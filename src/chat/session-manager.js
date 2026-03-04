@@ -16,7 +16,6 @@ const CodexBridge = require('./codex-bridge');
 const { getChatProvider, isAcpProvider, isClaudeCodeProvider, isCodexProvider, applyConfigOverrides: applyChatConfigOverrides } = require('./chat-providers');
 const logger = require('../utils/logger');
 
-const pairReviewSkillPath = path.resolve(__dirname, '../../.pi/skills/pair-review-api/SKILL.md');
 const taskExtensionDir = path.resolve(__dirname, '../../.pi/extensions/task');
 
 const CHAT_TOOLS = 'read,bash,grep,find,ls';
@@ -135,6 +134,12 @@ class ChatSessionManager {
     // Prepend per-message context first (focused suggestion — closer to user message)
     if (context) {
       messageForAgent = context + '\n\n---\n\n' + messageForAgent;
+    }
+
+    // Then prepend resume context (port correction after session resume — middle layer)
+    if (session.resumeContext) {
+      messageForAgent = session.resumeContext + '\n\n---\n\n' + messageForAgent;
+      session.resumeContext = null; // Only prepend once
     }
 
     // Then prepend initial session context (all suggestions — outermost)
@@ -309,6 +314,22 @@ class ChatSessionManager {
     `).run(sessionId);
 
     logger.info(`[ChatSession] Session ${sessionId} closed`);
+  }
+
+  /**
+   * Set context to prepend on the next sendMessage call for a resumed session.
+   * Similar to initialContext but set after resume rather than at creation.
+   * The context is consumed (prepended to the agent message, then cleared) on
+   * the next sendMessage call.
+   * @param {number} sessionId
+   * @param {string} context - Context string to prepend on next message
+   */
+  setResumeContext(sessionId, context) {
+    const session = this._sessions.get(sessionId);
+    if (!session) {
+      throw new Error(`Session ${sessionId} not found or not active`);
+    }
+    session.resumeContext = context || null;
   }
 
   /**
@@ -544,7 +565,6 @@ class ChatSessionManager {
     return new PiBridge({
       ...options,
       tools: CHAT_TOOLS,
-      skills: [pairReviewSkillPath],
       extensions: [taskExtensionDir],
     });
   }

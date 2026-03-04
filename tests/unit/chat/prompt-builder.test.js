@@ -185,12 +185,14 @@ describe('buildChatPrompt', () => {
       expect(prompt).not.toContain('AI analysis has been run');
     });
 
-    it('should include API capability section', () => {
+    it('should include API Access section with read-only instruction', () => {
       const prompt = buildChatPrompt({
         review: { id: 5, repository: 'owner/repo', pr_number: 1 }
       });
 
-      expect(prompt).toContain('pair-review-api skill');
+      expect(prompt).toContain('## API Access');
+      expect(prompt).toContain('read-only access to the code');
+      expect(prompt).not.toContain('pair-review-api skill');
     });
   });
 });

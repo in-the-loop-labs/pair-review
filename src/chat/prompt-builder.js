@@ -17,11 +17,10 @@ const logger = require('../utils/logger');
  * @param {Object} options
  * @param {Object} options.review - Review metadata {id, pr_number, repository, review_type, local_path, name}
  * @param {Object} [options.prData] - PR data with base_sha/head_sha (for PR reviews)
- * @param {string} [options.skillPath] - Absolute path to the pair-review-api SKILL.md file
  * @param {string} [options.chatInstructions] - Custom instructions from repo settings to append to system prompt
  * @returns {string} System prompt for the chat agent
  */
-function buildChatPrompt({ review, prData, skillPath, chatInstructions }) {
+function buildChatPrompt({ review, prData, chatInstructions }) {
   const sections = [];
 
   // Role
@@ -53,13 +52,14 @@ function buildChatPrompt({ review, prData, skillPath, chatInstructions }) {
   }
   sections.push(domainLines.join('\n'));
 
-  // API capability — MUST load the skill for endpoint details
-  const skillRef = skillPath
-    ? `(\`${skillPath}\`)`
-    : '(`.pi/skills/pair-review-api/SKILL.md`)';
+  // API Access — cheat-sheet is injected into initial context; full docs available via GET /api.md
   sections.push(
-    `You MUST read the pair-review-api skill ${skillRef} for endpoint details using the Read tool. With it you can create, update, and delete review comments, adopt or dismiss AI suggestions, and trigger new analyses via curl.\n` +
-    'IMPORTANT: Do NOT mention that you are reading a skill file, loading API documentation, or consulting reference material. Just use the API naturally as if you already know it.'
+    '## API Access\n\n' +
+    'You have **read-only access to the code**. To modify the review (create comments, adopt suggestions, trigger analysis) or interact with the pair-review app, you MUST use the pair-review API via `curl`. ' +
+    'All endpoints accept and return JSON.\n\n' +
+    'A compact API reference and the server URL are provided in the initial context of each session. ' +
+    `For the full API reference, fetch it with \`curl http://localhost:<port>/api.md?reviewId=${review?.id || '<id>'}\` (use the real port from your context).\n\n` +
+    'IMPORTANT: Do NOT mention that you are reading API documentation or consulting reference material. Just use the API naturally as if you already know it.'
   );
 
   // File reference syntax and context files

@@ -44,7 +44,9 @@ function createMockSessionManager(db) {
     onComplete: vi.fn().mockReturnValue(() => {}),
     onToolUse: vi.fn().mockReturnValue(() => {}),
     onStatus: vi.fn().mockReturnValue(() => {}),
-    onError: vi.fn().mockReturnValue(() => {})
+    onError: vi.fn().mockReturnValue(() => {}),
+    saveContextMessage: vi.fn().mockReturnValue({ id: 999 }),
+    setResumeContext: vi.fn()
   };
 }
 
@@ -479,7 +481,14 @@ describe('Chat Routes', () => {
       expect(mockManager.resumeSession).toHaveBeenCalledWith(5, expect.objectContaining({
         systemPrompt: expect.any(String),
       }));
-      expect(mockManager.sendMessage).toHaveBeenCalled();
+      // Port correction should be passed via context option, not prepended to content
+      expect(mockManager.sendMessage).toHaveBeenCalledWith(
+        5,
+        'hello after restart',
+        expect.objectContaining({
+          context: expect.stringContaining('Server port:')
+        })
+      );
     });
 
     it('should return 404 when review is not found during auto-resume', async () => {
@@ -556,7 +565,7 @@ describe('Chat Routes', () => {
       expect(mockManager.resumeSession).not.toHaveBeenCalled();
     });
 
-    it('should resume a resumable session', async () => {
+    it('should resume a resumable session and set resume context for port correction', async () => {
       mockManager.isSessionActive.mockReturnValue(false);
       mockManager.getSession.mockReturnValue({
         id: 1,
@@ -571,6 +580,13 @@ describe('Chat Routes', () => {
       expect(res.status).toBe(200);
       expect(res.body.data).toEqual({ id: 1, status: 'active' });
       expect(mockManager.resumeSession).toHaveBeenCalledWith(1, expect.any(Object));
+      // Port correction should use setResumeContext (consumed on next sendMessage),
+      // NOT saveContextMessage (which only writes to DB and never reaches the agent).
+      expect(mockManager.setResumeContext).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('Server port:')
+      );
+      expect(mockManager.saveContextMessage).not.toHaveBeenCalled();
     });
 
     it('should return 404 for unknown session', async () => {
@@ -910,7 +926,11 @@ describe('Chat Routes', () => {
       expect(re.test('curl https://api.github.com/repos')).toBe(false);
     });
 
-    it('should not match curl to localhost without /api/', () => {
+    it('should match curl to /api.md (full API docs endpoint)', () => {
+      expect(re.test('curl http://localhost:7247/api.md?reviewId=1')).toBe(true);
+    });
+
+    it('should not match curl to localhost without /api path prefix', () => {
       expect(re.test('curl http://localhost:7247/health')).toBe(false);
     });
 
@@ -1043,6 +1063,35 @@ describe('Chat Routes', () => {
       expect(res.body.data.suggestionCount).toBe(0);
       expect(res.body.data.run).toBeNull();
       expect(res.body.data.text).toBeNull();
+    });
+  });
+
+  describe('GET /api.md', () => {
+    it('should return rendered markdown with real values for valid reviewId', async () => {
+      const res = await request(app)
+        .get('/api.md?reviewId=1');
+
+      expect(res.status).toBe(200);
+      expect(res.headers['content-type']).toMatch(/text\/markdown/);
+      expect(res.text).toContain('## Comments');
+      expect(res.text).toContain('## Suggestions');
+      expect(res.text).not.toMatch(/\{\{[A-Z_]+\}\}/);
+    });
+
+    it('should return 400 when reviewId is missing', async () => {
+      const res = await request(app)
+        .get('/api.md');
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('reviewId');
+    });
+
+    it('should return 400 when reviewId is not a number', async () => {
+      const res = await request(app)
+        .get('/api.md?reviewId=abc');
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('reviewId');
     });
   });
 

@@ -12,14 +12,12 @@
  */
 
 const express = require('express');
-const path = require('path');
 const { queryOne, query, AnalysisRunRepository, RepoSettingsRepository } = require('../database');
 const { buildChatPrompt, buildInitialContext } = require('../chat/prompt-builder');
+const { renderApiDocs, buildApiCheatSheet } = require('../chat/api-reference');
 const { GitWorktreeManager } = require('../git/worktree');
 const logger = require('../utils/logger');
 const ws = require('../ws');
-
-const pairReviewSkillPath = path.resolve(__dirname, '../../.pi/skills/pair-review-api/SKILL.md');
 
 const router = express.Router();
 
@@ -90,7 +88,7 @@ const broadcastUnsubscribers = new Map();
  * @returns {RegExp}
  */
 function buildPairReviewApiRe(port) {
-  return new RegExp(`\\bcurl\\b.*\\bhttps?://(?:localhost|127\\.0\\.0\\.1):${port}/api/`);
+  return new RegExp(`\\bcurl\\b.*\\bhttps?://(?:localhost|127\\.0\\.0\\.1):${port}/api`);
 }
 
 /**
@@ -135,15 +133,6 @@ function registerChatBroadcast(chatSessionManager, sessionId, port) {
         }
         if (hiddenToolCallIds.has(data.toolCallId)) {
           if (data.status === 'end') hiddenToolCallIds.delete(data.toolCallId);
-          return;
-        }
-      }
-
-      // Suppress tool badges for reading the API skill file
-      if (data.toolName?.toLowerCase() === 'read') {
-        const readPath = data.args?.path || data.args?.file_path || '';
-        if (readPath.endsWith('pair-review-api/SKILL.md')) {
-          hiddenToolCallIds.add(data.toolCallId);
           return;
         }
       }
@@ -245,7 +234,7 @@ router.post('/api/chat/session', async (req, res) => {
       const chatInstructions = await getChatInstructions(db, review);
       const prData = await fetchPrData(db, review);
 
-      finalSystemPrompt = buildChatPrompt({ review, prData, skillPath: pairReviewSkillPath, chatInstructions });
+      finalSystemPrompt = buildChatPrompt({ review, prData, chatInstructions });
 
       if (!skipAnalysisContext) {
         // Fetch all AI suggestions from the latest analysis run
@@ -287,15 +276,16 @@ router.post('/api/chat/session', async (req, res) => {
     // Resolve cwd: explicit from request body, or the review's code directory
     const resolvedCwd = cwd || await resolveReviewCwd(db, review);
 
-    // Inject the server port into the initial context so the agent learns it
-    // once at session start. This avoids wasting tokens by repeating the port
-    // with every user message.  If the server restarts on a new port, the next
-    // session will pick up the new value automatically.
+    // Inject the server port and API cheat-sheet into the initial context so
+    // the agent learns it once at session start.  If the server restarts on a
+    // new port, the next session will pick up the new value automatically.
     const serverPort = req.socket.localPort;
     const portContext = `[Server port: ${serverPort}] The pair-review API is at http://localhost:${serverPort}`;
+    const cheatSheet = buildApiCheatSheet({ port: serverPort, reviewId: review.id });
+    const sessionPreamble = portContext + '\n\n' + cheatSheet;
     const initialContextWithPort = initialContext
-      ? portContext + '\n\n' + initialContext
-      : portContext;
+      ? sessionPreamble + '\n\n' + initialContext
+      : sessionPreamble;
 
     const session = await chatSessionManager.createSession({
       provider,
@@ -354,6 +344,7 @@ router.post('/api/chat/session/:id/message', async (req, res) => {
     const db = req.app.get('db');
 
     // Auto-resume: if session is not active in memory, try to resume it
+    let portCorrectionContext = null;
     if (!chatSessionManager.isSessionActive(sessionId)) {
       const session = chatSessionManager.getSession(sessionId);
       if (!session) {
@@ -372,7 +363,7 @@ router.post('/api/chat/session/:id/message', async (req, res) => {
       const chatInstructions = await getChatInstructions(db, review);
       const prData = await fetchPrData(db, review);
 
-      const systemPrompt = buildChatPrompt({ review, prData, skillPath: pairReviewSkillPath, chatInstructions });
+      const systemPrompt = buildChatPrompt({ review, prData, chatInstructions });
       const cwd = await resolveReviewCwd(db, review);
 
       try {
@@ -380,14 +371,27 @@ router.post('/api/chat/session/:id/message', async (req, res) => {
         unregisterChatBroadcast(sessionId);
         registerChatBroadcast(chatSessionManager, sessionId, req.socket.localPort);
         logger.info(`[ChatRoute] Auto-resumed session ${sessionId} for message delivery`);
+
+        // Inject port correction so the agent knows the current server address,
+        // even if the conversational history has a stale port from session creation.
+        const serverPort = req.socket.localPort;
+        portCorrectionContext = `[Server port: ${serverPort}] The pair-review API is at http://localhost:${serverPort}`;
+        // Note: we intentionally do NOT re-inject the API cheat sheet on resume.
+        // The agent already has the endpoint shapes from the original session context —
+        // it only needs the updated port to adjust its curl calls.
       } catch (err) {
         logger.error(`[ChatRoute] Failed to auto-resume session ${sessionId}: ${err.message}`);
         return res.status(410).json({ error: 'Failed to resume session: ' + err.message });
       }
     }
 
+    // Merge port correction context (from auto-resume) with any request-body context
+    const mergedContext = portCorrectionContext
+      ? (context ? portCorrectionContext + '\n\n' + context : portCorrectionContext)
+      : context;
+
     logger.debug(`[ChatRoute] Forwarding message to session ${sessionId} (${content.length} chars)`);
-    const result = await chatSessionManager.sendMessage(sessionId, content, { context, contextData, actionContext });
+    const result = await chatSessionManager.sendMessage(sessionId, content, { context: mergedContext, contextData, actionContext });
     logger.debug(`[ChatRoute] Message stored as ID ${result.id}, awaiting agent response via WebSocket`);
     res.json({ data: { messageId: result.id } });
   } catch (error) {
@@ -496,12 +500,21 @@ router.post('/api/chat/session/:id/resume', async (req, res) => {
     const chatInstructions = await getChatInstructions(db, review);
     const prData = await fetchPrData(db, review);
 
-    const systemPrompt = buildChatPrompt({ review, prData, skillPath: pairReviewSkillPath, chatInstructions });
+    const systemPrompt = buildChatPrompt({ review, prData, chatInstructions });
     const cwd = await resolveReviewCwd(db, review);
 
     await chatSessionManager.resumeSession(sessionId, { systemPrompt, cwd });
     unregisterChatBroadcast(sessionId);
-    registerChatBroadcast(chatSessionManager, sessionId, req.socket.localPort);
+    const serverPort = req.socket.localPort;
+    registerChatBroadcast(chatSessionManager, sessionId, serverPort);
+
+    // Inject port correction so the agent knows the current server address,
+    // even if the conversational history has a stale port from session creation.
+    // Uses resumeContext (consumed on next sendMessage) instead of saveContextMessage
+    // (which only writes to DB and never reaches the agent process).
+    chatSessionManager.setResumeContext(sessionId,
+      `[Server port: ${serverPort}] The pair-review API is at http://localhost:${serverPort}`
+    );
 
     logger.info(`[ChatRoute] Explicitly resumed session ${sessionId}`);
     res.json({ data: { id: sessionId, status: 'active' } });
@@ -608,6 +621,25 @@ router.get('/api/chat/analysis-context/:runId', async (req, res) => {
   } catch (error) {
     logger.error(`Error fetching analysis context: ${error.message}`);
     res.status(500).json({ error: 'Failed to fetch analysis context' });
+  }
+});
+
+/**
+ * Serve the full API reference as rendered markdown with real values baked in.
+ * Requires ?reviewId=N so the docs contain the correct review ID.
+ */
+router.get('/api.md', (req, res) => {
+  try {
+    const reviewId = parseInt(req.query.reviewId, 10);
+    if (!reviewId || !Number.isInteger(reviewId)) {
+      return res.status(400).json({ error: 'Missing required query parameter: reviewId' });
+    }
+    const port = req.socket.localPort;
+    const md = renderApiDocs({ port, reviewId });
+    res.type('text/markdown').send(md);
+  } catch (error) {
+    logger.error(`Error serving API docs: ${error.message}`);
+    res.status(500).json({ error: 'Failed to render API docs' });
   }
 });
 
