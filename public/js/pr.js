@@ -1400,6 +1400,15 @@ class PRManager {
       }
     } else {
       this.viewedFiles.delete(filePath);
+      // Auto-expand when unchecking viewed (match GitHub behavior)
+      if (wrapper && wrapper.classList.contains('collapsed')) {
+        wrapper.classList.remove('collapsed');
+        this.collapsedFiles.delete(filePath);
+        const header = wrapper.querySelector('.d2h-file-header');
+        if (header) {
+          window.DiffRenderer.updateFileHeaderState(header, true);
+        }
+      }
     }
 
     // Persist viewed state
