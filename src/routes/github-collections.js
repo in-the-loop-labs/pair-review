@@ -26,7 +26,7 @@ router.get('/api/github/review-requests', async (req, res) => {
     const fetchedAt = rows.length > 0 ? rows[0].fetched_at : null;
     res.json({ success: true, prs: rows, fetched_at: fetchedAt });
   } catch (error) {
-    logger.error('Failed to fetch review requests:', error.message);
+    logger.error('Failed to fetch review requests:', error);
     res.status(500).json({ success: false, error: 'Failed to fetch review requests' });
   }
 });
@@ -61,7 +61,10 @@ router.post('/api/github/review-requests/refresh', async (req, res) => {
     const fetchedAt = rows.length > 0 ? rows[0].fetched_at : null;
     res.json({ success: true, prs: rows, fetched_at: fetchedAt });
   } catch (error) {
-    logger.error('Failed to refresh review requests:', error.message);
+    if (error.status === 401 || error.status === 403) {
+      return res.status(401).json({ success: false, error: 'GitHub token is invalid or expired' });
+    }
+    logger.error('Failed to refresh review requests:', error);
     res.status(500).json({ success: false, error: 'Failed to refresh review requests' });
   }
 });
@@ -77,7 +80,7 @@ router.get('/api/github/my-prs', async (req, res) => {
     const fetchedAt = rows.length > 0 ? rows[0].fetched_at : null;
     res.json({ success: true, prs: rows, fetched_at: fetchedAt });
   } catch (error) {
-    logger.error('Failed to fetch my PRs:', error.message);
+    logger.error('Failed to fetch my PRs:', error);
     res.status(500).json({ success: false, error: 'Failed to fetch my PRs' });
   }
 });
@@ -112,7 +115,10 @@ router.post('/api/github/my-prs/refresh', async (req, res) => {
     const fetchedAt = rows.length > 0 ? rows[0].fetched_at : null;
     res.json({ success: true, prs: rows, fetched_at: fetchedAt });
   } catch (error) {
-    logger.error('Failed to refresh my PRs:', error.message);
+    if (error.status === 401 || error.status === 403) {
+      return res.status(401).json({ success: false, error: 'GitHub token is invalid or expired' });
+    }
+    logger.error('Failed to refresh my PRs:', error);
     res.status(500).json({ success: false, error: 'Failed to refresh my PRs' });
   }
 });

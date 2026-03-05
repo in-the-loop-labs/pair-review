@@ -1146,13 +1146,6 @@ class GitHubClient {
   }
 
   /**
-   * Retry API calls with exponential backoff
-   * @param {Function} apiCall - The API call function
-   * @param {number} maxRetries - Maximum number of retries
-   * @param {number} baseDelay - Base delay in milliseconds
-   * @returns {Promise<any>} API call result
-   */
-  /**
    * Search GitHub pull requests using the search API.
    * @param {string} searchQuery - Search query string (e.g., "is:pr is:open review-requested:USERNAME")
    * @returns {Promise<Array<{owner: string, repo: string, number: number, title: string, author: string, updated_at: string, html_url: string, state: string}>>}
@@ -1174,7 +1167,7 @@ class GitHubClient {
         repo,
         number: item.number,
         title: item.title,
-        author: item.user.login,
+        author: item.user?.login || null,
         updated_at: item.updated_at,
         html_url: item.html_url,
         state: item.state
@@ -1195,6 +1188,13 @@ class GitHubClient {
     };
   }
 
+  /**
+   * Retry API calls with exponential backoff
+   * @param {Function} apiCall - The API call function
+   * @param {number} maxRetries - Maximum number of retries
+   * @param {number} baseDelay - Base delay in milliseconds
+   * @returns {Promise<any>} API call result
+   */
   async retryWithBackoff(apiCall, maxRetries = 3, baseDelay = 1000) {
     let lastError;
     

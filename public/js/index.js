@@ -301,7 +301,7 @@
    */
   function renderCollectionPrRow(pr, collection) {
     var repoFull = pr.owner + '/' + pr.repo;
-    var prUrl = 'https://github.com/' + repoFull + '/pull/' + pr.number;
+    var prUrl = pr.html_url || ('https://github.com/' + repoFull + '/pull/' + pr.number);
     var relativeTime = formatRelativeTime(pr.updated_at);
 
     var authorDisplay = pr.author
@@ -891,9 +891,11 @@
 
     } catch (error) {
       console.error('Error loading recent reviews:', error);
-      // Hide the section on error, show help modal as fallback
-      section.style.display = 'none';
-      openHelpModal();
+      container.innerHTML =
+        '<div class="recent-reviews-empty">' +
+          '<p>Failed to load recent reviews. Please try refreshing the page.</p>' +
+        '</div>';
+      container.classList.remove('recent-reviews-loading');
     }
   }
 
