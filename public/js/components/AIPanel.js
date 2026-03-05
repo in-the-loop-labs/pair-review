@@ -208,6 +208,45 @@ class AIPanel {
     }
 
     /**
+     * Get the localStorage key for the collapsed state (per-review)
+     * @returns {string|null} Storage key or null if no PR context
+     */
+    _getCollapsedStorageKey() {
+        if (!this.currentPRKey) return null;
+        return `pair-review-panel-collapsed_${this.currentPRKey}`;
+    }
+
+    /**
+     * Save the collapsed state to localStorage (per-review)
+     */
+    _saveCollapsedState() {
+        const key = this._getCollapsedStorageKey();
+        if (key) {
+            localStorage.setItem(key, this.isCollapsed ? 'true' : 'false');
+        }
+    }
+
+    /**
+     * Restore the collapsed state from localStorage, or collapse for new reviews.
+     * If the user had the panel expanded for this review, expand it.
+     * Otherwise (new review or previously collapsed), collapse it.
+     */
+    _restoreOrCollapsePanel() {
+        const key = this._getCollapsedStorageKey();
+        if (key) {
+            const stored = localStorage.getItem(key);
+            if (stored === 'false') {
+                this.expand();
+            } else {
+                // 'true' or no saved state (new review) → collapse
+                this.collapse();
+            }
+        } else {
+            this.collapse();
+        }
+    }
+
+    /**
      * Get the localStorage key for the filter state (per-review)
      * @returns {string|null} Storage key or null if no PR context
      */
@@ -275,6 +314,7 @@ class AIPanel {
         // Set CSS variable to 0 so width calculations don't reserve space
         document.documentElement.style.setProperty('--ai-panel-width', '0px');
         window.panelGroup?._onReviewVisibilityChanged(false);
+        this._saveCollapsedState();
     }
 
     expand() {
@@ -285,6 +325,7 @@ class AIPanel {
         // Restore CSS variable from saved width or default
         document.documentElement.style.setProperty('--ai-panel-width', `${this.getEffectivePanelWidth()}px`);
         window.panelGroup?._onReviewVisibilityChanged(true);
+        this._saveCollapsedState();
     }
 
     /**
@@ -296,6 +337,7 @@ class AIPanel {
      */
     setPR(owner, repo, number) {
         this.currentPRKey = `${owner}/${repo}#${number}`;
+        this._restoreOrCollapsePanel();
         this.restoreSegmentSelection();
         this.restoreFilterState();
     }
@@ -327,6 +369,10 @@ class AIPanel {
      */
     setAnalysisState(state) {
         this.analysisState = state;
+        // Auto-expand panel when analysis starts
+        if (state === 'loading' && this.isCollapsed) {
+            this.expand();
+        }
         // Re-render if currently showing empty state
         if (this.findings.length === 0 && this.selectedSegment === 'ai') {
             this.renderFindings();
@@ -1737,3 +1783,8 @@ class AIPanel {
 document.addEventListener('DOMContentLoaded', () => {
     window.aiPanel = new AIPanel();
 });
+
+// Export for testing
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { AIPanel };
+}

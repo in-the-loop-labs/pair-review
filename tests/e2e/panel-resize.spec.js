@@ -20,6 +20,9 @@ test.describe('Panel Resize - PR Mode', () => {
     // Reload to apply cleared state
     await page.reload();
     await waitForDiffToRender(page);
+
+    // Expand AI panel (starts collapsed by default)
+    await page.locator('#ai-panel-toggle').click();
   });
 
   test.describe('Sidebar Resize', () => {

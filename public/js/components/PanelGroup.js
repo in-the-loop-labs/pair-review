@@ -41,6 +41,7 @@ class PanelGroup {
     this._reviewVisible = !document.getElementById('ai-panel')?.classList.contains('collapsed');
     this._chatVisible = false;
     this._popoverVisible = false;
+    this._currentPRKey = null; // Set via setPR() for per-review chat persistence
 
     // Read persisted layout
     const savedLayout = localStorage.getItem(PanelGroup.STORAGE_KEY);
@@ -79,20 +80,17 @@ class PanelGroup {
     // Apply initial layout
     this._applyLayout(this._layout);
 
-    // Restore chat visibility from last session (only if chat is available)
-    const chatState = document.documentElement.getAttribute('data-chat');
-    if (chatState === 'available') {
-      this._restoreChatFromStorage();
-    } else {
-      // Chat not available yet — zero out CSS variable so max-width calcs are correct.
-      document.documentElement.style.setProperty('--chat-panel-width', '0px');
-    }
+    // Chat starts hidden; per-review state restored when setPR() is called.
+    document.documentElement.style.setProperty('--chat-panel-width', '0px');
 
     // Listen for late chat-state transitions (config fetch may complete after constructor)
     window.addEventListener('chat-state-changed', (e) => {
       const state = e.detail?.state;
       if (state === 'available') {
-        this._restoreChatFromStorage();
+        // Only restore if PR context is already set (setPR was called before chat became available)
+        if (this._currentPRKey) {
+          this._restoreChatFromStorage();
+        }
       } else if (state === 'unavailable' && this.chatToggleBtn) {
         this.chatToggleBtn.title = 'Install and configure Pi to enable chat';
       }
@@ -422,10 +420,34 @@ class PanelGroup {
   }
 
   /**
-   * Restore chat visibility from localStorage (called when chat becomes available)
+   * Set the current PR for per-review chat visibility persistence.
+   * Call this when a PR/review loads (after aiPanel.setPR).
+   * @param {string} prKey - e.g. "owner/repo#123" or "local/local#2"
+   */
+  setPR(prKey) {
+    this._currentPRKey = prKey;
+    // Now that we know the review context, restore chat state if chat is available
+    if (this._isChatAvailable()) {
+      this._restoreChatFromStorage();
+    }
+  }
+
+  /**
+   * Get the per-review localStorage key for chat visibility.
+   * @returns {string|null} Storage key or null if no PR context
+   */
+  _getChatVisibleStorageKey() {
+    if (!this._currentPRKey) return null;
+    return `${PanelGroup.CHAT_VISIBLE_KEY}_${this._currentPRKey}`;
+  }
+
+  /**
+   * Restore chat visibility from localStorage (per-review).
+   * For new reviews (no saved state), chat stays hidden.
    */
   _restoreChatFromStorage() {
-    const savedChatVisible = localStorage.getItem(PanelGroup.CHAT_VISIBLE_KEY);
+    const key = this._getChatVisibleStorageKey();
+    const savedChatVisible = key ? localStorage.getItem(key) : null;
     if (savedChatVisible === 'true') {
       this._chatVisible = true;
       this.chatPanel.open({ suppressFocus: true });
@@ -478,8 +500,11 @@ class PanelGroup {
       this.chatToggleBtn.classList.toggle('active', visible);
     }
 
-    // Persist chat visibility
-    localStorage.setItem(PanelGroup.CHAT_VISIBLE_KEY, visible ? 'true' : 'false');
+    // Persist chat visibility (per-review)
+    const chatKey = this._getChatVisibleStorageKey();
+    if (chatKey) {
+      localStorage.setItem(chatKey, visible ? 'true' : 'false');
+    }
 
     // Clear inline flex heights so the remaining panel fills the space
     if (this._layout.startsWith('v-')) {

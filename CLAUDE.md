@@ -150,7 +150,7 @@ Test structure:
 - Test both modes manually or with E2E tests before considering a feature complete
 
 ### Testing Practices
-- NEVER duplicate production code in tests. Always import and test the actual implementation.
+- NEVER duplicate production code in tests. Always import and test the actual implementation. If a module lacks exports needed for testing, add them — see the `if (typeof module !== 'undefined')` pattern used in components like `ReviewModal.js` and `PanelGroup.js`.
 - If production code is structured in a way that makes it hard to test (e.g., browser-only IIFEs), refactor the production code to be testable rather than duplicating it.
 - When adding database migrations or new tables, ALWAYS update the test schemas in:
   - `tests/e2e/global-setup.js` (E2E test database)
