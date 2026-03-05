@@ -71,6 +71,9 @@ test.describe('AI Summary Modal', () => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
+    // Panel starts collapsed by default; expand it so summary button is clickable
+    await page.evaluate(() => window.aiPanel?.expand());
+
     // Click the summary button
     await page.locator('#ai-summary-btn').click();
 
@@ -87,6 +90,9 @@ test.describe('AI Summary Modal', () => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
+    // Panel starts collapsed by default; expand it so summary button is clickable
+    await page.evaluate(() => window.aiPanel?.expand());
+
     // Open modal
     await page.locator('#ai-summary-btn').click();
     await expect(page.locator('#ai-summary-modal')).toBeVisible();
@@ -102,6 +108,9 @@ test.describe('AI Summary Modal', () => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
+    // Panel starts collapsed by default; expand it so summary button is clickable
+    await page.evaluate(() => window.aiPanel?.expand());
+
     // Open modal
     await page.locator('#ai-summary-btn').click();
     await expect(page.locator('#ai-summary-modal')).toBeVisible();
@@ -116,6 +125,9 @@ test.describe('AI Summary Modal', () => {
   test('should close modal when clicking backdrop', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
+
+    // Panel starts collapsed by default; expand it so summary button is clickable
+    await page.evaluate(() => window.aiPanel?.expand());
 
     // Open modal
     await page.locator('#ai-summary-btn').click();
@@ -133,6 +145,9 @@ test.describe('AI Summary Modal', () => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
+    // Panel starts collapsed by default; expand it so summary button is clickable
+    await page.evaluate(() => window.aiPanel?.expand());
+
     // Open modal
     await page.locator('#ai-summary-btn').click();
     await expect(page.locator('#ai-summary-modal')).toBeVisible();
@@ -145,6 +160,9 @@ test.describe('AI Summary Modal', () => {
   test('should have copy button in modal', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
+
+    // Panel starts collapsed by default; expand it so summary button is clickable
+    await page.evaluate(() => window.aiPanel?.expand());
 
     // Open modal
     await page.locator('#ai-summary-btn').click();
@@ -160,6 +178,9 @@ test.describe('AI Summary Modal', () => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
+    // Panel starts collapsed by default; expand it so summary button is clickable
+    await page.evaluate(() => window.aiPanel?.expand());
+
     // Open modal before running analysis (no summary yet)
     await page.locator('#ai-summary-btn').click();
     await expect(page.locator('#ai-summary-modal')).toBeVisible();
@@ -172,6 +193,9 @@ test.describe('AI Summary Modal', () => {
   test('should display summary after analysis', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
+
+    // Panel starts collapsed by default; expand it so summary button is clickable
+    await page.evaluate(() => window.aiPanel?.expand());
 
     // Run analysis to get summary
     await seedAISuggestionsWithSummary(page);

@@ -15,15 +15,20 @@ test.describe('Panel Group - PR Mode', () => {
     await page.evaluate(() => {
       localStorage.removeItem('panel-group-layout');
       localStorage.removeItem('panel-group-chat-visible');
+      localStorage.removeItem('panel-group-chat-visible_test-owner/test-repo#1');
       localStorage.removeItem('chat-panel-width');
       localStorage.removeItem('panel-group-last-h');
       localStorage.removeItem('panel-group-last-v');
+      localStorage.removeItem('pair-review-panel-collapsed_test-owner/test-repo#1');
     });
     await page.reload();
     await waitForDiffToRender(page);
   });
 
   test('should have right-panel-group containing AI panel', async ({ page }) => {
+    // Expand AI panel (starts collapsed by default)
+    await page.locator('#ai-panel-toggle').click();
+
     const group = page.locator('#right-panel-group');
     await expect(group).toBeVisible();
     const aiPanel = group.locator('#ai-panel');
@@ -94,6 +99,9 @@ test.describe('Panel Group - PR Mode', () => {
       window.dispatchEvent(new CustomEvent('chat-state-changed', { detail: { state: 'available' } }));
     });
 
+    // Expand AI panel (starts collapsed by default)
+    await page.locator('#ai-panel-toggle').click();
+
     const chatBtn = page.locator('#chat-toggle-btn');
     const layoutBtn = page.locator('#panel-layout-toggle');
 
@@ -110,6 +118,9 @@ test.describe('Panel Group - PR Mode', () => {
       document.documentElement.setAttribute('data-chat', 'available');
       window.dispatchEvent(new CustomEvent('chat-state-changed', { detail: { state: 'available' } }));
     });
+
+    // Expand AI panel (starts collapsed by default)
+    await page.locator('#ai-panel-toggle').click();
 
     const chatBtn = page.locator('#chat-toggle-btn');
     const layoutBtn = page.locator('#panel-layout-toggle');
@@ -149,6 +160,9 @@ test.describe('Panel Group - PR Mode', () => {
       window.dispatchEvent(new CustomEvent('chat-state-changed', { detail: { state: 'available' } }));
     });
 
+    // Expand AI panel (starts collapsed by default)
+    await page.locator('#ai-panel-toggle').click();
+
     const chatBtn = page.locator('#chat-toggle-btn');
     const layoutBtn = page.locator('#panel-layout-toggle');
     const group = page.locator('#right-panel-group');
@@ -178,6 +192,9 @@ test.describe('Panel Group - PR Mode', () => {
       window.dispatchEvent(new CustomEvent('chat-state-changed', { detail: { state: 'available' } }));
     });
 
+    // Expand AI panel (starts collapsed by default)
+    await page.locator('#ai-panel-toggle').click();
+
     const chatBtn = page.locator('#chat-toggle-btn');
     const layoutBtn = page.locator('#panel-layout-toggle');
     const popover = page.locator('#layout-popover');
@@ -198,6 +215,9 @@ test.describe('Panel Group - PR Mode', () => {
       document.documentElement.setAttribute('data-chat', 'available');
       window.dispatchEvent(new CustomEvent('chat-state-changed', { detail: { state: 'available' } }));
     });
+
+    // Expand AI panel (starts collapsed by default)
+    await page.locator('#ai-panel-toggle').click();
 
     const chatBtn = page.locator('#chat-toggle-btn');
     const layoutBtn = page.locator('#panel-layout-toggle');
@@ -268,6 +288,9 @@ test.describe('Panel Group - PR Mode', () => {
   });
 
   test('both panels hidden: group collapses', async ({ page }) => {
+    // Expand AI panel (starts collapsed by default)
+    await page.locator('#ai-panel-toggle').click();
+
     const group = page.locator('#right-panel-group');
     const aiPanelClose = page.locator('#ai-panel-close');
 
@@ -279,9 +302,12 @@ test.describe('Panel Group - PR Mode', () => {
   });
 
   test('group not collapsed when at least one panel is visible', async ({ page }) => {
+    // Expand AI panel (starts collapsed by default)
+    await page.locator('#ai-panel-toggle').click();
+
     const group = page.locator('#right-panel-group');
 
-    // AI panel is visible by default, group should not be collapsed
+    // AI panel is visible, group should not be collapsed
     await expect(group).not.toHaveClass(/group-collapsed/);
   });
 
@@ -337,15 +363,20 @@ test.describe('Panel Group - Local Mode', () => {
     await page.evaluate(() => {
       localStorage.removeItem('panel-group-layout');
       localStorage.removeItem('panel-group-chat-visible');
+      localStorage.removeItem('panel-group-chat-visible_local/local#2');
       localStorage.removeItem('chat-panel-width');
       localStorage.removeItem('panel-group-last-h');
       localStorage.removeItem('panel-group-last-v');
+      localStorage.removeItem('pair-review-panel-collapsed_local/local#2');
     });
     await page.reload();
     await waitForDiffToRender(page);
   });
 
   test('should have right-panel-group containing AI panel', async ({ page }) => {
+    // Expand AI panel (starts collapsed by default)
+    await page.locator('#ai-panel-toggle').click();
+
     const group = page.locator('#right-panel-group');
     await expect(group).toBeVisible();
     const aiPanel = group.locator('#ai-panel');
@@ -381,6 +412,9 @@ test.describe('Panel Group - Local Mode', () => {
       document.documentElement.setAttribute('data-chat', 'available');
       window.dispatchEvent(new CustomEvent('chat-state-changed', { detail: { state: 'available' } }));
     });
+
+    // Expand AI panel (starts collapsed by default)
+    await page.locator('#ai-panel-toggle').click();
 
     const chatBtn = page.locator('#chat-toggle-btn');
     const layoutBtn = page.locator('#panel-layout-toggle');

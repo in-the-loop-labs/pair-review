@@ -374,6 +374,7 @@ class LocalManager {
         if (data.running && data.analysisId) {
           manager.currentAnalysisId = data.analysisId;
           manager.isAnalyzing = true;
+          window.aiPanel?.setAnalysisState('loading');
           manager.setButtonAnalyzing(data.analysisId);
 
           // Show the appropriate progress modal
@@ -791,10 +792,11 @@ class LocalManager {
         window.aiPanel = new window.AIPanel();
       }
 
-      // Set local context for AI Panel (restores filter state from localStorage)
+      // Set local context for AI Panel and Panel Group (restores per-review state from localStorage)
       if (window.aiPanel?.setPR) {
         window.aiPanel.setPR('local', reviewData.repository, this.reviewId);
       }
+      window.panelGroup?.setPR(`local/${reviewData.repository}#${this.reviewId}`);
 
       // Load saved comments using the restored filter state from AI Panel
       const includeDismissed = window.aiPanel?.showDismissedComments || false;
