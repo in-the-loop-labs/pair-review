@@ -262,6 +262,7 @@ async function startServer(sharedDb = null) {
     const councilRoutes = require('./routes/councils');
     const chatRoutes = require('./routes/chat');
     const contextFilesRoutes = require('./routes/context-files');
+    const githubCollectionsRoutes = require('./routes/github-collections');
 
     // Initialize chat session manager
     const ChatSessionManager = require('./chat/session-manager');
@@ -279,6 +280,7 @@ async function startServer(sharedDb = null) {
     app.use('/', localRoutes);
     app.use('/', setupRoutes);
     app.use('/', mcpRoutes);
+    app.use('/', githubCollectionsRoutes);
     app.use('/', prRoutes);
     
     // Error handling middleware

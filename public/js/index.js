@@ -279,6 +279,193 @@
     loaded: false
   };
 
+  // ─── GitHub PR Collections (Review Requests / My PRs) ─────────────────────
+
+  var reviewRequestsState = {
+    loaded: false,
+    prs: [],
+    fetchedAt: null
+  };
+
+  var myPrsState = {
+    loaded: false,
+    prs: [],
+    fetchedAt: null
+  };
+
+  /**
+   * Render a single row for a collection PR table.
+   * @param {Object} pr - PR object from the API
+   * @param {string} collection - The collection name ('review-requests' or 'my-prs')
+   * @returns {string} HTML string for the table row
+   */
+  function renderCollectionPrRow(pr, collection) {
+    var repoFull = pr.owner + '/' + pr.repo;
+    var prUrl = 'https://github.com/' + repoFull + '/pull/' + pr.number;
+    var relativeTime = formatRelativeTime(pr.updated_at);
+
+    var authorDisplay = pr.author
+      ? '<a href="https://github.com/' + encodeURIComponent(pr.author) + '" target="_blank" rel="noopener">' + escapeHtml(pr.author) + '</a>'
+      : '';
+
+    var githubLinkHtml =
+      '<a href="' + escapeHtml(pr.html_url || prUrl) + '" target="_blank" rel="noopener" class="btn-github-link" title="Open on GitHub">' +
+        '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg>' +
+      '</a>';
+
+    var authorTd = collection === 'my-prs'
+      ? ''
+      : '<td class="col-author">' + authorDisplay + '</td>';
+
+    return '' +
+      '<tr class="collection-pr-row" data-pr-url="' + escapeHtml(prUrl) + '">' +
+        '<td class="col-repo">' + escapeHtml(repoFull) + '</td>' +
+        '<td class="col-pr"><a href="' + escapeHtml(prUrl) + '" target="_blank" rel="noopener">#' + pr.number + '</a></td>' +
+        '<td class="col-title" title="' + escapeHtml(pr.title || '') + '">' + escapeHtml(pr.title || '') + '</td>' +
+        authorTd +
+        '<td class="col-time">' + relativeTime + '</td>' +
+        '<td class="col-actions">' + githubLinkHtml + '</td>' +
+      '</tr>';
+  }
+
+  /**
+   * Render the collection table into a container element.
+   * @param {HTMLElement} container - The container element
+   * @param {Object} state - The collection state object
+   * @param {string} collection - The collection name ('review-requests' or 'my-prs')
+   */
+  function renderCollectionTable(container, state, collection) {
+    if (state.prs.length === 0) {
+      var emptyMsg = collection === 'review-requests'
+        ? 'No pull requests awaiting your review.'
+        : 'You have no open pull requests.';
+
+      if (!state.fetchedAt) {
+        emptyMsg = 'Click refresh to fetch from GitHub.';
+      }
+
+      container.innerHTML =
+        '<div class="recent-reviews-empty">' +
+          '<p>' + emptyMsg + '</p>' +
+        '</div>';
+      container.classList.remove('recent-reviews-loading');
+      return;
+    }
+
+    var authorTh = collection === 'my-prs' ? '' : '<th>Author</th>';
+
+    container.innerHTML =
+      '<table class="recent-reviews-table">' +
+        '<thead>' +
+          '<tr>' +
+            '<th>Repository</th>' +
+            '<th>PR</th>' +
+            '<th>Title</th>' +
+            authorTh +
+            '<th>Updated</th>' +
+            '<th>Actions</th>' +
+          '</tr>' +
+        '</thead>' +
+        '<tbody>' +
+          state.prs.map(function (pr) { return renderCollectionPrRow(pr, collection); }).join('') +
+        '</tbody>' +
+      '</table>';
+    container.classList.remove('recent-reviews-loading');
+  }
+
+  /**
+   * Load collection PRs from cached backend data.
+   * @param {string} collection - 'review-requests' or 'my-prs'
+   * @param {string} containerId - DOM id of the container element
+   * @param {Object} state - The collection state object
+   */
+  async function loadCollectionPrs(collection, containerId, state) {
+    var container = document.getElementById(containerId);
+
+    try {
+      var response = await fetch('/api/github/' + collection);
+      if (!response.ok) throw new Error('Failed to fetch');
+      var data = await response.json();
+
+      state.loaded = true;
+      state.prs = data.prs || [];
+      state.fetchedAt = data.fetched_at;
+
+      renderCollectionTable(container, state, collection);
+
+      // Auto-refresh on first load if cache is empty
+      if (state.prs.length === 0 && !state.fetchedAt) {
+        refreshCollectionPrs(collection, containerId, state);
+      }
+    } catch (error) {
+      console.error('Error loading ' + collection + ':', error);
+      container.innerHTML =
+        '<div class="recent-reviews-empty">' +
+          '<p>Failed to load. Click refresh to try again.</p>' +
+        '</div>';
+      container.classList.remove('recent-reviews-loading');
+    }
+  }
+
+  /**
+   * Refresh collection PRs by fetching fresh data from GitHub.
+   * @param {string} collection - 'review-requests' or 'my-prs'
+   * @param {string} containerId - DOM id of the container element
+   * @param {Object} state - The collection state object
+   */
+  async function refreshCollectionPrs(collection, containerId, state) {
+    var container = document.getElementById(containerId);
+    var btnId = collection === 'review-requests' ? 'refresh-review-requests' : 'refresh-my-prs';
+    var btn = document.getElementById(btnId);
+
+    if (btn) btn.classList.add('refreshing');
+
+    // Show loading state only if this is the first load (no existing data)
+    if (state.prs.length === 0) {
+      container.innerHTML = '<div class="recent-reviews-loading">Fetching from GitHub...</div>';
+    }
+
+    try {
+      var response = await fetch('/api/github/' + collection + '/refresh', { method: 'POST' });
+
+      if (!response.ok) {
+        var errData = await response.json().catch(function() { return {}; });
+        if (response.status === 401) {
+          container.innerHTML =
+            '<div class="recent-reviews-empty">' +
+              '<p>Configure a GitHub token to see ' +
+              (collection === 'review-requests' ? 'review requests' : 'your pull requests') +
+              '.</p>' +
+            '</div>';
+          container.classList.remove('recent-reviews-loading');
+          return;
+        }
+        throw new Error(errData.error || 'Refresh failed');
+      }
+
+      var data = await response.json();
+      state.prs = data.prs || [];
+      state.fetchedAt = data.fetched_at;
+      state.loaded = true;
+
+      renderCollectionTable(container, state, collection);
+    } catch (error) {
+      console.error('Error refreshing ' + collection + ':', error);
+      // If we had existing data, keep showing it
+      if (state.prs.length > 0) {
+        renderCollectionTable(container, state, collection);
+      } else {
+        container.innerHTML =
+          '<div class="recent-reviews-empty">' +
+            '<p>Failed to fetch from GitHub. Check your token and try again.</p>' +
+          '</div>';
+        container.classList.remove('recent-reviews-loading');
+      }
+    } finally {
+      if (btn) btn.classList.remove('refreshing');
+    }
+  }
+
   /**
    * Fetch and display local review sessions (initial load).
    */
@@ -554,6 +741,9 @@
         '<td class="col-author">' + authorDisplay + '</td>' +
         '<td class="col-time">' + relativeTime + '</td>' +
         '<td class="col-actions">' +
+          '<a href="https://github.com/' + escapeHtml(worktree.repository) + '/pull/' + worktree.pr_number + '" target="_blank" rel="noopener" class="btn-github-link" title="Open on GitHub">' +
+            '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg>' +
+          '</a>' +
           '<a href="' + settingsLink + '" class="btn-repo-settings" title="Repository settings">' +
             '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">' +
               '<path d="M8 0a8.2 8.2 0 0 1 .701.031C9.444.095 9.99.645 10.16 1.29l.288 1.107c.018.066.079.158.212.224.231.114.454.243.668.386.123.082.233.09.299.071l1.103-.303c.644-.176 1.392.021 1.82.63.27.385.506.792.704 1.218.315.675.111 1.422-.364 1.891l-.814.806c-.049.048-.098.147-.088.294.016.257.016.515 0 .772-.01.147.038.246.088.294l.814.806c.475.469.679 1.216.364 1.891a7.977 7.977 0 0 1-.704 1.217c-.428.61-1.176.807-1.82.63l-1.102-.302c-.067-.019-.177-.011-.3.071a5.909 5.909 0 0 1-.668.386c-.133.066-.194.158-.211.224l-.29 1.106c-.168.646-.715 1.196-1.458 1.26a8.006 8.006 0 0 1-1.402 0c-.743-.064-1.289-.614-1.458-1.26l-.289-1.106c-.018-.066-.079-.158-.212-.224a5.738 5.738 0 0 1-.668-.386c-.123-.082-.233-.09-.299-.071l-1.103.303c-.644.176-1.392-.021-1.82-.63a8.12 8.12 0 0 1-.704-1.218c-.315-.675-.111-1.422.363-1.891l.815-.806c.05-.048.098-.147.088-.294a6.214 6.214 0 0 1 0-.772c.01-.147-.038-.246-.088-.294l-.815-.806C.635 6.045.431 5.298.746 4.623a7.92 7.92 0 0 1 .704-1.217c.428-.61 1.176-.807 1.82-.63l1.102.302c.067.019.177.011.3-.071.214-.143.437-.272.668-.386.133-.066.194-.158.211-.224l.29-1.106C6.009.645 6.556.095 7.299.03 7.53.01 7.764 0 8 0Zm-.571 1.525c-.036.003-.108.036-.137.146l-.289 1.105c-.147.561-.549.967-.998 1.189-.173.086-.34.183-.5.29-.417.278-.97.423-1.529.27l-1.103-.303c-.109-.03-.175.016-.195.045-.22.312-.412.644-.573.99-.014.031-.021.11.059.19l.815.806c.411.406.562.957.53 1.456a4.709 4.709 0 0 0 0 .582c.032.499-.119 1.05-.53 1.456l-.815.806c-.081.08-.073.159-.059.19.162.346.353.677.573.989.02.03.085.076.195.046l1.102-.303c.56-.153 1.113-.008 1.53.27.161.107.328.204.501.29.447.222.85.629.997 1.189l.289 1.105c.029.109.101.143.137.146a6.6 6.6 0 0 0 1.142 0c.036-.003.108-.036.137-.146l.289-1.105c.147-.561.549-.967.998-1.189.173-.086.34-.183.5-.29.417-.278.97-.423 1.529-.27l1.103.303c.109.029.175-.016.195-.045.22-.313.411-.644.573-.99.014-.031.021-.11-.059-.19l-.815-.806c-.411-.406-.562-.957-.53-1.456a4.709 4.709 0 0 0 0-.582c-.032-.499.119-1.05.53-1.456l.815-.806c.081-.08.073-.159.059-.19a6.464 6.464 0 0 0-.573-.989c-.02-.03-.085-.076-.195-.046l-1.102.303c-.56.153-1.113.008-1.53-.27a4.44 4.44 0 0 0-.501-.29c-.447-.222-.85-.629-.997-1.189l-.289-1.105c-.029-.11-.101-.143-.137-.146a6.6 6.6 0 0 0-1.142 0ZM11 8a3 3 0 1 1-6 0 3 3 0 0 1 6 0ZM9.5 8a1.5 1.5 0 1 0-3.001.001A1.5 1.5 0 0 0 9.5 8Z"/>' +
@@ -649,8 +839,6 @@
   async function loadRecentReviews() {
     const container = document.getElementById('recent-reviews-container');
     const section = document.getElementById('recent-reviews-section');
-    const usageInfo = document.getElementById('usage-info');
-
     // Reset pagination state
     recentReviewsPagination.lastTimestamp = null;
     recentReviewsPagination.hasMore = false;
@@ -665,14 +853,14 @@
       const data = await response.json();
 
       if (!data.success || !data.worktrees || data.worktrees.length === 0) {
-        // Show friendly empty state with usage info
+        // Show friendly empty state
         container.innerHTML =
           '<div class="recent-reviews-empty">' +
             '<p>No PR reviews yet. Paste a PR URL above to get started.</p>' +
           '</div>';
         container.classList.remove('recent-reviews-loading');
-        // Show usage info when no reviews exist
-        if (usageInfo) usageInfo.classList.remove('loading-hidden');
+        // Show help modal when no reviews exist
+        openHelpModal();
         return;
       }
 
@@ -703,9 +891,9 @@
 
     } catch (error) {
       console.error('Error loading recent reviews:', error);
-      // Hide the section on error, show usage info as fallback
+      // Hide the section on error, show help modal as fallback
       section.style.display = 'none';
-      if (usageInfo) usageInfo.classList.remove('loading-hidden');
+      openHelpModal();
     }
   }
 
@@ -943,6 +1131,41 @@
       return;
     }
 
+    // Refresh buttons for GitHub collections
+    var refreshReviewRequestsBtn = event.target.closest('#refresh-review-requests');
+    if (refreshReviewRequestsBtn) {
+      event.preventDefault();
+      refreshCollectionPrs('review-requests', 'review-requests-container', reviewRequestsState);
+      return;
+    }
+
+    var refreshMyPrsBtn = event.target.closest('#refresh-my-prs');
+    if (refreshMyPrsBtn) {
+      event.preventDefault();
+      refreshCollectionPrs('my-prs', 'my-prs-container', myPrsState);
+      return;
+    }
+
+    // Click on a collection PR row to start review
+    var collectionRow = event.target.closest('.collection-pr-row');
+    if (collectionRow && !event.target.closest('a')) {
+      var prUrl = collectionRow.dataset.prUrl;
+      if (prUrl) {
+        // Switch to PR tab and populate the input
+        var tabBar = document.getElementById('unified-tab-bar');
+        var prTabBtn = tabBar.querySelector('[data-tab="pr-tab"]');
+        switchTab(tabBar, prTabBtn);
+        localStorage.setItem(TAB_STORAGE_KEY, 'pr-tab');
+
+        var input = document.getElementById('pr-url-input');
+        if (input) {
+          input.value = prUrl;
+          input.focus();
+        }
+      }
+      return;
+    }
+
     // Show more (PR reviews)
     const showMoreBtn = event.target.closest('#btn-show-more');
     if (showMoreBtn) {
@@ -970,6 +1193,13 @@
         if (tabId === 'local-tab' && !localReviewsPagination.loaded) {
           loadLocalReviews();
         }
+        // Lazy-load GitHub collection tabs on first switch
+        if (tabId === 'review-requests-tab' && !reviewRequestsState.loaded) {
+          loadCollectionPrs('review-requests', 'review-requests-container', reviewRequestsState);
+        }
+        if (tabId === 'my-prs-tab' && !myPrsState.loaded) {
+          loadCollectionPrs('my-prs', 'my-prs-container', myPrsState);
+        }
       });
       return;
     }
@@ -979,17 +1209,7 @@
 
   document.addEventListener('DOMContentLoaded', function () {
     // Load config and update command examples based on npx detection
-    loadConfigAndUpdateUI().then(function () {
-      // Sync help content to usage-info section AFTER command examples are updated
-      const helpContent = document.querySelector('.help-modal-content');
-      const usageInfo = document.getElementById('usage-info');
-      if (helpContent && usageInfo) {
-        usageInfo.innerHTML = '';
-        Array.from(helpContent.childNodes).forEach(function (node) {
-          usageInfo.appendChild(node.cloneNode(true));
-        });
-      }
-    });
+    loadConfigAndUpdateUI();
 
     // Restore saved tab from localStorage (default: 'pr-tab')
     const savedTab = localStorage.getItem(TAB_STORAGE_KEY) || 'pr-tab';
@@ -1008,6 +1228,14 @@
     // If local tab is active, load local reviews immediately
     if (savedTab === 'local-tab') {
       loadLocalReviews();
+    }
+
+    // If a GitHub collection tab is active, load it immediately
+    if (savedTab === 'review-requests-tab') {
+      loadCollectionPrs('review-requests', 'review-requests-container', reviewRequestsState);
+    }
+    if (savedTab === 'my-prs-tab') {
+      loadCollectionPrs('my-prs', 'my-prs-container', myPrsState);
     }
 
     // Set up start review form handler
