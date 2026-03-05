@@ -335,6 +335,16 @@
    * @param {string} collection - The collection name ('review-requests' or 'my-prs')
    */
   function renderCollectionTable(container, state, collection) {
+    var fetchedAtId = collection === 'review-requests' ? 'review-requests-fetched-at' : 'my-prs-fetched-at';
+    var fetchedAtEl = document.getElementById(fetchedAtId);
+    if (fetchedAtEl) {
+      var lsKey = 'github-collection-fetched-at:' + collection;
+      var displayTs = localStorage.getItem(lsKey) || state.fetchedAt;
+      fetchedAtEl.textContent = displayTs
+        ? 'Updated ' + formatRelativeTime(displayTs)
+        : '';
+    }
+
     if (state.prs.length === 0) {
       var emptyMsg = collection === 'review-requests'
         ? 'No pull requests awaiting your review.'
@@ -447,6 +457,7 @@
       state.prs = data.prs || [];
       state.fetchedAt = data.fetched_at;
       state.loaded = true;
+      localStorage.setItem('github-collection-fetched-at:' + collection, new Date().toISOString());
 
       renderCollectionTable(container, state, collection);
     } catch (error) {
