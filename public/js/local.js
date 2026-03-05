@@ -374,6 +374,7 @@ class LocalManager {
         if (data.running && data.analysisId) {
           manager.currentAnalysisId = data.analysisId;
           manager.isAnalyzing = true;
+          window.aiPanel?.setAnalysisState('loading');
           manager.setButtonAnalyzing(data.analysisId);
 
           // Show the appropriate progress modal
