@@ -447,11 +447,12 @@ class PRManager {
         window.aiPanel = new window.AIPanel();
       }
 
-      // Set PR context for AI Panel (for PR-specific localStorage keys)
-      // This restores the filter state from localStorage
+      // Set PR context for AI Panel and Panel Group (for per-review localStorage keys)
+      // This restores the filter state and chat visibility from localStorage
       if (window.aiPanel?.setPR) {
         window.aiPanel.setPR(owner, repo, number);
       }
+      window.panelGroup?.setPR(`${owner}/${repo}#${number}`);
 
       // Load saved comments using the restored filter state from AI Panel
       // If AI Panel has showDismissedComments=true (restored from localStorage), use that

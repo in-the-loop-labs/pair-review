@@ -15,6 +15,7 @@ test.describe('Panel Group - PR Mode', () => {
     await page.evaluate(() => {
       localStorage.removeItem('panel-group-layout');
       localStorage.removeItem('panel-group-chat-visible');
+      localStorage.removeItem('panel-group-chat-visible_test-owner/test-repo#1');
       localStorage.removeItem('chat-panel-width');
       localStorage.removeItem('panel-group-last-h');
       localStorage.removeItem('panel-group-last-v');
@@ -366,6 +367,7 @@ test.describe('Panel Group - Local Mode', () => {
     await page.evaluate(() => {
       localStorage.removeItem('panel-group-layout');
       localStorage.removeItem('panel-group-chat-visible');
+      localStorage.removeItem('panel-group-chat-visible_local/local#2');
       localStorage.removeItem('chat-panel-width');
       localStorage.removeItem('panel-group-last-h');
       localStorage.removeItem('panel-group-last-v');
