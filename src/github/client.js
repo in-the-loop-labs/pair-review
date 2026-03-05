@@ -1147,7 +1147,7 @@ class GitHubClient {
 
   /**
    * Search GitHub pull requests using the search API.
-   * @param {string} searchQuery - Search query string (e.g., "is:pr is:open review-requested:USERNAME")
+   * @param {string} searchQuery - Search query string (e.g., "is:pr is:open user-review-requested:USERNAME")
    * @returns {Promise<Array<{owner: string, repo: string, number: number, title: string, author: string, updated_at: string, html_url: string, state: string}>>}
    */
   async searchPullRequests(searchQuery) {

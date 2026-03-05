@@ -279,7 +279,7 @@
     loaded: false
   };
 
-  // ─── GitHub PR Collections (Review Requests / My PRs) ─────────────────────
+  // ─── GitHub PR Collections (My Review Requests / My PRs) ───────────────────
 
   var reviewRequestsState = {
     loaded: false,

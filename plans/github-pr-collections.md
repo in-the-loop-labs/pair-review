@@ -21,7 +21,7 @@ Two endpoint pairs per collection:
 - **`POST /api/github/my-prs/refresh`** — Hits GitHub Search API, updates cache, returns fresh data
 
 ### GitHub API queries
-- Review Requests: `GET /search/issues?q=is:pr+is:open+review-requested:{username}`
+- Review Requests: `GET /search/issues?q=is:pr+is:open+user-review-requested:{username}`
 - My PRs: `GET /search/issues?q=is:pr+is:open+author:{username}`
 
 Both require knowing the authenticated user's login — use `octokit.rest.users.getAuthenticated()`.
