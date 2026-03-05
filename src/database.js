@@ -20,7 +20,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 25;
+const CURRENT_SCHEMA_VERSION = 26;
 
 /**
  * Database schema SQL statements
@@ -247,6 +247,22 @@ const SCHEMA_SQL = {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE
     )
+  `,
+
+  github_pr_cache: `
+    CREATE TABLE IF NOT EXISTS github_pr_cache (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      owner TEXT NOT NULL,
+      repo TEXT NOT NULL,
+      number INTEGER NOT NULL,
+      title TEXT,
+      author TEXT,
+      updated_at TEXT,
+      html_url TEXT,
+      state TEXT DEFAULT 'open',
+      collection TEXT NOT NULL,
+      fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
   `
 };
 
@@ -282,7 +298,9 @@ const INDEX_SQL = [
   'CREATE INDEX IF NOT EXISTS idx_chat_sessions_review ON chat_sessions(review_id)',
   'CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id)',
   // Context files indexes
-  'CREATE INDEX IF NOT EXISTS idx_context_files_review ON context_files(review_id)'
+  'CREATE INDEX IF NOT EXISTS idx_context_files_review ON context_files(review_id)',
+  // GitHub PR cache indexes
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_github_pr_cache_unique ON github_pr_cache(collection, owner, repo, number)'
 ];
 
 /**
@@ -1158,6 +1176,36 @@ const MIGRATIONS = {
     }
 
     console.log('Migration to schema version 25 complete');
+  },
+
+  // Migration to version 26: adds github_pr_cache table for PR collections
+  26: (db) => {
+    console.log('Migrating to schema version 26: Add github_pr_cache table');
+
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='github_pr_cache'").all();
+    if (tables.length === 0) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS github_pr_cache (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          owner TEXT NOT NULL,
+          repo TEXT NOT NULL,
+          number INTEGER NOT NULL,
+          title TEXT,
+          author TEXT,
+          updated_at TEXT,
+          html_url TEXT,
+          state TEXT DEFAULT 'open',
+          collection TEXT NOT NULL,
+          fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_github_pr_cache_unique ON github_pr_cache(collection, owner, repo, number)');
+      console.log('  Created github_pr_cache table');
+    } else {
+      console.log('  Table github_pr_cache already exists');
+    }
+
+    console.log('Migration to schema version 26 complete');
   }
 };
 

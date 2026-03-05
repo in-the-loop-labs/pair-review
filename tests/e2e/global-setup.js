@@ -257,6 +257,11 @@ function insertTestData() {
 async function globalSetup() {
   console.log('Starting E2E test server...');
 
+  // Create the mock worktree directory so fs.access checks pass
+  // (the /api/worktrees/recent endpoint filters out paths that don't exist)
+  const fs = require('fs');
+  fs.mkdirSync(mockWorktreeResponses.getWorktreePath, { recursive: true });
+
   // Create test database using shared schema module
   db = createTestDatabase();
   insertTestData();

@@ -542,55 +542,6 @@
             to { transform: rotate(360deg); }
         }
 
-        /* Usage Info (shown when no reviews) */
-        .usage-info {
-            background-color: var(--color-bg-primary);
-            border: 1px solid var(--color-border-primary);
-            border-radius: var(--radius-lg);
-            padding: 24px;
-            text-align: left;
-            max-width: 600px;
-            width: 100%;
-            margin-bottom: 32px;
-        }
-
-        .usage-info h3 {
-            font-size: 16px;
-            font-weight: 600;
-            margin-bottom: 16px;
-            color: var(--color-text-primary);
-        }
-
-        .usage-info p {
-            color: var(--color-text-secondary);
-            margin-bottom: 12px;
-        }
-
-        .usage-info code {
-            background-color: var(--color-bg-secondary);
-            padding: 2px 6px;
-            border-radius: var(--radius-sm);
-            font-family: var(--font-mono);
-            font-size: 13px;
-        }
-
-        .usage-info pre {
-            background-color: var(--color-bg-tertiary);
-            color: var(--color-text-primary);
-            padding: 16px;
-            border-radius: var(--radius-md);
-            margin: 12px 0;
-            overflow-x: auto;
-            font-family: var(--font-mono);
-            font-size: 13px;
-            line-height: 1.5;
-        }
-
-        .usage-info pre code {
-            background: none;
-            padding: 0;
-        }
-
         /* Recent Reviews Section */
         .recent-reviews-section {
             width: 100%;
@@ -754,6 +705,28 @@
             color: var(--color-text-primary);
         }
 
+        .btn-github-link {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 32px;
+            height: 32px;
+            padding: 0;
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: var(--radius-md);
+            color: var(--color-text-tertiary);
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            text-decoration: none;
+        }
+
+        .btn-github-link:hover {
+            background-color: var(--color-bg-secondary);
+            border-color: var(--color-border-primary);
+            color: var(--color-text-primary);
+        }
+
         .recent-reviews-empty {
             text-align: center;
             padding: 40px 20px;
@@ -868,6 +841,69 @@
 
         .tab-pane.active {
             display: block;
+        }
+
+        .tab-divider {
+            width: 1px;
+            height: 16px;
+            background: var(--color-border-secondary);
+            align-self: center;
+            margin: 0 4px;
+        }
+
+        .tab-pane-header {
+            display: flex;
+            justify-content: flex-end;
+            margin-bottom: 12px;
+        }
+
+        .btn-refresh {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 32px;
+            height: 32px;
+            padding: 0;
+            background: transparent;
+            border: 1px solid var(--color-border-primary);
+            border-radius: var(--radius-md);
+            color: var(--color-text-tertiary);
+            cursor: pointer;
+            transition: all var(--transition-fast);
+        }
+
+        .btn-refresh:hover {
+            background: var(--color-bg-secondary);
+            color: var(--color-text-primary);
+        }
+
+        .btn-refresh.refreshing {
+            pointer-events: none;
+            opacity: 0.6;
+        }
+
+        .btn-refresh.refreshing svg {
+            animation: spin 0.8s linear infinite;
+        }
+
+        .collection-pr-row {
+            cursor: pointer;
+        }
+
+        .collection-pr-row:hover {
+            background: var(--color-bg-secondary);
+        }
+
+        .collection-pr-number {
+            color: var(--ai-primary);
+            font-weight: 500;
+            font-family: var(--font-mono);
+            cursor: pointer;
+        }
+
+        .collection-pr-number:hover {
+            color: var(--ai-secondary);
+            text-decoration: underline;
         }
 
         /* Local Reviews Table - tighter spacing */
@@ -1021,10 +1057,6 @@
                 width: 100%;
             }
 
-            .usage-info {
-                padding: 20px;
-            }
-
             .recent-reviews-table {
                 font-size: 13px;
             }
@@ -1073,6 +1105,9 @@
                     <div class="section-header" id="recent-reviews-header">
                         <div class="tab-bar" id="unified-tab-bar">
                             <button class="tab-btn active" data-tab="pr-tab" type="button">Pull Requests</button>
+                            <button class="tab-btn" data-tab="review-requests-tab" type="button">Review Requests</button>
+                            <button class="tab-btn" data-tab="my-prs-tab" type="button">My PRs</button>
+                            <span class="tab-divider"></span>
                             <button class="tab-btn" data-tab="local-tab" type="button">Local Reviews</button>
                         </div>
                     </div>
@@ -1101,6 +1136,30 @@
                         </div>
                         <div id="recent-reviews-container" class="recent-reviews-loading">
                             Loading recent reviews...
+                        </div>
+                    </div>
+
+                    <!-- Review Requests Tab -->
+                    <div class="tab-pane" id="review-requests-tab">
+                        <div class="tab-pane-header">
+                            <button class="btn-refresh" id="refresh-review-requests" title="Refresh from GitHub">
+                                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M1.705 8.005a.75.75 0 0 1 .834.656 5.5 5.5 0 0 0 9.592 2.97l-1.204-1.204a.25.25 0 0 1 .177-.427h3.646a.25.25 0 0 1 .25.25v3.646a.25.25 0 0 1-.427.177l-1.38-1.38A7.002 7.002 0 0 1 1.05 8.84a.75.75 0 0 1 .656-.834ZM8 2.5a5.487 5.487 0 0 0-4.131 1.869l1.204 1.204A.25.25 0 0 1 4.896 6H1.25A.25.25 0 0 1 1 5.75V2.104a.25.25 0 0 1 .427-.177l1.38 1.38A7.002 7.002 0 0 1 14.95 7.16a.75.75 0 0 1-1.49.178A5.5 5.5 0 0 0 8 2.5Z"/></svg>
+                            </button>
+                        </div>
+                        <div id="review-requests-container" class="recent-reviews-loading">
+                            Loading...
+                        </div>
+                    </div>
+
+                    <!-- My PRs Tab -->
+                    <div class="tab-pane" id="my-prs-tab">
+                        <div class="tab-pane-header">
+                            <button class="btn-refresh" id="refresh-my-prs" title="Refresh from GitHub">
+                                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M1.705 8.005a.75.75 0 0 1 .834.656 5.5 5.5 0 0 0 9.592 2.97l-1.204-1.204a.25.25 0 0 1 .177-.427h3.646a.25.25 0 0 1 .25.25v3.646a.25.25 0 0 1-.427.177l-1.38-1.38A7.002 7.002 0 0 1 1.05 8.84a.75.75 0 0 1 .656-.834ZM8 2.5a5.487 5.487 0 0 0-4.131 1.869l1.204 1.204A.25.25 0 0 1 4.896 6H1.25A.25.25 0 0 1 1 5.75V2.104a.25.25 0 0 1 .427-.177l1.38 1.38A7.002 7.002 0 0 1 14.95 7.16a.75.75 0 0 1-1.49.178A5.5 5.5 0 0 0 8 2.5Z"/></svg>
+                            </button>
+                        </div>
+                        <div id="my-prs-container" class="recent-reviews-loading">
+                            Loading...
                         </div>
                     </div>
 
@@ -1134,10 +1193,6 @@
                         </div>
                     </div>
                 </div>
-
-                <!-- Usage Info (shown when no reviews, hidden initially during loading) -->
-                <!-- Content is populated from help modal via JS to avoid duplication -->
-                <div class="usage-info loading-hidden" id="usage-info"></div>
             </div>
         </main>
     </div>

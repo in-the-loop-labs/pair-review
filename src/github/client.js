@@ -1146,6 +1146,49 @@ class GitHubClient {
   }
 
   /**
+   * Search GitHub pull requests using the search API.
+   * @param {string} searchQuery - Search query string (e.g., "is:pr is:open review-requested:USERNAME")
+   * @returns {Promise<Array<{owner: string, repo: string, number: number, title: string, author: string, updated_at: string, html_url: string, state: string}>>}
+   */
+  async searchPullRequests(searchQuery) {
+    const items = await this.octokit.paginate(
+      this.octokit.rest.search.issuesAndPullRequests,
+      { q: searchQuery, per_page: 100 }
+    );
+
+    return items.map(item => {
+      // repository_url format: https://api.github.com/repos/OWNER/REPO
+      const parts = item.repository_url.split('/');
+      const repo = parts.pop();
+      const owner = parts.pop();
+
+      return {
+        owner,
+        repo,
+        number: item.number,
+        title: item.title,
+        author: item.user?.login || null,
+        updated_at: item.updated_at,
+        html_url: item.html_url,
+        state: item.state
+      };
+    });
+  }
+
+  /**
+   * Get the authenticated user's information.
+   * @returns {Promise<{login: string, name: string, avatar_url: string}>}
+   */
+  async getAuthenticatedUser() {
+    const { data } = await this.octokit.rest.users.getAuthenticated();
+    return {
+      login: data.login,
+      name: data.name,
+      avatar_url: data.avatar_url
+    };
+  }
+
+  /**
    * Retry API calls with exponential backoff
    * @param {Function} apiCall - The API call function
    * @param {number} maxRetries - Maximum number of retries

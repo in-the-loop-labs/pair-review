@@ -17,3 +17,4 @@ analyze_*.js
 test-results/
 .critic-loop/
 examples/
+.pair-review/config.local.json
