@@ -73,6 +73,9 @@ test.describe('Analysis History - Empty State', () => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
+    // Panel starts collapsed by default; expand it so analysis context elements are visible
+    await page.evaluate(() => window.aiPanel?.expand());
+
     // Note: In a full test suite run, previous tests may have already run analysis,
     // so we check for the expected behavior based on the current state
     const emptyState = page.locator('#analysis-context-empty');
@@ -97,6 +100,9 @@ test.describe('Analysis History - Empty State', () => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
+    // Panel starts collapsed by default; expand it so analysis context elements are visible
+    await page.evaluate(() => window.aiPanel?.expand());
+
     const emptyState = page.locator('#analysis-context-empty');
 
     // If empty state is visible, verify its text content
@@ -117,13 +123,22 @@ test.describe('Analysis History - Selector Display', () => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
+    // Panel starts collapsed by default; expand it so analysis context elements are visible
+    await page.evaluate(() => window.aiPanel?.expand());
+
     const emptyState = page.locator('#analysis-context-empty');
     const selector = page.locator('#analysis-context-selector');
 
-    // Check initial state - might already have analysis from previous tests
-    const initialSelectorVisible = await selector.isVisible();
+    // Wait for the analysis history to finish its initial async load.
+    // After page load, loadAnalysisRuns runs async. We need to wait for it to
+    // settle before checking the initial state.
+    // Strategy: try to wait for the selector to appear (if analyses exist from prior tests).
+    // If it doesn't appear within 2s, we're in a fresh state with no analyses.
+    const hasExistingAnalysis = await selector.waitFor({ state: 'visible', timeout: 2000 })
+      .then(() => true)
+      .catch(() => false);
 
-    if (!initialSelectorVisible) {
+    if (!hasExistingAnalysis) {
       // Fresh state - empty state should be visible initially
       await expect(emptyState).toBeVisible();
     }
@@ -158,6 +173,9 @@ test.describe('Analysis History - Selector Display', () => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
+    // Panel starts collapsed by default; expand it so analysis context elements are visible
+    await page.evaluate(() => window.aiPanel?.expand());
+
     // Run analysis
     await seedAnalysis(page);
     await reloadAnalysisHistory(page);
@@ -176,6 +194,9 @@ test.describe('Analysis History - Preview Panel', () => {
   test('should show preview panel in split-panel dropdown', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
+
+    // Panel starts collapsed by default; expand it so analysis context elements are visible
+    await page.evaluate(() => window.aiPanel?.expand());
 
     // Run analysis first
     await seedAnalysis(page);
@@ -202,6 +223,9 @@ test.describe('Analysis History - Preview Panel', () => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
+    // Panel starts collapsed by default; expand it so analysis context elements are visible
+    await page.evaluate(() => window.aiPanel?.expand());
+
     // Run analysis
     await seedAnalysis(page);
     await reloadAnalysisHistory(page);
@@ -225,6 +249,9 @@ test.describe('Analysis History - Preview Panel', () => {
   test('should update preview when hovering over different run items', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
+
+    // Panel starts collapsed by default; expand it so analysis context elements are visible
+    await page.evaluate(() => window.aiPanel?.expand());
 
     // Run multiple analyses to have more than one item
     await seedAnalysis(page);
@@ -272,6 +299,9 @@ test.describe('Analysis History - Preview Panel', () => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
+    // Panel starts collapsed by default; expand it so analysis context elements are visible
+    await page.evaluate(() => window.aiPanel?.expand());
+
     // Run analysis
     await seedAnalysis(page);
     await reloadAnalysisHistory(page);
@@ -298,6 +328,9 @@ test.describe('Analysis History - Copy Button', () => {
 
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
+
+    // Panel starts collapsed by default; expand it so analysis context elements are visible
+    await page.evaluate(() => window.aiPanel?.expand());
 
     // Run analysis with custom instructions
     await seedAnalysis(page);
@@ -341,6 +374,9 @@ test.describe('Analysis History - Copy Button', () => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
+    // Panel starts collapsed by default; expand it so analysis context elements are visible
+    await page.evaluate(() => window.aiPanel?.expand());
+
     // Run analysis with custom instructions
     await seedAnalysis(page);
     await reloadAnalysisHistory(page);
@@ -376,6 +412,9 @@ test.describe('Analysis History - Dropdown', () => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
+    // Panel starts collapsed by default; expand it so analysis context elements are visible
+    await page.evaluate(() => window.aiPanel?.expand());
+
     // Run analysis
     await seedAnalysis(page);
     await reloadAnalysisHistory(page);
@@ -400,6 +439,9 @@ test.describe('Analysis History - Dropdown', () => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
+    // Panel starts collapsed by default; expand it so analysis context elements are visible
+    await page.evaluate(() => window.aiPanel?.expand());
+
     // Run analysis
     await seedAnalysis(page);
     await reloadAnalysisHistory(page);
@@ -422,6 +464,9 @@ test.describe('Analysis History - Dropdown', () => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
+    // Panel starts collapsed by default; expand it so analysis context elements are visible
+    await page.evaluate(() => window.aiPanel?.expand());
+
     // Run analysis
     await seedAnalysis(page);
     await reloadAnalysisHistory(page);
@@ -439,6 +484,9 @@ test.describe('Analysis History - Dropdown', () => {
   test('should show first item as selected (most recent)', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
+
+    // Panel starts collapsed by default; expand it so analysis context elements are visible
+    await page.evaluate(() => window.aiPanel?.expand());
 
     // Run analysis
     await seedAnalysis(page);

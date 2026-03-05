@@ -326,6 +326,9 @@ test.describe('AI Panel', () => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
+    // Panel starts collapsed by default for new reviews; expand it first
+    await page.evaluate(() => window.aiPanel?.expand());
+
     // Findings list container should exist
     const findingsList = page.locator('#findings-list, .findings-list');
     await expect(findingsList.first()).toBeVisible();
@@ -367,6 +370,9 @@ test.describe('Segment Control', () => {
   test('should switch between AI and Comments views', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
+
+    // Panel starts collapsed by default; expand it so segment buttons are interactable
+    await page.evaluate(() => window.aiPanel?.expand());
 
     // Seed AI suggestions first
     await seedAISuggestions(page);
@@ -693,6 +699,9 @@ test.describe('Suggestion Navigation', () => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
+    // Panel starts collapsed by default; expand it so nav controls are visible
+    await page.evaluate(() => window.aiPanel?.expand());
+
     // Seed AI suggestions
     await seedAISuggestions(page);
 
@@ -719,6 +728,9 @@ test.describe('Suggestion Navigation', () => {
   test('should highlight active finding in panel', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
+
+    // Panel starts collapsed by default; expand it so findings are interactable
+    await page.evaluate(() => window.aiPanel?.expand());
 
     // Seed AI suggestions
     await seedAISuggestions(page);
@@ -758,6 +770,9 @@ test.describe('Quick Action Buttons in Review Panel', () => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
+    // Panel starts collapsed by default; expand it so findings are interactable
+    await page.evaluate(() => window.aiPanel?.expand());
+
     // Seed AI suggestions
     await seedAISuggestions(page);
 
@@ -795,6 +810,9 @@ test.describe('Quick Action Buttons in Review Panel', () => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
+    // Panel starts collapsed by default; expand it so findings are interactable
+    await page.evaluate(() => window.aiPanel?.expand());
+
     // Seed AI suggestions
     await seedAISuggestions(page);
 
@@ -820,6 +838,9 @@ test.describe('Quick Action Buttons in Review Panel', () => {
   test('should dismiss suggestion when clicking quick-action dismiss button', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
+
+    // Panel starts collapsed by default; expand it so findings are interactable
+    await page.evaluate(() => window.aiPanel?.expand());
 
     // Seed AI suggestions
     await seedAISuggestions(page);
@@ -868,6 +889,9 @@ test.describe('Quick Action Buttons in Review Panel', () => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
+    // Panel starts collapsed by default; expand it so findings are interactable
+    await page.evaluate(() => window.aiPanel?.expand());
+
     // Seed AI suggestions
     await seedAISuggestions(page);
 
@@ -895,6 +919,9 @@ test.describe('Quick Action Buttons in Review Panel', () => {
   test('should show restore button on dismissed findings instead of adopt/dismiss', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
+
+    // Panel starts collapsed by default; expand it so findings are interactable
+    await page.evaluate(() => window.aiPanel?.expand());
 
     // Seed AI suggestions
     await seedAISuggestions(page);
@@ -941,6 +968,9 @@ test.describe('Quick Action Buttons in Review Panel', () => {
   test('should hide restore button by default and show on hover (same as adopt/dismiss)', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
+
+    // Panel starts collapsed by default; expand it so findings are interactable
+    await page.evaluate(() => window.aiPanel?.expand());
 
     // Seed AI suggestions
     await seedAISuggestions(page);
@@ -994,6 +1024,9 @@ test.describe('Quick Action Buttons in Review Panel', () => {
   test('should restore finding to active state when clicking restore button', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
+
+    // Panel starts collapsed by default; expand it so findings are interactable
+    await page.evaluate(() => window.aiPanel?.expand());
 
     // Seed AI suggestions
     await seedAISuggestions(page);

@@ -739,6 +739,9 @@ test.describe('Dismissed Comment Persistence', () => {
     const deletedRow = page.locator(`[data-comment-id="${commentId}"]`);
     await expect(deletedRow).not.toBeVisible({ timeout: 5000 });
 
+    // Panel starts collapsed by default; expand it so segment buttons are interactable
+    await page.evaluate(() => window.aiPanel?.expand());
+
     // Switch to the "User" segment in the AI Panel to see comments
     const userSegmentBtn = page.locator('.segment-btn').filter({ hasText: 'User' });
     await expect(userSegmentBtn).toBeVisible({ timeout: 5000 });
@@ -770,6 +773,9 @@ test.describe('Dismissed Comment Persistence', () => {
     // Reload the page to test persistence
     await page.reload();
     await waitForDiffToRender(page);
+
+    // Panel starts collapsed again after reload; expand it
+    await page.evaluate(() => window.aiPanel?.expand());
 
     // Note: Filter toggle state persists via localStorage, so it should still be enabled
     // The AIPanel restores the filter state from localStorage on page load
@@ -839,6 +845,9 @@ test.describe('Comment Restore', () => {
     // Comment row should be removed from diff view immediately
     const deletedRow = page.locator(`[data-comment-id="${commentId}"]`);
     await expect(deletedRow).not.toBeVisible({ timeout: 5000 });
+
+    // Panel starts collapsed by default; expand it so segment buttons are interactable
+    await page.evaluate(() => window.aiPanel?.expand());
 
     // First, switch to the "User" segment in the AI Panel to see comments
     // The segment button contains text like "User (1)"
@@ -1044,6 +1053,9 @@ test.describe('Bulk Deletion via Clear All', () => {
     // Verify comments are removed from diff view
     await expect(page.locator('.user-comment-row')).toHaveCount(0, { timeout: 5000 });
 
+    // Panel starts collapsed by default; expand it so segment buttons are interactable
+    await page.evaluate(() => window.aiPanel?.expand());
+
     // Switch to the "User" segment in the AI Panel
     const userSegmentBtn = page.locator('.segment-btn').filter({ hasText: 'User' });
     await expect(userSegmentBtn).toBeVisible({ timeout: 5000 });
@@ -1096,6 +1108,9 @@ test.describe('Bulk Deletion via Clear All', () => {
     // Get the comment ID
     const commentRow = page.locator('.user-comment-row').first();
     const commentId = await commentRow.getAttribute('data-comment-id');
+
+    // Panel starts collapsed by default; expand it so segment buttons are interactable
+    await page.evaluate(() => window.aiPanel?.expand());
 
     // Switch to User segment to verify comment appears
     const userSegmentBtn = page.locator('.segment-btn').filter({ hasText: 'User' });
