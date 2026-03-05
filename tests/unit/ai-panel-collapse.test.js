@@ -2,122 +2,74 @@
 /**
  * Unit tests for AIPanel collapsed state persistence and auto-expand behavior.
  *
- * Since AIPanel is a browser-only class (no module exports), we test the method
- * logic by binding the actual implementations to minimal mock objects.
+ * Uses Object.create(AIPanel.prototype) to test the actual production methods
+ * without triggering the constructor's DOM dependencies.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-// ---------------------------------------------------------------------------
-// Method implementations extracted from AIPanel.js — kept in sync with the
-// production code so that tests verify real logic, not a reimplementation.
-// We bind these to mock panel objects in each test.
-// ---------------------------------------------------------------------------
+// Minimal globals required for AIPanel module to load
+global.window = {};
+global.document = {
+  getElementById: vi.fn(() => null),
+  addEventListener: vi.fn(),
+  createElement: vi.fn(() => ({
+    className: '', innerHTML: '', title: '',
+    classList: { add: vi.fn(), remove: vi.fn(), toggle: vi.fn() },
+    setAttribute: vi.fn(),
+    addEventListener: vi.fn(),
+    querySelector: vi.fn(() => null),
+    querySelectorAll: vi.fn(() => []),
+    insertBefore: vi.fn(),
+    appendChild: vi.fn(),
+  })),
+  documentElement: { style: { setProperty: vi.fn() } },
+  querySelector: vi.fn(() => null),
+  querySelectorAll: vi.fn(() => []),
+  dispatchEvent: vi.fn(),
+};
+global.localStorage = {
+  getItem: vi.fn(() => null),
+  setItem: vi.fn(),
+  removeItem: vi.fn(),
+};
+global.CustomEvent = class CustomEvent {};
 
-/** AIPanel.prototype._getCollapsedStorageKey */
-function _getCollapsedStorageKey() {
-  if (!this.currentPRKey) return null;
-  return `pair-review-panel-collapsed_${this.currentPRKey}`;
-}
-
-/** AIPanel.prototype._saveCollapsedState */
-function _saveCollapsedState() {
-  const key = this._getCollapsedStorageKey();
-  if (key) {
-    localStorage.setItem(key, this.isCollapsed ? 'true' : 'false');
-  }
-}
-
-/** AIPanel.prototype._restoreOrCollapsePanel */
-function _restoreOrCollapsePanel() {
-  const key = this._getCollapsedStorageKey();
-  if (key) {
-    const stored = localStorage.getItem(key);
-    if (stored === 'false') {
-      this.expand();
-    } else {
-      // 'true' or no saved state (new review) → collapse
-      this.collapse();
-    }
-  } else {
-    this.collapse();
-  }
-}
-
-/** AIPanel.prototype.setAnalysisState */
-function setAnalysisState(state) {
-  this.analysisState = state;
-  // Auto-expand panel when analysis starts
-  if (state === 'loading' && this.isCollapsed) {
-    this.expand();
-  }
-  // Re-render if currently showing empty state
-  if (this.findings.length === 0 && this.selectedSegment === 'ai') {
-    this.renderFindings();
-  }
-}
-
-/** AIPanel.prototype.collapse */
-function collapse() {
-  this.isCollapsed = true;
-  if (this.panel) {
-    this.panel.classList.add('collapsed');
-  }
-  document.documentElement.style.setProperty('--ai-panel-width', '0px');
-  window.panelGroup?._onReviewVisibilityChanged(false);
-  this._saveCollapsedState();
-}
-
-/** AIPanel.prototype.expand */
-function expand() {
-  this.isCollapsed = false;
-  if (this.panel) {
-    this.panel.classList.remove('collapsed');
-  }
-  document.documentElement.style.setProperty('--ai-panel-width', `${this.getEffectivePanelWidth()}px`);
-  window.panelGroup?._onReviewVisibilityChanged(true);
-  this._saveCollapsedState();
-}
+// Import the actual AIPanel class from production code
+const { AIPanel } = require('../../public/js/components/AIPanel.js');
 
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
 
-/** Create a mock panel with the real methods bound to it. */
-function createMockPanel(overrides = {}) {
-  const panel = {
-    isCollapsed: true,
-    currentPRKey: 'owner/repo#1',
-    findings: [],
-    selectedSegment: 'ai',
-    analysisState: 'unknown',
-    panel: {
-      classList: {
-        add: vi.fn(),
-        remove: vi.fn(),
-        contains: vi.fn(),
-      },
+let mockLocalStorage;
+
+/**
+ * Create a minimal AIPanel instance via Object.create to skip
+ * the constructor's DOM initialization.
+ */
+function createTestPanel(overrides = {}) {
+  const panel = Object.create(AIPanel.prototype);
+
+  // Set essential properties that the constructor would normally set
+  panel.isCollapsed = true;
+  panel.currentPRKey = 'owner/repo#1';
+  panel.findings = [];
+  panel.selectedSegment = 'ai';
+  panel.analysisState = 'unknown';
+  panel.panel = {
+    classList: {
+      add: vi.fn(),
+      remove: vi.fn(),
+      contains: vi.fn(),
     },
-    renderFindings: vi.fn(),
-    getEffectivePanelWidth: vi.fn(() => 320),
-    ...overrides,
   };
+  panel.renderFindings = vi.fn();
+  panel.getEffectivePanelWidth = vi.fn(() => 320);
 
-  // Bind real method implementations
-  panel._getCollapsedStorageKey = _getCollapsedStorageKey.bind(panel);
-  panel._saveCollapsedState = _saveCollapsedState.bind(panel);
-  panel._restoreOrCollapsePanel = _restoreOrCollapsePanel.bind(panel);
-  panel.setAnalysisState = setAnalysisState.bind(panel);
-  panel.collapse = collapse.bind(panel);
-  panel.expand = expand.bind(panel);
-
+  // Apply overrides
+  Object.assign(panel, overrides);
   return panel;
 }
-
-// ---------------------------------------------------------------------------
-// Globals setup
-// ---------------------------------------------------------------------------
-
-let mockLocalStorage;
 
 beforeEach(() => {
   mockLocalStorage = {};
@@ -129,6 +81,7 @@ beforeEach(() => {
   };
 
   global.document = {
+    ...global.document,
     documentElement: {
       style: {
         setProperty: vi.fn(),
@@ -150,19 +103,19 @@ beforeEach(() => {
 describe('AIPanel collapsed state persistence', () => {
   describe('_getCollapsedStorageKey', () => {
     it('returns key with currentPRKey when set', () => {
-      const panel = createMockPanel({ currentPRKey: 'foo/bar#42' });
+      const panel = createTestPanel({ currentPRKey: 'foo/bar#42' });
       expect(panel._getCollapsedStorageKey()).toBe('pair-review-panel-collapsed_foo/bar#42');
     });
 
     it('returns null when currentPRKey is null', () => {
-      const panel = createMockPanel({ currentPRKey: null });
+      const panel = createTestPanel({ currentPRKey: null });
       expect(panel._getCollapsedStorageKey()).toBeNull();
     });
   });
 
   describe('_saveCollapsedState', () => {
     it('saves "true" when panel is collapsed', () => {
-      const panel = createMockPanel({ isCollapsed: true });
+      const panel = createTestPanel({ isCollapsed: true });
       panel._saveCollapsedState();
       expect(localStorage.setItem).toHaveBeenCalledWith(
         'pair-review-panel-collapsed_owner/repo#1',
@@ -171,7 +124,7 @@ describe('AIPanel collapsed state persistence', () => {
     });
 
     it('saves "false" when panel is expanded', () => {
-      const panel = createMockPanel({ isCollapsed: false });
+      const panel = createTestPanel({ isCollapsed: false });
       panel._saveCollapsedState();
       expect(localStorage.setItem).toHaveBeenCalledWith(
         'pair-review-panel-collapsed_owner/repo#1',
@@ -180,7 +133,7 @@ describe('AIPanel collapsed state persistence', () => {
     });
 
     it('does not save when currentPRKey is null', () => {
-      const panel = createMockPanel({ currentPRKey: null });
+      const panel = createTestPanel({ currentPRKey: null });
       panel._saveCollapsedState();
       expect(localStorage.setItem).not.toHaveBeenCalled();
     });
@@ -188,7 +141,7 @@ describe('AIPanel collapsed state persistence', () => {
 
   describe('_restoreOrCollapsePanel', () => {
     it('collapses when no saved state exists (new review)', () => {
-      const panel = createMockPanel({ isCollapsed: false });
+      const panel = createTestPanel({ isCollapsed: false });
       panel._restoreOrCollapsePanel();
       expect(panel.isCollapsed).toBe(true);
       expect(panel.panel.classList.add).toHaveBeenCalledWith('collapsed');
@@ -196,7 +149,7 @@ describe('AIPanel collapsed state persistence', () => {
 
     it('expands when saved state is "false"', () => {
       mockLocalStorage['pair-review-panel-collapsed_owner/repo#1'] = 'false';
-      const panel = createMockPanel({ isCollapsed: true });
+      const panel = createTestPanel({ isCollapsed: true });
       panel._restoreOrCollapsePanel();
       expect(panel.isCollapsed).toBe(false);
       expect(panel.panel.classList.remove).toHaveBeenCalledWith('collapsed');
@@ -204,14 +157,14 @@ describe('AIPanel collapsed state persistence', () => {
 
     it('collapses when saved state is "true"', () => {
       mockLocalStorage['pair-review-panel-collapsed_owner/repo#1'] = 'true';
-      const panel = createMockPanel({ isCollapsed: false });
+      const panel = createTestPanel({ isCollapsed: false });
       panel._restoreOrCollapsePanel();
       expect(panel.isCollapsed).toBe(true);
       expect(panel.panel.classList.add).toHaveBeenCalledWith('collapsed');
     });
 
     it('collapses when currentPRKey is null', () => {
-      const panel = createMockPanel({ currentPRKey: null, isCollapsed: false });
+      const panel = createTestPanel({ currentPRKey: null, isCollapsed: false });
       panel._restoreOrCollapsePanel();
       expect(panel.isCollapsed).toBe(true);
     });
@@ -219,7 +172,7 @@ describe('AIPanel collapsed state persistence', () => {
 
   describe('collapse() and expand() save state', () => {
     it('collapse() saves "true" to localStorage', () => {
-      const panel = createMockPanel({ isCollapsed: false });
+      const panel = createTestPanel({ isCollapsed: false });
       panel.collapse();
       expect(panel.isCollapsed).toBe(true);
       expect(localStorage.setItem).toHaveBeenCalledWith(
@@ -229,7 +182,7 @@ describe('AIPanel collapsed state persistence', () => {
     });
 
     it('expand() saves "false" to localStorage', () => {
-      const panel = createMockPanel({ isCollapsed: true });
+      const panel = createTestPanel({ isCollapsed: true });
       panel.expand();
       expect(panel.isCollapsed).toBe(false);
       expect(localStorage.setItem).toHaveBeenCalledWith(
@@ -239,7 +192,7 @@ describe('AIPanel collapsed state persistence', () => {
     });
 
     it('collapse() sets CSS variable to 0px', () => {
-      const panel = createMockPanel();
+      const panel = createTestPanel();
       panel.collapse();
       expect(document.documentElement.style.setProperty).toHaveBeenCalledWith(
         '--ai-panel-width',
@@ -248,7 +201,7 @@ describe('AIPanel collapsed state persistence', () => {
     });
 
     it('expand() sets CSS variable from getEffectivePanelWidth', () => {
-      const panel = createMockPanel({ isCollapsed: true });
+      const panel = createTestPanel({ isCollapsed: true });
       panel.getEffectivePanelWidth = vi.fn(() => 450);
       panel.expand();
       expect(document.documentElement.style.setProperty).toHaveBeenCalledWith(
@@ -258,13 +211,13 @@ describe('AIPanel collapsed state persistence', () => {
     });
 
     it('collapse() notifies panelGroup', () => {
-      const panel = createMockPanel();
+      const panel = createTestPanel();
       panel.collapse();
       expect(window.panelGroup._onReviewVisibilityChanged).toHaveBeenCalledWith(false);
     });
 
     it('expand() notifies panelGroup', () => {
-      const panel = createMockPanel({ isCollapsed: true });
+      const panel = createTestPanel({ isCollapsed: true });
       panel.expand();
       expect(window.panelGroup._onReviewVisibilityChanged).toHaveBeenCalledWith(true);
     });
@@ -272,15 +225,14 @@ describe('AIPanel collapsed state persistence', () => {
 
   describe('setAnalysisState auto-expand', () => {
     it('auto-expands when state is "loading" and panel is collapsed', () => {
-      const panel = createMockPanel({ isCollapsed: true });
+      const panel = createTestPanel({ isCollapsed: true });
       panel.setAnalysisState('loading');
       expect(panel.isCollapsed).toBe(false);
       expect(panel.analysisState).toBe('loading');
     });
 
     it('does NOT expand when state is "loading" and panel is already expanded', () => {
-      const panel = createMockPanel({ isCollapsed: false });
-      // Spy to verify expand is NOT called
+      const panel = createTestPanel({ isCollapsed: false });
       const expandSpy = vi.fn();
       panel.expand = expandSpy;
       panel.setAnalysisState('loading');
@@ -289,21 +241,20 @@ describe('AIPanel collapsed state persistence', () => {
     });
 
     it('does NOT expand when state is "complete" and panel is collapsed', () => {
-      const panel = createMockPanel({ isCollapsed: true });
+      const panel = createTestPanel({ isCollapsed: true });
       panel.setAnalysisState('complete');
-      // Panel should remain collapsed
       expect(panel.isCollapsed).toBe(true);
       expect(panel.analysisState).toBe('complete');
     });
 
     it('does NOT expand when state is "none"', () => {
-      const panel = createMockPanel({ isCollapsed: true });
+      const panel = createTestPanel({ isCollapsed: true });
       panel.setAnalysisState('none');
       expect(panel.isCollapsed).toBe(true);
     });
 
     it('calls renderFindings when no findings and segment is "ai"', () => {
-      const panel = createMockPanel({
+      const panel = createTestPanel({
         findings: [],
         selectedSegment: 'ai',
         isCollapsed: false,
@@ -313,7 +264,7 @@ describe('AIPanel collapsed state persistence', () => {
     });
 
     it('does NOT call renderFindings when findings exist', () => {
-      const panel = createMockPanel({
+      const panel = createTestPanel({
         findings: [{ id: 1 }],
         selectedSegment: 'ai',
         isCollapsed: false,
@@ -323,7 +274,7 @@ describe('AIPanel collapsed state persistence', () => {
     });
 
     it('does NOT call renderFindings when segment is not "ai"', () => {
-      const panel = createMockPanel({
+      const panel = createTestPanel({
         findings: [],
         selectedSegment: 'user',
         isCollapsed: false,

@@ -1783,3 +1783,8 @@ class AIPanel {
 document.addEventListener('DOMContentLoaded', () => {
     window.aiPanel = new AIPanel();
 });
+
+// Export for testing
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { AIPanel };
+}
