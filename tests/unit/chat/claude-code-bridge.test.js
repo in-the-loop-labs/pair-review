@@ -291,6 +291,34 @@ describe('ClaudeCodeBridge', () => {
       expect(args).toContain('claude-opus-4-6');
     });
 
+    it('should quote settings JSON for shell mode', async () => {
+      const { mockDeps, mockSpawn, rlEmitter } = createMockDeps();
+      const bridge = new ClaudeCodeBridge({
+        useShell: true,
+        claudeCommand: 'devx claude --',
+        _deps: mockDeps,
+      });
+      await startBridge(bridge, rlEmitter);
+
+      // In shell mode, the command is a single string passed to the shell
+      const spawnCmd = mockSpawn.mock.calls[0][0];
+      // Settings JSON should be single-quoted to prevent shell brace expansion
+      expect(spawnCmd).toContain("--settings '{\"disableAllHooks\":true}'");
+    });
+
+    it('should not quote settings JSON for non-shell mode', async () => {
+      const { mockDeps, mockSpawn, rlEmitter } = createMockDeps();
+      const bridge = new ClaudeCodeBridge({
+        useShell: false,
+        _deps: mockDeps,
+      });
+      await startBridge(bridge, rlEmitter);
+
+      const args = mockSpawn.mock.calls[0][1];
+      expect(args).toContain('--settings');
+      expect(args).toContain('{"disableAllHooks":true}');
+    });
+
     it('should throw if already started', async () => {
       const { mockDeps, rlEmitter } = createMockDeps();
       const bridge = new ClaudeCodeBridge({ _deps: mockDeps });
