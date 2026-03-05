@@ -1618,4 +1618,170 @@ describe('GitHubClient', () => {
       expect(result).toBe(false);
     });
   });
+
+  describe('searchPullRequests', () => {
+    it('should call octokit.paginate with search.issuesAndPullRequests and the query', async () => {
+      const client = new GitHubClient('test-token');
+      const mockPaginate = vi.fn().mockResolvedValue([]);
+      client.octokit.paginate = mockPaginate;
+
+      await client.searchPullRequests('is:pr is:open review-requested:testuser');
+
+      expect(mockPaginate).toHaveBeenCalledWith(
+        client.octokit.rest.search.issuesAndPullRequests,
+        { q: 'is:pr is:open review-requested:testuser', per_page: 100 }
+      );
+    });
+
+    it('should correctly parse owner/repo from repository_url', async () => {
+      const client = new GitHubClient('test-token');
+      client.octokit.paginate = vi.fn().mockResolvedValue([
+        {
+          repository_url: 'https://api.github.com/repos/my-org/my-repo',
+          number: 42,
+          title: 'Fix bug',
+          user: { login: 'alice' },
+          updated_at: '2025-03-01T10:00:00Z',
+          html_url: 'https://github.com/my-org/my-repo/pull/42',
+          state: 'open'
+        }
+      ]);
+
+      const result = await client.searchPullRequests('is:pr is:open');
+
+      expect(result).toHaveLength(1);
+      expect(result[0].owner).toBe('my-org');
+      expect(result[0].repo).toBe('my-repo');
+    });
+
+    it('should map response items to the expected shape', async () => {
+      const client = new GitHubClient('test-token');
+      client.octokit.paginate = vi.fn().mockResolvedValue([
+        {
+          repository_url: 'https://api.github.com/repos/owner/repo',
+          number: 10,
+          title: 'Add feature',
+          user: { login: 'bob' },
+          updated_at: '2025-02-20T08:00:00Z',
+          html_url: 'https://github.com/owner/repo/pull/10',
+          state: 'open'
+        },
+        {
+          repository_url: 'https://api.github.com/repos/other/project',
+          number: 5,
+          title: 'Fix typo',
+          user: { login: 'carol' },
+          updated_at: '2025-02-21T09:00:00Z',
+          html_url: 'https://github.com/other/project/pull/5',
+          state: 'closed'
+        }
+      ]);
+
+      const result = await client.searchPullRequests('is:pr');
+
+      expect(result).toEqual([
+        {
+          owner: 'owner',
+          repo: 'repo',
+          number: 10,
+          title: 'Add feature',
+          author: 'bob',
+          updated_at: '2025-02-20T08:00:00Z',
+          html_url: 'https://github.com/owner/repo/pull/10',
+          state: 'open'
+        },
+        {
+          owner: 'other',
+          repo: 'project',
+          number: 5,
+          title: 'Fix typo',
+          author: 'carol',
+          updated_at: '2025-02-21T09:00:00Z',
+          html_url: 'https://github.com/other/project/pull/5',
+          state: 'closed'
+        }
+      ]);
+    });
+
+    it('should handle item.user being null (return author: null)', async () => {
+      const client = new GitHubClient('test-token');
+      client.octokit.paginate = vi.fn().mockResolvedValue([
+        {
+          repository_url: 'https://api.github.com/repos/owner/repo',
+          number: 7,
+          title: 'Ghost PR',
+          user: null,
+          updated_at: '2025-01-01T00:00:00Z',
+          html_url: 'https://github.com/owner/repo/pull/7',
+          state: 'open'
+        }
+      ]);
+
+      const result = await client.searchPullRequests('is:pr');
+
+      expect(result).toHaveLength(1);
+      expect(result[0].author).toBeNull();
+    });
+
+    it('should handle items with missing repository_url gracefully', async () => {
+      const client = new GitHubClient('test-token');
+      client.octokit.paginate = vi.fn().mockResolvedValue([
+        {
+          repository_url: undefined,
+          number: 1,
+          title: 'Bad item',
+          user: { login: 'alice' },
+          updated_at: '2025-01-01T00:00:00Z',
+          html_url: 'https://github.com/unknown/pull/1',
+          state: 'open'
+        }
+      ]);
+
+      // The code does parts.pop() on undefined.split('/'), so it should throw
+      await expect(client.searchPullRequests('is:pr')).rejects.toThrow();
+    });
+
+    it('should propagate API errors', async () => {
+      const client = new GitHubClient('test-token');
+      const apiError = new Error('API rate limit exceeded');
+      apiError.status = 403;
+      client.octokit.paginate = vi.fn().mockRejectedValue(apiError);
+
+      await expect(client.searchPullRequests('is:pr'))
+        .rejects.toThrow('API rate limit exceeded');
+    });
+  });
+
+  describe('getAuthenticatedUser', () => {
+    it('should call octokit.rest.users.getAuthenticated() and return mapped data', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGetAuthenticated = vi.fn().mockResolvedValue({
+        data: {
+          login: 'testuser',
+          name: 'Test User',
+          avatar_url: 'https://avatars.githubusercontent.com/u/12345'
+        }
+      });
+      client.octokit.rest.users = { getAuthenticated: mockGetAuthenticated };
+
+      const result = await client.getAuthenticatedUser();
+
+      expect(mockGetAuthenticated).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({
+        login: 'testuser',
+        name: 'Test User',
+        avatar_url: 'https://avatars.githubusercontent.com/u/12345'
+      });
+    });
+
+    it('should propagate errors', async () => {
+      const client = new GitHubClient('test-token');
+      const authError = new Error('Bad credentials');
+      authError.status = 401;
+      client.octokit.rest.users = { getAuthenticated: vi.fn().mockRejectedValue(authError) };
+
+      await expect(client.getAuthenticatedUser())
+        .rejects.toThrow('Bad credentials');
+    });
+  });
 });
