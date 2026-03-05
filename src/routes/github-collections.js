@@ -45,7 +45,7 @@ router.post('/api/github/review-requests/refresh', async (req, res) => {
     const db = req.app.get('db');
     const client = new GitHubClient(githubToken);
     const user = await client.getAuthenticatedUser();
-    const prs = await client.searchPullRequests(`is:pr is:open review-requested:${user.login}`);
+    const prs = await client.searchPullRequests(`is:pr is:open user-review-requested:${user.login}`);
 
     await withTransaction(db, async () => {
       await run(db, 'DELETE FROM github_pr_cache WHERE collection = ?', ['review-requests']);

@@ -201,7 +201,7 @@ describe('GitHub Collections Routes', () => {
 
       // Verify the search query includes the authenticated user's login
       expect(GitHubClient.prototype.searchPullRequests).toHaveBeenCalledWith(
-        'is:pr is:open review-requested:testuser'
+        'is:pr is:open user-review-requested:testuser'
       );
     });
 
