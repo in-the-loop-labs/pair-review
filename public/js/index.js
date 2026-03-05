@@ -320,7 +320,7 @@
     return '' +
       '<tr class="collection-pr-row" data-pr-url="' + escapeHtml(prUrl) + '">' +
         '<td class="col-repo">' + escapeHtml(repoFull) + '</td>' +
-        '<td class="col-pr"><a href="' + escapeHtml(prUrl) + '" target="_blank" rel="noopener">#' + pr.number + '</a></td>' +
+        '<td class="col-pr"><span class="collection-pr-number">#' + pr.number + '</span></td>' +
         '<td class="col-title" title="' + escapeHtml(pr.title || '') + '">' + escapeHtml(pr.title || '') + '</td>' +
         authorTd +
         '<td class="col-time">' + relativeTime + '</td>' +
@@ -1151,16 +1151,21 @@
     if (collectionRow && !event.target.closest('a')) {
       var prUrl = collectionRow.dataset.prUrl;
       if (prUrl) {
-        // Switch to PR tab and populate the input
+        // Switch to PR tab to show loading state
         var tabBar = document.getElementById('unified-tab-bar');
         var prTabBtn = tabBar.querySelector('[data-tab="pr-tab"]');
         switchTab(tabBar, prTabBtn);
         localStorage.setItem(TAB_STORAGE_KEY, 'pr-tab');
 
+        // Populate input and submit the form programmatically
         var input = document.getElementById('pr-url-input');
         if (input) {
           input.value = prUrl;
-          input.focus();
+          // Trigger the form submit
+          var form = document.getElementById('start-review-form');
+          if (form) {
+            form.dispatchEvent(new Event('submit', { cancelable: true }));
+          }
         }
       }
       return;

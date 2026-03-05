@@ -824,6 +824,9 @@ test.describe('Quick Action Buttons in Review Panel', () => {
     // Seed AI suggestions
     await seedAISuggestions(page);
 
+    // Dismiss the progress modal that may have appeared from the seeded analysis
+    await dismissProgressModalIfVisible(page);
+
     // Wait for findings to appear
     await page.waitForSelector('.finding-item', { timeout: 5000 });
 
