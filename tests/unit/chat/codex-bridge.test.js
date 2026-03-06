@@ -328,6 +328,59 @@ describe('CodexBridge', () => {
       );
     });
 
+    it('should include --model argument when model is set', async () => {
+      const { mockDeps, mockSpawn, fakeProc } = createMockDeps();
+      handshakeRl = setupHandshake(fakeProc);
+
+      const bridge = new CodexBridge({
+        model: 'o4-mini',
+        _deps: mockDeps,
+      });
+      await bridge.start();
+
+      expect(mockSpawn).toHaveBeenCalledWith(
+        'codex',
+        ['app-server', '--model', 'o4-mini'],
+        expect.any(Object)
+      );
+    });
+
+    it('should not include --model argument when model is not set', async () => {
+      const { mockDeps, mockSpawn, fakeProc } = createMockDeps();
+      handshakeRl = setupHandshake(fakeProc);
+
+      const bridge = new CodexBridge({
+        _deps: mockDeps,
+      });
+      await bridge.start();
+
+      expect(mockSpawn).toHaveBeenCalledWith(
+        'codex',
+        ['app-server'],
+        expect.any(Object)
+      );
+    });
+
+    it('should include --model in shell command when useShell and model are set', async () => {
+      const { mockDeps, mockSpawn, fakeProc } = createMockDeps();
+      handshakeRl = setupHandshake(fakeProc);
+
+      const bridge = new CodexBridge({
+        model: 'o4-mini',
+        codexCommand: 'devx codex',
+        codexArgs: ['app-server'],
+        useShell: true,
+        _deps: mockDeps,
+      });
+      await bridge.start();
+
+      expect(mockSpawn).toHaveBeenCalledWith(
+        'devx codex app-server --model o4-mini',
+        [],
+        expect.objectContaining({ shell: true })
+      );
+    });
+
     it('should include env vars in spawn options', async () => {
       const { mockDeps, mockSpawn, fakeProc } = createMockDeps();
       handshakeRl = setupHandshake(fakeProc);

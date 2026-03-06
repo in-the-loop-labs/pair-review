@@ -70,7 +70,7 @@ class AcpBridge extends EventEmitter {
 
     const deps = this._deps;
     const command = this.acpCommand;
-    const args = this.acpArgs;
+    const args = [...this.acpArgs];
     const useShell = this.useShell;
 
     // For multi-word commands (e.g. "devx gemini"), use shell mode
@@ -198,6 +198,19 @@ class AcpBridge extends EventEmitter {
       });
       this._sessionId = sessionId;
       logger.info(`[AcpBridge] Session created: ${sessionId}`);
+    }
+
+    // Set model via ACP protocol if configured (unstable API)
+    if (this.model && this._connection.unstable_setSessionModel) {
+      try {
+        await this._connection.unstable_setSessionModel({
+          sessionId: this._sessionId,
+          modelId: this.model,
+        });
+        logger.info(`[AcpBridge] Model set: ${this.model}`);
+      } catch (err) {
+        logger.warn(`[AcpBridge] Failed to set model (agent may not support it): ${err.message}`);
+      }
     }
 
     // Emit session info once so session-manager can store the agent_session_id

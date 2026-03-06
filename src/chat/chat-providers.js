@@ -102,6 +102,7 @@ function getChatProvider(id) {
 
   const merged = { ...base };
   if (overrides.command) merged.command = overrides.command;
+  if (overrides.model) merged.model = overrides.model;
   if (overrides.env) merged.env = { ...merged.env, ...overrides.env };
   if (overrides.args) {
     merged.args = overrides.args;

@@ -180,3 +180,9 @@ Test structure:
 - Accept an optional `_deps` parameter that merges over defaults: `const deps = { ...defaults, ..._deps }`.
 - In tests, use a `createMockDeps()` helper to provide explicit mocks.
 - This avoids brittle `jest.mock()` / `vi.mock()` patterns and makes test setup self-documenting.
+
+### ACP Chat Provider Configuration
+- For ACP (Agent Client Protocol) providers, use protocol-level methods for configuration, not CLI arguments.
+- CLI arguments like `--model` are for interactive mode; ACP server mode (`opencode acp`, `gemini --experimental-acp`, etc.) ignores them.
+- Use `unstable_setSessionModel({ sessionId, modelId })` after session creation to set the model.
+- Configuration via protocol is more reliable and consistent across different ACP implementations.

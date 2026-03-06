@@ -537,6 +537,7 @@ class ChatSessionManager {
       const providerDef = getChatProvider(provider);
       return new AcpBridge({
         ...options,
+        model: options.model || providerDef?.model,
         acpCommand: providerDef?.command,
         acpArgs: providerDef?.args,
         env: providerDef?.env,
@@ -556,6 +557,7 @@ class ChatSessionManager {
       const providerDef = getChatProvider(provider);
       return new CodexBridge({
         ...options,
+        model: options.model || providerDef?.model,
         codexCommand: providerDef?.command,
         codexArgs: providerDef?.args,
         env: providerDef?.env,

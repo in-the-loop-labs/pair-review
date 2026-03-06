@@ -162,6 +162,22 @@ describe('chat-providers', () => {
       const provider = getChatProvider('claude');
       expect(provider.useShell).toBeUndefined();
     });
+
+    it('should merge config overrides for model', () => {
+      applyConfigOverrides({
+        'opencode-acp': { model: 'anthropic/claude-opus-4-6' },
+      });
+      const provider = getChatProvider('opencode-acp');
+      expect(provider.model).toBe('anthropic/claude-opus-4-6');
+    });
+
+    it('should not set model when override is not provided', () => {
+      applyConfigOverrides({
+        'opencode-acp': { command: '/custom/opencode' },
+      });
+      const provider = getChatProvider('opencode-acp');
+      expect(provider.model).toBeUndefined();
+    });
   });
 
   describe('getAllChatProviders', () => {

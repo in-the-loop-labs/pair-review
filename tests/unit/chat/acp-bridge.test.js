@@ -43,6 +43,7 @@ function createMockDeps(overrides = {}) {
     loadSession: vi.fn().mockResolvedValue({}),
     prompt: vi.fn().mockResolvedValue({ stopReason: 'end_turn' }),
     cancel: vi.fn().mockResolvedValue(undefined),
+    unstable_setSessionModel: vi.fn().mockResolvedValue({}),
   };
 
   // Must use a real constructor function so `new` works correctly
@@ -191,6 +192,51 @@ describe('AcpBridge', () => {
       // Env should include the custom var
       const spawnOpts = mockSpawn.mock.calls[0][2];
       expect(spawnOpts.env.MY_VAR).toBe('yes');
+    });
+
+    it('should call unstable_setSessionModel when model is set', async () => {
+      const { mockDeps, mockConnection } = createMockDeps();
+      const bridge = new AcpBridge({
+        model: 'anthropic/claude-opus-4-6',
+        acpCommand: 'opencode',
+        acpArgs: ['acp'],
+        _deps: mockDeps,
+      });
+
+      await bridge.start();
+
+      expect(mockConnection.unstable_setSessionModel).toHaveBeenCalledWith({
+        sessionId: 'session-abc-123',
+        modelId: 'anthropic/claude-opus-4-6',
+      });
+    });
+
+    it('should not call unstable_setSessionModel when model is not set', async () => {
+      const { mockDeps, mockConnection } = createMockDeps();
+      const bridge = new AcpBridge({
+        acpCommand: 'opencode',
+        acpArgs: ['acp'],
+        _deps: mockDeps,
+      });
+
+      await bridge.start();
+
+      expect(mockConnection.unstable_setSessionModel).not.toHaveBeenCalled();
+    });
+
+    it('should handle unstable_setSessionModel failure gracefully', async () => {
+      const { mockDeps, mockConnection } = createMockDeps();
+      mockConnection.unstable_setSessionModel.mockRejectedValueOnce(new Error('Not supported'));
+      const bridge = new AcpBridge({
+        model: 'gpt-4o',
+        acpCommand: 'opencode',
+        acpArgs: ['acp'],
+        _deps: mockDeps,
+      });
+
+      // Should not throw
+      await expect(bridge.start()).resolves.toBeUndefined();
+      expect(bridge.isReady()).toBe(true);
     });
 
     it('should create ndJsonStream with process stdin/stdout', async () => {

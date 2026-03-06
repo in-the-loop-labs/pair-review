@@ -78,8 +78,13 @@ class CodexBridge extends EventEmitter {
 
     const deps = this._deps;
     const command = this.codexCommand;
-    const args = this.codexArgs;
+    const args = [...this.codexArgs];
     const useShell = this.useShell;
+
+    // Append model flag if configured
+    if (this.model) {
+      args.push('--model', this.model);
+    }
 
     // For multi-word commands (e.g. "devx codex"), use shell mode
     const spawnCmd = useShell ? `${command} ${args.join(' ')}` : command;
