@@ -145,7 +145,7 @@ describe('Chat Routes', () => {
       const callArgs = mockManager.createSession.mock.calls[0][0];
       expect(callArgs.systemPrompt).toBeTruthy();
       expect(callArgs.systemPrompt).toContain('code review');
-      expect(callArgs.systemPrompt).toContain('The review ID for this session is: 1');
+      expect(callArgs.systemPrompt).toContain('The internal review ID for this session to use with API requests is: 1');
       // Port should NOT be baked into the system prompt
       expect(callArgs.systemPrompt).not.toMatch(/http:\/\/localhost:\d+/);
     });
