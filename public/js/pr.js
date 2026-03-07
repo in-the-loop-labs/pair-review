@@ -3030,10 +3030,13 @@ class PRManager {
         // Clear placeholder in case of any orphaned elements
         placeholder.innerHTML = '';
 
+        const shareConfig = window.__pairReview?.share;
         this.splitButton = new window.SplitButton({
           onSubmit: () => this.openReviewModal(),
           onPreview: () => this.openPreviewModal(),
-          onClear: () => this.clearAllUserComments()
+          onClear: () => this.clearAllUserComments(),
+          onShare: () => this.openSharePage(),
+          shareUrl: shareConfig?.url || null
         });
         const buttonElement = this.splitButton.render();
         placeholder.appendChild(buttonElement);
@@ -3060,6 +3063,23 @@ class PRManager {
       this.previewModal = new PreviewModal();
     }
     this.previewModal.show();
+  }
+
+  /**
+   * Open share page in a new tab
+   * Builds the share URL with a callback_url pointing to this PR's share endpoint
+   */
+  openSharePage() {
+    const shareConfig = window.__pairReview?.share;
+    if (!shareConfig?.url) return;
+
+    const pr = this.currentPR;
+    if (!pr) return;
+
+    const callbackUrl = `${window.location.origin}/api/pr/${encodeURIComponent(pr.owner)}/${encodeURIComponent(pr.repo)}/${pr.number}/share`;
+    const shareUrl = new URL(shareConfig.url);
+    shareUrl.searchParams.set('callback_url', callbackUrl);
+    window.open(shareUrl.toString(), '_blank');
   }
 
   /**

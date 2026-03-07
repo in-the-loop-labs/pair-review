@@ -162,6 +162,25 @@ async function startServer(sharedDb = null) {
     // Middleware
     app.use(requestLogger);
     app.use(express.json());
+
+    // CORS middleware for share endpoints
+    // Allows configured external origins to fetch share data
+    const shareAllowedOrigins = config.share?.allowed_origins || [];
+    if (shareAllowedOrigins.length > 0) {
+      app.use('/api/pr/:owner/:repo/:number/share', (req, res, next) => {
+        const origin = req.headers.origin;
+        if (origin && shareAllowedOrigins.includes(origin)) {
+          res.setHeader('Access-Control-Allow-Origin', origin);
+          res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+          res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+          res.setHeader('Vary', 'Origin');
+        }
+        if (req.method === 'OPTIONS') {
+          return res.sendStatus(204);
+        }
+        next();
+      });
+    }
     
     // Static files with cache control headers
     // In dev_mode, all caching is disabled to avoid stale resources during development

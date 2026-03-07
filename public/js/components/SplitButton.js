@@ -27,7 +27,9 @@ class SplitButton {
     this.onSubmit = options.onSubmit || (() => {});
     this.onPreview = options.onPreview || (() => {});
     this.onClear = options.onClear || (() => {});
+    this.onShare = options.onShare || (() => {});
     this.onSetDefault = options.onSetDefault || (() => {});
+    this.shareUrl = options.shareUrl || null;
 
     // Bind methods
     this.handleMainClick = this.handleMainClick.bind(this);
@@ -122,7 +124,18 @@ class SplitButton {
       <button class="split-button-menu-item" data-action="preview" role="menuitem">
         <span class="menu-item-check">${isPreviewDefault ? '&#10003;' : ''}</span>
         <span class="menu-item-text">Preview</span>
-      </button>
+      </button>`;
+
+    if (this.shareUrl) {
+      menuItems += `
+      <div class="split-button-menu-separator"></div>
+      <button class="split-button-menu-item" data-action="share" role="menuitem">
+        <span class="menu-item-check"></span>
+        <span class="menu-item-text">Share</span>
+      </button>`;
+    }
+
+    menuItems += `
       <div class="split-button-menu-separator"></div>
       <button class="split-button-menu-item split-button-menu-item-danger" data-action="clear" role="menuitem" ${this.commentCount === 0 ? 'disabled' : ''}>
         <span class="menu-item-check"></span>
@@ -177,6 +190,9 @@ class SplitButton {
           this.setDefaultAction('preview');
         }
         this.onPreview();
+        break;
+      case 'share':
+        this.onShare();
         break;
       case 'clear':
         this.onClear();
@@ -360,6 +376,15 @@ class SplitButton {
    */
   getCommentCount() {
     return this.commentCount;
+  }
+
+  /**
+   * Update the share URL (controls whether Share menu item is visible)
+   * @param {string|null} url - Share site URL or null to hide
+   */
+  setShareUrl(url) {
+    this.shareUrl = url || null;
+    this.updateDropdownMenu();
   }
 
   /**

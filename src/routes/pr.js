@@ -1803,4 +1803,130 @@ router.post('/api/pr/:owner/:repo/:number/analyses/council', async (req, res) =>
   }
 });
 
+/**
+ * Get shareable review data for a PR
+ * Returns PR metadata, diff, and AI analysis results in a single payload
+ * for consumption by external share sites.
+ */
+router.get('/api/pr/:owner/:repo/:number/share', async (req, res) => {
+  try {
+    const { owner, repo, number } = req.params;
+    const prNumber = parseInt(number);
+
+    if (isNaN(prNumber) || prNumber <= 0) {
+      return res.status(400).json({ error: 'Invalid pull request number' });
+    }
+
+    const repository = normalizeRepository(owner, repo);
+    const db = req.app.get('db');
+
+    // Get PR metadata
+    const prMetadata = await queryOne(db, `
+      SELECT id, pr_number, repository, title, author, base_branch, head_branch, pr_data
+      FROM pr_metadata
+      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
+    `, [prNumber, repository]);
+
+    if (!prMetadata) {
+      return res.status(404).json({
+        error: `Pull request #${prNumber} not found in repository ${repository}`
+      });
+    }
+
+    // Parse PR data for diff and SHAs
+    let prData = {};
+    try {
+      prData = prMetadata.pr_data ? JSON.parse(prMetadata.pr_data) : {};
+    } catch (parseError) {
+      logger.warn('Error parsing PR data JSON for share:', parseError.message);
+    }
+
+    // Get review record
+    const reviewRepo = new ReviewRepository(db);
+    const review = await reviewRepo.getReviewByPR(prNumber, repository);
+
+    // Build changed files list
+    // changed_files may use 'insertions' (from git diff) or 'additions' (from GitHub API)
+    const changedFiles = (prData.changed_files || []).map(f => ({
+      path: f.file,
+      additions: f.insertions || f.additions || 0,
+      deletions: f.deletions || 0
+    }));
+
+    // Build response payload
+    const payload = {
+      owner,
+      repo,
+      prNumber,
+      title: prMetadata.title || '',
+      author: prMetadata.author || '',
+      baseBranch: prMetadata.base_branch || '',
+      headBranch: prMetadata.head_branch || '',
+      baseSha: prData.base_sha || '',
+      headSha: prData.head_sha || '',
+      diff: prData.diff || '',
+      changedFiles,
+      run: null,
+      suggestions: []
+    };
+
+    // If we have a review, get the latest completed analysis run and its suggestions
+    if (review) {
+      const analysisRunRepo = new AnalysisRunRepository(db);
+      const latestRun = await analysisRunRepo.getLatestByReviewId(review.id);
+
+      if (latestRun && latestRun.status === 'completed') {
+        payload.run = {
+          id: latestRun.id,
+          provider: latestRun.provider || null,
+          model: latestRun.model || null,
+          tier: latestRun.tier || null,
+          summary: latestRun.summary || null,
+          completedAt: latestRun.completed_at || null,
+          duration: latestRun.started_at && latestRun.completed_at
+            ? new Date(latestRun.completed_at).getTime() - new Date(latestRun.started_at).getTime()
+            : null,
+          customInstructions: latestRun.custom_instructions || latestRun.request_instructions || null
+        };
+
+        // Get suggestions for this run
+        const rows = await query(db, `
+          SELECT
+            id, file, line_start, line_end, side, type, title, body,
+            suggestion_text, ai_confidence, reasoning, status, is_file_level
+          FROM comments
+          WHERE review_id = ?
+            AND source = 'ai'
+            AND ai_run_id = ?
+            AND ai_level IS NULL
+            AND (is_raw = 0 OR is_raw IS NULL)
+            AND status IN ('active', 'adopted', 'dismissed')
+          ORDER BY file, line_start
+        `, [review.id, latestRun.id]);
+
+        payload.suggestions = rows.map(row => ({
+          id: row.id,
+          file: row.file,
+          lineStart: row.line_start,
+          lineEnd: row.line_end,
+          side: row.side || 'RIGHT',
+          type: row.type || 'comment',
+          title: row.title || '',
+          body: row.body || '',
+          suggestionText: row.suggestion_text || '',
+          confidence: row.ai_confidence != null ? row.ai_confidence : null,
+          reasoning: row.reasoning ? JSON.parse(row.reasoning) : [],
+          status: row.status,
+          isFileLevel: row.is_file_level === 1
+        }));
+      }
+    }
+
+    res.json(payload);
+  } catch (error) {
+    logger.error('Error generating share data:', error);
+    res.status(500).json({ error: 'Failed to generate share data' });
+  }
+});
+
 module.exports = router;

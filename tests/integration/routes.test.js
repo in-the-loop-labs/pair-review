@@ -6483,3 +6483,134 @@ describe('Context Files Endpoints', () => {
     });
   });
 });
+
+// ============================================================================
+// Share Endpoint Tests
+// ============================================================================
+
+describe('Share Endpoint', () => {
+  let db;
+  let app;
+
+  beforeEach(async () => {
+    db = await createTestDatabase();
+    app = createTestApp(db);
+  });
+
+  afterEach(async () => {
+    if (db) {
+      await closeTestDatabase(db);
+    }
+  });
+
+  describe('GET /api/pr/:owner/:repo/:number/share', () => {
+    it('should return 400 for invalid PR number', async () => {
+      const response = await request(app)
+        .get('/api/pr/owner/repo/invalid/share');
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Invalid pull request number');
+    });
+
+    it('should return 404 for non-existent PR', async () => {
+      const response = await request(app)
+        .get('/api/pr/owner/repo/999/share');
+
+      expect(response.status).toBe(404);
+    });
+
+    it('should return share payload for existing PR without analysis', async () => {
+      await insertTestPR(db);
+      await insertTestWorktree(db);
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/share');
+
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({
+        owner: 'owner',
+        repo: 'repo',
+        prNumber: 1,
+        title: 'Test PR Title',
+        author: 'testuser',
+        baseBranch: 'main',
+        headBranch: 'feature-branch',
+        baseSha: 'abc123',
+        headSha: 'def456',
+        diff: 'diff content',
+        run: null,
+        suggestions: []
+      });
+      expect(response.body.changedFiles).toHaveLength(1);
+      expect(response.body.changedFiles[0]).toMatchObject({
+        path: 'file.js',
+        additions: 1,
+        deletions: 0
+      });
+    });
+
+    it('should return share payload with analysis run and suggestions', async () => {
+      const reviewId = await insertTestPR(db);
+
+      // Insert a completed analysis run
+      const runId = 'test-run-uuid';
+      await run(db, `
+        INSERT INTO analysis_runs (id, review_id, provider, model, tier, status, summary, total_suggestions, files_analyzed, started_at, completed_at)
+        VALUES (?, ?, 'claude', 'opus', 'balanced', 'completed', 'Found 1 issue', 1, 1, datetime('now', '-1 minute'), datetime('now'))
+      `, [runId, reviewId]);
+
+      // Insert an AI suggestion
+      await run(db, `
+        INSERT INTO comments (review_id, source, author, ai_run_id, file, line_start, line_end, side, type, title, body, suggestion_text, ai_confidence, reasoning, status, is_file_level)
+        VALUES (?, 'ai', 'AI', ?, 'src/example.js', 42, 45, 'RIGHT', 'bug', 'Null reference', 'Could be null', 'Add null check', 0.85, '["step1","step2"]', 'active', 0)
+      `, [reviewId, runId]);
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/share');
+
+      expect(response.status).toBe(200);
+      expect(response.body.run).toMatchObject({
+        id: runId,
+        provider: 'claude',
+        model: 'opus',
+        tier: 'balanced',
+        summary: 'Found 1 issue'
+      });
+      expect(response.body.run.completedAt).toBeTruthy();
+      expect(response.body.run.duration).toBeGreaterThanOrEqual(0);
+
+      expect(response.body.suggestions).toHaveLength(1);
+      expect(response.body.suggestions[0]).toMatchObject({
+        file: 'src/example.js',
+        lineStart: 42,
+        lineEnd: 45,
+        side: 'RIGHT',
+        type: 'bug',
+        title: 'Null reference',
+        body: 'Could be null',
+        suggestionText: 'Add null check',
+        confidence: 0.85,
+        reasoning: ['step1', 'step2'],
+        status: 'active',
+        isFileLevel: false
+      });
+    });
+
+    it('should not return suggestions from non-completed runs', async () => {
+      const reviewId = await insertTestPR(db);
+
+      // Insert a running analysis run
+      await run(db, `
+        INSERT INTO analysis_runs (id, review_id, provider, model, status, started_at)
+        VALUES ('running-run', ?, 'claude', 'opus', 'running', datetime('now'))
+      `, [reviewId]);
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/share');
+
+      expect(response.status).toBe(200);
+      expect(response.body.run).toBeNull();
+      expect(response.body.suggestions).toEqual([]);
+    });
+  });
+});
