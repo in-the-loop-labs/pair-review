@@ -483,7 +483,7 @@ Configure your preferred models in `providers.pi.models` — see [AI Provider Co
 }
 ```
 
-Available chat provider IDs: `pi`, `claude`, `codex`, `copilot-acp`, `gemini-acp`, `opencode-acp`. Each supports `command`, `args` (replaces defaults), `extra_args` (appends), and `env` overrides.
+Available chat provider IDs: `pi`, `claude`, `codex`, `copilot-acp`, `gemini-acp`, `opencode-acp`, `cursor-acp`. Each supports `command`, `args` (replaces defaults), `extra_args` (appends), and `env` overrides.
 
 **Keyboard shortcut:** Press `p` then `c` to toggle the chat panel.
 
