@@ -4665,6 +4665,54 @@ describe('ChatPanel', () => {
       });
     });
 
+    describe('_renderProviderDropdown sorting', () => {
+      it('should render providers sorted alphabetically by name', () => {
+        chatPanel._chatProviders = [
+          { id: 'zeta', name: 'Zeta Provider', available: true },
+          { id: 'alpha', name: 'Alpha Provider', available: true },
+          { id: 'mid', name: 'Mid Provider', available: true },
+        ];
+        chatPanel._activeProvider = 'mid';
+        chatPanel.providerDropdown.querySelectorAll = vi.fn(() => []);
+
+        chatPanel._renderProviderDropdown();
+
+        const html = chatPanel.providerDropdown.innerHTML;
+        const alphaIdx = html.indexOf('Alpha Provider');
+        const midIdx = html.indexOf('Mid Provider');
+        const zetaIdx = html.indexOf('Zeta Provider');
+        expect(alphaIdx).toBeGreaterThan(-1);
+        expect(midIdx).toBeGreaterThan(alphaIdx);
+        expect(zetaIdx).toBeGreaterThan(midIdx);
+      });
+
+      it('should not mutate the original _chatProviders array', () => {
+        chatPanel._chatProviders = [
+          { id: 'b', name: 'Bravo', available: true },
+          { id: 'a', name: 'Alpha', available: true },
+        ];
+        chatPanel.providerDropdown.querySelectorAll = vi.fn(() => []);
+
+        chatPanel._renderProviderDropdown();
+
+        expect(chatPanel._chatProviders[0].id).toBe('b');
+        expect(chatPanel._chatProviders[1].id).toBe('a');
+      });
+
+      it('should sort case-insensitively', () => {
+        chatPanel._chatProviders = [
+          { id: 'upper', name: 'Zebra', available: true },
+          { id: 'lower', name: 'alpha', available: true },
+        ];
+        chatPanel.providerDropdown.querySelectorAll = vi.fn(() => []);
+
+        chatPanel._renderProviderDropdown();
+
+        const html = chatPanel.providerDropdown.innerHTML;
+        expect(html.indexOf('alpha')).toBeLessThan(html.indexOf('Zebra'));
+      });
+    });
+
     describe('close hides dropdown', () => {
       it('should call _hideProviderDropdown on close', () => {
         const spy = vi.spyOn(chatPanel, '_hideProviderDropdown');
