@@ -45,10 +45,11 @@ function buildChatPrompt({ review, prData, chatInstructions }) {
     '- **Workflow**: AI generates suggestions → reviewer triages (adopt, edit, or dismiss) → adopted suggestions become comments.',
     '- **IMPORTANT**: Do NOT adopt, dismiss, or modify suggestions or comments unless the user explicitly asks you to. Your role is to discuss and explain — the reviewer decides what action to take.',
     '- **Analysis runs** are the process that produces suggestions. Each run has a provider, model, tier, and status.',
-    '- **Review ID** is a stable integer identifying this review session, used in all API calls.'
+    '- **Review ID** is a stable integer identifying this review session, used in all API calls.',
+    '- **IMPORTANT**: Never mention internal IDs (comment IDs, suggestion IDs, run IDs) in your responses to the user. These are meaningless to the user and not shown in the UI. Refer to comments and suggestions by their content, title, file location, or line number instead.'
   ];
   if (review && review.id) {
-    domainLines.push(`- The review ID for this session is: ${review.id} (e.g. \`/api/reviews/${review.id}/comments\`).`);
+    domainLines.push(`- The internal review ID for this session to use with API requests is: ${review.id} (e.g. \`/api/reviews/${review.id}/comments\`).`);
   }
   sections.push(domainLines.join('\n'));
 

@@ -96,7 +96,7 @@ describe('buildChatPrompt', () => {
         review: { id: 42, repository: 'owner/repo', pr_number: 1 }
       });
 
-      expect(prompt).toContain('The review ID for this session is: 42');
+      expect(prompt).toContain('The internal review ID for this session to use with API requests is: 42');
       expect(prompt).toContain('/api/reviews/42/comments');
     });
 
@@ -105,13 +105,13 @@ describe('buildChatPrompt', () => {
         review: { repository: 'owner/repo', pr_number: 1 }
       });
 
-      expect(prompt).not.toContain('The review ID for this session is');
+      expect(prompt).not.toContain('The internal review ID for this session');
     });
 
     it('should not include reviewId value when review is null', () => {
       const prompt = buildChatPrompt({ review: null });
 
-      expect(prompt).not.toContain('The review ID for this session is');
+      expect(prompt).not.toContain('The internal review ID for this session');
     });
   });
 
