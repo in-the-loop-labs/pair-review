@@ -774,7 +774,9 @@ class ChatPanel {
 
   _renderProviderDropdown() {
     if (!this.providerDropdown) return;
-    const providers = this._chatProviders;
+    const providers = [...this._chatProviders].sort((a, b) =>
+      a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+    );
 
     if (providers.length === 0) {
       this.providerDropdown.innerHTML = `
