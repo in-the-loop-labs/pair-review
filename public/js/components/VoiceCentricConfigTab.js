@@ -709,7 +709,7 @@ class VoiceCentricConfigTab {
     const providerIds = Object.keys(this.providers).filter(id => {
       const p = this.providers[id];
       return !p.availability || p.availability.available;
-    });
+    }).sort((a, b) => (this.providers[a].name || a).localeCompare(this.providers[b].name || b));
 
     for (const id of providerIds) {
       const opt = document.createElement('option');
@@ -737,7 +737,7 @@ class VoiceCentricConfigTab {
     if (!modelSelect) return;
 
     const currentModel = modelSelect.value;
-    const models = provider.models || [];
+    const models = [...(provider.models || [])].sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id));
     modelSelect.innerHTML = '';
     for (const model of models) {
       const opt = document.createElement('option');

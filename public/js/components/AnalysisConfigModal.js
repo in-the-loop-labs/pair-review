@@ -452,12 +452,12 @@ class AnalysisConfigModal {
     const container = this.modal.querySelector('#provider-toggle-container');
     if (!container) return;
 
-    // Filter to only show available providers
+    // Filter to only show available providers, sorted alphabetically by name
     const availableProviderIds = Object.keys(this.providers).filter(providerId => {
       const provider = this.providers[providerId];
       // Show provider if no availability info (check pending) or if explicitly available
       return !provider.availability || provider.availability.available;
-    });
+    }).sort((a, b) => (this.providers[a].name || a).localeCompare(this.providers[b].name || b));
 
     // If selected provider is no longer available, select first available
     if (availableProviderIds.length > 0 && !availableProviderIds.includes(this.selectedProvider)) {
@@ -496,7 +496,8 @@ class AnalysisConfigModal {
     const container = this.modal.querySelector('#model-cards-container');
     if (!container) return;
 
-    container.innerHTML = this.models.map(model => `
+    const sortedModels = [...this.models].sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id));
+    container.innerHTML = sortedModels.map(model => `
       <button class="model-card ${model.id === this.selectedModel ? 'selected' : ''}" data-model="${model.id}" data-tier="${model.tier}">
         <div class="model-badge ${model.badgeClass || ''}">${model.badge || ''}</div>
         <div class="model-icon">${this.getModelIcon(model.tier)}</div>
