@@ -2106,6 +2106,7 @@ tr.newly-expanded .d2h-code-line-ctn {
   position: relative;
   display: flex;
   align-items: center;
+  flex-shrink: 0;
 }
 
 .btn-reasoning-toggle {
@@ -2439,7 +2440,7 @@ tr.newly-expanded .d2h-code-line-ctn {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--color-text-secondary);
-  max-width: 400px;
+  min-width: 0;
   font-size: 13px;
 }
 
@@ -4006,12 +4007,15 @@ tr.line-range-start .d2h-code-line-ctn {
   margin-bottom: 4px;
   padding-bottom: 4px;
   border-bottom: 1px solid rgba(139, 92, 246, 0.1);
+  min-width: 0;
 }
 
 .user-comment-header-left {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .user-comment-line-info {
@@ -4088,6 +4092,9 @@ tr.line-range-start .d2h-code-line-ctn {
   font-size: 12px;
   font-style: italic;
   margin-left: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Eye icon toggle button */
@@ -4156,6 +4163,7 @@ tr.line-range-start .d2h-code-line-ctn {
   align-items: center;
   gap: 4px;
   margin-left: auto;
+  flex-shrink: 0;
 }
 
 /* Hide edit/delete buttons when in editing mode */
