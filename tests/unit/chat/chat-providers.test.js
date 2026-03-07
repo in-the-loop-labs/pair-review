@@ -89,6 +89,18 @@ describe('chat-providers', () => {
       });
     });
 
+    it('should return cursor-acp provider with correct defaults', () => {
+      const cursor = getChatProvider('cursor-acp');
+      expect(cursor).toEqual({
+        id: 'cursor-acp',
+        name: 'Cursor (ACP)',
+        type: 'acp',
+        command: 'agent',
+        args: ['acp'],
+        env: {},
+      });
+    });
+
     it('should return null for unknown provider', () => {
       expect(getChatProvider('unknown')).toBeNull();
     });
@@ -153,14 +165,15 @@ describe('chat-providers', () => {
   });
 
   describe('getAllChatProviders', () => {
-    it('should return all six providers', () => {
+    it('should return all seven providers', () => {
       const providers = getAllChatProviders();
-      expect(providers).toHaveLength(6);
+      expect(providers).toHaveLength(7);
       const ids = providers.map(p => p.id);
       expect(ids).toContain('pi');
       expect(ids).toContain('copilot-acp');
       expect(ids).toContain('gemini-acp');
       expect(ids).toContain('opencode-acp');
+      expect(ids).toContain('cursor-acp');
       expect(ids).toContain('claude');
       expect(ids).toContain('codex');
     });
@@ -190,6 +203,10 @@ describe('chat-providers', () => {
 
     it('should return true for opencode-acp', () => {
       expect(isAcpProvider('opencode-acp')).toBe(true);
+    });
+
+    it('should return true for cursor-acp', () => {
+      expect(isAcpProvider('cursor-acp')).toBe(true);
     });
 
     it('should return false for unknown provider', () => {
@@ -351,6 +368,7 @@ describe('chat-providers', () => {
       expect(cache['copilot-acp']).toEqual({ available: true });
       expect(cache['gemini-acp']).toEqual({ available: true });
       expect(cache['opencode-acp']).toEqual({ available: true });
+      expect(cache['cursor-acp']).toEqual({ available: true });
       expect(cache['claude']).toEqual({ available: true });
       expect(cache.codex).toEqual({ available: true });
     });
