@@ -272,6 +272,13 @@ class ChatPanel {
       }
     });
 
+    // Re-read chat providers once the <head> config fetch resolves
+    this._onChatStateChanged = () => {
+      this._chatProviders = window.__pairReview?.chatProviders || [];
+      this._updateTitle();
+    };
+    window.addEventListener('chat-state-changed', this._onChatStateChanged);
+
     this._bindResizeEvents();
   }
 
@@ -3140,6 +3147,7 @@ class ChatPanel {
    */
   destroy() {
     document.removeEventListener('keydown', this._onKeydown);
+    window.removeEventListener('chat-state-changed', this._onChatStateChanged);
     this._closeSubscriptions();
     this.messages = [];
 
