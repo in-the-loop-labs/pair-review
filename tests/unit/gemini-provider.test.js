@@ -60,14 +60,13 @@ describe('GeminiProvider', () => {
     it('should return array of models with expected structure', () => {
       const models = GeminiProvider.getModels();
       expect(Array.isArray(models)).toBe(true);
-      expect(models.length).toBe(4);
+      expect(models.length).toBe(3);
 
       // Check that we have the expected model IDs
       const modelIds = models.map(m => m.id);
-      expect(modelIds).toContain('gemini-3-flash');
+      expect(modelIds).toContain('gemini-3-flash-preview');
       expect(modelIds).toContain('gemini-2.5-pro');
-      expect(modelIds).toContain('gemini-3-pro');
-      expect(modelIds).toContain('gemini-3.1-pro');
+      expect(modelIds).toContain('gemini-3.1-pro-preview');
 
       // Check model structure
       const defaultModel = models.find(m => m.id === 'gemini-2.5-pro');
@@ -93,8 +92,8 @@ describe('GeminiProvider', () => {
     });
 
     it('should create instance with specified model', () => {
-      const provider = new GeminiProvider('gemini-3-pro');
-      expect(provider.model).toBe('gemini-3-pro');
+      const provider = new GeminiProvider('gemini-3.1-pro-preview');
+      expect(provider.model).toBe('gemini-3.1-pro-preview');
     });
 
     it('should use default gemini command', () => {
@@ -126,9 +125,9 @@ describe('GeminiProvider', () => {
     });
 
     it('should configure base args correctly with stream-json output', () => {
-      const provider = new GeminiProvider('gemini-3-flash');
+      const provider = new GeminiProvider('gemini-3-flash-preview');
       expect(provider.args).toContain('-m');
-      expect(provider.args).toContain('gemini-3-flash');
+      expect(provider.args).toContain('gemini-3-flash-preview');
       expect(provider.args).toContain('-o');
       expect(provider.args).toContain('stream-json');
       expect(provider.args).toContain('--allowed-tools');
@@ -144,9 +143,9 @@ describe('GeminiProvider', () => {
     });
 
     it('should merge model-specific extra_args from config', () => {
-      const provider = new GeminiProvider('gemini-3-pro', {
+      const provider = new GeminiProvider('gemini-3.1-pro-preview', {
         models: [
-          { id: 'gemini-3-pro', extra_args: ['--special-flag'] }
+          { id: 'gemini-3.1-pro-preview', extra_args: ['--special-flag'] }
         ]
       });
       expect(provider.args).toContain('--special-flag');
@@ -175,10 +174,10 @@ describe('GeminiProvider', () => {
     });
 
     it('should merge model-specific env over provider env', () => {
-      const provider = new GeminiProvider('gemini-3-pro', {
+      const provider = new GeminiProvider('gemini-3.1-pro-preview', {
         env: { VAR1: 'provider' },
         models: [
-          { id: 'gemini-3-pro', env: { VAR1: 'model', VAR2: 'extra' } }
+          { id: 'gemini-3.1-pro-preview', env: { VAR1: 'model', VAR2: 'extra' } }
         ]
       });
       expect(provider.extraEnv.VAR1).toBe('model');
@@ -426,11 +425,11 @@ describe('GeminiProvider', () => {
   describe('getExtractionConfig', () => {
     it('should return correct config for default command', () => {
       const provider = new GeminiProvider();
-      const config = provider.getExtractionConfig('gemini-3-flash');
+      const config = provider.getExtractionConfig('gemini-3-flash-preview');
 
       expect(config.command).toBe('gemini');
       expect(config.args).toContain('-m');
-      expect(config.args).toContain('gemini-3-flash');
+      expect(config.args).toContain('gemini-3-flash-preview');
       expect(config.args).toContain('-o');
       expect(config.args).toContain('text');
       expect(config.useShell).toBe(false);
@@ -440,7 +439,7 @@ describe('GeminiProvider', () => {
     it('should use shell mode for multi-word command', () => {
       process.env.PAIR_REVIEW_GEMINI_CMD = 'docker run gemini';
       const provider = new GeminiProvider();
-      const config = provider.getExtractionConfig('gemini-3-flash');
+      const config = provider.getExtractionConfig('gemini-3-flash-preview');
 
       expect(config.useShell).toBe(true);
       expect(config.command).toContain('docker run gemini');
