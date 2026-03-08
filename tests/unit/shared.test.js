@@ -874,6 +874,165 @@ describe('createProgressCallback', () => {
       expect(status.levels[4].voices).toBeUndefined();
     });
 
+    // --- Consolidation progress disambiguation tests ---
+
+    it('should NOT update shared steps map for per-voice orchestration (with voiceId)', () => {
+      const callback = createProgressCallback(analysisId);
+
+      callback({
+        level: 'orchestration',
+        status: 'running',
+        progress: 'Per-reviewer consolidation...',
+        voiceId: 'claude-opus'
+      });
+
+      const status = activeAnalyses.get(analysisId);
+      // Per-voice orchestration should ONLY update voices map
+      expect(status.levels[4].voices['claude-opus']).toEqual({
+        status: 'running',
+        progress: 'Per-reviewer consolidation...'
+      });
+      // Shared consolidation state should NOT be set
+      expect(status.levels[4].steps).toBeUndefined();
+      expect(status.levels[4].consolidationStep).toBeUndefined();
+    });
+
+    it('should NOT set consolidationStep for per-voice orchestration stream events', () => {
+      const callback = createProgressCallback(analysisId);
+
+      callback({
+        level: 'orchestration',
+        streamEvent: { type: 'assistant_text', text: 'Reviewer thinking...' },
+        voiceId: 'claude-opus'
+      });
+
+      const status = activeAnalyses.get(analysisId);
+      // Stream event should go to per-voice entry, not shared
+      expect(status.levels[4].voices['claude-opus'].streamEvent).toEqual({
+        type: 'assistant_text',
+        text: 'Reviewer thinking...'
+      });
+      expect(status.levels[4].streamEvent).toBeUndefined();
+      expect(status.levels[4].consolidationStep).toBeUndefined();
+    });
+
+    it('should keep per-voice and shared consolidation state independent', () => {
+      const callback = createProgressCallback(analysisId);
+
+      // Voice 1 starts per-reviewer orchestration
+      callback({
+        level: 'orchestration',
+        status: 'running',
+        progress: 'R1 orchestrating...',
+        voiceId: 'claude-opus'
+      });
+
+      // Voice 2 starts per-reviewer orchestration
+      callback({
+        level: 'orchestration',
+        status: 'running',
+        progress: 'R2 orchestrating...',
+        voiceId: 'gemini-pro-1'
+      });
+
+      // Both voices complete
+      callback({
+        level: 'orchestration',
+        status: 'completed',
+        progress: 'R1 done',
+        voiceId: 'claude-opus'
+      });
+      callback({
+        level: 'orchestration',
+        status: 'completed',
+        progress: 'R2 done',
+        voiceId: 'gemini-pro-1'
+      });
+
+      // Now shared cross-voice consolidation starts (no voiceId)
+      callback({
+        level: 'orchestration',
+        status: 'running',
+        progress: 'Consolidating across reviewers...'
+      });
+
+      const status = activeAnalyses.get(analysisId);
+
+      // Per-voice state should reflect completed
+      expect(status.levels[4].voices['claude-opus'].status).toBe('completed');
+      expect(status.levels[4].voices['gemini-pro-1'].status).toBe('completed');
+
+      // Shared consolidation should be running with its own steps map
+      expect(status.levels[4].status).toBe('running');
+      expect(status.levels[4].steps.orchestration).toEqual({
+        status: 'running',
+        progress: 'Consolidating across reviewers...'
+      });
+      expect(status.levels[4].consolidationStep).toBe('orchestration');
+    });
+
+    it('should not leak per-voice stream events into shared streamEvent', () => {
+      const callback = createProgressCallback(analysisId);
+
+      // Shared consolidation starts
+      callback({
+        level: 'orchestration',
+        status: 'running',
+        progress: 'Cross-level consolidation...'
+      });
+
+      // Shared consolidation streams text
+      callback({
+        level: 'orchestration',
+        streamEvent: { type: 'assistant_text', text: 'Shared analysis text' }
+      });
+
+      // Per-voice stream event arrives (should NOT overwrite shared)
+      callback({
+        level: 'orchestration',
+        streamEvent: { type: 'assistant_text', text: 'Per-voice text' },
+        voiceId: 'claude-opus'
+      });
+
+      const status = activeAnalyses.get(analysisId);
+      // Shared stream should be preserved
+      expect(status.levels[4].streamEvent).toEqual({
+        type: 'assistant_text',
+        text: 'Shared analysis text'
+      });
+      // Per-voice stream should be in voices map
+      expect(status.levels[4].voices['claude-opus'].streamEvent).toEqual({
+        type: 'assistant_text',
+        text: 'Per-voice text'
+      });
+    });
+
+    it('should preserve per-voice state when shared consolidation updates', () => {
+      const callback = createProgressCallback(analysisId);
+
+      // Per-voice orchestration completes
+      callback({
+        level: 'orchestration',
+        status: 'completed',
+        progress: 'Voice done',
+        voiceId: 'claude-opus'
+      });
+
+      // Shared consolidation starts (should NOT destroy voice state)
+      callback({
+        level: 'orchestration',
+        status: 'running',
+        progress: 'Cross-voice consolidation...'
+      });
+
+      const status = activeAnalyses.get(analysisId);
+      expect(status.levels[4].voices['claude-opus']).toEqual({
+        status: 'completed',
+        progress: 'Voice done'
+      });
+      expect(status.levels[4].steps.orchestration.status).toBe('running');
+    });
+
     it('should preserve streamEvent when a different consolidation sub-step sends a status update', () => {
       const callback = createProgressCallback(analysisId);
 

@@ -231,16 +231,34 @@ function createProgressCallback(analysisId) {
         }
       }
 
-      currentStatus.levels[levelKey].streamEvent = evt;
-      // Propagate voiceId so council progress modal can identify active voice
-      if (progressUpdate.voiceId) {
-        currentStatus.levels[levelKey].voiceId = progressUpdate.voiceId;
-      }
-      // Propagate consolidation step so frontend can identify active consolidation child
-      if (consolidationMatch) {
-        currentStatus.levels[levelKey].consolidationStep = `L${consolidationMatch[1]}`;
-      } else if (level === 'orchestration') {
-        currentStatus.levels[levelKey].consolidationStep = 'orchestration';
+      // Per-voice orchestration streams: store in voices map, not shared state.
+      // This prevents per-reviewer orchestration (within each voice's analysis)
+      // from overwriting the shared consolidation streamEvent/consolidationStep.
+      const isPerVoiceOrchestration = (level === 'orchestration' || consolidationMatch) && progressUpdate.voiceId;
+      if (isPerVoiceOrchestration) {
+        if (!currentStatus.levels[levelKey].voices) {
+          currentStatus.levels[levelKey].voices = {};
+        }
+        if (!currentStatus.levels[levelKey].voices[progressUpdate.voiceId]) {
+          currentStatus.levels[levelKey].voices[progressUpdate.voiceId] = { status: 'running' };
+        }
+        currentStatus.levels[levelKey].voices[progressUpdate.voiceId].streamEvent = evt;
+      // Levels 1-3: stream events are stored in the shared levels[n].streamEvent field
+      // with voiceId as a routing discriminator (only one voice streams per level at a time).
+      // Level 4 is different (handled above) because it has both per-voice orchestration
+      // AND shared cross-voice consolidation, requiring separate storage paths.
+      } else {
+        currentStatus.levels[levelKey].streamEvent = evt;
+        // Propagate voiceId so council progress modal can identify active voice
+        if (progressUpdate.voiceId) {
+          currentStatus.levels[levelKey].voiceId = progressUpdate.voiceId;
+        }
+        // Propagate consolidation step so frontend can identify active consolidation child
+        if (consolidationMatch) {
+          currentStatus.levels[levelKey].consolidationStep = `L${consolidationMatch[1]}`;
+        } else if (level === 'orchestration') {
+          currentStatus.levels[levelKey].consolidationStep = 'orchestration';
+        }
       }
       activeAnalyses.set(analysisId, currentStatus);
 
@@ -295,48 +313,51 @@ function createProgressCallback(analysisId) {
     // Both maps must be preserved across updates since each progress event only
     // reports on a single step or voice at a time.
     if (level === 'orchestration' || consolidationMatch) {
-      const step = consolidationMatch ? `L${consolidationMatch[1]}` : 'orchestration';
-      // Preserve existing consolidation steps when updating level 4
-      const existing = currentStatus.levels[4] || {};
-      const steps = { ...(existing.steps || {}) };
-      steps[step] = {
-        status: progressUpdate.status || 'running',
-        progress: progressUpdate.progress || (consolidationMatch ? 'Consolidating...' : 'Finalizing results...')
-      };
-      // Derive the top-level consolidation status from the aggregate of step statuses
-      // so that a single step completing doesn't mark the whole phase as completed
-      const stepStatuses = Object.values(steps).map(s => s.status);
-      const derivedStatus = stepStatuses.every(s => s === 'completed') ? 'completed'
-        : stepStatuses.some(s => s === 'failed') ? 'failed'
-        : stepStatuses.some(s => s === 'running') ? 'running'
-        : progressUpdate.status || 'running';
-      // Preserve existing per-voice orchestration states when rebuilding level 4
-      const existingVoices = existing.voices ? { ...existing.voices } : undefined;
-      currentStatus.levels[4] = {
-        status: derivedStatus,
-        progress: progressUpdate.progress || (consolidationMatch ? 'Consolidating...' : 'Finalizing results...'),
-        streamEvent: existing.streamEvent,
-        consolidationStep: step,
-        steps,
-        voices: existingVoices
-      };
-
-      // Track per-voice orchestration state (voice-centric council mode):
-      // When a voiceId is present, store per-voice status in levels[4].voices
-      // so the frontend can update individual reviewer's consolidation row.
+      // Per-voice orchestration updates (voiceId present): only update the per-voice
+      // entry in levels[4].voices. Do NOT touch the shared consolidation state (steps,
+      // consolidationStep, streamEvent, top-level progress). This prevents per-reviewer
+      // orchestration (within each voice's analysis) from being confused with the
+      // overall cross-voice or cross-level consolidation.
       if (progressUpdate.voiceId) {
-        if (!currentStatus.levels[4].voices) {
-          currentStatus.levels[4].voices = {};
-        }
-        currentStatus.levels[4].voices[progressUpdate.voiceId] = {
-          status: progressUpdate.status || 'running',
-          progress: progressUpdate.progress || 'Consolidating...'
+        const existing = currentStatus.levels[4] || {};
+        const existingVoices = existing.voices ? { ...existing.voices } : {};
+        const prev = existingVoices[progressUpdate.voiceId] || {};
+        const voiceStatus = progressUpdate.status || 'running';
+        existingVoices[progressUpdate.voiceId] = voiceStatus === 'running'
+          ? { ...prev, status: voiceStatus, progress: progressUpdate.progress || 'Consolidating...' }
+          : { status: voiceStatus, progress: progressUpdate.progress || 'Consolidating...' };
+        currentStatus.levels[4] = {
+          ...existing,
+          voices: existingVoices,
+          voiceId: progressUpdate.voiceId
         };
-        // Last-writer-wins: reflects whichever voice reported most recently.
-        // Intentional — mirrors levels 1-3 behavior (line ~334) and the frontend
-        // uses per-voice detail from the `voices` map, not this top-level field.
-        // This field exists for backward compat with single-model progress routing.
-        currentStatus.levels[4].voiceId = progressUpdate.voiceId;
+      } else {
+        // Shared consolidation update (no voiceId): update steps map and derive
+        // aggregate status. This is the cross-level or cross-voice consolidation.
+        const step = consolidationMatch ? `L${consolidationMatch[1]}` : 'orchestration';
+        const existing = currentStatus.levels[4] || {};
+        const steps = { ...(existing.steps || {}) };
+        steps[step] = {
+          status: progressUpdate.status || 'running',
+          progress: progressUpdate.progress || (consolidationMatch ? 'Consolidating...' : 'Finalizing results...')
+        };
+        // Derive the top-level consolidation status from the aggregate of step statuses
+        // so that a single step completing doesn't mark the whole phase as completed
+        const stepStatuses = Object.values(steps).map(s => s.status);
+        const derivedStatus = stepStatuses.every(s => s === 'completed') ? 'completed'
+          : stepStatuses.some(s => s === 'failed') ? 'failed'
+          : stepStatuses.some(s => s === 'running') ? 'running'
+          : progressUpdate.status || 'running';
+        // Preserve existing per-voice orchestration states when rebuilding level 4
+        const existingVoices = existing.voices ? { ...existing.voices } : undefined;
+        currentStatus.levels[4] = {
+          status: derivedStatus,
+          progress: progressUpdate.progress || (consolidationMatch ? 'Consolidating...' : 'Finalizing results...'),
+          streamEvent: existing.streamEvent,
+          consolidationStep: step,
+          steps,
+          voices: existingVoices
+        };
       }
     }
 

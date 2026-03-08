@@ -987,12 +987,12 @@ describe('CouncilProgressModal', () => {
       );
     });
 
-    it('updates stream text for active voice orchestration step', () => {
+    it('updates stream text for active voice orchestration step from voices map', () => {
       const { modal } = createTestCouncilProgressModal();
 
       modal._renderMode = 'council';
 
-      vi.spyOn(modal, '_setVoiceCentricLevelState').mockImplementation(() => {});
+      const setLevelStateSpy = vi.spyOn(modal, '_setVoiceCentricLevelState').mockImplementation(() => {});
       vi.spyOn(modal, '_refreshAllVoiceHeaders').mockImplementation(() => {});
       vi.spyOn(modal, '_updateConsolidation').mockImplementation(() => {});
       const setStreamTextSpy = vi.spyOn(modal, '_setVoiceCentricStreamText').mockImplementation(() => {});
@@ -1001,15 +1001,72 @@ describe('CouncilProgressModal', () => {
         levels: {
           4: {
             status: 'running',
-            voiceId: 'claude-opus',
-            streamEvent: { text: 'Merging suggestions...' }
+            voices: {
+              'claude-opus': {
+                status: 'running',
+                streamEvent: { text: 'Merging suggestions...' }
+              }
+            }
           }
         }
       };
 
       modal._updateVoiceCentric(status);
 
-      expect(setStreamTextSpy).toHaveBeenCalledWith('claude-opus', 4, 'Merging suggestions...');
+      // Stream text is handled by _setVoiceCentricLevelState (via the snippet element),
+      // not by a separate _setVoiceCentricStreamText call
+      expect(setStreamTextSpy).not.toHaveBeenCalled();
+      expect(setLevelStateSpy).toHaveBeenCalledWith('claude-opus', 4, 'running', {
+        status: 'running',
+        streamEvent: { text: 'Merging suggestions...' }
+      });
+    });
+
+    it('routes per-voice and shared stream events independently', () => {
+      const { modal } = createTestCouncilProgressModal();
+
+      modal._renderMode = 'council';
+
+      const setLevelStateSpy = vi.spyOn(modal, '_setVoiceCentricLevelState').mockImplementation(() => {});
+      vi.spyOn(modal, '_refreshAllVoiceHeaders').mockImplementation(() => {});
+      vi.spyOn(modal, '_updateConsolidation').mockImplementation(() => {});
+      const setStreamTextSpy = vi.spyOn(modal, '_setVoiceCentricStreamText').mockImplementation(() => {});
+
+      // Status has both per-voice stream events in voices map AND a shared
+      // streamEvent (for cross-voice consolidation). They should not collide.
+      const status = {
+        levels: {
+          4: {
+            status: 'running',
+            streamEvent: { text: 'Cross-voice consolidation text' },
+            voices: {
+              'claude-opus': {
+                status: 'completed',
+                // No streamEvent — voice is done
+              },
+              'gemini-pro-1': {
+                status: 'running',
+                streamEvent: { text: 'Gemini still orchestrating...' }
+              }
+            }
+          }
+        }
+      };
+
+      modal._updateVoiceCentric(status);
+
+      // Stream text is handled internally by _setVoiceCentricLevelState (via snippet),
+      // not by a separate _setVoiceCentricStreamText call
+      expect(setStreamTextSpy).not.toHaveBeenCalled();
+      // Per-voice states are passed through to _setVoiceCentricLevelState with their full vStatus
+      expect(setLevelStateSpy).toHaveBeenCalledWith('gemini-pro-1', 4, 'running', {
+        status: 'running',
+        streamEvent: { text: 'Gemini still orchestrating...' }
+      });
+      // Completed voice should NOT carry stale stream text
+      expect(setLevelStateSpy).toHaveBeenCalledWith('claude-opus', 4, 'completed', {
+        status: 'completed',
+      });
     });
 
     it('does not update stream text when level 4 has no voiceId', () => {

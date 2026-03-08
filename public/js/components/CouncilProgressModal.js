@@ -520,7 +520,9 @@ class CouncilProgressModal {
 
     // Handle per-voice orchestration updates (level 4):
     // In voice-centric mode, each reviewer has a consolidation child at data-vc-level="4".
-    // The backend tracks per-voice orchestration state in levels[4].voices.
+    // The backend tracks per-voice orchestration state in levels[4].voices, including
+    // per-voice streamEvent. The shared levels[4].streamEvent is only for the overall
+    // cross-voice consolidation (no voiceId).
     const level4 = status.levels[4];
     if (level4) {
       if (level4.voices) {
@@ -529,12 +531,7 @@ class CouncilProgressModal {
         }
       }
 
-      // Update stream event text for the active voice's orchestration step
-      if (level4.streamEvent?.text && level4.voiceId) {
-        this._setVoiceCentricStreamText(level4.voiceId, 4, level4.streamEvent.text);
-      }
-
-      // Handle cross-reviewer consolidation section (no voiceId — shared consolidation)
+      // Handle cross-reviewer consolidation section (shared consolidation state only)
       this._updateConsolidation(level4);
     }
 
