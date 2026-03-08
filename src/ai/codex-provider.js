@@ -61,7 +61,8 @@ class CodexProvider extends AIProvider {
    * @param {string} model - Model identifier
    * @param {Object} configOverrides - Config overrides from providers config
    * @param {string} configOverrides.command - Custom CLI command
-   * @param {string[]} configOverrides.extra_args - Additional CLI arguments
+   * @param {string[]} configOverrides.args - Replace default shell env args (default: login shell + env policy)
+   * @param {string[]} configOverrides.extra_args - Additional CLI arguments (appended)
    * @param {Object} configOverrides.env - Additional environment variables
    * @param {Object[]} configOverrides.models - Custom model definitions
    */
@@ -109,11 +110,12 @@ class CodexProvider extends AIProvider {
     const sandboxArgs = configOverrides.yolo
       ? ['--dangerously-bypass-approvals-and-sandbox']
       : ['--sandbox', 'workspace-write', '--full-auto'];
-    // Shell env args are applied unconditionally — login shell PATH reconstruction
-    // is orthogonal to sandbox permissions. Yolo mode bypasses what Codex is
-    // *allowed* to do, but doesn't change how the shell *initializes*.
-    const shellEnvArgs = ['-c', 'allow_login_shell=false', '-c', 'shell_environment_policy.include_only=["PATH", "HOME", "USER"]'];
-    const baseArgs = ['exec', '-m', model, '--json', ...sandboxArgs, ...shellEnvArgs, '-'];
+    // Shell env args prevent login shell from reconstructing PATH (orthogonal to
+    // sandbox permissions). Overridable via configOverrides.args following the
+    // same two-tier pattern as chat-providers.js: args replaces, extra_args appends.
+    const defaultShellEnvArgs = ['-c', 'allow_login_shell=false', '-c', 'shell_environment_policy.include_only=["PATH","HOME","USER"]'];
+    const configArgs = configOverrides.args || defaultShellEnvArgs;
+    const baseArgs = ['exec', '-m', model, '--json', ...sandboxArgs, ...configArgs, '-'];
     const providerArgs = configOverrides.extra_args || [];
     const modelConfig = configOverrides.models?.find(m => m.id === model);
     const modelArgs = modelConfig?.extra_args || [];

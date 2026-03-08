@@ -73,7 +73,7 @@ const CHAT_PROVIDERS = {
     args: [
       'app-server',
       '-c', 'allow_login_shell=false',
-      '-c', 'shell_environment_policy.include_only=["PATH", "HOME", "USER"]',
+      '-c', 'shell_environment_policy.include_only=["PATH","HOME","USER"]',
     ],
     env: {},
   },
