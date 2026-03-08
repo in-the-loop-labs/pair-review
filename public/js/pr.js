@@ -498,6 +498,19 @@ class PRManager {
   }
 
   /**
+   * Reload AI suggestions and user comments after an analysis completes.
+   * Shared by the foreground `analysis_completed` handler and the deferred
+   * `_dirtyAnalysis` branch in the visibilitychange listener.
+   */
+  _reloadAfterAnalysis() {
+    const includeDismissed = window.aiPanel?.showDismissedComments ?? false;
+    return Promise.all([
+      this.loadAISuggestions(),
+      this.loadUserComments(includeDismissed)
+    ]);
+  }
+
+  /**
    * Listen for review-scoped CustomEvents dispatched by ChatPanel's
    * WebSocket pub/sub connection.
    */
@@ -558,9 +571,9 @@ class PRManager {
       debounced('analysis', () => {
         if (this.analysisHistoryManager) {
           this.analysisHistoryManager.refresh({ switchToNew: true })
-            .then(() => this.loadAISuggestions());
+            .then(() => this._reloadAfterAnalysis());
         } else {
-          this.loadAISuggestions();
+          this._reloadAfterAnalysis();
         }
       });
     });
@@ -593,9 +606,9 @@ class PRManager {
         this._dirtySuggestions = false; // analysis refresh includes suggestion reload
         if (this.analysisHistoryManager) {
           this.analysisHistoryManager.refresh({ switchToNew: true })
-            .then(() => this.loadAISuggestions());
+            .then(() => this._reloadAfterAnalysis());
         } else {
-          this.loadAISuggestions();
+          this._reloadAfterAnalysis();
         }
       } else if (this._dirtySuggestions) {
         this._dirtySuggestions = false;

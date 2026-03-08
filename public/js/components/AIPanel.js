@@ -1432,7 +1432,8 @@ class AIPanel {
      */
     clearAllFindings() {
         this.findings = [];
-        this.comments = [];
+        // NOTE: Do NOT clear this.comments here. User comments are independent
+        // of AI analysis and must persist across analysis runs.
         this.currentIndex = -1; // Reset navigation
         this.updateSegmentCounts();
         this.renderFindings();
