@@ -3030,14 +3030,37 @@ class PRManager {
         // Clear placeholder in case of any orphaned elements
         placeholder.innerHTML = '';
 
+        const shareConfig = window.__pairReview?.share;
+        let validatedShareUrl = null;
+        if (shareConfig?.url) {
+          try {
+            new URL(shareConfig.url);
+            validatedShareUrl = shareConfig.url;
+          } catch {
+            // Invalid share URL in config — don't render share button
+          }
+        }
         this.splitButton = new window.SplitButton({
           onSubmit: () => this.openReviewModal(),
           onPreview: () => this.openPreviewModal(),
-          onClear: () => this.clearAllUserComments()
+          onClear: () => this.clearAllUserComments(),
+          onShare: () => this.openSharePage(),
+          shareUrl: validatedShareUrl,
+          shareIcon: shareConfig?.icon || null,
+          shareLabel: shareConfig?.label || 'Share',
+          shareDescription: shareConfig?.description || null
         });
         const buttonElement = this.splitButton.render();
         placeholder.appendChild(buttonElement);
         this.updateCommentCount();
+
+        // Handle late config arrival — update share config when config fetch resolves
+        window.addEventListener('chat-state-changed', () => {
+          const lateCfg = window.__pairReview?.share;
+          if (this.splitButton) {
+            this.splitButton.setShareConfig(lateCfg || null);
+          }
+        }, { once: true });
       }
     }
   }
@@ -3060,6 +3083,69 @@ class PRManager {
       this.previewModal = new PreviewModal();
     }
     this.previewModal.show();
+  }
+
+  /**
+   * Open share page in a new tab
+   * Builds the share URL with a callback_url pointing to this PR's share endpoint
+   * Validates that there is analysis data to share before opening.
+   */
+  async openSharePage() {
+    const shareConfig = window.__pairReview?.share;
+    if (!shareConfig?.url) return;
+
+    const pr = this.currentPR;
+    if (!pr) return;
+
+    // Validate the share URL before attempting to use it
+    let shareUrl;
+    try {
+      shareUrl = new URL(shareConfig.url);
+    } catch {
+      console.error('Invalid share URL in configuration:', shareConfig.url);
+      return;
+    }
+
+    // Build the callback URL for the share endpoint
+    let callbackUrl = `${window.location.origin}/api/pr/${encodeURIComponent(pr.owner)}/${encodeURIComponent(pr.repo)}/${pr.number}/share`;
+
+    // Include selected run ID if one is explicitly selected
+    if (this.selectedRunId) {
+      callbackUrl += `?runId=${encodeURIComponent(this.selectedRunId)}`;
+    }
+
+    // Check that there is analysis data to share before opening the page
+    try {
+      const response = await fetch(callbackUrl);
+      if (!response.ok) {
+        if (window.toast) {
+          window.toast.showError('Unable to share: could not load review data');
+        }
+        return;
+      }
+      const data = await response.json().catch(() => null);
+      if (!data) {
+        if (window.toast) {
+          window.toast.showError('Unable to share: unexpected response from server');
+        }
+        return;
+      }
+      if (!data.run) {
+        if (window.toast) {
+          window.toast.showError('Nothing to share: no completed analysis found. Run an AI analysis first.');
+        }
+        return;
+      }
+    } catch (error) {
+      console.error('Error checking share data:', error);
+      if (window.toast) {
+        window.toast.showError('Unable to share: ' + error.message);
+      }
+      return;
+    }
+
+    shareUrl.searchParams.set('callback_url', callbackUrl);
+    window.open(shareUrl.toString(), '_blank');
   }
 
   /**

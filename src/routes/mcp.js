@@ -21,6 +21,7 @@ const {
   broadcastProgress,
   createProgressCallback
 } = require('./shared');
+const { safeParseJson } = require('../utils/safe-parse-json');
 
 // All valid tier values: canonical tiers + aliases (for Zod enum validation)
 const ALL_TIER_VALUES = /** @type {[string, ...string[]]} */ ([...TIERS, ...Object.keys(TIER_ALIASES)]);
@@ -428,7 +429,7 @@ function createMCPServer(db, options = {}) {
               type: s.type,
               ai_confidence: s.ai_confidence,
               status: s.status,
-              reasoning: s.reasoning ? JSON.parse(s.reasoning) : null,
+              reasoning: safeParseJson(s.reasoning),
             }))
           }, null, 2)
         }]

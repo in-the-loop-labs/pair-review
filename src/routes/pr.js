@@ -24,6 +24,7 @@ const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs').promises;
 const path = require('path');
+const { getGitHubToken } = require('../config');
 const logger = require('../utils/logger');
 const { buildDiffLineSet } = require('../utils/diff-annotator');
 const { broadcastReviewEvent } = require('../events/review-events');
@@ -37,6 +38,7 @@ const {
   createProgressCallback,
   parseEnabledLevels
 } = require('./shared');
+const { safeParseJson } = require('../utils/safe-parse-json');
 const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
 const { TIERS, TIER_ALIASES, VALID_TIERS, resolveTier } = require('../ai/prompts/config');
 const analysesRouter = require('./analyses');
@@ -199,7 +201,7 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
     let pendingDraft = null;
     if (review) {
       const config = req.app.get('config');
-      const githubToken = config?.github_token || req.app.get('githubToken');
+      const githubToken = getGitHubToken(config || {}) || req.app.get('githubToken');
 
       if (githubToken) {
         try {
@@ -527,7 +529,7 @@ router.get('/api/pr/:owner/:repo/:number/github-drafts', async (req, res) => {
     }
 
     // Initialize GitHub client and check for pending drafts on GitHub
-    const githubToken = config.github_token || req.app.get('githubToken');
+    const githubToken = getGitHubToken(config) || req.app.get('githubToken');
     if (!githubToken) {
       return res.status(500).json({
         error: 'GitHub token not configured. Please check your ~/.pair-review/config.json'
@@ -1800,6 +1802,168 @@ router.post('/api/pr/:owner/:repo/:number/analyses/council', async (req, res) =>
   } catch (error) {
     logger.error('Error starting council analysis:', error);
     res.status(500).json({ error: 'Failed to start council analysis' });
+  }
+});
+
+/**
+ * Get shareable review data for a PR
+ * Returns PR metadata, diff, and AI analysis results in a single payload
+ * for consumption by external share sites.
+ *
+ * NOTE: Intentionally PR-only. Sharing requires a stable PR reference
+ * (owner/repo/number) that external consumers can resolve. Local mode
+ * reviews operate on uncommitted changes with no such reference.
+ */
+router.get('/api/pr/:owner/:repo/:number/share', async (req, res) => {
+  try {
+    const { owner, repo, number } = req.params;
+    const prNumber = parseInt(number);
+
+    if (isNaN(prNumber) || prNumber <= 0) {
+      return res.status(400).json({ error: 'Invalid pull request number' });
+    }
+
+    const repository = normalizeRepository(owner, repo);
+    const db = req.app.get('db');
+
+    // Get PR metadata
+    const prMetadata = await queryOne(db, `
+      SELECT id, pr_number, repository, title, author, base_branch, head_branch, pr_data
+      FROM pr_metadata
+      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
+    `, [prNumber, repository]);
+
+    if (!prMetadata) {
+      return res.status(404).json({
+        error: `Pull request #${prNumber} not found in repository ${repository}`
+      });
+    }
+
+    // Parse PR data for diff and SHAs
+    let prData = {};
+    try {
+      prData = prMetadata.pr_data ? JSON.parse(prMetadata.pr_data) : {};
+    } catch (parseError) {
+      logger.warn('Error parsing PR data JSON for share:', parseError.message);
+    }
+
+    // Get review record
+    const reviewRepo = new ReviewRepository(db);
+    const review = await reviewRepo.getReviewByPR(prNumber, repository);
+
+    // Build changed files list
+    // changed_files may use 'insertions' (from git diff) or 'additions' (from GitHub API)
+    const changedFiles = (prData.changed_files || []).map(f => ({
+      path: f.file,
+      additions: f.insertions ?? f.additions ?? 0,
+      deletions: f.deletions ?? 0
+    }));
+
+    // Get the authenticated user (who is sharing)
+    let sharedBy = null;
+    try {
+      const config = req.app.get('config') || {};
+      const githubToken = getGitHubToken(config);
+      if (githubToken) {
+        const githubClient = new GitHubClient(githubToken);
+        const user = await githubClient.getAuthenticatedUser();
+        sharedBy = user.login;
+      }
+    } catch (authError) {
+      logger.warn('Could not get authenticated user for share:', authError.message);
+    }
+
+    // Build response payload
+    const payload = {
+      owner,
+      repo,
+      prNumber,
+      title: prMetadata.title || '',
+      author: prMetadata.author || '',
+      baseBranch: prMetadata.base_branch || '',
+      headBranch: prMetadata.head_branch || '',
+      baseSha: prData.base_sha || '',
+      headSha: prData.head_sha || '',
+      diff: prData.diff || '',
+      changedFiles,
+      sharedBy,
+      run: null,
+      suggestions: []
+    };
+
+    // If we have a review, get the analysis run and its suggestions
+    // Supports optional runId query param for specific run selection
+    if (review) {
+      const analysisRunRepo = new AnalysisRunRepository(db);
+      const requestedRunId = req.query.runId;
+      let targetRun = null;
+
+      if (requestedRunId) {
+        // Specific run requested - fetch it directly
+        targetRun = await analysisRunRepo.getById(requestedRunId);
+        // Verify it belongs to this review and is completed
+        if (!targetRun || targetRun.review_id !== review.id || targetRun.status !== 'completed') {
+          targetRun = null;
+        }
+      }
+
+      // If no specific run requested or it wasn't found/valid, fall back to the most recently completed run
+      if (!targetRun) {
+        const runs = await analysisRunRepo.getByReviewId(review.id);
+        targetRun = runs.find(r => r.status === 'completed') || null;
+      }
+
+      if (targetRun) {
+        payload.run = {
+          id: targetRun.id,
+          provider: targetRun.provider || null,
+          model: targetRun.model || null,
+          tier: targetRun.tier || null,
+          summary: targetRun.summary || null,
+          completedAt: targetRun.completed_at || null,
+          duration: targetRun.started_at && targetRun.completed_at
+            ? new Date(targetRun.completed_at).getTime() - new Date(targetRun.started_at).getTime()
+            : null,
+          customInstructions: targetRun.custom_instructions || targetRun.request_instructions || null
+        };
+
+        // Get suggestions for this run
+        const rows = await query(db, `
+          SELECT
+            id, file, line_start, line_end, side, type, title, body,
+            suggestion_text, ai_confidence, reasoning, status, is_file_level
+          FROM comments
+          WHERE review_id = ?
+            AND source = 'ai'
+            AND ai_run_id = ?
+            AND ai_level IS NULL
+            AND (is_raw = 0 OR is_raw IS NULL)
+            AND status IN ('active', 'adopted')
+          ORDER BY file, line_start
+        `, [review.id, targetRun.id]);
+
+        payload.suggestions = rows.map(row => ({
+          id: row.id,
+          file: row.file,
+          lineStart: row.line_start,
+          lineEnd: row.line_end,
+          side: row.side || 'RIGHT',
+          type: row.type || 'comment',
+          title: row.title || '',
+          body: row.body || '',
+          suggestionText: row.suggestion_text || '',
+          confidence: row.ai_confidence != null ? row.ai_confidence : null,
+          reasoning: safeParseJson(row.reasoning, []),
+          status: row.status,
+          isFileLevel: row.is_file_level === 1
+        }));
+      }
+    }
+
+    res.json(payload);
+  } catch (error) {
+    logger.error('Error generating share data:', error);
+    res.status(500).json({ error: 'Failed to generate share data' });
   }
 });
 
