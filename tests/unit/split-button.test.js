@@ -350,10 +350,16 @@ describe('SplitButton', () => {
       // The mock sets textContent and reads innerHTML, so we need to verify the logic
       const result = splitButton.escapeHtml('<script>alert("xss")</script>');
 
-      // Due to our mock implementation, the result will be the stripped version
-      // In real DOM, this would return '&lt;script&gt;alert("xss")&lt;/script&gt;'
-      // Our mock just strips tags for textContent, so we verify it doesn't crash
-      expect(typeof result).toBe('string');
+      expect(result).toBe('&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;');
+    });
+
+    it('should return empty string for null/undefined input', () => {
+      const SplitButton = getSplitButton();
+      const splitButton = new SplitButton({});
+
+      expect(splitButton.escapeHtml(null)).toBe('');
+      expect(splitButton.escapeHtml(undefined)).toBe('');
+      expect(splitButton.escapeHtml('')).toBe('');
     });
 
     it('should escape double quotes to prevent attribute injection', () => {

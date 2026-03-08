@@ -5381,7 +5381,7 @@ tr.line-range-start .d2h-code-line-ctn {
 }
 
 .menu-item-icon svg {
-  vertical-align: middle;
+  /* vertical alignment handled by flex parent */
 }
 
 .menu-item-text {

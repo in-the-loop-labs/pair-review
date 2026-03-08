@@ -24,6 +24,7 @@ const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs').promises;
 const path = require('path');
+const { getGitHubToken } = require('../config');
 const logger = require('../utils/logger');
 const { buildDiffLineSet } = require('../utils/diff-annotator');
 const { broadcastReviewEvent } = require('../events/review-events');
@@ -200,7 +201,7 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
     let pendingDraft = null;
     if (review) {
       const config = req.app.get('config');
-      const githubToken = config?.github_token || req.app.get('githubToken');
+      const githubToken = getGitHubToken(config || {}) || req.app.get('githubToken');
 
       if (githubToken) {
         try {
@@ -528,7 +529,7 @@ router.get('/api/pr/:owner/:repo/:number/github-drafts', async (req, res) => {
     }
 
     // Initialize GitHub client and check for pending drafts on GitHub
-    const githubToken = config.github_token || req.app.get('githubToken');
+    const githubToken = getGitHubToken(config) || req.app.get('githubToken');
     if (!githubToken) {
       return res.status(500).json({
         error: 'GitHub token not configured. Please check your ~/.pair-review/config.json'
@@ -1854,16 +1855,17 @@ router.get('/api/pr/:owner/:repo/:number/share', async (req, res) => {
     // changed_files may use 'insertions' (from git diff) or 'additions' (from GitHub API)
     const changedFiles = (prData.changed_files || []).map(f => ({
       path: f.file,
-      additions: f.insertions || f.additions || 0,
-      deletions: f.deletions || 0
+      additions: f.insertions ?? f.additions ?? 0,
+      deletions: f.deletions ?? 0
     }));
 
     // Get the authenticated user (who is sharing)
     let sharedBy = null;
     try {
       const config = req.app.get('config') || {};
-      if (config.github_token) {
-        const githubClient = new GitHubClient(config.github_token);
+      const githubToken = getGitHubToken(config);
+      if (githubToken) {
+        const githubClient = new GitHubClient(githubToken);
         const user = await githubClient.getAuthenticatedUser();
         sharedBy = user.login;
       }
@@ -1936,7 +1938,7 @@ router.get('/api/pr/:owner/:repo/:number/share', async (req, res) => {
             AND ai_run_id = ?
             AND ai_level IS NULL
             AND (is_raw = 0 OR is_raw IS NULL)
-            AND status IN ('active', 'adopted', 'dismissed')
+            AND status IN ('active', 'adopted')
           ORDER BY file, line_start
         `, [review.id, targetRun.id]);
 

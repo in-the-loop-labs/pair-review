@@ -3031,12 +3031,21 @@ class PRManager {
         placeholder.innerHTML = '';
 
         const shareConfig = window.__pairReview?.share;
+        let validatedShareUrl = null;
+        if (shareConfig?.url) {
+          try {
+            new URL(shareConfig.url);
+            validatedShareUrl = shareConfig.url;
+          } catch {
+            // Invalid share URL in config — don't render share button
+          }
+        }
         this.splitButton = new window.SplitButton({
           onSubmit: () => this.openReviewModal(),
           onPreview: () => this.openPreviewModal(),
           onClear: () => this.clearAllUserComments(),
           onShare: () => this.openSharePage(),
-          shareUrl: shareConfig?.url || null,
+          shareUrl: validatedShareUrl,
           shareIcon: shareConfig?.icon || null,
           shareLabel: shareConfig?.label || 'Share',
           shareDescription: shareConfig?.description || null
@@ -3044,6 +3053,14 @@ class PRManager {
         const buttonElement = this.splitButton.render();
         placeholder.appendChild(buttonElement);
         this.updateCommentCount();
+
+        // Handle late config arrival — update share config when config fetch resolves
+        window.addEventListener('chat-state-changed', () => {
+          const lateCfg = window.__pairReview?.share;
+          if (this.splitButton) {
+            this.splitButton.setShareConfig(lateCfg || null);
+          }
+        }, { once: true });
       }
     }
   }

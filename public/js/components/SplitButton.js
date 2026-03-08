@@ -416,6 +416,7 @@ class SplitButton {
    * @returns {string} Escaped string
    */
   escapeHtml(str) {
+    if (!str) return '';
     const div = document.createElement('div');
     div.textContent = str;
     return div.innerHTML.replace(/"/g, '&quot;');
