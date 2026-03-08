@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.3.3
+
+### Patch Changes
+
+- 71d8caa: Fix comment action buttons being pushed off-screen by long title text
+
 ## 2.3.2
 
 ### Patch Changes
