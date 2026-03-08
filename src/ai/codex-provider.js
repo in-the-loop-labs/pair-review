@@ -96,6 +96,12 @@ class CodexProvider extends AIProvider {
     // --full-auto: Non-interactive mode that auto-approves within sandbox bounds.
     // Combined with workspace-write sandbox, this limits damage to the worktree only.
     // Note: The -a flag is for interactive mode only; exec subcommand uses --full-auto.
+    //
+    // Shell environment config:
+    // - allow_login_shell=false: Prevents zsh from using -l flag, which would
+    //   reconstruct PATH from scratch and lose our BIN_DIR modification.
+    // - shell_environment_policy.include_only: Whitelist PATH, HOME, USER to be
+    //   inherited from the parent process, ensuring git-diff-lines is findable.
 
     // Build args: base args + provider extra_args + model extra_args
     // In yolo mode, bypass all sandbox restrictions and approval prompts
@@ -103,7 +109,10 @@ class CodexProvider extends AIProvider {
     const sandboxArgs = configOverrides.yolo
       ? ['--dangerously-bypass-approvals-and-sandbox']
       : ['--sandbox', 'workspace-write', '--full-auto'];
-    const baseArgs = ['exec', '-m', model, '--json', ...sandboxArgs, '-'];
+    const shellEnvArgs = configOverrides.yolo
+      ? []
+      : ['-c', 'allow_login_shell=false', '-c', 'shell_environment_policy.include_only=["PATH", "HOME", "USER"]'];
+    const baseArgs = ['exec', '-m', model, '--json', ...sandboxArgs, ...shellEnvArgs, '-'];
     const providerArgs = configOverrides.extra_args || [];
     const modelConfig = configOverrides.models?.find(m => m.id === model);
     const modelArgs = modelConfig?.extra_args || [];

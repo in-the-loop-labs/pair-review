@@ -48,7 +48,16 @@ class CodexBridge extends EventEmitter {
     this.codexCommand = options.codexCommand
       || process.env.PAIR_REVIEW_CODEX_CMD
       || 'codex';
-    this.codexArgs = options.codexArgs || ['app-server'];
+    // Shell environment config:
+    // - allow_login_shell=false: Prevents zsh from using -l flag, which would
+    //   reconstruct PATH from scratch and lose any PATH modifications.
+    // - shell_environment_policy.include_only: Whitelist PATH, HOME, USER to be
+    //   inherited from the parent process.
+    this.codexArgs = options.codexArgs || [
+      'app-server',
+      '-c', 'allow_login_shell=false',
+      '-c', 'shell_environment_policy.include_only=["PATH", "HOME", "USER"]',
+    ];
 
     this._deps = { ...defaults, ...options._deps };
     this._process = null;
