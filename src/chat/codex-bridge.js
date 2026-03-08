@@ -29,7 +29,7 @@ class CodexBridge extends EventEmitter {
    * @param {string} [options.cwd] - Working directory for agent process
    * @param {string} [options.systemPrompt] - System prompt text
    * @param {string} [options.codexCommand] - Codex binary (default: 'codex')
-   * @param {string[]} [options.codexArgs] - Args for Codex binary (default: ['app-server'])
+   * @param {string[]} [options.codexArgs] - Args for Codex binary (default: ['app-server']); chat-providers.js adds shell env config
    * @param {Object} [options.env] - Extra env vars for subprocess
    * @param {boolean} [options.useShell] - Use shell mode for multi-word commands
    * @param {string} [options.resumeThreadId] - Thread ID to resume

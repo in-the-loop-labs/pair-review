@@ -61,7 +61,8 @@ class CodexProvider extends AIProvider {
    * @param {string} model - Model identifier
    * @param {Object} configOverrides - Config overrides from providers config
    * @param {string} configOverrides.command - Custom CLI command
-   * @param {string[]} configOverrides.extra_args - Additional CLI arguments
+   * @param {string[]} configOverrides.args - Replace default shell env args (default: login shell + env policy)
+   * @param {string[]} configOverrides.extra_args - Additional CLI arguments (appended)
    * @param {Object} configOverrides.env - Additional environment variables
    * @param {Object[]} configOverrides.models - Custom model definitions
    */
@@ -96,6 +97,12 @@ class CodexProvider extends AIProvider {
     // --full-auto: Non-interactive mode that auto-approves within sandbox bounds.
     // Combined with workspace-write sandbox, this limits damage to the worktree only.
     // Note: The -a flag is for interactive mode only; exec subcommand uses --full-auto.
+    //
+    // Shell environment config:
+    // - allow_login_shell=false: Prevents zsh from using -l flag, which would
+    //   reconstruct PATH from scratch and lose our BIN_DIR modification.
+    // - shell_environment_policy.include_only: Whitelist PATH, HOME, USER to be
+    //   inherited from the parent process, ensuring git-diff-lines is findable.
 
     // Build args: base args + provider extra_args + model extra_args
     // In yolo mode, bypass all sandbox restrictions and approval prompts
@@ -103,7 +110,12 @@ class CodexProvider extends AIProvider {
     const sandboxArgs = configOverrides.yolo
       ? ['--dangerously-bypass-approvals-and-sandbox']
       : ['--sandbox', 'workspace-write', '--full-auto'];
-    const baseArgs = ['exec', '-m', model, '--json', ...sandboxArgs, '-'];
+    // Shell env args prevent login shell from reconstructing PATH (orthogonal to
+    // sandbox permissions). Overridable via configOverrides.args following the
+    // same two-tier pattern as chat-providers.js: args replaces, extra_args appends.
+    const defaultShellEnvArgs = ['-c', 'allow_login_shell=false', '-c', 'shell_environment_policy.include_only=["PATH","HOME","USER"]'];
+    const configArgs = configOverrides.args || defaultShellEnvArgs;
+    const baseArgs = ['exec', '-m', model, '--json', ...sandboxArgs, ...configArgs, '-'];
     const providerArgs = configOverrides.extra_args || [];
     const modelConfig = configOverrides.models?.find(m => m.id === model);
     const modelArgs = modelConfig?.extra_args || [];

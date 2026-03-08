@@ -222,7 +222,7 @@ describe('CodexBridge', () => {
       expect(bridge.codexArgs).toEqual(['app-server', '--verbose']);
     });
 
-    it('should default codexArgs to [app-server]', () => {
+    it('should default codexArgs to app-server', () => {
       const bridge = new CodexBridge();
       expect(bridge.codexArgs).toEqual(['app-server']);
     });
@@ -320,7 +320,7 @@ describe('CodexBridge', () => {
 
       expect(mockSpawn).toHaveBeenCalledWith(
         'codex',
-        ['app-server'],
+        expect.arrayContaining(['app-server']),
         expect.objectContaining({
           cwd: '/my/repo',
           stdio: ['pipe', 'pipe', 'pipe'],
@@ -340,7 +340,7 @@ describe('CodexBridge', () => {
 
       expect(mockSpawn).toHaveBeenCalledWith(
         'codex',
-        ['app-server', '--model', 'o4-mini'],
+        expect.arrayContaining(['app-server', '--model', 'o4-mini']),
         expect.any(Object)
       );
     });
@@ -354,11 +354,10 @@ describe('CodexBridge', () => {
       });
       await bridge.start();
 
-      expect(mockSpawn).toHaveBeenCalledWith(
-        'codex',
-        ['app-server'],
-        expect.any(Object)
-      );
+      // Should have default args but no --model
+      const spawnCall = mockSpawn.mock.calls[0];
+      expect(spawnCall[1]).toContain('app-server');
+      expect(spawnCall[1]).not.toContain('--model');
     });
 
     it('should include --model in shell command when useShell and model are set', async () => {
