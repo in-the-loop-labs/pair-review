@@ -1808,6 +1808,10 @@ router.post('/api/pr/:owner/:repo/:number/analyses/council', async (req, res) =>
  * Get shareable review data for a PR
  * Returns PR metadata, diff, and AI analysis results in a single payload
  * for consumption by external share sites.
+ *
+ * NOTE: Intentionally PR-only. Sharing requires a stable PR reference
+ * (owner/repo/number) that external consumers can resolve. Local mode
+ * reviews operate on uncommitted changes with no such reference.
  */
 router.get('/api/pr/:owner/:repo/:number/share', async (req, res) => {
   try {

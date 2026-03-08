@@ -411,16 +411,6 @@ class SplitButton {
   }
 
   /**
-   * Update the share URL (controls whether Share menu item is visible)
-   * @param {string|null} url - Share site URL or null to hide
-   * @deprecated Use setShareConfig() instead for full configuration
-   */
-  setShareUrl(url) {
-    this.shareUrl = url || null;
-    this.updateDropdownMenu();
-  }
-
-  /**
    * Escape HTML special characters to prevent XSS
    * @param {string} str - String to escape
    * @returns {string} Escaped string

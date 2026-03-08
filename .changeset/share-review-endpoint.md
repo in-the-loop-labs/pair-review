@@ -4,7 +4,7 @@
 
 Add share endpoint for external review viewers
 
-- New `/api/pr/:owner/:repo/:number/share` endpoint returns review data (PR metadata, analysis suggestions, user comments) for external consumption
+- New `/api/pr/:owner/:repo/:number/share` endpoint returns review data (PR metadata, AI analysis suggestions) for external consumption
 - Configurable share button in the review UI via `~/.pair-review/config.json`:
   - `share.url`: External viewer URL (callback receives share endpoint URL)
   - `share.label`: Custom button label
