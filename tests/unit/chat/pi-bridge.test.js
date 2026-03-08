@@ -25,13 +25,37 @@ const PiBridge = require('../../../src/chat/pi-bridge');
 /**
  * Helper to create a fake child process with real-enough streams for readline.
  */
-function createFakeProcess() {
+/**
+ * Helper to create a fake child process with real-enough streams for readline.
+ * By default, auto-responds to get_state RPC commands so that start() resolves
+ * quickly without hitting the 5s timeout.  Pass { autoRespondGetState: false }
+ * to suppress this and control the response manually.
+ */
+function createFakeProcess({ autoRespondGetState = true } = {}) {
   const proc = new EventEmitter();
   proc.stdin = new PassThrough();
   proc.stdin.writable = true;
   // Keep a spy on the original write so we can assert calls
   const origWrite = proc.stdin.write.bind(proc.stdin);
-  proc.stdin.write = vi.fn((...args) => origWrite(...args));
+  proc.stdin.write = vi.fn((...args) => {
+    origWrite(...args);
+    // Auto-respond to get_state so start() resolves promptly
+    if (autoRespondGetState) {
+      try {
+        const parsed = JSON.parse(String(args[0]).trim());
+        if (parsed.type === 'get_state') {
+          setImmediate(() => {
+            proc.stdout.write(JSON.stringify({
+              type: 'response',
+              command: 'get_state',
+              success: true,
+              data: { sessionFile: '/tmp/auto-session.json' }
+            }) + '\n');
+          });
+        }
+      } catch { /* not JSON, ignore */ }
+    }
+  });
   proc.stdout = new PassThrough();
   proc.stderr = new PassThrough();
   proc.kill = vi.fn();
@@ -166,6 +190,7 @@ describe('PiBridge', () => {
       const args = bridge._buildArgs();
       expect(args).toContain('--session');
       expect(args).toContain('/tmp/session.json');
+      expect(args).not.toContain('--continue');
     });
 
     it('should not include --session when sessionPath is null', () => {
@@ -544,6 +569,152 @@ describe('PiBridge', () => {
       await bridge.sendMessage('new question');
 
       expect(bridge._accumulatedText).toBe('');
+    });
+  });
+
+  describe('session file discovery via get_state', () => {
+    let noAutoProc;
+
+    beforeEach(() => {
+      // Use a fake process that does NOT auto-respond to get_state
+      noAutoProc = createFakeProcess({ autoRespondGetState: false });
+      mockSpawn.mockReturnValue(noAutoProc);
+    });
+
+    it('should send get_state after startup and emit session event on response', async () => {
+      const bridge = new PiBridge();
+      const sessionHandler = vi.fn();
+      bridge.on('session', sessionHandler);
+
+      // Intercept get_state write and respond with session file
+      noAutoProc.stdin.write = vi.fn((data) => {
+        try {
+          const parsed = JSON.parse(String(data).trim());
+          if (parsed.type === 'get_state') {
+            setImmediate(() => {
+              noAutoProc.stdout.write(JSON.stringify({
+                type: 'response',
+                command: 'get_state',
+                success: true,
+                data: { sessionFile: '/tmp/pi-session-abc.json' }
+              }) + '\n');
+            });
+          }
+        } catch { /* ignore */ }
+      });
+
+      await bridge.start();
+
+      expect(bridge.sessionPath).toBe('/tmp/pi-session-abc.json');
+      expect(sessionHandler).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionFile: '/tmp/pi-session-abc.json' })
+      );
+    });
+
+    it('should handle get_state response without sessionFile gracefully', async () => {
+      const bridge = new PiBridge();
+      const sessionHandler = vi.fn();
+      bridge.on('session', sessionHandler);
+
+      noAutoProc.stdin.write = vi.fn((data) => {
+        try {
+          const parsed = JSON.parse(String(data).trim());
+          if (parsed.type === 'get_state') {
+            setImmediate(() => {
+              noAutoProc.stdout.write(JSON.stringify({
+                type: 'response',
+                command: 'get_state',
+                success: true,
+                data: {}
+              }) + '\n');
+            });
+          }
+        } catch { /* ignore */ }
+      });
+
+      await bridge.start();
+
+      expect(bridge.sessionPath).toBeNull();
+      expect(sessionHandler).not.toHaveBeenCalled();
+    });
+
+    it('should handle get_state failure gracefully', async () => {
+      const bridge = new PiBridge();
+      const sessionHandler = vi.fn();
+      bridge.on('session', sessionHandler);
+
+      noAutoProc.stdin.write = vi.fn((data) => {
+        try {
+          const parsed = JSON.parse(String(data).trim());
+          if (parsed.type === 'get_state') {
+            setImmediate(() => {
+              noAutoProc.stdout.write(JSON.stringify({
+                type: 'response',
+                command: 'get_state',
+                success: false,
+                error: 'not supported'
+              }) + '\n');
+            });
+          }
+        } catch { /* ignore */ }
+      });
+
+      await bridge.start();
+
+      expect(bridge.sessionPath).toBeNull();
+      expect(sessionHandler).not.toHaveBeenCalled();
+    });
+
+    it('should resolve start even if get_state times out', async () => {
+      vi.useFakeTimers();
+
+      const bridge = new PiBridge();
+
+      // Don't respond to get_state at all
+      noAutoProc.stdin.write = vi.fn();
+
+      // Start will resolve the spawn promise (via setImmediate), then
+      // _querySessionFile sends get_state and waits for the response or timeout
+      const startPromise = bridge.start();
+
+      // Advance past the setImmediate for spawn ready
+      await vi.advanceTimersByTimeAsync(0);
+
+      // Advance past the 5s timeout for get_state
+      await vi.advanceTimersByTimeAsync(5000);
+
+      await startPromise;
+
+      expect(bridge.sessionPath).toBeNull();
+
+      vi.useRealTimers();
+    });
+
+    it('should route get_state response via pending callback, not emit error', async () => {
+      const bridge = new PiBridge();
+      const errorHandler = vi.fn();
+      bridge.on('error', errorHandler);
+
+      noAutoProc.stdin.write = vi.fn((data) => {
+        try {
+          const parsed = JSON.parse(String(data).trim());
+          if (parsed.type === 'get_state') {
+            setImmediate(() => {
+              noAutoProc.stdout.write(JSON.stringify({
+                type: 'response',
+                command: 'get_state',
+                success: true,
+                data: { sessionFile: '/tmp/sess.json' }
+              }) + '\n');
+            });
+          }
+        } catch { /* ignore */ }
+      });
+
+      await bridge.start();
+
+      // Should NOT have emitted an error — the response was routed to the callback
+      expect(errorHandler).not.toHaveBeenCalled();
     });
   });
 

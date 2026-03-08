@@ -53,6 +53,8 @@ class PiBridge extends EventEmitter {
     // Accumulate text across streaming deltas for each turn
     this._accumulatedText = '';
     this._inMessage = false;
+    // Pending callbacks for RPC responses keyed by command type
+    this._pendingCallbacks = new Map();
   }
 
   /**
@@ -145,7 +147,7 @@ class PiBridge extends EventEmitter {
           resolve();
         }
       });
-    });
+    }).then(() => this._querySessionFile());
   }
 
   /**
@@ -283,6 +285,53 @@ class PiBridge extends EventEmitter {
   }
 
   /**
+   * Query Pi's get_state command to discover the session file path.
+   * Pi's RPC protocol does not emit a 'session' event on its own, so we
+   * must explicitly ask for the state after startup.  The response contains
+   * a `sessionFile` field that we store and emit as a 'session' event so
+   * the session-manager can persist the agent_session_id.
+   * @returns {Promise<void>}
+   */
+  _querySessionFile() {
+    if (!this.isReady()) return Promise.resolve();
+
+    return new Promise((resolve) => {
+      let timeout;
+      // Register a callback for the get_state response
+      this._pendingCallbacks.set('get_state', (event) => {
+        clearTimeout(timeout);
+        if (event.success && event.data && event.data.sessionFile) {
+          this.sessionPath = event.data.sessionFile;
+          this.emit('session', { sessionFile: event.data.sessionFile });
+          logger.info(`[PiBridge] Discovered session file: ${event.data.sessionFile}`);
+        } else {
+          logger.debug('[PiBridge] get_state did not return a sessionFile');
+        }
+        resolve();
+      });
+
+      // Safety timeout — don't block startup forever if Pi never responds
+      timeout = setTimeout(() => {
+        if (this._pendingCallbacks.has('get_state')) {
+          this._pendingCallbacks.delete('get_state');
+          logger.debug('[PiBridge] get_state timed out');
+          resolve();
+        }
+      }, 5000);
+      // Don't let this timer keep the process alive
+      if (timeout.unref) timeout.unref();
+
+      try {
+        this._write(JSON.stringify({ type: 'get_state' }));
+      } catch (err) {
+        this._pendingCallbacks.delete('get_state');
+        logger.debug(`[PiBridge] Failed to send get_state: ${err.message}`);
+        resolve();
+      }
+    });
+  }
+
+  /**
    * Write a JSON command line to the process stdin.
    * @param {string} jsonLine - The JSON string (without trailing newline)
    */
@@ -360,8 +409,12 @@ class PiBridge extends EventEmitter {
         break;
 
       case 'response':
-        // Response to a command (prompt, abort)
-        if (!event.success) {
+        // Route to pending callback if one exists for this command
+        if (event.command && this._pendingCallbacks.has(event.command)) {
+          const callback = this._pendingCallbacks.get(event.command);
+          this._pendingCallbacks.delete(event.command);
+          callback(event);
+        } else if (!event.success) {
           logger.error(`[PiBridge] Command failed: ${event.error}`);
           this.emit('error', { error: new Error(event.error || 'Unknown command error') });
         } else {
