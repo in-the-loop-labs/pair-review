@@ -22,7 +22,7 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
  * GitHub Copilot CLI supports multiple AI models including OpenAI,
  * Anthropic, and Google models via the --model flag.
  * Available models (as of Feb 2026): claude-haiku-4.5, claude-sonnet-4.6,
- * claude-sonnet-4.5, gemini-3-pro-preview, gpt-5.2-codex, gpt-5.3-codex,
+ * claude-sonnet-4.5, gpt-5.2-codex, gpt-5.3-codex,
  * claude-opus-4.5, claude-opus-4.6, claude-opus-4.6-fast.
  * Default is claude-sonnet-4.6.
  */
@@ -53,15 +53,6 @@ const COPILOT_MODELS = [
     tagline: 'Previous Gen',
     description: 'Previous generation Sonnet—strong code understanding with excellent quality-to-cost ratio',
     badge: 'Previous Gen',
-    badgeClass: 'badge-balanced'
-  },
-  {
-    id: 'gemini-3-pro-preview',
-    name: 'Gemini 3 Pro',
-    tier: 'balanced',
-    tagline: 'Strong Alternative',
-    description: "Google's most capable model—strong reasoning for cross-file analysis",
-    badge: 'Balanced',
     badgeClass: 'badge-balanced'
   },
   {

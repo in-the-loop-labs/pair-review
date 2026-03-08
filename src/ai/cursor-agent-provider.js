@@ -31,7 +31,7 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
  * Tier structure:
  * - free (auto): Cursor's default auto-routing model
  * - fast (composer-1, gpt-5.3-codex-fast, gemini-3-flash): Quick analysis
- * - balanced (composer-1.5, sonnet-4.6-thinking, sonnet-4.5-thinking, gemini-3-pro, gemini-3.1-pro): Recommended for most reviews
+ * - balanced (composer-1.5, sonnet-4.6-thinking, sonnet-4.5-thinking, gemini-3.1-pro): Recommended for most reviews
  * - thorough (gpt-5.3-codex-high, gpt-5.3-codex-xhigh, opus-4.5-thinking, opus-4.6-thinking): Deep analysis for complex code
  */
 const CURSOR_AGENT_MODELS = [
@@ -97,15 +97,6 @@ const CURSOR_AGENT_MODELS = [
     tagline: 'Previous Gen',
     description: 'Previous generation extended thinking—still strong for thorough analysis',
     badge: 'Previous Gen',
-    badgeClass: 'badge-balanced'
-  },
-  {
-    id: 'gemini-3-pro',
-    name: 'Gemini 3 Pro',
-    tier: 'balanced',
-    tagline: 'Strong Alternative',
-    description: "Google's flagship model for code review—strong agentic and vibe coding capabilities",
-    badge: 'Balanced',
     badgeClass: 'badge-balanced'
   },
   {

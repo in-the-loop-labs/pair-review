@@ -117,9 +117,9 @@ describe('CopilotProvider', () => {
       expect(thoroughIds).toContain('claude-opus-4.6-fast');
     });
 
-    it('should have exactly 9 models covering tiers', () => {
+    it('should have exactly 8 models covering tiers', () => {
       const models = CopilotProvider.getModels();
-      expect(models).toHaveLength(9);
+      expect(models).toHaveLength(8);
 
       const tiers = models.map(m => m.tier);
       expect(tiers).toContain('fast');

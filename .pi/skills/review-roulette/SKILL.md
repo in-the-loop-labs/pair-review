@@ -30,7 +30,7 @@ Example reasoning models you might see (provider/model format):
 - `openai/gpt-5.2-pro`
 - `google/gemini-2.5-pro` (with thinking)
 - `google/gemini-2.5-flash` (with thinking)
-- `google/gemini-3-pro-preview`
+- `google/gemini-3.1-pro-preview`
 - `xai/grok-4`
 
 The exact list depends on which API keys are configured. Always check — do not

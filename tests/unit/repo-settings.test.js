@@ -216,7 +216,6 @@ const TEST_PROVIDERS = {
     models: [
       { id: 'claude-haiku-4.5', name: 'Claude Haiku 4.5', tier: 'fast' },
       { id: 'claude-sonnet-4.5', name: 'Claude Sonnet 4.5', tier: 'balanced', default: true },
-      { id: 'gemini-3-pro-preview', name: 'Gemini 3 Pro', tier: 'balanced' },
       { id: 'gpt-5.2-codex', name: 'GPT-5.2 Codex', tier: 'balanced' },
       { id: 'gpt-5.3-codex', name: 'GPT-5.3 Codex', tier: 'thorough' },
       { id: 'claude-opus-4.5', name: 'Claude Opus 4.5', tier: 'thorough' },

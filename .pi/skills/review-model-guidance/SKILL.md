@@ -78,7 +78,7 @@ Here are the higher-end models and their strengths for code review:
   files or functions.
 
 **Google**
-- **google/gemini-3-pro-preview**: Google's latest and most capable model (1M context).
+- **google/gemini-3.1-pro-preview**: Google's latest and most capable model (1M context).
   Strong at cross-file analysis and understanding large codebases holistically.
 - **google/gemini-2.5-pro with thinking**: Excellent at large-context analysis — can
   reason over many files simultaneously with its 1M token context window. Good for
