@@ -5374,6 +5374,16 @@ tr.line-range-start .d2h-code-line-ctn {
   color: #1f883d;
 }
 
+.menu-item-icon {
+  display: flex;
+  align-items: center;
+  margin-left: 8px;
+}
+
+.menu-item-icon svg {
+  vertical-align: middle;
+}
+
 .menu-item-text {
   flex: 1;
 }
