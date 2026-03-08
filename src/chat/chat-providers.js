@@ -68,7 +68,13 @@ const CHAT_PROVIDERS = {
     name: 'Codex (JSON-RPC)',
     type: 'codex',
     command: 'codex',
-    args: ['app-server'],
+    // Shell environment config prevents zsh -l from reconstructing PATH,
+    // ensuring git-diff-lines and other bin/ scripts remain findable.
+    args: [
+      'app-server',
+      '-c', 'allow_login_shell=false',
+      '-c', 'shell_environment_policy.include_only=["PATH", "HOME", "USER"]',
+    ],
     env: {},
   },
 };

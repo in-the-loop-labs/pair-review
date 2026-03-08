@@ -109,9 +109,10 @@ class CodexProvider extends AIProvider {
     const sandboxArgs = configOverrides.yolo
       ? ['--dangerously-bypass-approvals-and-sandbox']
       : ['--sandbox', 'workspace-write', '--full-auto'];
-    const shellEnvArgs = configOverrides.yolo
-      ? []
-      : ['-c', 'allow_login_shell=false', '-c', 'shell_environment_policy.include_only=["PATH", "HOME", "USER"]'];
+    // Shell env args are applied unconditionally — login shell PATH reconstruction
+    // is orthogonal to sandbox permissions. Yolo mode bypasses what Codex is
+    // *allowed* to do, but doesn't change how the shell *initializes*.
+    const shellEnvArgs = ['-c', 'allow_login_shell=false', '-c', 'shell_environment_policy.include_only=["PATH", "HOME", "USER"]'];
     const baseArgs = ['exec', '-m', model, '--json', ...sandboxArgs, ...shellEnvArgs, '-'];
     const providerArgs = configOverrides.extra_args || [];
     const modelConfig = configOverrides.models?.find(m => m.id === model);

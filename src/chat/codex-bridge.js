@@ -29,7 +29,7 @@ class CodexBridge extends EventEmitter {
    * @param {string} [options.cwd] - Working directory for agent process
    * @param {string} [options.systemPrompt] - System prompt text
    * @param {string} [options.codexCommand] - Codex binary (default: 'codex')
-   * @param {string[]} [options.codexArgs] - Args for Codex binary (default: ['app-server'])
+   * @param {string[]} [options.codexArgs] - Args for Codex binary (default includes app-server + shell env config)
    * @param {Object} [options.env] - Extra env vars for subprocess
    * @param {boolean} [options.useShell] - Use shell mode for multi-word commands
    * @param {string} [options.resumeThreadId] - Thread ID to resume
@@ -48,16 +48,7 @@ class CodexBridge extends EventEmitter {
     this.codexCommand = options.codexCommand
       || process.env.PAIR_REVIEW_CODEX_CMD
       || 'codex';
-    // Shell environment config:
-    // - allow_login_shell=false: Prevents zsh from using -l flag, which would
-    //   reconstruct PATH from scratch and lose any PATH modifications.
-    // - shell_environment_policy.include_only: Whitelist PATH, HOME, USER to be
-    //   inherited from the parent process.
-    this.codexArgs = options.codexArgs || [
-      'app-server',
-      '-c', 'allow_login_shell=false',
-      '-c', 'shell_environment_policy.include_only=["PATH", "HOME", "USER"]',
-    ];
+    this.codexArgs = options.codexArgs || ['app-server'];
 
     this._deps = { ...defaults, ...options._deps };
     this._process = null;

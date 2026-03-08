@@ -222,13 +222,9 @@ describe('CodexBridge', () => {
       expect(bridge.codexArgs).toEqual(['app-server', '--verbose']);
     });
 
-    it('should default codexArgs to app-server with shell env config', () => {
+    it('should default codexArgs to app-server', () => {
       const bridge = new CodexBridge();
-      expect(bridge.codexArgs).toEqual([
-        'app-server',
-        '-c', 'allow_login_shell=false',
-        '-c', 'shell_environment_policy.include_only=["PATH", "HOME", "USER"]',
-      ]);
+      expect(bridge.codexArgs).toEqual(['app-server']);
     });
 
     it('should initialize internal state', () => {
@@ -324,7 +320,7 @@ describe('CodexBridge', () => {
 
       expect(mockSpawn).toHaveBeenCalledWith(
         'codex',
-        expect.arrayContaining(['app-server', '-c', 'allow_login_shell=false']),
+        expect.arrayContaining(['app-server']),
         expect.objectContaining({
           cwd: '/my/repo',
           stdio: ['pipe', 'pipe', 'pipe'],
