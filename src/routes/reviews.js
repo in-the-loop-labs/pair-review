@@ -20,6 +20,7 @@ const simpleGit = require('simple-git');
 const { GitWorktreeManager } = require('../git/worktree');
 const { normalizeRepository } = require('../utils/paths');
 const { resolveFormat, formatAdoptedComment: formatComment } = require('../utils/comment-formatter');
+const { safeParseJson } = require('../utils/safe-parse-json');
 
 const router = express.Router();
 
@@ -568,7 +569,7 @@ router.get('/api/reviews/:reviewId/suggestions', validateReviewId, async (req, r
 
       return {
         ...row,
-        reasoning: row.reasoning ? JSON.parse(row.reasoning) : null,
+        reasoning: safeParseJson(row.reasoning),
         formattedBody
       };
     });

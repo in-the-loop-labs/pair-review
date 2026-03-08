@@ -53,9 +53,19 @@ router.get('/api/config', (req, res) => {
     chat_enable_shortcuts: config.chat?.enable_shortcuts !== false,
     pi_available: getCachedAvailability('pi')?.available || false,
     assisted_by_url: config.assisted_by_url || 'https://github.com/in-the-loop-labs/pair-review',
+    // Share configuration for external review viewers.
+    // - url: The base URL of the external share site
+    // - method: Plumbed through for future use (e.g., POST-based share flows).
+    //           The current implementation only uses GET via window.open().
+    // - icon: Optional custom SVG icon for the share button
+    // - label: Optional custom label for the share menu item (e.g., "Share to Acme")
+    // - description: Optional tooltip text shown on hover (e.g., "Share to Acme review board")
     share: config.share ? {
       url: config.share.url || null,
-      method: config.share.method || 'GET'
+      method: config.share.method || 'GET',
+      icon: config.share.icon || null,
+      label: config.share.label || null,
+      description: config.share.description || null
     } : null
   });
 });

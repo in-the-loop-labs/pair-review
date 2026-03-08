@@ -30,6 +30,10 @@ class SplitButton {
     this.onShare = options.onShare || (() => {});
     this.onSetDefault = options.onSetDefault || (() => {});
     this.shareUrl = options.shareUrl || null;
+    // Custom icon SVG, label, and description for share menu item
+    this.shareIcon = options.shareIcon || null;
+    this.shareLabel = options.shareLabel || 'Share';
+    this.shareDescription = options.shareDescription || null;
 
     // Bind methods
     this.handleMainClick = this.handleMainClick.bind(this);
@@ -127,11 +131,20 @@ class SplitButton {
       </button>`;
 
     if (this.shareUrl) {
+      // Icon renders on the right side of the label (unlike checkmarks which are on the left)
+      const iconHtml = this.shareIcon
+        ? `<span class="menu-item-icon">${this.shareIcon}</span>`
+        : '';
+      // Add title attribute for tooltip if description is provided
+      const titleAttr = this.shareDescription
+        ? ` title="${this.escapeHtml(this.shareDescription)}"`
+        : '';
       menuItems += `
       <div class="split-button-menu-separator"></div>
-      <button class="split-button-menu-item" data-action="share" role="menuitem">
+      <button class="split-button-menu-item" data-action="share" role="menuitem"${titleAttr}>
         <span class="menu-item-check"></span>
-        <span class="menu-item-text">Share</span>
+        <span class="menu-item-text">${this.escapeHtml(this.shareLabel)}</span>
+        ${iconHtml}
       </button>`;
     }
 
@@ -379,12 +392,43 @@ class SplitButton {
   }
 
   /**
+   * Update the share configuration (URL, icon, label, description)
+   * @param {Object|null} config - Share config with url, icon, label, description properties or null to hide
+   */
+  setShareConfig(config) {
+    if (config && config.url) {
+      this.shareUrl = config.url;
+      this.shareIcon = config.icon || null;
+      this.shareLabel = config.label || 'Share';
+      this.shareDescription = config.description || null;
+    } else {
+      this.shareUrl = null;
+      this.shareIcon = null;
+      this.shareLabel = 'Share';
+      this.shareDescription = null;
+    }
+    this.updateDropdownMenu();
+  }
+
+  /**
    * Update the share URL (controls whether Share menu item is visible)
    * @param {string|null} url - Share site URL or null to hide
+   * @deprecated Use setShareConfig() instead for full configuration
    */
   setShareUrl(url) {
     this.shareUrl = url || null;
     this.updateDropdownMenu();
+  }
+
+  /**
+   * Escape HTML special characters to prevent XSS
+   * @param {string} str - String to escape
+   * @returns {string} Escaped string
+   */
+  escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML.replace(/"/g, '&quot;');
   }
 
   /**
@@ -410,4 +454,9 @@ class SplitButton {
 // Export for use in other modules
 if (typeof window !== 'undefined') {
   window.SplitButton = SplitButton;
+}
+
+// Export for Node.js/test environments
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { SplitButton };
 }

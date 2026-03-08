@@ -2990,6 +2990,58 @@ describe('Config Endpoints', () => {
 
       expect(response.body.enable_chat).toBe(false);
     });
+
+    it('should return null share when not configured', async () => {
+      const response = await request(app)
+        .get('/api/config');
+
+      expect(response.body.share).toBeNull();
+    });
+
+    it('should return share config with all fields including description', async () => {
+      app.set('config', {
+        ...app.get('config'),
+        share: {
+          url: 'https://example.com/share',
+          method: 'POST',
+          icon: '<svg></svg>',
+          label: 'Share to Acme',
+          description: 'Share this review to the Acme review board'
+        }
+      });
+
+      const response = await request(app)
+        .get('/api/config');
+
+      expect(response.body.share).toEqual({
+        url: 'https://example.com/share',
+        method: 'POST',
+        icon: '<svg></svg>',
+        label: 'Share to Acme',
+        description: 'Share this review to the Acme review board'
+      });
+    });
+
+    it('should return null for missing share config fields', async () => {
+      app.set('config', {
+        ...app.get('config'),
+        share: {
+          url: 'https://example.com/share'
+          // No icon, label, or description
+        }
+      });
+
+      const response = await request(app)
+        .get('/api/config');
+
+      expect(response.body.share).toEqual({
+        url: 'https://example.com/share',
+        method: 'GET',
+        icon: null,
+        label: null,
+        description: null
+      });
+    });
   });
 
   describe('PATCH /api/config', () => {
@@ -6521,7 +6573,7 @@ describe('Share Endpoint', () => {
 
     it('should return share payload for existing PR without analysis', async () => {
       await insertTestPR(db);
-      await insertTestWorktree(db);
+      // Note: No insertTestWorktree needed - share endpoint doesn't query worktree table
 
       const response = await request(app)
         .get('/api/pr/owner/repo/1/share');
@@ -6611,6 +6663,112 @@ describe('Share Endpoint', () => {
       expect(response.status).toBe(200);
       expect(response.body.run).toBeNull();
       expect(response.body.suggestions).toEqual([]);
+    });
+
+    it('should accept runId query param to select specific run', async () => {
+      const reviewId = await insertTestPR(db);
+
+      // Insert two completed analysis runs
+      const olderRunId = 'older-run-uuid';
+      const newerRunId = 'newer-run-uuid';
+
+      await run(db, `
+        INSERT INTO analysis_runs (id, review_id, provider, model, tier, status, summary, started_at, completed_at)
+        VALUES (?, ?, 'gemini', 'gemini-2.0', 'fast', 'completed', 'Older run', datetime('now', '-10 minutes'), datetime('now', '-9 minutes'))
+      `, [olderRunId, reviewId]);
+
+      await run(db, `
+        INSERT INTO analysis_runs (id, review_id, provider, model, tier, status, summary, started_at, completed_at)
+        VALUES (?, ?, 'claude', 'opus', 'balanced', 'completed', 'Newer run', datetime('now', '-1 minute'), datetime('now'))
+      `, [newerRunId, reviewId]);
+
+      // Request the older run specifically
+      const response = await request(app)
+        .get(`/api/pr/owner/repo/1/share?runId=${olderRunId}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.run).toMatchObject({
+        id: olderRunId,
+        provider: 'gemini',
+        model: 'gemini-2.0',
+        summary: 'Older run'
+      });
+    });
+
+    it('should ignore runId that does not exist', async () => {
+      const reviewId = await insertTestPR(db);
+
+      // Insert a completed run
+      const validRunId = 'valid-run-uuid';
+      await run(db, `
+        INSERT INTO analysis_runs (id, review_id, provider, model, status, summary, started_at, completed_at)
+        VALUES (?, ?, 'claude', 'opus', 'completed', 'Valid run', datetime('now', '-1 minute'), datetime('now'))
+      `, [validRunId, reviewId]);
+
+      // Request with non-existent runId
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/share?runId=non-existent-id');
+
+      // Should fall back to the valid completed run
+      expect(response.status).toBe(200);
+      expect(response.body.run).toMatchObject({
+        id: validRunId,
+        summary: 'Valid run'
+      });
+    });
+
+    it('should ignore runId for non-completed run and fall back to first completed', async () => {
+      const reviewId = await insertTestPR(db);
+
+      // Insert a running run and a completed run
+      const runningRunId = 'running-run-uuid';
+      const completedRunId = 'completed-run-uuid';
+
+      await run(db, `
+        INSERT INTO analysis_runs (id, review_id, provider, model, status, started_at)
+        VALUES (?, ?, 'claude', 'opus', 'running', datetime('now'))
+      `, [runningRunId, reviewId]);
+
+      await run(db, `
+        INSERT INTO analysis_runs (id, review_id, provider, model, status, summary, started_at, completed_at)
+        VALUES (?, ?, 'gemini', 'gemini-2.0', 'completed', 'Completed run', datetime('now', '-5 minutes'), datetime('now', '-4 minutes'))
+      `, [completedRunId, reviewId]);
+
+      // Request the running run specifically
+      const response = await request(app)
+        .get(`/api/pr/owner/repo/1/share?runId=${runningRunId}`);
+
+      // Should fall back to the completed run
+      expect(response.status).toBe(200);
+      expect(response.body.run).toMatchObject({
+        id: completedRunId,
+        summary: 'Completed run'
+      });
+    });
+
+    it('should fall back to first completed run when latest is not completed', async () => {
+      const reviewId = await insertTestPR(db);
+
+      // Insert a completed run followed by a running run (latest)
+      const completedRunId = 'completed-run-uuid';
+      await run(db, `
+        INSERT INTO analysis_runs (id, review_id, provider, model, status, summary, started_at, completed_at)
+        VALUES (?, ?, 'claude', 'opus', 'completed', 'First completed run', datetime('now', '-10 minutes'), datetime('now', '-9 minutes'))
+      `, [completedRunId, reviewId]);
+
+      await run(db, `
+        INSERT INTO analysis_runs (id, review_id, provider, model, status, started_at)
+        VALUES ('latest-running', ?, 'gemini', 'gemini-2.0', 'running', datetime('now'))
+      `, [reviewId]);
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/share');
+
+      expect(response.status).toBe(200);
+      expect(response.body.run).toMatchObject({
+        id: completedRunId,
+        summary: 'First completed run'
+      });
     });
   });
 });

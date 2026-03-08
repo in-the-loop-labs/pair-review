@@ -37,6 +37,7 @@ const {
   createProgressCallback,
   parseEnabledLevels
 } = require('./shared');
+const { safeParseJson } = require('../utils/safe-parse-json');
 const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
 const { TIERS, TIER_ALIASES, VALID_TIERS, resolveTier } = require('../ai/prompts/config');
 const analysesRouter = require('./analyses');
@@ -1853,6 +1854,19 @@ router.get('/api/pr/:owner/:repo/:number/share', async (req, res) => {
       deletions: f.deletions || 0
     }));
 
+    // Get the authenticated user (who is sharing)
+    let sharedBy = null;
+    try {
+      const config = req.app.get('config') || {};
+      if (config.github_token) {
+        const githubClient = new GitHubClient(config.github_token);
+        const user = await githubClient.getAuthenticatedUser();
+        sharedBy = user.login;
+      }
+    } catch (authError) {
+      logger.warn('Could not get authenticated user for share:', authError.message);
+    }
+
     // Build response payload
     const payload = {
       owner,
@@ -1866,27 +1880,45 @@ router.get('/api/pr/:owner/:repo/:number/share', async (req, res) => {
       headSha: prData.head_sha || '',
       diff: prData.diff || '',
       changedFiles,
+      sharedBy,
       run: null,
       suggestions: []
     };
 
-    // If we have a review, get the latest completed analysis run and its suggestions
+    // If we have a review, get the analysis run and its suggestions
+    // Supports optional runId query param for specific run selection
     if (review) {
       const analysisRunRepo = new AnalysisRunRepository(db);
-      const latestRun = await analysisRunRepo.getLatestByReviewId(review.id);
+      const requestedRunId = req.query.runId;
+      let targetRun = null;
 
-      if (latestRun && latestRun.status === 'completed') {
+      if (requestedRunId) {
+        // Specific run requested - fetch it directly
+        targetRun = await analysisRunRepo.getById(requestedRunId);
+        // Verify it belongs to this review and is completed
+        if (!targetRun || targetRun.review_id !== review.id || targetRun.status !== 'completed') {
+          targetRun = null;
+        }
+      }
+
+      // If no specific run requested or it wasn't found/valid, fall back to the most recently completed run
+      if (!targetRun) {
+        const runs = await analysisRunRepo.getByReviewId(review.id);
+        targetRun = runs.find(r => r.status === 'completed') || null;
+      }
+
+      if (targetRun) {
         payload.run = {
-          id: latestRun.id,
-          provider: latestRun.provider || null,
-          model: latestRun.model || null,
-          tier: latestRun.tier || null,
-          summary: latestRun.summary || null,
-          completedAt: latestRun.completed_at || null,
-          duration: latestRun.started_at && latestRun.completed_at
-            ? new Date(latestRun.completed_at).getTime() - new Date(latestRun.started_at).getTime()
+          id: targetRun.id,
+          provider: targetRun.provider || null,
+          model: targetRun.model || null,
+          tier: targetRun.tier || null,
+          summary: targetRun.summary || null,
+          completedAt: targetRun.completed_at || null,
+          duration: targetRun.started_at && targetRun.completed_at
+            ? new Date(targetRun.completed_at).getTime() - new Date(targetRun.started_at).getTime()
             : null,
-          customInstructions: latestRun.custom_instructions || latestRun.request_instructions || null
+          customInstructions: targetRun.custom_instructions || targetRun.request_instructions || null
         };
 
         // Get suggestions for this run
@@ -1902,7 +1934,7 @@ router.get('/api/pr/:owner/:repo/:number/share', async (req, res) => {
             AND (is_raw = 0 OR is_raw IS NULL)
             AND status IN ('active', 'adopted', 'dismissed')
           ORDER BY file, line_start
-        `, [review.id, latestRun.id]);
+        `, [review.id, targetRun.id]);
 
         payload.suggestions = rows.map(row => ({
           id: row.id,
@@ -1915,7 +1947,7 @@ router.get('/api/pr/:owner/:repo/:number/share', async (req, res) => {
           body: row.body || '',
           suggestionText: row.suggestion_text || '',
           confidence: row.ai_confidence != null ? row.ai_confidence : null,
-          reasoning: row.reasoning ? JSON.parse(row.reasoning) : [],
+          reasoning: safeParseJson(row.reasoning, []),
           status: row.status,
           isFileLevel: row.is_file_level === 1
         }));
