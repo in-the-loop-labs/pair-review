@@ -283,4 +283,42 @@ describe('AIPanel collapsed state persistence', () => {
       expect(panel.renderFindings).not.toHaveBeenCalled();
     });
   });
+
+  describe('clearAllFindings preserves user comments', () => {
+    it('clears AI findings but preserves user comments', () => {
+      const panel = createTestPanel({
+        findings: [{ id: 1, title: 'AI suggestion' }],
+        comments: [
+          { id: 10, body: 'user comment 1' },
+          { id: 11, body: 'user comment 2' },
+        ],
+      });
+      panel.segmentBtns = [];
+      panel.resetLevelFilter = vi.fn();
+      global.document.querySelectorAll = vi.fn(() => []);
+
+      panel.clearAllFindings();
+
+      expect(panel.findings).toEqual([]);
+      expect(panel.comments).toEqual([
+        { id: 10, body: 'user comment 1' },
+        { id: 11, body: 'user comment 2' },
+      ]);
+    });
+
+    it('resets navigation index when clearing findings', () => {
+      const panel = createTestPanel({
+        findings: [{ id: 1 }],
+        comments: [],
+        currentIndex: 3,
+      });
+      panel.segmentBtns = [];
+      panel.resetLevelFilter = vi.fn();
+      global.document.querySelectorAll = vi.fn(() => []);
+
+      panel.clearAllFindings();
+
+      expect(panel.currentIndex).toBe(-1);
+    });
+  });
 });
