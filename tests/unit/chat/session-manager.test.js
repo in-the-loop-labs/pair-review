@@ -34,7 +34,7 @@ const _createdAcpBridges = [];
 const _createdClaudeCodeBridges = [];
 const _createdCodexBridges = [];
 
-function MockPiBridge() {
+function MockPiBridge(options) {
   const bridge = new EventEmitter();
   bridge.start = vi.fn().mockImplementation(() => {
     if (_nextStartFail) {
@@ -49,6 +49,7 @@ function MockPiBridge() {
   bridge.isBusy = vi.fn().mockReturnValue(false);
   bridge.abort = vi.fn();
   bridge._bridgeType = 'pi';
+  bridge._constructorOptions = options || {};
   _createdBridges.push(bridge);
   return bridge;
 }
@@ -672,7 +673,7 @@ describe('ChatSessionManager', () => {
       expect(row.agent_session_id).toBeNull();
     });
 
-    it('should resume session with valid session file', async () => {
+    it('should resume session with valid session file and pass sessionPath', async () => {
       const session = await manager.createSession({ provider: 'pi', reviewId: 1 });
       const sessionFilePath = '/tmp/test-resume-session.json';
 
@@ -692,6 +693,10 @@ describe('ChatSessionManager', () => {
         // DB should show active status
         const row = db.prepare('SELECT status FROM chat_sessions WHERE id = ?').get(session.id);
         expect(row.status).toBe('active');
+
+        // Should pass sessionPath to bridge constructor
+        const resumedBridge = _createdBridges[_createdBridges.length - 1];
+        expect(resumedBridge._constructorOptions.sessionPath).toBe(sessionFilePath);
       } finally {
         try { fs.unlinkSync(sessionFilePath); } catch { /* ignore */ }
       }

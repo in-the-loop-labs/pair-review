@@ -494,9 +494,10 @@ router.post('/api/chat/session/:id/resume', async (req, res) => {
       return res.status(404).json({ error: 'Review not found for session' });
     }
 
-    // Pi's --session replays the original conversation; --append-system-prompt
-    // re-injects the review context so the agent retains awareness of the codebase
-    // even if the system prompt was only in the initial session's context.
+    // Pi's --session replays the original conversation;
+    // --append-system-prompt re-injects the review context so the agent retains
+    // awareness of the codebase even if the system prompt was only in the
+    // initial session's context.
     const chatInstructions = await getChatInstructions(db, review);
     const prData = await fetchPrData(db, review);
 
