@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.4.1
+
+### Patch Changes
+
+- e2b789c: fix: use dynamic import() for ESM-only @agentclientprotocol/sdk to fix require() failure on Node 20+
+
 ## 2.4.0
 
 ### Minor Changes
