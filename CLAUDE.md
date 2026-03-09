@@ -181,6 +181,11 @@ Test structure:
 - In tests, use a `createMockDeps()` helper to provide explicit mocks.
 - This avoids brittle `jest.mock()` / `vi.mock()` patterns and makes test setup self-documenting.
 
+### ESM-Only Dependencies
+- This project is CommonJS. Some dependencies ship as ESM-only (`"type": "module"` in their package.json). Using `require()` on these will crash on Node <22 with `ERR_REQUIRE_ESM`.
+- When adding a new dependency, check its `package.json` for `"type": "module"`. If present, use a lazy `async function` with dynamic `import()` instead of top-level `require()`. See `loadAcp()` in `src/chat/acp-bridge.js` for the pattern.
+- **Vitest cannot catch this bug.** Vitest's module system transparently handles `require()` of ESM packages, so tests pass even when the code would crash in plain Node. Do not rely on unit tests to guard against ESM/CJS interop issues.
+
 ### ACP Chat Provider Configuration
 - For ACP (Agent Client Protocol) providers, use protocol-level methods for configuration, not CLI arguments.
 - CLI arguments like `--model` are for interactive mode; ACP server mode (`opencode acp`, `gemini --experimental-acp`, etc.) ignores them.
