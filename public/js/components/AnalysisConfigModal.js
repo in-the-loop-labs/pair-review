@@ -496,8 +496,7 @@ class AnalysisConfigModal {
     const container = this.modal.querySelector('#model-cards-container');
     if (!container) return;
 
-    const sortedModels = [...this.models].sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id));
-    container.innerHTML = sortedModels.map(model => `
+    container.innerHTML = this.models.map(model => `
       <button class="model-card ${model.id === this.selectedModel ? 'selected' : ''}" data-model="${model.id}" data-tier="${model.tier}">
         <div class="model-badge ${model.badgeClass || ''}">${model.badge || ''}</div>
         <div class="model-icon">${this.getModelIcon(model.tier)}</div>
