@@ -15,7 +15,17 @@ const { Writable, Readable } = require('stream');
 const logger = require('../utils/logger');
 const { version: pkgVersion } = require('../../package.json');
 
+// TODO: Lazy-load the ESM-only ACP SDK via dynamic import (cached after first call)
+let _acpModule = null;
+async function loadAcp() {
+  if (!_acpModule) {
+    _acpModule = await import('@agentclientprotocol/sdk');
+  }
+  return _acpModule;
+}
+
 // Default dependencies (overridable for testing)
+// BUG: require() of ESM-only package — temporarily reverted to prove test catches it
 const defaults = {
   spawn,
   acp: require('@agentclientprotocol/sdk'),
@@ -156,6 +166,11 @@ class AcpBridge extends EventEmitter {
    * @returns {Promise<void>}
    */
   async _initializeConnection(proc, deps) {
+    // Lazy-load ACP SDK if not injected (e.g. via _deps in tests)
+    if (!deps.acp) {
+      deps.acp = await loadAcp();
+    }
+
     const stream = deps.acp.ndJsonStream(
       deps.Writable.toWeb(proc.stdin),
       deps.Readable.toWeb(proc.stdout)
@@ -440,3 +455,4 @@ class AcpBridge extends EventEmitter {
 }
 
 module.exports = AcpBridge;
+module.exports.loadAcp = loadAcp;

@@ -15,6 +15,7 @@ vi.mock('../../../src/utils/logger', () => ({
 }));
 
 const AcpBridge = require('../../../src/chat/acp-bridge');
+const { loadAcp } = require('../../../src/chat/acp-bridge');
 
 /**
  * Helper to create a fake child process with EventEmitter + streams.
@@ -1018,6 +1019,21 @@ describe('AcpBridge', () => {
       fakeProc.emit('close', 0, 'SIGTERM');
 
       expect(errorHandler).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('loadAcp()', () => {
+    it('should dynamically import @agentclientprotocol/sdk with expected exports', async () => {
+      const acp = await loadAcp();
+
+      expect(acp).toHaveProperty('ClientSideConnection');
+      expect(typeof acp.ClientSideConnection).toBe('function');
+
+      expect(acp).toHaveProperty('ndJsonStream');
+      expect(typeof acp.ndJsonStream).toBe('function');
+
+      expect(acp).toHaveProperty('PROTOCOL_VERSION');
+      expect(acp.PROTOCOL_VERSION).toBeDefined();
     });
   });
 
