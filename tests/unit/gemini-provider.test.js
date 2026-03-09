@@ -185,22 +185,23 @@ describe('GeminiProvider', () => {
     });
 
     describe('yolo mode', () => {
-      it('should include --allowed-tools and no --yolo flag by default', () => {
+      it('should include --allowed-tools and no --approval-mode by default', () => {
         const provider = new GeminiProvider('gemini-2.5-pro');
         expect(provider.args).toContain('--allowed-tools');
-        expect(provider.args).not.toContain('--yolo');
+        expect(provider.args).not.toContain('--approval-mode');
       });
 
-      it('should use --yolo instead of --allowed-tools when yolo is true', () => {
+      it('should use --approval-mode=yolo instead of --allowed-tools when yolo is true', () => {
         const provider = new GeminiProvider('gemini-2.5-pro', { yolo: true });
-        expect(provider.args).toContain('--yolo');
+        expect(provider.args).toContain('--approval-mode');
+        expect(provider.args[provider.args.indexOf('--approval-mode') + 1]).toBe('yolo');
         expect(provider.args).not.toContain('--allowed-tools');
       });
 
       it('should use --allowed-tools when yolo is explicitly false', () => {
         const provider = new GeminiProvider('gemini-2.5-pro', { yolo: false });
         expect(provider.args).toContain('--allowed-tools');
-        expect(provider.args).not.toContain('--yolo');
+        expect(provider.args).not.toContain('--approval-mode');
       });
     });
   });

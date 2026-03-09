@@ -115,9 +115,9 @@ class GeminiProvider extends AIProvider {
     // Use --output-format stream-json for JSONL streaming output (better debugging visibility)
     let baseArgs;
     if (configOverrides.yolo) {
-      // In yolo mode, use Gemini's --yolo flag to auto-approve all tools
-      // (including write operations and destructive shell commands)
-      baseArgs = ['-m', model, '-o', 'stream-json', '--yolo'];
+      // In yolo mode, auto-approve all tools (including write operations and destructive shell commands)
+      // Note: --yolo is deprecated in favor of --approval-mode=yolo
+      baseArgs = ['-m', model, '-o', 'stream-json', '--approval-mode', 'yolo'];
     } else {
       const readOnlyTools = [
         // File system tools (read-only)
