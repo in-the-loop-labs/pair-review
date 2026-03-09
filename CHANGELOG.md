@@ -1,5 +1,67 @@
 # Changelog
 
+## 2.4.0
+
+### Minor Changes
+
+- eeccb20: Add named ACP chat providers (Copilot, Gemini, OpenCode) with a provider selector dropdown in the chat panel header
+- 0046968: Add Claude Code as a chat provider via direct subprocess management (no SDK dependency)
+- 17f147a: Add Codex as a chat provider via a new app-server bridge using Codex's JSON-RPC 2.0 protocol over stdio
+- ed6528b: feat: add cursor-acp as a chat provider for Cursor's ACP support
+- 279d5bc: Add Review Requests and My PRs tabs to index page for browsing GitHub PR collections
+- bf415b6: Serve API reference from the running server (GET /api.md) and inject a compact cheat sheet into chat initial context, replacing the static SKILL.md file
+- 9ffb668: Add share endpoint for external review viewers
+
+  - New `/api/pr/:owner/:repo/:number/share` endpoint returns review data (PR metadata, AI analysis suggestions) for external consumption
+  - Configurable share button in the review UI via `~/.pair-review/config.json`:
+    - `share.url`: External viewer URL (callback receives share endpoint URL)
+    - `share.label`: Custom button label
+    - `share.icon`: Custom icon (supports SVG, emoji)
+    - `share.description`: Tooltip text
+  - Supports sharing specific analysis runs or falls back to most recently completed run
+  - Added `safeParseJson` utility to prevent malformed JSON from crashing endpoints
+
+### Patch Changes
+
+- f692c16: Support model configuration for chat providers. The `model` field in `chat_providers` config is now passed to ACP and Codex bridges via `--model` argument.
+- 836e415: Fix invalid JSON error when starting Claude chat with multi-word command overrides (shell mode)
+- 70fa5e9: Fix Codex provider PATH inheritance for git-diff-lines
+
+  Configure Codex CLI to disable login shell and whitelist PATH inheritance, ensuring the `git-diff-lines` utility is findable. Previously, Codex's login shell (`zsh -l`) would reconstruct PATH from scratch, losing the BIN_DIR modification that makes `git-diff-lines` available.
+
+  Changes:
+
+  - Add `-c allow_login_shell=false` to prevent login shell PATH reconstruction
+  - Add `-c shell_environment_policy.include_only=["PATH", "HOME", "USER"]` to whitelist env var inheritance
+  - Apply to both `codex exec` (analysis) and `codex app-server` (chat) modes
+
+- f94252a: Fix consolidation progress disambiguation in review councils
+
+  Per-reviewer orchestration progress updates (with voiceId) no longer pollute the shared
+  consolidation state (steps, consolidationStep, streamEvent). This prevents progress from
+  individual reviewer's cross-level orchestration from being confused with the overall
+  cross-voice or cross-level consolidation in the progress dialog.
+
+- 9a7814b: Fix chat provider dropdown showing only "Pi" (wrong name) on initial load in local mode by listening for late config fetch completion
+- 99836eb: Fix broken Gemini analysis by updating model IDs to use the `-preview` suffix required by current Gemini CLI (e.g. `gemini-3-flash-preview`, `gemini-3.1-pro-preview`) and remove the deprecated `gemini-3-pro` model
+- b94ad77: Fix user comments disappearing from Review panel after AI analysis completes
+
+  `clearAllFindings()` was clearing both AI suggestions and user comments when a new
+  analysis started. Since the analysis completion handler only reloaded AI suggestions,
+  user comments were lost until a page refresh. Now `clearAllFindings()` preserves user
+  comments, and the analysis completion handler reloads both suggestions and comments.
+
+- 70d22d2: Fix Pi chat session resume by querying `get_state` after startup to discover and persist the session file path
+- 3d51b0c: Replace deprecated Gemini CLI `--yolo` flag with `--approval-mode yolo`
+- 6fb85ca: Instruct chat agent not to reference internal IDs (comment, suggestion, run IDs) in responses to users
+- 9468dec: Add info icon next to PR title that opens a popover showing the rendered PR description, so reviewers can read it without leaving the app
+- a595b67: Preserve configured model order on the single model tab in the Analysis Config dialog
+- 3dd6302: Add separate `chat_providers` config key for chat provider command overrides, distinct from `providers` which configures AI analysis providers. This prevents confusion when configuring different command overrides for the same provider used in different contexts. Also adds shell mode support for multi-word commands (e.g., "devx claude").
+- 34459b7: Sort chat provider dropdown options alphabetically by display name
+- 9df45bc: Sort provider and model dropdowns alphabetically in the Analysis config dialog (main, Council, and Advanced tabs)
+- b0f073d: Fix session history dropdown being clipped by chat panel overflow
+- 918330d: Use `user-review-requested:` instead of `review-requested:` for the Review Requests tab so only PRs where you are personally requested show up (excludes team-based requests). Renamed tab to "My Review Requests".
+
 ## 2.3.3
 
 ### Patch Changes
