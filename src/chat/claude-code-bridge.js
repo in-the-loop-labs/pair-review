@@ -465,6 +465,14 @@ class ClaudeCodeBridge extends EventEmitter {
             toolName: name,
             status: 'start',
           });
+        } else if (event.content_block && event.content_block.type === 'text') {
+          // When a new text block starts and we already have accumulated text
+          // from a previous block, inject paragraph separation so the markdown
+          // renderer doesn't smash the blocks together (e.g., "diff.The").
+          if (this._accumulatedText) {
+            this._accumulatedText += '\n\n';
+            this.emit('delta', { text: '\n\n' });
+          }
         }
         break;
 

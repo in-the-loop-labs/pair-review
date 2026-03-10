@@ -440,6 +440,85 @@ describe('ClaudeCodeBridge', () => {
       expect(bridge._accumulatedText).toBe('Hello world');
     });
 
+    it('should inject paragraph separation between text content blocks', async () => {
+      const { mockDeps, rlEmitter } = createMockDeps();
+      const bridge = new ClaudeCodeBridge({ _deps: mockDeps });
+      await startBridge(bridge, rlEmitter);
+
+      bridge._inMessage = true;
+
+      const deltaHandler = vi.fn();
+      bridge.on('delta', deltaHandler);
+
+      // First text block
+      simulateLine(rlEmitter, {
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          content_block: { type: 'text' },
+        },
+      });
+      simulateLine(rlEmitter, {
+        type: 'stream_event',
+        event: {
+          type: 'content_block_delta',
+          delta: { type: 'text_delta', text: 'Let me look at the actual diff.' },
+        },
+      });
+
+      // Second text block starts — should inject paragraph separation
+      simulateLine(rlEmitter, {
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          content_block: { type: 'text' },
+        },
+      });
+      simulateLine(rlEmitter, {
+        type: 'stream_event',
+        event: {
+          type: 'content_block_delta',
+          delta: { type: 'text_delta', text: 'The changes look good.' },
+        },
+      });
+
+      expect(bridge._accumulatedText).toBe(
+        'Let me look at the actual diff.\n\nThe changes look good.'
+      );
+      // Separator emitted as a delta
+      expect(deltaHandler).toHaveBeenCalledWith({ text: '\n\n' });
+    });
+
+    it('should not inject separator before the first text content block', async () => {
+      const { mockDeps, rlEmitter } = createMockDeps();
+      const bridge = new ClaudeCodeBridge({ _deps: mockDeps });
+      await startBridge(bridge, rlEmitter);
+
+      bridge._inMessage = true;
+
+      const deltaHandler = vi.fn();
+      bridge.on('delta', deltaHandler);
+
+      // First text block — no prior text, so no separator
+      simulateLine(rlEmitter, {
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          content_block: { type: 'text' },
+        },
+      });
+      simulateLine(rlEmitter, {
+        type: 'stream_event',
+        event: {
+          type: 'content_block_delta',
+          delta: { type: 'text_delta', text: 'Hello' },
+        },
+      });
+
+      expect(bridge._accumulatedText).toBe('Hello');
+      expect(deltaHandler).not.toHaveBeenCalledWith({ text: '\n\n' });
+    });
+
     it('should emit tool_use start on stream_event content_block_start tool_use', async () => {
       const { mockDeps, rlEmitter } = createMockDeps();
       const bridge = new ClaudeCodeBridge({ _deps: mockDeps });
