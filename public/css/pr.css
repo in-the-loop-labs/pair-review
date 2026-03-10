@@ -12277,9 +12277,12 @@ body.resizing * {
   font-size: 14px;
 }
 
-/* Override flex: 1 so the file name doesn't push the badge away */
+/* Don't grow (keeps badge next to text), shrink for long paths, clip from the left so the filename stays visible */
 .context-file-header .d2h-file-name {
-  flex: none;
+  flex: 0 1 auto;
+  direction: rtl;
+  unicode-bidi: plaintext;
+  text-overflow: ellipsis;
 }
 
 /* Push viewed checkbox (and everything after it) to the right */
