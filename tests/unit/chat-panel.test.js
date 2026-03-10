@@ -4817,15 +4817,26 @@ describe('ChatPanel', () => {
       expect(callBody.line_end).toBe(100);
     });
 
-    it('should set line_end = lineStart + 49 when only lineStart provided', async () => {
+    it('should center ±10 lines around lineStart when only lineStart provided', async () => {
       const mgr = createMockPRManager();
       global.fetch.mockResolvedValue({ status: 201 });
 
-      await mgr.ensureContextFile('src/foo.js', 10);
+      await mgr.ensureContextFile('src/foo.js', 50);
 
       const callBody = JSON.parse(global.fetch.mock.calls[0][1].body);
-      expect(callBody.line_start).toBe(10);
-      expect(callBody.line_end).toBe(59);
+      expect(callBody.line_start).toBe(40);
+      expect(callBody.line_end).toBe(60);
+    });
+
+    it('should clamp lineStart to 1 when target line is near beginning of file', async () => {
+      const mgr = createMockPRManager();
+      global.fetch.mockResolvedValue({ status: 201 });
+
+      await mgr.ensureContextFile('src/foo.js', 3);
+
+      const callBody = JSON.parse(global.fetch.mock.calls[0][1].body);
+      expect(callBody.line_start).toBe(1);
+      expect(callBody.line_end).toBe(21);
     });
 
     it('should clamp range > 500 lines (line_end capped at lineStart + 499)', async () => {
