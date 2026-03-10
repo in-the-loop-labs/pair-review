@@ -39,6 +39,29 @@ function buildReviewerLabel(idx, voice) {
 }
 
 /**
+ * Capture a unified diff snapshot for an analysis run.
+ * This ensures the diff is preserved even if the branch is force-pushed later.
+ *
+ * @param {Analyzer} analyzer - Analyzer instance (provides buildGitDiffCommand)
+ * @param {string} worktreePath - Path to the git worktree
+ * @param {Object} prMetadata - PR metadata with base/head branch info
+ * @param {string} logPrefix - Prefix for log messages
+ * @returns {Promise<string|null>} The diff snapshot or null if capture failed
+ */
+async function captureDiffSnapshot(analyzer, worktreePath, prMetadata, logPrefix = '') {
+  try {
+    const diffCmd = analyzer.buildGitDiffCommand(prMetadata);
+    const { stdout } = await execPromise(diffCmd, { cwd: worktreePath, maxBuffer: 50 * 1024 * 1024 });
+    logger.info(`${logPrefix}Captured diff snapshot (${stdout.length} bytes)`);
+    return stdout;
+  } catch (diffError) {
+    logger.warn(`${logPrefix}Failed to capture diff snapshot: ${diffError.message}`);
+    // Continue without diff snapshot - share endpoint will fall back to current PR diff
+    return null;
+  }
+}
+
+/**
  * Build shared context for a council voice/reviewer.
  * Used by both single-voice and multi-voice paths in runReviewerCentricCouncil.
  *
@@ -167,7 +190,11 @@ class Analyzer {
       logger.info(`${logPrefix}HEAD SHA: ${headSha}`);
     }
 
-    // Create analysis run record in database (skip when caller already created it)
+    // Capture unified diff snapshot for this analysis run
+    // This ensures the diff is preserved even if the branch is force-pushed later
+    const diffSnapshot = await captureDiffSnapshot(this, worktreePath, prMetadata, logPrefix);
+
+    // Create or update analysis run record in database
     const analysisRunRepo = new AnalysisRunRepository(this.db);
     if (!skipRunCreation) {
       try {
@@ -180,12 +207,21 @@ class Analyzer {
           customInstructions: mergedInstructions,  // Keep for backward compat
           repoInstructions,
           requestInstructions,
-          headSha
+          headSha,
+          diff: diffSnapshot
         });
         logger.info(`${logPrefix}Created analysis_run record: ${runId}`);
       } catch (createError) {
         logger.warn(`${logPrefix}Failed to create analysis_run record: ${createError.message}`);
         // Continue with analysis even if record creation fails
+      }
+    } else if (diffSnapshot) {
+      // Run was created by caller, but we still need to store the diff snapshot
+      try {
+        await analysisRunRepo.update(runId, { diff: diffSnapshot });
+        logger.info(`${logPrefix}Updated analysis_run with diff snapshot`);
+      } catch (updateError) {
+        logger.warn(`${logPrefix}Failed to update analysis_run with diff: ${updateError.message}`);
       }
     }
 
@@ -2657,6 +2693,9 @@ File-level suggestions should NOT have a line number. They apply to the entire f
     const headSha = prMetadata?.head_sha || null;
     const analysisRunRepo = new AnalysisRunRepository(this.db);
 
+    // Capture unified diff snapshot for this analysis run
+    const diffSnapshot = await captureDiffSnapshot(this, worktreePath, prMetadata, '[ReviewerCouncil] ');
+
     // Create parent analysis run only if caller didn't already create it
     // (when runId is passed via options, the route handler has already inserted the record)
     if (!options.runId) {
@@ -2671,12 +2710,21 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           repoInstructions: instructions?.repoInstructions || null,
           requestInstructions: instructions?.requestInstructions || null,
           headSha,
+          diff: diffSnapshot,
           configType: 'council',
           levelsConfig: enabledLevels
         });
         logger.info(`[ReviewerCouncil] Created parent analysis_run: ${parentRunId}`);
       } catch (err) {
         logger.warn(`[ReviewerCouncil] Failed to create parent run record: ${err.message}`);
+      }
+    } else if (diffSnapshot) {
+      // Run was created by caller, but we still need to store the diff snapshot
+      try {
+        await analysisRunRepo.update(parentRunId, { diff: diffSnapshot });
+        logger.info(`[ReviewerCouncil] Updated analysis_run with diff snapshot`);
+      } catch (updateError) {
+        logger.warn(`[ReviewerCouncil] Failed to update analysis_run with diff: ${updateError.message}`);
       }
     }
 
@@ -2768,6 +2816,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           repoInstructions: instructions?.repoInstructions || null,
           requestInstructions: instructions?.requestInstructions || null,
           headSha,
+          diff: diffSnapshot,
           parentRunId,
           configType: 'council',
           levelsConfig: enabledLevels

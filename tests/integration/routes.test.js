@@ -6770,5 +6770,49 @@ describe('Share Endpoint', () => {
         summary: 'First completed run'
       });
     });
+
+    it('should use diff from analysis run when available instead of PR data diff', async () => {
+      const reviewId = await insertTestPR(db);
+
+      // Insert a completed analysis run with its own diff snapshot and head_sha
+      const runId = 'run-with-diff-snapshot';
+      const snapshotDiff = 'snapshot diff content from when analysis was run';
+      const snapshotHeadSha = 'snapshot-commit-sha-123';
+      await run(db, `
+        INSERT INTO analysis_runs (id, review_id, provider, model, status, summary, diff, head_sha, started_at, completed_at)
+        VALUES (?, ?, 'claude', 'opus', 'completed', 'Analysis complete', ?, ?, datetime('now', '-1 minute'), datetime('now'))
+      `, [runId, reviewId, snapshotDiff, snapshotHeadSha]);
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/share');
+
+      expect(response.status).toBe(200);
+      // Should use the run's snapshot diff, not the PR metadata diff ('diff content')
+      expect(response.body.diff).toBe(snapshotDiff);
+      // Should use the run's snapshot headSha, not the PR metadata headSha ('def456')
+      expect(response.body.headSha).toBe(snapshotHeadSha);
+      expect(response.body.run.id).toBe(runId);
+    });
+
+    it('should fall back to PR diff when analysis run has no diff snapshot', async () => {
+      const reviewId = await insertTestPR(db);
+
+      // Insert a completed analysis run without diff snapshot (old runs before feature existed)
+      const runId = 'run-without-diff';
+      await run(db, `
+        INSERT INTO analysis_runs (id, review_id, provider, model, status, summary, started_at, completed_at)
+        VALUES (?, ?, 'claude', 'opus', 'completed', 'Legacy run', datetime('now', '-1 minute'), datetime('now'))
+      `, [runId, reviewId]);
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/share');
+
+      expect(response.status).toBe(200);
+      // Should fall back to PR metadata diff
+      expect(response.body.diff).toBe('diff content');
+      // Should fall back to PR metadata headSha
+      expect(response.body.headSha).toBe('def456');
+      expect(response.body.run.id).toBe(runId);
+    });
   });
 });

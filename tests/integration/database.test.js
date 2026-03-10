@@ -2262,6 +2262,84 @@ describe('AnalysisRunRepository', () => {
     });
   });
 
+  describe('getLatestCompletedByReviewId()', () => {
+    it('should retrieve the most recently completed analysis run', async () => {
+      // Create a mix of running and completed runs
+      await analysisRunRepo.create({ id: 'running-run', reviewId: testReview.id });
+      await analysisRunRepo.create({ id: 'completed-run-1', reviewId: testReview.id, status: 'completed' });
+      await analysisRunRepo.create({ id: 'completed-run-2', reviewId: testReview.id, status: 'completed' });
+
+      // Set completion times: completed-run-2 should be most recent
+      await run(db, `UPDATE analysis_runs SET completed_at = '2025-01-01 00:00:10' WHERE id = 'completed-run-1'`);
+      await run(db, `UPDATE analysis_runs SET completed_at = '2025-01-01 00:00:20' WHERE id = 'completed-run-2'`);
+
+      const latest = await analysisRunRepo.getLatestCompletedByReviewId(testReview.id);
+      expect(latest).not.toBeNull();
+      expect(latest.id).toBe('completed-run-2');
+      expect(latest.status).toBe('completed');
+    });
+
+    it('should return null when no completed runs exist', async () => {
+      // Create only running/failed runs, no completed
+      await analysisRunRepo.create({ id: 'running-only', reviewId: testReview.id });
+      await analysisRunRepo.create({ id: 'failed-run', reviewId: testReview.id });
+      await analysisRunRepo.update('failed-run', { status: 'failed' });
+
+      const latest = await analysisRunRepo.getLatestCompletedByReviewId(testReview.id);
+      expect(latest).toBeNull();
+    });
+
+    it('should return null for review with no analysis runs', async () => {
+      const latest = await analysisRunRepo.getLatestCompletedByReviewId(9999);
+      expect(latest).toBeNull();
+    });
+
+    it('should exclude diff by default', async () => {
+      await analysisRunRepo.create({
+        id: 'completed-with-diff',
+        reviewId: testReview.id,
+        status: 'completed',
+        diff: 'some large diff content'
+      });
+
+      const latest = await analysisRunRepo.getLatestCompletedByReviewId(testReview.id);
+      expect(latest).not.toBeNull();
+      expect(latest.id).toBe('completed-with-diff');
+      expect(latest.diff).toBeUndefined();
+    });
+
+    it('should include diff when includeDiff option is true', async () => {
+      const testDiff = 'diff --git a/file.js b/file.js\n+new line';
+      await analysisRunRepo.create({
+        id: 'completed-include-diff',
+        reviewId: testReview.id,
+        status: 'completed',
+        diff: testDiff
+      });
+
+      const latest = await analysisRunRepo.getLatestCompletedByReviewId(testReview.id, { includeDiff: true });
+      expect(latest).not.toBeNull();
+      expect(latest.id).toBe('completed-include-diff');
+      expect(latest.diff).toBe(testDiff);
+    });
+
+    it('should only consider completed runs, not failed or cancelled', async () => {
+      // Create a failed run (more recent) and a completed run (older)
+      await analysisRunRepo.create({ id: 'older-completed', reviewId: testReview.id, status: 'completed' });
+      await analysisRunRepo.create({ id: 'newer-failed', reviewId: testReview.id });
+      await analysisRunRepo.update('newer-failed', { status: 'failed' });
+
+      // Set the failed run to have a more recent completed_at
+      await run(db, `UPDATE analysis_runs SET completed_at = '2025-01-01 00:00:10' WHERE id = 'older-completed'`);
+      await run(db, `UPDATE analysis_runs SET completed_at = '2025-01-01 00:00:20' WHERE id = 'newer-failed'`);
+
+      const latest = await analysisRunRepo.getLatestCompletedByReviewId(testReview.id);
+      expect(latest).not.toBeNull();
+      // Should return the completed run, not the more recent failed run
+      expect(latest.id).toBe('older-completed');
+    });
+  });
+
   describe('delete()', () => {
     it('should delete an analysis run by ID', async () => {
       const runId = 'test-run-delete';
