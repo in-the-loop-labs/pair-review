@@ -4480,7 +4480,16 @@ class PRManager {
     const tbody = document.createElement('tbody');
     tbody.className = 'd2h-diff-tbody context-chunk';
     tbody.dataset.contextId = contextFile.id;
-    tbody.dataset.lineStart = contextFile.line_start;
+
+    // Compute effective display range, shifting for end-of-file
+    const clampedEnd = Math.min(contextFile.line_end, data.lines.length);
+    const intendedSize = contextFile.line_end - contextFile.line_start + 1;
+    let effectiveStart = contextFile.line_start;
+    const actualSize = clampedEnd - effectiveStart + 1;
+    if (actualSize < intendedSize && effectiveStart > 1) {
+      effectiveStart = Math.max(1, effectiveStart - (intendedSize - actualSize));
+    }
+    tbody.dataset.lineStart = effectiveStart;
 
     // Chunk header row with range label and per-chunk dismiss button
     const headerRow = document.createElement('tr');
@@ -4493,8 +4502,7 @@ class PRManager {
     contentTd.colSpan = 3;
     const rangeLabel = document.createElement('span');
     rangeLabel.className = 'context-range-label';
-    const lineEnd = Math.min(contextFile.line_end, data.lines.length);
-    rangeLabel.textContent = `Lines ${contextFile.line_start}\u2013${lineEnd}`;
+    rangeLabel.textContent = `Lines ${effectiveStart}\u2013${clampedEnd}`;
     contentTd.appendChild(rangeLabel);
     const chunkDismiss = document.createElement('button');
     chunkDismiss.className = 'context-chunk-dismiss';
@@ -4508,25 +4516,22 @@ class PRManager {
     headerRow.appendChild(contentTd);
     tbody.appendChild(headerRow);
 
-    const lineStart = contextFile.line_start;
-    const clampedEnd = Math.min(contextFile.line_end, data.lines.length);
-
     // Add expand-up gap row if there are lines above the context range
-    if (lineStart > 1) {
-      const gapAboveSize = lineStart - 1;
+    if (effectiveStart > 1) {
+      const gapAboveSize = effectiveStart - 1;
       const gapAbove = window.HunkParser.createGapRowElement(
         contextFile.file,
-        1,              // startLine (old coords)
-        lineStart - 1,  // endLine (old coords)
+        1,                  // startLine (old coords)
+        effectiveStart - 1, // endLine (old coords)
         gapAboveSize,
         'above',
         this.expandGapContext.bind(this),
-        1               // startLineNew (same as old for context files — no diff offset)
+        1                   // startLineNew (same as old for context files — no diff offset)
       );
       tbody.appendChild(gapAbove);
     }
 
-    for (let i = lineStart; i <= clampedEnd; i++) {
+    for (let i = effectiveStart; i <= clampedEnd; i++) {
       const lineData = {
         type: 'context',
         oldNumber: i,
@@ -4874,8 +4879,9 @@ class PRManager {
       lineStartVal = 1;
       lineEndVal = 100;
     } else if (lineEnd == null) {
-      lineStartVal = lineStart;
-      lineEndVal = lineStart + 49;
+      // Center a ~21-line window around the target line (±10 lines)
+      lineStartVal = Math.max(1, lineStart - 10);
+      lineEndVal = lineStartVal + 20;
     } else {
       lineStartVal = lineStart;
       lineEndVal = Math.min(lineEnd, lineStart + 499);
