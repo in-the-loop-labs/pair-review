@@ -3075,6 +3075,33 @@ class AnalysisRunRepository {
   }
 
   /**
+   * Get the most recently completed analysis run for a review
+   * @param {number} reviewId - Review ID (works for both PR and local modes)
+   * @param {Object} [options] - Optional query options
+   * @param {boolean} [options.includeDiff=false] - Include the diff column (can be large)
+   * @returns {Promise<Object|null>} Most recently completed analysis run or null
+   */
+  async getLatestCompletedByReviewId(reviewId, { includeDiff = false } = {}) {
+    const columns = [
+      'id', 'review_id', 'provider', 'model', 'tier', 'custom_instructions', 'repo_instructions', 'request_instructions',
+      'head_sha', 'summary', 'status', 'total_suggestions', 'files_analyzed', 'started_at', 'completed_at',
+      'parent_run_id', 'config_type', 'levels_config'
+    ];
+    if (includeDiff) {
+      columns.splice(9, 0, 'diff'); // Insert diff after head_sha
+    }
+    const row = await queryOne(this.db, `
+      SELECT ${columns.join(', ')}
+      FROM analysis_runs
+      WHERE review_id = ? AND status = 'completed'
+      ORDER BY completed_at DESC
+      LIMIT 1
+    `, [reviewId]);
+
+    return row || null;
+  }
+
+  /**
    * Get child runs for a parent council run, ordered by start time ascending
    * @param {string} parentRunId - Parent analysis run ID
    * @returns {Promise<Array<Object>>} Array of child analysis run records

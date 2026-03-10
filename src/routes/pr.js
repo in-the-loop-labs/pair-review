@@ -1911,8 +1911,7 @@ router.get('/api/pr/:owner/:repo/:number/share', async (req, res) => {
       // If no specific run requested or it wasn't found/valid, fall back to the most recently completed run
       if (!targetRun) {
         // Include diff since the share endpoint needs it for the snapshot
-        const runs = await analysisRunRepo.getByReviewId(review.id, { includeDiff: true });
-        targetRun = runs.find(r => r.status === 'completed') || null;
+        targetRun = await analysisRunRepo.getLatestCompletedByReviewId(review.id, { includeDiff: true });
       }
 
       if (targetRun) {
