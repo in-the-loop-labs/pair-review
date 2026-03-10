@@ -1900,7 +1900,8 @@ router.get('/api/pr/:owner/:repo/:number/share', async (req, res) => {
 
       if (requestedRunId) {
         // Specific run requested - fetch it directly
-        targetRun = await analysisRunRepo.getById(requestedRunId);
+        // Include diff since the share endpoint needs it for the snapshot
+        targetRun = await analysisRunRepo.getById(requestedRunId, { includeDiff: true });
         // Verify it belongs to this review and is completed
         if (!targetRun || targetRun.review_id !== review.id || targetRun.status !== 'completed') {
           targetRun = null;
@@ -1909,8 +1910,8 @@ router.get('/api/pr/:owner/:repo/:number/share', async (req, res) => {
 
       // If no specific run requested or it wasn't found/valid, fall back to the most recently completed run
       if (!targetRun) {
-        const runs = await analysisRunRepo.getByReviewId(review.id);
-        targetRun = runs.find(r => r.status === 'completed') || null;
+        // Include diff since the share endpoint needs it for the snapshot
+        targetRun = await analysisRunRepo.getLatestCompletedByReviewId(review.id, { includeDiff: true });
       }
 
       if (targetRun) {
@@ -1926,6 +1927,15 @@ router.get('/api/pr/:owner/:repo/:number/share', async (req, res) => {
             : null,
           customInstructions: targetRun.custom_instructions || targetRun.request_instructions || null
         };
+
+        // Use the run's snapshot of headSha and diff if available (for consistency with suggestions)
+        // Falls back to current PR data for old runs that predate snapshot capture
+        if (targetRun.head_sha) {
+          payload.headSha = targetRun.head_sha;
+        }
+        if (targetRun.diff) {
+          payload.diff = targetRun.diff;
+        }
 
         // Get suggestions for this run
         const rows = await query(db, `
