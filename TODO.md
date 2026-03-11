@@ -19,3 +19,6 @@ Each PR gets its own River session (container). This provides isolation but is r
 
 ### .gitattributes / generated file detection
 Generated file detection reads `.gitattributes` locally. Not functional in remote mode — fails silently (acceptable for MVP).
+
+### Index page should list from pr_metadata, not worktrees
+The index page (`/api/worktrees/recent`) uses the `worktrees` table as source of truth for "what PRs exist". This is an implementation detail that leaks into the UI — remote PRs have no worktree record and required a graft to appear. The proper fix: list from `pr_metadata` (or `reviews`), include storage status as a property (local worktree, remote, orphaned), and let the delete endpoint clean up all associated data (worktree dir, DB records, etc.) based on what actually exists. This isn't remote-specific — it's a general architectural improvement that remote mode exposes.
