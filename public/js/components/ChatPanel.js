@@ -429,6 +429,10 @@ class ChatPanel {
    */
   _showStatusFlash(text, timeout = 5000) {
     if (!this.statusFlash) return;
+    if (this._hideAnimationTimeout) {
+      clearTimeout(this._hideAnimationTimeout);
+      this._hideAnimationTimeout = null;
+    }
     const textEl = this.statusFlash.querySelector('.chat-panel__status-flash-text');
     if (textEl) textEl.textContent = text;
     this.statusFlash.style.display = '';
@@ -449,8 +453,9 @@ class ChatPanel {
     if (!this.statusFlash) return;
     this.statusFlash.classList.remove('chat-panel__status-flash--visible');
     // Hide after transition completes
-    setTimeout(() => {
+    this._hideAnimationTimeout = setTimeout(() => {
       if (this.statusFlash) this.statusFlash.style.display = 'none';
+      this._hideAnimationTimeout = null;
     }, 300);
   }
 
@@ -1275,7 +1280,10 @@ class ChatPanel {
         this._sessionWarm = true;
       }
 
-      // Handle 410 Gone: session is not resumable — transparently create a new one and retry once
+      // Handle 410 Gone: session is not resumable — transparently create a new one and retry once.
+      // Note: we do NOT call _hideStatusFlash() here. createSession() will call
+      // _showStatusFlash() which overwrites the pill text directly, avoiding a
+      // visible hide/show flicker during the transparent retry.
       if (response.status === 410) {
         console.debug('[ChatPanel] Session not resumable (410), creating new session and retrying');
         this.currentSessionId = null;

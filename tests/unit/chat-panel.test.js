@@ -5470,6 +5470,33 @@ describe('ChatPanel', () => {
       it('should be safe to call _hideStatusFlash when no flash is active', () => {
         expect(() => chatPanel._hideStatusFlash()).not.toThrow();
       });
+
+      it('should store hide-animation timeout and cancel it on next show', () => {
+        vi.useFakeTimers();
+        chatPanel._showStatusFlash('First');
+        chatPanel._hideStatusFlash();
+        // The animation timeout should be stored
+        expect(chatPanel._hideAnimationTimeout).toBeTruthy();
+        // Showing again before 300ms should cancel the pending hide
+        chatPanel._showStatusFlash('Second');
+        expect(chatPanel._hideAnimationTimeout).toBeNull();
+        // Advancing past the 300ms should NOT set display to 'none'
+        // because the timeout was cancelled
+        vi.advanceTimersByTime(300);
+        expect(chatPanel.statusFlash.style.display).toBe('');
+        vi.useRealTimers();
+      });
+
+      it('should set display none after hide animation completes', () => {
+        vi.useFakeTimers();
+        chatPanel._showStatusFlash('Test');
+        chatPanel._hideStatusFlash();
+        expect(chatPanel.statusFlash.style.display).not.toBe('none');
+        vi.advanceTimersByTime(300);
+        expect(chatPanel.statusFlash.style.display).toBe('none');
+        expect(chatPanel._hideAnimationTimeout).toBeNull();
+        vi.useRealTimers();
+      });
     });
   });
 });
