@@ -628,7 +628,7 @@ async function performHeadlessReview(args, config, db, flags, options) {
     const { remoteEnv, checkoutScript, checkoutTimeout } = resolveMonorepoOptions(config, repository);
 
     if (remoteEnv) {
-      const remoteShell = await getRemoteShell(repository, config);
+      const remoteShell = await getRemoteShell(repository, config, { owner: prInfo.owner, repo: prInfo.repo, prNumber: prInfo.number });
       const remoteCwd = remoteEnv.remote_cwd;
 
       if (checkoutScript) {
@@ -801,7 +801,7 @@ async function performHeadlessReview(args, config, db, flags, options) {
     const analyzer = new Analyzer(db, model);
 
     if (remoteEnv) {
-      const remoteShell = await getRemoteShell(repository, config);
+      const remoteShell = await getRemoteShell(repository, config, { owner: prInfo.owner, repo: prInfo.repo, prNumber: prInfo.number });
       analyzer.remoteShell = remoteShell;
     }
 

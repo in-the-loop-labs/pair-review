@@ -81,7 +81,7 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
     const { remoteEnv } = resolveMonorepoOptions(config, repository);
     let remoteShell = null;
     if (remoteEnv) {
-      remoteShell = await getRemoteShell(repository, config);
+      remoteShell = await getRemoteShell(repository, config, { owner, repo, prNumber });
     }
 
     // Check if we already have data AND a worktree for this PR in the database.
