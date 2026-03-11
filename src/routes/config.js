@@ -37,7 +37,7 @@ router.get('/api/config', (req, res) => {
   // Build chat_providers array with availability
   const chatAvailability = getAllCachedChatAvailability();
   const chatProviders = getAllChatProviders().map(p => ({
-    id: p.id, name: p.name, available: chatAvailability[p.id]?.available || false
+    id: p.id, name: p.name, type: p.type, available: chatAvailability[p.id]?.available || false
   }));
 
   // Only return safe configuration values (not secrets like github_token)

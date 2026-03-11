@@ -11055,6 +11055,39 @@ body.resizing * {
   background: linear-gradient(to bottom, var(--chat-subtle), transparent);
   flex-shrink: 0;
 }
+
+/* Status flash pill — transient notification between header and content */
+.chat-panel__status-flash {
+  display: flex;
+  justify-content: center;
+  padding: 6px 16px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.chat-panel__status-flash--visible {
+  opacity: 1;
+}
+
+.chat-panel__status-flash-text {
+  display: inline-block;
+  padding: 3px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #92400e;
+  background: #fef3c7;
+  border: 1px solid #fcd34d;
+  border-radius: 999px;
+}
+
+[data-theme="dark"] .chat-panel__status-flash-text {
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.12);
+  border-color: rgba(251, 191, 36, 0.3);
+}
+
 /* Provider picker */
 .chat-panel__provider-picker {
   position: relative;

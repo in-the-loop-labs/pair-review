@@ -96,17 +96,40 @@ function applyConfigOverrides(providersConfig) {
 
 /**
  * Get a chat provider definition with config overrides merged.
- * @param {string} id - Provider ID (e.g. 'copilot-acp')
+ * Supports both built-in providers and dynamic providers defined entirely in config.
+ * @param {string} id - Provider ID (e.g. 'copilot-acp', or a custom ID like 'river')
  * @returns {Object|null} Provider definition or null if unknown
  */
 function getChatProvider(id) {
   const base = CHAT_PROVIDERS[id];
-  if (!base) return null;
-
   const overrides = _configOverrides[id];
+
+  if (!base && !overrides) return null;
+
+  // Dynamic provider defined entirely in config
+  if (!base) {
+    const provider = {
+      id,
+      name: overrides.name || overrides.label || id,
+      type: overrides.type || 'acp',
+      command: overrides.command || id,
+      args: overrides.args || [],
+      env: overrides.env || {},
+    };
+    if (overrides.model) provider.model = overrides.model;
+    if (overrides.extra_args && Array.isArray(overrides.extra_args)) {
+      provider.args = [...provider.args, ...overrides.extra_args];
+    }
+    if (provider.command.includes(' ')) {
+      provider.useShell = true;
+    }
+    return provider;
+  }
+
   if (!overrides) return { ...base };
 
   const merged = { ...base };
+  if (overrides.name || overrides.label) merged.name = overrides.name || overrides.label;
   if (overrides.command) merged.command = overrides.command;
   if (overrides.model) merged.model = overrides.model;
   if (overrides.env) merged.env = { ...merged.env, ...overrides.env };
@@ -125,11 +148,15 @@ function getChatProvider(id) {
 }
 
 /**
- * Get all chat provider definitions (with overrides applied).
+ * Get all chat provider definitions (built-in + dynamic from config).
  * @returns {Array<Object>}
  */
 function getAllChatProviders() {
-  return Object.keys(CHAT_PROVIDERS).map(id => getChatProvider(id));
+  const ids = new Set([
+    ...Object.keys(CHAT_PROVIDERS),
+    ...Object.keys(_configOverrides),
+  ]);
+  return [...ids].map(id => getChatProvider(id)).filter(Boolean);
 }
 
 /**
@@ -138,7 +165,7 @@ function getAllChatProviders() {
  * @returns {boolean}
  */
 function isAcpProvider(id) {
-  const provider = CHAT_PROVIDERS[id];
+  const provider = getChatProvider(id);
   return provider?.type === 'acp';
 }
 
@@ -148,7 +175,7 @@ function isAcpProvider(id) {
  * @returns {boolean}
  */
 function isClaudeCodeProvider(id) {
-  const provider = CHAT_PROVIDERS[id];
+  const provider = getChatProvider(id);
   return provider?.type === 'claude';
 }
 
@@ -158,7 +185,7 @@ function isClaudeCodeProvider(id) {
  * @returns {boolean}
  */
 function isCodexProvider(id) {
-  const provider = CHAT_PROVIDERS[id];
+  const provider = getChatProvider(id);
   return provider?.type === 'codex';
 }
 
@@ -223,7 +250,7 @@ async function checkChatProviderAvailability(id, _deps) {
  * @returns {Promise<void>}
  */
 async function checkAllChatProviders(_deps) {
-  const ids = Object.keys(CHAT_PROVIDERS);
+  const ids = [...new Set([...Object.keys(CHAT_PROVIDERS), ...Object.keys(_configOverrides)])];
   const results = await Promise.all(
     ids.map(async (id) => {
       const result = await checkChatProviderAvailability(id, _deps);
