@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.4.3
+
+### Patch Changes
+
+- bb56a62: Center context file line window around the target line (±10 lines) instead of starting from it. Near the beginning or end of a file, the window shifts to show ~20 lines of content.
+- c697187: Fix Claude chat sentences running together when multiple text content blocks are sent in a single response
+- ba59e5f: Fix context file header overflow when file paths are long. The header now truncates long paths from the left (showing the filename) instead of pushing badges and buttons outside the container.
+
 ## 2.4.2
 
 ### Patch Changes
