@@ -12,6 +12,7 @@ const express = require('express');
 const { query, queryOne, run, WorktreeRepository } = require('../database');
 const { setupPRReview } = require('../setup/pr-setup');
 const { GitHubApiError } = require('../github/client');
+const { resolveMonorepoOptions } = require('../config');
 const fs = require('fs').promises;
 const logger = require('../utils/logger');
 
@@ -238,9 +239,54 @@ router.get('/api/worktrees/recent', async (req, res) => {
       created_at: w.created_at
     }));
 
+    // Include remote PRs (no worktree record) for repos with remote_env configured
+    const config = req.app.get('config');
+    const remotePRs = await query(db, `
+      SELECT
+        pm.id,
+        pm.repository,
+        pm.pr_number,
+        pm.title as pr_title,
+        pm.author,
+        pm.head_branch,
+        pm.updated_at as last_accessed_at,
+        pm.created_at
+      FROM pr_metadata pm
+      WHERE NOT EXISTS (
+        SELECT 1 FROM worktrees w
+        WHERE w.pr_number = pm.pr_number AND w.repository = pm.repository COLLATE NOCASE
+      )
+      ORDER BY pm.updated_at DESC
+      LIMIT ?
+    `, [limit]);
+
+    // Filter to only repos with remote_env configured
+    const remoteFormatted = remotePRs
+      .filter(pr => {
+        const { remoteEnv } = resolveMonorepoOptions(config, pr.repository);
+        return !!remoteEnv;
+      })
+      .map(pr => ({
+        id: `remote-${pr.id}`,
+        repository: pr.repository,
+        pr_number: pr.pr_number,
+        pr_title: pr.pr_title || `PR #${pr.pr_number}`,
+        author: pr.author || null,
+        branch: pr.head_branch,
+        head_branch: pr.head_branch,
+        last_accessed_at: pr.last_accessed_at,
+        created_at: pr.created_at,
+        remote: true
+      }));
+
+    // Merge and sort by last_accessed_at descending
+    const allItems = [...formattedWorktrees, ...remoteFormatted]
+      .sort((a, b) => (b.last_accessed_at || '').localeCompare(a.last_accessed_at || ''))
+      .slice(0, limit);
+
     res.json({
       success: true,
-      worktrees: formattedWorktrees,
+      worktrees: allItems,
       hasMore
     });
 
@@ -269,6 +315,30 @@ router.delete('/api/worktrees/:id', async (req, res) => {
     }
 
     const db = req.app.get('db');
+
+    // Handle remote PR deletion (id format: "remote-{pr_metadata_id}")
+    if (worktreeId.startsWith('remote-')) {
+      const metadataId = worktreeId.slice(7);
+      const prMeta = await queryOne(db, `
+        SELECT id, pr_number, repository FROM pr_metadata WHERE id = ?
+      `, [metadataId]);
+
+      if (!prMeta) {
+        return res.status(404).json({ success: false, error: 'Remote PR not found' });
+      }
+
+      logger.info(`Deleting remote PR data for ${prMeta.repository} #${prMeta.pr_number}`);
+      await run(db, `DELETE FROM reviews WHERE pr_number = ? AND repository = ? COLLATE NOCASE`,
+        [prMeta.pr_number, prMeta.repository]);
+      await run(db, `DELETE FROM pr_metadata WHERE id = ?`, [metadataId]);
+      logger.success(`Deleted remote PR data for ${prMeta.repository} #${prMeta.pr_number}`);
+
+      return res.json({
+        success: true,
+        message: `Remote PR data for ${prMeta.repository} #${prMeta.pr_number} deleted`
+      });
+    }
+
     const worktreeRepo = new WorktreeRepository(db);
 
     // Get worktree info before deletion
@@ -300,11 +370,6 @@ router.delete('/api/worktrees/:id', async (req, res) => {
 
     // Delete the worktree record from the database
     await run(db, `DELETE FROM worktrees WHERE id = ?`, [worktreeId]);
-
-    // Also delete associated PR metadata and comments (optional cleanup)
-    // Keep PR metadata for now as user might want to reload the PR later
-    // await run(db, `DELETE FROM pr_metadata WHERE pr_number = ? AND repository = ?`,
-    //   [worktree.pr_number, worktree.repository]);
 
     logger.success(`Deleted worktree ID ${worktreeId}`);
 
