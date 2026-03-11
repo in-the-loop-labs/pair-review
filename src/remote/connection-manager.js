@@ -1,10 +1,12 @@
 const { RemoteShell } = require('./shell');
 const logger = require('../utils/logger');
 
-const connections = new Map();
+const connections = new Map();   // key → RemoteShell (established)
+const pending = new Map();       // key → Promise<RemoteShell> (in-flight)
 
 /**
  * Get or create a RemoteShell for a repository + PR combination.
+ * Deduplicates concurrent connect attempts for the same key.
  *
  * @param {string} repository - "owner/repo" format
  * @param {Object} config - Application config
@@ -21,16 +23,36 @@ async function getRemoteShell(repository, config, prContext = {}) {
   // Key by repo + PR for per-PR session isolation
   const key = prContext.prNumber ? `${repository}#${prContext.prNumber}` : repository;
 
+  // Return existing established connection
   const existing = connections.get(key);
   if (existing) {
     await existing.ensureConnected();
     return existing;
   }
 
-  const shell = new RemoteShell(remoteEnv, prContext);
-  await shell.connect();
-  connections.set(key, shell);
-  return shell;
+  // Return in-flight connection promise (dedup concurrent callers)
+  const inflight = pending.get(key);
+  if (inflight) {
+    return inflight;
+  }
+
+  // Start new connection and store the promise so concurrent callers share it
+  const connectPromise = (async () => {
+    const shell = new RemoteShell(remoteEnv, prContext);
+    await shell.connect();
+    connections.set(key, shell);
+    pending.delete(key);
+    return shell;
+  })();
+
+  pending.set(key, connectPromise);
+
+  try {
+    return await connectPromise;
+  } catch (err) {
+    pending.delete(key);
+    throw err;
+  }
 }
 
 async function disconnectAll() {
@@ -39,6 +61,7 @@ async function disconnectAll() {
     await shell.disconnect();
   }
   connections.clear();
+  pending.clear();
 }
 
 function getConnectionForRepo(repository) {
