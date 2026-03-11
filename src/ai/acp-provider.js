@@ -14,7 +14,7 @@ const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { CancellationError, isAnalysisCancelled } = require('../routes/shared');
 const { truncateSnippet } = require('./stream-parser');
-const { AIProvider, inferModelDefaults, resolveDefaultModel, prettifyModelId } = require('./provider');
+const { AIProvider, inferModelDefaults, resolveDefaultModel, prettifyModelId, quoteShellArgs } = require('./provider');
 const { version: pkgVersion } = require('../../package.json');
 
 // Lazy-load the ESM-only ACP SDK via dynamic import (cached after first call)
@@ -41,7 +41,7 @@ const defaults = {
  */
 function killProcess(proc) {
   return new Promise((resolve) => {
-    if (!proc || proc.killed) { resolve(); return; }
+    if (!proc || proc.killed || proc.exitCode !== null) { resolve(); return; }
     const killTimeout = setTimeout(() => {
       if (!proc.killed) proc.kill('SIGKILL');
     }, 3000);
@@ -123,7 +123,7 @@ class AcpProvider extends AIProvider {
       const args = [...this.args];
       const useShell = this.useShell;
 
-      const spawnCmd = useShell ? `${command} ${args.join(' ')}` : command;
+      const spawnCmd = useShell ? `${command} ${quoteShellArgs(args).join(' ')}` : command;
       const spawnArgs = useShell ? [] : args;
 
       proc = deps.spawn(spawnCmd, spawnArgs, {

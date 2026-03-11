@@ -38,6 +38,7 @@ function createMockProcess(exitCode = 0, stdout = 'v1.0.0', error = null) {
     setTimeout(() => proc.emit('close', null), 0);
   });
   proc.killed = false;
+  proc.exitCode = null;
   proc.pid = 12345;
   // Schedule events after spawn returns
   setTimeout(() => {
@@ -58,6 +59,7 @@ function createMockDeps(responseText = '{"level":1,"suggestions":[]}') {
     setTimeout(() => mockProcess.emit('close', null), 0);
   });
   mockProcess.killed = false;
+  mockProcess.exitCode = null;
   mockProcess.pid = 99999;
 
   const mockSpawn = vi.fn().mockReturnValue(mockProcess);
@@ -664,6 +666,44 @@ describe('AcpProvider', () => {
       // Should not throw — warn and continue
       const result = await instance.execute('prompt');
       expect(result).toEqual({ level: 1 });
+    });
+
+    it('should not hang in killProcess when process has already exited naturally', async () => {
+      const { _deps, mockProcess } = createMockDeps('{"level":1}');
+      // Simulate a process that has already exited on its own before killProcess runs.
+      // Set exitCode (non-null) and override kill to NOT emit 'close' — if killProcess
+      // doesn't check exitCode, it will call kill() and wait for 'close' that never fires.
+      mockProcess.exitCode = 0;
+      mockProcess.kill = vi.fn(); // no-op, no 'close' event emitted
+
+      const TestProvider = createAcpProviderClass('exec-test', { command: 'myagent' });
+      const instance = new TestProvider('default', { command: 'myagent', _deps });
+
+      // Should resolve without hanging (killProcess sees exitCode !== null and returns)
+      const result = await instance.execute('prompt');
+      expect(result).toEqual({ level: 1 });
+      // kill should NOT have been called since exitCode was already set
+      expect(mockProcess.kill).not.toHaveBeenCalled();
+    });
+
+    it('should quote shell-sensitive args in shell mode to preserve argument boundaries', async () => {
+      const { _deps, mockSpawn } = createMockDeps('{"level":1}');
+      const TestProvider = createAcpProviderClass('exec-test', { command: 'devx myagent' });
+      const instance = new TestProvider('default', {
+        command: 'devx myagent',
+        args: ['--acp', '--config', '/path/with spaces/config.json', '--flag=value(1)'],
+        _deps,
+      });
+
+      await instance.execute('prompt');
+
+      // In shell mode, the first argument to spawn is the full command string.
+      // Args with spaces and metacharacters should be single-quoted.
+      const spawnCmd = mockSpawn.mock.calls[0][0];
+      expect(spawnCmd).toContain("'/path/with spaces/config.json'");
+      expect(spawnCmd).toContain("'--flag=value(1)'");
+      // Simple args should remain unquoted
+      expect(spawnCmd).toContain('--acp');
     });
   });
 
