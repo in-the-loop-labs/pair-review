@@ -156,24 +156,45 @@ class RemoteShell {
   /**
    * Spawn a command remotely with streaming stdio.
    * Used for AI providers (pi) that stream JSONL.
+   *
+   * Unlike exec(), this does NOT pipe through stdin — it passes the command
+   * via `bash -l -c` so that stdin remains available for the caller
+   * (e.g., pi-provider writes the prompt to stdin).
+   *
+   * Since nodeSpawn bypasses the local shell, only one level of shellQuote
+   * is needed (for the remote shell to parse after SSH concatenation).
    */
   spawn(command, options = {}) {
-    const script = this._buildScript(command, options);
     const { bin, args } = this._sshArgs();
-    // Use exec in the script so the command replaces bash and stdio flows through
-    const execScript = this._buildScript(`exec ${command}`, options);
-    const sshArgs = [...args, 'bash', '-l'];
+    const remoteCwd = options.cwd || this.config.remote_cwd;
+
+    let innerCmd = '';
+    if (remoteCwd) {
+      if (remoteCwd.startsWith('~/')) {
+        innerCmd += `cd "$HOME/${remoteCwd.slice(2)}" && `;
+      } else {
+        innerCmd += `cd ${shellQuote(remoteCwd)} && `;
+      }
+    }
+
+    if (options.env && Object.keys(options.env).length > 0) {
+      for (const [k, v] of Object.entries(options.env)) {
+        innerCmd += `export ${k}=${shellQuote(v)} && `;
+      }
+    }
+
+    // exec replaces bash with the command so stdio flows through
+    innerCmd += `exec ${command}`;
+
+    // One level of shellQuote: nodeSpawn passes args directly to ssh (no local shell),
+    // SSH concatenates and sends to remote shell which parses the quotes.
+    const sshArgs = [...args, 'bash', '-l', '-c', shellQuote(innerCmd)];
 
     logger.debug(`RemoteShell spawn: ${bin} ${sshArgs.join(' ')}`);
 
-    const child = nodeSpawn(bin, sshArgs, {
+    return nodeSpawn(bin, sshArgs, {
       stdio: ['pipe', 'pipe', 'pipe']
     });
-
-    child.stdin.write(execScript);
-    child.stdin.end();
-
-    return child;
   }
 
   getConnectionInfo() {

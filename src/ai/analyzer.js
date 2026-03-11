@@ -51,7 +51,7 @@ function buildReviewerLabel(idx, voice) {
 async function captureDiffSnapshot(analyzer, worktreePath, prMetadata, logPrefix = '') {
   try {
     const diffCmd = analyzer.buildGitDiffCommand(prMetadata);
-    const { stdout } = await execPromise(diffCmd, { cwd: worktreePath, maxBuffer: 50 * 1024 * 1024 });
+    const { stdout } = await analyzer._execInContext(diffCmd, { cwd: worktreePath, maxBuffer: 50 * 1024 * 1024 });
     logger.info(`${logPrefix}Captured diff snapshot (${stdout.length} bytes)`);
     return stdout;
   } catch (diffError) {
