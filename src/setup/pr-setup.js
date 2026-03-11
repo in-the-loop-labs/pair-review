@@ -422,15 +422,8 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, o
     // Remote mode: all git operations run on the remote host
     // ================================================================
 
-    // Step: repo — use remote working directory directly
-    progress({ step: 'repo', status: 'running', message: 'Using remote repository...' });
     repositoryPath = remoteShell.config.remote_cwd;
     worktreePath = remoteShell.config.remote_cwd;
-    progress({ step: 'repo', status: 'completed', message: `Remote repository at ${repositoryPath}` });
-
-    // Step: worktree — skip (remote cwd is the working directory)
-    progress({ step: 'worktree', status: 'running', message: 'Skipping worktree (remote mode)...' });
-    progress({ step: 'worktree', status: 'completed', message: 'Using remote working directory.' });
 
     // Step: checkout_script — run remotely if configured
     const { checkoutScript, checkoutTimeout } = resolveMonorepoOptions(config, repository);

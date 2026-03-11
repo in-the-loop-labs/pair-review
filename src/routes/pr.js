@@ -504,6 +504,37 @@ router.get('/api/pr/:owner/:repo/:number/check-stale', async (req, res) => {
 });
 
 /**
+ * Eagerly establish remote SSH connection for a PR.
+ * Fire-and-forget — the frontend calls this on PR page load so the
+ * connection is warm by the time the user triggers analysis.
+ */
+router.post('/api/pr/:owner/:repo/:number/connect', async (req, res) => {
+  try {
+    const { owner, repo, number } = req.params;
+    const prNumber = parseInt(number);
+    const repository = normalizeRepository(owner, repo);
+    const config = req.app.get('config');
+    const { remoteEnv } = resolveMonorepoOptions(config, repository);
+
+    if (!remoteEnv) {
+      return res.json({ connected: false, reason: 'not_remote' });
+    }
+
+    // Don't await — kick off connection in the background
+    getRemoteShell(repository, config, { owner, repo, prNumber }).then(() => {
+      logger.info(`Eager remote connection established for ${repository} #${prNumber}`);
+    }).catch(err => {
+      logger.warn(`Eager remote connection failed for ${repository} #${prNumber}: ${err.message}`);
+    });
+
+    return res.json({ connected: true, reason: 'connecting' });
+  } catch (err) {
+    logger.error('Error in POST /connect:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * Get pending GitHub draft review status for a PR
  * Fetches from GitHub and syncs with local database
  */

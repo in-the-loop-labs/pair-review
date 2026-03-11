@@ -79,16 +79,13 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
     // Resolve remote environment for this repo
     const repository = normalizeRepository(owner, repo);
     const { remoteEnv } = resolveMonorepoOptions(config, repository);
-    let remoteShell = null;
-    if (remoteEnv) {
-      remoteShell = await getRemoteShell(repository, config, { owner, repo, prNumber });
-    }
+    const isRemote = !!remoteEnv;
 
     // Check if we already have data AND a worktree for this PR in the database.
     // When a user deletes a worktree, PR metadata is preserved but the worktree
     // record is removed. We must re-run setup to recreate the worktree.
     // In remote mode, skip this check — there is no local worktree record.
-    if (!remoteShell) {
+    if (!isRemote) {
       const existingPR = await queryOne(
         db,
         'SELECT id FROM pr_metadata WHERE pr_number = ? AND repository = ? COLLATE NOCASE',
@@ -112,6 +109,14 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
 
     const promise = (async () => {
       try {
+        // Establish remote connection inside async setup so it doesn't block the HTTP response
+        let remoteShell = null;
+        if (isRemote) {
+          sendSetupEvent(setupId, 'step', { step: 'connect', status: 'running', message: 'Connecting to remote environment...' });
+          remoteShell = await getRemoteShell(repository, config, { owner, repo, prNumber });
+          sendSetupEvent(setupId, 'step', { step: 'connect', status: 'completed', message: 'Remote environment connected.' });
+        }
+
         const result = await setupPRReview({
           db,
           owner,
@@ -136,7 +141,7 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
 
     activeSetups.set(setupKey, { setupId, promise });
 
-    return res.json({ setupId });
+    return res.json({ setupId, remote: isRemote });
   } catch (err) {
     logger.error('Error in POST /api/setup/pr:', err);
     return res.status(500).json({ error: err.message });

@@ -536,6 +536,15 @@
                 { id: 'store',    label: 'Storing review data' },
             ];
 
+            const REMOTE_PR_STEPS = [
+                { id: 'verify',          label: 'Verifying repository access' },
+                { id: 'fetch',           label: 'Fetching pull request data' },
+                { id: 'connect',         label: 'Connecting to remote environment' },
+                { id: 'checkout_script', label: 'Preparing remote checkout' },
+                { id: 'diff',            label: 'Generating diff remotely' },
+                { id: 'store',           label: 'Storing review data' },
+            ];
+
             const LOCAL_STEPS = [
                 { id: 'validate', label: 'Validating path' },
                 { id: 'git',      label: 'Finding git repository' },
@@ -601,7 +610,7 @@
                 }
             }
 
-            const steps = mode === 'local' ? LOCAL_STEPS : PR_STEPS;
+            let steps = mode === 'local' ? LOCAL_STEPS : PR_STEPS;
             const stepStates = {};
 
             /* ── Render Target Label ── */
@@ -764,6 +773,12 @@
 
                     if (!data.setupId) {
                         throw new Error('No setup ID returned from server');
+                    }
+
+                    // Switch to remote steps if the server indicates remote mode
+                    if (data.remote && mode === 'pr') {
+                        steps = REMOTE_PR_STEPS;
+                        renderSteps();
                     }
 
                     connectWS(data.setupId);

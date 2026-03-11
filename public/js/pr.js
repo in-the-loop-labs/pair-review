@@ -432,6 +432,10 @@ class PRManager {
       const prData = responseData.data || responseData;
       this.currentPR = prData;
 
+      // Eagerly establish remote SSH connection (fire-and-forget)
+      // so it's warm by the time the user triggers analysis
+      fetch(`/api/pr/${owner}/${repo}/${number}/connect`, { method: 'POST' }).catch(() => {});
+
       // Render PR header with metadata
       this.renderPRHeader(prData);
 
