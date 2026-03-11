@@ -16,7 +16,7 @@ const { GitWorktreeManager } = require('../git/worktree');
 const { GitHubClient } = require('../github/client');
 const { normalizeRepository } = require('../utils/paths');
 const { findMainGitRoot } = require('../local-review');
-const { getConfigDir, getMonorepoPath, resolveMonorepoOptions, DEFAULT_CHECKOUT_TIMEOUT_MS } = require('../config');
+const { getConfigDir, getMonorepoPath, resolveMonorepoOptions } = require('../config');
 const logger = require('../utils/logger');
 const simpleGit = require('simple-git');
 const fs = require('fs').promises;
@@ -355,6 +355,27 @@ async function findRepositoryPath({ db, owner, repo, repository, prNumber, confi
 }
 
 /**
+ * Parse `git diff --numstat` output into a changedFiles array.
+ *
+ * Each line is: `<insertions>\t<deletions>\t<filename>`
+ * Binary files show `-\t-\t<filename>`.
+ *
+ * @param {string} output - Raw numstat output
+ * @returns {Array<{ file: string, insertions: number, deletions: number, changes: number, binary: boolean }>}
+ */
+function parseNumstat(output) {
+  if (!output || !output.trim()) return [];
+  return output.trim().split('\n').map(line => {
+    const [ins, del, ...fileParts] = line.split('\t');
+    const file = fileParts.join('\t'); // handle filenames with tabs (rename arrows)
+    const binary = ins === '-' && del === '-';
+    const insertions = binary ? 0 : parseInt(ins, 10);
+    const deletions = binary ? 0 : parseInt(del, 10);
+    return { file, insertions, deletions, changes: insertions + deletions, binary };
+  });
+}
+
+/**
  * Full PR review setup orchestrator.
  *
  * Verifies repository access, fetches PR data, discovers (or clones) the
@@ -371,7 +392,7 @@ async function findRepositoryPath({ db, owner, repo, repository, prNumber, confi
  * @param {Function} [params.onProgress] - Optional progress callback
  * @returns {Promise<{ reviewUrl: string, title: string }>}
  */
-async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, onProgress }) {
+async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, onProgress, remoteShell }) {
   const repository = normalizeRepository(owner, repo);
   const progress = onProgress || (() => {});
 
@@ -393,90 +414,127 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, o
   const prData = await githubClient.fetchPullRequest(owner, repo, prNumber);
   progress({ step: 'fetch', status: 'completed', message: 'Pull request data fetched.' });
 
-  // ------------------------------------------------------------------
-  // Step: repo - Find (or clone) a local repository
-  // ------------------------------------------------------------------
-  progress({ step: 'repo', status: 'running', message: 'Locating repository...' });
-  const { repositoryPath, knownPath, worktreeSourcePath, checkoutScript, checkoutTimeout, worktreeConfig } = await findRepositoryPath({
-    db,
-    owner,
-    repo,
-    repository,
-    prNumber,
-    config,
-    onProgress: progress
-  });
-  progress({ step: 'repo', status: 'completed', message: `Repository located at ${repositoryPath}` });
-
-  // ------------------------------------------------------------------
-  // Step: worktree - Create git worktree for the PR
-  // ------------------------------------------------------------------
-  progress({ step: 'worktree', status: 'running', message: 'Setting up git worktree...' });
-  const worktreeManager = new GitWorktreeManager(db, worktreeConfig || {});
   const prInfo = { owner, repo, number: prNumber };
-  // Use worktreeSourcePath as cwd for git worktree add (if available) to inherit sparse-checkout
-  const worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, repositoryPath, { worktreeSourcePath, checkoutScript, checkoutTimeout });
-  progress({ step: 'worktree', status: 'completed', message: `Worktree created at ${worktreePath}` });
+  let repositoryPath, worktreePath, diff, changedFiles;
 
-  // ------------------------------------------------------------------
-  // Step: sparse - Expand sparse-checkout before generating diff
-  // ------------------------------------------------------------------
-  // IMPORTANT: Sparse-checkout expansion MUST happen before diff generation.
-  // In monorepo worktrees that inherit a sparse-checkout from the source
-  // worktree, the checkout may not include all directories touched by the PR.
-  // If we generate the diff first, files outside the sparse cone will be missing
-  // from the worktree, producing an incomplete or empty diff. Expanding the
-  // sparse-checkout ensures every PR-changed directory is present on disk so
-  // that `git diff` can read the actual file contents.
-  //
-  // NOTE: prData.changed_files is an INTEGER (count) from the GitHub pulls.get
-  // API, not an array. We must fetch the actual file list via pulls.listFiles.
-  if (checkoutScript) {
-    // checkout_script handles all sparse-checkout setup — skip built-in expansion
-    logger.info('Skipping built-in sparse-checkout expansion (checkout_script configured)');
-    progress({ step: 'sparse', status: 'completed', message: 'Sparse-checkout managed by checkout_script' });
-  } else if (prData.changed_files > 0) {
-    const isSparse = await worktreeManager.isSparseCheckoutEnabled(worktreePath);
-    if (isSparse) {
-      progress({ step: 'sparse', status: 'running', message: 'Expanding sparse-checkout for PR directories...' });
-      try {
-        const prFiles = await githubClient.fetchPullRequestFiles(owner, repo, prNumber);
-        const addedDirs = await worktreeManager.ensurePRDirectoriesInSparseCheckout(worktreePath, prFiles);
-        if (addedDirs.length > 0) {
-          logger.info(`Expanded sparse-checkout for PR directories: ${addedDirs.join(', ')}`);
+  if (remoteShell) {
+    // ================================================================
+    // Remote mode: all git operations run on the remote host
+    // ================================================================
+
+    // Step: repo — use remote working directory directly
+    progress({ step: 'repo', status: 'running', message: 'Using remote repository...' });
+    repositoryPath = remoteShell.config.remote_cwd;
+    worktreePath = remoteShell.config.remote_cwd;
+    progress({ step: 'repo', status: 'completed', message: `Remote repository at ${repositoryPath}` });
+
+    // Step: worktree — skip (remote cwd is the working directory)
+    progress({ step: 'worktree', status: 'running', message: 'Skipping worktree (remote mode)...' });
+    progress({ step: 'worktree', status: 'completed', message: 'Using remote working directory.' });
+
+    // Step: checkout_script — run remotely if configured
+    const { checkoutScript, checkoutTimeout } = resolveMonorepoOptions(config, repository);
+    if (checkoutScript) {
+      progress({ step: 'checkout_script', status: 'running', message: 'Running checkout script remotely...' });
+      await remoteShell.exec(checkoutScript, {
+        cwd: worktreePath,
+        env: { BASE_SHA: prData.base_sha, HEAD_SHA: prData.head_sha, PR_NUMBER: String(prNumber) },
+        timeout: checkoutTimeout
+      });
+      progress({ step: 'checkout_script', status: 'completed', message: 'Checkout script completed.' });
+    }
+
+    // Step: sparse — skip entirely (checkout_script handles it remotely)
+
+    // Step: diff — generate diff remotely
+    progress({ step: 'diff', status: 'running', message: 'Generating diff remotely...' });
+    const { stdout: diffOutput } = await remoteShell.exec(
+      `git diff ${prData.base_sha}...${prData.head_sha} --unified=3`,
+      { cwd: worktreePath }
+    );
+    diff = diffOutput;
+    const { stdout: numstatOutput } = await remoteShell.exec(
+      `git diff ${prData.base_sha}...${prData.head_sha} --numstat`,
+      { cwd: worktreePath }
+    );
+    changedFiles = parseNumstat(numstatOutput);
+    progress({ step: 'diff', status: 'completed', message: 'Diff generated.' });
+
+    // Step: store — persist with skipWorktreeRecord (no local worktree)
+    progress({ step: 'store', status: 'running', message: 'Storing pull request data...' });
+    await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath, { skipWorktreeRecord: true });
+    progress({ step: 'store', status: 'completed', message: 'Pull request data stored.' });
+
+  } else {
+    // ================================================================
+    // Local mode: existing behavior
+    // ================================================================
+
+    // Step: repo - Find (or clone) a local repository
+    progress({ step: 'repo', status: 'running', message: 'Locating repository...' });
+    const { repositoryPath: repoPath, knownPath, worktreeSourcePath, checkoutScript, checkoutTimeout, worktreeConfig } = await findRepositoryPath({
+      db,
+      owner,
+      repo,
+      repository,
+      prNumber,
+      config,
+      onProgress: progress
+    });
+    repositoryPath = repoPath;
+    progress({ step: 'repo', status: 'completed', message: `Repository located at ${repositoryPath}` });
+
+    // Step: worktree - Create git worktree for the PR
+    progress({ step: 'worktree', status: 'running', message: 'Setting up git worktree...' });
+    const worktreeManager = new GitWorktreeManager(db, worktreeConfig || {});
+    // Use worktreeSourcePath as cwd for git worktree add (if available) to inherit sparse-checkout
+    worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, repositoryPath, { worktreeSourcePath, checkoutScript, checkoutTimeout });
+    progress({ step: 'worktree', status: 'completed', message: `Worktree created at ${worktreePath}` });
+
+    // Step: sparse - Expand sparse-checkout before generating diff
+    if (checkoutScript) {
+      // checkout_script handles all sparse-checkout setup — skip built-in expansion
+      logger.info('Skipping built-in sparse-checkout expansion (checkout_script configured)');
+      progress({ step: 'sparse', status: 'completed', message: 'Sparse-checkout managed by checkout_script' });
+    } else if (prData.changed_files > 0) {
+      const isSparse = await worktreeManager.isSparseCheckoutEnabled(worktreePath);
+      if (isSparse) {
+        progress({ step: 'sparse', status: 'running', message: 'Expanding sparse-checkout for PR directories...' });
+        try {
+          const prFiles = await githubClient.fetchPullRequestFiles(owner, repo, prNumber);
+          const addedDirs = await worktreeManager.ensurePRDirectoriesInSparseCheckout(worktreePath, prFiles);
+          if (addedDirs.length > 0) {
+            logger.info(`Expanded sparse-checkout for PR directories: ${addedDirs.join(', ')}`);
+          }
+          progress({ step: 'sparse', status: 'completed', message: addedDirs.length > 0 ? `Expanded: ${addedDirs.join(', ')}` : 'No expansion needed' });
+        } catch (sparseError) {
+          logger.warn(`Sparse-checkout expansion failed (non-fatal): ${sparseError.message}`);
+          progress({ step: 'sparse', status: 'completed', message: `Sparse-checkout expansion skipped: ${sparseError.message}` });
         }
-        progress({ step: 'sparse', status: 'completed', message: addedDirs.length > 0 ? `Expanded: ${addedDirs.join(', ')}` : 'No expansion needed' });
-      } catch (sparseError) {
-        logger.warn(`Sparse-checkout expansion failed (non-fatal): ${sparseError.message}`);
-        progress({ step: 'sparse', status: 'completed', message: `Sparse-checkout expansion skipped: ${sparseError.message}` });
       }
     }
-  }
 
-  // ------------------------------------------------------------------
-  // Step: diff - Generate unified diff and changed file list
-  // ------------------------------------------------------------------
-  progress({ step: 'diff', status: 'running', message: 'Generating unified diff...' });
-  const diff = await worktreeManager.generateUnifiedDiff(worktreePath, prData);
-  const changedFiles = await worktreeManager.getChangedFiles(worktreePath, prData);
-  progress({ step: 'diff', status: 'completed', message: 'Diff generated.' });
+    // Step: diff - Generate unified diff and changed file list
+    progress({ step: 'diff', status: 'running', message: 'Generating unified diff...' });
+    diff = await worktreeManager.generateUnifiedDiff(worktreePath, prData);
+    changedFiles = await worktreeManager.getChangedFiles(worktreePath, prData);
+    progress({ step: 'diff', status: 'completed', message: 'Diff generated.' });
 
-  // ------------------------------------------------------------------
-  // Step: store - Persist PR data and register repository location
-  // ------------------------------------------------------------------
-  progress({ step: 'store', status: 'running', message: 'Storing pull request data...' });
-  await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath);
+    // Step: store - Persist PR data and register repository location
+    progress({ step: 'store', status: 'running', message: 'Storing pull request data...' });
+    await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath);
 
-  // Register the repository path for future sessions if it wasn't already known
-  if (knownPath === null && repositoryPath) {
-    const repoSettingsRepo = new RepoSettingsRepository(db);
-    const currentPath = await repoSettingsRepo.getLocalPath(repository);
-    if (path.resolve(currentPath || '') !== path.resolve(repositoryPath)) {
-      await repoSettingsRepo.setLocalPath(repository, repositoryPath);
-      logger.info(`Registered repository location: ${repositoryPath}`);
+    // Register the repository path for future sessions if it wasn't already known
+    if (knownPath === null && repositoryPath) {
+      const repoSettingsRepo = new RepoSettingsRepository(db);
+      const currentPath = await repoSettingsRepo.getLocalPath(repository);
+      if (path.resolve(currentPath || '') !== path.resolve(repositoryPath)) {
+        await repoSettingsRepo.setLocalPath(repository, repositoryPath);
+        logger.info(`Registered repository location: ${repositoryPath}`);
+      }
     }
+    progress({ step: 'store', status: 'completed', message: 'Pull request data stored.' });
   }
-  progress({ step: 'store', status: 'completed', message: 'Pull request data stored.' });
 
   // ------------------------------------------------------------------
   // Return the review URL and title for the caller
@@ -485,4 +543,4 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, o
   return { reviewUrl, title: prData.title };
 }
 
-module.exports = { setupPRReview, storePRData, registerRepositoryLocation, findRepositoryPath };
+module.exports = { setupPRReview, storePRData, registerRepositoryLocation, findRepositoryPath, parseNumstat };

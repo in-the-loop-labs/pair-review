@@ -15,7 +15,8 @@ const crypto = require('crypto');
 const { activeSetups, broadcastSetupProgress } = require('./shared');
 const { setupPRReview } = require('../setup/pr-setup');
 const { setupLocalReview } = require('../setup/local-setup');
-const { getGitHubToken } = require('../config');
+const { getGitHubToken, resolveMonorepoOptions } = require('../config');
+const { getRemoteShell } = require('../remote/connection-manager');
 const { queryOne } = require('../database');
 const { normalizeRepository } = require('../utils/paths');
 const logger = require('../utils/logger');
@@ -75,25 +76,35 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
       return res.json({ setupId: existing.setupId });
     }
 
+    // Resolve remote environment for this repo
+    const repository = normalizeRepository(owner, repo);
+    const { remoteEnv } = resolveMonorepoOptions(config, repository);
+    let remoteShell = null;
+    if (remoteEnv) {
+      remoteShell = await getRemoteShell(repository, config);
+    }
+
     // Check if we already have data AND a worktree for this PR in the database.
     // When a user deletes a worktree, PR metadata is preserved but the worktree
     // record is removed. We must re-run setup to recreate the worktree.
-    const repository = normalizeRepository(owner, repo);
-    const existingPR = await queryOne(
-      db,
-      'SELECT id FROM pr_metadata WHERE pr_number = ? AND repository = ? COLLATE NOCASE',
-      [prNumber, repository]
-    );
-    if (existingPR) {
-      const worktree = await queryOne(
+    // In remote mode, skip this check — there is no local worktree record.
+    if (!remoteShell) {
+      const existingPR = await queryOne(
         db,
-        'SELECT id FROM worktrees WHERE pr_number = ? AND repository = ? COLLATE NOCASE',
+        'SELECT id FROM pr_metadata WHERE pr_number = ? AND repository = ? COLLATE NOCASE',
         [prNumber, repository]
       );
-      if (worktree) {
-        return res.json({ existing: true, reviewUrl: `/pr/${owner}/${repo}/${prNumber}` });
+      if (existingPR) {
+        const worktree = await queryOne(
+          db,
+          'SELECT id FROM worktrees WHERE pr_number = ? AND repository = ? COLLATE NOCASE',
+          [prNumber, repository]
+        );
+        if (worktree) {
+          return res.json({ existing: true, reviewUrl: `/pr/${owner}/${repo}/${prNumber}` });
+        }
+        logger.info(`PR metadata exists but worktree missing for ${repository} #${prNumber}, re-running setup`);
       }
-      logger.info(`PR metadata exists but worktree missing for ${repository} #${prNumber}, re-running setup`);
     }
 
     // Start the async setup
@@ -108,6 +119,7 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
           prNumber,
           githubToken,
           config,
+          remoteShell,
           onProgress: (progress) => {
             sendSetupEvent(setupId, 'step', progress);
           }

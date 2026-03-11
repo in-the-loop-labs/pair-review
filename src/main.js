@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 const fs = require('fs');
 const { loadConfig, getConfigDir, getGitHubToken, showWelcomeMessage, resolveDbName, resolveMonorepoOptions } = require('./config');
+const { getRemoteShell, disconnectAll } = require('./remote/connection-manager');
 const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository, ReviewRepository, RepoSettingsRepository, GitHubReviewRepository } = require('./database');
 const { PRArgumentParser } = require('./github/parser');
 const { GitHubClient } = require('./github/client');
@@ -9,7 +10,7 @@ const { startServer } = require('./server');
 const Analyzer = require('./ai/analyzer');
 const { applyConfigOverrides } = require('./ai');
 const { handleLocalReview, findMainGitRoot } = require('./local-review');
-const { storePRData, registerRepositoryLocation, findRepositoryPath } = require('./setup/pr-setup');
+const { storePRData, registerRepositoryLocation, findRepositoryPath, parseNumstat } = require('./setup/pr-setup');
 const { normalizeRepository, resolveRenamedFile, resolveRenamedFileOld } = require('./utils/paths');
 const logger = require('./utils/logger');
 const simpleGit = require('simple-git');
@@ -624,9 +625,37 @@ async function performHeadlessReview(args, config, db, flags, options) {
     let diff;
     let changedFiles;
     const repository = normalizeRepository(prInfo.owner, prInfo.repo);
+    const { remoteEnv, checkoutScript, checkoutTimeout } = resolveMonorepoOptions(config, repository);
 
-    // Determine working directory: --use-checkout uses current directory
-    if (flags.useCheckout) {
+    if (remoteEnv) {
+      const remoteShell = await getRemoteShell(repository, config);
+      const remoteCwd = remoteEnv.remote_cwd;
+
+      if (checkoutScript) {
+        console.log('Running checkout script remotely...');
+        await remoteShell.exec(checkoutScript, {
+          cwd: remoteCwd,
+          env: { BASE_SHA: prData.base_sha, HEAD_SHA: prData.head_sha, PR_NUMBER: String(prInfo.number) },
+          timeout: checkoutTimeout
+        });
+      }
+
+      console.log('Generating diff remotely...');
+      const { stdout: remoteDiff } = await remoteShell.exec(
+        `git diff ${prData.base_sha}...${prData.head_sha} --unified=3`,
+        { cwd: remoteCwd }
+      );
+
+      const { stdout: numstatOutput } = await remoteShell.exec(
+        `git diff ${prData.base_sha}...${prData.head_sha} --numstat`,
+        { cwd: remoteCwd }
+      );
+      const remoteChangedFiles = parseNumstat(numstatOutput);
+
+      worktreePath = remoteCwd;
+      diff = remoteDiff;
+      changedFiles = remoteChangedFiles;
+    } else if (flags.useCheckout) {
       worktreePath = process.cwd();
 
       // Verify cwd matches the target repository when using --use-checkout
@@ -740,7 +769,7 @@ async function performHeadlessReview(args, config, db, flags, options) {
     // Store PR data in database
     console.log('Storing pull request data...');
     await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath, {
-      skipWorktreeRecord: !!flags.useCheckout
+      skipWorktreeRecord: !!(remoteEnv || flags.useCheckout)
     });
 
     // Get PR metadata ID for AI analysis
@@ -770,6 +799,11 @@ async function performHeadlessReview(args, config, db, flags, options) {
     console.log('Running AI analysis (all 3 levels)...');
     const model = flags.model || process.env.PAIR_REVIEW_MODEL || 'opus';
     const analyzer = new Analyzer(db, model);
+
+    if (remoteEnv) {
+      const remoteShell = await getRemoteShell(repository, config);
+      analyzer.remoteShell = remoteShell;
+    }
 
     let analysisSummary = null;
     try {
@@ -1018,7 +1052,11 @@ async function handleActionReview(args, config, db, flags = {}) {
  */
 function gracefulShutdown(signal) {
   console.log(`\nReceived ${signal}, shutting down gracefully...`);
-  
+
+  disconnectAll().catch(err => {
+    console.error('Error disconnecting remote shells:', err.message);
+  });
+
   if (db) {
     db.close((error) => {
       if (error) {

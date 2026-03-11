@@ -260,15 +260,26 @@ class PiProvider extends AIProvider {
         fullArgs = [...this.baseArgs];
       }
 
-      const pi = spawn(fullCommand, fullArgs, {
-        cwd,
-        env: {
-          ...process.env,
-          ...this.extraEnv,
-          PATH: `${BIN_DIR}:${process.env.PATH}`
-        },
-        shell: this.useShell
-      });
+      const { remoteShell } = options;
+      let pi;
+      if (remoteShell) {
+        // Remote mode: spawn pi over SSH
+        const remoteCmd = this.useShell
+          ? `${fullCommand} ${fullArgs.join(' ')}`
+          : [fullCommand, ...fullArgs].join(' ');
+        pi = remoteShell.spawn(remoteCmd, { cwd });
+      } else {
+        // Local mode: existing spawn logic
+        pi = spawn(fullCommand, fullArgs, {
+          cwd,
+          env: {
+            ...process.env,
+            ...this.extraEnv,
+            PATH: `${BIN_DIR}:${process.env.PATH}`
+          },
+          shell: this.useShell
+        });
+      }
 
       const pid = pi.pid;
       logger.debug(`${levelPrefix} Pi CLI command: ${fullCommand} ${fullArgs.join(' ')}`);

@@ -113,6 +113,18 @@ class Analyzer {
     this.db = database;
     this.testContextCache = new Map(); // Cache test detection results per worktree
     this._worktreeManager = null; // Lazy-initialized for sparse-checkout queries
+    this.remoteShell = null; // Set externally for remote mode
+  }
+
+  /**
+   * Execute a command locally or remotely depending on whether a remote shell is configured.
+   * Drop-in replacement for execPromise when commands need to run in the worktree context.
+   */
+  async _execInContext(command, options = {}) {
+    if (this.remoteShell) {
+      return this.remoteShell.exec(command, options);
+    }
+    return execPromise(command, options);
   }
 
   /**
@@ -658,7 +670,7 @@ Do NOT create suggestions for any files not in this list. If you cannot find iss
    */
   async getChangedFilesList(worktreePath, prMetadata) {
     try {
-      const { stdout } = await execPromise(
+      const { stdout } = await this._execInContext(
         `git diff ${prMetadata.base_sha}...${prMetadata.head_sha} --name-only`,
         { cwd: worktreePath }
       );
@@ -857,6 +869,7 @@ Or simply ignore any changes to files matching these patterns in your analysis.
         analysisId,
         registerProcess,
         logPrefix: adapterLogPrefix,
+        remoteShell: this.remoteShell,
         onStreamEvent: progressCallback ? (event) => {
           progressCallback({ level: 1, status: 'running', streamEvent: event });
         } : undefined
@@ -1821,6 +1834,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
         analysisId,
         registerProcess,
         logPrefix: adapterLogPrefix,
+        remoteShell: this.remoteShell,
         onStreamEvent: progressCallback ? (event) => {
           progressCallback({ level: 2, status: 'running', streamEvent: event });
         } : undefined
@@ -1935,6 +1949,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
         analysisId,
         registerProcess,
         logPrefix: adapterLogPrefix,
+        remoteShell: this.remoteShell,
         onStreamEvent: progressCallback ? (event) => {
           progressCallback({ level: 3, status: 'running', streamEvent: event });
         } : undefined
@@ -2005,7 +2020,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
       // Step 1: Detect primary language(s) from changed files
       // For local mode, use git diff HEAD; for PR mode, use base...head
       const diffCmd = this.buildGitDiffCommand(prMetadata, '--name-only');
-      const { stdout: changedFiles } = await execPromise(diffCmd, { cwd: worktreePath });
+      const { stdout: changedFiles } = await this._execInContext(diffCmd, { cwd: worktreePath });
       const files = changedFiles.trim().split('\n').filter(f => f.length > 0);
       
       const languages = this.detectLanguages(files);
@@ -2022,8 +2037,8 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
         
         for (const pattern of patterns) {
           try {
-            const { stdout: foundFiles } = await execPromise(
-              `find . -name "${pattern}" -type f | head -20`, 
+            const { stdout: foundFiles } = await this._execInContext(
+              `find . -name "${pattern}" -type f | head -20`,
               { cwd: worktreePath }
             );
             
@@ -2481,6 +2496,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         analysisId,
         registerProcess,
         logPrefix: adapterLogPrefix,
+        remoteShell: this.remoteShell,
         onStreamEvent: progressCallback ? (event) => {
           progressCallback({ level: 'orchestration', status: 'running', streamEvent: event });
         } : undefined

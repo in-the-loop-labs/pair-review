@@ -24,7 +24,8 @@ const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs').promises;
 const path = require('path');
-const { getGitHubToken } = require('../config');
+const { getGitHubToken, resolveMonorepoOptions } = require('../config');
+const { getRemoteShell } = require('../remote/connection-manager');
 const logger = require('../utils/logger');
 const { buildDiffLineSet } = require('../utils/diff-annotator');
 const { broadcastReviewEvent } = require('../events/review-events');
@@ -1460,13 +1461,26 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
       });
     }
 
-    const worktreeManager = new GitWorktreeManager(db);
-    const worktreePath = await worktreeManager.getWorktreePath({ owner, repo, number: prNumber });
+    // Resolve remote config for this repository
+    const config = req.app.get('config');
+    const { remoteEnv } = resolveMonorepoOptions(config, repository);
+    const remoteShell = remoteEnv ? await getRemoteShell(repository, config) : null;
 
-    if (!await worktreeManager.worktreeExists({ owner, repo, number: prNumber })) {
-      return res.status(404).json({
-        error: 'Worktree not found for this PR. Please reload the PR.'
-      });
+    let worktreePath;
+    if (remoteShell) {
+      // Remote mode: worktree path comes from pr_metadata or remote_cwd config
+      const prData = safeParseJson(prMetadata.pr_data, {});
+      worktreePath = prData.worktree_path || remoteEnv.remote_cwd;
+    } else {
+      // Local mode: existing worktree validation
+      const worktreeManager = new GitWorktreeManager(db);
+      worktreePath = await worktreeManager.getWorktreePath({ owner, repo, number: prNumber });
+
+      if (!await worktreeManager.worktreeExists({ owner, repo, number: prNumber })) {
+        return res.status(404).json({
+          error: 'Worktree not found for this PR. Please reload the PR.'
+        });
+      }
     }
 
     const { provider, model, repoInstructions, combinedInstructions } = await withTransaction(db, async () => {
@@ -1556,6 +1570,7 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
     broadcastReviewEvent(review.id, { type: 'review:analysis_started', analysisId });
 
     const analyzer = new Analyzer(req.app.get('db'), model, provider);
+    analyzer.remoteShell = remoteShell;
 
     logger.section(`AI Analysis Request - PR #${prNumber}`);
     logger.log('API', `Repository: ${repository}`, 'magenta');
