@@ -468,7 +468,7 @@ router.get('/api/pr/:owner/:repo/:number/check-stale', async (req, res) => {
     }
 
     // Fetch current PR from GitHub
-    const githubClient = new GitHubClient(config.github_token);
+    const githubClient = new GitHubClient(getGitHubToken(config));
     const remotePrData = await githubClient.fetchPullRequest(owner, repo, prNumber);
 
     const remoteHeadSha = remotePrData.head_sha;
