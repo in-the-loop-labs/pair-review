@@ -188,6 +188,24 @@
           "badgeClass": "badge-power"
         }
       ]
+    },
+
+    "my-acp-agent": {
+      "_comment": "Example ACP (Agent Client Protocol) provider. Set type to 'acp' to register any ACP-compatible agent as a review provider. The agent must support --acp --stdio mode. Models are optional — a 'Default' model is created automatically if omitted.",
+      "type": "acp",
+      "command": "my-agent",
+      "args": ["--acp", "--stdio"],
+      "name": "My Custom Agent",
+      "env": {},
+      "installInstructions": "npm install -g my-agent",
+      "models": [
+        {
+          "id": "default",
+          "name": "Default",
+          "tier": "balanced",
+          "default": true
+        }
+      ]
     }
   },
 
