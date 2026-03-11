@@ -1,4 +1,4 @@
-const { exec, spawn } = require('child_process');
+const { exec, spawn: nodeSpawn, execFile } = require('child_process');
 const util = require('util');
 const execPromise = util.promisify(exec);
 const path = require('path');
@@ -84,50 +84,96 @@ class RemoteShell {
     await this.connect();
   }
 
-  _buildRemoteCommand(command, { cwd, env } = {}) {
-    const execPrefix = this._substituteVars(this.config.exec_prefix);
+  /**
+   * Build a shell script to run on the remote.
+   * Returns plain text — no quoting for SSH transport needed
+   * because we pipe it through stdin.
+   */
+  _buildScript(command, { cwd, env } = {}) {
     const remoteCwd = cwd || this.config.remote_cwd;
+    const lines = [];
 
-    let envExports = '';
-    if (env && Object.keys(env).length > 0) {
-      envExports = Object.entries(env)
-        .map(([k, v]) => `export ${k}=${shellQuote(v)}`)
-        .join('; ') + '; ';
+    if (remoteCwd) {
+      // cd with || exit so we fail fast if the path doesn't exist
+      lines.push(`cd ${shellQuote(remoteCwd)} || exit 1`);
     }
 
-    // Build the command to run inside bash -l on the remote
-    let innerCmd = '';
-    if (remoteCwd) {
-      // Handle tilde: use $HOME expansion (double-quoted so it expands on remote)
-      if (remoteCwd.startsWith('~/')) {
-        innerCmd += `cd "$HOME/${remoteCwd.slice(2)}" && `;
-      } else {
-        innerCmd += `cd ${shellQuote(remoteCwd)} && `;
+    if (env && Object.keys(env).length > 0) {
+      for (const [k, v] of Object.entries(env)) {
+        lines.push(`export ${k}=${shellQuote(v)}`);
       }
     }
-    innerCmd += envExports + command;
 
-    // Two levels of quoting needed for SSH transport:
-    // 1. shellQuote(innerCmd) makes it a single argument to `bash -l -c`
-    // 2. shellQuote(bashCmd) survives SSH's arg concatenation + remote shell parsing
-    const bashCmd = `bash -l -c ${shellQuote(innerCmd)}`;
-    return `${execPrefix} ${shellQuote(bashCmd)}`;
+    lines.push(command);
+    return lines.join('\n') + '\n';
   }
 
+  /**
+   * Parse exec_prefix into SSH args array.
+   * exec_prefix is e.g. "ssh -S /tmp/sock river@tunnel"
+   */
+  _sshArgs() {
+    const execPrefix = this._substituteVars(this.config.exec_prefix);
+    const parts = execPrefix.split(/\s+/);
+    // First element is 'ssh', rest are args
+    return { bin: parts[0], args: parts.slice(1) };
+  }
+
+  /**
+   * Execute a command remotely, capturing stdout/stderr.
+   * Pipes the script through stdin to avoid shell quoting issues.
+   */
   async exec(command, options = {}) {
     await this.ensureConnected();
-    const fullCmd = this._buildRemoteCommand(command, options);
-    logger.debug(`RemoteShell exec: ${fullCmd}`);
+    const script = this._buildScript(command, options);
+    const { bin, args } = this._sshArgs();
+    const sshArgs = [...args, 'bash', '-l'];
+
+    logger.debug(`RemoteShell exec: ${bin} ${sshArgs.join(' ')} <<< ${JSON.stringify(script)}`);
+
     const timeout = options.timeout || 300000;
-    return execPromise(fullCmd, { timeout, maxBuffer: 50 * 1024 * 1024 });
+
+    return new Promise((resolve, reject) => {
+      const child = execFile(bin, sshArgs, {
+        timeout,
+        maxBuffer: 50 * 1024 * 1024,
+      }, (error, stdout, stderr) => {
+        if (error) {
+          // Attach stderr to the error for better debugging
+          error.stderr = stderr;
+          logger.error(`RemoteShell exec failed: ${error.message}\nstderr: ${stderr}`);
+          reject(error);
+        } else {
+          resolve({ stdout, stderr });
+        }
+      });
+
+      child.stdin.write(script);
+      child.stdin.end();
+    });
   }
 
+  /**
+   * Spawn a command remotely with streaming stdio.
+   * Used for AI providers (pi) that stream JSONL.
+   */
   spawn(command, options = {}) {
-    const fullCmd = this._buildRemoteCommand(command, options);
-    logger.debug(`RemoteShell spawn: ${fullCmd}`);
-    return spawn('bash', ['-c', fullCmd], {
+    const script = this._buildScript(command, options);
+    const { bin, args } = this._sshArgs();
+    // Use exec in the script so the command replaces bash and stdio flows through
+    const execScript = this._buildScript(`exec ${command}`, options);
+    const sshArgs = [...args, 'bash', '-l'];
+
+    logger.debug(`RemoteShell spawn: ${bin} ${sshArgs.join(' ')}`);
+
+    const child = nodeSpawn(bin, sshArgs, {
       stdio: ['pipe', 'pipe', 'pipe']
     });
+
+    child.stdin.write(execScript);
+    child.stdin.end();
+
+    return child;
   }
 
   getConnectionInfo() {

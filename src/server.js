@@ -8,6 +8,7 @@ const { applyConfigOverrides, checkAllProviders } = require('./ai');
 const { checkAllChatProviders } = require('./chat/chat-providers');
 const logger = require('./utils/logger');
 const { attachWebSocket, closeAll: closeAllWS } = require('./ws');
+const { disconnectAll: disconnectAllRemote } = require('./remote/connection-manager');
 
 let db = null;
 let server = null;
@@ -223,12 +224,21 @@ async function startServer(sharedDb = null) {
           // When a user deletes a worktree, metadata is preserved but the
           // worktree record is removed. Without this check the route serves
           // pr.html for a missing worktree, causing 404s on file fetches.
-          const worktree = await queryOne(db, 'SELECT id FROM worktrees WHERE pr_number = ? AND repository = ? COLLATE NOCASE', [prNumber, repository]);
-          if (worktree) {
+          // In remote mode (remote_env configured), there is no local worktree
+          // record — skip the check.
+          const config = app.get('config');
+          const { resolveMonorepoOptions } = require('./config');
+          const { remoteEnv } = resolveMonorepoOptions(config, repository);
+          if (remoteEnv) {
             res.sendFile(path.join(__dirname, '..', 'public', 'pr.html'));
           } else {
-            logger.info(`PR metadata exists but no worktree for ${repository} #${prNumber}, serving setup page`);
-            res.sendFile(path.join(__dirname, '..', 'public', 'setup.html'));
+            const worktree = await queryOne(db, 'SELECT id FROM worktrees WHERE pr_number = ? AND repository = ? COLLATE NOCASE', [prNumber, repository]);
+            if (worktree) {
+              res.sendFile(path.join(__dirname, '..', 'public', 'pr.html'));
+            } else {
+              logger.info(`PR metadata exists but no worktree for ${repository} #${prNumber}, serving setup page`);
+              res.sendFile(path.join(__dirname, '..', 'public', 'setup.html'));
+            }
           }
         } else {
           res.sendFile(path.join(__dirname, '..', 'public', 'setup.html'));
@@ -372,6 +382,13 @@ async function gracefulShutdown(signal) {
   }
 
   closeAllWS();
+
+  // Tear down SSH ControlMaster sockets for remote environments
+  try {
+    await disconnectAllRemote();
+  } catch (error) {
+    console.error('Error disconnecting remote shells:', error.message);
+  }
 
   if (server) {
     server.close(() => {

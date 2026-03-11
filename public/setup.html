@@ -517,6 +517,9 @@
         </div>
     </div>
 
+    <!-- WebSocket client -->
+    <script src="/js/ws-client.js"></script>
+
     <script>
         // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -718,17 +721,15 @@
 
             /* ── Setup Flow ── */
             async function startSetup() {
-                var postUrl, sseBaseUrl;
+                var postUrl;
 
                 if (mode === 'pr') {
                     var o = encodeURIComponent(context.owner);
                     var r = encodeURIComponent(context.repo);
                     var n = encodeURIComponent(context.number);
                     postUrl = '/api/setup/pr/' + o + '/' + r + '/' + n;
-                    sseBaseUrl = postUrl + '/progress';
                 } else if (mode === 'local') {
                     postUrl = '/api/setup/local';
-                    sseBaseUrl = '/api/setup/local';
                 } else {
                     showError('Unable to determine review mode. Please return home and try again.');
                     return;
@@ -765,15 +766,7 @@
                         throw new Error('No setup ID returned from server');
                     }
 
-                    // Connect to SSE endpoint
-                    var sseUrl;
-                    if (mode === 'pr') {
-                        sseUrl = sseBaseUrl + '?setupId=' + encodeURIComponent(data.setupId);
-                    } else {
-                        sseUrl = sseBaseUrl + '/' + encodeURIComponent(data.setupId) + '/progress';
-                    }
-
-                    connectSSE(sseUrl);
+                    connectWS(data.setupId);
 
                 } catch (err) {
                     showError(err.message || 'Failed to start setup. Please try again.');
@@ -784,98 +777,66 @@
                 }
             }
 
-            /* ── SSE Connection ── */
-            function connectSSE(url) {
-                var eventSource = new EventSource(url);
+            /* ── WebSocket Connection ── */
+            // Note: No wsReconnected recovery here. Setup is a short-lived,
+            // one-time flow — if the WS drops mid-setup, the user can simply
+            // reload the page. Not worth the complexity of state recovery.
+            function connectWS(setupId) {
+                window.wsClient.connect();
 
-                eventSource.addEventListener('step', function(e) {
-                    try {
-                        var payload = JSON.parse(e.data);
-                        var stepId = payload.step || payload.id;
-                        var status = payload.status || 'running';
-                        var message = payload.message || '';
+                var unsub = window.wsClient.subscribe('setup:' + setupId, function(msg) {
+                    switch (msg.type) {
+                        case 'step': {
+                            var stepId = msg.step || msg.id;
+                            var status = msg.status || 'running';
+                            var message = msg.message || '';
 
-                        stepStates[stepId] = { status: status, message: message };
-                        renderSteps();
-                        updateProgressBar();
-                    } catch (err) {
-                        console.error('Error parsing step event:', err);
-                    }
-                });
-
-                eventSource.addEventListener('complete', function(e) {
-                    try {
-                        var payload = JSON.parse(e.data);
-
-                        // Mark all steps as completed
-                        for (var i = 0; i < steps.length; i++) {
-                            if (!stepStates[steps[i].id] || stepStates[steps[i].id].status !== 'completed') {
-                                stepStates[steps[i].id] = { status: 'completed', message: '' };
-                            }
+                            stepStates[stepId] = { status: status, message: message };
+                            renderSteps();
+                            updateProgressBar();
+                            break;
                         }
-                        renderSteps();
-                        updateProgressBar();
 
-                        showRedirect();
-                        eventSource.close();
-
-                        // Small delay so the user sees the completed state
-                        setTimeout(function() {
-                            if (payload.reviewUrl) {
-                                var targetUrl = new URL(payload.reviewUrl, window.location.origin);
-                                var qs = new URLSearchParams(window.location.search);
-                                if (qs.get('analyze') === 'true') targetUrl.searchParams.set('analyze', qs.get('analyze'));
-                                window.location.href = targetUrl.toString();
+                        case 'complete': {
+                            unsub();
+                            // Mark all steps as completed
+                            for (var i = 0; i < steps.length; i++) {
+                                if (!stepStates[steps[i].id] || stepStates[steps[i].id].status !== 'completed') {
+                                    stepStates[steps[i].id] = { status: 'completed', message: '' };
+                                }
                             }
-                        }, 400);
-                    } catch (err) {
-                        console.error('Error parsing complete event:', err);
-                    }
-                });
+                            renderSteps();
+                            updateProgressBar();
+                            showRedirect();
 
-                eventSource.addEventListener('error', function(e) {
-                    // SSE 'error' event type from server (custom)
-                    if (e.data) {
-                        try {
-                            var payload = JSON.parse(e.data);
-                            var failedStep = payload.step;
-                            var errorMsg = payload.message || 'An unexpected error occurred';
+                            // Small delay so the user sees the completed state
+                            setTimeout(function() {
+                                if (msg.reviewUrl) {
+                                    var targetUrl = new URL(msg.reviewUrl, window.location.origin);
+                                    var qs = new URLSearchParams(window.location.search);
+                                    if (qs.get('analyze') === 'true') targetUrl.searchParams.set('analyze', qs.get('analyze'));
+                                    window.location.href = targetUrl.toString();
+                                }
+                            }, 400);
+                            break;
+                        }
 
-                            if (failedStep && stepStates[failedStep]) {
-                                stepStates[failedStep] = { status: 'error', message: errorMsg };
-                            } else if (failedStep) {
+                        case 'error': {
+                            unsub();
+                            var failedStep = msg.step;
+                            var errorMsg = msg.message || 'An unexpected error occurred';
+
+                            if (failedStep) {
                                 stepStates[failedStep] = { status: 'error', message: errorMsg };
                             }
 
                             renderSteps();
                             updateProgressBar();
                             showError(errorMsg);
-                            eventSource.close();
-                            return;
-                        } catch (parseErr) {
-                            // Not a JSON error event, fall through
-                        }
-                    }
-
-                    // Native EventSource error (connection lost, etc.)
-                    if (eventSource.readyState === EventSource.CLOSED) {
-                        // Check if we got any errors already shown
-                        if (!errorSection.classList.contains('visible')) {
-                            showError('Connection to server was lost. Please retry.');
-                            updateProgressBar();
+                            break;
                         }
                     }
                 });
-
-                eventSource.onerror = function() {
-                    // EventSource connection failure
-                    if (eventSource.readyState === EventSource.CLOSED) {
-                        if (!errorSection.classList.contains('visible') && !redirectSection.classList.contains('visible')) {
-                            showError('Connection to server was lost. Please retry.');
-                            updateProgressBar();
-                        }
-                    }
-                };
             }
 
             /* ── Kick Off ── */
