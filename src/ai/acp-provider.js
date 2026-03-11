@@ -133,6 +133,14 @@ class AcpProvider extends AIProvider {
         shell: useShell,
       });
 
+      proc.on('error', (error) => {
+        if (error.code === 'ENOENT') {
+          logger.error(`${levelPrefix} ACP CLI not found: ${this.command}`);
+        } else {
+          logger.error(`${levelPrefix} ACP process error: ${error.message}`);
+        }
+      });
+
       const pid = proc.pid;
       logger.info(`${levelPrefix} Spawned ACP process: PID ${pid}`);
 
@@ -250,7 +258,9 @@ class AcpProvider extends AIProvider {
         }, timeout);
       });
 
-      await Promise.race([promptPromise, timeoutPromise]);
+      const raceResult = Promise.race([promptPromise, timeoutPromise]);
+      promptPromise.catch(() => {}); // swallow rejection if timeout wins
+      await raceResult;
 
       if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
 
@@ -273,9 +283,12 @@ class AcpProvider extends AIProvider {
       }
 
       // Regex extraction failed — try LLM-based extraction as fallback
+      // TODO: ACP lifecycle overhead makes it impractical for the lightweight extraction fallback.
+      // getExtractionConfig() returns null, so extractJSONWithLLM() will always return { success: false }.
+      // A future implementation could send a second ACP prompt asking the agent to fix its JSON.
       logger.warn(`${levelPrefix} Regex extraction failed: ${extracted.error}`);
       logger.info(`${levelPrefix} Raw response length: ${accumulatedText.length} characters`);
-      logger.info(`${levelPrefix} Attempting LLM-based JSON extraction fallback...`);
+      logger.info(`${levelPrefix} Attempting LLM-based JSON extraction fallback (no-op for ACP providers)...`);
 
       try {
         const llmExtracted = await this.extractJSONWithLLM(accumulatedText, {

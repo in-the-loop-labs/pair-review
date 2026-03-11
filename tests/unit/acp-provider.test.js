@@ -49,7 +49,7 @@ function createMockProcess(exitCode = 0, stdout = 'v1.0.0', error = null) {
   return proc;
 }
 
-function createMockDeps(responseText = '{"level":1,"suggestions":[]}') {
+function createMockDeps(responseText = '{"level":1,"suggestions":[]}', { promptImpl } = {}) {
   const mockProcess = new EventEmitter();
   mockProcess.stdout = new EventEmitter();
   mockProcess.stderr = new EventEmitter();
@@ -68,22 +68,28 @@ function createMockDeps(responseText = '{"level":1,"suggestions":[]}') {
   let sessionUpdateHandler = null;
   let permissionHandler = null;
 
+  // Default prompt impl: emit agent_message_chunk with responseText
+  const defaultPromptImpl = async () => {
+    if (sessionUpdateHandler) {
+      sessionUpdateHandler({
+        sessionId: 'test-session-123',
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: responseText },
+        },
+      });
+    }
+  };
+
   const mockConnection = {
     initialize: vi.fn().mockResolvedValue(undefined),
     newSession: vi.fn().mockResolvedValue({ sessionId: 'test-session-123' }),
     unstable_setSessionModel: vi.fn().mockResolvedValue(undefined),
-    prompt: vi.fn().mockImplementation(async () => {
-      // Simulate agent_message_chunk during prompt execution
-      if (sessionUpdateHandler) {
-        sessionUpdateHandler({
-          sessionId: 'test-session-123',
-          update: {
-            sessionUpdate: 'agent_message_chunk',
-            content: { type: 'text', text: responseText },
-          },
-        });
-      }
-    }),
+    prompt: vi.fn().mockImplementation(
+      promptImpl
+        ? (...args) => promptImpl(sessionUpdateHandler, ...args)
+        : defaultPromptImpl
+    ),
     cancel: vi.fn().mockResolvedValue(undefined),
   };
 
@@ -503,60 +509,25 @@ describe('AcpProvider', () => {
     });
 
     it('should call onStreamEvent for tool_call updates', async () => {
-      // Custom mock that emits a tool_call update
-      const mockProcess = new EventEmitter();
-      mockProcess.stdout = new EventEmitter();
-      mockProcess.stderr = new EventEmitter();
-      mockProcess.stdin = { on: vi.fn() };
-      mockProcess.kill = vi.fn(() => {
-        mockProcess.killed = true;
-        setTimeout(() => mockProcess.emit('close', null), 0);
-      });
-      mockProcess.killed = false;
-      mockProcess.pid = 88888;
-
-      let sessionUpdateHandler = null;
-      const mockConnection = {
-        initialize: vi.fn().mockResolvedValue(undefined),
-        newSession: vi.fn().mockResolvedValue({ sessionId: 'sess-1' }),
-        unstable_setSessionModel: vi.fn().mockResolvedValue(undefined),
-        prompt: vi.fn().mockImplementation(async () => {
+      const { _deps } = createMockDeps('{"level":1}', {
+        promptImpl: async (sessionUpdateHandler) => {
           if (sessionUpdateHandler) {
             // Emit tool_call
             sessionUpdateHandler({
-              sessionId: 'sess-1',
+              sessionId: 'test-session-123',
               update: { sessionUpdate: 'tool_call', title: 'Read file', kind: 'shell' },
             });
             // Then emit text with JSON
             sessionUpdateHandler({
-              sessionId: 'sess-1',
+              sessionId: 'test-session-123',
               update: {
                 sessionUpdate: 'agent_message_chunk',
                 content: { type: 'text', text: '{"level":1}' },
               },
             });
           }
-        }),
-      };
-
-      function MockCSC(handlerFactory) {
-        const handler = handlerFactory('mock-agent');
-        sessionUpdateHandler = handler.sessionUpdate;
-        Object.assign(this, mockConnection);
-      }
-
-      const mockAcp = {
-        ndJsonStream: vi.fn().mockReturnValue('mock-stream'),
-        ClientSideConnection: MockCSC,
-        PROTOCOL_VERSION: '2025-01-01',
-      };
-
-      const _deps = {
-        spawn: vi.fn().mockReturnValue(mockProcess),
-        acp: mockAcp,
-        Writable: { toWeb: vi.fn().mockReturnValue('w') },
-        Readable: { toWeb: vi.fn().mockReturnValue('r') },
-      };
+        },
+      });
 
       const TestProvider = createAcpProviderClass('tool-test', { command: 'agent' });
       const instance = new TestProvider('default', { command: 'agent', _deps });
@@ -609,42 +580,9 @@ describe('AcpProvider', () => {
     });
 
     it('should handle timeout by rejecting with error', async () => {
-      // Create a mock that never resolves prompt
-      const mockProcess = new EventEmitter();
-      mockProcess.stdout = new EventEmitter();
-      mockProcess.stderr = new EventEmitter();
-      mockProcess.stdin = { on: vi.fn() };
-      mockProcess.kill = vi.fn(() => {
-        mockProcess.killed = true;
-        setTimeout(() => mockProcess.emit('close', null), 0);
+      const { _deps } = createMockDeps('', {
+        promptImpl: () => new Promise(() => {}), // never resolves
       });
-      mockProcess.killed = false;
-      mockProcess.pid = 77777;
-
-      const mockConnection = {
-        initialize: vi.fn().mockResolvedValue(undefined),
-        newSession: vi.fn().mockResolvedValue({ sessionId: 'sess-timeout' }),
-        unstable_setSessionModel: vi.fn().mockResolvedValue(undefined),
-        prompt: vi.fn().mockReturnValue(new Promise(() => {})), // never resolves
-      };
-
-      function MockCSCTimeout(handlerFactory) {
-        handlerFactory('mock-agent');
-        Object.assign(this, mockConnection);
-      }
-
-      const mockAcp = {
-        ndJsonStream: vi.fn().mockReturnValue('mock-stream'),
-        ClientSideConnection: MockCSCTimeout,
-        PROTOCOL_VERSION: '2025-01-01',
-      };
-
-      const _deps = {
-        spawn: vi.fn().mockReturnValue(mockProcess),
-        acp: mockAcp,
-        Writable: { toWeb: vi.fn().mockReturnValue('w') },
-        Readable: { toWeb: vi.fn().mockReturnValue('r') },
-      };
 
       const TestProvider = createAcpProviderClass('timeout-test', { command: 'slow-agent' });
       const instance = new TestProvider('default', { command: 'slow-agent', _deps });
@@ -704,6 +642,58 @@ describe('AcpProvider', () => {
       expect(spawnCmd).toContain("'--flag=value(1)'");
       // Simple args should remain unquoted
       expect(spawnCmd).toContain('--acp');
+    });
+
+    it('should register error handler on spawned process', async () => {
+      const { _deps, mockProcess } = createMockDeps('{"level":1}');
+
+      const TestProvider = createAcpProviderClass('enoent-test', { command: 'nonexistent-cli' });
+      const instance = new TestProvider('default', { command: 'nonexistent-cli', _deps });
+
+      // Execute to set up the error handler
+      const executePromise = instance.execute('prompt', { level: 2 });
+
+      // Verify that an 'error' listener was registered on the process
+      const errorListeners = mockProcess.listeners('error');
+      expect(errorListeners.length).toBeGreaterThanOrEqual(1);
+
+      await executePromise;
+    });
+
+    it('should handle ENOENT error on spawned process without crashing', async () => {
+      const { _deps, mockProcess } = createMockDeps('{"level":1}');
+
+      const TestProvider = createAcpProviderClass('enoent-test', { command: 'nonexistent-cli' });
+      const instance = new TestProvider('default', { command: 'nonexistent-cli', _deps });
+
+      const executePromise = instance.execute('prompt', { level: 2 });
+
+      // Emit ENOENT error — should be caught by the handler, not crash
+      const enoentError = new Error('spawn nonexistent-cli ENOENT');
+      enoentError.code = 'ENOENT';
+      mockProcess.emit('error', enoentError);
+
+      // Execute should still complete successfully (prompt resolved with valid JSON)
+      const result = await executePromise;
+      expect(result).toEqual({ level: 1 });
+    });
+
+    it('should handle non-ENOENT error on spawned process without crashing', async () => {
+      const { _deps, mockProcess } = createMockDeps('{"level":1}');
+
+      const TestProvider = createAcpProviderClass('err-test', { command: 'myagent' });
+      const instance = new TestProvider('default', { command: 'myagent', _deps });
+
+      const executePromise = instance.execute('prompt', { level: 3 });
+
+      // Emit a non-ENOENT error — should be caught by the handler, not crash
+      const genericError = new Error('something went wrong');
+      genericError.code = 'EPERM';
+      mockProcess.emit('error', genericError);
+
+      // Execute should still complete successfully
+      const result = await executePromise;
+      expect(result).toEqual({ level: 1 });
     });
   });
 
