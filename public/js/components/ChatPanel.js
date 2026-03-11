@@ -32,6 +32,7 @@ class ChatPanel {
     this._analysisContextRemoved = false;
     this._sessionAnalysisRunId = null; // tracks which AI run ID's context is loaded in the current session
     this._openPromise = null; // concurrency guard for open()
+    this._sessionWarm = false; // true once the session has been used in this page load
     this._activeProvider = window.__pairReview?.chatProvider || 'pi';
     this._chatProviders = window.__pairReview?.chatProviders || [];
 
@@ -83,6 +84,9 @@ class ChatPanel {
               </svg>
             </button>
           </div>
+        </div>
+        <div class="chat-panel__status-flash" style="display:none">
+          <span class="chat-panel__status-flash-text">Starting Agent Client Protocol</span>
         </div>
         <div class="chat-panel__messages-wrapper">
           <div class="chat-panel__messages" id="chat-messages">
@@ -170,6 +174,7 @@ class ChatPanel {
     this.historyBtn = this.container.querySelector('.chat-panel__history-btn');
     this.titleTextEl = this.container.querySelector('.chat-panel__title-text');
     this.newContentPill = this.container.querySelector('.chat-panel__new-content-pill');
+    this.statusFlash = this.container.querySelector('.chat-panel__status-flash');
   }
 
   /**
@@ -405,6 +410,53 @@ class ChatPanel {
     const entry = this._chatProviders.find(p => p.id === providerId);
     if (entry) return entry.name;
     return providerId.charAt(0).toUpperCase() + providerId.slice(1);
+  }
+
+  /**
+   * Check if the active provider uses ACP (Agent Client Protocol).
+   * @returns {boolean}
+   */
+  _isAcpProvider() {
+    const entry = this._chatProviders.find(p => p.id === this._activeProvider);
+    return entry?.type === 'acp';
+  }
+
+  /**
+   * Show a transient status flash pill (e.g. "Starting Agent Client Protocol").
+   * Auto-hides after the given timeout.
+   * @param {string} text - Text to display
+   * @param {number} [timeout=5000] - Max display time in ms
+   */
+  _showStatusFlash(text, timeout = 5000) {
+    if (!this.statusFlash) return;
+    if (this._hideAnimationTimeout) {
+      clearTimeout(this._hideAnimationTimeout);
+      this._hideAnimationTimeout = null;
+    }
+    const textEl = this.statusFlash.querySelector('.chat-panel__status-flash-text');
+    if (textEl) textEl.textContent = text;
+    this.statusFlash.style.display = '';
+    // Force reflow to ensure the fade-in animation triggers
+    void this.statusFlash.offsetHeight;
+    this.statusFlash.classList.add('chat-panel__status-flash--visible');
+    this._statusFlashTimeout = setTimeout(() => this._hideStatusFlash(), timeout);
+  }
+
+  /**
+   * Hide the status flash pill with a fade-out animation.
+   */
+  _hideStatusFlash() {
+    if (this._statusFlashTimeout) {
+      clearTimeout(this._statusFlashTimeout);
+      this._statusFlashTimeout = null;
+    }
+    if (!this.statusFlash) return;
+    this.statusFlash.classList.remove('chat-panel__status-flash--visible');
+    // Hide after transition completes
+    this._hideAnimationTimeout = setTimeout(() => {
+      if (this.statusFlash) this.statusFlash.style.display = 'none';
+      this._hideAnimationTimeout = null;
+    }, 300);
   }
 
   /**
@@ -666,6 +718,7 @@ class ChatPanel {
 
       const mru = sessions[0];
       this.currentSessionId = mru.id;
+      this._sessionWarm = false;
       this._resubscribeChat();
       console.debug('[ChatPanel] Loaded MRU session:', mru.id, 'messages:', mru.message_count);
 
@@ -944,6 +997,7 @@ class ChatPanel {
 
     // 2. Reset state
     this.currentSessionId = sessionId;
+    this._sessionWarm = false;
     this._resubscribeChat();
     this.messages = [];
     this._streamingContent = '';
@@ -1081,6 +1135,11 @@ class ChatPanel {
       return null;
     }
 
+    const isAcp = this._isAcpProvider();
+    if (isAcp) {
+      this._showStatusFlash('Starting Agent Client Protocol');
+    }
+
     try {
       const body = {
         provider: this._activeProvider,
@@ -1100,6 +1159,8 @@ class ChatPanel {
         body: JSON.stringify(body)
       });
 
+      if (isAcp) this._hideStatusFlash();
+
       if (!response.ok) {
         const err = await response.json().catch(() => ({}));
         throw new Error(err.error || 'Failed to create chat session');
@@ -1107,10 +1168,12 @@ class ChatPanel {
 
       const result = await response.json();
       this.currentSessionId = result.data.id;
+      this._sessionWarm = true;
       this._resubscribeChat();
       console.debug('[ChatPanel] Session created:', this.currentSessionId);
       return result.data;
     } catch (error) {
+      if (isAcp) this._hideStatusFlash();
       console.error('[ChatPanel] Error creating session:', error);
       this._showError('Failed to start chat session. ' + error.message);
       return null;
@@ -1197,6 +1260,12 @@ class ChatPanel {
       this._pendingActionContext = null;
     }
 
+    // Show ACP resume flash when the session may need server-side auto-resume
+    const acpResuming = this._isAcpProvider() && !this._sessionWarm;
+    if (acpResuming) {
+      this._showStatusFlash('Resuming Agent Client Protocol');
+    }
+
     // Send to API
     try {
       console.debug('[ChatPanel] Sending message to session', this.currentSessionId);
@@ -1206,7 +1275,15 @@ class ChatPanel {
         body: JSON.stringify(payload)
       });
 
-      // Handle 410 Gone: session is not resumable — transparently create a new one and retry once
+      if (acpResuming) {
+        this._hideStatusFlash();
+        this._sessionWarm = true;
+      }
+
+      // Handle 410 Gone: session is not resumable — transparently create a new one and retry once.
+      // Note: we do NOT call _hideStatusFlash() here. createSession() will call
+      // _showStatusFlash() which overwrites the pill text directly, avoiding a
+      // visible hide/show flicker during the transparent retry.
       if (response.status === 410) {
         console.debug('[ChatPanel] Session not resumable (410), creating new session and retrying');
         this.currentSessionId = null;
@@ -1230,6 +1307,7 @@ class ChatPanel {
       }
       console.debug('[ChatPanel] Message accepted, waiting for WebSocket events');
     } catch (error) {
+      if (acpResuming) this._hideStatusFlash();
       // Restore pending context so it's not lost
       this._pendingContext = savedContext;
       this._pendingContextData = savedContextData;

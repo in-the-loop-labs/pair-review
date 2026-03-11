@@ -5404,4 +5404,99 @@ describe('ChatPanel', () => {
       });
     });
   });
+
+  describe('ACP status flash', () => {
+    describe('_isAcpProvider', () => {
+      it('should return true when active provider has type acp', () => {
+        chatPanel._activeProvider = 'gemini-acp';
+        chatPanel._chatProviders = [
+          { id: 'gemini-acp', name: 'Gemini', type: 'acp', available: true },
+          { id: 'pi', name: 'Pi', type: 'pi', available: true },
+        ];
+        expect(chatPanel._isAcpProvider()).toBe(true);
+      });
+
+      it('should return false when active provider has non-acp type', () => {
+        chatPanel._activeProvider = 'pi';
+        chatPanel._chatProviders = [
+          { id: 'pi', name: 'Pi', type: 'pi', available: true },
+        ];
+        expect(chatPanel._isAcpProvider()).toBe(false);
+      });
+
+      it('should return false when active provider is not found', () => {
+        chatPanel._activeProvider = 'unknown';
+        chatPanel._chatProviders = [];
+        expect(chatPanel._isAcpProvider()).toBe(false);
+      });
+    });
+
+    describe('_showStatusFlash / _hideStatusFlash', () => {
+      beforeEach(() => {
+        chatPanel.statusFlash = createMockElement('div');
+        const textSpan = createMockElement('span');
+        chatPanel.statusFlash.querySelector = vi.fn(() => textSpan);
+        chatPanel.statusFlash._textSpan = textSpan;
+      });
+
+      it('should show flash with given text and add visible class', () => {
+        chatPanel._showStatusFlash('Starting Agent Client Protocol');
+        expect(chatPanel.statusFlash._textSpan.textContent).toBe('Starting Agent Client Protocol');
+        expect(chatPanel.statusFlash.classList.add).toHaveBeenCalledWith('chat-panel__status-flash--visible');
+      });
+
+      it('should hide flash and remove visible class', () => {
+        chatPanel._showStatusFlash('Test');
+        chatPanel._hideStatusFlash();
+        expect(chatPanel.statusFlash.classList.remove).toHaveBeenCalledWith('chat-panel__status-flash--visible');
+      });
+
+      it('should clear existing timeout when hiding', () => {
+        chatPanel._showStatusFlash('Test', 10000);
+        expect(chatPanel._statusFlashTimeout).toBeTruthy();
+        chatPanel._hideStatusFlash();
+        expect(chatPanel._statusFlashTimeout).toBeNull();
+      });
+
+      it('should auto-hide after timeout', () => {
+        vi.useFakeTimers();
+        chatPanel._showStatusFlash('Test', 100);
+        expect(chatPanel._statusFlashTimeout).toBeTruthy();
+        vi.advanceTimersByTime(100);
+        expect(chatPanel.statusFlash.classList.remove).toHaveBeenCalledWith('chat-panel__status-flash--visible');
+        vi.useRealTimers();
+      });
+
+      it('should be safe to call _hideStatusFlash when no flash is active', () => {
+        expect(() => chatPanel._hideStatusFlash()).not.toThrow();
+      });
+
+      it('should store hide-animation timeout and cancel it on next show', () => {
+        vi.useFakeTimers();
+        chatPanel._showStatusFlash('First');
+        chatPanel._hideStatusFlash();
+        // The animation timeout should be stored
+        expect(chatPanel._hideAnimationTimeout).toBeTruthy();
+        // Showing again before 300ms should cancel the pending hide
+        chatPanel._showStatusFlash('Second');
+        expect(chatPanel._hideAnimationTimeout).toBeNull();
+        // Advancing past the 300ms should NOT set display to 'none'
+        // because the timeout was cancelled
+        vi.advanceTimersByTime(300);
+        expect(chatPanel.statusFlash.style.display).toBe('');
+        vi.useRealTimers();
+      });
+
+      it('should set display none after hide animation completes', () => {
+        vi.useFakeTimers();
+        chatPanel._showStatusFlash('Test');
+        chatPanel._hideStatusFlash();
+        expect(chatPanel.statusFlash.style.display).not.toBe('none');
+        vi.advanceTimersByTime(300);
+        expect(chatPanel.statusFlash.style.display).toBe('none');
+        expect(chatPanel._hideAnimationTimeout).toBeNull();
+        vi.useRealTimers();
+      });
+    });
+  });
 });
