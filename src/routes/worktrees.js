@@ -328,6 +328,13 @@ router.delete('/api/worktrees/:id', async (req, res) => {
       }
 
       logger.info(`Deleting remote PR data for ${prMeta.repository} #${prMeta.pr_number}`);
+      // Delete in dependency order: chat_sessions lacks ON DELETE CASCADE,
+      // so we must remove them before reviews.
+      const reviewIds = await query(db, `SELECT id FROM reviews WHERE pr_number = ? AND repository = ? COLLATE NOCASE`,
+        [prMeta.pr_number, prMeta.repository]);
+      for (const r of reviewIds) {
+        await run(db, `DELETE FROM chat_sessions WHERE review_id = ?`, [r.id]);
+      }
       await run(db, `DELETE FROM reviews WHERE pr_number = ? AND repository = ? COLLATE NOCASE`,
         [prMeta.pr_number, prMeta.repository]);
       await run(db, `DELETE FROM pr_metadata WHERE id = ?`, [metadataId]);
