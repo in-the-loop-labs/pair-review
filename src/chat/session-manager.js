@@ -43,7 +43,7 @@ class ChatSessionManager {
    * @param {string} [options.initialContext] - Initial context to prepend to the first user message
    * @returns {Promise<{id: number, status: string}>}
    */
-  async createSession({ provider, model, reviewId, contextCommentId, systemPrompt, cwd, initialContext }) {
+  async createSession({ provider, model, reviewId, contextCommentId, systemPrompt, cwd, initialContext, extraEnv }) {
     // Insert session record into DB
     const stmt = this._db.prepare(`
       INSERT INTO chat_sessions (review_id, context_comment_id, provider, model, status)
@@ -66,6 +66,7 @@ class ChatSessionManager {
       model,
       cwd,
       systemPrompt,
+      extraEnv,
     });
 
     const listeners = {
@@ -409,7 +410,7 @@ class ChatSessionManager {
    * @param {string} [options.cwd] - Working directory for agent
    * @returns {Promise<{id: number, status: string}>}
    */
-  async resumeSession(sessionId, { systemPrompt, cwd } = {}) {
+  async resumeSession(sessionId, { systemPrompt, cwd, extraEnv } = {}) {
     // Already active — return immediately
     if (this._sessions.has(sessionId)) {
       return { id: sessionId, status: 'active' };
@@ -453,6 +454,7 @@ class ChatSessionManager {
       model: row.model,
       cwd,
       systemPrompt,
+      extraEnv,
       ...resumeOptions,
     });
 
@@ -540,7 +542,7 @@ class ChatSessionManager {
         model: options.model || providerDef?.model,
         acpCommand: providerDef?.command,
         acpArgs: providerDef?.args,
-        env: providerDef?.env,
+        env: { ...providerDef?.env, ...options.extraEnv },
         useShell: providerDef?.useShell,
       });
     }

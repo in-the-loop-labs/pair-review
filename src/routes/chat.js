@@ -12,10 +12,12 @@
  */
 
 const express = require('express');
+const os = require('os');
 const { queryOne, query, AnalysisRunRepository, RepoSettingsRepository } = require('../database');
 const { buildChatPrompt, buildInitialContext } = require('../chat/prompt-builder');
 const { renderApiDocs, buildApiCheatSheet } = require('../chat/api-reference');
 const { GitWorktreeManager } = require('../git/worktree');
+const { resolveMonorepoOptions } = require('../config');
 const logger = require('../utils/logger');
 const ws = require('../ws');
 
@@ -24,15 +26,25 @@ const router = express.Router();
 /**
  * Resolve the working directory for a chat session.
  * - Local reviews: use review.local_path (the git root being reviewed)
+ * - Remote PR reviews: use remote_cwd from config (agent runs on remote via Delta)
  * - PR reviews: look up the worktree path from the worktrees table
  * @param {Object} db - Database instance
  * @param {Object} review - Review record from the database
+ * @param {Object} [config] - Application config (for remote_env lookup)
  * @returns {Promise<string|null>} Absolute path to the code directory, or null
  */
-async function resolveReviewCwd(db, review) {
+async function resolveReviewCwd(db, review, config) {
   // Local reviews store the path directly
   if (review.local_path) {
     return review.local_path;
+  }
+
+  // PR reviews: check for remote_env first
+  if (review.pr_number && review.repository && config) {
+    const { remoteEnv } = resolveMonorepoOptions(config, review.repository);
+    if (remoteEnv) {
+      return remoteEnv.remote_cwd;
+    }
   }
 
   // PR reviews: resolve worktree via the worktree manager
@@ -45,6 +57,27 @@ async function resolveReviewCwd(db, review) {
   }
 
   return null;
+}
+
+/**
+ * Compute dynamic environment variables for a remote chat session.
+ * Sets RIVER_SESSION so the distributary connects to the same River
+ * container that the PR review SSH connection uses.
+ * @param {Object} review - Review record
+ * @param {Object} config - Application config
+ * @returns {Object|null} Extra env vars to merge, or null if not remote
+ */
+function resolveRemoteChatEnv(review, config) {
+  if (!review.pr_number || !review.repository) return null;
+
+  const { remoteEnv } = resolveMonorepoOptions(config, review.repository);
+  if (!remoteEnv) return null;
+
+  // Build the session name using the same template as river-pr-connect
+  const user = os.userInfo().username;
+  const sessionName = `${user}-pr-${review.pr_number}`;
+
+  return { RIVER_SESSION: sessionName };
 }
 
 /**
@@ -274,7 +307,11 @@ router.post('/api/chat/session', async (req, res) => {
     }
 
     // Resolve cwd: explicit from request body, or the review's code directory
-    const resolvedCwd = cwd || await resolveReviewCwd(db, review);
+    const config = req.app.get('config');
+    const resolvedCwd = cwd || await resolveReviewCwd(db, review, config);
+
+    // Compute dynamic env for remote sessions (e.g., RIVER_SESSION)
+    const remoteChatEnv = resolveRemoteChatEnv(review, config);
 
     // Inject the server port and API cheat-sheet into the initial context so
     // the agent learns it once at session start.  If the server restarts on a
@@ -294,7 +331,8 @@ router.post('/api/chat/session', async (req, res) => {
       contextCommentId: contextCommentId || null,
       systemPrompt: finalSystemPrompt,
       cwd: resolvedCwd,
-      initialContext: initialContextWithPort
+      initialContext: initialContextWithPort,
+      extraEnv: remoteChatEnv,
     });
 
     logger.info(`Chat session created: ${session.id} (provider=${provider}, model=${model})`);
@@ -364,10 +402,12 @@ router.post('/api/chat/session/:id/message', async (req, res) => {
       const prData = await fetchPrData(db, review);
 
       const systemPrompt = buildChatPrompt({ review, prData, chatInstructions });
-      const cwd = await resolveReviewCwd(db, review);
+      const msgConfig = req.app.get('config');
+      const cwd = await resolveReviewCwd(db, review, msgConfig);
+      const msgRemoteEnv = resolveRemoteChatEnv(review, msgConfig);
 
       try {
-        await chatSessionManager.resumeSession(sessionId, { systemPrompt, cwd });
+        await chatSessionManager.resumeSession(sessionId, { systemPrompt, cwd, extraEnv: msgRemoteEnv });
         unregisterChatBroadcast(sessionId);
         registerChatBroadcast(chatSessionManager, sessionId, req.socket.localPort);
         logger.info(`[ChatRoute] Auto-resumed session ${sessionId} for message delivery`);
@@ -502,9 +542,11 @@ router.post('/api/chat/session/:id/resume', async (req, res) => {
     const prData = await fetchPrData(db, review);
 
     const systemPrompt = buildChatPrompt({ review, prData, chatInstructions });
-    const cwd = await resolveReviewCwd(db, review);
+    const resumeConfig = req.app.get('config');
+    const cwd = await resolveReviewCwd(db, review, resumeConfig);
+    const resumeRemoteEnv = resolveRemoteChatEnv(review, resumeConfig);
 
-    await chatSessionManager.resumeSession(sessionId, { systemPrompt, cwd });
+    await chatSessionManager.resumeSession(sessionId, { systemPrompt, cwd, extraEnv: resumeRemoteEnv });
     unregisterChatBroadcast(sessionId);
     const serverPort = req.socket.localPort;
     registerChatBroadcast(chatSessionManager, sessionId, serverPort);
