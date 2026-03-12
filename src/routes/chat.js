@@ -39,11 +39,14 @@ async function resolveReviewCwd(db, review, config) {
     return review.local_path;
   }
 
-  // PR reviews: check for remote_env first
+  // Remote PR reviews: the chat bridge (distributary) runs locally and connects
+  // to the remote via its own tunnel. No local cwd needed — return null so the
+  // bridge spawns in the default directory. The remote_cwd is communicated to
+  // the agent via the system prompt, not the spawn cwd.
   if (review.pr_number && review.repository && config) {
     const { remoteEnv } = resolveMonorepoOptions(config, review.repository);
     if (remoteEnv) {
-      return remoteEnv.remote_cwd;
+      return null;
     }
   }
 
