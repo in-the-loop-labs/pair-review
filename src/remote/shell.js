@@ -13,6 +13,7 @@ class RemoteShell {
    * @param {string} [context.owner] - Repository owner
    * @param {string} [context.repo] - Repository name
    * @param {number|string} [context.prNumber] - PR number
+   * @param {number|string} [context.port] - Local server port (for reverse tunnel)
    */
   constructor(remoteEnvConfig, context = {}) {
     this.config = remoteEnvConfig;
@@ -21,6 +22,7 @@ class RemoteShell {
       owner: context.owner || '',
       repo: context.repo || '',
       pr_number: String(context.prNumber || ''),
+      port: String(context.port || ''),
     };
     this.socketPath = null;
     this._connected = false;
@@ -37,6 +39,7 @@ class RemoteShell {
     result = result.replace(/\{owner\}/g, this.context.owner);
     result = result.replace(/\{repo\}/g, this.context.repo);
     result = result.replace(/\{pr_number\}/g, this.context.pr_number);
+    result = result.replace(/\{port\}/g, this.context.port);
     return result;
   }
 

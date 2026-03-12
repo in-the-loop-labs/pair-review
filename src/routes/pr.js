@@ -521,7 +521,7 @@ router.post('/api/pr/:owner/:repo/:number/connect', async (req, res) => {
     }
 
     // Don't await — kick off connection in the background
-    getRemoteShell(repository, config, { owner, repo, prNumber }).then(() => {
+    getRemoteShell(repository, config, { owner, repo, prNumber, port: req.socket.localPort }).then(() => {
       logger.info(`Eager remote connection established for ${repository} #${prNumber}`);
     }).catch(err => {
       logger.warn(`Eager remote connection failed for ${repository} #${prNumber}: ${err.message}`);
@@ -1495,7 +1495,7 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
     // Resolve remote config for this repository
     const config = req.app.get('config');
     const { remoteEnv } = resolveMonorepoOptions(config, repository);
-    const remoteShell = remoteEnv ? await getRemoteShell(repository, config, { owner, repo, prNumber }) : null;
+    const remoteShell = remoteEnv ? await getRemoteShell(repository, config, { owner, repo, prNumber, port: req.socket.localPort }) : null;
 
     let worktreePath;
     if (remoteShell) {

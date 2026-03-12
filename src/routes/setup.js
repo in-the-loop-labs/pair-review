@@ -113,7 +113,7 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
         let remoteShell = null;
         if (isRemote) {
           sendSetupEvent(setupId, 'step', { step: 'connect', status: 'running', message: 'Connecting to remote environment...' });
-          remoteShell = await getRemoteShell(repository, config, { owner, repo, prNumber });
+          remoteShell = await getRemoteShell(repository, config, { owner, repo, prNumber, port: req.socket.localPort });
           sendSetupEvent(setupId, 'step', { step: 'connect', status: 'completed', message: 'Remote environment connected.' });
         }
 
