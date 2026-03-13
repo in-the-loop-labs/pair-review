@@ -20,7 +20,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 30;
+const CURRENT_SCHEMA_VERSION = 31;
 
 /**
  * Database schema SQL statements
@@ -118,6 +118,7 @@ const SCHEMA_SQL = {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       pr_data TEXT,
       last_ai_run_id TEXT,
+      last_accessed_at TEXT,
       UNIQUE(pr_number, repository)
     )
   `,
@@ -285,6 +286,7 @@ const INDEX_SQL = [
   'CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status)',
   'CREATE INDEX IF NOT EXISTS idx_comments_file_level ON comments(review_id, file, is_file_level)',
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_metadata_unique ON pr_metadata(pr_number, repository)',
+  'CREATE INDEX IF NOT EXISTS idx_pr_metadata_last_accessed ON pr_metadata(last_accessed_at)',
   'CREATE INDEX IF NOT EXISTS idx_worktrees_last_accessed ON worktrees(last_accessed_at)',
   'CREATE INDEX IF NOT EXISTS idx_worktrees_repo ON worktrees(repository)',
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_repo_settings_repository ON repo_settings(repository)',
@@ -1381,6 +1383,50 @@ const MIGRATIONS = {
     console.log('  Recreated idx_reviews_local with local_head_branch');
 
     console.log('Migration to schema version 30 complete');
+  },
+
+  // Migration to version 31: Add last_accessed_at to pr_metadata and backfill from worktrees
+  31: (db) => {
+    console.log('Migrating to schema version 31: Add last_accessed_at to pr_metadata');
+
+    const hasCol = columnExists(db, 'pr_metadata', 'last_accessed_at');
+    if (!hasCol) {
+      try {
+        db.prepare('ALTER TABLE pr_metadata ADD COLUMN last_accessed_at TEXT').run();
+        console.log('  Added last_accessed_at column to pr_metadata');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column last_accessed_at already exists (race condition)');
+      }
+    } else {
+      console.log('  Column last_accessed_at already exists');
+    }
+
+    // Backfill from worktrees table (best available access timestamp)
+    const backfilled = db.prepare(`
+      UPDATE pr_metadata
+      SET last_accessed_at = (
+        SELECT MAX(w.last_accessed_at) FROM worktrees w
+        WHERE w.pr_number = pr_metadata.pr_number
+          AND w.repository = pr_metadata.repository COLLATE NOCASE
+      )
+      WHERE last_accessed_at IS NULL
+    `).run();
+    console.log(`  Backfilled ${backfilled.changes} pr_metadata rows from worktrees`);
+
+    // For any remaining rows without a worktree, use updated_at as fallback
+    const fallback = db.prepare(`
+      UPDATE pr_metadata
+      SET last_accessed_at = updated_at
+      WHERE last_accessed_at IS NULL
+    `).run();
+    if (fallback.changes > 0) {
+      console.log(`  Used updated_at fallback for ${fallback.changes} pr_metadata rows`);
+    }
+
+    console.log('Migration to schema version 31 complete');
   }
 };
 
