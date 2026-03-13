@@ -729,30 +729,30 @@
 
   /**
    * Render a single recent review table row
-   * @param {Object} worktree - Worktree data
+   * @param {Object} review - Review data
    * @returns {string} HTML string for the table row
    */
-  function renderRecentReviewRow(worktree) {
-    const parts = worktree.repository.split('/');
+  function renderRecentReviewRow(review) {
+    const parts = review.repository.split('/');
     const owner = parts[0];
     const repo = parts[1];
-    const link = '/pr/' + owner + '/' + repo + '/' + worktree.pr_number;
+    const link = '/pr/' + owner + '/' + repo + '/' + review.pr_number;
     const settingsLink = '/repo-settings.html?owner=' + encodeURIComponent(owner) + '&repo=' + encodeURIComponent(repo);
-    const relativeTime = formatRelativeTime(worktree.last_accessed_at);
+    const relativeTime = formatRelativeTime(review.last_accessed_at);
 
-    const authorDisplay = worktree.author
-      ? '<a href="https://github.com/' + encodeURIComponent(worktree.author) + '" target="_blank" rel="noopener">' + escapeHtml(worktree.author) + '</a>'
+    const authorDisplay = review.author
+      ? '<a href="https://github.com/' + encodeURIComponent(review.author) + '" target="_blank" rel="noopener">' + escapeHtml(review.author) + '</a>'
       : '';
 
     return '' +
       '<tr>' +
-        '<td class="col-repo">' + escapeHtml(worktree.repository) + '</td>' +
-        '<td class="col-pr"><a href="' + link + '">#' + worktree.pr_number + '</a></td>' +
-        '<td class="col-title" title="' + escapeHtml(worktree.pr_title) + '">' + escapeHtml(worktree.pr_title) + '</td>' +
+        '<td class="col-repo">' + escapeHtml(review.repository) + '</td>' +
+        '<td class="col-pr"><a href="' + link + '">#' + review.pr_number + '</a></td>' +
+        '<td class="col-title" title="' + escapeHtml(review.pr_title) + '">' + escapeHtml(review.pr_title) + '</td>' +
         '<td class="col-author">' + authorDisplay + '</td>' +
         '<td class="col-time">' + relativeTime + '</td>' +
         '<td class="col-actions">' +
-          '<a href="https://github.com/' + escapeHtml(worktree.repository) + '/pull/' + worktree.pr_number + '" target="_blank" rel="noopener" class="btn-github-link" title="Open on GitHub">' +
+          '<a href="https://github.com/' + escapeHtml(review.repository) + '/pull/' + review.pr_number + '" target="_blank" rel="noopener" class="btn-github-link" title="Open on GitHub">' +
             '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg>' +
           '</a>' +
           '<a href="' + settingsLink + '" class="btn-repo-settings" title="Repository settings">' +
@@ -761,11 +761,11 @@
             '</svg>' +
           '</a>' +
           '<button' +
-            ' class="btn-delete-worktree"' +
-            ' data-worktree-id="' + worktree.id + '"' +
-            ' data-repository="' + escapeHtml(worktree.repository) + '"' +
-            ' data-pr-number="' + worktree.pr_number + '"' +
-            ' title="Delete worktree"' +
+            ' class="btn-delete-review"' +
+            ' data-review-id="' + review.id + '"' +
+            ' data-repository="' + escapeHtml(review.repository) + '"' +
+            ' data-pr-number="' + review.pr_number + '"' +
+            ' title="Delete review"' +
           '>' +
             '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">' +
               '<path fill-rule="evenodd" d="M6.5 1.75a.25.25 0 01.25-.25h2.5a.25.25 0 01.25.25V3h-3V1.75zm4.5 0V3h2.25a.75.75 0 010 1.5H2.75a.75.75 0 010-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75zM4.496 6.675a.75.75 0 10-1.492.15l.66 6.6A1.75 1.75 0 005.405 15h5.19a1.75 1.75 0 001.741-1.575l.66-6.6a.75.75 0 00-1.492-.15l-.66 6.6a.25.25 0 01-.249.225h-5.19a.25.25 0 01-.249-.225l-.66-6.6z"></path>' +
@@ -776,11 +776,11 @@
   }
 
   /**
-   * Show inline delete confirmation for a PR worktree row
+   * Show inline delete confirmation for a PR review row
    * @param {HTMLElement} button - The delete button element
    */
-  function showDeleteWorktreeConfirm(button) {
-    const worktreeId = button.dataset.worktreeId;
+  function showDeleteReviewConfirm(button) {
+    const reviewId = button.dataset.reviewId;
     const repository = button.dataset.repository;
     const prNumber = button.dataset.prNumber;
     const row = button.closest('tr');
@@ -798,8 +798,8 @@
     row.innerHTML =
       '<td colspan="' + colCount + '">' +
         '<div class="delete-confirm-inner">' +
-          '<span>Delete worktree for ' + escapeHtml(repository) + ' #' + escapeHtml(String(prNumber)) + '?</span>' +
-          '<button class="btn-confirm-yes" data-worktree-id="' + worktreeId + '">Delete</button>' +
+          '<span>Delete review for ' + escapeHtml(repository) + ' #' + escapeHtml(String(prNumber)) + '?</span>' +
+          '<button class="btn-confirm-yes" data-review-id="' + reviewId + '">Delete</button>' +
           '<button class="btn-confirm-no">Cancel</button>' +
         '</div>' +
       '</td>';
@@ -807,20 +807,20 @@
     // Wire up buttons
     row.querySelector('.btn-confirm-yes').addEventListener('click', async function () {
       try {
-        const response = await fetch('/api/worktrees/' + worktreeId, {
+        const response = await fetch('/api/worktrees/' + reviewId, {
           method: 'DELETE'
         });
 
         if (!response.ok) {
           const data = await response.json().catch(function () { return {}; });
-          throw new Error(data.error || 'Failed to delete worktree');
+          throw new Error(data.error || 'Failed to delete review');
         }
 
         // Reload the recent reviews list
         await loadRecentReviews();
 
       } catch (error) {
-        console.error('Error deleting worktree:', error);
+        console.error('Error deleting review:', error);
         // Restore row on failure
         row.classList.remove('delete-confirm-row');
         row.innerHTML = originalHTML;
@@ -837,7 +837,7 @@
   const recentReviewsPagination = {
     /** ISO timestamp of the last loaded item (cursor for next fetch) */
     lastTimestamp: null,
-    /** Number of worktrees to fetch per page */
+    /** Number of reviews to fetch per page */
     pageSize: 10,
     /** Whether the server has indicated more results exist */
     hasMore: false
@@ -863,7 +863,7 @@
 
       const data = await response.json();
 
-      if (!data.success || !data.worktrees || data.worktrees.length === 0) {
+      if (!data.success || !data.reviews || data.reviews.length === 0) {
         // Show friendly empty state
         container.innerHTML =
           '<div class="recent-reviews-empty">' +
@@ -876,7 +876,7 @@
       }
 
       // Update pagination state - track the cursor for the next page
-      recentReviewsPagination.lastTimestamp = data.worktrees[data.worktrees.length - 1].last_accessed_at;
+      recentReviewsPagination.lastTimestamp = data.reviews[data.reviews.length - 1].last_accessed_at;
       recentReviewsPagination.hasMore = !!data.hasMore;
 
       // Render the table of recent reviews
@@ -893,7 +893,7 @@
             '</tr>' +
           '</thead>' +
           '<tbody id="recent-reviews-tbody">' +
-            data.worktrees.map(renderRecentReviewRow).join('') +
+            data.reviews.map(renderRecentReviewRow).join('') +
           '</tbody>' +
         '</table>' +
         renderShowMoreButton(data.hasMore);
@@ -927,7 +927,7 @@
   }
 
   /**
-   * Load the next page of worktrees and append them to the existing table.
+   * Load the next page of reviews and append them to the existing table.
    * Called when the "Show more" button is clicked.
    */
   async function loadMoreReviews() {
@@ -953,7 +953,7 @@
       // Guard against stale response if the table was refreshed (e.g. by a delete) while loading
       if (!document.contains(btn)) return;
 
-      if (!data.success || !data.worktrees || data.worktrees.length === 0) {
+      if (!data.success || !data.reviews || data.reviews.length === 0) {
         // No more results - remove the button
         const showMoreContainer = document.getElementById('show-more-container');
         if (showMoreContainer) showMoreContainer.remove();
@@ -962,10 +962,10 @@
       }
 
       // Append new rows to the existing table body
-      tbody.insertAdjacentHTML('beforeend', data.worktrees.map(renderRecentReviewRow).join(''));
+      tbody.insertAdjacentHTML('beforeend', data.reviews.map(renderRecentReviewRow).join(''));
 
       // Update pagination state - advance the cursor
-      recentReviewsPagination.lastTimestamp = data.worktrees[data.worktrees.length - 1].last_accessed_at;
+      recentReviewsPagination.lastTimestamp = data.reviews[data.reviews.length - 1].last_accessed_at;
       recentReviewsPagination.hasMore = !!data.hasMore;
 
       // Update or remove the "Show more" button
@@ -1126,12 +1126,12 @@
 
   // Event delegation for buttons, show-more, tab switching
   document.addEventListener('click', function (event) {
-    // Delete worktree (PR mode)
-    const deleteBtn = event.target.closest('.btn-delete-worktree');
+    // Delete review (PR mode)
+    const deleteBtn = event.target.closest('.btn-delete-review');
     if (deleteBtn) {
       event.preventDefault();
       event.stopPropagation();
-      showDeleteWorktreeConfirm(deleteBtn);
+      showDeleteReviewConfirm(deleteBtn);
       return;
     }
 
