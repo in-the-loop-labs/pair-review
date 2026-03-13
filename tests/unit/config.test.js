@@ -92,6 +92,69 @@ describe('config.js', () => {
 
       expect(result).toBe('env_token');
     });
+
+    describe('github_token_source: "gh"', () => {
+      let execSyncSpy;
+
+      beforeEach(() => {
+        const childProcess = require('child_process');
+        execSyncSpy = vi.spyOn(childProcess, 'execSync');
+      });
+
+      afterEach(() => {
+        execSyncSpy.mockRestore();
+      });
+
+      it('should resolve token via gh auth token when github_token_source is "gh" and no token/env set', () => {
+        execSyncSpy.mockReturnValue('gh_token_from_cli\n');
+        const config = { github_token_source: 'gh' };
+
+        const result = getGitHubToken(config);
+
+        expect(result).toBe('gh_token_from_cli');
+        expect(execSyncSpy).toHaveBeenCalledWith('gh auth token', { encoding: 'utf8' });
+      });
+
+      it('should return empty string when github_token_source is "gh" but gh CLI fails', () => {
+        execSyncSpy.mockImplementation(() => { throw new Error('command not found: gh'); });
+        const config = { github_token_source: 'gh' };
+
+        const result = getGitHubToken(config);
+
+        expect(result).toBe('');
+      });
+
+      it('should prefer env var over github_token_source', () => {
+        execSyncSpy.mockReturnValue('gh_token\n');
+        process.env.GITHUB_TOKEN = 'env_token';
+        const config = { github_token_source: 'gh' };
+
+        const result = getGitHubToken(config);
+
+        expect(result).toBe('env_token');
+        expect(execSyncSpy).not.toHaveBeenCalled();
+      });
+
+      it('should prefer config.github_token over github_token_source', () => {
+        execSyncSpy.mockReturnValue('gh_token\n');
+        const config = { github_token: 'literal_token', github_token_source: 'gh' };
+
+        const result = getGitHubToken(config);
+
+        expect(result).toBe('literal_token');
+        expect(execSyncSpy).not.toHaveBeenCalled();
+      });
+
+      it('should ignore github_token_source when value is not "gh"', () => {
+        execSyncSpy.mockReturnValue('should_not_be_called\n');
+        const config = { github_token_source: 'unsupported' };
+
+        const result = getGitHubToken(config);
+
+        expect(result).toBe('');
+        expect(execSyncSpy).not.toHaveBeenCalled();
+      });
+    });
   });
 
   describe('expandPath', () => {

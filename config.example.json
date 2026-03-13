@@ -2,6 +2,8 @@
   "_comment": "Example configuration file for pair-review. Copy to ~/.pair-review/config.json and modify as needed.",
 
   "github_token": "ghp_your_github_personal_access_token_here",
+  "_github_token_source_comment": "Set github_token_source to 'gh' to use the token from 'gh auth token' instead of a static github_token. Requires the GitHub CLI to be installed and authenticated.",
+  "github_token_source": "",
   "port": 7247,
   "theme": "light",
   "default_provider": "claude",

@@ -2,6 +2,7 @@
 const fs = require('fs').promises;
 const path = require('path');
 const os = require('os');
+const childProcess = require('child_process');
 const logger = require('./utils/logger');
 
 const CONFIG_DIR = path.join(os.homedir(), '.pair-review');
@@ -247,6 +248,7 @@ function getConfigDir() {
  * Priority:
  *   1. GITHUB_TOKEN environment variable (highest priority)
  *   2. config.github_token from ~/.pair-review/config.json
+ *   3. `gh auth token` when config.github_token_source is "gh"
  *
  * @param {Object} config - Configuration object from loadConfig()
  * @returns {string} - GitHub token or empty string if not configured
@@ -257,7 +259,18 @@ function getGitHubToken(config) {
     return process.env.GITHUB_TOKEN;
   }
   // Fall back to config file
-  return config.github_token || '';
+  if (config.github_token) {
+    return config.github_token;
+  }
+  // Fall back to gh CLI when configured as token source
+  if (config.github_token_source === 'gh') {
+    try {
+      return childProcess.execSync('gh auth token', { encoding: 'utf8' }).trim();
+    } catch {
+      return '';
+    }
+  }
+  return '';
 }
 
 /**

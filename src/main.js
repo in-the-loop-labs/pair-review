@@ -337,6 +337,8 @@ GITHUB TOKEN:
     You can provide the token via:
       1. GITHUB_TOKEN environment variable (takes precedence)
       2. github_token field in config file
+      3. github_token_source set to "gh" in config file
+         (uses 'gh auth token' from GitHub CLI)
 
 ENVIRONMENT VARIABLES:
     GITHUB_TOKEN            GitHub Personal Access Token (takes precedence over config file)
@@ -504,7 +506,7 @@ async function handlePullRequest(args, config, db, flags = {}) {
     // Get GitHub token (env var takes precedence over config)
     const githubToken = getGitHubToken(config);
     if (!githubToken) {
-      throw new Error('GitHub token not found. Set GITHUB_TOKEN environment variable or run: npx pair-review --configure');
+      throw new Error('GitHub token not found. Set GITHUB_TOKEN env var, add github_token to config, or set github_token_source to "gh". Run: npx pair-review --configure');
     }
 
     // Parse PR arguments
@@ -600,7 +602,7 @@ async function performHeadlessReview(args, config, db, flags, options) {
     // Get GitHub token (env var takes precedence over config)
     const githubToken = getGitHubToken(config);
     if (!githubToken) {
-      throw new Error('GitHub token not found. Set GITHUB_TOKEN environment variable or run: npx pair-review --configure');
+      throw new Error('GitHub token not found. Set GITHUB_TOKEN env var, add github_token to config, or set github_token_source to "gh". Run: npx pair-review --configure');
     }
 
     // Parse PR arguments
