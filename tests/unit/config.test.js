@@ -849,6 +849,7 @@ describe('config.js', () => {
   });
 
   describe('loadConfig', () => {
+    const MANAGED_CONFIG_PATH = path.join(__dirname, '..', '..', 'config.managed.json');
     const GLOBAL_CONFIG_PATH = path.join(os.homedir(), '.pair-review', 'config.json');
     const GLOBAL_LOCAL_CONFIG_PATH = path.join(os.homedir(), '.pair-review', 'config.local.json');
     const PROJECT_CONFIG_PATH = path.join(process.cwd(), '.pair-review', 'config.json');
@@ -876,12 +877,14 @@ describe('config.js', () => {
     /**
      * @param {Object} opts
      * @param {Object|null} opts.global - Global config.json content (null = ENOENT)
+     * @param {Object|null} [opts.managed] - Managed config.managed.json content (null = ENOENT)
      * @param {Object|null} [opts.globalLocal] - Global config.local.json content (null = ENOENT)
      * @param {Object|null} [opts.project] - Project config.json content (null = ENOENT)
      * @param {Object|null} [opts.projectLocal] - Project config.local.json content (null = ENOENT)
      */
-    function mockReadFile({ global: globalJson, globalLocal = null, project = null, projectLocal = null }) {
+    function mockReadFile({ managed = null, global: globalJson, globalLocal = null, project = null, projectLocal = null }) {
       const fileMap = {
+        [MANAGED_CONFIG_PATH]: managed,
         [GLOBAL_CONFIG_PATH]: globalJson,
         [GLOBAL_LOCAL_CONFIG_PATH]: globalLocal,
         [PROJECT_CONFIG_PATH]: project,
@@ -1020,6 +1023,71 @@ describe('config.js', () => {
       mockReadFile({
         global: { port: 7247 },
         // globalLocal, project, projectLocal all default to null (ENOENT)
+      });
+
+      const { config } = await loadConfig();
+
+      expect(config.port).toBe(7247);
+    });
+
+    // --- managed config tests ---
+
+    it('should apply managed config values between defaults and global config', async () => {
+      mockReadFile({
+        managed: { default_provider: 'gemini', theme: 'dark' },
+        global: { port: 7247 },
+      });
+
+      const { config } = await loadConfig();
+
+      expect(config.default_provider).toBe('gemini');
+      expect(config.theme).toBe('dark');
+      expect(config.port).toBe(7247);
+    });
+
+    it('should let global config override managed config', async () => {
+      mockReadFile({
+        managed: { default_provider: 'gemini' },
+        global: { default_provider: 'claude', port: 7247 },
+      });
+
+      const { config } = await loadConfig();
+
+      expect(config.default_provider).toBe('claude');
+    });
+
+    it('should deep-merge managed config nested objects with defaults', async () => {
+      mockReadFile({
+        managed: { chat: { enable_shortcuts: false }, providers: { corp: { command: 'corp-ai' } } },
+        global: { port: 7247 },
+      });
+
+      const { config } = await loadConfig();
+
+      expect(config.chat.enable_shortcuts).toBe(false);
+      expect(config.providers.corp).toEqual({ command: 'corp-ai' });
+    });
+
+    it('should apply full 5-layer precedence with managed config', async () => {
+      mockReadFile({
+        managed: { theme: 'managed', default_provider: 'managed-provider' },
+        global: { theme: 'global', port: 1111 },
+        globalLocal: { theme: 'global-local', port: 2222 },
+        project: { theme: 'project', port: 3333 },
+        projectLocal: { theme: 'project-local' },
+      });
+
+      const { config } = await loadConfig();
+
+      expect(config.theme).toBe('project-local');
+      expect(config.port).toBe(3333);
+      expect(config.default_provider).toBe('managed-provider');  // only managed set this
+    });
+
+    it('should skip missing managed config silently', async () => {
+      mockReadFile({
+        // managed defaults to null (ENOENT)
+        global: { port: 7247 },
       });
 
       const { config } = await loadConfig();

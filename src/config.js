@@ -13,6 +13,7 @@ const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 const CONFIG_LOCAL_FILE = path.join(CONFIG_DIR, 'config.local.json');
 const CONFIG_EXAMPLE_FILE = path.join(CONFIG_DIR, 'config.example.json');
 const PACKAGE_ROOT = path.join(__dirname, '..');
+const MANAGED_CONFIG_FILE = path.join(PACKAGE_ROOT, 'config.managed.json');
 
 const DEFAULT_CONFIG = {
   github_token: "",
@@ -175,6 +176,7 @@ async function loadConfig() {
 
   const localDir = path.join(process.cwd(), '.pair-review');
   const sources = [
+    { path: MANAGED_CONFIG_FILE,                         label: 'managed config',       required: false },
     { path: CONFIG_FILE,                                label: 'global config',        required: true  },
     { path: CONFIG_LOCAL_FILE,                           label: 'global local config',  required: false },
     { path: path.join(localDir, 'config.json'),         label: 'project config',       required: false },
