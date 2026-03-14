@@ -180,6 +180,9 @@ class PRManager {
     this.initAnalysisConfigModal();
     this.initKeyboardShortcuts();
 
+    // Track toolbar height for sticky file headers (they sit below the sticky toolbar)
+    this._initToolbarHeightTracking();
+
     // Initialize diff options dropdown (gear icon for whitespace toggle).
     // Must happen before init() so the persisted hideWhitespace state is
     // applied before the first loadAndDisplayFiles() call.
@@ -236,6 +239,27 @@ class PRManager {
       }
       return originalFetch.call(this, input, init);
     };
+  }
+
+  /**
+   * Keep --toolbar-height CSS variable in sync with the actual toolbar size
+   * so sticky file headers can position themselves below the sticky toolbar.
+   */
+  _initToolbarHeightTracking() {
+    const toolbar = document.querySelector('.diff-toolbar');
+    if (!toolbar) return;
+
+    const update = () => {
+      document.documentElement.style.setProperty(
+        '--toolbar-height', toolbar.offsetHeight + 'px'
+      );
+    };
+    update();
+
+    // Re-measure when toolbar resizes (e.g. analysis dots appear/disappear)
+    if (typeof ResizeObserver !== 'undefined') {
+      new ResizeObserver(update).observe(toolbar);
+    }
   }
 
   /**
@@ -1182,7 +1206,13 @@ class PRManager {
     }
 
     table.appendChild(tbody);
-    wrapper.appendChild(table);
+
+    // Wrap table in a scrollable container for horizontal scroll of long code lines
+    // (parent elements use overflow:visible to support sticky file headers)
+    const fileBody = document.createElement('div');
+    fileBody.className = 'd2h-file-body';
+    fileBody.appendChild(table);
+    wrapper.appendChild(fileBody);
 
     return wrapper;
   }
@@ -4784,7 +4814,11 @@ class PRManager {
     table.className = 'd2h-diff-table';
     const tbody = this._buildContextChunkTbody(data, contextFile);
     table.appendChild(tbody);
-    wrapper.appendChild(table);
+
+    const fileBody = document.createElement('div');
+    fileBody.className = 'd2h-file-body';
+    fileBody.appendChild(table);
+    wrapper.appendChild(fileBody);
 
     // Insert in sorted path order among existing file wrappers
     const allWrappers = [...diffContainer.querySelectorAll('.d2h-file-wrapper')];
