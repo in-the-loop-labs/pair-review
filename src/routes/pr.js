@@ -300,7 +300,8 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
     }
 
     // Fetch fresh PR data from GitHub
-    const githubClient = new GitHubClient(config.github_token);
+    const githubToken = getGitHubToken(config);
+    const githubClient = new GitHubClient(githubToken);
     const prData = await githubClient.fetchPullRequest(owner, repo, prNumber);
 
     // Update worktree with latest changes
@@ -467,7 +468,8 @@ router.get('/api/pr/:owner/:repo/:number/check-stale', async (req, res) => {
     }
 
     // Fetch current PR from GitHub
-    const githubClient = new GitHubClient(config.github_token);
+    const githubToken = getGitHubToken(config);
+    const githubClient = new GitHubClient(githubToken);
     const remotePrData = await githubClient.fetchPullRequest(owner, repo, prNumber);
 
     const remoteHeadSha = remotePrData.head_sha;
