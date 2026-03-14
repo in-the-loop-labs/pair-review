@@ -1,6 +1,8 @@
 {
   "_comment": "Example configuration file for pair-review. Copy to ~/.pair-review/config.json and modify as needed.",
 
+  "_github_token_command_comment": "Shell command whose stdout is used as the GitHub token. Runs once and is cached. Default: 'gh auth token'.",
+  "github_token_command": "gh auth token",
   "github_token": "ghp_your_github_personal_access_token_here",
   "port": 7247,
   "theme": "light",

@@ -2,7 +2,10 @@
 const fs = require('fs').promises;
 const path = require('path');
 const os = require('os');
+const childProcess = require('child_process');
 const logger = require('./utils/logger');
+
+let _cachedCommandToken = null;
 
 const CONFIG_DIR = path.join(os.homedir(), '.pair-review');
 const DEFAULT_CHECKOUT_TIMEOUT_MS = 300000;
@@ -13,6 +16,7 @@ const PACKAGE_ROOT = path.join(__dirname, '..');
 
 const DEFAULT_CONFIG = {
   github_token: "",
+  github_token_command: "gh auth token",  // Shell command whose stdout is used as the GitHub token
   port: 7247,
   theme: "light",
   default_provider: "claude",  // AI provider: 'claude', 'gemini', 'codex', 'copilot', 'opencode', 'cursor-agent', 'pi'
@@ -247,17 +251,54 @@ function getConfigDir() {
  * Priority:
  *   1. GITHUB_TOKEN environment variable (highest priority)
  *   2. config.github_token from ~/.pair-review/config.json
+ *   3. config.github_token_command — execute shell command, use stdout (cached on success)
+ *   4. Empty string (no token)
  *
  * @param {Object} config - Configuration object from loadConfig()
  * @returns {string} - GitHub token or empty string if not configured
  */
 function getGitHubToken(config) {
-  // Environment variable takes precedence
   if (process.env.GITHUB_TOKEN) {
+    logger.debug('Using GitHub token from GITHUB_TOKEN environment variable');
     return process.env.GITHUB_TOKEN;
   }
-  // Fall back to config file
-  return config.github_token || '';
+  if (config.github_token) {
+    logger.debug('Using GitHub token from config.github_token');
+    return config.github_token;
+  }
+  if (config.github_token_command) {
+    if (_cachedCommandToken !== null) {
+      logger.debug('Using GitHub token from github_token_command (cached)');
+      return _cachedCommandToken;
+    }
+    logger.debug(`Attempting GitHub token from command: ${config.github_token_command}`);
+    try {
+      const result = childProcess.execSync(config.github_token_command, {
+        encoding: 'utf8',
+        timeout: 5000,
+        stdio: ['pipe', 'pipe', 'ignore']
+      }).trim();
+      if (!result) {
+        logger.warn(`github_token_command did not produce a token (command: ${config.github_token_command})`);
+        return '';
+      }
+      logger.debug('Using GitHub token from github_token_command');
+      _cachedCommandToken = result;
+      return result;
+    } catch (error) {
+      logger.warn(`github_token_command failed (command: ${config.github_token_command}): ${error.message}`);
+      return '';
+    }
+  }
+  logger.debug('No GitHub token configured');
+  return '';
+}
+
+/**
+ * Resets the cached command token. Exported for testing only.
+ */
+function _resetTokenCache() {
+  _cachedCommandToken = null;
 }
 
 /**
@@ -465,5 +506,6 @@ module.exports = {
   resolveMonorepoOptions,
   resolveDbName,
   warnIfDevModeWithoutDbName,
+  _resetTokenCache,
   DEFAULT_CHECKOUT_TIMEOUT_MS
 };
