@@ -339,9 +339,9 @@ GITHUB TOKEN:
 
     You can provide the token via:
       1. GITHUB_TOKEN environment variable (takes precedence)
-      2. github_token_command in config file (preferred, default: "gh auth token")
+      2. github_token field in config file (**deprecated**)
+      3. github_token_command in config file (**preferred** for security, default: "gh auth token")
          No secret stored in plain text. Works with gh CLI, 1Password CLI, pass, etc.
-      3. github_token field in config file (literal token — less secure)
 
 ENVIRONMENT VARIABLES:
     GITHUB_TOKEN            GitHub Personal Access Token (takes precedence over config file)

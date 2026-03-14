@@ -301,6 +301,9 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
 
     // Fetch fresh PR data from GitHub
     const githubToken = getGitHubToken(config);
+    if (!githubToken) {
+      return res.status(401).json({ error: 'GitHub token not configured' });
+    }
     const githubClient = new GitHubClient(githubToken);
     const prData = await githubClient.fetchPullRequest(owner, repo, prNumber);
 
@@ -469,6 +472,9 @@ router.get('/api/pr/:owner/:repo/:number/check-stale', async (req, res) => {
 
     // Fetch current PR from GitHub
     const githubToken = getGitHubToken(config);
+    if (!githubToken) {
+      return res.json({ isStale: null, error: 'GitHub token not configured' });
+    }
     const githubClient = new GitHubClient(githubToken);
     const remotePrData = await githubClient.fetchPullRequest(owner, repo, prNumber);
 

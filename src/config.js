@@ -286,7 +286,7 @@ function getGitHubToken(config) {
       _cachedCommandToken = result;
       return result;
     } catch (error) {
-      logger.warn(`github_token_command did not produce a token (command: ${config.github_token_command})`);
+      logger.warn(`github_token_command failed (command: ${config.github_token_command}): ${error.message}`);
       return '';
     }
   }

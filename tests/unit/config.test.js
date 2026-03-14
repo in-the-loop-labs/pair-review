@@ -134,17 +134,18 @@ describe('config.js', () => {
       });
     });
 
-    it('should return empty string and log warning when command fails', () => {
+    it('should return empty string and log warning with error details when command fails', () => {
       execSyncSpy.mockImplementation(() => { throw new Error('command not found'); });
       const config = { github_token_command: 'bad-command' };
 
       const result = getGitHubToken(config);
 
       expect(result).toBe('');
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('did not produce a token'));
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('github_token_command failed'));
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('command not found'));
     });
 
-    it('should return empty string and log warning on timeout', () => {
+    it('should return empty string and log warning with error details on timeout', () => {
       const err = new Error('ETIMEDOUT');
       err.killed = true;
       execSyncSpy.mockImplementation(() => { throw err; });
@@ -153,7 +154,8 @@ describe('config.js', () => {
       const result = getGitHubToken(config);
 
       expect(result).toBe('');
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('did not produce a token'));
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('github_token_command failed'));
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('ETIMEDOUT'));
     });
 
     it('should return empty string and log warning when command returns whitespace only', () => {
