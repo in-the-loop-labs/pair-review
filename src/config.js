@@ -268,6 +268,7 @@ function getGitHubToken(config) {
   }
   if (config.github_token_command) {
     if (_cachedCommandToken !== null) {
+      logger.debug('Using GitHub token from github_token_command (cached)');
       return _cachedCommandToken;
     }
     logger.debug(`Attempting GitHub token from command: ${config.github_token_command}`);
