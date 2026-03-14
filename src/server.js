@@ -225,6 +225,8 @@ async function startServer(sharedDb = null) {
           // pr.html for a missing worktree, causing 404s on file fetches.
           const worktree = await queryOne(db, 'SELECT id FROM worktrees WHERE pr_number = ? AND repository = ? COLLATE NOCASE', [prNumber, repository]);
           if (worktree) {
+            // Update last_accessed_at so the recent reviews list reflects actual access
+            run(db, 'UPDATE pr_metadata SET last_accessed_at = ? WHERE id = ?', [new Date().toISOString(), existing.id]).catch(err => logger.warn(`Failed to update last_accessed_at: ${err.message}`));
             res.sendFile(path.join(__dirname, '..', 'public', 'pr.html'));
           } else {
             logger.info(`PR metadata exists but no worktree for ${repository} #${prNumber}, serving setup page`);

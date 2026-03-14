@@ -70,13 +70,15 @@ async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath,
       SELECT id FROM pr_metadata WHERE pr_number = ? AND repository = ? COLLATE NOCASE
     `, [prInfo.number, repository]);
 
+    const now = new Date().toISOString();
+
     if (existingPR) {
       // Update existing PR metadata (preserves ID)
       await run(db, `
         UPDATE pr_metadata
         SET title = ?, description = ?, author = ?,
             base_branch = ?, head_branch = ?, pr_data = ?,
-            updated_at = CURRENT_TIMESTAMP
+            updated_at = CURRENT_TIMESTAMP, last_accessed_at = ?
         WHERE id = ?
       `, [
         prData.title,
@@ -85,6 +87,7 @@ async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath,
         prData.base_branch,
         prData.head_branch,
         JSON.stringify(extendedPRData),
+        now,
         existingPR.id
       ]);
       logger.info(`Updated existing PR metadata (ID: ${existingPR.id})`);
@@ -92,8 +95,8 @@ async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath,
       // Insert new PR metadata
       const result = await run(db, `
         INSERT INTO pr_metadata
-        (pr_number, repository, title, description, author, base_branch, head_branch, pr_data)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        (pr_number, repository, title, description, author, base_branch, head_branch, pr_data, last_accessed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         prInfo.number,
         repository,
@@ -102,7 +105,8 @@ async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath,
         prData.author,
         prData.base_branch,
         prData.head_branch,
-        JSON.stringify(extendedPRData)
+        JSON.stringify(extendedPRData),
+        now
       ]);
       logger.info(`Created new PR metadata (ID: ${result.lastID})`);
     }

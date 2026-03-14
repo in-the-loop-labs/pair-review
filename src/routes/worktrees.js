@@ -9,7 +9,7 @@
  */
 
 const express = require('express');
-const { query, queryOne, run, WorktreeRepository } = require('../database');
+const { query, queryOne, run } = require('../database');
 const { setupPRReview } = require('../setup/pr-setup');
 const { GitHubApiError } = require('../github/client');
 const fs = require('fs').promises;
@@ -116,208 +116,185 @@ router.post('/api/worktrees/create', async (req, res) => {
 });
 
 /**
- * Get recently accessed worktrees with cursor-based pagination.
- * Returns list of recently reviewed PRs with metadata.
- * Filters out stale worktrees where the directory no longer exists.
+ * Get recently reviewed PRs with cursor-based pagination.
+ * Lists from pr_metadata (source of truth) and includes storage status
+ * based on whether a local worktree directory exists.
  *
  * Query parameters:
- *   limit  - Number of worktrees to return (default 10, max 50)
- *   before - ISO timestamp cursor: return worktrees accessed before this time.
+ *   limit  - Number of reviews to return (default 10, max 50)
+ *   before - ISO timestamp cursor: return reviews accessed before this time.
  *            For subsequent pages, send the last_accessed_at of the last item
  *            from the previous page. Omit for the initial load.
  *
  * Response includes:
- *   worktrees - Array of worktree objects
- *   hasMore   - Whether more worktrees are available beyond this page
+ *   reviews - Array of review objects with storage_status
+ *   hasMore - Whether more reviews are available beyond this page
  */
 router.get('/api/worktrees/recent', async (req, res) => {
   try {
-    const limit = Math.min(parseInt(req.query.limit) || 10, 50); // Default 10, max 50
-    const before = req.query.before || null; // ISO timestamp cursor
+    const limit = Math.min(parseInt(req.query.limit) || 10, 50);
+    const before = req.query.before || null;
     const db = req.app.get('db');
 
-    // Fetch a constant overshoot per page to account for stale entries
-    // that will be filtered out, plus one extra to determine hasMore
-    const fetchCount = limit * 3 + 1;
+    // Fetch limit + 1 to determine hasMore
+    const fetchCount = limit + 1;
 
-    let enrichedWorktrees;
-    if (before) {
-      // Cursor-based: fetch rows older than the cursor.
-      // Strict less-than: entries sharing the cursor timestamp may be skipped,
-      // acceptable given millisecond precision and small dataset size.
-      enrichedWorktrees = await query(db, `
-        SELECT
-          w.id,
-          w.repository,
-          w.pr_number,
-          w.branch,
-          w.path,
-          w.last_accessed_at,
-          w.created_at,
-          pm.title as pr_title,
-          pm.author,
-          pm.head_branch
-        FROM worktrees w
-        LEFT JOIN pr_metadata pm ON w.pr_number = pm.pr_number AND w.repository = pm.repository COLLATE NOCASE
-        WHERE w.last_accessed_at < ?
-        ORDER BY w.last_accessed_at DESC
-        LIMIT ?
-      `, [before, fetchCount]);
-    } else {
-      // Initial load: no cursor, just fetch from the top
-      enrichedWorktrees = await query(db, `
-        SELECT
-          w.id,
-          w.repository,
-          w.pr_number,
-          w.branch,
-          w.path,
-          w.last_accessed_at,
-          w.created_at,
-          pm.title as pr_title,
-          pm.author,
-          pm.head_branch
-        FROM worktrees w
-        LEFT JOIN pr_metadata pm ON w.pr_number = pm.pr_number AND w.repository = pm.repository COLLATE NOCASE
-        ORDER BY w.last_accessed_at DESC
-        LIMIT ?
-      `, [fetchCount]);
-    }
+    const params = before ? [before, fetchCount] : [fetchCount];
+    const rows = await query(db, `
+      SELECT
+        pm.id,
+        pm.repository,
+        pm.pr_number,
+        pm.title,
+        pm.author,
+        pm.head_branch,
+        pm.last_accessed_at,
+        pm.created_at,
+        w.id as worktree_id,
+        w.path as worktree_path,
+        w.branch
+      FROM pr_metadata pm
+      LEFT JOIN worktrees w ON pm.pr_number = w.pr_number AND pm.repository = w.repository COLLATE NOCASE
+      WHERE pm.title IS NOT NULL AND pm.title != ''
+        ${before ? 'AND pm.last_accessed_at < ?' : ''}
+      ORDER BY pm.last_accessed_at DESC
+      LIMIT ?
+    `, params);
 
-    // Filter out worktrees where:
-    // 1. The directory no longer exists
-    // 2. The data is incomplete/corrupted (no author, unknown branch)
-    const staleIds = [];
-    const validWorktrees = [];
-
-    for (const w of enrichedWorktrees) {
-      // Check for corrupted/incomplete data
-      if (w.branch === 'unknown' || !w.pr_title || w.pr_title === `PR #${w.pr_number}`) {
-        staleIds.push(w.id);
-        continue;
-      }
-
-      // Check if path still exists
-      try {
-        await fs.access(w.path);
-        validWorktrees.push(w);
-      } catch {
-        // Path doesn't exist - mark for cleanup
-        staleIds.push(w.id);
-      }
-    }
-
-    // Only run stale cleanup on initial (non-paginated) requests to keep the
-    // dataset stable while the user pages through results.
-    if (staleIds.length > 0 && !before) {
-      setImmediate(async () => {
+    // Determine storage status for each entry
+    const reviews = [];
+    for (const row of rows) {
+      let storageStatus = 'cached';
+      if (row.worktree_path) {
         try {
-          const placeholders = staleIds.map(() => '?').join(',');
-          await run(db, `DELETE FROM worktrees WHERE id IN (${placeholders})`, staleIds);
-          logger.info(`Cleaned up ${staleIds.length} stale worktree records`);
-        } catch (err) {
-          logger.warn(`Failed to cleanup stale worktrees: ${err.message}`);
+          await fs.access(row.worktree_path);
+          storageStatus = 'local';
+        } catch {
+          // Worktree dir missing — clean up stale record asynchronously on first page
+          if (!before) {
+            setImmediate(async () => {
+              try {
+                await run(db, 'DELETE FROM worktrees WHERE id = ?', [row.worktree_id]);
+                logger.info(`Cleaned up stale worktree record ${row.worktree_id}`);
+              } catch (err) {
+                logger.warn(`Failed to cleanup stale worktree: ${err.message}`);
+              }
+            });
+          }
         }
+      }
+      reviews.push({
+        id: row.id,
+        repository: row.repository,
+        pr_number: row.pr_number,
+        pr_title: row.title,
+        author: row.author || null,
+        head_branch: row.head_branch || row.branch || null,
+        last_accessed_at: row.last_accessed_at,
+        created_at: row.created_at,
+        storage_status: storageStatus
       });
     }
 
-    // Take the first `limit` valid results; anything beyond means hasMore
-    const pageWorktrees = validWorktrees.slice(0, limit);
-    const hasMore = validWorktrees.length > limit;
-
-    // Format the results with fallback values
-    const formattedWorktrees = pageWorktrees.map(w => ({
-      id: w.id,
-      repository: w.repository,
-      pr_number: w.pr_number,
-      pr_title: w.pr_title || `PR #${w.pr_number}`,
-      author: w.author || null,
-      branch: w.branch,
-      head_branch: w.head_branch || w.branch,
-      last_accessed_at: w.last_accessed_at,
-      created_at: w.created_at
-    }));
+    // Take the first `limit` results; anything beyond means hasMore
+    const hasMore = reviews.length > limit;
+    const pageReviews = hasMore ? reviews.slice(0, limit) : reviews;
 
     res.json({
       success: true,
-      worktrees: formattedWorktrees,
+      reviews: pageReviews,
       hasMore
     });
 
   } catch (error) {
-    logger.error('Error fetching recent worktrees:', error);
+    logger.error('Error fetching recent reviews:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to fetch recent worktrees'
+      error: 'Failed to fetch recent reviews'
     });
   }
 });
 
 /**
- * Delete a worktree
- * Removes the worktree record from the database and optionally deletes the directory
+ * Delete a review and all associated data.
+ * Cleans up: worktree directory, worktree record, comments, reviews, and pr_metadata.
+ *
+ * :id is the pr_metadata.id (integer primary key)
  */
 router.delete('/api/worktrees/:id', async (req, res) => {
   try {
-    const worktreeId = req.params.id;
+    const metadataId = parseInt(req.params.id, 10);
 
-    if (!worktreeId) {
+    if (!metadataId || isNaN(metadataId)) {
       return res.status(400).json({
         success: false,
-        error: 'Invalid worktree ID'
+        error: 'Invalid review ID'
       });
     }
 
     const db = req.app.get('db');
-    const worktreeRepo = new WorktreeRepository(db);
 
-    // Get worktree info before deletion
-    const worktree = await queryOne(db, `
-      SELECT id, path, pr_number, repository FROM worktrees WHERE id = ?
-    `, [worktreeId]);
+    // Look up pr_metadata to get the composite key
+    const metadata = await queryOne(db, `
+      SELECT id, pr_number, repository FROM pr_metadata WHERE id = ?
+    `, [metadataId]);
 
-    if (!worktree) {
+    if (!metadata) {
       return res.status(404).json({
         success: false,
-        error: 'Worktree not found'
+        error: 'Review not found'
       });
     }
 
-    logger.info(`Deleting worktree ID ${worktreeId} for ${worktree.repository} #${worktree.pr_number}`);
+    const { pr_number: prNumber, repository } = metadata;
+    logger.info(`Deleting review for ${repository} #${prNumber} (metadata ID ${metadataId})`);
+
+    // Look up associated worktree for filesystem cleanup
+    const worktree = await queryOne(db, `
+      SELECT id, path FROM worktrees WHERE pr_number = ? AND repository = ? COLLATE NOCASE
+    `, [prNumber, repository]);
 
     // Delete the worktree directory if it exists
-    if (worktree.path) {
+    if (worktree && worktree.path) {
       try {
         await fs.access(worktree.path);
-        // Directory exists, try to remove it
         await fs.rm(worktree.path, { recursive: true, force: true });
         logger.info(`Deleted worktree directory: ${worktree.path}`);
-      } catch (pathError) {
-        // Directory doesn't exist or can't be accessed - that's okay
+      } catch {
         logger.warn(`Could not delete worktree directory (may not exist): ${worktree.path}`);
       }
     }
 
-    // Delete the worktree record from the database
-    await run(db, `DELETE FROM worktrees WHERE id = ?`, [worktreeId]);
+    // Delete all associated database records in a transaction
+    await run(db, 'BEGIN TRANSACTION');
+    try {
+      await run(db, 'DELETE FROM worktrees WHERE pr_number = ? AND repository = ? COLLATE NOCASE', [prNumber, repository]);
+      await run(db, `
+        DELETE FROM comments WHERE review_id IN (
+          SELECT id FROM reviews WHERE pr_number = ? AND repository = ? COLLATE NOCASE
+        )
+      `, [prNumber, repository]);
+      await run(db, 'DELETE FROM chat_sessions WHERE review_id IN (SELECT id FROM reviews WHERE pr_number = ? AND repository = ? COLLATE NOCASE)', [prNumber, repository]);
+      await run(db, 'DELETE FROM reviews WHERE pr_number = ? AND repository = ? COLLATE NOCASE', [prNumber, repository]);
+      await run(db, 'DELETE FROM pr_metadata WHERE id = ?', [metadataId]);
+      await run(db, 'COMMIT');
+    } catch (txError) {
+      await run(db, 'ROLLBACK');
+      throw txError;
+    }
 
-    // Also delete associated PR metadata and comments (optional cleanup)
-    // Keep PR metadata for now as user might want to reload the PR later
-    // await run(db, `DELETE FROM pr_metadata WHERE pr_number = ? AND repository = ?`,
-    //   [worktree.pr_number, worktree.repository]);
-
-    logger.success(`Deleted worktree ID ${worktreeId}`);
+    logger.success(`Deleted review for ${repository} #${prNumber}`);
 
     res.json({
       success: true,
-      message: `Worktree for ${worktree.repository} #${worktree.pr_number} deleted`
+      message: `Review for ${repository} #${prNumber} deleted`
     });
 
   } catch (error) {
-    logger.error('Error deleting worktree:', error);
+    logger.error('Error deleting review:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to delete worktree: ' + error.message
+      error: 'Failed to delete review: ' + error.message
     });
   }
 });
