@@ -1188,8 +1188,7 @@
   background: var(--color-bg-primary);
   border: 1px solid var(--color-border-primary);
   border-radius: 8px;
-  overflow-x: auto;
-  overflow-y: visible;
+  overflow: visible; /* Must be visible so sticky file headers work relative to .diff-view */
   position: relative;
   min-width: 0;
   padding-bottom: 1px;
@@ -1335,7 +1334,7 @@
 /* Diff styling improvements */
 .d2h-file-wrapper[data-file-name] {
   margin-bottom: 24px;
-  overflow-x: auto; /* Allow horizontal scroll for long code lines */
+  overflow-x: visible; /* Must be visible for sticky file headers to work */
   max-width: 100%;
 }
 
@@ -1348,6 +1347,9 @@
   border-bottom: 1px solid var(--color-border-primary);
   font-weight: 600;
   font-size: 14px;
+  position: sticky;
+  top: var(--toolbar-height, 0px);
+  z-index: 4;
 }
 
 .d2h-file-name {
@@ -1540,7 +1542,8 @@
   color: #f85149;
 }
 
-/* Hide diff table when collapsed */
+/* Hide diff content when collapsed */
+.d2h-file-wrapper.collapsed .d2h-file-body,
 .d2h-file-wrapper.collapsed .d2h-diff-table {
   display: none;
 }
@@ -1558,6 +1561,12 @@
 /* Make header clickable for collapse toggle */
 .d2h-file-wrapper .d2h-file-header {
   cursor: pointer;
+}
+
+/* Scrollable wrapper for diff tables — provides per-file horizontal scroll
+   now that .d2h-file-wrapper and .diff-container use overflow:visible for sticky headers */
+.d2h-file-body {
+  overflow-x: auto;
 }
 
 .d2h-diff-table {
@@ -6288,6 +6297,9 @@ body:not([data-theme="dark"]) .theme-icon-light {
   background: var(--color-bg-primary);
   border-bottom: 1px solid var(--color-border-primary);
   flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  z-index: 5;
 }
 
 .diff-toolbar .sidebar-toggle-collapsed {
@@ -6759,11 +6771,10 @@ body:not([data-theme="dark"]) .theme-icon-light {
 }
 
 .main-layout .diff-container {
-  flex: 1;
+  flex: 1 0 auto; /* Grow to fill, but don't shrink below content so .diff-view scrolls */
   min-width: 0; /* Prevent flex item from expanding beyond container */
   padding: 16px;
-  overflow-y: auto;
-  overflow-x: auto; /* Allow scroll as fallback for unbreakable content */
+  overflow: visible; /* Must be visible so sticky file headers work relative to .diff-view */
 }
 
 /* --------------------------------------------------------------------------
