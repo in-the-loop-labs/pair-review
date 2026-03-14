@@ -1164,11 +1164,11 @@
     if (collectionRow && !event.target.closest('a')) {
       var prUrl = collectionRow.dataset.prUrl;
       if (prUrl) {
-        // Switch to PR tab to show loading state
+        // Switch to PR tab to show loading state (do NOT persist to
+        // localStorage – the user's intentional tab choice should be preserved)
         var tabBar = document.getElementById('unified-tab-bar');
         var prTabBtn = tabBar.querySelector('[data-tab="pr-tab"]');
         switchTab(tabBar, prTabBtn);
-        localStorage.setItem(TAB_STORAGE_KEY, 'pr-tab');
 
         // Populate input and submit the form programmatically
         var input = document.getElementById('pr-url-input');
