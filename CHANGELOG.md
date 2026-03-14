@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.4.4
+
+### Patch Changes
+
+- e1e6b05: Auto-refresh GitHub PR lists when switching to "My Review Requests" or "My PRs" tabs on the index page
+- 90107dd: Preserve selected index tab when clicking a PR from collection tabs (My Review Requests, My PRs)
+- 0e16d82: Sticky file headers in diff panel so the current file's header stays visible while scrolling
+
 ## 2.4.3
 
 ### Patch Changes
