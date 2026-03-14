@@ -211,8 +211,7 @@ function insertTestData() {
     VALUES (1, 'test-owner/test-repo', 'draft')
   `).run();
 
-  // Insert worktree
-  const now = new Date().toISOString();
+  // Insert worktree (reuses `now` from pr_metadata insert above)
   db.prepare(`
     INSERT INTO worktrees (id, pr_number, repository, branch, path, created_at, last_accessed_at)
     VALUES ('e2e-test-id', 1, 'test-owner/test-repo', 'feature-test', '/tmp/worktree/e2e-test', ?, ?)
