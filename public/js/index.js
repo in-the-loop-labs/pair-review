@@ -402,11 +402,6 @@
       state.fetchedAt = data.fetched_at;
 
       renderCollectionTable(container, state, collection);
-
-      // Auto-refresh on first load if cache is empty
-      if (state.prs.length === 0 && !state.fetchedAt) {
-        refreshCollectionPrs(collection, containerId, state);
-      }
     } catch (error) {
       console.error('Error loading ' + collection + ':', error);
       container.innerHTML =
@@ -1204,19 +1199,25 @@
     const unifiedTabBtn = event.target.closest('#unified-tab-bar .tab-btn');
     if (unifiedTabBtn) {
       const tabBar = document.getElementById('unified-tab-bar');
-      switchTab(tabBar, unifiedTabBtn, function (tabId) {
+      switchTab(tabBar, unifiedTabBtn, async function (tabId) {
         // Persist tab choice
         localStorage.setItem(TAB_STORAGE_KEY, tabId);
         // Lazy-load local reviews on first switch
         if (tabId === 'local-tab' && !localReviewsPagination.loaded) {
           loadLocalReviews();
         }
-        // Lazy-load GitHub collection tabs on first switch
-        if (tabId === 'review-requests-tab' && !reviewRequestsState.loaded) {
-          loadCollectionPrs('review-requests', 'review-requests-container', reviewRequestsState);
+        // Load cached data on first switch, then always refresh from GitHub
+        if (tabId === 'review-requests-tab') {
+          if (!reviewRequestsState.loaded) {
+            await loadCollectionPrs('review-requests', 'review-requests-container', reviewRequestsState);
+          }
+          refreshCollectionPrs('review-requests', 'review-requests-container', reviewRequestsState);
         }
-        if (tabId === 'my-prs-tab' && !myPrsState.loaded) {
-          loadCollectionPrs('my-prs', 'my-prs-container', myPrsState);
+        if (tabId === 'my-prs-tab') {
+          if (!myPrsState.loaded) {
+            await loadCollectionPrs('my-prs', 'my-prs-container', myPrsState);
+          }
+          refreshCollectionPrs('my-prs', 'my-prs-container', myPrsState);
         }
       });
       return;
@@ -1248,12 +1249,14 @@
       loadLocalReviews();
     }
 
-    // If a GitHub collection tab is active, load it immediately
+    // If a GitHub collection tab is active, load cached data then refresh from GitHub
     if (savedTab === 'review-requests-tab') {
-      loadCollectionPrs('review-requests', 'review-requests-container', reviewRequestsState);
+      loadCollectionPrs('review-requests', 'review-requests-container', reviewRequestsState)
+        .then(function () { refreshCollectionPrs('review-requests', 'review-requests-container', reviewRequestsState); });
     }
     if (savedTab === 'my-prs-tab') {
-      loadCollectionPrs('my-prs', 'my-prs-container', myPrsState);
+      loadCollectionPrs('my-prs', 'my-prs-container', myPrsState)
+        .then(function () { refreshCollectionPrs('my-prs', 'my-prs-container', myPrsState); });
     }
 
     // Set up start review form handler

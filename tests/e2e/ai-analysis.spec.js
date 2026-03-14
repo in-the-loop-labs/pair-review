@@ -131,6 +131,11 @@ async function seedAISuggestions(page) {
 
   // Wait for at least one AI suggestion to render
   await page.waitForSelector('.ai-suggestion, [data-suggestion-id]', { timeout: 5000 });
+
+  // Dismiss the progress modal if it appeared (the POST triggers the modal via
+  // the running-analysis check on the frontend, and it can linger long enough to
+  // intercept pointer events on suggestion action buttons).
+  await dismissProgressModalIfVisible(page);
 }
 
 test.describe('AI Analysis Button', () => {
