@@ -318,7 +318,7 @@ CONFIG FILE:
 
     Example config:
     {
-      "github_token": "ghp_your_token_here",
+      "github_token_command": "gh auth token",
       "port": 7247,
       "theme": "light",
       "debug_stream": false,
@@ -327,7 +327,10 @@ CONFIG FILE:
     }
 
 GITHUB TOKEN:
-    Create a Personal Access Token at:
+    If you have the GitHub CLI (gh) installed and authenticated,
+    you're all set — the default github_token_command handles it.
+
+    Otherwise, create a Personal Access Token at:
     https://github.com/settings/tokens/new
 
     Required scopes:
@@ -336,7 +339,9 @@ GITHUB TOKEN:
 
     You can provide the token via:
       1. GITHUB_TOKEN environment variable (takes precedence)
-      2. github_token field in config file
+      2. github_token_command in config file (preferred, default: "gh auth token")
+         No secret stored in plain text. Works with gh CLI, 1Password CLI, pass, etc.
+      3. github_token field in config file (literal token — less secure)
 
 ENVIRONMENT VARIABLES:
     GITHUB_TOKEN            GitHub Personal Access Token (takes precedence over config file)
@@ -504,7 +509,7 @@ async function handlePullRequest(args, config, db, flags = {}) {
     // Get GitHub token (env var takes precedence over config)
     const githubToken = getGitHubToken(config);
     if (!githubToken) {
-      throw new Error('GitHub token not found. Set GITHUB_TOKEN environment variable or run: npx pair-review --configure');
+      throw new Error('GitHub token not found. Set GITHUB_TOKEN env var, add github_token to config, or set github_token_command (e.g., "gh auth token"). Run: npx pair-review --configure');
     }
 
     // Parse PR arguments
@@ -600,7 +605,7 @@ async function performHeadlessReview(args, config, db, flags, options) {
     // Get GitHub token (env var takes precedence over config)
     const githubToken = getGitHubToken(config);
     if (!githubToken) {
-      throw new Error('GitHub token not found. Set GITHUB_TOKEN environment variable or run: npx pair-review --configure');
+      throw new Error('GitHub token not found. Set GITHUB_TOKEN env var, add github_token to config, or set github_token_command (e.g., "gh auth token"). Run: npx pair-review --configure');
     }
 
     // Parse PR arguments

@@ -4,7 +4,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { deepMerge, getGitHubToken, expandPath, getMonorepoPath, getMonorepoCheckoutScript, getMonorepoWorktreeDirectory, getMonorepoWorktreeNameTemplate, getMonorepoCheckoutTimeout, resolveMonorepoOptions, resolveDbName, warnIfDevModeWithoutDbName, loadConfig } = require('../../src/config');
+const childProcess = require('child_process');
+const { deepMerge, getGitHubToken, expandPath, getMonorepoPath, getMonorepoCheckoutScript, getMonorepoWorktreeDirectory, getMonorepoWorktreeNameTemplate, getMonorepoCheckoutTimeout, resolveMonorepoOptions, resolveDbName, warnIfDevModeWithoutDbName, loadConfig, _resetTokenCache } = require('../../src/config');
 
 describe('config.js', () => {
   describe('getGitHubToken', () => {
@@ -91,6 +92,152 @@ describe('config.js', () => {
       const result = getGitHubToken(config);
 
       expect(result).toBe('env_token');
+    });
+  });
+
+  describe('github_token_command', () => {
+    let originalEnv;
+    let execSyncSpy;
+    let warnSpy;
+
+    beforeEach(() => {
+      originalEnv = process.env.GITHUB_TOKEN;
+      delete process.env.GITHUB_TOKEN;
+      _resetTokenCache();
+      execSyncSpy = vi.spyOn(childProcess, 'execSync');
+      const logger = require('../../src/utils/logger');
+      warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      if (originalEnv !== undefined) {
+        process.env.GITHUB_TOKEN = originalEnv;
+      } else {
+        delete process.env.GITHUB_TOKEN;
+      }
+      _resetTokenCache();
+      execSyncSpy.mockRestore();
+      warnSpy.mockRestore();
+    });
+
+    it('should return trimmed token from command', () => {
+      execSyncSpy.mockReturnValue('ghp_abc123\n');
+      const config = { github_token_command: 'gh auth token' };
+
+      const result = getGitHubToken(config);
+
+      expect(result).toBe('ghp_abc123');
+      expect(execSyncSpy).toHaveBeenCalledWith('gh auth token', {
+        encoding: 'utf8',
+        timeout: 5000,
+        stdio: ['pipe', 'pipe', 'ignore']
+      });
+    });
+
+    it('should return empty string and log warning when command fails', () => {
+      execSyncSpy.mockImplementation(() => { throw new Error('command not found'); });
+      const config = { github_token_command: 'bad-command' };
+
+      const result = getGitHubToken(config);
+
+      expect(result).toBe('');
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('did not produce a token'));
+    });
+
+    it('should return empty string and log warning on timeout', () => {
+      const err = new Error('ETIMEDOUT');
+      err.killed = true;
+      execSyncSpy.mockImplementation(() => { throw err; });
+      const config = { github_token_command: 'sleep 999' };
+
+      const result = getGitHubToken(config);
+
+      expect(result).toBe('');
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('did not produce a token'));
+    });
+
+    it('should return empty string and log warning when command returns whitespace only', () => {
+      execSyncSpy.mockReturnValue('  \n  \n');
+      const config = { github_token_command: 'echo ""' };
+
+      const result = getGitHubToken(config);
+
+      expect(result).toBe('');
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('did not produce a token'));
+    });
+
+    it('should prefer env var over command', () => {
+      process.env.GITHUB_TOKEN = 'env_token';
+      execSyncSpy.mockReturnValue('cmd_token\n');
+      const config = { github_token_command: 'gh auth token' };
+
+      const result = getGitHubToken(config);
+
+      expect(result).toBe('env_token');
+      expect(execSyncSpy).not.toHaveBeenCalled();
+    });
+
+    it('should prefer config literal over command', () => {
+      execSyncSpy.mockReturnValue('cmd_token\n');
+      const config = { github_token: 'literal_token', github_token_command: 'gh auth token' };
+
+      const result = getGitHubToken(config);
+
+      expect(result).toBe('literal_token');
+      expect(execSyncSpy).not.toHaveBeenCalled();
+    });
+
+    it('should cache result and only call execSync once', () => {
+      execSyncSpy.mockReturnValue('ghp_cached\n');
+      const config = { github_token_command: 'gh auth token' };
+
+      const result1 = getGitHubToken(config);
+      const result2 = getGitHubToken(config);
+
+      expect(result1).toBe('ghp_cached');
+      expect(result2).toBe('ghp_cached');
+      expect(execSyncSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('should not cache failures — retry on next call', () => {
+      execSyncSpy.mockImplementationOnce(() => { throw new Error('not found'); });
+      execSyncSpy.mockReturnValueOnce('ghp_retry_success\n');
+      const config = { github_token_command: 'gh auth token' };
+
+      const result1 = getGitHubToken(config);
+      const result2 = getGitHubToken(config);
+
+      expect(result1).toBe('');
+      expect(result2).toBe('ghp_retry_success');
+      expect(execSyncSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it('should not cache empty output — retry on next call', () => {
+      execSyncSpy.mockReturnValueOnce('  \n');
+      execSyncSpy.mockReturnValueOnce('ghp_now_works\n');
+      const config = { github_token_command: 'gh auth token' };
+
+      const result1 = getGitHubToken(config);
+      const result2 = getGitHubToken(config);
+
+      expect(result1).toBe('');
+      expect(result2).toBe('ghp_now_works');
+      expect(execSyncSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it('should execute the exact custom command string', () => {
+      execSyncSpy.mockReturnValue('op_token\n');
+      const config = { github_token_command: 'op read op://vault/github/token' };
+
+      getGitHubToken(config);
+
+      expect(execSyncSpy).toHaveBeenCalledWith('op read op://vault/github/token', expect.any(Object));
+    });
+
+    it('should not call execSync when github_token_command is absent or empty', () => {
+      expect(getGitHubToken({})).toBe('');
+      expect(getGitHubToken({ github_token_command: '' })).toBe('');
+      expect(execSyncSpy).not.toHaveBeenCalled();
     });
   });
 
