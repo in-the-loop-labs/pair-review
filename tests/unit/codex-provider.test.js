@@ -60,13 +60,14 @@ describe('CodexProvider', () => {
     it('should return array of models with expected structure', () => {
       const models = CodexProvider.getModels();
       expect(Array.isArray(models)).toBe(true);
-      expect(models.length).toBe(3);
+      expect(models.length).toBe(4);
 
       // Check that we have the expected model IDs
       const modelIds = models.map(m => m.id);
       expect(modelIds).toContain('gpt-5.1-codex-mini');
       expect(modelIds).toContain('gpt-5.2-codex');
       expect(modelIds).toContain('gpt-5.3-codex');
+      expect(modelIds).toContain('gpt-5.4');
 
       // Check model structure
       const defaultModel = models.find(m => m.id === 'gpt-5.2-codex');
