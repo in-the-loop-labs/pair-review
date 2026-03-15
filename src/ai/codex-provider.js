@@ -23,7 +23,8 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
  * Based on OpenAI Codex Models guide (developers.openai.com/codex/models)
  * - gpt-5.1-codex-mini: Smaller, cost-effective variant for quick scans
  * - gpt-5.2-codex: Advanced coding model for everyday reviews, good reasoning/cost balance
- * - gpt-5.3-codex: Most capable agentic coding model with frontier performance and reasoning
+ * - gpt-5.3-codex: Capable agentic coding model with frontier performance and reasoning
+ * - gpt-5.4: Latest generation with enhanced reasoning depth
  */
 const CODEX_MODELS = [
   {
@@ -50,7 +51,16 @@ const CODEX_MODELS = [
     name: 'GPT-5.3 Codex',
     tier: 'thorough',
     tagline: 'Deep Review',
-    description: 'Most capable agentic coding model—combines frontier coding performance with stronger reasoning for deep cross-file analysis.',
+    description: 'Capable agentic coding model—combines frontier coding performance with strong reasoning for cross-file analysis.',
+    badge: 'Thorough',
+    badgeClass: 'badge-power'
+  },
+  {
+    id: 'gpt-5.4',
+    name: 'GPT-5.4',
+    tier: 'thorough',
+    tagline: 'Latest Gen',
+    description: 'Latest generation model with enhanced reasoning depth for complex architectural reviews.',
     badge: 'Most Thorough',
     badgeClass: 'badge-power'
   }

@@ -63,7 +63,7 @@ describe('CursorAgentProvider', () => {
     it('should return array of models with expected structure', () => {
       const models = CursorAgentProvider.getModels();
       expect(Array.isArray(models)).toBe(true);
-      expect(models.length).toBe(12);
+      expect(models.length).toBe(14);
 
       // Check that we have the expected model IDs
       const modelIds = models.map(m => m.id);
@@ -79,6 +79,8 @@ describe('CursorAgentProvider', () => {
       expect(modelIds).toContain('gpt-5.3-codex-xhigh');
       expect(modelIds).toContain('opus-4.5-thinking');
       expect(modelIds).toContain('opus-4.6-thinking');
+      expect(modelIds).toContain('gpt-5.4-high');
+      expect(modelIds).toContain('gpt-5.4-medium');
 
       // Check model structure for the default model
       const defaultModel = models.find(m => m.id === 'sonnet-4.6-thinking');

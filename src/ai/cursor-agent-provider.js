@@ -143,6 +143,24 @@ const CURSOR_AGENT_MODELS = [
     description: 'Deep analysis with extended thinking—Cursor default for maximum review quality',
     badge: 'Most Thorough',
     badgeClass: 'badge-power'
+  },
+  {
+    id: 'gpt-5.4-high',
+    name: 'GPT-5.4 High',
+    tier: 'thorough',
+    tagline: 'Latest OpenAI',
+    description: 'Latest generation with high reasoning effort—strong for complex architectural reviews',
+    badge: 'Latest Gen',
+    badgeClass: 'badge-power'
+  },
+  {
+    id: 'gpt-5.4-medium',
+    name: 'GPT-5.4',
+    tier: 'thorough',
+    tagline: 'Latest Gen',
+    description: 'Latest generation at medium reasoning depth',
+    badge: 'Latest',
+    badgeClass: 'badge-power'
   }
 ];
 
