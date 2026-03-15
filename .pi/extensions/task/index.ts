@@ -205,10 +205,13 @@ async function runTask(
 	onUpdate: OnUpdate | undefined,
 	makeDetails: (results: TaskResult[]) => TaskDetails,
 ): Promise<TaskResult> {
-	// Build args: full tool access, JSON output, no session persistence
+	// Build args: full tool access, JSON output, no session persistence.
+	// Skills and extensions are left enabled so subtasks have access to the
+	// user's configured environment. --no-prompt-templates is kept because
+	// prompt templates can't be triggered in -p mode.
 	const args: string[] = [
 		"--mode", "json", "-p", "--no-session",
-		"--no-extensions", "--no-skills", "--no-prompt-templates",
+		"--no-prompt-templates",
 		"-e", EXTENSION_DIR,
 	];
 	if (model) {

@@ -273,12 +273,9 @@ class PiBridge extends EventEmitter {
     }
 
     // Load extensions via -e (e.g., task extension for subagent delegation).
-    // --no-extensions prevents auto-discovery; only explicitly listed ones load.
-    if (this.extensions.length > 0) {
-      args.push('--no-extensions');
-      for (const ext of this.extensions) {
-        args.push('-e', ext);
-      }
+    // These are additive — the user's auto-discovered extensions remain available.
+    for (const ext of this.extensions) {
+      args.push('-e', ext);
     }
 
     return args;

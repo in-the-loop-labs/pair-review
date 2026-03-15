@@ -150,11 +150,12 @@ describe('PiProvider', () => {
       expect(provider.baseArgs).toContain('--tools');
       expect(provider.baseArgs).toContain('read,bash,grep,find,ls');
       expect(provider.baseArgs).toContain('--no-session');
-      // Task extension loaded, auto-discovery disabled
+      // Task extension loaded, prompt templates suppressed (not useful in -p mode)
       expect(provider.baseArgs).toContain('-e');
-      expect(provider.baseArgs).toContain('--no-extensions');
-      expect(provider.baseArgs).toContain('--no-skills');
       expect(provider.baseArgs).toContain('--no-prompt-templates');
+      // Skills and extensions are left enabled for the user's environment
+      expect(provider.baseArgs).not.toContain('--no-extensions');
+      expect(provider.baseArgs).not.toContain('--no-skills');
     });
 
     it('should merge provider extra_args from config', () => {
@@ -240,9 +241,9 @@ describe('PiProvider', () => {
       expect(provider.baseArgs).not.toContain('--tools');
       expect(provider.baseArgs).not.toContain('read,bash,grep,find,ls');
       expect(provider.baseArgs).toContain('-e');
-      expect(provider.baseArgs).toContain('--no-extensions');
-      expect(provider.baseArgs).toContain('--no-skills');
       expect(provider.baseArgs).toContain('--no-prompt-templates');
+      expect(provider.baseArgs).not.toContain('--no-extensions');
+      expect(provider.baseArgs).not.toContain('--no-skills');
     });
 
     it('should include --tools in non-yolo mode (default)', () => {

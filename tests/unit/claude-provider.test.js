@@ -155,6 +155,9 @@ describe('ClaudeProvider', () => {
       expect(provider.args).toContain('--output-format');
       expect(provider.args).toContain('stream-json');
       expect(provider.args).toContain('--allowedTools');
+      // Hooks are suppressed in analysis subprocesses to avoid side-effects
+      expect(provider.args).toContain('--settings');
+      expect(provider.args).toContain('{"disableAllHooks":true}');
     });
 
     it('should merge provider extra_args from config', () => {

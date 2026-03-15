@@ -189,24 +189,23 @@ class PiProvider extends AIProvider {
     // --no-session: Each pi invocation is an ephemeral analysis — there's no need to
     //               persist session state between runs. Set PAIR_REVIEW_PI_SESSION=1
     //               to enable session saving for debugging (sessions saved to ~/.pi/sessions/).
-    // --no-skills: Skills are disabled by default to keep runs deterministic. A skill can
-    //              still be loaded via `--skill` in model-specific `extra_args` if needed.
-
     // Build args: base args + built-in extra_args + provider extra_args + model extra_args
     // In yolo mode, omit --tools entirely to allow all tools (including edit, write)
     // The task extension is loaded to give the model a subagent tool for delegating
     // work to isolated subprocesses, preserving the main context window.
-    // --no-extensions prevents auto-discovery of other extensions.
-    // --no-skills and --no-prompt-templates keep the subprocess focused.
+    // --no-prompt-templates: prompt templates can't be triggered in -p mode, so suppress
+    // them to avoid wasting context. Skills and extensions are left enabled so the
+    // subprocess has access to the user's configured environment. To disable them,
+    // add --no-skills or --no-extensions to extra_args in provider/model config.
     const sessionArgs = process.env.PAIR_REVIEW_PI_SESSION ? [] : ['--no-session'];
     let baseArgs;
     if (configOverrides.yolo) {
       baseArgs = ['-p', '--mode', 'json', ...cliModelArgs, ...sessionArgs,
-        '--no-extensions', '--no-skills', '--no-prompt-templates',
+        '--no-prompt-templates',
         '-e', TASK_EXTENSION_DIR];
     } else {
       baseArgs = ['-p', '--mode', 'json', ...cliModelArgs, '--tools', 'read,bash,grep,find,ls', ...sessionArgs,
-        '--no-extensions', '--no-skills', '--no-prompt-templates',
+        '--no-prompt-templates',
         '-e', TASK_EXTENSION_DIR];
     }
     const builtInArgs = builtIn?.extra_args || [];
