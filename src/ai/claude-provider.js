@@ -174,7 +174,14 @@ class ClaudeProvider extends AIProvider {
       ].join(',');
       permissionArgs = ['--allowedTools', allowedTools];
     }
-    const baseArgs = ['-p', '--verbose', ...cliModelArgs, '--output-format', 'stream-json', ...permissionArgs];
+    // Suppress user hooks in analysis subprocesses to avoid side-effects
+    // (notifications, confirmations, etc.) firing on every tool call during review.
+    // Uses --settings '{"disableAllHooks":true}' since Claude has no --no-hooks flag.
+    // Skills and extensions are left enabled so the subprocess has access to the
+    // user's configured environment. To disable skills, add --disable-slash-commands
+    // to extra_args in provider/model config.
+    const hooksArgs = ['--settings', '{"disableAllHooks":true}'];
+    const baseArgs = ['-p', '--verbose', ...cliModelArgs, '--output-format', 'stream-json', ...hooksArgs, ...permissionArgs];
     if (maxBudget) {
       const budgetNum = parseFloat(maxBudget);
       if (isNaN(budgetNum) || budgetNum <= 0) {
