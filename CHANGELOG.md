@@ -1,5 +1,22 @@
 # Changelog
 
+## 2.6.0
+
+### Minor Changes
+
+- 11053e7: Enable user skills and extensions in AI provider subprocesses
+
+  AI analysis and chat subprocesses no longer suppress the user's configured skills and extensions (`--no-skills`, `--no-extensions` removed from Pi provider, Pi chat bridge, and task extension). This lets the user's environment flow through to subprocesses by default. To opt out, add the corresponding flags to `extra_args` in provider/model config.
+
+  Also adds hook suppression (`disableAllHooks`) to the Claude analysis provider, preventing user hooks from firing during review analysis — consistent with the existing chat bridge behavior.
+
+### Patch Changes
+
+- 102cd4b: Add GPT-5.4 models to Codex and Cursor Agent providers
+- 6b39fe4: Add managed config layer (`config.managed.json`) for corporate/packaged environments
+
+  Ships an empty `config.managed.json` with the package. When the package is repackaged for corporate environments (e.g., Nix store), this file can be overwritten with company-wide defaults. The config chain is now: defaults -> managed -> global -> global.local -> project -> project.local.
+
 ## 2.5.0
 
 ### Minor Changes
