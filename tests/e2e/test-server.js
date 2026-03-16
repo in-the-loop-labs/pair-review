@@ -317,9 +317,8 @@ async function startTestServer(port) {
   // Static files
   const publicDir = path.join(__dirname, '..', '..', 'public');
   app.use(express.static(publicDir, {
-    setHeaders: (res) => {
-      res.setHeader('Cache-Control', 'no-store');
-    }
+    maxAge: '1h',
+    etag: true,
   }));
 
   // HTML routes
