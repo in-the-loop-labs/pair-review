@@ -177,6 +177,14 @@
             color: var(--color-text-primary);
         }
 
+        .app-version {
+            color: var(--color-fg-muted, #656d76);
+            font-size: 12px;
+            font-weight: 400;
+            margin-left: 6px;
+            opacity: 0.7;
+        }
+
         .header-right {
             display: flex;
             align-items: center;
@@ -1089,7 +1097,7 @@
                         <path transform="rotate(-50 12 12)" d="M18.178 8c5.096 0 5.096 8 0 8-5.095 0-7.133-8-12.356-8-5.096 0-5.096 8 0 8 5.223 0 7.26-8 12.356-8z"/>
                     </svg>
                     <span class="logo-text">pair<span class="logo-accent">review</span></span>
-                    <span id="app-version" style="color: var(--color-fg-muted, #656d76); font-size: 12px; font-weight: 400; margin-left: 6px; opacity: 0.7;"></span>
+                    <span id="app-version" class="app-version"></span>
                 </a>
             </div>
             <div class="header-right">
