@@ -21,6 +21,7 @@ const {
 } = require('../ai');
 const { normalizeRepository } = require('../utils/paths');
 const { isRunningViaNpx, saveConfig } = require('../config');
+const { version } = require('../../package.json');
 const { getAllChatProviders, getAllCachedChatAvailability } = require('../chat/chat-providers');
 const { PRESETS } = require('../utils/comment-formatter');
 const logger = require('../utils/logger');
@@ -42,6 +43,7 @@ router.get('/api/config', (req, res) => {
 
   // Only return safe configuration values (not secrets like github_token)
   res.json({
+    version,
     theme: config.theme || 'light',
     comment_button_action: config.comment_button_action || 'submit',
     comment_format: config.comment_format || 'legacy',
