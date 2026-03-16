@@ -10,6 +10,7 @@ coverage/
 .claude/settings.local.json.bak
 
 test-*.js
+!tests/e2e/test-server.js
 test_*.js
 debug*
 analyze_*.js
