@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.6.1
+
+### Patch Changes
+
+- 007ecbf: Display app version in the header on the index page
+- 1aca096: Display app version on PR setup page and extract shared .app-version CSS class
+- 95e5be8: Skip creating ~/.pair-review/config.json on first run when config.managed.json contains configuration keys
+
 ## 2.6.0
 
 ### Minor Changes
