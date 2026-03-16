@@ -20,6 +20,16 @@ const test = base.extend({
   baseURL: async ({ testServer }, use) => {
     await use(`http://localhost:${testServer.port}`);
   },
+
+  // Inject CSS to disable all animations/transitions for faster test execution
+  page: async ({ page }, use) => {
+    await page.addInitScript(() => {
+      const style = document.createElement('style');
+      style.textContent = '*, *::before, *::after { animation-duration: 0s !important; transition-duration: 0s !important; animation-delay: 0s !important; transition-delay: 0s !important; }';
+      (document.head || document.documentElement).appendChild(style);
+    });
+    await use(page);
+  },
 });
 
 export { test, expect };
