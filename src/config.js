@@ -185,22 +185,26 @@ async function loadConfig() {
 
   let mergedConfig = { ...DEFAULT_CONFIG };
   let isFirstRun = false;
+  let hasManagedConfig = false;
 
   for (const source of sources) {
     try {
       const data = await fs.readFile(source.path, 'utf8');
       const parsed = JSON.parse(data);
+      if (source.label === 'managed config' && Object.keys(parsed).length > 0) {
+        hasManagedConfig = true;
+      }
       mergedConfig = deepMerge(mergedConfig, parsed);
     } catch (error) {
       if (error.code === 'ENOENT') {
-        if (source.required) {
+        if (source.required && !hasManagedConfig) {
           // Global config doesn't exist — create it with defaults
           const config = { ...DEFAULT_CONFIG };
           await saveConfig(config);
           logger.debug(`Created default config file: ${CONFIG_FILE}`);
           isFirstRun = true;
         }
-        // Optional files: skip silently
+        // Optional files or managed-config-present: skip silently
       } else if (error instanceof SyntaxError) {
         if (source.required) {
           console.error(`Invalid configuration file at ~/.pair-review/config.json`);
