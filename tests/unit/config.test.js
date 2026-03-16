@@ -1095,6 +1095,44 @@ describe('config.js', () => {
       expect(config.port).toBe(7247);
     });
 
+    it('should skip creating global config when managed config has keys', async () => {
+      mockReadFile({
+        managed: { default_provider: 'gemini', theme: 'dark' },
+        global: null,  // ENOENT — would normally trigger creation
+      });
+
+      const { config, isFirstRun } = await loadConfig();
+
+      expect(writeFileSpy).not.toHaveBeenCalled();
+      expect(isFirstRun).toBe(false);
+      expect(config.default_provider).toBe('gemini');
+      expect(config.theme).toBe('dark');
+    });
+
+    it('should still create global config when managed config is empty object', async () => {
+      mockReadFile({
+        managed: {},
+        global: null,  // ENOENT
+      });
+
+      const { isFirstRun } = await loadConfig();
+
+      expect(writeFileSpy).toHaveBeenCalled();
+      expect(isFirstRun).toBe(true);
+    });
+
+    it('should still create global config when managed config is missing', async () => {
+      mockReadFile({
+        // managed defaults to null (ENOENT)
+        global: null,
+      });
+
+      const { isFirstRun } = await loadConfig();
+
+      expect(writeFileSpy).toHaveBeenCalled();
+      expect(isFirstRun).toBe(true);
+    });
+
     it('should warn and skip malformed local config files', async () => {
       const logger = require('../../src/utils/logger');
       const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
