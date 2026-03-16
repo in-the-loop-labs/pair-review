@@ -2,3 +2,4 @@ commit	metric	status	description
 ca0711f	184.78	keep	baseline
 8329632	111.01	crash	fullyParallel false workers 4 - 7 failures from DB contention
 be6d721	57.19	keep	per-worker server isolation with fixtures - workers 4
+b5919bd	39.12	keep	split ai-analysis + comment-crud into 2 files each
