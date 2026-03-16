@@ -1092,6 +1092,12 @@
         const config = await response.json();
         updateCommandExamples(config.is_running_via_npx);
 
+        // Display version in header
+        if (config.version) {
+          const versionEl = document.getElementById('app-version');
+          if (versionEl) versionEl.textContent = 'v' + config.version;
+        }
+
         // Expose chat provider config to components (ChatPanel reads these)
         window.__pairReview = window.__pairReview || {};
         window.__pairReview.chatProvider = config.chat_provider || 'pi';
