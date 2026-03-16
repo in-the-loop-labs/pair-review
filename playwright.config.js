@@ -5,7 +5,7 @@ export default defineConfig({
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
-  workers: 8,
+  workers: process.env.E2E_WORKERS ? parseInt(process.env.E2E_WORKERS, 10) : (process.env.CI ? 2 : 8),
   reporter: process.env.CI ? 'github' : 'list',
 
   use: {
