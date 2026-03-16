@@ -6,7 +6,7 @@
  * popover layout picker, persistence, and panel coordination.
  */
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 import { waitForDiffToRender } from './helpers.js';
 
 test.describe('Panel Group - PR Mode', () => {

@@ -10,7 +10,7 @@
  * - Comment form Chat button hidden when data-chat="disabled"
  */
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 import { waitForDiffToRender } from './helpers.js';
 
 /**
