@@ -9,7 +9,7 @@
  * - Error handling for submission failures
  */
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 import { waitForDiffToRender } from './helpers.js';
 
 // Helper to open the review modal

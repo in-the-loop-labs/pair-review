@@ -14,7 +14,7 @@
  * The test server is started via global-setup.js with pre-seeded test data.
  */
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 import { waitForDiffToRender } from './helpers.js';
 
 // Helper to clean up all file comments for test isolation

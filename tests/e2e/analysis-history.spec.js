@@ -10,7 +10,7 @@
  * - Dropdown behavior and selection
  */
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 import { waitForDiffToRender } from './helpers.js';
 
 /**

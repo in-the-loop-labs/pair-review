@@ -6,7 +6,7 @@
  * opening, closing, and content display.
  */
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 
 test.describe('Help Modal', () => {
   test.beforeEach(async ({ page }) => {

@@ -6,7 +6,7 @@
  * automatically refreshes PR data and triggers AI analysis without user interaction.
  */
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 import { waitForDiffToRender } from './helpers.js';
 
 test.describe('Auto-Analyze Query Parameter', () => {

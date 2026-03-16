@@ -9,7 +9,7 @@
  * selectedCouncilId and fell through to _saveCouncilAs().
  */
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 import { waitForDiffToRender } from './helpers.js';
 
 // Helper: seed a council via API and return its id

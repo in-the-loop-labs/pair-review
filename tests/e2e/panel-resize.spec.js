@@ -6,7 +6,7 @@
  * Verifies that widths can be changed via drag and persist to localStorage.
  */
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 import { waitForDiffToRender, dragResizeHandle } from './helpers.js';
 
 test.describe('Panel Resize - PR Mode', () => {
