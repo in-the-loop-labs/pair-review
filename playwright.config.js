@@ -5,7 +5,8 @@ export default defineConfig({
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
-  workers: process.env.E2E_WORKERS ? parseInt(process.env.E2E_WORKERS, 10) : (process.env.CI ? 2 : 8),
+  // GitHub Actions ubuntu-latest: 4 vCPUs; local dev: tune to your machine
+  workers: process.env.E2E_WORKERS ? parseInt(process.env.E2E_WORKERS, 10) : (process.env.CI ? 3 : 8),
   reporter: process.env.CI ? 'github' : 'list',
 
   use: {
