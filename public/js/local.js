@@ -1130,72 +1130,12 @@ class LocalManager {
           const reviewData = this.localData;
           const branchInfo = reviewData?.branchInfo;
 
+          // Always show the standard empty diff message
+          diffContainer.innerHTML = '<div class="no-diff">No unstaged changes to review. Make some changes to your files and click the <strong>Refresh</strong> button to reload.</div>';
+
+          // If branch has commits ahead, show a dialog offering to switch to branch review
           if (reviewData?.localMode === 'uncommitted' && branchInfo) {
-            // Show branch review prompt
-            diffContainer.innerHTML = `
-              <div class="no-diff" style="text-align: center; padding: 48px 24px;">
-                <div style="margin-bottom: 16px; font-size: 15px; color: var(--color-text-secondary);">
-                  No uncommitted changes to review.
-                </div>
-                <div style="margin-bottom: 24px; font-size: 14px;">
-                  This branch has <strong>${branchInfo.commitCount}</strong> commit${branchInfo.commitCount !== 1 ? 's' : ''} ahead of <code style="padding: 2px 6px; background: var(--color-bg-tertiary); border-radius: 4px; font-size: 12px;">${branchInfo.baseBranch}</code>.
-                </div>
-                <button id="branch-review-btn" class="btn btn-sm" style="background: var(--ai-primary); color: white; padding: 8px 20px; border-radius: 6px; font-weight: 600; cursor: pointer; border: none;">
-                  Review Branch Changes
-                </button>
-                <div style="margin-top: 16px;">
-                  <label style="font-size: 12px; color: var(--color-text-tertiary); cursor: pointer; display: inline-flex; align-items: center; gap: 6px;">
-                    <input type="checkbox" id="branch-review-dont-ask" style="cursor: pointer;">
-                    Don't ask again for this repository
-                  </label>
-                </div>
-              </div>
-            `;
-
-            // Wire up the button
-            const reviewId = this.reviewId;
-            const btn = document.getElementById('branch-review-btn');
-            if (btn) {
-              btn.addEventListener('click', async () => {
-                btn.disabled = true;
-                btn.textContent = 'Switching...';
-
-                // Save "don't ask" preference if checked
-                const dontAsk = document.getElementById('branch-review-dont-ask');
-                if (dontAsk?.checked) {
-                  try {
-                    await fetch(`/api/local/${reviewId}/branch-review-preference`, {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ preference: -1 })
-                    });
-                  } catch { /* non-fatal */ }
-                }
-
-                try {
-                  const resp = await fetch(`/api/local/${reviewId}/switch-to-branch`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ baseBranch: branchInfo.baseBranch })
-                  });
-                  if (!resp.ok) {
-                    const err = await resp.json();
-                    throw new Error(err.error || 'Switch failed');
-                  }
-                  // Reload the page to pick up branch mode
-                  window.location.reload();
-                } catch (error) {
-                  btn.disabled = false;
-                  btn.textContent = 'Review Branch Changes';
-                  console.error('Failed to switch to branch mode:', error);
-                  if (window.Toast) {
-                    window.Toast.show('Failed to switch: ' + error.message, 'error');
-                  }
-                }
-              });
-            }
-          } else {
-            diffContainer.innerHTML = '<div class="no-diff">No unstaged changes to review. Make some changes to your files and click the <strong>Refresh</strong> button to reload.</div>';
+            this.showBranchReviewDialog(branchInfo);
           }
         }
 
@@ -1295,6 +1235,129 @@ class LocalManager {
         diffContainer.innerHTML = '<div class="no-diff">Error loading changes</div>';
       }
     }
+  }
+
+  /**
+   * Show a dialog prompting the user to review branch changes.
+   * Uses the same modal pattern as ConfirmDialog/TextInputDialog.
+   * @param {Object} branchInfo - Branch info with commitCount and baseBranch
+   */
+  showBranchReviewDialog(branchInfo) {
+    // Remove any existing branch review dialog
+    const existing = document.getElementById('branch-review-dialog');
+    if (existing) existing.remove();
+
+    const commitLabel = branchInfo.commitCount === 1 ? 'commit' : 'commits';
+
+    const overlay = document.createElement('div');
+    overlay.id = 'branch-review-dialog';
+    overlay.className = 'modal-overlay';
+    overlay.style.display = 'flex';
+
+    overlay.innerHTML = `
+      <div class="modal-backdrop" data-action="cancel"></div>
+      <div class="modal-container confirm-dialog-container" style="width: 440px; height: auto;">
+        <div class="modal-header">
+          <h3>Branch Has Changes</h3>
+          <button class="modal-close-btn" data-action="cancel" title="Close">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/>
+            </svg>
+          </button>
+        </div>
+
+        <div class="modal-body" style="padding: 16px 20px;">
+          <p style="margin: 0 0 12px 0; font-size: 14px;">
+            No uncommitted changes. This branch has <strong>${branchInfo.commitCount}</strong> ${commitLabel} ahead of <code style="padding: 2px 6px; background: var(--color-bg-tertiary); border-radius: 4px; font-size: 12px;">${branchInfo.baseBranch}</code>.
+          </p>
+          <label style="font-size: 12px; color: var(--color-text-tertiary); cursor: pointer; display: inline-flex; align-items: center; gap: 6px;">
+            <input type="checkbox" id="branch-review-dont-ask" style="cursor: pointer;">
+            Don't ask again for this repository
+          </label>
+        </div>
+
+        <div class="modal-footer">
+          <button class="btn btn-secondary" data-action="cancel">Cancel</button>
+          <button class="btn btn-primary" id="branch-review-confirm-btn" data-action="confirm">
+            Review Branch Changes
+          </button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(overlay);
+
+    const reviewId = this.reviewId;
+
+    const closeDialog = () => {
+      overlay.style.display = 'none';
+      overlay.remove();
+      document.removeEventListener('keydown', keyHandler);
+    };
+
+    const handleConfirm = async () => {
+      const confirmBtn = overlay.querySelector('#branch-review-confirm-btn');
+      if (confirmBtn) {
+        confirmBtn.disabled = true;
+        confirmBtn.textContent = 'Switching...';
+      }
+
+      // Save "don't ask" preference if checked
+      const dontAsk = overlay.querySelector('#branch-review-dont-ask');
+      if (dontAsk?.checked) {
+        try {
+          await fetch(`/api/local/${reviewId}/branch-review-preference`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ preference: -1 })
+          });
+        } catch { /* non-fatal */ }
+      }
+
+      try {
+        const resp = await fetch(`/api/local/${reviewId}/switch-to-branch`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ baseBranch: branchInfo.baseBranch })
+        });
+        if (!resp.ok) {
+          const err = await resp.json();
+          throw new Error(err.error || 'Switch failed');
+        }
+        // Reload the page to pick up branch mode
+        window.location.reload();
+      } catch (error) {
+        if (confirmBtn) {
+          confirmBtn.disabled = false;
+          confirmBtn.textContent = 'Review Branch Changes';
+        }
+        console.error('Failed to switch to branch mode:', error);
+        if (window.Toast) {
+          window.Toast.show('Failed to switch: ' + error.message, 'error');
+        }
+      }
+    };
+
+    // Event delegation for clicks
+    overlay.addEventListener('click', (e) => {
+      const action = e.target.closest('[data-action]')?.dataset.action;
+      if (action === 'confirm') {
+        handleConfirm();
+      } else if (action === 'cancel') {
+        closeDialog();
+      }
+    });
+
+    // Keyboard handler
+    const keyHandler = (e) => {
+      if (e.key === 'Escape') {
+        closeDialog();
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        handleConfirm();
+      }
+    };
+    document.addEventListener('keydown', keyHandler);
   }
 
   /**
