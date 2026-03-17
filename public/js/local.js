@@ -1153,6 +1153,7 @@ class LocalManager {
             `;
 
             // Wire up the button
+            const reviewId = this.reviewId;
             const btn = document.getElementById('branch-review-btn');
             if (btn) {
               btn.addEventListener('click', async () => {
@@ -1163,7 +1164,7 @@ class LocalManager {
                 const dontAsk = document.getElementById('branch-review-dont-ask');
                 if (dontAsk?.checked) {
                   try {
-                    await fetch(\`/api/local/\${this.reviewId}/branch-review-preference\`, {
+                    await fetch(`/api/local/${reviewId}/branch-review-preference`, {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({ preference: -1 })
@@ -1172,7 +1173,7 @@ class LocalManager {
                 }
 
                 try {
-                  const resp = await fetch(\`/api/local/\${this.reviewId}/switch-to-branch\`, {
+                  const resp = await fetch(`/api/local/${reviewId}/switch-to-branch`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ baseBranch: branchInfo.baseBranch })
@@ -1188,7 +1189,7 @@ class LocalManager {
                   btn.textContent = 'Review Branch Changes';
                   console.error('Failed to switch to branch mode:', error);
                   if (window.Toast) {
-                    window.Toast.show(\`Failed to switch: \${error.message}\`, 'error');
+                    window.Toast.show('Failed to switch: ' + error.message, 'error');
                   }
                 }
               });
