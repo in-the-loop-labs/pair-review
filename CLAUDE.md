@@ -180,6 +180,7 @@ Test structure:
 - Accept an optional `_deps` parameter that merges over defaults: `const deps = { ...defaults, ..._deps }`.
 - In tests, use a `createMockDeps()` helper to provide explicit mocks.
 - This avoids brittle `jest.mock()` / `vi.mock()` patterns and makes test setup self-documenting.
+- **Never re-resolve config values.** When a module needs values from user config (tokens, paths, preferences), accept them via `_deps` from the caller — do not re-read or reconstruct config internally. The canonical config is loaded once via `loadConfig()` in the route/CLI entry point. Re-resolving creates silent divergences (e.g., skipping config-file tokens, ignoring custom commands). Pass resolved values down, don't reach up.
 
 ### ESM-Only Dependencies
 - This project is CommonJS. Some dependencies ship as ESM-only (`"type": "module"` in their package.json). Using `require()` on these will crash on Node <22 with `ERR_REQUIRE_ESM`.

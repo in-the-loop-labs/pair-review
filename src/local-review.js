@@ -4,7 +4,7 @@ const { promisify } = require('util');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs').promises;
-const { loadConfig, showWelcomeMessage, resolveDbName } = require('./config');
+const { loadConfig, showWelcomeMessage, resolveDbName, getGitHubToken } = require('./config');
 const logger = require('./utils/logger');
 
 const execAsync = promisify(exec);
@@ -565,27 +565,15 @@ async function handleLocalReview(targetPath, flags = {}) {
     const { diff, untrackedFiles, stats } = await generateLocalDiff(repoPath);
 
     // Branch detection: when no uncommitted changes, check if branch has commits ahead
-    let branchInfo = null;
-    if (!diff && untrackedFiles.length === 0 && branch !== 'HEAD') {
-      try {
-        const { detectBaseBranch } = require('./git/base-branch');
-        const detection = await detectBaseBranch(repoPath, branch, { repository });
-        if (detection) {
-          const commitCount = await getBranchCommitCount(repoPath, detection.baseBranch);
-          if (commitCount > 0) {
-            branchInfo = {
-              baseBranch: detection.baseBranch,
-              commitCount,
-              source: detection.source,
-              prNumber: detection.prNumber || null
-            };
-            console.log(`\nNo uncommitted changes, but branch has ${commitCount} commit(s) ahead of ${detection.baseBranch}.`);
-            console.log('The UI will offer to review branch changes.');
-          }
-        }
-      } catch (error) {
-        logger.warn(`Branch detection failed: ${error.message}`);
-      }
+    const branchInfo = await detectAndBuildBranchInfo(repoPath, branch, {
+      repository,
+      diff,
+      untrackedFiles,
+      githubToken: getGitHubToken(config)
+    });
+    if (branchInfo) {
+      console.log(`\nNo uncommitted changes, but branch has ${branchInfo.commitCount} commit(s) ahead of ${branchInfo.baseBranch}.`);
+      console.log('The UI will offer to review branch changes.');
     }
 
     if (!diff && untrackedFiles.length === 0 && !branchInfo) {
@@ -779,7 +767,7 @@ async function generateBranchDiff(repoPath, baseBranch, options = {}) {
   // Generate the diff
   let diff = '';
   try {
-    diff = execSync(`git diff ${mergeBaseSha}...HEAD --no-color --no-ext-diff --unified=25${wFlag}`, {
+    diff = execSync(`git diff ${mergeBaseSha}..HEAD --no-color --no-ext-diff --unified=25${wFlag}`, {
       cwd: repoPath,
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -846,6 +834,54 @@ async function getFirstCommitSubject(repoPath, baseBranch) {
   return null;
 }
 
+/**
+ * Detect whether the current branch has commits ahead of its base branch
+ * and build a branchInfo object suitable for the frontend prompt.
+ *
+ * Encapsulates the full sequence: guard checks -> detectBaseBranch -> getBranchCommitCount.
+ * All call sites should use this instead of assembling branchInfo inline.
+ *
+ * @param {string} repoPath - Absolute path to the git repository
+ * @param {string} branch - Current branch name
+ * @param {Object} options
+ * @param {string} options.repository - owner/repo string
+ * @param {string} [options.diff] - The uncommitted diff content (empty = eligible)
+ * @param {Array} [options.untrackedFiles] - Untracked files array (empty = eligible)
+ * @param {string} [options.githubToken] - Resolved GitHub token for PR lookup
+ * @returns {Promise<{baseBranch: string, commitCount: number, source: string, prNumber?: number}|null>}
+ */
+async function detectAndBuildBranchInfo(repoPath, branch, options = {}) {
+  const { repository, diff, untrackedFiles, githubToken } = options;
+
+  // Guard: detached HEAD, has uncommitted changes, or has untracked files
+  if (branch === 'HEAD') return null;
+  if (diff) return null;
+  if (untrackedFiles && untrackedFiles.length > 0) return null;
+
+  try {
+    const { detectBaseBranch } = require('./git/base-branch');
+    const depsOverride = githubToken ? { getGitHubToken: () => githubToken } : undefined;
+    const detection = await detectBaseBranch(repoPath, branch, {
+      repository,
+      _deps: depsOverride
+    });
+    if (!detection) return null;
+
+    const commitCount = await getBranchCommitCount(repoPath, detection.baseBranch);
+    if (commitCount <= 0) return null;
+
+    return {
+      baseBranch: detection.baseBranch,
+      commitCount,
+      source: detection.source,
+      prNumber: detection.prNumber || null
+    };
+  } catch (error) {
+    logger.warn(`Branch detection failed: ${error.message}`);
+    return null;
+  }
+}
+
 module.exports = {
   handleLocalReview,
   findGitRoot,
@@ -857,6 +893,7 @@ module.exports = {
   generateBranchDiff,
   getBranchCommitCount,
   getFirstCommitSubject,
+  detectAndBuildBranchInfo,
   generateLocalReviewId,
   getUntrackedFiles,
   computeLocalDiffDigest

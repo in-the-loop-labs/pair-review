@@ -1130,8 +1130,12 @@ class LocalManager {
           const reviewData = this.localData;
           const branchInfo = reviewData?.branchInfo;
 
-          // Always show the standard empty diff message
-          diffContainer.innerHTML = '<div class="no-diff">No unstaged changes to review. Make some changes to your files and click the <strong>Refresh</strong> button to reload.</div>';
+          // Show mode-aware empty message (neutral when branch info available, actionable otherwise)
+          if (reviewData?.localMode === 'uncommitted' && branchInfo) {
+            diffContainer.innerHTML = '<div class="no-diff">No uncommitted changes.</div>';
+          } else {
+            diffContainer.innerHTML = '<div class="no-diff">No unstaged changes to review. Make some changes to your files and click the <strong>Refresh</strong> button to reload.</div>';
+          }
 
           // If branch has commits ahead, show a dialog offering to switch to branch review
           if (reviewData?.localMode === 'uncommitted' && branchInfo) {
@@ -1354,7 +1358,8 @@ class LocalManager {
         closeDialog();
       } else if (e.key === 'Enter') {
         e.preventDefault();
-        handleConfirm();
+        const btn = overlay.querySelector('#branch-review-confirm-btn');
+        if (!btn?.disabled) handleConfirm();
       }
     };
     document.addEventListener('keydown', keyHandler);

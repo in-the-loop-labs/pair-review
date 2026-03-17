@@ -4,16 +4,10 @@ const logger = require('../utils/logger');
 
 const defaults = {
   execSync,
-  getGitHubToken: () => {
-    // Lazy-load to avoid circular deps
-    const { loadConfig, getGitHubToken } = require('../config');
-    // loadConfig is async but we only need the cached/sync token resolver
-    // Use a sync approach: check env first, then try gh auth token
-    return getGitHubToken({
-      github_token: process.env.GITHUB_TOKEN || '',
-      github_token_command: 'gh auth token'
-    });
-  },
+  // Callers should pass a resolved token via _deps.getGitHubToken.
+  // This default returns empty so GitHub lookup is silently skipped
+  // when no token is provided — never re-resolve config internally.
+  getGitHubToken: () => '',
   createGitHubClient: (token) => {
     const { GitHubClient } = require('../github/client');
     return new GitHubClient(token);

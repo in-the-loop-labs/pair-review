@@ -64,17 +64,23 @@ describe('generateBranchDiff', () => {
   });
 
   it('respects hideWhitespace option', async () => {
-    // Add a whitespace-only change
+    // Go back to main and add a file, then branch and make whitespace-only change
+    execSync('git checkout main', { cwd: testDir, stdio: 'pipe' });
+    await fs.writeFile(path.join(testDir, 'ws-file.txt'), 'hello world\n');
+    execSync('git add ws-file.txt', { cwd: testDir, stdio: 'pipe' });
+    execSync('git commit -m "Add ws file on main"', { cwd: testDir, stdio: 'pipe' });
+
+    execSync('git checkout -b ws-test', { cwd: testDir, stdio: 'pipe' });
     await fs.writeFile(path.join(testDir, 'ws-file.txt'), 'hello   world\n');
     execSync('git add ws-file.txt', { cwd: testDir, stdio: 'pipe' });
-    execSync('git commit -m "Add ws file"', { cwd: testDir, stdio: 'pipe' });
+    execSync('git commit -m "Whitespace change"', { cwd: testDir, stdio: 'pipe' });
 
     const withWs = await generateBranchDiff(testDir, 'main');
     const withoutWs = await generateBranchDiff(testDir, 'main', { hideWhitespace: true });
 
-    // Both should have diffs, but the content may differ
+    // With -w, the whitespace-only file should NOT appear in the diff
     expect(withWs.diff).toContain('ws-file.txt');
-    expect(withoutWs.diff).toBeTruthy();
+    expect(withoutWs.diff).not.toContain('ws-file.txt');
   });
 });
 
