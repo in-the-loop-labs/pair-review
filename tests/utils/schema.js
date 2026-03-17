@@ -32,7 +32,9 @@ const SCHEMA_SQL = {
       local_path TEXT,
       local_head_sha TEXT,
       summary TEXT,
-      name TEXT
+      name TEXT,
+      local_mode TEXT DEFAULT 'uncommitted',
+      local_base_branch TEXT
     )
   `,
 
@@ -111,6 +113,7 @@ const SCHEMA_SQL = {
       default_tab TEXT,
       default_chat_instructions TEXT,
       local_path TEXT,
+      auto_branch_review INTEGER DEFAULT 0,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     )

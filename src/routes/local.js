@@ -21,7 +21,7 @@ const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
 const { broadcastReviewEvent } = require('../events/review-events');
 const { mergeInstructions } = require('../utils/instructions');
-const { generateLocalDiff, computeLocalDiffDigest } = require('../local-review');
+const { generateLocalDiff, generateBranchDiff, getBranchCommitCount, getFirstCommitSubject, computeLocalDiffDigest } = require('../local-review');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
 const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
 const { TIERS, TIER_ALIASES, VALID_TIERS, resolveTier } = require('../ai/prompts/config');
@@ -288,8 +288,30 @@ router.post('/api/local/start', async (req, res) => {
     // Compute digest for staleness detection
     const digest = await computeLocalDiffDigest(repoPath);
 
+    // Branch detection: when no uncommitted changes, check if branch has commits ahead
+    let branchInfo = null;
+    if (!diff && branch !== 'HEAD') {
+      try {
+        const { detectBaseBranch } = require('../git/base-branch');
+        const detection = await detectBaseBranch(repoPath, branch, { repository });
+        if (detection) {
+          const commitCount = await getBranchCommitCount(repoPath, detection.baseBranch);
+          if (commitCount > 0) {
+            branchInfo = {
+              baseBranch: detection.baseBranch,
+              commitCount,
+              source: detection.source,
+              prNumber: detection.prNumber || null
+            };
+          }
+        }
+      } catch (error) {
+        logger.warn(`Branch detection in /start: ${error.message}`);
+      }
+    }
+
     // Persist to in-memory Map
-    setLocalReviewDiff(sessionId, { diff, stats, digest });
+    setLocalReviewDiff(sessionId, { diff, stats, digest, branchInfo });
 
     // Persist to database
     await reviewRepo.saveLocalDiff(sessionId, { diff, stats, digest });
@@ -302,6 +324,7 @@ router.post('/api/local/start', async (req, res) => {
       sessionId,
       repository,
       branch,
+      branchInfo,
       stats: {
         trackedChanges: stats.trackedChanges || 0,
         untrackedFiles: stats.untrackedFiles || 0,
@@ -376,6 +399,55 @@ router.get('/api/local/:reviewId', async (req, res) => {
       }
     }
 
+    // Build branch info for the response
+    const localMode = review.local_mode || 'uncommitted';
+    const baseBranch = review.local_base_branch || null;
+
+    // When uncommitted mode and no diff, check for branch detection info in cache
+    let branchInfo = null;
+    const cachedDiff = getLocalReviewDiff(reviewId);
+    if (localMode === 'uncommitted' && cachedDiff?.branchInfo) {
+      branchInfo = cachedDiff.branchInfo;
+    } else if (localMode === 'uncommitted' && !cachedDiff && review.local_path && branchName !== 'HEAD') {
+      // No cache (web UI started session) — run detection on-demand
+      try {
+        const { detectBaseBranch } = require('../git/base-branch');
+        const detection = await detectBaseBranch(review.local_path, branchName, { repository: repositoryName });
+        if (detection) {
+          const commitCount = await getBranchCommitCount(review.local_path, detection.baseBranch);
+          if (commitCount > 0) {
+            branchInfo = {
+              baseBranch: detection.baseBranch,
+              commitCount,
+              source: detection.source,
+              prNumber: detection.prNumber || null
+            };
+          }
+        }
+      } catch (error) {
+        logger.warn(`Branch detection in metadata: ${error.message}`);
+      }
+    }
+
+    // Check repo settings for auto_branch_review preference
+    let autoBranchReview = 0;
+    if (branchInfo && repositoryName && repositoryName.includes('/')) {
+      try {
+        const repoSettingsRepo = new RepoSettingsRepository(db);
+        const repoSettings = await repoSettingsRepo.getRepoSettings(repositoryName);
+        if (repoSettings) {
+          autoBranchReview = repoSettings.auto_branch_review || 0;
+        }
+      } catch {
+        // Non-fatal
+      }
+    }
+
+    // If auto_branch_review is -1 (never), suppress branchInfo
+    if (autoBranchReview === -1) {
+      branchInfo = null;
+    }
+
     res.json({
       id: review.id,
       localPath: review.local_path,
@@ -385,6 +457,9 @@ router.get('/api/local/:reviewId', async (req, res) => {
       reviewType: 'local',
       status: review.status,
       name: review.name || null,
+      localMode,
+      baseBranch,
+      branchInfo,
       createdAt: review.created_at,
       updatedAt: review.updated_at
     });
@@ -467,12 +542,18 @@ router.get('/api/local/:reviewId/diff', async (req, res) => {
 
     // When ?w=1, regenerate the diff with whitespace changes hidden (transient view, not cached)
     const hideWhitespace = req.query.w === '1';
+    const isBranchMode = (review.local_mode || 'uncommitted') === 'branch';
     let diffData;
 
     if (hideWhitespace && review.local_path) {
       try {
-        const wsResult = await generateLocalDiff(review.local_path, { hideWhitespace: true });
-        diffData = { diff: wsResult.diff, stats: wsResult.stats };
+        if (isBranchMode && review.local_base_branch) {
+          const wsResult = await generateBranchDiff(review.local_path, review.local_base_branch, { hideWhitespace: true });
+          diffData = { diff: wsResult.diff, stats: wsResult.stats };
+        } else {
+          const wsResult = await generateLocalDiff(review.local_path, { hideWhitespace: true });
+          diffData = { diff: wsResult.diff, stats: wsResult.stats };
+        }
       } catch (wsError) {
         logger.warn(`Could not generate whitespace-filtered diff for review #${reviewId}: ${wsError.message}`);
         // Fall through to cached diff below
@@ -599,7 +680,27 @@ router.get('/api/local/:reviewId/check-stale', async (req, res) => {
       });
     }
 
-    // Compute current digest to compare against baseline
+    // Branch mode: staleness = HEAD SHA changed (simpler than content-digest)
+    const isBranchMode = (review.local_mode || 'uncommitted') === 'branch';
+    if (isBranchMode) {
+      try {
+        const { getHeadSha } = require('../local-review');
+        const currentHeadSha = await getHeadSha(localPath);
+        const isStale = review.local_head_sha !== currentHeadSha;
+        return res.json({
+          isStale,
+          storedSha: review.local_head_sha,
+          currentSha: currentHeadSha
+        });
+      } catch (error) {
+        return res.json({
+          isStale: true,
+          error: `Could not check HEAD SHA: ${error.message}`
+        });
+      }
+    }
+
+    // Uncommitted mode: compute current digest to compare against baseline
     const currentDigest = await computeLocalDiffDigest(localPath);
 
     // If current digest computation failed, assume stale to be safe
@@ -770,14 +871,38 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
 
     // Build local review metadata for the analyzer
     // The analyzer uses base_sha and head_sha for git diff commands
-    // For local review, we use HEAD as both since we're diffing working directory
+    // For branch mode, base_sha is the merge-base; for uncommitted, both are HEAD
+    const isBranchMode = (review.local_mode || 'uncommitted') === 'branch';
+    let analysisBaseSha = review.local_head_sha;
+    if (isBranchMode && review.local_base_branch) {
+      // Try to compute merge-base for accurate analysis context
+      try {
+        const { execSync } = require('child_process');
+        for (const ref of [`origin/${review.local_base_branch}`, review.local_base_branch]) {
+          try {
+            analysisBaseSha = execSync(`git merge-base ${ref} HEAD`, {
+              cwd: localPath,
+              encoding: 'utf8',
+              stdio: ['pipe', 'pipe', 'pipe']
+            }).trim();
+            break;
+          } catch { /* try next ref */ }
+        }
+      } catch {
+        // Fall back to HEAD
+      }
+    }
     const localMetadata = {
       id: reviewId,
       repository: review.repository,  // Include repository for context display
-      title: `Local changes in ${repository}`,
-      description: `Reviewing uncommitted changes in ${localPath}`,
-      base_sha: review.local_head_sha,  // HEAD commit
-      head_sha: review.local_head_sha,  // HEAD commit (diff is against working directory)
+      title: isBranchMode
+        ? `Branch changes: ${review.local_base_branch}..HEAD`
+        : `Local changes in ${repository}`,
+      description: isBranchMode
+        ? `Reviewing committed changes on branch against ${review.local_base_branch}`
+        : `Reviewing uncommitted changes in ${localPath}`,
+      base_sha: analysisBaseSha,
+      head_sha: review.local_head_sha,
       reviewType: 'local'
     };
 
@@ -996,11 +1121,22 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
       logger.warn(`Could not check HEAD SHA: ${headError.message}`);
     }
 
-    // Regenerate the diff from the working directory
-    const { diff, stats } = await generateLocalDiff(localPath);
+    // Regenerate the diff based on mode
+    const isBranchMode = (review.local_mode || 'uncommitted') === 'branch';
+    let diff, stats, digest;
 
-    // Compute fresh digest for the new diff
-    const digest = await computeLocalDiffDigest(localPath);
+    if (isBranchMode && review.local_base_branch) {
+      const branchResult = await generateBranchDiff(localPath, review.local_base_branch);
+      diff = branchResult.diff;
+      stats = branchResult.stats;
+      // For branch mode, use HEAD SHA as digest proxy (staleness = HEAD changed)
+      digest = currentHeadSha || review.local_head_sha;
+    } else {
+      const localResult = await generateLocalDiff(localPath);
+      diff = localResult.diff;
+      stats = localResult.stats;
+      digest = await computeLocalDiffDigest(localPath);
+    }
 
     // Update the stored diff data for the appropriate session
     const targetSessionId = sessionChanged ? newSessionId : reviewId;
@@ -1013,7 +1149,7 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
       logger.warn(`Could not persist diff to database: ${persistError.message}`);
     }
 
-    logger.success(`Diff refreshed: ${stats.unstagedChanges} unstaged, ${stats.untrackedFiles} untracked${stats.stagedChanges > 0 ? ` (${stats.stagedChanges} staged excluded)` : ''}`);
+    logger.success(`Diff refreshed (${isBranchMode ? 'branch' : 'uncommitted'}): ${stats.trackedChanges || 0} file(s)`);
 
     res.json({
       success: true,
@@ -1035,6 +1171,143 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
     res.status(500).json({
       error: 'Failed to refresh diff: ' + error.message
     });
+  }
+});
+
+/**
+ * Switch a local review from uncommitted mode to branch mode.
+ * Called when the user accepts the "Review Branch Changes" prompt.
+ */
+router.post('/api/local/:reviewId/switch-to-branch', async (req, res) => {
+  try {
+    const reviewId = parseInt(req.params.reviewId);
+
+    if (isNaN(reviewId) || reviewId <= 0) {
+      return res.status(400).json({ error: 'Invalid review ID' });
+    }
+
+    const db = req.app.get('db');
+    const reviewRepo = new ReviewRepository(db);
+    const review = await reviewRepo.getLocalReviewById(reviewId);
+
+    if (!review) {
+      return res.status(404).json({ error: `Local review #${reviewId} not found` });
+    }
+
+    const localPath = review.local_path;
+    if (!localPath) {
+      return res.status(400).json({ error: 'Local review is missing path information' });
+    }
+
+    // Determine base branch from request body or detect it
+    let baseBranch = req.body?.baseBranch;
+    if (!baseBranch) {
+      const { getCurrentBranch } = require('../local-review');
+      const currentBranch = await getCurrentBranch(localPath);
+      const { detectBaseBranch } = require('../git/base-branch');
+      const detection = await detectBaseBranch(localPath, currentBranch, { repository: review.repository });
+      if (!detection) {
+        return res.status(400).json({ error: 'Could not detect base branch' });
+      }
+      baseBranch = detection.baseBranch;
+    }
+
+    logger.log('API', `Switching review #${reviewId} to branch mode (base: ${baseBranch})`, 'cyan');
+
+    // Generate branch diff
+    const { diff, stats, mergeBaseSha } = await generateBranchDiff(localPath, baseBranch);
+
+    // Get the HEAD SHA for staleness tracking
+    const { getHeadSha } = require('../local-review');
+    const headSha = await getHeadSha(localPath);
+
+    // Update the review record to branch mode
+    await run(db, `
+      UPDATE reviews
+      SET local_mode = 'branch', local_base_branch = ?, local_head_sha = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `, [baseBranch, headSha, reviewId]);
+
+    // Get first commit subject as default name (if review is unnamed)
+    if (!review.name) {
+      const firstSubject = await getFirstCommitSubject(localPath, baseBranch);
+      if (firstSubject) {
+        await reviewRepo.updateReview(reviewId, { name: firstSubject.slice(0, 200) });
+      }
+    }
+
+    // Store diff in cache and DB
+    setLocalReviewDiff(reviewId, { diff, stats, digest: headSha });
+    await reviewRepo.saveLocalDiff(reviewId, { diff, stats, digest: headSha });
+
+    logger.success(`Review #${reviewId} switched to branch mode: ${stats.trackedChanges || 0} file(s) changed`);
+
+    res.json({
+      success: true,
+      localMode: 'branch',
+      baseBranch,
+      mergeBaseSha,
+      stats: {
+        trackedChanges: stats.trackedChanges || 0,
+        untrackedFiles: 0,
+        stagedChanges: 0,
+        unstagedChanges: 0
+      }
+    });
+
+  } catch (error) {
+    logger.error(`Error switching to branch mode: ${error.message}`);
+    res.status(500).json({ error: 'Failed to switch to branch mode: ' + error.message });
+  }
+});
+
+/**
+ * Save "don't ask again" preference for branch review
+ */
+router.post('/api/local/:reviewId/branch-review-preference', async (req, res) => {
+  try {
+    const reviewId = parseInt(req.params.reviewId);
+
+    if (isNaN(reviewId) || reviewId <= 0) {
+      return res.status(400).json({ error: 'Invalid review ID' });
+    }
+
+    const { preference } = req.body || {};
+    if (![0, 1, -1].includes(preference)) {
+      return res.status(400).json({ error: 'Invalid preference value. Must be 0, 1, or -1.' });
+    }
+
+    const db = req.app.get('db');
+    const reviewRepo = new ReviewRepository(db);
+    const review = await reviewRepo.getLocalReviewById(reviewId);
+
+    if (!review) {
+      return res.status(404).json({ error: `Local review #${reviewId} not found` });
+    }
+
+    const repository = review.repository;
+    if (!repository || !repository.includes('/')) {
+      return res.status(400).json({ error: 'Cannot save preference: no repository identified' });
+    }
+
+    const repoSettingsRepo = new RepoSettingsRepository(db);
+    const existing = await repoSettingsRepo.getRepoSettings(repository);
+
+    if (existing) {
+      await run(db, `
+        UPDATE repo_settings SET auto_branch_review = ?, updated_at = ? WHERE repository = ? COLLATE NOCASE
+      `, [preference, new Date().toISOString(), repository]);
+    } else {
+      await run(db, `
+        INSERT INTO repo_settings (repository, auto_branch_review, created_at, updated_at) VALUES (?, ?, ?, ?)
+      `, [repository, preference, new Date().toISOString(), new Date().toISOString()]);
+    }
+
+    res.json({ success: true, preference });
+
+  } catch (error) {
+    logger.error(`Error saving branch review preference: ${error.message}`);
+    res.status(500).json({ error: 'Failed to save preference' });
   }
 });
 

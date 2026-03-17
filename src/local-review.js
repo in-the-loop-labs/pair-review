@@ -564,9 +564,33 @@ async function handleLocalReview(targetPath, flags = {}) {
     console.log('Generating diff for local changes...');
     const { diff, untrackedFiles, stats } = await generateLocalDiff(repoPath);
 
-    if (!diff && untrackedFiles.length === 0) {
+    // Branch detection: when no uncommitted changes, check if branch has commits ahead
+    let branchInfo = null;
+    if (!diff && untrackedFiles.length === 0 && branch !== 'HEAD') {
+      try {
+        const { detectBaseBranch } = require('./git/base-branch');
+        const detection = await detectBaseBranch(repoPath, branch, { repository });
+        if (detection) {
+          const commitCount = await getBranchCommitCount(repoPath, detection.baseBranch);
+          if (commitCount > 0) {
+            branchInfo = {
+              baseBranch: detection.baseBranch,
+              commitCount,
+              source: detection.source,
+              prNumber: detection.prNumber || null
+            };
+            console.log(`\nNo uncommitted changes, but branch has ${commitCount} commit(s) ahead of ${detection.baseBranch}.`);
+            console.log('The UI will offer to review branch changes.');
+          }
+        }
+      } catch (error) {
+        logger.warn(`Branch detection failed: ${error.message}`);
+      }
+    }
+
+    if (!diff && untrackedFiles.length === 0 && !branchInfo) {
       console.log('\nNo local changes detected. The UI will open anyway - you can make changes and refresh.');
-    } else {
+    } else if (diff || untrackedFiles.length > 0) {
       console.log(`Found changes:`);
     if (stats.unstagedChanges > 0) {
       console.log(`  - ${stats.unstagedChanges} unstaged file(s)`);
@@ -594,7 +618,7 @@ async function handleLocalReview(targetPath, flags = {}) {
     const digest = await computeLocalDiffDigest(repoPath);
 
     // Store diff data in module-level Map (avoids process.env size limits and security concerns)
-    localReviewDiffs.set(sessionId, { diff, stats, digest });
+    localReviewDiffs.set(sessionId, { diff, stats, digest, branchInfo });
 
     // Persist diff to database so past sessions remain viewable without the server running
     try {
@@ -701,6 +725,127 @@ async function computeLocalDiffDigest(localPath) {
   return digest;
 }
 
+/**
+ * Generate diff for committed branch changes against a base branch.
+ * Uses merge-base to find the common ancestor and diffs from there to HEAD.
+ *
+ * @param {string} repoPath - Path to the git repository
+ * @param {string} baseBranch - Base branch name (e.g. 'main')
+ * @param {Object} [options]
+ * @param {boolean} [options.hideWhitespace] - Whether to hide whitespace changes
+ * @returns {Promise<{diff: string, stats: Object, mergeBaseSha: string}>}
+ */
+async function generateBranchDiff(repoPath, baseBranch, options = {}) {
+  const wFlag = options.hideWhitespace ? ' -w' : '';
+  const stats = {
+    trackedChanges: 0,
+    untrackedFiles: 0,
+    stagedChanges: 0,
+    unstagedChanges: 0
+  };
+
+  // Try to fetch the latest base branch from remote (best-effort)
+  try {
+    execSync(`git fetch origin ${baseBranch}`, {
+      cwd: repoPath,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 15000
+    });
+  } catch {
+    logger.warn(`Could not fetch origin/${baseBranch} — using local ref`);
+  }
+
+  // Find merge-base: try origin/<base> first, fall back to local <base>
+  let mergeBaseSha;
+  try {
+    mergeBaseSha = execSync(`git merge-base origin/${baseBranch} HEAD`, {
+      cwd: repoPath,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe']
+    }).trim();
+  } catch {
+    try {
+      mergeBaseSha = execSync(`git merge-base ${baseBranch} HEAD`, {
+        cwd: repoPath,
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'pipe']
+      }).trim();
+    } catch (error) {
+      throw new Error(`Could not find merge-base between ${baseBranch} and HEAD: ${error.message}`);
+    }
+  }
+
+  // Generate the diff
+  let diff = '';
+  try {
+    diff = execSync(`git diff ${mergeBaseSha}...HEAD --no-color --no-ext-diff --unified=25${wFlag}`, {
+      cwd: repoPath,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      maxBuffer: 50 * 1024 * 1024
+    });
+
+    if (diff.trim()) {
+      stats.trackedChanges = (diff.match(/^diff --git/gm) || []).length;
+    }
+  } catch (error) {
+    if (error.message && error.message.includes('maxBuffer')) {
+      throw new Error('Branch diff exceeded maximum buffer size (50MB).');
+    }
+    throw new Error(`Failed to generate branch diff: ${error.message}`);
+  }
+
+  return { diff, stats, mergeBaseSha };
+}
+
+/**
+ * Get the number of commits on the current branch ahead of the base branch.
+ * @param {string} repoPath - Path to the git repository
+ * @param {string} baseBranch - Base branch name
+ * @returns {Promise<number>} Number of commits ahead
+ */
+async function getBranchCommitCount(repoPath, baseBranch) {
+  // Try origin/<base> first, fall back to local <base>
+  for (const ref of [`origin/${baseBranch}`, baseBranch]) {
+    try {
+      const count = execSync(`git rev-list --count ${ref}..HEAD`, {
+        cwd: repoPath,
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'pipe']
+      }).trim();
+      return parseInt(count, 10) || 0;
+    } catch {
+      // Try next ref
+    }
+  }
+  return 0;
+}
+
+/**
+ * Get the subject of the first commit on the branch relative to the base.
+ * Used as the default review name.
+ * @param {string} repoPath - Path to the git repository
+ * @param {string} baseBranch - Base branch name
+ * @returns {Promise<string|null>} First commit subject or null
+ */
+async function getFirstCommitSubject(repoPath, baseBranch) {
+  for (const ref of [`origin/${baseBranch}`, baseBranch]) {
+    try {
+      const output = execSync(`git log ${ref}..HEAD --format=%s --reverse`, {
+        cwd: repoPath,
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'pipe']
+      }).trim();
+      const firstLine = output.split('\n')[0];
+      return firstLine || null;
+    } catch {
+      // Try next ref
+    }
+  }
+  return null;
+}
+
 module.exports = {
   handleLocalReview,
   findGitRoot,
@@ -709,6 +854,9 @@ module.exports = {
   getRepositoryName,
   getCurrentBranch,
   generateLocalDiff,
+  generateBranchDiff,
+  getBranchCommitCount,
+  getFirstCommitSubject,
   generateLocalReviewId,
   getUntrackedFiles,
   computeLocalDiffDigest

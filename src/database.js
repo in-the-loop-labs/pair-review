@@ -20,7 +20,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 27;
+const CURRENT_SCHEMA_VERSION = 28;
 
 /**
  * Database schema SQL statements
@@ -42,7 +42,9 @@ const SCHEMA_SQL = {
       local_path TEXT,
       local_head_sha TEXT,
       summary TEXT,
-      name TEXT
+      name TEXT,
+      local_mode TEXT DEFAULT 'uncommitted',
+      local_base_branch TEXT
     )
   `,
 
@@ -141,6 +143,7 @@ const SCHEMA_SQL = {
       default_tab TEXT,
       default_chat_instructions TEXT,
       local_path TEXT,
+      auto_branch_review INTEGER DEFAULT 0,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
@@ -1230,6 +1233,51 @@ const MIGRATIONS = {
     }
 
     console.log('Migration to schema version 27 complete');
+  },
+
+  28: (db) => {
+    console.log('Migrating to schema version 28: Add branch review columns');
+
+    // Add local_mode to reviews
+    if (!columnExists(db, 'reviews', 'local_mode')) {
+      try {
+        db.prepare("ALTER TABLE reviews ADD COLUMN local_mode TEXT DEFAULT 'uncommitted'").run();
+        console.log('  Added local_mode column to reviews');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) throw error;
+        console.log('  Column local_mode already exists (race condition)');
+      }
+    } else {
+      console.log('  Column local_mode already exists');
+    }
+
+    // Add local_base_branch to reviews
+    if (!columnExists(db, 'reviews', 'local_base_branch')) {
+      try {
+        db.prepare('ALTER TABLE reviews ADD COLUMN local_base_branch TEXT').run();
+        console.log('  Added local_base_branch column to reviews');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) throw error;
+        console.log('  Column local_base_branch already exists (race condition)');
+      }
+    } else {
+      console.log('  Column local_base_branch already exists');
+    }
+
+    // Add auto_branch_review to repo_settings
+    if (!columnExists(db, 'repo_settings', 'auto_branch_review')) {
+      try {
+        db.prepare('ALTER TABLE repo_settings ADD COLUMN auto_branch_review INTEGER DEFAULT 0').run();
+        console.log('  Added auto_branch_review column to repo_settings');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) throw error;
+        console.log('  Column auto_branch_review already exists (race condition)');
+      }
+    } else {
+      console.log('  Column auto_branch_review already exists');
+    }
+
+    console.log('Migration to schema version 28 complete');
   }
 };
 
@@ -1729,7 +1777,7 @@ class RepoSettingsRepository {
    */
   async getRepoSettings(repository) {
     const row = await queryOne(this.db, `
-      SELECT id, repository, default_instructions, default_provider, default_model, default_council_id, default_tab, default_chat_instructions, local_path, created_at, updated_at
+      SELECT id, repository, default_instructions, default_provider, default_model, default_council_id, default_tab, default_chat_instructions, local_path, auto_branch_review, created_at, updated_at
       FROM repo_settings
       WHERE repository = ? COLLATE NOCASE
     `, [repository]);
@@ -2617,25 +2665,36 @@ class ReviewRepository {
    * @param {string} context.repository - Repository identifier (can be derived from path)
    * @returns {Promise<number>} The review ID
    */
-  async upsertLocalReview({ localPath, localHeadSha, repository }) {
+  async upsertLocalReview({ localPath, localHeadSha, repository, localMode, localBaseBranch }) {
     // Try to find existing local review by path and SHA
     const existing = await this.getLocalReview(localPath, localHeadSha);
 
     if (existing) {
-      // Update the updated_at timestamp
+      // Update the updated_at timestamp (and mode/base if provided)
+      const updates = ['updated_at = CURRENT_TIMESTAMP'];
+      const params = [];
+      if (localMode !== undefined) {
+        updates.push('local_mode = ?');
+        params.push(localMode);
+      }
+      if (localBaseBranch !== undefined) {
+        updates.push('local_base_branch = ?');
+        params.push(localBaseBranch);
+      }
+      params.push(existing.id);
       await run(this.db, `
         UPDATE reviews
-        SET updated_at = CURRENT_TIMESTAMP
+        SET ${updates.join(', ')}
         WHERE id = ?
-      `, [existing.id]);
+      `, params);
       return existing.id;
     }
 
     // Create new local review
     const result = await run(this.db, `
-      INSERT INTO reviews (pr_number, repository, status, review_type, local_path, local_head_sha)
-      VALUES (NULL, ?, 'draft', 'local', ?, ?)
-    `, [repository, localPath, localHeadSha]);
+      INSERT INTO reviews (pr_number, repository, status, review_type, local_path, local_head_sha, local_mode, local_base_branch)
+      VALUES (NULL, ?, 'draft', 'local', ?, ?, ?, ?)
+    `, [repository, localPath, localHeadSha, localMode || 'uncommitted', localBaseBranch || null]);
 
     return result.lastID;
   }
@@ -2650,7 +2709,8 @@ class ReviewRepository {
     const row = await queryOne(this.db, `
       SELECT id, pr_number, repository, status, review_id,
              created_at, updated_at, submitted_at, review_data, custom_instructions,
-             review_type, local_path, local_head_sha, summary, name
+             review_type, local_path, local_head_sha, summary, name,
+             local_mode, local_base_branch
       FROM reviews
       WHERE review_type = 'local' AND local_path = ? AND local_head_sha = ?
     `, [localPath, localHeadSha]);
@@ -2672,7 +2732,8 @@ class ReviewRepository {
     const row = await queryOne(this.db, `
       SELECT id, pr_number, repository, status, review_id,
              created_at, updated_at, submitted_at, review_data, custom_instructions,
-             review_type, local_path, local_head_sha, summary, name
+             review_type, local_path, local_head_sha, summary, name,
+             local_mode, local_base_branch
       FROM reviews
       WHERE id = ? AND review_type = 'local'
     `, [id]);

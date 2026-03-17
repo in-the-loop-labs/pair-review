@@ -1225,6 +1225,36 @@ class GitHubClient {
     
     throw lastError;
   }
+
+  /**
+   * Find an open PR for the given branch name.
+   * @param {string} owner - Repository owner
+   * @param {string} repo - Repository name
+   * @param {string} branch - Head branch name (without owner: prefix)
+   * @returns {Promise<{baseBranch: string, prNumber: number}|null>} Base branch info or null
+   */
+  async findPRByBranch(owner, repo, branch) {
+    try {
+      const { data: pulls } = await this.octokit.rest.pulls.list({
+        owner,
+        repo,
+        head: `${owner}:${branch}`,
+        state: 'open',
+        per_page: 1
+      });
+
+      if (pulls.length > 0) {
+        return {
+          baseBranch: pulls[0].base.ref,
+          prNumber: pulls[0].number
+        };
+      }
+      return null;
+    } catch (error) {
+      logger.warn(`Could not look up PR for branch ${branch}: ${error.message}`);
+      return null;
+    }
+  }
 }
 
 module.exports = { GitHubClient, GitHubApiError, isComplexityError };

@@ -771,14 +771,17 @@ class LocalManager {
       this.localData = reviewData;
 
       // Create a currentPR-like object for compatibility
+      const isBranchMode = reviewData.localMode === 'branch';
       manager.currentPR = {
         id: reviewData.id,
         owner: 'local',
         repo: reviewData.repository,
         number: reviewData.id,
-        title: `Local Changes - ${reviewData.branch}`,
+        title: isBranchMode
+          ? `Branch Changes - ${reviewData.branch} vs ${reviewData.baseBranch}`
+          : `Local Changes - ${reviewData.branch}`,
         head_branch: reviewData.branch,
-        base_branch: reviewData.branch,
+        base_branch: isBranchMode ? reviewData.baseBranch : reviewData.branch,
         head_sha: reviewData.localHeadSha,
         reviewType: 'local',
         localPath: reviewData.localPath
@@ -951,6 +954,27 @@ class LocalManager {
       branchText.textContent = reviewData.branch || 'unknown';
     }
 
+    // Show base branch badge in branch mode
+    const branchVs = document.getElementById('local-branch-vs');
+    const baseBranchEl = document.getElementById('local-base-branch');
+    const baseBranchText = document.getElementById('local-base-branch-text');
+    if (reviewData.localMode === 'branch' && reviewData.baseBranch) {
+      if (branchVs) branchVs.style.display = '';
+      if (baseBranchEl) baseBranchEl.style.display = '';
+      if (baseBranchText) baseBranchText.textContent = reviewData.baseBranch;
+    } else {
+      if (branchVs) branchVs.style.display = 'none';
+      if (baseBranchEl) baseBranchEl.style.display = 'none';
+    }
+
+    // Update refresh button tooltip based on mode
+    const refreshBtn = document.getElementById('local-refresh-btn');
+    if (refreshBtn) {
+      refreshBtn.title = reviewData.localMode === 'branch'
+        ? 'Refresh diff from branch'
+        : 'Refresh diff from directory';
+    }
+
     // Update branch name (toolbar) and wire up copy button
     const branchName = document.getElementById('pr-branch-name');
     if (branchName) {
@@ -1100,10 +1124,78 @@ class LocalManager {
       const generatedFiles = new Set(data.generated_files || []);
 
       if (!diffContent) {
-        // Clear the diff container
         const diffContainer = document.getElementById('diff-container');
         if (diffContainer) {
-          diffContainer.innerHTML = '<div class="no-diff">No unstaged changes to review. Make some changes to your files and click the <strong>Refresh</strong> button to reload.</div>';
+          // Check if this is uncommitted mode with branch info available
+          const reviewData = this.localData;
+          const branchInfo = reviewData?.branchInfo;
+
+          if (reviewData?.localMode === 'uncommitted' && branchInfo) {
+            // Show branch review prompt
+            diffContainer.innerHTML = `
+              <div class="no-diff" style="text-align: center; padding: 48px 24px;">
+                <div style="margin-bottom: 16px; font-size: 15px; color: var(--color-text-secondary);">
+                  No uncommitted changes to review.
+                </div>
+                <div style="margin-bottom: 24px; font-size: 14px;">
+                  This branch has <strong>${branchInfo.commitCount}</strong> commit${branchInfo.commitCount !== 1 ? 's' : ''} ahead of <code style="padding: 2px 6px; background: var(--color-bg-tertiary); border-radius: 4px; font-size: 12px;">${branchInfo.baseBranch}</code>.
+                </div>
+                <button id="branch-review-btn" class="btn btn-sm" style="background: var(--ai-primary); color: white; padding: 8px 20px; border-radius: 6px; font-weight: 600; cursor: pointer; border: none;">
+                  Review Branch Changes
+                </button>
+                <div style="margin-top: 16px;">
+                  <label style="font-size: 12px; color: var(--color-text-tertiary); cursor: pointer; display: inline-flex; align-items: center; gap: 6px;">
+                    <input type="checkbox" id="branch-review-dont-ask" style="cursor: pointer;">
+                    Don't ask again for this repository
+                  </label>
+                </div>
+              </div>
+            `;
+
+            // Wire up the button
+            const btn = document.getElementById('branch-review-btn');
+            if (btn) {
+              btn.addEventListener('click', async () => {
+                btn.disabled = true;
+                btn.textContent = 'Switching...';
+
+                // Save "don't ask" preference if checked
+                const dontAsk = document.getElementById('branch-review-dont-ask');
+                if (dontAsk?.checked) {
+                  try {
+                    await fetch(\`/api/local/\${this.reviewId}/branch-review-preference\`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ preference: -1 })
+                    });
+                  } catch { /* non-fatal */ }
+                }
+
+                try {
+                  const resp = await fetch(\`/api/local/\${this.reviewId}/switch-to-branch\`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ baseBranch: branchInfo.baseBranch })
+                  });
+                  if (!resp.ok) {
+                    const err = await resp.json();
+                    throw new Error(err.error || 'Switch failed');
+                  }
+                  // Reload the page to pick up branch mode
+                  window.location.reload();
+                } catch (error) {
+                  btn.disabled = false;
+                  btn.textContent = 'Review Branch Changes';
+                  console.error('Failed to switch to branch mode:', error);
+                  if (window.Toast) {
+                    window.Toast.show(\`Failed to switch: \${error.message}\`, 'error');
+                  }
+                }
+              });
+            }
+          } else {
+            diffContainer.innerHTML = '<div class="no-diff">No unstaged changes to review. Make some changes to your files and click the <strong>Refresh</strong> button to reload.</div>';
+          }
         }
 
         // Clear the file navigation sidebar
