@@ -112,7 +112,6 @@
   color: #fff;
   background: linear-gradient(135deg, #d97706 0%, #b45309 100%);
   box-shadow: 0 2px 6px rgba(217, 119, 6, 0.35);
-  cursor: pointer;
   transition: opacity 0.15s ease, transform 0.15s ease;
   white-space: nowrap;
   margin-left: 8px;

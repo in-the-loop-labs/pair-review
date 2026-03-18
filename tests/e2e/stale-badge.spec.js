@@ -86,11 +86,10 @@ test.describe('Stale PR Badge', () => {
       });
     });
 
+    const refreshPromise = page.waitForRequest("**/api/pr/test-owner/test-repo/1/refresh");
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
-
-    // Wait a moment for async staleness check to complete
-    await page.waitForTimeout(1000);
+    await refreshPromise;
 
     // Badge should NOT appear (silent refresh)
     const badge = page.locator('#stale-badge');
@@ -98,47 +97,6 @@ test.describe('Stale PR Badge', () => {
 
     // Refresh should have been triggered
     expect(refreshCalled).toBe(true);
-  });
-
-  test('clicking badge triggers refresh and hides badge', async ({ page }) => {
-    // Override check-stale to return stale
-    await page.route('**/api/pr/test-owner/test-repo/1/check-stale', route => {
-      route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ isStale: true, prState: 'open', merged: false })
-      });
-    });
-
-    // Override suggestions/check to indicate analysis has run
-    await page.route('**/api/reviews/*/suggestions/check', route => {
-      route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ hasSuggestions: true, analysisHasRun: true })
-      });
-    });
-
-    await page.goto('/pr/test-owner/test-repo/1');
-    await waitForDiffToRender(page);
-
-    const badge = page.locator('#stale-badge');
-    await expect(badge).toBeVisible();
-
-    // Mock the refresh endpoint
-    await page.route('**/api/pr/test-owner/test-repo/1/refresh', route => {
-      route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ success: true, data: { owner: 'test-owner', repo: 'test-repo', number: 1, title: 'Test PR for E2E', id: 1 } })
-      });
-    });
-
-    // Click the badge
-    await badge.click();
-
-    // Badge should be hidden after refresh
-    await expect(badge).toBeHidden();
   });
 
   test('shows MERGED badge for merged PR', async ({ page }) => {

@@ -140,9 +140,6 @@ class PRManager {
     // Sent as X-Client-Id header on mutation requests; the server echoes
     // it back in the WebSocket broadcast so this tab can skip its own events.
     this._clientId = Math.random().toString(36).slice(2) + Date.now().toString(36);
-    // Staleness check cache — reused by pre-analysis check if fresh
-    this._stalenessResult = null;
-    this._stalenessCheckedAt = 0;
     this._installFetchInterceptor();
 
     // Initialize modules
@@ -285,12 +282,6 @@ class PRManager {
     const refreshBtn = document.getElementById('refresh-pr');
     if (refreshBtn) {
       refreshBtn.addEventListener('click', () => this.refreshPR());
-    }
-
-    // Stale badge — click to refresh
-    const staleBadge = document.getElementById('stale-badge');
-    if (staleBadge) {
-      staleBadge.addEventListener('click', () => this.refreshPR());
     }
 
     // PR description popover
@@ -4092,28 +4083,19 @@ class PRManager {
         return;
       }
 
-      // Run stale check and settings fetch in parallel to minimize dialog delay.
-      // Reuse cached staleness result if < 30s old (e.g. from _checkStalenessOnLoad).
+      // Run stale check and settings fetch in parallel to minimize dialog delay
+      // Use AbortController so the fetch is truly cancelled on timeout,
+      // freeing the HTTP connection for subsequent requests.
       const _tParallel0 = performance.now();
-      const STALE_CACHE_TTL = 30000;
-      const cachedFresh = this._stalenessResult && (Date.now() - this._stalenessCheckedAt < STALE_CACHE_TTL);
-      let staleCheckWithTimeout;
-      if (cachedFresh) {
-        console.debug('[Analyze] reusing cached stale-check result');
-        staleCheckWithTimeout = Promise.resolve(this._stalenessResult);
-      } else {
-        // Use AbortController so the fetch is truly cancelled on timeout,
-        // freeing the HTTP connection for subsequent requests.
-        const staleAbort = new AbortController();
-        const staleTimer = setTimeout(() => {
-          console.debug(`[Analyze] stale-check timed out after ${STALE_TIMEOUT}ms, aborting`);
-          staleAbort.abort();
-        }, STALE_TIMEOUT);
-        staleCheckWithTimeout = fetch(`/api/pr/${owner}/${repo}/${number}/check-stale`, { signal: staleAbort.signal })
-          .then(r => r.ok ? r.json() : null)
-          .then(result => { clearTimeout(staleTimer); return result; })
-          .catch(() => { clearTimeout(staleTimer); return null; });
-      }
+      const staleAbort = new AbortController();
+      const staleTimer = setTimeout(() => {
+        console.debug(`[Analyze] stale-check timed out after ${STALE_TIMEOUT}ms, aborting`);
+        staleAbort.abort();
+      }, STALE_TIMEOUT);
+      const staleCheckWithTimeout = fetch(`/api/pr/${owner}/${repo}/${number}/check-stale`, { signal: staleAbort.signal })
+        .then(r => r.ok ? r.json() : null)
+        .then(result => { clearTimeout(staleTimer); return result; })
+        .catch(() => { clearTimeout(staleTimer); return null; });
 
       const [staleResult, repoSettings, reviewSettings] = await Promise.all([
         staleCheckWithTimeout,
@@ -4371,9 +4353,6 @@ class PRManager {
       if (!response.ok) return;
 
       const result = await response.json();
-      // Cache for reuse by pre-analysis check
-      this._stalenessResult = result;
-      this._stalenessCheckedAt = Date.now();
 
       // Show badge for closed/merged PRs regardless of staleness
       if (result.prState && result.prState !== 'open') {
@@ -4447,7 +4426,7 @@ class PRManager {
       badge.title = 'This PR has been closed';
     } else {
       if (textEl) textEl.textContent = 'STALE';
-      badge.title = 'PR data is outdated — click to refresh';
+      badge.title = 'PR data is outdated';
     }
     badge.style.display = '';
   }
@@ -4528,9 +4507,6 @@ class PRManager {
         }, 100);
 
         this._hideStaleBadge();
-        // Invalidate staleness cache after successful refresh
-        this._stalenessResult = null;
-        this._stalenessCheckedAt = 0;
         console.log('PR refreshed successfully');
       }
     } catch (error) {
