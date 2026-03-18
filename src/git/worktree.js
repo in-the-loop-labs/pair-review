@@ -637,8 +637,12 @@ class GitWorktreeManager {
     try {
       const git = simpleGit(worktreePath);
       const commonDir = (await git.raw(['rev-parse', '--git-common-dir'])).trim();
-      // commonDir is the .git directory of the main repo; resolve to the working tree root
-      const repoRoot = path.resolve(worktreePath, commonDir, '..');
+      // commonDir is either a .git subdirectory (regular repos) or the bare repo root itself.
+      // Only strip the last component when it's actually a .git directory.
+      const resolvedCommonDir = path.resolve(worktreePath, commonDir);
+      const repoRoot = path.basename(resolvedCommonDir) === '.git'
+        ? path.dirname(resolvedCommonDir)
+        : resolvedCommonDir;
       return simpleGit(repoRoot);
     } catch {
       return null;
@@ -800,15 +804,17 @@ class GitWorktreeManager {
 
   /**
    * Prune stale worktree registrations from the owning repository.
-   * @param {string} [worktreePath] - Optional worktree path to resolve the owning repo from.
-   *   If omitted, falls back to process.cwd().
+   * @param {string|import('simple-git').SimpleGit} [worktreePathOrGit] - A worktree path to
+   *   resolve the owning repo from, or a SimpleGit instance directly. Falls back to process.cwd().
    * @returns {Promise<void>}
    */
-  async pruneWorktrees(worktreePath) {
+  async pruneWorktrees(worktreePathOrGit) {
     try {
       let git;
-      if (worktreePath) {
-        git = await this.resolveOwningRepo(worktreePath);
+      if (worktreePathOrGit && typeof worktreePathOrGit === 'object') {
+        git = worktreePathOrGit;
+      } else if (typeof worktreePathOrGit === 'string') {
+        git = await this.resolveOwningRepo(worktreePathOrGit);
       }
       if (!git) {
         git = simpleGit(process.cwd());
@@ -920,6 +926,22 @@ class GitWorktreeManager {
 
       console.log(`[pair-review] Found ${staleWorktrees.length} stale worktrees older than ${retentionDays} days`);
 
+      // Resolve owning repos BEFORE cleanup removes directories
+      const owningRepos = new Map();
+      for (const worktree of staleWorktrees) {
+        try {
+          const repo = await this.resolveOwningRepo(worktree.path);
+          if (repo) {
+            const repoPath = (await repo.raw(['rev-parse', '--git-dir'])).trim();
+            if (!owningRepos.has(repoPath)) {
+              owningRepos.set(repoPath, repo);
+            }
+          }
+        } catch {
+          // ignore - will fall back to manual removal
+        }
+      }
+
       for (const worktree of staleWorktrees) {
         try {
           // Try to remove via git worktree remove first
@@ -954,10 +976,10 @@ class GitWorktreeManager {
         }
       }
 
-      // Run git worktree prune to clean up orphaned registrations
-      // Pass a worktree path so we can resolve the owning repo
-      const firstPath = staleWorktrees[0] && staleWorktrees[0].path;
-      await this.pruneWorktrees(firstPath);
+      // Prune each unique owning repo
+      for (const repo of owningRepos.values()) {
+        await this.pruneWorktrees(repo);
+      }
 
       if (result.cleaned > 0) {
         console.log(`[pair-review] Cleaned up ${result.cleaned} stale worktrees (older than ${retentionDays} days)`);
