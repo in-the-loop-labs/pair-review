@@ -99,6 +99,50 @@
   color: var(--color-text-tertiary);
 }
 
+/* Stale Badge */
+.stale-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: #fff;
+  background: linear-gradient(135deg, #d97706 0%, #b45309 100%);
+  box-shadow: 0 2px 6px rgba(217, 119, 6, 0.35);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  white-space: nowrap;
+  margin-left: 8px;
+}
+
+
+.stale-badge.pr-closed {
+  background: linear-gradient(135deg, #cf222e 0%, #a40e26 100%);
+  box-shadow: 0 2px 6px rgba(207, 34, 46, 0.35);
+}
+
+.stale-badge.pr-merged {
+  background: linear-gradient(135deg, #8250df 0%, #6639ba 100%);
+  box-shadow: 0 2px 6px rgba(130, 80, 223, 0.35);
+}
+
+[data-theme="dark"] .stale-badge {
+  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+  box-shadow: 0 2px 8px rgba(245, 158, 11, 0.4);
+}
+
+[data-theme="dark"] .stale-badge.pr-closed {
+  background: linear-gradient(135deg, #f85149 0%, #cf222e 100%);
+  box-shadow: 0 2px 8px rgba(248, 81, 73, 0.4);
+}
+
+[data-theme="dark"] .stale-badge.pr-merged {
+  background: linear-gradient(135deg, #a371f7 0%, #8250df 100%);
+  box-shadow: 0 2px 8px rgba(163, 113, 247, 0.4);
+}
+
 .pr-title .github-link {
   display: inline-flex;
   align-items: center;
