@@ -17,6 +17,7 @@ const { localReviewDiffs } = require('../../src/routes/shared');
 // Note: vi.mock doesn't work with CommonJS require() in this project (forks pool),
 // so we use vi.spyOn on the actual module exports instead.
 const localReviewModule = require('../../src/local-review');
+const { RepoSettingsRepository } = require('../../src/database');
 
 describe('Local Sessions API', () => {
   let app;
@@ -36,6 +37,10 @@ describe('Local Sessions API', () => {
       mergeBaseSha: null
     });
     vi.spyOn(localReviewModule, 'computeScopedDigest').mockResolvedValue('digest123');
+    vi.spyOn(localReviewModule, 'detectAndBuildBranchInfo').mockResolvedValue(null);
+    vi.spyOn(localReviewModule, 'findMergeBase').mockResolvedValue('mergebase123');
+    vi.spyOn(localReviewModule, 'getBranchCommitCount').mockResolvedValue(0);
+    vi.spyOn(localReviewModule, 'getFirstCommitSubject').mockResolvedValue(null);
 
     app = express();
     app.use(express.json());
@@ -485,6 +490,401 @@ describe('Local Sessions API', () => {
       // DB diff should be gone too (cascade)
       const dbDiff = await reviewRepo.getLocalDiff(id);
       expect(dbDiff).toBeNull();
+    });
+  });
+
+  describe('POST /api/local/:reviewId/set-scope', () => {
+    it('should change scope from default to staged→untracked', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/path/scope-change',
+        localHeadSha: 'shaScopeChange',
+        repository: 'owner/scope-repo'
+      });
+
+      const res = await request(app)
+        .post(`/api/local/${id}/set-scope`)
+        .send({ scopeStart: 'staged', scopeEnd: 'untracked' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.scopeStart).toBe('staged');
+      expect(res.body.scopeEnd).toBe('untracked');
+      expect(res.body.stats).toBeDefined();
+      expect(res.body.stats).toHaveProperty('trackedChanges');
+      expect(res.body.stats).toHaveProperty('untrackedFiles');
+      expect(res.body.stats).toHaveProperty('stagedChanges');
+      expect(res.body.stats).toHaveProperty('unstagedChanges');
+    });
+
+    it('should return 400 for invalid scope (end before start)', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/path/bad-scope',
+        localHeadSha: 'shaBadScope',
+        repository: 'owner/bad-scope-repo'
+      });
+
+      const res = await request(app)
+        .post(`/api/local/${id}/set-scope`)
+        .send({ scopeStart: 'untracked', scopeEnd: 'staged' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/invalid scope/i);
+    });
+
+    it('should return 400 when scopeStart is missing', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/path/missing-start',
+        localHeadSha: 'shaMissStart',
+        repository: 'owner/miss-start-repo'
+      });
+
+      const res = await request(app)
+        .post(`/api/local/${id}/set-scope`)
+        .send({ scopeEnd: 'untracked' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/scopeStart.*scopeEnd.*required/i);
+    });
+
+    it('should return 400 when scopeEnd is missing', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/path/missing-end',
+        localHeadSha: 'shaMissEnd',
+        repository: 'owner/miss-end-repo'
+      });
+
+      const res = await request(app)
+        .post(`/api/local/${id}/set-scope`)
+        .send({ scopeStart: 'staged' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/scopeStart.*scopeEnd.*required/i);
+    });
+
+    it('should regenerate diff and persist to DB when scope changes', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/path/regen-diff',
+        localHeadSha: 'shaRegenDiff',
+        repository: 'owner/regen-diff-repo'
+      });
+
+      // Save an initial diff to DB with distinct values
+      await reviewRepo.saveLocalDiff(id, {
+        diff: 'old diff that should be replaced',
+        stats: { trackedChanges: 99 },
+        digest: 'olddigest'
+      });
+
+      // set-scope should regenerate the diff and overwrite DB
+      const res = await request(app)
+        .post(`/api/local/${id}/set-scope`)
+        .send({ scopeStart: 'staged', scopeEnd: 'untracked' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+
+      // Verify the DB diff was replaced by the regenerated diff
+      const dbDiff = await reviewRepo.getLocalDiff(id);
+      expect(dbDiff.diff).not.toBe('old diff that should be replaced');
+      expect(dbDiff.digest).not.toBe('olddigest');
+
+      // Verify the in-memory cache was also populated
+      const cached = localReviewDiffs.get(id);
+      expect(cached).toBeDefined();
+      expect(cached.diff).not.toBe('old diff that should be replaced');
+    });
+
+    it('should return 404 for non-existent review', async () => {
+      const res = await request(app)
+        .post('/api/local/9999/set-scope')
+        .send({ scopeStart: 'staged', scopeEnd: 'untracked' });
+
+      expect(res.status).toBe(404);
+    });
+
+    it('should return 400 for invalid review ID', async () => {
+      const res = await request(app)
+        .post('/api/local/abc/set-scope')
+        .send({ scopeStart: 'staged', scopeEnd: 'untracked' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/invalid review id/i);
+    });
+
+    it('should include localMode in response', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/path/local-mode',
+        localHeadSha: 'shaLocalMode',
+        repository: 'owner/localmode-repo'
+      });
+
+      const res = await request(app)
+        .post(`/api/local/${id}/set-scope`)
+        .send({ scopeStart: 'staged', scopeEnd: 'untracked' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.localMode).toBe('uncommitted');
+    });
+  });
+
+  describe('POST /api/local/:reviewId/switch-to-branch', () => {
+    it('should redirect 307 to set-scope with branch→branch scope', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/path/switch-branch',
+        localHeadSha: 'shaSwitchBranch',
+        repository: 'owner/switch-branch-repo'
+      });
+
+      const res = await request(app)
+        .post(`/api/local/${id}/switch-to-branch`)
+        .send({});
+
+      // supertest follows redirects by default for GET, but for POST 307
+      // the redirect header should point to set-scope
+      expect(res.status).toBe(307);
+      expect(res.headers.location).toBe(`/api/local/${id}/set-scope`);
+    });
+  });
+
+  describe('POST /api/local/:reviewId/branch-review-preference', () => {
+    it('should accept preference value 1 (always)', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/path/pref-always',
+        localHeadSha: 'shaPrefAlways',
+        repository: 'owner/pref-always-repo'
+      });
+
+      const res = await request(app)
+        .post(`/api/local/${id}/branch-review-preference`)
+        .send({ preference: 1 });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.preference).toBe(1);
+
+      // Verify in database
+      const repoSettingsRepo = new RepoSettingsRepository(db);
+      const settings = await repoSettingsRepo.getRepoSettings('owner/pref-always-repo');
+      expect(settings.auto_branch_review).toBe(1);
+    });
+
+    it('should accept preference value -1 (never)', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/path/pref-never',
+        localHeadSha: 'shaPrefNever',
+        repository: 'owner/pref-never-repo'
+      });
+
+      const res = await request(app)
+        .post(`/api/local/${id}/branch-review-preference`)
+        .send({ preference: -1 });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.preference).toBe(-1);
+
+      const repoSettingsRepo = new RepoSettingsRepository(db);
+      const settings = await repoSettingsRepo.getRepoSettings('owner/pref-never-repo');
+      expect(settings.auto_branch_review).toBe(-1);
+    });
+
+    it('should accept preference value 0 (ask)', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/path/pref-ask',
+        localHeadSha: 'shaPrefAsk',
+        repository: 'owner/pref-ask-repo'
+      });
+
+      const res = await request(app)
+        .post(`/api/local/${id}/branch-review-preference`)
+        .send({ preference: 0 });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.preference).toBe(0);
+    });
+
+    it('should reject invalid preference values', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/path/pref-bad',
+        localHeadSha: 'shaPrefBad',
+        repository: 'owner/pref-bad-repo'
+      });
+
+      const res = await request(app)
+        .post(`/api/local/${id}/branch-review-preference`)
+        .send({ preference: 42 });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/invalid preference/i);
+    });
+
+    it('should reject missing preference', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/path/pref-missing',
+        localHeadSha: 'shaPrefMissing',
+        repository: 'owner/pref-missing-repo'
+      });
+
+      const res = await request(app)
+        .post(`/api/local/${id}/branch-review-preference`)
+        .send({});
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/invalid preference/i);
+    });
+
+    it('should return 404 for non-existent review', async () => {
+      const res = await request(app)
+        .post('/api/local/9999/branch-review-preference')
+        .send({ preference: 1 });
+
+      expect(res.status).toBe(404);
+    });
+
+    it('should update existing repo settings', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/path/pref-update',
+        localHeadSha: 'shaPrefUpdate',
+        repository: 'owner/pref-update-repo'
+      });
+
+      // Create initial setting
+      await request(app)
+        .post(`/api/local/${id}/branch-review-preference`)
+        .send({ preference: 1 });
+
+      // Update to a different value
+      const res = await request(app)
+        .post(`/api/local/${id}/branch-review-preference`)
+        .send({ preference: -1 });
+
+      expect(res.status).toBe(200);
+      expect(res.body.preference).toBe(-1);
+
+      const repoSettingsRepo = new RepoSettingsRepository(db);
+      const settings = await repoSettingsRepo.getRepoSettings('owner/pref-update-repo');
+      expect(settings.auto_branch_review).toBe(-1);
+    });
+  });
+
+  describe('DB persistence of scope columns', () => {
+    it('should set local_scope_start and local_scope_end in database after POST /api/local/start', async () => {
+      const res = await request(app)
+        .post('/api/local/start')
+        .send({ path: '/tmp' });
+
+      expect(res.status).toBe(200);
+      const sessionId = res.body.sessionId;
+
+      // Verify scope columns in database
+      const reviewRepo = new ReviewRepository(db);
+      const review = await reviewRepo.getLocalReviewById(sessionId);
+      expect(review.local_scope_start).toBe('unstaged');
+      expect(review.local_scope_end).toBe('untracked');
+    });
+
+    it('should update scope columns in database after POST set-scope', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/path/scope-persist',
+        localHeadSha: 'shaScopePersist',
+        repository: 'owner/scope-persist-repo'
+      });
+
+      // Verify initial defaults
+      const beforeReview = await reviewRepo.getLocalReviewById(id);
+      expect(beforeReview.local_scope_start).toBe('unstaged');
+      expect(beforeReview.local_scope_end).toBe('untracked');
+
+      // Change scope
+      const res = await request(app)
+        .post(`/api/local/${id}/set-scope`)
+        .send({ scopeStart: 'staged', scopeEnd: 'unstaged' });
+
+      expect(res.status).toBe(200);
+
+      // Verify updated columns
+      const afterReview = await reviewRepo.getLocalReviewById(id);
+      expect(afterReview.local_scope_start).toBe('staged');
+      expect(afterReview.local_scope_end).toBe('unstaged');
+    });
+
+    it('should persist scope columns through multiple scope changes', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/path/scope-multi',
+        localHeadSha: 'shaScopeMulti',
+        repository: 'owner/scope-multi-repo'
+      });
+
+      // First change: staged→untracked
+      await request(app)
+        .post(`/api/local/${id}/set-scope`)
+        .send({ scopeStart: 'staged', scopeEnd: 'untracked' });
+
+      let review = await reviewRepo.getLocalReviewById(id);
+      expect(review.local_scope_start).toBe('staged');
+      expect(review.local_scope_end).toBe('untracked');
+
+      // Second change: unstaged→unstaged
+      await request(app)
+        .post(`/api/local/${id}/set-scope`)
+        .send({ scopeStart: 'unstaged', scopeEnd: 'unstaged' });
+
+      review = await reviewRepo.getLocalReviewById(id);
+      expect(review.local_scope_start).toBe('unstaged');
+      expect(review.local_scope_end).toBe('unstaged');
+    });
+  });
+
+  describe('GET /api/local/:reviewId (scope fields in metadata)', () => {
+    it('should include scopeStart and scopeEnd in metadata response', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/path/scope-meta',
+        localHeadSha: 'shaScopeMeta',
+        repository: 'owner/scope-meta-repo'
+      });
+
+      const res = await request(app).get(`/api/local/${id}`);
+      expect(res.status).toBe(200);
+      expect(res.body.scopeStart).toBe('unstaged');
+      expect(res.body.scopeEnd).toBe('untracked');
+      expect(res.body.baseBranch).toBeNull();
+    });
+
+    it('should reflect updated scope after set-scope call', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/path/scope-meta-updated',
+        localHeadSha: 'shaScopeMetaUp',
+        repository: 'owner/scope-meta-up-repo'
+      });
+
+      // Change scope
+      await request(app)
+        .post(`/api/local/${id}/set-scope`)
+        .send({ scopeStart: 'staged', scopeEnd: 'unstaged' });
+
+      // Get metadata
+      const res = await request(app).get(`/api/local/${id}`);
+      expect(res.status).toBe(200);
+      expect(res.body.scopeStart).toBe('staged');
+      expect(res.body.scopeEnd).toBe('unstaged');
     });
   });
 
