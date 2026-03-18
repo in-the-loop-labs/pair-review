@@ -2724,6 +2724,44 @@ class ReviewRepository {
   }
 
   /**
+   * Get an existing branch-mode local review by path (ignoring HEAD SHA).
+   * Branch-mode sessions persist across HEAD changes — only the path matters.
+   * @param {string} localPath - Absolute path to the local repository
+   * @returns {Promise<Object|null>} Most recent branch-mode review or null
+   */
+  async getLocalBranchReview(localPath) {
+    const row = await queryOne(this.db, `
+      SELECT id, pr_number, repository, status, review_id,
+             created_at, updated_at, submitted_at, review_data, custom_instructions,
+             review_type, local_path, local_head_sha, summary, name,
+             local_mode, local_base_branch
+      FROM reviews
+      WHERE review_type = 'local' AND local_path = ? AND local_mode = 'branch'
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `, [localPath]);
+    if (!row) return null;
+    return { ...row, review_data: row.review_data ? JSON.parse(row.review_data) : null };
+  }
+
+  /**
+   * Update the HEAD SHA for a local review.
+   * Used when branch-mode sessions persist across commits — the unique index
+   * on (local_path, local_head_sha) requires careful handling.
+   * @param {number} id - Review ID
+   * @param {string} newHeadSha - New HEAD SHA to set
+   * @returns {Promise<boolean>} True if record was updated
+   */
+  async updateLocalHeadSha(id, newHeadSha) {
+    const result = await run(this.db, `
+      UPDATE reviews
+      SET local_head_sha = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `, [newHeadSha, id]);
+    return result.changes > 0;
+  }
+
+  /**
    * Get a local review by its database ID
    * @param {number} id - Review ID
    * @returns {Promise<Object|null>} Review record or null if not found

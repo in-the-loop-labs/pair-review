@@ -277,11 +277,24 @@ router.post('/api/local/start', async (req, res) => {
     // Create or resume session
     const db = req.app.get('db');
     const reviewRepo = new ReviewRepository(db);
-    const sessionId = await reviewRepo.upsertLocalReview({
-      localPath: repoPath,
-      localHeadSha: headSha,
-      repository
-    });
+
+    // First, check for an existing branch-mode session on this path
+    // (branch mode sessions persist across HEAD changes)
+    let sessionId;
+    const branchSession = await reviewRepo.getLocalBranchReview(repoPath);
+    if (branchSession) {
+      sessionId = branchSession.id;
+      // Update HEAD SHA if it changed
+      if (branchSession.local_head_sha !== headSha) {
+        await reviewRepo.updateLocalHeadSha(sessionId, headSha);
+      }
+    } else {
+      sessionId = await reviewRepo.upsertLocalReview({
+        localPath: repoPath,
+        localHeadSha: headSha,
+        repository
+      });
+    }
 
     // Generate diff
     logger.log('API', `Starting local review for ${repoPath}`, 'cyan');
@@ -1065,6 +1078,7 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
 
     // Check if HEAD has changed
     const { getHeadSha } = require('../local-review');
+    const isBranchMode = (review.local_mode || 'uncommitted') === 'branch';
     let currentHeadSha;
     let sessionChanged = false;
     let newSessionId = null;
@@ -1073,32 +1087,38 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
       currentHeadSha = await getHeadSha(localPath);
 
       if (originalHeadSha && currentHeadSha !== originalHeadSha) {
-        sessionChanged = true;
         logger.log('API', `HEAD changed: ${originalHeadSha.substring(0, 7)} -> ${currentHeadSha.substring(0, 7)}`, 'yellow');
 
-        // Check if a session already exists for the new HEAD
-        const existingSession = await reviewRepo.getLocalReview(localPath, currentHeadSha);
-        if (existingSession) {
-          newSessionId = existingSession.id;
-          logger.log('API', `Existing session found for new HEAD: ${newSessionId}`, 'cyan');
+        if (isBranchMode) {
+          // Branch mode: session persists across HEAD changes — just update the SHA
+          await reviewRepo.updateLocalHeadSha(reviewId, currentHeadSha);
+          logger.log('API', `Updated HEAD SHA on branch session ${reviewId}`, 'cyan');
+          // sessionChanged stays false — no redirect needed
         } else {
-          // Create a new session for the new HEAD
-          const { getRepositoryName } = require('../local-review');
-          const repository = await getRepositoryName(localPath);
-          newSessionId = await reviewRepo.upsertLocalReview({
-            localPath: localPath,
-            localHeadSha: currentHeadSha,
-            repository
-          });
-          logger.log('API', `Created new session for new HEAD: ${newSessionId}`, 'cyan');
+          // Uncommitted mode: HEAD change means a new session
+          sessionChanged = true;
+
+          // Check if a session already exists for the new HEAD
+          const existingSession = await reviewRepo.getLocalReview(localPath, currentHeadSha);
+          if (existingSession) {
+            newSessionId = existingSession.id;
+            logger.log('API', `Existing session found for new HEAD: ${newSessionId}`, 'cyan');
+          } else {
+            // Create a new session for the new HEAD
+            const { getRepositoryName } = require('../local-review');
+            const repository = await getRepositoryName(localPath);
+            newSessionId = await reviewRepo.upsertLocalReview({
+              localPath: localPath,
+              localHeadSha: currentHeadSha,
+              repository
+            });
+            logger.log('API', `Created new session for new HEAD: ${newSessionId}`, 'cyan');
+          }
         }
       }
     } catch (headError) {
       logger.warn(`Could not check HEAD SHA: ${headError.message}`);
     }
-
-    // Regenerate the diff based on mode
-    const isBranchMode = (review.local_mode || 'uncommitted') === 'branch';
     let diff, stats, digest;
 
     if (isBranchMode && review.local_base_branch) {

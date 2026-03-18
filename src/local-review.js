@@ -544,12 +544,26 @@ async function handleLocalReview(targetPath, flags = {}) {
     }
 
     console.log('Checking for existing review session...');
-    const existingReview = await reviewRepo.getLocalReview(repoPath, headSha);
+    let existingReview = await reviewRepo.getLocalReview(repoPath, headSha);
+
+    if (!existingReview) {
+      // Check for existing branch-mode session on this path
+      // (branch mode sessions persist across HEAD changes)
+      const branchSession = await reviewRepo.getLocalBranchReview(repoPath);
+      if (branchSession) {
+        existingReview = branchSession;
+      }
+    }
 
     let sessionId;
     if (existingReview) {
-      console.log(`Resuming existing review session (ID: ${existingReview.id})`);
       sessionId = existingReview.id;
+      // Update HEAD SHA if it changed (branch mode: new commits on same branch)
+      if (existingReview.local_head_sha !== headSha) {
+        await reviewRepo.updateLocalHeadSha(sessionId, headSha);
+        console.log(`Updated HEAD SHA on session ${sessionId}: ${existingReview.local_head_sha.substring(0, 7)} -> ${headSha.substring(0, 7)}`);
+      }
+      console.log(`Resuming existing review session (ID: ${existingReview.id})`);
     } else {
       console.log('Creating new review session...');
       sessionId = await reviewRepo.upsertLocalReview({
