@@ -662,21 +662,21 @@ class GitWorktreeManager {
       // Check if worktree exists
       const exists = await this.pathExists(worktreePath);
 
-      // Try to remove via git worktree remove first (handles both directory and registration)
-      try {
-        const owningRepo = await this.resolveOwningRepo(worktreePath);
-        if (!owningRepo) {
-          throw new Error('Could not resolve owning repository');
-        }
-        await owningRepo.raw(['worktree', 'remove', '--force', worktreePath]);
-        console.log(`Removed worktree via git: ${worktreePath}`);
-        return;
-      } catch (gitError) {
-        console.log('Git worktree remove failed, trying manual cleanup...');
-      }
-
-      // If directory exists, remove it manually
       if (exists) {
+        // Try to remove via git worktree remove first (handles both directory and registration)
+        try {
+          const owningRepo = await this.resolveOwningRepo(worktreePath);
+          if (!owningRepo) {
+            throw new Error('Could not resolve owning repository');
+          }
+          await owningRepo.raw(['worktree', 'remove', '--force', worktreePath]);
+          console.log(`Removed worktree via git: ${worktreePath}`);
+          return;
+        } catch (gitError) {
+          console.log('Git worktree remove failed, trying manual cleanup...');
+        }
+
+        // git remove failed — remove directory manually
         await this.removeDirectory(worktreePath);
         console.log(`Removed worktree directory: ${worktreePath}`);
       }

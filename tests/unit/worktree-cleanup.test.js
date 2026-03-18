@@ -52,6 +52,7 @@ describe('GitWorktreeManager worktree cleanup', () => {
       const mockOwningRepo = { raw: vi.fn().mockResolvedValue('') };
       manager.resolveOwningRepo = vi.fn().mockResolvedValue(mockOwningRepo);
       manager.pruneWorktrees = vi.fn().mockResolvedValue(undefined);
+      manager.pathExists = vi.fn().mockResolvedValue(true);
 
       await manager.cleanupWorktree('/tmp/worktrees/pr-42');
 
@@ -59,6 +60,17 @@ describe('GitWorktreeManager worktree cleanup', () => {
       expect(mockOwningRepo.raw).toHaveBeenCalledWith(
         ['worktree', 'remove', '--force', '/tmp/worktrees/pr-42']
       );
+    });
+
+    it('should be a no-op when worktree path does not exist', async () => {
+      manager.resolveOwningRepo = vi.fn();
+      manager.pruneWorktrees = vi.fn().mockResolvedValue(undefined);
+      manager.pathExists = vi.fn().mockResolvedValue(false);
+
+      await manager.cleanupWorktree('/tmp/worktrees/pr-42');
+
+      expect(manager.resolveOwningRepo).not.toHaveBeenCalled();
+      expect(manager.removeDirectory).not.toHaveBeenCalled();
     });
 
     it('should fall back to manual removal when resolveOwningRepo returns null', async () => {
