@@ -136,6 +136,8 @@ class PRManager {
     this.hideWhitespace = false;
     // Diff options dropdown (gear icon popover)
     this.diffOptionsDropdown = null;
+    // Cached staleness check promise — shared between on-load and triggerAIAnalysis
+    this._stalenessPromise = null;
     // Unique client ID for self-echo suppression on WebSocket review events.
     // Sent as X-Client-Id header on mutation requests; the server echoes
     // it back in the WebSocket broadcast so this tab can skip its own events.
@@ -510,6 +512,9 @@ class PRManager {
 
       // Listen for review mutation events via WebSocket pub/sub
       this._initReviewEventListeners();
+
+      // Fire-and-forget staleness check — shows badge or auto-refreshes
+      this._stalenessPromise = this._checkStalenessOnLoad(owner, repo, number);
 
     } catch (error) {
       console.error('Error loading PR:', error);
@@ -4080,19 +4085,13 @@ class PRManager {
         return;
       }
 
-      // Run stale check and settings fetch in parallel to minimize dialog delay
-      // Use AbortController so the fetch is truly cancelled on timeout,
-      // freeing the HTTP connection for subsequent requests.
+      // Run stale check and settings fetch in parallel to minimize dialog delay.
+      // Reuse the on-load staleness promise if still available, otherwise fetch fresh.
       const _tParallel0 = performance.now();
-      const staleAbort = new AbortController();
-      const staleTimer = setTimeout(() => {
-        console.debug(`[Analyze] stale-check timed out after ${STALE_TIMEOUT}ms, aborting`);
-        staleAbort.abort();
-      }, STALE_TIMEOUT);
-      const staleCheckWithTimeout = fetch(`/api/pr/${owner}/${repo}/${number}/check-stale`, { signal: staleAbort.signal })
-        .then(r => r.ok ? r.json() : null)
-        .then(result => { clearTimeout(staleTimer); return result; })
-        .catch(() => { clearTimeout(staleTimer); return null; });
+      const staleCheckWithTimeout = this._stalenessPromise
+        ? this._stalenessPromise
+        : this._fetchStaleness(owner, repo, number);
+      this._stalenessPromise = null; // consume it
 
       const [staleResult, repoSettings, reviewSettings] = await Promise.all([
         staleCheckWithTimeout,
@@ -4330,6 +4329,127 @@ class PRManager {
     this.resetButton();
   }
 
+  // ─── Staleness Badge ────────────────────────────────────────────
+
+  /**
+   * Fire-and-forget staleness check on page load.
+   * If stale and no active session data, silently refreshes.
+   * If stale and session data exists, shows the badge.
+   * Also shows badge variants for closed/merged PRs.
+   * @returns {Promise<Object|null>} The parsed staleness result, or null on failure.
+   */
+  async _checkStalenessOnLoad(owner, repo, number) {
+    try {
+      const result = await this._fetchStaleness(owner, repo, number);
+      if (!result) return null;
+
+      // Show badge for closed/merged PRs regardless of staleness
+      if (result.prState && result.prState !== 'open') {
+        const type = result.merged ? 'merged' : 'closed';
+        this._showStaleBadge(type);
+        return result;
+      }
+
+      if (result.isStale !== true) return result;
+
+      // Stale — decide: silent refresh or show badge
+      const hasData = await this._hasActiveSessionData();
+      if (hasData) {
+        this._showStaleBadge('stale');
+      } else {
+        // No user work to protect — refresh silently
+        await this.refreshPR();
+      }
+      return result;
+    } catch {
+      // Fail silently — staleness badge is best-effort
+      return null;
+    }
+  }
+
+  /**
+   * Fetch staleness data from the server with a timeout.
+   * @returns {Promise<Object|null>} The parsed staleness result, or null on failure/timeout.
+   */
+  async _fetchStaleness(owner, repo, number) {
+    try {
+      const staleAbort = new AbortController();
+      const staleTimer = setTimeout(() => staleAbort.abort(), STALE_TIMEOUT);
+      const response = await fetch(
+        `/api/pr/${owner}/${repo}/${number}/check-stale`,
+        { signal: staleAbort.signal }
+      );
+      clearTimeout(staleTimer);
+      if (!response.ok) return null;
+      return await response.json();
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Check whether the current session has user work worth protecting
+   * (analysis results or active user comments).
+   * Returns true if uncertain (fail-safe: don't auto-refresh).
+   */
+  async _hasActiveSessionData() {
+    const reviewId = this.currentPR?.id;
+    // No review record → no session data possible
+    if (!reviewId) return false;
+
+    try {
+      const [suggestionsRes, commentsRes] = await Promise.all([
+        fetch(`/api/reviews/${reviewId}/suggestions/check`).then(r => r.ok ? r.json() : null),
+        fetch(`/api/reviews/${reviewId}/comments`).then(r => r.ok ? r.json() : null)
+      ]);
+
+      const hasAnalysis = suggestionsRes?.analysisHasRun === true;
+      const hasUserComments = (commentsRes?.comments || []).some(
+        c => c.source === 'user' && c.status !== 'inactive'
+      );
+
+      return hasAnalysis || hasUserComments;
+    } catch {
+      // Uncertain — fail safe
+      return true;
+    }
+  }
+
+  /**
+   * Show the stale badge with an optional variant class.
+   * @param {'stale'|'closed'|'merged'} type
+   */
+  _showStaleBadge(type) {
+    const badge = document.getElementById('stale-badge');
+    if (!badge) return;
+
+    // Reset variant classes
+    badge.classList.remove('pr-closed', 'pr-merged');
+
+    const textEl = badge.querySelector('.stale-badge-text');
+    if (type === 'merged') {
+      badge.classList.add('pr-merged');
+      if (textEl) textEl.textContent = 'MERGED';
+      badge.title = 'This PR has been merged';
+    } else if (type === 'closed') {
+      badge.classList.add('pr-closed');
+      if (textEl) textEl.textContent = 'CLOSED';
+      badge.title = 'This PR has been closed';
+    } else {
+      if (textEl) textEl.textContent = 'STALE';
+      badge.title = 'PR data is outdated';
+    }
+    badge.style.display = '';
+  }
+
+  /**
+   * Hide the stale badge.
+   */
+  _hideStaleBadge() {
+    const badge = document.getElementById('stale-badge');
+    if (badge) badge.style.display = 'none';
+  }
+
   /**
    * Refresh the PR data
    */
@@ -4397,6 +4517,8 @@ class PRManager {
           window.scrollTo(0, scrollPosition);
         }, 100);
 
+        this._hideStaleBadge();
+        this._stalenessPromise = null;
         console.log('PR refreshed successfully');
       }
     } catch (error) {
