@@ -7237,6 +7237,7 @@ body.resizing * {
 .diff-options-popover {
   position: fixed;
   z-index: 1100;
+  min-width: 320px;
   background: var(--color-bg-primary);
   border: 1px solid var(--color-border-primary);
   border-radius: 8px;

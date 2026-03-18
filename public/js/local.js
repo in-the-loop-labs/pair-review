@@ -770,22 +770,47 @@ class LocalManager {
       const reviewData = await response.json();
       this.localData = reviewData;
 
+      // Read scope from metadata (backend now returns these)
+      const LS = window.LocalScope;
+      const scopeStart = reviewData.scopeStart || (LS ? LS.DEFAULT_SCOPE.start : 'unstaged');
+      const scopeEnd = reviewData.scopeEnd || (LS ? LS.DEFAULT_SCOPE.end : 'untracked');
+      this.scopeStart = scopeStart;
+      this.scopeEnd = scopeEnd;
+
       // Create a currentPR-like object for compatibility
-      const isBranchMode = reviewData.localMode === 'branch';
+      const hasBranch = LS ? LS.scopeIncludes(scopeStart, scopeEnd, 'branch') : false;
       manager.currentPR = {
         id: reviewData.id,
         owner: 'local',
         repo: reviewData.repository,
         number: reviewData.id,
-        title: isBranchMode
+        title: hasBranch
           ? `Branch Changes - ${reviewData.branch} vs ${reviewData.baseBranch}`
           : `Local Changes - ${reviewData.branch}`,
         head_branch: reviewData.branch,
-        base_branch: isBranchMode ? reviewData.baseBranch : reviewData.branch,
+        base_branch: hasBranch ? reviewData.baseBranch : reviewData.branch,
         head_sha: reviewData.localHeadSha,
         reviewType: 'local',
         localPath: reviewData.localPath
       };
+
+      // Re-initialize DiffOptionsDropdown with scope options
+      const branchAvailable = Boolean(reviewData.branchAvailable);
+      if (manager.diffOptionsDropdown) {
+        // Remove old popover from DOM
+        if (manager.diffOptionsDropdown._popoverEl) {
+          manager.diffOptionsDropdown._popoverEl.remove();
+        }
+      }
+      const diffOptionsBtn = document.getElementById('diff-options-btn');
+      if (diffOptionsBtn && window.DiffOptionsDropdown) {
+        manager.diffOptionsDropdown = new window.DiffOptionsDropdown(diffOptionsBtn, {
+          onToggleWhitespace: (hide) => manager.handleWhitespaceToggle(hide),
+          onScopeChange: (start, end) => this._handleScopeChange(start, end),
+          initialScope: { start: scopeStart, end: scopeEnd },
+          branchAvailable
+        });
+      }
 
       // Update header with local info
       this.updateLocalHeader(reviewData);
@@ -954,11 +979,16 @@ class LocalManager {
       branchText.textContent = reviewData.branch || 'unknown';
     }
 
-    // Show base branch badge in branch mode
+    // Show base branch badge when branch is in scope
+    const LS = window.LocalScope;
+    const scopeStart = this.scopeStart || (LS ? LS.DEFAULT_SCOPE.start : 'unstaged');
+    const scopeEnd = this.scopeEnd || (LS ? LS.DEFAULT_SCOPE.end : 'untracked');
+    const hasBranch = LS ? LS.scopeIncludes(scopeStart, scopeEnd, 'branch') : false;
+
     const branchVs = document.getElementById('local-branch-vs');
     const baseBranchEl = document.getElementById('local-base-branch');
     const baseBranchText = document.getElementById('local-base-branch-text');
-    if (reviewData.localMode === 'branch' && reviewData.baseBranch) {
+    if (hasBranch && reviewData.baseBranch) {
       if (branchVs) branchVs.style.display = '';
       if (baseBranchEl) baseBranchEl.style.display = '';
       if (baseBranchText) baseBranchText.textContent = reviewData.baseBranch;
@@ -967,12 +997,11 @@ class LocalManager {
       if (baseBranchEl) baseBranchEl.style.display = 'none';
     }
 
-    // Update refresh button tooltip based on mode
+    // Update refresh button tooltip based on scope
     const refreshBtn = document.getElementById('local-refresh-btn');
     if (refreshBtn) {
-      refreshBtn.title = reviewData.localMode === 'branch'
-        ? 'Refresh diff from branch'
-        : 'Refresh diff from directory';
+      const scopeLabel = LS ? LS.scopeLabel(scopeStart, scopeEnd) : 'directory';
+      refreshBtn.title = `Refresh diff (${scopeLabel})`;
     }
 
     // Update branch name (toolbar) and wire up copy button
@@ -1126,19 +1155,22 @@ class LocalManager {
       if (!diffContent) {
         const diffContainer = document.getElementById('diff-container');
         if (diffContainer) {
-          // Check if this is uncommitted mode with branch info available
           const reviewData = this.localData;
           const branchInfo = reviewData?.branchInfo;
+          const LS = window.LocalScope;
+          const hasBranch = LS ? LS.scopeIncludes(this.scopeStart, this.scopeEnd, 'branch') : false;
 
-          // Show mode-aware empty message (neutral when branch info available, actionable otherwise)
-          if (reviewData?.localMode === 'uncommitted' && branchInfo) {
-            diffContainer.innerHTML = '<div class="no-diff">No uncommitted changes.</div>';
+          // Show scope-aware empty message
+          if (!hasBranch && branchInfo) {
+            const scopeLabel = LS ? LS.scopeLabel(this.scopeStart, this.scopeEnd) : 'current scope';
+            diffContainer.innerHTML = `<div class="no-diff">No changes in ${scopeLabel} scope.</div>`;
           } else {
-            diffContainer.innerHTML = '<div class="no-diff">No unstaged changes to review. Make some changes to your files and click the <strong>Refresh</strong> button to reload.</div>';
+            const scopeLabel = LS ? LS.scopeLabel(this.scopeStart, this.scopeEnd) : 'current scope';
+            diffContainer.innerHTML = `<div class="no-diff">No changes in ${scopeLabel} scope. Make some changes and click <strong>Refresh</strong> to reload.</div>`;
           }
 
-          // If branch has commits ahead, show a dialog offering to switch to branch review
-          if (reviewData?.localMode === 'uncommitted' && branchInfo) {
+          // If branch has commits ahead and branch is not in scope, offer to expand
+          if (!hasBranch && branchInfo) {
             this.showBranchReviewDialog(branchInfo);
           }
         }
@@ -1242,6 +1274,76 @@ class LocalManager {
   }
 
   /**
+   * Handle scope change from DiffOptionsDropdown.
+   * POSTs new scope to backend, reloads diff on success.
+   * @param {string} scopeStart - New start stop
+   * @param {string} scopeEnd - New end stop
+   */
+  async _handleScopeChange(scopeStart, scopeEnd) {
+    const manager = window.prManager;
+    const LS = window.LocalScope;
+
+    try {
+      const resp = await fetch(`/api/local/${this.reviewId}/set-scope`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scopeStart, scopeEnd })
+      });
+
+      if (!resp.ok) {
+        const err = await resp.json();
+        throw new Error(err.error || 'Failed to set scope');
+      }
+
+      const result = await resp.json();
+
+      // Update local state
+      this.scopeStart = scopeStart;
+      this.scopeEnd = scopeEnd;
+
+      // Update localData
+      if (this.localData) {
+        this.localData.scopeStart = scopeStart;
+        this.localData.scopeEnd = scopeEnd;
+        if (result.baseBranch) {
+          this.localData.baseBranch = result.baseBranch;
+        }
+        if (result.localMode) {
+          this.localData.localMode = result.localMode;
+        }
+      }
+
+      // Update currentPR
+      const hasBranch = LS ? LS.scopeIncludes(scopeStart, scopeEnd, 'branch') : false;
+      if (manager?.currentPR) {
+        manager.currentPR.base_branch = hasBranch
+          ? (result.baseBranch || this.localData?.baseBranch || manager.currentPR.head_branch)
+          : manager.currentPR.head_branch;
+      }
+
+      // Update header and reload diff
+      this.updateLocalHeader(this.localData);
+      await this.loadLocalDiff();
+
+      // Re-anchor comments and suggestions
+      const includeDismissed = window.aiPanel?.showDismissedComments || false;
+      await manager.loadUserComments(includeDismissed);
+      await manager.loadAISuggestions(null, manager.selectedRunId);
+
+      // Show toast
+      if (window.Toast) {
+        const label = LS ? LS.scopeLabel(scopeStart, scopeEnd) : `${scopeStart}\u2013${scopeEnd}`;
+        window.Toast.show(`Scope: ${label}`, 'success');
+      }
+    } catch (error) {
+      console.error('Failed to change scope:', error);
+      if (window.Toast) {
+        window.Toast.show('Failed to change scope: ' + error.message, 'error');
+      }
+    }
+  }
+
+  /**
    * Show a dialog prompting the user to review branch changes.
    * Uses the same modal pattern as ConfirmDialog/TextInputDialog.
    * @param {Object} branchInfo - Branch info with commitCount and baseBranch
@@ -1283,7 +1385,7 @@ class LocalManager {
         <div class="modal-footer">
           <button class="btn btn-secondary" data-action="cancel">Cancel</button>
           <button class="btn btn-primary" id="branch-review-confirm-btn" data-action="confirm">
-            Review Branch Changes
+            Expand Scope to Branch
           </button>
         </div>
       </div>
@@ -1292,6 +1394,7 @@ class LocalManager {
     document.body.appendChild(overlay);
 
     const reviewId = this.reviewId;
+    const self = this;
 
     const closeDialog = () => {
       overlay.style.display = 'none';
@@ -1303,7 +1406,7 @@ class LocalManager {
       const confirmBtn = overlay.querySelector('#branch-review-confirm-btn');
       if (confirmBtn) {
         confirmBtn.disabled = true;
-        confirmBtn.textContent = 'Switching...';
+        confirmBtn.textContent = 'Expanding...';
       }
 
       // Save "don't ask" preference if checked
@@ -1319,25 +1422,65 @@ class LocalManager {
       }
 
       try {
-        const resp = await fetch(`/api/local/${reviewId}/switch-to-branch`, {
+        const newEnd = self.scopeEnd || 'branch';
+        const resp = await fetch(`/api/local/${reviewId}/set-scope`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ baseBranch: branchInfo.baseBranch })
+          body: JSON.stringify({
+            scopeStart: 'branch',
+            scopeEnd: newEnd,
+            baseBranch: branchInfo.baseBranch
+          })
         });
         if (!resp.ok) {
           const err = await resp.json();
-          throw new Error(err.error || 'Switch failed');
+          throw new Error(err.error || 'Failed to expand scope');
         }
-        // Reload the page to pick up branch mode
-        window.location.reload();
+
+        // Update local scope state
+        self.scopeStart = 'branch';
+        self.scopeEnd = newEnd;
+
+        // Update the dropdown UI
+        const manager = window.prManager;
+        if (manager?.diffOptionsDropdown) {
+          manager.diffOptionsDropdown.scope = { start: 'branch', end: newEnd };
+          manager.diffOptionsDropdown.branchAvailable = true;
+        }
+
+        // Update currentPR for branch context
+        if (manager?.currentPR) {
+          manager.currentPR.base_branch = branchInfo.baseBranch;
+          manager.currentPR.title = `Branch Changes - ${manager.currentPR.head_branch} vs ${branchInfo.baseBranch}`;
+        }
+
+        // Update localData for header
+        if (self.localData) {
+          self.localData.baseBranch = branchInfo.baseBranch;
+          self.localData.scopeStart = 'branch';
+          self.localData.scopeEnd = newEnd;
+          self.localData.localMode = 'branch';
+        }
+
+        closeDialog();
+
+        // Reload diff and update header
+        self.updateLocalHeader(self.localData);
+        await self.loadLocalDiff();
+
+        if (window.Toast) {
+          const LS = window.LocalScope;
+          const label = LS ? LS.scopeLabel('branch', newEnd) : 'Branch';
+          window.Toast.show(`Scope expanded to ${label}`, 'success');
+        }
       } catch (error) {
         if (confirmBtn) {
           confirmBtn.disabled = false;
-          confirmBtn.textContent = 'Review Branch Changes';
+          confirmBtn.textContent = 'Expand Scope to Branch';
         }
-        console.error('Failed to switch to branch mode:', error);
+        console.error('Failed to expand scope to branch:', error);
         if (window.Toast) {
-          window.Toast.show('Failed to switch: ' + error.message, 'error');
+          window.Toast.show('Failed to expand scope: ' + error.message, 'error');
         }
       }
     };

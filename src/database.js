@@ -20,7 +20,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 28;
+const CURRENT_SCHEMA_VERSION = 29;
 
 /**
  * Database schema SQL statements
@@ -44,7 +44,9 @@ const SCHEMA_SQL = {
       summary TEXT,
       name TEXT,
       local_mode TEXT DEFAULT 'uncommitted',
-      local_base_branch TEXT
+      local_base_branch TEXT,
+      local_scope_start TEXT DEFAULT 'unstaged',
+      local_scope_end TEXT DEFAULT 'untracked'
     )
   `,
 
@@ -170,6 +172,8 @@ const SCHEMA_SQL = {
       parent_run_id TEXT,
       config_type TEXT DEFAULT 'single',
       levels_config TEXT,
+      scope_start TEXT,
+      scope_end TEXT,
       FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE
     )
   `,
@@ -1278,6 +1282,80 @@ const MIGRATIONS = {
     }
 
     console.log('Migration to schema version 28 complete');
+  },
+
+  // Migration to version 29: adds scope columns for flexible diff range selection
+  29: (db) => {
+    console.log('Migrating to schema version 29: Add scope columns to reviews and analysis_runs');
+
+    // Add local_scope_start to reviews
+    if (!columnExists(db, 'reviews', 'local_scope_start')) {
+      try {
+        db.prepare("ALTER TABLE reviews ADD COLUMN local_scope_start TEXT DEFAULT 'unstaged'").run();
+        console.log('  Added local_scope_start column to reviews');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) throw error;
+        console.log('  Column local_scope_start already exists (race condition)');
+      }
+    } else {
+      console.log('  Column local_scope_start already exists');
+    }
+
+    // Add local_scope_end to reviews
+    if (!columnExists(db, 'reviews', 'local_scope_end')) {
+      try {
+        db.prepare("ALTER TABLE reviews ADD COLUMN local_scope_end TEXT DEFAULT 'untracked'").run();
+        console.log('  Added local_scope_end column to reviews');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) throw error;
+        console.log('  Column local_scope_end already exists (race condition)');
+      }
+    } else {
+      console.log('  Column local_scope_end already exists');
+    }
+
+    // Migrate existing data from local_mode to new scope columns
+    // uncommitted → start='unstaged', end='untracked'
+    db.prepare(`
+      UPDATE reviews SET local_scope_start = 'unstaged', local_scope_end = 'untracked'
+      WHERE local_mode = 'uncommitted' OR local_mode IS NULL
+    `).run();
+    console.log('  Migrated uncommitted reviews to scope columns');
+
+    // branch → start='branch', end='branch'
+    db.prepare(`
+      UPDATE reviews SET local_scope_start = 'branch', local_scope_end = 'branch'
+      WHERE local_mode = 'branch'
+    `).run();
+    console.log('  Migrated branch reviews to scope columns');
+
+    // Add scope_start to analysis_runs
+    if (!columnExists(db, 'analysis_runs', 'scope_start')) {
+      try {
+        db.prepare('ALTER TABLE analysis_runs ADD COLUMN scope_start TEXT').run();
+        console.log('  Added scope_start column to analysis_runs');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) throw error;
+        console.log('  Column scope_start already exists (race condition)');
+      }
+    } else {
+      console.log('  Column scope_start already exists');
+    }
+
+    // Add scope_end to analysis_runs
+    if (!columnExists(db, 'analysis_runs', 'scope_end')) {
+      try {
+        db.prepare('ALTER TABLE analysis_runs ADD COLUMN scope_end TEXT').run();
+        console.log('  Added scope_end column to analysis_runs');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) throw error;
+        console.log('  Column scope_end already exists (race condition)');
+      }
+    } else {
+      console.log('  Column scope_end already exists');
+    }
+
+    console.log('Migration to schema version 29 complete');
   }
 };
 
@@ -2665,17 +2743,27 @@ class ReviewRepository {
    * @param {string} context.repository - Repository identifier (can be derived from path)
    * @returns {Promise<number>} The review ID
    */
-  async upsertLocalReview({ localPath, localHeadSha, repository, localMode, localBaseBranch }) {
+  async upsertLocalReview({ localPath, localHeadSha, repository, scopeStart, scopeEnd, localMode, localBaseBranch }) {
     // Try to find existing local review by path and SHA
     const existing = await this.getLocalReview(localPath, localHeadSha);
 
     if (existing) {
-      // Update the updated_at timestamp (and mode/base if provided)
+      // Update the updated_at timestamp (and scope/base if provided)
       const updates = ['updated_at = CURRENT_TIMESTAMP'];
       const params = [];
-      if (localMode !== undefined) {
+      if (scopeStart !== undefined) {
+        updates.push('local_scope_start = ?');
+        params.push(scopeStart);
+        // Also write local_mode for backward compat during transition
+        updates.push('local_mode = ?');
+        params.push(scopeStart === 'branch' ? 'branch' : 'uncommitted');
+      } else if (localMode !== undefined) {
         updates.push('local_mode = ?');
         params.push(localMode);
+      }
+      if (scopeEnd !== undefined) {
+        updates.push('local_scope_end = ?');
+        params.push(scopeEnd);
       }
       if (localBaseBranch !== undefined) {
         updates.push('local_base_branch = ?');
@@ -2690,11 +2778,16 @@ class ReviewRepository {
       return existing.id;
     }
 
+    // Derive local_mode from scopeStart for backward compat
+    const effectiveMode = scopeStart === 'branch' ? 'branch' : (localMode || 'uncommitted');
+    const effectiveScopeStart = scopeStart || 'unstaged';
+    const effectiveScopeEnd = scopeEnd || 'untracked';
+
     // Create new local review
     const result = await run(this.db, `
-      INSERT INTO reviews (pr_number, repository, status, review_type, local_path, local_head_sha, local_mode, local_base_branch)
-      VALUES (NULL, ?, 'draft', 'local', ?, ?, ?, ?)
-    `, [repository, localPath, localHeadSha, localMode || 'uncommitted', localBaseBranch || null]);
+      INSERT INTO reviews (pr_number, repository, status, review_type, local_path, local_head_sha, local_mode, local_base_branch, local_scope_start, local_scope_end)
+      VALUES (NULL, ?, 'draft', 'local', ?, ?, ?, ?, ?, ?)
+    `, [repository, localPath, localHeadSha, effectiveMode, localBaseBranch || null, effectiveScopeStart, effectiveScopeEnd]);
 
     return result.lastID;
   }
@@ -2710,7 +2803,7 @@ class ReviewRepository {
       SELECT id, pr_number, repository, status, review_id,
              created_at, updated_at, submitted_at, review_data, custom_instructions,
              review_type, local_path, local_head_sha, summary, name,
-             local_mode, local_base_branch
+             local_mode, local_base_branch, local_scope_start, local_scope_end
       FROM reviews
       WHERE review_type = 'local' AND local_path = ? AND local_head_sha = ?
     `, [localPath, localHeadSha]);
@@ -2730,13 +2823,23 @@ class ReviewRepository {
    * @returns {Promise<Object|null>} Most recent branch-mode review or null
    */
   async getLocalBranchReview(localPath) {
+    return this.getLocalBranchScopeReview(localPath);
+  }
+
+  /**
+   * Get an existing branch-scope local review by path (ignoring HEAD SHA).
+   * Branch-scope sessions persist across HEAD changes — only the path matters.
+   * @param {string} localPath - Absolute path to the local repository
+   * @returns {Promise<Object|null>} Most recent branch-scope review or null
+   */
+  async getLocalBranchScopeReview(localPath) {
     const row = await queryOne(this.db, `
       SELECT id, pr_number, repository, status, review_id,
              created_at, updated_at, submitted_at, review_data, custom_instructions,
              review_type, local_path, local_head_sha, summary, name,
-             local_mode, local_base_branch
+             local_mode, local_base_branch, local_scope_start, local_scope_end
       FROM reviews
-      WHERE review_type = 'local' AND local_path = ? AND local_mode = 'branch'
+      WHERE review_type = 'local' AND local_path = ? AND local_scope_start = 'branch'
       ORDER BY updated_at DESC
       LIMIT 1
     `, [localPath]);
@@ -2762,6 +2865,33 @@ class ReviewRepository {
   }
 
   /**
+   * Update the scope range and optionally the base branch for a local review.
+   * @param {number} id - Review ID
+   * @param {string} scopeStart - Scope start value (e.g. 'unstaged', 'staged', 'branch')
+   * @param {string} scopeEnd - Scope end value (e.g. 'staged', 'untracked', 'branch')
+   * @param {string} [baseBranch] - Base branch name (only relevant for branch scope)
+   * @returns {Promise<boolean>} True if record was updated
+   */
+  async updateLocalScope(id, scopeStart, scopeEnd, baseBranch) {
+    const updates = ['local_scope_start = ?', 'local_scope_end = ?', 'updated_at = CURRENT_TIMESTAMP'];
+    const params = [scopeStart, scopeEnd];
+    // Also write local_mode for backward compat
+    updates.push('local_mode = ?');
+    params.push(scopeStart === 'branch' ? 'branch' : 'uncommitted');
+    if (baseBranch !== undefined) {
+      updates.push('local_base_branch = ?');
+      params.push(baseBranch);
+    }
+    params.push(id);
+    const result = await run(this.db, `
+      UPDATE reviews
+      SET ${updates.join(', ')}
+      WHERE id = ?
+    `, params);
+    return result.changes > 0;
+  }
+
+  /**
    * Get a local review by its database ID
    * @param {number} id - Review ID
    * @returns {Promise<Object|null>} Review record or null if not found
@@ -2771,7 +2901,7 @@ class ReviewRepository {
       SELECT id, pr_number, repository, status, review_id,
              created_at, updated_at, submitted_at, review_data, custom_instructions,
              review_type, local_path, local_head_sha, summary, name,
-             local_mode, local_base_branch
+             local_mode, local_base_branch, local_scope_start, local_scope_end
       FROM reviews
       WHERE id = ? AND review_type = 'local'
     `, [id]);
@@ -3026,14 +3156,14 @@ class AnalysisRunRepository {
    * @param {string} [runInfo.status='running'] - Initial status (default 'running'; pass 'completed' for externally-produced results)
    * @returns {Promise<Object>} Created analysis run record
    */
-  async create({ id, reviewId, provider = null, model = null, tier = null, customInstructions = null, repoInstructions = null, requestInstructions = null, headSha = null, diff = null, status = 'running', parentRunId = null, configType = 'single', levelsConfig = null }) {
+  async create({ id, reviewId, provider = null, model = null, tier = null, customInstructions = null, repoInstructions = null, requestInstructions = null, headSha = null, diff = null, status = 'running', parentRunId = null, configType = 'single', levelsConfig = null, scopeStart = null, scopeEnd = null }) {
     const isTerminal = ['completed', 'failed', 'cancelled'].includes(status);
     const completedAt = isTerminal ? 'CURRENT_TIMESTAMP' : 'NULL';
     const levelsConfigJson = levelsConfig ? JSON.stringify(levelsConfig) : null;
     await run(this.db, `
-      INSERT INTO analysis_runs (id, review_id, provider, model, tier, custom_instructions, repo_instructions, request_instructions, head_sha, diff, status, completed_at, parent_run_id, config_type, levels_config)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${completedAt}, ?, ?, ?)
-    `, [id, reviewId, provider, model, tier, customInstructions, repoInstructions, requestInstructions, headSha, diff, status, parentRunId, configType, levelsConfigJson]);
+      INSERT INTO analysis_runs (id, review_id, provider, model, tier, custom_instructions, repo_instructions, request_instructions, head_sha, diff, status, completed_at, parent_run_id, config_type, levels_config, scope_start, scope_end)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${completedAt}, ?, ?, ?, ?, ?)
+    `, [id, reviewId, provider, model, tier, customInstructions, repoInstructions, requestInstructions, headSha, diff, status, parentRunId, configType, levelsConfigJson, scopeStart, scopeEnd]);
 
     // Query back the inserted row to return actual database values (including timestamps)
     return await this.getById(id);

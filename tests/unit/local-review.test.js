@@ -5,7 +5,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 
-const { computeLocalDiffDigest, generateLocalDiff, findMainGitRoot, findGitRoot } = require('../../src/local-review');
+const { computeLocalDiffDigest, generateLocalDiff, findMainGitRoot, findGitRoot, generateScopedDiff, computeScopedDigest } = require('../../src/local-review');
 
 describe('computeLocalDiffDigest', () => {
   let testDir;
@@ -375,5 +375,252 @@ describe('findGitRoot vs findMainGitRoot comparison', () => {
     // For regular repos, both should return the same path
     expect(gitRoot).toBe(mainRoot);
     expect(gitRoot).toBe(mainRepoDir);
+  });
+});
+
+describe('generateScopedDiff', () => {
+  let testDir;
+  let defaultBranch;
+
+  beforeEach(async () => {
+    testDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pair-review-scoped-'));
+    execSync('git init', { cwd: testDir, stdio: 'pipe' });
+    execSync('git config user.email "test@test.com"', { cwd: testDir, stdio: 'pipe' });
+    execSync('git config user.name "Test User"', { cwd: testDir, stdio: 'pipe' });
+
+    await fs.writeFile(path.join(testDir, 'file.txt'), 'initial content\n');
+    execSync('git add file.txt', { cwd: testDir, stdio: 'pipe' });
+    execSync('git commit -m "Initial commit"', { cwd: testDir, stdio: 'pipe' });
+
+    defaultBranch = execSync('git rev-parse --abbrev-ref HEAD', {
+      cwd: testDir, encoding: 'utf8', stdio: 'pipe'
+    }).trim();
+  });
+
+  afterEach(async () => {
+    if (testDir) {
+      await fs.rm(testDir, { recursive: true, force: true });
+    }
+  });
+
+  describe('unstaged–untracked scope (legacy default)', () => {
+    it('should return unstaged changes and untracked files', async () => {
+      await fs.writeFile(path.join(testDir, 'file.txt'), 'modified\n');
+      await fs.writeFile(path.join(testDir, 'new.txt'), 'brand new\n');
+
+      const result = await generateScopedDiff(testDir, 'unstaged', 'untracked');
+
+      expect(result.diff).toContain('diff --git a/file.txt b/file.txt');
+      expect(result.diff).toContain('diff --git a/new.txt b/new.txt');
+      expect(result.mergeBaseSha).toBeNull();
+    });
+
+    it('should NOT include staged changes', async () => {
+      await fs.writeFile(path.join(testDir, 'file.txt'), 'staged change\n');
+      execSync('git add file.txt', { cwd: testDir, stdio: 'pipe' });
+
+      const result = await generateScopedDiff(testDir, 'unstaged', 'untracked');
+
+      expect(result.diff).not.toContain('staged change');
+    });
+  });
+
+  describe('staged scope', () => {
+    it('should return only staged changes', async () => {
+      await fs.writeFile(path.join(testDir, 'file.txt'), 'staged content\n');
+      execSync('git add file.txt', { cwd: testDir, stdio: 'pipe' });
+      // Make another unstaged change
+      await fs.writeFile(path.join(testDir, 'file.txt'), 'unstaged on top\n');
+
+      const result = await generateScopedDiff(testDir, 'staged', 'staged');
+
+      expect(result.diff).toContain('staged content');
+      expect(result.diff).not.toContain('unstaged on top');
+      expect(result.mergeBaseSha).toBeNull();
+    });
+  });
+
+  describe('staged–unstaged scope', () => {
+    it('should return staged + unstaged via diff HEAD', async () => {
+      await fs.writeFile(path.join(testDir, 'file.txt'), 'staged content\n');
+      execSync('git add file.txt', { cwd: testDir, stdio: 'pipe' });
+      await fs.writeFile(path.join(testDir, 'file.txt'), 'unstaged on top\n');
+
+      const result = await generateScopedDiff(testDir, 'staged', 'unstaged');
+
+      // Should see the final working tree state vs HEAD
+      expect(result.diff).toContain('unstaged on top');
+      expect(result.mergeBaseSha).toBeNull();
+    });
+  });
+
+  describe('unstaged-only scope', () => {
+    it('should return only unstaged changes, no untracked', async () => {
+      await fs.writeFile(path.join(testDir, 'file.txt'), 'modified\n');
+      await fs.writeFile(path.join(testDir, 'new.txt'), 'untracked\n');
+
+      const result = await generateScopedDiff(testDir, 'unstaged', 'unstaged');
+
+      expect(result.diff).toContain('diff --git a/file.txt b/file.txt');
+      expect(result.diff).not.toContain('new.txt');
+      expect(result.stats.untrackedFiles).toBe(0);
+    });
+  });
+
+  describe('untracked-only scope', () => {
+    it('should return only untracked file diffs', async () => {
+      await fs.writeFile(path.join(testDir, 'file.txt'), 'modified\n');
+      await fs.writeFile(path.join(testDir, 'new.txt'), 'untracked\n');
+
+      const result = await generateScopedDiff(testDir, 'untracked', 'untracked');
+
+      expect(result.diff).not.toContain('file.txt');
+      expect(result.diff).toContain('diff --git a/new.txt b/new.txt');
+      expect(result.stats.untrackedFiles).toBe(1);
+    });
+  });
+
+  describe('branch scope', () => {
+    it('should return committed changes since merge-base', async () => {
+      // Create a branch and add a commit
+      execSync('git checkout -b feature', { cwd: testDir, stdio: 'pipe' });
+      await fs.writeFile(path.join(testDir, 'feature.txt'), 'feature work\n');
+      execSync('git add feature.txt', { cwd: testDir, stdio: 'pipe' });
+      execSync('git commit -m "Feature commit"', { cwd: testDir, stdio: 'pipe' });
+
+      const result = await generateScopedDiff(testDir, 'branch', 'branch', defaultBranch);
+
+      expect(result.diff).toContain('feature.txt');
+      expect(result.diff).toContain('feature work');
+      expect(result.mergeBaseSha).toBeTruthy();
+    });
+
+    it('should throw when baseBranch is missing', async () => {
+      await expect(
+        generateScopedDiff(testDir, 'branch', 'branch')
+      ).rejects.toThrow('baseBranch is required');
+    });
+  });
+
+  describe('branch–unstaged scope', () => {
+    it('should include both committed and working tree changes', async () => {
+      execSync('git checkout -b feature2', { cwd: testDir, stdio: 'pipe' });
+      await fs.writeFile(path.join(testDir, 'committed.txt'), 'committed\n');
+      execSync('git add committed.txt', { cwd: testDir, stdio: 'pipe' });
+      execSync('git commit -m "Feature"', { cwd: testDir, stdio: 'pipe' });
+      // Also make an unstaged change
+      await fs.writeFile(path.join(testDir, 'file.txt'), 'working tree change\n');
+
+      const result = await generateScopedDiff(testDir, 'branch', 'unstaged', defaultBranch);
+
+      expect(result.diff).toContain('committed.txt');
+      expect(result.diff).toContain('working tree change');
+      expect(result.mergeBaseSha).toBeTruthy();
+    });
+  });
+
+  describe('empty working directory', () => {
+    it('should return empty diff when no changes exist', async () => {
+      const result = await generateScopedDiff(testDir, 'unstaged', 'untracked');
+
+      expect(result.diff).toBeFalsy();
+      expect(result.stats.trackedChanges).toBe(0);
+      expect(result.stats.untrackedFiles).toBe(0);
+    });
+  });
+});
+
+describe('computeScopedDigest', () => {
+  let testDir;
+
+  beforeEach(async () => {
+    testDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pair-review-digest-'));
+    execSync('git init', { cwd: testDir, stdio: 'pipe' });
+    execSync('git config user.email "test@test.com"', { cwd: testDir, stdio: 'pipe' });
+    execSync('git config user.name "Test User"', { cwd: testDir, stdio: 'pipe' });
+
+    await fs.writeFile(path.join(testDir, 'file.txt'), 'initial\n');
+    execSync('git add file.txt', { cwd: testDir, stdio: 'pipe' });
+    execSync('git commit -m "Initial"', { cwd: testDir, stdio: 'pipe' });
+  });
+
+  afterEach(async () => {
+    if (testDir) {
+      await fs.rm(testDir, { recursive: true, force: true });
+    }
+  });
+
+  it('should return a 16-char hex digest', async () => {
+    await fs.writeFile(path.join(testDir, 'file.txt'), 'changed\n');
+    const digest = await computeScopedDigest(testDir, 'unstaged', 'untracked');
+    expect(digest).toMatch(/^[a-f0-9]{16}$/);
+  });
+
+  it('should be consistent for same state', async () => {
+    await fs.writeFile(path.join(testDir, 'file.txt'), 'changed\n');
+    const d1 = await computeScopedDigest(testDir, 'unstaged', 'untracked');
+    const d2 = await computeScopedDigest(testDir, 'unstaged', 'untracked');
+    expect(d1).toBe(d2);
+  });
+
+  it('should change when unstaged content changes', async () => {
+    await fs.writeFile(path.join(testDir, 'file.txt'), 'v1\n');
+    const d1 = await computeScopedDigest(testDir, 'unstaged', 'unstaged');
+
+    await fs.writeFile(path.join(testDir, 'file.txt'), 'v2\n');
+    const d2 = await computeScopedDigest(testDir, 'unstaged', 'unstaged');
+
+    expect(d1).not.toBe(d2);
+  });
+
+  it('should change when staged content changes', async () => {
+    await fs.writeFile(path.join(testDir, 'file.txt'), 'staged-v1\n');
+    execSync('git add file.txt', { cwd: testDir, stdio: 'pipe' });
+    const d1 = await computeScopedDigest(testDir, 'staged', 'staged');
+
+    await fs.writeFile(path.join(testDir, 'file.txt'), 'staged-v2\n');
+    execSync('git add file.txt', { cwd: testDir, stdio: 'pipe' });
+    const d2 = await computeScopedDigest(testDir, 'staged', 'staged');
+
+    expect(d1).not.toBe(d2);
+  });
+
+  it('should change when untracked file is added', async () => {
+    const d1 = await computeScopedDigest(testDir, 'untracked', 'untracked');
+
+    await fs.writeFile(path.join(testDir, 'new.txt'), 'new\n');
+    const d2 = await computeScopedDigest(testDir, 'untracked', 'untracked');
+
+    expect(d1).not.toBe(d2);
+  });
+
+  it('should include HEAD SHA when branch is in scope', async () => {
+    execSync('git checkout -b feat', { cwd: testDir, stdio: 'pipe' });
+    await fs.writeFile(path.join(testDir, 'a.txt'), 'a\n');
+    execSync('git add a.txt', { cwd: testDir, stdio: 'pipe' });
+    execSync('git commit -m "commit a"', { cwd: testDir, stdio: 'pipe' });
+    const d1 = await computeScopedDigest(testDir, 'branch', 'branch');
+
+    await fs.writeFile(path.join(testDir, 'b.txt'), 'b\n');
+    execSync('git add b.txt', { cwd: testDir, stdio: 'pipe' });
+    execSync('git commit -m "commit b"', { cwd: testDir, stdio: 'pipe' });
+    const d2 = await computeScopedDigest(testDir, 'branch', 'branch');
+
+    expect(d1).not.toBe(d2);
+  });
+
+  it('should return null for non-existent path', async () => {
+    const digest = await computeScopedDigest('/non/existent/path', 'unstaged', 'untracked');
+    expect(digest).toBeNull();
+  });
+
+  it('should match computeLocalDiffDigest for unstaged–untracked scope', async () => {
+    await fs.writeFile(path.join(testDir, 'file.txt'), 'modified\n');
+    await fs.writeFile(path.join(testDir, 'new.txt'), 'new file\n');
+
+    const scopedDigest = await computeScopedDigest(testDir, 'unstaged', 'untracked');
+    const legacyDigest = await computeLocalDiffDigest(testDir);
+
+    expect(scopedDigest).toBe(legacyDigest);
   });
 });

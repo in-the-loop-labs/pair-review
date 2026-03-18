@@ -34,7 +34,9 @@ const SCHEMA_SQL = {
       summary TEXT,
       name TEXT,
       local_mode TEXT DEFAULT 'uncommitted',
-      local_base_branch TEXT
+      local_base_branch TEXT,
+      local_scope_start TEXT DEFAULT 'unstaged',
+      local_scope_end TEXT DEFAULT 'untracked'
     )
   `,
 
@@ -140,6 +142,8 @@ const SCHEMA_SQL = {
       parent_run_id TEXT,
       config_type TEXT DEFAULT 'single',
       levels_config TEXT,
+      scope_start TEXT,
+      scope_end TEXT,
       FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE
     )
   `,

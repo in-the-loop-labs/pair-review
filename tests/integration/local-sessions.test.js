@@ -30,12 +30,12 @@ describe('Local Sessions API', () => {
     vi.spyOn(localReviewModule, 'getHeadSha').mockResolvedValue('abc123def456');
     vi.spyOn(localReviewModule, 'getRepositoryName').mockResolvedValue('owner/repo');
     vi.spyOn(localReviewModule, 'getCurrentBranch').mockResolvedValue('main');
-    vi.spyOn(localReviewModule, 'generateLocalDiff').mockResolvedValue({
+    vi.spyOn(localReviewModule, 'generateScopedDiff').mockResolvedValue({
       diff: 'diff --git a/file.js b/file.js\n--- a/file.js\n+++ b/file.js',
-      untrackedFiles: [],
-      stats: { trackedChanges: 1, untrackedFiles: 0, stagedChanges: 0, unstagedChanges: 1 }
+      stats: { trackedChanges: 1, untrackedFiles: 0, stagedChanges: 0, unstagedChanges: 1 },
+      mergeBaseSha: null
     });
-    vi.spyOn(localReviewModule, 'computeLocalDiffDigest').mockResolvedValue('digest123');
+    vi.spyOn(localReviewModule, 'computeScopedDigest').mockResolvedValue('digest123');
 
     app = express();
     app.use(express.json());
