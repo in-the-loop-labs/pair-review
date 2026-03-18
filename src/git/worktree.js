@@ -627,6 +627,29 @@ class GitWorktreeManager {
   }
 
   /**
+   * Resolve the owning git repository for a worktree path.
+   * Uses `git rev-parse --git-common-dir` to find the main repo,
+   * which works even when worktrees are outside the parent repo directory.
+   * @param {string} worktreePath - Path to a worktree
+   * @returns {Promise<import('simple-git').SimpleGit|null>} simpleGit instance for the owning repo, or null
+   */
+  async resolveOwningRepo(worktreePath) {
+    try {
+      const git = simpleGit(worktreePath);
+      const commonDir = (await git.raw(['rev-parse', '--git-common-dir'])).trim();
+      // commonDir is either a .git subdirectory (regular repos) or the bare repo root itself.
+      // Only strip the last component when it's actually a .git directory.
+      const resolvedCommonDir = path.resolve(worktreePath, commonDir);
+      const repoRoot = path.basename(resolvedCommonDir) === '.git'
+        ? path.dirname(resolvedCommonDir)
+        : resolvedCommonDir;
+      return simpleGit(repoRoot);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Cleanup a specific worktree
    * @param {string} worktreePath - Path to worktree to cleanup
    * @returns {Promise<void>}
@@ -634,27 +657,30 @@ class GitWorktreeManager {
   async cleanupWorktree(worktreePath) {
     try {
       // First try to prune any stale worktree registrations
-      await this.pruneWorktrees();
-      
+      await this.pruneWorktrees(worktreePath);
+
       // Check if worktree exists
       const exists = await this.pathExists(worktreePath);
-      
-      // Try to remove via git worktree remove first (handles both directory and registration)
-      try {
-        const parentGit = simpleGit(path.dirname(worktreePath));
-        await parentGit.raw(['worktree', 'remove', '--force', worktreePath]);
-        console.log(`Removed worktree via git: ${worktreePath}`);
-        return;
-      } catch (gitError) {
-        console.log('Git worktree remove failed, trying manual cleanup...');
-      }
 
-      // If directory exists, remove it manually
       if (exists) {
+        // Try to remove via git worktree remove first (handles both directory and registration)
+        try {
+          const owningRepo = await this.resolveOwningRepo(worktreePath);
+          if (!owningRepo) {
+            throw new Error('Could not resolve owning repository');
+          }
+          await owningRepo.raw(['worktree', 'remove', '--force', worktreePath]);
+          console.log(`Removed worktree via git: ${worktreePath}`);
+          return;
+        } catch (gitError) {
+          console.log('Git worktree remove failed, trying manual cleanup...');
+        }
+
+        // git remove failed — remove directory manually
         await this.removeDirectory(worktreePath);
         console.log(`Removed worktree directory: ${worktreePath}`);
       }
-      
+
     } catch (error) {
       console.warn(`Warning: Could not cleanup worktree at ${worktreePath}: ${error.message}`);
       // Don't throw - this is cleanup, continue with creation
@@ -777,14 +803,22 @@ class GitWorktreeManager {
   }
 
   /**
-   * Prune stale worktree registrations
+   * Prune stale worktree registrations from the owning repository.
+   * @param {string|import('simple-git').SimpleGit} [worktreePathOrGit] - A worktree path to
+   *   resolve the owning repo from, or a SimpleGit instance directly. Falls back to process.cwd().
    * @returns {Promise<void>}
    */
-  async pruneWorktrees() {
+  async pruneWorktrees(worktreePathOrGit) {
     try {
-      // Find the parent git repository to prune from
-      // We need to find any git repo to run the prune command
-      const git = simpleGit(process.cwd());
+      let git;
+      if (worktreePathOrGit && typeof worktreePathOrGit === 'object') {
+        git = worktreePathOrGit;
+      } else if (typeof worktreePathOrGit === 'string') {
+        git = await this.resolveOwningRepo(worktreePathOrGit);
+      }
+      if (!git) {
+        git = simpleGit(process.cwd());
+      }
       await git.raw(['worktree', 'prune']);
       console.log('Pruned stale worktree registrations');
     } catch (error) {
@@ -892,12 +926,31 @@ class GitWorktreeManager {
 
       console.log(`[pair-review] Found ${staleWorktrees.length} stale worktrees older than ${retentionDays} days`);
 
+      // Resolve owning repos BEFORE cleanup removes directories
+      const owningRepos = new Map();
+      for (const worktree of staleWorktrees) {
+        try {
+          const repo = await this.resolveOwningRepo(worktree.path);
+          if (repo) {
+            const repoPath = (await repo.raw(['rev-parse', '--git-dir'])).trim();
+            if (!owningRepos.has(repoPath)) {
+              owningRepos.set(repoPath, repo);
+            }
+          }
+        } catch {
+          // ignore - will fall back to manual removal
+        }
+      }
+
       for (const worktree of staleWorktrees) {
         try {
           // Try to remove via git worktree remove first
           try {
-            const git = simpleGit(path.dirname(worktree.path));
-            await git.raw(['worktree', 'remove', '--force', worktree.path]);
+            const owningRepo = await this.resolveOwningRepo(worktree.path);
+            if (!owningRepo) {
+              throw new Error('Could not resolve owning repository');
+            }
+            await owningRepo.raw(['worktree', 'remove', '--force', worktree.path]);
             console.log(`[pair-review] Removed worktree via git: ${worktree.path}`);
           } catch (gitError) {
             // If git worktree remove fails, try manual directory removal
@@ -923,8 +976,10 @@ class GitWorktreeManager {
         }
       }
 
-      // Run git worktree prune to clean up orphaned registrations
-      await this.pruneWorktrees();
+      // Prune each unique owning repo
+      for (const repo of owningRepos.values()) {
+        await this.pruneWorktrees(repo);
+      }
 
       if (result.cleaned > 0) {
         console.log(`[pair-review] Cleaned up ${result.cleaned} stale worktrees (older than ${retentionDays} days)`);
