@@ -117,15 +117,6 @@
   margin-left: 8px;
 }
 
-.stale-badge:hover {
-  opacity: 0.85;
-  transform: scale(1.04);
-}
-
-.stale-badge svg {
-  width: 12px;
-  height: 12px;
-}
 
 .stale-badge.pr-closed {
   background: linear-gradient(135deg, #cf222e 0%, #a40e26 100%);
