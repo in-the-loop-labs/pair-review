@@ -23,7 +23,7 @@ const logger = require('../utils/logger');
 const { broadcastReviewEvent } = require('../events/review-events');
 const { mergeInstructions } = require('../utils/instructions');
 const { getGitHubToken } = require('../config');
-const { generateScopedDiff, computeScopedDigest, getBranchCommitCount, getFirstCommitSubject, detectAndBuildBranchInfo } = require('../local-review');
+const { generateScopedDiff, computeScopedDigest, getBranchCommitCount, getFirstCommitSubject, detectAndBuildBranchInfo, findMergeBase } = require('../local-review');
 const { isValidScope, scopeIncludes, includesBranch, DEFAULT_SCOPE } = require('../local-scope');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
 const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
@@ -838,6 +838,10 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
     const runId = uuidv4();
     const analysisId = runId;
 
+    // Extract scope early — needed for both analysis run creation and diff generation
+    const scopeStart = review.local_scope_start || DEFAULT_SCOPE.start;
+    const scopeEnd = review.local_scope_end || DEFAULT_SCOPE.end;
+
     // Create DB analysis_runs record immediately so it's queryable for polling
     const analysisRunRepo = new AnalysisRunRepository(db);
     const levelsConfig = parseEnabledLevels(requestEnabledLevels, requestSkipLevel3);
@@ -896,23 +900,11 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
     // Build local review metadata for the analyzer
     // The analyzer uses base_sha and head_sha for git diff commands
     // When branch is in scope, base_sha is the merge-base; otherwise, HEAD
-    const scopeStart = review.local_scope_start || DEFAULT_SCOPE.start;
-    const scopeEnd = review.local_scope_end || DEFAULT_SCOPE.end;
     const hasBranch = includesBranch(scopeStart);
     let analysisBaseSha = review.local_head_sha;
     if (hasBranch && review.local_base_branch) {
-      // Try to compute merge-base for accurate analysis context
       try {
-        for (const ref of [`origin/${review.local_base_branch}`, review.local_base_branch]) {
-          try {
-            analysisBaseSha = execSync(`git merge-base ${ref} HEAD`, {
-              cwd: localPath,
-              encoding: 'utf8',
-              stdio: ['pipe', 'pipe', 'pipe']
-            }).trim();
-            break;
-          } catch { /* try next ref */ }
-        }
+        analysisBaseSha = await findMergeBase(localPath, review.local_base_branch);
       } catch {
         // Fall back to HEAD
       }
@@ -944,7 +936,7 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
     logger.log('API', `Provider: ${selectedProvider}`, 'cyan');
     logger.log('API', `Model: ${selectedModel}`, 'cyan');
     logger.log('API', `Tier: ${tier}`, 'cyan');
-    logger.log('API', `Changed files: ${changedFiles.length}`, 'cyan');
+    logger.log('API', `Changed files: ${changedFiles ? changedFiles.length : '(branch mode)'}`, 'cyan');
     if (combinedInstructions) {
       logger.log('API', `Custom instructions: ${combinedInstructions.length} chars`, 'cyan');
     }
@@ -1530,16 +1522,7 @@ router.post('/api/local/:reviewId/analyses/council', async (req, res) => {
     let analysisBaseSha = review.local_head_sha;
     if (councilHasBranch && review.local_base_branch) {
       try {
-        for (const ref of [`origin/${review.local_base_branch}`, review.local_base_branch]) {
-          try {
-            analysisBaseSha = execSync(`git merge-base ${ref} HEAD`, {
-              cwd: localPath,
-              encoding: 'utf8',
-              stdio: ['pipe', 'pipe', 'pipe']
-            }).trim();
-            break;
-          } catch { /* try next ref */ }
-        }
+        analysisBaseSha = await findMergeBase(localPath, review.local_base_branch);
       } catch {
         // Fall back to HEAD
       }
@@ -1593,7 +1576,7 @@ router.post('/api/local/:reviewId/analyses/council', async (req, res) => {
         headSha: review.local_head_sha,
         logLabel: `local review #${reviewId}`,
         initialStatusExtra: { reviewId, reviewType: 'local' },
-        runUpdateExtra: { filesAnalyzed: changedFiles.length }
+        runUpdateExtra: { filesAnalyzed: changedFiles ? changedFiles.length : 0 }
       },
       councilConfig,
       councilId,

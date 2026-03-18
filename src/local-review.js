@@ -667,6 +667,19 @@ async function generateLocalDiff(repoPath, options = {}) {
   const result = await generateScopedDiff(repoPath, 'unstaged', 'untracked', null, options);
   // Preserve legacy untrackedFiles field
   const untrackedFiles = await getUntrackedFiles(repoPath);
+
+  // Always count staged changes for CLI info message, even when staged is out of scope
+  if (!result.stats.stagedChanges) {
+    try {
+      const stagedStat = execSync('git diff --cached --stat --no-color', {
+        cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe']
+      });
+      if (stagedStat.trim()) {
+        result.stats.stagedChanges = (stagedStat.match(/\|/g) || []).length;
+      }
+    } catch { /* non-critical */ }
+  }
+
   return {
     diff: result.diff,
     untrackedFiles,
@@ -1006,5 +1019,6 @@ module.exports = {
   generateLocalReviewId,
   getUntrackedFiles,
   computeLocalDiffDigest,
-  computeScopedDigest
+  computeScopedDigest,
+  findMergeBase
 };

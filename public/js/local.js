@@ -797,10 +797,7 @@ class LocalManager {
       // Re-initialize DiffOptionsDropdown with scope options
       const branchAvailable = Boolean(reviewData.branchAvailable);
       if (manager.diffOptionsDropdown) {
-        // Remove old popover from DOM
-        if (manager.diffOptionsDropdown._popoverEl) {
-          manager.diffOptionsDropdown._popoverEl.remove();
-        }
+        manager.diffOptionsDropdown.destroy();
       }
       const diffOptionsBtn = document.getElementById('diff-options-btn');
       if (diffOptionsBtn && window.DiffOptionsDropdown) {
@@ -1331,14 +1328,14 @@ class LocalManager {
       await manager.loadAISuggestions(null, manager.selectedRunId);
 
       // Show toast
-      if (window.Toast) {
+      if (window.toast) {
         const label = LS ? LS.scopeLabel(scopeStart, scopeEnd) : `${scopeStart}\u2013${scopeEnd}`;
-        window.Toast.show(`Scope: ${label}`, 'success');
+        window.toast.showSuccess(`Scope: ${label}`);
       }
     } catch (error) {
       console.error('Failed to change scope:', error);
-      if (window.Toast) {
-        window.Toast.show('Failed to change scope: ' + error.message, 'error');
+      if (window.toast) {
+        window.toast.showError('Failed to change scope: ' + error.message);
       }
     }
   }
@@ -1422,7 +1419,8 @@ class LocalManager {
       }
 
       try {
-        const newEnd = self.scopeEnd || 'branch';
+        const LS = window.LocalScope;
+        const newEnd = self.scopeEnd || (LS ? LS.DEFAULT_SCOPE.end : 'untracked');
         const resp = await fetch(`/api/local/${reviewId}/set-scope`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1468,10 +1466,10 @@ class LocalManager {
         self.updateLocalHeader(self.localData);
         await self.loadLocalDiff();
 
-        if (window.Toast) {
+        if (window.toast) {
           const LS = window.LocalScope;
           const label = LS ? LS.scopeLabel('branch', newEnd) : 'Branch';
-          window.Toast.show(`Scope expanded to ${label}`, 'success');
+          window.toast.showSuccess(`Scope expanded to ${label}`);
         }
       } catch (error) {
         if (confirmBtn) {
@@ -1479,8 +1477,8 @@ class LocalManager {
           confirmBtn.textContent = 'Expand Scope to Branch';
         }
         console.error('Failed to expand scope to branch:', error);
-        if (window.Toast) {
-          window.Toast.show('Failed to expand scope: ' + error.message, 'error');
+        if (window.toast) {
+          window.toast.showError('Failed to expand scope: ' + error.message);
         }
       }
     };

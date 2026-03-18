@@ -60,14 +60,15 @@ class DiffOptionsDropdown {
     this._syncButtonActive();
 
     // Toggle popover on button click
-    this._btn.addEventListener('click', (e) => {
+    this._btnClickHandler = (e) => {
       e.stopPropagation();
       if (this._visible) {
         this._hide();
       } else {
         this._show();
       }
-    });
+    };
+    this._btn.addEventListener('click', this._btnClickHandler);
 
     // Fire initial callback so the consumer can apply the persisted state
     if (this._hideWhitespace) {
@@ -114,6 +115,19 @@ class DiffOptionsDropdown {
     this._scopeStart = val.start;
     this._scopeEnd = val.end;
     this._updateScopeUI();
+  }
+
+  /** Remove all DOM elements and event listeners. Safe to call multiple times. */
+  destroy() {
+    this._hide();
+    if (this._popoverEl) {
+      this._popoverEl.remove();
+      this._popoverEl = null;
+    }
+    if (this._btn && this._btnClickHandler) {
+      this._btn.removeEventListener('click', this._btnClickHandler);
+      this._btnClickHandler = null;
+    }
   }
 
   // ---------------------------------------------------------------------------
