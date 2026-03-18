@@ -627,6 +627,25 @@ class GitWorktreeManager {
   }
 
   /**
+   * Resolve the owning git repository for a worktree path.
+   * Uses `git rev-parse --git-common-dir` to find the main repo,
+   * which works even when worktrees are outside the parent repo directory.
+   * @param {string} worktreePath - Path to a worktree
+   * @returns {Promise<import('simple-git').SimpleGit|null>} simpleGit instance for the owning repo, or null
+   */
+  async resolveOwningRepo(worktreePath) {
+    try {
+      const git = simpleGit(worktreePath);
+      const commonDir = (await git.raw(['rev-parse', '--git-common-dir'])).trim();
+      // commonDir is the .git directory of the main repo; resolve to the working tree root
+      const repoRoot = path.resolve(worktreePath, commonDir, '..');
+      return simpleGit(repoRoot);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Cleanup a specific worktree
    * @param {string} worktreePath - Path to worktree to cleanup
    * @returns {Promise<void>}
@@ -634,15 +653,18 @@ class GitWorktreeManager {
   async cleanupWorktree(worktreePath) {
     try {
       // First try to prune any stale worktree registrations
-      await this.pruneWorktrees();
-      
+      await this.pruneWorktrees(worktreePath);
+
       // Check if worktree exists
       const exists = await this.pathExists(worktreePath);
-      
+
       // Try to remove via git worktree remove first (handles both directory and registration)
       try {
-        const parentGit = simpleGit(path.dirname(worktreePath));
-        await parentGit.raw(['worktree', 'remove', '--force', worktreePath]);
+        const owningRepo = await this.resolveOwningRepo(worktreePath);
+        if (!owningRepo) {
+          throw new Error('Could not resolve owning repository');
+        }
+        await owningRepo.raw(['worktree', 'remove', '--force', worktreePath]);
         console.log(`Removed worktree via git: ${worktreePath}`);
         return;
       } catch (gitError) {
@@ -654,7 +676,7 @@ class GitWorktreeManager {
         await this.removeDirectory(worktreePath);
         console.log(`Removed worktree directory: ${worktreePath}`);
       }
-      
+
     } catch (error) {
       console.warn(`Warning: Could not cleanup worktree at ${worktreePath}: ${error.message}`);
       // Don't throw - this is cleanup, continue with creation
@@ -777,14 +799,20 @@ class GitWorktreeManager {
   }
 
   /**
-   * Prune stale worktree registrations
+   * Prune stale worktree registrations from the owning repository.
+   * @param {string} [worktreePath] - Optional worktree path to resolve the owning repo from.
+   *   If omitted, falls back to process.cwd().
    * @returns {Promise<void>}
    */
-  async pruneWorktrees() {
+  async pruneWorktrees(worktreePath) {
     try {
-      // Find the parent git repository to prune from
-      // We need to find any git repo to run the prune command
-      const git = simpleGit(process.cwd());
+      let git;
+      if (worktreePath) {
+        git = await this.resolveOwningRepo(worktreePath);
+      }
+      if (!git) {
+        git = simpleGit(process.cwd());
+      }
       await git.raw(['worktree', 'prune']);
       console.log('Pruned stale worktree registrations');
     } catch (error) {
@@ -896,8 +924,11 @@ class GitWorktreeManager {
         try {
           // Try to remove via git worktree remove first
           try {
-            const git = simpleGit(path.dirname(worktree.path));
-            await git.raw(['worktree', 'remove', '--force', worktree.path]);
+            const owningRepo = await this.resolveOwningRepo(worktree.path);
+            if (!owningRepo) {
+              throw new Error('Could not resolve owning repository');
+            }
+            await owningRepo.raw(['worktree', 'remove', '--force', worktree.path]);
             console.log(`[pair-review] Removed worktree via git: ${worktree.path}`);
           } catch (gitError) {
             // If git worktree remove fails, try manual directory removal
@@ -924,7 +955,9 @@ class GitWorktreeManager {
       }
 
       // Run git worktree prune to clean up orphaned registrations
-      await this.pruneWorktrees();
+      // Pass a worktree path so we can resolve the owning repo
+      const firstPath = staleWorktrees[0] && staleWorktrees[0].path;
+      await this.pruneWorktrees(firstPath);
 
       if (result.cleaned > 0) {
         console.log(`[pair-review] Cleaned up ${result.cleaned} stale worktrees (older than ${retentionDays} days)`);
