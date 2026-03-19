@@ -341,8 +341,8 @@ class DiffOptionsDropdown {
     let newStart = this._scopeStart;
     let newEnd = this._scopeEnd;
 
-    // Ctrl/Cmd-click: solo-select this single stop
-    if (event && (event.ctrlKey || event.metaKey)) {
+    // Alt/Option-click: solo-select this single stop
+    if (event && event.altKey) {
       newStart = clickedStop;
       newEnd = clickedStop;
     } else {
