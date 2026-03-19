@@ -1317,10 +1317,12 @@ class LocalManager {
     await manager.loadUserComments(includeDismissed);
     await manager.loadAISuggestions(null, manager.selectedRunId);
 
-    // Update DiffOptionsDropdown scope and clear status
+    // Only update dropdown if user hasn't clicked again since this request started
     if (manager?.diffOptionsDropdown) {
-      manager.diffOptionsDropdown.scope = { start: scopeStart, end: scopeEnd };
-      manager.diffOptionsDropdown.clearScopeStatus();
+      const current = manager.diffOptionsDropdown.scope;
+      if (current.start === scopeStart && current.end === scopeEnd) {
+        manager.diffOptionsDropdown.clearScopeStatus();
+      }
     }
   }
 
@@ -1360,10 +1362,13 @@ class LocalManager {
       if (window.toast) {
         window.toast.showError('Failed to change scope: ' + error.message);
       }
-      // Rollback dropdown on failure and clear status
+      // Rollback dropdown only if user hasn't clicked again
       if (manager?.diffOptionsDropdown) {
-        manager.diffOptionsDropdown.scope = { start: oldStart, end: oldEnd };
-        manager.diffOptionsDropdown.clearScopeStatus();
+        const current = manager.diffOptionsDropdown.scope;
+        if (current.start === scopeStart && current.end === scopeEnd) {
+          manager.diffOptionsDropdown.scope = { start: oldStart, end: oldEnd };
+          manager.diffOptionsDropdown.clearScopeStatus();
+        }
       }
     }
   }
