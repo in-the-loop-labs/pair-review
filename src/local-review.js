@@ -8,7 +8,7 @@ const { loadConfig, showWelcomeMessage, resolveDbName, getGitHubToken } = requir
 const logger = require('./utils/logger');
 
 const execAsync = promisify(exec);
-const { scopeIncludes } = require('./local-scope');
+const { scopeIncludes, includesBranch, DEFAULT_SCOPE, scopeLabel } = require('./local-scope');
 const { initializeDatabase, ReviewRepository, RepoSettingsRepository } = require('./database');
 const { startServer } = require('./server');
 const { localReviewDiffs } = require('./routes/shared');
@@ -791,38 +791,43 @@ async function handleLocalReview(targetPath, flags = {}) {
       console.log(`Created new review session (ID: ${sessionId})`);
     }
 
-    // Generate local diff
-    console.log('Generating diff for local changes...');
-    const { diff, untrackedFiles, stats } = await generateLocalDiff(repoPath);
+    // Read scope from session (or use defaults for new sessions)
+    const scopeStart = existingReview?.local_scope_start || DEFAULT_SCOPE.start;
+    const scopeEnd = existingReview?.local_scope_end || DEFAULT_SCOPE.end;
+    const baseBranch = existingReview?.local_base_branch || null;
 
-    // Branch detection: when no uncommitted changes, check if branch has commits ahead
-    const branchInfo = await detectAndBuildBranchInfo(repoPath, branch, {
-      repository,
-      diff,
-      untrackedFiles,
-      githubToken: getGitHubToken(config),
-      enableGraphite: config.enable_graphite === true
-    });
-    if (branchInfo) {
-      console.log(`\nNo uncommitted changes, but branch has ${branchInfo.commitCount} commit(s) ahead of ${branchInfo.baseBranch}.`);
-      console.log('The UI will offer to review branch changes.');
+    // Generate diff using session's actual scope
+    console.log(`Generating diff for scope: ${scopeLabel(scopeStart, scopeEnd)}...`);
+    const { diff, stats } = await generateScopedDiff(repoPath, scopeStart, scopeEnd, baseBranch);
+
+    // Branch detection: when scope does NOT include branch and no uncommitted changes,
+    // check if branch has commits ahead (frontend uses this to suggest expanding scope)
+    let branchInfo = null;
+    if (!includesBranch(scopeStart)) {
+      const untrackedFiles = await getUntrackedFiles(repoPath);
+      branchInfo = await detectAndBuildBranchInfo(repoPath, branch, {
+        repository,
+        diff,
+        untrackedFiles,
+        githubToken: getGitHubToken(config),
+        enableGraphite: config.enable_graphite === true
+      });
+      if (branchInfo) {
+        console.log(`\nNo uncommitted changes, but branch has ${branchInfo.commitCount} commit(s) ahead of ${branchInfo.baseBranch}.`);
+        console.log('The UI will offer to review branch changes.');
+      }
     }
 
-    if (!diff && untrackedFiles.length === 0 && !branchInfo) {
-      console.log('\nNo local changes detected. The UI will open anyway - you can make changes and refresh.');
-    } else if (diff || untrackedFiles.length > 0) {
-      console.log(`Found changes:`);
-    if (stats.unstagedChanges > 0) {
-      console.log(`  - ${stats.unstagedChanges} unstaged file(s)`);
-    }
-    if (stats.untrackedFiles > 0) {
-      const skipped = untrackedFiles.filter(f => f.skipped).length;
-      const included = stats.untrackedFiles - skipped;
-      console.log(`  - ${included} untracked file(s)${skipped > 0 ? ` (${skipped} skipped)` : ''}`);
-    }
-    if (stats.stagedChanges > 0) {
-      console.log(`  - ${stats.stagedChanges} staged file(s) (excluded from review)`);
-    }
+    if (!diff && !branchInfo) {
+      console.log('\nNo changes detected in current scope. The UI will open anyway - you can change scope or make changes and refresh.');
+    } else if (diff) {
+      console.log(`Found ${stats.trackedChanges || 0} file(s) changed`);
+      if (stats.untrackedFiles > 0) {
+        console.log(`  - ${stats.untrackedFiles} untracked file(s)`);
+      }
+      if (stats.stagedChanges > 0 && !scopeIncludes(scopeStart, scopeEnd, 'staged')) {
+        console.log(`  - ${stats.stagedChanges} staged file(s) (outside current scope)`);
+      }
     }
 
     // Set environment variables for local mode (metadata only, not large data)
@@ -835,7 +840,7 @@ async function handleLocalReview(targetPath, flags = {}) {
 
     // Compute baseline digest NOW for accurate staleness detection later
     // This must be done at diff-capture time, not lazily at check time
-    const digest = await computeLocalDiffDigest(repoPath);
+    const digest = await computeScopedDigest(repoPath, scopeStart, scopeEnd);
 
     // Store diff data in module-level Map (avoids process.env size limits and security concerns)
     localReviewDiffs.set(sessionId, { diff, stats, digest, branchInfo });
