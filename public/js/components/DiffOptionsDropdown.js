@@ -52,6 +52,8 @@ class DiffOptionsDropdown {
     this._scopeEnd = (initialScope && initialScope.end) || (LS ? LS.DEFAULT_SCOPE.end : 'untracked');
     this._scopeStops = [];
     this._scopeTrackEl = null;
+    this._scopeDebounceTimer = null;
+    this._scopeStatusEl = null;
 
     // Read persisted state
     this._hideWhitespace = localStorage.getItem(STORAGE_KEY) === 'true';
@@ -117,9 +119,18 @@ class DiffOptionsDropdown {
     this._updateScopeUI();
   }
 
+  /** Clear the scope status indicator (call after scope change completes). */
+  clearScopeStatus() {
+    if (this._scopeStatusEl) {
+      this._scopeStatusEl.style.display = 'none';
+      this._scopeStatusEl.textContent = '';
+    }
+  }
+
   /** Remove all DOM elements and event listeners. Safe to call multiple times. */
   destroy() {
     this._hide();
+    clearTimeout(this._scopeDebounceTimer);
     if (this._popoverEl) {
       this._popoverEl.remove();
       this._popoverEl = null;
@@ -202,14 +213,28 @@ class DiffOptionsDropdown {
     section.style.padding = '8px 20px 12px';
     section.className = 'scope-selector-section';
 
-    // Title
+    // Title row with status indicator
+    const titleRow = document.createElement('div');
+    titleRow.style.display = 'flex';
+    titleRow.style.alignItems = 'center';
+    titleRow.style.justifyContent = 'space-between';
+    titleRow.style.marginBottom = '10px';
+
     const title = document.createElement('div');
     title.textContent = 'Diff scope';
     title.style.fontSize = '0.8125rem';
     title.style.fontWeight = '600';
-    title.style.marginBottom = '10px';
     title.style.color = 'var(--color-text-primary, #24292f)';
-    section.appendChild(title);
+
+    const statusEl = document.createElement('div');
+    statusEl.style.fontSize = '11px';
+    statusEl.style.color = 'var(--color-text-secondary, #656d76)';
+    statusEl.style.display = 'none';
+    this._scopeStatusEl = statusEl;
+
+    titleRow.appendChild(title);
+    titleRow.appendChild(statusEl);
+    section.appendChild(titleRow);
 
     // Track container
     const trackContainer = document.createElement('div');
@@ -284,7 +309,7 @@ class DiffOptionsDropdown {
 
       stopEl.addEventListener('click', (e) => {
         e.stopPropagation();
-        this._handleStopClick(stop);
+        this._handleStopClick(stop, e);
       });
 
       stopsRow.appendChild(stopEl);
@@ -301,7 +326,7 @@ class DiffOptionsDropdown {
     this._updateScopeUI();
   }
 
-  _handleStopClick(clickedStop) {
+  _handleStopClick(clickedStop, event) {
     const LS = window.LocalScope;
     if (!LS) return;
 
@@ -312,34 +337,37 @@ class DiffOptionsDropdown {
     const ci = stops.indexOf(clickedStop);
     const si = stops.indexOf(this._scopeStart);
     const ei = stops.indexOf(this._scopeEnd);
-    const included = ci >= si && ci <= ei;
 
     let newStart = this._scopeStart;
     let newEnd = this._scopeEnd;
 
-    // Checkbox-like toggle with contiguity constraint:
-    // - Enabled boundary stop → toggle off (shrink range), but never remove the last stop
-    // - Disabled stop adjacent to range → toggle on (expand range)
-    // - Interior enabled stop or non-adjacent disabled stop → ignore
-
-    if (included) {
-      // Toggling OFF — only allowed at boundaries, and range must have >1 stop
-      if (si === ei) return; // Single stop — can't remove the last one
-      if (ci === si) {
-        newStart = stops[si + 1];
-      } else if (ci === ei) {
-        newEnd = stops[ei - 1];
-      } else {
-        return; // Interior — can't break contiguity
-      }
+    // Ctrl/Cmd-click: solo-select this single stop
+    if (event && (event.ctrlKey || event.metaKey)) {
+      newStart = clickedStop;
+      newEnd = clickedStop;
     } else {
-      // Toggling ON — only allowed if adjacent to current range
-      if (ci === si - 1) {
-        newStart = clickedStop;
-      } else if (ci === ei + 1) {
-        newEnd = clickedStop;
+      // Checkbox-like toggle with contiguity constraint
+      const included = ci >= si && ci <= ei;
+
+      if (included) {
+        // Toggling OFF — only allowed at boundaries, and range must have >1 stop
+        if (si === ei) return;
+        if (ci === si) {
+          newStart = stops[si + 1];
+        } else if (ci === ei) {
+          newEnd = stops[ei - 1];
+        } else {
+          return; // Interior — can't break contiguity
+        }
       } else {
-        return; // Not adjacent — can't break contiguity
+        // Toggling ON — only allowed if adjacent to current range
+        if (ci === si - 1) {
+          newStart = clickedStop;
+        } else if (ci === ei + 1) {
+          newEnd = clickedStop;
+        } else {
+          return; // Not adjacent — can't break contiguity
+        }
       }
     }
 
@@ -349,14 +377,28 @@ class DiffOptionsDropdown {
     }
 
     if (!LS.isValidScope(newStart, newEnd)) return;
+    if (newStart === this._scopeStart && newEnd === this._scopeEnd) return;
 
     this._scopeStart = newStart;
     this._scopeEnd = newEnd;
     this._updateScopeUI();
 
-    if (this._onScopeChange) {
-      this._onScopeChange(this._scopeStart, this._scopeEnd);
-    }
+    // Show pending status and debounce the backend call
+    this._setScopeStatus('Updating\u2026');
+
+    clearTimeout(this._scopeDebounceTimer);
+    this._scopeDebounceTimer = setTimeout(() => {
+      this._setScopeStatus('Loading diff\u2026');
+      if (this._onScopeChange) {
+        this._onScopeChange(this._scopeStart, this._scopeEnd);
+      }
+    }, 600);
+  }
+
+  _setScopeStatus(text) {
+    if (!this._scopeStatusEl) return;
+    this._scopeStatusEl.textContent = text;
+    this._scopeStatusEl.style.display = text ? 'block' : 'none';
   }
 
   _updateScopeUI() {

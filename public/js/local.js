@@ -1317,9 +1317,10 @@ class LocalManager {
     await manager.loadUserComments(includeDismissed);
     await manager.loadAISuggestions(null, manager.selectedRunId);
 
-    // Update DiffOptionsDropdown scope
+    // Update DiffOptionsDropdown scope and clear status
     if (manager?.diffOptionsDropdown) {
       manager.diffOptionsDropdown.scope = { start: scopeStart, end: scopeEnd };
+      manager.diffOptionsDropdown.clearScopeStatus();
     }
   }
 
@@ -1359,9 +1360,10 @@ class LocalManager {
       if (window.toast) {
         window.toast.showError('Failed to change scope: ' + error.message);
       }
-      // Rollback dropdown on failure
+      // Rollback dropdown on failure and clear status
       if (manager?.diffOptionsDropdown) {
         manager.diffOptionsDropdown.scope = { start: oldStart, end: oldEnd };
+        manager.diffOptionsDropdown.clearScopeStatus();
       }
     }
   }
