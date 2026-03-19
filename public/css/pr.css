@@ -7309,6 +7309,150 @@ body.resizing * {
   background: rgba(88, 166, 255, 0.15);
 }
 
+/* --------------------------------------------------------------------------
+   Comment Minimize Mode
+   -------------------------------------------------------------------------- */
+
+/* When minimize mode is active, hide all inline comment and suggestion rows */
+.comments-minimized .user-comment-row,
+.comments-minimized .ai-suggestion-row {
+  display: none;
+}
+
+/* Per-line expansion override — clicking an indicator reveals that line's rows */
+.comments-minimized .user-comment-row.comment-expanded,
+.comments-minimized .ai-suggestion-row.comment-expanded {
+  display: table-row;
+}
+
+/* Indicator button on the right edge of diff code cells */
+.comment-indicator {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  border: 1px solid var(--color-border-primary);
+  border-radius: 12px;
+  background: var(--color-bg-secondary);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--color-text-secondary);
+  opacity: 1;
+  transition: background 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+  z-index: 5;
+}
+
+.comment-indicator:hover {
+  background: var(--color-bg-tertiary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.comment-indicator.expanded {
+  border-width: 2px;
+  padding: 1px 5px; /* compensate for thicker border */
+}
+
+.comment-indicator .indicator-icon {
+  display: inline-flex;
+  align-items: center;
+}
+
+.comment-indicator .indicator-icon svg {
+  display: block;
+}
+
+.comment-indicator .indicator-user {
+  color: var(--comment-primary, #8250df);
+}
+
+.comment-indicator .indicator-adopted {
+  color: var(--comment-primary, #8250df);
+}
+
+.comment-indicator:has(.indicator-user),
+.comment-indicator:has(.indicator-adopted) {
+  border-color: var(--comment-primary, #8250df);
+  background: rgba(130, 80, 223, 0.06);
+}
+
+.comment-indicator:has(.indicator-user):hover,
+.comment-indicator:has(.indicator-adopted):hover {
+  background: rgba(130, 80, 223, 0.12);
+  box-shadow: 0 1px 3px rgba(130, 80, 223, 0.15);
+}
+
+.comment-indicator .indicator-ai {
+  color: var(--ai-accent, #d97706);
+}
+
+.comment-indicator:has(.indicator-ai) {
+  border-color: var(--ai-accent, #d97706);
+  background: rgba(217, 119, 6, 0.06);
+}
+
+.comment-indicator:has(.indicator-ai):hover {
+  background: rgba(217, 119, 6, 0.12);
+  box-shadow: 0 1px 3px rgba(217, 119, 6, 0.15);
+}
+
+.comment-indicator .indicator-count {
+  font-weight: 600;
+  font-size: 10px;
+  min-width: 14px;
+  text-align: center;
+}
+
+/* Dark theme overrides */
+[data-theme="dark"] .comment-indicator {
+  background: var(--color-bg-tertiary);
+  border-color: var(--color-border-secondary);
+}
+
+[data-theme="dark"] .comment-indicator:hover {
+  background: var(--color-bg-primary);
+}
+
+[data-theme="dark"] .comment-indicator:has(.indicator-user),
+[data-theme="dark"] .comment-indicator:has(.indicator-adopted) {
+  border-color: var(--comment-primary, #a371f7);
+  background: rgba(163, 113, 247, 0.1);
+}
+
+[data-theme="dark"] .comment-indicator .indicator-user,
+[data-theme="dark"] .comment-indicator .indicator-adopted {
+  color: var(--comment-primary, #a371f7);
+}
+
+[data-theme="dark"] .comment-indicator:has(.indicator-user):hover,
+[data-theme="dark"] .comment-indicator:has(.indicator-adopted):hover {
+  background: rgba(163, 113, 247, 0.18);
+  box-shadow: 0 1px 3px rgba(163, 113, 247, 0.25);
+}
+
+[data-theme="dark"] .comment-indicator:has(.indicator-ai) {
+  border-color: var(--color-accent-ai, #fbbf24);
+  background: rgba(251, 191, 36, 0.1);
+}
+
+[data-theme="dark"] .comment-indicator .indicator-ai {
+  color: var(--color-accent-ai, #fbbf24);
+}
+
+[data-theme="dark"] .comment-indicator:has(.indicator-ai):hover {
+  background: rgba(251, 191, 36, 0.18);
+  box-shadow: 0 1px 3px rgba(251, 191, 36, 0.25);
+}
+
+[data-theme="dark"] .comment-indicator.expanded {
+  border-width: 2px;
+  padding: 1px 5px;
+}
+
 .ai-panel-header {
   display: flex;
   align-items: center;

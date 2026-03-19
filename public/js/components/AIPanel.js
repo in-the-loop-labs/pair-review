@@ -1000,7 +1000,16 @@ class AIPanel {
             }
 
             if (targetSuggestion) {
-                targetSuggestion.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                const minimizer = window.prManager?.commentMinimizer;
+                if (minimizer?.active) {
+                    // Comments are minimized — scroll to the parent diff line instead
+                    const diffRow = minimizer.findDiffRowFor(targetSuggestion);
+                    if (diffRow) {
+                        diffRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    }
+                } else {
+                    targetSuggestion.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
                 targetSuggestion.classList.add('current-suggestion');
                 setTimeout(() => targetSuggestion.classList.remove('current-suggestion'), 2000);
             }
@@ -1061,7 +1070,16 @@ class AIPanel {
             }
 
             if (targetElement) {
-                targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                const minimizer = window.prManager?.commentMinimizer;
+                if (minimizer?.active && !isFileLevel) {
+                    // Comments are minimized — scroll to the parent diff line instead
+                    const diffRow = minimizer.findDiffRowFor(targetElement);
+                    if (diffRow) {
+                        diffRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    }
+                } else {
+                    targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
                 // Add highlight effect
                 const commentDiv = isFileLevel ? targetElement : targetElement.querySelector('.user-comment');
                 if (commentDiv) {
