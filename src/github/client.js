@@ -397,13 +397,14 @@ class GitHubClient {
    */
   async addCommentsInBatches(prNodeId, reviewId, comments, batchSize = 10) {
     if (comments.length === 0) {
-      return { successCount: 0, failed: false, failedDetails: [] };
+      return { successCount: 0, failed: false, failedDetails: [], failedComments: [] };
     }
 
     let currentBatchSize = batchSize;
     let remaining = comments.slice();
     let totalSuccessful = 0;
     const failedDetails = [];
+    const failedComments = [];
     let batchNumber = 0;
 
     console.log(`Adding ${comments.length} comments in batches of up to ${currentBatchSize}`);
@@ -535,16 +536,15 @@ class GitHubClient {
               const location = `${batch[i].path}:${batch[i].line || 'file-level'}`;
               console.warn(`Comment ${i} in batch ${batchNumber} failed to add: ${location} - ${ghError}`);
               failedDetails.push(`${location} - ${ghError}`);
+              failedComments.push(batch[i]);
             }
           }
-          // If not all comments in batch succeeded, it's a failure
           if (batchSuccessful < batch.length) {
-            console.error(`CRITICAL: Batch ${batchNumber} had ${batch.length - batchSuccessful} failures`);
-            return { successCount: totalSuccessful + batchSuccessful, failed: true, failedDetails };
+            console.warn(`Batch ${batchNumber} had ${batch.length - batchSuccessful} failures, continuing with remaining batches`);
           }
-          // All comments succeeded despite the error being thrown (recovered from partial error)
-          console.log(`Batch ${batchNumber} complete (recovered from partial error): ${batchSuccessful} comments added`);
+          // Continue processing — don't return early on partial failure
           totalSuccessful += batchSuccessful;
+          console.log(`Batch ${batchNumber} complete (partial): ${batchSuccessful}/${batch.length} comments added`);
         } else {
           // Total failure of the batch
           const totalError = batchError.message || 'Unknown error';
@@ -554,8 +554,9 @@ class GitHubClient {
             const ghError = perCommentErrors[`comment${i}`] || totalError;
             const location = `${batch[i].path}:${batch[i].line || 'file-level'}`;
             failedDetails.push(`${location} - ${ghError}`);
+            failedComments.push(batch[i]);
           }
-          return { successCount: totalSuccessful, failed: true, failedDetails };
+          console.warn(`Batch ${batchNumber} failed completely, continuing with remaining batches`);
         }
       } else if (batchResult) {
         // Verify each comment was successfully added
@@ -568,24 +569,59 @@ class GitHubClient {
             const location = `${batch[i].path}:${batch[i].line || 'file-level'}`;
             console.warn(`Comment ${i} in batch ${batchNumber} failed to add: ${location} - No error details available`);
             failedDetails.push(`${location} - No error details available`);
+            failedComments.push(batch[i]);
           }
         }
 
         if (batchSuccessful < batch.length) {
-          console.error(`CRITICAL: Batch ${batchNumber} had ${batch.length - batchSuccessful} failures`);
-          return { successCount: totalSuccessful + batchSuccessful, failed: true, failedDetails };
+          console.warn(`Batch ${batchNumber} had ${batch.length - batchSuccessful} failures, continuing with remaining batches`);
         }
 
         totalSuccessful += batchSuccessful;
-        console.log(`Batch ${batchNumber} complete: ${batchSuccessful} comments added`);
+        console.log(`Batch ${batchNumber} complete: ${batchSuccessful}/${batch.length} comments added`);
       }
 
       // Advance past the successfully processed batch
       remaining = remaining.slice(batch.length);
     }
 
-    console.log(`All batches complete: ${totalSuccessful} total comments added`);
-    return { successCount: totalSuccessful, failed: false, failedDetails };
+    const hasFailed = failedComments.length > 0;
+    if (hasFailed) {
+      console.warn(`All batches complete: ${totalSuccessful} comments added, ${failedComments.length} failed`);
+    } else {
+      console.log(`All batches complete: ${totalSuccessful} total comments added`);
+    }
+    return { successCount: totalSuccessful, failed: hasFailed, failedDetails, failedComments };
+  }
+
+  /**
+   * Format failed comments as text to append to the review body.
+   * When inline comments fail (e.g., invalid line positions outside diff hunks),
+   * we include them in the review body so the feedback is not lost.
+   *
+   * @param {Array} failedComments - Array of comment objects that failed to post inline
+   * @returns {string} Formatted text to append to review body
+   */
+  formatFailedCommentsForBody(failedComments) {
+    if (!failedComments || failedComments.length === 0) return '';
+
+    const lines = [
+      '',
+      '---',
+      `⚠️ **${failedComments.length} comment${failedComments.length === 1 ? '' : 's'} could not be posted inline** (invalid position in diff):`,
+      ''
+    ];
+
+    for (const comment of failedComments) {
+      const location = comment.line
+        ? `**${comment.path}:${comment.line}**`
+        : `**${comment.path}** (file-level)`;
+      lines.push(`### ${location}`);
+      lines.push(comment.body);
+      lines.push('');
+    }
+
+    return lines.join('\n');
   }
 
   /**
@@ -807,30 +843,29 @@ class GitHubClient {
 
       // Step 2: Add comments in batches
       let successfulComments = 0;
+      let failedCommentsList = [];
       if (comments.length > 0) {
         console.log(`Step 2: Adding ${comments.length} comments in batches...`);
         const batchResult = await this.addCommentsInBatches(prNodeId, reviewId, comments);
         successfulComments = batchResult.successCount;
+        failedCommentsList = batchResult.failedComments || [];
 
         if (batchResult.failed) {
           const failedCount = comments.length - successfulComments;
-          const details = batchResult.failedDetails || [];
-          console.error(`CRITICAL: ${failedCount} of ${comments.length} comments failed to add to GitHub`);
-          // Only clean up the pending review if we created it (not if it was pre-existing)
-          if (!usedExistingReview) {
-            const cleaned = await this.deletePendingReview(reviewId);
-            if (!cleaned) {
-              console.warn('Warning: Failed to clean up pending review - manual cleanup may be required');
-            }
-          } else {
-            console.warn('Skipping cleanup of pre-existing pending review - comments may be partially added');
-          }
-          const detailSuffix = details.length > 0 ? ` Failures:\n${details.join('\n')}` : '';
-          throw new Error(`Failed to add ${failedCount} of ${comments.length} comments to GitHub.${detailSuffix}`);
+          console.warn(
+            `${failedCount} of ${comments.length} comments failed to add inline. ` +
+            `${successfulComments} posted inline, ${failedCount} will be added to review body.`
+          );
         }
       }
 
       // Step 3: Submit the review
+      // If some comments failed, append them to the body so feedback is not lost
+      let finalBody = body || '';
+      if (failedCommentsList.length > 0) {
+        finalBody += this.formatFailedCommentsForBody(failedCommentsList);
+      }
+
       console.log(`Step 3: Submitting review with event ${event}...`);
       const submitResult = await this.octokit.graphql(`
         mutation SubmitReview($reviewId: ID!, $event: PullRequestReviewEvent!, $body: String) {
@@ -850,18 +885,23 @@ class GitHubClient {
       `, {
         reviewId: reviewId,
         event: event,
-        body: body || null
+        body: finalBody || null
       });
 
       const result = submitResult.submitPullRequestReview.pullRequestReview;
-      console.log(`Review submitted successfully: ${result.url}`);
+      if (failedCommentsList.length > 0) {
+        console.warn(`Review submitted with ${successfulComments} inline comments, ${failedCommentsList.length} added to review body: ${result.url}`);
+      } else {
+        console.log(`Review submitted successfully: ${result.url}`);
+      }
 
       return {
         id: result.id,
         databaseId: result.databaseId,
         html_url: result.url,
         state: result.state,
-        comments_count: successfulComments
+        comments_count: successfulComments,
+        failed_comments_count: failedCommentsList.length
       };
 
     } catch (error) {
@@ -934,42 +974,66 @@ class GitHubClient {
 
       // Step 2: Add comments in batches
       let successfulComments = 0;
+      let failedCommentsList = [];
       if (comments.length > 0) {
         console.log(`Step 2: Adding ${comments.length} comments in batches...`);
         const batchResult = await this.addCommentsInBatches(prNodeId, reviewId, comments);
         successfulComments = batchResult.successCount;
+        failedCommentsList = batchResult.failedComments || [];
 
         if (batchResult.failed) {
           const failedCount = comments.length - successfulComments;
-          const details = batchResult.failedDetails || [];
-          const detailSuffix = details.length > 0 ? ` Failures:\n${details.join('\n')}` : '';
-          console.error(`CRITICAL: ${failedCount} of ${comments.length} comments failed to add to draft review`);
-          // Only clean up the pending review if we created it (not if it was pre-existing)
-          if (!usedExistingReview) {
-            const cleaned = await this.deletePendingReview(reviewId);
-            if (!cleaned) {
-              console.warn('Warning: Failed to clean up pending review - manual cleanup may be required');
+          console.warn(
+            `${failedCount} of ${comments.length} comments failed to add inline to draft review. ` +
+            `${successfulComments} posted inline, ${failedCount} will be added to review body.`
+          );
+
+          // If all comments failed and we created the review, there's nothing
+          // to keep — but we still don't delete. We'll update the body with all
+          // comments as top-level text so nothing is lost.
+        }
+      }
+
+      // If some comments failed, update the review body to include them
+      if (failedCommentsList.length > 0) {
+        const failedBodyText = this.formatFailedCommentsForBody(failedCommentsList);
+        const updatedBody = (body || '') + failedBodyText;
+        try {
+          await this.octokit.graphql(`
+            mutation UpdateReviewBody($reviewId: ID!, $body: String!) {
+              updatePullRequestReview(input: {
+                pullRequestReviewId: $reviewId
+                body: $body
+              }) {
+                pullRequestReview {
+                  id
+                }
+              }
             }
-            throw new Error(
-              `Failed to add ${failedCount} of ${comments.length} comments to draft review. ` +
-              `The draft review has been deleted.${detailSuffix}`
-            );
-          } else {
-            console.warn('Skipping cleanup of pre-existing pending review - comments may be partially added');
-            throw new Error(`Failed to add ${failedCount} of ${comments.length} comments to existing draft review. ${successfulComments} comments were added to the GitHub draft.${detailSuffix}`);
-          }
+          `, {
+            reviewId: reviewId,
+            body: updatedBody
+          });
+          console.log(`Updated draft review body with ${failedCommentsList.length} failed comment(s)`);
+        } catch (updateError) {
+          console.warn(`Failed to update review body with failed comments: ${updateError.message}`);
         }
       }
 
       // Note: We do NOT submit the review - it stays as PENDING (draft)
-      console.log(`Draft review created successfully (pending): ${reviewUrl || reviewId}`);
+      if (failedCommentsList.length > 0) {
+        console.warn(`Draft review created with ${successfulComments} inline comments, ${failedCommentsList.length} added to review body (pending): ${reviewUrl || reviewId}`);
+      } else {
+        console.log(`Draft review created successfully (pending): ${reviewUrl || reviewId}`);
+      }
 
       return {
         id: reviewId,
         databaseId: reviewDatabaseId,
         html_url: reviewUrl,
         state: 'PENDING',
-        comments_count: successfulComments
+        comments_count: successfulComments,
+        failed_comments_count: failedCommentsList.length
       };
 
     } catch (error) {

@@ -391,12 +391,18 @@ describe('GitHubClient', () => {
       expect(firstCallMutation).toContain('addPullRequestReview');
     });
 
-    it('should NOT delete pre-existing review on batch failure', async () => {
+    it('should NOT delete pre-existing review on batch failure and submit with failed comments in body', async () => {
       const client = new GitHubClient('test-token');
       const mockGraphql = vi.fn()
         // Add comments batch fails completely
         .mockRejectedValueOnce(new Error('Batch failed'))
-        .mockRejectedValueOnce(new Error('Batch failed retry'));
+        .mockRejectedValueOnce(new Error('Batch failed retry'))
+        // Step 3: Submit review succeeds (with failed comments appended to body)
+        .mockResolvedValueOnce({
+          submitPullRequestReview: {
+            pullRequestReview: { id: 'existing-review-id', databaseId: 789, url: 'https://github.com/owner/repo/pull/1#pullrequestreview-789', state: 'COMMENTED' }
+          }
+        });
       client.octokit.graphql = mockGraphql;
 
       // Spy on deletePendingReview to ensure it's NOT called
@@ -410,15 +416,21 @@ describe('GitHubClient', () => {
         isFileLevel: false
       }];
 
-      await expect(
-        client.createReviewGraphQL('PR_node123', 'COMMENT', 'Body', comments, 'existing-review-id')
-      ).rejects.toThrow('Failed to add');
+      const result = await client.createReviewGraphQL('PR_node123', 'COMMENT', 'Body', comments, 'existing-review-id');
 
-      // deletePendingReview should NOT be called for pre-existing reviews
+      // deletePendingReview should NOT be called — review is kept with failed comments in body
       expect(deleteSpy).not.toHaveBeenCalled();
+      // Review should be submitted
+      expect(result.state).toBe('COMMENTED');
+      expect(result.comments_count).toBe(0);
+      expect(result.failed_comments_count).toBe(1);
+      // Body should include the failed comment text
+      const submitCall = mockGraphql.mock.calls[2];
+      expect(submitCall[1].body).toContain('could not be posted inline');
+      expect(submitCall[1].body).toContain('src/file.js:1');
     });
 
-    it('should delete newly-created review on batch failure', async () => {
+    it('should NOT delete newly-created review on batch failure and submit with failed comments in body', async () => {
       const client = new GitHubClient('test-token');
       const mockGraphql = vi.fn()
         // Step 1: Create review succeeds
@@ -429,10 +441,16 @@ describe('GitHubClient', () => {
         })
         // Step 2: Add comments fails
         .mockRejectedValueOnce(new Error('Batch failed'))
-        .mockRejectedValueOnce(new Error('Batch failed retry'));
+        .mockRejectedValueOnce(new Error('Batch failed retry'))
+        // Step 3: Submit review succeeds (with failed comments appended to body)
+        .mockResolvedValueOnce({
+          submitPullRequestReview: {
+            pullRequestReview: { id: 'new-review-456', databaseId: 456, url: 'https://github.com/owner/repo/pull/1#pullrequestreview-456', state: 'COMMENTED' }
+          }
+        });
       client.octokit.graphql = mockGraphql;
 
-      // Spy on deletePendingReview
+      // Spy on deletePendingReview to ensure it's NOT called
       const deleteSpy = vi.spyOn(client, 'deletePendingReview').mockResolvedValue(true);
 
       const comments = [{
@@ -443,12 +461,17 @@ describe('GitHubClient', () => {
         isFileLevel: false
       }];
 
-      await expect(
-        client.createReviewGraphQL('PR_node123', 'COMMENT', 'Body', comments)
-      ).rejects.toThrow('Failed to add');
+      const result = await client.createReviewGraphQL('PR_node123', 'COMMENT', 'Body', comments);
 
-      // deletePendingReview SHOULD be called for reviews we created
-      expect(deleteSpy).toHaveBeenCalledWith('new-review-456');
+      // deletePendingReview should NOT be called — review is kept
+      expect(deleteSpy).not.toHaveBeenCalled();
+      // Review should be submitted
+      expect(result.state).toBe('COMMENTED');
+      expect(result.comments_count).toBe(0);
+      expect(result.failed_comments_count).toBe(1);
+      // Body should include the failed comment text
+      const submitCall = mockGraphql.mock.calls[3];
+      expect(submitCall[1].body).toContain('could not be posted inline');
     });
   });
 
@@ -603,6 +626,160 @@ describe('GitHubClient', () => {
       expect(mutationString).not.toContain('startLine');
       expect(mutationString).toContain('line: 50');
     });
+
+    it('should keep review and update body when some comments fail (partial failure)', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn()
+        // Step 1: Create pending review
+        .mockResolvedValueOnce({
+          addPullRequestReview: {
+            pullRequestReview: { id: 'review-789', databaseId: 789, url: 'https://github.com/owner/repo/pull/1#pullrequestreview-789' }
+          }
+        })
+        // Step 2: Batch with partial success (comment0 succeeds, comment1 fails)
+        .mockRejectedValueOnce(Object.assign(new Error('GraphQL partial failure'), {
+          data: {
+            comment0: { thread: { id: 'thread-0' } },
+            comment1: null
+          },
+          errors: [{ path: ['comment1'], message: 'line is not part of the diff' }]
+        }))
+        .mockRejectedValueOnce(Object.assign(new Error('GraphQL partial failure retry'), {
+          data: {
+            comment0: { thread: { id: 'thread-0' } },
+            comment1: null
+          },
+          errors: [{ path: ['comment1'], message: 'line is not part of the diff' }]
+        }))
+        // Step 3: updatePullRequestReview to add failed comments to body
+        .mockResolvedValueOnce({
+          updatePullRequestReview: { pullRequestReview: { id: 'review-789' } }
+        });
+      client.octokit.graphql = mockGraphql;
+
+      const deleteSpy = vi.spyOn(client, 'deletePendingReview').mockResolvedValue(true);
+
+      const comments = [
+        { path: 'src/good.js', line: 10, side: 'RIGHT', body: 'Good comment', isFileLevel: false },
+        { path: 'src/bad.js', line: 999, side: 'RIGHT', body: 'Bad line comment', isFileLevel: false }
+      ];
+
+      const result = await client.createDraftReviewGraphQL('PR_node123', 'Draft body', comments);
+
+      // Review should NOT be deleted
+      expect(deleteSpy).not.toHaveBeenCalled();
+      // Review should be kept as PENDING
+      expect(result.state).toBe('PENDING');
+      expect(result.comments_count).toBe(1);
+      expect(result.failed_comments_count).toBe(1);
+      // Should have called updatePullRequestReview to update body
+      const updateCall = mockGraphql.mock.calls[3];
+      expect(updateCall[0]).toContain('updatePullRequestReview');
+      expect(updateCall[1].body).toContain('could not be posted inline');
+      expect(updateCall[1].body).toContain('src/bad.js:999');
+    });
+
+    it('should keep review and update body when ALL comments fail', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn()
+        // Step 1: Create pending review
+        .mockResolvedValueOnce({
+          addPullRequestReview: {
+            pullRequestReview: { id: 'review-all-fail', databaseId: 100, url: 'https://github.com/owner/repo/pull/1#pullrequestreview-100' }
+          }
+        })
+        // Step 2: All comments fail
+        .mockRejectedValueOnce(new Error('All comments invalid'))
+        .mockRejectedValueOnce(new Error('All comments invalid retry'))
+        // Step 3: updatePullRequestReview to add all failed comments to body
+        .mockResolvedValueOnce({
+          updatePullRequestReview: { pullRequestReview: { id: 'review-all-fail' } }
+        });
+      client.octokit.graphql = mockGraphql;
+
+      const deleteSpy = vi.spyOn(client, 'deletePendingReview').mockResolvedValue(true);
+
+      const comments = [
+        { path: 'src/a.js', line: 999, side: 'RIGHT', body: 'Comment A', isFileLevel: false },
+        { path: 'src/b.js', line: 888, side: 'RIGHT', body: 'Comment B', isFileLevel: false }
+      ];
+
+      const result = await client.createDraftReviewGraphQL('PR_node123', 'Draft body', comments);
+
+      // Review should NOT be deleted — body updated with all comments
+      expect(deleteSpy).not.toHaveBeenCalled();
+      expect(result.state).toBe('PENDING');
+      expect(result.comments_count).toBe(0);
+      expect(result.failed_comments_count).toBe(2);
+      // Should update body with both failed comments
+      const updateCall = mockGraphql.mock.calls[3];
+      expect(updateCall[1].body).toContain('src/a.js:999');
+      expect(updateCall[1].body).toContain('src/b.js:888');
+    });
+
+    it('should return normally when all comments succeed (no regression)', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn()
+        .mockResolvedValueOnce({
+          addPullRequestReview: {
+            pullRequestReview: { id: 'review-ok', databaseId: 200, url: 'https://github.com/owner/repo/pull/1#pullrequestreview-200' }
+          }
+        })
+        .mockResolvedValueOnce({
+          comment0: { thread: { id: 'thread-0' } },
+          comment1: { thread: { id: 'thread-1' } }
+        });
+      client.octokit.graphql = mockGraphql;
+
+      const comments = [
+        { path: 'src/a.js', line: 10, side: 'RIGHT', body: 'Good A', isFileLevel: false },
+        { path: 'src/b.js', line: 20, side: 'RIGHT', body: 'Good B', isFileLevel: false }
+      ];
+
+      const result = await client.createDraftReviewGraphQL('PR_node123', 'Draft body', comments);
+
+      expect(result.state).toBe('PENDING');
+      expect(result.comments_count).toBe(2);
+      expect(result.failed_comments_count).toBe(0);
+      // Only 2 calls: create review + add comments (no updatePullRequestReview)
+      expect(mockGraphql).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('formatFailedCommentsForBody', () => {
+    it('should format failed comments with file and line info', () => {
+      const client = new GitHubClient('test-token');
+      const failedComments = [
+        { path: 'src/foo.js', line: 42, body: 'This needs refactoring' },
+        { path: 'src/bar.js', line: 100, body: 'Consider using a constant' }
+      ];
+
+      const result = client.formatFailedCommentsForBody(failedComments);
+
+      expect(result).toContain('2 comments could not be posted inline');
+      expect(result).toContain('**src/foo.js:42**');
+      expect(result).toContain('This needs refactoring');
+      expect(result).toContain('**src/bar.js:100**');
+      expect(result).toContain('Consider using a constant');
+    });
+
+    it('should handle file-level comments without line numbers', () => {
+      const client = new GitHubClient('test-token');
+      const failedComments = [
+        { path: 'README.md', body: 'File comment' }
+      ];
+
+      const result = client.formatFailedCommentsForBody(failedComments);
+
+      expect(result).toContain('1 comment could not be posted inline');
+      expect(result).toContain('**README.md** (file-level)');
+    });
+
+    it('should return empty string for no failed comments', () => {
+      const client = new GitHubClient('test-token');
+      expect(client.formatFailedCommentsForBody([])).toBe('');
+      expect(client.formatFailedCommentsForBody(null)).toBe('');
+    });
   });
 
   describe('addCommentsInBatches', () => {
@@ -704,7 +881,7 @@ describe('GitHubClient', () => {
       expect(mockGraphql).toHaveBeenCalledTimes(2);
     });
 
-    it('should return failed: true on partial failure', async () => {
+    it('should return failed: true on partial failure and include failedComments', async () => {
       const client = new GitHubClient('test-token');
       const mockGraphql = vi.fn().mockResolvedValue({
         comment0: { thread: { id: 'thread-0' } },
@@ -721,6 +898,9 @@ describe('GitHubClient', () => {
 
       expect(result.successCount).toBe(1);
       expect(result.failed).toBe(true);
+      expect(result.failedComments).toHaveLength(1);
+      expect(result.failedComments[0].path).toBe('file2.js');
+      expect(result.failedComments[0].body).toBe('Comment 2');
     });
 
     it('should return failed: true when batch completely fails after retry', async () => {
