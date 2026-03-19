@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.6.2
+
+### Patch Changes
+
+- eb2ec99: Add optional Graphite links alongside GitHub icons on PR and index pages, gated by `enable_graphite` config
+- 133204c: Fix worktree cleanup failing when worktrees are outside the parent git repo directory (e.g., bare repo setups). Cleanup now resolves the owning repository via `git rev-parse --git-common-dir` instead of assuming the parent directory or `process.cwd()` is the correct repo.
+- 12c2e03: Show STALE badge in header when PR data is outdated vs GitHub. Auto-refreshes silently when no user work exists; otherwise displays a badge indicating staleness. Also shows MERGED/CLOSED state badges.
+
 ## 2.6.1
 
 ### Patch Changes
