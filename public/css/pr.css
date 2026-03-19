@@ -568,6 +568,7 @@
 
 #theme-toggle:hover {
   background-color: var(--color-bg-secondary);
+  border-color: var(--color-border-primary);
 }
 
 #theme-toggle svg {
@@ -6165,8 +6166,9 @@ body::before {
   box-shadow: 0 0 12px var(--ai-glow);
 }
 
-/* Theme toggle in header — border is transparent at rest; hover border comes
-   from the .header-icon-group .btn.btn-icon:hover rule */
+/* Theme toggle in header — border is transparent at rest, visible on hover.
+   Must set border-color explicitly here because this ID selector beats the
+   class-based .header-icon-group .btn.btn-icon:hover rule in specificity. */
 .header #theme-toggle {
   background: transparent;
   border: 1px solid transparent;
@@ -6175,11 +6177,13 @@ body::before {
 
 .header #theme-toggle:hover {
   background: var(--color-bg-secondary);
+  border-color: var(--color-border-primary);
   color: var(--color-text-primary);
 }
 
-/* Refresh button in header — border is transparent at rest; hover border comes
-   from the .header-icon-group .btn.btn-icon:hover rule */
+/* Refresh button in header — border is transparent at rest, visible on hover.
+   Must set border-color explicitly here because this ID selector beats the
+   class-based .header-icon-group .btn.btn-icon:hover rule in specificity. */
 .header #refresh-pr {
   background: transparent;
   border: 1px solid transparent;
@@ -6188,6 +6192,7 @@ body::before {
 
 .header #refresh-pr:hover {
   background: var(--color-bg-secondary);
+  border-color: var(--color-border-primary);
   color: var(--color-text-primary);
 }
 
