@@ -519,6 +519,25 @@ describe('generateScopedDiff', () => {
     });
   });
 
+  describe('branch–staged scope', () => {
+    it('should include both committed and staged-only changes against merge-base', async () => {
+      execSync('git checkout -b feature3', { cwd: testDir, stdio: 'pipe' });
+      await fs.writeFile(path.join(testDir, 'committed2.txt'), 'committed\n');
+      execSync('git add committed2.txt', { cwd: testDir, stdio: 'pipe' });
+      execSync('git commit -m "Feature3"', { cwd: testDir, stdio: 'pipe' });
+      // Add a staged-only change (not committed)
+      await fs.writeFile(path.join(testDir, 'staged-only.txt'), 'staged content\n');
+      execSync('git add staged-only.txt', { cwd: testDir, stdio: 'pipe' });
+
+      const result = await generateScopedDiff(testDir, 'branch', 'staged', defaultBranch);
+
+      expect(result.diff).toContain('committed2.txt');
+      expect(result.diff).toContain('staged-only.txt');
+      expect(result.diff).toContain('staged content');
+      expect(result.mergeBaseSha).toBeTruthy();
+    });
+  });
+
   describe('empty working directory', () => {
     it('should return empty diff when no changes exist', async () => {
       const result = await generateScopedDiff(testDir, 'unstaged', 'untracked');

@@ -192,3 +192,14 @@ Test structure:
 - CLI arguments like `--model` are for interactive mode; ACP server mode (`opencode acp`, `gemini --experimental-acp`, etc.) ignores them.
 - Use `unstable_setSessionModel({ sessionId, modelId })` after session creation to set the model.
 - Configuration via protocol is more reliable and consistent across different ACP implementations.
+
+### Team-Based Implementation: Integration Review
+
+When using agent teams to implement features in parallel, always spawn a final "integration reviewer" teammate after all implementation teammates complete. This teammate should:
+
+1. **Trace cross-boundary contracts**: Verify that producer outputs match consumer expectations (e.g., data formats, nullability assumptions, API naming conventions like `window.toast` vs `window.Toast`).
+2. **Diff duplicated flows**: Find code paths that should behave identically and verify they don't diverge (e.g., missing steps like re-anchoring comments, updating titles, rolling back on failure).
+3. **Walk end-to-end user flows**: Trace at least one happy path from UI interaction through frontend → API → backend → response → UI update, verifying each handoff.
+4. **Check variable lifecycle**: Ensure variables are declared before use across the full execution path, especially when different teammates wrote different sections of the same function.
+
+This pattern addresses coordination failures where individual pieces are well-implemented but the wiring between them breaks. Assign this teammate zero implementation files — read-only access, review-only role.
