@@ -558,7 +558,7 @@
 /* Theme toggle button specific styling */
 #theme-toggle {
   background-color: transparent;
-  border: 1px solid var(--color-border-primary);
+  border: 1px solid transparent;
   color: var(--color-text-primary);
   padding: 6px 10px;
   display: inline-flex;
@@ -6123,11 +6123,10 @@ body::before {
 }
 
 /* Icon buttons within the icon group have special styling (no border, transparent bg).
-   Uses high-specificity selector to override the generic .btn-icon rule (council selector).
-   The [data-theme] prefix ensures this also beats dark-mode overrides like
-   [data-theme="dark"] .btn-icon which would otherwise re-apply a visible border
-   on <button> elements (browsers treat border inheritance differently for
-   <button> vs <a> when specificity is close). */
+   Uses high-specificity selector to override the generic .btn-icon rule (council selector)
+   and the [data-theme="dark"] .btn-icon dark-mode override.
+   NOTE: ID-based selectors (#theme-toggle, #refresh-pr) beat this rule regardless of
+   how many classes are stacked, so those rules must also set border to transparent. */
 [data-theme] .header-icon-group .btn.btn-icon {
   border: 1px solid transparent;
   border-color: transparent;
@@ -6166,10 +6165,11 @@ body::before {
   box-shadow: 0 0 12px var(--ai-glow);
 }
 
-/* Theme toggle in header */
+/* Theme toggle in header — border is transparent at rest; hover border comes
+   from the .header-icon-group .btn.btn-icon:hover rule */
 .header #theme-toggle {
   background: transparent;
-  border: 1px solid var(--color-border-primary);
+  border: 1px solid transparent;
   color: var(--color-text-secondary);
 }
 
@@ -6178,10 +6178,11 @@ body::before {
   color: var(--color-text-primary);
 }
 
-/* Refresh button in header */
+/* Refresh button in header — border is transparent at rest; hover border comes
+   from the .header-icon-group .btn.btn-icon:hover rule */
 .header #refresh-pr {
   background: transparent;
-  border: 1px solid var(--color-border-primary);
+  border: 1px solid transparent;
   color: var(--color-text-secondary);
 }
 
