@@ -1271,6 +1271,59 @@ class LocalManager {
   }
 
   /**
+   * Apply the result of a scope-change POST to local state, UI, and diff.
+   * Shared by _handleScopeChange and showBranchReviewDialog.handleConfirm.
+   * @param {string} scopeStart - New start stop
+   * @param {string} scopeEnd - New end stop
+   * @param {Object} result - Response body from POST set-scope
+   */
+  async _applyScopeResult(scopeStart, scopeEnd, result) {
+    const manager = window.prManager;
+    const LS = window.LocalScope;
+
+    // Update local state
+    this.scopeStart = scopeStart;
+    this.scopeEnd = scopeEnd;
+
+    // Update localData
+    if (this.localData) {
+      this.localData.scopeStart = scopeStart;
+      this.localData.scopeEnd = scopeEnd;
+      if (result.baseBranch) {
+        this.localData.baseBranch = result.baseBranch;
+      }
+      if (result.localMode) {
+        this.localData.localMode = result.localMode;
+      }
+    }
+
+    // Update currentPR
+    const hasBranch = LS ? LS.includesBranch(scopeStart) : false;
+    if (manager?.currentPR) {
+      manager.currentPR.base_branch = hasBranch
+        ? (result.baseBranch || this.localData?.baseBranch || manager.currentPR.head_branch)
+        : manager.currentPR.head_branch;
+      manager.currentPR.title = hasBranch
+        ? `Branch Changes - ${manager.currentPR.head_branch} vs ${manager.currentPR.base_branch}`
+        : `Local Changes - ${manager.currentPR.head_branch}`;
+    }
+
+    // Update header and reload diff
+    this.updateLocalHeader(this.localData);
+    await this.loadLocalDiff();
+
+    // Re-anchor comments and suggestions
+    const includeDismissed = window.aiPanel?.showDismissedComments || false;
+    await manager.loadUserComments(includeDismissed);
+    await manager.loadAISuggestions(null, manager.selectedRunId);
+
+    // Update DiffOptionsDropdown scope
+    if (manager?.diffOptionsDropdown) {
+      manager.diffOptionsDropdown.scope = { start: scopeStart, end: scopeEnd };
+    }
+  }
+
+  /**
    * Handle scope change from DiffOptionsDropdown.
    * POSTs new scope to backend, reloads diff on success.
    * @param {string} scopeStart - New start stop
@@ -1279,6 +1332,8 @@ class LocalManager {
   async _handleScopeChange(scopeStart, scopeEnd) {
     const manager = window.prManager;
     const LS = window.LocalScope;
+    const oldStart = this.scopeStart;
+    const oldEnd = this.scopeEnd;
 
     try {
       const resp = await fetch(`/api/local/${this.reviewId}/set-scope`, {
@@ -1293,41 +1348,8 @@ class LocalManager {
       }
 
       const result = await resp.json();
+      await this._applyScopeResult(scopeStart, scopeEnd, result);
 
-      // Update local state
-      this.scopeStart = scopeStart;
-      this.scopeEnd = scopeEnd;
-
-      // Update localData
-      if (this.localData) {
-        this.localData.scopeStart = scopeStart;
-        this.localData.scopeEnd = scopeEnd;
-        if (result.baseBranch) {
-          this.localData.baseBranch = result.baseBranch;
-        }
-        if (result.localMode) {
-          this.localData.localMode = result.localMode;
-        }
-      }
-
-      // Update currentPR
-      const hasBranch = LS ? LS.scopeIncludes(scopeStart, scopeEnd, 'branch') : false;
-      if (manager?.currentPR) {
-        manager.currentPR.base_branch = hasBranch
-          ? (result.baseBranch || this.localData?.baseBranch || manager.currentPR.head_branch)
-          : manager.currentPR.head_branch;
-      }
-
-      // Update header and reload diff
-      this.updateLocalHeader(this.localData);
-      await this.loadLocalDiff();
-
-      // Re-anchor comments and suggestions
-      const includeDismissed = window.aiPanel?.showDismissedComments || false;
-      await manager.loadUserComments(includeDismissed);
-      await manager.loadAISuggestions(null, manager.selectedRunId);
-
-      // Show toast
       if (window.toast) {
         const label = LS ? LS.scopeLabel(scopeStart, scopeEnd) : `${scopeStart}\u2013${scopeEnd}`;
         window.toast.showSuccess(`Scope: ${label}`);
@@ -1336,6 +1358,10 @@ class LocalManager {
       console.error('Failed to change scope:', error);
       if (window.toast) {
         window.toast.showError('Failed to change scope: ' + error.message);
+      }
+      // Rollback dropdown on failure
+      if (manager?.diffOptionsDropdown) {
+        manager.diffOptionsDropdown.scope = { start: oldStart, end: oldEnd };
       }
     }
   }
@@ -1435,39 +1461,19 @@ class LocalManager {
           throw new Error(err.error || 'Failed to expand scope');
         }
 
-        // Update local scope state
-        self.scopeStart = 'branch';
-        self.scopeEnd = newEnd;
+        const result = await resp.json();
 
-        // Update the dropdown UI
+        // Update the dropdown branchAvailable flag
         const manager = window.prManager;
         if (manager?.diffOptionsDropdown) {
-          manager.diffOptionsDropdown.scope = { start: 'branch', end: newEnd };
           manager.diffOptionsDropdown.branchAvailable = true;
-        }
-
-        // Update currentPR for branch context
-        if (manager?.currentPR) {
-          manager.currentPR.base_branch = branchInfo.baseBranch;
-          manager.currentPR.title = `Branch Changes - ${manager.currentPR.head_branch} vs ${branchInfo.baseBranch}`;
-        }
-
-        // Update localData for header
-        if (self.localData) {
-          self.localData.baseBranch = branchInfo.baseBranch;
-          self.localData.scopeStart = 'branch';
-          self.localData.scopeEnd = newEnd;
-          self.localData.localMode = 'branch';
         }
 
         closeDialog();
 
-        // Reload diff and update header
-        self.updateLocalHeader(self.localData);
-        await self.loadLocalDiff();
+        await self._applyScopeResult('branch', newEnd, result);
 
         if (window.toast) {
-          const LS = window.LocalScope;
           const label = LS ? LS.scopeLabel('branch', newEnd) : 'Branch';
           window.toast.showSuccess(`Scope expanded to ${label}`);
         }

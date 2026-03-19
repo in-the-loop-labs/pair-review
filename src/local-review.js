@@ -368,6 +368,10 @@ async function getUntrackedFiles(repoPath) {
  * @returns {Promise<string>} Merge-base SHA
  */
 async function findMergeBase(repoPath, baseBranch) {
+  if (!baseBranch || !/^[\w.\-\/]+$/.test(baseBranch)) {
+    throw new Error(`Invalid branch name: ${baseBranch}`);
+  }
+
   // Try to fetch the latest base branch from remote (best-effort)
   try {
     execSync(`git fetch origin ${baseBranch}`, {
@@ -915,6 +919,10 @@ async function generateBranchDiff(repoPath, baseBranch, options = {}) {
  * @returns {Promise<number>} Number of commits ahead
  */
 async function getBranchCommitCount(repoPath, baseBranch) {
+  if (!baseBranch || !/^[\w.\-\/]+$/.test(baseBranch)) {
+    throw new Error(`Invalid branch name: ${baseBranch}`);
+  }
+
   // Try origin/<base> first, fall back to local <base>
   for (const ref of [`origin/${baseBranch}`, baseBranch]) {
     try {
@@ -939,6 +947,10 @@ async function getBranchCommitCount(repoPath, baseBranch) {
  * @returns {Promise<string|null>} First commit subject or null
  */
 async function getFirstCommitSubject(repoPath, baseBranch) {
+  if (!baseBranch || !/^[\w.\-\/]+$/.test(baseBranch)) {
+    throw new Error(`Invalid branch name: ${baseBranch}`);
+  }
+
   for (const ref of [`origin/${baseBranch}`, baseBranch]) {
     try {
       const output = execSync(`git log ${ref}..HEAD --format=%s --reverse`, {

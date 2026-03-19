@@ -631,25 +631,32 @@ describe('Local Sessions API', () => {
       expect(res.status).toBe(200);
       expect(res.body.localMode).toBe('uncommitted');
     });
-  });
 
-  describe('POST /api/local/:reviewId/switch-to-branch', () => {
-    it('should redirect 307 to set-scope with branch→branch scope', async () => {
+    it('should set branch scope with localMode=branch and persist DB columns', async () => {
       const reviewRepo = new ReviewRepository(db);
       const id = await reviewRepo.upsertLocalReview({
-        localPath: '/path/switch-branch',
-        localHeadSha: 'shaSwitchBranch',
-        repository: 'owner/switch-branch-repo'
+        localPath: '/path/branch-scope',
+        localHeadSha: 'shaBranchScope',
+        repository: 'owner/branch-scope-repo'
       });
 
-      const res = await request(app)
-        .post(`/api/local/${id}/switch-to-branch`)
-        .send({});
+      // Mock findMergeBase to return a specific SHA for branch diff
+      localReviewModule.findMergeBase.mockResolvedValue('abc123mergebase');
 
-      // supertest follows redirects by default for GET, but for POST 307
-      // the redirect header should point to set-scope
-      expect(res.status).toBe(307);
-      expect(res.headers.location).toBe(`/api/local/${id}/set-scope`);
+      const res = await request(app)
+        .post(`/api/local/${id}/set-scope`)
+        .send({ scopeStart: 'branch', scopeEnd: 'branch', baseBranch: 'main' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.localMode).toBe('branch');
+      expect(res.body.mergeBaseSha).toBeDefined();
+
+      // Verify DB columns are persisted
+      const review = await reviewRepo.getLocalReviewById(id);
+      expect(review.local_scope_start).toBe('branch');
+      expect(review.local_scope_end).toBe('branch');
+      expect(review.local_base_branch).toBe('main');
     });
   });
 

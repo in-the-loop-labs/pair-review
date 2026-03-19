@@ -926,7 +926,9 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
     // Get changed files for local mode path validation
     // When branch is in scope, pass null so analyzer falls through to getChangedFilesList
     // which correctly uses git diff base_sha...head_sha --name-only
-    const changedFiles = hasBranch ? null : await analyzer.getLocalChangedFiles(localPath);
+    const changedFiles = (hasBranch || scopeIncludes(scopeStart, scopeEnd, 'staged'))
+      ? null
+      : await analyzer.getLocalChangedFiles(localPath);
 
     // Log analysis start
     logger.section(`Local AI Analysis Request - Review #${reviewId}`);
@@ -1156,9 +1158,7 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
     const scopedResult = await generateScopedDiff(localPath, scopeStart, scopeEnd, review.local_base_branch);
     const diff = scopedResult.diff;
     const stats = scopedResult.stats;
-    const digest = hasBranch
-      ? (currentHeadSha || review.local_head_sha)
-      : await computeScopedDigest(localPath, scopeStart, scopeEnd);
+    const digest = await computeScopedDigest(localPath, scopeStart, scopeEnd);
 
     // Update the stored diff data for the appropriate session
     const targetSessionId = sessionChanged ? newSessionId : reviewId;
@@ -1279,7 +1279,7 @@ router.post('/api/local/:reviewId/set-scope', async (req, res) => {
     }
 
     // Compute digest
-    const digest = includesBranch(scopeStart) ? headSha : await computeScopedDigest(localPath, scopeStart, scopeEnd);
+    const digest = await computeScopedDigest(localPath, scopeStart, scopeEnd);
 
     // Store diff in cache and DB
     setLocalReviewDiff(reviewId, { diff, stats, digest });
@@ -1306,20 +1306,6 @@ router.post('/api/local/:reviewId/set-scope', async (req, res) => {
     logger.error(`Error setting scope: ${error.message}`);
     res.status(500).json({ error: 'Failed to set scope: ' + error.message });
   }
-});
-
-/**
- * Backward-compat wrapper: switch-to-branch → set-scope with branch→branch scope.
- * Rewrites the body and redirects internally via 307.
- */
-router.post('/api/local/:reviewId/switch-to-branch', (req, res) => {
-  // Rewrite body for set-scope and let Express re-route
-  req.body = {
-    scopeStart: 'branch',
-    scopeEnd: 'branch',
-    baseBranch: req.body?.baseBranch
-  };
-  res.redirect(307, `/api/local/${req.params.reviewId}/set-scope`);
 });
 
 /**
@@ -1538,13 +1524,15 @@ router.post('/api/local/:reviewId/analyses/council', async (req, res) => {
     };
 
     const analyzer = new Analyzer(db, 'council', 'council');
-    // When branch is in scope, pass null so analyzer falls through to getChangedFilesList
-    const changedFiles = councilHasBranch ? null : await analyzer.getLocalChangedFiles(localPath);
+    // When branch or staged is in scope, pass null so analyzer falls through to getChangedFilesList
+    const changedFiles = (councilHasBranch || scopeIncludes(councilScopeStart, councilScopeEnd, 'staged'))
+      ? null
+      : await analyzer.getLocalChangedFiles(localPath);
 
     // Generate and cache diff
     try {
       const diffResult = await generateScopedDiff(localPath, councilScopeStart, councilScopeEnd, review.local_base_branch);
-      const digest = councilHasBranch ? review.local_head_sha : await computeScopedDigest(localPath, councilScopeStart, councilScopeEnd);
+      const digest = await computeScopedDigest(localPath, councilScopeStart, councilScopeEnd);
       setLocalReviewDiff(reviewId, { diff: diffResult.diff, stats: diffResult.stats, digest });
     } catch (diffError) {
       logger.warn(`Could not generate diff for local council review ${reviewId}: ${diffError.message}`);
