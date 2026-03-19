@@ -129,6 +129,19 @@ Test structure:
   - When completing a change, run the relevant tests
   - When completing changes that modify frontend code, use a Task tool run E2E tests
 
+### Plan Hazards Section
+- When creating implementation plans or issues, include a **Hazards** section that lists:
+  - All existing code paths that perform similar work to the change being made
+  - Shared functions that will be modified, with all their callers listed
+  - State that could change between scheduling and execution (async races)
+  - Completion/error handlers that assume they're the only thing in flight
+- Example:
+  > **Hazards**
+  > `_applyScopeResult` has two callers: `_handleScopeChange` and
+  > `showBranchReviewDialog`. Verify both paths after any change.
+  > The completion handler was recently guarded against stale overwrites.
+  > Any scope-syncing change must preserve that guard.
+
 ## Project Documentation Structure
 - **CLAUDE.md**: Stable requirements (this file)
 
