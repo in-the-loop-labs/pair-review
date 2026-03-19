@@ -32,7 +32,11 @@ const SCHEMA_SQL = {
       local_path TEXT,
       local_head_sha TEXT,
       summary TEXT,
-      name TEXT
+      name TEXT,
+      local_mode TEXT DEFAULT 'uncommitted',
+      local_base_branch TEXT,
+      local_scope_start TEXT DEFAULT 'unstaged',
+      local_scope_end TEXT DEFAULT 'untracked'
     )
   `,
 
@@ -111,6 +115,7 @@ const SCHEMA_SQL = {
       default_tab TEXT,
       default_chat_instructions TEXT,
       local_path TEXT,
+      auto_branch_review INTEGER DEFAULT 0,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
@@ -137,6 +142,8 @@ const SCHEMA_SQL = {
       parent_run_id TEXT,
       config_type TEXT DEFAULT 'single',
       levels_config TEXT,
+      scope_start TEXT,
+      scope_end TEXT,
       FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE
     )
   `,

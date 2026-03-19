@@ -770,19 +770,44 @@ class LocalManager {
       const reviewData = await response.json();
       this.localData = reviewData;
 
+      // Read scope from metadata (backend now returns these)
+      const LS = window.LocalScope;
+      const scopeStart = reviewData.scopeStart || (LS ? LS.DEFAULT_SCOPE.start : 'unstaged');
+      const scopeEnd = reviewData.scopeEnd || (LS ? LS.DEFAULT_SCOPE.end : 'untracked');
+      this.scopeStart = scopeStart;
+      this.scopeEnd = scopeEnd;
+
       // Create a currentPR-like object for compatibility
+      const hasBranch = LS ? LS.scopeIncludes(scopeStart, scopeEnd, 'branch') : false;
       manager.currentPR = {
         id: reviewData.id,
         owner: 'local',
         repo: reviewData.repository,
         number: reviewData.id,
-        title: `Local Changes - ${reviewData.branch}`,
+        title: hasBranch
+          ? `Branch Changes - ${reviewData.branch} vs ${reviewData.baseBranch}`
+          : `Local Changes - ${reviewData.branch}`,
         head_branch: reviewData.branch,
-        base_branch: reviewData.branch,
+        base_branch: hasBranch ? reviewData.baseBranch : reviewData.branch,
         head_sha: reviewData.localHeadSha,
         reviewType: 'local',
         localPath: reviewData.localPath
       };
+
+      // Re-initialize DiffOptionsDropdown with scope options
+      const branchAvailable = Boolean(reviewData.branchAvailable);
+      if (manager.diffOptionsDropdown) {
+        manager.diffOptionsDropdown.destroy();
+      }
+      const diffOptionsBtn = document.getElementById('diff-options-btn');
+      if (diffOptionsBtn && window.DiffOptionsDropdown) {
+        manager.diffOptionsDropdown = new window.DiffOptionsDropdown(diffOptionsBtn, {
+          onToggleWhitespace: (hide) => manager.handleWhitespaceToggle(hide),
+          onScopeChange: (start, end) => this._handleScopeChange(start, end),
+          initialScope: { start: scopeStart, end: scopeEnd },
+          branchAvailable
+        });
+      }
 
       // Update header with local info
       this.updateLocalHeader(reviewData);
@@ -951,6 +976,31 @@ class LocalManager {
       branchText.textContent = reviewData.branch || 'unknown';
     }
 
+    // Show base branch badge when branch is in scope
+    const LS = window.LocalScope;
+    const scopeStart = this.scopeStart || (LS ? LS.DEFAULT_SCOPE.start : 'unstaged');
+    const scopeEnd = this.scopeEnd || (LS ? LS.DEFAULT_SCOPE.end : 'untracked');
+    const hasBranch = LS ? LS.scopeIncludes(scopeStart, scopeEnd, 'branch') : false;
+
+    const branchVs = document.getElementById('local-branch-vs');
+    const baseBranchEl = document.getElementById('local-base-branch');
+    const baseBranchText = document.getElementById('local-base-branch-text');
+    if (hasBranch && reviewData.baseBranch) {
+      if (branchVs) branchVs.style.display = '';
+      if (baseBranchEl) baseBranchEl.style.display = '';
+      if (baseBranchText) baseBranchText.textContent = reviewData.baseBranch;
+    } else {
+      if (branchVs) branchVs.style.display = 'none';
+      if (baseBranchEl) baseBranchEl.style.display = 'none';
+    }
+
+    // Update refresh button tooltip based on scope
+    const refreshBtn = document.getElementById('local-refresh-btn');
+    if (refreshBtn) {
+      const scopeLabel = LS ? LS.scopeLabel(scopeStart, scopeEnd) : 'directory';
+      refreshBtn.title = `Refresh diff (${scopeLabel})`;
+    }
+
     // Update branch name (toolbar) and wire up copy button
     const branchName = document.getElementById('pr-branch-name');
     if (branchName) {
@@ -1100,10 +1150,26 @@ class LocalManager {
       const generatedFiles = new Set(data.generated_files || []);
 
       if (!diffContent) {
-        // Clear the diff container
         const diffContainer = document.getElementById('diff-container');
         if (diffContainer) {
-          diffContainer.innerHTML = '<div class="no-diff">No unstaged changes to review. Make some changes to your files and click the <strong>Refresh</strong> button to reload.</div>';
+          const reviewData = this.localData;
+          const branchInfo = reviewData?.branchInfo;
+          const LS = window.LocalScope;
+          const hasBranch = LS ? LS.scopeIncludes(this.scopeStart, this.scopeEnd, 'branch') : false;
+
+          // Show scope-aware empty message
+          if (!hasBranch && branchInfo) {
+            const scopeLabel = LS ? LS.scopeLabel(this.scopeStart, this.scopeEnd) : 'current scope';
+            diffContainer.innerHTML = `<div class="no-diff">No changes in ${scopeLabel} scope.</div>`;
+          } else {
+            const scopeLabel = LS ? LS.scopeLabel(this.scopeStart, this.scopeEnd) : 'current scope';
+            diffContainer.innerHTML = `<div class="no-diff">No changes in ${scopeLabel} scope. Make some changes and click <strong>Refresh</strong> to reload.</div>`;
+          }
+
+          // If branch has commits ahead and branch is not in scope, offer to expand
+          if (!hasBranch && branchInfo) {
+            this.showBranchReviewDialog(branchInfo);
+          }
         }
 
         // Clear the file navigation sidebar
@@ -1202,6 +1268,256 @@ class LocalManager {
         diffContainer.innerHTML = '<div class="no-diff">Error loading changes</div>';
       }
     }
+  }
+
+  /**
+   * Apply the result of a scope-change POST to local state, UI, and diff.
+   * Shared by _handleScopeChange and showBranchReviewDialog.handleConfirm.
+   * @param {string} scopeStart - New start stop
+   * @param {string} scopeEnd - New end stop
+   * @param {Object} result - Response body from POST set-scope
+   */
+  async _applyScopeResult(scopeStart, scopeEnd, result) {
+    const manager = window.prManager;
+    const LS = window.LocalScope;
+
+    // Update local state
+    this.scopeStart = scopeStart;
+    this.scopeEnd = scopeEnd;
+
+    // Update localData
+    if (this.localData) {
+      this.localData.scopeStart = scopeStart;
+      this.localData.scopeEnd = scopeEnd;
+      if (result.baseBranch) {
+        this.localData.baseBranch = result.baseBranch;
+      }
+      if (result.localMode) {
+        this.localData.localMode = result.localMode;
+      }
+    }
+
+    // Update currentPR
+    const hasBranch = LS ? LS.includesBranch(scopeStart) : false;
+    if (manager?.currentPR) {
+      manager.currentPR.base_branch = hasBranch
+        ? (result.baseBranch || this.localData?.baseBranch || manager.currentPR.head_branch)
+        : manager.currentPR.head_branch;
+      manager.currentPR.title = hasBranch
+        ? `Branch Changes - ${manager.currentPR.head_branch} vs ${manager.currentPR.base_branch}`
+        : `Local Changes - ${manager.currentPR.head_branch}`;
+    }
+
+    // Update header and reload diff
+    this.updateLocalHeader(this.localData);
+    await this.loadLocalDiff();
+
+    // Re-anchor comments and suggestions
+    const includeDismissed = window.aiPanel?.showDismissedComments || false;
+    await manager.loadUserComments(includeDismissed);
+    await manager.loadAISuggestions(null, manager.selectedRunId);
+
+    // Only update dropdown if user hasn't clicked again since this request started
+    if (manager?.diffOptionsDropdown) {
+      const current = manager.diffOptionsDropdown.scope;
+      if (current.start === scopeStart && current.end === scopeEnd) {
+        manager.diffOptionsDropdown.clearScopeStatus();
+      }
+    }
+  }
+
+  /**
+   * Handle scope change from DiffOptionsDropdown.
+   * POSTs new scope to backend, reloads diff on success.
+   * @param {string} scopeStart - New start stop
+   * @param {string} scopeEnd - New end stop
+   */
+  async _handleScopeChange(scopeStart, scopeEnd) {
+    const manager = window.prManager;
+    const LS = window.LocalScope;
+    const oldStart = this.scopeStart;
+    const oldEnd = this.scopeEnd;
+
+    try {
+      const resp = await fetch(`/api/local/${this.reviewId}/set-scope`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scopeStart, scopeEnd })
+      });
+
+      if (!resp.ok) {
+        const err = await resp.json();
+        throw new Error(err.error || 'Failed to set scope');
+      }
+
+      const result = await resp.json();
+      await this._applyScopeResult(scopeStart, scopeEnd, result);
+
+      if (window.toast) {
+        const label = LS ? LS.scopeLabel(scopeStart, scopeEnd) : `${scopeStart}\u2013${scopeEnd}`;
+        window.toast.showSuccess(`Scope: ${label}`);
+      }
+    } catch (error) {
+      console.error('Failed to change scope:', error);
+      if (window.toast) {
+        window.toast.showError('Failed to change scope: ' + error.message);
+      }
+      // Rollback dropdown only if user hasn't clicked again
+      if (manager?.diffOptionsDropdown) {
+        const current = manager.diffOptionsDropdown.scope;
+        if (current.start === scopeStart && current.end === scopeEnd) {
+          manager.diffOptionsDropdown.scope = { start: oldStart, end: oldEnd };
+          manager.diffOptionsDropdown.clearScopeStatus();
+        }
+      }
+    }
+  }
+
+  /**
+   * Show a dialog prompting the user to review branch changes.
+   * Uses the same modal pattern as ConfirmDialog/TextInputDialog.
+   * @param {Object} branchInfo - Branch info with commitCount and baseBranch
+   */
+  showBranchReviewDialog(branchInfo) {
+    // Remove any existing branch review dialog
+    const existing = document.getElementById('branch-review-dialog');
+    if (existing) existing.remove();
+
+    const commitLabel = branchInfo.commitCount === 1 ? 'commit' : 'commits';
+
+    const overlay = document.createElement('div');
+    overlay.id = 'branch-review-dialog';
+    overlay.className = 'modal-overlay';
+    overlay.style.display = 'flex';
+
+    overlay.innerHTML = `
+      <div class="modal-backdrop" data-action="cancel"></div>
+      <div class="modal-container confirm-dialog-container" style="width: 440px; height: auto;">
+        <div class="modal-header">
+          <h3>Branch Has Changes</h3>
+          <button class="modal-close-btn" data-action="cancel" title="Close">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/>
+            </svg>
+          </button>
+        </div>
+
+        <div class="modal-body" style="padding: 16px 20px;">
+          <p style="margin: 0 0 12px 0; font-size: 14px;">
+            No uncommitted changes. This branch has <strong>${branchInfo.commitCount}</strong> ${commitLabel} ahead of <code style="padding: 2px 6px; background: var(--color-bg-tertiary); border-radius: 4px; font-size: 12px;">${branchInfo.baseBranch}</code>.
+          </p>
+          <label style="font-size: 12px; color: var(--color-text-tertiary); cursor: pointer; display: inline-flex; align-items: center; gap: 6px;">
+            <input type="checkbox" id="branch-review-dont-ask" style="cursor: pointer;">
+            Don't ask again for this repository
+          </label>
+        </div>
+
+        <div class="modal-footer">
+          <button class="btn btn-secondary" data-action="cancel">Cancel</button>
+          <button class="btn btn-primary" id="branch-review-confirm-btn" data-action="confirm">
+            Expand Scope to Branch
+          </button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(overlay);
+
+    const reviewId = this.reviewId;
+    const self = this;
+
+    const closeDialog = () => {
+      overlay.style.display = 'none';
+      overlay.remove();
+      document.removeEventListener('keydown', keyHandler);
+    };
+
+    const handleConfirm = async () => {
+      const confirmBtn = overlay.querySelector('#branch-review-confirm-btn');
+      if (confirmBtn) {
+        confirmBtn.disabled = true;
+        confirmBtn.textContent = 'Expanding...';
+      }
+
+      // Save "don't ask" preference if checked
+      const dontAsk = overlay.querySelector('#branch-review-dont-ask');
+      if (dontAsk?.checked) {
+        try {
+          await fetch(`/api/local/${reviewId}/branch-review-preference`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ preference: -1 })
+          });
+        } catch { /* non-fatal */ }
+      }
+
+      try {
+        const LS = window.LocalScope;
+        const newEnd = self.scopeEnd || (LS ? LS.DEFAULT_SCOPE.end : 'untracked');
+        const resp = await fetch(`/api/local/${reviewId}/set-scope`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            scopeStart: 'branch',
+            scopeEnd: newEnd,
+            baseBranch: branchInfo.baseBranch
+          })
+        });
+        if (!resp.ok) {
+          const err = await resp.json();
+          throw new Error(err.error || 'Failed to expand scope');
+        }
+
+        const result = await resp.json();
+
+        // Update the dropdown branchAvailable flag
+        const manager = window.prManager;
+        if (manager?.diffOptionsDropdown) {
+          manager.diffOptionsDropdown.branchAvailable = true;
+          manager.diffOptionsDropdown.scope = { start: 'branch', end: newEnd };
+        }
+
+        closeDialog();
+
+        await self._applyScopeResult('branch', newEnd, result);
+
+        if (window.toast) {
+          const label = LS ? LS.scopeLabel('branch', newEnd) : 'Branch';
+          window.toast.showSuccess(`Scope expanded to ${label}`);
+        }
+      } catch (error) {
+        if (confirmBtn) {
+          confirmBtn.disabled = false;
+          confirmBtn.textContent = 'Expand Scope to Branch';
+        }
+        console.error('Failed to expand scope to branch:', error);
+        if (window.toast) {
+          window.toast.showError('Failed to expand scope: ' + error.message);
+        }
+      }
+    };
+
+    // Event delegation for clicks
+    overlay.addEventListener('click', (e) => {
+      const action = e.target.closest('[data-action]')?.dataset.action;
+      if (action === 'confirm') {
+        handleConfirm();
+      } else if (action === 'cancel') {
+        closeDialog();
+      }
+    });
+
+    // Keyboard handler
+    const keyHandler = (e) => {
+      if (e.key === 'Escape') {
+        closeDialog();
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        const btn = overlay.querySelector('#branch-review-confirm-btn');
+        if (!btn?.disabled) handleConfirm();
+      }
+    };
+    document.addEventListener('keydown', keyHandler);
   }
 
   /**

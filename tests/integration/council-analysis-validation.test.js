@@ -29,8 +29,8 @@ vi.mock('../../src/git/gitattributes', () => ({
 }));
 
 vi.mock('../../src/local-review', () => ({
-  generateLocalDiff: vi.fn().mockResolvedValue({ diff: '', stats: {} }),
-  computeLocalDiffDigest: vi.fn().mockResolvedValue('abc123')
+  generateScopedDiff: vi.fn().mockResolvedValue({ diff: '', stats: {}, mergeBaseSha: null }),
+  computeScopedDigest: vi.fn().mockResolvedValue('abc123')
 }));
 
 const { GitWorktreeManager } = require('../../src/git/worktree');

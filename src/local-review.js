@@ -4,10 +4,11 @@ const { promisify } = require('util');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs').promises;
-const { loadConfig, showWelcomeMessage, resolveDbName } = require('./config');
+const { loadConfig, showWelcomeMessage, resolveDbName, getGitHubToken } = require('./config');
 const logger = require('./utils/logger');
 
 const execAsync = promisify(exec);
+const { scopeIncludes, includesBranch, DEFAULT_SCOPE, scopeLabel } = require('./local-scope');
 const { initializeDatabase, ReviewRepository, RepoSettingsRepository } = require('./database');
 const { startServer } = require('./server');
 const { localReviewDiffs } = require('./routes/shared');
@@ -360,98 +361,80 @@ async function getUntrackedFiles(repoPath) {
 }
 
 /**
- * Generate diff for local changes (unstaged only, not staged)
- * Local mode shows unstaged changes + untracked files, NOT staged changes.
- * This allows users to stage files to "hide" them from the review.
+ * Find merge-base between baseBranch and HEAD.
+ * Tries to fetch origin first, then tries origin/<base>, falls back to local <base>.
  * @param {string} repoPath - Path to the git repository
- * @returns {Promise<{diff: string, untrackedFiles: Array, stats: Object}>}
+ * @param {string} baseBranch - Base branch name
+ * @returns {Promise<string>} Merge-base SHA
  */
-async function generateLocalDiff(repoPath, options = {}) {
-  let diff = '';
-  const wFlag = options.hideWhitespace ? ' -w' : '';
-  const stats = {
-    trackedChanges: 0,
-    untrackedFiles: 0,
-    stagedChanges: 0,
-    unstagedChanges: 0
-  };
-
-  try {
-    // Count staged changes for stats (but don't include in diff)
-    // This is informational only - staged files are excluded from review
-    const stagedDiff = execSync(`git diff --cached --no-color --no-ext-diff --unified=25${wFlag}`, {
-      cwd: repoPath,
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      maxBuffer: 50 * 1024 * 1024 // 50MB buffer
-    });
-
-    if (stagedDiff.trim()) {
-      stats.stagedChanges = (stagedDiff.match(/^diff --git/gm) || []).length;
-    }
-
-    // Get unstaged changes to tracked files (this is what we show in the review)
-    const unstagedDiff = execSync(`git diff --no-color --no-ext-diff --unified=25${wFlag}`, {
-      cwd: repoPath,
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      maxBuffer: 50 * 1024 * 1024 // 50MB buffer
-    });
-
-    if (unstagedDiff.trim()) {
-      diff += unstagedDiff;
-      stats.unstagedChanges = (unstagedDiff.match(/^diff --git/gm) || []).length;
-    }
-
-    stats.trackedChanges = stats.unstagedChanges;
-
-  } catch (error) {
-    // Check for buffer overflow errors and provide clear user feedback
-    if (error.message && error.message.includes('maxBuffer')) {
-      console.error(`Error: Diff output exceeded the 50MB buffer limit.`);
-      console.error(`This typically happens with very large repositories or binary files in the diff.`);
-      console.error(`Consider staging some files to exclude them from the review.`);
-      throw new Error('Diff output exceeded maximum buffer size (50MB). Try staging some files to reduce the diff size.');
-    }
-    console.warn(`Warning: Could not generate diff for tracked files: ${error.message}`);
+async function findMergeBase(repoPath, baseBranch) {
+  if (!baseBranch || !/^[\w.\-\/]+$/.test(baseBranch)) {
+    throw new Error(`Invalid branch name: ${baseBranch}`);
   }
 
-  // Get untracked files
-  const untrackedFiles = await getUntrackedFiles(repoPath);
-  stats.untrackedFiles = untrackedFiles.length;
+  // Try to fetch the latest base branch from remote (best-effort)
+  try {
+    execSync(`git fetch origin ${baseBranch}`, {
+      cwd: repoPath,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 15000
+    });
+  } catch {
+    logger.warn(`Could not fetch origin/${baseBranch} — using local ref`);
+  }
 
-  // Generate authentic git diff for untracked files using git diff --no-index
+  // Find merge-base: try origin/<base> first, fall back to local <base>
+  try {
+    return execSync(`git merge-base origin/${baseBranch} HEAD`, {
+      cwd: repoPath,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe']
+    }).trim();
+  } catch {
+    try {
+      return execSync(`git merge-base ${baseBranch} HEAD`, {
+        cwd: repoPath,
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'pipe']
+      }).trim();
+    } catch (error) {
+      throw new Error(`Could not find merge-base between ${baseBranch} and HEAD: ${error.message}`);
+    }
+  }
+}
+
+/**
+ * Generate diff output for untracked files using git diff --no-index.
+ * @param {string} repoPath - Path to the git repository
+ * @param {Array} untrackedFiles - Array from getUntrackedFiles()
+ * @param {string} wFlag - Whitespace flag (e.g. ' -w' or '')
+ * @returns {string} Combined diff text for untracked files
+ */
+function generateUntrackedDiffs(repoPath, untrackedFiles, wFlag) {
+  let diff = '';
   for (const untracked of untrackedFiles) {
     if (!untracked.skipped) {
       try {
         const filePath = path.join(repoPath, untracked.file);
-        // git diff --no-index exits with code 1 when files differ, code 0 when identical
         let fileDiff;
         try {
           fileDiff = execSync(`git diff --no-index --no-color --no-ext-diff${wFlag} -- /dev/null "${filePath}"`, {
             cwd: repoPath,
             encoding: 'utf8',
             stdio: ['pipe', 'pipe', 'pipe'],
-            maxBuffer: 10 * 1024 * 1024 // 10MB buffer per file
+            maxBuffer: 10 * 1024 * 1024
           });
         } catch (diffError) {
-          // git diff --no-index returns exit code 1 when files differ (expected case)
-          // Exit code 1 with stdout means files differ - this is the normal case for new files
-          // Defensive check: ensure diffError is an object with expected properties
           if (diffError && typeof diffError === 'object' &&
               diffError.status === GIT_DIFF_HAS_DIFFERENCES && typeof diffError.stdout === 'string') {
             fileDiff = diffError.stdout;
           } else {
-            // Any other error (status !== 1 or no stdout) is a real error
             throw diffError;
           }
         }
 
         if (fileDiff && fileDiff.trim()) {
-          // The diff output from git diff --no-index shows the absolute path (without leading /),
-          // e.g., "diff --git a/Users/tim/src/repo/file.js b/Users/tim/src/repo/file.js"
-          // We need to normalize this to relative paths from the repo root,
-          // e.g., "diff --git a/file.js b/file.js"
           const normalizedDiff = fileDiff
             .replace(/^diff --git a\/.+? b\/.+$/m, `diff --git a/${untracked.file} b/${untracked.file}`)
             .replace(/^\+\+\+ b\/.+$/m, `+++ b/${untracked.file}`);
@@ -462,15 +445,249 @@ async function generateLocalDiff(repoPath, options = {}) {
           diff += normalizedDiff;
         }
       } catch (fileError) {
-        console.warn(`Warning: Could not generate diff for untracked file ${untracked.file}: ${fileError.message}`);
+        logger.warn(`Could not generate diff for untracked file ${untracked.file}: ${fileError.message}`);
       }
     }
   }
+  return diff;
+}
+
+/**
+ * Generate diff for a given scope range.
+ *
+ * Scope stops: branch → staged → unstaged → untracked
+ * When branch is in scope, diffs anchor against merge-base.
+ * Otherwise, diffs anchor against HEAD (staged) or INDEX (unstaged).
+ *
+ * @param {string} repoPath - Path to the git repository
+ * @param {string} scopeStart - Start of scope range (e.g. 'unstaged', 'branch')
+ * @param {string} scopeEnd - End of scope range (e.g. 'untracked', 'branch')
+ * @param {string} [baseBranch] - Base branch name (required when branch is in scope)
+ * @param {Object} [options]
+ * @param {boolean} [options.hideWhitespace] - Whether to hide whitespace changes
+ * @returns {Promise<{diff: string, stats: Object, mergeBaseSha: string|null}>}
+ */
+async function generateScopedDiff(repoPath, scopeStart, scopeEnd, baseBranch, options = {}) {
+  const wFlag = options.hideWhitespace ? ' -w' : '';
+  const stats = {
+    trackedChanges: 0,
+    untrackedFiles: 0,
+    stagedChanges: 0,
+    unstagedChanges: 0
+  };
+
+  const hasBranch = scopeIncludes(scopeStart, scopeEnd, 'branch');
+  const hasStaged = scopeIncludes(scopeStart, scopeEnd, 'staged');
+  const hasUnstaged = scopeIncludes(scopeStart, scopeEnd, 'unstaged');
+  const hasUntracked = scopeIncludes(scopeStart, scopeEnd, 'untracked');
+
+  let mergeBaseSha = null;
+  let diff = '';
+
+  // Resolve merge-base when branch is in scope
+  if (hasBranch) {
+    if (!baseBranch) {
+      throw new Error('baseBranch is required when scope includes branch');
+    }
+    mergeBaseSha = await findMergeBase(repoPath, baseBranch);
+  }
+
+  // Build the git diff command based on scope range
+  try {
+    if (hasBranch && !hasStaged && !hasUnstaged) {
+      // Branch only → committed changes since merge-base
+      diff = execSync(`git diff ${mergeBaseSha}..HEAD --no-color --no-ext-diff --unified=25${wFlag}`, {
+        cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
+        maxBuffer: 50 * 1024 * 1024
+      });
+    } else if (hasBranch && hasStaged && !hasUnstaged) {
+      // Branch–Staged → staged changes relative to merge-base
+      diff = execSync(`git diff --cached ${mergeBaseSha} --no-color --no-ext-diff --unified=25${wFlag}`, {
+        cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
+        maxBuffer: 50 * 1024 * 1024
+      });
+    } else if (hasBranch && hasUnstaged) {
+      // Branch–Unstaged (or Branch–Untracked) → working tree vs merge-base
+      diff = execSync(`git diff ${mergeBaseSha} --no-color --no-ext-diff --unified=25${wFlag}`, {
+        cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
+        maxBuffer: 50 * 1024 * 1024
+      });
+    } else if (hasStaged && !hasUnstaged) {
+      // Staged only → cached changes
+      diff = execSync(`git diff --cached --no-color --no-ext-diff --unified=25${wFlag}`, {
+        cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
+        maxBuffer: 50 * 1024 * 1024
+      });
+    } else if (hasStaged && hasUnstaged) {
+      // Staged–Unstaged (or Staged–Untracked) → all changes vs HEAD
+      diff = execSync(`git diff HEAD --no-color --no-ext-diff --unified=25${wFlag}`, {
+        cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
+        maxBuffer: 50 * 1024 * 1024
+      });
+    } else if (hasUnstaged) {
+      // Unstaged only or Unstaged–Untracked → working tree changes
+      diff = execSync(`git diff --no-color --no-ext-diff --unified=25${wFlag}`, {
+        cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
+        maxBuffer: 50 * 1024 * 1024
+      });
+    }
+    // hasUntracked-only: no git diff needed, just untracked files below
+  } catch (error) {
+    if (error.message && error.message.includes('maxBuffer')) {
+      throw new Error('Diff output exceeded maximum buffer size (50MB).');
+    }
+    throw new Error(`Failed to generate scoped diff: ${error.message}`);
+  }
+
+  if (diff.trim()) {
+    stats.trackedChanges = (diff.match(/^diff --git/gm) || []).length;
+  }
+
+  // Count staged/unstaged for stats when relevant
+  if (hasStaged) {
+    try {
+      const stagedDiff = execSync(`git diff --cached --stat --no-color`, {
+        cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe']
+      });
+      if (stagedDiff.trim()) {
+        stats.stagedChanges = (stagedDiff.match(/\|/g) || []).length;
+      }
+    } catch { /* non-critical */ }
+  }
+  if (hasUnstaged) {
+    try {
+      const unstagedDiff = execSync(`git diff --stat --no-color`, {
+        cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe']
+      });
+      if (unstagedDiff.trim()) {
+        stats.unstagedChanges = (unstagedDiff.match(/\|/g) || []).length;
+      }
+    } catch { /* non-critical */ }
+  }
+
+  // Append untracked file diffs
+  if (hasUntracked) {
+    const untrackedFiles = await getUntrackedFiles(repoPath);
+    stats.untrackedFiles = untrackedFiles.length;
+
+    const untrackedDiff = generateUntrackedDiffs(repoPath, untrackedFiles, wFlag);
+    if (untrackedDiff) {
+      if (diff) diff += '\n';
+      diff += untrackedDiff;
+    }
+  }
+
+  return { diff, stats, mergeBaseSha };
+}
+
+/**
+ * Compute a content digest for the current scope.
+ * Used for staleness detection — if the digest changes, the scope content changed.
+ *
+ * @param {string} repoPath - Path to the git repository
+ * @param {string} scopeStart - Start of scope range
+ * @param {string} scopeEnd - End of scope range
+ * @returns {Promise<string|null>} 16-char hex digest, or null on error
+ */
+async function computeScopedDigest(repoPath, scopeStart, scopeEnd) {
+  let hasError = false;
+  const parts = [];
+
+  // Branch in scope → HEAD SHA matters
+  if (scopeIncludes(scopeStart, scopeEnd, 'branch')) {
+    try {
+      const result = await execAsync('git rev-parse HEAD', {
+        cwd: repoPath, encoding: 'utf8'
+      });
+      parts.push('HEAD:' + result.stdout.trim());
+    } catch {
+      hasError = true;
+    }
+  }
+
+  // Staged in scope → cached diff content
+  if (scopeIncludes(scopeStart, scopeEnd, 'staged')) {
+    try {
+      const result = await execAsync('git diff --cached', {
+        cwd: repoPath, encoding: 'utf8', maxBuffer: 50 * 1024 * 1024
+      });
+      parts.push('STAGED:' + result.stdout);
+    } catch {
+      hasError = true;
+    }
+  }
+
+  // Unstaged in scope → working tree diff
+  if (scopeIncludes(scopeStart, scopeEnd, 'unstaged')) {
+    try {
+      const result = await execAsync('git diff', {
+        cwd: repoPath, encoding: 'utf8', maxBuffer: 50 * 1024 * 1024
+      });
+      parts.push('UNSTAGED:' + result.stdout);
+    } catch {
+      hasError = true;
+    }
+  }
+
+  // Untracked in scope → file list with sizes/mtimes
+  if (scopeIncludes(scopeStart, scopeEnd, 'untracked')) {
+    try {
+      const result = await execAsync('git ls-files --others --exclude-standard', {
+        cwd: repoPath, encoding: 'utf8'
+      });
+      const files = result.stdout.trim().split('\n').filter(f => f.length > 0);
+      let untrackedInfo = '';
+      for (const file of files) {
+        try {
+          const fileStat = await fs.stat(path.join(repoPath, file));
+          untrackedInfo += `${file}:${fileStat.size}:${fileStat.mtimeMs}\n`;
+        } catch {
+          untrackedInfo += `${file}:missing\n`;
+        }
+      }
+      parts.push('UNTRACKED:' + untrackedInfo);
+    } catch {
+      hasError = true;
+    }
+  }
+
+  if (hasError && parts.length === 0) {
+    return null;
+  }
+
+  const combined = parts.join('\n---\n');
+  return crypto.createHash('sha256').update(combined).digest('hex').substring(0, 16);
+}
+
+/**
+ * Generate diff for local changes (unstaged + untracked).
+ * Thin wrapper around generateScopedDiff with legacy return shape.
+ * @param {string} repoPath - Path to the git repository
+ * @param {Object} [options]
+ * @param {boolean} [options.hideWhitespace] - Whether to hide whitespace changes
+ * @returns {Promise<{diff: string, untrackedFiles: Array, stats: Object}>}
+ */
+async function generateLocalDiff(repoPath, options = {}) {
+  const result = await generateScopedDiff(repoPath, 'unstaged', 'untracked', null, options);
+  // Preserve legacy untrackedFiles field
+  const untrackedFiles = await getUntrackedFiles(repoPath);
+
+  // Always count staged changes for CLI info message, even when staged is out of scope
+  if (!result.stats.stagedChanges) {
+    try {
+      const stagedStat = execSync('git diff --cached --stat --no-color', {
+        cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe']
+      });
+      if (stagedStat.trim()) {
+        result.stats.stagedChanges = (stagedStat.match(/\|/g) || []).length;
+      }
+    } catch { /* non-critical */ }
+  }
 
   return {
-    diff,
+    diff: result.diff,
     untrackedFiles,
-    stats
+    stats: result.stats
   };
 }
 
@@ -544,12 +761,26 @@ async function handleLocalReview(targetPath, flags = {}) {
     }
 
     console.log('Checking for existing review session...');
-    const existingReview = await reviewRepo.getLocalReview(repoPath, headSha);
+    let existingReview = await reviewRepo.getLocalReview(repoPath, headSha);
+
+    if (!existingReview) {
+      // Check for existing branch-mode session on this path
+      // (branch mode sessions persist across HEAD changes)
+      const branchSession = await reviewRepo.getLocalBranchReview(repoPath);
+      if (branchSession) {
+        existingReview = branchSession;
+      }
+    }
 
     let sessionId;
     if (existingReview) {
-      console.log(`Resuming existing review session (ID: ${existingReview.id})`);
       sessionId = existingReview.id;
+      // Update HEAD SHA if it changed (branch mode: new commits on same branch)
+      if (existingReview.local_head_sha !== headSha) {
+        await reviewRepo.updateLocalHeadSha(sessionId, headSha);
+        console.log(`Updated HEAD SHA on session ${sessionId}: ${existingReview.local_head_sha.substring(0, 7)} -> ${headSha.substring(0, 7)}`);
+      }
+      console.log(`Resuming existing review session (ID: ${existingReview.id})`);
     } else {
       console.log('Creating new review session...');
       sessionId = await reviewRepo.upsertLocalReview({
@@ -560,25 +791,43 @@ async function handleLocalReview(targetPath, flags = {}) {
       console.log(`Created new review session (ID: ${sessionId})`);
     }
 
-    // Generate local diff
-    console.log('Generating diff for local changes...');
-    const { diff, untrackedFiles, stats } = await generateLocalDiff(repoPath);
+    // Read scope from session (or use defaults for new sessions)
+    const scopeStart = existingReview?.local_scope_start || DEFAULT_SCOPE.start;
+    const scopeEnd = existingReview?.local_scope_end || DEFAULT_SCOPE.end;
+    const baseBranch = existingReview?.local_base_branch || null;
 
-    if (!diff && untrackedFiles.length === 0) {
-      console.log('\nNo local changes detected. The UI will open anyway - you can make changes and refresh.');
-    } else {
-      console.log(`Found changes:`);
-    if (stats.unstagedChanges > 0) {
-      console.log(`  - ${stats.unstagedChanges} unstaged file(s)`);
+    // Generate diff using session's actual scope
+    console.log(`Generating diff for scope: ${scopeLabel(scopeStart, scopeEnd)}...`);
+    const { diff, stats } = await generateScopedDiff(repoPath, scopeStart, scopeEnd, baseBranch);
+
+    // Branch detection: when scope does NOT include branch and no uncommitted changes,
+    // check if branch has commits ahead (frontend uses this to suggest expanding scope)
+    let branchInfo = null;
+    if (!includesBranch(scopeStart)) {
+      const untrackedFiles = await getUntrackedFiles(repoPath);
+      branchInfo = await detectAndBuildBranchInfo(repoPath, branch, {
+        repository,
+        diff,
+        untrackedFiles,
+        githubToken: getGitHubToken(config),
+        enableGraphite: config.enable_graphite === true
+      });
+      if (branchInfo) {
+        console.log(`\nNo uncommitted changes, but branch has ${branchInfo.commitCount} commit(s) ahead of ${branchInfo.baseBranch}.`);
+        console.log('The UI will offer to review branch changes.');
+      }
     }
-    if (stats.untrackedFiles > 0) {
-      const skipped = untrackedFiles.filter(f => f.skipped).length;
-      const included = stats.untrackedFiles - skipped;
-      console.log(`  - ${included} untracked file(s)${skipped > 0 ? ` (${skipped} skipped)` : ''}`);
-    }
-    if (stats.stagedChanges > 0) {
-      console.log(`  - ${stats.stagedChanges} staged file(s) (excluded from review)`);
-    }
+
+    if (!diff && !branchInfo) {
+      console.log('\nNo changes detected in current scope. The UI will open anyway - you can change scope or make changes and refresh.');
+    } else if (diff) {
+      console.log(`Found ${stats.trackedChanges || 0} file(s) changed`);
+      if (stats.untrackedFiles > 0) {
+        console.log(`  - ${stats.untrackedFiles} untracked file(s)`);
+      }
+      if (stats.stagedChanges > 0 && !scopeIncludes(scopeStart, scopeEnd, 'staged')) {
+        console.log(`  - ${stats.stagedChanges} staged file(s) (outside current scope)`);
+      }
     }
 
     // Set environment variables for local mode (metadata only, not large data)
@@ -591,10 +840,10 @@ async function handleLocalReview(targetPath, flags = {}) {
 
     // Compute baseline digest NOW for accurate staleness detection later
     // This must be done at diff-capture time, not lazily at check time
-    const digest = await computeLocalDiffDigest(repoPath);
+    const digest = await computeScopedDigest(repoPath, scopeStart, scopeEnd);
 
     // Store diff data in module-level Map (avoids process.env size limits and security concerns)
-    localReviewDiffs.set(sessionId, { diff, stats, digest });
+    localReviewDiffs.set(sessionId, { diff, stats, digest, branchInfo });
 
     // Persist diff to database so past sessions remain viewable without the server running
     try {
@@ -646,59 +895,132 @@ async function handleLocalReview(targetPath, flags = {}) {
 }
 
 /**
- * Compute a hash digest of local changes for staleness detection
- * Uses git diff output which captures actual content changes
- * Returns null on error (caller should treat as stale to be safe)
+ * Compute a hash digest of local changes for staleness detection.
+ * Thin wrapper around computeScopedDigest with scope unstaged→untracked.
  * @param {string} localPath - Path to the local git repository
  * @returns {Promise<string|null>} 16-character hex digest or null on error
  */
 async function computeLocalDiffDigest(localPath) {
-  let hasError = false;
+  return computeScopedDigest(localPath, 'unstaged', 'untracked');
+}
 
-  // Get unstaged diff (the actual content being reviewed)
-  let unstagedDiff = '';
-  try {
-    const result = await execAsync('git diff', {
-      cwd: localPath,
-      encoding: 'utf8',
-      maxBuffer: 50 * 1024 * 1024
-    });
-    unstagedDiff = result.stdout;
-  } catch (e) {
-    hasError = true;
+/**
+ * Generate diff for committed branch changes against a base branch.
+ * Thin wrapper around generateScopedDiff with scope branch→branch.
+ *
+ * @param {string} repoPath - Path to the git repository
+ * @param {string} baseBranch - Base branch name (e.g. 'main')
+ * @param {Object} [options]
+ * @param {boolean} [options.hideWhitespace] - Whether to hide whitespace changes
+ * @returns {Promise<{diff: string, stats: Object, mergeBaseSha: string}>}
+ */
+async function generateBranchDiff(repoPath, baseBranch, options = {}) {
+  return generateScopedDiff(repoPath, 'branch', 'branch', baseBranch, options);
+}
+
+/**
+ * Get the number of commits on the current branch ahead of the base branch.
+ * @param {string} repoPath - Path to the git repository
+ * @param {string} baseBranch - Base branch name
+ * @returns {Promise<number>} Number of commits ahead
+ */
+async function getBranchCommitCount(repoPath, baseBranch) {
+  if (!baseBranch || !/^[\w.\-\/]+$/.test(baseBranch)) {
+    throw new Error(`Invalid branch name: ${baseBranch}`);
   }
 
-  // Get list of untracked files with their sizes (content proxy)
-  let untrackedInfo = '';
-  try {
-    const result = await execAsync('git ls-files --others --exclude-standard', {
-      cwd: localPath,
-      encoding: 'utf8'
-    });
-    const untrackedFiles = result.stdout.trim().split('\n').filter(f => f.length > 0);
-
-    // For untracked files, include file path and size in digest
-    for (const file of untrackedFiles) {
-      try {
-        const stats = await fs.stat(path.join(localPath, file));
-        untrackedInfo += `${file}:${stats.size}:${stats.mtimeMs}\n`;
-      } catch (statError) {
-        untrackedInfo += `${file}:missing\n`;
-      }
+  // Try origin/<base> first, fall back to local <base>
+  for (const ref of [`origin/${baseBranch}`, baseBranch]) {
+    try {
+      const count = execSync(`git rev-list --count ${ref}..HEAD`, {
+        cwd: repoPath,
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'pipe']
+      }).trim();
+      return parseInt(count, 10) || 0;
+    } catch {
+      // Try next ref
     }
-  } catch (e) {
-    hasError = true;
+  }
+  return 0;
+}
+
+/**
+ * Get the subject of the first commit on the branch relative to the base.
+ * Used as the default review name.
+ * @param {string} repoPath - Path to the git repository
+ * @param {string} baseBranch - Base branch name
+ * @returns {Promise<string|null>} First commit subject or null
+ */
+async function getFirstCommitSubject(repoPath, baseBranch) {
+  if (!baseBranch || !/^[\w.\-\/]+$/.test(baseBranch)) {
+    throw new Error(`Invalid branch name: ${baseBranch}`);
   }
 
-  // If we had errors, return null to signal caller should assume stale
-  if (hasError && !unstagedDiff && !untrackedInfo) {
+  for (const ref of [`origin/${baseBranch}`, baseBranch]) {
+    try {
+      const output = execSync(`git log ${ref}..HEAD --format=%s --reverse`, {
+        cwd: repoPath,
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'pipe']
+      }).trim();
+      const firstLine = output.split('\n')[0];
+      return firstLine || null;
+    } catch {
+      // Try next ref
+    }
+  }
+  return null;
+}
+
+/**
+ * Detect whether the current branch has commits ahead of its base branch
+ * and build a branchInfo object suitable for the frontend prompt.
+ *
+ * Encapsulates the full sequence: guard checks -> detectBaseBranch -> getBranchCommitCount.
+ * All call sites should use this instead of assembling branchInfo inline.
+ *
+ * @param {string} repoPath - Absolute path to the git repository
+ * @param {string} branch - Current branch name
+ * @param {Object} options
+ * @param {string} options.repository - owner/repo string
+ * @param {string} [options.diff] - The uncommitted diff content (empty = eligible)
+ * @param {Array} [options.untrackedFiles] - Untracked files array (empty = eligible)
+ * @param {string} [options.githubToken] - Resolved GitHub token for PR lookup
+ * @param {boolean} [options.enableGraphite] - When true, try Graphite CLI for parent branch
+ * @returns {Promise<{baseBranch: string, commitCount: number, source: string, prNumber?: number}|null>}
+ */
+async function detectAndBuildBranchInfo(repoPath, branch, options = {}) {
+  const { repository, diff, untrackedFiles, githubToken, enableGraphite } = options;
+
+  // Guard: detached HEAD, has uncommitted changes, or has untracked files
+  if (branch === 'HEAD') return null;
+  if (diff) return null;
+  if (untrackedFiles && untrackedFiles.length > 0) return null;
+
+  try {
+    const { detectBaseBranch } = require('./git/base-branch');
+    const depsOverride = githubToken ? { getGitHubToken: () => githubToken } : undefined;
+    const detection = await detectBaseBranch(repoPath, branch, {
+      repository,
+      enableGraphite,
+      _deps: depsOverride
+    });
+    if (!detection) return null;
+
+    const commitCount = await getBranchCommitCount(repoPath, detection.baseBranch);
+    if (commitCount <= 0) return null;
+
+    return {
+      baseBranch: detection.baseBranch,
+      commitCount,
+      source: detection.source,
+      prNumber: detection.prNumber || null
+    };
+  } catch (error) {
+    logger.warn(`Branch detection failed: ${error.message}`);
     return null;
   }
-
-  // Combine and hash
-  const combined = unstagedDiff + '\n---UNTRACKED---\n' + untrackedInfo;
-  const digest = crypto.createHash('sha256').update(combined).digest('hex').substring(0, 16);
-  return digest;
 }
 
 module.exports = {
@@ -709,7 +1031,14 @@ module.exports = {
   getRepositoryName,
   getCurrentBranch,
   generateLocalDiff,
+  generateBranchDiff,
+  generateScopedDiff,
+  getBranchCommitCount,
+  getFirstCommitSubject,
+  detectAndBuildBranchInfo,
   generateLocalReviewId,
   getUntrackedFiles,
-  computeLocalDiffDigest
+  computeLocalDiffDigest,
+  computeScopedDigest,
+  findMergeBase
 };

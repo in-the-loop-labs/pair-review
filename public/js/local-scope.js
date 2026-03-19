@@ -1,0 +1,1 @@
+../../src/local-scope.js

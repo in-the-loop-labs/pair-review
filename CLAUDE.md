@@ -129,6 +129,19 @@ Test structure:
   - When completing a change, run the relevant tests
   - When completing changes that modify frontend code, use a Task tool run E2E tests
 
+### Plan Hazards Section
+- When creating implementation plans or issues, include a **Hazards** section that lists:
+  - All existing code paths that perform similar work to the change being made
+  - Shared functions that will be modified, with all their callers listed
+  - State that could change between scheduling and execution (async races)
+  - Completion/error handlers that assume they're the only thing in flight
+- Example:
+  > **Hazards**
+  > `_applyScopeResult` has two callers: `_handleScopeChange` and
+  > `showBranchReviewDialog`. Verify both paths after any change.
+  > The completion handler was recently guarded against stale overwrites.
+  > Any scope-syncing change must preserve that guard.
+
 ## Project Documentation Structure
 - **CLAUDE.md**: Stable requirements (this file)
 
@@ -180,6 +193,7 @@ Test structure:
 - Accept an optional `_deps` parameter that merges over defaults: `const deps = { ...defaults, ..._deps }`.
 - In tests, use a `createMockDeps()` helper to provide explicit mocks.
 - This avoids brittle `jest.mock()` / `vi.mock()` patterns and makes test setup self-documenting.
+- **Never re-resolve config values.** When a module needs values from user config (tokens, paths, preferences), accept them via `_deps` from the caller — do not re-read or reconstruct config internally. The canonical config is loaded once via `loadConfig()` in the route/CLI entry point. Re-resolving creates silent divergences (e.g., skipping config-file tokens, ignoring custom commands). Pass resolved values down, don't reach up.
 
 ### ESM-Only Dependencies
 - This project is CommonJS. Some dependencies ship as ESM-only (`"type": "module"` in their package.json). Using `require()` on these will crash on Node <22 with `ERR_REQUIRE_ESM`.
@@ -191,3 +205,14 @@ Test structure:
 - CLI arguments like `--model` are for interactive mode; ACP server mode (`opencode acp`, `gemini --experimental-acp`, etc.) ignores them.
 - Use `unstable_setSessionModel({ sessionId, modelId })` after session creation to set the model.
 - Configuration via protocol is more reliable and consistent across different ACP implementations.
+
+### Team-Based Implementation: Integration Review
+
+When using agent teams to implement features in parallel, always spawn a final "integration reviewer" teammate after all implementation teammates complete. This teammate should:
+
+1. **Trace cross-boundary contracts**: Verify that producer outputs match consumer expectations (e.g., data formats, nullability assumptions, API naming conventions like `window.toast` vs `window.Toast`).
+2. **Diff duplicated flows**: Find code paths that should behave identically and verify they don't diverge (e.g., missing steps like re-anchoring comments, updating titles, rolling back on failure).
+3. **Walk end-to-end user flows**: Trace at least one happy path from UI interaction through frontend → API → backend → response → UI update, verifying each handoff.
+4. **Check variable lifecycle**: Ensure variables are declared before use across the full execution path, especially when different teammates wrote different sections of the same function.
+
+This pattern addresses coordination failures where individual pieces are well-implemented but the wiring between them breaks. Assign this teammate zero implementation files — read-only access, review-only role.

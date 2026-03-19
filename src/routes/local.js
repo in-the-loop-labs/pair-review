@@ -13,6 +13,7 @@
  */
 
 const express = require('express');
+const { execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs').promises;
 const { queryOne, run, ReviewRepository, RepoSettingsRepository, AnalysisRunRepository, CouncilRepository } = require('../database');
@@ -21,7 +22,9 @@ const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
 const { broadcastReviewEvent } = require('../events/review-events');
 const { mergeInstructions } = require('../utils/instructions');
-const { generateLocalDiff, computeLocalDiffDigest } = require('../local-review');
+const { getGitHubToken } = require('../config');
+const { generateScopedDiff, computeScopedDigest, getBranchCommitCount, getFirstCommitSubject, detectAndBuildBranchInfo, findMergeBase } = require('../local-review');
+const { isValidScope, scopeIncludes, includesBranch, DEFAULT_SCOPE } = require('../local-scope');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
 const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
 const { TIERS, TIER_ALIASES, VALID_TIERS, resolveTier } = require('../ai/prompts/config');
@@ -275,21 +278,48 @@ router.post('/api/local/start', async (req, res) => {
     // Create or resume session
     const db = req.app.get('db');
     const reviewRepo = new ReviewRepository(db);
-    const sessionId = await reviewRepo.upsertLocalReview({
-      localPath: repoPath,
-      localHeadSha: headSha,
-      repository
-    });
 
-    // Generate diff
+    // First, check for an existing branch-scope session on this path
+    // (branch scope sessions persist across HEAD changes)
+    let sessionId;
+    const branchSession = await reviewRepo.getLocalBranchScopeReview(repoPath);
+    if (branchSession) {
+      sessionId = branchSession.id;
+      // Update HEAD SHA if it changed
+      if (branchSession.local_head_sha !== headSha) {
+        await reviewRepo.updateLocalHeadSha(sessionId, headSha);
+      }
+    } else {
+      sessionId = await reviewRepo.upsertLocalReview({
+        localPath: repoPath,
+        localHeadSha: headSha,
+        repository,
+        scopeStart: DEFAULT_SCOPE.start,
+        scopeEnd: DEFAULT_SCOPE.end
+      });
+    }
+
+    // Generate diff using default scope
     logger.log('API', `Starting local review for ${repoPath}`, 'cyan');
-    const { diff, stats } = await generateLocalDiff(repoPath);
+    const scopeStart = branchSession?.local_scope_start || DEFAULT_SCOPE.start;
+    const scopeEnd = branchSession?.local_scope_end || DEFAULT_SCOPE.end;
+    const baseBranch = branchSession?.local_base_branch || null;
+    const { diff, stats } = await generateScopedDiff(repoPath, scopeStart, scopeEnd, baseBranch);
 
     // Compute digest for staleness detection
-    const digest = await computeLocalDiffDigest(repoPath);
+    const digest = await computeScopedDigest(repoPath, scopeStart, scopeEnd);
+
+    // Branch detection: when no uncommitted changes, check if branch has commits ahead
+    const config = req.app.get('config') || {};
+    const branchInfo = await detectAndBuildBranchInfo(repoPath, branch, {
+      repository,
+      diff,
+      githubToken: getGitHubToken(config),
+      enableGraphite: config.enable_graphite === true
+    });
 
     // Persist to in-memory Map
-    setLocalReviewDiff(sessionId, { diff, stats, digest });
+    setLocalReviewDiff(sessionId, { diff, stats, digest, branchInfo });
 
     // Persist to database
     await reviewRepo.saveLocalDiff(sessionId, { diff, stats, digest });
@@ -302,6 +332,7 @@ router.post('/api/local/start', async (req, res) => {
       sessionId,
       repository,
       branch,
+      branchInfo,
       stats: {
         trackedChanges: stats.trackedChanges || 0,
         untrackedFiles: stats.untrackedFiles || 0,
@@ -376,6 +407,70 @@ router.get('/api/local/:reviewId', async (req, res) => {
       }
     }
 
+    // Build scope info for the response
+    const scopeStart = review.local_scope_start || DEFAULT_SCOPE.start;
+    const scopeEnd = review.local_scope_end || DEFAULT_SCOPE.end;
+    const baseBranch = review.local_base_branch || null;
+
+    // When scope does NOT include branch, check for branch detection info
+    // Frontend uses this to suggest expanding scope to include branch
+    let branchInfo = null;
+    const cachedDiff = getLocalReviewDiff(reviewId);
+    if (!includesBranch(scopeStart) && cachedDiff?.branchInfo) {
+      branchInfo = cachedDiff.branchInfo;
+    } else if (!includesBranch(scopeStart) && !cachedDiff && review.local_path) {
+      // No cache (web UI started session) — run detection on-demand
+      const config = req.app.get('config') || {};
+      branchInfo = await detectAndBuildBranchInfo(review.local_path, branchName, {
+        repository: repositoryName,
+        githubToken: getGitHubToken(config),
+        enableGraphite: config.enable_graphite === true
+      });
+    }
+
+    // Check repo settings for auto_branch_review preference
+    let autoBranchReview = 0;
+    if (branchInfo && repositoryName && repositoryName.includes('/')) {
+      try {
+        const repoSettingsRepo = new RepoSettingsRepository(db);
+        const repoSettings = await repoSettingsRepo.getRepoSettings(repositoryName);
+        if (repoSettings) {
+          autoBranchReview = repoSettings.auto_branch_review || 0;
+        }
+      } catch {
+        // Non-fatal
+      }
+    }
+
+    // If auto_branch_review is -1 (never), suppress branchInfo
+    if (autoBranchReview === -1) {
+      branchInfo = null;
+    }
+
+    // Determine if Branch stop should be selectable in the scope range selector.
+    // This is independent of branchInfo (which guards on no uncommitted changes).
+    // Branch is available when: not detached HEAD, not on default branch, and has commits ahead.
+    let branchAvailable = includesBranch(scopeStart) || Boolean(branchInfo);
+    if (!branchAvailable && branchName && branchName !== 'HEAD' && branchName !== 'unknown' && review.local_path) {
+      try {
+        const { getBranchCommitCount } = require('../local-review');
+        const { detectBaseBranch } = require('../git/base-branch');
+        const config = req.app.get('config') || {};
+        const depsOverride = getGitHubToken(config) ? { getGitHubToken: () => getGitHubToken(config) } : undefined;
+        const detection = await detectBaseBranch(review.local_path, branchName, {
+          repository: repositoryName,
+          enableGraphite: config.enable_graphite === true,
+          _deps: depsOverride
+        });
+        if (detection) {
+          const commitCount = await getBranchCommitCount(review.local_path, detection.baseBranch);
+          branchAvailable = commitCount > 0;
+        }
+      } catch {
+        // Non-fatal — branch stop stays disabled
+      }
+    }
+
     res.json({
       id: review.id,
       localPath: review.local_path,
@@ -385,6 +480,12 @@ router.get('/api/local/:reviewId', async (req, res) => {
       reviewType: 'local',
       status: review.status,
       name: review.name || null,
+      localMode: review.local_mode || 'uncommitted',
+      scopeStart,
+      scopeEnd,
+      baseBranch,
+      branchInfo,
+      branchAvailable,
       createdAt: review.created_at,
       updatedAt: review.updated_at
     });
@@ -467,11 +568,13 @@ router.get('/api/local/:reviewId/diff', async (req, res) => {
 
     // When ?w=1, regenerate the diff with whitespace changes hidden (transient view, not cached)
     const hideWhitespace = req.query.w === '1';
+    const scopeStart = review.local_scope_start || DEFAULT_SCOPE.start;
+    const scopeEnd = review.local_scope_end || DEFAULT_SCOPE.end;
     let diffData;
 
     if (hideWhitespace && review.local_path) {
       try {
-        const wsResult = await generateLocalDiff(review.local_path, { hideWhitespace: true });
+        const wsResult = await generateScopedDiff(review.local_path, scopeStart, scopeEnd, review.local_base_branch, { hideWhitespace: true });
         diffData = { diff: wsResult.diff, stats: wsResult.stats };
       } catch (wsError) {
         logger.warn(`Could not generate whitespace-filtered diff for review #${reviewId}: ${wsError.message}`);
@@ -572,6 +675,29 @@ router.get('/api/local/:reviewId/check-stale', async (req, res) => {
       });
     }
 
+    const scopeStart = review.local_scope_start || DEFAULT_SCOPE.start;
+    const scopeEnd = review.local_scope_end || DEFAULT_SCOPE.end;
+
+    // When branch is in scope, also check HEAD SHA change
+    if (includesBranch(scopeStart)) {
+      try {
+        const { getHeadSha } = require('../local-review');
+        const currentHeadSha = await getHeadSha(localPath);
+        if (review.local_head_sha !== currentHeadSha) {
+          return res.json({
+            isStale: true,
+            storedSha: review.local_head_sha,
+            currentSha: currentHeadSha
+          });
+        }
+      } catch (error) {
+        return res.json({
+          isStale: true,
+          error: `Could not check HEAD SHA: ${error.message}`
+        });
+      }
+    }
+
     // Get stored diff data (in-memory first, then fall back to DB)
     let storedDiffData = getLocalReviewDiff(reviewId);
     if (!storedDiffData) {
@@ -600,7 +726,7 @@ router.get('/api/local/:reviewId/check-stale', async (req, res) => {
     }
 
     // Compute current digest to compare against baseline
-    const currentDigest = await computeLocalDiffDigest(localPath);
+    const currentDigest = await computeScopedDigest(localPath, scopeStart, scopeEnd);
 
     // If current digest computation failed, assume stale to be safe
     if (!currentDigest) {
@@ -715,6 +841,10 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
     const runId = uuidv4();
     const analysisId = runId;
 
+    // Extract scope early — needed for both analysis run creation and diff generation
+    const scopeStart = review.local_scope_start || DEFAULT_SCOPE.start;
+    const scopeEnd = review.local_scope_end || DEFAULT_SCOPE.end;
+
     // Create DB analysis_runs record immediately so it's queryable for polling
     const analysisRunRepo = new AnalysisRunRepository(db);
     const levelsConfig = parseEnabledLevels(requestEnabledLevels, requestSkipLevel3);
@@ -730,7 +860,9 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
         requestInstructions,
         headSha: review.local_head_sha || null,
         configType: 'single',
-        levelsConfig
+        levelsConfig,
+        scopeStart,
+        scopeEnd
       });
     } catch (error) {
       logger.error('Failed to create analysis run record:', error);
@@ -770,20 +902,37 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
 
     // Build local review metadata for the analyzer
     // The analyzer uses base_sha and head_sha for git diff commands
-    // For local review, we use HEAD as both since we're diffing working directory
+    // When branch is in scope, base_sha is the merge-base; otherwise, HEAD
+    const hasBranch = includesBranch(scopeStart);
+    let analysisBaseSha = review.local_head_sha;
+    if (hasBranch && review.local_base_branch) {
+      try {
+        analysisBaseSha = await findMergeBase(localPath, review.local_base_branch);
+      } catch {
+        // Fall back to HEAD
+      }
+    }
     const localMetadata = {
       id: reviewId,
-      repository: review.repository,  // Include repository for context display
-      title: `Local changes in ${repository}`,
-      description: `Reviewing uncommitted changes in ${localPath}`,
-      base_sha: review.local_head_sha,  // HEAD commit
-      head_sha: review.local_head_sha,  // HEAD commit (diff is against working directory)
+      repository: review.repository,
+      title: hasBranch
+        ? `Branch changes: ${review.local_base_branch}..HEAD`
+        : `Local changes in ${repository}`,
+      description: hasBranch
+        ? `Reviewing committed changes on branch against ${review.local_base_branch}`
+        : `Reviewing uncommitted changes in ${localPath}`,
+      base_sha: analysisBaseSha,
+      head_sha: review.local_head_sha,
       reviewType: 'local'
     };
 
     // Get changed files for local mode path validation
-    // This is critical for local mode since git diff HEAD...HEAD returns nothing
-    const changedFiles = await analyzer.getLocalChangedFiles(localPath);
+    // When branch is in scope, pass null so analyzer falls through to getChangedFilesList
+    // which correctly uses git diff base_sha...head_sha --name-only
+    const hasStaged = scopeIncludes(scopeStart, scopeEnd, 'staged');
+    const changedFiles = hasBranch
+      ? null
+      : await analyzer.getLocalChangedFiles(localPath, { includeStaged: hasStaged });
 
     // Log analysis start
     logger.section(`Local AI Analysis Request - Review #${reviewId}`);
@@ -793,7 +942,7 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
     logger.log('API', `Provider: ${selectedProvider}`, 'cyan');
     logger.log('API', `Model: ${selectedModel}`, 'cyan');
     logger.log('API', `Tier: ${tier}`, 'cyan');
-    logger.log('API', `Changed files: ${changedFiles.length}`, 'cyan');
+    logger.log('API', `Changed files: ${changedFiles ? changedFiles.length : '(branch mode)'}`, 'cyan');
     if (combinedInstructions) {
       logger.log('API', `Custom instructions: ${combinedInstructions.length} chars`, 'cyan');
     }
@@ -964,6 +1113,9 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
 
     // Check if HEAD has changed
     const { getHeadSha } = require('../local-review');
+    const scopeStart = review.local_scope_start || DEFAULT_SCOPE.start;
+    const scopeEnd = review.local_scope_end || DEFAULT_SCOPE.end;
+    const hasBranch = includesBranch(scopeStart);
     let currentHeadSha;
     let sessionChanged = false;
     let newSessionId = null;
@@ -972,35 +1124,45 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
       currentHeadSha = await getHeadSha(localPath);
 
       if (originalHeadSha && currentHeadSha !== originalHeadSha) {
-        sessionChanged = true;
         logger.log('API', `HEAD changed: ${originalHeadSha.substring(0, 7)} -> ${currentHeadSha.substring(0, 7)}`, 'yellow');
 
-        // Check if a session already exists for the new HEAD
-        const existingSession = await reviewRepo.getLocalReview(localPath, currentHeadSha);
-        if (existingSession) {
-          newSessionId = existingSession.id;
-          logger.log('API', `Existing session found for new HEAD: ${newSessionId}`, 'cyan');
+        if (hasBranch) {
+          // Branch scope: session persists across HEAD changes — just update the SHA
+          await reviewRepo.updateLocalHeadSha(reviewId, currentHeadSha);
+          logger.log('API', `Updated HEAD SHA on branch-scope session ${reviewId}`, 'cyan');
+          // sessionChanged stays false — no redirect needed
         } else {
-          // Create a new session for the new HEAD
-          const { getRepositoryName } = require('../local-review');
-          const repository = await getRepositoryName(localPath);
-          newSessionId = await reviewRepo.upsertLocalReview({
-            localPath: localPath,
-            localHeadSha: currentHeadSha,
-            repository
-          });
-          logger.log('API', `Created new session for new HEAD: ${newSessionId}`, 'cyan');
+          // Non-branch scope: HEAD change means a new session
+          sessionChanged = true;
+
+          // Check if a session already exists for the new HEAD
+          const existingSession = await reviewRepo.getLocalReview(localPath, currentHeadSha);
+          if (existingSession) {
+            newSessionId = existingSession.id;
+            logger.log('API', `Existing session found for new HEAD: ${newSessionId}`, 'cyan');
+          } else {
+            // Create a new session for the new HEAD
+            const { getRepositoryName } = require('../local-review');
+            const repository = await getRepositoryName(localPath);
+            newSessionId = await reviewRepo.upsertLocalReview({
+              localPath: localPath,
+              localHeadSha: currentHeadSha,
+              repository,
+              scopeStart,
+              scopeEnd
+            });
+            logger.log('API', `Created new session for new HEAD: ${newSessionId}`, 'cyan');
+          }
         }
       }
     } catch (headError) {
       logger.warn(`Could not check HEAD SHA: ${headError.message}`);
     }
 
-    // Regenerate the diff from the working directory
-    const { diff, stats } = await generateLocalDiff(localPath);
-
-    // Compute fresh digest for the new diff
-    const digest = await computeLocalDiffDigest(localPath);
+    const scopedResult = await generateScopedDiff(localPath, scopeStart, scopeEnd, review.local_base_branch);
+    const diff = scopedResult.diff;
+    const stats = scopedResult.stats;
+    const digest = await computeScopedDigest(localPath, scopeStart, scopeEnd);
 
     // Update the stored diff data for the appropriate session
     const targetSessionId = sessionChanged ? newSessionId : reviewId;
@@ -1013,7 +1175,7 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
       logger.warn(`Could not persist diff to database: ${persistError.message}`);
     }
 
-    logger.success(`Diff refreshed: ${stats.unstagedChanges} unstaged, ${stats.untrackedFiles} untracked${stats.stagedChanges > 0 ? ` (${stats.stagedChanges} staged excluded)` : ''}`);
+    logger.success(`Diff refreshed (scope ${scopeStart}–${scopeEnd}): ${stats.trackedChanges || 0} file(s)`);
 
     res.json({
       success: true,
@@ -1035,6 +1197,169 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
     res.status(500).json({
       error: 'Failed to refresh diff: ' + error.message
     });
+  }
+});
+
+/**
+ * Set the scope range for a local review.
+ * Validates scope, detects baseBranch if needed, regenerates diff.
+ */
+router.post('/api/local/:reviewId/set-scope', async (req, res) => {
+  try {
+    const reviewId = parseInt(req.params.reviewId);
+
+    if (isNaN(reviewId) || reviewId <= 0) {
+      return res.status(400).json({ error: 'Invalid review ID' });
+    }
+
+    const { scopeStart, scopeEnd, baseBranch: requestBaseBranch } = req.body || {};
+
+    if (!scopeStart || !scopeEnd) {
+      return res.status(400).json({ error: 'scopeStart and scopeEnd are required' });
+    }
+
+    if (!isValidScope(scopeStart, scopeEnd)) {
+      return res.status(400).json({ error: `Invalid scope range: ${scopeStart}–${scopeEnd}` });
+    }
+
+    const db = req.app.get('db');
+    const reviewRepo = new ReviewRepository(db);
+    const review = await reviewRepo.getLocalReviewById(reviewId);
+
+    if (!review) {
+      return res.status(404).json({ error: `Local review #${reviewId} not found` });
+    }
+
+    const localPath = review.local_path;
+    if (!localPath) {
+      return res.status(400).json({ error: 'Local review is missing path information' });
+    }
+
+    // When branch is in scope, resolve baseBranch
+    let baseBranch = requestBaseBranch || null;
+    if (includesBranch(scopeStart)) {
+      if (!baseBranch) {
+        const { getCurrentBranch } = require('../local-review');
+        const currentBranch = await getCurrentBranch(localPath);
+        const { detectBaseBranch } = require('../git/base-branch');
+        const config = req.app.get('config') || {};
+        const token = getGitHubToken(config);
+        const detection = await detectBaseBranch(localPath, currentBranch, {
+          repository: review.repository,
+          enableGraphite: config.enable_graphite === true,
+          _deps: token ? { getGitHubToken: () => token } : undefined
+        });
+        if (!detection) {
+          return res.status(400).json({ error: 'Could not detect base branch' });
+        }
+        baseBranch = detection.baseBranch;
+      }
+
+      // Validate branch name to prevent shell injection
+      if (!/^[\w.\-/]+$/.test(baseBranch)) {
+        return res.status(400).json({ error: 'Invalid branch name' });
+      }
+    }
+
+    logger.log('API', `Setting scope on review #${reviewId}: ${scopeStart}–${scopeEnd}${baseBranch ? ` (base: ${baseBranch})` : ''}`, 'cyan');
+
+    // Generate diff for the new scope
+    const { diff, stats, mergeBaseSha } = await generateScopedDiff(localPath, scopeStart, scopeEnd, baseBranch);
+
+    // Get the HEAD SHA for staleness tracking
+    const { getHeadSha } = require('../local-review');
+    const headSha = await getHeadSha(localPath);
+
+    // Update the review record with new scope
+    await reviewRepo.updateLocalScope(reviewId, scopeStart, scopeEnd, baseBranch);
+    await reviewRepo.updateLocalHeadSha(reviewId, headSha);
+
+    // Auto-name review from first commit subject when branch is newly in scope
+    const oldScopeStart = review.local_scope_start || DEFAULT_SCOPE.start;
+    if (!review.name && includesBranch(scopeStart) && !includesBranch(oldScopeStart) && baseBranch) {
+      const firstSubject = await getFirstCommitSubject(localPath, baseBranch);
+      if (firstSubject) {
+        await reviewRepo.updateReview(reviewId, { name: firstSubject.slice(0, 200) });
+      }
+    }
+
+    // Compute digest
+    const digest = await computeScopedDigest(localPath, scopeStart, scopeEnd);
+
+    // Store diff in cache and DB
+    setLocalReviewDiff(reviewId, { diff, stats, digest });
+    await reviewRepo.saveLocalDiff(reviewId, { diff, stats, digest });
+
+    logger.success(`Review #${reviewId} scope set to ${scopeStart}–${scopeEnd}: ${stats.trackedChanges || 0} file(s) changed`);
+
+    res.json({
+      success: true,
+      scopeStart,
+      scopeEnd,
+      localMode: includesBranch(scopeStart) ? 'branch' : 'uncommitted',
+      baseBranch,
+      mergeBaseSha,
+      stats: {
+        trackedChanges: stats.trackedChanges || 0,
+        untrackedFiles: stats.untrackedFiles || 0,
+        stagedChanges: stats.stagedChanges || 0,
+        unstagedChanges: stats.unstagedChanges || 0
+      }
+    });
+
+  } catch (error) {
+    logger.error(`Error setting scope: ${error.message}`);
+    res.status(500).json({ error: 'Failed to set scope: ' + error.message });
+  }
+});
+
+/**
+ * Save "don't ask again" preference for branch review
+ */
+router.post('/api/local/:reviewId/branch-review-preference', async (req, res) => {
+  try {
+    const reviewId = parseInt(req.params.reviewId);
+
+    if (isNaN(reviewId) || reviewId <= 0) {
+      return res.status(400).json({ error: 'Invalid review ID' });
+    }
+
+    const { preference } = req.body || {};
+    if (![0, 1, -1].includes(preference)) {
+      return res.status(400).json({ error: 'Invalid preference value. Must be 0, 1, or -1.' });
+    }
+
+    const db = req.app.get('db');
+    const reviewRepo = new ReviewRepository(db);
+    const review = await reviewRepo.getLocalReviewById(reviewId);
+
+    if (!review) {
+      return res.status(404).json({ error: `Local review #${reviewId} not found` });
+    }
+
+    const repository = review.repository;
+    if (!repository || !repository.includes('/')) {
+      return res.status(400).json({ error: 'Cannot save preference: no repository identified' });
+    }
+
+    const repoSettingsRepo = new RepoSettingsRepository(db);
+    const existing = await repoSettingsRepo.getRepoSettings(repository);
+
+    if (existing) {
+      await run(db, `
+        UPDATE repo_settings SET auto_branch_review = ?, updated_at = ? WHERE repository = ? COLLATE NOCASE
+      `, [preference, new Date().toISOString(), repository]);
+    } else {
+      await run(db, `
+        INSERT INTO repo_settings (repository, auto_branch_review, created_at, updated_at) VALUES (?, ?, ?, ?)
+      `, [repository, preference, new Date().toISOString(), new Date().toISOString()]);
+    }
+
+    res.json({ success: true, preference });
+
+  } catch (error) {
+    logger.error(`Error saving branch review preference: ${error.message}`);
+    res.status(500).json({ error: 'Failed to save preference' });
   }
 });
 
@@ -1180,21 +1505,39 @@ router.post('/api/local/:reviewId/analyses/council', async (req, res) => {
 
     const localPath = review.local_path;
 
+    const councilScopeStart = review.local_scope_start || DEFAULT_SCOPE.start;
+    const councilScopeEnd = review.local_scope_end || DEFAULT_SCOPE.end;
+    const councilHasBranch = includesBranch(councilScopeStart);
+
+    // Compute merge-base when branch is in scope
+    let analysisBaseSha = review.local_head_sha;
+    if (councilHasBranch && review.local_base_branch) {
+      try {
+        analysisBaseSha = await findMergeBase(localPath, review.local_base_branch);
+      } catch {
+        // Fall back to HEAD
+      }
+    }
+
     const prMetadata = {
       reviewType: 'local',
       repository: review.repository,
-      title: review.name || 'Local changes',
+      title: review.name || (councilHasBranch ? `Branch changes: ${review.local_base_branch}..HEAD` : 'Local changes'),
       description: '',
+      base_sha: analysisBaseSha,
       head_sha: review.local_head_sha
     };
 
     const analyzer = new Analyzer(db, 'council', 'council');
-    const changedFiles = await analyzer.getLocalChangedFiles(localPath);
+    const councilHasStaged = scopeIncludes(councilScopeStart, councilScopeEnd, 'staged');
+    const changedFiles = councilHasBranch
+      ? null
+      : await analyzer.getLocalChangedFiles(localPath, { includeStaged: councilHasStaged });
 
     // Generate and cache diff
     try {
-      const diffResult = await generateLocalDiff(localPath);
-      const digest = await computeLocalDiffDigest(localPath);
+      const diffResult = await generateScopedDiff(localPath, councilScopeStart, councilScopeEnd, review.local_base_branch);
+      const digest = await computeScopedDigest(localPath, councilScopeStart, councilScopeEnd);
       setLocalReviewDiff(reviewId, { diff: diffResult.diff, stats: diffResult.stats, digest });
     } catch (diffError) {
       logger.warn(`Could not generate diff for local council review ${reviewId}: ${diffError.message}`);
@@ -1226,7 +1569,7 @@ router.post('/api/local/:reviewId/analyses/council', async (req, res) => {
         headSha: review.local_head_sha,
         logLabel: `local review #${reviewId}`,
         initialStatusExtra: { reviewId, reviewType: 'local' },
-        runUpdateExtra: { filesAnalyzed: changedFiles.length }
+        runUpdateExtra: { filesAnalyzed: changedFiles ? changedFiles.length : 0 }
       },
       councilConfig,
       councilId,
