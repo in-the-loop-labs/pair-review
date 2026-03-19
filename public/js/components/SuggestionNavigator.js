@@ -375,6 +375,8 @@ class SuggestionNavigator {
           const diffRow = minimizer.findDiffRowFor(suggestionEl);
           if (diffRow) {
             diffRow.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+          } else {
+            suggestionEl.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
           }
         } else {
           suggestionEl.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });

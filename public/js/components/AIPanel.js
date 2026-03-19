@@ -1004,9 +1004,7 @@ class AIPanel {
                 if (minimizer?.active) {
                     // Comments are minimized — scroll to the parent diff line instead
                     const diffRow = minimizer.findDiffRowFor(targetSuggestion);
-                    if (diffRow) {
-                        diffRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    }
+                    (diffRow || targetSuggestion).scrollIntoView({ behavior: 'smooth', block: 'center' });
                 } else {
                     targetSuggestion.scrollIntoView({ behavior: 'smooth', block: 'center' });
                 }
@@ -1074,9 +1072,7 @@ class AIPanel {
                 if (minimizer?.active && !isFileLevel) {
                     // Comments are minimized — scroll to the parent diff line instead
                     const diffRow = minimizer.findDiffRowFor(targetElement);
-                    if (diffRow) {
-                        diffRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    }
+                    (diffRow || targetElement).scrollIntoView({ behavior: 'smooth', block: 'center' });
                 } else {
                     targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
                 }

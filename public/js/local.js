@@ -803,6 +803,7 @@ class LocalManager {
       if (diffOptionsBtn && window.DiffOptionsDropdown) {
         manager.diffOptionsDropdown = new window.DiffOptionsDropdown(diffOptionsBtn, {
           onToggleWhitespace: (hide) => manager.handleWhitespaceToggle(hide),
+          onToggleMinimize: (minimized) => manager.handleMinimizeToggle(minimized),
           onScopeChange: (start, end) => this._handleScopeChange(start, end),
           initialScope: { start: scopeStart, end: scopeEnd },
           branchAvailable

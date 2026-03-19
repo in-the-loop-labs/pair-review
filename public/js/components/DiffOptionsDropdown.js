@@ -12,6 +12,12 @@
  * _hidePopover() (fixed positioning via getBoundingClientRect, click-outside
  * and Escape to dismiss, opacity+transform animation).
  *
+ * IMPORTANT: This dropdown is constructed in BOTH pr.js and local.js.
+ * LocalManager (local.js) destroys the pr.js instance and recreates it
+ * with scope-selector support. Any new callback added here MUST be
+ * threaded through both construction sites or it will silently no-op
+ * in local mode.
+ *
  * Usage:
  *   const dropdown = new DiffOptionsDropdown(
  *     document.getElementById('diff-options-btn'),

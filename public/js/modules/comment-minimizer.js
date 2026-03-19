@@ -86,7 +86,7 @@ class CommentMinimizer {
     for (const row of suggestionRows) {
       const diffRow = this._findDiffRowFor(row);
       if (!diffRow) continue;
-      const entry = lineMap.get(diffRow) || { hasUser: false, hasAI: false, userCount: 0, aiCount: 0 };
+      const entry = lineMap.get(diffRow) || { hasUser: false, hasAI: false, hasAdopted: false, userCount: 0, aiCount: 0, adoptedCount: 0 };
       entry.hasAI = true;
       // Count individual suggestion divs within the row (may have multiple)
       const count = row.querySelectorAll('.ai-suggestion').length;
