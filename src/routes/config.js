@@ -55,6 +55,7 @@ router.get('/api/config', (req, res) => {
     chat_enable_shortcuts: config.chat?.enable_shortcuts !== false,
     pi_available: getCachedAvailability('pi')?.available || false,
     assisted_by_url: config.assisted_by_url || 'https://github.com/in-the-loop-labs/pair-review',
+    enable_graphite: config.enable_graphite === true,
     // Share configuration for external review viewers.
     // - url: The base URL of the external share site
     // - method: Plumbed through for future use (e.g., POST-based share flows).

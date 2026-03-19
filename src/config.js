@@ -34,7 +34,8 @@ const DEFAULT_CONFIG = {
   providers: {},  // Custom AI analysis provider configurations (overrides built-in defaults)
   chat_providers: {},  // Custom chat provider configurations (overrides built-in defaults)
   monorepos: {},  // Monorepo configurations: { "owner/repo": { path: "~/path/to/clone" } }
-  assisted_by_url: "https://github.com/in-the-loop-labs/pair-review"  // URL for "Review assisted by" footer link
+  assisted_by_url: "https://github.com/in-the-loop-labs/pair-review",  // URL for "Review assisted by" footer link
+  enable_graphite: false  // When true, shows Graphite links alongside GitHub links
 };
 
 /**

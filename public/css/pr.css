@@ -6122,15 +6122,26 @@ body::before {
   justify-content: center;
 }
 
-/* Icon buttons within the icon group have special styling (no border, transparent bg)
-   This selector is more specific than .header .btn-icon to override properly */
-.header-icon-group .btn-icon {
-  border: none;
+/* Icon buttons within the icon group have special styling (no border, transparent bg).
+   Uses high-specificity selector to override the generic .btn-icon rule (council selector).
+   The [data-theme] prefix ensures this also beats dark-mode overrides like
+   [data-theme="dark"] .btn-icon which would otherwise re-apply a visible border
+   on <button> elements (browsers treat border inheritance differently for
+   <button> vs <a> when specificity is close). */
+[data-theme] .header-icon-group .btn.btn-icon {
+  border: 1px solid transparent;
+  border-color: transparent;
   background: transparent;
+  color: var(--color-text-tertiary);
+  width: 36px;
+  height: 36px;
+  box-sizing: border-box;
 }
 
-.header-icon-group .btn-icon:hover {
+[data-theme] .header-icon-group .btn.btn-icon:hover {
   background: var(--color-bg-tertiary);
+  border-color: var(--color-border-primary);
+  color: var(--color-text-primary);
 }
 
 .header .btn-secondary {
