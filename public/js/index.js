@@ -316,7 +316,7 @@
     var graphiteLinkHtml = '';
     if (window.__pairReview?.enableGraphite && pr.html_url) {
       // Derive from html_url to preserve GitHub's original casing (Graphite URLs are case-sensitive)
-      var graphiteUrl = pr.html_url.replace(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/, 'https://app.graphite.com/github/pr/$1/$2/$3');
+      var graphiteUrl = window.__pairReview.toGraphiteUrl(pr.html_url);
       graphiteLinkHtml =
         '<a href="' + escapeHtml(graphiteUrl) + '" target="_blank" rel="noopener" class="btn-github-link" title="Open on Graphite">' +
           '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M9.7932,1.3079L3.101,3.101l-1.7932,6.6921,4.899,4.899,6.6921-1.7931,1.7932-6.6921L9.7932,1.3079Zm1.0936,11.6921H5.1133l-2.8867-5L5.1133,3h5.7735l2.8867,5-2.8867,5Z"/><polygon points="11.3504 4.6496 6.7737 3.4232 3.4232 6.7737 4.6496 11.3504 9.2263 12.5768 12.5768 9.2263 11.3504 4.6496"/></svg>' +
@@ -761,7 +761,7 @@
             '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg>' +
           '</a>' +
           (window.__pairReview?.enableGraphite && worktree.html_url
-            ? '<a href="' + escapeHtml(worktree.html_url.replace(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/, 'https://app.graphite.com/github/pr/$1/$2/$3')) + '" target="_blank" rel="noopener" class="btn-github-link" title="Open on Graphite">' +
+            ? '<a href="' + escapeHtml(window.__pairReview.toGraphiteUrl(worktree.html_url)) + '" target="_blank" rel="noopener" class="btn-github-link" title="Open on Graphite">' +
                 '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M9.7932,1.3079L3.101,3.101l-1.7932,6.6921,4.899,4.899,6.6921-1.7931,1.7932-6.6921L9.7932,1.3079Zm1.0936,11.6921H5.1133l-2.8867-5L5.1133,3h5.7735l2.8867,5-2.8867,5Z"/><polygon points="11.3504 4.6496 6.7737 3.4232 3.4232 6.7737 4.6496 11.3504 9.2263 12.5768 12.5768 9.2263 11.3504 4.6496"/></svg>' +
               '</a>'
             : '') +

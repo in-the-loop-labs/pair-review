@@ -911,7 +911,7 @@ class PRManager {
     const graphiteLink = document.getElementById('graphite-link');
     if (graphiteLink && pr.html_url && window.__pairReview?.enableGraphite) {
       // Derive from html_url to preserve GitHub's original casing (Graphite URLs are case-sensitive)
-      const graphiteUrl = pr.html_url.replace(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/, 'https://app.graphite.com/github/pr/$1/$2/$3');
+      const graphiteUrl = window.__pairReview.toGraphiteUrl(pr.html_url);
       graphiteLink.href = graphiteUrl;
       graphiteLink.style.display = '';
     }

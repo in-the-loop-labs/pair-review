@@ -17,6 +17,12 @@
                 state = anyAvailable ? 'available' : 'unavailable';
             }
             window.__pairReview = window.__pairReview || {};
+            window.__pairReview.toGraphiteUrl = function(githubUrl) {
+                return githubUrl.replace(
+                    /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/,
+                    'https://app.graphite.com/github/pr/$1/$2/$3'
+                );
+            };
             window.__pairReview.chatProvider = config.chat_provider || 'pi';
             window.__pairReview.chatProviders = chatProviders;
             window.__pairReview.share = config.share || null;
