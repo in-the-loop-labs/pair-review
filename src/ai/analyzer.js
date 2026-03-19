@@ -670,20 +670,18 @@ Do NOT create suggestions for any files not in this list. If you cannot find iss
   }
 
   /**
-   * Get list of changed files for local mode analysis
-   * Includes unstaged changes and untracked files only.
-   *
-   * Design note: Staged files are intentionally excluded. Local mode focuses on
-   * reviewing uncommitted working directory changes before they are staged.
-   * Staged changes are considered "ready to commit" and outside the scope of
-   * local review at this point.
+   * Get list of changed files for local mode analysis.
+   * By default includes unstaged changes and untracked files.
+   * When `options.includeStaged` is true, also includes staged (git add'd) files.
    *
    * @param {string} localPath - Path to the local git repository
+   * @param {Object} [options]
+   * @param {boolean} [options.includeStaged] - Also include staged files
    * @returns {Promise<Array<string>>} List of changed file paths
    */
-  async getLocalChangedFiles(localPath) {
+  async getLocalChangedFiles(localPath, options = {}) {
     try {
-      // Get modified tracked files (unstaged only - staged files are excluded by design)
+      // Get modified tracked files (unstaged)
       const { stdout: unstaged } = await execPromise(
         'git diff --name-only',
         { cwd: localPath }
@@ -695,11 +693,19 @@ Do NOT create suggestions for any files not in this list. If you cannot find iss
         { cwd: localPath }
       );
 
-      // Combine and dedupe (no staged files - see design note above)
-      // Filter empty strings immediately after split to handle empty git output
       const unstagedFiles = unstaged.trim().split('\n').filter(f => f.length > 0);
       const untrackedFiles = untracked.trim().split('\n').filter(f => f.length > 0);
       const allFiles = [...unstagedFiles, ...untrackedFiles];
+
+      // Include staged files when scope includes staged
+      if (options.includeStaged) {
+        const { stdout: staged } = await execPromise(
+          'git diff --cached --name-only',
+          { cwd: localPath }
+        );
+        const stagedFiles = staged.trim().split('\n').filter(f => f.length > 0);
+        allFiles.push(...stagedFiles);
+      }
 
       return [...new Set(allFiles)];
     } catch (error) {

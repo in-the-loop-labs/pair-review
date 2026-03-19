@@ -926,9 +926,10 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
     // Get changed files for local mode path validation
     // When branch is in scope, pass null so analyzer falls through to getChangedFilesList
     // which correctly uses git diff base_sha...head_sha --name-only
-    const changedFiles = (hasBranch || scopeIncludes(scopeStart, scopeEnd, 'staged'))
+    const hasStaged = scopeIncludes(scopeStart, scopeEnd, 'staged');
+    const changedFiles = hasBranch
       ? null
-      : await analyzer.getLocalChangedFiles(localPath);
+      : await analyzer.getLocalChangedFiles(localPath, { includeStaged: hasStaged });
 
     // Log analysis start
     logger.section(`Local AI Analysis Request - Review #${reviewId}`);
@@ -1524,10 +1525,10 @@ router.post('/api/local/:reviewId/analyses/council', async (req, res) => {
     };
 
     const analyzer = new Analyzer(db, 'council', 'council');
-    // When branch or staged is in scope, pass null so analyzer falls through to getChangedFilesList
-    const changedFiles = (councilHasBranch || scopeIncludes(councilScopeStart, councilScopeEnd, 'staged'))
+    const councilHasStaged = scopeIncludes(councilScopeStart, councilScopeEnd, 'staged');
+    const changedFiles = councilHasBranch
       ? null
-      : await analyzer.getLocalChangedFiles(localPath);
+      : await analyzer.getLocalChangedFiles(localPath, { includeStaged: councilHasStaged });
 
     // Generate and cache diff
     try {
