@@ -237,7 +237,8 @@ router.get('/api/worktrees/recent', async (req, res) => {
       branch: w.branch,
       head_branch: w.head_branch || w.branch,
       last_accessed_at: w.last_accessed_at,
-      created_at: w.created_at
+      created_at: w.created_at,
+      html_url: w.html_url || null
     }));
 
     res.json({
