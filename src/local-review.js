@@ -800,7 +800,8 @@ async function handleLocalReview(targetPath, flags = {}) {
       repository,
       diff,
       untrackedFiles,
-      githubToken: getGitHubToken(config)
+      githubToken: getGitHubToken(config),
+      enableGraphite: config.enable_graphite === true
     });
     if (branchInfo) {
       console.log(`\nNo uncommitted changes, but branch has ${branchInfo.commitCount} commit(s) ahead of ${branchInfo.baseBranch}.`);
@@ -981,10 +982,11 @@ async function getFirstCommitSubject(repoPath, baseBranch) {
  * @param {string} [options.diff] - The uncommitted diff content (empty = eligible)
  * @param {Array} [options.untrackedFiles] - Untracked files array (empty = eligible)
  * @param {string} [options.githubToken] - Resolved GitHub token for PR lookup
+ * @param {boolean} [options.enableGraphite] - When true, try Graphite CLI for parent branch
  * @returns {Promise<{baseBranch: string, commitCount: number, source: string, prNumber?: number}|null>}
  */
 async function detectAndBuildBranchInfo(repoPath, branch, options = {}) {
-  const { repository, diff, untrackedFiles, githubToken } = options;
+  const { repository, diff, untrackedFiles, githubToken, enableGraphite } = options;
 
   // Guard: detached HEAD, has uncommitted changes, or has untracked files
   if (branch === 'HEAD') return null;
@@ -996,6 +998,7 @@ async function detectAndBuildBranchInfo(repoPath, branch, options = {}) {
     const depsOverride = githubToken ? { getGitHubToken: () => githubToken } : undefined;
     const detection = await detectBaseBranch(repoPath, branch, {
       repository,
+      enableGraphite,
       _deps: depsOverride
     });
     if (!detection) return null;

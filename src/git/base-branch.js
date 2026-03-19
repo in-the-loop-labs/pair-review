@@ -26,6 +26,7 @@ const defaults = {
  * @param {string} currentBranch - Current branch name (or 'HEAD' if detached)
  * @param {Object} [options]
  * @param {string} [options.repository] - owner/repo string (needed for GitHub lookup)
+ * @param {boolean} [options.enableGraphite] - When true, try Graphite CLI for parent branch
  * @param {Object} [options._deps] - Dependency overrides for testing
  * @returns {Promise<{baseBranch: string, source: string, prNumber?: number}|null>}
  */
@@ -37,9 +38,11 @@ async function detectBaseBranch(repoPath, currentBranch, options = {}) {
     return null;
   }
 
-  // 1. Graphite
-  const graphiteResult = tryGraphite(repoPath, currentBranch, deps);
-  if (graphiteResult) return graphiteResult;
+  // 1. Graphite (only when enabled via config)
+  if (options.enableGraphite) {
+    const graphiteResult = tryGraphite(repoPath, currentBranch, deps);
+    if (graphiteResult) return graphiteResult;
+  }
 
   // 2. GitHub PR
   const ghResult = await tryGitHubPR(repoPath, currentBranch, options.repository, deps);

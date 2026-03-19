@@ -39,7 +39,7 @@ describe('detectBaseBranch', () => {
     });
     const deps = createMockDeps({ execSync });
 
-    const result = await detectBaseBranch('/repo', 'feature-child', { _deps: deps });
+    const result = await detectBaseBranch('/repo', 'feature-child', { enableGraphite: true, _deps: deps });
     expect(result).toEqual({ baseBranch: 'feature-parent', source: 'graphite' });
   });
 
@@ -52,8 +52,23 @@ describe('detectBaseBranch', () => {
     });
     const deps = createMockDeps({ execSync });
 
-    const result = await detectBaseBranch('/repo', 'my-branch', { _deps: deps });
+    const result = await detectBaseBranch('/repo', 'my-branch', { enableGraphite: true, _deps: deps });
     expect(result).toEqual({ baseBranch: 'main', source: 'graphite' });
+  });
+
+  it('skips Graphite when enableGraphite is false', async () => {
+    const execSync = vi.fn((cmd) => {
+      // gt is installed, but should NOT be called when enableGraphite is false
+      if (cmd === 'git remote show origin') return '  HEAD branch: main\n';
+      if (cmd.includes('rev-parse --verify')) return 'abc123\n';
+      throw new Error(`unexpected: ${cmd}`);
+    });
+    const deps = createMockDeps({ execSync });
+
+    const result = await detectBaseBranch('/repo', 'feature', { _deps: deps });
+    expect(result).toEqual({ baseBranch: 'main', source: 'default-branch' });
+    // Verify gt commands were never called
+    expect(execSync).not.toHaveBeenCalledWith('which gt', expect.anything());
   });
 
   it('skips Graphite gracefully when gt is not installed', async () => {
@@ -66,7 +81,7 @@ describe('detectBaseBranch', () => {
     });
     const deps = createMockDeps({ execSync });
 
-    const result = await detectBaseBranch('/repo', 'feature', { _deps: deps });
+    const result = await detectBaseBranch('/repo', 'feature', { enableGraphite: true, _deps: deps });
     expect(result).toEqual({ baseBranch: 'main', source: 'default-branch' });
   });
 

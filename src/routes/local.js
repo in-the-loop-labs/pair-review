@@ -314,7 +314,8 @@ router.post('/api/local/start', async (req, res) => {
     const branchInfo = await detectAndBuildBranchInfo(repoPath, branch, {
       repository,
       diff,
-      githubToken: getGitHubToken(config)
+      githubToken: getGitHubToken(config),
+      enableGraphite: config.enable_graphite === true
     });
 
     // Persist to in-memory Map
@@ -422,7 +423,8 @@ router.get('/api/local/:reviewId', async (req, res) => {
       const config = req.app.get('config') || {};
       branchInfo = await detectAndBuildBranchInfo(review.local_path, branchName, {
         repository: repositoryName,
-        githubToken: getGitHubToken(config)
+        githubToken: getGitHubToken(config),
+        enableGraphite: config.enable_graphite === true
       });
     }
 
@@ -457,6 +459,7 @@ router.get('/api/local/:reviewId', async (req, res) => {
         const depsOverride = getGitHubToken(config) ? { getGitHubToken: () => getGitHubToken(config) } : undefined;
         const detection = await detectBaseBranch(review.local_path, branchName, {
           repository: repositoryName,
+          enableGraphite: config.enable_graphite === true,
           _deps: depsOverride
         });
         if (detection) {
@@ -1243,6 +1246,7 @@ router.post('/api/local/:reviewId/set-scope', async (req, res) => {
         const token = getGitHubToken(config);
         const detection = await detectBaseBranch(localPath, currentBranch, {
           repository: review.repository,
+          enableGraphite: config.enable_graphite === true,
           _deps: token ? { getGitHubToken: () => token } : undefined
         });
         if (!detection) {
