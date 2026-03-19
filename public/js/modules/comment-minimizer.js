@@ -248,6 +248,7 @@ class CommentMinimizer {
     return this._findDiffRowFor(commentRow);
   }
 
+  // TODO: expose via API route so chat can programmatically expand findings when discussing them
   /**
    * Expand comments for a given element so it becomes visible when minimized.
    * Call this before scrolling to a comment/suggestion row that may be hidden.
