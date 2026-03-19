@@ -1474,6 +1474,7 @@ class LocalManager {
         const manager = window.prManager;
         if (manager?.diffOptionsDropdown) {
           manager.diffOptionsDropdown.branchAvailable = true;
+          manager.diffOptionsDropdown.scope = { start: 'branch', end: newEnd };
         }
 
         closeDialog();
