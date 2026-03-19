@@ -156,7 +156,8 @@ router.get('/api/worktrees/recent', async (req, res) => {
           w.created_at,
           pm.title as pr_title,
           pm.author,
-          pm.head_branch
+          pm.head_branch,
+          json_extract(pm.pr_data, '$.html_url') as html_url
         FROM worktrees w
         LEFT JOIN pr_metadata pm ON w.pr_number = pm.pr_number AND w.repository = pm.repository COLLATE NOCASE
         WHERE w.last_accessed_at < ?
@@ -176,7 +177,8 @@ router.get('/api/worktrees/recent', async (req, res) => {
           w.created_at,
           pm.title as pr_title,
           pm.author,
-          pm.head_branch
+          pm.head_branch,
+          json_extract(pm.pr_data, '$.html_url') as html_url
         FROM worktrees w
         LEFT JOIN pr_metadata pm ON w.pr_number = pm.pr_number AND w.repository = pm.repository COLLATE NOCASE
         ORDER BY w.last_accessed_at DESC
@@ -235,7 +237,8 @@ router.get('/api/worktrees/recent', async (req, res) => {
       branch: w.branch,
       head_branch: w.head_branch || w.branch,
       last_accessed_at: w.last_accessed_at,
-      created_at: w.created_at
+      created_at: w.created_at,
+      html_url: w.html_url || null
     }));
 
     res.json({

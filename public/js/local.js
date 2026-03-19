@@ -588,6 +588,12 @@ class LocalManager {
       githubLink.style.display = 'none';
     }
 
+    // Hide Graphite link (no PR to link to in local mode)
+    const graphiteLink = document.getElementById('graphite-link');
+    if (graphiteLink) {
+      graphiteLink.style.display = 'none';
+    }
+
     // Hide refresh button (no remote to refresh from)
     const refreshBtn = document.getElementById('refresh-pr');
     if (refreshBtn) {

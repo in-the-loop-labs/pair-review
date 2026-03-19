@@ -907,6 +907,15 @@ class PRManager {
       githubLink.href = pr.html_url;
     }
 
+    // Update Graphite link (gated on enable_graphite config)
+    const graphiteLink = document.getElementById('graphite-link');
+    if (graphiteLink && pr.html_url && window.__pairReview?.enableGraphite) {
+      // Derive from html_url to preserve GitHub's original casing (Graphite URLs are case-sensitive)
+      const graphiteUrl = window.__pairReview.toGraphiteUrl(pr.html_url);
+      graphiteLink.href = graphiteUrl;
+      graphiteLink.style.display = '';
+    }
+
     // Update settings link
     const settingsLink = document.getElementById('settings-link');
     if (settingsLink && pr.owner && pr.repo) {

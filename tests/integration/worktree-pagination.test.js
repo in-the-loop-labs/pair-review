@@ -42,14 +42,15 @@ function createTestApp(db) {
  * @param {string} opts.accessedAt  - ISO date for last_accessed_at
  * @param {string} [opts.branch]    - Branch name (default: 'feature')
  * @param {string} [opts.path]      - Worktree filesystem path
+ * @param {object} [opts.prData]    - PR data JSON (stored in pr_metadata.pr_data)
  */
-async function insertWorktree(db, { id, prNumber, repository, title, author, accessedAt, branch = 'feature', path = '/tmp/wt' }) {
+async function insertWorktree(db, { id, prNumber, repository, title, author, accessedAt, branch = 'feature', path = '/tmp/wt', prData = null }) {
   const createdAt = accessedAt; // simplify: same as accessed
 
   await run(db, `
-    INSERT OR IGNORE INTO pr_metadata (pr_number, repository, title, author, base_branch, head_branch)
-    VALUES (?, ?, ?, ?, 'main', ?)
-  `, [prNumber, repository, title, author, branch]);
+    INSERT OR IGNORE INTO pr_metadata (pr_number, repository, title, author, base_branch, head_branch, pr_data)
+    VALUES (?, ?, ?, ?, 'main', ?, ?)
+  `, [prNumber, repository, title, author, branch, prData ? JSON.stringify(prData) : null]);
 
   await run(db, `
     INSERT INTO worktrees (id, pr_number, repository, branch, path, created_at, last_accessed_at)
@@ -316,5 +317,42 @@ describe('GET /api/worktrees/recent — pagination', () => {
     expect(page2.body.worktrees).toHaveLength(1);
     expect(page2.body.worktrees[0].pr_number).toBe(5);
     expect(page2.body.hasMore).toBe(false);
+  });
+
+  it('should include html_url from pr_data in the response', async () => {
+    const htmlUrl = 'https://github.com/owner/repo/pull/42';
+    await insertWorktree(db, {
+      id: 'wt-with-url',
+      prNumber: 42,
+      repository: 'owner/repo',
+      title: 'PR with html_url',
+      author: 'user',
+      accessedAt: new Date().toISOString(),
+      prData: { html_url: htmlUrl }
+    });
+
+    const res = await request(app).get('/api/worktrees/recent?limit=10');
+
+    expect(res.status).toBe(200);
+    expect(res.body.worktrees).toHaveLength(1);
+    expect(res.body.worktrees[0].html_url).toBe(htmlUrl);
+  });
+
+  it('should return html_url as null when pr_data has no html_url', async () => {
+    await insertWorktree(db, {
+      id: 'wt-no-url',
+      prNumber: 43,
+      repository: 'owner/repo',
+      title: 'PR without html_url',
+      author: 'user',
+      accessedAt: new Date().toISOString(),
+      prData: { some_field: 'value' }
+    });
+
+    const res = await request(app).get('/api/worktrees/recent?limit=10');
+
+    expect(res.status).toBe(200);
+    expect(res.body.worktrees).toHaveLength(1);
+    expect(res.body.worktrees[0].html_url).toBeNull();
   });
 });
