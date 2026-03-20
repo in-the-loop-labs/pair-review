@@ -34,7 +34,7 @@ describe('detectBaseBranch', () => {
     const execSync = vi.fn((cmd) => {
       if (cmd === 'which gt') return '/usr/local/bin/gt\n';
       if (cmd === 'gt trunk') return 'main\n';
-      if (cmd === 'gt branch parent') return 'feature-parent\n';
+      if (cmd === 'gt parent') return 'feature-parent\n';
       throw new Error(`unexpected: ${cmd}`);
     });
     const deps = createMockDeps({ execSync });
@@ -47,7 +47,7 @@ describe('detectBaseBranch', () => {
     const execSync = vi.fn((cmd) => {
       if (cmd === 'which gt') return '/usr/local/bin/gt\n';
       if (cmd === 'gt trunk') return 'main\n';
-      if (cmd === 'gt branch parent') return 'my-branch\n';
+      if (cmd === 'gt parent') return 'my-branch\n';
       throw new Error(`unexpected: ${cmd}`);
     });
     const deps = createMockDeps({ execSync });
