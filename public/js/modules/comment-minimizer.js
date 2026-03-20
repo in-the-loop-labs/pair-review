@@ -87,10 +87,19 @@ class CommentMinimizer {
       const diffRow = this._findDiffRowFor(row);
       if (!diffRow) continue;
       const entry = lineMap.get(diffRow) || { hasUser: false, hasAI: false, hasAdopted: false, userCount: 0, aiCount: 0, adoptedCount: 0 };
-      entry.hasAI = true;
-      // Count individual suggestion divs within the row (may have multiple)
-      const count = row.querySelectorAll('.ai-suggestion').length;
-      entry.aiCount += count || 1;
+      // Count non-adopted suggestion divs only — adopted ones are already
+      // represented by the adopted comment row (avoid double-counting)
+      const allSuggestions = row.querySelectorAll('.ai-suggestion');
+      let activeCount = 0;
+      for (const s of allSuggestions) {
+        if (!s.dataset?.hiddenForAdoption) {
+          activeCount++;
+        }
+      }
+      if (activeCount > 0) {
+        entry.hasAI = true;
+        entry.aiCount += activeCount;
+      }
       lineMap.set(diffRow, entry);
     }
 
@@ -147,7 +156,7 @@ class CommentMinimizer {
       icons.push(`<span class="indicator-icon indicator-user" title="${info.userCount} comment${info.userCount !== 1 ? 's' : ''}">${CommentMinimizer.PERSON_ICON}</span>`);
     }
     if (info.hasAdopted) {
-      icons.push(`<span class="indicator-icon indicator-adopted" title="${info.adoptedCount} adopted${info.adoptedCount !== 1 ? '' : ''}">${CommentMinimizer.AI_COMMENT_ICON}</span>`);
+      icons.push(`<span class="indicator-icon indicator-adopted" title="${info.adoptedCount} adopted comment${info.adoptedCount !== 1 ? 's' : ''}">${CommentMinimizer.AI_COMMENT_ICON}</span>`);
     }
     if (info.hasAI) {
       icons.push(`<span class="indicator-icon indicator-ai" title="${info.aiCount} suggestion${info.aiCount !== 1 ? 's' : ''}">${CommentMinimizer.SPARKLES_ICON}</span>`);
@@ -160,7 +169,7 @@ class CommentMinimizer {
 
     const totalLabel = [];
     if (info.userCount) totalLabel.push(`${info.userCount} comment${info.userCount !== 1 ? 's' : ''}`);
-    if (info.adoptedCount) totalLabel.push(`${info.adoptedCount} adopted`);
+    if (info.adoptedCount) totalLabel.push(`${info.adoptedCount} adopted comment${info.adoptedCount !== 1 ? 's' : ''}`);
     if (info.aiCount) totalLabel.push(`${info.aiCount} suggestion${info.aiCount !== 1 ? 's' : ''}`);
     btn.title = totalLabel.join(', ');
 

@@ -7344,7 +7344,7 @@ body.resizing * {
   color: var(--color-text-secondary);
   opacity: 1;
   transition: background 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
-  z-index: 5;
+  z-index: 2; /* must be below sticky file headers (z-index: 4) */
 }
 
 .comment-indicator:hover {

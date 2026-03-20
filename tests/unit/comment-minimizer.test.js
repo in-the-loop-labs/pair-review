@@ -16,7 +16,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-// Setup global.window before importing production code
+// Ensure global.window exists before importing production code (which assigns to window.CommentMinimizer)
 global.window = global.window || {};
 
 const { CommentMinimizer } = require('../../public/js/modules/comment-minimizer.js');
@@ -120,6 +120,21 @@ function buildCodeCell() {
 }
 
 /**
+ * Build a mock button element with classList support.
+ */
+function buildMockButton(className = '') {
+  return {
+    className,
+    classList: {
+      _set: new Set(),
+      add(c) { this._set.add(c); },
+      remove(c) { this._set.delete(c); },
+      contains(c) { return this._set.has(c); },
+    },
+  };
+}
+
+/**
  * Build a mock element that can act as a child inside a comment row.
  * Uses closest() to walk up to the provided parentRow.
  */
@@ -149,6 +164,7 @@ let diffContainer;
 let allIndicators;
 
 beforeEach(() => {
+  global.window = global.window || {};
   allIndicators = [];
   diffContainer = {
     classList: {
@@ -191,7 +207,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   delete global.document;
+  delete global.window;
 });
 
 // ===========================================================================
@@ -495,7 +513,7 @@ describe('CommentMinimizer', () => {
       const btn = codeCell.children[0];
       expect(btn.innerHTML).toContain('indicator-adopted');
       expect(btn.innerHTML).not.toContain('indicator-user');
-      expect(btn.title).toBe('1 adopted');
+      expect(btn.title).toBe('1 adopted comment');
     });
 
     it('should combine counts for mixed comment types on the same diff line', () => {
@@ -531,8 +549,8 @@ describe('CommentMinimizer', () => {
       expect(btn.innerHTML).toContain('indicator-adopted');
       expect(btn.innerHTML).toContain('indicator-ai');
       // Total = 1 user + 1 adopted + 1 AI = 3
-      expect(btn.innerHTML).toContain('indicator-count');
-      expect(btn.title).toBe('1 comment, 1 adopted, 1 suggestion');
+      expect(btn.innerHTML).toContain('<span class="indicator-count">3</span>');
+      expect(btn.title).toBe('1 comment, 1 adopted comment, 1 suggestion');
     });
 
     it('should count multiple AI suggestions within a single suggestion row', () => {
@@ -589,6 +607,60 @@ describe('CommentMinimizer', () => {
       // createElement should not have been called (no indicator injected)
       expect(global.document.createElement).not.toHaveBeenCalled();
     });
+
+    it('should not throw when diff row has no codeCell', () => {
+      // Diff row without .d2h-code-line-ctn child
+      const rows = buildRows([
+        { classes: ['d2h-cntx'] },
+        { classes: ['user-comment-row'] },
+      ]);
+
+      mockQuerySelectorAll([rows[1]], []);
+
+      const cm = new CommentMinimizer();
+      cm._active = true;
+
+      // Should not throw
+      expect(() => cm.refreshIndicators()).not.toThrow();
+      // No indicator created since there is no codeCell
+      expect(global.document.createElement).not.toHaveBeenCalled();
+    });
+
+    it('should not create duplicate indicators when called twice', () => {
+      const codeCell = buildCodeCell();
+      const rows = buildRows([
+        { classes: ['d2h-cntx'], children: { '.d2h-code-line-ctn': codeCell } },
+        { classes: ['user-comment-row'] },
+      ]);
+
+      mockQuerySelectorAll([rows[1]], []);
+
+      const cm = new CommentMinimizer();
+      cm._active = true;
+      cm.refreshIndicators();
+      cm.refreshIndicators();
+
+      // Only one indicator should exist — refreshIndicators removes old ones first
+      expect(codeCell.children.length).toBe(1);
+    });
+
+    it('should add expanded class to indicator when diff line is in _expandedLines', () => {
+      const codeCell = buildCodeCell();
+      const rows = buildRows([
+        { classes: ['d2h-cntx'], children: { '.d2h-code-line-ctn': codeCell } },
+        { classes: ['user-comment-row'] },
+      ]);
+
+      mockQuerySelectorAll([rows[1]], []);
+
+      const cm = new CommentMinimizer();
+      cm._active = true;
+      cm._expandedLines.add(rows[0]);
+      cm.refreshIndicators();
+
+      const btn = codeCell.children[0];
+      expect(btn.classList.contains('expanded')).toBe(true);
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -604,7 +676,7 @@ describe('CommentMinimizer', () => {
       ]);
 
       const cm = new CommentMinimizer();
-      const btn = { classList: { _set: new Set(), add(c) { this._set.add(c); }, remove(c) { this._set.delete(c); }, contains(c) { return this._set.has(c); } } };
+      const btn = buildMockButton();
 
       // Expand
       cm._toggleLineComments(rows[0], btn);
@@ -632,8 +704,8 @@ describe('CommentMinimizer', () => {
       ]);
 
       const cm = new CommentMinimizer();
-      const btn1 = { classList: { _set: new Set(), add(c) { this._set.add(c); }, remove(c) { this._set.delete(c); }, contains(c) { return this._set.has(c); } } };
-      const btn2 = { classList: { _set: new Set(), add(c) { this._set.add(c); }, remove(c) { this._set.delete(c); }, contains(c) { return this._set.has(c); } } };
+      const btn1 = buildMockButton();
+      const btn2 = buildMockButton();
 
       cm._toggleLineComments(rows[0], btn1);
       cm._toggleLineComments(rows[2], btn2);
@@ -676,15 +748,15 @@ describe('CommentMinimizer', () => {
     });
 
     it('should remove comments-minimized class and indicators when disabled', () => {
-      const removedIndicators = [];
+      const mockIndicator1 = { remove: vi.fn() };
+      const mockIndicator2 = { remove: vi.fn() };
       global.document.querySelectorAll = vi.fn((selector) => {
-        if (selector === '.comment-indicator') return removedIndicators.map(i => ({ remove: vi.fn() }));
+        if (selector === '.comment-indicator') return [mockIndicator1, mockIndicator2];
         if (selector === '.comment-expanded') return [];
         return [];
       });
 
       const cm = new CommentMinimizer();
-      // First enable
       cm._active = true;
       diffContainer.classList.add('comments-minimized');
 
@@ -692,6 +764,8 @@ describe('CommentMinimizer', () => {
 
       expect(cm.active).toBe(false);
       expect(diffContainer.classList.contains('comments-minimized')).toBe(false);
+      expect(mockIndicator1.remove).toHaveBeenCalled();
+      expect(mockIndicator2.remove).toHaveBeenCalled();
     });
 
     it('should clear _expandedLines when toggling', () => {
@@ -772,23 +846,9 @@ describe('CommentMinimizer', () => {
   // -------------------------------------------------------------------------
   describe('expandForElement', () => {
     it('should expand comments for a given element and update indicator button', () => {
-      const indicatorBtn = {
-        className: 'comment-indicator',
-        classList: {
-          _set: new Set(),
-          add(c) { this._set.add(c); },
-          remove(c) { this._set.delete(c); },
-          contains(c) { return this._set.has(c); },
-        },
-      };
+      const indicatorBtn = buildMockButton('comment-indicator');
       const codeCell = buildCodeCell();
       codeCell.children.push(indicatorBtn);
-      // Override querySelector so it finds the indicator
-      const origQS = codeCell.querySelector;
-      codeCell.querySelector = (selector) => {
-        if (selector === '.d2h-code-line-ctn .comment-indicator') return indicatorBtn;
-        return origQS(selector);
-      };
 
       const rows = buildRows([
         { classes: ['d2h-cntx'], children: { '.d2h-code-line-ctn': codeCell } },
