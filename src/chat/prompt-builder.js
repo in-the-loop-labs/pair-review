@@ -124,8 +124,8 @@ function buildReviewContext(review, prData) {
     lines.push(`This is a local code review for: ${name}`);
     lines.push('');
     lines.push('## Viewing Code Changes');
-    lines.push('The changes under review are **unstaged and untracked local changes**. Staged changes (`git diff --cached`) are treated as already reviewed.');
-    lines.push('To see the diff under review: `git diff`');
+    lines.push('The changes under review are **unstaged and untracked local changes**. Staged changes (`git diff --no-ext-diff --cached`) are treated as already reviewed.');
+    lines.push('To see the diff under review: `git diff --no-ext-diff`');
     lines.push('Do NOT use `git diff HEAD~1` or `git log` — those show committed history, not the changes under review.');
   } else {
     const parts = [];
@@ -146,7 +146,7 @@ function buildReviewContext(review, prData) {
       lines.push('');
       lines.push('## Viewing Code Changes');
       lines.push(`The changes under review are the diff between base commit \`${prData.base_sha.substring(0, 8)}\` and head commit \`${prData.head_sha.substring(0, 8)}\`.`);
-      lines.push(`To see the full diff: \`git diff ${prData.base_sha}...${prData.head_sha}\``);
+      lines.push(`To see the full diff: \`git diff --no-ext-diff ${prData.base_sha}...${prData.head_sha}\``);
       lines.push('Do NOT use `git diff HEAD~1` or `git diff` without arguments — those do not show the PR changes.');
     }
   }

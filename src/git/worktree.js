@@ -536,7 +536,8 @@ class GitWorktreeManager {
       // This ensures we compare the exact commits from the PR, even if the base branch has moved
       const diff = await git.diff([
         `${prData.base_sha}...${prData.head_sha}`,
-        '--unified=3'
+        '--unified=3',
+        '--no-ext-diff'
       ]);
 
       return diff;
@@ -559,7 +560,7 @@ class GitWorktreeManager {
 
       // Get file changes with stats using base SHA and head SHA
       // This ensures we get the exact files changed in the PR, even if the base branch has moved
-      const diffSummary = await git.diffSummary([`${prData.base_sha}...${prData.head_sha}`]);
+      const diffSummary = await git.diffSummary([`${prData.base_sha}...${prData.head_sha}`, '--no-ext-diff']);
 
       // Parse .gitattributes to identify generated files
       const gitattributes = await getGeneratedFilePatterns(worktreePath);

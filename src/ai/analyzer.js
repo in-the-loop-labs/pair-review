@@ -659,7 +659,7 @@ Do NOT create suggestions for any files not in this list. If you cannot find iss
   async getChangedFilesList(worktreePath, prMetadata) {
     try {
       const { stdout } = await execPromise(
-        `git diff ${prMetadata.base_sha}...${prMetadata.head_sha} --name-only`,
+        `git diff --no-ext-diff ${prMetadata.base_sha}...${prMetadata.head_sha} --name-only`,
         { cwd: worktreePath }
       );
       return stdout.trim().split('\n').filter(f => f.length > 0);
@@ -685,7 +685,7 @@ Do NOT create suggestions for any files not in this list. If you cannot find iss
     try {
       // Get modified tracked files (unstaged only - staged files are excluded by design)
       const { stdout: unstaged } = await execPromise(
-        'git diff --name-only',
+        'git diff --no-ext-diff --name-only',
         { cwd: localPath }
       );
 
@@ -777,7 +777,7 @@ The following files are marked as generated in .gitattributes and should be SKIP
 ${generatedPatterns.map(p => `- ${p}`).join('\n')}
 
 These are auto-generated files (like package-lock.json, build outputs, etc.) that should not be reviewed.
-When running git diff, you can exclude these with: git diff ${'{base}'}...${'{head}'} -- ':!pattern' for each pattern.
+When running git diff, you can exclude these with: git diff --no-ext-diff ${'{base}'}...${'{head}'} -- ':!pattern' for each pattern.
 Or simply ignore any changes to files matching these patterns in your analysis.
 `;
   }
@@ -983,10 +983,10 @@ ${prMetadata.description || '(No description provided)'}
     const isLocal = prMetadata.reviewType === 'local';
     if (isLocal) {
       // For local mode, diff against HEAD to see working directory changes
-      return suffix ? `git diff HEAD ${suffix}` : 'git diff HEAD';
+      return suffix ? `git diff --no-ext-diff HEAD ${suffix}` : 'git diff --no-ext-diff HEAD';
     }
     // For PR mode, diff between base and head commits
-    const baseCmd = `git diff ${prMetadata.base_sha}...${prMetadata.head_sha}`;
+    const baseCmd = `git diff --no-ext-diff ${prMetadata.base_sha}...${prMetadata.head_sha}`;
     return suffix ? `${baseCmd} ${suffix}` : baseCmd;
   }
 

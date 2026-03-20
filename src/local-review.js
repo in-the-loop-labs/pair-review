@@ -658,7 +658,7 @@ async function computeLocalDiffDigest(localPath) {
   // Get unstaged diff (the actual content being reviewed)
   let unstagedDiff = '';
   try {
-    const result = await execAsync('git diff', {
+    const result = await execAsync('git diff --no-ext-diff', {
       cwd: localPath,
       encoding: 'utf8',
       maxBuffer: 50 * 1024 * 1024
