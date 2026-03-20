@@ -30,9 +30,9 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
  *
  * Tier structure:
  * - free (auto): Cursor's default auto-routing model
- * - fast (composer-1, gpt-5.3-codex-fast, gemini-3-flash): Quick analysis
+ * - fast (composer-2-fast, gpt-5.3-codex-fast, gemini-3-flash): Quick analysis
  * - balanced (composer-1.5, sonnet-4.6-thinking, sonnet-4.5-thinking, gemini-3.1-pro): Recommended for most reviews
- * - thorough (gpt-5.3-codex-high, gpt-5.3-codex-xhigh, opus-4.5-thinking, opus-4.6-thinking): Deep analysis for complex code
+ * - thorough (composer-2, gpt-5.3-codex-high, gpt-5.3-codex-xhigh, opus-4.5-thinking, opus-4.6-thinking): Deep analysis for complex code
  */
 const CURSOR_AGENT_MODELS = [
   {
@@ -45,22 +45,31 @@ const CURSOR_AGENT_MODELS = [
     badgeClass: 'badge-speed'
   },
   {
+    id: 'composer-2',
+    name: 'Composer 2',
+    tier: 'thorough',
+    tagline: 'Latest Composer',
+    description: 'Frontier-level coding model trained with compaction-in-the-loop RL—strong on long-horizon tasks requiring hundreds of actions',
+    badge: 'Latest',
+    badgeClass: 'badge-power'
+  },
+  {
+    id: 'composer-2-fast',
+    name: 'Composer 2 Fast',
+    tier: 'fast',
+    tagline: 'Fast Composer',
+    description: 'Same intelligence as Composer 2 with lower latency—default for interactive Cursor sessions',
+    badge: 'Fast',
+    badgeClass: 'badge-speed'
+  },
+  {
     id: 'composer-1.5',
     name: 'Composer 1.5',
     tier: 'balanced',
-    tagline: 'Latest Composer',
-    description: 'Cursor Composer model—positioned between Sonnet and Opus for multi-file edits',
-    badge: 'Balanced',
+    tagline: 'Previous Composer',
+    description: 'Previous generation Cursor Composer model—positioned between Sonnet and Opus for multi-file edits',
+    badge: 'Previous Gen',
     badgeClass: 'badge-balanced'
-  },
-  {
-    id: 'composer-1',
-    name: 'Composer 1',
-    tier: 'fast',
-    tagline: 'Original Composer',
-    description: 'Cursor Composer model—good for quick multi-file editing workflows',
-    badge: 'Fast',
-    badgeClass: 'badge-speed'
   },
   {
     id: 'gpt-5.3-codex-fast',
