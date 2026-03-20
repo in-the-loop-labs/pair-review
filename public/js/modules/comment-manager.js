@@ -500,6 +500,11 @@ class CommentManager {
         this.prManager.updateCommentCount();
       }
 
+      // Refresh minimize-mode indicators so the new comment is reflected
+      if (window.prManager?.commentMinimizer) {
+        window.prManager.commentMinimizer.refreshIndicators();
+      }
+
     } catch (error) {
       console.error('Error saving comment:', error);
       alert('Failed to save comment');

@@ -3,19 +3,27 @@
  * DiffOptionsDropdown - Gear-icon popover for diff display options.
  *
  * Anchors a small dropdown below the gear button (#diff-options-btn) with
- * checkbox toggles that control diff rendering.  Currently supports:
+ * checkbox toggles that control diff rendering.  Supports:
  *   - "Hide whitespace changes"
+ *   - "Minimize comments" (collapse inline comments to line indicators)
  *   - Scope range selector (local mode only)
  *
  * Follows the same popover pattern used by PanelGroup._showPopover() /
  * _hidePopover() (fixed positioning via getBoundingClientRect, click-outside
  * and Escape to dismiss, opacity+transform animation).
  *
+ * IMPORTANT: This dropdown is constructed in BOTH pr.js and local.js.
+ * LocalManager (local.js) destroys the pr.js instance and recreates it
+ * with scope-selector support. Any new callback added here MUST be
+ * threaded through both construction sites or it will silently no-op
+ * in local mode.
+ *
  * Usage:
  *   const dropdown = new DiffOptionsDropdown(
  *     document.getElementById('diff-options-btn'),
  *     {
  *       onToggleWhitespace: (hidden) => { … },
+ *       onToggleMinimize: (minimized) => { … },
  *       onScopeChange: (start, end) => { … },
  *       initialScope: { start: 'unstaged', end: 'untracked' },
  *       branchAvailable: false
@@ -24,23 +32,27 @@
  */
 
 const STORAGE_KEY = 'pair-review-hide-whitespace';
+const MINIMIZE_STORAGE_KEY = 'pair-review-minimize-comments';
 
 class DiffOptionsDropdown {
   /**
    * @param {HTMLElement} buttonElement - The gear icon button already in the DOM
    * @param {Object}      callbacks
    * @param {function(boolean):void} callbacks.onToggleWhitespace
+   * @param {function(boolean):void} [callbacks.onToggleMinimize]
    * @param {function(string,string):void} [callbacks.onScopeChange]
    * @param {{start:string,end:string}} [callbacks.initialScope]
    * @param {boolean} [callbacks.branchAvailable]
    */
-  constructor(buttonElement, { onToggleWhitespace, onScopeChange, initialScope, branchAvailable }) {
+  constructor(buttonElement, { onToggleWhitespace, onToggleMinimize, onScopeChange, initialScope, branchAvailable }) {
     this._btn = buttonElement;
     this._onToggleWhitespace = onToggleWhitespace;
+    this._onToggleMinimize = onToggleMinimize || (() => {});
     this._onScopeChange = onScopeChange || null;
 
     this._popoverEl = null;
     this._checkbox = null;
+    this._minimizeCheckbox = null;
     this._visible = false;
     this._outsideClickHandler = null;
     this._escapeHandler = null;
@@ -57,6 +69,7 @@ class DiffOptionsDropdown {
 
     // Read persisted state
     this._hideWhitespace = localStorage.getItem(STORAGE_KEY) === 'true';
+    this._minimizeComments = localStorage.getItem(MINIMIZE_STORAGE_KEY) === 'true';
 
     this._renderPopover();
     this._syncButtonActive();
@@ -72,9 +85,12 @@ class DiffOptionsDropdown {
     };
     this._btn.addEventListener('click', this._btnClickHandler);
 
-    // Fire initial callback so the consumer can apply the persisted state
+    // Fire initial callbacks so the consumer can apply persisted state
     if (this._hideWhitespace) {
       this._onToggleWhitespace(true);
+    }
+    if (this._minimizeComments) {
+      this._onToggleMinimize(true);
     }
   }
 
@@ -96,6 +112,22 @@ class DiffOptionsDropdown {
     this._persist();
     this._syncButtonActive();
     this._onToggleWhitespace(bool);
+  }
+
+  /** @returns {boolean} Whether comments are currently minimized */
+  get minimizeComments() {
+    return this._minimizeComments;
+  }
+
+  /** Programmatically set the minimize toggle (updates UI + storage). */
+  set minimizeComments(value) {
+    const bool = Boolean(value);
+    if (bool === this._minimizeComments) return;
+    this._minimizeComments = bool;
+    if (this._minimizeCheckbox) this._minimizeCheckbox.checked = bool;
+    this._persist();
+    this._syncButtonActive();
+    this._onToggleMinimize(bool);
   }
 
   /** Update branch availability (e.g. after base branch is set). */
@@ -168,7 +200,45 @@ class DiffOptionsDropdown {
       popover.appendChild(divider);
     }
 
-    // Label wrapping checkbox for a nice click target
+    // --- Whitespace checkbox ---
+    const wsLabel = this._createCheckboxLabel('Hide whitespace changes', this._hideWhitespace);
+    const wsCheckbox = wsLabel.querySelector('input');
+    popover.appendChild(wsLabel);
+
+    // --- Minimize comments checkbox ---
+    const minLabel = this._createCheckboxLabel('Minimize comments', this._minimizeComments);
+    const minCheckbox = minLabel.querySelector('input');
+    popover.appendChild(minLabel);
+
+    document.body.appendChild(popover);
+
+    this._popoverEl = popover;
+    this._checkbox = wsCheckbox;
+    this._minimizeCheckbox = minCheckbox;
+
+    // Respond to checkbox changes
+    wsCheckbox.addEventListener('change', () => {
+      this._hideWhitespace = wsCheckbox.checked;
+      this._persist();
+      this._syncButtonActive();
+      this._onToggleWhitespace(this._hideWhitespace);
+    });
+
+    minCheckbox.addEventListener('change', () => {
+      this._minimizeComments = minCheckbox.checked;
+      this._persist();
+      this._syncButtonActive();
+      this._onToggleMinimize(this._minimizeComments);
+    });
+  }
+
+  /**
+   * Create a label element wrapping a checkbox.
+   * @param {string} text - Label text
+   * @param {boolean} checked - Initial checked state
+   * @returns {HTMLLabelElement}
+   */
+  _createCheckboxLabel(text, checked) {
     const label = document.createElement('label');
     label.style.display = 'flex';
     label.style.alignItems = 'center';
@@ -181,28 +251,13 @@ class DiffOptionsDropdown {
 
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
-    checkbox.checked = this._hideWhitespace;
+    checkbox.checked = checked;
     checkbox.style.margin = '0';
     checkbox.style.cursor = 'pointer';
 
-    const text = document.createTextNode('Hide whitespace changes');
-
     label.appendChild(checkbox);
-    label.appendChild(text);
-    popover.appendChild(label);
-
-    document.body.appendChild(popover);
-
-    this._popoverEl = popover;
-    this._checkbox = checkbox;
-
-    // Respond to checkbox changes
-    checkbox.addEventListener('change', () => {
-      this._hideWhitespace = checkbox.checked;
-      this._persist();
-      this._syncButtonActive();
-      this._onToggleWhitespace(this._hideWhitespace);
-    });
+    label.appendChild(document.createTextNode(text));
+    return label;
   }
 
   _renderScopeSelector(popover) {
@@ -526,12 +581,13 @@ class DiffOptionsDropdown {
 
   _persist() {
     localStorage.setItem(STORAGE_KEY, String(this._hideWhitespace));
+    localStorage.setItem(MINIMIZE_STORAGE_KEY, String(this._minimizeComments));
   }
 
   /** Add/remove `.active` on the gear button as a visual cue that filtering is on. */
   _syncButtonActive() {
     if (!this._btn) return;
-    this._btn.classList.toggle('active', this._hideWhitespace);
+    this._btn.classList.toggle('active', this._hideWhitespace || this._minimizeComments);
   }
 }
 

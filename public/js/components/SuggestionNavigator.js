@@ -369,11 +369,18 @@ class SuggestionNavigator {
       const suggestionEl = document.querySelector(`[data-suggestion-id="${currentSuggestion.id}"]`);
       
       if (suggestionEl) {
-        suggestionEl.scrollIntoView({ 
-          behavior: 'smooth', 
-          block: 'center',
-          inline: 'nearest'
-        });
+        const minimizer = window.prManager?.commentMinimizer;
+        if (minimizer?.active) {
+          // Comments are minimized — scroll to the parent diff line instead
+          const diffRow = minimizer.findDiffRowFor(suggestionEl);
+          if (diffRow) {
+            diffRow.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+          } else {
+            suggestionEl.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+          }
+        } else {
+          suggestionEl.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+        }
       }
     }
   }

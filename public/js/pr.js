@@ -136,6 +136,8 @@ class PRManager {
     this.hideWhitespace = false;
     // Diff options dropdown (gear icon popover)
     this.diffOptionsDropdown = null;
+    // Comment minimizer — manages minimize mode indicators
+    this.commentMinimizer = window.CommentMinimizer ? new window.CommentMinimizer() : null;
     // Cached staleness check promise — shared between on-load and triggerAIAnalysis
     this._stalenessPromise = null;
     // Unique client ID for self-echo suppression on WebSocket review events.
@@ -192,6 +194,7 @@ class PRManager {
     if (diffOptionsBtn && window.DiffOptionsDropdown) {
       this.diffOptionsDropdown = new window.DiffOptionsDropdown(diffOptionsBtn, {
         onToggleWhitespace: (hide) => this.handleWhitespaceToggle(hide),
+        onToggleMinimize: (minimized) => this.handleMinimizeToggle(minimized),
       });
     }
 
@@ -755,6 +758,18 @@ class PRManager {
     requestAnimationFrame(() => {
       window.scrollTo(0, scrollY);
     });
+  }
+
+  /**
+   * Handle the minimize comments toggle from DiffOptionsDropdown.
+   * Toggles minimize mode which hides inline comments/suggestions and
+   * shows compact indicators on diff lines instead.
+   * @param {boolean} minimized - Whether to minimize comments
+   */
+  handleMinimizeToggle(minimized) {
+    if (this.commentMinimizer) {
+      this.commentMinimizer.setMinimized(minimized);
+    }
   }
 
   /**
@@ -2453,6 +2468,11 @@ class PRManager {
         }
       }
 
+      // Refresh minimize-mode indicators so deleted comments no longer show
+      if (this.commentMinimizer) {
+        this.commentMinimizer.refreshIndicators();
+      }
+
       // Show success toast
       if (window.toast) {
         window.toast.showSuccess('Comment dismissed');
@@ -2673,6 +2693,11 @@ class PRManager {
       }
 
       this.updateCommentCount();
+
+      // Refresh minimize-mode indicators (no-op when minimize mode is off)
+      if (this.commentMinimizer) {
+        this.commentMinimizer.refreshIndicators();
+      }
     } catch (error) {
       console.error('Error loading user comments:', error);
     }
@@ -2753,7 +2778,11 @@ class PRManager {
   }
 
   async displayAISuggestions(suggestions) {
-    return this.suggestionManager.displayAISuggestions(suggestions);
+    await this.suggestionManager.displayAISuggestions(suggestions);
+    // Refresh minimize-mode indicators (no-op when minimize mode is off)
+    if (this.commentMinimizer) {
+      this.commentMinimizer.refreshIndicators();
+    }
   }
 
   createSuggestionRow(suggestions) {
@@ -2867,6 +2896,11 @@ class PRManager {
     }
 
     this.updateCommentCount();
+
+    // Refresh minimize-mode indicators so the adopted comment is reflected
+    if (this.commentMinimizer) {
+      this.commentMinimizer.refreshIndicators();
+    }
   }
 
   /**
@@ -2991,6 +3025,11 @@ class PRManager {
       if (window.aiPanel) {
         window.aiPanel.updateFindingStatus(suggestionId, 'dismissed');
       }
+
+      // Refresh minimize-mode indicators after suggestion state change
+      if (this.commentMinimizer) {
+        this.commentMinimizer.refreshIndicators();
+      }
     } catch (error) {
       console.error('Error dismissing suggestion:', error);
       alert('Failed to dismiss suggestion');
@@ -3040,6 +3079,11 @@ class PRManager {
 
       if (window.aiPanel) {
         window.aiPanel.updateFindingStatus(suggestionId, 'active');
+      }
+
+      // Refresh minimize-mode indicators after suggestion state change
+      if (this.commentMinimizer) {
+        this.commentMinimizer.refreshIndicators();
       }
     } catch (error) {
       console.error('Error restoring suggestion:', error);
