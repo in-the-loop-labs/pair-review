@@ -11970,6 +11970,25 @@ body.resizing * {
   30% { opacity: 1; transform: scale(1); }
 }
 
+/* Loop logo spinner (easter egg: chat_spinner = "loop") */
+.chat-panel__loop-spinner {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 0;
+}
+
+.chat-panel__loop-spinner svg {
+  width: 20px;
+  height: 20px;
+  color: var(--color-accent-ai, #8b5cf6);
+  animation: loop-spin 1.4s linear infinite;
+}
+
+@keyframes loop-spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
 /* Blinking cursor during streaming */
 .chat-panel__cursor {
   display: inline-block;

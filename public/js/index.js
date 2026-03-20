@@ -1119,6 +1119,7 @@
         const chatProviders = config.chat_providers || [];
         window.__pairReview.chatProviders = chatProviders;
         window.__pairReview.enableGraphite = config.enable_graphite === true;
+        window.__pairReview.chatSpinner = config.chat_spinner || 'dots';
 
         // Set chat feature state based on config and provider availability
         let chatState = 'disabled';
