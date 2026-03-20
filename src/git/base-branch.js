@@ -18,7 +18,7 @@ const defaults = {
  * Detect the base branch for the current branch.
  *
  * Priority:
- *   1. Graphite — `gt trunk` and `gt branch parent`
+ *   1. Graphite — `gt trunk` and `gt parent`
  *   2. GitHub PR — look up an open PR for this branch
  *   3. Default branch — `git remote show origin` or local main/master
  *
@@ -76,7 +76,7 @@ function tryGraphite(repoPath, currentBranch, deps) {
     }).trim();
 
     // Get parent branch
-    const parent = deps.execSync('gt branch parent', {
+    const parent = deps.execSync('gt parent', {
       cwd: repoPath,
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
