@@ -1169,7 +1169,7 @@ class LocalManager {
             diffContainer.innerHTML = `<div class="no-diff">No changes in ${scopeLabel} scope.</div>`;
           } else {
             const scopeLabel = LS ? LS.scopeLabel(this.scopeStart, this.scopeEnd) : 'current scope';
-            diffContainer.innerHTML = `<div class="no-diff">No changes in ${scopeLabel} scope. Make some changes and click <strong>Refresh</strong> to reload.</div>`;
+            diffContainer.innerHTML = `<div class="no-diff">No changes in ${scopeLabel} scope. Change <strong>Diff scope</strong> or make some changes and click <strong>Refresh</strong> to reload.</div>`;
           }
 
           // If branch has commits ahead and branch is not in scope, offer to expand
