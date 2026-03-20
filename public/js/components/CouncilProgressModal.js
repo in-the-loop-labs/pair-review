@@ -806,6 +806,11 @@ class CouncilProgressModal {
       window.prManager.setButtonComplete();
     }
 
+    // Flash tab title
+    if (window.tabTitle) {
+      window.tabTitle.flashComplete();
+    }
+
     // Reload suggestions
     const manager = window.prManager || window.localManager;
     if (manager && typeof manager.loadAISuggestions === 'function') {
@@ -884,6 +889,11 @@ class CouncilProgressModal {
     if (window.prManager) {
       window.prManager.resetButton();
     }
+
+    // Flash tab title
+    if (window.tabTitle) {
+      window.tabTitle.flashFailed();
+    }
   }
 
   _handleCancellation(_status) {
@@ -924,6 +934,9 @@ class CouncilProgressModal {
     if (window.prManager) {
       window.prManager.resetButton();
     }
+
+    // No tab-title flash for cancellation — the user initiated it, so no notification needed.
+
     if (window.aiPanel?.setAnalysisState) {
       window.aiPanel.setAnalysisState('unknown');
     }

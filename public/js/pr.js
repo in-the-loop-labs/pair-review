@@ -464,6 +464,11 @@ class PRManager {
       // Render PR header with metadata
       this.renderPRHeader(prData);
 
+      // Set descriptive tab title
+      if (window.tabTitle) {
+        window.tabTitle.setBase(`PR #${number}`);
+      }
+
       // Fetch diff and file list from diff endpoint
       await this.loadAndDisplayFiles(owner, repo, number);
 
@@ -5191,6 +5196,11 @@ if (typeof document !== 'undefined') {
     // Initialize panel resizer for drag-to-resize functionality
     if (typeof window.PanelResizer !== 'undefined') {
       window.PanelResizer.init();
+    }
+
+    // Initialize tab title manager
+    if (typeof TabTitle !== 'undefined') {
+      window.tabTitle = new TabTitle();
     }
 
     prManager = new PRManager();

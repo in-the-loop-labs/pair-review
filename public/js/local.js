@@ -977,6 +977,11 @@ class LocalManager {
       branchText.textContent = reviewData.branch || 'unknown';
     }
 
+    // Set descriptive tab title
+    if (window.tabTitle && reviewData.branch) {
+      window.tabTitle.setBase(reviewData.branch);
+    }
+
     // Show base branch badge when branch is in scope
     const LS = window.LocalScope;
     const scopeStart = this.scopeStart || (LS ? LS.DEFAULT_SCOPE.start : 'unstaged');
