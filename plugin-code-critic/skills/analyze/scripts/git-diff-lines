@@ -84,7 +84,7 @@ GIT_CMD=(git)
 if [[ -n "$GIT_CWD" ]]; then
   GIT_CMD+=(-C "$GIT_CWD")
 fi
-GIT_CMD+=(diff)
+GIT_CMD+=(diff --no-ext-diff)
 # Guard: expanding an empty array with set -u fails in Bash < 4.4
 if [[ ${#GIT_ARGS[@]} -gt 0 ]]; then
   GIT_CMD+=("${GIT_ARGS[@]}")

@@ -662,10 +662,10 @@ async function performHeadlessReview(args, config, db, flags, options) {
         }
       }
 
-      diff = await git.diff([`${prData.base_sha}...${prData.head_sha}`, '--unified=3']);
+      diff = await git.diff([`${prData.base_sha}...${prData.head_sha}`, '--unified=3', '--no-ext-diff']);
 
       // Get changed files
-      const diffSummary = await git.diffSummary([`${prData.base_sha}...${prData.head_sha}`]);
+      const diffSummary = await git.diffSummary([`${prData.base_sha}...${prData.head_sha}`, '--no-ext-diff']);
       const gitattributes = await getGeneratedFilePatterns(worktreePath);
 
       changedFiles = diffSummary.files.map(file => {

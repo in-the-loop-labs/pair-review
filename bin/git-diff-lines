@@ -68,7 +68,7 @@ function executeGitDiff(args, cwd = null) {
     if (cwd) {
       spawnOptions.cwd = cwd;
     }
-    const gitProcess = spawn('git', ['diff', ...args], spawnOptions);
+    const gitProcess = spawn('git', ['diff', '--no-ext-diff', ...args], spawnOptions);
 
     let stdout = '';
     let stderr = '';
