@@ -783,7 +783,7 @@ The following files are marked as generated in .gitattributes and should be SKIP
 ${generatedPatterns.map(p => `- ${p}`).join('\n')}
 
 These are auto-generated files (like package-lock.json, build outputs, etc.) that should not be reviewed.
-When running git diff, you can exclude these with: git diff ${'{base}'}...${'{head}'} -- ':!pattern' for each pattern.
+When running git diff, you can exclude these with: git diff --no-ext-diff ${'{base}'}...${'{head}'} -- ':!pattern' for each pattern.
 Or simply ignore any changes to files matching these patterns in your analysis.
 `;
   }
