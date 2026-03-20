@@ -63,13 +63,14 @@ describe('CursorAgentProvider', () => {
     it('should return array of models with expected structure', () => {
       const models = CursorAgentProvider.getModels();
       expect(Array.isArray(models)).toBe(true);
-      expect(models.length).toBe(14);
+      expect(models.length).toBe(15);
 
       // Check that we have the expected model IDs
       const modelIds = models.map(m => m.id);
       expect(modelIds).toContain('auto');
+      expect(modelIds).toContain('composer-2');
+      expect(modelIds).toContain('composer-2-fast');
       expect(modelIds).toContain('composer-1.5');
-      expect(modelIds).toContain('composer-1');
       expect(modelIds).toContain('gpt-5.3-codex-fast');
       expect(modelIds).toContain('gemini-3-flash');
       expect(modelIds).toContain('sonnet-4.6-thinking');
@@ -96,8 +97,9 @@ describe('CursorAgentProvider', () => {
       const models = CursorAgentProvider.getModels();
       const tierMap = Object.fromEntries(models.map(m => [m.id, m.tier]));
       expect(tierMap['auto']).toBe('free');
+      expect(tierMap['composer-2']).toBe('thorough');
+      expect(tierMap['composer-2-fast']).toBe('fast');
       expect(tierMap['composer-1.5']).toBe('balanced');
-      expect(tierMap['composer-1']).toBe('fast');
       expect(tierMap['gpt-5.3-codex-fast']).toBe('fast');
       expect(tierMap['gemini-3-flash']).toBe('fast');
       expect(tierMap['sonnet-4.6-thinking']).toBe('balanced');
