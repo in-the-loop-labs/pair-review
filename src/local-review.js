@@ -546,7 +546,7 @@ async function generateScopedDiff(repoPath, scopeStart, scopeEnd, baseBranch, op
   // Count staged/unstaged for stats when relevant
   if (hasStaged) {
     try {
-      const stagedDiff = execSync(`git diff --cached --stat --no-color`, {
+      const stagedDiff = execSync(`git diff --cached --stat --no-color --no-ext-diff`, {
         cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe']
       });
       if (stagedDiff.trim()) {
@@ -556,7 +556,7 @@ async function generateScopedDiff(repoPath, scopeStart, scopeEnd, baseBranch, op
   }
   if (hasUnstaged) {
     try {
-      const unstagedDiff = execSync(`git diff --stat --no-color`, {
+      const unstagedDiff = execSync(`git diff --stat --no-color --no-ext-diff`, {
         cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe']
       });
       if (unstagedDiff.trim()) {
@@ -608,7 +608,7 @@ async function computeScopedDigest(repoPath, scopeStart, scopeEnd) {
   // Staged in scope → cached diff content
   if (scopeIncludes(scopeStart, scopeEnd, 'staged')) {
     try {
-      const result = await execAsync('git diff --cached', {
+      const result = await execAsync('git diff --cached --no-ext-diff', {
         cwd: repoPath, encoding: 'utf8', maxBuffer: 50 * 1024 * 1024
       });
       parts.push('STAGED:' + result.stdout);
@@ -620,7 +620,7 @@ async function computeScopedDigest(repoPath, scopeStart, scopeEnd) {
   // Unstaged in scope → working tree diff
   if (scopeIncludes(scopeStart, scopeEnd, 'unstaged')) {
     try {
-      const result = await execAsync('git diff', {
+      const result = await execAsync('git diff --no-ext-diff', {
         cwd: repoPath, encoding: 'utf8', maxBuffer: 50 * 1024 * 1024
       });
       parts.push('UNSTAGED:' + result.stdout);
@@ -675,7 +675,7 @@ async function generateLocalDiff(repoPath, options = {}) {
   // Always count staged changes for CLI info message, even when staged is out of scope
   if (!result.stats.stagedChanges) {
     try {
-      const stagedStat = execSync('git diff --cached --stat --no-color', {
+      const stagedStat = execSync('git diff --cached --stat --no-color --no-ext-diff', {
         cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe']
       });
       if (stagedStat.trim()) {
