@@ -97,7 +97,7 @@ describe('CursorAgentProvider', () => {
       const models = CursorAgentProvider.getModels();
       const tierMap = Object.fromEntries(models.map(m => [m.id, m.tier]));
       expect(tierMap['auto']).toBe('free');
-      expect(tierMap['composer-2']).toBe('balanced');
+      expect(tierMap['composer-2']).toBe('thorough');
       expect(tierMap['composer-2-fast']).toBe('fast');
       expect(tierMap['composer-1.5']).toBe('balanced');
       expect(tierMap['gpt-5.3-codex-fast']).toBe('fast');
