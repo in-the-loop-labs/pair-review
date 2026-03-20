@@ -361,8 +361,8 @@ async function getUntrackedFiles(repoPath) {
 }
 
 /**
- * Find merge-base between baseBranch and HEAD.
- * Tries to fetch origin first, then tries origin/<base>, falls back to local <base>.
+ * Find merge-base between baseBranch and HEAD using local refs.
+ * This is only used in local review mode where the local ref is authoritative.
  * @param {string} repoPath - Path to the git repository
  * @param {string} baseBranch - Base branch name
  * @returns {Promise<string>} Merge-base SHA
@@ -372,35 +372,14 @@ async function findMergeBase(repoPath, baseBranch) {
     throw new Error(`Invalid branch name: ${baseBranch}`);
   }
 
-  // Try to fetch the latest base branch from remote (best-effort)
   try {
-    execSync(`git fetch origin ${baseBranch}`, {
-      cwd: repoPath,
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 15000
-    });
-  } catch {
-    logger.warn(`Could not fetch origin/${baseBranch} — using local ref`);
-  }
-
-  // Find merge-base: try origin/<base> first, fall back to local <base>
-  try {
-    return execSync(`git merge-base origin/${baseBranch} HEAD`, {
+    return execSync(`git merge-base ${baseBranch} HEAD`, {
       cwd: repoPath,
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe']
     }).trim();
-  } catch {
-    try {
-      return execSync(`git merge-base ${baseBranch} HEAD`, {
-        cwd: repoPath,
-        encoding: 'utf8',
-        stdio: ['pipe', 'pipe', 'pipe']
-      }).trim();
-    } catch (error) {
-      throw new Error(`Could not find merge-base between ${baseBranch} and HEAD: ${error.message}`);
-    }
+  } catch (error) {
+    throw new Error(`Could not find merge-base between ${baseBranch} and HEAD: ${error.message}`);
   }
 }
 
