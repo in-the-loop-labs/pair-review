@@ -10,6 +10,13 @@ const DISMISS_ICON = `<svg viewBox="0 0 16 16" fill="currentColor" width="12" he
 /** Pixel threshold for considering the user "near the bottom" of the messages container. */
 const NEAR_BOTTOM_THRESHOLD = 80;
 
+const LOOP_SPINNER_HTML = `<span class="chat-panel__loop-spinner"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="20" height="20"><path transform="rotate(-50 12 12)" d="M18.178 8c5.096 0 5.096 8 0 8-5.095 0-7.133-8-12.356-8-5.096 0-5.096 8 0 8 5.223 0 7.26-8 12.356-8z"/></svg></span>`;
+const DOTS_SPINNER_HTML = '<span class="chat-panel__typing-indicator"><span></span><span></span><span></span></span>';
+
+function getChatSpinnerHTML() {
+  return window.__pairReview?.chatSpinner === 'loop' ? LOOP_SPINNER_HTML : DOTS_SPINNER_HTML;
+}
+
 class ChatPanel {
   constructor(containerId) {
     this.containerId = containerId;
@@ -2409,7 +2416,7 @@ class ChatPanel {
 
     const bubble = document.createElement('div');
     bubble.className = 'chat-panel__bubble';
-    bubble.innerHTML = '<span class="chat-panel__typing-indicator"><span></span><span></span><span></span></span>';
+    bubble.innerHTML = getChatSpinnerHTML();
 
     msgEl.appendChild(bubble);
     this.messagesEl.appendChild(msgEl);
@@ -2641,10 +2648,10 @@ class ChatPanel {
     // Don't add duplicate
     if (streamingMsg.querySelector('.chat-panel__thinking')) return;
 
-    // Don't add if the bubble still has its initial typing indicator (no content yet).
-    // The bubble's own dots are sufficient — adding a second set would show two pulsing indicators.
+    // Don't add if the bubble still has its initial spinner (no content yet).
+    // The bubble's own indicator is sufficient — adding a second would show two.
     const bubble = streamingMsg.querySelector('.chat-panel__bubble');
-    if (bubble && bubble.querySelector('.chat-panel__typing-indicator')) return;
+    if (bubble && (bubble.querySelector('.chat-panel__typing-indicator') || bubble.querySelector('.chat-panel__loop-spinner'))) return;
 
     // Remove the cursor — the thinking indicator replaces it as the "working" signal.
     // When new text arrives, updateStreamingMessage() will re-add the cursor naturally.
@@ -2653,7 +2660,7 @@ class ChatPanel {
 
     const indicator = document.createElement('div');
     indicator.className = 'chat-panel__thinking';
-    indicator.innerHTML = '<span class="chat-panel__typing-indicator"><span></span><span></span><span></span></span>';
+    indicator.innerHTML = getChatSpinnerHTML();
     streamingMsg.appendChild(indicator);
     this.scrollToBottom();
   }
