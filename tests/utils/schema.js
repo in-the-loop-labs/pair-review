@@ -35,6 +35,7 @@ const SCHEMA_SQL = {
       name TEXT,
       local_mode TEXT DEFAULT 'uncommitted',
       local_base_branch TEXT,
+      local_head_branch TEXT,
       local_scope_start TEXT DEFAULT 'unstaged',
       local_scope_end TEXT DEFAULT 'untracked'
     )
@@ -258,7 +259,7 @@ const INDEX_SQL = [
   'CREATE INDEX IF NOT EXISTS idx_worktrees_last_accessed ON worktrees(last_accessed_at)',
   'CREATE INDEX IF NOT EXISTS idx_worktrees_repo ON worktrees(repository)',
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_repo_settings_repository ON repo_settings(repository)',
-  "CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_local ON reviews(local_path, local_head_sha) WHERE review_type = 'local'",
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_local ON reviews(local_path, local_head_sha, local_head_branch) WHERE review_type = 'local'",
   "CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_pr_unique ON reviews(pr_number, repository) WHERE review_type = 'pr'",
   'CREATE INDEX IF NOT EXISTS idx_analysis_runs_review_id ON analysis_runs(review_id, started_at DESC)',
   'CREATE INDEX IF NOT EXISTS idx_analysis_runs_status ON analysis_runs(status)',

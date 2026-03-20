@@ -56,7 +56,21 @@ async function setupLocalReview({ db, targetPath, onProgress }) {
     reviewId = generateLocalReviewId(repoPath, headSha);
 
     const reviewRepo = new ReviewRepository(db);
-    existingReview = await reviewRepo.getLocalReview(repoPath, headSha);
+    existingReview = await reviewRepo.getLocalReview(repoPath, headSha, branch);
+
+    // Adopt legacy sessions that predate branch tracking
+    if (!existingReview) {
+      const legacy = await reviewRepo.getLocalReviewByPathAndSha(repoPath, headSha);
+      if (legacy && legacy.local_head_branch === null) {
+        existingReview = legacy;
+      }
+    }
+
+    // Check for branch-scope session (persists across HEAD changes)
+    if (!existingReview) {
+      const branchSession = await reviewRepo.getLocalBranchReview(repoPath, branch);
+      if (branchSession) existingReview = branchSession;
+    }
 
     repository = await getRepositoryName(repoPath);
 
@@ -102,14 +116,21 @@ async function setupLocalReview({ db, targetPath, onProgress }) {
   try {
     progress({ step: 'store', status: 'running', message: 'Persisting review session...' });
 
+    const storeRepo = new ReviewRepository(db);
     if (existingReview) {
       sessionId = existingReview.id;
+      if (existingReview.local_head_sha !== headSha) {
+        await storeRepo.updateLocalHeadSha(sessionId, headSha);
+      }
+      if (existingReview.local_head_branch === null) {
+        await storeRepo.updateReview(sessionId, { local_head_branch: branch });
+      }
     } else {
-      const reviewRepo = new ReviewRepository(db);
-      sessionId = await reviewRepo.upsertLocalReview({
+      sessionId = await storeRepo.upsertLocalReview({
         localPath: repoPath,
         localHeadSha: headSha,
-        repository
+        repository,
+        localHeadBranch: branch
       });
     }
 

@@ -31,7 +31,7 @@ const {
   killProcesses,
   createProgressCallback
 } = require('./shared');
-const { generateLocalDiff, computeLocalDiffDigest } = require('../local-review');
+const { generateLocalDiff, computeLocalDiffDigest, getCurrentBranch } = require('../local-review');
 const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
 const { TIERS, TIER_ALIASES, VALID_TIERS, resolveTier } = require('../ai/prompts/config');
 
@@ -209,13 +209,21 @@ router.post('/api/analyses/results', async (req, res) => {
     // --- Resolve review ---
     let reviewId;
     if (hasLocal) {
-      // Local mode: derive repository name from the directory basename
-      const repository = path.basename(localPath) || 'local';
-      reviewId = await reviewRepo.upsertLocalReview({
-        localPath,
-        localHeadSha: headSha,
-        repository
-      });
+      // Local mode: find existing session or create a new one
+      let localHeadBranch;
+      try { localHeadBranch = await getCurrentBranch(localPath); } catch (_) { /* non-fatal */ }
+      const existingReview = await reviewRepo.findLocalReview(localPath, headSha, localHeadBranch);
+      if (existingReview) {
+        reviewId = existingReview.id;
+      } else {
+        const repository = path.basename(localPath) || 'local';
+        reviewId = await reviewRepo.upsertLocalReview({
+          localPath,
+          localHeadSha: headSha,
+          repository,
+          localHeadBranch
+        });
+      }
 
       // Generate and store diff so the web UI can display it
       try {

@@ -761,12 +761,20 @@ async function handleLocalReview(targetPath, flags = {}) {
     }
 
     console.log('Checking for existing review session...');
-    let existingReview = await reviewRepo.getLocalReview(repoPath, headSha);
+    let existingReview = await reviewRepo.getLocalReview(repoPath, headSha, branch);
 
     if (!existingReview) {
-      // Check for existing branch-mode session on this path
-      // (branch mode sessions persist across HEAD changes)
-      const branchSession = await reviewRepo.getLocalBranchReview(repoPath);
+      // Adopt legacy sessions that predate branch tracking (local_head_branch is NULL)
+      const legacy = await reviewRepo.getLocalReviewByPathAndSha(repoPath, headSha);
+      if (legacy && legacy.local_head_branch === null) {
+        existingReview = legacy;
+      }
+    }
+
+    if (!existingReview) {
+      // Check for existing branch-scope session on this path
+      // (branch scope sessions persist across HEAD changes)
+      const branchSession = await reviewRepo.getLocalBranchReview(repoPath, branch);
       if (branchSession) {
         existingReview = branchSession;
       }
@@ -780,13 +788,19 @@ async function handleLocalReview(targetPath, flags = {}) {
         await reviewRepo.updateLocalHeadSha(sessionId, headSha);
         console.log(`Updated HEAD SHA on session ${sessionId}: ${existingReview.local_head_sha.substring(0, 7)} -> ${headSha.substring(0, 7)}`);
       }
+      // Backfill branch on legacy sessions
+      if (existingReview.local_head_branch === null) {
+        await reviewRepo.updateReview(sessionId, { local_head_branch: branch });
+        console.log(`Backfilled branch on session ${sessionId}: ${branch}`);
+      }
       console.log(`Resuming existing review session (ID: ${existingReview.id})`);
     } else {
       console.log('Creating new review session...');
       sessionId = await reviewRepo.upsertLocalReview({
         localPath: repoPath,
         localHeadSha: headSha,
-        repository
+        repository,
+        localHeadBranch: branch
       });
       console.log(`Created new review session (ID: ${sessionId})`);
     }
