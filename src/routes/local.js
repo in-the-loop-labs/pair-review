@@ -23,7 +23,7 @@ const logger = require('../utils/logger');
 const { broadcastReviewEvent } = require('../events/review-events');
 const { mergeInstructions } = require('../utils/instructions');
 const { getGitHubToken } = require('../config');
-const { generateScopedDiff, computeScopedDigest, getBranchCommitCount, getFirstCommitSubject, detectAndBuildBranchInfo, findMergeBase } = require('../local-review');
+const { generateScopedDiff, computeScopedDigest, getBranchCommitCount, getFirstCommitSubject, detectAndBuildBranchInfo, findMergeBase, getCurrentBranch, getRepositoryName } = require('../local-review');
 const { isValidScope, scopeIncludes, includesBranch, DEFAULT_SCOPE } = require('../local-scope');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
 const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
@@ -279,15 +279,31 @@ router.post('/api/local/start', async (req, res) => {
     const db = req.app.get('db');
     const reviewRepo = new ReviewRepository(db);
 
-    // First, check for an existing branch-scope session on this path
-    // (branch scope sessions persist across HEAD changes)
     let sessionId;
-    const branchSession = await reviewRepo.getLocalBranchScopeReview(repoPath);
-    if (branchSession) {
-      sessionId = branchSession.id;
-      // Update HEAD SHA if it changed
-      if (branchSession.local_head_sha !== headSha) {
+    // Try exact match (path + sha + branch)
+    let existing = await reviewRepo.getLocalReview(repoPath, headSha, branch);
+
+    // Adopt legacy sessions that predate branch tracking
+    if (!existing) {
+      const legacy = await reviewRepo.getLocalReviewByPathAndSha(repoPath, headSha);
+      if (legacy && legacy.local_head_branch === null) {
+        existing = legacy;
+      }
+    }
+
+    // Check for branch-scope session (persists across HEAD changes)
+    if (!existing) {
+      const branchSession = await reviewRepo.getLocalBranchScopeReview(repoPath, branch);
+      if (branchSession) existing = branchSession;
+    }
+
+    if (existing) {
+      sessionId = existing.id;
+      if (existing.local_head_sha !== headSha) {
         await reviewRepo.updateLocalHeadSha(sessionId, headSha);
+      }
+      if (existing.local_head_branch === null) {
+        await reviewRepo.updateReview(sessionId, { local_head_branch: branch });
       }
     } else {
       sessionId = await reviewRepo.upsertLocalReview({
@@ -295,15 +311,16 @@ router.post('/api/local/start', async (req, res) => {
         localHeadSha: headSha,
         repository,
         scopeStart: DEFAULT_SCOPE.start,
-        scopeEnd: DEFAULT_SCOPE.end
+        scopeEnd: DEFAULT_SCOPE.end,
+        localHeadBranch: branch
       });
     }
 
     // Generate diff using default scope
     logger.log('API', `Starting local review for ${repoPath}`, 'cyan');
-    const scopeStart = branchSession?.local_scope_start || DEFAULT_SCOPE.start;
-    const scopeEnd = branchSession?.local_scope_end || DEFAULT_SCOPE.end;
-    const baseBranch = branchSession?.local_base_branch || null;
+    const scopeStart = existing?.local_scope_start || DEFAULT_SCOPE.start;
+    const scopeEnd = existing?.local_scope_end || DEFAULT_SCOPE.end;
+    const baseBranch = existing?.local_base_branch || null;
     const { diff, stats } = await generateScopedDiff(repoPath, scopeStart, scopeEnd, baseBranch);
 
     // Compute digest for staleness detection
@@ -1136,20 +1153,21 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
           sessionChanged = true;
 
           // Check if a session already exists for the new HEAD
-          const existingSession = await reviewRepo.getLocalReview(localPath, currentHeadSha);
+          let refreshBranch;
+          try { refreshBranch = await getCurrentBranch(localPath); } catch (_) { /* non-fatal */ }
+          const existingSession = await reviewRepo.findLocalReview(localPath, currentHeadSha, refreshBranch);
           if (existingSession) {
             newSessionId = existingSession.id;
             logger.log('API', `Existing session found for new HEAD: ${newSessionId}`, 'cyan');
           } else {
-            // Create a new session for the new HEAD
-            const { getRepositoryName } = require('../local-review');
             const repository = await getRepositoryName(localPath);
             newSessionId = await reviewRepo.upsertLocalReview({
               localPath: localPath,
               localHeadSha: currentHeadSha,
               repository,
               scopeStart,
-              scopeEnd
+              scopeEnd,
+              localHeadBranch: refreshBranch
             });
             logger.log('API', `Created new session for new HEAD: ${newSessionId}`, 'cyan');
           }
@@ -1235,12 +1253,12 @@ router.post('/api/local/:reviewId/set-scope', async (req, res) => {
       return res.status(400).json({ error: 'Local review is missing path information' });
     }
 
-    // When branch is in scope, resolve baseBranch
+    // When branch is in scope, resolve baseBranch and current branch
     let baseBranch = requestBaseBranch || null;
+    let currentBranch = null;
     if (includesBranch(scopeStart)) {
+      currentBranch = await getCurrentBranch(localPath);
       if (!baseBranch) {
-        const { getCurrentBranch } = require('../local-review');
-        const currentBranch = await getCurrentBranch(localPath);
         const { detectBaseBranch } = require('../git/base-branch');
         const config = req.app.get('config') || {};
         const token = getGitHubToken(config);
@@ -1270,8 +1288,8 @@ router.post('/api/local/:reviewId/set-scope', async (req, res) => {
     const { getHeadSha } = require('../local-review');
     const headSha = await getHeadSha(localPath);
 
-    // Update the review record with new scope
-    await reviewRepo.updateLocalScope(reviewId, scopeStart, scopeEnd, baseBranch);
+    // Update the review record with new scope (headBranch stored on branch scope, cleared otherwise)
+    await reviewRepo.updateLocalScope(reviewId, scopeStart, scopeEnd, baseBranch, currentBranch);
     await reviewRepo.updateLocalHeadSha(reviewId, headSha);
 
     // Auto-name review from first commit subject when branch is newly in scope

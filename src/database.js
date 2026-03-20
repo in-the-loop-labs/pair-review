@@ -20,7 +20,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 29;
+const CURRENT_SCHEMA_VERSION = 30;
 
 /**
  * Database schema SQL statements
@@ -45,6 +45,7 @@ const SCHEMA_SQL = {
       name TEXT,
       local_mode TEXT DEFAULT 'uncommitted',
       local_base_branch TEXT,
+      local_head_branch TEXT,
       local_scope_start TEXT DEFAULT 'unstaged',
       local_scope_end TEXT DEFAULT 'untracked'
     )
@@ -287,7 +288,7 @@ const INDEX_SQL = [
   'CREATE INDEX IF NOT EXISTS idx_worktrees_last_accessed ON worktrees(last_accessed_at)',
   'CREATE INDEX IF NOT EXISTS idx_worktrees_repo ON worktrees(repository)',
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_repo_settings_repository ON repo_settings(repository)',
-  'CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_local ON reviews(local_path, local_head_sha) WHERE review_type = \'local\'',
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_local ON reviews(local_path, local_head_sha, local_head_branch) WHERE review_type = \'local\'',
   // Partial unique index for PR reviews only (NULL pr_number values for local reviews should not conflict)
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_pr_unique ON reviews(pr_number, repository) WHERE review_type = \'pr\'',
   // Analysis runs indexes
@@ -1356,6 +1357,30 @@ const MIGRATIONS = {
     }
 
     console.log('Migration to schema version 29 complete');
+  },
+
+  // Migration to version 30: adds head branch tracking for branch-aware session identity
+  30: (db) => {
+    console.log('Migrating to schema version 30: Add local_head_branch to reviews');
+
+    if (!columnExists(db, 'reviews', 'local_head_branch')) {
+      try {
+        db.prepare('ALTER TABLE reviews ADD COLUMN local_head_branch TEXT').run();
+        console.log('  Added local_head_branch column to reviews');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) throw error;
+        console.log('  Column local_head_branch already exists (race condition)');
+      }
+    } else {
+      console.log('  Column local_head_branch already exists');
+    }
+
+    // Recreate unique index to include local_head_branch in session identity
+    db.prepare('DROP INDEX IF EXISTS idx_reviews_local').run();
+    db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_local ON reviews(local_path, local_head_sha, local_head_branch) WHERE review_type = 'local'").run();
+    console.log('  Recreated idx_reviews_local with local_head_branch');
+
+    console.log('Migration to schema version 30 complete');
   }
 };
 
@@ -2546,6 +2571,11 @@ class ReviewRepository {
       params.push(updates.name);
     }
 
+    if (updates.local_head_branch !== undefined) {
+      setClauses.push('local_head_branch = ?');
+      params.push(updates.local_head_branch);
+    }
+
     if (updates.submittedAt !== undefined) {
       setClauses.push('submitted_at = ?');
       const submittedAt = updates.submittedAt instanceof Date
@@ -2743,9 +2773,9 @@ class ReviewRepository {
    * @param {string} context.repository - Repository identifier (can be derived from path)
    * @returns {Promise<number>} The review ID
    */
-  async upsertLocalReview({ localPath, localHeadSha, repository, scopeStart, scopeEnd, localMode, localBaseBranch }) {
-    // Try to find existing local review by path and SHA
-    const existing = await this.getLocalReview(localPath, localHeadSha);
+  async upsertLocalReview({ localPath, localHeadSha, repository, scopeStart, scopeEnd, localMode, localBaseBranch, localHeadBranch }) {
+    // Try to find existing local review by path, SHA, and branch
+    const existing = await this.getLocalReview(localPath, localHeadSha, localHeadBranch);
 
     if (existing) {
       // Update the updated_at timestamp (and scope/base if provided)
@@ -2769,6 +2799,10 @@ class ReviewRepository {
         updates.push('local_base_branch = ?');
         params.push(localBaseBranch);
       }
+      if (localHeadBranch !== undefined) {
+        updates.push('local_head_branch = ?');
+        params.push(localHeadBranch);
+      }
       params.push(existing.id);
       await run(this.db, `
         UPDATE reviews
@@ -2785,27 +2819,60 @@ class ReviewRepository {
 
     // Create new local review
     const result = await run(this.db, `
-      INSERT INTO reviews (pr_number, repository, status, review_type, local_path, local_head_sha, local_mode, local_base_branch, local_scope_start, local_scope_end)
-      VALUES (NULL, ?, 'draft', 'local', ?, ?, ?, ?, ?, ?)
-    `, [repository, localPath, localHeadSha, effectiveMode, localBaseBranch || null, effectiveScopeStart, effectiveScopeEnd]);
+      INSERT INTO reviews (pr_number, repository, status, review_type, local_path, local_head_sha, local_mode, local_base_branch, local_head_branch, local_scope_start, local_scope_end)
+      VALUES (NULL, ?, 'draft', 'local', ?, ?, ?, ?, ?, ?, ?)
+    `, [repository, localPath, localHeadSha, effectiveMode, localBaseBranch || null, localHeadBranch || null, effectiveScopeStart, effectiveScopeEnd]);
 
     return result.lastID;
   }
 
   /**
-   * Get a local review by path and HEAD SHA
+   * Get a local review by path, HEAD SHA, and branch.
    * @param {string} localPath - Absolute path to the local repository
    * @param {string} localHeadSha - Current HEAD SHA of the repository
+   * @param {string} [headBranch] - Branch name; when falsy, matches only NULL-branch sessions
    * @returns {Promise<Object|null>} Review record or null if not found
    */
-  async getLocalReview(localPath, localHeadSha) {
+  async getLocalReview(localPath, localHeadSha, headBranch) {
+    const branchClause = headBranch
+      ? 'AND local_head_branch = ?'
+      : 'AND local_head_branch IS NULL';
+    const params = [localPath, localHeadSha];
+    if (headBranch) params.push(headBranch);
     const row = await queryOne(this.db, `
       SELECT id, pr_number, repository, status, review_id,
              created_at, updated_at, submitted_at, review_data, custom_instructions,
              review_type, local_path, local_head_sha, summary, name,
-             local_mode, local_base_branch, local_scope_start, local_scope_end
+             local_mode, local_base_branch, local_head_branch, local_scope_start, local_scope_end
+      FROM reviews
+      WHERE review_type = 'local' AND local_path = ? AND local_head_sha = ? ${branchClause}
+    `, params);
+
+    if (!row) return null;
+
+    return {
+      ...row,
+      review_data: row.review_data ? JSON.parse(row.review_data) : null
+    };
+  }
+
+  /**
+   * Get a local review by path and HEAD SHA only (ignoring branch).
+   * Used by external callers (MCP, analysis results) that may not have branch context.
+   * @param {string} localPath - Absolute path to the local repository
+   * @param {string} localHeadSha - Current HEAD SHA of the repository
+   * @returns {Promise<Object|null>} Review record or null if not found
+   */
+  async getLocalReviewByPathAndSha(localPath, localHeadSha) {
+    const row = await queryOne(this.db, `
+      SELECT id, pr_number, repository, status, review_id,
+             created_at, updated_at, submitted_at, review_data, custom_instructions,
+             review_type, local_path, local_head_sha, summary, name,
+             local_mode, local_base_branch, local_head_branch, local_scope_start, local_scope_end
       FROM reviews
       WHERE review_type = 'local' AND local_path = ? AND local_head_sha = ?
+      ORDER BY updated_at DESC
+      LIMIT 1
     `, [localPath, localHeadSha]);
 
     if (!row) return null;
@@ -2817,32 +2884,50 @@ class ReviewRepository {
   }
 
   /**
+   * Find a local review by path and SHA, trying branch-exact match first,
+   * then falling back to branch-agnostic lookup.
+   * @param {string} localPath - Absolute path to the local repository
+   * @param {string} localHeadSha - Current HEAD SHA of the repository
+   * @param {string} [headBranch] - Branch name for exact match
+   * @returns {Promise<Object|null>} Review record or null if not found
+   */
+  async findLocalReview(localPath, localHeadSha, headBranch) {
+    const review = await this.getLocalReview(localPath, localHeadSha, headBranch);
+    if (review) return review;
+    // Only adopt sessions that predate branch tracking (NULL branch)
+    const fallback = await this.getLocalReviewByPathAndSha(localPath, localHeadSha);
+    if (fallback && fallback.local_head_branch === null) return fallback;
+    return null;
+  }
+
+  /**
    * Get an existing branch-mode local review by path (ignoring HEAD SHA).
    * Branch-mode sessions persist across HEAD changes — only the path matters.
    * @param {string} localPath - Absolute path to the local repository
    * @returns {Promise<Object|null>} Most recent branch-mode review or null
    */
-  async getLocalBranchReview(localPath) {
-    return this.getLocalBranchScopeReview(localPath);
+  async getLocalBranchReview(localPath, headBranch) {
+    return this.getLocalBranchScopeReview(localPath, headBranch);
   }
 
   /**
-   * Get an existing branch-scope local review by path (ignoring HEAD SHA).
-   * Branch-scope sessions persist across HEAD changes — only the path matters.
+   * Get an existing branch-scope local review by path and head branch.
+   * Branch-scope sessions persist across HEAD changes but are scoped to a specific branch.
    * @param {string} localPath - Absolute path to the local repository
+   * @param {string} headBranch - Current branch name
    * @returns {Promise<Object|null>} Most recent branch-scope review or null
    */
-  async getLocalBranchScopeReview(localPath) {
+  async getLocalBranchScopeReview(localPath, headBranch) {
     const row = await queryOne(this.db, `
       SELECT id, pr_number, repository, status, review_id,
              created_at, updated_at, submitted_at, review_data, custom_instructions,
              review_type, local_path, local_head_sha, summary, name,
-             local_mode, local_base_branch, local_scope_start, local_scope_end
+             local_mode, local_base_branch, local_head_branch, local_scope_start, local_scope_end
       FROM reviews
-      WHERE review_type = 'local' AND local_path = ? AND local_scope_start = 'branch'
+      WHERE review_type = 'local' AND local_path = ? AND local_scope_start = 'branch' AND local_head_branch = ?
       ORDER BY updated_at DESC
       LIMIT 1
-    `, [localPath]);
+    `, [localPath, headBranch]);
     if (!row) return null;
     return { ...row, review_data: row.review_data ? JSON.parse(row.review_data) : null };
   }
@@ -2872,7 +2957,7 @@ class ReviewRepository {
    * @param {string} [baseBranch] - Base branch name (only relevant for branch scope)
    * @returns {Promise<boolean>} True if record was updated
    */
-  async updateLocalScope(id, scopeStart, scopeEnd, baseBranch) {
+  async updateLocalScope(id, scopeStart, scopeEnd, baseBranch, headBranch) {
     const updates = ['local_scope_start = ?', 'local_scope_end = ?', 'updated_at = CURRENT_TIMESTAMP'];
     const params = [scopeStart, scopeEnd];
     // Also write local_mode for backward compat
@@ -2882,6 +2967,9 @@ class ReviewRepository {
       updates.push('local_base_branch = ?');
       params.push(baseBranch);
     }
+    // Store head branch when entering branch scope, clear when leaving
+    updates.push('local_head_branch = ?');
+    params.push(scopeStart === 'branch' ? (headBranch || null) : null);
     params.push(id);
     const result = await run(this.db, `
       UPDATE reviews
@@ -2901,7 +2989,7 @@ class ReviewRepository {
       SELECT id, pr_number, repository, status, review_id,
              created_at, updated_at, submitted_at, review_data, custom_instructions,
              review_type, local_path, local_head_sha, summary, name,
-             local_mode, local_base_branch, local_scope_start, local_scope_end
+             local_mode, local_base_branch, local_head_branch, local_scope_start, local_scope_end
       FROM reviews
       WHERE id = ? AND review_type = 'local'
     `, [id]);

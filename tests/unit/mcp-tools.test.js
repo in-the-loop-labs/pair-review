@@ -672,7 +672,7 @@ describe('start_analysis tool', () => {
 
     // Verify review was created
     const reviewRepo = new ReviewRepository(db);
-    const review = await reviewRepo.getLocalReview('/tmp/new-repo', 'def456');
+    const review = await reviewRepo.getLocalReviewByPathAndSha('/tmp/new-repo', 'def456');
     expect(review).not.toBeNull();
   });
 
@@ -881,13 +881,6 @@ describe('start_analysis tool', () => {
   });
 
   it('should persist customInstructions in local mode', async () => {
-    const reviewRepo = new ReviewRepository(db);
-    const reviewId = await reviewRepo.upsertLocalReview({
-      localPath: '/tmp/instructions-repo',
-      localHeadSha: 'inst123',
-      repository: 'instructions-repo',
-    });
-
     const result = await client.callTool({
       name: 'start_analysis',
       arguments: {
@@ -899,8 +892,9 @@ describe('start_analysis tool', () => {
     const content = JSON.parse(result.content[0].text);
     expect(content.status).toBe('started');
 
-    // Verify custom instructions were persisted
-    const review = await reviewRepo.getLocalReviewById(reviewId);
+    // Verify custom instructions were persisted on the review created by the tool
+    const reviewRepo = new ReviewRepository(db);
+    const review = await reviewRepo.getLocalReviewById(content.reviewId);
     expect(review.custom_instructions).toBe('Focus on performance');
   });
 

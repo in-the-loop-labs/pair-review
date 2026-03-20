@@ -11,6 +11,7 @@ const { getTierForModel } = require('../ai/provider');
 const { TIERS, TIER_ALIASES, resolveTier } = require('../ai/prompts/config');
 const { GitWorktreeManager } = require('../git/worktree');
 const path = require('path');
+const { getCurrentBranch } = require('../local-review');
 const { normalizeRepository } = require('../utils/paths');
 const logger = require('../utils/logger');
 const { broadcastReviewEvent } = require('../events/review-events');
@@ -118,7 +119,11 @@ async function resolveReview(args, db) {
   const reviewRepo = new ReviewRepository(db);
 
   if (args.path && args.headSha) {
-    const review = await reviewRepo.getLocalReview(args.path, args.headSha);
+    let headBranch = args.branch;
+    if (!headBranch) {
+      try { headBranch = await getCurrentBranch(args.path); } catch (_) { /* non-fatal */ }
+    }
+    const review = await reviewRepo.findLocalReview(args.path, args.headSha, headBranch);
     if (!review) {
       return { review: null, error: `No local review found for path "${args.path}" with HEAD SHA "${args.headSha}"` };
     }
@@ -507,21 +512,26 @@ function createMCPServer(db, options = {}) {
           const localPath = args.path;
           const localHeadSha = args.headSha;
 
+          // Resolve current branch for session identity
+          let localHeadBranch;
+          try { localHeadBranch = await getCurrentBranch(localPath); } catch (_) { /* non-fatal */ }
+
           // Look up or create local review record
-          // Try to get repository name from existing review, else use directory basename
+          let reviewId;
           let repository;
-          const existingReview = await reviewRepo.getLocalReview(localPath, localHeadSha);
+          const existingReview = await reviewRepo.findLocalReview(localPath, localHeadSha, localHeadBranch);
           if (existingReview) {
+            reviewId = existingReview.id;
             repository = existingReview.repository;
           } else {
             repository = path.basename(localPath);
+            reviewId = await reviewRepo.upsertLocalReview({
+              localPath,
+              localHeadSha,
+              repository,
+              localHeadBranch
+            });
           }
-
-          const reviewId = await reviewRepo.upsertLocalReview({
-            localPath,
-            localHeadSha,
-            repository
-          });
 
           // Concurrent analysis guard: check if one is already running
           const existingAnalysisId = reviewToAnalysisId.get(reviewId);

@@ -930,4 +930,116 @@ describe('Local Sessions API', () => {
       expect(res.body.diff).toBe('');
     });
   });
+
+  describe('Branch-aware session identity', () => {
+    it('should create separate sessions for different branches at same path', async () => {
+      const reviewRepo = new ReviewRepository(db);
+
+      // Create two sessions, then set each to branch scope on different branches
+      const id1 = await reviewRepo.upsertLocalReview({
+        localPath: '/repo',
+        localHeadSha: 'sha-feature-a',
+        repository: 'owner/repo'
+      });
+      await reviewRepo.updateLocalScope(id1, 'branch', 'branch', 'main', 'feature-a');
+
+      const id2 = await reviewRepo.upsertLocalReview({
+        localPath: '/repo',
+        localHeadSha: 'sha-feature-b',
+        repository: 'owner/repo'
+      });
+      await reviewRepo.updateLocalScope(id2, 'branch', 'branch', 'main', 'feature-b');
+
+      expect(id1).not.toBe(id2);
+
+      // Each branch lookup returns the correct session
+      const foundA = await reviewRepo.getLocalBranchScopeReview('/repo', 'feature-a');
+      expect(foundA.id).toBe(id1);
+      const foundB = await reviewRepo.getLocalBranchScopeReview('/repo', 'feature-b');
+      expect(foundB.id).toBe(id2);
+    });
+
+    it('should reuse session for same branch with different HEAD SHA', async () => {
+      const reviewRepo = new ReviewRepository(db);
+
+      const id1 = await reviewRepo.upsertLocalReview({
+        localPath: '/repo',
+        localHeadSha: 'sha-old',
+        repository: 'owner/repo'
+      });
+      await reviewRepo.updateLocalScope(id1, 'branch', 'branch', 'main', 'feature-a');
+
+      // Simulate finding the session on the same branch with a new HEAD
+      const found = await reviewRepo.getLocalBranchScopeReview('/repo', 'feature-a');
+      expect(found).not.toBeNull();
+      expect(found.id).toBe(id1);
+    });
+
+    it('should not find branch session for a different branch at same path', async () => {
+      const reviewRepo = new ReviewRepository(db);
+
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/repo',
+        localHeadSha: 'sha-1',
+        repository: 'owner/repo'
+      });
+      await reviewRepo.updateLocalScope(id, 'branch', 'branch', 'main', 'feature-a');
+
+      const found = await reviewRepo.getLocalBranchScopeReview('/repo', 'feature-b');
+      expect(found).toBeNull();
+    });
+
+    it('should store local_head_branch via updateLocalScope and retrieve it', async () => {
+      const reviewRepo = new ReviewRepository(db);
+
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/repo',
+        localHeadSha: 'sha-1',
+        repository: 'owner/repo'
+      });
+
+      // head_branch is null at creation
+      let review = await reviewRepo.getLocalReviewById(id);
+      expect(review.local_head_branch).toBeNull();
+
+      // Set when entering branch scope
+      await reviewRepo.updateLocalScope(id, 'branch', 'branch', 'main', 'my-branch');
+      review = await reviewRepo.getLocalReviewById(id);
+      expect(review.local_head_branch).toBe('my-branch');
+
+      // Cleared when leaving branch scope
+      await reviewRepo.updateLocalScope(id, 'unstaged', 'untracked');
+      review = await reviewRepo.getLocalReviewById(id);
+      expect(review.local_head_branch).toBeNull();
+    });
+
+    it('POST /api/local/start should create separate sessions per branch after scope change', async () => {
+      // Start session on feature-a
+      localReviewModule.getCurrentBranch.mockResolvedValue('feature-a');
+      localReviewModule.getHeadSha.mockResolvedValue('sha-a');
+
+      const res1 = await request(app)
+        .post('/api/local/start')
+        .send({ path: '/tmp' });
+      expect(res1.status).toBe(200);
+      const sessionA = res1.body.sessionId;
+
+      // Switch scope to branch mode (stores headBranch via updateLocalScope)
+      const reviewRepo = new ReviewRepository(db);
+      await reviewRepo.updateLocalScope(sessionA, 'branch', 'branch', 'main', 'feature-a');
+
+      // Start session on feature-b (different branch)
+      localReviewModule.getCurrentBranch.mockResolvedValue('feature-b');
+      localReviewModule.getHeadSha.mockResolvedValue('sha-b');
+
+      const res2 = await request(app)
+        .post('/api/local/start')
+        .send({ path: '/tmp' });
+      expect(res2.status).toBe(200);
+      const sessionB = res2.body.sessionId;
+
+      // Should be different sessions
+      expect(sessionA).not.toBe(sessionB);
+    });
+  });
 });
