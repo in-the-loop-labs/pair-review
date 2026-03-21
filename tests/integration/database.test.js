@@ -553,7 +553,7 @@ describe('ReviewRepository', () => {
 
   describe('getOrCreate()', () => {
     it('should create new review when none exists', async () => {
-      const review = await reviewRepo.getOrCreate({
+      const { review, created } = await reviewRepo.getOrCreate({
         prNumber: 123,
         repository: 'owner/repo',
         customInstructions: 'Test'
@@ -561,23 +561,25 @@ describe('ReviewRepository', () => {
 
       expect(review.id).toBe(1);
       expect(review.pr_number).toBe(123);
+      expect(created).toBe(true);
     });
 
     it('should return existing review when one exists', async () => {
-      const created = await reviewRepo.createReview({
+      const existingReview = await reviewRepo.createReview({
         prNumber: 123,
         repository: 'owner/repo',
         customInstructions: 'Original'
       });
 
-      const retrieved = await reviewRepo.getOrCreate({
+      const { review: retrieved, created } = await reviewRepo.getOrCreate({
         prNumber: 123,
         repository: 'owner/repo',
         customInstructions: 'Different'
       });
 
-      expect(retrieved.id).toBe(created.id);
+      expect(retrieved.id).toBe(existingReview.id);
       expect(retrieved.custom_instructions).toBe('Original'); // Should not update
+      expect(created).toBe(false);
     });
   });
 

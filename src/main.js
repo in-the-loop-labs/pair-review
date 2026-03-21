@@ -764,7 +764,7 @@ async function performHeadlessReview(args, config, db, flags, options) {
     // The review.id is passed to the analyzer so comments use review.id, not prMetadata.id
     // This avoids ID collision with local mode where comments also use reviews.id
     const reviewRepo = new ReviewRepository(db);
-    const review = await reviewRepo.getOrCreate({ prNumber: prInfo.number, repository });
+    const { review } = await reviewRepo.getOrCreate({ prNumber: prInfo.number, repository });
 
     // Fetch repo settings to get default instructions
     const repoSettingsRepo = new RepoSettingsRepository(db);

@@ -26,7 +26,7 @@ const { buildReviewStartedPayload, buildReviewLoadedPayload, buildAnalysisStarte
 const { mergeInstructions } = require('../utils/instructions');
 const { getGitHubToken } = require('../config');
 const { generateScopedDiff, computeScopedDigest, getBranchCommitCount, getFirstCommitSubject, detectAndBuildBranchInfo, findMergeBase, getCurrentBranch, getRepositoryName } = require('../local-review');
-const { isValidScope, scopeIncludes, includesBranch, DEFAULT_SCOPE } = require('../local-scope');
+const { STOPS, isValidScope, scopeIncludes, includesBranch, DEFAULT_SCOPE } = require('../local-scope');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
 const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
 const { TIERS, TIER_ALIASES, VALID_TIERS, resolveTier } = require('../ai/prompts/config');
@@ -320,18 +320,21 @@ router.post('/api/local/start', async (req, res) => {
 
     // Fire review hook (non-blocking)
     const config = req.app.get('config') || {};
-    getCachedUser(config).then(user => {
-      const hookEvent = existing ? 'review.loaded' : 'review.started';
-      const builder = existing ? buildReviewLoadedPayload : buildReviewStartedPayload;
-      const scopeLabel = `${existing?.local_scope_start || DEFAULT_SCOPE.start}..${existing?.local_scope_end || DEFAULT_SCOPE.end}`;
-      const payload = builder({ reviewId: sessionId, mode: 'local', localContext: { path: repoPath, branch, scope: scopeLabel, headSha }, user });
-      fireHooks(hookEvent, payload, config);
-    }).catch(() => {});
-
     // Generate diff using default scope
     logger.log('API', `Starting local review for ${repoPath}`, 'cyan');
     const scopeStart = existing?.local_scope_start || DEFAULT_SCOPE.start;
     const scopeEnd = existing?.local_scope_end || DEFAULT_SCOPE.end;
+
+    // Fire review hook (non-blocking, after scope is resolved)
+    getCachedUser(config).then(user => {
+      const hookEvent = existing ? 'review.loaded' : 'review.started';
+      const builder = existing ? buildReviewLoadedPayload : buildReviewStartedPayload;
+      const si = STOPS.indexOf(scopeStart);
+      const ei = STOPS.indexOf(scopeEnd);
+      const scope = STOPS.slice(si, ei + 1);
+      const payload = builder({ reviewId: sessionId, mode: 'local', localContext: { path: repoPath, branch, headSha, scope }, user });
+      fireHooks(hookEvent, payload, config);
+    }).catch(err => { logger.warn(`Review hook failed: ${err.message}`); });
     const baseBranch = existing?.local_base_branch || null;
     const { diff, stats } = await generateScopedDiff(repoPath, scopeStart, scopeEnd, baseBranch);
 
@@ -517,6 +520,22 @@ router.get('/api/local/:reviewId', async (req, res) => {
       createdAt: review.created_at,
       updatedAt: review.updated_at
     });
+
+    // Fire review.loaded hook (session already exists to be fetched by ID)
+    const hookConfig = req.app.get('config') || {};
+    getCachedUser(hookConfig).then(user => {
+      const hookScopeStart = review.local_scope_start || DEFAULT_SCOPE.start;
+      const hookScopeEnd = review.local_scope_end || DEFAULT_SCOPE.end;
+      const si = STOPS.indexOf(hookScopeStart);
+      const ei = STOPS.indexOf(hookScopeEnd);
+      const scope = STOPS.slice(si, ei + 1);
+      const payload = buildReviewLoadedPayload({
+        reviewId: review.id, mode: 'local',
+        localContext: { path: review.local_path, branch: branchName, headSha: review.local_head_sha, scope },
+        user,
+      });
+      fireHooks('review.loaded', payload, hookConfig);
+    }).catch(err => { logger.warn(`Review hook failed: ${err.message}`); });
 
   } catch (error) {
     logger.error('Error fetching local review:', error.stack || error.message);

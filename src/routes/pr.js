@@ -183,10 +183,10 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
 
     // Eagerly create the review record on first visit so all subsequent
     // events (analysis, comments, hooks) always have a real reviewId.
+    // To distinguish new vs returning, snapshot the current record first.
     const db = req.app.get('db');
     const reviewRepo = new ReviewRepository(db);
-    const existingReview = await reviewRepo.getReviewByPR(prNumber, repository);
-    const review = existingReview || await reviewRepo.getOrCreate({ prNumber, repository });
+    const { review, created: isNewReview } = await reviewRepo.getOrCreate({ prNumber, repository });
 
     // Parse extended PR data
     let extendedData = {};
@@ -268,11 +268,11 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
       baseSha: extendedData.base_sha || null, headSha: extendedData.head_sha || null,
     };
     getCachedUser(config).then(user => {
-      const hookEvent = existingReview ? 'review.loaded' : 'review.started';
-      const builder = existingReview ? buildReviewLoadedPayload : buildReviewStartedPayload;
+      const hookEvent = isNewReview ? 'review.started' : 'review.loaded';
+      const builder = isNewReview ? buildReviewStartedPayload : buildReviewLoadedPayload;
       const payload = builder({ reviewId: review.id, mode: 'pr', prContext, user });
       fireHooks(hookEvent, payload, config);
-    }).catch(() => {}); // getCachedUser failures are logged internally
+    }).catch(err => { logger.warn(`Review hook failed: ${err.message}`); });
 
   } catch (error) {
     console.error('Error fetching PR data:', error);
@@ -373,7 +373,7 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
     // Get or create a review record for this PR
     // The review.id is used for comments to avoid ID collision with local mode
     const reviewRepo = new ReviewRepository(db);
-    const review = await reviewRepo.getOrCreate({ prNumber, repository });
+    const { review } = await reviewRepo.getOrCreate({ prNumber, repository });
 
     // Fetch and return updated PR data (reuse the same structure as GET endpoint)
     const prMetadata = await queryOne(db, `
@@ -1028,7 +1028,7 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
     // Get or create a review record for this PR
     // Comments are associated with review.id, not prMetadata.id
     const reviewRepo = new ReviewRepository(db);
-    const review = await reviewRepo.getOrCreate({ prNumber, repository });
+    const { review } = await reviewRepo.getOrCreate({ prNumber, repository });
 
     // Get all active user comments for this PR using review.id
     const comments = await query(db, `
@@ -1533,7 +1533,7 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
     const runId = uuidv4();
     const analysisId = runId;
 
-    const review = await reviewRepo.getOrCreate({ prNumber, repository });
+    const { review } = await reviewRepo.getOrCreate({ prNumber, repository });
 
     const analysisRunRepo = new AnalysisRunRepository(db);
     const levelsConfig = parseEnabledLevels(requestEnabledLevels, requestSkipLevel3);
@@ -1822,7 +1822,7 @@ router.post('/api/pr/:owner/:repo/:number/analyses/council', async (req, res) =>
     const repoInstructions = repoSettings?.default_instructions || null;
     const requestInstructions = rawInstructions?.trim() || null;
 
-    const review = await reviewRepo.getOrCreate({ prNumber, repository });
+    const { review } = await reviewRepo.getOrCreate({ prNumber, repository });
 
     if (requestInstructions) {
       await reviewRepo.upsertCustomInstructions(prNumber, repository, requestInstructions);

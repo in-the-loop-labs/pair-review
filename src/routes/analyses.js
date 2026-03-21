@@ -245,7 +245,7 @@ router.post('/api/analyses/results', async (req, res) => {
         return res.status(400).json({ error: 'Invalid pull request number' });
       }
       const repository = normalizeRepository(repoParts[0], repoParts[1]);
-      const review = await reviewRepo.getOrCreate({
+      const { review } = await reviewRepo.getOrCreate({
         prNumber: parsedPR,
         repository
       });

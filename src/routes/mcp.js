@@ -697,7 +697,7 @@ function createMCPServer(db, options = {}) {
           const worktreePath = await worktreeManager.getWorktreePath({ owner, repo, number: prNumber });
 
           // Get or create review record
-          const review = await reviewRepo.getOrCreate({ prNumber, repository });
+          const { review } = await reviewRepo.getOrCreate({ prNumber, repository });
 
           // Resolve provider and model
           const repoSettings = await repoSettingsRepo.getRepoSettings(repository);
