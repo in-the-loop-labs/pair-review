@@ -471,6 +471,11 @@ AI PROVIDERS:
       // Resolve localPath, defaulting to cwd if not provided
       const targetPath = flags.localPath || process.cwd();
       await handleLocalReview(targetPath, flags);
+
+      // Async cleanup of stale worktrees and reviews (don't block startup)
+      cleanupStaleWorktreesAsync(config);
+      cleanupStaleReviewsAsync(config);
+
       return; // Exit after local review
     }
 
