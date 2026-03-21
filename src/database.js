@@ -20,7 +20,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 32;
+const CURRENT_SCHEMA_VERSION = 33;
 
 /**
  * Database schema SQL statements
@@ -99,6 +99,7 @@ const SCHEMA_SQL = {
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
+      FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE,
       FOREIGN KEY (adopted_as_id) REFERENCES comments(id),
       FOREIGN KEY (parent_id) REFERENCES comments(id)
     )
@@ -1462,6 +1463,72 @@ const MIGRATIONS = {
 
     console.log('  Recreated chat_sessions with ON DELETE CASCADE/SET NULL');
     console.log('Migration to schema version 32 complete');
+  },
+
+  // Migration to version 33: Add ON DELETE CASCADE to comments FK for review_id
+  // SQLite doesn't support ALTER CONSTRAINT, so we recreate the table.
+  33: (db) => {
+    console.log('Migrating to schema version 33: Add cascade delete to comments.review_id FK');
+
+    if (!tableExists(db, 'comments')) {
+      console.log('  comments table does not exist, skipping');
+      console.log('Migration to schema version 33 complete');
+      return;
+    }
+
+    db.prepare(`CREATE TABLE IF NOT EXISTS comments_rebuild (
+      id INTEGER PRIMARY KEY,
+      review_id INTEGER,
+      source TEXT,
+      author TEXT,
+
+      ai_run_id TEXT,
+      ai_level INTEGER,
+      ai_confidence REAL,
+
+      file TEXT,
+      line_start INTEGER,
+      line_end INTEGER,
+      diff_position INTEGER,
+      side TEXT DEFAULT 'RIGHT' CHECK(side IN ('LEFT', 'RIGHT')),
+      commit_sha TEXT,
+      type TEXT,
+      title TEXT,
+      body TEXT,
+      suggestion_text TEXT,
+      reasoning TEXT,
+
+      status TEXT DEFAULT 'active' CHECK(status IN ('active', 'dismissed', 'adopted', 'submitted', 'draft', 'inactive')),
+      adopted_as_id INTEGER,
+      parent_id INTEGER,
+      is_file_level INTEGER DEFAULT 0,
+
+      voice_id TEXT,
+      is_raw INTEGER DEFAULT 0,
+
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+      FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE,
+      FOREIGN KEY (adopted_as_id) REFERENCES comments(id),
+      FOREIGN KEY (parent_id) REFERENCES comments(id)
+    )`).run();
+
+    db.prepare('INSERT INTO comments_rebuild SELECT * FROM comments').run();
+
+    db.prepare('DROP TABLE comments').run();
+    db.prepare('ALTER TABLE comments_rebuild RENAME TO comments').run();
+
+    // Recreate all indexes on the new table
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_comments_review_file ON comments(review_id, file, line_start)').run();
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_comments_ai_run ON comments(ai_run_id)').run();
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status)').run();
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_comments_file_level ON comments(review_id, file, is_file_level)').run();
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_comments_voice ON comments(voice_id)').run();
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_comments_is_raw ON comments(is_raw)').run();
+
+    console.log('  Recreated comments with ON DELETE CASCADE for review_id');
+    console.log('Migration to schema version 33 complete');
   }
 };
 
@@ -3195,6 +3262,69 @@ class ReviewRepository {
       DELETE FROM reviews WHERE id = ? AND review_type = 'local'
     `, [reviewId]);
     return result.changes > 0;
+  }
+
+  /**
+   * Find reviews older than the given cutoff date (based on updated_at).
+   * @param {string} cutoffDate - ISO 8601 date string
+   * @returns {Promise<Array<{id: number, pr_number: number|null, repository: string, review_type: string}>>}
+   */
+  async findStale(cutoffDate) {
+    return query(this.db, `
+      SELECT id, pr_number, repository, review_type
+      FROM reviews
+      WHERE updated_at < ?
+    `, [cutoffDate]);
+  }
+
+  /**
+   * Delete a review and all associated data in a single transaction.
+   *
+   * Cascade-deleted by FK constraints: analysis_runs, local_diffs, github_reviews,
+   * chat_sessions (→ chat_messages), context_files, comments.
+   *
+   * Orphan-cleaned explicitly: pr_metadata, github_pr_cache (only when no other
+   * reviews reference the same PR).
+   *
+   * @param {number} reviewId - Review ID to delete
+   * @param {Object} [opts] - Options
+   * @param {number|null} [opts.prNumber] - PR number (skips orphan cleanup if null)
+   * @param {string|null} [opts.repository] - Repository in owner/repo format
+   * @returns {Promise<boolean>} True if review was deleted
+   */
+  async deleteWithRelatedData(reviewId, { prNumber = null, repository = null } = {}) {
+    return withTransaction(this.db, async () => {
+      // Delete the review row — FK cascades handle related tables
+      const result = await run(this.db, 'DELETE FROM reviews WHERE id = ?', [reviewId]);
+
+      if (result.changes === 0) return false;
+
+      // Clean up orphaned pr_metadata and github_pr_cache if this was a PR review
+      if (prNumber != null && repository) {
+        const remaining = await queryOne(this.db, `
+          SELECT COUNT(*) as cnt FROM reviews
+          WHERE pr_number = ? AND repository = ? COLLATE NOCASE
+        `, [prNumber, repository]);
+
+        if (remaining.cnt === 0) {
+          await run(this.db, `
+            DELETE FROM pr_metadata
+            WHERE pr_number = ? AND repository = ? COLLATE NOCASE
+          `, [prNumber, repository]);
+
+          // Parse owner/repo for github_pr_cache
+          const parts = repository.split('/');
+          if (parts.length === 2) {
+            await run(this.db, `
+              DELETE FROM github_pr_cache
+              WHERE owner = ? AND repo = ? AND number = ?
+            `, [parts[0], parts[1], prNumber]);
+          }
+        }
+      }
+
+      return true;
+    });
   }
 }
 

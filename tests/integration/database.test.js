@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { createTestDatabase, closeTestDatabase } from '../utils/schema';
+import { createTestDatabase, closeTestDatabase, seedTestReview } from '../utils/schema';
 
 // Import database module functions and classes
 const database = require('../../src/database.js');
@@ -1470,6 +1470,9 @@ describe('Comments Table Operations', () => {
 
   beforeEach(async () => {
     db = await createTestDatabase();
+    // Seed review rows to satisfy FK constraint on comments.review_id
+    seedTestReview(db, { id: 1 });
+    seedTestReview(db, { id: 2, prNumber: 2 });
   });
 
   afterEach(async () => {

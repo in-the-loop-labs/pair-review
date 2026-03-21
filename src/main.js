@@ -182,6 +182,41 @@ function cleanupStaleWorktreesAsync(config) {
   });
 }
 
+/**
+ * Asynchronously cleanup stale reviews (runs in background, doesn't block)
+ * @param {Object} config - Application configuration
+ */
+function cleanupStaleReviewsAsync(config) {
+  setImmediate(async () => {
+    try {
+      const retentionDays = config.review_retention_days || 21;
+      const cutoffDate = new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
+      const cutoffISO = cutoffDate.toISOString();
+
+      const reviewRepo = new ReviewRepository(db);
+      const staleReviews = await reviewRepo.findStale(cutoffISO);
+
+      if (staleReviews.length === 0) return;
+
+      logger.info(`[pair-review] Cleaning up ${staleReviews.length} reviews older than ${retentionDays} days`);
+
+      for (const review of staleReviews) {
+        try {
+          await reviewRepo.deleteWithRelatedData(review.id, {
+            prNumber: review.pr_number,
+            repository: review.repository
+          });
+        } catch (err) {
+          logger.error(`[pair-review] Failed to cleanup review ${review.id}: ${err.message}`);
+        }
+      }
+    } catch (error) {
+      logger.error('[pair-review] Background review cleanup error:', error.message);
+    }
+  });
+}
+
 // Known flags that are valid (for validation)
 const KNOWN_FLAGS = new Set([
   '--ai',
@@ -531,8 +566,9 @@ async function handlePullRequest(args, config, db, flags = {}) {
     // Start server and open browser to setup page
     const port = await startServer(db);
 
-    // Async cleanup of stale worktrees (don't block startup)
+    // Async cleanup of stale worktrees and reviews (don't block startup)
     cleanupStaleWorktreesAsync(config);
+    cleanupStaleReviewsAsync(config);
 
     let url = `http://localhost:${port}/pr/${prInfo.owner}/${prInfo.repo}/${prInfo.number}`;
     if (flags.ai) {
@@ -555,8 +591,9 @@ async function handlePullRequest(args, config, db, flags = {}) {
 async function startServerOnly(config) {
   const port = await startServer(db);
 
-  // Async cleanup of stale worktrees (don't block startup)
+  // Async cleanup of stale worktrees and reviews (don't block startup)
   cleanupStaleWorktreesAsync(config);
+  cleanupStaleReviewsAsync(config);
 
   // Open browser to landing page
   const url = `http://localhost:${port}/`;

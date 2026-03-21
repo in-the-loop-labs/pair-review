@@ -9,7 +9,7 @@
  */
 
 const express = require('express');
-const { query, queryOne, run } = require('../database');
+const { query, queryOne, run, ReviewRepository } = require('../database');
 const { setupPRReview } = require('../setup/pr-setup');
 const { GitHubApiError } = require('../github/client');
 const fs = require('fs').promises;
@@ -267,22 +267,23 @@ router.delete('/api/worktrees/:id', async (req, res) => {
       }
     }
 
-    // Delete all associated database records in a transaction
-    await run(db, 'BEGIN TRANSACTION');
-    try {
-      await run(db, 'DELETE FROM worktrees WHERE pr_number = ? AND repository = ? COLLATE NOCASE', [prNumber, repository]);
-      await run(db, 'DELETE FROM chat_sessions WHERE review_id IN (SELECT id FROM reviews WHERE pr_number = ? AND repository = ? COLLATE NOCASE)', [prNumber, repository]);
-      await run(db, `
-        DELETE FROM comments WHERE review_id IN (
-          SELECT id FROM reviews WHERE pr_number = ? AND repository = ? COLLATE NOCASE
-        )
-      `, [prNumber, repository]);
-      await run(db, 'DELETE FROM reviews WHERE pr_number = ? AND repository = ? COLLATE NOCASE', [prNumber, repository]);
+    // Delete all associated database records
+    // First delete the worktree record, then use shared review cleanup
+    await run(db, 'DELETE FROM worktrees WHERE pr_number = ? AND repository = ? COLLATE NOCASE', [prNumber, repository]);
+
+    // Find all reviews for this PR and delete them with cascading cleanup
+    const reviews = await query(db, `
+      SELECT id FROM reviews WHERE pr_number = ? AND repository = ? COLLATE NOCASE
+    `, [prNumber, repository]);
+
+    const reviewRepo = new ReviewRepository(db);
+    for (const review of reviews) {
+      await reviewRepo.deleteWithRelatedData(review.id, { prNumber, repository });
+    }
+
+    // If no reviews existed, still clean up pr_metadata directly
+    if (reviews.length === 0) {
       await run(db, 'DELETE FROM pr_metadata WHERE id = ?', [metadataId]);
-      await run(db, 'COMMIT');
-    } catch (txError) {
-      await run(db, 'ROLLBACK');
-      throw txError;
     }
 
     logger.success(`Deleted review for ${repository} #${prNumber}`);
