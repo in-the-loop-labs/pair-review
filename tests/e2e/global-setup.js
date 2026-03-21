@@ -199,10 +199,11 @@ function insertTestData() {
   });
 
   // Insert PR metadata
+  const now = new Date().toISOString();
   db.prepare(`
-    INSERT INTO pr_metadata (pr_number, repository, title, description, author, base_branch, head_branch, pr_data)
-    VALUES (1, 'test-owner/test-repo', 'Test PR for E2E', 'Test description', 'testuser', 'main', 'feature-test', ?)
-  `).run(prData);
+    INSERT INTO pr_metadata (pr_number, repository, title, description, author, base_branch, head_branch, pr_data, last_accessed_at)
+    VALUES (1, 'test-owner/test-repo', 'Test PR for E2E', 'Test description', 'testuser', 'main', 'feature-test', ?, ?)
+  `).run(prData, now);
 
   // Insert review record (needed for comments to work - PR API returns review.id)
   db.prepare(`
@@ -210,8 +211,7 @@ function insertTestData() {
     VALUES (1, 'test-owner/test-repo', 'draft')
   `).run();
 
-  // Insert worktree
-  const now = new Date().toISOString();
+  // Insert worktree (reuses `now` from pr_metadata insert above)
   db.prepare(`
     INSERT INTO worktrees (id, pr_number, repository, branch, path, created_at, last_accessed_at)
     VALUES ('e2e-test-id', 1, 'test-owner/test-repo', 'feature-test', '/tmp/worktree/e2e-test', ?, ?)

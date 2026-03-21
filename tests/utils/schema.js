@@ -88,6 +88,7 @@ const SCHEMA_SQL = {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       pr_data TEXT,
       last_ai_run_id TEXT,
+      last_accessed_at TEXT,
       UNIQUE(pr_number, repository)
     )
   `,
@@ -198,8 +199,8 @@ const SCHEMA_SQL = {
       status TEXT DEFAULT 'active',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (review_id) REFERENCES reviews(id),
-      FOREIGN KEY (context_comment_id) REFERENCES comments(id)
+      FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE,
+      FOREIGN KEY (context_comment_id) REFERENCES comments(id) ON DELETE SET NULL
     )
   `,
 
@@ -256,6 +257,7 @@ const INDEX_SQL = [
   'CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status)',
   'CREATE INDEX IF NOT EXISTS idx_comments_file_level ON comments(review_id, file, is_file_level)',
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_metadata_unique ON pr_metadata(pr_number, repository)',
+  'CREATE INDEX IF NOT EXISTS idx_pr_metadata_last_accessed ON pr_metadata(last_accessed_at)',
   'CREATE INDEX IF NOT EXISTS idx_worktrees_last_accessed ON worktrees(last_accessed_at)',
   'CREATE INDEX IF NOT EXISTS idx_worktrees_repo ON worktrees(repository)',
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_repo_settings_repository ON repo_settings(repository)',
