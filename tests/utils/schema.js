@@ -69,6 +69,7 @@ const SCHEMA_SQL = {
       is_raw INTEGER DEFAULT 0,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE,
       FOREIGN KEY (adopted_as_id) REFERENCES comments(id),
       FOREIGN KEY (parent_id) REFERENCES comments(id)
     )
@@ -320,9 +321,30 @@ function closeTestDatabase(db) {
   db.close();
 }
 
+/**
+ * Create a review row for tests that need to insert comments.
+ * Satisfies the FOREIGN KEY (review_id) REFERENCES reviews(id) constraint.
+ *
+ * @param {Database} db - Test database
+ * @param {Object} [opts] - Options
+ * @param {number} [opts.id] - Specific ID to use
+ * @param {number} [opts.prNumber] - PR number (default: 1)
+ * @param {string} [opts.repository] - Repository (default: 'test/repo')
+ * @returns {number} The review ID
+ */
+function seedTestReview(db, { id, prNumber = 1, repository = 'test/repo' } = {}) {
+  if (id) {
+    db.prepare('INSERT INTO reviews (id, pr_number, repository, status, review_type) VALUES (?, ?, ?, \'draft\', \'pr\')').run(id, prNumber, repository);
+    return id;
+  }
+  const result = db.prepare('INSERT INTO reviews (pr_number, repository, status, review_type) VALUES (?, ?, \'draft\', \'pr\')').run(prNumber, repository);
+  return Number(result.lastInsertRowid);
+}
+
 module.exports = {
   SCHEMA_SQL,
   INDEX_SQL,
   createTestDatabase,
-  closeTestDatabase
+  closeTestDatabase,
+  seedTestReview
 };

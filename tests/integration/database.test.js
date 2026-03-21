@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { createTestDatabase, closeTestDatabase } from '../utils/schema';
+import { createTestDatabase, closeTestDatabase, seedTestReview } from '../utils/schema';
 
 // Import database module functions and classes
 const database = require('../../src/database.js');
@@ -532,22 +532,6 @@ describe('ReviewRepository', () => {
       expect(retrieved.status).toBe('submitted');
       expect(retrieved.review_id).toBe(999);
       expect(retrieved.custom_instructions).toBe('Updated');
-    });
-  });
-
-  describe('deleteReview()', () => {
-    it('should return false for non-existent ID', async () => {
-      const result = await reviewRepo.deleteReview(999);
-      expect(result).toBe(false);
-    });
-
-    it('should delete review and return true', async () => {
-      const created = await reviewRepo.createReview({ prNumber: 1, repository: 'owner/repo' });
-      const result = await reviewRepo.deleteReview(created.id);
-
-      expect(result).toBe(true);
-      const retrieved = await reviewRepo.getReview(created.id);
-      expect(retrieved).toBeNull();
     });
   });
 
@@ -1472,6 +1456,9 @@ describe('Comments Table Operations', () => {
 
   beforeEach(async () => {
     db = await createTestDatabase();
+    // Seed review rows to satisfy FK constraint on comments.review_id
+    seedTestReview(db, { id: 1 });
+    seedTestReview(db, { id: 2, prNumber: 2 });
   });
 
   afterEach(async () => {
@@ -1859,7 +1846,7 @@ describe('Edge Cases and Error Handling', () => {
         expect(retrieved).not.toBeNull();
         expect(retrieved.repository).toBe(repo);
 
-        await reviewRepo.deleteReview(review.id);
+        await reviewRepo.deleteWithRelatedData(review.id);
       }
     });
   });

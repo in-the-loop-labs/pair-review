@@ -23,6 +23,7 @@ const DEFAULT_CONFIG = {
   default_provider: "claude",  // AI provider: 'claude', 'gemini', 'codex', 'copilot', 'opencode', 'cursor-agent', 'pi'
   default_model: "opus",       // Model within the provider (e.g., 'opus' for Claude, 'gemini-2.5-pro' for Gemini)
   worktree_retention_days: 7,
+  review_retention_days: 21,
   dev_mode: false,  // When true, disables static file caching for development
   debug_stream: false,  // When true, logs AI provider streaming events (equivalent to --debug-stream CLI flag)
   db_name: "",  // Custom database filename (default: database.db). Useful for per-worktree isolation.
