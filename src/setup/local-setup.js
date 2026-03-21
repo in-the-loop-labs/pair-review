@@ -2,6 +2,10 @@
 const { findGitRoot, getHeadSha, getCurrentBranch, getRepositoryName, generateLocalDiff, generateLocalReviewId, computeLocalDiffDigest, findMainGitRoot } = require('../local-review');
 const { ReviewRepository, RepoSettingsRepository } = require('../database');
 const { localReviewDiffs } = require('../routes/shared');
+const { fireHooks } = require('../hooks/hook-runner');
+const { buildReviewStartedPayload, buildReviewLoadedPayload, getCachedUser } = require('../hooks/payloads');
+const { STOPS, DEFAULT_SCOPE } = require('../local-scope');
+const logger = require('../utils/logger');
 const path = require('path');
 const fs = require('fs').promises;
 
@@ -15,9 +19,10 @@ const fs = require('fs').promises;
  * @param {Object} options.db - Initialized database instance
  * @param {string} options.targetPath - Path to review (file or directory)
  * @param {Function} [options.onProgress] - Progress callback ({ step, status, message })
+ * @param {Object} [options.config] - App config (for hooks)
  * @returns {Promise<Object>} Review session info
  */
-async function setupLocalReview({ db, targetPath, onProgress }) {
+async function setupLocalReview({ db, targetPath, onProgress, config }) {
   const progress = typeof onProgress === 'function'
     ? onProgress
     : () => {};
@@ -140,6 +145,21 @@ async function setupLocalReview({ db, targetPath, onProgress }) {
   } catch (err) {
     progress({ step: 'store', status: 'error', message: err.message });
     throw err;
+  }
+
+  // Fire review hook (non-blocking)
+  if (config) {
+    getCachedUser(config).then(user => {
+      const hookEvent = existingReview ? 'review.loaded' : 'review.started';
+      const builder = existingReview ? buildReviewLoadedPayload : buildReviewStartedPayload;
+      const scopeStart = existingReview?.local_scope_start || DEFAULT_SCOPE.start;
+      const scopeEnd = existingReview?.local_scope_end || DEFAULT_SCOPE.end;
+      const si = STOPS.indexOf(scopeStart);
+      const ei = STOPS.indexOf(scopeEnd);
+      const scope = STOPS.slice(si, ei + 1);
+      const payload = builder({ reviewId: sessionId, mode: 'local', localContext: { path: repoPath, branch, headSha, scope }, user });
+      fireHooks(hookEvent, payload, config);
+    }).catch(err => { logger.warn(`Review hook failed: ${err.message}`); });
   }
 
   return {

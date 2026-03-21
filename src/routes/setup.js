@@ -165,6 +165,7 @@ router.post('/api/setup/local', async (req, res) => {
         const result = await setupLocalReview({
           db,
           targetPath,
+          config: req.app.get('config') || {},
           onProgress: (progress) => {
             sendSetupEvent(setupId, 'step', progress);
           }

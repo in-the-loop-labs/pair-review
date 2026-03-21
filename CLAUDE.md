@@ -160,6 +160,7 @@ Test structure:
   - API endpoints for fetching/modifying comments
   - Event listeners in frontend JavaScript
   - Query parameters and their handling
+- **CLI vs Web UI entry points**: Some actions have two entry points — the CLI startup path and the web UI route handler. For example, local review sessions are created in `src/local-review.js` (CLI) and `src/routes/local.js` (web UI `POST /api/local/start`). PR reviews are set up via the browser hitting the GET endpoint. When adding cross-cutting behavior (hooks, logging, side effects), verify it fires from BOTH entry points.
 - Test both modes manually or with E2E tests before considering a feature complete
 
 ### Testing Practices

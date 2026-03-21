@@ -2737,16 +2737,17 @@ class ReviewRepository {
    * @param {string} reviewInfo.repository - Repository in owner/repo format
    * @param {Object} [reviewInfo.reviewData] - Additional review data
    * @param {string} [reviewInfo.customInstructions] - Custom instructions
-   * @returns {Promise<Object>} Review record (existing or newly created)
+   * @returns {Promise<{review: Object, created: boolean}>} Tuple with review record and creation flag
    */
   async getOrCreate({ prNumber, repository, reviewData = null, customInstructions = null }) {
     const existing = await this.getReviewByPR(prNumber, repository);
 
     if (existing) {
-      return existing;
+      return { review: existing, created: false };
     }
 
-    return this.createReview({ prNumber, repository, reviewData, customInstructions });
+    const review = await this.createReview({ prNumber, repository, reviewData, customInstructions });
+    return { review, created: true };
   }
 
   /**

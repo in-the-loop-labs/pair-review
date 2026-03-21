@@ -800,12 +800,14 @@ describe('PR Management Endpoints', () => {
   });
 
   describe('GET /api/pr/:owner/:repo/:number pendingDraft in response', () => {
-    it('should return pendingDraft null when no review record exists', async () => {
-      // Insert PR metadata without review record
+    it('should return pendingDraft null when GitHub has no pending draft', async () => {
+      // Insert PR metadata (review record is created eagerly on GET)
       await run(db, `
         INSERT INTO pr_metadata (pr_number, repository, title, description, author, base_branch, head_branch, pr_data)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `, [1, 'owner/repo', 'Test PR', 'Description', 'testuser', 'main', 'feature', JSON.stringify({ state: 'open' })]);
+
+      vi.spyOn(GitHubClient.prototype, 'getPendingReviewForUser').mockResolvedValue(null);
 
       const response = await request(app)
         .get('/api/pr/owner/repo/1');
