@@ -286,18 +286,6 @@ router.post('/api/analyses/results', async (req, res) => {
     // --- Broadcast completion event via WebSocket (after transaction completes) ---
     broadcastReviewEvent(reviewId, { type: 'review:analysis_completed' });
 
-    // Fire analysis.completed hook for external import (no analysis.started by design)
-    const extMode = hasLocal ? 'local' : 'pr';
-    const extPrContext = hasPR ? { repo, prNumber: parseInt(prNumber, 10) } : undefined;
-    const extLocalContext = hasLocal ? { path: localPath, headSha } : undefined;
-    getCachedUser(req.app.get('config') || {}).then(user => {
-      fireHooks('analysis.completed', buildAnalysisCompletedPayload({
-        reviewId, analysisId: runId, provider: provider || 'external', model: model || 'unknown',
-        status: 'success', totalSuggestions,
-        mode: extMode, prContext: extPrContext, localContext: extLocalContext, user,
-      }), req.app.get('config') || {});
-    }).catch(() => {});
-
     logger.success(`Imported ${totalSuggestions} external analysis suggestions (run ${runId})`);
 
     res.status(201).json({
@@ -417,28 +405,9 @@ router.post('/api/analyses/:id/cancel', async (req, res) => {
     // Broadcast cancelled status to WebSocket clients
     broadcastProgress(id, cancelledStatus);
 
-    // Fire analysis.completed hook for cancellation
-    // Resolve provider/model from the DB run record when available
-    const cancelHookConfig = req.app.get('config') || {};
-    if (analysis.runId) {
-      const db = req.app.get('db');
-      const runRepo = new AnalysisRunRepository(db);
-      runRepo.getById(analysis.runId).then(run => {
-        const provider = run?.provider || 'unknown';
-        const model = run?.model || 'unknown';
-        const mode = analysis.reviewType === 'local' ? 'local' : 'pr';
-        const prContext = mode === 'pr' && analysis.prNumber
-          ? { number: analysis.prNumber, repo: analysis.repository }
-          : undefined;
-        return getCachedUser(cancelHookConfig).then(user => {
-          fireHooks('analysis.completed', buildAnalysisCompletedPayload({
-            reviewId: analysis.reviewId, analysisId: id, provider, model,
-            status: 'cancelled', totalSuggestions: 0,
-            mode, prContext, user,
-          }), cancelHookConfig);
-        });
-      }).catch(() => {});
-    }
+    // Hook firing removed — the .catch(isCancellation) handlers in
+    // pr.js, local.js, and launchCouncilAnalysis already fire
+    // analysis.completed with full context when the process exits.
 
     // Clean up review to analysis ID mapping
     if (analysis.reviewId) {
@@ -568,12 +537,14 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
 
   broadcastProgress(analysisId, initialStatus);
   broadcastReviewEvent(reviewId, { type: 'review:analysis_started', analysisId });
-  fireHooks('analysis.started', buildAnalysisStartedPayload({
-    reviewId, analysisId, provider: 'council', model: councilId || 'inline-config',
-    mode: initialStatusExtra?.reviewType || 'pr',
-    prContext: hookContext.prContext, localContext: hookContext.localContext,
-    user: hookContext.user,
-  }), modeConfig || {});
+  getCachedUser(modeConfig || {}).then(user => {
+    fireHooks('analysis.started', buildAnalysisStartedPayload({
+      reviewId, analysisId, provider: 'council', model: councilId || 'inline-config',
+      mode: initialStatusExtra?.reviewType || 'pr',
+      prContext: hookContext.prContext, localContext: hookContext.localContext,
+      user,
+    }), modeConfig || {});
+  }).catch(err => { logger.warn(`Analysis hook failed: ${err.message}`); });
 
   const analyzer = new Analyzer(db, 'council', 'council');
 
