@@ -20,7 +20,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 31;
+const CURRENT_SCHEMA_VERSION = 32;
 
 /**
  * Database schema SQL statements
@@ -229,8 +229,8 @@ const SCHEMA_SQL = {
       status TEXT DEFAULT 'active' CHECK(status IN ('active', 'closed', 'error')),
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (review_id) REFERENCES reviews(id),
-      FOREIGN KEY (context_comment_id) REFERENCES comments(id)
+      FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE,
+      FOREIGN KEY (context_comment_id) REFERENCES comments(id) ON DELETE SET NULL
     )
   `,
 
@@ -1427,6 +1427,41 @@ const MIGRATIONS = {
     }
 
     console.log('Migration to schema version 31 complete');
+  },
+
+  // Migration to version 32: Add ON DELETE CASCADE/SET NULL to chat_sessions FKs
+  // SQLite doesn't support ALTER CONSTRAINT, so we recreate the table.
+  32: (db) => {
+    console.log('Migrating to schema version 32: Add cascade deletes to chat_sessions FKs');
+
+    if (!tableExists(db, 'chat_sessions')) {
+      console.log('  chat_sessions table does not exist, skipping');
+      console.log('Migration to schema version 32 complete');
+      return;
+    }
+
+    db.prepare(`CREATE TABLE IF NOT EXISTS chat_sessions_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      review_id INTEGER NOT NULL,
+      context_comment_id INTEGER,
+      agent_session_id TEXT,
+      provider TEXT NOT NULL,
+      model TEXT,
+      status TEXT DEFAULT 'active' CHECK(status IN ('active', 'closed', 'error')),
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE,
+      FOREIGN KEY (context_comment_id) REFERENCES comments(id) ON DELETE SET NULL
+    )`).run();
+
+    db.prepare(`INSERT INTO chat_sessions_new
+      SELECT * FROM chat_sessions`).run();
+
+    db.prepare('DROP TABLE chat_sessions').run();
+    db.prepare('ALTER TABLE chat_sessions_new RENAME TO chat_sessions').run();
+
+    console.log('  Recreated chat_sessions with ON DELETE CASCADE/SET NULL');
+    console.log('Migration to schema version 32 complete');
   }
 };
 

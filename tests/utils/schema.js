@@ -199,8 +199,8 @@ const SCHEMA_SQL = {
       status TEXT DEFAULT 'active',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (review_id) REFERENCES reviews(id),
-      FOREIGN KEY (context_comment_id) REFERENCES comments(id)
+      FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE,
+      FOREIGN KEY (context_comment_id) REFERENCES comments(id) ON DELETE SET NULL
     )
   `,
 
