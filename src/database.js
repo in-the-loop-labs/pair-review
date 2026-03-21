@@ -2877,19 +2877,6 @@ class ReviewRepository {
   }
 
   /**
-   * Delete a review record by ID
-   * @param {number} id - Review ID
-   * @returns {Promise<boolean>} True if record was deleted
-   */
-  async deleteReview(id) {
-    const result = await run(this.db, `
-      DELETE FROM reviews WHERE id = ?
-    `, [id]);
-
-    return result.changes > 0;
-  }
-
-  /**
    * List reviews for a repository
    * @param {string} repository - Repository in owner/repo format
    * @param {number} [limit=50] - Maximum number of records to return

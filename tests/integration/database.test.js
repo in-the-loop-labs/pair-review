@@ -535,22 +535,6 @@ describe('ReviewRepository', () => {
     });
   });
 
-  describe('deleteReview()', () => {
-    it('should return false for non-existent ID', async () => {
-      const result = await reviewRepo.deleteReview(999);
-      expect(result).toBe(false);
-    });
-
-    it('should delete review and return true', async () => {
-      const created = await reviewRepo.createReview({ prNumber: 1, repository: 'owner/repo' });
-      const result = await reviewRepo.deleteReview(created.id);
-
-      expect(result).toBe(true);
-      const retrieved = await reviewRepo.getReview(created.id);
-      expect(retrieved).toBeNull();
-    });
-  });
-
   describe('getOrCreate()', () => {
     it('should create new review when none exists', async () => {
       const review = await reviewRepo.getOrCreate({
@@ -1860,7 +1844,7 @@ describe('Edge Cases and Error Handling', () => {
         expect(retrieved).not.toBeNull();
         expect(retrieved.repository).toBe(repo);
 
-        await reviewRepo.deleteReview(review.id);
+        await reviewRepo.deleteWithRelatedData(review.id);
       }
     });
   });

@@ -334,7 +334,7 @@ function closeTestDatabase(db) {
  */
 function seedTestReview(db, { id, prNumber = 1, repository = 'test/repo' } = {}) {
   if (id) {
-    db.exec(`INSERT INTO reviews (id, pr_number, repository, status, review_type) VALUES (${id}, ${prNumber}, '${repository}', 'draft', 'pr')`);
+    db.prepare('INSERT INTO reviews (id, pr_number, repository, status, review_type) VALUES (?, ?, ?, \'draft\', \'pr\')').run(id, prNumber, repository);
     return id;
   }
   const result = db.prepare('INSERT INTO reviews (pr_number, repository, status, review_type) VALUES (?, ?, \'draft\', \'pr\')').run(prNumber, repository);
