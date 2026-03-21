@@ -21,6 +21,8 @@ const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
 const { broadcastReviewEvent } = require('../events/review-events');
+const { fireHooks } = require('../hooks/hook-runner');
+const { buildReviewStartedPayload, buildReviewLoadedPayload, buildAnalysisStartedPayload, buildAnalysisCompletedPayload, getCachedUser } = require('../hooks/payloads');
 const { mergeInstructions } = require('../utils/instructions');
 const { getGitHubToken } = require('../config');
 const { generateScopedDiff, computeScopedDigest, getBranchCommitCount, getFirstCommitSubject, detectAndBuildBranchInfo, findMergeBase, getCurrentBranch, getRepositoryName } = require('../local-review');
@@ -316,6 +318,16 @@ router.post('/api/local/start', async (req, res) => {
       });
     }
 
+    // Fire review hook (non-blocking)
+    const config = req.app.get('config') || {};
+    getCachedUser(config).then(user => {
+      const hookEvent = existing ? 'review.loaded' : 'review.started';
+      const builder = existing ? buildReviewLoadedPayload : buildReviewStartedPayload;
+      const scopeLabel = `${existing?.local_scope_start || DEFAULT_SCOPE.start}..${existing?.local_scope_end || DEFAULT_SCOPE.end}`;
+      const payload = builder({ reviewId: sessionId, mode: 'local', localContext: { path: repoPath, branch, scope: scopeLabel, headSha }, user });
+      fireHooks(hookEvent, payload, config);
+    }).catch(() => {});
+
     // Generate diff using default scope
     logger.log('API', `Starting local review for ${repoPath}`, 'cyan');
     const scopeStart = existing?.local_scope_start || DEFAULT_SCOPE.start;
@@ -327,7 +339,6 @@ router.post('/api/local/start', async (req, res) => {
     const digest = await computeScopedDigest(repoPath, scopeStart, scopeEnd);
 
     // Branch detection: when no uncommitted changes, check if branch has commits ahead
-    const config = req.app.get('config') || {};
     const branchInfo = await detectAndBuildBranchInfo(repoPath, branch, {
       repository,
       diff,
@@ -913,6 +924,14 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
     // Broadcast initial status
     broadcastProgress(analysisId, initialStatus);
     broadcastReviewEvent(reviewId, { type: 'review:analysis_started', analysisId });
+    getCachedUser(req.app.get('config') || {}).then(user => {
+      fireHooks('analysis.started', buildAnalysisStartedPayload({
+        reviewId, analysisId, provider: selectedProvider, model: selectedModel,
+        mode: 'local',
+        localContext: { path: localPath, branch: review.local_head_branch, headSha: review.local_head_sha },
+        user,
+      }), req.app.get('config') || {});
+    }).catch(() => {});
 
     // Create analyzer instance with provider and model
     const analyzer = new Analyzer(db, selectedModel, selectedProvider);
@@ -1031,6 +1050,19 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
         // Broadcast completion status
         broadcastProgress(analysisId, completedStatus);
         broadcastReviewEvent(reviewId, { type: 'review:analysis_completed' });
+
+        // Fire analysis.completed hook
+        const hookConfig = req.app.get('config') || {};
+        getCachedUser(hookConfig).then(user => {
+          fireHooks('analysis.completed', buildAnalysisCompletedPayload({
+            reviewId, analysisId, provider: selectedProvider, model: selectedModel,
+            status: 'success',
+            totalSuggestions: completionInfo.totalSuggestions,
+            mode: 'local',
+            localContext: { path: localPath, branch: review.local_head_branch, headSha: review.local_head_sha },
+            user,
+          }), hookConfig);
+        }).catch(() => {});
       })
       .catch(error => {
         const currentStatus = activeAnalyses.get(analysisId);
@@ -1043,6 +1075,16 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
         if (error.isCancellation) {
           logger.info(`Local analysis cancelled for review #${reviewId}`);
           // Status is already set to 'cancelled' by the cancel endpoint
+          const cancelConfig = req.app.get('config') || {};
+          getCachedUser(cancelConfig).then(user => {
+            fireHooks('analysis.completed', buildAnalysisCompletedPayload({
+              reviewId, analysisId, provider: selectedProvider, model: selectedModel,
+              status: 'cancelled', totalSuggestions: 0,
+              mode: 'local',
+              localContext: { path: localPath, branch: review.local_head_branch, headSha: review.local_head_sha },
+              user,
+            }), cancelConfig);
+          }).catch(() => {});
           return;
         }
 
@@ -1068,6 +1110,17 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
 
         // Broadcast failure status
         broadcastProgress(analysisId, failedStatus);
+
+        const failConfig = req.app.get('config') || {};
+        getCachedUser(failConfig).then(user => {
+          fireHooks('analysis.completed', buildAnalysisCompletedPayload({
+            reviewId, analysisId, provider: selectedProvider, model: selectedModel,
+            status: 'failed', totalSuggestions: 0,
+            mode: 'local',
+            localContext: { path: localPath, branch: review.local_head_branch, headSha: review.local_head_sha },
+            user,
+          }), failConfig);
+        }).catch(() => {});
       })
       .finally(() => {
         // Clean up review to analysis ID mapping (unified map)
@@ -1587,6 +1640,11 @@ router.post('/api/local/:reviewId/analyses/council', async (req, res) => {
         headSha: review.local_head_sha,
         logLabel: `local review #${reviewId}`,
         initialStatusExtra: { reviewId, reviewType: 'local' },
+        config: req.app.get('config') || {},
+        hookContext: {
+          mode: 'local',
+          localContext: { path: localPath, branch: review.local_head_branch, headSha: review.local_head_sha },
+        },
         runUpdateExtra: { filesAnalyzed: changedFiles ? changedFiles.length : 0 }
       },
       councilConfig,

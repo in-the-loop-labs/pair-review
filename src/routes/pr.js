@@ -28,6 +28,8 @@ const { getGitHubToken } = require('../config');
 const logger = require('../utils/logger');
 const { buildDiffLineSet } = require('../utils/diff-annotator');
 const { broadcastReviewEvent } = require('../events/review-events');
+const { fireHooks } = require('../hooks/hook-runner');
+const { buildReviewStartedPayload, buildReviewLoadedPayload, buildAnalysisStartedPayload, buildAnalysisCompletedPayload, getCachedUser } = require('../hooks/payloads');
 const simpleGit = require('simple-git');
 const {
   activeAnalyses,
@@ -179,11 +181,12 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
       });
     }
 
-    // Get review record if it exists (don't create on GET - REST compliance)
-    // The review.id is used for comments to avoid ID collision with local mode
+    // Eagerly create the review record on first visit so all subsequent
+    // events (analysis, comments, hooks) always have a real reviewId.
     const db = req.app.get('db');
     const reviewRepo = new ReviewRepository(db);
-    const review = await reviewRepo.getReviewByPR(prNumber, repository);
+    const existingReview = await reviewRepo.getReviewByPR(prNumber, repository);
+    const review = existingReview || await reviewRepo.getOrCreate({ prNumber, repository });
 
     // Parse extended PR data
     let extendedData = {};
@@ -196,10 +199,9 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
     // Parse owner and repo from repository field
     const [repoOwner, repoName] = repository.split('/');
 
-    // Check for pending GitHub draft if we have a review record
-    // This avoids unnecessary GitHub API calls for PRs the user hasn't started reviewing
+    // Check for pending GitHub draft
     let pendingDraft = null;
-    if (review) {
+    {
       const config = req.app.get('config');
       const githubToken = getGitHubToken(config || {}) || req.app.get('githubToken');
 
@@ -222,11 +224,10 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
 
     // Prepare response
     // Use review.id instead of prMetadata.id to avoid ID collision with local mode
-    // When no review exists yet, id will be null
     const response = {
       success: true,
       data: {
-        id: review ? review.id : null,
+        id: review.id,
         owner: repoOwner,
         repo: repoName,
         number: prMetadata.pr_number,
@@ -258,6 +259,20 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
     };
 
     res.json(response);
+
+    // Fire review hook (after response, non-blocking)
+    const config = req.app.get('config') || {};
+    const prContext = {
+      number: prNumber, owner: repoOwner, repo: repoName,
+      author: prMetadata.author, baseBranch: prMetadata.base_branch, headBranch: prMetadata.head_branch,
+      baseSha: extendedData.base_sha || null, headSha: extendedData.head_sha || null,
+    };
+    getCachedUser(config).then(user => {
+      const hookEvent = existingReview ? 'review.loaded' : 'review.started';
+      const builder = existingReview ? buildReviewLoadedPayload : buildReviewStartedPayload;
+      const payload = builder({ reviewId: review.id, mode: 'pr', prContext, user });
+      fireHooks(hookEvent, payload, config);
+    }).catch(() => {}); // getCachedUser failures are logged internally
 
   } catch (error) {
     console.error('Error fetching PR data:', error);
@@ -1562,6 +1577,17 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
 
     broadcastProgress(analysisId, initialStatus);
     broadcastReviewEvent(review.id, { type: 'review:analysis_started', analysisId });
+    const analysisConfig = req.app.get('config') || {};
+    const analysisPrContext = {
+      number: prNumber, owner, repo,
+      author: prMetadata.author, baseBranch: prMetadata.base_branch, headBranch: prMetadata.head_branch,
+      baseSha: prMetadata.base_sha || null, headSha: prMetadata.head_sha || null,
+    };
+    getCachedUser(analysisConfig).then(user => {
+      fireHooks('analysis.started', buildAnalysisStartedPayload({
+        reviewId: review.id, analysisId, provider, model, mode: 'pr', prContext: analysisPrContext, user,
+      }), analysisConfig);
+    }).catch(() => {});
 
     const analyzer = new Analyzer(req.app.get('db'), model, provider);
 
@@ -1657,6 +1683,16 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
 
         broadcastProgress(analysisId, completedStatus);
         broadcastReviewEvent(review.id, { type: 'review:analysis_completed' });
+
+        // Fire analysis.completed hook
+        const hookConfig = req.app.get('config') || {};
+        getCachedUser(hookConfig).then(user => {
+          fireHooks('analysis.completed', buildAnalysisCompletedPayload({
+            reviewId: review.id, analysisId, provider, model, status: 'success',
+            totalSuggestions: completionInfo.totalSuggestions,
+            mode: 'pr', prContext: analysisPrContext, user,
+          }), hookConfig);
+        }).catch(() => {});
       })
       .catch(error => {
         const currentStatus = activeAnalyses.get(analysisId);
@@ -1667,6 +1703,13 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
 
         if (error.isCancellation) {
           logger.info(`Analysis cancelled for PR #${prNumber}`);
+          getCachedUser(analysisConfig).then(user => {
+            fireHooks('analysis.completed', buildAnalysisCompletedPayload({
+              reviewId: review.id, analysisId, provider, model,
+              status: 'cancelled', totalSuggestions: 0,
+              mode: 'pr', prContext: analysisPrContext, user,
+            }), analysisConfig);
+          }).catch(() => {});
           return;
         }
 
@@ -1690,6 +1733,14 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
         activeAnalyses.set(analysisId, failedStatus);
 
         broadcastProgress(analysisId, failedStatus);
+
+        getCachedUser(analysisConfig).then(user => {
+          fireHooks('analysis.completed', buildAnalysisCompletedPayload({
+            reviewId: review.id, analysisId, provider, model,
+            status: 'failed', totalSuggestions: 0,
+            mode: 'pr', prContext: analysisPrContext, user,
+          }), analysisConfig);
+        }).catch(() => {});
       })
       .finally(() => {
         // Clean up review to analysis ID mapping (unified map)
@@ -1788,6 +1839,16 @@ router.post('/api/pr/:owner/:repo/:number/analyses/council', async (req, res) =>
         headSha: prMetadata.head_sha,
         logLabel: `PR #${prNumber}`,
         initialStatusExtra: { prNumber, reviewType: 'pr' },
+        config: req.app.get('config') || {},
+        hookContext: {
+          mode: 'pr',
+          prContext: {
+            number: prNumber, owner, repo,
+            author: prMetadata.author, baseBranch: prMetadata.base_branch,
+            headBranch: prMetadata.head_branch,
+            baseSha: prMetadata.base_sha || null, headSha: prMetadata.head_sha || null,
+          },
+        },
         onSuccess: async (result) => {
           if (result.summary) {
             await reviewRepo.upsertSummary(prNumber, repository, result.summary);

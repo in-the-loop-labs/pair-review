@@ -35,6 +35,7 @@ const DEFAULT_CONFIG = {
   chat_providers: {},  // Custom chat provider configurations (overrides built-in defaults)
   monorepos: {},  // Monorepo configurations: { "owner/repo": { path: "~/path/to/clone" } }
   assisted_by_url: "https://github.com/in-the-loop-labs/pair-review",  // URL for "Review assisted by" footer link
+  hooks: {},  // Hook commands per event: { "review.started": { "my_hook": { "command": "..." } } }
   enable_graphite: false  // When true, shows Graphite links alongside GitHub links
 };
 
