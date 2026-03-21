@@ -271,12 +271,12 @@ router.delete('/api/worktrees/:id', async (req, res) => {
     await run(db, 'BEGIN TRANSACTION');
     try {
       await run(db, 'DELETE FROM worktrees WHERE pr_number = ? AND repository = ? COLLATE NOCASE', [prNumber, repository]);
+      await run(db, 'DELETE FROM chat_sessions WHERE review_id IN (SELECT id FROM reviews WHERE pr_number = ? AND repository = ? COLLATE NOCASE)', [prNumber, repository]);
       await run(db, `
         DELETE FROM comments WHERE review_id IN (
           SELECT id FROM reviews WHERE pr_number = ? AND repository = ? COLLATE NOCASE
         )
       `, [prNumber, repository]);
-      await run(db, 'DELETE FROM chat_sessions WHERE review_id IN (SELECT id FROM reviews WHERE pr_number = ? AND repository = ? COLLATE NOCASE)', [prNumber, repository]);
       await run(db, 'DELETE FROM reviews WHERE pr_number = ? AND repository = ? COLLATE NOCASE', [prNumber, repository]);
       await run(db, 'DELETE FROM pr_metadata WHERE id = ?', [metadataId]);
       await run(db, 'COMMIT');
