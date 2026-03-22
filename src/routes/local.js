@@ -21,7 +21,7 @@ const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
 const { broadcastReviewEvent } = require('../events/review-events');
-const { fireHooks } = require('../hooks/hook-runner');
+const { fireHooks, hasHooks } = require('../hooks/hook-runner');
 const { buildReviewStartedPayload, buildReviewLoadedPayload, buildAnalysisStartedPayload, buildAnalysisCompletedPayload, getCachedUser } = require('../hooks/payloads');
 const { mergeInstructions } = require('../utils/instructions');
 const { getGitHubToken } = require('../config');
@@ -418,15 +418,17 @@ router.post('/api/local/start', async (req, res) => {
     const scopeEnd = existing?.local_scope_end || DEFAULT_SCOPE.end;
 
     // Fire review hook (non-blocking, after scope is resolved)
-    getCachedUser(config).then(user => {
-      const hookEvent = existing ? 'review.loaded' : 'review.started';
-      const builder = existing ? buildReviewLoadedPayload : buildReviewStartedPayload;
-      const si = STOPS.indexOf(scopeStart);
-      const ei = STOPS.indexOf(scopeEnd);
-      const scope = STOPS.slice(si, ei + 1);
-      const payload = builder({ reviewId: sessionId, mode: 'local', localContext: { path: repoPath, branch, headSha, scope }, user });
-      fireHooks(hookEvent, payload, config);
-    }).catch(err => { logger.warn(`Review hook failed: ${err.message}`); });
+    const hookEvent = existing ? 'review.loaded' : 'review.started';
+    if (hasHooks(hookEvent, config)) {
+      getCachedUser(config).then(user => {
+        const builder = existing ? buildReviewLoadedPayload : buildReviewStartedPayload;
+        const si = STOPS.indexOf(scopeStart);
+        const ei = STOPS.indexOf(scopeEnd);
+        const scope = STOPS.slice(si, ei + 1);
+        const payload = builder({ reviewId: sessionId, mode: 'local', localContext: { path: repoPath, branch, headSha, scope }, user });
+        fireHooks(hookEvent, payload, config);
+      }).catch(err => { logger.warn(`Review hook failed: ${err.message}`); });
+    }
     const baseBranch = existing?.local_base_branch || null;
     const { diff, stats } = await generateScopedDiff(repoPath, scopeStart, scopeEnd, baseBranch);
 
@@ -619,19 +621,21 @@ router.get('/api/local/:reviewId', async (req, res) => {
 
     // Fire review.loaded hook (session already exists to be fetched by ID)
     const hookConfig = req.app.get('config') || {};
-    getCachedUser(hookConfig).then(user => {
-      const hookScopeStart = review.local_scope_start || DEFAULT_SCOPE.start;
-      const hookScopeEnd = review.local_scope_end || DEFAULT_SCOPE.end;
-      const si = STOPS.indexOf(hookScopeStart);
-      const ei = STOPS.indexOf(hookScopeEnd);
-      const scope = STOPS.slice(si, ei + 1);
-      const payload = buildReviewLoadedPayload({
-        reviewId: review.id, mode: 'local',
-        localContext: { path: review.local_path, branch: branchName, headSha: review.local_head_sha, scope },
-        user,
-      });
-      fireHooks('review.loaded', payload, hookConfig);
-    }).catch(err => { logger.warn(`Review hook failed: ${err.message}`); });
+    if (hasHooks('review.loaded', hookConfig)) {
+      getCachedUser(hookConfig).then(user => {
+        const hookScopeStart = review.local_scope_start || DEFAULT_SCOPE.start;
+        const hookScopeEnd = review.local_scope_end || DEFAULT_SCOPE.end;
+        const si = STOPS.indexOf(hookScopeStart);
+        const ei = STOPS.indexOf(hookScopeEnd);
+        const scope = STOPS.slice(si, ei + 1);
+        const payload = buildReviewLoadedPayload({
+          reviewId: review.id, mode: 'local',
+          localContext: { path: review.local_path, branch: branchName, headSha: review.local_head_sha, scope },
+          user,
+        });
+        fireHooks('review.loaded', payload, hookConfig);
+      }).catch(err => { logger.warn(`Review hook failed: ${err.message}`); });
+    }
 
   } catch (error) {
     logger.error('Error fetching local review:', error.stack || error.message);
@@ -1067,14 +1071,17 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
     // Broadcast initial status
     broadcastProgress(analysisId, initialStatus);
     broadcastReviewEvent(reviewId, { type: 'review:analysis_started', analysisId });
-    getCachedUser(req.app.get('config') || {}).then(user => {
-      fireHooks('analysis.started', buildAnalysisStartedPayload({
-        reviewId, analysisId, provider: selectedProvider, model: selectedModel,
-        mode: 'local',
-        localContext: { path: localPath, branch: review.local_head_branch, headSha: review.local_head_sha },
-        user,
-      }), req.app.get('config') || {});
-    }).catch(() => {});
+    const analysisHookConfig = req.app.get('config') || {};
+    if (hasHooks('analysis.started', analysisHookConfig)) {
+      getCachedUser(analysisHookConfig).then(user => {
+        fireHooks('analysis.started', buildAnalysisStartedPayload({
+          reviewId, analysisId, provider: selectedProvider, model: selectedModel,
+          mode: 'local',
+          localContext: { path: localPath, branch: review.local_head_branch, headSha: review.local_head_sha },
+          user,
+        }), analysisHookConfig);
+      }).catch(() => {});
+    }
 
     // Create analyzer instance with provider and model
     const analyzer = new Analyzer(db, selectedModel, selectedProvider);
@@ -1196,16 +1203,18 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
 
         // Fire analysis.completed hook
         const hookConfig = req.app.get('config') || {};
-        getCachedUser(hookConfig).then(user => {
-          fireHooks('analysis.completed', buildAnalysisCompletedPayload({
-            reviewId, analysisId, provider: selectedProvider, model: selectedModel,
-            status: 'success',
-            totalSuggestions: completionInfo.totalSuggestions,
-            mode: 'local',
-            localContext: { path: localPath, branch: review.local_head_branch, headSha: review.local_head_sha },
-            user,
-          }), hookConfig);
-        }).catch(() => {});
+        if (hasHooks('analysis.completed', hookConfig)) {
+          getCachedUser(hookConfig).then(user => {
+            fireHooks('analysis.completed', buildAnalysisCompletedPayload({
+              reviewId, analysisId, provider: selectedProvider, model: selectedModel,
+              status: 'success',
+              totalSuggestions: completionInfo.totalSuggestions,
+              mode: 'local',
+              localContext: { path: localPath, branch: review.local_head_branch, headSha: review.local_head_sha },
+              user,
+            }), hookConfig);
+          }).catch(() => {});
+        }
       })
       .catch(error => {
         const currentStatus = activeAnalyses.get(analysisId);
@@ -1219,15 +1228,17 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
           logger.info(`Local analysis cancelled for review #${reviewId}`);
           // Status is already set to 'cancelled' by the cancel endpoint
           const cancelConfig = req.app.get('config') || {};
-          getCachedUser(cancelConfig).then(user => {
-            fireHooks('analysis.completed', buildAnalysisCompletedPayload({
-              reviewId, analysisId, provider: selectedProvider, model: selectedModel,
-              status: 'cancelled', totalSuggestions: 0,
-              mode: 'local',
-              localContext: { path: localPath, branch: review.local_head_branch, headSha: review.local_head_sha },
-              user,
-            }), cancelConfig);
-          }).catch(() => {});
+          if (hasHooks('analysis.completed', cancelConfig)) {
+            getCachedUser(cancelConfig).then(user => {
+              fireHooks('analysis.completed', buildAnalysisCompletedPayload({
+                reviewId, analysisId, provider: selectedProvider, model: selectedModel,
+                status: 'cancelled', totalSuggestions: 0,
+                mode: 'local',
+                localContext: { path: localPath, branch: review.local_head_branch, headSha: review.local_head_sha },
+                user,
+              }), cancelConfig);
+            }).catch(() => {});
+          }
           return;
         }
 
@@ -1255,15 +1266,17 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
         broadcastProgress(analysisId, failedStatus);
 
         const failConfig = req.app.get('config') || {};
-        getCachedUser(failConfig).then(user => {
-          fireHooks('analysis.completed', buildAnalysisCompletedPayload({
-            reviewId, analysisId, provider: selectedProvider, model: selectedModel,
-            status: 'failed', totalSuggestions: 0,
-            mode: 'local',
-            localContext: { path: localPath, branch: review.local_head_branch, headSha: review.local_head_sha },
-            user,
-          }), failConfig);
-        }).catch(() => {});
+        if (hasHooks('analysis.completed', failConfig)) {
+          getCachedUser(failConfig).then(user => {
+            fireHooks('analysis.completed', buildAnalysisCompletedPayload({
+              reviewId, analysisId, provider: selectedProvider, model: selectedModel,
+              status: 'failed', totalSuggestions: 0,
+              mode: 'local',
+              localContext: { path: localPath, branch: review.local_head_branch, headSha: review.local_head_sha },
+              user,
+            }), failConfig);
+          }).catch(() => {});
+        }
       })
       .finally(() => {
         // Clean up review to analysis ID mapping (unified map)

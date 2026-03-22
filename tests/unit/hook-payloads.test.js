@@ -6,6 +6,9 @@ const {
   buildReviewLoadedPayload,
   buildAnalysisStartedPayload,
   buildAnalysisCompletedPayload,
+  buildChatStartedPayload,
+  buildChatResumedPayload,
+  buildChatHookContext,
   getCachedUser,
   fireReviewStartedHook,
   _resetUserCache,
@@ -218,11 +221,157 @@ describe('hook payloads', () => {
         reviewId: 1, analysisId: 'a', provider: 'p', model: 'm',
         status: 'success', totalSuggestions: 0, mode: 'pr',
       });
+      const chatStarted = buildChatStartedPayload({
+        reviewId: 1, sessionId: 1, provider: 'p', model: 'm', mode: 'pr',
+      });
+      const chatResumed = buildChatResumedPayload({
+        reviewId: 1, sessionId: 1, provider: 'p', model: 'm', mode: 'pr',
+      });
 
-      for (const payload of [reviewStarted, reviewLoaded, analysisStarted, analysisCompleted]) {
+      for (const payload of [reviewStarted, reviewLoaded, analysisStarted, analysisCompleted, chatStarted, chatResumed]) {
         expect(typeof payload.version).toBe('string');
         expect(payload.version).toBe(pkgVersion);
       }
+    });
+  });
+
+  // ── buildChatStartedPayload / buildChatResumedPayload ─────────
+
+  describe('buildChatStartedPayload', () => {
+    it('sets event to chat.started and includes sessionId, provider, model', () => {
+      const payload = buildChatStartedPayload({
+        reviewId: 10, sessionId: 5, provider: 'claude', model: 'opus',
+        mode: 'pr', prContext: { owner: 'acme', repo: 'app', number: 42 },
+      });
+
+      expect(payload.event).toBe('chat.started');
+      expect(payload.sessionId).toBe(5);
+      expect(payload.provider).toBe('claude');
+      expect(payload.model).toBe('opus');
+      expect(payload.reviewId).toBe(10);
+    });
+
+    it('includes timestamp in ISO 8601 format and version', () => {
+      const { version: pkgVersion } = require('../../package.json');
+      const payload = buildChatStartedPayload({
+        reviewId: 1, sessionId: 1, provider: 'p', model: 'm', mode: 'pr',
+      });
+
+      expect(payload.timestamp).toMatch(ISO_8601_RE);
+      expect(payload.version).toBe(pkgVersion);
+    });
+
+    it('PR mode: includes pr field, no local field', () => {
+      const payload = buildChatStartedPayload({
+        reviewId: 1, sessionId: 1, provider: 'p', model: 'm',
+        mode: 'pr', prContext: { owner: 'o', repo: 'r', number: 7 },
+      });
+
+      expect(payload.mode).toBe('pr');
+      expect(payload.pr).toEqual({ owner: 'o', repo: 'r', number: 7 });
+      expect(payload).not.toHaveProperty('local');
+    });
+
+    it('Local mode: includes local field, no pr field', () => {
+      const payload = buildChatStartedPayload({
+        reviewId: 1, sessionId: 1, provider: 'p', model: 'm',
+        mode: 'local', localContext: { path: '/repo', branch: 'main', headSha: 'abc' },
+      });
+
+      expect(payload.mode).toBe('local');
+      expect(payload.local).toEqual({ path: '/repo', branch: 'main', headSha: 'abc' });
+      expect(payload).not.toHaveProperty('pr');
+    });
+
+    it('with user: includes user object', () => {
+      const payload = buildChatStartedPayload({
+        reviewId: 1, sessionId: 1, provider: 'p', model: 'm',
+        mode: 'pr', user: { login: 'octocat' },
+      });
+
+      expect(payload.user).toEqual({ login: 'octocat' });
+    });
+
+    it('without user: user field NOT present', () => {
+      const payload = buildChatStartedPayload({
+        reviewId: 1, sessionId: 1, provider: 'p', model: 'm',
+        mode: 'pr', user: null,
+      });
+
+      expect(payload).not.toHaveProperty('user');
+    });
+
+    it('missing provider/model defaults to null', () => {
+      const payload = buildChatStartedPayload({
+        reviewId: 1, sessionId: 1, mode: 'pr',
+      });
+
+      expect(payload.provider).toBeNull();
+      expect(payload.model).toBeNull();
+    });
+  });
+
+  describe('buildChatResumedPayload', () => {
+    it('sets event to chat.resumed', () => {
+      const payload = buildChatResumedPayload({
+        reviewId: 1, sessionId: 3, provider: 'gemini', model: 'pro',
+        mode: 'local', localContext: { path: '/code' },
+      });
+
+      expect(payload.event).toBe('chat.resumed');
+      expect(payload.sessionId).toBe(3);
+      expect(payload.provider).toBe('gemini');
+    });
+  });
+
+  // ── buildChatHookContext ─────────────────────────────────────
+
+  describe('buildChatHookContext', () => {
+    it('local review: returns mode local with localContext', () => {
+      const review = {
+        review_type: 'local',
+        local_path: '/tmp/repo',
+        local_head_branch: 'feat-x',
+        local_head_sha: 'abc123',
+      };
+      const result = buildChatHookContext(review);
+      expect(result).toEqual({
+        mode: 'local',
+        localContext: { path: '/tmp/repo', branch: 'feat-x', headSha: 'abc123' },
+      });
+    });
+
+    it('PR review: returns mode pr with prContext split from repository', () => {
+      const review = {
+        review_type: 'pr',
+        repository: 'acme/widgets',
+        pr_number: 42,
+      };
+      const result = buildChatHookContext(review);
+      expect(result).toEqual({
+        mode: 'pr',
+        prContext: { number: 42, owner: 'acme', repo: 'widgets' },
+      });
+    });
+
+    it('missing repository: owner and repo are null', () => {
+      const review = { review_type: 'pr', pr_number: 5 };
+      const result = buildChatHookContext(review);
+      expect(result.prContext.owner).toBeNull();
+      expect(result.prContext.repo).toBeNull();
+    });
+
+    it('repository without slash: owner set, repo is null', () => {
+      const review = { review_type: 'pr', repository: 'monorepo', pr_number: 1 };
+      const result = buildChatHookContext(review);
+      expect(result.prContext.owner).toBe('monorepo');
+      expect(result.prContext.repo).toBeNull();
+    });
+
+    it('local review with missing fields: values default to null', () => {
+      const review = { review_type: 'local' };
+      const result = buildChatHookContext(review);
+      expect(result.localContext).toEqual({ path: null, branch: null, headSha: null });
     });
   });
 
@@ -337,19 +486,20 @@ describe('hook payloads', () => {
         GitHubClient: MockClient,
       });
 
+      const hookConfig = { hooks: { 'review.started': { test: { command: 'echo' } } } };
       await fireReviewStartedHook({
         reviewId: 42,
         prNumber: 7,
         owner: 'acme',
         repo: 'widgets',
         prData: basePrData,
-        config: { hooks: {} },
+        config: hookConfig,
       }, { fireHooks: fireDeps.fireHooks });
 
       expect(fireDeps.fireHooks).toHaveBeenCalledTimes(1);
       const [eventName, payload, config] = fireDeps.fireHooks.mock.calls[0];
       expect(eventName).toBe('review.started');
-      expect(config).toEqual({ hooks: {} });
+      expect(config).toEqual(hookConfig);
       expect(payload.event).toBe('review.started');
       expect(payload.reviewId).toBe(42);
       expect(payload.mode).toBe('pr');
@@ -378,7 +528,7 @@ describe('hook payloads', () => {
         owner: 'o',
         repo: 'r',
         prData: { author: 'a', base_branch: 'main', head_branch: 'fix' },
-        config: {},
+        config: { hooks: { 'review.started': { test: { command: 'echo' } } } },
       }, { fireHooks: mockFireHooks });
 
       const payload = mockFireHooks.mock.calls[0][1];
@@ -403,7 +553,7 @@ describe('hook payloads', () => {
         owner: 'o',
         repo: 'r',
         prData: basePrData,
-        config: {},
+        config: { hooks: { 'review.started': { test: { command: 'echo' } } } },
       }, { fireHooks: mockFireHooks });
 
       const payload = mockFireHooks.mock.calls[0][1];

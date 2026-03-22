@@ -18,6 +18,32 @@ const { renderApiDocs, buildApiCheatSheet } = require('../chat/api-reference');
 const { GitWorktreeManager } = require('../git/worktree');
 const logger = require('../utils/logger');
 const ws = require('../ws');
+const { fireHooks, hasHooks } = require('../hooks/hook-runner');
+const { buildChatStartedPayload, buildChatResumedPayload, buildChatHookContext, getCachedUser } = require('../hooks/payloads');
+
+/**
+ * Fire a chat hook event (non-blocking). Skips async work when no hooks are configured.
+ * @param {string} event - 'chat.started' or 'chat.resumed'
+ * @param {Object} opts
+ * @param {Object} opts.req - Express request (used to read config)
+ * @param {Object} opts.review - Review record
+ * @param {number} opts.sessionId - Chat session ID
+ * @param {string} opts.provider - AI provider
+ * @param {string} opts.model - AI model
+ */
+function fireChatHook(event, { req, review, sessionId, provider, model }) {
+  const config = req.app.get('config') || {};
+  if (!hasHooks(event, config)) return;
+
+  const buildPayload = event === 'chat.started' ? buildChatStartedPayload : buildChatResumedPayload;
+  getCachedUser(config).then(user => {
+    const payload = buildPayload({
+      reviewId: review.id, sessionId, provider, model,
+      ...buildChatHookContext(review), user,
+    });
+    fireHooks(event, payload, config);
+  }).catch(err => { logger.warn(`Chat hook failed: ${err.message}`); });
+}
 
 const router = express.Router();
 
@@ -302,6 +328,8 @@ router.post('/api/chat/session', async (req, res) => {
     // Register broadcast listeners so events reach all connected clients
     registerChatBroadcast(chatSessionManager, session.id, serverPort);
 
+    fireChatHook('chat.started', { req, review, sessionId: session.id, provider, model });
+
     const responseData = { id: session.id, status: session.status };
 
     // Include analysis context metadata so the frontend can show a context indicator
@@ -371,6 +399,8 @@ router.post('/api/chat/session/:id/message', async (req, res) => {
         unregisterChatBroadcast(sessionId);
         registerChatBroadcast(chatSessionManager, sessionId, req.socket.localPort);
         logger.info(`[ChatRoute] Auto-resumed session ${sessionId} for message delivery`);
+
+        fireChatHook('chat.resumed', { req, review, sessionId, provider: session.provider, model: session.model });
 
         // Inject port correction so the agent knows the current server address,
         // even if the conversational history has a stale port from session creation.
@@ -518,6 +548,9 @@ router.post('/api/chat/session/:id/resume', async (req, res) => {
     );
 
     logger.info(`[ChatRoute] Explicitly resumed session ${sessionId}`);
+
+    fireChatHook('chat.resumed', { req, review, sessionId, provider: session.provider, model: session.model });
+
     res.json({ data: { id: sessionId, status: 'active' } });
   } catch (error) {
     logger.error(`Error resuming chat session: ${error.message}`);

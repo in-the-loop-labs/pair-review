@@ -84,4 +84,17 @@ function spawnHook(name, command, json, deps) {
   }
 }
 
-module.exports = { fireHooks };
+/**
+ * Check whether any hooks are registered for `eventName`.
+ * Use this to skip expensive async work (e.g. getCachedUser) when no hooks exist.
+ *
+ * @param {string} eventName - e.g. 'chat.started'
+ * @param {Object} config    - app config
+ * @returns {boolean}
+ */
+function hasHooks(eventName, config) {
+  const hookMap = config?.hooks?.[eventName];
+  return hookMap && typeof hookMap === 'object' && Object.keys(hookMap).length > 0;
+}
+
+module.exports = { fireHooks, hasHooks };

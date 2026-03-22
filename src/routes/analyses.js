@@ -21,7 +21,7 @@ const { getTierForModel } = require('../ai/provider');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
 const { broadcastReviewEvent } = require('../events/review-events');
-const { fireHooks } = require('../hooks/hook-runner');
+const { fireHooks, hasHooks } = require('../hooks/hook-runner');
 const { buildAnalysisStartedPayload, buildAnalysisCompletedPayload, getCachedUser } = require('../hooks/payloads');
 const path = require('path');
 const { normalizeRepository } = require('../utils/paths');
@@ -537,14 +537,17 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
 
   broadcastProgress(analysisId, initialStatus);
   broadcastReviewEvent(reviewId, { type: 'review:analysis_started', analysisId });
-  getCachedUser(modeConfig || {}).then(user => {
-    fireHooks('analysis.started', buildAnalysisStartedPayload({
-      reviewId, analysisId, provider: 'council', model: councilId || 'inline-config',
-      mode: initialStatusExtra?.reviewType || 'pr',
-      prContext: hookContext.prContext, localContext: hookContext.localContext,
-      user,
-    }), modeConfig || {});
-  }).catch(err => { logger.warn(`Analysis hook failed: ${err.message}`); });
+  const effectiveConfig = modeConfig || {};
+  if (hasHooks('analysis.started', effectiveConfig)) {
+    getCachedUser(effectiveConfig).then(user => {
+      fireHooks('analysis.started', buildAnalysisStartedPayload({
+        reviewId, analysisId, provider: 'council', model: councilId || 'inline-config',
+        mode: initialStatusExtra?.reviewType || 'pr',
+        prContext: hookContext.prContext, localContext: hookContext.localContext,
+        user,
+      }), effectiveConfig);
+    }).catch(err => { logger.warn(`Analysis hook failed: ${err.message}`); });
+  }
 
   const analyzer = new Analyzer(db, 'council', 'council');
 
@@ -614,28 +617,32 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
       broadcastReviewEvent(initialStatus.reviewId, { type: 'review:analysis_completed' });
 
       // Fire analysis.completed hook
-      getCachedUser(modeConfig || {}).then(user => {
-        fireHooks('analysis.completed', buildAnalysisCompletedPayload({
-          reviewId: initialStatus.reviewId, analysisId, provider: 'council',
-          model: councilId || 'inline-config',
-          status: 'success', totalSuggestions: result.suggestions.length,
-          mode: initialStatusExtra?.reviewType || 'pr',
-          prContext: hookContext.prContext, localContext: hookContext.localContext, user,
-        }), modeConfig || {});
-      }).catch(() => {});
+      if (hasHooks('analysis.completed', effectiveConfig)) {
+        getCachedUser(effectiveConfig).then(user => {
+          fireHooks('analysis.completed', buildAnalysisCompletedPayload({
+            reviewId: initialStatus.reviewId, analysisId, provider: 'council',
+            model: councilId || 'inline-config',
+            status: 'success', totalSuggestions: result.suggestions.length,
+            mode: initialStatusExtra?.reviewType || 'pr',
+            prContext: hookContext.prContext, localContext: hookContext.localContext, user,
+          }), effectiveConfig);
+        }).catch(() => {});
+      }
     })
     .catch(error => {
       if (error.isCancellation) {
         logger.info(`Council analysis cancelled for ${logLabel}`);
-        getCachedUser(modeConfig || {}).then(user => {
-          fireHooks('analysis.completed', buildAnalysisCompletedPayload({
-            reviewId, analysisId, provider: 'council',
-            model: councilId || 'inline-config',
-            status: 'cancelled', totalSuggestions: 0,
-            mode: initialStatusExtra?.reviewType || 'pr',
-            prContext: hookContext.prContext, localContext: hookContext.localContext, user,
-          }), modeConfig || {});
-        }).catch(() => {});
+        if (hasHooks('analysis.completed', effectiveConfig)) {
+          getCachedUser(effectiveConfig).then(user => {
+            fireHooks('analysis.completed', buildAnalysisCompletedPayload({
+              reviewId, analysisId, provider: 'council',
+              model: councilId || 'inline-config',
+              status: 'cancelled', totalSuggestions: 0,
+              mode: initialStatusExtra?.reviewType || 'pr',
+              prContext: hookContext.prContext, localContext: hookContext.localContext, user,
+            }), effectiveConfig);
+          }).catch(() => {});
+        }
         return;
       }
       logger.error(`Council analysis failed for ${logLabel}: ${error.message}`);
@@ -652,15 +659,17 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
 
       analysisRunRepo.update(runId, { status: 'failed' }).catch(() => {});
 
-      getCachedUser(modeConfig || {}).then(user => {
-        fireHooks('analysis.completed', buildAnalysisCompletedPayload({
-          reviewId, analysisId, provider: 'council',
-          model: councilId || 'inline-config',
-          status: 'failed', totalSuggestions: 0,
-          mode: initialStatusExtra?.reviewType || 'pr',
-          prContext: hookContext.prContext, localContext: hookContext.localContext, user,
-        }), modeConfig || {});
-      }).catch(() => {});
+      if (hasHooks('analysis.completed', effectiveConfig)) {
+        getCachedUser(effectiveConfig).then(user => {
+          fireHooks('analysis.completed', buildAnalysisCompletedPayload({
+            reviewId, analysisId, provider: 'council',
+            model: councilId || 'inline-config',
+            status: 'failed', totalSuggestions: 0,
+            mode: initialStatusExtra?.reviewType || 'pr',
+            prContext: hookContext.prContext, localContext: hookContext.localContext, user,
+          }), effectiveConfig);
+        }).catch(() => {});
+      }
     })
     .finally(() => {
       // Clean up unified tracking map entry

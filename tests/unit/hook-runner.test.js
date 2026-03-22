@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 const EventEmitter = require('events');
 
-const { fireHooks } = require('../../src/hooks/hook-runner');
+const { fireHooks, hasHooks } = require('../../src/hooks/hook-runner');
 
 function createMockChild() {
   const child = new EventEmitter();
@@ -295,6 +295,34 @@ describe('hook-runner', () => {
       vi.advanceTimersByTime(6000);
 
       expect(child.kill).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('hasHooks', () => {
+    it('returns falsy for undefined config', () => {
+      expect(hasHooks('chat.started', undefined)).toBeFalsy();
+    });
+
+    it('returns falsy for null config', () => {
+      expect(hasHooks('chat.started', null)).toBeFalsy();
+    });
+
+    it('returns falsy for config with empty hooks object', () => {
+      expect(hasHooks('chat.started', { hooks: {} })).toBeFalsy();
+    });
+
+    it('returns falsy when event is not present in hooks map', () => {
+      const config = { hooks: { 'review.started': { h: { command: 'echo' } } } };
+      expect(hasHooks('chat.started', config)).toBeFalsy();
+    });
+
+    it('returns falsy when event has empty handler map', () => {
+      expect(hasHooks('chat.started', { hooks: { 'chat.started': {} } })).toBeFalsy();
+    });
+
+    it('returns true when event has at least one hook registered', () => {
+      const config = { hooks: { 'chat.started': { notify: { command: 'curl ...' } } } };
+      expect(hasHooks('chat.started', config)).toBe(true);
     });
   });
 });

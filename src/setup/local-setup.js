@@ -2,7 +2,7 @@
 const { findGitRoot, getHeadSha, getCurrentBranch, getRepositoryName, generateLocalDiff, generateLocalReviewId, computeLocalDiffDigest, findMainGitRoot } = require('../local-review');
 const { ReviewRepository, RepoSettingsRepository } = require('../database');
 const { localReviewDiffs } = require('../routes/shared');
-const { fireHooks } = require('../hooks/hook-runner');
+const { fireHooks, hasHooks } = require('../hooks/hook-runner');
 const { buildReviewStartedPayload, buildReviewLoadedPayload, getCachedUser } = require('../hooks/payloads');
 const { STOPS, DEFAULT_SCOPE } = require('../local-scope');
 const logger = require('../utils/logger');
@@ -148,9 +148,9 @@ async function setupLocalReview({ db, targetPath, onProgress, config }) {
   }
 
   // Fire review hook (non-blocking)
-  if (config) {
+  const hookEvent = existingReview ? 'review.loaded' : 'review.started';
+  if (config && hasHooks(hookEvent, config)) {
     getCachedUser(config).then(user => {
-      const hookEvent = existingReview ? 'review.loaded' : 'review.started';
       const builder = existingReview ? buildReviewLoadedPayload : buildReviewStartedPayload;
       const scopeStart = existingReview?.local_scope_start || DEFAULT_SCOPE.start;
       const scopeEnd = existingReview?.local_scope_end || DEFAULT_SCOPE.end;
