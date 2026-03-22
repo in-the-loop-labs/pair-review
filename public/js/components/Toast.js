@@ -8,6 +8,12 @@ class Toast {
     this.toastContainer = null;
     this.activeToasts = [];
     this.createContainer();
+
+    // Convenience aliases — matches the conventional toast API (toast.error(), toast.success(), etc.)
+    this.error = this.showError.bind(this);
+    this.success = this.showSuccess.bind(this);
+    this.warning = this.showWarning.bind(this);
+    this.info = this.showInfo.bind(this);
   }
 
   /**

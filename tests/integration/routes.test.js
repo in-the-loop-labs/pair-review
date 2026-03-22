@@ -6818,3 +6818,306 @@ describe('Share Endpoint', () => {
     });
   });
 });
+
+// ============================================================================
+// Bulk Delete Endpoint Tests
+// ============================================================================
+
+describe('POST /api/worktrees/bulk-delete', () => {
+  let db;
+  let app;
+
+  beforeEach(async () => {
+    db = await createTestDatabase();
+    app = createTestApp(db);
+  });
+
+  afterEach(async () => {
+    if (db) {
+      await closeTestDatabase(db);
+    }
+  });
+
+  /**
+   * Helper: insert a PR and return the pr_metadata.id
+   */
+  async function insertPRAndGetMetadataId(prNumber, repository = 'owner/repo') {
+    await insertTestPR(db, prNumber, repository);
+    const row = await queryOne(db, `
+      SELECT id FROM pr_metadata WHERE pr_number = ? AND repository = ?
+    `, [prNumber, repository]);
+    return row.id;
+  }
+
+  it('should bulk delete multiple reviews and return correct counts', async () => {
+    const id1 = await insertPRAndGetMetadataId(10);
+    const id2 = await insertPRAndGetMetadataId(20);
+    const id3 = await insertPRAndGetMetadataId(30);
+
+    const response = await request(app)
+      .post('/api/worktrees/bulk-delete')
+      .send({ ids: [id1, id3] });
+
+    expect(response.status).toBe(200);
+    expect(response.body.success).toBe(true);
+    expect(response.body.deleted).toBe(2);
+    expect(response.body.failed).toBe(0);
+    expect(response.body.errors).toEqual([]);
+
+    // Verify deleted rows are gone
+    const deleted1 = await queryOne(db, 'SELECT id FROM pr_metadata WHERE id = ?', [id1]);
+    const deleted3 = await queryOne(db, 'SELECT id FROM pr_metadata WHERE id = ?', [id3]);
+    expect(deleted1).toBeUndefined();
+    expect(deleted3).toBeUndefined();
+
+    // Verify the untouched row still exists
+    const kept = await queryOne(db, 'SELECT id FROM pr_metadata WHERE id = ?', [id2]);
+    expect(kept).toBeDefined();
+  });
+
+  it('should return 400 when ids array is empty', async () => {
+    const response = await request(app)
+      .post('/api/worktrees/bulk-delete')
+      .send({ ids: [] });
+
+    expect(response.status).toBe(400);
+    expect(response.body.success).toBe(false);
+    expect(response.body.error).toMatch(/non-empty/);
+  });
+
+  it('should return 400 when ids field is missing', async () => {
+    const response = await request(app)
+      .post('/api/worktrees/bulk-delete')
+      .send({});
+
+    expect(response.status).toBe(400);
+    expect(response.body.success).toBe(false);
+    expect(response.body.error).toMatch(/non-empty/);
+  });
+
+  it('should return 400 when body is empty', async () => {
+    const response = await request(app)
+      .post('/api/worktrees/bulk-delete')
+      .send();
+
+    expect(response.status).toBe(400);
+    expect(response.body.success).toBe(false);
+  });
+
+  it('should return 400 when ids contain non-integer values', async () => {
+    const response = await request(app)
+      .post('/api/worktrees/bulk-delete')
+      .send({ ids: [1, 'abc', 3] });
+
+    expect(response.status).toBe(400);
+    expect(response.body.success).toBe(false);
+    expect(response.body.error).toMatch(/positive integers/);
+  });
+
+  it('should return 400 when ids contain zero or negative values', async () => {
+    const response = await request(app)
+      .post('/api/worktrees/bulk-delete')
+      .send({ ids: [0, -1] });
+
+    expect(response.status).toBe(400);
+    expect(response.body.success).toBe(false);
+    expect(response.body.error).toMatch(/positive integers/);
+  });
+
+  it('should return 400 when more than 50 ids are provided', async () => {
+    const ids = Array.from({ length: 51 }, (_, i) => i + 1);
+    const response = await request(app)
+      .post('/api/worktrees/bulk-delete')
+      .send({ ids });
+
+    expect(response.status).toBe(400);
+    expect(response.body.success).toBe(false);
+    expect(response.body.error).toMatch(/Maximum 50/);
+  });
+
+  it('should report partial failure when some ids do not exist', async () => {
+    const id1 = await insertPRAndGetMetadataId(10);
+
+    const response = await request(app)
+      .post('/api/worktrees/bulk-delete')
+      .send({ ids: [id1, 99999] });
+
+    expect(response.status).toBe(200);
+    expect(response.body.success).toBe(true);
+    expect(response.body.deleted).toBe(1);
+    expect(response.body.failed).toBe(1);
+    expect(response.body.errors).toHaveLength(1);
+    expect(response.body.errors[0].id).toBe(99999);
+    expect(response.body.errors[0].error).toMatch(/not found/i);
+  });
+
+  it('should report all failures when no ids exist', async () => {
+    const response = await request(app)
+      .post('/api/worktrees/bulk-delete')
+      .send({ ids: [88888, 99999] });
+
+    expect(response.status).toBe(200);
+    expect(response.body.success).toBe(false);
+    expect(response.body.deleted).toBe(0);
+    expect(response.body.failed).toBe(2);
+    expect(response.body.errors).toHaveLength(2);
+  });
+});
+
+describe('POST /api/local/sessions/bulk-delete', () => {
+  let db;
+  let app;
+
+  beforeEach(async () => {
+    db = await createTestDatabase();
+    app = createTestApp(db);
+  });
+
+  afterEach(async () => {
+    if (db) {
+      await closeTestDatabase(db);
+    }
+  });
+
+  /**
+   * Helper: insert a local review session and return its reviews.id
+   */
+  async function insertLocalSession(name = 'test-session') {
+    const result = await run(db, `
+      INSERT INTO reviews (repository, status, review_type, local_path, local_head_sha, name)
+      VALUES ('test-repo', 'draft', 'local', '/tmp/test-repo', 'abc123def', ?)
+    `, [name]);
+    return result.lastID;
+  }
+
+  it('should bulk delete multiple local sessions and return correct counts', async () => {
+    const id1 = await insertLocalSession('session-1');
+    const id2 = await insertLocalSession('session-2');
+    const id3 = await insertLocalSession('session-3');
+
+    const response = await request(app)
+      .post('/api/local/sessions/bulk-delete')
+      .send({ ids: [id1, id3] });
+
+    expect(response.status).toBe(200);
+    expect(response.body.success).toBe(true);
+    expect(response.body.deleted).toBe(2);
+    expect(response.body.failed).toBe(0);
+    expect(response.body.errors).toEqual([]);
+
+    // Verify deleted rows are gone
+    const deleted1 = await queryOne(db, 'SELECT id FROM reviews WHERE id = ?', [id1]);
+    const deleted3 = await queryOne(db, 'SELECT id FROM reviews WHERE id = ?', [id3]);
+    expect(deleted1).toBeUndefined();
+    expect(deleted3).toBeUndefined();
+
+    // Verify the untouched row still exists
+    const kept = await queryOne(db, 'SELECT id FROM reviews WHERE id = ?', [id2]);
+    expect(kept).toBeDefined();
+  });
+
+  it('should return 400 when ids array is empty', async () => {
+    const response = await request(app)
+      .post('/api/local/sessions/bulk-delete')
+      .send({ ids: [] });
+
+    expect(response.status).toBe(400);
+    expect(response.body.success).toBe(false);
+    expect(response.body.error).toMatch(/non-empty/);
+  });
+
+  it('should return 400 when ids field is missing', async () => {
+    const response = await request(app)
+      .post('/api/local/sessions/bulk-delete')
+      .send({});
+
+    expect(response.status).toBe(400);
+    expect(response.body.success).toBe(false);
+    expect(response.body.error).toMatch(/non-empty/);
+  });
+
+  it('should return 400 when body is empty', async () => {
+    const response = await request(app)
+      .post('/api/local/sessions/bulk-delete')
+      .send();
+
+    expect(response.status).toBe(400);
+    expect(response.body.success).toBe(false);
+  });
+
+  it('should return 400 when ids contain non-integer values', async () => {
+    const response = await request(app)
+      .post('/api/local/sessions/bulk-delete')
+      .send({ ids: [1, 'abc', 3] });
+
+    expect(response.status).toBe(400);
+    expect(response.body.success).toBe(false);
+    expect(response.body.error).toMatch(/positive integers/);
+  });
+
+  it('should return 400 when ids contain zero or negative values', async () => {
+    const response = await request(app)
+      .post('/api/local/sessions/bulk-delete')
+      .send({ ids: [0, -1] });
+
+    expect(response.status).toBe(400);
+    expect(response.body.success).toBe(false);
+    expect(response.body.error).toMatch(/positive integers/);
+  });
+
+  it('should return 400 when more than 50 ids are provided', async () => {
+    const ids = Array.from({ length: 51 }, (_, i) => i + 1);
+    const response = await request(app)
+      .post('/api/local/sessions/bulk-delete')
+      .send({ ids });
+
+    expect(response.status).toBe(400);
+    expect(response.body.success).toBe(false);
+    expect(response.body.error).toMatch(/Maximum 50/);
+  });
+
+  it('should report partial failure when some ids do not exist', async () => {
+    const id1 = await insertLocalSession('session-1');
+
+    const response = await request(app)
+      .post('/api/local/sessions/bulk-delete')
+      .send({ ids: [id1, 99999] });
+
+    expect(response.status).toBe(200);
+    expect(response.body.success).toBe(true);
+    expect(response.body.deleted).toBe(1);
+    expect(response.body.failed).toBe(1);
+    expect(response.body.errors).toHaveLength(1);
+    expect(response.body.errors[0].id).toBe(99999);
+    expect(response.body.errors[0].error).toMatch(/not found/i);
+  });
+
+  it('should report all failures when no ids exist', async () => {
+    const response = await request(app)
+      .post('/api/local/sessions/bulk-delete')
+      .send({ ids: [88888, 99999] });
+
+    expect(response.status).toBe(200);
+    expect(response.body.success).toBe(false);
+    expect(response.body.deleted).toBe(0);
+    expect(response.body.failed).toBe(2);
+    expect(response.body.errors).toHaveLength(2);
+  });
+
+  it('should not delete PR-mode reviews even if id matches', async () => {
+    // Insert a PR review (not local)
+    const reviewId = await insertTestPR(db, 42, 'owner/repo');
+
+    const response = await request(app)
+      .post('/api/local/sessions/bulk-delete')
+      .send({ ids: [reviewId] });
+
+    expect(response.status).toBe(200);
+    expect(response.body.deleted).toBe(0);
+    expect(response.body.failed).toBe(1);
+
+    // Verify the PR review still exists
+    const kept = await queryOne(db, 'SELECT id FROM reviews WHERE id = ?', [reviewId]);
+    expect(kept).toBeDefined();
+  });
+});

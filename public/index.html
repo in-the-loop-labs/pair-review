@@ -61,6 +61,7 @@
 
             --color-accent-primary: #0969da;
             --color-accent-hover: #0860ca;
+            --color-accent-subtle: rgba(9, 105, 218, 0.04);
             --color-accent-emphasis: #238636;
             --color-accent-emphasis-hover: #2ea043;
 
@@ -94,6 +95,7 @@
 
             --color-accent-primary: #58a6ff;
             --color-accent-hover: #1f6feb;
+            --color-accent-subtle: rgba(56, 139, 253, 0.06);
             --color-accent-emphasis: #238636;
             --color-accent-emphasis-hover: #2ea043;
 
@@ -1053,6 +1055,168 @@
             color: var(--color-text-primary);
         }
 
+        /* ─── Selection Mode ─────────────────────────────────────── */
+
+        /* Select toggle button — matches .btn-refresh sizing */
+        .btn-select-toggle {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 12px;
+            font-family: var(--font-sans);
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--color-text-secondary);
+            background: transparent;
+            border: 1px solid var(--color-border-primary);
+            border-radius: var(--radius-md);
+            cursor: pointer;
+            transition: all var(--transition-fast);
+        }
+
+        .btn-select-toggle:hover {
+            background: var(--color-bg-secondary);
+            color: var(--color-text-primary);
+        }
+
+        .btn-select-toggle.active {
+            background: var(--color-accent-subtle);
+            border-color: var(--color-accent-primary);
+            color: var(--color-accent-primary);
+        }
+
+        /* Checkbox column */
+        .col-select {
+            width: 32px;
+            text-align: center;
+            padding: 6px 8px !important;
+        }
+
+        .col-select input[type="checkbox"] {
+            width: 15px;
+            height: 15px;
+            cursor: pointer;
+            accent-color: var(--color-accent-primary);
+            vertical-align: middle;
+        }
+
+        /* Selected row highlight */
+        .recent-reviews-table tbody tr.bulk-selected td {
+            background-color: var(--color-accent-subtle);
+        }
+
+        /* Hide per-row delete buttons in selection mode */
+        .selection-mode .btn-delete-review,
+        .selection-mode .btn-delete-session {
+            display: none;
+        }
+
+        /* Inline bulk action controls — appear next to Select button */
+        .bulk-inline-actions {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .bulk-action-count {
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--color-text-secondary);
+        }
+
+        .bulk-action-buttons {
+            display: inline-flex;
+            gap: 6px;
+        }
+
+        .btn-bulk-delete {
+            padding: 4px 12px;
+            font-size: 12px;
+            font-weight: 500;
+            background: var(--color-danger);
+            color: #ffffff;
+            border: none;
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+        }
+
+        .btn-bulk-delete:hover:not(:disabled) {
+            background: var(--color-danger-hover);
+        }
+
+        .btn-bulk-delete:disabled {
+            opacity: 0.4;
+            cursor: default;
+        }
+
+        .btn-bulk-open,
+        .btn-bulk-analyze {
+            padding: 4px 12px;
+            font-size: 12px;
+            font-weight: 500;
+            background: var(--color-accent-primary);
+            color: #ffffff;
+            border: none;
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+        }
+
+        .btn-bulk-open:hover:not(:disabled),
+        .btn-bulk-analyze:hover:not(:disabled) {
+            opacity: 0.9;
+        }
+
+        .btn-bulk-open:disabled,
+        .btn-bulk-analyze:disabled {
+            opacity: 0.4;
+            cursor: default;
+        }
+
+        .btn-bulk-cancel {
+            padding: 4px 12px;
+            font-size: 12px;
+            font-weight: 500;
+            background: transparent;
+            color: var(--color-text-secondary);
+            border: 1px solid var(--color-border-primary);
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+        }
+
+        .btn-bulk-cancel:hover {
+            background: var(--color-bg-secondary);
+            color: var(--color-text-primary);
+        }
+
+        /* Confirmation state — hide normal action buttons, show confirm buttons */
+        .bulk-inline-actions .bulk-confirm-buttons {
+            display: none;
+            gap: 6px;
+        }
+
+        .bulk-inline-actions.confirming .bulk-action-buttons {
+            display: none;
+        }
+
+        .bulk-inline-actions.confirming .bulk-confirm-buttons {
+            display: inline-flex;
+        }
+
+        .bulk-inline-actions.confirming > .btn-bulk-cancel {
+            display: none;
+        }
+
+        /* Select mode header row (between form and table, for PR/Local tabs) */
+        .select-mode-header {
+            display: none;
+            justify-content: flex-end;
+            padding: 0 0 8px 0;
+        }
+
+        .select-mode-header.visible {
+            display: flex;
+        }
+
         /* Start review section spacing inside unified tabs */
         .tab-pane .start-review-section {
             max-width: 100%;
@@ -1266,6 +1430,7 @@
         </div>
     </div>
 
+    <script src="/js/components/Toast.js"></script>
     <script src="/js/index.js"></script>
 </body>
 </html>

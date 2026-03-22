@@ -12,6 +12,7 @@ const express = require('express');
 const { query, queryOne, run, ReviewRepository } = require('../database');
 const { setupPRReview } = require('../setup/pr-setup');
 const { GitHubApiError } = require('../github/client');
+const { GitWorktreeManager } = require('../git/worktree');
 const fs = require('fs').promises;
 const logger = require('../utils/logger');
 
@@ -218,6 +219,70 @@ router.get('/api/worktrees/recent', async (req, res) => {
 });
 
 /**
+ * Delete a single review by pr_metadata ID.
+ * Cleans up: worktree directory, worktree record, comments, reviews, and pr_metadata.
+ *
+ * @param {object} db - Database handle
+ * @param {number} metadataId - pr_metadata.id
+ * @returns {{ success: boolean, message: string }}
+ * @throws {Error} if deletion fails
+ */
+async function deleteReviewById(db, metadataId) {
+  const metadata = await queryOne(db, `
+    SELECT id, pr_number, repository FROM pr_metadata WHERE id = ?
+  `, [metadataId]);
+
+  if (!metadata) {
+    return { success: false, message: 'Review not found' };
+  }
+
+  const { pr_number: prNumber, repository } = metadata;
+  logger.info(`Deleting review for ${repository} #${prNumber} (metadata ID ${metadataId})`);
+
+  // Look up associated worktree path for cleanup after DB commit
+  const worktree = await queryOne(db, `
+    SELECT id, path FROM worktrees WHERE pr_number = ? AND repository = ? COLLATE NOCASE
+  `, [prNumber, repository]);
+
+  // Delete all associated database records in a transaction
+  await run(db, 'BEGIN TRANSACTION');
+  try {
+    await run(db, 'DELETE FROM worktrees WHERE pr_number = ? AND repository = ? COLLATE NOCASE', [prNumber, repository]);
+    await run(db, 'DELETE FROM chat_sessions WHERE review_id IN (SELECT id FROM reviews WHERE pr_number = ? AND repository = ? COLLATE NOCASE)', [prNumber, repository]);
+    await run(db, `
+      DELETE FROM comments WHERE review_id IN (
+        SELECT id FROM reviews WHERE pr_number = ? AND repository = ? COLLATE NOCASE
+      )
+    `, [prNumber, repository]);
+    await run(db, 'DELETE FROM reviews WHERE pr_number = ? AND repository = ? COLLATE NOCASE', [prNumber, repository]);
+    await run(db, 'DELETE FROM pr_metadata WHERE id = ?', [metadataId]);
+    // Clean up cached GitHub PR data
+    const parts = repository.split('/');
+    if (parts.length === 2) {
+      await run(db, 'DELETE FROM github_pr_cache WHERE owner = ? AND repo = ? AND number = ?', [parts[0], parts[1], prNumber]);
+    }
+    await run(db, 'COMMIT');
+  } catch (txError) {
+    await run(db, 'ROLLBACK');
+    throw txError;
+  }
+
+  // Clean up worktree AFTER successful DB commit so rollback doesn't orphan data
+  if (worktree && worktree.path) {
+    try {
+      const worktreeManager = new GitWorktreeManager(db);
+      await worktreeManager.cleanupWorktree(worktree.path);
+      logger.info(`Cleaned up worktree: ${worktree.path}`);
+    } catch {
+      logger.warn(`Could not clean up worktree (may not exist): ${worktree.path}`);
+    }
+  }
+
+  logger.success(`Deleted review for ${repository} #${prNumber}`);
+  return { success: true, message: `Review for ${repository} #${prNumber} deleted` };
+}
+
+/**
  * Delete a review and all associated data.
  * Cleans up: worktree directory, worktree record, comments, reviews, and pr_metadata.
  *
@@ -235,62 +300,18 @@ router.delete('/api/worktrees/:id', async (req, res) => {
     }
 
     const db = req.app.get('db');
+    const result = await deleteReviewById(db, metadataId);
 
-    // Look up pr_metadata to get the composite key
-    const metadata = await queryOne(db, `
-      SELECT id, pr_number, repository FROM pr_metadata WHERE id = ?
-    `, [metadataId]);
-
-    if (!metadata) {
+    if (!result.success) {
       return res.status(404).json({
         success: false,
-        error: 'Review not found'
+        error: result.message
       });
     }
 
-    const { pr_number: prNumber, repository } = metadata;
-    logger.info(`Deleting review for ${repository} #${prNumber} (metadata ID ${metadataId})`);
-
-    // Look up associated worktree for filesystem cleanup
-    const worktree = await queryOne(db, `
-      SELECT id, path FROM worktrees WHERE pr_number = ? AND repository = ? COLLATE NOCASE
-    `, [prNumber, repository]);
-
-    // Delete the worktree directory if it exists
-    if (worktree && worktree.path) {
-      try {
-        await fs.access(worktree.path);
-        await fs.rm(worktree.path, { recursive: true, force: true });
-        logger.info(`Deleted worktree directory: ${worktree.path}`);
-      } catch {
-        logger.warn(`Could not delete worktree directory (may not exist): ${worktree.path}`);
-      }
-    }
-
-    // Delete all associated database records
-    // First delete the worktree record, then use shared review cleanup
-    await run(db, 'DELETE FROM worktrees WHERE pr_number = ? AND repository = ? COLLATE NOCASE', [prNumber, repository]);
-
-    // Find all reviews for this PR and delete them with cascading cleanup
-    const reviews = await query(db, `
-      SELECT id FROM reviews WHERE pr_number = ? AND repository = ? COLLATE NOCASE
-    `, [prNumber, repository]);
-
-    const reviewRepo = new ReviewRepository(db);
-    for (const review of reviews) {
-      await reviewRepo.deleteWithRelatedData(review.id, { prNumber, repository });
-    }
-
-    // If no reviews existed, still clean up pr_metadata directly
-    if (reviews.length === 0) {
-      await run(db, 'DELETE FROM pr_metadata WHERE id = ?', [metadataId]);
-    }
-
-    logger.success(`Deleted review for ${repository} #${prNumber}`);
-
     res.json({
       success: true,
-      message: `Review for ${repository} #${prNumber} deleted`
+      message: result.message
     });
 
   } catch (error) {
@@ -298,6 +319,72 @@ router.delete('/api/worktrees/:id', async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Failed to delete review: ' + error.message
+    });
+  }
+});
+
+/**
+ * Bulk delete reviews by pr_metadata IDs.
+ * Accepts { ids: number[] } in request body. Max 50 IDs per request.
+ * Each deletion is independent — partial failures are reported per-ID.
+ */
+router.post('/api/worktrees/bulk-delete', async (req, res) => {
+  try {
+    const { ids } = req.body || {};
+
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Request body must contain a non-empty "ids" array'
+      });
+    }
+
+    if (ids.length > 50) {
+      return res.status(400).json({
+        success: false,
+        error: 'Maximum 50 IDs per request'
+      });
+    }
+
+    const parsedIds = ids.map(id => parseInt(id, 10));
+    if (parsedIds.some(id => isNaN(id) || id <= 0)) {
+      return res.status(400).json({
+        success: false,
+        error: 'All IDs must be positive integers'
+      });
+    }
+
+    const db = req.app.get('db');
+    let deleted = 0;
+    const errors = [];
+
+    for (const id of parsedIds) {
+      try {
+        const result = await deleteReviewById(db, id);
+        if (result.success) {
+          deleted++;
+        } else {
+          errors.push({ id, error: result.message });
+        }
+      } catch (err) {
+        errors.push({ id, error: err.message });
+      }
+    }
+
+    if (deleted > 0) logger.success(`Bulk deleted ${deleted} review(s)`);
+
+    res.json({
+      success: deleted > 0 || errors.length === 0,
+      deleted,
+      failed: errors.length,
+      errors
+    });
+
+  } catch (error) {
+    logger.error('Error in bulk delete:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to process bulk delete: ' + error.message
     });
   }
 });

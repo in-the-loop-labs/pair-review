@@ -208,6 +208,34 @@ async function startServer(sharedDb = null) {
       res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
     });
     
+    // Bulk-open — opens multiple local URLs in the OS browser via the `open` package.
+    // Bypasses popup blockers since the server shells out directly.
+    const openUrl = (...args) => import('open').then(({ default: open }) => open(...args));
+    app.post('/api/bulk-open', async (req, res) => {
+      try {
+        const { urls } = req.body || {};
+        if (!Array.isArray(urls) || urls.length === 0) {
+          return res.status(400).json({ error: 'urls array required' });
+        }
+        if (urls.length > 20) {
+          return res.status(400).json({ error: 'Maximum 20 URLs per request' });
+        }
+        // Only allow local paths starting with / (prevent open-redirect)
+        const validUrls = urls.filter(u => typeof u === 'string' && u.startsWith('/'));
+        if (validUrls.length === 0) {
+          return res.status(400).json({ error: 'All URLs must be local paths starting with /' });
+        }
+        const port = req.socket.localPort;
+        for (const url of validUrls) {
+          await openUrl(`http://localhost:${port}${url}`);
+        }
+        res.json({ success: true, opened: validUrls.length });
+      } catch (error) {
+        logger.error('Bulk open failed:', error);
+        res.status(500).json({ error: 'Failed to open URLs' });
+      }
+    });
+
     // PR display route - serves pr.html if review data exists, setup.html otherwise
     app.get('/pr/:owner/:repo/:number', async (req, res) => {
       const { owner, repo, number } = req.params;

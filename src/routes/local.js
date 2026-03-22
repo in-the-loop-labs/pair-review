@@ -66,6 +66,22 @@ function deleteLocalReviewDiff(reviewId) {
 }
 
 /**
+ * Delete a local review session and its in-memory diff cache.
+ * Shared by both single-delete and bulk-delete routes.
+ *
+ * @param {ReviewRepository} reviewRepo - Repository instance
+ * @param {number} id - Review ID
+ * @returns {boolean} true if deleted, false if not found
+ */
+async function deleteLocalReviewFull(reviewRepo, id) {
+  const deleted = await reviewRepo.deleteLocalSession(id);
+  if (deleted) {
+    deleteLocalReviewDiff(id);
+  }
+  return deleted;
+}
+
+/**
  * Open native OS directory picker dialog and return the selected path.
  * Uses osascript on macOS, zenity/kdialog on Linux, PowerShell on Windows.
  * Must be registered BEFORE /:reviewId param routes.
@@ -185,6 +201,74 @@ router.get('/api/local/sessions', async (req, res) => {
 });
 
 /**
+ * Bulk delete local review sessions.
+ * Accepts { ids: number[] } in request body. Max 50 IDs per request.
+ * Must be registered BEFORE /:reviewId param routes.
+ * Only deletes DB records — does NOT remove files on disk.
+ */
+router.post('/api/local/sessions/bulk-delete', async (req, res) => {
+  try {
+    const { ids } = req.body || {};
+
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Request body must contain a non-empty "ids" array'
+      });
+    }
+
+    if (ids.length > 50) {
+      return res.status(400).json({
+        success: false,
+        error: 'Maximum 50 IDs per request'
+      });
+    }
+
+    const parsedIds = ids.map(id => parseInt(id, 10));
+    if (parsedIds.some(id => isNaN(id) || id <= 0)) {
+      return res.status(400).json({
+        success: false,
+        error: 'All IDs must be positive integers'
+      });
+    }
+
+    const db = req.app.get('db');
+    const reviewRepo = new ReviewRepository(db);
+    let deleted = 0;
+    const errors = [];
+
+    for (const id of parsedIds) {
+      try {
+        const result = await deleteLocalReviewFull(reviewRepo, id);
+        if (result) {
+          deleted++;
+        } else {
+          errors.push({ id, error: `Local review #${id} not found` });
+        }
+      } catch (err) {
+        errors.push({ id, error: err.message });
+      }
+    }
+
+    if (deleted > 0) logger.success(`Bulk deleted ${deleted} local review session(s)`);
+
+    res.json({
+      success: deleted > 0 || errors.length === 0,
+      deleted,
+      failed: errors.length,
+      errors
+    });
+
+  } catch (error) {
+    logger.error(`Error in bulk delete local sessions: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to process bulk delete'
+    });
+  }
+});
+
+/**
  * Delete a local review session
  * Must be registered BEFORE /:reviewId param routes
  * Only deletes DB records — does NOT remove files on disk.
@@ -201,16 +285,13 @@ router.delete('/api/local/sessions/:reviewId', async (req, res) => {
 
     const db = req.app.get('db');
     const reviewRepo = new ReviewRepository(db);
-    const deleted = await reviewRepo.deleteLocalSession(reviewId);
+    const deleted = await deleteLocalReviewFull(reviewRepo, reviewId);
 
     if (!deleted) {
       return res.status(404).json({
         error: `Local review #${reviewId} not found`
       });
     }
-
-    // Clean up in-memory diff cache to avoid stale data
-    deleteLocalReviewDiff(reviewId);
 
     logger.success(`Deleted local review session #${reviewId}`);
 
