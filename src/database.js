@@ -1514,7 +1514,19 @@ const MIGRATIONS = {
       FOREIGN KEY (parent_id) REFERENCES comments(id)
     )`).run();
 
-    db.prepare('INSERT INTO comments_rebuild SELECT * FROM comments').run();
+    // Use explicit column names — SELECT * would break if column order differs
+    // (e.g., columns added via ALTER TABLE ADD COLUMN are appended to the end)
+    const cols = [
+      'id', 'review_id', 'source', 'author',
+      'ai_run_id', 'ai_level', 'ai_confidence',
+      'file', 'line_start', 'line_end', 'diff_position',
+      'side', 'commit_sha', 'type', 'title', 'body',
+      'suggestion_text', 'reasoning',
+      'status', 'adopted_as_id', 'parent_id', 'is_file_level',
+      'voice_id', 'is_raw',
+      'created_at', 'updated_at'
+    ].join(', ');
+    db.prepare(`INSERT INTO comments_rebuild (${cols}) SELECT ${cols} FROM comments`).run();
 
     db.prepare('DROP TABLE comments').run();
     db.prepare('ALTER TABLE comments_rebuild RENAME TO comments').run();
