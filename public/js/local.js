@@ -702,7 +702,8 @@ class LocalManager {
   /**
    * Handle a non-branch-scope HEAD SHA change.
    * Shows a 3-option dialog (or auto-updates in silent mode).
-   * @returns {boolean} true if the session was updated or redirected, false if cancelled
+   * @returns {boolean} true if the session was updated in-place (caller should apply diff),
+   *                    false if cancelled or redirecting away (caller should skip _applyRefreshedDiff)
    */
   async _resolveHeadChange(result, opts) {
     const abbrevLen = this.localData?.shaAbbrevLength || 7;
@@ -713,12 +714,15 @@ class LocalManager {
 
     if (!opts.silent && window.confirmDialog) {
       const dialogResult = await window.confirmDialog.show({
-        title: 'HEAD Has Changed',
-        message: `A new commit was detected (${originalSha} \u2192 ${newSha}). Your comments and AI suggestions are tied to the previous commit.\n\nChoose how to proceed:`,
+        title: 'New Commit Detected',
+        message: `HEAD has moved from ${originalSha} to ${newSha}. The current diff was captured against the previous HEAD commit.`,
         confirmText: 'Update This Session',
+        confirmDesc: 'Use the new HEAD commit with the current review',
         confirmClass: 'btn-primary',
         secondaryText: 'Start New Session',
-        cancelText: 'Keep Current Diff'
+        secondaryDesc: 'Review by comparing to the new HEAD commit',
+        cancelText: 'Keep Current Diff',
+        cancelDesc: 'Continue reviewing without refreshing'
       });
 
       if (dialogResult === 'confirm') {
@@ -759,12 +763,12 @@ class LocalManager {
     if (data.action === 'redirect') {
       // UNIQUE conflict — redirect to existing session
       window.location.href = `/local/${data.sessionId}`;
-      return true; // will redirect
+      return false; // navigating away — caller must not fire _applyRefreshedDiff
     }
 
     if (data.action === 'new-session') {
       window.location.href = `/local/${data.newSessionId}`;
-      return true; // will redirect
+      return false; // navigating away — caller must not fire _applyRefreshedDiff
     }
 
     // action === 'updated' — session SHA + diff updated, continue to reload
