@@ -4414,6 +4414,13 @@ class PRManager {
       const hasData = await this._hasActiveSessionData();
       if (hasData) {
         this._showStaleBadge('stale');
+        if (window.chatPanel) {
+          const oldSha = result.localHeadSha ? result.localHeadSha.substring(0, 7) : 'unknown';
+          const newSha = result.remoteHeadSha ? result.remoteHeadSha.substring(0, 7) : 'unknown';
+          window.chatPanel.queueDiffStateNotification(
+            `PR HEAD has changed (${oldSha} → ${newSha}). The diff has not been refreshed yet.`
+          );
+        }
       } else {
         // No user work to protect — refresh silently
         await this.refreshPR();
@@ -4532,6 +4539,8 @@ class PRManager {
       diffContainer.innerHTML = '<div class="loading">Refreshing pull request...</div>';
     }
 
+    const oldHeadSha = this.currentPR?.head_sha;
+
     try {
       // Call refresh API endpoint to fetch fresh data from GitHub
       const response = await fetch(`/api/pr/${owner}/${repo}/${number}/refresh`, {
@@ -4548,6 +4557,14 @@ class PRManager {
       // Update current PR data
       if (data.success && data.data) {
         this.currentPR = data.data;
+
+        // Notify chat agent if HEAD SHA changed
+        const newHeadSha = data.data?.head_sha;
+        if (window.chatPanel && oldHeadSha && newHeadSha && oldHeadSha !== newHeadSha) {
+          window.chatPanel.queueDiffStateNotification(
+            `PR refreshed. HEAD changed: ${oldHeadSha.substring(0, 7)} → ${newHeadSha.substring(0, 7)}.`
+          );
+        }
 
         // Save scroll position and expanded state
         const scrollPosition = window.scrollY;
