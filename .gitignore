@@ -19,3 +19,5 @@ test-results/
 .critic-loop/
 examples/
 .pair-review/config.local.json
+public/js/vendor/pierre-diffs.js
+public/js/vendor/pierre-diffs.js.map
