@@ -499,6 +499,7 @@ class PRManager {
         this.analysisHistoryManager = new window.AnalysisHistoryManager({
           reviewId: this.currentPR.id,
           mode: 'pr',
+          shaAbbrevLength: this.currentPR.shaAbbrevLength || 7,
           onSelectionChange: (runId, _run) => {
             this.selectedRunId = runId;
             this.loadAISuggestions(null, runId);
@@ -899,7 +900,8 @@ class PRManager {
     const commitSha = document.getElementById('pr-commit-sha');
     const commitCopy = document.getElementById('pr-commit-copy');
     if (commitSha && pr.head_sha) {
-      commitSha.textContent = pr.head_sha.substring(0, 7);
+      const abbrevLen = pr.shaAbbrevLength || 7;
+      commitSha.textContent = pr.head_sha.substring(0, abbrevLen);
       // Store full SHA for copying (updates on refresh)
       commitSha.dataset.fullSha = pr.head_sha;
 
@@ -4415,8 +4417,9 @@ class PRManager {
       if (hasData) {
         this._showStaleBadge('stale');
         if (window.chatPanel) {
-          const oldSha = result.localHeadSha ? result.localHeadSha.substring(0, 7) : 'unknown';
-          const newSha = result.remoteHeadSha ? result.remoteHeadSha.substring(0, 7) : 'unknown';
+          const abbrevLen = this.currentPR?.shaAbbrevLength || 7;
+          const oldSha = result.localHeadSha ? result.localHeadSha.substring(0, abbrevLen) : 'unknown';
+          const newSha = result.remoteHeadSha ? result.remoteHeadSha.substring(0, abbrevLen) : 'unknown';
           window.chatPanel.queueDiffStateNotification(
             `PR HEAD has changed (${oldSha} → ${newSha}). The diff has not been refreshed yet.`
           );
@@ -4561,8 +4564,9 @@ class PRManager {
         // Notify chat agent if HEAD SHA changed
         const newHeadSha = data.data?.head_sha;
         if (window.chatPanel && oldHeadSha && newHeadSha && oldHeadSha !== newHeadSha) {
+          const abbrevLen = this.currentPR?.shaAbbrevLength || 7;
           window.chatPanel.queueDiffStateNotification(
-            `PR refreshed. HEAD changed: ${oldHeadSha.substring(0, 7)} → ${newHeadSha.substring(0, 7)}.`
+            `PR refreshed. HEAD changed: ${oldHeadSha.substring(0, abbrevLen)} → ${newHeadSha.substring(0, abbrevLen)}.`
           );
         }
 

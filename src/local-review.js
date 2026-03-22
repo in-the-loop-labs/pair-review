@@ -14,6 +14,7 @@ const { STOPS, scopeIncludes, includesBranch, DEFAULT_SCOPE, scopeLabel } = requ
 const { initializeDatabase, ReviewRepository, RepoSettingsRepository } = require('./database');
 const { startServer } = require('./server');
 const { localReviewDiffs } = require('./routes/shared');
+const { getShaAbbrevLength } = require('./git/sha-abbrev');
 const open = (...args) => import('open').then(({ default: open }) => open(...args));
 
 // Design note: This module uses execSync for git commands despite async function signatures.
@@ -767,7 +768,8 @@ async function handleLocalReview(targetPath, flags = {}) {
       // Update HEAD SHA if it changed (branch mode: new commits on same branch)
       if (existingReview.local_head_sha !== headSha) {
         await reviewRepo.updateLocalHeadSha(sessionId, headSha);
-        console.log(`Updated HEAD SHA on session ${sessionId}: ${existingReview.local_head_sha.substring(0, 7)} -> ${headSha.substring(0, 7)}`);
+        const abbrevLen = getShaAbbrevLength(repoPath);
+        console.log(`Updated HEAD SHA on session ${sessionId}: ${existingReview.local_head_sha.substring(0, abbrevLen)} -> ${headSha.substring(0, abbrevLen)}`);
       }
       // Backfill branch on legacy sessions
       if (existingReview.local_head_branch === null) {

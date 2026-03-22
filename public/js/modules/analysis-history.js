@@ -20,11 +20,12 @@ class AnalysisHistoryManager {
    * @param {Function} options.onSelectionChange - Callback when a run is selected, receives (runId, run)
    * @param {string} options.containerPrefix - Prefix for DOM element IDs (default: 'analysis-context')
    */
-  constructor({ reviewId, mode, onSelectionChange, containerPrefix = 'analysis-context' }) {
+  constructor({ reviewId, mode, onSelectionChange, containerPrefix = 'analysis-context', shaAbbrevLength = 7 }) {
     this.reviewId = reviewId;
     this.mode = mode;
     this.onSelectionChange = onSelectionChange;
     this.containerPrefix = containerPrefix;
+    this.shaAbbrevLength = shaAbbrevLength;
 
     // State
     this.runs = [];
@@ -421,7 +422,7 @@ class AnalysisHistoryManager {
 
     // Format HEAD SHA - show abbreviated version with full SHA in title
     const headSha = run.head_sha;
-    const headShaDisplay = headSha ? headSha.substring(0, 7) : null;
+    const headShaDisplay = headSha ? headSha.substring(0, this.shaAbbrevLength) : null;
 
     // Format status
     const statusInfo = this.formatStatus(run.status);

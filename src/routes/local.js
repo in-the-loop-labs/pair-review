@@ -28,6 +28,7 @@ const { getGitHubToken } = require('../config');
 const { generateScopedDiff, computeScopedDigest, getBranchCommitCount, getFirstCommitSubject, detectAndBuildBranchInfo, findMergeBase, getCurrentBranch, getRepositoryName } = require('../local-review');
 const { STOPS, isValidScope, scopeIncludes, includesBranch, DEFAULT_SCOPE } = require('../local-scope');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
+const { getShaAbbrevLength } = require('../git/sha-abbrev');
 const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
 const { TIERS, TIER_ALIASES, VALID_TIERS, resolveTier } = require('../ai/prompts/config');
 const {
@@ -186,9 +187,19 @@ router.get('/api/local/sessions', async (req, res) => {
     const reviewRepo = new ReviewRepository(db);
     const { sessions, hasMore } = await reviewRepo.listLocalSessions({ limit, before });
 
+    // Compute SHA abbreviation length per unique repo path
+    const abbrevCache = new Map();
+    const enrichedSessions = sessions.map(session => {
+      if (!session.local_path) return session;
+      if (!abbrevCache.has(session.local_path)) {
+        abbrevCache.set(session.local_path, getShaAbbrevLength(session.local_path));
+      }
+      return { ...session, sha_abbrev_length: abbrevCache.get(session.local_path) };
+    });
+
     res.json({
       success: true,
-      sessions,
+      sessions: enrichedSessions,
       hasMore
     });
 
@@ -583,6 +594,9 @@ router.get('/api/local/:reviewId', async (req, res) => {
       }
     }
 
+    // Compute SHA abbreviation length from the repo's git config
+    const shaAbbrevLength = getShaAbbrevLength(review.local_path);
+
     res.json({
       id: review.id,
       localPath: review.local_path,
@@ -598,6 +612,7 @@ router.get('/api/local/:reviewId', async (req, res) => {
       baseBranch,
       branchInfo,
       branchAvailable,
+      shaAbbrevLength,
       createdAt: review.created_at,
       updatedAt: review.updated_at
     });
@@ -1322,7 +1337,8 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
       currentHeadSha = await getHeadSha(localPath);
 
       if (originalHeadSha && currentHeadSha !== originalHeadSha) {
-        logger.log('API', `HEAD changed: ${originalHeadSha.substring(0, 7)} -> ${currentHeadSha.substring(0, 7)}`, 'yellow');
+        const abbrevLen = getShaAbbrevLength(localPath);
+        logger.log('API', `HEAD changed: ${originalHeadSha.substring(0, abbrevLen)} -> ${currentHeadSha.substring(0, abbrevLen)}`, 'yellow');
 
         if (hasBranch) {
           // Branch scope: session persists across HEAD changes — just update the SHA

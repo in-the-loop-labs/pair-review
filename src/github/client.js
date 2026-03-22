@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 const { Octokit } = require('@octokit/rest');
 const logger = require('../utils/logger');
+const { DEFAULT_SHA_ABBREV_LENGTH } = require('../git/sha-abbrev');
 
 /**
  * Custom error class for GitHub API errors that preserves the HTTP status code.
@@ -332,7 +333,7 @@ class GitHubClient {
       // Extract commit_id from first comment (all comments should have the same one)
       const commitId = comments.length > 0 ? comments[0].commit_id : null;
       if (commitId) {
-        console.log(`Using commit_id for review: ${commitId.substring(0, 7)}`);
+        console.log(`Using commit_id for review: ${commitId.substring(0, DEFAULT_SHA_ABBREV_LENGTH)}`);
       } else {
         console.warn('No commit_id available - review may fail for lines outside diff');
       }

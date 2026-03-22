@@ -235,8 +235,9 @@
     const link = '/local/' + session.id;
     const relativeTime = formatRelativeTime(session.updated_at);
     const pathDisplay = session.local_path || '';
+    const abbrevLen = session.sha_abbrev_length || 7;
     const sha = session.local_head_sha
-      ? session.local_head_sha.substring(0, 7)
+      ? session.local_head_sha.substring(0, abbrevLen)
       : '';
     const hasName = !!session.name;
     const nameDisplay = hasName ? escapeHtml(session.name) : '<em>Untitled</em>';
