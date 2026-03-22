@@ -771,6 +771,13 @@ class LocalManager {
       const result = await this._fetchLocalStaleness();
       if (!result) return null;
 
+      // Notify chat of HEAD SHA change even when diff digest is unchanged
+      // (e.g. git commit --amend with identical content, or rebase)
+      if (result.headShaChanged && window.chatPanel) {
+        window.chatPanel.queueDiffStateNotification(
+          `HEAD SHA changed (${result.previousHeadSha ? result.previousHeadSha.substring(0, 7) : 'unknown'} → ${result.currentHeadSha ? result.currentHeadSha.substring(0, 7) : 'unknown'}). The branch may have been rebased.`
+        );
+      }
       if (result.isStale !== true) return result;
 
       // Stale — decide: silent refresh or show badge

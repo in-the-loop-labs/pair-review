@@ -1012,6 +1012,7 @@ class ChatPanel {
     this._streamingContent = '';
     this._pendingContext = [];
     this._pendingContextData = [];
+    this._pendingDiffStateNotifications = [];
     this._contextSource = null;
     this._contextItemId = null;
     this._contextLineMeta = null;
@@ -1334,7 +1335,7 @@ class ChatPanel {
       // Restore pending context so it's not lost
       this._pendingContext = savedContext;
       this._pendingContextData = savedContextData;
-      this._pendingDiffStateNotifications = savedDiffState;
+      this._pendingDiffStateNotifications = [...savedDiffState, ...this._pendingDiffStateNotifications];
       // Restore removability on context cards that were locked before the failed send
       this._restoreRemovableCards();
       console.error('[ChatPanel] Error sending message:', error);
