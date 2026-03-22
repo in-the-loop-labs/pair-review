@@ -1476,6 +1476,21 @@ const MIGRATIONS = {
       return;
     }
 
+    // Disable FK checks for the rebuild — old databases may have orphaned
+    // comments (review_id pointing to deleted reviews) because FK enforcement
+    // wasn't always active or CASCADE wasn't defined.
+    db.pragma('foreign_keys = OFF');
+
+    // Clean up orphaned comments before rebuild
+    if (tableExists(db, 'reviews')) {
+      const orphaned = db.prepare(
+        'DELETE FROM comments WHERE review_id IS NOT NULL AND review_id NOT IN (SELECT id FROM reviews)'
+      ).run();
+      if (orphaned.changes > 0) {
+        console.log(`  Cleaned up ${orphaned.changes} orphaned comments`);
+      }
+    }
+
     db.prepare(`CREATE TABLE IF NOT EXISTS comments_rebuild (
       id INTEGER PRIMARY KEY,
       review_id INTEGER,
@@ -1514,10 +1529,30 @@ const MIGRATIONS = {
       FOREIGN KEY (parent_id) REFERENCES comments(id)
     )`).run();
 
-    db.prepare('INSERT INTO comments_rebuild SELECT * FROM comments').run();
+    // Use explicit column names — SELECT * would break if column order differs
+    // (e.g., columns added via ALTER TABLE ADD COLUMN are appended to the end)
+    const cols = [
+      'id', 'review_id', 'source', 'author',
+      'ai_run_id', 'ai_level', 'ai_confidence',
+      'file', 'line_start', 'line_end', 'diff_position',
+      'side', 'commit_sha', 'type', 'title', 'body',
+      'suggestion_text', 'reasoning',
+      'status', 'adopted_as_id', 'parent_id', 'is_file_level',
+      'voice_id', 'is_raw',
+      'created_at', 'updated_at'
+    ].join(', ');
+    // Wrap in transaction so a crash between DROP and RENAME can't strand
+    // data in comments_rebuild. PRAGMA foreign_keys = OFF must stay outside
+    // the transaction (SQLite requirement).
+    const rebuild = db.transaction(() => {
+      db.prepare(`INSERT INTO comments_rebuild (${cols}) SELECT ${cols} FROM comments`).run();
+      db.prepare('DROP TABLE comments').run();
+      db.prepare('ALTER TABLE comments_rebuild RENAME TO comments').run();
+    });
+    rebuild();
 
-    db.prepare('DROP TABLE comments').run();
-    db.prepare('ALTER TABLE comments_rebuild RENAME TO comments').run();
+    // Re-enable FK checks
+    db.pragma('foreign_keys = ON');
 
     // Recreate all indexes on the new table
     db.prepare('CREATE INDEX IF NOT EXISTS idx_comments_review_file ON comments(review_id, file, line_start)').run();
