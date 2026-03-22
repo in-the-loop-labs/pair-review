@@ -18,6 +18,7 @@ const { query, queryOne, run, withTransaction, WorktreeRepository, ReviewReposit
 const { GitWorktreeManager } = require('../git/worktree');
 const { GitHubClient } = require('../github/client');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
+const { getShaAbbrevLength, DEFAULT_SHA_ABBREV_LENGTH } = require('../git/sha-abbrev');
 const { normalizeRepository, resolveRenamedFile, resolveRenamedFileOld } = require('../utils/paths');
 const { mergeInstructions } = require('../utils/instructions');
 const Analyzer = require('../ai/analyzer');
@@ -222,6 +223,11 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
       }
     }
 
+    // Compute SHA abbreviation length from the worktree's git config
+    const shaAbbrevLength = extendedData.worktree_path
+      ? getShaAbbrevLength(extendedData.worktree_path)
+      : DEFAULT_SHA_ABBREV_LENGTH;
+
     // Prepare response
     // Use review.id instead of prMetadata.id to avoid ID collision with local mode
     const response = {
@@ -239,6 +245,7 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
         head_branch: prMetadata.head_branch,
         head_sha: extendedData.head_sha || null,  // Head commit SHA for GitHub API comments
         node_id: extendedData.node_id || null,  // GraphQL node ID for review submission
+        shaAbbrevLength,
         created_at: prMetadata.created_at,
         updated_at: prMetadata.updated_at,
         file_changes: extendedData.changed_files ? extendedData.changed_files.length : 0,

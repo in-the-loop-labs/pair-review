@@ -663,8 +663,9 @@ class LocalManager {
       let userDeclinedSwitch = false;
       if (result.sessionChanged && result.newSessionId) {
         // Show confirmation dialog to user
-        const originalSha = result.previousHeadSha ? result.previousHeadSha.substring(0, 7) : 'unknown';
-        const newSha = result.currentHeadSha ? result.currentHeadSha.substring(0, 7) : 'unknown';
+        const abbrevLen = this.localData?.shaAbbrevLength || 7;
+        const originalSha = result.previousHeadSha ? result.previousHeadSha.substring(0, abbrevLen) : 'unknown';
+        const newSha = result.currentHeadSha ? result.currentHeadSha.substring(0, abbrevLen) : 'unknown';
 
         if (window.confirmDialog) {
           const dialogResult = await window.confirmDialog.show({
@@ -709,8 +710,9 @@ class LocalManager {
       if (!userDeclinedSwitch && window.chatPanel) {
         if (result.headShaChanged) {
           const prev = result.previousHeadSha;
+          const abbrevLen = this.localData?.shaAbbrevLength || 7;
           window.chatPanel.queueDiffStateNotification(
-            `HEAD SHA changed: ${prev ? prev.substring(0, 7) : 'unknown'} → ${result.currentHeadSha ? result.currentHeadSha.substring(0, 7) : 'unknown'}.`
+            `HEAD SHA changed: ${prev ? prev.substring(0, abbrevLen) : 'unknown'} → ${result.currentHeadSha ? result.currentHeadSha.substring(0, abbrevLen) : 'unknown'}.`
           );
         }
         window.chatPanel.queueDiffStateNotification(
@@ -773,9 +775,10 @@ class LocalManager {
 
       // Notify chat of HEAD SHA change even when diff digest is unchanged
       // (e.g. git commit --amend with identical content, or rebase)
+      const abbrevLen = this.localData?.shaAbbrevLength || 7;
       if (result.headShaChanged && window.chatPanel) {
         window.chatPanel.queueDiffStateNotification(
-          `HEAD SHA changed (${result.previousHeadSha ? result.previousHeadSha.substring(0, 7) : 'unknown'} → ${result.currentHeadSha ? result.currentHeadSha.substring(0, 7) : 'unknown'}). The branch may have been rebased.`
+          `HEAD SHA changed (${result.previousHeadSha ? result.previousHeadSha.substring(0, abbrevLen) : 'unknown'} → ${result.currentHeadSha ? result.currentHeadSha.substring(0, abbrevLen) : 'unknown'}). The branch may have been rebased.`
         );
       }
       if (result.isStale !== true) return result;
@@ -791,7 +794,7 @@ class LocalManager {
           // (the !hasData path calls refreshDiff() which queues its own notification)
           if (result.headShaChanged) {
             window.chatPanel.queueDiffStateNotification(
-              `HEAD SHA changed (${result.previousHeadSha ? result.previousHeadSha.substring(0, 7) : 'unknown'} → ${result.currentHeadSha ? result.currentHeadSha.substring(0, 7) : 'unknown'}). The branch may have been rebased.`
+              `HEAD SHA changed (${result.previousHeadSha ? result.previousHeadSha.substring(0, abbrevLen) : 'unknown'} → ${result.currentHeadSha ? result.currentHeadSha.substring(0, abbrevLen) : 'unknown'}). The branch may have been rebased.`
             );
           }
           window.chatPanel.queueDiffStateNotification(
@@ -875,6 +878,7 @@ class LocalManager {
         head_branch: reviewData.branch,
         base_branch: hasBranch ? reviewData.baseBranch : reviewData.branch,
         head_sha: reviewData.localHeadSha,
+        shaAbbrevLength: reviewData.shaAbbrevLength || 7,
         reviewType: 'local',
         localPath: reviewData.localPath
       };
@@ -924,6 +928,7 @@ class LocalManager {
         manager.analysisHistoryManager = new window.AnalysisHistoryManager({
           reviewId: this.reviewId,
           mode: 'local',
+          shaAbbrevLength: reviewData.shaAbbrevLength || 7,
           onSelectionChange: (runId, _run) => {
             manager.selectedRunId = runId;
             manager.loadAISuggestions(null, runId);
@@ -1121,7 +1126,8 @@ class LocalManager {
     // Update commit SHA and wire up copy button
     const commitSha = document.getElementById('pr-commit-sha');
     if (commitSha && reviewData.localHeadSha) {
-      commitSha.textContent = reviewData.localHeadSha.substring(0, 7);
+      const abbrevLen = reviewData.shaAbbrevLength || 7;
+      commitSha.textContent = reviewData.localHeadSha.substring(0, abbrevLen);
       commitSha.dataset.fullSha = reviewData.localHeadSha;
     }
 
