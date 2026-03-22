@@ -660,10 +660,11 @@ class LocalManager {
       console.log('Diff refreshed:', result.stats);
 
       // Check if HEAD has changed (user made a commit)
+      let userDeclinedSwitch = false;
       if (result.sessionChanged && result.newSessionId) {
         // Show confirmation dialog to user
-        const originalSha = result.originalHeadSha ? result.originalHeadSha.substring(0, 7) : 'unknown';
-        const newSha = result.newHeadSha ? result.newHeadSha.substring(0, 7) : 'unknown';
+        const originalSha = result.previousHeadSha ? result.previousHeadSha.substring(0, 7) : 'unknown';
+        const newSha = result.currentHeadSha ? result.currentHeadSha.substring(0, 7) : 'unknown';
 
         if (window.confirmDialog) {
           const dialogResult = await window.confirmDialog.show({
@@ -678,6 +679,8 @@ class LocalManager {
             // Redirect to the new session
             window.location.href = `/local/${result.newSessionId}`;
             return;
+          } else {
+            userDeclinedSwitch = true;
           }
         } else {
           // Fallback if confirmDialog is not available
@@ -690,6 +693,8 @@ class LocalManager {
           if (switchSession) {
             window.location.href = `/local/${result.newSessionId}`;
             return;
+          } else {
+            userDeclinedSwitch = true;
           }
         }
 
@@ -697,6 +702,20 @@ class LocalManager {
         if (window.toast) {
           window.toast.showInfo('Staying on current session. Refresh again to see this option.');
         }
+      }
+
+      // Notify chat agent about diff refresh (skip if user declined session switch —
+      // loadLocalDiff() below reloads the old session's diff, nothing actually changed)
+      if (!userDeclinedSwitch && window.chatPanel) {
+        if (result.headShaChanged) {
+          const prev = result.previousHeadSha;
+          window.chatPanel.queueDiffStateNotification(
+            `HEAD SHA changed: ${prev ? prev.substring(0, 7) : 'unknown'} → ${result.currentHeadSha ? result.currentHeadSha.substring(0, 7) : 'unknown'}.`
+          );
+        }
+        window.chatPanel.queueDiffStateNotification(
+          'Local diff refreshed from working directory.'
+        );
       }
 
       // Reload the diff display
@@ -760,6 +779,18 @@ class LocalManager {
       if (hasData) {
         console.debug('[Local] working directory stale, session has data — showing badge');
         manager._showStaleBadge('stale', 'Working directory has changed');
+        if (window.chatPanel) {
+          // Notify chat of HEAD SHA change only when we have session data to protect
+          // (the !hasData path calls refreshDiff() which queues its own notification)
+          if (result.headShaChanged) {
+            window.chatPanel.queueDiffStateNotification(
+              `HEAD SHA changed (${result.previousHeadSha ? result.previousHeadSha.substring(0, 7) : 'unknown'} → ${result.currentHeadSha ? result.currentHeadSha.substring(0, 7) : 'unknown'}). The branch may have been rebased.`
+            );
+          }
+          window.chatPanel.queueDiffStateNotification(
+            'Working directory has changed since the diff was captured.'
+          );
+        }
       } else {
         // No user work to protect — refresh silently
         console.debug('[Local] working directory stale, no session data — auto-refreshing');
@@ -1409,6 +1440,14 @@ class LocalManager {
       const result = await resp.json();
       await this._applyScopeResult(scopeStart, scopeEnd, result);
 
+      // Notify chat agent about scope change
+      if (window.chatPanel) {
+        const label = LS ? LS.scopeLabel(scopeStart, scopeEnd) : `${scopeStart}\u2013${scopeEnd}`;
+        window.chatPanel.queueDiffStateNotification(
+          `Diff scope changed to ${label}. The set of reviewed files has changed.`
+        );
+      }
+
       if (window.toast) {
         const label = LS ? LS.scopeLabel(scopeStart, scopeEnd) : `${scopeStart}\u2013${scopeEnd}`;
         window.toast.showSuccess(`Scope: ${label}`);
@@ -1536,6 +1575,13 @@ class LocalManager {
         closeDialog();
 
         await self._applyScopeResult('branch', newEnd, result);
+
+        if (window.chatPanel) {
+          const label = LS ? LS.scopeLabel('branch', newEnd) : 'branch';
+          window.chatPanel.queueDiffStateNotification(
+            `Diff scope changed to ${label} via branch review. The set of reviewed files has changed.`
+          );
+        }
 
         if (window.toast) {
           const label = LS ? LS.scopeLabel('branch', newEnd) : 'Branch';

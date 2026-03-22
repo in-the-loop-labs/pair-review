@@ -31,6 +31,7 @@ class ChatPanel {
     this._streamingContent = '';
     this._pendingContext = [];
     this._pendingContextData = [];
+    this._pendingDiffStateNotifications = [];
     this._contextSource = null;   // 'suggestion' or 'user' — set when opened with context
     this._contextItemId = null;   // suggestion ID or comment ID from context
     this._contextLineMeta = null;  // { file, line_start, line_end } — set when opened with line context
@@ -648,6 +649,7 @@ class ChatPanel {
     this._streamingContent = '';
     this._pendingContext = [];
     this._pendingContextData = [];
+    this._pendingDiffStateNotifications = [];
     this._contextSource = null;
     this._contextItemId = null;
     this._contextLineMeta = null;
@@ -1240,10 +1242,22 @@ class ChatPanel {
 
     // Build the API payload — may include pending context from "Ask about this"
     const payload = { content };
+
+    // Snapshot diff-state queue for error recovery (invisible to user, no UI cards)
+    const savedDiffState = this._pendingDiffStateNotifications.slice();
+    let diffStatePrefix = '';
+    if (this._pendingDiffStateNotifications.length > 0) {
+      diffStatePrefix = '[Diff State Update]\n' + this._pendingDiffStateNotifications.join('\n');
+      this._pendingDiffStateNotifications = [];
+    }
+
     const savedContext = this._pendingContext;
     const savedContextData = this._pendingContextData;
     if (this._pendingContext.length > 0) {
-      payload.context = this._pendingContext.join('\n\n');
+      const userContext = this._pendingContext.join('\n\n');
+      payload.context = diffStatePrefix
+        ? diffStatePrefix + '\n\n' + userContext
+        : userContext;
       payload.contextData = this._pendingContextData;
       this._pendingContext = [];
       this._pendingContextData = [];
@@ -1255,6 +1269,8 @@ class ChatPanel {
         if (btn) btn.remove();
         delete card.dataset.contextIndex;
       });
+    } else if (diffStatePrefix) {
+      payload.context = diffStatePrefix;
     }
 
     // Lock analysis context card (not indexed, handled separately from pending context)
@@ -1318,12 +1334,23 @@ class ChatPanel {
       // Restore pending context so it's not lost
       this._pendingContext = savedContext;
       this._pendingContextData = savedContextData;
+      this._pendingDiffStateNotifications = savedDiffState;
       // Restore removability on context cards that were locked before the failed send
       this._restoreRemovableCards();
       console.error('[ChatPanel] Error sending message:', error);
       this._showError('Failed to send message. ' + error.message);
       this._finalizeStreaming();
     }
+  }
+
+  /**
+   * Queue an invisible diff-state notification for the chat agent.
+   * Unlike _pendingContext, these do NOT render UI cards and survive panel close.
+   * Drained into the context parameter on the next sendMessage() call.
+   * @param {string} message - Description of the diff state change
+   */
+  queueDiffStateNotification(message) {
+    this._pendingDiffStateNotifications.push(message);
   }
 
   /**

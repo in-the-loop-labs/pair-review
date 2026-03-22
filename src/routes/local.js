@@ -806,24 +806,37 @@ router.get('/api/local/:reviewId/check-stale', async (req, res) => {
     const scopeStart = review.local_scope_start || DEFAULT_SCOPE.start;
     const scopeEnd = review.local_scope_end || DEFAULT_SCOPE.end;
 
-    // When branch is in scope, also check HEAD SHA change
-    if (includesBranch(scopeStart)) {
-      try {
-        const { getHeadSha } = require('../local-review');
-        const currentHeadSha = await getHeadSha(localPath);
-        if (review.local_head_sha !== currentHeadSha) {
-          return res.json({
-            isStale: true,
-            storedSha: review.local_head_sha,
-            currentSha: currentHeadSha
-          });
-        }
-      } catch (error) {
+    // Always check HEAD SHA for supplementary fields
+    let headShaChanged = false;
+    let previousHeadSha = review.local_head_sha || null;
+    let currentHeadSha = null;
+
+    try {
+      const { getHeadSha } = require('../local-review');
+      currentHeadSha = await getHeadSha(localPath);
+      headShaChanged = !!(previousHeadSha && currentHeadSha && currentHeadSha !== previousHeadSha);
+    } catch (error) {
+      // If branch is in scope, HEAD SHA failure is fatal (existing behavior)
+      if (includesBranch(scopeStart)) {
         return res.json({
           isStale: true,
+          headShaChanged,
+          previousHeadSha,
+          currentHeadSha: null,
           error: `Could not check HEAD SHA: ${error.message}`
         });
       }
+      // Otherwise, just continue with digest check
+    }
+
+    // When branch is in scope and HEAD changed, early return (existing behavior)
+    if (includesBranch(scopeStart) && headShaChanged) {
+      return res.json({
+        isStale: true,
+        headShaChanged,
+        previousHeadSha,
+        currentHeadSha
+      });
     }
 
     // Get stored diff data (in-memory first, then fall back to DB)
@@ -838,6 +851,9 @@ router.get('/api/local/:reviewId/check-stale', async (req, res) => {
       } else {
         return res.json({
           isStale: null,
+          headShaChanged,
+          previousHeadSha,
+          currentHeadSha,
           error: 'No stored diff data found'
         });
       }
@@ -849,6 +865,9 @@ router.get('/api/local/:reviewId/check-stale', async (req, res) => {
       // Assume stale to be safe and prompt user to refresh
       return res.json({
         isStale: true,
+        headShaChanged,
+        previousHeadSha,
+        currentHeadSha,
         error: 'No baseline digest - please refresh to enable staleness detection'
       });
     }
@@ -860,6 +879,9 @@ router.get('/api/local/:reviewId/check-stale', async (req, res) => {
     if (!currentDigest) {
       return res.json({
         isStale: true,
+        headShaChanged,
+        previousHeadSha,
+        currentHeadSha,
         error: 'Could not compute current digest - refresh recommended'
       });
     }
@@ -869,13 +891,19 @@ router.get('/api/local/:reviewId/check-stale', async (req, res) => {
     res.json({
       isStale,
       storedDigest: storedDiffData.digest,
-      currentDigest
+      currentDigest,
+      headShaChanged,
+      previousHeadSha,
+      currentHeadSha
     });
 
   } catch (error) {
     logger.warn(`Error checking local review staleness: ${error.message}`);
     res.json({
       isStale: null,
+      headShaChanged: false,
+      previousHeadSha: null,
+      currentHeadSha: null,
       error: error.message
     });
   }
@@ -1353,8 +1381,9 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
       message: 'Diff refreshed successfully',
       sessionChanged,
       newSessionId: sessionChanged ? newSessionId : null,
-      newHeadSha: sessionChanged ? currentHeadSha : null,
-      originalHeadSha: originalHeadSha,
+      headShaChanged: !!(originalHeadSha && currentHeadSha && currentHeadSha !== originalHeadSha),
+      previousHeadSha: originalHeadSha,
+      currentHeadSha: currentHeadSha || null,
       stats: {
         trackedChanges: stats.trackedChanges || 0,
         untrackedFiles: stats.untrackedFiles || 0,
