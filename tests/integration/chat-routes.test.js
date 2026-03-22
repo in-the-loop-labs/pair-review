@@ -14,9 +14,16 @@ vi.mock('../../src/utils/logger', () => ({
   section: vi.fn()
 }));
 
+// Install spies on hook-runner BEFORE chat.js is loaded so destructured
+// imports capture the spy wrappers.
+const hookRunnerModule = require('../../src/hooks/hook-runner');
+vi.spyOn(hookRunnerModule, 'fireHooks');
+vi.spyOn(hookRunnerModule, 'hasHooks');
+
 const chatRouter = require('../../src/routes/chat');
 const { _broadcastUnsubscribers, _buildPairReviewApiRe } = require('../../src/routes/chat');
 const ws = require('../../src/ws');
+const { _resetUserCache } = require('../../src/hooks/payloads');
 
 /**
  * Creates a mock ChatSessionManager with controllable behavior.
@@ -58,6 +65,12 @@ describe('Chat Routes', () => {
 
   beforeEach(() => {
     broadcastSpy = vi.spyOn(ws, 'broadcast').mockImplementation(() => {});
+
+    // Reset hook spies (don't restore — keeps wrappers intact for destructured refs)
+    vi.clearAllMocks();
+    hookRunnerModule.fireHooks.mockImplementation(() => {});
+    hookRunnerModule.hasHooks.mockImplementation(() => false);
+    _resetUserCache();
 
     db = createTestDatabase();
 
@@ -1247,6 +1260,129 @@ describe('Chat Routes', () => {
       expect(sessions[2].isActive).toBe(false);
       expect(sessions[2].isResumable).toBe(false);
       expect(sessions[2].message_count).toBe(0);
+    });
+  });
+
+  // ── Chat hook integration tests ───────────────────────────────
+
+  describe('chat hooks', () => {
+    /**
+     * Helper: wait for the non-blocking fireChatHook promise chain to settle.
+     * getCachedUser resolves in a microtask when no token is present, so a
+     * single macrotask tick is sufficient.
+     */
+    function flushHooks() {
+      return new Promise(resolve => setTimeout(resolve, 10));
+    }
+
+    it('fires chat.started hook on POST /api/chat/session', async () => {
+      hookRunnerModule.hasHooks.mockImplementation(() => true);
+
+      await request(app)
+        .post('/api/chat/session')
+        .send({ provider: 'claude', model: 'opus', reviewId: 1, systemPrompt: 'test' });
+
+      await flushHooks();
+
+      expect(hookRunnerModule.fireHooks).toHaveBeenCalledTimes(1);
+      const [eventName, payload] = hookRunnerModule.fireHooks.mock.calls[0];
+      expect(eventName).toBe('chat.started');
+      expect(payload.event).toBe('chat.started');
+      expect(payload.sessionId).toBe(1);
+      expect(payload.provider).toBe('claude');
+      expect(payload.model).toBe('opus');
+      expect(payload.reviewId).toBe(1);
+      expect(payload.mode).toBe('pr');
+      expect(payload.pr).toEqual({ number: null, owner: 'owner', repo: 'repo' });
+    });
+
+    it('does not fire chat.started hook when no hooks configured', async () => {
+      hookRunnerModule.hasHooks.mockImplementation(() => false);
+
+      await request(app)
+        .post('/api/chat/session')
+        .send({ provider: 'claude', model: 'opus', reviewId: 1, systemPrompt: 'test' });
+
+      await flushHooks();
+
+      expect(hookRunnerModule.fireHooks).not.toHaveBeenCalled();
+    });
+
+    it('fires chat.resumed hook on explicit POST /api/chat/session/:id/resume', async () => {
+      hookRunnerModule.hasHooks.mockImplementation(() => true);
+
+      // Insert a resumable session
+      db.prepare(`
+        INSERT INTO chat_sessions (id, review_id, provider, model, agent_session_id, status)
+        VALUES (1, 1, 'claude', 'sonnet', 'agent-sess-1', 'active')
+      `).run();
+
+      // Session must NOT be active in memory for resume to proceed
+      mockManager.isSessionActive.mockReturnValue(false);
+
+      await request(app)
+        .post('/api/chat/session/1/resume')
+        .send();
+
+      await flushHooks();
+
+      expect(hookRunnerModule.fireHooks).toHaveBeenCalledTimes(1);
+      const [eventName, payload] = hookRunnerModule.fireHooks.mock.calls[0];
+      expect(eventName).toBe('chat.resumed');
+      expect(payload.event).toBe('chat.resumed');
+      expect(payload.sessionId).toBe(1);
+      expect(payload.provider).toBe('claude');
+      expect(payload.model).toBe('sonnet');
+      expect(payload.mode).toBe('pr');
+    });
+
+    it('fires chat.resumed hook on auto-resume in POST /api/chat/session/:id/message', async () => {
+      hookRunnerModule.hasHooks.mockImplementation(() => true);
+
+      // Insert a resumable session
+      db.prepare(`
+        INSERT INTO chat_sessions (id, review_id, provider, model, agent_session_id, status)
+        VALUES (1, 1, 'gemini', 'pro', 'agent-sess-2', 'active')
+      `).run();
+
+      // Session is NOT active in memory → triggers auto-resume path
+      mockManager.isSessionActive.mockReturnValue(false);
+
+      await request(app)
+        .post('/api/chat/session/1/message')
+        .send({ content: 'hello' });
+
+      await flushHooks();
+
+      expect(hookRunnerModule.fireHooks).toHaveBeenCalledTimes(1);
+      const [eventName, payload] = hookRunnerModule.fireHooks.mock.calls[0];
+      expect(eventName).toBe('chat.resumed');
+      expect(payload.event).toBe('chat.resumed');
+      expect(payload.sessionId).toBe(1);
+      expect(payload.provider).toBe('gemini');
+      expect(payload.model).toBe('pro');
+    });
+
+    it('fires chat.started with local context for local reviews', async () => {
+      hookRunnerModule.hasHooks.mockImplementation(() => true);
+
+      // Insert a local review
+      db.prepare(`
+        INSERT INTO reviews (id, repository, status, review_type, local_path, local_head_branch, local_head_sha)
+        VALUES (2, 'my/repo', 'draft', 'local', '/tmp/code', 'feat-x', 'abc123')
+      `).run();
+
+      await request(app)
+        .post('/api/chat/session')
+        .send({ provider: 'claude', model: 'opus', reviewId: 2, systemPrompt: 'test' });
+
+      await flushHooks();
+
+      expect(hookRunnerModule.fireHooks).toHaveBeenCalledTimes(1);
+      const [, payload] = hookRunnerModule.fireHooks.mock.calls[0];
+      expect(payload.mode).toBe('local');
+      expect(payload.local).toEqual({ path: '/tmp/code', branch: 'feat-x', headSha: 'abc123' });
+      expect(payload).not.toHaveProperty('pr');
     });
   });
 });

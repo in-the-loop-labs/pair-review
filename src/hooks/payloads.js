@@ -61,8 +61,8 @@ function buildAnalysisStartedPayload({ reviewId, analysisId, provider, model, mo
     version,
     reviewId,
     analysisId,
-    provider,
-    model,
+    provider: provider ?? null,
+    model: model ?? null,
     ...buildContextFields({ mode, prContext, localContext, user }),
   };
 }
@@ -77,11 +77,61 @@ function buildAnalysisCompletedPayload({
     version,
     reviewId,
     analysisId,
-    provider,
-    model,
+    provider: provider ?? null,
+    model: model ?? null,
     status,
     totalSuggestions: totalSuggestions ?? 0,
     ...buildContextFields({ mode, prContext, localContext, user }),
+  };
+}
+
+// ── Chat payloads ───────────────────────────────────────────────
+
+function buildChatPayload(event, { reviewId, sessionId, provider, model, mode, prContext, localContext, user }) {
+  return {
+    event,
+    timestamp: new Date().toISOString(),
+    version,
+    reviewId,
+    sessionId,
+    provider: provider ?? null,
+    model: model ?? null,
+    ...buildContextFields({ mode, prContext, localContext, user }),
+  };
+}
+
+function buildChatStartedPayload(opts) {
+  return buildChatPayload('chat.started', opts);
+}
+
+function buildChatResumedPayload(opts) {
+  return buildChatPayload('chat.resumed', opts);
+}
+
+/**
+ * Derive hook context fields (mode, prContext/localContext) from a review record.
+ * @param {Object} review - Review record from the database
+ * @returns {{ mode: string, prContext?: Object, localContext?: Object }}
+ */
+function buildChatHookContext(review) {
+  if (review.review_type === 'local') {
+    return {
+      mode: 'local',
+      localContext: {
+        path: review.local_path ?? null,
+        branch: review.local_head_branch ?? null,
+        headSha: review.local_head_sha ?? null,
+      },
+    };
+  }
+  const [owner, repo] = (review.repository || '').split('/');
+  return {
+    mode: 'pr',
+    prContext: {
+      number: review.pr_number ?? null,
+      owner: owner || null,
+      repo: repo || null,
+    },
   };
 }
 
@@ -150,6 +200,9 @@ module.exports = {
   buildReviewLoadedPayload,
   buildAnalysisStartedPayload,
   buildAnalysisCompletedPayload,
+  buildChatStartedPayload,
+  buildChatResumedPayload,
+  buildChatHookContext,
   getCachedUser,
   fireReviewStartedHook,
   _resetUserCache,
