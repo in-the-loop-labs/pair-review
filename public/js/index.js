@@ -66,6 +66,12 @@
   // Close on Escape key
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') {
+      // Exit selection mode first (higher priority)
+      if (activeSelection && activeSelection.active) {
+        activeSelection.exit();
+        return;
+      }
+      // Then try closing help modal
       const overlay = document.getElementById('help-modal-overlay');
       if (overlay.classList.contains('visible')) {
         closeHelpModal();
@@ -328,7 +334,7 @@
       : '<td class="col-author">' + authorDisplay + '</td>';
 
     return '' +
-      '<tr class="collection-pr-row" data-pr-url="' + escapeHtml(prUrl) + '">' +
+      '<tr class="collection-pr-row" data-pr-url="' + escapeHtml(prUrl) + '" data-owner="' + escapeHtml(pr.owner) + '" data-repo="' + escapeHtml(pr.repo) + '" data-number="' + pr.number + '">' +
         '<td class="col-repo">' + escapeHtml(repoFull) + '</td>' +
         '<td class="col-pr"><span class="collection-pr-number">#' + pr.number + '</span></td>' +
         '<td class="col-title" title="' + escapeHtml(pr.title || '') + '">' + escapeHtml(pr.title || '') + '</td>' +
@@ -345,6 +351,9 @@
    * @param {string} collection - The collection name ('review-requests' or 'my-prs')
    */
   function renderCollectionTable(container, state, collection) {
+    var sel = collection === 'review-requests' ? reviewRequestsSelection : myPrsSelection;
+    sel.exit();
+
     var fetchedAtId = collection === 'review-requests' ? 'review-requests-fetched-at' : 'my-prs-fetched-at';
     var fetchedAtEl = document.getElementById(fetchedAtId);
     if (fetchedAtEl) {
@@ -374,6 +383,8 @@
 
     var authorTh = collection === 'my-prs' ? '' : '<th>Author</th>';
 
+    var tbodyId = collection === 'review-requests' ? 'review-requests-tbody' : 'my-prs-tbody';
+
     container.innerHTML =
       '<table class="recent-reviews-table">' +
         '<thead>' +
@@ -386,7 +397,7 @@
             '<th>Actions</th>' +
           '</tr>' +
         '</thead>' +
-        '<tbody>' +
+        '<tbody id="' + tbodyId + '">' +
           state.prs.map(function (pr) { return renderCollectionPrRow(pr, collection); }).join('') +
         '</tbody>' +
       '</table>';
@@ -486,6 +497,8 @@
    * Fetch and display local review sessions (initial load).
    */
   async function loadLocalReviews() {
+    localSelection.exit();
+
     const container = document.getElementById('local-reviews-container');
     if (!container) return;
 
@@ -577,6 +590,7 @@
       }
 
       tbody.insertAdjacentHTML('beforeend', data.sessions.map(renderLocalReviewRow).join(''));
+      if (localSelection.active) localSelection.onRowsAdded();
 
       localReviewsPagination.lastTimestamp = data.sessions[data.sessions.length - 1].updated_at;
       localReviewsPagination.hasMore = !!data.hasMore;
@@ -750,7 +764,7 @@
       : '';
 
     return '' +
-      '<tr>' +
+      '<tr data-review-id="' + review.id + '">' +
         '<td class="col-repo">' + escapeHtml(review.repository) + '</td>' +
         '<td class="col-pr"><a href="' + link + '">#' + review.pr_number + '</a></td>' +
         '<td class="col-title" title="' + escapeHtml(review.pr_title) + '">' + escapeHtml(review.pr_title) + '</td>' +
@@ -858,6 +872,8 @@
    * Resets pagination state and renders the full table from scratch.
    */
   async function loadRecentReviews() {
+    prSelection.exit();
+
     const container = document.getElementById('recent-reviews-container');
     const section = document.getElementById('recent-reviews-section');
     // Reset pagination state
@@ -973,6 +989,7 @@
 
       // Append new rows to the existing table body
       tbody.insertAdjacentHTML('beforeend', data.reviews.map(renderRecentReviewRow).join(''));
+      if (prSelection.active) prSelection.onRowsAdded();
 
       // Update pagination state - advance the cursor
       recentReviewsPagination.lastTimestamp = data.reviews[data.reviews.length - 1].last_accessed_at;
@@ -1140,6 +1157,518 @@
     }
   }
 
+  // ─── Selection Mode ──────────────────────────────────────────────────────
+
+  /** Currently active SelectionMode instance (only one tab at a time) */
+  var activeSelection = null;
+
+  /**
+   * SelectionMode manages checkbox-based selection for a single tab's table.
+   *
+   * @param {Object} config
+   * @param {string} config.tabId - Tab pane element ID (e.g. 'pr-tab')
+   * @param {string} config.containerId - Table container ID (e.g. 'recent-reviews-container')
+   * @param {string} config.tbodyId - Table body ID (e.g. 'recent-reviews-tbody')
+   * @param {string} config.rowIdAttr - data attribute name on <tr> for the row's ID (e.g. 'reviewId' reads tr.dataset.reviewId)
+   * @param {Array} config.actions - [{ label: string, className: string, handler: function(selectedIds, selectionInstance) }]
+   */
+  function SelectionMode(config) {
+    this.config = config;
+    this.active = false;
+    this.selectedIds = new Set();
+    this._actionBar = null;
+    this._toggleBtn = null;
+    this._confirming = false;
+  }
+
+  SelectionMode.prototype.enter = function () {
+    if (this.active) return;
+    this.active = true;
+    this.selectedIds.clear();
+    this._confirming = false;
+
+    // Deactivate any other active selection
+    if (activeSelection && activeSelection !== this) {
+      activeSelection.exit();
+    }
+    activeSelection = this;
+
+    var container = document.getElementById(this.config.containerId);
+    if (container) container.classList.add('selection-mode');
+
+    // Hide the Select button, show inline action controls
+    if (this._toggleBtn) {
+      this._toggleBtn.style.display = 'none';
+    }
+    this._ensureInlineActions();
+    this._showInlineActions();
+
+    this._injectCheckboxes();
+    this._updateInlineActions();
+  };
+
+  SelectionMode.prototype.exit = function () {
+    if (!this.active) return;
+    this.active = false;
+    this.selectedIds.clear();
+    this._confirming = false;
+
+    if (activeSelection === this) activeSelection = null;
+
+    var container = document.getElementById(this.config.containerId);
+    if (container) container.classList.remove('selection-mode');
+
+    // Show Select button, hide inline action controls
+    if (this._toggleBtn) {
+      this._toggleBtn.style.display = '';
+    }
+    this._hideInlineActions();
+
+    this._removeCheckboxes();
+  };
+
+  SelectionMode.prototype.toggle = function () {
+    if (this.active) {
+      this.exit();
+    } else {
+      this.enter();
+    }
+  };
+
+  SelectionMode.prototype._getTable = function () {
+    var container = document.getElementById(this.config.containerId);
+    return container ? container.querySelector('table') : null;
+  };
+
+  SelectionMode.prototype._getTbody = function () {
+    return document.getElementById(this.config.tbodyId);
+  };
+
+  SelectionMode.prototype._injectCheckboxes = function () {
+    var table = this._getTable();
+    if (!table) return;
+
+    // Add select-all checkbox to thead
+    var thead = table.querySelector('thead tr');
+    if (thead) {
+      var th = document.createElement('th');
+      th.className = 'col-select';
+      th.innerHTML = '<input type="checkbox" class="select-all-checkbox" title="Select all">';
+      thead.insertBefore(th, thead.firstChild);
+
+      var self = this;
+      th.querySelector('input').addEventListener('change', function () {
+        self._handleSelectAll(this.checked);
+      });
+    }
+
+    // Add checkboxes to all existing rows
+    var tbody = this._getTbody();
+    if (tbody) {
+      var rows = tbody.querySelectorAll('tr');
+      for (var i = 0; i < rows.length; i++) {
+        this._injectCheckboxIntoRow(rows[i]);
+      }
+    }
+  };
+
+  SelectionMode.prototype._injectCheckboxIntoRow = function (tr) {
+    // Skip rows that already have a checkbox (e.g. delete-confirm rows)
+    if (tr.querySelector('.col-select')) return;
+    // Skip delete confirmation rows
+    if (tr.classList.contains('delete-confirm-row')) return;
+
+    var rowId = tr.dataset[this.config.rowIdAttr];
+    var td = document.createElement('td');
+    td.className = 'col-select';
+    td.innerHTML = '<input type="checkbox" data-select-id="' + (rowId || '') + '">';
+    tr.insertBefore(td, tr.firstChild);
+
+    var self = this;
+    td.querySelector('input').addEventListener('change', function () {
+      self._handleRowCheckbox(this.dataset.selectId, this.checked, tr);
+    });
+  };
+
+  SelectionMode.prototype._removeCheckboxes = function () {
+    var table = this._getTable();
+    if (!table) return;
+
+    // Remove all .col-select cells
+    var cells = table.querySelectorAll('.col-select');
+    for (var i = 0; i < cells.length; i++) {
+      cells[i].remove();
+    }
+
+    // Remove selected class from all rows
+    var rows = table.querySelectorAll('tr.bulk-selected');
+    for (var j = 0; j < rows.length; j++) {
+      rows[j].classList.remove('bulk-selected');
+    }
+  };
+
+  SelectionMode.prototype._handleSelectAll = function (checked) {
+    var tbody = this._getTbody();
+    if (!tbody) return;
+
+    var checkboxes = tbody.querySelectorAll('.col-select input[type="checkbox"]');
+    for (var i = 0; i < checkboxes.length; i++) {
+      var cb = checkboxes[i];
+      cb.checked = checked;
+      var id = cb.dataset.selectId;
+      var row = cb.closest('tr');
+      if (checked) {
+        if (id) this.selectedIds.add(id);
+        if (row) row.classList.add('bulk-selected');
+      } else {
+        this.selectedIds.delete(id);
+        if (row) row.classList.remove('bulk-selected');
+      }
+    }
+    this._updateInlineActions();
+  };
+
+  SelectionMode.prototype._handleRowCheckbox = function (id, checked, tr) {
+    if (checked) {
+      if (id) this.selectedIds.add(id);
+      tr.classList.add('bulk-selected');
+    } else {
+      this.selectedIds.delete(id);
+      tr.classList.remove('bulk-selected');
+    }
+
+    // Update select-all checkbox state
+    var table = this._getTable();
+    if (table) {
+      var selectAllCb = table.querySelector('.select-all-checkbox');
+      if (selectAllCb) {
+        var tbody = this._getTbody();
+        var total = tbody ? tbody.querySelectorAll('.col-select input[type="checkbox"]').length : 0;
+        selectAllCb.checked = total > 0 && this.selectedIds.size === total;
+        selectAllCb.indeterminate = !selectAllCb.checked && this.selectedIds.size > 0;
+      }
+    }
+
+    this._updateInlineActions();
+  };
+
+  SelectionMode.prototype.onRowsAdded = function () {
+    if (!this.active) return;
+    var tbody = this._getTbody();
+    if (!tbody) return;
+
+    var rows = tbody.querySelectorAll('tr');
+    for (var i = 0; i < rows.length; i++) {
+      if (!rows[i].querySelector('.col-select')) {
+        this._injectCheckboxIntoRow(rows[i]);
+      }
+    }
+
+    // Uncheck select-all since new rows are not selected
+    var table = this._getTable();
+    if (table) {
+      var selectAllCb = table.querySelector('.select-all-checkbox');
+      if (selectAllCb) {
+        selectAllCb.checked = false;
+        selectAllCb.indeterminate = this.selectedIds.size > 0;
+      }
+    }
+  };
+
+  /**
+   * Build the inline action controls (action buttons + count + cancel) and
+   * insert them next to the Select toggle button. Created once, then
+   * shown/hidden on enter/exit.
+   */
+  SelectionMode.prototype._ensureInlineActions = function () {
+    if (this._inlineEl) return;
+    if (!this._toggleBtn) return;
+
+    var wrapper = document.createElement('span');
+    wrapper.className = 'bulk-inline-actions';
+
+    // Count label
+    var countSpan = document.createElement('span');
+    countSpan.className = 'bulk-action-count';
+    wrapper.appendChild(countSpan);
+
+    // Action buttons (disabled by default — enabled when selection count > 0)
+    var buttonsSpan = document.createElement('span');
+    buttonsSpan.className = 'bulk-action-buttons';
+    var self = this;
+    this._actionBtns = [];
+    for (var i = 0; i < this.config.actions.length; i++) {
+      var action = this.config.actions[i];
+      var btn = document.createElement('button');
+      btn.className = action.className;
+      btn.textContent = action.label;
+      btn.disabled = true;
+      btn.addEventListener('click', (function (act) {
+        return function () {
+          act.handler(new Set(self.selectedIds), self);
+        };
+      })(action));
+      buttonsSpan.appendChild(btn);
+      this._actionBtns.push(btn);
+    }
+    wrapper.appendChild(buttonsSpan);
+
+    // Confirm buttons (hidden by default, shown when confirming)
+    var confirmSpan = document.createElement('span');
+    confirmSpan.className = 'bulk-confirm-buttons';
+    var confirmYes = document.createElement('button');
+    confirmYes.className = 'btn-bulk-delete';
+    confirmYes.textContent = 'Confirm';
+    var confirmNo = document.createElement('button');
+    confirmNo.className = 'btn-bulk-cancel';
+    confirmNo.textContent = 'Cancel';
+    confirmSpan.appendChild(confirmYes);
+    confirmSpan.appendChild(confirmNo);
+    wrapper.appendChild(confirmSpan);
+
+    // Cancel button (exits selection mode)
+    var cancelBtn = document.createElement('button');
+    cancelBtn.className = 'btn-bulk-cancel';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.addEventListener('click', function () {
+      self.exit();
+    });
+    wrapper.appendChild(cancelBtn);
+
+    // Insert after the toggle button
+    this._toggleBtn.parentNode.insertBefore(wrapper, this._toggleBtn.nextSibling);
+    this._inlineEl = wrapper;
+    this._countEl = countSpan;
+    this._confirmYes = confirmYes;
+    this._confirmNo = confirmNo;
+  };
+
+  SelectionMode.prototype._showInlineActions = function () {
+    if (this._inlineEl) this._inlineEl.style.display = '';
+  };
+
+  SelectionMode.prototype._hideInlineActions = function () {
+    if (this._inlineEl) {
+      this._inlineEl.style.display = 'none';
+      this._inlineEl.classList.remove('confirming');
+      this._confirming = false;
+    }
+  };
+
+  SelectionMode.prototype._updateInlineActions = function () {
+    if (!this._inlineEl) return;
+
+    var count = this.selectedIds.size;
+
+    // Update count label
+    // Clear count text when not confirming (only used for confirm message)
+    if (this._countEl && !this._confirming) {
+      this._countEl.textContent = '';
+    }
+
+    // Enable/disable action buttons
+    for (var i = 0; i < this._actionBtns.length; i++) {
+      this._actionBtns[i].disabled = count === 0;
+    }
+
+    // Exit confirming state if count drops to 0
+    if (count === 0 && this._confirming) {
+      this._inlineEl.classList.remove('confirming');
+      this._confirming = false;
+    }
+  };
+
+  /**
+   * Show confirmation state in the inline action controls.
+   * @param {string} message - Confirmation message (e.g. "Delete 3 reviews?")
+   * @param {Function} onConfirm - Called when user confirms
+   */
+  SelectionMode.prototype.showConfirm = function (message, onConfirm) {
+    if (!this._inlineEl) return;
+
+    this._confirming = true;
+    if (this._countEl) this._countEl.textContent = message;
+    this._inlineEl.classList.add('confirming');
+
+    var self = this;
+
+    // Wire up confirm/cancel buttons (replace nodes to avoid stacking listeners)
+    var newConfirmYes = this._confirmYes.cloneNode(true);
+    this._confirmYes.parentNode.replaceChild(newConfirmYes, this._confirmYes);
+    this._confirmYes = newConfirmYes;
+
+    var newConfirmNo = this._confirmNo.cloneNode(true);
+    this._confirmNo.parentNode.replaceChild(newConfirmNo, this._confirmNo);
+    this._confirmNo = newConfirmNo;
+
+    newConfirmYes.addEventListener('click', function () {
+      self._inlineEl.classList.remove('confirming');
+      self._confirming = false;
+      onConfirm();
+    });
+
+    newConfirmNo.addEventListener('click', function () {
+      self._inlineEl.classList.remove('confirming');
+      self._confirming = false;
+      self._updateInlineActions();
+    });
+  };
+
+  // ─── Selection Mode Instances & Handlers ────────────────────────────────────
+
+  var prSelection = new SelectionMode({
+    tabId: 'pr-tab',
+    containerId: 'recent-reviews-container',
+    tbodyId: 'recent-reviews-tbody',
+    rowIdAttr: 'reviewId',
+    actions: [
+      { label: 'Delete', className: 'btn-bulk-delete', handler: handleBulkDeletePR }
+    ]
+  });
+
+  var localSelection = new SelectionMode({
+    tabId: 'local-tab',
+    containerId: 'local-reviews-container',
+    tbodyId: 'local-reviews-tbody',
+    rowIdAttr: 'sessionId',
+    actions: [
+      { label: 'Delete', className: 'btn-bulk-delete', handler: handleBulkDeleteLocal }
+    ]
+  });
+
+  var reviewRequestsSelection = new SelectionMode({
+    tabId: 'review-requests-tab',
+    containerId: 'review-requests-container',
+    tbodyId: 'review-requests-tbody',
+    rowIdAttr: 'prUrl',
+    actions: [
+      { label: 'Open', className: 'btn-bulk-open', handler: handleBulkOpen },
+      { label: 'Analyze', className: 'btn-bulk-analyze', handler: handleBulkAnalyze }
+    ]
+  });
+
+  var myPrsSelection = new SelectionMode({
+    tabId: 'my-prs-tab',
+    containerId: 'my-prs-container',
+    tbodyId: 'my-prs-tbody',
+    rowIdAttr: 'prUrl',
+    actions: [
+      { label: 'Open', className: 'btn-bulk-open', handler: handleBulkOpen },
+      { label: 'Analyze', className: 'btn-bulk-analyze', handler: handleBulkAnalyze }
+    ]
+  });
+
+  async function handleBulkDeletePR(selectedIds, selectionInstance) {
+    var count = selectedIds.size;
+    selectionInstance.showConfirm('Delete ' + count + ' review' + (count === 1 ? '' : 's') + '?', async function () {
+      try {
+        var response = await fetch('/api/worktrees/bulk-delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids: Array.from(selectedIds).map(Number) })
+        });
+        var data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Bulk delete failed');
+
+        if (data.failed > 0) {
+          if (window.toast) window.toast.error(data.failed + ' of ' + count + ' failed to delete');
+        } else {
+          if (window.toast) window.toast.success('Deleted ' + data.deleted + ' review' + (data.deleted === 1 ? '' : 's'));
+        }
+
+        selectionInstance.exit();
+        await loadRecentReviews();
+      } catch (error) {
+        console.error('Bulk delete PR error:', error);
+        if (window.toast) window.toast.error('Bulk delete failed: ' + error.message);
+        selectionInstance.exit();
+        await loadRecentReviews();
+      }
+    });
+  }
+
+  async function handleBulkDeleteLocal(selectedIds, selectionInstance) {
+    var count = selectedIds.size;
+    selectionInstance.showConfirm('Delete ' + count + ' session' + (count === 1 ? '' : 's') + '?', async function () {
+      try {
+        var response = await fetch('/api/local/sessions/bulk-delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids: Array.from(selectedIds).map(Number) })
+        });
+        var data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Bulk delete failed');
+
+        if (data.failed > 0) {
+          if (window.toast) window.toast.error(data.failed + ' of ' + count + ' failed to delete');
+        } else {
+          if (window.toast) window.toast.success('Deleted ' + data.deleted + ' session' + (data.deleted === 1 ? '' : 's'));
+        }
+
+        selectionInstance.exit();
+        await loadLocalReviews();
+      } catch (error) {
+        console.error('Bulk delete local error:', error);
+        if (window.toast) window.toast.error('Bulk delete failed: ' + error.message);
+        selectionInstance.exit();
+        await loadLocalReviews();
+      }
+    });
+  }
+
+  /**
+   * Build pair-review URLs from selected collection rows.
+   * @param {Set} selectedIds - PR URLs (data-pr-url values)
+   * @param {string} tbodyId - tbody element ID
+   * @param {string} [query] - optional query string (e.g. '?analyze=true')
+   * @returns {string[]} array of pair-review URLs
+   */
+  function buildReviewUrls(selectedIds, tbodyId, query) {
+    var tbody = document.getElementById(tbodyId);
+    if (!tbody) return [];
+    var urls = [];
+    selectedIds.forEach(function (prUrl) {
+      var row = tbody.querySelector('tr[data-pr-url="' + CSS.escape(prUrl) + '"]');
+      if (!row) return;
+      var owner = row.dataset.owner;
+      var repo = row.dataset.repo;
+      var number = row.dataset.number;
+      if (owner && repo && number) {
+        urls.push('/pr/' + encodeURIComponent(owner) + '/' + encodeURIComponent(repo) + '/' + number + (query || ''));
+      }
+    });
+    return urls;
+  }
+
+  /**
+   * Open multiple review URLs via the server-side /api/bulk-open endpoint.
+   * The server uses the OS `open` command to launch each URL in the default
+   * browser, bypassing popup blockers entirely.
+   */
+  function bulkOpenUrls(urls) {
+    if (urls.length === 0) return;
+    fetch('/api/bulk-open', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ urls: urls })
+    }).catch(function (err) {
+      console.error('Bulk open failed:', err);
+      if (window.toast) window.toast.error('Failed to open reviews');
+    });
+  }
+
+  function handleBulkOpen(selectedIds, selectionInstance) {
+    var urls = buildReviewUrls(selectedIds, selectionInstance.config.tbodyId);
+    selectionInstance.exit();
+    bulkOpenUrls(urls);
+  }
+
+  function handleBulkAnalyze(selectedIds, selectionInstance) {
+    var urls = buildReviewUrls(selectedIds, selectionInstance.config.tbodyId, '?analyze=true');
+    selectionInstance.exit();
+    bulkOpenUrls(urls);
+  }
+
   // ─── Event Delegation ───────────────────────────────────────────────────────
 
   // Event delegation for buttons, show-more, tab switching
@@ -1177,9 +1706,30 @@
       return;
     }
 
-    // Click on a collection PR row to start review
+    // Select toggle button
+    var selectToggle = event.target.closest('.btn-select-toggle');
+    if (selectToggle) {
+      event.preventDefault();
+      var tabId = selectToggle.dataset.selectionTab;
+      var instances = { 'pr-tab': prSelection, 'local-tab': localSelection, 'review-requests-tab': reviewRequestsSelection, 'my-prs-tab': myPrsSelection };
+      var instance = instances[tabId];
+      if (instance) instance.toggle();
+      return;
+    }
+
+    // Click on a collection PR row — toggle checkbox in selection mode, else start review
     var collectionRow = event.target.closest('.collection-pr-row');
-    if (collectionRow && !event.target.closest('a')) {
+    if (collectionRow && !event.target.closest('a') && !event.target.closest('.col-select')) {
+      // If in selection mode, toggle the row's checkbox
+      if (activeSelection && activeSelection.active && collectionRow.closest('.selection-mode')) {
+        var cb = collectionRow.querySelector('.col-select input[type="checkbox"]');
+        if (cb) {
+          cb.checked = !cb.checked;
+          cb.dispatchEvent(new Event('change'));
+        }
+        return;
+      }
+
       var prUrl = collectionRow.dataset.prUrl;
       if (prUrl) {
         // Switch to PR tab to show loading state (do NOT persist to
@@ -1223,6 +1773,8 @@
     if (unifiedTabBtn) {
       const tabBar = document.getElementById('unified-tab-bar');
       switchTab(tabBar, unifiedTabBtn, async function (tabId) {
+        // Exit any active selection mode when switching tabs
+        if (activeSelection) activeSelection.exit();
         // Persist tab choice
         localStorage.setItem(TAB_STORAGE_KEY, tabId);
         // Lazy-load local reviews on first switch
@@ -1305,6 +1857,57 @@
     // Note: No explicit Enter keypress handlers are needed here.
     // Both inputs are inside <form> elements, so pressing Enter
     // natively triggers form submission.
+
+    // ─── Create Select toggle buttons for each tab ──────────────────────────
+
+    function createSelectButton(tabId) {
+      var btn = document.createElement('button');
+      btn.className = 'btn-select-toggle';
+      btn.type = 'button';
+      btn.textContent = 'Select';
+      btn.dataset.selectionTab = tabId;
+      return btn;
+    }
+
+    // PR tab: insert header between form and container
+    var prTab = document.getElementById('pr-tab');
+    if (prTab) {
+      var prContainer = document.getElementById('recent-reviews-container');
+      var prHeader = document.createElement('div');
+      prHeader.className = 'select-mode-header visible';
+      var prBtn = createSelectButton('pr-tab');
+      prSelection._toggleBtn = prBtn;
+      prHeader.appendChild(prBtn);
+      prTab.insertBefore(prHeader, prContainer);
+    }
+
+    // Local tab: insert header between form and container
+    var localTab = document.getElementById('local-tab');
+    if (localTab) {
+      var localContainer = document.getElementById('local-reviews-container');
+      var localHeader = document.createElement('div');
+      localHeader.className = 'select-mode-header visible';
+      var localBtn = createSelectButton('local-tab');
+      localSelection._toggleBtn = localBtn;
+      localHeader.appendChild(localBtn);
+      localTab.insertBefore(localHeader, localContainer);
+    }
+
+    // Review Requests tab: add to existing header
+    var rrHeader = document.querySelector('#review-requests-tab .tab-pane-header');
+    if (rrHeader) {
+      var rrBtn = createSelectButton('review-requests-tab');
+      reviewRequestsSelection._toggleBtn = rrBtn;
+      rrHeader.insertBefore(rrBtn, rrHeader.firstChild);
+    }
+
+    // My PRs tab: add to existing header
+    var mpHeader = document.querySelector('#my-prs-tab .tab-pane-header');
+    if (mpHeader) {
+      var mpBtn = createSelectButton('my-prs-tab');
+      myPrsSelection._toggleBtn = mpBtn;
+      mpHeader.insertBefore(mpBtn, mpHeader.firstChild);
+    }
   });
 
   // ─── bfcache Restoration ───────────────────────────────────────────────────
