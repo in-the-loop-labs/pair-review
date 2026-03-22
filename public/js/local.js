@@ -634,9 +634,11 @@ class LocalManager {
   }
 
   /**
-   * Refresh the diff from the working directory
+   * Refresh the diff from the working directory.
+   * @param {Object} [opts] - Options
+   * @param {boolean} [opts.silent] - When true, auto-update on HEAD change without dialog
    */
-  async refreshDiff() {
+  async refreshDiff(opts = {}) {
     const manager = window.prManager;
     const refreshBtn = document.getElementById('local-refresh-btn');
 
@@ -659,89 +661,25 @@ class LocalManager {
       const result = await response.json();
       console.log('Diff refreshed:', result.stats);
 
-      // Check if HEAD has changed (user made a commit)
-      let userDeclinedSwitch = false;
-      if (result.sessionChanged && result.newSessionId) {
-        // Show confirmation dialog to user
-        const abbrevLen = this.localData?.shaAbbrevLength || 7;
-        const originalSha = result.previousHeadSha ? result.previousHeadSha.substring(0, abbrevLen) : 'unknown';
-        const newSha = result.currentHeadSha ? result.currentHeadSha.substring(0, abbrevLen) : 'unknown';
+      // HEAD change handling — branch scope is auto-updated by the backend;
+      // non-branch scope requires user decision via resolve-head-change.
+      if (result.headShaChanged) {
+        const LS = window.LocalScope;
+        const hasBranch = LS ? LS.scopeIncludes(this.scopeStart, this.scopeEnd, 'branch') : false;
 
-        if (window.confirmDialog) {
-          const dialogResult = await window.confirmDialog.show({
-            title: 'HEAD Has Changed',
-            message: `A new commit was detected (${originalSha} -> ${newSha}). Your comments and AI suggestions are tied to the previous commit.\n\nWould you like to switch to the new session for the current HEAD?`,
-            confirmText: 'Switch to New Session',
-            cancelText: 'Stay on Current Session',
-            confirmClass: 'btn-primary'
-          });
-
-          if (dialogResult === 'confirm') {
-            // Redirect to the new session
-            window.location.href = `/local/${result.newSessionId}`;
+        if (!hasBranch) {
+          // Non-branch scope: let the user (or silent mode) decide
+          const resolved = await this._resolveHeadChange(result, opts);
+          if (!resolved) {
+            // User cancelled — keep old diff, early return
             return;
-          } else {
-            userDeclinedSwitch = true;
-          }
-        } else {
-          // Fallback if confirmDialog is not available
-          const switchSession = confirm(
-            `HEAD has changed (${originalSha} -> ${newSha}). ` +
-            `Your comments and AI suggestions are tied to the previous commit. ` +
-            `Switch to the new session?`
-          );
-
-          if (switchSession) {
-            window.location.href = `/local/${result.newSessionId}`;
-            return;
-          } else {
-            userDeclinedSwitch = true;
           }
         }
-
-        // User chose to stay, show info toast
-        if (window.toast) {
-          window.toast.showInfo('Staying on current session. Refresh again to see this option.');
-        }
-      }
-
-      // Notify chat agent about diff refresh (skip if user declined session switch —
-      // loadLocalDiff() below reloads the old session's diff, nothing actually changed)
-      if (!userDeclinedSwitch && window.chatPanel) {
-        if (result.headShaChanged) {
-          const prev = result.previousHeadSha;
-          const abbrevLen = this.localData?.shaAbbrevLength || 7;
-          window.chatPanel.queueDiffStateNotification(
-            `HEAD SHA changed: ${prev ? prev.substring(0, abbrevLen) : 'unknown'} → ${result.currentHeadSha ? result.currentHeadSha.substring(0, abbrevLen) : 'unknown'}.`
-          );
-        }
-        window.chatPanel.queueDiffStateNotification(
-          'Local diff refreshed from working directory.'
-        );
+        // Branch scope: backend already updated SHA and persisted diff — fall through
       }
 
       // Reload the diff display
-      await this.loadLocalDiff();
-
-      // Re-render comments and AI suggestions on the fresh DOM
-      // (renderDiff clears the diff container, so we must re-populate)
-      const includeDismissed = window.aiPanel?.showDismissedComments || false;
-      await manager.loadUserComments(includeDismissed);
-      // Note: Unlike loadLocalReview() which skips this when analysisHistoryManager exists
-      // (because the manager triggers loadAISuggestions via onSelectionChange on init),
-      // refresh must call unconditionally since the manager won't re-fire its callback.
-      await manager.loadAISuggestions(null, manager.selectedRunId);
-
-      // Clear stale state after successful refresh
-      manager._hideStaleBadge();
-      manager._stalenessPromise = null;
-
-      // Show success toast
-      if (window.toast) {
-        window.toast.showSuccess('Diff refreshed successfully');
-      } else if (window.showToast) {
-        window.showToast('Diff refreshed successfully', 'success');
-      }
+      await this._applyRefreshedDiff(manager, result);
 
     } catch (error) {
       console.error('Error refreshing diff:', error);
@@ -758,6 +696,121 @@ class LocalManager {
         refreshBtn.disabled = false;
         refreshBtn.classList.remove('btn-loading');
       }
+    }
+  }
+
+  /**
+   * Handle a non-branch-scope HEAD SHA change.
+   * Shows a 3-option dialog (or auto-updates in silent mode).
+   * @returns {boolean} true if the session was updated or redirected, false if cancelled
+   */
+  async _resolveHeadChange(result, opts) {
+    const abbrevLen = this.localData?.shaAbbrevLength || 7;
+    const originalSha = result.previousHeadSha ? result.previousHeadSha.substring(0, abbrevLen) : 'unknown';
+    const newSha = result.currentHeadSha ? result.currentHeadSha.substring(0, abbrevLen) : 'unknown';
+
+    let action = 'update'; // default for silent mode
+
+    if (!opts.silent && window.confirmDialog) {
+      const dialogResult = await window.confirmDialog.show({
+        title: 'HEAD Has Changed',
+        message: `A new commit was detected (${originalSha} \u2192 ${newSha}). Your comments and AI suggestions are tied to the previous commit.\n\nChoose how to proceed:`,
+        confirmText: 'Update This Session',
+        confirmClass: 'btn-primary',
+        secondaryText: 'Start New Session',
+        cancelText: 'Keep Current Diff'
+      });
+
+      if (dialogResult === 'confirm') {
+        action = 'update';
+      } else if (dialogResult === 'secondary') {
+        action = 'new-session';
+      } else {
+        // Cancel — keep old diff
+        if (window.toast) {
+          window.toast.showInfo('Staying on current session with previous diff.');
+        }
+        return false;
+      }
+    } else if (!opts.silent) {
+      // Fallback if confirmDialog is not available
+      const switchSession = confirm(
+        `HEAD has changed (${originalSha} \u2192 ${newSha}). ` +
+        `Update this session with the new diff?`
+      );
+      action = switchSession ? 'update' : 'cancel';
+      if (action === 'cancel') return false;
+    }
+
+    // Call resolve-head-change endpoint
+    const resp = await fetch(`/api/local/${this.reviewId}/resolve-head-change`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, newHeadSha: result.currentHeadSha })
+    });
+
+    if (!resp.ok) {
+      const err = await resp.json();
+      throw new Error(err.error || 'Failed to resolve head change');
+    }
+
+    const data = await resp.json();
+
+    if (data.action === 'redirect') {
+      // UNIQUE conflict — redirect to existing session
+      window.location.href = `/local/${data.sessionId}`;
+      return true; // will redirect
+    }
+
+    if (data.action === 'new-session') {
+      window.location.href = `/local/${data.newSessionId}`;
+      return true; // will redirect
+    }
+
+    // action === 'updated' — session SHA + diff updated, continue to reload
+    return true;
+  }
+
+  /**
+   * Reload the diff display, re-anchor comments, notify chat, clear stale state.
+   * Shared by refreshDiff() for both normal refreshes and HEAD-change updates.
+   */
+  async _applyRefreshedDiff(manager, result) {
+    // Notify chat agent about diff refresh
+    if (window.chatPanel) {
+      if (result.headShaChanged) {
+        const prev = result.previousHeadSha;
+        const abbrevLen = this.localData?.shaAbbrevLength || 7;
+        window.chatPanel.queueDiffStateNotification(
+          `HEAD SHA changed: ${prev ? prev.substring(0, abbrevLen) : 'unknown'} \u2192 ${result.currentHeadSha ? result.currentHeadSha.substring(0, abbrevLen) : 'unknown'}.`
+        );
+      }
+      window.chatPanel.queueDiffStateNotification(
+        'Local diff refreshed from working directory.'
+      );
+    }
+
+    // Reload the diff display
+    await this.loadLocalDiff();
+
+    // Re-render comments and AI suggestions on the fresh DOM
+    // (renderDiff clears the diff container, so we must re-populate)
+    const includeDismissed = window.aiPanel?.showDismissedComments || false;
+    await manager.loadUserComments(includeDismissed);
+    // Note: Unlike loadLocalReview() which skips this when analysisHistoryManager exists
+    // (because the manager triggers loadAISuggestions via onSelectionChange on init),
+    // refresh must call unconditionally since the manager won't re-fire its callback.
+    await manager.loadAISuggestions(null, manager.selectedRunId);
+
+    // Clear stale state after successful refresh
+    manager._hideStaleBadge();
+    manager._stalenessPromise = null;
+
+    // Show success toast
+    if (window.toast) {
+      window.toast.showSuccess('Diff refreshed successfully');
+    } else if (window.showToast) {
+      window.showToast('Diff refreshed successfully', 'success');
     }
   }
 
@@ -802,9 +855,9 @@ class LocalManager {
           );
         }
       } else {
-        // No user work to protect — refresh silently
+        // No user work to protect — refresh silently (auto-update on HEAD change)
         console.debug('[Local] working directory stale, no session data — auto-refreshing');
-        await this.refreshDiff();
+        await this.refreshDiff({ silent: true });
       }
       return result;
     } catch {

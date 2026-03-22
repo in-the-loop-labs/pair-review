@@ -158,6 +158,12 @@ class ConfirmDialog {
         }
       }
 
+      // Set cancel button text (optional)
+      const cancelBtn = this.modal.querySelector('.modal-footer [data-action="cancel"]');
+      if (cancelBtn) {
+        cancelBtn.textContent = options.cancelText || 'Cancel';
+      }
+
       // Store callbacks with promise resolution
       this.onConfirm = () => {
         if (options.onConfirm) {

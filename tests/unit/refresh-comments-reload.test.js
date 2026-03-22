@@ -219,9 +219,12 @@ describe('Local mode: refreshDiff() reloads comments after diff refresh', () => 
    *
    * The actual integration is verified by checking that the source code
    * contains the correct calls after loadLocalDiff().
+   *
+   * The reload logic lives in _applyRefreshedDiff(), which refreshDiff() calls
+   * for both normal refreshes and HEAD-change updates.
    */
 
-  it('should verify local.js refreshDiff calls loadUserComments and loadAISuggestions after loadLocalDiff', async () => {
+  it('should verify local.js _applyRefreshedDiff calls loadUserComments and loadAISuggestions after loadLocalDiff', async () => {
     // Read the source to confirm the fix is present
     const fs = require('fs');
     const path = require('path');
@@ -230,29 +233,36 @@ describe('Local mode: refreshDiff() reloads comments after diff refresh', () => 
       'utf-8'
     );
 
-    // Find the refreshDiff method body using regex.
+    // Find the _applyRefreshedDiff method body using regex.
     // The lookahead `\n  (?:async\s)?\w+\s*\(` assumes methods are indented with
     // 2 spaces (the project's standard indentation for class-like method bodies).
-    const refreshDiffMatch = localSource.match(
-      /async refreshDiff\(\)\s*\{[\s\S]*?(?=\n  (?:async\s)?\w+\s*\()/
+    const applyMatch = localSource.match(
+      /async _applyRefreshedDiff\([^)]*\)\s*\{[\s\S]*?(?=\n  (?:async\s)?\w+\s*\()/
     );
-    expect(refreshDiffMatch).toBeTruthy();
-    const refreshDiffBody = refreshDiffMatch[0];
+    expect(applyMatch).toBeTruthy();
+    const applyBody = applyMatch[0];
 
     // Verify loadLocalDiff is called
-    expect(refreshDiffBody).toContain('await this.loadLocalDiff()');
+    expect(applyBody).toContain('await this.loadLocalDiff()');
 
     // Verify loadUserComments is called AFTER loadLocalDiff
-    const loadDiffIdx = refreshDiffBody.indexOf('await this.loadLocalDiff()');
-    const loadCommentsIdx = refreshDiffBody.indexOf('await manager.loadUserComments(');
-    const loadSuggestionsIdx = refreshDiffBody.indexOf('await manager.loadAISuggestions(null, manager.selectedRunId)');
+    const loadDiffIdx = applyBody.indexOf('await this.loadLocalDiff()');
+    const loadCommentsIdx = applyBody.indexOf('await manager.loadUserComments(');
+    const loadSuggestionsIdx = applyBody.indexOf('await manager.loadAISuggestions(null, manager.selectedRunId)');
 
     expect(loadCommentsIdx).toBeGreaterThan(loadDiffIdx);
     expect(loadSuggestionsIdx).toBeGreaterThan(loadDiffIdx);
     expect(loadSuggestionsIdx).toBeGreaterThan(loadCommentsIdx);
+
+    // Verify refreshDiff() calls _applyRefreshedDiff
+    const refreshDiffMatch = localSource.match(
+      /async refreshDiff\([^)]*\)\s*\{[\s\S]*?(?=\n  (?:\/\*\*|async\s))/
+    );
+    expect(refreshDiffMatch).toBeTruthy();
+    expect(refreshDiffMatch[0]).toContain('this._applyRefreshedDiff(');
   });
 
-  it('should verify local.js refreshDiff passes includeDismissed from aiPanel', async () => {
+  it('should verify local.js _applyRefreshedDiff passes includeDismissed from aiPanel', async () => {
     const fs = require('fs');
     const path = require('path');
     const localSource = fs.readFileSync(
@@ -260,17 +270,16 @@ describe('Local mode: refreshDiff() reloads comments after diff refresh', () => 
       'utf-8'
     );
 
-    // Find the refreshDiff method body using regex.
-    // The lookahead `\n  (?:async\s)?\w+\s*\(` assumes methods are indented with
-    // 2 spaces (the project's standard indentation for class-like method bodies).
-    const refreshDiffMatch = localSource.match(
-      /async refreshDiff\(\)\s*\{[\s\S]*?(?=\n  (?:async\s)?\w+\s*\()/
+    // Find the _applyRefreshedDiff method body
+    const applyMatch = localSource.match(
+      /async _applyRefreshedDiff\([^)]*\)\s*\{[\s\S]*?(?=\n  (?:async\s)?\w+\s*\()/
     );
-    const refreshDiffBody = refreshDiffMatch[0];
+    expect(applyMatch).toBeTruthy();
+    const applyBody = applyMatch[0];
 
     // Verify the dismissed filter flag is derived from aiPanel
-    expect(refreshDiffBody).toContain('window.aiPanel?.showDismissedComments');
-    expect(refreshDiffBody).toContain('await manager.loadUserComments(includeDismissed)');
+    expect(applyBody).toContain('window.aiPanel?.showDismissedComments');
+    expect(applyBody).toContain('await manager.loadUserComments(includeDismissed)');
   });
 });
 

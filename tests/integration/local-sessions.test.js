@@ -1042,4 +1042,333 @@ describe('Local Sessions API', () => {
       expect(sessionA).not.toBe(sessionB);
     });
   });
+
+  describe('POST /api/local/:reviewId/resolve-head-change', () => {
+    it('action "update" — updates SHA and returns { action: "updated" }', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/path/resolve-update',
+        localHeadSha: 'oldsha111',
+        repository: 'owner/resolve-repo'
+      });
+
+      const res = await request(app)
+        .post(`/api/local/${id}/resolve-head-change`)
+        .send({ action: 'update', newHeadSha: 'newsha222' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.action).toBe('updated');
+
+      // Verify the SHA was actually updated in the database
+      const review = await reviewRepo.getLocalReviewById(id);
+      expect(review.local_head_sha).toBe('newsha222');
+
+      // Verify diff was recomputed and persisted
+      const dbDiff = await reviewRepo.getLocalDiff(id);
+      expect(dbDiff).not.toBeNull();
+      expect(dbDiff.digest).toBe('digest123');
+
+      // Verify in-memory cache was populated
+      const cached = localReviewDiffs.get(id);
+      expect(cached).toBeDefined();
+      expect(cached.digest).toBe('digest123');
+    });
+
+    it('action "update" with UNIQUE conflict — returns { action: "redirect", sessionId }', async () => {
+      const reviewRepo = new ReviewRepository(db);
+
+      // Create the session we will try to update
+      const originalId = await reviewRepo.upsertLocalReview({
+        localPath: '/path/conflict-test',
+        localHeadSha: 'sha-original',
+        repository: 'owner/conflict-repo'
+      });
+
+      // Create a conflicting session at the same path+sha+branch combo
+      const conflictId = await reviewRepo.upsertLocalReview({
+        localPath: '/path/conflict-test',
+        localHeadSha: 'sha-conflict-target',
+        repository: 'owner/conflict-repo'
+      });
+
+      // Try to update the original session's SHA to the conflict target SHA
+      const res = await request(app)
+        .post(`/api/local/${originalId}/resolve-head-change`)
+        .send({ action: 'update', newHeadSha: 'sha-conflict-target' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.action).toBe('redirect');
+      expect(res.body.sessionId).toBe(conflictId);
+
+      // Verify the original session SHA was NOT changed
+      const review = await reviewRepo.getLocalReviewById(originalId);
+      expect(review.local_head_sha).toBe('sha-original');
+    });
+
+    it('action "new-session" — creates new session, returns its ID', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/mock/repo',
+        localHeadSha: 'sha-old-session',
+        repository: 'owner/repo'
+      });
+
+      const res = await request(app)
+        .post(`/api/local/${id}/resolve-head-change`)
+        .send({ action: 'new-session', newHeadSha: 'sha-brand-new' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.action).toBe('new-session');
+      expect(res.body.newSessionId).toBeDefined();
+      expect(res.body.newSessionId).not.toBe(id);
+
+      // Verify the new session exists in the database
+      const newReview = await reviewRepo.getLocalReviewById(res.body.newSessionId);
+      expect(newReview).not.toBeNull();
+      expect(newReview.local_head_sha).toBe('sha-brand-new');
+      expect(newReview.local_path).toBe('/mock/repo');
+    });
+
+    it('action "new-session" — returns existing session if one already exists for new HEAD', async () => {
+      const reviewRepo = new ReviewRepository(db);
+
+      // Create original session
+      const originalId = await reviewRepo.upsertLocalReview({
+        localPath: '/mock/repo',
+        localHeadSha: 'sha-current',
+        repository: 'owner/repo'
+      });
+
+      // Create an existing session at the target HEAD
+      const existingId = await reviewRepo.upsertLocalReview({
+        localPath: '/mock/repo',
+        localHeadSha: 'sha-already-exists',
+        repository: 'owner/repo'
+      });
+
+      const res = await request(app)
+        .post(`/api/local/${originalId}/resolve-head-change`)
+        .send({ action: 'new-session', newHeadSha: 'sha-already-exists' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.action).toBe('new-session');
+      expect(res.body.newSessionId).toBe(existingId);
+    });
+
+    it('should return 400 for invalid review ID', async () => {
+      const res = await request(app)
+        .post('/api/local/abc/resolve-head-change')
+        .send({ action: 'update', newHeadSha: 'sha123' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/invalid review id/i);
+    });
+
+    it('should return 400 for negative review ID', async () => {
+      const res = await request(app)
+        .post('/api/local/-5/resolve-head-change')
+        .send({ action: 'update', newHeadSha: 'sha123' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/invalid review id/i);
+    });
+
+    it('should return 404 for non-existent review ID', async () => {
+      const res = await request(app)
+        .post('/api/local/9999/resolve-head-change')
+        .send({ action: 'update', newHeadSha: 'sha123' });
+
+      expect(res.status).toBe(404);
+      expect(res.body.error).toMatch(/not found/i);
+    });
+
+    it('should return 400 when action is missing', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/path/missing-action',
+        localHeadSha: 'sha-missing-action',
+        repository: 'owner/missing-action-repo'
+      });
+
+      const res = await request(app)
+        .post(`/api/local/${id}/resolve-head-change`)
+        .send({ newHeadSha: 'sha123' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/action/i);
+    });
+
+    it('should return 400 when action is invalid', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/path/bad-action',
+        localHeadSha: 'sha-bad-action',
+        repository: 'owner/bad-action-repo'
+      });
+
+      const res = await request(app)
+        .post(`/api/local/${id}/resolve-head-change`)
+        .send({ action: 'delete', newHeadSha: 'sha123' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/action/i);
+    });
+
+    it('should return 400 when newHeadSha is missing', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/path/missing-sha',
+        localHeadSha: 'sha-missing-sha',
+        repository: 'owner/missing-sha-repo'
+      });
+
+      const res = await request(app)
+        .post(`/api/local/${id}/resolve-head-change`)
+        .send({ action: 'update' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/newHeadSha/i);
+    });
+
+    it('should return 400 when newHeadSha is not a string', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/path/bad-sha-type',
+        localHeadSha: 'sha-bad-type',
+        repository: 'owner/bad-type-repo'
+      });
+
+      const res = await request(app)
+        .post(`/api/local/${id}/resolve-head-change`)
+        .send({ action: 'update', newHeadSha: 12345 });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/newHeadSha/i);
+    });
+
+    it('action "new-session" should inherit scope from the original session', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/mock/repo',
+        localHeadSha: 'sha-scoped',
+        repository: 'owner/repo'
+      });
+
+      // Set a non-default scope on the original session
+      await reviewRepo.updateLocalScope(id, 'staged', 'unstaged');
+
+      const res = await request(app)
+        .post(`/api/local/${id}/resolve-head-change`)
+        .send({ action: 'new-session', newHeadSha: 'sha-new-scoped' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.newSessionId).toBeDefined();
+
+      // Verify the new session inherited the scope
+      const newReview = await reviewRepo.getLocalReviewById(res.body.newSessionId);
+      expect(newReview.local_scope_start).toBe('staged');
+      expect(newReview.local_scope_end).toBe('unstaged');
+    });
+  });
+
+  describe('POST /api/local/:reviewId/refresh (HEAD change on non-branch scope)', () => {
+    it('should return headShaChanged: true but NOT sessionChanged or newSessionId when HEAD changes on non-branch-scope review', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/mock/repo',
+        localHeadSha: 'sha-before-refresh',
+        repository: 'owner/repo'
+      });
+
+      // Mock getHeadSha to return a different SHA than what was stored
+      localReviewModule.getHeadSha.mockResolvedValue('sha-after-refresh');
+
+      const res = await request(app)
+        .post(`/api/local/${id}/refresh`)
+        .send({});
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.headShaChanged).toBe(true);
+      expect(res.body.previousHeadSha).toBe('sha-before-refresh');
+      expect(res.body.currentHeadSha).toBe('sha-after-refresh');
+
+      // These fields must NOT be present — the refresh endpoint defers
+      // session creation to the resolve-head-change endpoint
+      expect(res.body).not.toHaveProperty('sessionChanged');
+      expect(res.body).not.toHaveProperty('newSessionId');
+
+      // Verify the session's HEAD SHA was NOT updated (deferred to resolve-head-change)
+      const review = await reviewRepo.getLocalReviewById(id);
+      expect(review.local_head_sha).toBe('sha-before-refresh');
+    });
+
+    it('should NOT persist diff when HEAD changes on non-branch-scope review', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/mock/repo',
+        localHeadSha: 'sha-no-persist',
+        repository: 'owner/repo'
+      });
+
+      // Save an initial diff
+      await reviewRepo.saveLocalDiff(id, {
+        diff: 'original diff before HEAD change',
+        stats: { trackedChanges: 1 },
+        digest: 'original-digest'
+      });
+
+      // Mock getHeadSha to return a different SHA
+      localReviewModule.getHeadSha.mockResolvedValue('sha-different');
+
+      const res = await request(app)
+        .post(`/api/local/${id}/refresh`)
+        .send({});
+
+      expect(res.status).toBe(200);
+      expect(res.body.headShaChanged).toBe(true);
+
+      // The old diff in the DB should be preserved (not overwritten)
+      const dbDiff = await reviewRepo.getLocalDiff(id);
+      expect(dbDiff.diff).toBe('original diff before HEAD change');
+      expect(dbDiff.digest).toBe('original-digest');
+    });
+
+    it('should update HEAD SHA and persist diff when HEAD changes on branch-scope review', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/mock/repo',
+        localHeadSha: 'sha-branch-old',
+        repository: 'owner/repo'
+      });
+
+      // Set scope to branch
+      await reviewRepo.updateLocalScope(id, 'branch', 'branch', 'main', 'feature-x');
+
+      // Mock getHeadSha to return a different SHA
+      localReviewModule.getHeadSha.mockResolvedValue('sha-branch-new');
+
+      const res = await request(app)
+        .post(`/api/local/${id}/refresh`)
+        .send({});
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.headShaChanged).toBe(true);
+
+      // Branch-scope reviews SHOULD update the SHA in-place
+      const review = await reviewRepo.getLocalReviewById(id);
+      expect(review.local_head_sha).toBe('sha-branch-new');
+
+      // Diff should be persisted (not deferred)
+      const dbDiff = await reviewRepo.getLocalDiff(id);
+      expect(dbDiff).not.toBeNull();
+      expect(dbDiff.digest).toBe('digest123');
+    });
+  });
 });
