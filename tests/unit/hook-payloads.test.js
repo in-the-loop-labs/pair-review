@@ -486,19 +486,20 @@ describe('hook payloads', () => {
         GitHubClient: MockClient,
       });
 
+      const hookConfig = { hooks: { 'review.started': { test: { command: 'echo' } } } };
       await fireReviewStartedHook({
         reviewId: 42,
         prNumber: 7,
         owner: 'acme',
         repo: 'widgets',
         prData: basePrData,
-        config: { hooks: {} },
+        config: hookConfig,
       }, { fireHooks: fireDeps.fireHooks });
 
       expect(fireDeps.fireHooks).toHaveBeenCalledTimes(1);
       const [eventName, payload, config] = fireDeps.fireHooks.mock.calls[0];
       expect(eventName).toBe('review.started');
-      expect(config).toEqual({ hooks: {} });
+      expect(config).toEqual(hookConfig);
       expect(payload.event).toBe('review.started');
       expect(payload.reviewId).toBe(42);
       expect(payload.mode).toBe('pr');
@@ -527,7 +528,7 @@ describe('hook payloads', () => {
         owner: 'o',
         repo: 'r',
         prData: { author: 'a', base_branch: 'main', head_branch: 'fix' },
-        config: {},
+        config: { hooks: { 'review.started': { test: { command: 'echo' } } } },
       }, { fireHooks: mockFireHooks });
 
       const payload = mockFireHooks.mock.calls[0][1];
@@ -552,7 +553,7 @@ describe('hook payloads', () => {
         owner: 'o',
         repo: 'r',
         prData: basePrData,
-        config: {},
+        config: { hooks: { 'review.started': { test: { command: 'echo' } } } },
       }, { fireHooks: mockFireHooks });
 
       const payload = mockFireHooks.mock.calls[0][1];

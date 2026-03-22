@@ -184,6 +184,9 @@ const defaultFireDeps = {
  */
 async function fireReviewStartedHook({ reviewId, prNumber, owner, repo, prData, config }, _deps) {
   const deps = { ...defaultFireDeps, ..._deps };
+  const { hasHooks } = require('./hook-runner');
+  if (!hasHooks('review.started', config)) return;
+
   const prContext = {
     number: prNumber, owner, repo,
     author: prData.author, baseBranch: prData.base_branch, headBranch: prData.head_branch,

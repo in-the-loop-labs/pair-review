@@ -28,7 +28,7 @@ const { getGitHubToken } = require('../config');
 const logger = require('../utils/logger');
 const { buildDiffLineSet } = require('../utils/diff-annotator');
 const { broadcastReviewEvent } = require('../events/review-events');
-const { fireHooks } = require('../hooks/hook-runner');
+const { fireHooks, hasHooks } = require('../hooks/hook-runner');
 const { buildReviewStartedPayload, buildReviewLoadedPayload, buildAnalysisStartedPayload, buildAnalysisCompletedPayload, getCachedUser } = require('../hooks/payloads');
 const simpleGit = require('simple-git');
 const {
@@ -267,12 +267,14 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
       author: prMetadata.author, baseBranch: prMetadata.base_branch, headBranch: prMetadata.head_branch,
       baseSha: extendedData.base_sha || null, headSha: extendedData.head_sha || null,
     };
-    getCachedUser(config).then(user => {
-      const hookEvent = isNewReview ? 'review.started' : 'review.loaded';
-      const builder = isNewReview ? buildReviewStartedPayload : buildReviewLoadedPayload;
-      const payload = builder({ reviewId: review.id, mode: 'pr', prContext, user });
-      fireHooks(hookEvent, payload, config);
-    }).catch(err => { logger.warn(`Review hook failed: ${err.message}`); });
+    const hookEvent = isNewReview ? 'review.started' : 'review.loaded';
+    if (hasHooks(hookEvent, config)) {
+      getCachedUser(config).then(user => {
+        const builder = isNewReview ? buildReviewStartedPayload : buildReviewLoadedPayload;
+        const payload = builder({ reviewId: review.id, mode: 'pr', prContext, user });
+        fireHooks(hookEvent, payload, config);
+      }).catch(err => { logger.warn(`Review hook failed: ${err.message}`); });
+    }
 
   } catch (error) {
     console.error('Error fetching PR data:', error);
@@ -1583,11 +1585,13 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
       author: prMetadata.author, baseBranch: prMetadata.base_branch, headBranch: prMetadata.head_branch,
       baseSha: prMetadata.base_sha || null, headSha: prMetadata.head_sha || null,
     };
-    getCachedUser(analysisConfig).then(user => {
-      fireHooks('analysis.started', buildAnalysisStartedPayload({
-        reviewId: review.id, analysisId, provider, model, mode: 'pr', prContext: analysisPrContext, user,
-      }), analysisConfig);
-    }).catch(() => {});
+    if (hasHooks('analysis.started', analysisConfig)) {
+      getCachedUser(analysisConfig).then(user => {
+        fireHooks('analysis.started', buildAnalysisStartedPayload({
+          reviewId: review.id, analysisId, provider, model, mode: 'pr', prContext: analysisPrContext, user,
+        }), analysisConfig);
+      }).catch(() => {});
+    }
 
     const analyzer = new Analyzer(req.app.get('db'), model, provider);
 
@@ -1686,13 +1690,15 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
 
         // Fire analysis.completed hook
         const hookConfig = req.app.get('config') || {};
-        getCachedUser(hookConfig).then(user => {
-          fireHooks('analysis.completed', buildAnalysisCompletedPayload({
-            reviewId: review.id, analysisId, provider, model, status: 'success',
-            totalSuggestions: completionInfo.totalSuggestions,
-            mode: 'pr', prContext: analysisPrContext, user,
-          }), hookConfig);
-        }).catch(() => {});
+        if (hasHooks('analysis.completed', hookConfig)) {
+          getCachedUser(hookConfig).then(user => {
+            fireHooks('analysis.completed', buildAnalysisCompletedPayload({
+              reviewId: review.id, analysisId, provider, model, status: 'success',
+              totalSuggestions: completionInfo.totalSuggestions,
+              mode: 'pr', prContext: analysisPrContext, user,
+            }), hookConfig);
+          }).catch(() => {});
+        }
       })
       .catch(error => {
         const currentStatus = activeAnalyses.get(analysisId);
@@ -1703,13 +1709,15 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
 
         if (error.isCancellation) {
           logger.info(`Analysis cancelled for PR #${prNumber}`);
-          getCachedUser(analysisConfig).then(user => {
-            fireHooks('analysis.completed', buildAnalysisCompletedPayload({
-              reviewId: review.id, analysisId, provider, model,
-              status: 'cancelled', totalSuggestions: 0,
-              mode: 'pr', prContext: analysisPrContext, user,
-            }), analysisConfig);
-          }).catch(() => {});
+          if (hasHooks('analysis.completed', analysisConfig)) {
+            getCachedUser(analysisConfig).then(user => {
+              fireHooks('analysis.completed', buildAnalysisCompletedPayload({
+                reviewId: review.id, analysisId, provider, model,
+                status: 'cancelled', totalSuggestions: 0,
+                mode: 'pr', prContext: analysisPrContext, user,
+              }), analysisConfig);
+            }).catch(() => {});
+          }
           return;
         }
 
@@ -1734,13 +1742,15 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
 
         broadcastProgress(analysisId, failedStatus);
 
-        getCachedUser(analysisConfig).then(user => {
-          fireHooks('analysis.completed', buildAnalysisCompletedPayload({
-            reviewId: review.id, analysisId, provider, model,
-            status: 'failed', totalSuggestions: 0,
-            mode: 'pr', prContext: analysisPrContext, user,
-          }), analysisConfig);
-        }).catch(() => {});
+        if (hasHooks('analysis.completed', analysisConfig)) {
+          getCachedUser(analysisConfig).then(user => {
+            fireHooks('analysis.completed', buildAnalysisCompletedPayload({
+              reviewId: review.id, analysisId, provider, model,
+              status: 'failed', totalSuggestions: 0,
+              mode: 'pr', prContext: analysisPrContext, user,
+            }), analysisConfig);
+          }).catch(() => {});
+        }
       })
       .finally(() => {
         // Clean up review to analysis ID mapping (unified map)

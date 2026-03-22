@@ -6,7 +6,7 @@ const path = require('path');
 const fs = require('fs').promises;
 const { loadConfig, showWelcomeMessage, resolveDbName, getGitHubToken } = require('./config');
 const logger = require('./utils/logger');
-const { fireHooks } = require('./hooks/hook-runner');
+const { fireHooks, hasHooks } = require('./hooks/hook-runner');
 const { buildReviewStartedPayload, buildReviewLoadedPayload, getCachedUser } = require('./hooks/payloads');
 
 const execAsync = promisify(exec);
@@ -791,15 +791,17 @@ async function handleLocalReview(targetPath, flags = {}) {
     const scopeEnd = existingReview?.local_scope_end || DEFAULT_SCOPE.end;
 
     // Fire review hook (non-blocking)
-    getCachedUser(config).then(user => {
-      const hookEvent = existingReview ? 'review.loaded' : 'review.started';
-      const builder = existingReview ? buildReviewLoadedPayload : buildReviewStartedPayload;
-      const si = STOPS.indexOf(scopeStart);
-      const ei = STOPS.indexOf(scopeEnd);
-      const scope = STOPS.slice(si, ei + 1);
-      const payload = builder({ reviewId: sessionId, mode: 'local', localContext: { path: repoPath, branch, headSha, scope }, user });
-      fireHooks(hookEvent, payload, config);
-    }).catch(err => { logger.warn(`Review hook failed: ${err.message}`); });
+    const hookEvent = existingReview ? 'review.loaded' : 'review.started';
+    if (hasHooks(hookEvent, config)) {
+      getCachedUser(config).then(user => {
+        const builder = existingReview ? buildReviewLoadedPayload : buildReviewStartedPayload;
+        const si = STOPS.indexOf(scopeStart);
+        const ei = STOPS.indexOf(scopeEnd);
+        const scope = STOPS.slice(si, ei + 1);
+        const payload = builder({ reviewId: sessionId, mode: 'local', localContext: { path: repoPath, branch, headSha, scope }, user });
+        fireHooks(hookEvent, payload, config);
+      }).catch(err => { logger.warn(`Review hook failed: ${err.message}`); });
+    }
     const baseBranch = existingReview?.local_base_branch || null;
 
     // Generate diff using session's actual scope
