@@ -2689,6 +2689,36 @@ tr.newly-expanded .d2h-code-line-ctn {
   justify-content: center;
 }
 
+/* When a secondary button is visible (3 buttons), widen and stack vertically.
+   column-reverse puts Confirm (primary) on top, Cancel on bottom. */
+.confirm-dialog-container.has-secondary {
+  min-width: 440px;
+}
+
+.confirm-dialog-container.has-secondary .modal-footer {
+  flex-direction: column-reverse;
+  align-items: stretch;
+}
+
+.confirm-dialog-container.has-secondary .modal-footer .btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* Button description subtitles */
+.modal-footer .btn .btn-label {
+  display: block;
+}
+
+.modal-footer .btn .btn-desc {
+  display: block;
+  font-size: 12px;
+  font-weight: normal;
+  opacity: 0.7;
+  margin-top: 2px;
+}
+
 /* Dialogs spawned from within other modals need higher z-index */
 #text-input-dialog,
 #confirm-dialog {

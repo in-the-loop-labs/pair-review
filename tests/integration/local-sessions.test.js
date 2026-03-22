@@ -1130,6 +1130,12 @@ describe('Local Sessions API', () => {
       expect(newReview).not.toBeNull();
       expect(newReview.local_head_sha).toBe('sha-brand-new');
       expect(newReview.local_path).toBe('/mock/repo');
+
+      // Verify the new session has a diff immediately available
+      const diffRes = await request(app)
+        .get(`/api/local/${res.body.newSessionId}/diff`);
+      expect(diffRes.status).toBe(200);
+      expect(diffRes.body.diff).toBeTruthy();
     });
 
     it('action "new-session" — returns existing session if one already exists for new HEAD', async () => {

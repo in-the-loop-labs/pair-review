@@ -1364,20 +1364,31 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
       logger.warn(`Could not check HEAD SHA: ${headError.message}`);
     }
 
+    // Non-branch HEAD change: skip diff computation entirely — the old diff is
+    // preserved until the user decides (via resolve-head-change) what to do.
+    // The resolve-head-change endpoint will recompute the diff for whichever
+    // action the user picks (update or new-session).
+    if (headShaChanged && !hasBranch) {
+      return res.json({
+        success: true,
+        message: 'HEAD changed — awaiting user decision',
+        headShaChanged,
+        previousHeadSha: originalHeadSha,
+        currentHeadSha: currentHeadSha || null,
+        stats: {}
+      });
+    }
+
     const scopedResult = await generateScopedDiff(localPath, scopeStart, scopeEnd, review.local_base_branch);
     const diff = scopedResult.diff;
     const stats = scopedResult.stats;
     const digest = await computeScopedDigest(localPath, scopeStart, scopeEnd);
 
-    // Persist diff — skip for non-branch HEAD changes so the old diff is
-    // preserved until the user decides (via resolve-head-change) what to do.
-    if (!headShaChanged || hasBranch) {
-      setLocalReviewDiff(reviewId, { diff, stats, digest });
-      try {
-        await reviewRepo.saveLocalDiff(reviewId, { diff, stats, digest });
-      } catch (persistError) {
-        logger.warn(`Could not persist diff to database: ${persistError.message}`);
-      }
+    setLocalReviewDiff(reviewId, { diff, stats, digest });
+    try {
+      await reviewRepo.saveLocalDiff(reviewId, { diff, stats, digest });
+    } catch (persistError) {
+      logger.warn(`Could not persist diff to database: ${persistError.message}`);
     }
 
     logger.success(`Diff refreshed (scope ${scopeStart}–${scopeEnd}): ${stats.trackedChanges || 0} file(s)`);
@@ -1488,6 +1499,16 @@ router.post('/api/local/:reviewId/resolve-head-change', async (req, res) => {
       localHeadBranch: branch
     });
     logger.log('API', `Created new session for new HEAD: ${newSessionId}`, 'cyan');
+
+    // Compute and persist diff so the new session is immediately usable
+    const newScopeResult = await generateScopedDiff(localPath, scopeStart, scopeEnd, review.local_base_branch);
+    const newDigest = await computeScopedDigest(localPath, scopeStart, scopeEnd);
+    setLocalReviewDiff(newSessionId, { diff: newScopeResult.diff, stats: newScopeResult.stats, digest: newDigest });
+    try {
+      await reviewRepo.saveLocalDiff(newSessionId, { diff: newScopeResult.diff, stats: newScopeResult.stats, digest: newDigest });
+    } catch (persistError) {
+      logger.warn(`Could not persist diff for new session: ${persistError.message}`);
+    }
 
     return res.json({ success: true, action: 'new-session', newSessionId });
 
