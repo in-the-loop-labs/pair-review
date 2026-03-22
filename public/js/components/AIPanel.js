@@ -1051,7 +1051,9 @@ class AIPanel {
                     const diffRow = minimizer.findDiffRowFor(targetSuggestion);
                     (diffRow || targetSuggestion).scrollIntoView({ behavior: 'smooth', block: 'center' });
                 } else {
-                    targetSuggestion.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    // Use block:'start' so the suggestion header is visible,
+                    // not cut off when the card is taller than half the viewport.
+                    targetSuggestion.scrollIntoView({ behavior: 'smooth', block: 'start' });
                 }
                 targetSuggestion.classList.add('current-suggestion');
                 setTimeout(() => targetSuggestion.classList.remove('current-suggestion'), 2000);
@@ -1096,14 +1098,17 @@ class AIPanel {
                 }
             }
 
-            // For line-level comments, try to find by exact comment ID
+            // For line-level comments, try to find by exact comment ID.
+            // Legacy path uses .user-comment-row (table rows), annotation path
+            // uses [data-comment-id] on light-DOM divs slotted into @pierre/diffs.
             if (!targetElement && commentId) {
-                targetElement = document.querySelector(`.user-comment-row[data-comment-id="${commentId}"]`);
+                targetElement = document.querySelector(`.user-comment-row[data-comment-id="${commentId}"]`)
+                    || document.querySelector(`[data-comment-id="${commentId}"]`);
             }
 
             // Fallback: find by file and line if no direct match
             if (!targetElement && file && line) {
-                const commentRows = document.querySelectorAll('.user-comment-row');
+                const commentRows = document.querySelectorAll('.user-comment-row, [data-comment-id]');
                 for (const row of commentRows) {
                     if (row.dataset.file === file && row.dataset.lineStart === line) {
                         targetElement = row;
@@ -1119,10 +1124,10 @@ class AIPanel {
                     const diffRow = isFileLevel ? null : minimizer.findDiffRowFor(targetElement);
                     (diffRow || targetElement).scrollIntoView({ behavior: 'smooth', block: 'center' });
                 } else {
-                    targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    targetElement.scrollIntoView({ behavior: 'smooth', block: 'start' });
                 }
-                // Add highlight effect
-                const commentDiv = isFileLevel ? targetElement : targetElement.querySelector('.user-comment');
+                // Add highlight effect — find .user-comment inside (works for both paths)
+                const commentDiv = isFileLevel ? targetElement : (targetElement.querySelector('.user-comment') || targetElement);
                 if (commentDiv) {
                     commentDiv.classList.add('highlight-flash');
                     setTimeout(() => commentDiv.classList.remove('highlight-flash'), 2000);

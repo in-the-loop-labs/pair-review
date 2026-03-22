@@ -152,6 +152,57 @@ class PRManager {
     this.suggestionManager = new window.SuggestionManager(this);
     this.fileCommentManager = window.FileCommentManager ? new window.FileCommentManager(this) : null;
 
+    // Initialize PierreBridge for @pierre/diffs rendering
+    this.pierreBridge = window.PierreBridge ? new window.PierreBridge({
+      theme: this.currentTheme,
+      onCommentClick: (fileName, lineNumber, side, range) => {
+        const diffPosition = this.pierreBridge.getDiffPosition(fileName, lineNumber, side);
+        if (range && range.end !== range.start) {
+          this.showCommentForm(null, range.start, fileName, diffPosition, range.end, side);
+        } else {
+          this.showCommentForm(null, lineNumber, fileName, diffPosition, null, side);
+        }
+      },
+      onLineClick: (fileName, props) => {
+        // Line click handler - available for future use
+      },
+      onLineSelect: (fileName, range) => {
+        // Line selection handler - available for future use
+      },
+      onLineSelectionEnd: (fileName, range) => {
+        // Line selection completed
+      },
+      onHunkExpand: (fileName, hunkIndex, direction, lineCount) => {
+        // @pierre/diffs handles expansion natively
+      },
+      onCommentEdit: (comment) => {
+        if (this.commentManager) {
+          this.commentManager.editComment(comment.id);
+        }
+      },
+      onCommentDelete: (comment) => {
+        if (this.commentManager) {
+          this.commentManager.deleteComment(comment.id);
+        }
+      },
+      onSuggestionAdopt: (suggestion) => {
+        if (this.suggestionManager) {
+          this.suggestionManager.adoptSuggestion(suggestion.id);
+        }
+      },
+      onSuggestionDismiss: (suggestion) => {
+        if (this.suggestionManager) {
+          this.suggestionManager.dismissSuggestion(suggestion.id);
+        }
+      },
+      onCommentFormSubmit: (fileName, annotationId, data, body) => {
+        this._handleCommentFormSubmit(fileName, annotationId, data, body);
+      },
+      onCommentFormCancel: (fileName, annotationId, data) => {
+        this.pierreBridge.removeAnnotation(fileName, annotationId);
+      },
+    }) : null;
+
     // Line range selection state - delegate to lineTracker
     Object.defineProperty(this, 'rangeSelectionStart', {
       get: () => this.lineTracker.rangeSelectionStart,
@@ -1575,6 +1626,11 @@ class PRManager {
     const diffContainer = document.getElementById('diff-container');
     if (!diffContainer) return;
 
+    // Clean up existing @pierre/diffs instances before clearing the container
+    if (this.pierreBridge) {
+      this.pierreBridge.destroyAll();
+    }
+
     diffContainer.innerHTML = '';
 
     // Use changed_files array from API
@@ -1709,7 +1765,24 @@ class PRManager {
       header.appendChild(fileChatBtn);
     }
 
-    // Create diff table
+    // Create container for @pierre/diffs rendering
+    if (this.pierreBridge && !this.pierreBridge._disabled) {
+      const diffBody = document.createElement('div');
+      diffBody.className = 'pierre-diff-body';
+
+      if (file.patch) {
+        this.pierreBridge.renderFile(file.file, diffBody, file.patch, {
+          collapsed: isCollapsed,
+        });
+      } else if (file.binary) {
+        this.pierreBridge.renderBinaryFile(diffBody);
+      }
+
+      wrapper.appendChild(diffBody);
+      return wrapper;
+    }
+
+    // Fallback: old table-based rendering (used when PierreBridge is not available)
     const table = document.createElement('table');
     table.className = 'd2h-diff-table';
 
@@ -2050,6 +2123,11 @@ class PRManager {
     if (header) {
       window.DiffRenderer.updateFileHeaderState(header, !wrapper.classList.contains('collapsed'));
     }
+
+    // Sync collapsed state with @pierre/diffs instance
+    if (this.pierreBridge && this.pierreBridge.files.has(filePath)) {
+      this.pierreBridge.setCollapsed(filePath, wrapper.classList.contains('collapsed'));
+    }
   }
 
   /**
@@ -2070,6 +2148,10 @@ class PRManager {
         if (header) {
           window.DiffRenderer.updateFileHeaderState(header, false);
         }
+        // Sync with @pierre/diffs
+        if (this.pierreBridge && this.pierreBridge.files.has(filePath)) {
+          this.pierreBridge.setCollapsed(filePath, true);
+        }
       }
     } else {
       this.viewedFiles.delete(filePath);
@@ -2080,6 +2162,10 @@ class PRManager {
         const header = wrapper.querySelector('.d2h-file-header');
         if (header) {
           window.DiffRenderer.updateFileHeaderState(header, true);
+        }
+        // Sync with @pierre/diffs
+        if (this.pierreBridge && this.pierreBridge.files.has(filePath)) {
+          this.pierreBridge.setCollapsed(filePath, false);
         }
       }
     }
@@ -2603,6 +2689,12 @@ class PRManager {
       await new Promise(resolve => setTimeout(resolve, 50));
     }
 
+    // For @pierre/diffs rendered files, expansion is handled by the library.
+    // Annotations will be placed and @pierre/diffs will show them even in collapsed regions.
+    if (this.pierreBridge && this.pierreBridge.files.has(file)) {
+      return true;
+    }
+
     // Find the gap section containing the target lines using the shared module
     // Pass the side parameter so findMatchingGap uses the correct coordinate system:
     // - 'RIGHT' = NEW coordinates (modified file, most common for AI suggestions)
@@ -2681,6 +2773,11 @@ class PRManager {
       const { file, line_start, line_end, side } = item;
       const resolvedSide = (side || 'right').toUpperCase();
 
+      // @pierre/diffs files handle visibility internally via annotations
+      if (this.pierreBridge && this.pierreBridge.files.has(file)) {
+        continue;
+      }
+
       const fileElement = this.findFileElement(file);
       if (!fileElement) continue;
 
@@ -2741,7 +2838,69 @@ class PRManager {
    * Comment form methods - delegate to CommentManager
    */
   showCommentForm(targetRow, lineNumber, fileName, diffPosition, endLineNumber, side = 'RIGHT') {
+    // Use PierreBridge annotation for files rendered by @pierre/diffs
+    if (this.pierreBridge && this.pierreBridge.files.has(fileName)) {
+      const formId = `form-${fileName}-${lineNumber}-${side}`;
+      this.pierreBridge.addAnnotation(fileName, {
+        lineNumber: endLineNumber || lineNumber,
+        side: side,
+        type: 'comment-form',
+        id: formId,
+        data: {
+          lineStart: lineNumber,
+          lineEnd: endLineNumber || lineNumber,
+          fileName: fileName,
+          diffPosition: diffPosition,
+          side: side,
+          showSuggestionBtn: true,
+        },
+      });
+      return;
+    }
+    // Fallback: old table-based comment form (context files)
     this.commentManager.showCommentForm(targetRow, lineNumber, fileName, diffPosition, endLineNumber, side);
+  }
+
+  /**
+   * Handle comment form submission from PierreBridge annotation.
+   * Saves the comment via API, removes the form annotation, and reloads comments.
+   * @param {string} fileName - File the comment belongs to
+   * @param {string} annotationId - PierreBridge annotation ID for the form
+   * @param {Object} data - Form data (lineStart, lineEnd, fileName, diffPosition, side)
+   * @param {string} body - Comment body text
+   */
+  async _handleCommentFormSubmit(fileName, annotationId, data, body) {
+    if (!body || !body.trim()) return;
+
+    try {
+      const commentData = {
+        file: data.fileName,
+        line_start: data.lineStart,
+        line_end: data.lineEnd,
+        body: body.trim(),
+        side: data.side || 'RIGHT',
+        diff_position: data.diffPosition,
+      };
+
+      const response = await fetch(`/api/reviews/${this.currentPR.id}/comments`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Client-Id': this._clientId,
+        },
+        body: JSON.stringify(commentData),
+      });
+
+      if (response.ok) {
+        // Remove form annotation
+        this.pierreBridge.removeAnnotation(fileName, annotationId);
+        // Reload comments to show the new one
+        const includeDismissed = window.aiPanel?.showDismissedComments || false;
+        await this.loadUserComments(includeDismissed);
+      }
+    } catch (error) {
+      console.error('Error saving comment:', error);
+    }
   }
 
   hideCommentForm() {
@@ -3201,38 +3360,61 @@ class PRManager {
       // Clear existing comment rows before re-rendering
       document.querySelectorAll('.user-comment-row:not(.suggestion-edit-pending)').forEach(row => row.remove());
 
-      // Before rendering, ensure all comment target lines are visible
-      // (expand hidden hunks so the line rows exist in the DOM)
-      const lineItems = lineLevelComments.map(c => ({
-        file: c.file,
-        line_start: c.line_start,
-        line_end: c.line_start,
-        side: c.side || 'RIGHT'
-      }));
-      await this.ensureLinesVisible(lineItems);
+      // Clear existing PierreBridge comment annotations
+      if (this.pierreBridge) {
+        for (const [file] of this.pierreBridge.files) {
+          this.pierreBridge.removeAnnotationsByType(file, 'comment');
+        }
+      }
 
-      // Display line-level comments inline with diff (only active comments reach here)
+      // Partition line-level comments by rendering engine
+      const pierreComments = [];
+      const legacyComments = [];
       lineLevelComments.forEach(comment => {
-        const fileElement = this.findFileElement(comment.file);
-        if (!fileElement) return;
-
-        // Use the comment's side to determine which coordinate system to search in
-        // LEFT side = OLD coordinates (deleted lines or context lines in OLD coords)
-        // RIGHT side = NEW coordinates (added lines or context lines in NEW coords)
-        const side = comment.side || 'RIGHT';
-
-        const lineRows = fileElement.querySelectorAll('tr');
-        for (const row of lineRows) {
-          // Pass side to getLineNumber() to get the correct coordinate system
-          // This allows context lines (which have BOTH old and new line numbers) to be found
-          // when the comment was placed on a LEFT-side line (old coordinate)
-          const lineNum = this.getLineNumber(row, side);
-          if (lineNum === comment.line_start) {
-            this.displayUserComment(comment, row);
-            break;
-          }
+        if (this.pierreBridge && this.pierreBridge.files.has(comment.file)) {
+          pierreComments.push(comment);
+        } else {
+          legacyComments.push(comment);
         }
       });
+
+      // Display comments via PierreBridge annotations
+      pierreComments.forEach(comment => {
+        const side = comment.side || 'RIGHT';
+        this.pierreBridge.addAnnotation(comment.file, {
+          lineNumber: comment.line_start,
+          side: side,
+          type: 'comment',
+          id: `comment-${comment.id}`,
+          data: comment,
+        });
+      });
+
+      // Legacy path: ensure target lines visible and render via DOM insertion
+      if (legacyComments.length > 0) {
+        const lineItems = legacyComments.map(c => ({
+          file: c.file,
+          line_start: c.line_start,
+          line_end: c.line_start,
+          side: c.side || 'RIGHT'
+        }));
+        await this.ensureLinesVisible(lineItems);
+
+        legacyComments.forEach(comment => {
+          const fileElement = this.findFileElement(comment.file);
+          if (!fileElement) return;
+
+          const side = comment.side || 'RIGHT';
+          const lineRows = fileElement.querySelectorAll('tr');
+          for (const row of lineRows) {
+            const lineNum = this.getLineNumber(row, side);
+            if (lineNum === comment.line_start) {
+              this.displayUserComment(comment, row);
+              break;
+            }
+          }
+        });
+      }
 
       // Load file-level comments into their zones (only active comments reach here)
       if (this.fileCommentManager && fileLevelComments.length > 0) {
@@ -4385,6 +4567,10 @@ class PRManager {
     localStorage.setItem('theme', this.currentTheme);
     document.documentElement.setAttribute('data-theme', this.currentTheme);
     this.updateThemeIcon();
+    // Sync theme with @pierre/diffs instances
+    if (this.pierreBridge) {
+      this.pierreBridge.setTheme(this.currentTheme);
+    }
   }
 
   updateThemeIcon() {

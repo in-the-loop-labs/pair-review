@@ -21,3 +21,5 @@ examples/
 .pair-review/config.local.json
 pr.diff
 .task-context.md
+public/js/vendor/pierre-diffs.js
+public/js/vendor/pierre-diffs.js.map

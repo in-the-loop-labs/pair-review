@@ -16,8 +16,13 @@
 async function waitForDiffToRender(page, timeout = 10000) {
   // Wait for diff container to have content (file sections)
   await page.waitForSelector('[data-file-name]', { timeout });
-  // Wait for at least one diff line to render
-  await page.waitForSelector('.d2h-code-line-ctn', { timeout });
+  // Wait for at least one diff line to render.
+  // Supports both old table-based rendering (.d2h-code-line-ctn) and
+  // @pierre/diffs rendering (.pierre-diff-body with a diffs-container inside).
+  await Promise.race([
+    page.waitForSelector('.d2h-code-line-ctn', { timeout }),
+    page.waitForSelector('.pierre-diff-body diffs-container', { timeout }),
+  ]);
 }
 
 /**
