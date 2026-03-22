@@ -18,6 +18,8 @@ const { normalizeRepository } = require('../utils/paths');
 const { findMainGitRoot } = require('../local-review');
 const { getConfigDir, getMonorepoPath, resolveMonorepoOptions, DEFAULT_CHECKOUT_TIMEOUT_MS } = require('../config');
 const logger = require('../utils/logger');
+const { fireHooks } = require('../hooks/hook-runner');
+const { buildReviewStartedPayload, getCachedUser } = require('../hooks/payloads');
 const simpleGit = require('simple-git');
 const fs = require('fs').promises;
 const path = require('path');
@@ -119,6 +121,9 @@ async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath,
       SELECT id FROM reviews WHERE pr_number = ? AND repository = ? COLLATE NOCASE
     `, [prInfo.number, repository]);
 
+    let isNewReview;
+    let reviewId;
+
     if (existingReview) {
       // Update existing review (preserves ID)
       await run(db, `
@@ -132,6 +137,8 @@ async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath,
         }),
         existingReview.id
       ]);
+      isNewReview = false;
+      reviewId = existingReview.id;
       logger.info(`Updated existing review (ID: ${existingReview.id})`);
     } else {
       // Insert new review
@@ -147,12 +154,16 @@ async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath,
           created_at: new Date().toISOString()
         })
       ]);
+      isNewReview = true;
+      reviewId = result.lastID;
       logger.info(`Created new review (ID: ${result.lastID})`);
     }
 
     // Commit transaction
     await run(db, 'COMMIT');
     logger.info(`Stored PR data for ${repository} #${prInfo.number}`);
+
+    return { isNewReview, reviewId };
 
   } catch (error) {
     // Rollback transaction on error
@@ -469,7 +480,7 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, o
   // Step: store - Persist PR data and register repository location
   // ------------------------------------------------------------------
   progress({ step: 'store', status: 'running', message: 'Storing pull request data...' });
-  await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath);
+  const { isNewReview, reviewId } = await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath);
 
   // Register the repository path for future sessions if it wasn't already known
   if (knownPath === null && repositoryPath) {
@@ -481,6 +492,22 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, o
     }
   }
   progress({ step: 'store', status: 'completed', message: 'Pull request data stored.' });
+
+  // Fire review.started hook for new reviews (non-blocking).
+  // The GET route fires review.loaded on page load; firing review.started
+  // here ensures the first-time event isn't lost because storePRData already
+  // created the review record before the GET route's getOrCreate runs.
+  if (isNewReview && config) {
+    const prContext = {
+      number: prNumber, owner, repo,
+      author: prData.author, baseBranch: prData.base_branch, headBranch: prData.head_branch,
+      baseSha: prData.base_sha || null, headSha: prData.head_sha || null,
+    };
+    getCachedUser(config).then(user => {
+      const payload = buildReviewStartedPayload({ reviewId, mode: 'pr', prContext, user });
+      fireHooks('review.started', payload, config);
+    }).catch(err => { logger.warn(`Review hook failed: ${err.message}`); });
+  }
 
   // ------------------------------------------------------------------
   // Return the review URL and title for the caller

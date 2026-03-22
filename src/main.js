@@ -10,6 +10,8 @@ const Analyzer = require('./ai/analyzer');
 const { applyConfigOverrides } = require('./ai');
 const { handleLocalReview, findMainGitRoot } = require('./local-review');
 const { storePRData, registerRepositoryLocation, findRepositoryPath } = require('./setup/pr-setup');
+const { fireHooks } = require('./hooks/hook-runner');
+const { buildReviewStartedPayload, getCachedUser } = require('./hooks/payloads');
 const { normalizeRepository, resolveRenamedFile, resolveRenamedFileOld } = require('./utils/paths');
 const logger = require('./utils/logger');
 const simpleGit = require('simple-git');
@@ -786,9 +788,22 @@ async function performHeadlessReview(args, config, db, flags, options) {
 
     // Store PR data in database
     console.log('Storing pull request data...');
-    await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath, {
+    const { isNewReview, reviewId: storedReviewId } = await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath, {
       skipWorktreeRecord: !!flags.useCheckout
     });
+
+    // Fire review.started hook for new reviews (non-blocking)
+    if (isNewReview) {
+      const prContext = {
+        number: prInfo.number, owner: prInfo.owner, repo: prInfo.repo,
+        author: prData.author, baseBranch: prData.base_branch, headBranch: prData.head_branch,
+        baseSha: prData.base_sha || null, headSha: prData.head_sha || null,
+      };
+      getCachedUser(config).then(user => {
+        const payload = buildReviewStartedPayload({ reviewId: storedReviewId, mode: 'pr', prContext, user });
+        fireHooks('review.started', payload, config);
+      }).catch(err => { logger.warn(`Review hook failed: ${err.message}`); });
+    }
 
     // Get PR metadata ID for AI analysis
     const prMetadata = await queryOne(db, `
