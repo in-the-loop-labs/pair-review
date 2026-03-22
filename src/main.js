@@ -10,8 +10,7 @@ const Analyzer = require('./ai/analyzer');
 const { applyConfigOverrides } = require('./ai');
 const { handleLocalReview, findMainGitRoot } = require('./local-review');
 const { storePRData, registerRepositoryLocation, findRepositoryPath } = require('./setup/pr-setup');
-const { fireHooks } = require('./hooks/hook-runner');
-const { buildReviewStartedPayload, getCachedUser } = require('./hooks/payloads');
+const { fireReviewStartedHook } = require('./hooks/payloads');
 const { normalizeRepository, resolveRenamedFile, resolveRenamedFileOld } = require('./utils/paths');
 const logger = require('./utils/logger');
 const simpleGit = require('simple-git');
@@ -794,14 +793,9 @@ async function performHeadlessReview(args, config, db, flags, options) {
 
     // Fire review.started hook for new reviews (non-blocking)
     if (isNewReview) {
-      const prContext = {
-        number: prInfo.number, owner: prInfo.owner, repo: prInfo.repo,
-        author: prData.author, baseBranch: prData.base_branch, headBranch: prData.head_branch,
-        baseSha: prData.base_sha || null, headSha: prData.head_sha || null,
-      };
-      getCachedUser(config).then(user => {
-        const payload = buildReviewStartedPayload({ reviewId: storedReviewId, mode: 'pr', prContext, user });
-        fireHooks('review.started', payload, config);
+      fireReviewStartedHook({
+        reviewId: storedReviewId, prNumber: prInfo.number,
+        owner: prInfo.owner, repo: prInfo.repo, prData, config,
       }).catch(err => { logger.warn(`Review hook failed: ${err.message}`); });
     }
 

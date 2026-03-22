@@ -7,6 +7,7 @@ const {
   buildAnalysisStartedPayload,
   buildAnalysisCompletedPayload,
   getCachedUser,
+  fireReviewStartedHook,
   _resetUserCache,
 } = require('../../src/hooks/payloads');
 
@@ -297,6 +298,116 @@ describe('hook payloads', () => {
       await getCachedUser({}, deps);
 
       expect(MockClient).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  // ── fireReviewStartedHook ─────────────────────────────────────
+
+  describe('fireReviewStartedHook', () => {
+    const basePrData = {
+      author: 'octocat',
+      base_branch: 'main',
+      head_branch: 'feat-x',
+      base_sha: 'aaa111',
+      head_sha: 'bbb222',
+    };
+
+    function createMockFireHooksDeps({ user = { login: 'octocat' }, token = 'ghp_tok' } = {}) {
+      const MockClient = vi.fn().mockImplementation(function () {
+        this.getAuthenticatedUser = vi.fn().mockResolvedValue(user);
+      });
+      // Pre-populate getCachedUser so it resolves via our mock
+      _resetUserCache();
+      return {
+        fireHooks: vi.fn(),
+        // getCachedUser uses its own _deps param, so we seed the cache first
+        _mockClient: MockClient,
+        _token: token,
+      };
+    }
+
+    it('calls fireHooks with review.started event and correct payload shape', async () => {
+      const fireDeps = createMockFireHooksDeps();
+      // Seed the user cache so fireReviewStartedHook's getCachedUser resolves
+      const MockClient = vi.fn().mockImplementation(function () {
+        this.getAuthenticatedUser = vi.fn().mockResolvedValue({ login: 'octocat' });
+      });
+      await getCachedUser({}, {
+        getGitHubToken: vi.fn().mockReturnValue('ghp_tok'),
+        GitHubClient: MockClient,
+      });
+
+      await fireReviewStartedHook({
+        reviewId: 42,
+        prNumber: 7,
+        owner: 'acme',
+        repo: 'widgets',
+        prData: basePrData,
+        config: { hooks: {} },
+      }, { fireHooks: fireDeps.fireHooks });
+
+      expect(fireDeps.fireHooks).toHaveBeenCalledTimes(1);
+      const [eventName, payload, config] = fireDeps.fireHooks.mock.calls[0];
+      expect(eventName).toBe('review.started');
+      expect(config).toEqual({ hooks: {} });
+      expect(payload.event).toBe('review.started');
+      expect(payload.reviewId).toBe(42);
+      expect(payload.mode).toBe('pr');
+      expect(payload.pr).toEqual({
+        number: 7, owner: 'acme', repo: 'widgets',
+        author: 'octocat', baseBranch: 'main', headBranch: 'feat-x',
+        baseSha: 'aaa111', headSha: 'bbb222',
+      });
+      expect(payload.user).toEqual({ login: 'octocat' });
+    });
+
+    it('builds prContext with null SHAs when prData omits them', async () => {
+      _resetUserCache();
+      const MockClient = vi.fn().mockImplementation(function () {
+        this.getAuthenticatedUser = vi.fn().mockResolvedValue({ login: 'dev' });
+      });
+      await getCachedUser({}, {
+        getGitHubToken: vi.fn().mockReturnValue('ghp_tok'),
+        GitHubClient: MockClient,
+      });
+
+      const mockFireHooks = vi.fn();
+      await fireReviewStartedHook({
+        reviewId: 10,
+        prNumber: 3,
+        owner: 'o',
+        repo: 'r',
+        prData: { author: 'a', base_branch: 'main', head_branch: 'fix' },
+        config: {},
+      }, { fireHooks: mockFireHooks });
+
+      const payload = mockFireHooks.mock.calls[0][1];
+      expect(payload.pr.baseSha).toBeNull();
+      expect(payload.pr.headSha).toBeNull();
+    });
+
+    it('resolves user via getCachedUser', async () => {
+      _resetUserCache();
+      const MockClient = vi.fn().mockImplementation(function () {
+        this.getAuthenticatedUser = vi.fn().mockResolvedValue({ login: 'testuser' });
+      });
+      await getCachedUser({}, {
+        getGitHubToken: vi.fn().mockReturnValue('ghp_tok'),
+        GitHubClient: MockClient,
+      });
+
+      const mockFireHooks = vi.fn();
+      await fireReviewStartedHook({
+        reviewId: 1,
+        prNumber: 1,
+        owner: 'o',
+        repo: 'r',
+        prData: basePrData,
+        config: {},
+      }, { fireHooks: mockFireHooks });
+
+      const payload = mockFireHooks.mock.calls[0][1];
+      expect(payload.user).toEqual({ login: 'testuser' });
     });
   });
 });
