@@ -1541,10 +1541,15 @@ const MIGRATIONS = {
       'voice_id', 'is_raw',
       'created_at', 'updated_at'
     ].join(', ');
-    db.prepare(`INSERT INTO comments_rebuild (${cols}) SELECT ${cols} FROM comments`).run();
-
-    db.prepare('DROP TABLE comments').run();
-    db.prepare('ALTER TABLE comments_rebuild RENAME TO comments').run();
+    // Wrap in transaction so a crash between DROP and RENAME can't strand
+    // data in comments_rebuild. PRAGMA foreign_keys = OFF must stay outside
+    // the transaction (SQLite requirement).
+    const rebuild = db.transaction(() => {
+      db.prepare(`INSERT INTO comments_rebuild (${cols}) SELECT ${cols} FROM comments`).run();
+      db.prepare('DROP TABLE comments').run();
+      db.prepare('ALTER TABLE comments_rebuild RENAME TO comments').run();
+    });
+    rebuild();
 
     // Re-enable FK checks
     db.pragma('foreign_keys = ON');
