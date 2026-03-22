@@ -4476,8 +4476,9 @@ class PRManager {
   /**
    * Show the stale badge with an optional variant class.
    * @param {'stale'|'closed'|'merged'} type
+   * @param {string} [title] - Optional custom tooltip text. Falls back to type-specific defaults.
    */
-  _showStaleBadge(type) {
+  _showStaleBadge(type, title) {
     const badge = document.getElementById('stale-badge');
     if (!badge) return;
 
@@ -4488,14 +4489,14 @@ class PRManager {
     if (type === 'merged') {
       badge.classList.add('pr-merged');
       if (textEl) textEl.textContent = 'MERGED';
-      badge.title = 'This PR has been merged';
+      badge.title = title || 'This PR has been merged';
     } else if (type === 'closed') {
       badge.classList.add('pr-closed');
       if (textEl) textEl.textContent = 'CLOSED';
-      badge.title = 'This PR has been closed';
+      badge.title = title || 'This PR has been closed';
     } else {
       if (textEl) textEl.textContent = 'STALE';
-      badge.title = 'PR data is outdated';
+      badge.title = title || 'PR data is outdated';
     }
     badge.style.display = '';
   }

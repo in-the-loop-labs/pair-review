@@ -230,10 +230,6 @@ class LocalManager {
 
     // Override triggerAIAnalysis for local mode
     manager.triggerAIAnalysis = async function() {
-      // Timeout (ms) for stale check — git commands can hang on locked repos.
-      // Defined locally to avoid relying on cross-script const from pr.js.
-      const STALE_TIMEOUT = 2000;
-
       if (manager.isAnalyzing) {
         manager.reopenModal();
         return;
@@ -257,19 +253,13 @@ class LocalManager {
           return;
         }
 
-        // Run stale check and settings fetch in parallel to minimize dialog delay
-        // Use AbortController so the fetch is truly cancelled on timeout,
-        // freeing the HTTP connection for subsequent requests.
+        // Run stale check and settings fetch in parallel to minimize dialog delay.
+        // Reuse the on-load staleness promise if still available, otherwise fetch fresh.
         const _tParallel0 = performance.now();
-        const staleAbort = new AbortController();
-        const staleTimer = setTimeout(() => {
-          console.debug(`[Analyze] stale-check timed out after ${STALE_TIMEOUT}ms, aborting`);
-          staleAbort.abort();
-        }, STALE_TIMEOUT);
-        const staleCheckWithTimeout = fetch(`/api/local/${reviewId}/check-stale`, { signal: staleAbort.signal })
-          .then(r => r.ok ? r.json() : null)
-          .then(result => { clearTimeout(staleTimer); return result; })
-          .catch(() => { clearTimeout(staleTimer); return null; });
+        const staleCheckWithTimeout = manager._stalenessPromise
+          ? manager._stalenessPromise
+          : self._fetchLocalStaleness();
+        manager._stalenessPromise = null; // consume it
         const [staleResult, repoSettings, reviewSettings] = await Promise.all([
           staleCheckWithTimeout,
           manager.fetchRepoSettings().catch(() => null),
@@ -721,6 +711,10 @@ class LocalManager {
       // refresh must call unconditionally since the manager won't re-fire its callback.
       await manager.loadAISuggestions(null, manager.selectedRunId);
 
+      // Clear stale state after successful refresh
+      manager._hideStaleBadge();
+      manager._stalenessPromise = null;
+
       // Show success toast
       if (window.toast) {
         window.toast.showSuccess('Diff refreshed successfully');
@@ -743,6 +737,59 @@ class LocalManager {
         refreshBtn.disabled = false;
         refreshBtn.classList.remove('btn-loading');
       }
+    }
+  }
+
+  /**
+   * Check staleness on page load and show badge or auto-refresh.
+   *
+   * Logic mirrors PRManager._checkStalenessOnLoad but uses the local
+   * GET endpoint and only supports the 'stale' badge type (no merged/closed).
+   * @returns {Promise<Object|null>} The staleness result, or null on failure.
+   */
+  async _checkLocalStalenessOnLoad() {
+    try {
+      const result = await this._fetchLocalStaleness();
+      if (!result) return null;
+
+      if (result.isStale !== true) return result;
+
+      // Stale — decide: silent refresh or show badge
+      const manager = window.prManager;
+      const hasData = await manager._hasActiveSessionData();
+      if (hasData) {
+        console.debug('[Local] working directory stale, session has data — showing badge');
+        manager._showStaleBadge('stale', 'Working directory has changed');
+      } else {
+        // No user work to protect — refresh silently
+        console.debug('[Local] working directory stale, no session data — auto-refreshing');
+        await this.refreshDiff();
+      }
+      return result;
+    } catch {
+      // Fail silently — staleness badge is best-effort
+      return null;
+    }
+  }
+
+  /**
+   * Fetch staleness data from the local review endpoint with a timeout.
+   * Uses GET to check the local review staleness endpoint.
+   * @returns {Promise<Object|null>} The parsed staleness result, or null on failure/timeout.
+   */
+  async _fetchLocalStaleness() {
+    try {
+      const staleAbort = new AbortController();
+      const staleTimer = setTimeout(() => staleAbort.abort(), STALE_TIMEOUT);
+      const response = await fetch(
+        `/api/local/${this.reviewId}/check-stale`,
+        { signal: staleAbort.signal }
+      );
+      clearTimeout(staleTimer);
+      if (!response.ok) return null;
+      return await response.json();
+    } catch {
+      return null;
     }
   }
 
@@ -862,6 +909,9 @@ class LocalManager {
       if (window.prManager?._initReviewEventListeners) {
         window.prManager._initReviewEventListeners();
       }
+
+      // Fire-and-forget staleness check — shows badge or auto-refreshes
+      manager._stalenessPromise = this._checkLocalStalenessOnLoad();
 
     } catch (error) {
       console.error('Error loading local review:', error);
@@ -1577,6 +1627,11 @@ class LocalManager {
 }
 
 // Initialize LocalManager when in local mode
-if (window.PAIR_REVIEW_LOCAL_MODE) {
+if (typeof window !== 'undefined' && window.PAIR_REVIEW_LOCAL_MODE) {
   window.localManager = new LocalManager();
+}
+
+// Export for testing (Node.js environment)
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { LocalManager };
 }
