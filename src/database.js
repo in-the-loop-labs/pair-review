@@ -1476,6 +1476,21 @@ const MIGRATIONS = {
       return;
     }
 
+    // Disable FK checks for the rebuild — old databases may have orphaned
+    // comments (review_id pointing to deleted reviews) because FK enforcement
+    // wasn't always active or CASCADE wasn't defined.
+    db.pragma('foreign_keys = OFF');
+
+    // Clean up orphaned comments before rebuild
+    if (tableExists(db, 'reviews')) {
+      const orphaned = db.prepare(
+        'DELETE FROM comments WHERE review_id IS NOT NULL AND review_id NOT IN (SELECT id FROM reviews)'
+      ).run();
+      if (orphaned.changes > 0) {
+        console.log(`  Cleaned up ${orphaned.changes} orphaned comments`);
+      }
+    }
+
     db.prepare(`CREATE TABLE IF NOT EXISTS comments_rebuild (
       id INTEGER PRIMARY KEY,
       review_id INTEGER,
@@ -1530,6 +1545,9 @@ const MIGRATIONS = {
 
     db.prepare('DROP TABLE comments').run();
     db.prepare('ALTER TABLE comments_rebuild RENAME TO comments').run();
+
+    // Re-enable FK checks
+    db.pragma('foreign_keys = ON');
 
     // Recreate all indexes on the new table
     db.prepare('CREATE INDEX IF NOT EXISTS idx_comments_review_file ON comments(review_id, file, line_start)').run();
