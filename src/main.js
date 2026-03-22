@@ -10,6 +10,7 @@ const Analyzer = require('./ai/analyzer');
 const { applyConfigOverrides } = require('./ai');
 const { handleLocalReview, findMainGitRoot } = require('./local-review');
 const { storePRData, registerRepositoryLocation, findRepositoryPath } = require('./setup/pr-setup');
+const { fireReviewStartedHook } = require('./hooks/payloads');
 const { normalizeRepository, resolveRenamedFile, resolveRenamedFileOld } = require('./utils/paths');
 const logger = require('./utils/logger');
 const simpleGit = require('simple-git');
@@ -786,9 +787,17 @@ async function performHeadlessReview(args, config, db, flags, options) {
 
     // Store PR data in database
     console.log('Storing pull request data...');
-    await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath, {
+    const { isNewReview, reviewId: storedReviewId } = await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath, {
       skipWorktreeRecord: !!flags.useCheckout
     });
+
+    // Fire review.started hook for new reviews (non-blocking)
+    if (isNewReview) {
+      fireReviewStartedHook({
+        reviewId: storedReviewId, prNumber: prInfo.number,
+        owner: prInfo.owner, repo: prInfo.repo, prData, config,
+      }).catch(err => { logger.warn(`Review hook failed: ${err.message}`); });
+    }
 
     // Get PR metadata ID for AI analysis
     const prMetadata = await queryOne(db, `

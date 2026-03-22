@@ -40,8 +40,12 @@ vi.spyOn(configModule, 'resolveMonorepoOptions');
 vi.spyOn(localReview, 'findMainGitRoot');
 vi.spyOn(GitWorktreeManager.prototype, 'pathExists');
 
+// Install spy on fireHooks BEFORE pr-setup.js is loaded
+const hookRunnerModule = require('../../src/hooks/hook-runner');
+vi.spyOn(hookRunnerModule, 'fireHooks');
+
 // NOW load pr-setup.js - its destructured variables will capture our spies
-const { findRepositoryPath } = require('../../src/setup/pr-setup');
+const { findRepositoryPath, storePRData } = require('../../src/setup/pr-setup');
 
 // The test repo root is a real git directory we can use for success cases
 const TEST_REPO_ROOT = path.resolve(__dirname, '../..');
@@ -460,5 +464,76 @@ describe('findRepositoryPath with monorepo configuration', () => {
     });
 
     expect(result.worktreeConfig).toBeNull();
+  });
+});
+
+// ============================================================================
+// storePRData - isNewReview return value
+// ============================================================================
+// Regression: storePRData creates the review record during CLI/web setup,
+// but previously didn't report whether the review was new. The GET route's
+// getOrCreate then found the existing record and fired review.loaded instead
+// of review.started.
+
+describe('storePRData returns isNewReview flag', () => {
+  let db;
+
+  const prInfo = { owner: 'owner', repo: 'repo', number: 99 };
+  const prData = {
+    title: 'Test PR',
+    body: 'Description',
+    author: 'octocat',
+    base_branch: 'main',
+    head_branch: 'feature',
+  };
+  const diff = '--- a/file.js\n+++ b/file.js\n@@ -1 +1 @@\n-old\n+new';
+  const changedFiles = [{ file: 'file.js', insertions: 1, deletions: 1, changes: 2 }];
+  const worktreePath = '/tmp/wt/pr-99';
+
+  beforeEach(async () => {
+    db = await createTestDatabase();
+    vi.clearAllMocks();
+    hookRunnerModule.fireHooks.mockImplementation(() => {});
+  });
+
+  afterEach(async () => {
+    if (db) {
+      await closeTestDatabase(db);
+    }
+  });
+
+  it('should return isNewReview: true when creating a review for the first time', async () => {
+    const result = await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath, {
+      skipWorktreeRecord: true
+    });
+
+    expect(result.isNewReview).toBe(true);
+    expect(result.reviewId).toBeGreaterThan(0);
+  });
+
+  it('should return isNewReview: false when updating an existing review', async () => {
+    // First call creates the review
+    const first = await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath, {
+      skipWorktreeRecord: true
+    });
+    expect(first.isNewReview).toBe(true);
+
+    // Second call finds the existing review
+    const second = await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath, {
+      skipWorktreeRecord: true
+    });
+    expect(second.isNewReview).toBe(false);
+    expect(second.reviewId).toBe(first.reviewId);
+  });
+
+  it('should return the correct reviewId for newly created reviews', async () => {
+    const result = await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath, {
+      skipWorktreeRecord: true
+    });
+
+    // Verify the returned reviewId matches what's in the database
+    const { queryOne: qo } = require('../../src/database');
+    const row = await qo(db, 'SELECT id FROM reviews WHERE pr_number = ? AND repository = ? COLLATE NOCASE', [99, 'owner/repo']);
+    expect(result.reviewId).toBe(row.id);
   });
 });

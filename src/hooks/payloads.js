@@ -120,11 +120,37 @@ function _resetUserCache() {
   cachedUser = undefined;
 }
 
+// ── Convenience: fire review.started in one call ────────────────
+
+const defaultFireDeps = {
+  fireHooks: null, // lazy-loaded to avoid circular deps
+};
+
+/**
+ * Build and fire a `review.started` hook for a PR review.
+ *
+ * Encapsulates the full sequence: build prContext, resolve the GitHub
+ * user, assemble the payload, and fire. Callers should use `.catch()`.
+ */
+async function fireReviewStartedHook({ reviewId, prNumber, owner, repo, prData, config }, _deps) {
+  const deps = { ...defaultFireDeps, ..._deps };
+  const prContext = {
+    number: prNumber, owner, repo,
+    author: prData.author, baseBranch: prData.base_branch, headBranch: prData.head_branch,
+    baseSha: prData.base_sha || null, headSha: prData.head_sha || null,
+  };
+  const user = await getCachedUser(config);
+  const payload = buildReviewStartedPayload({ reviewId, mode: 'pr', prContext, user });
+  const fire = deps.fireHooks || require('./hook-runner').fireHooks;
+  fire('review.started', payload, config);
+}
+
 module.exports = {
   buildReviewStartedPayload,
   buildReviewLoadedPayload,
   buildAnalysisStartedPayload,
   buildAnalysisCompletedPayload,
   getCachedUser,
+  fireReviewStartedHook,
   _resetUserCache,
 };
