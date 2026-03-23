@@ -201,7 +201,7 @@ describe('GitHub Collections Routes', () => {
 
       // Verify the search query includes the authenticated user's login
       expect(GitHubClient.prototype.searchPullRequests).toHaveBeenCalledWith(
-        'is:pr is:open user-review-requested:testuser'
+        'is:pr is:open archived:false user-review-requested:testuser'
       );
     });
 
@@ -425,7 +425,7 @@ describe('GitHub Collections Routes', () => {
 
       // Verify the search query includes the authenticated user's login with author:
       expect(GitHubClient.prototype.searchPullRequests).toHaveBeenCalledWith(
-        'is:pr is:open author:myuser'
+        'is:pr is:open archived:false author:myuser'
       );
     });
 
