@@ -34,6 +34,14 @@ const MAX_FILE_SIZE = 1024 * 1024;
 const GIT_DIFF_HAS_DIFFERENCES = 1;
 
 /**
+ * Common git diff flags used across all diff operations.
+ * - --no-color: Disable color output for consistent parsing
+ * - --no-ext-diff: Disable external diff drivers
+ * - --src-prefix/--dst-prefix: Ensure consistent a/ b/ prefixes (overrides user's diff.noprefix)
+ */
+const GIT_DIFF_COMMON_FLAGS = '--no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/';
+
+/**
  * Find the main git repository root, resolving through worktrees.
  * For regular repos, returns the repo root.
  * For worktrees, returns the parent/main repository root (not the worktree path).
@@ -401,7 +409,7 @@ function generateUntrackedDiffs(repoPath, untrackedFiles, wFlag) {
         const filePath = path.join(repoPath, untracked.file);
         let fileDiff;
         try {
-          fileDiff = execSync(`git diff --no-index --no-color --no-ext-diff${wFlag} -- /dev/null "${filePath}"`, {
+          fileDiff = execSync(`git diff --no-index ${GIT_DIFF_COMMON_FLAGS}${wFlag} -- /dev/null "${filePath}"`, {
             cwd: repoPath,
             encoding: 'utf8',
             stdio: ['pipe', 'pipe', 'pipe'],
@@ -478,37 +486,37 @@ async function generateScopedDiff(repoPath, scopeStart, scopeEnd, baseBranch, op
   try {
     if (hasBranch && !hasStaged && !hasUnstaged) {
       // Branch only → committed changes since merge-base
-      diff = execSync(`git diff ${mergeBaseSha}..HEAD --no-color --no-ext-diff --unified=25${wFlag}`, {
+      diff = execSync(`git diff ${mergeBaseSha}..HEAD ${GIT_DIFF_COMMON_FLAGS} --unified=25${wFlag}`, {
         cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
         maxBuffer: 50 * 1024 * 1024
       });
     } else if (hasBranch && hasStaged && !hasUnstaged) {
       // Branch–Staged → staged changes relative to merge-base
-      diff = execSync(`git diff --cached ${mergeBaseSha} --no-color --no-ext-diff --unified=25${wFlag}`, {
+      diff = execSync(`git diff --cached ${mergeBaseSha} ${GIT_DIFF_COMMON_FLAGS} --unified=25${wFlag}`, {
         cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
         maxBuffer: 50 * 1024 * 1024
       });
     } else if (hasBranch && hasUnstaged) {
       // Branch–Unstaged (or Branch–Untracked) → working tree vs merge-base
-      diff = execSync(`git diff ${mergeBaseSha} --no-color --no-ext-diff --unified=25${wFlag}`, {
+      diff = execSync(`git diff ${mergeBaseSha} ${GIT_DIFF_COMMON_FLAGS} --unified=25${wFlag}`, {
         cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
         maxBuffer: 50 * 1024 * 1024
       });
     } else if (hasStaged && !hasUnstaged) {
       // Staged only → cached changes
-      diff = execSync(`git diff --cached --no-color --no-ext-diff --unified=25${wFlag}`, {
+      diff = execSync(`git diff --cached ${GIT_DIFF_COMMON_FLAGS} --unified=25${wFlag}`, {
         cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
         maxBuffer: 50 * 1024 * 1024
       });
     } else if (hasStaged && hasUnstaged) {
       // Staged–Unstaged (or Staged–Untracked) → all changes vs HEAD
-      diff = execSync(`git diff HEAD --no-color --no-ext-diff --unified=25${wFlag}`, {
+      diff = execSync(`git diff HEAD ${GIT_DIFF_COMMON_FLAGS} --unified=25${wFlag}`, {
         cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
         maxBuffer: 50 * 1024 * 1024
       });
     } else if (hasUnstaged) {
       // Unstaged only or Unstaged–Untracked → working tree changes
-      diff = execSync(`git diff --no-color --no-ext-diff --unified=25${wFlag}`, {
+      diff = execSync(`git diff ${GIT_DIFF_COMMON_FLAGS} --unified=25${wFlag}`, {
         cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
         maxBuffer: 50 * 1024 * 1024
       });
@@ -590,7 +598,7 @@ async function computeScopedDigest(repoPath, scopeStart, scopeEnd) {
   // Staged in scope → cached diff content
   if (scopeIncludes(scopeStart, scopeEnd, 'staged')) {
     try {
-      const result = await execAsync('git diff --cached --no-ext-diff', {
+      const result = await execAsync(`git diff --cached ${GIT_DIFF_COMMON_FLAGS}`, {
         cwd: repoPath, encoding: 'utf8', maxBuffer: 50 * 1024 * 1024
       });
       parts.push('STAGED:' + result.stdout);
@@ -602,7 +610,7 @@ async function computeScopedDigest(repoPath, scopeStart, scopeEnd) {
   // Unstaged in scope → working tree diff
   if (scopeIncludes(scopeStart, scopeEnd, 'unstaged')) {
     try {
-      const result = await execAsync('git diff --no-ext-diff', {
+      const result = await execAsync(`git diff ${GIT_DIFF_COMMON_FLAGS}`, {
         cwd: repoPath, encoding: 'utf8', maxBuffer: 50 * 1024 * 1024
       });
       parts.push('UNSTAGED:' + result.stdout);

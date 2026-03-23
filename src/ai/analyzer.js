@@ -28,6 +28,14 @@ const { buildSparseCheckoutGuidance } = require('./prompts/sparse-checkout-guida
 const COUNCIL_CONSOLIDATION_THRESHOLD = 8;
 
 /**
+ * Common git diff flags used across all diff operations.
+ * - --no-color: Disable color output (guards against color.diff=always in user config)
+ * - --no-ext-diff: Disable external diff drivers
+ * - --src-prefix/--dst-prefix: Ensure consistent a/ b/ prefixes (overrides user's diff.noprefix)
+ */
+const GIT_DIFF_COMMON_FLAGS = '--no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/';
+
+/**
  * Build a human-readable display label for a council voice/reviewer.
  * Uses 1-based index so logs read "Reviewer 1", "Reviewer 2", etc.
  * @param {number} idx - 0-based array index
@@ -989,10 +997,10 @@ ${prMetadata.description || '(No description provided)'}
     const isLocal = prMetadata.reviewType === 'local';
     if (isLocal) {
       // For local mode, diff against HEAD to see working directory changes
-      return suffix ? `git diff --no-ext-diff HEAD ${suffix}` : 'git diff --no-ext-diff HEAD';
+      return suffix ? `git diff ${GIT_DIFF_COMMON_FLAGS} HEAD ${suffix}` : `git diff ${GIT_DIFF_COMMON_FLAGS} HEAD`;
     }
     // For PR mode, diff between base and head commits
-    const baseCmd = `git diff --no-ext-diff ${prMetadata.base_sha}...${prMetadata.head_sha}`;
+    const baseCmd = `git diff ${GIT_DIFF_COMMON_FLAGS} ${prMetadata.base_sha}...${prMetadata.head_sha}`;
     return suffix ? `${baseCmd} ${suffix}` : baseCmd;
   }
 
