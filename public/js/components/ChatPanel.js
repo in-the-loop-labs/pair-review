@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 /**
  * ChatPanel - AI chat sidebar component
  * Provides a sliding chat panel for conversing with AI about the current review.

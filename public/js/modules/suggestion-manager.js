@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 /**
  * SuggestionManager - AI suggestion handling
  * Handles display, adopt, dismiss, and restore of AI suggestions.

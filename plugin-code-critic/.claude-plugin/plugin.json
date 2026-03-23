@@ -8,7 +8,7 @@
   },
   "homepage": "https://github.com/in-the-loop-labs/pair-review",
   "repository": "https://github.com/in-the-loop-labs/pair-review",
-  "license": "GPL-3.0-or-later",
+  "license": "Apache-2.0",
   "keywords": [
     "code-review",
     "ai",

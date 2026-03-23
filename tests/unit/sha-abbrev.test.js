@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 import { describe, it, expect, vi } from 'vitest';
 const { getShaAbbrevLength, DEFAULT_SHA_ABBREV_LENGTH } = require('../../src/git/sha-abbrev');
 

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 /**
  * Tests that clicking a collection PR row (from "My Review Requests" or
  * "My PRs") does NOT persist the tab switch to localStorage, while normal

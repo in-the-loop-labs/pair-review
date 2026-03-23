@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 /**
  * Canonical category-to-emoji mapping for AI suggestion types.
  * Used by SuggestionManager and FileCommentManager to format adopted comments.

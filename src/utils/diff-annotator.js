@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 /**
  * Diff annotation utility for adding explicit line numbers to unified diffs
  * Provides two-column format showing both OLD (base) and NEW (head) line numbers
