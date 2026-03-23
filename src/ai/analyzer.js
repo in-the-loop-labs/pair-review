@@ -28,10 +28,11 @@ const { buildSparseCheckoutGuidance } = require('./prompts/sparse-checkout-guida
 const COUNCIL_CONSOLIDATION_THRESHOLD = 8;
 
 /**
- * Git diff flags to ensure consistent a/ b/ prefixes in output.
- * Overrides user's diff.noprefix or custom diff.srcPrefix/dstPrefix settings.
+ * Common git diff flags used across all diff operations.
+ * - --no-ext-diff: Disable external diff drivers
+ * - --src-prefix/--dst-prefix: Ensure consistent a/ b/ prefixes (overrides user's diff.noprefix)
  */
-const GIT_DIFF_PREFIX_FLAGS = '--src-prefix=a/ --dst-prefix=b/';
+const GIT_DIFF_COMMON_FLAGS = '--no-ext-diff --src-prefix=a/ --dst-prefix=b/';
 
 /**
  * Build a human-readable display label for a council voice/reviewer.
@@ -995,10 +996,10 @@ ${prMetadata.description || '(No description provided)'}
     const isLocal = prMetadata.reviewType === 'local';
     if (isLocal) {
       // For local mode, diff against HEAD to see working directory changes
-      return suffix ? `git diff --no-ext-diff ${GIT_DIFF_PREFIX_FLAGS} HEAD ${suffix}` : `git diff --no-ext-diff ${GIT_DIFF_PREFIX_FLAGS} HEAD`;
+      return suffix ? `git diff ${GIT_DIFF_COMMON_FLAGS} HEAD ${suffix}` : `git diff ${GIT_DIFF_COMMON_FLAGS} HEAD`;
     }
     // For PR mode, diff between base and head commits
-    const baseCmd = `git diff --no-ext-diff ${GIT_DIFF_PREFIX_FLAGS} ${prMetadata.base_sha}...${prMetadata.head_sha}`;
+    const baseCmd = `git diff ${GIT_DIFF_COMMON_FLAGS} ${prMetadata.base_sha}...${prMetadata.head_sha}`;
     return suffix ? `${baseCmd} ${suffix}` : baseCmd;
   }
 
