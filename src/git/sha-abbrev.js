@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 const { execSync } = require('child_process');
 
 const DEFAULT_SHA_ABBREV_LENGTH = 7;

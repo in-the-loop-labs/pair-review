@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 /**
  * DiffContext - Extract diff hunks for chat context enrichment.
  * Provides utilities to pull relevant unified diff sections for

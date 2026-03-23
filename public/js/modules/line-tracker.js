@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 /**
  * LineTracker - Line number mapping, range selection, and highlighting
  * Handles line number extraction, range selection for multi-line comments,

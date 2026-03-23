@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 /**
  * Tier icon utility for model selection UI
  * Returns emoji icons for different model tiers that work well in both light and dark themes

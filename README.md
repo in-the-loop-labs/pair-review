@@ -3,7 +3,7 @@
 > Your AI-powered code review partner - Close the feedback loop between you and AI coding agents
 
 [![npm version](https://img.shields.io/npm/v/@in-the-loop-labs/pair-review)](https://www.npmjs.com/package/@in-the-loop-labs/pair-review)
-[![License: GPL-3.0](https://img.shields.io/badge/License-GPL%203.0-blue.svg)](LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Node.js >= 20](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
 
 [GitHub Repository](https://github.com/in-the-loop-labs/pair-review)
@@ -819,7 +819,7 @@ Contributions welcome! Please:
 
 ## License
 
-GPL-3.0 License - see LICENSE file for details
+Apache-2.0 License - see LICENSE file for details
 
 ---
 

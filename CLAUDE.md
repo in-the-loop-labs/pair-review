@@ -113,7 +113,7 @@ Test structure:
 - **Git workflow**: Ask before committing to main or pushing to remote
 - **Releases**: Never run `npm run release` unless explicitly instructed—it publishes to npm and pushes tags
 - **Changesets**: Create a changeset (`.changeset/*.md`) for user-facing changes that warrant a version bump. Package "@in-the-loop-labs/pair-review". Use `patch` for bug fixes, `minor` for new features, `major` for breaking changes. Not needed for docs-only or internal refactoring changes. Name changesets based on the actual change.
-- Add a 'SPDX-License-Identifier: GPL-3.0-or-later' notice at the start of all source code files.
+- Add a 'Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0' notice at the start of all source code files.
 - Package name: `pair-review`
 - No specific Node version requirement (use modern/recent)
 - Adapter pattern for AI providers to enable future extensibility

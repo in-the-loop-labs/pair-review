@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 const express = require('express');
 const path = require('path');
 const { loadConfig, getGitHubToken, resolveDbName, warnIfDevModeWithoutDbName } = require('./config');
