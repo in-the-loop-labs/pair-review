@@ -715,14 +715,14 @@ class LocalManager {
     if (!opts.silent && window.confirmDialog) {
       const dialogResult = await window.confirmDialog.show({
         title: 'New Commit Detected',
-        message: `HEAD has moved from ${originalSha} to ${newSha}. The current diff was captured against the previous HEAD commit.`,
-        confirmText: 'Update This Session',
-        confirmDesc: 'Use the new HEAD commit with the current review',
+        message: `HEAD has moved from ${originalSha} to ${newSha}. Your review is based on the old commit.`,
+        confirmText: 'Continue This Session',
+        confirmDesc: 'Keep comments and suggestions, refresh diff to new HEAD',
         confirmClass: 'btn-primary',
         secondaryText: 'Start New Session',
-        secondaryDesc: 'Review by comparing to the new HEAD commit',
-        cancelText: 'Keep Current Diff',
-        cancelDesc: 'Continue reviewing without refreshing'
+        secondaryDesc: 'Begin a fresh review from the new commit',
+        cancelText: 'Ignore the Change',
+        cancelDesc: 'Continue reviewing using the previous diff'
       });
 
       if (dialogResult === 'confirm') {
