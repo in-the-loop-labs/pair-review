@@ -28,6 +28,12 @@ const { buildSparseCheckoutGuidance } = require('./prompts/sparse-checkout-guida
 const COUNCIL_CONSOLIDATION_THRESHOLD = 8;
 
 /**
+ * Git diff flags to ensure consistent a/ b/ prefixes in output.
+ * Overrides user's diff.noprefix or custom diff.srcPrefix/dstPrefix settings.
+ */
+const GIT_DIFF_PREFIX_FLAGS = '--src-prefix=a/ --dst-prefix=b/';
+
+/**
  * Build a human-readable display label for a council voice/reviewer.
  * Uses 1-based index so logs read "Reviewer 1", "Reviewer 2", etc.
  * @param {number} idx - 0-based array index
@@ -989,10 +995,10 @@ ${prMetadata.description || '(No description provided)'}
     const isLocal = prMetadata.reviewType === 'local';
     if (isLocal) {
       // For local mode, diff against HEAD to see working directory changes
-      return suffix ? `git diff --no-ext-diff HEAD ${suffix}` : 'git diff --no-ext-diff HEAD';
+      return suffix ? `git diff --no-ext-diff ${GIT_DIFF_PREFIX_FLAGS} HEAD ${suffix}` : `git diff --no-ext-diff ${GIT_DIFF_PREFIX_FLAGS} HEAD`;
     }
     // For PR mode, diff between base and head commits
-    const baseCmd = `git diff --no-ext-diff ${prMetadata.base_sha}...${prMetadata.head_sha}`;
+    const baseCmd = `git diff --no-ext-diff ${GIT_DIFF_PREFIX_FLAGS} ${prMetadata.base_sha}...${prMetadata.head_sha}`;
     return suffix ? `${baseCmd} ${suffix}` : baseCmd;
   }
 
