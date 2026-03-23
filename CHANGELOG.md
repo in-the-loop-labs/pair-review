@@ -1,5 +1,35 @@
 # Changelog
 
+## 2.7.0
+
+### Minor Changes
+
+- 826e880: Add branch review mode: when opening local mode on a branch with no uncommitted changes, detect commits ahead of the base branch and offer to review them
+- c37cdf0: Add bulk actions with selection mode on the index page: bulk delete for Pull Requests and Local Reviews tabs, bulk open and analyze for My Review Requests and My PRs tabs
+- 3d2e104: Notify the chat agent when diff state changes. Queues invisible context messages on HEAD SHA changes, diff refreshes, and scope changes so the agent stays aware of what it's reviewing.
+- ab703a7: Add `chat.started` and `chat.resumed` hook events for tracking chat session usage
+- dfaab24: Add hooks system for running external commands on lifecycle events (review.started, review.loaded, analysis.started, analysis.completed). Configure in ~/.pair-review/config.json under the `hooks` key.
+- 5087f44: List reviewed PRs from pr_metadata instead of worktrees table, adding storage status and full cascade delete
+- 2e0b214: Add stale badge indicator for local reviews on page load, matching PR mode behavior
+- a9b2a17: Add "Minimize comments" toggle to diff options that collapses inline comments and AI suggestions to compact indicator buttons on diff lines. Person icon (purple) for user comments, speech-bubble-with-sparkles icon (purple) for adopted suggestions, and sparkles icon (amber) for AI suggestions. Click an indicator to expand that line's comments. Review panel navigation scrolls to the diff line when minimized. Preference persists via localStorage.
+- a2f47be: Auto-cleanup stale reviews after configurable retention period (default 21 days)
+- ec77ece: Allow updating existing review session when HEAD SHA changes instead of forcing new session
+
+### Patch Changes
+
+- 394310e: Fix local mode session identity to include branch name. Previously, sessions were keyed by (path, HEAD SHA) only, so switching branches at the same commit would reuse the wrong session. Sessions are now keyed by (path, HEAD SHA, branch) and branch-scope sessions also match on branch name.
+- 2f8937a: Use Git's dynamic SHA abbreviation length instead of hardcoded 7-char truncation. Calls `git rev-parse --short HEAD` to respect the repository's `core.abbrev` setting and Git's auto-scaling for large monorepos.
+- 8997d03: fix: fire review.started hook when PR review is created for the first time
+
+  Previously, the review.started hook never fired for PR reviews because the
+  database record was created during CLI/web setup (storePRData), and the GET
+  route's getOrCreate then found the existing record and fired review.loaded
+  instead. Now storePRData reports whether the review is new, and the setup
+  paths (setupPRReview and main.js CLI) fire review.started directly.
+
+- ccef871: Improve browser tab titles to show context (PR number or branch name) instead of generic text. Flash tab title on review completion or failure when the tab is in the background, reverting when the tab regains focus.
+- c83d97f: Fix Graphite CLI parent branch detection using correct `gt parent` command
+
 ## 2.6.3
 
 ### Patch Changes
