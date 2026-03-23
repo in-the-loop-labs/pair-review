@@ -1587,6 +1587,13 @@
   color: #f85149;
 }
 
+/* When collapsed, the wrapper is only as tall as the header, so the header's
+   sticky positioning can't push it below the toolbar.  Adding scroll-margin
+   ensures scrollIntoView() lands the header below the sticky toolbar. */
+.d2h-file-wrapper.collapsed {
+  scroll-margin-top: var(--toolbar-height, 0px);
+}
+
 /* Hide diff content when collapsed */
 .d2h-file-wrapper.collapsed .d2h-file-body,
 .d2h-file-wrapper.collapsed .d2h-diff-table {
