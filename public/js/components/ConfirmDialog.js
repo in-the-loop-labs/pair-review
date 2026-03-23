@@ -133,10 +133,20 @@ class ConfirmDialog {
         messageElement.textContent = options.message || 'Are you sure?';
       }
 
+      // Helper: set button label + optional description subtitle
+      const setBtnContent = (btn, label, description) => {
+        if (!btn) return;
+        if (description) {
+          btn.innerHTML = `<span class="btn-label">${label}</span><span class="btn-desc">${description}</span>`;
+        } else {
+          btn.textContent = label;
+        }
+      };
+
       // Set confirm button text and style
       const confirmBtn = this.modal.querySelector('#confirm-dialog-btn');
       if (confirmBtn) {
-        confirmBtn.textContent = options.confirmText || 'Confirm';
+        setBtnContent(confirmBtn, options.confirmText || 'Confirm', options.confirmDesc);
         // Remove previous style classes and add new one
         confirmBtn.classList.remove('btn-primary', 'btn-secondary', 'btn-danger', 'btn-warning');
         const confirmClass = options.confirmClass || 'btn-danger';
@@ -145,17 +155,26 @@ class ConfirmDialog {
 
       // Set secondary button (optional 3rd button)
       const secondaryBtn = this.modal.querySelector('#confirm-dialog-secondary-btn');
+      const container = this.modal.querySelector('.confirm-dialog-container');
       if (secondaryBtn) {
         if (options.secondaryText) {
-          secondaryBtn.textContent = options.secondaryText;
+          setBtnContent(secondaryBtn, options.secondaryText, options.secondaryDesc);
           secondaryBtn.style.display = '';
           // Remove previous style classes and add new one
           secondaryBtn.classList.remove('btn-primary', 'btn-secondary', 'btn-danger', 'btn-warning');
           const secondaryClass = options.secondaryClass || 'btn-secondary';
           secondaryBtn.classList.add(secondaryClass);
+          if (container) container.classList.add('has-secondary');
         } else {
           secondaryBtn.style.display = 'none';
+          if (container) container.classList.remove('has-secondary');
         }
+      }
+
+      // Set cancel button text (optional)
+      const cancelBtn = this.modal.querySelector('.modal-footer [data-action="cancel"]');
+      if (cancelBtn) {
+        setBtnContent(cancelBtn, options.cancelText || 'Cancel', options.cancelDesc);
       }
 
       // Store callbacks with promise resolution

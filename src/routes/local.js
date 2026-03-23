@@ -1343,13 +1343,13 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
     const scopeEnd = review.local_scope_end || DEFAULT_SCOPE.end;
     const hasBranch = includesBranch(scopeStart);
     let currentHeadSha;
-    let sessionChanged = false;
-    let newSessionId = null;
+    let headShaChanged = false;
 
     try {
       currentHeadSha = await getHeadSha(localPath);
 
       if (originalHeadSha && currentHeadSha !== originalHeadSha) {
+        headShaChanged = true;
         const abbrevLen = getShaAbbrevLength(localPath);
         logger.log('API', `HEAD changed: ${originalHeadSha.substring(0, abbrevLen)} -> ${currentHeadSha.substring(0, abbrevLen)}`, 'yellow');
 
@@ -1357,34 +1357,26 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
           // Branch scope: session persists across HEAD changes — just update the SHA
           await reviewRepo.updateLocalHeadSha(reviewId, currentHeadSha);
           logger.log('API', `Updated HEAD SHA on branch-scope session ${reviewId}`, 'cyan');
-          // sessionChanged stays false — no redirect needed
-        } else {
-          // Non-branch scope: HEAD change means a new session
-          sessionChanged = true;
-
-          // Check if a session already exists for the new HEAD
-          let refreshBranch;
-          try { refreshBranch = await getCurrentBranch(localPath); } catch (_) { /* non-fatal */ }
-          const existingSession = await reviewRepo.findLocalReview(localPath, currentHeadSha, refreshBranch);
-          if (existingSession) {
-            newSessionId = existingSession.id;
-            logger.log('API', `Existing session found for new HEAD: ${newSessionId}`, 'cyan');
-          } else {
-            const repository = await getRepositoryName(localPath);
-            newSessionId = await reviewRepo.upsertLocalReview({
-              localPath: localPath,
-              localHeadSha: currentHeadSha,
-              repository,
-              scopeStart,
-              scopeEnd,
-              localHeadBranch: refreshBranch
-            });
-            logger.log('API', `Created new session for new HEAD: ${newSessionId}`, 'cyan');
-          }
         }
+        // Non-branch scope: defer decision to frontend via resolve-head-change endpoint
       }
     } catch (headError) {
       logger.warn(`Could not check HEAD SHA: ${headError.message}`);
+    }
+
+    // Non-branch HEAD change: skip diff computation entirely — the old diff is
+    // preserved until the user decides (via resolve-head-change) what to do.
+    // The resolve-head-change endpoint will recompute the diff for whichever
+    // action the user picks (update or new-session).
+    if (headShaChanged && !hasBranch) {
+      return res.json({
+        success: true,
+        message: 'HEAD changed — awaiting user decision',
+        headShaChanged,
+        previousHeadSha: originalHeadSha,
+        currentHeadSha: currentHeadSha || null,
+        stats: {}
+      });
     }
 
     const scopedResult = await generateScopedDiff(localPath, scopeStart, scopeEnd, review.local_base_branch);
@@ -1392,13 +1384,9 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
     const stats = scopedResult.stats;
     const digest = await computeScopedDigest(localPath, scopeStart, scopeEnd);
 
-    // Update the stored diff data for the appropriate session
-    const targetSessionId = sessionChanged ? newSessionId : reviewId;
-    setLocalReviewDiff(targetSessionId, { diff, stats, digest });
-
-    // Persist diff to database for future session recovery
+    setLocalReviewDiff(reviewId, { diff, stats, digest });
     try {
-      await reviewRepo.saveLocalDiff(targetSessionId, { diff, stats, digest });
+      await reviewRepo.saveLocalDiff(reviewId, { diff, stats, digest });
     } catch (persistError) {
       logger.warn(`Could not persist diff to database: ${persistError.message}`);
     }
@@ -1408,9 +1396,7 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
     res.json({
       success: true,
       message: 'Diff refreshed successfully',
-      sessionChanged,
-      newSessionId: sessionChanged ? newSessionId : null,
-      headShaChanged: !!(originalHeadSha && currentHeadSha && currentHeadSha !== originalHeadSha),
+      headShaChanged,
       previousHeadSha: originalHeadSha,
       currentHeadSha: currentHeadSha || null,
       stats: {
@@ -1426,6 +1412,109 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
     res.status(500).json({
       error: 'Failed to refresh diff: ' + error.message
     });
+  }
+});
+
+/**
+ * Resolve a HEAD SHA change on a non-branch-scoped review.
+ * Called by the frontend after the user chooses how to handle a detected HEAD change.
+ *
+ * action: 'update'      — keep the current session, update its SHA, recompute diff
+ * action: 'new-session'  — create a fresh session for the new HEAD, return its ID
+ */
+router.post('/api/local/:reviewId/resolve-head-change', async (req, res) => {
+  try {
+    const reviewId = parseInt(req.params.reviewId);
+    if (isNaN(reviewId) || reviewId <= 0) {
+      return res.status(400).json({ error: 'Invalid review ID' });
+    }
+
+    const { action, newHeadSha } = req.body || {};
+    if (!action || !['update', 'new-session'].includes(action)) {
+      return res.status(400).json({ error: 'action must be "update" or "new-session"' });
+    }
+    if (!newHeadSha || typeof newHeadSha !== 'string') {
+      return res.status(400).json({ error: 'newHeadSha is required' });
+    }
+
+    const db = req.app.get('db');
+    const reviewRepo = new ReviewRepository(db);
+    const review = await reviewRepo.getLocalReviewById(reviewId);
+    if (!review) {
+      return res.status(404).json({ error: `Local review #${reviewId} not found` });
+    }
+
+    const localPath = review.local_path;
+    if (!localPath) {
+      return res.status(400).json({ error: 'Local review is missing path information' });
+    }
+
+    const scopeStart = review.local_scope_start || DEFAULT_SCOPE.start;
+    const scopeEnd = review.local_scope_end || DEFAULT_SCOPE.end;
+
+    if (action === 'update') {
+      // Check for UNIQUE conflict before updating
+      const headBranch = review.local_head_branch || null;
+      const conflict = await reviewRepo.getLocalReview(localPath, newHeadSha, headBranch);
+      if (conflict && conflict.id !== reviewId) {
+        logger.log('API', `UNIQUE conflict: session #${conflict.id} already exists for this HEAD`, 'yellow');
+        return res.json({ success: true, action: 'redirect', sessionId: conflict.id });
+      }
+
+      // Update SHA
+      await reviewRepo.updateLocalHeadSha(reviewId, newHeadSha);
+      logger.log('API', `Updated HEAD SHA on session ${reviewId}`, 'cyan');
+
+      // Recompute and persist diff
+      const scopedResult = await generateScopedDiff(localPath, scopeStart, scopeEnd, review.local_base_branch);
+      const digest = await computeScopedDigest(localPath, scopeStart, scopeEnd);
+      setLocalReviewDiff(reviewId, { diff: scopedResult.diff, stats: scopedResult.stats, digest });
+      try {
+        await reviewRepo.saveLocalDiff(reviewId, { diff: scopedResult.diff, stats: scopedResult.stats, digest });
+      } catch (persistError) {
+        logger.warn(`Could not persist diff to database: ${persistError.message}`);
+      }
+
+      return res.json({ success: true, action: 'updated' });
+    }
+
+    // action === 'new-session'
+    let branch;
+    try { branch = await getCurrentBranch(localPath); } catch (_) { /* non-fatal */ }
+    const repository = await getRepositoryName(localPath);
+
+    // Check for an existing session at the new HEAD
+    const existing = await reviewRepo.findLocalReview(localPath, newHeadSha, branch);
+    if (existing) {
+      logger.log('API', `Existing session found for new HEAD: ${existing.id}`, 'cyan');
+      return res.json({ success: true, action: 'new-session', newSessionId: existing.id });
+    }
+
+    const newSessionId = await reviewRepo.upsertLocalReview({
+      localPath,
+      localHeadSha: newHeadSha,
+      repository,
+      scopeStart,
+      scopeEnd,
+      localHeadBranch: branch
+    });
+    logger.log('API', `Created new session for new HEAD: ${newSessionId}`, 'cyan');
+
+    // Compute and persist diff so the new session is immediately usable
+    const newScopeResult = await generateScopedDiff(localPath, scopeStart, scopeEnd, review.local_base_branch);
+    const newDigest = await computeScopedDigest(localPath, scopeStart, scopeEnd);
+    setLocalReviewDiff(newSessionId, { diff: newScopeResult.diff, stats: newScopeResult.stats, digest: newDigest });
+    try {
+      await reviewRepo.saveLocalDiff(newSessionId, { diff: newScopeResult.diff, stats: newScopeResult.stats, digest: newDigest });
+    } catch (persistError) {
+      logger.warn(`Could not persist diff for new session: ${persistError.message}`);
+    }
+
+    return res.json({ success: true, action: 'new-session', newSessionId });
+
+  } catch (error) {
+    logger.error('Error resolving head change:', error);
+    res.status(500).json({ error: 'Failed to resolve head change: ' + error.message });
   }
 });
 
