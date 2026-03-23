@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.0.0
+
+### Major Changes
+
+- ce55a56: Relicense from GPL-3.0 to Apache-2.0
+
 ## 2.7.0
 
 ### Minor Changes
