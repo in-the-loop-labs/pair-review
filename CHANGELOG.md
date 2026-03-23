@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.6.3
+
+### Patch Changes
+
+- cfd5e5d: Add Composer 2 and Composer 2 Fast models to Cursor Agent provider, remove deprecated Composer 1
+- ebba158: Fix scrolling to collapsed files in file navigator so the file header is fully visible below the sticky toolbar
+- 6e9eec7: Exclude PRs from archived repositories in review requests and my PRs lists
+- 61dbfc8: Add --no-ext-diff to all git diff execution sites to prevent external diff tools from corrupting parsed output
+
 ## 2.6.2
 
 ### Patch Changes
