@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.0.2
+
+### Patch Changes
+
+- ba4f8e1: Fix branch scope selector not becoming available after committing changes in a local review session
+
 ## 3.0.1
 
 ### Patch Changes
