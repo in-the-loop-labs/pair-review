@@ -12762,3 +12762,57 @@ body.resizing * {
   opacity: 0.4;
   cursor: not-allowed;
 }
+
+/* Severity badges for executable provider suggestions */
+.severity-badge {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-weight: 500;
+  margin-left: 4px;
+}
+
+.severity-critical {
+  background: #fde8e8;
+  color: #d32f2f;
+}
+
+.severity-medium {
+  background: #fff3e0;
+  color: #ef6c00;
+}
+
+.severity-minor {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+[data-theme="dark"] .severity-critical {
+  background: #3d1c1c;
+  color: #ef9a9a;
+}
+
+[data-theme="dark"] .severity-medium {
+  background: #3d2e1c;
+  color: #ffcc80;
+}
+
+[data-theme="dark"] .severity-minor {
+  background: #1c3d1c;
+  color: #a5d6a7;
+}
+
+/* Note shown when executable provider is selected (no level toggles) */
+.executable-provider-note {
+  padding: 8px 12px;
+  background: var(--bg-tertiary, #f6f8fa);
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--fg-muted, #656d76);
+  margin-top: 8px;
+}
+
+[data-theme="dark"] .executable-provider-note {
+  background: rgba(56, 139, 253, 0.1);
+  color: var(--color-text-secondary, #8b949e);
+}

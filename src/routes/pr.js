@@ -40,11 +40,15 @@ const {
   determineCompletionInfo,
   broadcastProgress,
   createProgressCallback,
-  parseEnabledLevels
+  parseEnabledLevels,
+  registerProcess: registerProcessForCancellation
 } = require('./shared');
 const { safeParseJson } = require('../utils/safe-parse-json');
 const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
 const { TIERS, TIER_ALIASES, VALID_TIERS, resolveTier } = require('../ai/prompts/config');
+const { getProviderClass, createProvider } = require('../ai/provider');
+const { CommentRepository } = require('../database');
+const { runExecutableAnalysis } = require('./executable-analysis');
 const analysesRouter = require('./analyses');
 
 const router = express.Router();
@@ -1460,6 +1464,79 @@ router.post('/api/parse-pr-url', (req, res) => {
 // ==========================================================================
 
 /**
+ * Handle analysis for executable providers in PR mode.
+ * Spawns the external CLI against the PR worktree and maps output to suggestions.
+ */
+async function handleExecutablePRAnalysis(req, res, {
+  reviewId, review, prNumber, owner, repo, repository, worktreePath, prMetadata,
+  selectedProvider, selectedModel, repoInstructions, requestInstructions,
+  combinedInstructions, runId, analysisId, reviewRepo
+}) {
+  const prContext = {
+    number: prNumber, owner, repo,
+    author: prMetadata.author, baseBranch: prMetadata.base_branch, headBranch: prMetadata.head_branch,
+    baseSha: prMetadata.base_sha || null, headSha: prMetadata.head_sha || null,
+  };
+
+  return runExecutableAnalysis(req, res, {
+    reviewId,
+    review,
+    selectedProvider,
+    selectedModel,
+    repoInstructions,
+    requestInstructions,
+    runId,
+    analysisId,
+    repository,
+    reviewType: 'pr',
+    headSha: prMetadata.head_sha,
+    extraInitialStatus: { prNumber }
+  }, {
+    activeAnalyses,
+    reviewToAnalysisId,
+    broadcastProgress,
+    broadcastReviewEvent,
+    registerProcessForCancellation
+  }, {
+    logLabel: `PR #${prNumber}`,
+    buildContext: (_r, { selectedModel: model, requestInstructions: customInstructions }) => ({
+      title: prMetadata.title || `PR #${prNumber}`,
+      description: prMetadata.description || '',
+      cwd: worktreePath,
+      model,
+      baseSha: prMetadata.base_sha || null,
+      headSha: prMetadata.head_sha || null,
+      baseBranch: prMetadata.base_branch || null,
+      headBranch: prMetadata.head_branch || null,
+      customInstructions: customInstructions || null
+    }),
+    buildHookPayload: () => ({
+      mode: 'pr',
+      prContext
+    }),
+    onSuccess: async (db, _runId, { summary }) => {
+      // Update pr_metadata with last_ai_run_id
+      const { PRMetadataRepository } = require('../database');
+      const prMetadataRepo = new PRMetadataRepository(db);
+      try {
+        await prMetadataRepo.updateLastAiRunId(prMetadata.id, _runId);
+      } catch (e) {
+        logger.warn(`Failed to update pr_metadata: ${e.message}`);
+      }
+
+      // Save summary
+      if (summary) {
+        try {
+          await reviewRepo.upsertSummary(prNumber, repository, summary);
+        } catch (e) {
+          logger.warn(`Failed to save summary: ${e.message}`);
+        }
+      }
+    }
+  });
+}
+
+/**
  * Trigger AI analysis for a PR
  */
 router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
@@ -1555,6 +1632,33 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
     const analysisId = runId;
 
     const { review } = await reviewRepo.getOrCreate({ prNumber, repository });
+
+    // Check if selected provider is an executable provider (external tool)
+    const ProviderClass = getProviderClass(provider);
+    if (ProviderClass?.isExecutable) {
+      // Reject local-only executable providers in PR mode
+      if (ProviderClass.localOnly) {
+        return res.status(400).json({ error: `Provider "${provider}" is only available for local reviews` });
+      }
+      return handleExecutablePRAnalysis(req, res, {
+        reviewId: review.id,
+        review,
+        prNumber,
+        owner,
+        repo,
+        repository,
+        worktreePath,
+        prMetadata,
+        selectedProvider: provider,
+        selectedModel: model,
+        repoInstructions,
+        requestInstructions,
+        combinedInstructions,
+        runId,
+        analysisId,
+        reviewRepo
+      });
+    }
 
     const analysisRunRepo = new AnalysisRunRepository(db);
     const levelsConfig = parseEnabledLevels(requestEnabledLevels, requestSkipLevel3);

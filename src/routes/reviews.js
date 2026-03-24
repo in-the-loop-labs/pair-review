@@ -533,6 +533,7 @@ router.get('/api/reviews/:reviewId/suggestions', validateReviewId, async (req, r
         reasoning,
         status,
         is_file_level,
+        severity,
         created_at,
         updated_at
       FROM comments

@@ -191,6 +191,35 @@
           "badgeClass": "badge-power"
         }
       ]
+    },
+
+    "my-review-tool": {
+      "_comment": "Example executable provider. Runs an external CLI tool and maps its output to pair-review's suggestion format using an LLM. The tool's raw output is transformed via mapping_instructions.",
+      "type": "executable",
+      "command": "my-review-tool",
+      "args": ["analyze"],
+      "name": "My Review Tool",
+      "supports_levels": false,
+      "context_args": {
+        "title": "--title",
+        "description": "--description",
+        "output_dir": "--output-dir",
+        "head_sha": "--sha",
+        "model": "--model",
+        "head_branch": "--branch"
+      },
+      "output_glob": "**/results.json",
+      "mapping_instructions": "The tool outputs JSON with a 'findings' array and a 'summary' string. Each finding has: category (bug/style/perf), priority (high/medium/low), title, body, fix, path, start_line, end_line. Map path to file, body to description, fix to suggestion. Map priority to severity: high=critical, medium=medium, low=minor. Map confidence: high=0.9, medium=0.7, low=0.4.",
+      "env": {},
+      "installInstructions": "Install my-review-tool: pip install my-review-tool",
+      "models": [
+        {
+          "id": "default",
+          "name": "Default",
+          "tier": "thorough",
+          "default": true
+        }
+      ]
     }
   },
 

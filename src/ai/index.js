@@ -33,6 +33,9 @@ const {
   clearCache: clearAvailabilityCache
 } = require('./provider-availability');
 
+// Load executable provider factory (used by applyConfigOverrides for dynamic registration)
+const { createExecutableProviderClass } = require('./executable-provider');
+
 // Load and register all providers
 // Each provider self-registers when loaded
 require('./claude-provider');
@@ -69,6 +72,9 @@ module.exports = {
   inferModelDefaults,
   resolveDefaultModel,
   prettifyModelId,
+
+  // Executable provider factory
+  createExecutableProviderClass,
 
   // Provider availability checking
   getCachedAvailability,

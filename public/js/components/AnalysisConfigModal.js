@@ -452,9 +452,14 @@ class AnalysisConfigModal {
     const container = this.modal.querySelector('#provider-toggle-container');
     if (!container) return;
 
+    // Detect if this is a PR review (not local) based on URL
+    const isPRReview = !window.location.pathname.startsWith('/local');
+
     // Filter to only show available providers, sorted alphabetically by name
     const availableProviderIds = Object.keys(this.providers).filter(providerId => {
       const provider = this.providers[providerId];
+      // Hide localOnly providers when reviewing a PR
+      if (isPRReview && provider.localOnly) return false;
       // Show provider if no availability info (check pending) or if explicitly available
       return !provider.availability || provider.availability.available;
     }).sort((a, b) => (this.providers[a].name || a).localeCompare(this.providers[b].name || b));
@@ -548,6 +553,27 @@ class AnalysisConfigModal {
 
     // Re-render model cards (handles its own event listeners)
     this.renderModelCards();
+
+    // Toggle level toggles visibility based on provider's supportsLevels flag
+    const provider = this.providers[providerId];
+    const levelToggles = this.modal.querySelector('.single-level-toggles');
+    const skipLevel3Info = this.modal.querySelector('#skip-level3-info');
+    const existingNote = this.modal.querySelector('.executable-provider-note');
+
+    if (provider.supportsLevels === false) {
+      if (levelToggles) levelToggles.style.display = 'none';
+      if (skipLevel3Info) skipLevel3Info.style.display = 'none';
+      if (!existingNote) {
+        const note = document.createElement('div');
+        note.className = 'executable-provider-note';
+        note.textContent = 'This provider runs its own analysis pipeline';
+        levelToggles?.parentNode?.appendChild(note);
+      }
+    } else {
+      if (levelToggles) levelToggles.style.display = '';
+      if (skipLevel3Info) skipLevel3Info.style.display = '';
+      if (existingNote) existingNote.remove();
+    }
 
     // Update selection state for the selected model
     if (this.selectedModel) {
