@@ -592,6 +592,21 @@ class CouncilProgressModal {
       }
     }
 
+    // Handle executable voice updates (level 'exec'):
+    // Executable voices emit progress with level: 'exec' instead of numeric 1/2/3.
+    // The single "Running analysis..." row uses data-vc-level="exec".
+    const execLevel = status.levels?.exec;
+    if (execLevel) {
+      if (execLevel.voices) {
+        for (const [voiceId, vStatus] of Object.entries(execLevel.voices)) {
+          this._setVoiceCentricLevelState(voiceId, 'exec', vStatus.status || 'running', vStatus);
+        }
+      }
+      if (execLevel.streamEvent?.text && execLevel.voiceId) {
+        this._setVoiceCentricStreamText(execLevel.voiceId, 'exec', execLevel.streamEvent.text);
+      }
+    }
+
     // Handle per-voice orchestration updates (level 4):
     // In voice-centric mode, each reviewer has a consolidation child at data-vc-level="4".
     // The backend tracks per-voice orchestration state in levels[4].voices, including
@@ -1147,6 +1162,21 @@ class CouncilProgressModal {
       }
     }
 
+    // Executable voices don't require enabled levels — add any not already captured
+    // (handles all-executable councils where no levels are enabled)
+    if (config.voices) {
+      const providersInfo = window.analysisConfigModal?.providers || {};
+      for (const voice of config.voices) {
+        if (providersInfo[voice.provider]?.isExecutable) {
+          const sig = `${voice.provider}|${voice.model}|${voice.tier || 'balanced'}|${voice.customInstructions || ''}`;
+          if (!seenSignatures.has(sig)) {
+            seenSignatures.add(sig);
+            uniqueVoices.push(voice);
+          }
+        }
+      }
+    }
+
     // Build voiceMap: voiceKey -> { voice, levels } using deduplicated array indices
     const voiceMap = new Map();
     uniqueVoices.forEach((voice, idx) => {
@@ -1156,9 +1186,13 @@ class CouncilProgressModal {
 
     let html = '<div class="council-progress-tree">';
 
+    // Check which providers are executable via the cached providers list
+    const providersMap = window.analysisConfigModal?.providers || {};
+
     // Build a parent row for each unique voice
     for (const [voiceKey, { voice, levels }] of voiceMap) {
       const label = this._formatVoiceLabel(voice);
+      const isExecutable = providersMap[voice.provider]?.isExecutable || false;
 
       html += `
         <div class="council-level" data-voice-key="${voiceKey}">
@@ -1170,31 +1204,46 @@ class CouncilProgressModal {
           <div class="council-level-children">
       `;
 
-      // Level children (orchestration row is always last, added separately below)
-      levels.forEach((levelNum) => {
-        const connectorClass = 'connector-mid';
+      if (isExecutable) {
+        // Executable voices: single "Running analysis..." row instead of L1/L2/L3
         html += `
-          <div class="council-voice ${connectorClass}" data-vc-voice="${voiceKey}" data-vc-level="${levelNum}">
-            <span class="council-voice-connector ${connectorClass}"></span>
-            <span class="council-voice-icon running"><span class="council-spinner"></span></span>
-            <span class="council-voice-label">Level ${levelNum} \u2014 ${levelNames[levelNum]}</span>
-            <span class="council-voice-status running">Running...</span>
+          <div class="council-voice connector-last" data-vc-voice="${voiceKey}" data-vc-level="exec">
+            <span class="council-voice-connector connector-last"></span>
+            <span class="council-voice-icon pending">\u25CB</span>
+            <span class="council-voice-label">Running analysis\u2026</span>
+            <span class="council-voice-status pending">Pending</span>
             <div class="council-voice-detail">
               <div class="council-voice-snippet" style="display: none;"></div>
             </div>
           </div>
         `;
-      });
+      } else {
+        // Native voices: L1/L2/L3 children + orchestration
+        levels.forEach((levelNum) => {
+          const connectorClass = 'connector-mid';
+          html += `
+            <div class="council-voice ${connectorClass}" data-vc-voice="${voiceKey}" data-vc-level="${levelNum}">
+              <span class="council-voice-connector ${connectorClass}"></span>
+              <span class="council-voice-icon running"><span class="council-spinner"></span></span>
+              <span class="council-voice-label">Level ${levelNum} \u2014 ${levelNames[levelNum]}</span>
+              <span class="council-voice-status running">Running...</span>
+              <div class="council-voice-detail">
+                <div class="council-voice-snippet" style="display: none;"></div>
+              </div>
+            </div>
+          `;
+        });
 
-      // Orchestration child (always last)
-      html += `
-          <div class="council-voice connector-last" data-vc-voice="${voiceKey}" data-vc-level="4">
-            <span class="council-voice-connector connector-last"></span>
-            <span class="council-voice-icon pending">\u25CB</span>
-            <span class="council-voice-label">Consolidation</span>
-            <span class="council-voice-status pending">Pending</span>
-          </div>
-      `;
+        // Orchestration child (always last)
+        html += `
+            <div class="council-voice connector-last" data-vc-voice="${voiceKey}" data-vc-level="4">
+              <span class="council-voice-connector connector-last"></span>
+              <span class="council-voice-icon pending">\u25CB</span>
+              <span class="council-voice-label">Consolidation</span>
+              <span class="council-voice-status pending">Pending</span>
+            </div>
+        `;
+      }
 
       html += `
           </div>

@@ -525,10 +525,12 @@ class VoiceCentricConfigTab {
       }
     });
 
-    // Provider change -> update model dropdowns
+    // Provider change -> update model dropdowns + executable state
     panel.addEventListener('change', (e) => {
       if (e.target.classList.contains('voice-provider')) {
         this._updateModelDropdown(e.target);
+        this._updateExecutableState(e.target);
+        this._updateLevelToggleState();
       }
       // Model change -> update tier to match model's recommended tier
       if (e.target.classList.contains('voice-model')) {
@@ -597,13 +599,15 @@ class VoiceCentricConfigTab {
       TimeoutSelect.mount(mount, { className: 'vc-timeout', title: 'Per-reviewer timeout' });
     }
 
-    // Populate provider dropdown
+    // Populate provider dropdown and update executable state
     const newProviderSelect = list.querySelector(`.voice-provider[data-index="${index}"]`);
     if (newProviderSelect) {
       this._populateProviderDropdown(newProviderSelect);
+      this._updateExecutableState(newProviderSelect);
     }
 
     this._updateRemoveButtonVisibility();
+    this._updateLevelToggleState();
     this._markDirty();
   }
 
@@ -619,6 +623,7 @@ class VoiceCentricConfigTab {
 
     this._reindexReviewers();
     this._updateRemoveButtonVisibility();
+    this._updateLevelToggleState();
     this._markDirty();
   }
 
@@ -780,6 +785,87 @@ class VoiceCentricConfigTab {
   }
 
   /**
+   * Update UI state for a reviewer row based on whether its provider is executable.
+   * Hides the tier dropdown and shows a note for executable providers.
+   * @param {HTMLSelectElement} providerSelect - The provider dropdown that changed
+   */
+  _updateExecutableState(providerSelect) {
+    const providerId = providerSelect.value;
+    const provider = this.providers[providerId];
+    const isExecutable = provider?.isExecutable || false;
+    const noCustomInstructions = provider?.capabilities?.custom_instructions === false;
+    const container = providerSelect.closest('.voice-row');
+    if (!container) return;
+
+    const tierSelect = container.querySelector('.voice-tier');
+    if (tierSelect) {
+      tierSelect.style.display = isExecutable ? 'none' : '';
+    }
+
+    // Hide per-reviewer instructions toggle and area when provider doesn't support them
+    const idx = providerSelect.dataset?.index;
+    const instrToggle = container.querySelector(`.toggle-instructions-icon[data-index="${idx}"]`);
+    if (instrToggle) {
+      instrToggle.style.display = noCustomInstructions ? 'none' : '';
+    }
+    const instrArea = container.querySelector(`.voice-instructions-area[data-index="${idx}"]`);
+    if (instrArea && noCustomInstructions) {
+      instrArea.style.display = 'none';
+    }
+
+    // Add or remove the executable note
+    let note = container.querySelector('.executable-note');
+    if (isExecutable && !note) {
+      note = document.createElement('span');
+      note.className = 'executable-note';
+      note.textContent = 'External tool';
+      note.title = 'External tool \u2014 runs its own analysis pipeline';
+      container.appendChild(note);
+    } else if (!isExecutable && note) {
+      note.remove();
+    }
+  }
+
+  /**
+   * Update level toggle state based on whether all voices are executable.
+   * If all voices are executable, disable level checkboxes and show a note.
+   * If any native voice is present, re-enable.
+   */
+  _updateLevelToggleState() {
+    const panel = this.modal.querySelector('#tab-panel-council');
+    if (!panel) return;
+
+    const reviewers = panel.querySelectorAll('.vc-reviewer');
+    let allExecutable = reviewers.length > 0;
+    reviewers.forEach(wrapper => {
+      const providerSelect = wrapper.querySelector('.voice-provider');
+      const providerId = providerSelect?.value;
+      const provider = this.providers[providerId];
+      if (!provider?.isExecutable) {
+        allExecutable = false;
+      }
+    });
+
+    const checkboxes = panel.querySelectorAll('.vc-level-checkbox');
+    checkboxes.forEach(cb => {
+      cb.disabled = allExecutable;
+    });
+
+    // Add or remove the all-executable note
+    const togglesContainer = panel.querySelector('.vc-level-toggles');
+    if (!togglesContainer) return;
+    let note = togglesContainer.querySelector('.vc-levels-disabled-note');
+    if (allExecutable && !note) {
+      note = document.createElement('p');
+      note.className = 'vc-levels-disabled-note section-hint-text';
+      note.textContent = 'Level selection does not apply when all reviewers are external tools';
+      togglesContainer.appendChild(note);
+    } else if (!allExecutable && note) {
+      note.remove();
+    }
+  }
+
+  /**
    * Mount all TimeoutSelect instances on the panel.
    * Called after HTML is injected into the DOM.
    * @param {HTMLElement} panel
@@ -836,7 +922,9 @@ class VoiceCentricConfigTab {
       const timeout = timeoutSelect ? parseInt(timeoutSelect.value, 10) : VoiceCentricConfigTab.DEFAULT_TIMEOUT;
       const idx = wrapper.dataset.index;
       const instrInput = wrapper.querySelector(`.voice-instructions-input[data-index="${idx}"]`);
-      const customInstructions = instrInput?.value?.trim() || undefined;
+      const providerInfo = this.providers[provider];
+      const supportsCustomInstructions = providerInfo?.capabilities?.custom_instructions !== false;
+      const customInstructions = supportsCustomInstructions ? (instrInput?.value?.trim() || undefined) : undefined;
 
       if (provider && model) {
         const voice = { provider, model, tier, timeout };
@@ -955,6 +1043,7 @@ class VoiceCentricConfigTab {
           this._populateProviderDropdown(providerSelect);
           providerSelect.value = voice.provider;
           this._updateModelDropdown(providerSelect);
+          this._updateExecutableState(providerSelect);
           const modelSelect = row.querySelector('.voice-model');
           if (modelSelect) modelSelect.value = voice.model;
           const tierSelect = row.querySelector('.voice-tier');
@@ -985,6 +1074,7 @@ class VoiceCentricConfigTab {
       });
 
       this._updateRemoveButtonVisibility();
+      this._updateLevelToggleState();
     }
 
     // Apply level toggles

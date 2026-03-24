@@ -1961,7 +1961,9 @@ router.post('/api/local/:reviewId/analyses/council', async (req, res) => {
       title: review.name || (councilHasBranch ? `Branch changes: ${review.local_base_branch}..HEAD` : 'Local changes'),
       description: '',
       base_sha: analysisBaseSha,
-      head_sha: review.local_head_sha
+      head_sha: review.local_head_sha,
+      base_branch: review.local_base_branch || null,
+      head_branch: review.local_head_branch || null
     };
 
     const analyzer = new Analyzer(db, 'council', 'council');

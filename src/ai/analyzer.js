@@ -1,5 +1,6 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
-const { createProvider } = require('./index');
+const { createProvider, getProviderClass } = require('./index');
+const os = require('os');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 const fs = require('fs').promises;
@@ -87,7 +88,14 @@ function buildVoiceContext(voice, idx, instructions, progressCallback, db) {
       : voice.customInstructions;
   }
 
-  const voiceAnalyzer = new Analyzer(db, voice.model, voice.provider);
+  const ProviderClass = getProviderClass(voice.provider);
+  const isExecutable = ProviderClass?.isExecutable || false;
+
+  // Only create Analyzer for native voices
+  const voiceAnalyzer = isExecutable ? null : new Analyzer(db, voice.model, voice.provider);
+  // Create provider instance for executable voices (used directly)
+  const voiceProvider = isExecutable ? createProvider(voice.provider, voice.model) : null;
+
   const voiceTier = voice.tier || 'balanced';
   const voiceTimeout = voice.timeout || 600000;
 
@@ -100,7 +108,65 @@ function buildVoiceContext(voice, idx, instructions, progressCallback, db) {
     });
   } : null;
 
-  return { voiceAnalyzer, voiceKey, reviewerLabel, voiceRequestInstructions, voiceProgressCallback, voiceTier, voiceTimeout };
+  return { voiceAnalyzer, voiceProvider, isExecutable, voiceKey, reviewerLabel, voiceRequestInstructions, voiceProgressCallback, voiceTier, voiceTimeout };
+}
+
+/**
+ * Run an executable provider as a council voice.
+ * Mirrors the pattern in src/routes/executable-analysis.js but without Express/HTTP concerns.
+ *
+ * @param {Object} voiceProvider - Provider instance from createProvider()
+ * @param {number|string} reviewId - Review ID
+ * @param {string} worktreePath - Path to the git worktree
+ * @param {Object} prMetadata - PR metadata
+ * @param {Object} options - { analysisId, timeout, requestInstructions, progressCallback, logPrefix }
+ * @returns {Promise<Object>} { suggestions, summary }
+ */
+async function runExecutableVoice(voiceProvider, reviewId, worktreePath, prMetadata, options) {
+  const { analysisId, timeout, requestInstructions, progressCallback, logPrefix } = options;
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pair-review-exec-'));
+  try {
+    const executableContext = {
+      title: prMetadata.title || '',
+      description: prMetadata.description || '',
+      cwd: worktreePath,
+      outputDir: tmpDir,
+      model: voiceProvider.model || null,
+      baseSha: prMetadata.base_sha || null,
+      headSha: prMetadata.head_sha || null,
+      baseBranch: prMetadata.base_branch || null,
+      headBranch: prMetadata.head_branch || null,
+      customInstructions: requestInstructions || null,
+    };
+
+    // Emit initial running status (non-stream) so the progress modal
+    // populates exec.voices[voiceId] and transitions from Pending to Running
+    if (progressCallback) {
+      progressCallback({ level: 'exec', status: 'running', progress: 'Starting external tool...' });
+    }
+
+    const result = await voiceProvider.execute(null, {
+      executableContext,
+      cwd: worktreePath,
+      timeout: timeout || voiceProvider.timeout || 600000,
+      analysisId,
+      registerProcess,
+      onStreamEvent: progressCallback ? (event) => {
+        progressCallback({ level: 'exec', status: 'running', streamEvent: event });
+      } : null
+    });
+
+    if (!result?.success || !result?.data) {
+      throw new Error(`${logPrefix || ''}Executable provider returned no data`);
+    }
+
+    return {
+      suggestions: result.data.suggestions || [],
+      summary: result.data.summary || ''
+    };
+  } finally {
+    try { await fs.rm(tmpDir, { recursive: true, force: true }); } catch (_) {}
+  }
 }
 
 class Analyzer {
@@ -2751,7 +2817,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
     // Single voice: skip child run entirely, run analysis directly on parent run
     if (voices.length === 1) {
       const voice = voices[0];
-      const { voiceAnalyzer, voiceKey, reviewerLabel, voiceRequestInstructions, voiceProgressCallback, voiceTier, voiceTimeout } =
+      const { voiceAnalyzer, voiceProvider, isExecutable, voiceKey, reviewerLabel, voiceRequestInstructions, voiceProgressCallback, voiceTier, voiceTimeout } =
         buildVoiceContext(voice, 0, instructions, progressCallback, this.db);
       logger.info(`[ReviewerCouncil] Single reviewer (${reviewerLabel}) — running directly on parent run, no child run`);
 
@@ -2761,8 +2827,37 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           voiceCentric: true,
           level: 'voice-init',
           status: 'running',
-          voices: { [voiceKey]: { status: 'pending', provider: voice.provider, model: voice.model, tier: voiceTier } }
+          voices: { [voiceKey]: { status: 'pending', provider: voice.provider, model: voice.model, tier: voiceTier, isExecutable } }
         });
+      }
+
+      if (isExecutable) {
+        const result = await runExecutableVoice(voiceProvider, reviewId, worktreePath, prMetadata, {
+          analysisId, timeout: voiceTimeout,
+          requestInstructions: voiceRequestInstructions,
+          progressCallback: voiceProgressCallback,
+          logPrefix: `[${reviewerLabel}] `
+        });
+
+        const finalSuggestions = this.validateAndFinalizeSuggestions(result.suggestions, fileLineCountMap, validFiles);
+        await this.storeSuggestions(reviewId, parentRunId, finalSuggestions, null, validFiles);
+
+        try {
+          await analysisRunRepo.update(parentRunId, {
+            status: 'completed',
+            summary: result.summary,
+            totalSuggestions: finalSuggestions.length,
+            filesAnalyzed: validFiles.length
+          });
+        } catch (err) {
+          logger.warn(`[ReviewerCouncil] Failed to update parent run: ${err.message}`);
+        }
+
+        return {
+          runId: parentRunId,
+          suggestions: finalSuggestions,
+          summary: result.summary || `Review council complete: ${finalSuggestions.length} suggestions`
+        };
       }
 
       // analyzeAllLevels handles validation, storage, and run status updates internally
@@ -2802,20 +2897,23 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         level: 'voice-init',
         status: 'running',
         voices: Object.fromEntries(voices.map((v, idx) => {
-          const voiceKey = `${v.provider}-${v.model}${idx > 0 ? `-${idx}` : ''}`;
-          return [voiceKey, {
+          const vKey = `${v.provider}-${v.model}${idx > 0 ? `-${idx}` : ''}`;
+          const VoiceProviderClass = getProviderClass(v.provider);
+          return [vKey, {
             status: 'pending',
             provider: v.provider,
             model: v.model,
-            tier: v.tier || 'balanced'
+            tier: v.tier || 'balanced',
+            isExecutable: VoiceProviderClass?.isExecutable || false
           }];
         }))
       });
     }
 
-    // For each voice, create a child run and launch analyzeAllLevels
+    // For each voice, create a child run and launch analysis
+    const commentRepo = new CommentRepository(this.db);
     const voicePromises = voices.map(async (voice, idx) => {
-      const { voiceAnalyzer, voiceKey, reviewerLabel, voiceRequestInstructions, voiceProgressCallback, voiceTier, voiceTimeout } =
+      const { voiceAnalyzer, voiceProvider, isExecutable, voiceKey, reviewerLabel, voiceRequestInstructions, voiceProgressCallback, voiceTier, voiceTimeout } =
         buildVoiceContext(voice, idx, instructions, progressCallback, this.db);
       const childRunId = uuidv4();
 
@@ -2843,6 +2941,35 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       }
 
       try {
+        if (isExecutable) {
+          const result = await runExecutableVoice(voiceProvider, reviewId, worktreePath, prMetadata, {
+            analysisId, timeout: voiceTimeout,
+            requestInstructions: voiceRequestInstructions,
+            progressCallback: voiceProgressCallback,
+            logPrefix: `[${reviewerLabel}] `
+          });
+
+          // Validate suggestions before storage (matches single-voice path)
+          const validatedSuggestions = this.validateAndFinalizeSuggestions(result.suggestions, fileLineCountMap, validFiles);
+
+          // Update child run
+          try {
+            await analysisRunRepo.update(childRunId, {
+              status: 'completed',
+              summary: result.summary,
+              totalSuggestions: validatedSuggestions.length
+            });
+          } catch (err) {
+            logger.warn(`[ReviewerCouncil] Failed to update child run ${childRunId}: ${err.message}`);
+          }
+
+          // Store validated voice suggestions
+          await commentRepo.bulkInsertAISuggestions(reviewId, childRunId, validatedSuggestions, null);
+
+          const validatedResult = { ...result, suggestions: validatedSuggestions };
+          return { voiceKey, reviewerLabel, childRunId, result: validatedResult, provider: voice.provider, model: voice.model, isExecutable: true };
+        }
+
         const result = await voiceAnalyzer.analyzeAllLevels(
           reviewId,
           worktreePath,
@@ -2874,7 +3001,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           logger.warn(`[ReviewerCouncil] Failed to update child run ${childRunId}: ${err.message}`);
         }
 
-        return { voiceKey, reviewerLabel, childRunId, result, provider: voice.provider, model: voice.model };
+        return { voiceKey, reviewerLabel, childRunId, result, provider: voice.provider, model: voice.model, isExecutable: false };
       } catch (error) {
         // Update child run to failed/cancelled
         try {
@@ -3023,6 +3150,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         voiceKey: v.voiceKey,
         provider: v.provider,
         model: v.model,
+        isExecutable: v.isExecutable || false,
         suggestionCount: v.result.suggestions.length + (v.result.fileLevelSuggestions?.length || 0),
         suggestions: v.result.suggestions,
         fileLevelSuggestions: v.result.fileLevelSuggestions || [],
@@ -3642,15 +3770,17 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @private
    */
   _defaultConsolidation(councilConfig) {
-    // Use the first voice as consolidation model
     const voices = councilConfig.voices || [];
-    if (voices.length > 0) {
+    // Prefer first non-executable voice for consolidation
+    const nativeVoice = voices.find(v => !getProviderClass(v.provider)?.isExecutable);
+    if (nativeVoice) {
       return {
-        provider: voices[0].provider,
-        model: voices[0].model,
-        tier: voices[0].tier || 'balanced'
+        provider: nativeVoice.provider,
+        model: nativeVoice.model,
+        tier: nativeVoice.tier || 'balanced'
       };
     }
+    // All-executable council: fall back to claude/sonnet-4.6
     return { provider: 'claude', model: 'sonnet-4.6', tier: 'balanced' };
   }
 
@@ -3673,7 +3803,9 @@ File-level suggestions should NOT have a line number. They apply to the entire f
     const aiProvider = createProvider(provider, model);
 
     const voiceDescriptions = voiceReviews.map(v => {
-      let desc = `### Reviewer: ${v.voiceKey} (${v.provider}/${v.model}) — ${v.suggestionCount} suggestions\n`;
+      let desc = `### Reviewer: ${v.voiceKey}`;
+      if (v.isExecutable) desc += ' [external tool]';
+      desc += ` (${v.provider}/${v.model}) — ${v.suggestionCount} suggestions\n`;
       if (v.summary) desc += `Summary: ${v.summary}\n`;
       desc += `Suggestions:\n${JSON.stringify(v.suggestions, null, 2)}`;
       if (v.fileLevelSuggestions?.length > 0) {

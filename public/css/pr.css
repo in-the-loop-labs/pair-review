@@ -10214,6 +10214,18 @@ body.resizing * {
   min-width: 90px;
 }
 
+.executable-note {
+  font-size: 11px;
+  color: var(--fg-muted, #656d76);
+  font-style: italic;
+  white-space: nowrap;
+}
+
+.vc-levels-disabled-note {
+  margin-top: 6px;
+  margin-bottom: 0;
+}
+
 .btn-icon {
   box-sizing: border-box;
   width: 28px;
