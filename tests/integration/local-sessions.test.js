@@ -17,6 +17,7 @@ const { localReviewDiffs } = require('../../src/routes/shared');
 // Note: vi.mock doesn't work with CommonJS require() in this project (forks pool),
 // so we use vi.spyOn on the actual module exports instead.
 const localReviewModule = require('../../src/local-review');
+const baseBranchModule = require('../../src/git/base-branch');
 const { RepoSettingsRepository } = require('../../src/database');
 
 describe('Local Sessions API', () => {
@@ -1375,6 +1376,101 @@ describe('Local Sessions API', () => {
       const dbDiff = await reviewRepo.getLocalDiff(id);
       expect(dbDiff).not.toBeNull();
       expect(dbDiff.digest).toBe('digest123');
+    });
+
+    it('should return branchAvailable: true when branch has commits ahead after HEAD change', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/mock/repo',
+        localHeadSha: 'sha-before',
+        repository: 'owner/repo',
+        localHeadBranch: 'feature-branch'
+      });
+
+      // Mock HEAD change
+      localReviewModule.getHeadSha.mockResolvedValue('sha-after');
+
+      // Mock branch detection: branch has commits ahead
+      vi.spyOn(baseBranchModule, 'detectBaseBranch').mockResolvedValue({ baseBranch: 'main' });
+      localReviewModule.getBranchCommitCount.mockResolvedValue(2);
+
+      const res = await request(app)
+        .post(`/api/local/${id}/refresh`)
+        .send({});
+
+      expect(res.status).toBe(200);
+      expect(res.body.headShaChanged).toBe(true);
+      expect(res.body.branchAvailable).toBe(true);
+    });
+
+    it('should return branchAvailable: false when branch has no commits ahead', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/mock/repo',
+        localHeadSha: 'sha-before',
+        repository: 'owner/repo',
+        localHeadBranch: 'feature-branch'
+      });
+
+      // Mock HEAD change
+      localReviewModule.getHeadSha.mockResolvedValue('sha-after');
+
+      // Mock branch detection: no commits ahead
+      vi.spyOn(baseBranchModule, 'detectBaseBranch').mockResolvedValue({ baseBranch: 'main' });
+      localReviewModule.getBranchCommitCount.mockResolvedValue(0);
+
+      const res = await request(app)
+        .post(`/api/local/${id}/refresh`)
+        .send({});
+
+      expect(res.status).toBe(200);
+      expect(res.body.branchAvailable).toBe(false);
+    });
+  });
+
+  describe('POST /api/local/:reviewId/resolve-head-change (branchAvailable)', () => {
+    it('action "update" should return branchAvailable: true when branch has commits ahead', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/mock/repo',
+        localHeadSha: 'oldsha',
+        repository: 'owner/repo',
+        localHeadBranch: 'feature-branch'
+      });
+
+      // Mock branch detection: branch has commits ahead
+      vi.spyOn(baseBranchModule, 'detectBaseBranch').mockResolvedValue({ baseBranch: 'main' });
+      localReviewModule.getBranchCommitCount.mockResolvedValue(3);
+
+      const res = await request(app)
+        .post(`/api/local/${id}/resolve-head-change`)
+        .send({ action: 'update', newHeadSha: 'newsha' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.action).toBe('updated');
+      expect(res.body.branchAvailable).toBe(true);
+    });
+
+    it('action "update" should return branchAvailable: false when no commits ahead', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/mock/repo',
+        localHeadSha: 'oldsha',
+        repository: 'owner/repo',
+        localHeadBranch: 'feature-branch'
+      });
+
+      // Mock branch detection: no commits ahead
+      vi.spyOn(baseBranchModule, 'detectBaseBranch').mockResolvedValue({ baseBranch: 'main' });
+      localReviewModule.getBranchCommitCount.mockResolvedValue(0);
+
+      const res = await request(app)
+        .post(`/api/local/${id}/resolve-head-change`)
+        .send({ action: 'update', newHeadSha: 'newsha' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.action).toBe('updated');
+      expect(res.body.branchAvailable).toBe(false);
     });
   });
 });
