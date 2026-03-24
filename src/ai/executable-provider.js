@@ -83,7 +83,9 @@ ${rawOutput}`;
  * @param {string} config.command - CLI command to run
  * @param {string[]} config.args - Base CLI arguments
  * @param {string} config.name - Display name
- * @param {boolean} config.supports_levels - Whether the tool supports L1/L2/L3 analysis
+ * @param {Object} config.capabilities - Provider capabilities overrides
+ * @param {boolean} config.capabilities.review_levels - Whether the tool supports L1/L2/L3 analysis
+ * @param {boolean} config.capabilities.custom_instructions - Whether the tool supports custom instructions
  * @param {Object} config.context_args - Maps context keys to CLI flags
  * @param {string} config.output_glob - Glob pattern to find result file
  * @param {string} config.mapping_instructions - Tool-specific mapping instructions for LLM
@@ -119,6 +121,7 @@ function createExecutableProviderClass(id, config) {
       this.contextArgs = config.context_args || {};
       this.outputGlob = config.output_glob || '**/results.json';
       this.mappingInstructions = config.mapping_instructions || '';
+      this.timeout = config.timeout || 600000; // Default 10 minutes
       this.availabilityCommand = config.availability_command || 'true';
       this.extraEnv = {
         ...(config.env || {}),
@@ -254,7 +257,17 @@ function createExecutableProviderClass(id, config) {
           stdout += chunk;
           // Stream each line to debug output for live visibility
           for (const line of chunk.split('\n')) {
-            if (line.trim()) logger.streamDebug(`[${id}] ${line}`);
+            const trimmed = line.trim();
+            if (trimmed) {
+              logger.streamDebug(`[${id}] ${trimmed}`);
+              if (onStreamEvent) {
+                onStreamEvent({
+                  type: 'assistant_text',
+                  text: trimmed.slice(0, 200),
+                  timestamp: Date.now()
+                });
+              }
+            }
           }
         });
 
@@ -323,6 +336,13 @@ function createExecutableProviderClass(id, config) {
             logger.info(`[${id}] Result file: ${rawJson.length} bytes`);
 
             // Map the output to pair-review's schema
+            if (onStreamEvent) {
+              onStreamEvent({
+                type: 'assistant_text',
+                text: 'Mapping tool output to suggestion format...',
+                timestamp: Date.now()
+              });
+            }
             const mapped = await this.mapOutputToSchema(rawJson);
             logger.info(`[${id}] Mapped ${mapped.suggestions?.length || 0} suggestions`);
 
@@ -490,8 +510,11 @@ function createExecutableProviderClass(id, config) {
 
   // Flags for the system
   ExecProvider.isExecutable = true;
-  ExecProvider.supportsLevels = config.supports_levels !== undefined ? config.supports_levels : false;
-  ExecProvider.localOnly = config.local_only || false;
+  const caps = config.capabilities || {};
+  ExecProvider.capabilities = {
+    review_levels: caps.review_levels !== undefined ? caps.review_levels : false,
+    custom_instructions: caps.custom_instructions !== undefined ? caps.custom_instructions : false
+  };
 
   return ExecProvider;
 }

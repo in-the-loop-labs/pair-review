@@ -34,8 +34,10 @@ All changes are in the **pair-review** repo (`~/src/github.com/in-the-loop-labs/
       "command": "my-review-tool",
       "args": ["analyze"],
       "name": "My Review Tool",
-      "local_only": true,
-      "supports_levels": false,
+      "capabilities": {
+        "review_levels": false,
+        "custom_instructions": false
+      },
       "context_args": {
         "title": "--title",
         "description": "--description",
@@ -68,7 +70,7 @@ Follow the ACP PR #334 factory pattern: `createExecutableProviderClass(id, confi
 
 ```
 constructor(model, configOverrides)
-  - Stores: command, args, contextArgs, outputGlob, mappingInstructions, localOnly, supportsLevels
+  - Stores: command, args, contextArgs, outputGlob, mappingInstructions, capabilities
   - Command precedence: PAIR_REVIEW_{ID}_CMD env var > config.command > id
   - Shell mode if command contains spaces
 
@@ -99,8 +101,7 @@ static getProviderName/Id/Models/DefaultModel/InstallInstructions
   - Return values from factory closure (same pattern as ACP)
 
 static isExecutable = true
-static localOnly = config.local_only
-static supportsLevels = config.supports_levels
+static capabilities = { review_levels: config.capabilities.review_levels, custom_instructions: config.capabilities.custom_instructions }
 ```
 
 ### Argument Assembly
@@ -136,11 +137,10 @@ Use lazy-require to avoid circular dependency (same pattern as ACP).
 
 ### `src/ai/provider.js` — `getAllProvidersInfo()`
 
-Add `localOnly` and `supportsLevels` to the provider info response:
+Add `capabilities` object to the provider info response:
 
 ```javascript
-localOnly: ProviderClass.localOnly || false,
-supportsLevels: ProviderClass.supportsLevels !== false,
+capabilities: ProviderClass.capabilities || { review_levels: true, custom_instructions: true },
 ```
 
 ### `src/ai/index.js`
@@ -180,13 +180,7 @@ if (ProviderClass?.isExecutable) {
 
 ### `src/routes/pr.js`
 
-Reject executable providers that are `local_only`:
-
-```javascript
-if (ProviderClass?.isExecutable && ProviderClass.localOnly) {
-  return res.status(400).json({ error: `Provider "${selectedProvider}" only available for local reviews` });
-}
-```
+Executable providers are no longer restricted by mode — the `local_only` concept has been dropped.
 
 ---
 
@@ -255,11 +249,14 @@ addColumnIfNotExists('comments', 'severity', 'TEXT');
 
 ### `public/js/components/AnalysisConfigModal.js`
 
-When selected provider has `supportsLevels === false`:
+When selected provider has `capabilities.review_levels === false`:
 - Hide the level toggle checkboxes
 - Show a note: "This provider runs its own analysis pipeline"
 
-When provider list is loaded, store `localOnly` and `supportsLevels` per provider. Filter providers based on review mode (hide `localOnly` providers in PR mode).
+When selected provider has `capabilities.custom_instructions === false`:
+- Hide the custom instructions textarea
+
+When provider list is loaded, store `capabilities` per provider.
 
 ### `public/js/modules/suggestion-manager.js`
 
@@ -291,11 +288,11 @@ Only render when `severity` is non-null.
 - `execute()` finds result file via output_glob
 - `mapOutputToSchema()` builds correct prompt with mapping_instructions
 - Error handling: CLI failure, missing result file, mapping failure, timeout
-- `local_only` and `supports_levels` flags propagate correctly
+- `capabilities` object propagates correctly
 
 ### Modified: existing provider config tests
 - `applyConfigOverrides()` registers executable providers from config
-- `getAllProvidersInfo()` includes `localOnly` and `supportsLevels`
+- `getAllProvidersInfo()` includes `capabilities` object
 
 ### Database
 - Migration 34 adds severity column
@@ -308,7 +305,7 @@ Only render when `severity` is non-null.
 
 1. **Unit tests:** `npm test -- tests/unit/executable-provider.test.js`
 2. **DB migration:** Start pair-review, verify `severity` column exists in comments table
-3. **Provider registration:** Configure a mock executable provider in config.json, verify it appears in `GET /api/providers` with `localOnly` and `supportsLevels` flags
+3. **Provider registration:** Configure a mock executable provider in config.json, verify it appears in `GET /api/providers` with `capabilities` object
 4. **End-to-end local:** Configure an executable provider, open a local review, select it as provider, run analysis, verify suggestions appear with severity badges
 5. **UI:** Verify level toggles are hidden for executable providers, severity badges render correctly
 6. **Existing tests:** Full suite passes (`npm test`)

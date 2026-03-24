@@ -4106,7 +4106,8 @@ class PRManager {
             null,
             {
               configType: data.status?.isCouncil ? (data.status.configType || 'advanced') : 'single',
-              enabledLevels: data.status?.enabledLevels || [1, 2, 3]
+              enabledLevels: data.status?.enabledLevels || [1, 2, 3],
+              noLevels: data.status?.noLevels || false
             }
           );
         }
@@ -4413,7 +4414,8 @@ class PRManager {
           config.isCouncil ? config.councilName : null,
           {
             configType: config.isCouncil ? (config.configType || 'advanced') : 'single',
-            enabledLevels: config.enabledLevels || [1, 2, 3]
+            enabledLevels: config.enabledLevels || [1, 2, 3],
+            noLevels: config.noLevels || false
           }
         );
       }

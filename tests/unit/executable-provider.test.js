@@ -166,15 +166,19 @@ describe('createExecutableProviderClass', () => {
       expect(createExecutableProviderClass('t', {}).isExecutable).toBe(true);
     });
 
-    it('sets supportsLevels from config', () => {
-      expect(createExecutableProviderClass('t1', { supports_levels: true }).supportsLevels).toBe(true);
-      expect(createExecutableProviderClass('t2', { supports_levels: false }).supportsLevels).toBe(false);
-      expect(createExecutableProviderClass('t3', {}).supportsLevels).toBe(false);
-    });
+    it('sets capabilities from config', () => {
+      const withCaps = createExecutableProviderClass('t1', {
+        capabilities: { review_levels: true, custom_instructions: true }
+      });
+      expect(withCaps.capabilities).toEqual({ review_levels: true, custom_instructions: true });
 
-    it('sets localOnly from config', () => {
-      expect(createExecutableProviderClass('t1', { local_only: true }).localOnly).toBe(true);
-      expect(createExecutableProviderClass('t2', {}).localOnly).toBe(false);
+      const withPartialCaps = createExecutableProviderClass('t2', {
+        capabilities: { review_levels: true }
+      });
+      expect(withPartialCaps.capabilities).toEqual({ review_levels: true, custom_instructions: false });
+
+      const withNoCaps = createExecutableProviderClass('t3', {});
+      expect(withNoCaps.capabilities).toEqual({ review_levels: false, custom_instructions: false });
     });
 
     it('sets getInstallInstructions from config', () => {
@@ -430,6 +434,99 @@ describe('createExecutableProviderClass', () => {
       expect(onStreamEvent).toHaveBeenCalledWith(
         expect.objectContaining({ type: 'assistant_text', text: expect.stringContaining('Test Tool') })
       );
+    });
+
+    it('emits onStreamEvent for each non-empty stdout line', async () => {
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+      actualMockGlob.mockResolvedValue(['result.json']);
+      actualMockReadFile.mockResolvedValue('{}');
+
+      const onStreamEvent = vi.fn();
+      const p = instance.execute(null, {
+        executableContext: { outputDir: '/tmp/out', cwd: '/tmp/repo' }, onStreamEvent
+      });
+      child.stdout.emit('data', Buffer.from('Analyzing file1.js\nChecking rules\n\n'));
+      child.emit('close', 0);
+      await p;
+
+      // First call is the initial "Running external tool" event
+      // Next calls are from stdout lines
+      const calls = onStreamEvent.mock.calls.map(c => c[0]);
+      expect(calls).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'assistant_text', text: 'Analyzing file1.js', timestamp: expect.any(Number) }),
+        expect.objectContaining({ type: 'assistant_text', text: 'Checking rules', timestamp: expect.any(Number) })
+      ]));
+    });
+
+    it('truncates stdout stream events to 200 characters', async () => {
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+      actualMockGlob.mockResolvedValue(['result.json']);
+      actualMockReadFile.mockResolvedValue('{}');
+
+      const onStreamEvent = vi.fn();
+      const p = instance.execute(null, {
+        executableContext: { outputDir: '/tmp/out', cwd: '/tmp/repo' }, onStreamEvent
+      });
+      const longLine = 'A'.repeat(300);
+      child.stdout.emit('data', Buffer.from(longLine + '\n'));
+      child.emit('close', 0);
+      await p;
+
+      const stdoutEvents = onStreamEvent.mock.calls
+        .map(c => c[0])
+        .filter(e => e.text.startsWith('A'));
+      expect(stdoutEvents.length).toBe(1);
+      expect(stdoutEvents[0].text.length).toBe(200);
+    });
+
+    it('does not emit stdout stream events when onStreamEvent is not provided', async () => {
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+      actualMockGlob.mockResolvedValue(['result.json']);
+      actualMockReadFile.mockResolvedValue('{}');
+
+      const p = instance.execute(null, {
+        executableContext: { outputDir: '/tmp/out', cwd: '/tmp/repo' }
+      });
+      // Should not throw even though there is no onStreamEvent callback
+      child.stdout.emit('data', Buffer.from('some output\n'));
+      child.emit('close', 0);
+      await p;
+    });
+
+    it('emits mapping phase stream event before mapOutputToSchema', async () => {
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+      actualMockGlob.mockResolvedValue(['result.json']);
+      actualMockReadFile.mockResolvedValue('{}');
+
+      const events = [];
+      const onStreamEvent = vi.fn((event) => events.push(event));
+
+      // Track when mapOutputToSchema is called relative to stream events
+      let mappingCalledAfterEventCount = -1;
+      instance.mapOutputToSchema = vi.fn().mockImplementation(() => {
+        mappingCalledAfterEventCount = events.length;
+        return Promise.resolve({ suggestions: [{ title: 'Fix this' }], summary: 'One issue found' });
+      });
+
+      const p = instance.execute(null, {
+        executableContext: { outputDir: '/tmp/out', cwd: '/tmp/repo' }, onStreamEvent
+      });
+      child.emit('close', 0);
+      await p;
+
+      // The mapping event should be present
+      const mappingEvent = events.find(e => e.text === 'Mapping tool output to suggestion format...');
+      expect(mappingEvent).toBeDefined();
+      expect(mappingEvent.type).toBe('assistant_text');
+      expect(mappingEvent.timestamp).toEqual(expect.any(Number));
+
+      // The mapping event should be emitted before mapOutputToSchema is called
+      const mappingEventIndex = events.indexOf(mappingEvent);
+      expect(mappingEventIndex).toBeLessThan(mappingCalledAfterEventCount);
     });
 
     it('finds result file via outputGlob and returns mapped data', async () => {

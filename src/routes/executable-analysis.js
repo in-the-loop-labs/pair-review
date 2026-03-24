@@ -101,6 +101,8 @@ async function runExecutableAnalysis(req, res, params, shared, callbacks) {
     repository,
     reviewType,
     status: 'running',
+    // TODO: derive from provider capabilities once level-based progress is supported for executable providers
+    noLevels: true,
     startedAt: new Date().toISOString(),
     progress: 'Running external analysis tool...',
     levels: {},
@@ -152,12 +154,27 @@ async function runExecutableAnalysis(req, res, params, shared, callbacks) {
       logger.log('API', `Working dir: ${cwd}`, 'magenta');
       logger.log('API', `Output dir: ${tmpDir}`, 'magenta');
 
+      // Throttled stream event handler — avoids flooding WebSocket
+      let lastBroadcastTime = 0;
+      const THROTTLE_MS = 300;
+      const onStreamEvent = (event) => {
+        const status = activeAnalyses.get(analysisId);
+        if (!status) return;
+        status.levels = { exec: { status: 'running', streamEvent: event } };
+        const now = Date.now();
+        if (now - lastBroadcastTime >= THROTTLE_MS) {
+          lastBroadcastTime = now;
+          broadcastProgress(analysisId, status);
+        }
+      };
+
       const result = await provider.execute(null, {
         executableContext,
         cwd,
-        timeout: 300000,
+        timeout: provider.timeout || 600000,
         analysisId,
-        registerProcess: (id, proc) => registerProcessForCancellation(id, proc)
+        registerProcess: (id, proc) => registerProcessForCancellation(id, proc),
+        onStreamEvent
       });
 
       if (!result?.success || !result?.data) {

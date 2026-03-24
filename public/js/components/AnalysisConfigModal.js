@@ -452,14 +452,9 @@ class AnalysisConfigModal {
     const container = this.modal.querySelector('#provider-toggle-container');
     if (!container) return;
 
-    // Detect if this is a PR review (not local) based on URL
-    const isPRReview = !window.location.pathname.startsWith('/local');
-
     // Filter to only show available providers, sorted alphabetically by name
     const availableProviderIds = Object.keys(this.providers).filter(providerId => {
       const provider = this.providers[providerId];
-      // Hide localOnly providers when reviewing a PR
-      if (isPRReview && provider.localOnly) return false;
       // Show provider if no availability info (check pending) or if explicitly available
       return !provider.availability || provider.availability.available;
     }).sort((a, b) => (this.providers[a].name || a).localeCompare(this.providers[b].name || b));
@@ -554,25 +549,45 @@ class AnalysisConfigModal {
     // Re-render model cards (handles its own event listeners)
     this.renderModelCards();
 
-    // Toggle level toggles visibility based on provider's supportsLevels flag
+    // Toggle level toggles visibility based on provider's capabilities
     const provider = this.providers[providerId];
+    const supportsLevels = provider.capabilities?.review_levels !== false;
+    const supportsCustomInstructions = provider.capabilities?.custom_instructions !== false;
     const levelToggles = this.modal.querySelector('.single-level-toggles');
     const skipLevel3Info = this.modal.querySelector('#skip-level3-info');
-    const existingNote = this.modal.querySelector('.executable-provider-note');
+    const existingLevelsNote = this.modal.querySelector('.executable-provider-levels-note');
+    const customInstructionsSection = this.modal.querySelector('#custom-instructions')?.closest('.config-section');
 
-    if (provider.supportsLevels === false) {
+    if (!supportsLevels) {
       if (levelToggles) levelToggles.style.display = 'none';
       if (skipLevel3Info) skipLevel3Info.style.display = 'none';
-      if (!existingNote) {
+      if (!existingLevelsNote) {
         const note = document.createElement('div');
-        note.className = 'executable-provider-note';
+        note.className = 'executable-provider-note executable-provider-levels-note';
         note.textContent = 'This provider runs its own analysis pipeline';
         levelToggles?.parentNode?.appendChild(note);
       }
     } else {
       if (levelToggles) levelToggles.style.display = '';
       if (skipLevel3Info) skipLevel3Info.style.display = '';
-      if (existingNote) existingNote.remove();
+      if (existingLevelsNote) existingLevelsNote.remove();
+    }
+
+    // Toggle custom instructions visibility based on provider's capabilities
+    const instructionsContainer = customInstructionsSection?.querySelector('.instructions-container');
+    const existingInstructionsNote = customInstructionsSection?.querySelector('.executable-provider-instructions-note');
+
+    if (!supportsCustomInstructions) {
+      if (instructionsContainer) instructionsContainer.style.display = 'none';
+      if (!existingInstructionsNote && customInstructionsSection) {
+        const note = document.createElement('div');
+        note.className = 'executable-provider-note executable-provider-instructions-note';
+        note.textContent = 'This provider runs its own analysis pipeline and does not accept custom instructions.';
+        customInstructionsSection.appendChild(note);
+      }
+    } else {
+      if (instructionsContainer) instructionsContainer.style.display = '';
+      if (existingInstructionsNote) existingInstructionsNote.remove();
     }
 
     // Update selection state for the selected model
@@ -774,16 +789,20 @@ class AnalysisConfigModal {
     const selectedModelCard = this.modal.querySelector('.model-card.selected');
     const tier = selectedModelCard?.dataset?.tier || 'balanced';
 
+    const selectedProvider = this.providers[this.selectedProvider];
+    const noLevels = selectedProvider?.capabilities?.review_levels === false;
+
     const config = {
       provider: this.selectedProvider,
       model: this.selectedModel,
       tier: tier,
       instructions: this.buildInstructions(),
-      customInstructions: this.modal.querySelector('#custom-instructions')?.value?.trim() || '',
+      customInstructions: selectedProvider?.capabilities?.custom_instructions === false ? '' : (this.modal.querySelector('#custom-instructions')?.value?.trim() || ''),
       presets: Array.from(this.selectedPresets),
       repoInstructions: this.repoInstructions,
       enabledLevels: [...this.enabledLevels],
-      skipLevel3: !this.enabledLevels.includes(3)
+      skipLevel3: !this.enabledLevels.includes(3),
+      noLevels
     };
 
     if (this.onSubmit) this.onSubmit(config);

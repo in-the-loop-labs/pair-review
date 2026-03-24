@@ -558,14 +558,19 @@ function getAllProvidersInfo() {
     // Use overridden install instructions if available
     const installInstructions = overrides?.installInstructions || ProviderClass.getInstallInstructions();
 
+    // Build capabilities: executable providers define their own, others get defaults
+    const capabilities = ProviderClass.capabilities || {
+      review_levels: true,
+      custom_instructions: true
+    };
+
     providers.push({
       id,
       name: ProviderClass.getProviderName(),
       models,
       defaultModel,
       installInstructions,
-      localOnly: ProviderClass.localOnly || false,
-      supportsLevels: ProviderClass.supportsLevels !== false,
+      capabilities,
       isExecutable: ProviderClass.isExecutable || false
     });
   }

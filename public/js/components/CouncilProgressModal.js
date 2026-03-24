@@ -54,9 +54,12 @@ class CouncilProgressModal {
     // Detect rendering mode
     const configType = options.configType || (councilConfig ? 'advanced' : 'single');
     this._renderMode = configType;
+    this._noLevels = options.noLevels || false;
 
     // Rebuild DOM based on mode
-    if (configType === 'single') {
+    if (configType === 'single' && this._noLevels) {
+      this._rebuildBodyNoLevels();
+    } else if (configType === 'single') {
       const enabledLevels = options.enabledLevels || [1, 2, 3];
       this._rebuildBodySingleModel(enabledLevels);
     } else if (configType === 'council') {
@@ -239,6 +242,20 @@ class CouncilProgressModal {
    * @param {Object} status
    */
   updateProgress(status) {
+    // No-levels mode: update the single row based on overall status
+    if (this._noLevels) {
+      this._updateNoLevelsProgress(status);
+      // Terminal states
+      if (status.status === 'completed') {
+        this._handleCompletion(status);
+      } else if (status.status === 'failed') {
+        this._handleFailure(status);
+      } else if (status.status === 'cancelled') {
+        this._handleCancellation(status);
+      }
+      return;
+    }
+
     if (!status.levels || typeof status.levels !== 'object') {
       console.warn('Council progress: invalid status structure', status);
       return;
@@ -289,6 +306,63 @@ class CouncilProgressModal {
       this._handleFailure(status);
     } else if (status.status === 'cancelled') {
       this._handleCancellation(status);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // No-levels progress
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Update the single row for no-levels providers.
+   * Maps overall analysis status to the single "Running analysis..." row.
+   */
+  _updateNoLevelsProgress(status) {
+    const header = this.modal.querySelector('.council-level-header[data-level="analysis"]');
+    if (!header) return;
+
+    const iconEl = header.querySelector('.council-level-icon');
+    const statusEl = header.querySelector('.council-level-status');
+    if (!iconEl || !statusEl) return;
+
+    // Derive state from overall status or from any level status
+    let state = 'pending';
+    if (status.status === 'running' || status.status === 'in_progress') {
+      state = 'running';
+    } else if (status.status === 'completed') {
+      state = 'completed';
+    } else if (status.status === 'failed') {
+      state = 'failed';
+    } else if (status.status === 'cancelled') {
+      state = 'cancelled';
+    } else if (status.levels) {
+      // Fall back to checking individual levels
+      const levelValues = Object.values(status.levels);
+      if (levelValues.some(l => l.status === 'running')) state = 'running';
+      else if (levelValues.some(l => l.status === 'completed')) state = 'running';
+    }
+
+    this._renderState(iconEl, statusEl, state, 'council-level');
+
+    // Show stream event text in the snippet element
+    const levelEl = header.closest('.council-level');
+    const snippetEl = levelEl?.querySelector('.council-level-snippet');
+    if (snippetEl) {
+      // Check for stream events in any level
+      let streamText = null;
+      if (status.levels) {
+        for (const lvl of Object.values(status.levels)) {
+          if (lvl.streamEvent?.text) {
+            streamText = lvl.streamEvent.text;
+          }
+        }
+      }
+      if (state === 'running' && streamText) {
+        snippetEl.textContent = streamText;
+        snippetEl.style.display = 'block';
+      } else if (state !== 'running') {
+        snippetEl.style.display = 'none';
+      }
     }
   }
 
@@ -1203,6 +1277,28 @@ class CouncilProgressModal {
 
     html += '</div>';
     body.innerHTML = html;
+  }
+
+  /**
+   * Rebuild the modal body for no-levels providers (e.g., executable providers).
+   * Shows a single "Running analysis..." entry instead of the L1/L2/L3 breakdown.
+   */
+  _rebuildBodyNoLevels() {
+    const body = this.modal.querySelector('.council-progress-body');
+    if (!body) return;
+
+    body.innerHTML = `
+      <div class="council-progress-tree">
+        <div class="council-level" data-level="analysis">
+          <div class="council-level-header" data-level="analysis">
+            <span class="council-level-icon pending">\u25CB</span>
+            <span class="council-level-title">Running analysis\u2026</span>
+            <span class="council-level-status pending">Pending</span>
+          </div>
+          <div class="council-level-snippet" style="display: none;"></div>
+        </div>
+      </div>
+    `;
   }
 
   _resetFooter() {

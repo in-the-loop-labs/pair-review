@@ -1636,10 +1636,6 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
     // Check if selected provider is an executable provider (external tool)
     const ProviderClass = getProviderClass(provider);
     if (ProviderClass?.isExecutable) {
-      // Reject local-only executable providers in PR mode
-      if (ProviderClass.localOnly) {
-        return res.status(400).json({ error: `Provider "${provider}" is only available for local reviews` });
-      }
       return handleExecutablePRAnalysis(req, res, {
         reviewId: review.id,
         review,

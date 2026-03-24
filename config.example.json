@@ -199,7 +199,10 @@
       "command": "my-review-tool",
       "args": ["analyze"],
       "name": "My Review Tool",
-      "supports_levels": false,
+      "capabilities": {
+        "review_levels": false,
+        "custom_instructions": false
+      },
       "context_args": {
         "title": "--title",
         "description": "--description",
