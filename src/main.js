@@ -16,7 +16,7 @@ const logger = require('./utils/logger');
 const simpleGit = require('simple-git');
 const { getGeneratedFilePatterns } = require('./git/gitattributes');
 const { getEmoji: getCategoryEmoji } = require('./utils/category-emoji');
-const open = (...args) => import('open').then(({default: open}) => open(...args));
+const open = (...args) => process.env.PAIR_REVIEW_NO_OPEN ? Promise.resolve() : import('open').then(({default: open}) => open(...args));
 const { registerProtocolHandler, unregisterProtocolHandler } = require('./protocol-handler');
 
 let db = null;

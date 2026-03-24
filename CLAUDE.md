@@ -171,6 +171,7 @@ Test structure:
   - `tests/integration/routes.test.js` (Integration test database)
   - Ensure index names match the production schema exactly
 - **Test coverage is mandatory for new functionality**: When adding new methods, parameters, or behavioral changes to existing code, add corresponding unit tests in the same task. Do not defer test writing to a separate task or leave it for later. Tests should cover: (1) the happy path, (2) edge cases like missing/null inputs, (3) error conditions. For bug fixes, add a regression test that would have caught the bug.
+- **Tests must NEVER open browser tabs or windows.** All calls to the `open` npm package in production code are gated behind `PAIR_REVIEW_NO_OPEN` env var. Vitest config sets this globally. Any test that spawns the CLI via `spawnSync`/`spawn` MUST include `PAIR_REVIEW_NO_OPEN: '1'` in its env. Playwright E2E tests must always run headless (`headless: true` in `playwright.config.js`). If you add a new code path that opens a browser, it must respect this env var.
 
 ### Skill Prompt Regeneration
 - When modifying prompt templates or line number guidance in `src/ai/prompts/`, run `node scripts/generate-skill-prompts.js` to regenerate the static reference files in `plugin-code-critic/skills/analyze/references/`

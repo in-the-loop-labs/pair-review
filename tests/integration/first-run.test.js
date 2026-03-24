@@ -35,7 +35,8 @@ describe('First-run welcome message', () => {
         ...process.env,
         HOME: testHomeDir,
         // Prevent any GITHUB_TOKEN from being used
-        GITHUB_TOKEN: ''
+        GITHUB_TOKEN: '',
+        PAIR_REVIEW_NO_OPEN: '1'
       },
       timeout: 10000
     });
@@ -68,7 +69,8 @@ describe('First-run welcome message', () => {
       env: {
         ...process.env,
         HOME: testHomeDir,
-        GITHUB_TOKEN: ''
+        GITHUB_TOKEN: '',
+        PAIR_REVIEW_NO_OPEN: '1'
       },
       timeout: 10000
     });
@@ -86,7 +88,8 @@ describe('First-run welcome message', () => {
       cwd: path.join(__dirname, '../..'),
       env: {
         ...process.env,
-        HOME: testHomeDir
+        HOME: testHomeDir,
+        PAIR_REVIEW_NO_OPEN: '1'
       },
       timeout: 10000
     });
@@ -103,7 +106,8 @@ describe('First-run welcome message', () => {
       cwd: path.join(__dirname, '../..'),
       env: {
         ...process.env,
-        HOME: testHomeDir
+        HOME: testHomeDir,
+        PAIR_REVIEW_NO_OPEN: '1'
       },
       timeout: 10000
     });
@@ -120,7 +124,8 @@ describe('First-run welcome message', () => {
       cwd: path.join(__dirname, '../..'),
       env: {
         ...process.env,
-        HOME: testHomeDir
+        HOME: testHomeDir,
+        PAIR_REVIEW_NO_OPEN: '1'
       },
       timeout: 10000
     });
@@ -139,7 +144,8 @@ describe('First-run welcome message', () => {
       env: {
         ...process.env,
         HOME: testHomeDir,
-        GITHUB_TOKEN: ''
+        GITHUB_TOKEN: '',
+        PAIR_REVIEW_NO_OPEN: '1'
       },
       timeout: 10000
     });
