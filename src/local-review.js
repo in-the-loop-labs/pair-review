@@ -15,7 +15,7 @@ const { initializeDatabase, ReviewRepository, RepoSettingsRepository } = require
 const { startServer } = require('./server');
 const { localReviewDiffs } = require('./routes/shared');
 const { getShaAbbrevLength } = require('./git/sha-abbrev');
-const open = (...args) => import('open').then(({ default: open }) => open(...args));
+const open = (...args) => process.env.PAIR_REVIEW_NO_OPEN ? Promise.resolve() : import('open').then(({ default: open }) => open(...args));
 
 // Design note: This module uses execSync for git commands despite async function signatures.
 // For a local CLI tool, synchronous execution is acceptable and simplifies error handling.

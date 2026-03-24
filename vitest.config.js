@@ -5,6 +5,11 @@ export default defineConfig({
     // Use Node environment (not browser)
     environment: 'node',
 
+    // Suppress browser opening during tests
+    env: {
+      PAIR_REVIEW_NO_OPEN: '1',
+    },
+
     // Test file patterns
     include: ['tests/**/*.test.js'],
 

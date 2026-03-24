@@ -210,7 +210,7 @@ async function startServer(sharedDb = null) {
     
     // Bulk-open — opens multiple local URLs in the OS browser via the `open` package.
     // Bypasses popup blockers since the server shells out directly.
-    const openUrl = (...args) => import('open').then(({ default: open }) => open(...args));
+    const openUrl = (...args) => process.env.PAIR_REVIEW_NO_OPEN ? Promise.resolve() : import('open').then(({ default: open }) => open(...args));
     app.post('/api/bulk-open', async (req, res) => {
       try {
         const { urls } = req.body || {};
