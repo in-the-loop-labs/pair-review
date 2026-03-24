@@ -75,9 +75,9 @@ async function checkBranchAvailable(localPath, branchName, scopeStart, config, r
   if (includesBranch(scopeStart)) return true;
   if (!branchName || branchName === 'HEAD' || branchName === 'unknown' || !localPath) return false;
   try {
-    const { detectBaseBranch } = require('../git/base-branch');
+    const baseBranch = require('../git/base-branch');
     const depsOverride = getGitHubToken(config) ? { getGitHubToken: () => getGitHubToken(config) } : undefined;
-    const detection = await detectBaseBranch(localPath, branchName, {
+    const detection = await baseBranch.detectBaseBranch(localPath, branchName, {
       repository: repositoryName,
       enableGraphite: config.enable_graphite === true,
       _deps: depsOverride
@@ -1378,7 +1378,8 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
     // Recompute branchAvailable so the frontend can update the scope selector
     // (e.g. after a commit creates the first branch-ahead commit).
     const config = req.app.get('config') || {};
-    const branchName = review.local_head_branch || null;
+    let branchName;
+    try { branchName = await getCurrentBranch(localPath); } catch (_) { branchName = review.local_head_branch || null; }
     const branchAvailable = await checkBranchAvailable(
       localPath, branchName, scopeStart, config, review.repository
     );
@@ -1474,17 +1475,24 @@ router.post('/api/local/:reviewId/resolve-head-change', async (req, res) => {
     const scopeEnd = review.local_scope_end || DEFAULT_SCOPE.end;
 
     if (action === 'update') {
-      // Check for UNIQUE conflict before updating
-      const headBranch = review.local_head_branch || null;
+      // Read live branch — may differ from stored value after a checkout.
+      // Lazy require to ensure testability via vi.spyOn on the module exports.
+      let headBranch;
+      try { headBranch = await require('../local-review').getCurrentBranch(localPath); } catch (_) { headBranch = review.local_head_branch || null; }
+
+      // Check for UNIQUE conflict before any mutation.
+      // Use the live branch + new SHA so the conflict check targets the
+      // final identity tuple (localPath, newHeadSha, headBranch).
       const conflict = await reviewRepo.getLocalReview(localPath, newHeadSha, headBranch);
       if (conflict && conflict.id !== reviewId) {
         logger.log('API', `UNIQUE conflict: session #${conflict.id} already exists for this HEAD`, 'yellow');
         return res.json({ success: true, action: 'redirect', sessionId: conflict.id });
       }
 
-      // Update SHA
-      await reviewRepo.updateLocalHeadSha(reviewId, newHeadSha);
-      logger.log('API', `Updated HEAD SHA on session ${reviewId}`, 'cyan');
+      // Persist SHA and branch together in a single write so SQLite only
+      // ever sees the final identity tuple — no transient intermediate state.
+      await reviewRepo.updateReview(reviewId, { local_head_sha: newHeadSha, local_head_branch: headBranch });
+      logger.log('API', `Updated HEAD SHA and branch on session ${reviewId}`, 'cyan');
 
       // Recompute and persist diff
       const scopedResult = await generateScopedDiff(localPath, scopeStart, scopeEnd, review.local_base_branch);

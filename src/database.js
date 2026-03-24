@@ -2717,6 +2717,7 @@ class ReviewRepository {
    * @param {Object} [updates.reviewData] - Additional review data (will be JSON stringified)
    * @param {string} [updates.customInstructions] - Custom instructions used for AI analysis
    * @param {string} [updates.summary] - AI analysis summary
+   * @param {string} [updates.local_head_sha] - Local HEAD SHA
    * @param {Date|string} [updates.submittedAt] - Submission timestamp
    * @returns {Promise<boolean>} True if record was updated
    */
@@ -2757,6 +2758,11 @@ class ReviewRepository {
     if (updates.local_head_branch !== undefined) {
       setClauses.push('local_head_branch = ?');
       params.push(updates.local_head_branch);
+    }
+
+    if (updates.local_head_sha !== undefined) {
+      setClauses.push('local_head_sha = ?');
+      params.push(updates.local_head_sha);
     }
 
     if (updates.submittedAt !== undefined) {

@@ -25,16 +25,16 @@ async function checkBranchAvailable(localPath, branchName, scopeStart, config, r
   if (includesBranch(scopeStart)) return true;
   if (!branchName || branchName === 'HEAD' || branchName === 'unknown' || !localPath) return false;
   try {
-    const { getBranchCommitCount } = require('../local-review');
-    const { detectBaseBranch } = require('../git/base-branch');
+    const localReview = require('../local-review');
+    const baseBranch = require('../git/base-branch');
     const depsOverride = getGitHubToken(config) ? { getGitHubToken: () => getGitHubToken(config) } : undefined;
-    const detection = await detectBaseBranch(localPath, branchName, {
+    const detection = await baseBranch.detectBaseBranch(localPath, branchName, {
       repository: repositoryName,
       enableGraphite: config.enable_graphite === true,
       _deps: depsOverride
     });
     if (detection) {
-      const commitCount = await getBranchCommitCount(localPath, detection.baseBranch);
+      const commitCount = await localReview.getBranchCommitCount(localPath, detection.baseBranch);
       return commitCount > 0;
     }
   } catch {

@@ -706,7 +706,7 @@ class LocalManager {
   /**
    * Handle a non-branch-scope HEAD SHA change.
    * Shows a 3-option dialog (or auto-updates in silent mode).
-   * @returns {boolean} true if the session was updated in-place (caller should apply diff),
+   * @returns {Object|false} The response data object if the session was updated in-place (caller should apply diff),
    *                    false if cancelled or redirecting away (caller should skip _applyRefreshedDiff)
    */
   async _resolveHeadChange(result, opts) {
