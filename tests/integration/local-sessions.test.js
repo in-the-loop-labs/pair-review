@@ -17,6 +17,7 @@ const { localReviewDiffs } = require('../../src/routes/shared');
 // Note: vi.mock doesn't work with CommonJS require() in this project (forks pool),
 // so we use vi.spyOn on the actual module exports instead.
 const localReviewModule = require('../../src/local-review');
+const baseBranchModule = require('../../src/git/base-branch');
 const { RepoSettingsRepository } = require('../../src/database');
 
 describe('Local Sessions API', () => {
@@ -1075,6 +1076,40 @@ describe('Local Sessions API', () => {
       expect(cached.digest).toBe('digest123');
     });
 
+    it('action "update" with branch change — updates SHA and branch in place', async () => {
+      const reviewRepo = new ReviewRepository(db);
+
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/path/resolve-branch-update',
+        localHeadSha: 'oldsha',
+        localHeadBranch: 'old-branch',
+        repository: 'owner/repo'
+      });
+
+      localReviewModule.getCurrentBranch.mockResolvedValue('new-branch');
+
+      const res = await request(app)
+        .post(`/api/local/${id}/resolve-head-change`)
+        .send({ action: 'update', newHeadSha: 'newsha' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.action).toBe('updated');
+
+      const review = await reviewRepo.getLocalReviewById(id);
+      expect(review.local_head_sha).toBe('newsha');
+      expect(review.local_head_branch).toBe('new-branch');
+
+      const dbDiff = await reviewRepo.getLocalDiff(id);
+      expect(dbDiff).not.toBeNull();
+      expect(dbDiff.digest).toBe('digest123');
+
+      // Verify the session is findable by its new identity tuple
+      const found = await reviewRepo.getLocalReview('/path/resolve-branch-update', 'newsha', 'new-branch');
+      expect(found).not.toBeNull();
+      expect(found.id).toBe(id);
+    });
+
     it('action "update" with UNIQUE conflict — returns { action: "redirect", sessionId }', async () => {
       const reviewRepo = new ReviewRepository(db);
 
@@ -1082,6 +1117,7 @@ describe('Local Sessions API', () => {
       const originalId = await reviewRepo.upsertLocalReview({
         localPath: '/path/conflict-test',
         localHeadSha: 'sha-original',
+        localHeadBranch: 'main',
         repository: 'owner/conflict-repo'
       });
 
@@ -1089,6 +1125,7 @@ describe('Local Sessions API', () => {
       const conflictId = await reviewRepo.upsertLocalReview({
         localPath: '/path/conflict-test',
         localHeadSha: 'sha-conflict-target',
+        localHeadBranch: 'main',
         repository: 'owner/conflict-repo'
       });
 
@@ -1105,6 +1142,46 @@ describe('Local Sessions API', () => {
       // Verify the original session SHA was NOT changed
       const review = await reviewRepo.getLocalReviewById(originalId);
       expect(review.local_head_sha).toBe('sha-original');
+    });
+
+    it('action "update" with branch change + UNIQUE conflict — redirects WITHOUT mutating original session branch', async () => {
+      const reviewRepo = new ReviewRepository(db);
+
+      // Create the original session on 'old-branch'
+      const originalId = await reviewRepo.upsertLocalReview({
+        localPath: '/path/branch-conflict',
+        localHeadSha: 'sha-original',
+        localHeadBranch: 'old-branch',
+        repository: 'owner/branch-conflict-repo'
+      });
+
+      // Mock getCurrentBranch to simulate the user having checked out a new branch
+      localReviewModule.getCurrentBranch.mockResolvedValue('new-branch');
+
+      // Create a conflicting session at (same path, newHeadSha, 'new-branch')
+      const conflictId = await reviewRepo.upsertLocalReview({
+        localPath: '/path/branch-conflict',
+        localHeadSha: 'sha-new-head',
+        localHeadBranch: 'new-branch',
+        repository: 'owner/branch-conflict-repo'
+      });
+
+      // Try to update the original session — should detect the conflict
+      // at the FINAL tuple (path, newHeadSha, new-branch) and redirect
+      const res = await request(app)
+        .post(`/api/local/${originalId}/resolve-head-change`)
+        .send({ action: 'update', newHeadSha: 'sha-new-head' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.action).toBe('redirect');
+      expect(res.body.sessionId).toBe(conflictId);
+
+      // CRITICAL: the original session must NOT have been mutated.
+      // The branch must still be 'old-branch', not 'new-branch'.
+      const original = await reviewRepo.getLocalReviewById(originalId);
+      expect(original.local_head_branch).toBe('old-branch');
+      expect(original.local_head_sha).toBe('sha-original');
     });
 
     it('action "new-session" — creates new session, returns its ID', async () => {
@@ -1375,6 +1452,101 @@ describe('Local Sessions API', () => {
       const dbDiff = await reviewRepo.getLocalDiff(id);
       expect(dbDiff).not.toBeNull();
       expect(dbDiff.digest).toBe('digest123');
+    });
+
+    it('should return branchAvailable: true when branch has commits ahead after HEAD change', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/mock/repo',
+        localHeadSha: 'sha-before',
+        repository: 'owner/repo',
+        localHeadBranch: 'feature-branch'
+      });
+
+      // Mock HEAD change
+      localReviewModule.getHeadSha.mockResolvedValue('sha-after');
+
+      // Mock branch detection: branch has commits ahead
+      vi.spyOn(baseBranchModule, 'detectBaseBranch').mockResolvedValue({ baseBranch: 'main' });
+      localReviewModule.getBranchCommitCount.mockResolvedValue(2);
+
+      const res = await request(app)
+        .post(`/api/local/${id}/refresh`)
+        .send({});
+
+      expect(res.status).toBe(200);
+      expect(res.body.headShaChanged).toBe(true);
+      expect(res.body.branchAvailable).toBe(true);
+    });
+
+    it('should return branchAvailable: false when branch has no commits ahead', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/mock/repo',
+        localHeadSha: 'sha-before',
+        repository: 'owner/repo',
+        localHeadBranch: 'feature-branch'
+      });
+
+      // Mock HEAD change
+      localReviewModule.getHeadSha.mockResolvedValue('sha-after');
+
+      // Mock branch detection: no commits ahead
+      vi.spyOn(baseBranchModule, 'detectBaseBranch').mockResolvedValue({ baseBranch: 'main' });
+      localReviewModule.getBranchCommitCount.mockResolvedValue(0);
+
+      const res = await request(app)
+        .post(`/api/local/${id}/refresh`)
+        .send({});
+
+      expect(res.status).toBe(200);
+      expect(res.body.branchAvailable).toBe(false);
+    });
+  });
+
+  describe('POST /api/local/:reviewId/resolve-head-change (branchAvailable)', () => {
+    it('action "update" should return branchAvailable: true when branch has commits ahead', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/mock/repo',
+        localHeadSha: 'oldsha',
+        repository: 'owner/repo',
+        localHeadBranch: 'feature-branch'
+      });
+
+      // Mock branch detection: branch has commits ahead
+      vi.spyOn(baseBranchModule, 'detectBaseBranch').mockResolvedValue({ baseBranch: 'main' });
+      localReviewModule.getBranchCommitCount.mockResolvedValue(3);
+
+      const res = await request(app)
+        .post(`/api/local/${id}/resolve-head-change`)
+        .send({ action: 'update', newHeadSha: 'newsha' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.action).toBe('updated');
+      expect(res.body.branchAvailable).toBe(true);
+    });
+
+    it('action "update" should return branchAvailable: false when no commits ahead', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/mock/repo',
+        localHeadSha: 'oldsha',
+        repository: 'owner/repo',
+        localHeadBranch: 'feature-branch'
+      });
+
+      // Mock branch detection: no commits ahead
+      vi.spyOn(baseBranchModule, 'detectBaseBranch').mockResolvedValue({ baseBranch: 'main' });
+      localReviewModule.getBranchCommitCount.mockResolvedValue(0);
+
+      const res = await request(app)
+        .post(`/api/local/${id}/resolve-head-change`)
+        .send({ action: 'update', newHeadSha: 'newsha' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.action).toBe('updated');
+      expect(res.body.branchAvailable).toBe(false);
     });
   });
 });

@@ -67,6 +67,34 @@ function deleteLocalReviewDiff(reviewId) {
 }
 
 /**
+ * Check whether branch scope should be selectable in the scope range selector.
+ * Returns true when the branch has commits ahead of the base branch.
+ * Non-fatal: returns false on any error.
+ */
+async function checkBranchAvailable(localPath, branchName, scopeStart, config, repositoryName) {
+  if (includesBranch(scopeStart)) return true;
+  if (!branchName || branchName === 'HEAD' || branchName === 'unknown' || !localPath) return false;
+  try {
+    const baseBranch = require('../git/base-branch');
+    const depsOverride = getGitHubToken(config) ? { getGitHubToken: () => getGitHubToken(config) } : undefined;
+    const detection = await baseBranch.detectBaseBranch(localPath, branchName, {
+      repository: repositoryName,
+      enableGraphite: config.enable_graphite === true,
+      _deps: depsOverride
+    });
+    if (detection) {
+      // Lazy require to ensure testability via vi.spyOn on the module exports
+      const localReview = require('../local-review');
+      const commitCount = await localReview.getBranchCommitCount(localPath, detection.baseBranch);
+      return commitCount > 0;
+    }
+  } catch {
+    // Non-fatal — branch stop stays disabled
+  }
+  return false;
+}
+
+/**
  * Delete a local review session and its in-memory diff cache.
  * Shared by both single-delete and bulk-delete routes.
  *
@@ -575,26 +603,9 @@ router.get('/api/local/:reviewId', async (req, res) => {
     // Determine if Branch stop should be selectable in the scope range selector.
     // This is independent of branchInfo (which guards on no uncommitted changes).
     // Branch is available when: not detached HEAD, not on default branch, and has commits ahead.
-    let branchAvailable = includesBranch(scopeStart) || Boolean(branchInfo);
-    if (!branchAvailable && branchName && branchName !== 'HEAD' && branchName !== 'unknown' && review.local_path) {
-      try {
-        const { getBranchCommitCount } = require('../local-review');
-        const { detectBaseBranch } = require('../git/base-branch');
-        const config = req.app.get('config') || {};
-        const depsOverride = getGitHubToken(config) ? { getGitHubToken: () => getGitHubToken(config) } : undefined;
-        const detection = await detectBaseBranch(review.local_path, branchName, {
-          repository: repositoryName,
-          enableGraphite: config.enable_graphite === true,
-          _deps: depsOverride
-        });
-        if (detection) {
-          const commitCount = await getBranchCommitCount(review.local_path, detection.baseBranch);
-          branchAvailable = commitCount > 0;
-        }
-      } catch {
-        // Non-fatal — branch stop stays disabled
-      }
-    }
+    const branchAvailable = Boolean(branchInfo) || await checkBranchAvailable(
+      review.local_path, branchName, scopeStart, req.app.get('config') || {}, repositoryName
+    );
 
     // Compute SHA abbreviation length from the repo's git config
     const shaAbbrevLength = getShaAbbrevLength(review.local_path);
@@ -1364,6 +1375,15 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
       logger.warn(`Could not check HEAD SHA: ${headError.message}`);
     }
 
+    // Recompute branchAvailable so the frontend can update the scope selector
+    // (e.g. after a commit creates the first branch-ahead commit).
+    const config = req.app.get('config') || {};
+    let branchName;
+    try { branchName = await getCurrentBranch(localPath); } catch (_) { branchName = review.local_head_branch || null; }
+    const branchAvailable = await checkBranchAvailable(
+      localPath, branchName, scopeStart, config, review.repository
+    );
+
     // Non-branch HEAD change: skip diff computation entirely — the old diff is
     // preserved until the user decides (via resolve-head-change) what to do.
     // The resolve-head-change endpoint will recompute the diff for whichever
@@ -1373,6 +1393,7 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
         success: true,
         message: 'HEAD changed — awaiting user decision',
         headShaChanged,
+        branchAvailable,
         previousHeadSha: originalHeadSha,
         currentHeadSha: currentHeadSha || null,
         stats: {}
@@ -1397,6 +1418,7 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
       success: true,
       message: 'Diff refreshed successfully',
       headShaChanged,
+      branchAvailable,
       previousHeadSha: originalHeadSha,
       currentHeadSha: currentHeadSha || null,
       stats: {
@@ -1453,17 +1475,24 @@ router.post('/api/local/:reviewId/resolve-head-change', async (req, res) => {
     const scopeEnd = review.local_scope_end || DEFAULT_SCOPE.end;
 
     if (action === 'update') {
-      // Check for UNIQUE conflict before updating
-      const headBranch = review.local_head_branch || null;
+      // Read live branch — may differ from stored value after a checkout.
+      // Lazy require to ensure testability via vi.spyOn on the module exports.
+      let headBranch;
+      try { headBranch = await require('../local-review').getCurrentBranch(localPath); } catch (_) { headBranch = review.local_head_branch || null; }
+
+      // Check for UNIQUE conflict before any mutation.
+      // Use the live branch + new SHA so the conflict check targets the
+      // final identity tuple (localPath, newHeadSha, headBranch).
       const conflict = await reviewRepo.getLocalReview(localPath, newHeadSha, headBranch);
       if (conflict && conflict.id !== reviewId) {
         logger.log('API', `UNIQUE conflict: session #${conflict.id} already exists for this HEAD`, 'yellow');
         return res.json({ success: true, action: 'redirect', sessionId: conflict.id });
       }
 
-      // Update SHA
-      await reviewRepo.updateLocalHeadSha(reviewId, newHeadSha);
-      logger.log('API', `Updated HEAD SHA on session ${reviewId}`, 'cyan');
+      // Persist SHA and branch together in a single write so SQLite only
+      // ever sees the final identity tuple — no transient intermediate state.
+      await reviewRepo.updateReview(reviewId, { local_head_sha: newHeadSha, local_head_branch: headBranch });
+      logger.log('API', `Updated HEAD SHA and branch on session ${reviewId}`, 'cyan');
 
       // Recompute and persist diff
       const scopedResult = await generateScopedDiff(localPath, scopeStart, scopeEnd, review.local_base_branch);
@@ -1475,7 +1504,14 @@ router.post('/api/local/:reviewId/resolve-head-change', async (req, res) => {
         logger.warn(`Could not persist diff to database: ${persistError.message}`);
       }
 
-      return res.json({ success: true, action: 'updated' });
+      // Recompute branchAvailable — the commit may have created the first
+      // branch-ahead commit, making the Branch scope stop selectable.
+      const config = req.app.get('config') || {};
+      const branchAvailable = await checkBranchAvailable(
+        localPath, headBranch, scopeStart, config, review.repository
+      );
+
+      return res.json({ success: true, action: 'updated', branchAvailable });
     }
 
     // action === 'new-session'

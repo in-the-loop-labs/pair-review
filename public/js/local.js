@@ -674,6 +674,10 @@ class LocalManager {
             // User cancelled — keep old diff, early return
             return;
           }
+          // resolved is the response object — merge branchAvailable into result
+          if (resolved.branchAvailable !== undefined) {
+            result.branchAvailable = resolved.branchAvailable;
+          }
         }
         // Branch scope: backend already updated SHA and persisted diff — fall through
       }
@@ -702,7 +706,7 @@ class LocalManager {
   /**
    * Handle a non-branch-scope HEAD SHA change.
    * Shows a 3-option dialog (or auto-updates in silent mode).
-   * @returns {boolean} true if the session was updated in-place (caller should apply diff),
+   * @returns {Object|false} The response data object if the session was updated in-place (caller should apply diff),
    *                    false if cancelled or redirecting away (caller should skip _applyRefreshedDiff)
    */
   async _resolveHeadChange(result, opts) {
@@ -771,8 +775,9 @@ class LocalManager {
       return false; // navigating away — caller must not fire _applyRefreshedDiff
     }
 
-    // action === 'updated' — session SHA + diff updated, continue to reload
-    return true;
+    // action === 'updated' — session SHA + diff updated, continue to reload.
+    // Return the response data so the caller can extract branchAvailable, etc.
+    return data;
   }
 
   /**
@@ -805,6 +810,11 @@ class LocalManager {
     // (because the manager triggers loadAISuggestions via onSelectionChange on init),
     // refresh must call unconditionally since the manager won't re-fire its callback.
     await manager.loadAISuggestions(null, manager.selectedRunId);
+
+    // Update branchAvailable on the scope selector if the backend sent an updated value
+    if (result.branchAvailable !== undefined && manager.diffOptionsDropdown) {
+      manager.diffOptionsDropdown.branchAvailable = result.branchAvailable;
+    }
 
     // Clear stale state after successful refresh
     manager._hideStaleBadge();
