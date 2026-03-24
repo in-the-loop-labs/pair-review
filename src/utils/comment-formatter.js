@@ -8,7 +8,7 @@ const { getEmoji } = require('./category-emoji');
 
 /**
  * Preset format templates for adopted comments.
- * Template placeholders: {emoji}, {category}, {title}, {description}, {suggestion}
+ * Template placeholders: {emoji}, {category}, {severity}, {title}, {description}, {suggestion}
  * Conditional sections: {?field}...{/field} — content is kept when field is truthy, stripped when falsy.
  */
 const PRESETS = {
@@ -76,12 +76,12 @@ function processConditionalSections(template, values) {
  * Format an adopted comment using the given format configuration.
  * Handles legacy data where suggestion_text was concatenated into body.
  *
- * @param {{ body: string, suggestionText?: string, category?: string, title?: string }} fields
+ * @param {{ body: string, suggestionText?: string, category?: string, title?: string, severity?: string }} fields
  * @param {{ template: string, emojiOverrides: Object, categoryOverrides: Object }} formatConfig
  * @returns {string} Formatted comment text
  */
 function formatAdoptedComment(fields, formatConfig) {
-  const { body, title } = fields;
+  const { body, title, severity } = fields;
   let { category, suggestionText } = fields;
 
   if (!category) {
@@ -111,9 +111,12 @@ function formatAdoptedComment(fields, formatConfig) {
   const capitalizedCategory = capitalizeCategory(category);
 
   // Process conditional sections first, then replace individual placeholders
+  const capitalizedSeverity = severity ? capitalizeCategory(severity) : '';
+
   const fieldValues = {
     suggestion: suggestionText || '',
     title: title || '',
+    severity: capitalizedSeverity,
     emoji,
     category: capitalizedCategory,
     description
@@ -124,6 +127,7 @@ function formatAdoptedComment(fields, formatConfig) {
   // Replace placeholders
   result = result.replace(/\{emoji\}/g, emoji);
   result = result.replace(/\{category\}/g, capitalizedCategory);
+  result = result.replace(/\{severity\}/g, capitalizedSeverity);
   result = result.replace(/\{title\}/g, title || '');
   result = result.replace(/\{description\}/g, description);
   result = result.replace(/\{suggestion\}/g, suggestionText || '');

@@ -1871,6 +1871,8 @@ tr.newly-expanded .d2h-code-line-ctn {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+  overflow: hidden;
 }
 
 /* Category label badge for AI suggestions - HIDDEN in favor of unified AI Suggestion badge (issue pair_review-pqb) */
@@ -1889,11 +1891,16 @@ tr.newly-expanded .d2h-code-line-ctn {
   font-weight: 600;
   background: var(--ai-subtle, rgba(245, 158, 11, 0.1));
   color: var(--ai-primary, #f59e0b);
+  white-space: nowrap;
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .ai-suggestion-badge svg {
   width: 14px;
   height: 14px;
+  flex-shrink: 0;
   opacity: 0.8;
 }
 
@@ -1924,6 +1931,7 @@ tr.newly-expanded .d2h-code-line-ctn {
   background: var(--ai-subtle, rgba(245, 158, 11, 0.1));
   border-radius: var(--radius-sm, 4px);
   flex-shrink: 0;
+  white-space: nowrap;
 }
 
 /* Type-specific colors - using CSS variables for theme support */
@@ -2074,6 +2082,10 @@ tr.newly-expanded .d2h-code-line-ctn {
 .ai-title {
   font-weight: 600;
   color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 /* Confidence display removed to match cleaner prototype design (issue pair_review-7g5) */
@@ -8947,10 +8959,22 @@ body.resizing * {
 }
 
 /* Category label for AI findings */
+.finding-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .finding-category {
   font-size: 0.6875rem;
   color: var(--color-text-tertiary);
   text-transform: capitalize;
+}
+
+.finding-meta .severity-badge {
+  margin-left: 0;
+  font-size: 0.6rem;
+  padding: 0 4px;
 }
 
 /* Star icon for praise findings */
@@ -12765,11 +12789,15 @@ body.resizing * {
 
 /* Severity badges for executable provider suggestions */
 .severity-badge {
+  display: inline-flex;
   font-size: 11px;
   padding: 1px 6px;
   border-radius: 3px;
   font-weight: 500;
   margin-left: 4px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  width: fit-content;
 }
 
 .severity-critical {
@@ -12783,8 +12811,8 @@ body.resizing * {
 }
 
 .severity-minor {
-  background: #e8f5e9;
-  color: #2e7d32;
+  background: #fff8e1;
+  color: #f9a825;
 }
 
 [data-theme="dark"] .severity-critical {
@@ -12798,8 +12826,8 @@ body.resizing * {
 }
 
 [data-theme="dark"] .severity-minor {
-  background: #1c3d1c;
-  color: #a5d6a7;
+  background: #3d3a1c;
+  color: #fff176;
 }
 
 /* Note shown when executable provider is selected (no level toggles) */
