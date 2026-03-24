@@ -12,6 +12,15 @@ const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { TIERS, TIER_ALIASES } = require('./prompts/config');
 
+// Lazy-require to avoid circular dependency (acp-provider.js imports from this file)
+let _createAcpProviderClass = null;
+function getCreateAcpProviderClass() {
+  if (!_createAcpProviderClass) {
+    _createAcpProviderClass = require('./acp-provider').createAcpProviderClass;
+  }
+  return _createAcpProviderClass;
+}
+
 // Directory containing bin scripts (git-diff-lines, etc.)
 const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
 
@@ -445,6 +454,26 @@ function applyConfigOverrides(config) {
 
   for (const [providerId, providerConfig] of Object.entries(providersConfig)) {
     logger.debug(`Applying config overrides for provider: ${providerId}`);
+
+    // Dynamic ACP provider: register a new provider class from config
+    if (providerConfig.type === 'acp') {
+      if (!providerConfig.command) {
+        logger.warn(`ACP provider "${providerId}" missing required "command" field, skipping`);
+        continue;
+      }
+      const AcpClass = getCreateAcpProviderClass()(providerId, providerConfig);
+      registerProvider(providerId, AcpClass);
+      // Store config as overrides so createProvider() can pass them to the constructor
+      providerConfigOverrides.set(providerId, {
+        command: providerConfig.command,
+        args: providerConfig.args,
+        installInstructions: providerConfig.installInstructions,
+        env: providerConfig.env,
+        models: AcpClass.getModels(), // Already processed by factory
+      });
+      logger.info(`Registered dynamic ACP provider: ${providerId}`);
+      continue;
+    }
 
     // Process models if specified - infer defaults for each
     let processedModels = null;

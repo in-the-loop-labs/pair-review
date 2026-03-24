@@ -42,6 +42,7 @@ require('./copilot-provider');
 require('./opencode-provider');
 require('./cursor-agent-provider');
 require('./pi-provider');
+const { createAcpProviderClass } = require('./acp-provider');
 
 // Export the unified API
 module.exports = {
@@ -69,6 +70,9 @@ module.exports = {
   inferModelDefaults,
   resolveDefaultModel,
   prettifyModelId,
+
+  // ACP provider factory
+  createAcpProviderClass,
 
   // Provider availability checking
   getCachedAvailability,
