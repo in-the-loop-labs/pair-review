@@ -90,8 +90,8 @@ test.describe('Auto-Analyze Query Parameter', () => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
-    // Give a moment for any async triggers
-    await page.waitForTimeout(1000);
+    // Wait for all network activity to settle before asserting the negative
+    await page.waitForLoadState('networkidle');
 
     expect(analyzeRequested).toBe(false);
   });
@@ -108,7 +108,59 @@ test.describe('Auto-Analyze Query Parameter', () => {
     await page.goto('/pr/test-owner/test-repo/1?analyze=false');
     await waitForDiffToRender(page);
 
-    await page.waitForTimeout(1000);
+    await page.waitForLoadState('networkidle');
+
+    expect(analyzeRequested).toBe(false);
+  });
+});
+
+test.describe('Auto-Analyze Query Parameter - Local Mode', () => {
+  test('should auto-trigger analysis when ?analyze=true is present in local mode', async ({ page }) => {
+    // Mock the local analysis endpoint so it returns immediately
+    await page.route('**/api/local/2/analyses', route => {
+      if (route.request().method() === 'POST') {
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            analysisId: 'test-local-analysis',
+            status: 'started',
+            message: 'AI analysis started in background'
+          })
+        });
+      } else {
+        route.continue();
+      }
+    });
+
+    // Intercept the analyze POST request to verify it fires
+    const analyzeRequest = page.waitForRequest(
+      request => request.url().includes('/api/local/2/analyses') &&
+                 request.method() === 'POST',
+      { timeout: 10000 }
+    );
+
+    await page.goto('/local/2?analyze=true');
+    await waitForDiffToRender(page);
+
+    // Verify the analysis POST was triggered
+    const analyze = await analyzeRequest;
+    expect(analyze.method()).toBe('POST');
+  });
+
+  test('should not auto-trigger analysis in local mode without query param', async ({ page }) => {
+    let analyzeRequested = false;
+
+    page.on('request', request => {
+      if (request.url().includes('/api/local/2/analyses') && request.method() === 'POST') {
+        analyzeRequested = true;
+      }
+    });
+
+    await page.goto('/local/2');
+    await waitForDiffToRender(page);
+
+    await page.waitForLoadState('networkidle');
 
     expect(analyzeRequested).toBe(false);
   });
