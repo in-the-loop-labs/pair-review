@@ -44,6 +44,9 @@ class ChatSessionManager {
    * @returns {Promise<{id: number, status: string}>}
    */
   async createSession({ provider, model, reviewId, contextCommentId, systemPrompt, cwd, initialContext }) {
+    // Resolve model: explicit request value > provider config default
+    const resolvedModel = model || getChatProvider(provider)?.model || null;
+
     // Insert session record into DB
     const stmt = this._db.prepare(`
       INSERT INTO chat_sessions (review_id, context_comment_id, provider, model, status)
@@ -53,17 +56,17 @@ class ChatSessionManager {
       reviewId,
       contextCommentId || null,
       provider,
-      model || null
+      resolvedModel
     );
     const sessionId = Number(result.lastInsertRowid);
 
-    logger.info(`[ChatSession] Creating session ${sessionId} (provider=${provider}, review=${reviewId})`);
+    logger.info(`[ChatSession] Creating session ${sessionId} (provider=${provider}, model=${resolvedModel}, review=${reviewId})`);
 
     // Create and start the bridge
     // Chat sessions get bash for git commands; review analysis uses the safe default
     const bridge = this._createBridge(provider, {
       provider,
-      model,
+      model: resolvedModel,
       cwd,
       systemPrompt,
     });

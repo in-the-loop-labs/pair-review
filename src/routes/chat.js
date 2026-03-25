@@ -323,7 +323,7 @@ router.post('/api/chat/session', async (req, res) => {
       initialContext: initialContextWithPort
     });
 
-    logger.info(`Chat session created: ${session.id} (provider=${provider}, model=${model})`);
+    logger.info(`Chat session created: ${session.id} (provider=${provider})`);
 
     // Register broadcast listeners so events reach all connected clients
     registerChatBroadcast(chatSessionManager, session.id, serverPort);
