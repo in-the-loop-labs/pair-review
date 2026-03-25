@@ -117,6 +117,7 @@ function createTestCouncilProgressModal() {
   modal.isRunningInBackground = false;
   modal.councilConfig = null;
   modal._voiceStates = {};
+  modal._executableVoices = new Set();
 
   return { modal, modalContainer };
 }

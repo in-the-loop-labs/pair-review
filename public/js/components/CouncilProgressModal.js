@@ -23,6 +23,11 @@ class CouncilProgressModal {
     // Track per-voice completion state
     this._voiceStates = {};
 
+    // Track which voice keys are executable providers.
+    // Populated from progress events (levels.exec.voices) and persisted
+    // across show()/hide() cycles so reopened modals render correctly.
+    this._executableVoices = new Set();
+
     this._createModal();
     this._setupEventListeners();
   }
@@ -259,6 +264,15 @@ class CouncilProgressModal {
     if (!status.levels || typeof status.levels !== 'object') {
       console.warn('Council progress: invalid status structure', status);
       return;
+    }
+
+    // Track executable voice keys from exec level data so that reopened
+    // modals can render executable reviewers correctly without relying on
+    // the config modal's provider cache (which may be empty on reopen).
+    if (status.levels.exec?.voices) {
+      for (const voiceKey of Object.keys(status.levels.exec.voices)) {
+        this._executableVoices.add(voiceKey);
+      }
     }
 
     if (this._renderMode === 'single') {
@@ -598,9 +612,43 @@ class CouncilProgressModal {
     const execLevel = status.levels?.exec;
     if (execLevel) {
       if (execLevel.voices) {
+        // Check if any exec voice was rendered with native L1/L2/L3 structure
+        // instead of the single exec row. This happens when the modal was opened
+        // before _executableVoices was populated. If so, re-render the full body.
+        let needsRerender = false;
+        for (const voiceId of Object.keys(execLevel.voices)) {
+          const execEl = this.modal.querySelector(`[data-vc-voice="${voiceId}"][data-vc-level="exec"]`);
+          if (!execEl) {
+            // Voice exists in exec progress but has no exec DOM element — was likely
+            // rendered with native structure. Re-render to fix.
+            needsRerender = true;
+            break;
+          }
+        }
+        if (needsRerender && this.councilConfig) {
+          this._rebuildBodyVoiceCentric(this.councilConfig);
+          // Re-apply all progress to the fresh DOM
+          this._updateVoiceCentric(status);
+          return;
+        }
+
         for (const [voiceId, vStatus] of Object.entries(execLevel.voices)) {
           this._setVoiceCentricLevelState(voiceId, 'exec', vStatus.status || 'running', vStatus);
         }
+      } else if (execLevel.status && execLevel.status !== 'pending') {
+        // Aggregate terminal update without per-voice breakdown (completion/cancellation
+        // paths may collapse exec progress to just { status, progress }). Propagate the
+        // status to every rendered exec row, mirroring the pattern used for numeric levels
+        // with shared terminal state in _updateVoiceFromLevelStatus.
+        const terminalState = execLevel.status;
+        const execEls = this.modal.querySelectorAll('[data-vc-level="exec"]');
+        execEls.forEach(el => {
+          const voiceKey = el.dataset.vcVoice;
+          const stateKey = `${voiceKey}:exec`;
+          if (this._voiceStates[stateKey] !== 'completed' && this._voiceStates[stateKey] !== 'failed') {
+            this._setVoiceCentricLevelState(voiceKey, 'exec', terminalState, execLevel);
+          }
+        });
       }
       if (execLevel.streamEvent?.text && execLevel.voiceId) {
         this._setVoiceCentricStreamText(execLevel.voiceId, 'exec', execLevel.streamEvent.text);
@@ -1163,11 +1211,16 @@ class CouncilProgressModal {
     }
 
     // Executable voices don't require enabled levels — add any not already captured
-    // (handles all-executable councils where no levels are enabled)
+    // (handles all-executable councils where no levels are enabled).
+    // Use _executableVoices (populated from progress events) as primary source,
+    // falling back to the config modal's provider cache. This ensures executable
+    // voices render correctly even when the modal is reopened for an already-running
+    // analysis where the config modal cache may be empty.
     if (config.voices) {
       const providersInfo = window.analysisConfigModal?.providers || {};
       for (const voice of config.voices) {
-        if (providersInfo[voice.provider]?.isExecutable) {
+        const isExec = providersInfo[voice.provider]?.isExecutable || false;
+        if (isExec) {
           const sig = `${voice.provider}|${voice.model}|${voice.tier || 'balanced'}|${voice.customInstructions || ''}`;
           if (!seenSignatures.has(sig)) {
             seenSignatures.add(sig);
@@ -1184,15 +1237,33 @@ class CouncilProgressModal {
       voiceMap.set(voiceKey, { voice, levels: enabledLevelNums });
     });
 
+    // Also add any executable voices known from progress events but not yet
+    // in the voiceMap (covers the case where config modal providers cache is
+    // empty but we've already seen exec-level progress data).
+    for (const execVoiceKey of this._executableVoices) {
+      if (!voiceMap.has(execVoiceKey)) {
+        // Find the matching voice in config.voices by key pattern
+        const configVoices = config.voices || [];
+        const matchingVoice = configVoices.find((v, idx) => {
+          const candidateKey = `${v.provider}-${v.model}${idx > 0 ? `-${idx}` : ''}`;
+          return candidateKey === execVoiceKey;
+        });
+        if (matchingVoice) {
+          voiceMap.set(execVoiceKey, { voice: matchingVoice, levels: enabledLevelNums });
+        }
+      }
+    }
+
     let html = '<div class="council-progress-tree">';
 
-    // Check which providers are executable via the cached providers list
+    // Build a parent row for each unique voice.
+    // Determine executable status from: (1) _executableVoices set (populated from
+    // progress events), or (2) config modal provider cache as fallback.
     const providersMap = window.analysisConfigModal?.providers || {};
 
-    // Build a parent row for each unique voice
     for (const [voiceKey, { voice, levels }] of voiceMap) {
       const label = this._formatVoiceLabel(voice);
-      const isExecutable = providersMap[voice.provider]?.isExecutable || false;
+      const isExecutable = this._executableVoices.has(voiceKey) || (providersMap[voice.provider]?.isExecutable || false);
 
       html += `
         <div class="council-level" data-voice-key="${voiceKey}">

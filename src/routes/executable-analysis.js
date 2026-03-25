@@ -16,12 +16,92 @@
 
 const os = require('os');
 const path = require('path');
+const { exec } = require('child_process');
+const { promisify } = require('util');
+const execPromise = promisify(exec);
 const fsPromises = require('fs').promises;
 const logger = require('../utils/logger');
 const { createProvider } = require('../ai/provider');
 const { AnalysisRunRepository, CommentRepository } = require('../database');
 const { fireHooks, hasHooks } = require('../hooks/hook-runner');
 const { buildAnalysisStartedPayload, buildAnalysisCompletedPayload, getCachedUser } = require('../hooks/payloads');
+const { normalizePath, resolveRenamedFile } = require('../utils/paths');
+const { buildFileLineCountMap, validateSuggestionLineNumbers } = require('../utils/line-validation');
+const { GIT_DIFF_FLAGS } = require('../git/diff-flags');
+
+/**
+ * Get the list of changed files from git for suggestion validation.
+ * PR mode uses base...head diff; local mode uses unstaged + untracked + staged.
+ * @param {string} cwd - Working directory
+ * @param {Object} context - Executable context with baseSha/headSha
+ * @returns {Promise<string[]>} Changed file paths
+ */
+async function getChangedFiles(cwd, context) {
+  try {
+    if (context.baseSha && context.headSha) {
+      const { stdout } = await execPromise(
+        `git diff ${GIT_DIFF_FLAGS} ${context.baseSha}...${context.headSha} --name-only`,
+        { cwd }
+      );
+      return stdout.trim().split('\n').filter(f => f.length > 0);
+    }
+    // Local mode: unstaged + untracked + staged
+    const [unstaged, untracked, staged] = await Promise.all([
+      execPromise(`git diff ${GIT_DIFF_FLAGS} --name-only`, { cwd }).then(r => r.stdout),
+      execPromise('git ls-files --others --exclude-standard', { cwd }).then(r => r.stdout),
+      execPromise(`git diff ${GIT_DIFF_FLAGS} --cached --name-only`, { cwd }).then(r => r.stdout)
+    ]);
+    const all = [
+      ...unstaged.trim().split('\n'),
+      ...untracked.trim().split('\n'),
+      ...staged.trim().split('\n')
+    ].filter(f => f.length > 0);
+    return [...new Set(all)];
+  } catch (error) {
+    logger.warn(`Could not get changed files list: ${error.message}`);
+    return [];
+  }
+}
+
+/**
+ * Validate suggestions: filter by file path and clamp invalid line numbers.
+ * Mirrors Analyzer.validateAndFinalizeSuggestions as a standalone function.
+ * @param {Array} suggestions - Suggestion objects from the executable provider
+ * @param {string[]} validFiles - Changed file paths from the diff
+ * @param {Map<string, number>} fileLineCountMap - File path → line count
+ * @returns {Array} Validated suggestions
+ */
+function validateSuggestions(suggestions, validFiles, fileLineCountMap) {
+  if (!suggestions || suggestions.length === 0) return [];
+  const inputCount = suggestions.length;
+
+  // File path validation
+  let filtered = suggestions;
+  if (validFiles && validFiles.length > 0) {
+    const normalizedValid = new Set(validFiles.map(p => normalizePath(resolveRenamedFile(p))));
+    filtered = suggestions.filter(s => {
+      const norm = normalizePath(resolveRenamedFile(s.file));
+      if (normalizedValid.has(norm)) return true;
+      logger.warn(`[Validation] Discarded suggestion with invalid path: "${s.file}" (${s.type} - ${s.title})`);
+      return false;
+    });
+    if (filtered.length < inputCount) {
+      logger.info(`[Validation] File path filter: ${inputCount} → ${filtered.length} suggestions`);
+    }
+  } else {
+    logger.warn('[Validation] No valid paths available, skipping path filtering');
+  }
+
+  // Line number validation
+  const lineResult = validateSuggestionLineNumbers(filtered, fileLineCountMap, { convertToFileLevel: true });
+  if (lineResult.converted.length > 0) {
+    logger.warn(`[Validation] Converted ${lineResult.converted.length} suggestions to file-level (invalid line numbers)`);
+  }
+
+  const final = [...lineResult.valid, ...lineResult.converted];
+  logger.info(`[Validation] Final: ${final.length} suggestions from ${inputCount} input`);
+  return final;
+}
 
 /**
  * Run the full executable-provider analysis lifecycle.
@@ -181,10 +261,17 @@ async function runExecutableAnalysis(req, res, params, shared, callbacks) {
         throw new Error('Executable provider returned no data');
       }
 
-      const suggestions = result.data.suggestions || [];
+      const rawSuggestions = result.data.suggestions || [];
       const summary = result.data.summary || '';
 
-      // Store suggestions
+      // Validate suggestions against the diff (file paths + line numbers)
+      const validFiles = await getChangedFiles(cwd, executableContext);
+      const fileLineCountMap = validFiles.length > 0
+        ? await buildFileLineCountMap(cwd, validFiles)
+        : new Map();
+      const suggestions = validateSuggestions(rawSuggestions, validFiles, fileLineCountMap);
+
+      // Store validated suggestions
       await commentRepo.bulkInsertAISuggestions(reviewId, runId, suggestions, null);
 
       // Update run to completed
@@ -226,6 +313,17 @@ async function runExecutableAnalysis(req, res, params, shared, callbacks) {
     } catch (error) {
       if (error.isCancellation) {
         logger.info(`Executable analysis cancelled for ${logLabel}`);
+        // Status is already set to 'cancelled' by the cancel endpoint
+        if (hasHooks('analysis.completed', analysisHookConfig)) {
+          getCachedUser(analysisHookConfig).then(user => {
+            fireHooks('analysis.completed', buildAnalysisCompletedPayload({
+              reviewId, analysisId, provider: selectedProvider, model: selectedModel,
+              status: 'cancelled', totalSuggestions: 0,
+              ...hookPayloadFields,
+              user,
+            }), analysisHookConfig);
+          }).catch(() => {});
+        }
         return;
       }
 
@@ -262,8 +360,9 @@ async function runExecutableAnalysis(req, res, params, shared, callbacks) {
         }).catch(() => {});
       }
     } finally {
-      // Clean up tracking maps
-      activeAnalyses.delete(analysisId);
+      // Clean up review-to-analysis mapping (allow new analyses for this review).
+      // Do NOT delete activeAnalyses entry — leave it with terminal status so
+      // clients can poll for final results via HTTP (matches local.js/pr.js).
       reviewToAnalysisId.delete(reviewId);
 
       // Clean up temp directory
