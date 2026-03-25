@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const childProcess = require('child_process');
-const { deepMerge, getGitHubToken, expandPath, getMonorepoPath, getMonorepoCheckoutScript, getMonorepoWorktreeDirectory, getMonorepoWorktreeNameTemplate, getMonorepoCheckoutTimeout, resolveMonorepoOptions, resolveDbName, warnIfDevModeWithoutDbName, loadConfig, _resetTokenCache } = require('../../src/config');
+const { deepMerge, getGitHubToken, expandPath, getMonorepoPath, getMonorepoCheckoutScript, getMonorepoWorktreeDirectory, getMonorepoWorktreeNameTemplate, getMonorepoCheckoutTimeout, resolveMonorepoOptions, resolveDbName, warnIfDevModeWithoutDbName, loadConfig, shouldSkipUpdateNotifier, _resetTokenCache } = require('../../src/config');
 
 describe('config.js', () => {
   describe('getGitHubToken', () => {
@@ -1151,6 +1151,104 @@ describe('config.js', () => {
       expect(config.port).toBe(7247);
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Malformed config'));
       warnSpy.mockRestore();
+    });
+  });
+
+  describe('shouldSkipUpdateNotifier', () => {
+    const MANAGED_CONFIG_PATH = path.join(__dirname, '..', '..', 'config.managed.json');
+    const GLOBAL_CONFIG_PATH = path.join(os.homedir(), '.pair-review', 'config.json');
+    const GLOBAL_LOCAL_CONFIG_PATH = path.join(os.homedir(), '.pair-review', 'config.local.json');
+    const PROJECT_CONFIG_PATH = path.join(process.cwd(), '.pair-review', 'config.json');
+    const PROJECT_LOCAL_CONFIG_PATH = path.join(process.cwd(), '.pair-review', 'config.local.json');
+
+    let readFileSyncSpy;
+
+    beforeEach(() => {
+      readFileSyncSpy = vi.spyOn(fs, 'readFileSync');
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    function mockReadFileSync(fileMap) {
+      readFileSyncSpy.mockImplementation((filePath) => {
+        if (filePath in fileMap && fileMap[filePath] !== null) {
+          return JSON.stringify(fileMap[filePath]);
+        }
+        const err = new Error('ENOENT');
+        err.code = 'ENOENT';
+        throw err;
+      });
+    }
+
+    it('should return false when no config files exist', () => {
+      mockReadFileSync({});
+      expect(shouldSkipUpdateNotifier()).toBe(false);
+    });
+
+    it('should return false when config files do not set the flag', () => {
+      mockReadFileSync({
+        [GLOBAL_CONFIG_PATH]: { port: 7247 },
+      });
+      expect(shouldSkipUpdateNotifier()).toBe(false);
+    });
+
+    it('should return true when global config sets skip_update_notifier', () => {
+      mockReadFileSync({
+        [GLOBAL_CONFIG_PATH]: { skip_update_notifier: true },
+      });
+      expect(shouldSkipUpdateNotifier()).toBe(true);
+    });
+
+    it('should return true when managed config sets skip_update_notifier', () => {
+      mockReadFileSync({
+        [MANAGED_CONFIG_PATH]: { skip_update_notifier: true },
+      });
+      expect(shouldSkipUpdateNotifier()).toBe(true);
+    });
+
+    it('should let later config files override earlier ones', () => {
+      mockReadFileSync({
+        [MANAGED_CONFIG_PATH]: { skip_update_notifier: true },
+        [GLOBAL_CONFIG_PATH]: { skip_update_notifier: false },
+      });
+      expect(shouldSkipUpdateNotifier()).toBe(false);
+    });
+
+    it('should let project config override global config', () => {
+      mockReadFileSync({
+        [GLOBAL_CONFIG_PATH]: { skip_update_notifier: false },
+        [PROJECT_CONFIG_PATH]: { skip_update_notifier: true },
+      });
+      expect(shouldSkipUpdateNotifier()).toBe(true);
+    });
+
+    it('should let project local config have final say', () => {
+      mockReadFileSync({
+        [MANAGED_CONFIG_PATH]: { skip_update_notifier: true },
+        [GLOBAL_CONFIG_PATH]: { skip_update_notifier: true },
+        [PROJECT_LOCAL_CONFIG_PATH]: { skip_update_notifier: false },
+      });
+      expect(shouldSkipUpdateNotifier()).toBe(false);
+    });
+
+    it('should skip malformed config files silently', () => {
+      readFileSyncSpy.mockImplementation((filePath) => {
+        if (filePath === GLOBAL_CONFIG_PATH) return '{ bad json';
+        if (filePath === GLOBAL_LOCAL_CONFIG_PATH) return JSON.stringify({ skip_update_notifier: true });
+        const err = new Error('ENOENT');
+        err.code = 'ENOENT';
+        throw err;
+      });
+      expect(shouldSkipUpdateNotifier()).toBe(true);
+    });
+
+    it('should coerce truthy values to boolean', () => {
+      mockReadFileSync({
+        [GLOBAL_CONFIG_PATH]: { skip_update_notifier: 1 },
+      });
+      expect(shouldSkipUpdateNotifier()).toBe(true);
     });
   });
 });
