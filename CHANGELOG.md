@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.0.3
+
+### Patch Changes
+
+- ee5a3b7: Fix chat providers ignoring model, command, and env from config overrides
+- 81bef6f: Fix diff panel scroll getting stuck on file boundaries
+- a294552: Fix --ai flag not triggering auto-analysis in local mode
+- c21b86d: Fix local mode header elements overlapping right-side actions when branch names are long
+- 888d808: Fix chat provider ID "pi" being incorrectly passed as --provider to the Pi CLI, which expects a model provider (e.g. "google", "anthropic"). The provider flag is now only set when explicitly configured by the user.
+- 3bbcc0e: Harden all git diff calls against user git config that could alter output format (color.diff, diff.noprefix, diff.mnemonicPrefix, diff.relative)
+- 9fe2952: Add `skip_update_notifier` config setting to suppress the "update available" notification on exit. Useful for managed deployments where users cannot update directly.
+
 ## 3.0.2
 
 ### Patch Changes

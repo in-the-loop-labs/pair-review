@@ -1,6 +1,6 @@
 {
   "name": "pair-review",
-  "version": "3.0.2",
+  "version": "3.0.3",
   "description": "pair-review app integration — Open PRs and local changes in the pair-review web UI, run server-side AI analysis, and address review feedback. Requires the pair-review MCP server.",
   "author": {
     "name": "in-the-loop-labs",
