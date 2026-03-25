@@ -117,6 +117,7 @@ function getChatProvider(id) {
       env: overrides.env || {},
     };
     if (overrides.model) provider.model = overrides.model;
+    if (overrides.provider) provider.provider = overrides.provider;
     if (overrides.extra_args && Array.isArray(overrides.extra_args)) {
       provider.args = [...provider.args, ...overrides.extra_args];
     }
@@ -132,6 +133,7 @@ function getChatProvider(id) {
   if (overrides.name || overrides.label) merged.name = overrides.name || overrides.label;
   if (overrides.command) merged.command = overrides.command;
   if (overrides.model) merged.model = overrides.model;
+  if (overrides.provider) merged.provider = overrides.provider;
   if (overrides.env) merged.env = { ...merged.env, ...overrides.env };
   if (overrides.args) {
     merged.args = overrides.args;

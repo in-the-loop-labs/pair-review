@@ -962,6 +962,24 @@ describe('ChatSessionManager', () => {
       expect(bridge._constructorOptions.env).toEqual({ PI_DEBUG: '1' });
     });
 
+    it('should not pass chat provider ID as provider to PiBridge', async () => {
+      mockChatProviders.getChatProvider.mockImplementationOnce(
+        () => ({ id: 'pi', type: 'pi' })
+      );
+      await manager.createSession({ provider: 'pi', reviewId: 1 });
+      const bridge = _createdBridges[0];
+      expect(bridge._constructorOptions.provider).toBeNull();
+    });
+
+    it('should pass model provider from provider def to PiBridge', async () => {
+      mockChatProviders.getChatProvider.mockImplementationOnce(
+        () => ({ id: 'pi', type: 'pi', provider: 'google' })
+      );
+      await manager.createSession({ provider: 'pi', reviewId: 1 });
+      const bridge = _createdBridges[0];
+      expect(bridge._constructorOptions.provider).toBe('google');
+    });
+
     it('should pass model from provider def to ClaudeCodeBridge when no session model', async () => {
       mockChatProviders.getChatProvider.mockImplementationOnce(
         () => ({ id: 'claude', type: 'claude', command: 'claude', model: 'claude-sonnet-4-6' })

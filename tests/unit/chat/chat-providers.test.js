@@ -178,6 +178,32 @@ describe('chat-providers', () => {
       const provider = getChatProvider('opencode-acp');
       expect(provider.model).toBeUndefined();
     });
+
+    it('should merge config overrides for provider (model provider)', () => {
+      applyConfigOverrides({
+        'pi': { provider: 'google' },
+      });
+      const provider = getChatProvider('pi');
+      expect(provider.provider).toBe('google');
+    });
+
+    it('should not set provider when override is not provided', () => {
+      applyConfigOverrides({
+        'pi': { model: 'gemini-2.5-flash' },
+      });
+      const provider = getChatProvider('pi');
+      expect(provider.provider).toBeUndefined();
+    });
+
+    it('should forward provider field for dynamic (non-built-in) providers', () => {
+      applyConfigOverrides({
+        'river': { type: 'pi', command: 'my-pi', provider: 'google' },
+      });
+      const provider = getChatProvider('river');
+      expect(provider.provider).toBe('google');
+      expect(provider.type).toBe('pi');
+      expect(provider.command).toBe('my-pi');
+    });
   });
 
   describe('getAllChatProviders', () => {
