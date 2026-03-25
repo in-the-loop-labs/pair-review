@@ -7,6 +7,7 @@ const { getConfigDir, DEFAULT_CHECKOUT_TIMEOUT_MS } = require('../config');
 const { WorktreeRepository, generateWorktreeId } = require('../database');
 const { getGeneratedFilePatterns } = require('./gitattributes');
 const { normalizeRepository, resolveRenamedFile, resolveRenamedFileOld } = require('../utils/paths');
+const { GIT_DIFF_FLAGS_ARRAY, GIT_DIFF_SUMMARY_FLAGS_ARRAY } = require('./diff-flags');
 const { spawn, execSync } = require('child_process');
 
 /**
@@ -534,10 +535,12 @@ class GitWorktreeManager {
 
       // Generate diff between base SHA and head SHA (not branch names)
       // This ensures we compare the exact commits from the PR, even if the base branch has moved
+      // Defensive flags to normalize output regardless of user's git config
+      // (see src/git/diff-flags.js for rationale)
       const diff = await git.diff([
         `${prData.base_sha}...${prData.head_sha}`,
         '--unified=3',
-        '--no-ext-diff'
+        ...GIT_DIFF_FLAGS_ARRAY
       ]);
 
       return diff;
@@ -560,7 +563,10 @@ class GitWorktreeManager {
 
       // Get file changes with stats using base SHA and head SHA
       // This ensures we get the exact files changed in the PR, even if the base branch has moved
-      const diffSummary = await git.diffSummary([`${prData.base_sha}...${prData.head_sha}`, '--no-ext-diff']);
+      const diffSummary = await git.diffSummary([
+        `${prData.base_sha}...${prData.head_sha}`,
+        ...GIT_DIFF_SUMMARY_FLAGS_ARRAY
+      ]);
 
       // Parse .gitattributes to identify generated files
       const gitattributes = await getGeneratedFilePatterns(worktreePath);

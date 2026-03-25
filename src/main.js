@@ -15,6 +15,7 @@ const { normalizeRepository, resolveRenamedFile, resolveRenamedFileOld } = requi
 const logger = require('./utils/logger');
 const simpleGit = require('simple-git');
 const { getGeneratedFilePatterns } = require('./git/gitattributes');
+const { GIT_DIFF_FLAGS_ARRAY, GIT_DIFF_SUMMARY_FLAGS_ARRAY } = require('./git/diff-flags');
 const { getEmoji: getCategoryEmoji } = require('./utils/category-emoji');
 const open = (...args) => process.env.PAIR_REVIEW_NO_OPEN ? Promise.resolve() : import('open').then(({default: open}) => open(...args));
 const { registerProtocolHandler, unregisterProtocolHandler } = require('./protocol-handler');
@@ -705,10 +706,17 @@ async function performHeadlessReview(args, config, db, flags, options) {
         }
       }
 
-      diff = await git.diff([`${prData.base_sha}...${prData.head_sha}`, '--unified=3', '--no-ext-diff']);
+      diff = await git.diff([
+        `${prData.base_sha}...${prData.head_sha}`,
+        '--unified=3',
+        ...GIT_DIFF_FLAGS_ARRAY
+      ]);
 
       // Get changed files
-      const diffSummary = await git.diffSummary([`${prData.base_sha}...${prData.head_sha}`, '--no-ext-diff']);
+      const diffSummary = await git.diffSummary([
+        `${prData.base_sha}...${prData.head_sha}`,
+        ...GIT_DIFF_SUMMARY_FLAGS_ARRAY
+      ]);
       const gitattributes = await getGeneratedFilePatterns(worktreePath);
 
       changedFiles = diffSummary.files.map(file => {

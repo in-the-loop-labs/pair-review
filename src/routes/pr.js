@@ -32,6 +32,7 @@ const { broadcastReviewEvent } = require('../events/review-events');
 const { fireHooks, hasHooks } = require('../hooks/hook-runner');
 const { buildReviewStartedPayload, buildReviewLoadedPayload, buildAnalysisStartedPayload, buildAnalysisCompletedPayload, getCachedUser } = require('../hooks/payloads');
 const simpleGit = require('simple-git');
+const { GIT_DIFF_FLAGS_ARRAY, GIT_DIFF_SUMMARY_FLAGS_ARRAY } = require('../git/diff-flags');
 const {
   activeAnalyses,
   reviewToAnalysisId,
@@ -706,10 +707,19 @@ router.get('/api/pr/:owner/:repo/:number/diff', async (req, res) => {
 
         if (baseSha && headSha) {
           // Regenerate diff with -w flag to ignore whitespace changes
-          diffContent = await git.diff([`${baseSha}...${headSha}`, '--unified=3', '-w', '--no-ext-diff']);
+          diffContent = await git.diff([
+            `${baseSha}...${headSha}`,
+            '--unified=3',
+            '-w',
+            ...GIT_DIFF_FLAGS_ARRAY
+          ]);
 
           // Regenerate changed files stats with -w flag
-          const diffSummary = await git.diffSummary([`${baseSha}...${headSha}`, '-w', '--no-ext-diff']);
+          const diffSummary = await git.diffSummary([
+            `${baseSha}...${headSha}`,
+            '-w',
+            ...GIT_DIFF_SUMMARY_FLAGS_ARRAY
+          ]);
           const gitattributes = await getGeneratedFilePatterns(worktreePath);
           changedFiles = diffSummary.files.map(file => {
             const resolvedFile = resolveRenamedFile(file.file);
