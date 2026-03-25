@@ -227,6 +227,20 @@ async function loadConfig() {
     process.exit(1);
   }
 
+  // Load global instructions from ~/.pair-review/global-instructions.md
+  const globalInstructionsPath = path.join(CONFIG_DIR, 'global-instructions.md');
+  try {
+    const content = await fs.readFile(globalInstructionsPath, 'utf-8');
+    const trimmed = content.trim();
+    if (trimmed) {
+      mergedConfig.globalInstructions = trimmed;
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      logger.warn(`Could not read global instructions from ${globalInstructionsPath}: ${error.message}`);
+    }
+  }
+
   return { config: mergedConfig, isFirstRun };
 }
 

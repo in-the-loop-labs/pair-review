@@ -821,6 +821,7 @@ async function performHeadlessReview(args, config, db, flags, options) {
     const repoSettingsRepo = new RepoSettingsRepository(db);
     const repoSettings = await repoSettingsRepo.getRepoSettings(repository);
     const repoInstructions = repoSettings?.default_instructions || null;
+    const globalInstructions = config.globalInstructions || null;
 
     // Run AI analysis
     console.log('Running AI analysis (all 3 levels)...');
@@ -829,8 +830,8 @@ async function performHeadlessReview(args, config, db, flags, options) {
 
     let analysisSummary = null;
     try {
-      // Pass repo instructions to ensure they're captured in the analysis run
-      const analysisResult = await analyzer.analyzeAllLevels(review.id, worktreePath, storedPRData, null, { repoInstructions });
+      // Pass all instruction levels to ensure they're captured in the analysis run
+      const analysisResult = await analyzer.analyzeAllLevels(review.id, worktreePath, storedPRData, null, { globalInstructions, repoInstructions });
       analysisSummary = analysisResult.summary;
       console.log('AI analysis completed successfully');
     } catch (analysisError) {

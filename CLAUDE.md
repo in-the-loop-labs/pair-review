@@ -161,6 +161,7 @@ Test structure:
   - Event listeners in frontend JavaScript
   - Query parameters and their handling
 - **CLI vs Web UI entry points**: Some actions have two entry points — the CLI startup path and the web UI route handler. For example, local review sessions are created in `src/local-review.js` (CLI) and `src/routes/local.js` (web UI `POST /api/local/start`). PR reviews are set up via the browser hitting the GET endpoint. When adding cross-cutting behavior (hooks, logging, side effects), verify it fires from BOTH entry points.
+- **Analysis code paths in `src/ai/analyzer.js`**: There are three independent code paths that set up instructions and call analysis: (1) `analyzeAllLevels` (the main path), (2) `runReviewerCentricCouncil`, and (3) `runCouncilAnalysis`. When changing instruction handling, prompt construction, or analysis options, verify the change is applied to **all three paths**. The council paths build their own instructions objects and call `mergeInstructions` independently — they won't inherit changes made only to `analyzeAllLevels`.
 - Test both modes manually or with E2E tests before considering a feature complete
 
 ### Testing Practices

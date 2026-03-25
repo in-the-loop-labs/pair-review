@@ -20,7 +20,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 33;
+const CURRENT_SCHEMA_VERSION = 34;
 
 /**
  * Database schema SQL statements
@@ -162,6 +162,7 @@ const SCHEMA_SQL = {
       model TEXT,
       tier TEXT,
       custom_instructions TEXT,
+      global_instructions TEXT,
       repo_instructions TEXT,
       request_instructions TEXT,
       head_sha TEXT,
@@ -1564,6 +1565,26 @@ const MIGRATIONS = {
 
     console.log('  Recreated comments with ON DELETE CASCADE for review_id');
     console.log('Migration to schema version 33 complete');
+  },
+
+  34: (db) => {
+    console.log('Migrating to schema version 34: Add global_instructions to analysis_runs');
+
+    if (!columnExists(db, 'analysis_runs', 'global_instructions')) {
+      try {
+        db.prepare('ALTER TABLE analysis_runs ADD COLUMN global_instructions TEXT').run();
+        console.log('  Added global_instructions column to analysis_runs');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column global_instructions already exists (race condition)');
+      }
+    } else {
+      console.log('  Column global_instructions already exists');
+    }
+
+    console.log('Migration to schema version 34 complete');
   }
 };
 
@@ -3477,6 +3498,7 @@ class AnalysisRunRepository {
    * @param {string} [runInfo.provider] - AI provider (claude, gemini, etc.)
    * @param {string} [runInfo.model] - AI model name
    * @param {string} [runInfo.customInstructions] - Merged custom instructions (kept for backward compatibility)
+   * @param {string} [runInfo.globalInstructions] - Global instructions from ~/.pair-review/global-instructions.md
    * @param {string} [runInfo.repoInstructions] - Repository-level instructions from repo_settings
    * @param {string} [runInfo.requestInstructions] - Request-level instructions from the analyze request
    * @param {string} [runInfo.headSha] - Git HEAD SHA at the time of analysis (PR head commit or local HEAD)
@@ -3484,14 +3506,14 @@ class AnalysisRunRepository {
    * @param {string} [runInfo.status='running'] - Initial status (default 'running'; pass 'completed' for externally-produced results)
    * @returns {Promise<Object>} Created analysis run record
    */
-  async create({ id, reviewId, provider = null, model = null, tier = null, customInstructions = null, repoInstructions = null, requestInstructions = null, headSha = null, diff = null, status = 'running', parentRunId = null, configType = 'single', levelsConfig = null, scopeStart = null, scopeEnd = null }) {
+  async create({ id, reviewId, provider = null, model = null, tier = null, customInstructions = null, globalInstructions = null, repoInstructions = null, requestInstructions = null, headSha = null, diff = null, status = 'running', parentRunId = null, configType = 'single', levelsConfig = null, scopeStart = null, scopeEnd = null }) {
     const isTerminal = ['completed', 'failed', 'cancelled'].includes(status);
     const completedAt = isTerminal ? 'CURRENT_TIMESTAMP' : 'NULL';
     const levelsConfigJson = levelsConfig ? JSON.stringify(levelsConfig) : null;
     await run(this.db, `
-      INSERT INTO analysis_runs (id, review_id, provider, model, tier, custom_instructions, repo_instructions, request_instructions, head_sha, diff, status, completed_at, parent_run_id, config_type, levels_config, scope_start, scope_end)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${completedAt}, ?, ?, ?, ?, ?)
-    `, [id, reviewId, provider, model, tier, customInstructions, repoInstructions, requestInstructions, headSha, diff, status, parentRunId, configType, levelsConfigJson, scopeStart, scopeEnd]);
+      INSERT INTO analysis_runs (id, review_id, provider, model, tier, custom_instructions, global_instructions, repo_instructions, request_instructions, head_sha, diff, status, completed_at, parent_run_id, config_type, levels_config, scope_start, scope_end)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${completedAt}, ?, ?, ?, ?, ?)
+    `, [id, reviewId, provider, model, tier, customInstructions, globalInstructions, repoInstructions, requestInstructions, headSha, diff, status, parentRunId, configType, levelsConfigJson, scopeStart, scopeEnd]);
 
     // Query back the inserted row to return actual database values (including timestamps)
     return await this.getById(id);
@@ -3574,12 +3596,12 @@ class AnalysisRunRepository {
    */
   async getById(id, { includeDiff = false } = {}) {
     const columns = [
-      'id', 'review_id', 'provider', 'model', 'tier', 'custom_instructions', 'repo_instructions', 'request_instructions',
+      'id', 'review_id', 'provider', 'model', 'tier', 'custom_instructions', 'global_instructions', 'repo_instructions', 'request_instructions',
       'head_sha', 'summary', 'status', 'total_suggestions', 'files_analyzed', 'started_at', 'completed_at',
       'parent_run_id', 'config_type', 'levels_config'
     ];
     if (includeDiff) {
-      columns.splice(9, 0, 'diff'); // Insert diff after head_sha
+      columns.splice(columns.indexOf('head_sha') + 1, 0, 'diff'); // Insert diff after head_sha
     }
     const row = await queryOne(this.db, `
       SELECT ${columns.join(', ')}
@@ -3602,12 +3624,12 @@ class AnalysisRunRepository {
   async getByReviewId(reviewId, { limit, includeDiff = false } = {}) {
     const params = [reviewId];
     const columns = [
-      'id', 'review_id', 'provider', 'model', 'tier', 'custom_instructions', 'repo_instructions', 'request_instructions',
+      'id', 'review_id', 'provider', 'model', 'tier', 'custom_instructions', 'global_instructions', 'repo_instructions', 'request_instructions',
       'head_sha', 'summary', 'status', 'total_suggestions', 'files_analyzed', 'started_at', 'completed_at',
       'parent_run_id', 'config_type', 'levels_config'
     ];
     if (includeDiff) {
-      columns.splice(9, 0, 'diff'); // Insert diff after head_sha
+      columns.splice(columns.indexOf('head_sha') + 1, 0, 'diff'); // Insert diff after head_sha
     }
     let sql = `
       SELECT ${columns.join(', ')}
@@ -3640,12 +3662,12 @@ class AnalysisRunRepository {
    */
   async getLatestCompletedByReviewId(reviewId, { includeDiff = false } = {}) {
     const columns = [
-      'id', 'review_id', 'provider', 'model', 'tier', 'custom_instructions', 'repo_instructions', 'request_instructions',
+      'id', 'review_id', 'provider', 'model', 'tier', 'custom_instructions', 'global_instructions', 'repo_instructions', 'request_instructions',
       'head_sha', 'summary', 'status', 'total_suggestions', 'files_analyzed', 'started_at', 'completed_at',
       'parent_run_id', 'config_type', 'levels_config'
     ];
     if (includeDiff) {
-      columns.splice(9, 0, 'diff'); // Insert diff after head_sha
+      columns.splice(columns.indexOf('head_sha') + 1, 0, 'diff'); // Insert diff after head_sha
     }
     const row = await queryOne(this.db, `
       SELECT ${columns.join(', ')}
@@ -3667,7 +3689,7 @@ class AnalysisRunRepository {
     // Note: diff column is intentionally omitted - child runs share the same diff as parent
     // to avoid data duplication. Use the parent run's diff when needed.
     return query(this.db, `
-      SELECT id, review_id, provider, model, tier, custom_instructions, repo_instructions, request_instructions,
+      SELECT id, review_id, provider, model, tier, custom_instructions, global_instructions, repo_instructions, request_instructions,
              head_sha, summary, status, total_suggestions, files_analyzed, started_at, completed_at,
              parent_run_id, config_type, levels_config
       FROM analysis_runs

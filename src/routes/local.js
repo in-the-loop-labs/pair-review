@@ -988,6 +988,8 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
     const repoSettingsRepo = new RepoSettingsRepository(db);
     const repoSettings = repository ? await repoSettingsRepo.getRepoSettings(repository) : null;
 
+    const appConfig = req.app.get('config') || {};
+
     // Determine provider: request body > repo settings > config > default ('claude')
     let selectedProvider;
     if (requestProvider) {
@@ -995,8 +997,7 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
     } else if (repoSettings && repoSettings.default_provider) {
       selectedProvider = repoSettings.default_provider;
     } else {
-      const config = req.app.get('config') || {};
-      selectedProvider = config.default_provider || config.provider || 'claude';
+      selectedProvider = appConfig.default_provider || appConfig.provider || 'claude';
     }
 
     // Determine model: request body > repo settings > config/CLI > default
@@ -1011,8 +1012,10 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
 
     // Get repo instructions from settings
     const repoInstructions = repoSettings?.default_instructions || null;
+    // Get global instructions from config (loaded at startup from ~/.pair-review/global-instructions.md)
+    const globalInstructions = appConfig.globalInstructions || null;
     // Merge for logging purposes (analyzer will also merge internally)
-    const combinedInstructions = mergeInstructions(repoInstructions, requestInstructions);
+    const combinedInstructions = mergeInstructions({ globalInstructions, repoInstructions, requestInstructions });
 
     // Save custom instructions to the review record
     // Only update when requestInstructions has a value - updateReview would accept
@@ -1042,6 +1045,7 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
         provider: selectedProvider,
         model: selectedModel,
         tier,
+        globalInstructions,
         repoInstructions,
         requestInstructions,
         headSha: review.local_head_sha || null,
@@ -1147,7 +1151,7 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
     const progressCallback = createProgressCallback(analysisId);
 
     // Start analysis asynchronously (skipRunCreation since we created the record above; also passes changedFiles for local mode path validation, tier for prompt selection, and skipLevel3 flag)
-    analyzer.analyzeLevel1(reviewId, localPath, localMetadata, progressCallback, { repoInstructions, requestInstructions }, changedFiles, { analysisId, runId, skipRunCreation: true, tier, skipLevel3: requestSkipLevel3, enabledLevels: levelsConfig })
+    analyzer.analyzeLevel1(reviewId, localPath, localMetadata, progressCallback, { globalInstructions, repoInstructions, requestInstructions }, changedFiles, { analysisId, runId, skipRunCreation: true, tier, skipLevel3: requestSkipLevel3, enabledLevels: levelsConfig })
       .then(async result => {
         logger.section('Local Analysis Results');
         logger.success(`Analysis complete for local review #${reviewId}`);
@@ -1932,7 +1936,7 @@ router.post('/api/local/:reviewId/analyses/council', async (req, res) => {
       },
       councilConfig,
       councilId,
-      { repoInstructions, requestInstructions },
+      { globalInstructions: (req.app.get('config') || {}).globalInstructions || null, repoInstructions, requestInstructions },
       configType
     );
 

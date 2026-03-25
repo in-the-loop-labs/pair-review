@@ -1501,6 +1501,9 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
       });
     }
 
+    const appConfig = req.app.get('config') || {};
+    const globalInstructions = appConfig.globalInstructions || null;
+
     const { provider, model, repoInstructions, combinedInstructions } = await withTransaction(db, async () => {
       const repoSettingsRepo = new RepoSettingsRepository(db);
       const fetchedRepoSettings = await repoSettingsRepo.getRepoSettings(repository);
@@ -1511,8 +1514,7 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
       } else if (fetchedRepoSettings && fetchedRepoSettings.default_provider) {
         selectedProvider = fetchedRepoSettings.default_provider;
       } else {
-        const config = req.app.get('config') || {};
-        selectedProvider = config.default_provider || config.provider || 'claude';
+        selectedProvider = appConfig.default_provider || appConfig.provider || 'claude';
       }
 
       let selectedModel;
@@ -1525,7 +1527,7 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
       }
 
       const fetchedRepoInstructions = fetchedRepoSettings?.default_instructions || null;
-      const mergedInstructions = mergeInstructions(fetchedRepoInstructions, requestInstructions);
+      const mergedInstructions = mergeInstructions({ globalInstructions, repoInstructions: fetchedRepoInstructions, requestInstructions });
 
       if (requestInstructions) {
         await reviewRepo.upsertCustomInstructions(prNumber, repository, requestInstructions);
@@ -1553,6 +1555,7 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
       provider,
       model,
       tier,
+      globalInstructions,
       repoInstructions,
       requestInstructions,
       headSha: prMetadata.head_sha || null,
@@ -1586,7 +1589,7 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
 
     broadcastProgress(analysisId, initialStatus);
     broadcastReviewEvent(review.id, { type: 'review:analysis_started', analysisId });
-    const analysisConfig = req.app.get('config') || {};
+    const analysisConfig = appConfig;
     const analysisPrContext = {
       number: prNumber, owner, repo,
       author: prMetadata.author, baseBranch: prMetadata.base_branch, headBranch: prMetadata.head_branch,
@@ -1616,7 +1619,7 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
 
     const progressCallback = createProgressCallback(analysisId);
 
-    analyzer.analyzeLevel1(review.id, worktreePath, prMetadata, progressCallback, { repoInstructions, requestInstructions }, null, { analysisId, runId, skipRunCreation: true, tier, skipLevel3: requestSkipLevel3, enabledLevels: levelsConfig })
+    analyzer.analyzeLevel1(review.id, worktreePath, prMetadata, progressCallback, { globalInstructions, repoInstructions, requestInstructions }, null, { analysisId, runId, skipRunCreation: true, tier, skipLevel3: requestSkipLevel3, enabledLevels: levelsConfig })
       .then(async result => {
         logger.section('Analysis Results');
         logger.success(`Analysis complete for PR #${prNumber}`);
@@ -1874,7 +1877,7 @@ router.post('/api/pr/:owner/:repo/:number/analyses/council', async (req, res) =>
       },
       councilConfig,
       councilId,
-      { repoInstructions, requestInstructions },
+      { globalInstructions: (req.app.get('config') || {}).globalInstructions || null, repoInstructions, requestInstructions },
       configType
     );
 
