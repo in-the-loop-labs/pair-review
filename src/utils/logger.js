@@ -129,28 +129,38 @@ class AILogger {
 
   /**
    * Log AI analysis error
+   * @param {string} message - Error message
+   * @param {Error} [error] - Optional error object to include
    */
-  error(message) {
+  error(message, error) {
     if (!this.enabled) return;
     const timestamp = new Date().toISOString().split('T')[1].split('.')[0];
-    process.stderr.write(
-      `${COLORS.cyan}[${timestamp}]${COLORS.reset} ` +
+    let output = `${COLORS.cyan}[${timestamp}]${COLORS.reset} ` +
       `${COLORS.bright}${COLORS.red}[AI ✗]${COLORS.reset} ` +
-      `${COLORS.red}${message}${COLORS.reset}\n`
-    );
+      `${COLORS.red}${message}${COLORS.reset}`;
+    if (error) {
+      const errorMsg = error.message || String(error);
+      output += ` ${COLORS.red}${errorMsg}${COLORS.reset}`;
+    }
+    process.stderr.write(output + '\n');
   }
 
   /**
    * Log AI analysis warning
+   * @param {string} message - Warning message
+   * @param {Error} [error] - Optional error object to include
    */
-  warn(message) {
+  warn(message, error) {
     if (!this.enabled) return;
     const timestamp = new Date().toISOString().split('T')[1].split('.')[0];
-    this._stdout.write(
-      `${COLORS.cyan}[${timestamp}]${COLORS.reset} ` +
+    let output = `${COLORS.cyan}[${timestamp}]${COLORS.reset} ` +
       `${COLORS.bright}${COLORS.yellow}[AI ⚠]${COLORS.reset} ` +
-      `${COLORS.yellow}${message}${COLORS.reset}\n`
-    );
+      `${COLORS.yellow}${message}${COLORS.reset}`;
+    if (error) {
+      const errorMsg = error.message || String(error);
+      output += ` ${COLORS.yellow}${errorMsg}${COLORS.reset}`;
+    }
+    this._stdout.write(output + '\n');
   }
 
   /**
