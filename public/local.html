@@ -112,10 +112,24 @@
             font-family: 'JetBrains Mono', monospace;
             font-size: 11px;
             color: var(--color-text-primary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 260px;
         }
 
         .local-branch-badge svg {
             color: var(--color-text-tertiary);
+            flex-shrink: 0;
+        }
+
+        .local-branch-badge span {
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .local-branch-vs {
+            flex-shrink: 0;
         }
 
         /* Dark mode improvements for header icon buttons */
@@ -139,18 +153,25 @@
             gap: 16px;
             font-size: 13px;
             color: var(--color-text-secondary);
+            min-width: 0;
+            overflow: hidden;
         }
 
         .local-header-info .info-item {
             display: flex;
             align-items: center;
             gap: 6px;
+            min-width: 0;
+            overflow: hidden;
         }
 
         .local-header-info .info-value {
             color: var(--color-text-primary);
             font-weight: 600;
             font-size: 14px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
 
         /* Path display in toolbar-meta (with left truncation) */
@@ -193,11 +214,12 @@
             border-radius: 4px;
             border: 1px dashed var(--color-border-primary);
             transition: all 0.15s ease;
-            max-width: 360px;
+            max-width: 100%;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
             position: relative;
+            display: inline-block;
         }
 
         .local-review-name:hover {
