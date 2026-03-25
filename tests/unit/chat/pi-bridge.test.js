@@ -84,6 +84,8 @@ describe('PiBridge', () => {
       expect(bridge.cwd).toBe(process.cwd());
       expect(bridge.systemPrompt).toBeNull();
       expect(bridge.piCommand).toBe('pi');
+      expect(bridge.env).toEqual({});
+      expect(bridge.useShell).toBe(false);
     });
 
     it('should accept custom options', () => {
@@ -92,13 +94,17 @@ describe('PiBridge', () => {
         provider: 'anthropic',
         cwd: '/tmp/work',
         systemPrompt: 'Be helpful',
-        piCommand: '/usr/local/bin/pi'
+        piCommand: '/usr/local/bin/pi',
+        env: { PI_DEBUG: '1' },
+        useShell: true,
       });
       expect(bridge.model).toBe('claude-sonnet-4');
       expect(bridge.provider).toBe('anthropic');
       expect(bridge.cwd).toBe('/tmp/work');
       expect(bridge.systemPrompt).toBe('Be helpful');
       expect(bridge.piCommand).toBe('/usr/local/bin/pi');
+      expect(bridge.env).toEqual({ PI_DEBUG: '1' });
+      expect(bridge.useShell).toBe(true);
     });
 
     it('should accept sessionPath option', () => {
@@ -197,6 +203,40 @@ describe('PiBridge', () => {
       const bridge = new PiBridge();
       const args = bridge._buildArgs();
       expect(args).not.toContain('--session');
+    });
+  });
+
+  describe('start (spawn options)', () => {
+    it('should merge env into process.env for spawn', async () => {
+      const bridge = new PiBridge({ env: { PI_CUSTOM: 'yes' } });
+      await bridge.start();
+      const spawnOpts = mockSpawn.mock.calls[0][2];
+      expect(spawnOpts.env.PI_CUSTOM).toBe('yes');
+      // Should also inherit process.env
+      expect(spawnOpts.env.PATH).toBe(process.env.PATH);
+    });
+
+    it('should use shell mode for multi-word commands', async () => {
+      const bridge = new PiBridge({ piCommand: 'devx pi', useShell: true });
+      await bridge.start();
+      const spawnCmd = mockSpawn.mock.calls[0][0];
+      const spawnArgs = mockSpawn.mock.calls[0][1];
+      const spawnOpts = mockSpawn.mock.calls[0][2];
+      // Shell mode: command + args joined into single string, empty args array
+      expect(spawnCmd).toContain('devx pi');
+      expect(spawnArgs).toEqual([]);
+      expect(spawnOpts.shell).toBe(true);
+    });
+
+    it('should not use shell mode by default', async () => {
+      const bridge = new PiBridge({ piCommand: 'pi' });
+      await bridge.start();
+      const spawnCmd = mockSpawn.mock.calls[0][0];
+      const spawnArgs = mockSpawn.mock.calls[0][1];
+      const spawnOpts = mockSpawn.mock.calls[0][2];
+      expect(spawnCmd).toBe('pi');
+      expect(spawnArgs.length).toBeGreaterThan(0);
+      expect(spawnOpts.shell).toBe(false);
     });
   });
 

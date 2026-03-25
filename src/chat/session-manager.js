@@ -548,6 +548,7 @@ class ChatSessionManager {
       const providerDef = getChatProvider(provider);
       return new ClaudeCodeBridge({
         ...options,
+        model: options.model || providerDef?.model,
         claudeCommand: providerDef?.command,
         env: providerDef?.env,
         useShell: providerDef?.useShell,
@@ -564,8 +565,14 @@ class ChatSessionManager {
         useShell: providerDef?.useShell,
       });
     }
+    // Pi provider — resolve config overrides (command, model, env) from provider def
+    const providerDef = getChatProvider(provider);
     return new PiBridge({
       ...options,
+      model: options.model || providerDef?.model,
+      piCommand: providerDef?.command,
+      env: providerDef?.env,
+      useShell: providerDef?.useShell,
       tools: CHAT_TOOLS,
       extensions: [taskExtensionDir],
     });

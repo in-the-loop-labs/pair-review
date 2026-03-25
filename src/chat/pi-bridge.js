@@ -14,6 +14,7 @@ const { EventEmitter } = require('events');
 const { spawn } = require('child_process');
 const { createInterface } = require('readline');
 const logger = require('../utils/logger');
+const { quoteShellArgs } = require('../ai/provider');
 
 /**
  * Dialog methods in extension_ui_request that expect a response.
@@ -30,6 +31,8 @@ class PiBridge extends EventEmitter {
    * @param {string} [options.systemPrompt] - System prompt text
    * @param {string} [options.tools] - Comma-separated tool list (default: 'read,grep,find,ls')
    * @param {string} [options.piCommand] - Override Pi command (default: 'pi')
+   * @param {Object} [options.env] - Extra env vars for subprocess
+   * @param {boolean} [options.useShell] - Use shell mode for multi-word commands
    * @param {string[]} [options.skills] - Array of skill file paths to load via --skill
    * @param {string[]} [options.extensions] - Array of extension directory paths to load via -e
    * @param {string} [options.sessionPath] - Path to a session file for resumption
@@ -42,6 +45,8 @@ class PiBridge extends EventEmitter {
     this.systemPrompt = options.systemPrompt || null;
     this.tools = options.tools || 'read,grep,find,ls';
     this.piCommand = options.piCommand || process.env.PAIR_REVIEW_PI_CMD || 'pi';
+    this.env = options.env || {};
+    this.useShell = options.useShell || false;
     this.skills = options.skills || [];
     this.extensions = options.extensions || [];
     this.sessionPath = options.sessionPath || null;
@@ -69,15 +74,20 @@ class PiBridge extends EventEmitter {
 
     const args = this._buildArgs();
     const command = this.piCommand;
-    const spawnArgs = args;
+    const useShell = this.useShell;
 
-    logger.info(`[PiBridge] Starting Pi RPC: ${command} ${spawnArgs.join(' ')}`);
+    // For multi-word commands (e.g. "devx pi"), use shell mode.
+    const spawnCmd = useShell ? `${command} ${quoteShellArgs(args).join(' ')}` : command;
+    const spawnArgs = useShell ? [] : args;
+
+    logger.info(`[PiBridge] Starting Pi RPC: ${command} ${args.join(' ')}`);
 
     return new Promise((resolve, reject) => {
-      const proc = spawn(command, spawnArgs, {
+      const proc = spawn(spawnCmd, spawnArgs, {
         cwd: this.cwd,
-        env: { ...process.env },
-        stdio: ['pipe', 'pipe', 'pipe']
+        env: { ...process.env, ...this.env },
+        stdio: ['pipe', 'pipe', 'pipe'],
+        shell: useShell,
       });
 
       this._process = proc;

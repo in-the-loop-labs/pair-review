@@ -932,6 +932,53 @@ describe('ChatSessionManager', () => {
       const bridge = _createdClaudeCodeBridges[0];
       expect(bridge._constructorOptions.claudeCommand).toBe('claude');
     });
+
+    it('should pass model from provider def to PiBridge when no session model', async () => {
+      mockChatProviders.getChatProvider.mockImplementationOnce(
+        () => ({ id: 'pi', type: 'pi', command: 'devx pi', model: 'anthropic/claude-opus-4-6', useShell: true })
+      );
+      await manager.createSession({ provider: 'pi', reviewId: 1 });
+      const bridge = _createdBridges[0];
+      expect(bridge._constructorOptions.model).toBe('anthropic/claude-opus-4-6');
+      expect(bridge._constructorOptions.piCommand).toBe('devx pi');
+      expect(bridge._constructorOptions.useShell).toBe(true);
+    });
+
+    it('should prefer session model over provider def model for PiBridge', async () => {
+      mockChatProviders.getChatProvider.mockImplementationOnce(
+        () => ({ id: 'pi', type: 'pi', model: 'anthropic/claude-opus-4-6' })
+      );
+      await manager.createSession({ provider: 'pi', model: 'google/gemini-2.5-pro', reviewId: 1 });
+      const bridge = _createdBridges[0];
+      expect(bridge._constructorOptions.model).toBe('google/gemini-2.5-pro');
+    });
+
+    it('should pass env from provider def to PiBridge', async () => {
+      mockChatProviders.getChatProvider.mockImplementationOnce(
+        () => ({ id: 'pi', type: 'pi', env: { PI_DEBUG: '1' } })
+      );
+      await manager.createSession({ provider: 'pi', reviewId: 1 });
+      const bridge = _createdBridges[0];
+      expect(bridge._constructorOptions.env).toEqual({ PI_DEBUG: '1' });
+    });
+
+    it('should pass model from provider def to ClaudeCodeBridge when no session model', async () => {
+      mockChatProviders.getChatProvider.mockImplementationOnce(
+        () => ({ id: 'claude', type: 'claude', command: 'claude', model: 'claude-sonnet-4-6' })
+      );
+      await manager.createSession({ provider: 'claude', reviewId: 1 });
+      const bridge = _createdClaudeCodeBridges[0];
+      expect(bridge._constructorOptions.model).toBe('claude-sonnet-4-6');
+    });
+
+    it('should prefer session model over provider def model for ClaudeCodeBridge', async () => {
+      mockChatProviders.getChatProvider.mockImplementationOnce(
+        () => ({ id: 'claude', type: 'claude', command: 'claude', model: 'claude-sonnet-4-6' })
+      );
+      await manager.createSession({ provider: 'claude', model: 'claude-opus-4-6', reviewId: 1 });
+      const bridge = _createdClaudeCodeBridges[0];
+      expect(bridge._constructorOptions.model).toBe('claude-opus-4-6');
+    });
   });
 
   describe('constructor', () => {
