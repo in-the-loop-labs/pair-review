@@ -8,10 +8,13 @@ const pkg = require('../package.json');
 const args = process.argv.slice(2);
 const isMCP = args.includes('--mcp');
 
-// Check for updates and notify user (skip in MCP mode to avoid stdout pollution)
+// Check for updates and notify user (skip in MCP mode and when config suppresses it)
 if (!isMCP) {
-  const updateNotifier = require('update-notifier');
-  updateNotifier({ pkg }).notify();
+  const { shouldSkipUpdateNotifier } = require('../src/config');
+  if (!shouldSkipUpdateNotifier()) {
+    const updateNotifier = require('update-notifier');
+    updateNotifier({ pkg }).notify();
+  }
 }
 
 async function main() {

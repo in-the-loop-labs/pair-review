@@ -37,7 +37,8 @@ const DEFAULT_CONFIG = {
   monorepos: {},  // Monorepo configurations: { "owner/repo": { path: "~/path/to/clone" } }
   assisted_by_url: "https://github.com/in-the-loop-labs/pair-review",  // URL for "Review assisted by" footer link
   hooks: {},  // Hook commands per event: { "review.started": { "my_hook": { "command": "..." } } }
-  enable_graphite: false  // When true, shows Graphite links alongside GitHub links
+  enable_graphite: false,  // When true, shows Graphite links alongside GitHub links
+  skip_update_notifier: false  // When true, suppresses the "update available" notification on exit
 };
 
 /**
@@ -495,6 +496,42 @@ function warnIfDevModeWithoutDbName(config) {
   }
 }
 
+/**
+ * Synchronously checks whether the update notifier should be skipped.
+ * Reads config files in the standard merge order (managed → global → global.local
+ * → project → project.local) and returns the resolved boolean value of
+ * `skip_update_notifier`. Designed for use in bin/pair-review.js which runs
+ * before the async main process.
+ *
+ * @returns {boolean} True if the update notifier should be suppressed
+ */
+function shouldSkipUpdateNotifier() {
+  const fsSync = require('fs');
+  const localDir = path.join(process.cwd(), '.pair-review');
+  // Keep in sync with the sources list in loadConfig()
+  const sources = [
+    MANAGED_CONFIG_FILE,
+    CONFIG_FILE,
+    CONFIG_LOCAL_FILE,
+    path.join(localDir, 'config.json'),
+    path.join(localDir, 'config.local.json'),
+  ];
+
+  let skip = false;
+  for (const filePath of sources) {
+    try {
+      const data = fsSync.readFileSync(filePath, 'utf8');
+      const parsed = JSON.parse(data);
+      if ('skip_update_notifier' in parsed) {
+        skip = Boolean(parsed.skip_update_notifier);
+      }
+    } catch {
+      // File missing or malformed — skip silently
+    }
+  }
+  return skip;
+}
+
 module.exports = {
   deepMerge,
   loadConfig,
@@ -515,6 +552,7 @@ module.exports = {
   resolveMonorepoOptions,
   resolveDbName,
   warnIfDevModeWithoutDbName,
+  shouldSkipUpdateNotifier,
   _resetTokenCache,
   DEFAULT_CHECKOUT_TIMEOUT_MS
 };
