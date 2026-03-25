@@ -1616,9 +1616,13 @@
 }
 
 /* Scrollable wrapper for diff tables — provides per-file horizontal scroll
-   now that .d2h-file-wrapper and .diff-container use overflow:visible for sticky headers */
+   now that .d2h-file-wrapper and .diff-container use overflow:visible for sticky headers.
+   overflow-y must be explicitly hidden: CSS spec coerces it to 'auto' when overflow-x
+   is non-visible, which creates an accidental vertical scroll trap that eats wheel events
+   at the boundary instead of propagating them to .diff-view. */
 .d2h-file-body {
   overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .d2h-diff-table {
