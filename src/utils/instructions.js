@@ -6,24 +6,38 @@
  */
 
 /**
- * Merge repository and request instructions with XML-like tags for AI clarity
+ * Merge global, repository, and request instructions with XML-like tags for AI clarity.
  * Server is the single source of truth for how instructions are merged.
  *
- * @param {string|null} repoInstructions - Default instructions from repository settings
- * @param {string|null} requestInstructions - Custom instructions from the analysis request
- * @returns {string|null} Merged instructions with XML tags, or null if both inputs are empty
+ * Precedence (lowest → highest): global → repo → custom/request
+ *
+ * @param {Object} instructions - Instructions to merge
+ * @param {string|null} [instructions.globalInstructions] - Global instructions from ~/.pair-review/global-instructions.md
+ * @param {string|null} [instructions.repoInstructions] - Default instructions from repository settings
+ * @param {string|null} [instructions.requestInstructions] - Custom instructions from the analysis request
+ * @returns {string|null} Merged instructions with XML tags, or null if all inputs are empty
  */
-function mergeInstructions(repoInstructions, requestInstructions) {
-  if (!repoInstructions && !requestInstructions) {
+function mergeInstructions({ globalInstructions, repoInstructions, requestInstructions } = {}) {
+  if (!globalInstructions && !repoInstructions && !requestInstructions) {
     return null;
   }
 
   const parts = [];
+  if (globalInstructions) {
+    parts.push(`These are global instructions that apply to all reviews:\n<global_instructions>\n${globalInstructions}\n</global_instructions>`);
+  }
   if (repoInstructions) {
-    parts.push(`These are default instructions for this repository:\n<repo_instructions>\n${repoInstructions}\n</repo_instructions>`);
+    const repoPrecedence = globalInstructions
+      ? ' They take precedence over global_instructions in areas where they overlap or conflict:'
+      : '';
+    parts.push(`These are default instructions for this repository.${repoPrecedence}\n<repo_instructions>\n${repoInstructions}\n</repo_instructions>`);
   }
   if (requestInstructions) {
-    parts.push(`These are custom instructions for this analysis run. The following instructions take precedence over the repo_instructions in areas where they overlap or conflict:\n<custom_instructions>\n${requestInstructions}\n</custom_instructions>`);
+    const overrides = [repoInstructions && 'repo_instructions', globalInstructions && 'global_instructions'].filter(Boolean);
+    const customPrecedence = overrides.length
+      ? ` They take precedence over ${overrides.join(' and ')} in areas where they overlap or conflict:`
+      : '';
+    parts.push(`These are custom instructions for this analysis run.${customPrecedence}\n<custom_instructions>\n${requestInstructions}\n</custom_instructions>`);
   }
   return parts.join('\n\n');
 }

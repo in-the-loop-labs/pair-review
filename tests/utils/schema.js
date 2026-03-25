@@ -132,6 +132,7 @@ const SCHEMA_SQL = {
       model TEXT,
       tier TEXT,
       custom_instructions TEXT,
+      global_instructions TEXT,
       repo_instructions TEXT,
       request_instructions TEXT,
       head_sha TEXT,

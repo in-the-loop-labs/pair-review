@@ -446,7 +446,7 @@ router.post('/api/analyses/:id/cancel', async (req, res) => {
  * @param {Object} modeContext - Mode-specific values
  * @param {Object} councilConfig - Validated council configuration
  * @param {string} councilId - Council ID (for the model field in analysis_runs), or null for inline config
- * @param {Object} instructions - { repoInstructions, requestInstructions }
+ * @param {Object} instructions - { globalInstructions, repoInstructions, requestInstructions }
  * @param {string} [configType='advanced'] - Config type
  * @returns {{ analysisId: string, runId: string }}
  */
@@ -472,7 +472,7 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
     hookContext = {},
   } = modeContext;
 
-  const { repoInstructions, requestInstructions } = instructions;
+  const { globalInstructions, repoInstructions, requestInstructions } = instructions;
 
   const isVoiceCentric = configType === 'council';
 
@@ -496,6 +496,7 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
     provider: 'council',
     model: councilId || 'inline-config',
     tier: null,
+    globalInstructions,
     repoInstructions,
     requestInstructions,
     headSha: headSha || null,
@@ -563,7 +564,7 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
     worktreePath,
     prMetadata,
     changedFiles,
-    instructions: { repoInstructions, requestInstructions }
+    instructions: { globalInstructions, repoInstructions, requestInstructions }
   };
 
   const analysisPromise = isVoiceCentric

@@ -136,6 +136,7 @@ class Analyzer {
    * @param {Object} prMetadata - PR metadata with base branch info
    * @param {Function} progressCallback - Callback for progress updates
    * @param {Object|string} instructions - Instructions object or legacy string for backward compatibility
+   * @param {string} [instructions.globalInstructions] - Global instructions from ~/.pair-review/global-instructions.md
    * @param {string} [instructions.repoInstructions] - Repository-level instructions from repo_settings
    * @param {string} [instructions.requestInstructions] - Request-level instructions from the analyze request
    * @param {Array<string>} changedFiles - Optional list of changed files for local mode validation
@@ -163,6 +164,7 @@ class Analyzer {
     }
 
     // Handle both new object format and legacy string format for backward compatibility
+    let globalInstructions = null;
     let repoInstructions = null;
     let requestInstructions = null;
     let mergedInstructions = null;
@@ -172,9 +174,10 @@ class Analyzer {
       mergedInstructions = instructions;
     } else if (instructions && typeof instructions === 'object') {
       // New format: object with separate instruction fields
+      globalInstructions = instructions.globalInstructions || null;
       repoInstructions = instructions.repoInstructions || null;
       requestInstructions = instructions.requestInstructions || null;
-      mergedInstructions = mergeInstructions(repoInstructions, requestInstructions);
+      mergedInstructions = mergeInstructions({ globalInstructions, repoInstructions, requestInstructions });
     }
 
     logger.section('Multi-Level AI Analysis Starting (Parallel Execution)');
@@ -208,6 +211,7 @@ class Analyzer {
           model: this.model,
           tier: options.tier ? resolveTier(options.tier) : 'balanced',
           customInstructions: mergedInstructions,  // Keep for backward compat
+          globalInstructions,
           repoInstructions,
           requestInstructions,
           headSha,
@@ -798,6 +802,7 @@ Or simply ignore any changes to files matching these patterns in your analysis.
    * @param {Object} prMetadata - PR metadata with base branch info
    * @param {Function} progressCallback - Callback for progress updates
    * @param {Object|string} instructions - Instructions object or legacy string for backward compatibility
+   * @param {string} [instructions.globalInstructions] - Global instructions from ~/.pair-review/global-instructions.md
    * @param {string} [instructions.repoInstructions] - Repository-level instructions from repo_settings
    * @param {string} [instructions.requestInstructions] - Request-level instructions from the analyze request
    * @param {Array<string>} changedFiles - Optional list of changed files for local mode validation
@@ -2627,7 +2632,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @param {string} reviewContext.worktreePath - Path to the git worktree
    * @param {Object} reviewContext.prMetadata - PR/review metadata
    * @param {Array<string>} [reviewContext.changedFiles] - Changed files list
-   * @param {Object} reviewContext.instructions - Instructions { repoInstructions, requestInstructions }
+   * @param {Object} reviewContext.instructions - Instructions { globalInstructions, repoInstructions, requestInstructions }
    * @param {Object} councilConfig - Reviewer-centric council configuration
    * @param {Array<Object>} councilConfig.voices - Reviewer configurations (provider, model, tier, customInstructions, timeout)
    * @param {Object} councilConfig.levels - Which levels to enable, e.g. {1: true, 2: true, 3: false}
@@ -2677,7 +2682,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
     // Merge instructions
     let mergedInstructions = null;
     if (instructions && typeof instructions === 'object') {
-      mergedInstructions = mergeInstructions(instructions.repoInstructions, instructions.requestInstructions);
+      mergedInstructions = mergeInstructions({ globalInstructions: instructions.globalInstructions, repoInstructions: instructions.repoInstructions, requestInstructions: instructions.requestInstructions });
     }
 
     // Resolve enabledLevels from council config
@@ -2716,6 +2721,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           model: 'voice-centric',
           tier: null,
           customInstructions: mergedInstructions,
+          globalInstructions: instructions?.globalInstructions || null,
           repoInstructions: instructions?.repoInstructions || null,
           requestInstructions: instructions?.requestInstructions || null,
           headSha,
@@ -2766,7 +2772,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         worktreePath,
         prMetadata,
         voiceProgressCallback,
-        { repoInstructions: instructions?.repoInstructions, requestInstructions: voiceRequestInstructions },
+        { globalInstructions: instructions?.globalInstructions, repoInstructions: instructions?.repoInstructions, requestInstructions: voiceRequestInstructions },
         changedFiles,
         {
           analysisId,
@@ -2822,6 +2828,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           model: voice.model,
           tier: voiceTier,
           customInstructions: mergedInstructions,
+          globalInstructions: instructions?.globalInstructions || null,
           repoInstructions: instructions?.repoInstructions || null,
           requestInstructions: instructions?.requestInstructions || null,
           headSha,
@@ -2841,7 +2848,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           worktreePath,
           prMetadata,
           voiceProgressCallback,
-          { repoInstructions: instructions?.repoInstructions, requestInstructions: voiceRequestInstructions },
+          { globalInstructions: instructions?.globalInstructions, repoInstructions: instructions?.repoInstructions, requestInstructions: voiceRequestInstructions },
           changedFiles,
           {
             analysisId,
@@ -3092,7 +3099,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @param {string} reviewContext.worktreePath - Path to the git worktree
    * @param {Object} reviewContext.prMetadata - PR/review metadata
    * @param {Array<string>} [reviewContext.changedFiles] - Changed files list
-   * @param {Object} reviewContext.instructions - Instructions object { repoInstructions, requestInstructions }
+   * @param {Object} reviewContext.instructions - Instructions object { globalInstructions, repoInstructions, requestInstructions }
    * @param {Object} councilConfig - Council configuration
    * @param {Object} councilConfig.levels - Level configurations keyed by '1', '2', '3'
    * @param {Object} [councilConfig.consolidation] - Consolidation provider/model/tier
@@ -3114,7 +3121,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
     const { mergeInstructions } = require('../utils/instructions');
     let mergedInstructions = null;
     if (instructions && typeof instructions === 'object') {
-      mergedInstructions = mergeInstructions(instructions.repoInstructions, instructions.requestInstructions);
+      mergedInstructions = mergeInstructions({ globalInstructions: instructions.globalInstructions, repoInstructions: instructions.repoInstructions, requestInstructions: instructions.requestInstructions });
     }
 
     // Load generated file patterns
