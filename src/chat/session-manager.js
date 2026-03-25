@@ -565,10 +565,15 @@ class ChatSessionManager {
         useShell: providerDef?.useShell,
       });
     }
-    // Pi provider — resolve config overrides (command, model, env) from provider def
+    // Pi provider — resolve config overrides (command, model, env) from provider def.
+    // options.provider is the chat provider ID (e.g. "pi") — do NOT pass it to PiBridge,
+    // which would forward it as `--provider pi` to the Pi CLI.  The CLI's --provider flag
+    // expects a model provider ("google", "anthropic", etc.) and should only come from
+    // explicit user configuration (providerDef.provider).
     const providerDef = getChatProvider(provider);
     return new PiBridge({
       ...options,
+      provider: providerDef?.provider || null,
       model: options.model || providerDef?.model,
       piCommand: providerDef?.command,
       env: providerDef?.env,
