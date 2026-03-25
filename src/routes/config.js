@@ -20,10 +20,9 @@ const {
   isCheckInProgress
 } = require('../ai');
 const { normalizeRepository } = require('../utils/paths');
-const { isRunningViaNpx, saveConfig } = require('../config');
+const { isRunningViaNpx } = require('../config');
 const { version } = require('../../package.json');
 const { getAllChatProviders, getAllCachedChatAvailability } = require('../chat/chat-providers');
-const { PRESETS } = require('../utils/comment-formatter');
 const logger = require('../utils/logger');
 
 const router = express.Router();
@@ -72,124 +71,6 @@ router.get('/api/config', (req, res) => {
       description: config.share.description || null
     } : null
   });
-});
-
-/**
- * Update user configuration
- * Updates safe configuration values
- */
-router.patch('/api/config', async (req, res) => {
-  try {
-    const { comment_button_action, chat_enable_shortcuts, comment_format } = req.body;
-
-    // Validate comment_button_action if provided
-    if (comment_button_action !== undefined) {
-      if (!['submit', 'preview'].includes(comment_button_action)) {
-        return res.status(400).json({
-          error: 'Invalid comment_button_action. Must be "submit" or "preview"'
-        });
-      }
-    }
-
-    if (chat_enable_shortcuts !== undefined) {
-      if (typeof chat_enable_shortcuts !== 'boolean') {
-        return res.status(400).json({
-          error: 'Invalid chat_enable_shortcuts. Must be a boolean'
-        });
-      }
-    }
-
-    // Validate comment_format if provided
-    if (comment_format !== undefined) {
-      const validPresets = Object.keys(PRESETS);
-      if (typeof comment_format === 'string') {
-        if (!validPresets.includes(comment_format)) {
-          return res.status(400).json({
-            error: `Invalid comment_format preset. Must be one of: ${validPresets.join(', ')}`
-          });
-        }
-      } else if (typeof comment_format === 'object' && comment_format !== null) {
-        if (!comment_format.template || typeof comment_format.template !== 'string') {
-          return res.status(400).json({
-            error: 'Custom comment_format must have a "template" string'
-          });
-        }
-        // Validate categoryOverrides if provided (must be a string->string mapping)
-        if (comment_format.categoryOverrides !== undefined) {
-          if (typeof comment_format.categoryOverrides !== 'object' || comment_format.categoryOverrides === null || Array.isArray(comment_format.categoryOverrides)) {
-            return res.status(400).json({
-              error: 'categoryOverrides must be an object mapping category names to replacement strings'
-            });
-          }
-          for (const [, value] of Object.entries(comment_format.categoryOverrides)) {
-            if (typeof value !== 'string') {
-              return res.status(400).json({
-                error: 'categoryOverrides must be a string-to-string mapping'
-              });
-            }
-          }
-        }
-        // Validate emojiOverrides if provided (must be a string->string mapping)
-        if (comment_format.emojiOverrides !== undefined) {
-          if (typeof comment_format.emojiOverrides !== 'object' || comment_format.emojiOverrides === null || Array.isArray(comment_format.emojiOverrides)) {
-            return res.status(400).json({
-              error: 'emojiOverrides must be an object mapping category names to emoji strings'
-            });
-          }
-          for (const [, value] of Object.entries(comment_format.emojiOverrides)) {
-            if (typeof value !== 'string') {
-              return res.status(400).json({
-                error: 'emojiOverrides must be a string-to-string mapping'
-              });
-            }
-          }
-        }
-      } else {
-        return res.status(400).json({
-          error: 'comment_format must be a preset name string or a custom template object'
-        });
-      }
-    }
-
-    // Get current config
-    const config = req.app.get('config') || {};
-
-    // Update allowed fields
-    if (comment_button_action !== undefined) {
-      config.comment_button_action = comment_button_action;
-    }
-
-    if (chat_enable_shortcuts !== undefined) {
-      if (!config.chat) config.chat = {};
-      config.chat.enable_shortcuts = chat_enable_shortcuts;
-    }
-
-    if (comment_format !== undefined) {
-      config.comment_format = comment_format;
-    }
-
-    // Save config to file
-    await saveConfig(config);
-
-    // Update app config
-    req.app.set('config', config);
-
-    res.json({
-      success: true,
-      config: {
-        theme: config.theme || 'light',
-        comment_button_action: config.comment_button_action || 'submit',
-        chat_enable_shortcuts: config.chat?.enable_shortcuts !== false,
-        comment_format: config.comment_format || 'legacy'
-      }
-    });
-
-  } catch (error) {
-    logger.error('Error updating config:', error);
-    res.status(500).json({
-      error: 'Failed to update configuration'
-    });
-  }
 });
 
 /**

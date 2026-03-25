@@ -549,7 +549,6 @@ function shouldSkipUpdateNotifier() {
 module.exports = {
   deepMerge,
   loadConfig,
-  saveConfig,
   getConfigDir,
   validatePort,
   getGitHubToken,

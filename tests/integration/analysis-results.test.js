@@ -21,7 +21,6 @@ vi.spyOn(GitWorktreeManager.prototype, 'worktreeExists').mockResolvedValue(true)
 vi.spyOn(GitWorktreeManager.prototype, 'getWorktreePath').mockResolvedValue('/tmp/worktree/test');
 
 const configModule = require('../../src/config');
-vi.spyOn(configModule, 'saveConfig').mockResolvedValue(undefined);
 vi.spyOn(configModule, 'loadConfig').mockResolvedValue({
   github_token: 'test-token',
   port: 7247,
