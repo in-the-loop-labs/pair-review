@@ -308,7 +308,6 @@ async function globalSetup() {
     theme: 'light',
     model: 'sonnet'
   });
-  configModule.saveConfig = async () => {};
   configModule.getConfigDir = () => '/tmp/.pair-review-e2e-test';
 
   // Create Express app

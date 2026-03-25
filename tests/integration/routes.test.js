@@ -77,8 +77,7 @@ vi.spyOn(GitWorktreeManager.prototype, 'updateWorktree').mockResolvedValue(mockW
 vi.spyOn(GitWorktreeManager.prototype, 'createWorktreeForPR').mockResolvedValue(mockWorktreeResponses.getWorktreePath);
 vi.spyOn(GitWorktreeManager.prototype, 'pathExists').mockResolvedValue(true);
 
-// Spy on config module functions to prevent writing to user's real config
-vi.spyOn(configModule, 'saveConfig').mockResolvedValue(undefined);
+// Spy on config module functions to prevent reading user's real config
 vi.spyOn(configModule, 'loadConfig').mockResolvedValue({
   config: {
     github_token: 'test-token',
@@ -3044,38 +3043,8 @@ describe('Config Endpoints', () => {
         description: null
       });
     });
-  });
 
-  describe('PATCH /api/config', () => {
-    it('should return 400 for invalid comment_button_action', async () => {
-      const response = await request(app)
-        .patch('/api/config')
-        .send({ comment_button_action: 'invalid' });
-
-      expect(response.status).toBe(400);
-      expect(response.body.error).toContain('Invalid comment_button_action');
-    });
-
-    it('should update comment_button_action to preview', async () => {
-      const response = await request(app)
-        .patch('/api/config')
-        .send({ comment_button_action: 'preview' });
-
-      expect(response.status).toBe(200);
-      expect(response.body.success).toBe(true);
-      expect(response.body.config.comment_button_action).toBe('preview');
-    });
-
-    it('should update comment_button_action to submit', async () => {
-      const response = await request(app)
-        .patch('/api/config')
-        .send({ comment_button_action: 'submit' });
-
-      expect(response.status).toBe(200);
-      expect(response.body.config.comment_button_action).toBe('submit');
-    });
-
-    it('should return comment_format in GET /api/config', async () => {
+    it('should return comment_format from config', async () => {
       app.set('config', { ...app.get('config'), comment_format: 'minimal' });
 
       const response = await request(app)
@@ -3083,135 +3052,6 @@ describe('Config Endpoints', () => {
 
       expect(response.status).toBe(200);
       expect(response.body.comment_format).toBe('minimal');
-    });
-
-    it('should accept a valid preset string for comment_format', async () => {
-      const response = await request(app)
-        .patch('/api/config')
-        .send({ comment_format: 'minimal' });
-
-      expect(response.status).toBe(200);
-      expect(response.body.success).toBe(true);
-      expect(response.body.config.comment_format).toBe('minimal');
-    });
-
-    it('should accept a valid object config for comment_format', async () => {
-      const response = await request(app)
-        .patch('/api/config')
-        .send({
-          comment_format: {
-            template: '{emoji} [{category}] {description}',
-            categoryOverrides: { bug: 'defect' }
-          }
-        });
-
-      expect(response.status).toBe(200);
-      expect(response.body.success).toBe(true);
-      expect(response.body.config.comment_format).toEqual({
-        template: '{emoji} [{category}] {description}',
-        categoryOverrides: { bug: 'defect' }
-      });
-    });
-
-    it('should reject an invalid preset string for comment_format', async () => {
-      const response = await request(app)
-        .patch('/api/config')
-        .send({ comment_format: 'nonexistent_preset' });
-
-      expect(response.status).toBe(400);
-      expect(response.body.error).toContain('Invalid comment_format preset');
-    });
-
-    it('should reject an object config missing template', async () => {
-      const response = await request(app)
-        .patch('/api/config')
-        .send({ comment_format: { categoryOverrides: { bug: 'defect' } } });
-
-      expect(response.status).toBe(400);
-      expect(response.body.error).toContain('template');
-    });
-
-    it('should reject categoryOverrides with non-string values', async () => {
-      const response = await request(app)
-        .patch('/api/config')
-        .send({
-          comment_format: {
-            template: '{description}',
-            categoryOverrides: { bug: 123 }
-          }
-        });
-
-      expect(response.status).toBe(400);
-      expect(response.body.error).toContain('string-to-string');
-    });
-
-    it('should reject emojiOverrides that is not an object', async () => {
-      const response = await request(app)
-        .patch('/api/config')
-        .send({
-          comment_format: {
-            template: '{description}',
-            emojiOverrides: 'not-an-object'
-          }
-        });
-
-      expect(response.status).toBe(400);
-      expect(response.body.error).toContain('emojiOverrides must be an object');
-    });
-
-    it('should reject emojiOverrides that is an array', async () => {
-      const response = await request(app)
-        .patch('/api/config')
-        .send({
-          comment_format: {
-            template: '{description}',
-            emojiOverrides: ['bug']
-          }
-        });
-
-      expect(response.status).toBe(400);
-      expect(response.body.error).toContain('emojiOverrides must be an object');
-    });
-
-    it('should reject emojiOverrides with non-string values', async () => {
-      const response = await request(app)
-        .patch('/api/config')
-        .send({
-          comment_format: {
-            template: '{description}',
-            emojiOverrides: { bug: 123 }
-          }
-        });
-
-      expect(response.status).toBe(400);
-      expect(response.body.error).toContain('string-to-string');
-    });
-
-    it('should accept valid emojiOverrides', async () => {
-      const response = await request(app)
-        .patch('/api/config')
-        .send({
-          comment_format: {
-            template: '{emoji} {description}',
-            emojiOverrides: { bug: '🔴', praise: '👏' }
-          }
-        });
-
-      expect(response.status).toBe(200);
-      expect(response.body.success).toBe(true);
-    });
-
-    it('should accept a template without {description} placeholder', async () => {
-      const response = await request(app)
-        .patch('/api/config')
-        .send({
-          comment_format: {
-            template: '{emoji} {category}: {suggestion}'
-          }
-        });
-
-      expect(response.status).toBe(200);
-      expect(response.body.success).toBe(true);
     });
   });
 });
