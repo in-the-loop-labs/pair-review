@@ -13,6 +13,7 @@ const { normalizePath, pathExistsInList, resolveRenamedFile } = require('../util
 const { buildFileLineCountMap, validateSuggestionLineNumbers } = require('../utils/line-validation');
 const { getPromptBuilder } = require('./prompts');
 const { formatValidFiles } = require('./prompts/shared/valid-files');
+const { GIT_DIFF_FLAGS } = require('../git/diff-flags');
 const {
   buildAnalysisLineNumberGuidance,
   buildOrchestrationLineNumberGuidance: buildOrchestrationGuidance,
@@ -27,13 +28,7 @@ const { buildSparseCheckoutGuidance } = require('./prompts/sparse-checkout-guida
 /** Minimum total suggestion count across all voices before consolidation is applied */
 const COUNCIL_CONSOLIDATION_THRESHOLD = 8;
 
-/**
- * Common git diff flags used across all diff operations.
- * - --no-color: Disable color output (guards against color.diff=always in user config)
- * - --no-ext-diff: Disable external diff drivers
- * - --src-prefix/--dst-prefix: Ensure consistent a/ b/ prefixes (overrides user's diff.noprefix)
- */
-const GIT_DIFF_COMMON_FLAGS = '--no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/';
+// GIT_DIFF_FLAGS imported from ../git/diff-flags
 
 /**
  * Build a human-readable display label for a council voice/reviewer.
@@ -667,7 +662,7 @@ Do NOT create suggestions for any files not in this list. If you cannot find iss
   async getChangedFilesList(worktreePath, prMetadata) {
     try {
       const { stdout } = await execPromise(
-        `git diff --no-ext-diff ${prMetadata.base_sha}...${prMetadata.head_sha} --name-only`,
+        `git diff ${GIT_DIFF_FLAGS} ${prMetadata.base_sha}...${prMetadata.head_sha} --name-only`,
         { cwd: worktreePath }
       );
       return stdout.trim().split('\n').filter(f => f.length > 0);
@@ -691,7 +686,7 @@ Do NOT create suggestions for any files not in this list. If you cannot find iss
     try {
       // Get modified tracked files (unstaged)
       const { stdout: unstaged } = await execPromise(
-        'git diff --no-ext-diff --name-only',
+        `git diff ${GIT_DIFF_FLAGS} --name-only`,
         { cwd: localPath }
       );
 
@@ -708,7 +703,7 @@ Do NOT create suggestions for any files not in this list. If you cannot find iss
       // Include staged files when scope includes staged
       if (options.includeStaged) {
         const { stdout: staged } = await execPromise(
-          'git diff --no-ext-diff --cached --name-only',
+          `git diff ${GIT_DIFF_FLAGS} --cached --name-only`,
           { cwd: localPath }
         );
         const stagedFiles = staged.trim().split('\n').filter(f => f.length > 0);
@@ -997,10 +992,10 @@ ${prMetadata.description || '(No description provided)'}
     const isLocal = prMetadata.reviewType === 'local';
     if (isLocal) {
       // For local mode, diff against HEAD to see working directory changes
-      return suffix ? `git diff ${GIT_DIFF_COMMON_FLAGS} HEAD ${suffix}` : `git diff ${GIT_DIFF_COMMON_FLAGS} HEAD`;
+      return suffix ? `git diff ${GIT_DIFF_FLAGS} HEAD ${suffix}` : `git diff ${GIT_DIFF_FLAGS} HEAD`;
     }
     // For PR mode, diff between base and head commits
-    const baseCmd = `git diff ${GIT_DIFF_COMMON_FLAGS} ${prMetadata.base_sha}...${prMetadata.head_sha}`;
+    const baseCmd = `git diff ${GIT_DIFF_FLAGS} ${prMetadata.base_sha}...${prMetadata.head_sha}`;
     return suffix ? `${baseCmd} ${suffix}` : baseCmd;
   }
 

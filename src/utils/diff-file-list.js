@@ -2,6 +2,7 @@
 const { promisify } = require('util');
 const { exec } = require('child_process');
 const { queryOne } = require('../database');
+const { GIT_DIFF_FLAGS } = require('../git/diff-flags');
 
 const execPromise = promisify(exec);
 
@@ -37,7 +38,7 @@ async function getDiffFileList(db, review) {
     try {
       const opts = { cwd: review.local_path };
       const [{ stdout: unstaged }, { stdout: untracked }] = await Promise.all([
-        execPromise('git diff --no-ext-diff --name-only', opts),
+        execPromise(`git diff ${GIT_DIFF_FLAGS} --name-only`, opts),
         execPromise('git ls-files --others --exclude-standard', opts),
       ]);
       const combined = `${unstaged}\n${untracked}`
