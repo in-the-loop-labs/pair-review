@@ -876,7 +876,10 @@ async function handleLocalReview(targetPath, flags = {}) {
     const port = await startServer(db);
 
     // Open browser to local review view
-    const url = `http://localhost:${port}/local/${sessionId}`;
+    let url = `http://localhost:${port}/local/${sessionId}`;
+    if (flags.ai) {
+      url += '?analyze=true';
+    }
     console.log(`\nOpening browser to: ${url}`);
     await open(url);
 
