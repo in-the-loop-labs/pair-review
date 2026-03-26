@@ -1444,4 +1444,30 @@ describe('CouncilProgressModal', () => {
       expect(updateSpy).not.toHaveBeenCalled();
     });
   });
+
+  describe('_formatVoiceLabel', () => {
+    it('includes tier in parentheses for regular providers', () => {
+      const { modal } = createTestCouncilProgressModal();
+      const voice = { provider: 'claude', model: 'sonnet-4-5', tier: 'balanced' };
+      expect(modal._formatVoiceLabel(voice)).toBe('Claude sonnet-4-5 (Balanced)');
+    });
+
+    it('defaults tier to Balanced when not specified', () => {
+      const { modal } = createTestCouncilProgressModal();
+      const voice = { provider: 'gemini', model: 'gemini-2-5-pro' };
+      expect(modal._formatVoiceLabel(voice)).toBe('Gemini gemini-2-5-pro (Balanced)');
+    });
+
+    it('omits tier suffix for executable providers', () => {
+      const { modal } = createTestCouncilProgressModal();
+      const voice = { provider: 'binks', model: 'default', tier: 'thorough' };
+      expect(modal._formatVoiceLabel(voice, { isExecutable: true })).toBe('Binks default');
+    });
+
+    it('omits tier suffix for executable providers without explicit tier', () => {
+      const { modal } = createTestCouncilProgressModal();
+      const voice = { provider: 'custom-tool', model: 'v1' };
+      expect(modal._formatVoiceLabel(voice, { isExecutable: true })).toBe('Custom-tool v1');
+    });
+  });
 });

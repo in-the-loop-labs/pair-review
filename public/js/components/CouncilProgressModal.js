@@ -1262,8 +1262,8 @@ class CouncilProgressModal {
     const providersMap = window.analysisConfigModal?.providers || {};
 
     for (const [voiceKey, { voice, levels }] of voiceMap) {
-      const label = this._formatVoiceLabel(voice);
       const isExecutable = this._executableVoices.has(voiceKey) || (providersMap[voice.provider]?.isExecutable || false);
+      const label = this._formatVoiceLabel(voice, { isExecutable });
 
       html += `
         <div class="council-level" data-voice-key="${voiceKey}">
@@ -1620,9 +1620,10 @@ class CouncilProgressModal {
    * Example: { provider: 'claude', model: 'sonnet-4-5', tier: 'balanced' }
    *       -> "Claude sonnet-4-5 (Balanced)"
    */
-  _formatVoiceLabel(voice) {
+  _formatVoiceLabel(voice, { isExecutable = false } = {}) {
     const provider = this._capitalize(voice.provider || 'unknown');
     const model = voice.model || 'default';
+    if (isExecutable) return `${provider} ${model}`;
     const tier = this._capitalize(voice.tier || 'balanced');
     return `${provider} ${model} (${tier})`;
   }
