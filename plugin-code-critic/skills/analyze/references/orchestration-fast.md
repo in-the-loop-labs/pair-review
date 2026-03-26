@@ -48,6 +48,7 @@ Each level provides suggestions as a JSON array with the following schema per it
 - title: brief title
 - description: full explanation
 - suggestion: remediation advice
+- severity: "critical", "medium", or "minor" (omit for praise items)
 - confidence: 0.0-1.0 score
 - reasoning: (optional) array of strings with step-by-step reasoning
 - is_file_level: true if this is a file-level suggestion (no line numbers)
@@ -63,6 +64,8 @@ Each level provides suggestions as a JSON array with the following schema per it
 
 ## Rules
 Combine related suggestions. Merge overlaps. Preserve unique insights. Never mention levels.
+Assess severity using evidence across levels; preserve highest when uncertain. Omit for praise.
+Severity: critical (crashes, security, data loss, race conditions, breaking changes, test failures), medium (degraded functionality, missing error handling/validation/test coverage), minor (code quality, docs, optimizations).
 
 ### Priority
 Security > Bugs > Architecture > Performance > Style
@@ -81,6 +84,7 @@ Use "Consider...", "Worth noting..." - guidance not mandates.
     "line": 42,
     "old_or_new": "NEW",
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
+    "severity": "critical|medium|minor (omit for praise)",
     "title": "Brief title",
     "description": "Why it matters",
     "suggestion": "What to do (omit for praise)",
@@ -89,6 +93,7 @@ Use "Consider...", "Worth noting..." - guidance not mandates.
   "fileLevelSuggestions": [{
     "file": "path/to/file",
     "type": "...",
+    "severity": "critical|medium|minor (omit for praise)",
     "title": "Brief title",
     "description": "File-level observation",
     "suggestion": "How to fix (omit for praise)",

@@ -74,6 +74,13 @@ Do NOT modify files. Your role is strictly to analyze and report findings.
 
 Note: You may use parallel read-only Tasks to examine multiple files simultaneously.
 
+### Severity Classification
+Assign a severity to each suggestion (except praise):
+- **critical**: Production incidents, system failures, or security vulnerabilities — runtime crashes, data corruption or loss, race conditions, deadlocks, breaking changes, changes that will cause existing tests to fail
+- **medium**: Degraded functionality or reliability — missing error handling, N+1 queries, missing validation, missing or poor test coverage for new functionality
+- **minor**: Code quality concerns — documentation gaps, minor optimizations, style inconsistencies
+Omit severity for praise items.
+
 ## Output Format
 
 **>>> CRITICAL: Output ONLY valid JSON. No markdown, no ```json blocks. Start with { end with }. <<<**
@@ -85,6 +92,7 @@ Note: You may use parallel read-only Tasks to examine multiple files simultaneou
     "line": 42,
     "old_or_new": "NEW",
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
+    "severity": "critical|medium|minor (omit for praise)",
     "title": "Brief title",
     "description": "Explanation mentioning why full file context was needed",
     "suggestion": "How to fix/improve (omit for praise items)",
@@ -94,6 +102,7 @@ Note: You may use parallel read-only Tasks to examine multiple files simultaneou
   "fileLevelSuggestions": [{
     "file": "path/to/file",
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
+    "severity": "critical|medium|minor (omit for praise)",
     "title": "File-level concern",
     "description": "File-level observation (architecture, organization, naming, etc.)",
     "suggestion": "How to address (omit for praise items)",

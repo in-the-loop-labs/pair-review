@@ -79,6 +79,14 @@ ONLY suggest for files in this list:
 Annotated diff tool, \`cat -n\`, ls, find, grep. Do NOT modify files.
 </section>
 
+<section name="severity-classification" required="true" tier="fast">
+### Severity
+Assign severity to each suggestion (omit for praise):
+- **critical**: Production incidents, crashes, security vulnerabilities, data corruption/loss, race conditions, breaking changes, test failures
+- **medium**: Degraded functionality, missing error handling, missing validation, missing/poor test coverage
+- **minor**: Code quality, docs gaps, minor optimizations
+</section>
+
 <section name="output-schema" locked="true">
 ## Output Format
 
@@ -91,6 +99,7 @@ Annotated diff tool, \`cat -n\`, ls, find, grep. Do NOT modify files.
     "line": 42,
     "old_or_new": "NEW",
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
+    "severity": "critical|medium|minor (omit for praise)",
     "title": "Brief title",
     "description": "Explanation",
     "suggestion": "How to fix (omit for praise)",
@@ -139,6 +148,7 @@ const sections = [
   { name: 'initial-setup', required: true, tier: ['fast'] },
   { name: 'focus-areas', required: true, tier: ['fast'] },
   { name: 'available-commands', required: true, tier: ['fast'] },
+  { name: 'severity-classification', required: true, tier: ['fast'] },
   { name: 'output-schema', locked: true },
   { name: 'diff-instructions', required: true, tier: ['fast'] },
   { name: 'guidelines', required: true, tier: ['fast'] }
@@ -159,6 +169,7 @@ const defaultOrder = [
   'initial-setup',
   'focus-areas',
   'available-commands',
+  'severity-classification',
   'output-schema',
   'diff-instructions',
   'guidelines'

@@ -59,6 +59,12 @@ ONLY suggest for files in this list:
 ## Commands (READ-ONLY)
 Annotated diff tool, `cat -n`, ls, find, grep. Do NOT modify files.
 
+### Severity
+Assign severity to each suggestion (omit for praise):
+- **critical**: Production incidents, crashes, security vulnerabilities, data corruption/loss, race conditions, breaking changes, test failures
+- **medium**: Degraded functionality, missing error handling, missing validation, missing/poor test coverage
+- **minor**: Code quality, docs gaps, minor optimizations
+
 ## Output Format
 
 **>>> CRITICAL: Output ONLY valid JSON. No markdown, no ```json blocks. Start with { end with }. <<<**
@@ -70,6 +76,7 @@ Annotated diff tool, `cat -n`, ls, find, grep. Do NOT modify files.
     "line": 42,
     "old_or_new": "NEW",
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
+    "severity": "critical|medium|minor (omit for praise)",
     "title": "Brief title",
     "description": "Explanation",
     "suggestion": "How to fix (omit for praise)",

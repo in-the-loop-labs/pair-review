@@ -96,6 +96,14 @@ Do NOT modify files.
 {{sparseCheckoutGuidance}}
 </section>
 
+<section name="severity-classification" required="true" tier="fast">
+### Severity
+Assign severity to each suggestion (omit for praise):
+- **critical**: Production incidents, crashes, security vulnerabilities, data corruption/loss, race conditions, breaking changes, test failures
+- **medium**: Degraded functionality, missing error handling, missing validation, missing/poor test coverage
+- **minor**: Code quality, docs gaps, minor optimizations
+</section>
+
 <section name="output-schema" locked="true">
 ## Output Format
 
@@ -109,6 +117,7 @@ Output JSON with this structure:
     "line": 42,
     "old_or_new": "NEW",
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
+    "severity": "critical|medium|minor (omit for praise)",
     "title": "Brief title",
     "description": "Detailed explanation mentioning why codebase context was needed",
     "suggestion": "How to fix/improve based on codebase context (omit for praise items)",
@@ -117,6 +126,7 @@ Output JSON with this structure:
   "fileLevelSuggestions": [{
     "file": "path/to/file",
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
+    "severity": "critical|medium|minor (omit for praise)",
     "title": "Brief title describing file-level concern",
     "description": "Explanation of the file-level observation from codebase perspective",
     "suggestion": "How to address the file-level concern (omit for praise items)",
@@ -169,6 +179,7 @@ const sections = [
   { name: 'focus-areas', required: true, tier: ['fast'] },
   { name: 'available-commands', required: true, tier: ['fast'] },
   { name: 'sparse-checkout', optional: true, tier: ['fast', 'balanced', 'thorough'] },
+  { name: 'severity-classification', required: true, tier: ['fast'] },
   { name: 'output-schema', locked: true },
   { name: 'diff-instructions', required: true, tier: ['fast'] },
   { name: 'guidelines', required: true, tier: ['fast'] }
@@ -191,6 +202,7 @@ const defaultOrder = [
   'focus-areas',
   'available-commands',
   'sparse-checkout',
+  'severity-classification',
   'output-schema',
   'diff-instructions',
   'guidelines'

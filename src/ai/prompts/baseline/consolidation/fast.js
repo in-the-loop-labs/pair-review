@@ -64,6 +64,8 @@ Merge suggestions from multiple AI reviewers. Deduplicate. Resolve conflicts. Ke
 - When reviewers disagree, keep the more specific analysis.
 - Preserve unique insights from individual reviewers.
 - Drop very low confidence (< 0.3) items unless multiple reviewers agree.
+- Assess severity using evidence across reviewers; preserve highest when uncertain. Omit for praise.
+- Severity: critical (crashes, security, data loss, race conditions, breaking changes, test failures), medium (degraded functionality, missing error handling/validation/test coverage), minor (code quality, docs, optimizations).
 </section>
 
 <section name="output-schema" locked="true">
@@ -74,6 +76,7 @@ Merge suggestions from multiple AI reviewers. Deduplicate. Resolve conflicts. Ke
     "line": 42,
     "old_or_new": "NEW",
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
+    "severity": "critical|medium|minor (omit for praise)",
     "title": "Brief title",
     "description": "Detailed explanation",
     "suggestion": "How to fix/improve (omit for praise)",
@@ -82,6 +85,7 @@ Merge suggestions from multiple AI reviewers. Deduplicate. Resolve conflicts. Ke
   "fileLevelSuggestions": [{
     "file": "path/to/file",
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
+    "severity": "critical|medium|minor (omit for praise)",
     "title": "Brief title describing file-level concern",
     "description": "Explanation of the file-level observation",
     "suggestion": "How to address the file-level concern (omit for praise items)",

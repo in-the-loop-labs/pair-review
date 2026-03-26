@@ -80,6 +80,14 @@ ONLY suggest for files in this list:
 Annotated diff tool (preferred), \`cat -n <file>\`, ls, find, grep. Do NOT modify files.
 </section>
 
+<section name="severity-classification" required="true" tier="fast">
+### Severity
+Assign severity to each suggestion (omit for praise):
+- **critical**: Production incidents, crashes, security vulnerabilities, data corruption/loss, race conditions, breaking changes, test failures
+- **medium**: Degraded functionality, missing error handling, missing validation, missing/poor test coverage
+- **minor**: Code quality, docs gaps, minor optimizations
+</section>
+
 <section name="output-schema" locked="true">
 ## Output Format
 
@@ -92,6 +100,7 @@ Annotated diff tool (preferred), \`cat -n <file>\`, ls, find, grep. Do NOT modif
     "line": 42,
     "old_or_new": "NEW",
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
+    "severity": "critical|medium|minor (omit for praise)",
     "title": "Brief title",
     "description": "Why file context was needed",
     "suggestion": "How to fix (omit for praise)",
@@ -100,6 +109,7 @@ Annotated diff tool (preferred), \`cat -n <file>\`, ls, find, grep. Do NOT modif
   "fileLevelSuggestions": [{
     "file": "path/to/file",
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
+    "severity": "critical|medium|minor (omit for praise)",
     "title": "File-level concern",
     "description": "File-level observation",
     "suggestion": "How to address (omit for praise)",
@@ -146,6 +156,7 @@ const sections = [
   { name: 'analysis-process', required: true, tier: ['fast'] },
   { name: 'focus-areas', required: true, tier: ['fast'] },
   { name: 'available-commands', required: true, tier: ['fast'] },
+  { name: 'severity-classification', required: true, tier: ['fast'] },
   { name: 'output-schema', locked: true },
   { name: 'diff-instructions', required: true, tier: ['fast'] },
   { name: 'guidelines', required: true, tier: ['fast'] }
@@ -166,6 +177,7 @@ const defaultOrder = [
   'analysis-process',
   'focus-areas',
   'available-commands',
+  'severity-classification',
   'output-schema',
   'diff-instructions',
   'guidelines'
