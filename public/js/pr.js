@@ -2241,6 +2241,7 @@ class PRManager {
 
   /**
    * Edit user comment
+   * NOTE: similar edit form in comment-manager.js _buildEditFormRow — keep in sync
    */
   async editUserComment(commentId) {
     try {
@@ -2536,7 +2537,7 @@ class PRManager {
    */
   async clearAllUserComments() {
     // Count both line-level and file-level user comments
-    const lineCommentRows = document.querySelectorAll('.user-comment-row');
+    const lineCommentRows = document.querySelectorAll('.user-comment-row:not(.suggestion-edit-pending)');
     const fileCommentCards = document.querySelectorAll('.file-comment-card.user-comment');
     const totalComments = lineCommentRows.length + fileCommentCards.length;
 
@@ -2654,7 +2655,7 @@ class PRManager {
       });
 
       // Clear existing comment rows before re-rendering
-      document.querySelectorAll('.user-comment-row').forEach(row => row.remove());
+      document.querySelectorAll('.user-comment-row:not(.suggestion-edit-pending)').forEach(row => row.remove());
 
       // Before rendering, ensure all comment target lines are visible
       // (expand hidden hunks so the line rows exist in the DOM)
@@ -2836,7 +2837,27 @@ class PRManager {
   }
 
   /**
-   * Shared helper for adoptAndEditSuggestion and adoptSuggestion.
+   * Build a user comment object from adoption/edit response data.
+   * Single source of truth for comment shape — used by both adopt-as-is
+   * and edit-then-adopt flows.
+   */
+  _buildCommentObject({ userCommentId, formattedBody, fileName, lineNumber, suggestionType, suggestionTitle, suggestionId, diffPosition, side }) {
+    return {
+      id: userCommentId,
+      file: fileName,
+      line_start: parseInt(lineNumber),
+      body: formattedBody,
+      type: suggestionType,
+      title: suggestionTitle,
+      parent_id: suggestionId,
+      diff_position: diffPosition ? parseInt(diffPosition) : null,
+      side: side || 'RIGHT',
+      created_at: new Date().toISOString()
+    };
+  }
+
+  /**
+   * Helper for adoptSuggestion (adopt-as-is flow).
    * Performs the /adopt fetch, collapses the suggestion, formats the comment,
    * and builds the newComment object. Returns { newComment, suggestionRow }
    * or null on failure. Throws on errors so the caller can handle them.
@@ -2865,20 +2886,12 @@ class PRManager {
     // Collapse the suggestion in the UI
     this.collapseSuggestionForAdoption(suggestionRow, suggestionId);
 
-    // Use the server-formatted body — server is the single source of truth
-    const formattedText = adoptResult.formattedBody;
-    const newComment = {
-      id: adoptResult.userCommentId,
-      file: fileName,
-      line_start: parseInt(lineNumber),
-      body: formattedText,
-      type: suggestionType,
-      title: suggestionTitle,
-      parent_id: suggestionId,
-      diff_position: diffPosition ? parseInt(diffPosition) : null,
-      side: side || 'RIGHT',
-      created_at: new Date().toISOString()
-    };
+    const newComment = this._buildCommentObject({
+      userCommentId: adoptResult.userCommentId,
+      formattedBody: adoptResult.formattedBody,
+      fileName, lineNumber, suggestionType, suggestionTitle,
+      suggestionId, diffPosition, side
+    });
 
     return { isFileLevel: false, newComment, suggestionRow };
   }
@@ -2911,37 +2924,88 @@ class PRManager {
   }
 
   /**
-   * Adopt an AI suggestion and open it in edit mode
+   * Open an AI suggestion in edit mode without adopting it yet.
+   * The suggestion is only adopted when the user clicks Save/Adopt.
    */
-  async adoptAndEditSuggestion(suggestionId) {
+  async editAndAdoptSuggestion(suggestionId) {
     try {
       const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
       if (!suggestionDiv) throw new Error('Suggestion element not found');
 
-      const result = await this._adoptAndBuildComment(suggestionId, suggestionDiv);
+      const { suggestionText, formattedBody, suggestionType, suggestionTitle } = this.extractSuggestionData(suggestionDiv);
+      const { suggestionRow, lineNumber, lineEnd, fileName, diffPosition, side, isFileLevel } = this.getFileAndLineInfo(suggestionDiv);
 
-      if (result.isFileLevel) {
+      if (isFileLevel) {
         if (!this.fileCommentManager) throw new Error('FileCommentManager not initialized');
-        const zone = this.fileCommentManager.findZoneForFile(result.fileName);
-        if (!zone) throw new Error(`Could not find file comments zone for ${result.fileName}`);
+        const zone = this.fileCommentManager.findZoneForFile(fileName);
+        if (!zone) throw new Error(`Could not find file comments zone for ${fileName}`);
 
         const suggestion = {
           id: suggestionId,
-          file: result.fileName,
-          body: result.suggestionText,
-          type: result.suggestionType,
-          title: result.suggestionTitle
+          file: fileName,
+          body: suggestionText,
+          formattedBody,
+          type: suggestionType,
+          title: suggestionTitle
         };
 
         this.fileCommentManager.editAndAdoptAISuggestion(zone, suggestion);
         return;
       }
 
-      this.displayUserCommentInEditMode(result.newComment, result.suggestionRow);
-      this._notifyAdoption(suggestionId, result.newComment);
+      // Line-level: show edit form WITHOUT adopting yet
+      const suggestion = {
+        id: suggestionId,
+        file: fileName,
+        body: formattedBody || suggestionText,
+        type: suggestionType,
+        title: suggestionTitle,
+        lineNumber,
+        lineEnd,
+        diffPosition,
+        side
+      };
+
+      this.commentManager.displaySuggestionEditForm(
+        suggestion,
+        suggestionRow,
+        async (editedText) => {
+          // User clicked Save — now adopt via /edit endpoint
+          try {
+            const reviewId = this.currentPR?.id;
+            const editResponse = await fetch(`/api/reviews/${reviewId}/suggestions/${suggestionId}/edit`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ action: 'adopt_edited', editedText })
+            });
+
+            if (!editResponse.ok) throw new Error('Failed to adopt suggestion with edits');
+            const editResult = await editResponse.json();
+
+            // Collapse the suggestion card
+            this.collapseSuggestionForAdoption(suggestionRow, suggestionId);
+
+            const newComment = this._buildCommentObject({
+              userCommentId: editResult.userCommentId,
+              formattedBody: editResult.formattedBody,
+              fileName, lineNumber, suggestionType, suggestionTitle,
+              suggestionId, diffPosition, side
+            });
+            this.displayUserComment(newComment, suggestionRow);
+            this._notifyAdoption(suggestionId, newComment);
+          } catch (error) {
+            console.error('Error saving edited suggestion:', error);
+            alert(`Failed to save suggestion: ${error.message}`);
+            throw error; // Re-throw so displaySuggestionEditForm can re-enable the save button
+          }
+        },
+        () => {
+          // User clicked Cancel — nothing to revert
+        }
+      );
     } catch (error) {
-      console.error('Error adopting and editing suggestion:', error);
-      alert(`Failed to adopt suggestion: ${error.message}`);
+      console.error('Error editing suggestion:', error);
+      alert(`Failed to edit suggestion: ${error.message}`);
     }
   }
 
@@ -3262,7 +3326,7 @@ class PRManager {
    */
   updateCommentCount() {
     // Count both line-level comments (.user-comment-row) and file-level comments (.file-comment-card.user-comment)
-    const lineComments = document.querySelectorAll('.user-comment-row').length;
+    const lineComments = document.querySelectorAll('.user-comment-row:not(.suggestion-edit-pending)').length;
     const fileComments = document.querySelectorAll('.file-comment-card.user-comment').length;
     const userComments = lineComments + fileComments;
 
@@ -3299,7 +3363,7 @@ class PRManager {
     const submitBtn = document.getElementById('submit-review-btn');
 
     // Count BOTH line-level and file-level comments for validation
-    const lineComments = document.querySelectorAll('.user-comment-row').length;
+    const lineComments = document.querySelectorAll('.user-comment-row:not(.suggestion-edit-pending)').length;
     const fileComments = document.querySelectorAll('.file-comment-card.user-comment').length;
     const totalComments = lineComments + fileComments;
     if (reviewEvent === 'REQUEST_CHANGES' && !reviewBody && totalComments === 0) {

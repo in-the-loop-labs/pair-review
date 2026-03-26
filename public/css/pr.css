@@ -10881,6 +10881,15 @@ body.resizing * {
 /* File-level AI suggestions now use the same classes as line-level (.ai-suggestion-*)
    No custom button styles needed - they inherit from .ai-action classes defined earlier */
 
+/* File-level AI suggestions: override line-level viewport-based max-width.
+   Line-level suggestions use calc(100vw - sidebar - panels) because they sit in table cells.
+   File-level suggestions sit inside .file-comments-container which is already correctly sized,
+   so they just need to fill their container. */
+.file-comment-card.ai-suggestion {
+  max-width: 100%;
+  margin: 0; /* Container handles spacing via gap; don't center with auto margins */
+}
+
 /* File-level AI suggestion collapsed state - uses same classes as line-level */
 .file-comment-card.ai-suggestion.collapsed {
   background: var(--color-bg-secondary, #f6f8fa);
