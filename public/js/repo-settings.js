@@ -635,12 +635,12 @@ class RepoSettingsPage {
       return;
     }
 
-    const tierIcon = window.getTierIcon ? window.getTierIcon(model.tier) : '';
+    const modelIcon = model.icon || (window.getTierIcon ? window.getTierIcon(model.tier) : '');
 
     container.innerHTML = `
       <div class="model-card selected settings-model-card-static" data-tier="${this.escapeHtml(model.tier || '')}">
         <div class="model-badge ${this.escapeHtml(model.badgeClass || '')}">${this.escapeHtml(model.badge || '')}</div>
-        <div class="model-icon">${tierIcon}</div>
+        <div class="model-icon">${modelIcon}</div>
         <div class="model-info">
           <span class="model-name">${this.escapeHtml(model.name)}</span>
           <span class="model-tagline">${this.escapeHtml(model.tagline || '')}</span>

@@ -499,7 +499,7 @@ class AnalysisConfigModal {
     container.innerHTML = this.models.map(model => `
       <button class="model-card ${model.id === this.selectedModel ? 'selected' : ''}" data-model="${model.id}" data-tier="${model.tier}">
         <div class="model-badge ${model.badgeClass || ''}">${model.badge || ''}</div>
-        <div class="model-icon">${this.getModelIcon(model.tier)}</div>
+        <div class="model-icon">${model.icon || this.getModelIcon(model.tier)}</div>
         <div class="model-info">
           <span class="model-name">${model.name}</span>
           <span class="model-tagline">${model.tagline || ''}</span>

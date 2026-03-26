@@ -224,7 +224,9 @@ async function runExecutableAnalysis(req, res, params, shared, callbacks) {
 
       const executableContext = {
         ...buildContext(review, { selectedModel, requestInstructions }),
-        outputDir: tmpDir
+        outputDir: tmpDir,
+        // Use resolved CLI model (cli_model || id) instead of raw model ID; null suppresses model
+        model: provider.resolvedModel !== undefined ? provider.resolvedModel : (provider.model || null)
       };
       const cwd = executableContext.cwd || process.cwd();
 
@@ -365,12 +367,16 @@ async function runExecutableAnalysis(req, res, params, shared, callbacks) {
       // clients can poll for final results via HTTP (matches local.js/pr.js).
       reviewToAnalysisId.delete(reviewId);
 
-      // Clean up temp directory
+      // Clean up temp directory (keep in debug mode for inspection)
       if (tmpDir) {
-        try {
-          await fsPromises.rm(tmpDir, { recursive: true, force: true });
-        } catch (e) {
-          logger.debug(`Failed to clean up temp dir ${tmpDir}: ${e.message}`);
+        if (logger.isStreamDebugEnabled()) {
+          logger.info(`Keeping executable output dir for debug: ${tmpDir}`);
+        } else {
+          try {
+            await fsPromises.rm(tmpDir, { recursive: true, force: true });
+          } catch (e) {
+            logger.debug(`Failed to clean up temp dir ${tmpDir}: ${e.message}`);
+          }
         }
       }
     }

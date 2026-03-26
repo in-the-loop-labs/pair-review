@@ -243,6 +243,53 @@ describe('createExecutableProviderClass', () => {
       expect(new P('default', { env: { B: '2' } }).extraEnv).toEqual({ A: '1', B: '2' });
       expect(new P('default', { env: { A: '2' } }).extraEnv.A).toBe('2');
     });
+
+    it('merges model-level env into extraEnv', () => {
+      const P = createExecutableProviderClass('t', {
+        command: 'x', env: { A: '1' },
+        models: [{ id: 'custom', tier: 'thorough', env: { C: '3' } }]
+      });
+      expect(new P('custom', { env: { B: '2' } }).extraEnv).toEqual({ A: '1', B: '2', C: '3' });
+    });
+
+    it('resolves model to cli_model when defined', () => {
+      const P = createExecutableProviderClass('t', {
+        command: 'x',
+        models: [{ id: 'opus-4-6', cli_model: 'anthropic:claude-opus-4-6', tier: 'thorough' }]
+      });
+      expect(new P('opus-4-6').resolvedModel).toBe('anthropic:claude-opus-4-6');
+    });
+
+    it('resolves model to id when cli_model is undefined', () => {
+      const P = createExecutableProviderClass('t', {
+        command: 'x',
+        models: [{ id: 'default', tier: 'thorough', default: true }]
+      });
+      expect(new P('default').resolvedModel).toBe('default');
+    });
+
+    it('resolves model to null when cli_model is "" (suppresses model)', () => {
+      const P = createExecutableProviderClass('t', {
+        command: 'x',
+        models: [{ id: 'no-model', cli_model: '', tier: 'thorough' }]
+      });
+      expect(new P('no-model').resolvedModel).toBeNull();
+    });
+
+    it('stores model-level extra_args', () => {
+      const P = createExecutableProviderClass('t', {
+        command: 'x',
+        models: [{ id: 'noisy', tier: 'thorough', extra_args: ['--critic-models', 'DISABLED'] }]
+      });
+      expect(new P('noisy').modelExtraArgs).toEqual(['--critic-models', 'DISABLED']);
+    });
+
+    it('stores provider-level extra_args from config and configOverrides', () => {
+      const P = createExecutableProviderClass('t', {
+        command: 'x', extra_args: ['--verbose']
+      });
+      expect(new P('default', { extra_args: ['--debug'] }).providerExtraArgs).toEqual(['--verbose', '--debug']);
+    });
   });
 
   // ── _buildArgs ────────────────────────────────────────────────────
@@ -281,6 +328,69 @@ describe('createExecutableProviderClass', () => {
         command: 'x', args: ['--fmt', 'json'], context_args: { pr_title: '--title' }
       });
       expect(new P()._buildArgs({})).toEqual(['--fmt', 'json']);
+    });
+
+    it('includes provider extra_args after baseArgs', () => {
+      const P = createExecutableProviderClass('t', {
+        command: 'x', args: ['--fmt', 'json'], extra_args: ['--verbose'],
+        context_args: { pr_title: '--title' }
+      });
+      expect(new P()._buildArgs({ prTitle: 'Fix' })).toEqual(['--fmt', 'json', '--verbose', '--title', 'Fix']);
+    });
+
+    it('includes model extra_args after provider extra_args', () => {
+      const P = createExecutableProviderClass('t', {
+        command: 'x', args: ['--fmt', 'json'], extra_args: ['--verbose'],
+        models: [{ id: 'noisy', tier: 'thorough', extra_args: ['--critic-models', 'DISABLED'] }],
+        context_args: { pr_title: '--title' }
+      });
+      expect(new P('noisy')._buildArgs({ prTitle: 'Fix' }))
+        .toEqual(['--fmt', 'json', '--verbose', '--critic-models', 'DISABLED', '--title', 'Fix']);
+    });
+
+    it('includes configOverrides extra_args between config and model args', () => {
+      const P = createExecutableProviderClass('t', {
+        command: 'x', extra_args: ['--verbose'],
+        models: [{ id: 'custom', tier: 'thorough', extra_args: ['--strict'] }]
+      });
+      expect(new P('custom', { extra_args: ['--debug'] })._buildArgs({}))
+        .toEqual(['--verbose', '--debug', '--strict']);
+    });
+
+    it('does not pass --model when cli_model is "" (model suppressed via resolvedModel=null)', () => {
+      const P = createExecutableProviderClass('t', {
+        command: 'x',
+        context_args: { model: '--model', output_dir: '--output-dir' },
+        models: [
+          { id: 'no-critic', cli_model: '', tier: 'thorough', extra_args: ['--critic-models', 'DISABLED'] }
+        ]
+      });
+      const instance = new P('no-critic');
+      // resolvedModel is null, so executableContext.model should be null
+      const executableContext = {
+        model: instance.resolvedModel !== undefined ? instance.resolvedModel : instance.model,
+        outputDir: '/tmp/out'
+      };
+      expect(instance.resolvedModel).toBeNull();
+      expect(instance._buildArgs(executableContext))
+        .toEqual(['--critic-models', 'DISABLED', '--output-dir', '/tmp/out']);
+    });
+
+    it('passes resolved cli_model through context_args model mapping', () => {
+      const P = createExecutableProviderClass('t', {
+        command: 'x',
+        context_args: { model: '--model', output_dir: '--output-dir' },
+        models: [
+          { id: 'opus-4-6', cli_model: 'anthropic:claude-opus-4-6', tier: 'thorough' }
+        ]
+      });
+      const instance = new P('opus-4-6');
+      const executableContext = {
+        model: instance.resolvedModel !== undefined ? instance.resolvedModel : instance.model,
+        outputDir: '/tmp/out'
+      };
+      expect(instance._buildArgs(executableContext))
+        .toEqual(['--model', 'anthropic:claude-opus-4-6', '--output-dir', '/tmp/out']);
     });
   });
 

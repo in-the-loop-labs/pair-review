@@ -116,8 +116,18 @@ function createExecutableProviderClass(id, config) {
       // For multi-word commands, use shell mode
       this.useShell = this.execCommand.includes(' ');
 
+      // Resolve model-level config from the models array
+      const modelConfig = models.find(m => m.id === model) || {};
+      // cli_model: explicit string overrides model id; "" or null suppresses model; undefined falls back to id
+      this.resolvedModel = modelConfig.cli_model !== undefined ? (modelConfig.cli_model || null) : model;
+      this.modelExtraArgs = modelConfig.extra_args || [];
+
       // Store config fields
       this.baseArgs = config.args || [];
+      this.providerExtraArgs = [
+        ...(config.extra_args || []),
+        ...(configOverrides.extra_args || [])
+      ];
       this.contextArgs = config.context_args || {};
       this.outputGlob = config.output_glob || '**/results.json';
       this.mappingInstructions = config.mapping_instructions || '';
@@ -125,7 +135,8 @@ function createExecutableProviderClass(id, config) {
       this.availabilityCommand = config.availability_command || 'true';
       this.extraEnv = {
         ...(config.env || {}),
-        ...(configOverrides.env || {})
+        ...(configOverrides.env || {}),
+        ...(modelConfig.env || {})
       };
     }
 
@@ -138,7 +149,7 @@ function createExecutableProviderClass(id, config) {
      * @private
      */
     _buildArgs(executableContext) {
-      const args = [...this.baseArgs];
+      const args = [...this.baseArgs, ...this.providerExtraArgs, ...this.modelExtraArgs];
 
       for (const [configKey, flag] of Object.entries(this.contextArgs)) {
         // Config keys are snake_case, context keys are camelCase

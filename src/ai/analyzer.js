@@ -131,7 +131,7 @@ async function runExecutableVoice(voiceProvider, reviewId, worktreePath, prMetad
       description: prMetadata.description || '',
       cwd: worktreePath,
       outputDir: tmpDir,
-      model: voiceProvider.model || null,
+      model: voiceProvider.resolvedModel !== undefined ? voiceProvider.resolvedModel : (voiceProvider.model || null),
       baseSha: prMetadata.base_sha || null,
       headSha: prMetadata.head_sha || null,
       baseBranch: prMetadata.base_branch || null,
@@ -165,7 +165,11 @@ async function runExecutableVoice(voiceProvider, reviewId, worktreePath, prMetad
       summary: result.data.summary || ''
     };
   } finally {
-    try { await fs.rm(tmpDir, { recursive: true, force: true }); } catch (_) {}
+    if (logger.isStreamDebugEnabled()) {
+      logger.info(`[ExecutableVoice] Keeping output dir for debug: ${tmpDir}`);
+    } else {
+      try { await fs.rm(tmpDir, { recursive: true, force: true }); } catch (_) {}
+    }
   }
 }
 
