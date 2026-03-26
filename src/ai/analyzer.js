@@ -2967,7 +2967,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           await commentRepo.bulkInsertAISuggestions(reviewId, childRunId, validatedSuggestions, null);
 
           const validatedResult = { ...result, suggestions: validatedSuggestions };
-          return { voiceKey, reviewerLabel, childRunId, result: validatedResult, provider: voice.provider, model: voice.model, isExecutable: true };
+          return { voiceKey, reviewerLabel, childRunId, result: validatedResult, provider: voice.provider, model: voice.model, isExecutable: true, customInstructions: voice.customInstructions || null };
         }
 
         const result = await voiceAnalyzer.analyzeAllLevels(
@@ -3001,7 +3001,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           logger.warn(`[ReviewerCouncil] Failed to update child run ${childRunId}: ${err.message}`);
         }
 
-        return { voiceKey, reviewerLabel, childRunId, result, provider: voice.provider, model: voice.model, isExecutable: false };
+        return { voiceKey, reviewerLabel, childRunId, result, provider: voice.provider, model: voice.model, isExecutable: false, customInstructions: voice.customInstructions || null };
       } catch (error) {
         // Update child run to failed/cancelled
         try {
@@ -3151,6 +3151,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         provider: v.provider,
         model: v.model,
         isExecutable: v.isExecutable || false,
+        customInstructions: v.customInstructions || null,
         suggestionCount: v.result.suggestions.length + (v.result.fileLevelSuggestions?.length || 0),
         suggestions: v.result.suggestions,
         fileLevelSuggestions: v.result.fileLevelSuggestions || [],
@@ -3294,7 +3295,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           model: voice.model,
           tier,
           timeout: voice.timeout || 600000,
-          customInstructions: voiceInstructions
+          customInstructions: voiceInstructions,
+          voiceCustomInstructions: voice.customInstructions || null
         });
       }
     }
@@ -3471,8 +3473,16 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         // Multiple reviewers — run intra-level consolidation
         logger.info(`[Council] Pass 1: Consolidating ${successfulVoicesForLevel.length} reviewers for Level ${level}`);
         try {
+          const voiceGroups = successfulVoicesForLevel.map(({ t: task, idx }) => ({
+            voiceId: task.voiceId,
+            provider: task.provider,
+            model: task.model,
+            customInstructions: task.voiceCustomInstructions,
+            summary: voiceResults[idx].value.summary,
+            suggestions: voiceResults[idx].value.suggestions
+          }));
           const consolidated = await this._intraLevelConsolidate(
-            level, suggestions, prMetadata, orchInstructions, worktreePath,
+            level, voiceGroups, prMetadata, orchInstructions, worktreePath,
             { provider: orchProvider, model: orchModel, tier: orchTier, timeout: orchConfig.timeout, analysisId, progressCallback, reviewerCount: successfulVoicesForLevel.length }
           );
           consolidatedPerLevel[level] = consolidated;
@@ -3634,7 +3644,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
   /**
    * Run intra-level consolidation for a level with multiple voices
    * @param {number} level - Analysis level
-   * @param {Array} suggestions - Combined suggestions from all voices at this level
+   * @param {Array<Object>} voiceGroups - Per-reviewer groups: { voiceId, provider, model, customInstructions, suggestions }
    * @param {Object} prMetadata - PR metadata
    * @param {string} customInstructions - Custom instructions
    * @param {string} worktreePath - Worktree path
@@ -3642,7 +3652,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @returns {Promise<Array>} Consolidated suggestions
    * @private
    */
-  async _intraLevelConsolidate(level, suggestions, prMetadata, customInstructions, worktreePath, orchConfig) {
+  async _intraLevelConsolidate(level, voiceGroups, prMetadata, customInstructions, worktreePath, orchConfig) {
     const { provider, model, tier, timeout, analysisId, progressCallback, reviewerCount } = orchConfig;
 
     const aiProvider = createProvider(provider, model);
@@ -3652,13 +3662,25 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       ? `local changes (review #${prMetadata.pr_number || 'local'})`
       : `pull request #${prMetadata.pr_number}`;
 
+    const reviewerSuggestions = voiceGroups.map(g => {
+      let desc = `### Reviewer: ${g.voiceId} (${g.provider}/${g.model})\n`;
+      if (g.customInstructions) {
+        desc += `\n**Review Focus:**\n${g.customInstructions}\n`;
+      }
+      if (g.summary) desc += `\n**Summary:** ${g.summary}\n`;
+      desc += `\n**Suggestions:**\n${JSON.stringify(g.suggestions, null, 2)}`;
+      return desc;
+    }).join('\n\n---\n\n');
+
+    const suggestionCount = voiceGroups.reduce((sum, g) => sum + g.suggestions.length, 0);
+
     const promptBuilder = getPromptBuilder('consolidation', tier || 'balanced', provider);
     const prompt = promptBuilder.build({
       reviewIntro: `You are consolidating Level ${level} code review suggestions from multiple independent AI reviewers for ${reviewDescription}.`,
       customInstructions: customInstructions ? this.buildCustomInstructionsSection(customInstructions) : '',
       lineNumberGuidance: this.buildOrchestrationLineNumberGuidance(worktreePath),
-      reviewerSuggestions: JSON.stringify(suggestions, null, 2),
-      suggestionCount: suggestions.length,
+      reviewerSuggestions,
+      suggestionCount,
       reviewerCount: reviewerCount || 'multiple'
     });
 
@@ -3806,13 +3828,16 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       let desc = `### Reviewer: ${v.voiceKey}`;
       if (v.isExecutable) desc += ' [external tool]';
       desc += ` (${v.provider}/${v.model}) — ${v.suggestionCount} suggestions\n`;
-      if (v.summary) desc += `Summary: ${v.summary}\n`;
-      desc += `Suggestions:\n${JSON.stringify(v.suggestions, null, 2)}`;
+      if (v.customInstructions) {
+        desc += `\n**Review Focus:**\n${v.customInstructions}\n`;
+      }
+      if (v.summary) desc += `\n**Summary:** ${v.summary}\n`;
+      desc += `\n**Suggestions:**\n${JSON.stringify(v.suggestions, null, 2)}`;
       if (v.fileLevelSuggestions?.length > 0) {
-        desc += `\nFile-Level Suggestions:\n${JSON.stringify(v.fileLevelSuggestions, null, 2)}`;
+        desc += `\n**File-Level Suggestions:**\n${JSON.stringify(v.fileLevelSuggestions, null, 2)}`;
       }
       return desc;
-    }).join('\n\n');
+    }).join('\n\n---\n\n');
 
     const isLocal = prMetadata.reviewType === 'local';
     const reviewDescription = isLocal

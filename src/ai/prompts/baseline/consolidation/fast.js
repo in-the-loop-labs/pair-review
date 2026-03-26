@@ -52,6 +52,11 @@ Merge suggestions from multiple AI reviewers. Deduplicate. Resolve conflicts. Ke
 {{customInstructions}}
 </section>
 
+<section name="reviewer-context-guidance" required="true" tier="fast">
+### Reviewer Context
+Reviewers may have custom instructions below. Only boost findings when instructions indicate domain expertise relevant to the finding (e.g., "focus on security" boosts security findings). Persona/methodology instructions (e.g., "be thorough") don't confer specialist weight. In domain conflicts, prefer the domain-focused reviewer.
+</section>
+
 <section name="input-suggestions" locked="true">
 ## Input: {{reviewerCount}} Reviewer(s), {{suggestionCount}} Total Suggestions
 
@@ -125,6 +130,7 @@ const sections = [
   { name: 'critical-output', locked: true },
   { name: 'role-description', required: true, tier: ['fast'] },
   { name: 'custom-instructions', optional: true, tier: ['fast', 'balanced', 'thorough'] },
+  { name: 'reviewer-context-guidance', required: true, tier: ['fast'] },
   { name: 'input-suggestions', locked: true },
   { name: 'consolidation-rules', required: true, tier: ['fast'] },
   { name: 'output-schema', locked: true },
@@ -143,6 +149,7 @@ const defaultOrder = [
   'critical-output',
   'role-description',
   'custom-instructions',
+  'reviewer-context-guidance',
   'input-suggestions',
   'consolidation-rules',
   'output-schema',

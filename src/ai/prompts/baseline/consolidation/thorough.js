@@ -69,6 +69,19 @@ Take your time to analyze the reviewer findings thoroughly. For each cluster of 
 {{customInstructions}}
 </section>
 
+<section name="reviewer-context-guidance" required="true" tier="thorough">
+### Reviewer Context Awareness
+Each reviewer below may have been configured with custom instructions. These fall into two categories:
+
+- **Domain-focused reviewers**: Instructions that specify a code review focus area (e.g., "focus on security", "review error handling", "check performance"). Their findings *within that focus area* carry higher weight than generalist reviewers.
+- **General reviewers**: Either no custom instructions, or instructions about methodology/style/persona (e.g., "be thorough", "use a friendly tone"). Treat their suggestions at face value across all categories.
+
+**Weighting rules:**
+- Only boost a reviewer's findings when their instructions indicate domain expertise relevant to the finding's category
+- Cross-specialty findings from a domain-focused reviewer should be treated as general findings
+- In conflicts within a domain, prefer the domain-focused reviewer's analysis over a generalist's
+</section>
+
 <section name="input-suggestions" locked="true">
 ## Input: {{reviewerCount}} Reviewer(s), {{suggestionCount}} Total Suggestions
 
@@ -147,7 +160,8 @@ The summary field should synthesize the findings, not list them.
 - **Lead with the most important insight**: What should the reviewer focus on first?
 - **Connect the dots**: How do individual findings relate to each other?
 - **Calibrate severity**: Is this code fundamentally sound with minor issues, or are there structural problems?
-- **Write as a single reviewer**: Do NOT mention consolidation, merging, or multiple reviewers
+- **Draw on reviewer summaries**: Each reviewer may include a summary of their overall assessment. Use these to inform your synthesis — they capture the reviewer's high-level conclusions and priorities that may not be fully reflected in individual suggestions.
+- **Write as a single reviewer**: Do not mention consolidation, merging, or multiple reviewers -- unless specifically requested
 </section>
 
 <section name="output-schema" locked="true">
@@ -181,7 +195,7 @@ Output JSON with this structure:
     "confidence": 0.0-1.0,
     "reasoning": ["Step-by-step reasoning explaining why this issue was flagged"]
   }],
-  "summary": "Brief summary of the key findings and their significance. Write as if a single reviewer produced this analysis — do NOT mention 'consolidation', 'merging', or 'multiple reviewers'."
+  "summary": "Brief summary of the key findings and their significance. Draw on reviewer summaries for high-level conclusions. Write as if a single reviewer produced this analysis — do not mention 'consolidation', 'merging', or 'multiple reviewers' unless specifically requested."
 }
 
 ### GitHub Suggestion Syntax
@@ -237,6 +251,7 @@ const sections = [
   { name: 'role-description', required: true, tier: ['thorough'] },
   { name: 'reasoning-encouragement', required: true, tier: ['thorough'] },
   { name: 'custom-instructions', optional: true, tier: ['balanced', 'thorough'] },
+  { name: 'reviewer-context-guidance', required: true, tier: ['thorough'] },
   { name: 'input-suggestions', locked: true },
   { name: 'consolidation-rules', required: true, tier: ['thorough'] },
   { name: 'consensus-handling', required: true, tier: ['thorough'] },
@@ -257,6 +272,7 @@ const defaultOrder = [
   'role-description',
   'reasoning-encouragement',
   'custom-instructions',
+  'reviewer-context-guidance',
   'input-suggestions',
   'consolidation-rules',
   'consensus-handling',

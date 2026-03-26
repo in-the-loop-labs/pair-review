@@ -51,6 +51,19 @@ Multiple independent AI reviewers have analyzed the same code changes. Your job 
 {{customInstructions}}
 </section>
 
+<section name="reviewer-context-guidance" required="true">
+### Reviewer Context Awareness
+Each reviewer below may have been configured with custom instructions. These fall into two categories:
+
+- **Domain-focused reviewers**: Instructions that specify a code review focus area (e.g., "focus on security", "review error handling", "check performance"). Their findings *within that focus area* carry higher weight than generalist reviewers.
+- **General reviewers**: Either no custom instructions, or instructions about methodology/style/persona (e.g., "be thorough", "use a friendly tone"). Treat their suggestions at face value across all categories.
+
+**Weighting rules:**
+- Only boost a reviewer's findings when their instructions indicate domain expertise relevant to the finding's category
+- Cross-specialty findings from a domain-focused reviewer should be treated as general findings
+- In conflicts within a domain, prefer the domain-focused reviewer's analysis over a generalist's
+</section>
+
 <section name="input-suggestions" locked="true">
 ## Input: {{reviewerCount}} Reviewer(s), {{suggestionCount}} Total Suggestions
 
@@ -126,7 +139,7 @@ Output JSON with this structure:
     "confidence": 0.0-1.0,
     "reasoning": ["Step-by-step reasoning explaining why this issue was flagged (optional)"]
   }],
-  "summary": "Brief consolidation summary. Write as if a single reviewer produced this analysis — do NOT mention 'consolidation', 'merging', or 'multiple reviewers'."
+  "summary": "Brief consolidation summary. Draw on reviewer summaries for high-level conclusions. Write as if a single reviewer produced this analysis — do not mention 'consolidation', 'merging', or 'multiple reviewers' unless specifically requested."
 }
 
 ### GitHub Suggestion Syntax
@@ -165,6 +178,7 @@ const sections = [
   { name: 'critical-output', locked: true },
   { name: 'role-description', required: true },
   { name: 'custom-instructions', optional: true },
+  { name: 'reviewer-context-guidance', required: true },
   { name: 'input-suggestions', locked: true },
   { name: 'consolidation-rules', required: true },
   { name: 'consensus-handling', required: true },
@@ -183,6 +197,7 @@ const defaultOrder = [
   'critical-output',
   'role-description',
   'custom-instructions',
+  'reviewer-context-guidance',
   'input-suggestions',
   'consolidation-rules',
   'consensus-handling',
