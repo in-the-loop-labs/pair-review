@@ -210,7 +210,7 @@ class Analyzer {
           provider: this.provider,
           model: this.model,
           tier: options.tier ? resolveTier(options.tier) : 'balanced',
-          customInstructions: mergedInstructions,  // Keep for backward compat
+          customInstructions: requestInstructions,  // Only request-level; global/repo stored in their own columns
           globalInstructions,
           repoInstructions,
           requestInstructions,
@@ -2720,7 +2720,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           provider: 'council',
           model: 'voice-centric',
           tier: null,
-          customInstructions: mergedInstructions,
+          customInstructions: instructions?.requestInstructions || null,  // Only request-level; global/repo stored in their own columns
           globalInstructions: instructions?.globalInstructions || null,
           repoInstructions: instructions?.repoInstructions || null,
           requestInstructions: instructions?.requestInstructions || null,
@@ -2827,7 +2827,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           provider: voice.provider,
           model: voice.model,
           tier: voiceTier,
-          customInstructions: mergedInstructions,
+          customInstructions: instructions?.requestInstructions || null,  // Only request-level; global/repo stored in their own columns
           globalInstructions: instructions?.globalInstructions || null,
           repoInstructions: instructions?.repoInstructions || null,
           requestInstructions: instructions?.requestInstructions || null,
