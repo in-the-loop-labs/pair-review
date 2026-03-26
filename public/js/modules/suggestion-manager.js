@@ -433,6 +433,7 @@ class SuggestionManager {
       // Store original markdown body for adopt functionality
       // Use JSON.stringify to preserve newlines and special characters
       suggestionDiv.dataset.originalBody = JSON.stringify(suggestion.body || '');
+      suggestionDiv.dataset.formattedBody = JSON.stringify(suggestion.formattedBody || '');
 
       // Store target info on the suggestion div for reliable retrieval in getFileAndLineInfo
       // This avoids fragile DOM traversal that fails when gap rows are between suggestion and target
@@ -444,6 +445,9 @@ class SuggestionManager {
         suggestionDiv.dataset.diffPosition = targetInfo.diffPosition || '';
         suggestionDiv.dataset.isFileLevel = targetInfo.isFileLevel ? 'true' : 'false';
       }
+
+      // Store line_end from the suggestion itself (may differ from targetInfo.lineNumber for multi-line suggestions)
+      suggestionDiv.dataset.lineEnd = suggestion.line_end !== undefined ? String(suggestion.line_end) : (targetInfo?.lineNumber !== undefined ? String(targetInfo.lineNumber) : '');
 
       // Convert suggestion.id to number for comparison since parent_id might be a number
       const suggestionIdNum = parseInt(suggestion.id);
@@ -526,7 +530,7 @@ class SuggestionManager {
             <svg viewBox="0 0 16 16" width="16" height="16"><path fill-rule="evenodd" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"></path></svg>
             Adopt
           </button>
-          <button class="ai-action ai-action-edit" onclick="prManager.adoptAndEditSuggestion(${suggestion.id})">
+          <button class="ai-action ai-action-edit" onclick="prManager.editAndAdoptSuggestion(${suggestion.id})">
             <svg viewBox="0 0 16 16" width="16" height="16"><path fill-rule="evenodd" d="M11.013 1.427a1.75 1.75 0 012.474 0l1.086 1.086a1.75 1.75 0 010 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 01-.927-.928l.929-3.25a1.75 1.75 0 01.445-.758l8.61-8.61zm1.414 1.06a.25.25 0 00-.354 0L10.811 3.75l1.439 1.44 1.263-1.263a.25.25 0 000-.354l-1.086-1.086zM11.189 6.25L9.75 4.81l-6.286 6.287a.25.25 0 00-.064.108l-.558 1.953 1.953-.558a.249.249 0 00.108-.064l6.286-6.286z"></path></svg>
             Edit
           </button>
@@ -556,6 +560,8 @@ class SuggestionManager {
   extractSuggestionData(suggestionDiv) {
     const suggestionText = suggestionDiv.dataset?.originalBody ?
       JSON.parse(suggestionDiv.dataset.originalBody) : '';
+    const formattedBody = suggestionDiv.dataset?.formattedBody ?
+      JSON.parse(suggestionDiv.dataset.formattedBody) : '';
 
     // Get type from ai-suggestion-badge data-type attribute or praise-badge
     const badgeElement = suggestionDiv.querySelector('.ai-suggestion-badge, .praise-badge');
@@ -563,7 +569,7 @@ class SuggestionManager {
     const suggestionType = badgeElement?.dataset?.type || (badgeElement?.classList?.contains('praise-badge') ? 'praise' : '');
     const suggestionTitle = titleElement?.textContent?.trim() || '';
 
-    return { suggestionText, suggestionType, suggestionTitle };
+    return { suggestionText, formattedBody, suggestionType, suggestionTitle };
   }
 
   /**
@@ -609,6 +615,7 @@ class SuggestionManager {
     // This is the reliable method that works even with gap rows between suggestion and target
     const storedFileName = suggestionDiv.dataset.fileName;
     const storedLineNumber = suggestionDiv.dataset.lineNumber;
+    const storedLineEnd = suggestionDiv.dataset.lineEnd;
     const storedSide = suggestionDiv.dataset.side;
     const storedDiffPosition = suggestionDiv.dataset.diffPosition;
     const storedIsFileLevel = suggestionDiv.dataset.isFileLevel;
@@ -642,6 +649,7 @@ class SuggestionManager {
           targetRow,
           suggestionRow,
           lineNumber: parseInt(storedLineNumber, 10),
+          lineEnd: storedLineEnd ? parseInt(storedLineEnd, 10) : null,
           fileName: storedFileName,
           diffPosition: storedDiffPosition || null,
           side: storedSide || 'RIGHT',

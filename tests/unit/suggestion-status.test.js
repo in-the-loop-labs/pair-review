@@ -852,7 +852,7 @@ describe('PRManager Suggestion Status', () => {
       // DESIGN DECISION: Dismissed comments are never in the diff DOM, so we simply count all visible elements.
       // Mock DOM with 2 comment rows (all active, dismissed comments are never in DOM)
       document.querySelectorAll.mockImplementation((selector) => {
-        if (selector === '.user-comment-row') {
+        if (selector === '.user-comment-row:not(.suggestion-edit-pending)') {
           return { length: 2 }; // 2 comments
         }
         if (selector === '.file-comment-card.user-comment') {
@@ -869,7 +869,7 @@ describe('PRManager Suggestion Status', () => {
     it('should count file-level comments', () => {
       // Mock DOM with file-level comments (dismissed comments are never in DOM)
       document.querySelectorAll.mockImplementation((selector) => {
-        if (selector === '.user-comment-row') {
+        if (selector === '.user-comment-row:not(.suggestion-edit-pending)') {
           return { length: 0 }; // No line-level comments
         }
         if (selector === '.file-comment-card.user-comment') {
@@ -886,7 +886,7 @@ describe('PRManager Suggestion Status', () => {
     it('should combine line-level and file-level comment counts', () => {
       // Mock DOM with both types: 3 line-level, 2 file-level
       document.querySelectorAll.mockImplementation((selector) => {
-        if (selector === '.user-comment-row') {
+        if (selector === '.user-comment-row:not(.suggestion-edit-pending)') {
           return { length: 3 }; // 3 line-level comments
         }
         if (selector === '.file-comment-card.user-comment') {
@@ -903,7 +903,7 @@ describe('PRManager Suggestion Status', () => {
     it('should return 0 when no comments exist', () => {
       // Mock DOM with no comments (dismissed comments are never in DOM anyway)
       document.querySelectorAll.mockImplementation((selector) => {
-        if (selector === '.user-comment-row') {
+        if (selector === '.user-comment-row:not(.suggestion-edit-pending)') {
           return { length: 0 }; // No line-level
         }
         if (selector === '.file-comment-card.user-comment') {
@@ -921,7 +921,7 @@ describe('PRManager Suggestion Status', () => {
       prManager.splitButton = null;
 
       document.querySelectorAll.mockImplementation((selector) => {
-        if (selector === '.user-comment-row') {
+        if (selector === '.user-comment-row:not(.suggestion-edit-pending)') {
           return { length: 2 };
         }
         if (selector === '.file-comment-card.user-comment') {

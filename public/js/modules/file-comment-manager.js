@@ -357,12 +357,8 @@ class FileCommentManager {
 
     // Choose icon based on comment origin (AI-adopted vs user-originated) - matches line-level
     const commentIcon = isAIOrigin
-      ? `<svg class="octicon octicon-comment-ai" viewBox="0 0 16 16" width="16" height="16">
-           <path d="M7.75 1a.75.75 0 0 1 0 1.5h-5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h2c.199 0 .39.079.53.22.141.14.22.331.22.53v2.19l2.72-2.72a.747.747 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-2a.75.75 0 0 1 1.5 0v2c0 .464-.184.909-.513 1.237A1.746 1.746 0 0 1 13.25 12H9.06l-2.573 2.573A1.457 1.457 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25v-7.5C1 1.784 1.784 1 2.75 1h5Zm4.519-.837a.248.248 0 0 1 .466 0l.238.648a3.726 3.726 0 0 0 2.218 2.219l.649.238a.249.249 0 0 1 0 .467l-.649.238a3.725 3.725 0 0 0-2.218 2.218l-.238.649a.248.248 0 0 1-.466 0l-.239-.649a3.725 3.725 0 0 0-2.218-2.218l-.649-.238a.249.249 0 0 1 0-.467l.649-.238A3.726 3.726 0 0 0 12.03.811l.239-.648Z"/>
-         </svg>`
-      : `<svg class="octicon octicon-person" viewBox="0 0 16 16" width="16" height="16">
-           <path d="M10.561 8.073a6.005 6.005 0 0 1 3.432 5.142.75.75 0 1 1-1.498.07 4.5 4.5 0 0 0-8.99 0 .75.75 0 0 1-1.498-.07 6.004 6.004 0 0 1 3.431-5.142 3.999 3.999 0 1 1 5.123 0ZM10.5 5a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z"/>
-         </svg>`;
+      ? window.CommentManager.AI_ICON_SVG
+      : window.CommentManager.PERSON_ICON_SVG;
 
     // Praise badge for "Nice Work" comments - matches line-level
     const praiseBadge = comment.type === 'praise'
@@ -746,7 +742,7 @@ class FileCommentManager {
         data-file="${window.escapeHtmlAttribute(suggestion.file)}"
       >${this.escapeHtml(suggestion.formattedBody || suggestion.body)}</textarea>
       <div class="file-comment-form-footer">
-        <button class="file-comment-form-btn submit submit-btn">Adopt</button>
+        <button class="file-comment-form-btn submit submit-btn">Save</button>
         <button class="file-comment-form-btn cancel cancel-btn">Cancel</button>
       </div>
     `;

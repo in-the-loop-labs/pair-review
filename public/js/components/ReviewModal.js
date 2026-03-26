@@ -371,7 +371,7 @@ class ReviewModal {
    */
   updateCommentCount() {
     // Count both line-level comments (.user-comment-row) and file-level comments (.file-comment-card.user-comment)
-    const lineComments = document.querySelectorAll('.user-comment-row').length;
+    const lineComments = document.querySelectorAll('.user-comment-row:not(.suggestion-edit-pending)').length;
     const fileComments = document.querySelectorAll('.file-comment-card.user-comment').length;
     const userComments = lineComments + fileComments;
     const countElement = this.modal.querySelector('.review-comment-count');
@@ -470,7 +470,7 @@ class ReviewModal {
     const reviewEvent = selectedOption ? selectedOption.value : 'COMMENT';
     // Count BOTH line-level (.user-comment-row) and file-level (.file-comment-card.user-comment) comments
     // This must match the counting logic in updateCommentCount() for consistency
-    const lineComments = document.querySelectorAll('.user-comment-row').length;
+    const lineComments = document.querySelectorAll('.user-comment-row:not(.suggestion-edit-pending)').length;
     const fileComments = document.querySelectorAll('.file-comment-card.user-comment').length;
     const commentCount = lineComments + fileComments;
     
