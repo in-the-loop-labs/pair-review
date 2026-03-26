@@ -580,12 +580,8 @@ class CommentManager {
 
     // Choose icon based on comment origin (AI-adopted vs user-originated)
     const commentIcon = comment.parent_id
-      ? `<svg class="octicon octicon-comment-ai" viewBox="0 0 16 16" width="16" height="16">
-           <path d="M7.75 1a.75.75 0 0 1 0 1.5h-5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h2c.199 0 .39.079.53.22.141.14.22.331.22.53v2.19l2.72-2.72a.747.747 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-2a.75.75 0 0 1 1.5 0v2c0 .464-.184.909-.513 1.237A1.746 1.746 0 0 1 13.25 12H9.06l-2.573 2.573A1.457 1.457 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25v-7.5C1 1.784 1.784 1 2.75 1h5Zm4.519-.837a.248.248 0 0 1 .466 0l.238.648a3.726 3.726 0 0 0 2.218 2.219l.649.238a.249.249 0 0 1 0 .467l-.649.238a3.725 3.725 0 0 0-2.218 2.218l-.238.649a.248.248 0 0 1-.466 0l-.239-.649a3.725 3.725 0 0 0-2.218-2.218l-.649-.238a.249.249 0 0 1 0-.467l.649-.238A3.726 3.726 0 0 0 12.03.811l.239-.648Z"/>
-         </svg>`
-      : `<svg class="octicon octicon-person" viewBox="0 0 16 16" width="16" height="16">
-           <path d="M10.561 8.073a6.005 6.005 0 0 1 3.432 5.142.75.75 0 1 1-1.498.07 4.5 4.5 0 0 0-8.99 0 .75.75 0 0 1-1.498-.07 6.004 6.004 0 0 1 3.431-5.142 3.999 3.999 0 1 1 5.123 0ZM10.5 5a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z"/>
-         </svg>`;
+      ? CommentManager.AI_ICON_SVG
+      : CommentManager.PERSON_ICON_SVG;
 
     // Build class list for comment styling
     const baseClasses = ['user-comment'];
@@ -634,56 +630,51 @@ class CommentManager {
     targetRow.parentNode.insertBefore(commentRow, targetRow.nextSibling);
   }
 
+  /** SVG icons for comment origin display */
+  static AI_ICON_SVG = `<svg class="octicon octicon-comment-ai" viewBox="0 0 16 16" width="16" height="16">
+    <path d="M7.75 1a.75.75 0 0 1 0 1.5h-5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h2c.199 0 .39.079.53.22.141.14.22.331.22.53v2.19l2.72-2.72a.747.747 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-2a.75.75 0 0 1 1.5 0v2c0 .464-.184.909-.513 1.237A1.746 1.746 0 0 1 13.25 12H9.06l-2.573 2.573A1.457 1.457 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25v-7.5C1 1.784 1.784 1 2.75 1h5Zm4.519-.837a.248.248 0 0 1 .466 0l.238.648a3.726 3.726 0 0 0 2.218 2.219l.649.238a.249.249 0 0 1 0 .467l-.649.238a3.725 3.725 0 0 0-2.218 2.218l-.238.649a.248.248 0 0 1-.466 0l-.239-.649a3.725 3.725 0 0 0-2.218-2.218l-.649-.238a.249.249 0 0 1 0-.467l.649-.238A3.726 3.726 0 0 0 12.03.811l.239-.648Z"/>
+  </svg>`;
+
+  static PERSON_ICON_SVG = `<svg class="octicon octicon-person" viewBox="0 0 16 16" width="16" height="16">
+    <path d="M10.561 8.073a6.005 6.005 0 0 1 3.432 5.142.75.75 0 1 1-1.498.07 4.5 4.5 0 0 0-8.99 0 .75.75 0 0 1-1.498-.07 6.004 6.004 0 0 1 3.431-5.142 3.999 3.999 0 1 1 5.123 0ZM10.5 5a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z"/>
+  </svg>`;
+
   /**
-   * Display a user comment in edit mode (for adopted suggestions)
-   * @param {Object} comment - Comment data
-   * @param {HTMLElement} targetRow - Row to insert after
+   * Shared builder for comment/suggestion edit form rows.
+   * Builds the DOM, inserts after targetRow, wires common event handling
+   * (autoResize, emoji, suggestion button), and returns { formRow, textarea, saveBtn, cancelBtn }.
+   * Callers wire their own save/cancel logic on the returned elements.
+   * NOTE: similar edit form in pr.js editUserComment — keep in sync
+   * @private
    */
-  displayUserCommentInEditMode(comment, targetRow) {
-    const commentRow = document.createElement('tr');
-    commentRow.className = 'user-comment-row';
-    commentRow.dataset.commentId = comment.id;
-    // Store file/line/side data for editing
-    commentRow.dataset.file = comment.file;
-    commentRow.dataset.lineStart = comment.line_start;
-    commentRow.dataset.lineEnd = comment.line_end || comment.line_start;
-    if (comment.side) {
-      commentRow.dataset.side = comment.side;
-    }
+  _buildEditFormRow(targetRow, {
+    rowClassName, rowDataset, iconHtml, originClass, lineInfo,
+    type, title, body, bodyHtml, textareaId, placeholder,
+    dataAttrs, saveLabel
+  }) {
+    const formRow = document.createElement('tr');
+    formRow.className = rowClassName;
+    Object.assign(formRow.dataset, rowDataset);
 
     const td = document.createElement('td');
     td.colSpan = 4;
     td.className = 'user-comment-cell';
 
-    const lineInfo = comment.line_end && comment.line_end !== comment.line_start
-      ? `Lines ${comment.line_start}-${comment.line_end}`
-      : `Line ${comment.line_start}`;
-
     const escapeHtml = this.prManager?.escapeHtml?.bind(this.prManager) || ((s) => s);
 
-    // Choose icon based on comment origin (AI-adopted vs user-originated)
-    const commentIcon = comment.parent_id
-      ? `<svg class="octicon octicon-comment-ai" viewBox="0 0 16 16" width="16" height="16">
-           <path d="M7.75 1a.75.75 0 0 1 0 1.5h-5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h2c.199 0 .39.079.53.22.141.14.22.331.22.53v2.19l2.72-2.72a.747.747 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-2a.75.75 0 0 1 1.5 0v2c0 .464-.184.909-.513 1.237A1.746 1.746 0 0 1 13.25 12H9.06l-2.573 2.573A1.457 1.457 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25v-7.5C1 1.784 1.784 1 2.75 1h5Zm4.519-.837a.248.248 0 0 1 .466 0l.238.648a3.726 3.726 0 0 0 2.218 2.219l.649.238a.249.249 0 0 1 0 .467l-.649.238a3.725 3.725 0 0 0-2.218 2.218l-.238.649a.248.248 0 0 1-.466 0l-.239-.649a3.725 3.725 0 0 0-2.218-2.218l-.649-.238a.249.249 0 0 1 0-.467l.649-.238A3.726 3.726 0 0 0 12.03.811l.239-.648Z"/>
-         </svg>`
-      : `<svg class="octicon octicon-person" viewBox="0 0 16 16" width="16" height="16">
-           <path d="M10.561 8.073a6.005 6.005 0 0 1 3.432 5.142.75.75 0 1 1-1.498.07 4.5 4.5 0 0 0-8.99 0 .75.75 0 0 1-1.498-.07 6.004 6.004 0 0 1 3.431-5.142 3.999 3.999 0 1 1 5.123 0ZM10.5 5a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z"/>
-         </svg>`;
-
-    const commentHTML = `
-      <div class="user-comment editing-mode ${comment.parent_id ? 'adopted-comment comment-ai-origin' : 'comment-user-origin'}">
+    const html = `
+      <div class="user-comment editing-mode ${originClass}">
         <div class="user-comment-header">
           <div class="user-comment-header-left">
             <span class="comment-origin-icon">
-              ${commentIcon}
+              ${iconHtml}
             </span>
             <span class="user-comment-line-info">${lineInfo}</span>
-            ${comment.type === 'praise' ? `<span class="adopted-praise-badge" title="Nice Work"><svg viewBox="0 0 16 16" width="12" height="12"><path d="M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z"/></svg>Nice Work</span>` : ''}
-            ${comment.title ? `<span class="adopted-title">${escapeHtml(comment.title)}</span>` : ''}
+            ${type === 'praise' ? `<span class="adopted-praise-badge" title="Nice Work"><svg viewBox="0 0 16 16" width="12" height="12"><path d="M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z"/></svg>Nice Work</span>` : ''}
+            ${title ? `<span class="adopted-title">${escapeHtml(title)}</span>` : ''}
           </div>
         </div>
-        <!-- Hidden body div for saving - pre-populate with markdown rendered content and store original -->
-        <div class="user-comment-body" style="display: none;" data-original-markdown="${window.escapeHtmlAttribute(comment.body)}">${window.renderMarkdown ? window.renderMarkdown(comment.body) : escapeHtml(comment.body)}</div>
+        ${bodyHtml || ''}
         <div class="user-comment-edit-form">
           <div class="comment-form-toolbar">
             <button type="button" class="btn btn-sm suggestion-btn" title="Insert a suggestion (Ctrl+G)">
@@ -691,71 +682,55 @@ class CommentManager {
             </button>
           </div>
           <textarea
-            id="edit-comment-${comment.id}"
+            ${textareaId ? `id="${textareaId}"` : ''}
             class="comment-edit-textarea"
-            placeholder="Enter your comment..."
-            data-file="${comment.file}"
-            data-line="${comment.line_start}"
-            data-line-end="${comment.line_end || comment.line_start}"
-            data-side="${comment.side || 'RIGHT'}"
-          >${escapeHtml(comment.body)}</textarea>
+            placeholder="${placeholder}"
+            data-file="${window.escapeHtmlAttribute ? window.escapeHtmlAttribute(dataAttrs.file) : dataAttrs.file}"
+            data-line="${dataAttrs.line}"
+            data-line-end="${dataAttrs.lineEnd}"
+            data-side="${dataAttrs.side}"
+          >${escapeHtml(body)}</textarea>
           <div class="comment-edit-actions">
-            <button class="btn btn-sm btn-primary save-edit-btn">
-              Save
-            </button>
-            <button class="btn btn-sm btn-secondary cancel-edit-btn">
-              Cancel
-            </button>
+            <button class="btn btn-sm btn-primary save-edit-btn">${saveLabel}</button>
+            <button class="btn btn-sm btn-secondary cancel-edit-btn">Cancel</button>
           </div>
         </div>
       </div>
     `;
 
-    td.innerHTML = commentHTML;
-    commentRow.appendChild(td);
+    td.innerHTML = html;
+    formRow.appendChild(td);
 
-    // Insert comment immediately after the target row (suggestion row)
     if (targetRow.nextSibling) {
-      targetRow.parentNode.insertBefore(commentRow, targetRow.nextSibling);
+      targetRow.parentNode.insertBefore(formRow, targetRow.nextSibling);
     } else {
-      targetRow.parentNode.appendChild(commentRow);
+      targetRow.parentNode.appendChild(formRow);
     }
 
-    // Get references
-    const editForm = td.querySelector('.user-comment-edit-form');
-    const textarea = document.getElementById(`edit-comment-${comment.id}`);
-    const suggestionBtn = editForm.querySelector('.suggestion-btn');
-    const saveBtn = editForm.querySelector('.save-edit-btn');
-    const cancelBtn = editForm.querySelector('.cancel-edit-btn');
+    const textarea = textareaId
+      ? document.getElementById(textareaId)
+      : formRow.querySelector('.comment-edit-textarea');
+    const suggestionBtn = formRow.querySelector('.suggestion-btn');
+    const saveBtn = formRow.querySelector('.save-edit-btn');
+    const cancelBtn = formRow.querySelector('.cancel-edit-btn');
 
     if (textarea) {
-      // Auto-resize to fit content
       this.autoResizeTextarea(textarea);
-
       textarea.focus();
-      // Position cursor at end of text instead of selecting all
       textarea.setSelectionRange(textarea.value.length, textarea.value.length);
 
-      // Attach emoji picker for autocomplete
       if (window.emojiPicker) {
         window.emojiPicker.attach(textarea);
       }
 
-      // Update suggestion button state based on content
       this.updateSuggestionButtonState(textarea, suggestionBtn);
 
-      // Suggestion button handler
       suggestionBtn.addEventListener('click', () => {
         if (!suggestionBtn.disabled) {
           this.insertSuggestionBlock(textarea, suggestionBtn);
         }
       });
 
-      // Save/cancel handlers - use prManager methods for consistency
-      saveBtn.addEventListener('click', () => this.prManager?.saveEditedUserComment(comment.id));
-      cancelBtn.addEventListener('click', () => this.prManager?.cancelEditUserComment(comment.id));
-
-      // Auto-resize on input and update suggestion button state
       textarea.addEventListener('input', () => {
         this.autoResizeTextarea(textarea);
         this.updateSuggestionButtonState(textarea, suggestionBtn);
@@ -764,6 +739,105 @@ class CommentManager {
       // Keyboard shortcuts (Escape, Cmd/Ctrl+Enter) are handled by delegated
       // event listener in setupCommentFormDelegation() to avoid memory leaks
     }
+
+    return { formRow, textarea, saveBtn, cancelBtn };
+  }
+
+  /**
+   * Display a user comment in edit mode (for adopted suggestions)
+   * @param {Object} comment - Comment data
+   * @param {HTMLElement} targetRow - Row to insert after
+   */
+  displayUserCommentInEditMode(comment, targetRow) {
+    const lineInfo = comment.line_end && comment.line_end !== comment.line_start
+      ? `Lines ${comment.line_start}-${comment.line_end}`
+      : `Line ${comment.line_start}`;
+
+    const escapeHtml = this.prManager?.escapeHtml?.bind(this.prManager) || ((s) => s);
+    const bodyHtml = `<div class="user-comment-body" style="display: none;" data-original-markdown="${window.escapeHtmlAttribute(comment.body)}">${window.renderMarkdown ? window.renderMarkdown(comment.body) : escapeHtml(comment.body)}</div>`;
+
+    const rowDataset = { commentId: comment.id, file: comment.file, lineStart: comment.line_start, lineEnd: comment.line_end || comment.line_start };
+    if (comment.side) rowDataset.side = comment.side;
+
+    const { saveBtn, cancelBtn } = this._buildEditFormRow(targetRow, {
+      rowClassName: 'user-comment-row',
+      rowDataset,
+      iconHtml: comment.parent_id ? CommentManager.AI_ICON_SVG : CommentManager.PERSON_ICON_SVG,
+      originClass: comment.parent_id ? 'adopted-comment comment-ai-origin' : 'comment-user-origin',
+      lineInfo,
+      type: comment.type,
+      title: comment.title,
+      body: comment.body,
+      bodyHtml,
+      textareaId: `edit-comment-${comment.id}`,
+      placeholder: 'Enter your comment...',
+      dataAttrs: {
+        file: comment.file,
+        line: comment.line_start,
+        lineEnd: comment.line_end || comment.line_start,
+        side: comment.side || 'RIGHT'
+      },
+      saveLabel: 'Save'
+    });
+
+    saveBtn.addEventListener('click', () => this.prManager?.saveEditedUserComment(comment.id));
+    cancelBtn.addEventListener('click', () => this.prManager?.cancelEditUserComment(comment.id));
+  }
+
+  /**
+   * Display an edit form for an AI suggestion that has NOT yet been adopted.
+   * Nothing is saved until the user clicks Save/Adopt.
+   * @param {Object} suggestion - { id, body, type, title, file, lineNumber, diffPosition, side }
+   * @param {HTMLElement} targetRow - The suggestion row to insert the form after
+   * @param {Function} onSave - Called with (editedText) when user clicks Save
+   * @param {Function} onCancel - Called when user clicks Cancel
+   */
+  displaySuggestionEditForm(suggestion, targetRow, onSave, onCancel) {
+    // Remove any existing pending edit form (prevents stale multi-form state)
+    const existing = document.querySelector('.suggestion-edit-pending');
+    if (existing) existing.remove();
+
+    const { formRow, saveBtn, cancelBtn } = this._buildEditFormRow(targetRow, {
+      rowClassName: 'user-comment-row suggestion-edit-pending',
+      rowDataset: { suggestionId: suggestion.id },
+      iconHtml: CommentManager.AI_ICON_SVG,
+      originClass: 'adopted-comment comment-ai-origin',
+      lineInfo: suggestion.lineEnd && suggestion.lineEnd !== suggestion.lineNumber
+        ? `Lines ${suggestion.lineNumber}-${suggestion.lineEnd}`
+        : `Line ${suggestion.lineNumber}`,
+      type: suggestion.type,
+      title: suggestion.title,
+      body: suggestion.body,
+      placeholder: 'Edit the suggestion...',
+      dataAttrs: {
+        file: suggestion.file,
+        line: suggestion.lineNumber,
+        lineEnd: suggestion.lineEnd || suggestion.lineNumber,
+        side: suggestion.side || 'RIGHT'
+      },
+      saveLabel: 'Save'
+    });
+
+    saveBtn.addEventListener('click', async () => {
+      const textarea = formRow.querySelector('.comment-edit-textarea');
+      const text = textarea?.value.trim();
+      if (text) {
+        saveBtn.disabled = true;
+        try {
+          await onSave(text);
+          formRow.remove();
+        } catch (err) {
+          saveBtn.disabled = false;
+        }
+      }
+    });
+
+    cancelBtn.addEventListener('click', () => {
+      formRow.remove();
+      onCancel();
+    });
+
+    return formRow;
   }
 }
 
