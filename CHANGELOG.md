@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.0.4
+
+### Patch Changes
+
+- c539e27: Fix edit-and-adopt suggestion flow: correct comment count inflation from pending edit forms, support multi-line suggestion ranges, consistent HTML-attribute escaping in edit form builder, and deduplicate inline SVG icons
+
 ## 3.0.3
 
 ### Patch Changes
