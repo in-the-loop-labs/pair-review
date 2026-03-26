@@ -5,6 +5,7 @@
  * Verifies:
  * - Single-voice path: analyzeAllLevels runs directly on parent run (no child run)
  * - Below-threshold path (suggestions < COUNCIL_CONSOLIDATION_THRESHOLD)
+ * - custom_instructions column stores only request-level instructions (regression)
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
@@ -390,6 +391,275 @@ describe('runReviewerCentricCouncil', () => {
         null,
         expect.any(Array)
       );
+    });
+  });
+
+  describe('custom_instructions column storage', () => {
+    // Regression: custom_instructions was storing mergedInstructions (global + repo + request
+    // concatenated with XML tags) instead of only the request-level instructions.
+    // This caused the analysis history popover to display global/repo instructions
+    // under "Custom Instructions" when no request instructions were provided,
+    // because the UI falls back to custom_instructions when request_instructions is null.
+    //
+    // These tests use a mock SQLite db to capture actual INSERT params, because the
+    // vi.mock for AnalysisRunRepository doesn't intercept requires inside analyzer.js
+    // in the forks pool.
+
+    /**
+     * Create a mock SQLite db that captures analysis_runs INSERT parameters.
+     * Returns the mock db and an array of captured insert param objects.
+     */
+    function createCaptureDb() {
+      const inserts = [];
+      return {
+        db: {
+          prepare: vi.fn().mockImplementation((sql) => ({
+            run: vi.fn().mockImplementation((...params) => {
+              if (sql.includes('INSERT INTO analysis_runs')) {
+                // Map positional params to named fields based on the INSERT column order.
+                // Column order: id, review_id, provider, model, tier, custom_instructions,
+                // global_instructions, repo_instructions, request_instructions, head_sha,
+                // diff, status, completed_at (interpolated), parent_run_id, config_type,
+                // levels_config, scope_start, scope_end
+                inserts.push({
+                  id: params[0],
+                  reviewId: params[1],
+                  provider: params[2],
+                  model: params[3],
+                  tier: params[4],
+                  customInstructions: params[5],
+                  globalInstructions: params[6],
+                  repoInstructions: params[7],
+                  requestInstructions: params[8],
+                  parentRunId: params[12],
+                  configType: params[13]
+                });
+              }
+              return { lastInsertRowid: 1, changes: 1 };
+            }),
+            get: vi.fn().mockReturnValue(null),
+            all: vi.fn().mockReturnValue([])
+          }))
+        },
+        inserts
+      };
+    }
+
+    function createCaptureAnalyzer(db) {
+      const a = new Analyzer(db, 'sonnet', 'claude');
+      a.loadGeneratedFilePatterns = vi.fn().mockResolvedValue({ getPatterns: () => [] });
+      a.getChangedFilesList = vi.fn().mockResolvedValue(['src/foo.js', 'src/bar.js']);
+      a.storeSuggestions = vi.fn().mockResolvedValue(undefined);
+      a.validateSuggestionFilePaths = vi.fn().mockImplementation((s) => s || []);
+      a.validateAndFinalizeSuggestions = vi.fn().mockImplementation((s) => s || []);
+      return a;
+    }
+
+    it('should store only requestInstructions in customInstructions for parent run', async () => {
+      const { db, inserts } = createCaptureDb();
+      const captureAnalyzer = createCaptureAnalyzer(db);
+
+      const reviewContext = {
+        reviewId: 1,
+        worktreePath: '/tmp/test-worktree',
+        prMetadata: { head_sha: 'abc123' },
+        changedFiles: ['src/foo.js', 'src/bar.js'],
+        instructions: {
+          globalInstructions: 'Global: check for accessibility',
+          repoInstructions: 'Repo: follow style guide',
+          requestInstructions: 'Focus on security'
+        }
+      };
+      const councilConfig = {
+        voices: [
+          { provider: 'claude', model: 'sonnet', tier: 'balanced' },
+          { provider: 'gemini', model: 'pro', tier: 'balanced' }
+        ],
+        levels: { '1': true, '2': true, '3': false },
+        consolidation: { provider: 'claude', model: 'opus', tier: 'balanced' }
+      };
+      // No runId — forces parent run creation
+      const options = { analysisId: 'test-analysis-id', progressCallback: null };
+
+      vi.spyOn(Analyzer.prototype, 'analyzeAllLevels').mockResolvedValue({
+        suggestions: buildMockSuggestions(2),
+        summary: 'Test'
+      });
+
+      await captureAnalyzer.runReviewerCentricCouncil(reviewContext, councilConfig, options);
+
+      // First insert is the parent run
+      expect(inserts.length).toBeGreaterThanOrEqual(1);
+      const parentInsert = inserts[0];
+      expect(parentInsert.customInstructions).toBe('Focus on security');
+      // Must NOT contain global/repo instructions (the pre-fix bug)
+      expect(parentInsert.customInstructions).not.toContain('Global:');
+      expect(parentInsert.customInstructions).not.toContain('Repo:');
+      // Separate columns should store their respective values
+      expect(parentInsert.globalInstructions).toBe('Global: check for accessibility');
+      expect(parentInsert.repoInstructions).toBe('Repo: follow style guide');
+      expect(parentInsert.requestInstructions).toBe('Focus on security');
+    });
+
+    it('should store only requestInstructions in customInstructions for child runs', async () => {
+      const { db, inserts } = createCaptureDb();
+      const captureAnalyzer = createCaptureAnalyzer(db);
+
+      const reviewContext = {
+        reviewId: 1,
+        worktreePath: '/tmp/test-worktree',
+        prMetadata: { head_sha: 'abc123' },
+        changedFiles: ['src/foo.js', 'src/bar.js'],
+        instructions: {
+          globalInstructions: 'Global: check for accessibility',
+          repoInstructions: 'Repo: follow style guide',
+          requestInstructions: 'Focus on security'
+        }
+      };
+      const councilConfig = {
+        voices: [
+          { provider: 'claude', model: 'sonnet', tier: 'balanced' },
+          { provider: 'gemini', model: 'pro', tier: 'balanced' }
+        ],
+        levels: { '1': true, '2': true, '3': false },
+        consolidation: { provider: 'claude', model: 'opus', tier: 'balanced' }
+      };
+      // Pass runId to skip parent creation — only child runs are created
+      const options = { analysisId: 'test-analysis-id', runId: 'parent-run-id', progressCallback: null };
+
+      vi.spyOn(Analyzer.prototype, 'analyzeAllLevels').mockResolvedValue({
+        suggestions: buildMockSuggestions(2),
+        summary: 'Test'
+      });
+
+      await captureAnalyzer.runReviewerCentricCouncil(reviewContext, councilConfig, options);
+
+      // With runId passed, parent insert is skipped — all inserts are child runs
+      const childInserts = inserts.filter(i => i.parentRunId != null);
+      expect(childInserts.length).toBe(2);
+      for (const childInsert of childInserts) {
+        expect(childInsert.customInstructions).toBe('Focus on security');
+        expect(childInsert.customInstructions).not.toContain('Global:');
+        expect(childInsert.customInstructions).not.toContain('Repo:');
+        expect(childInsert.globalInstructions).toBe('Global: check for accessibility');
+        expect(childInsert.repoInstructions).toBe('Repo: follow style guide');
+        expect(childInsert.requestInstructions).toBe('Focus on security');
+      }
+    });
+
+    it('should store null in customInstructions when only global/repo instructions exist', async () => {
+      const { db, inserts } = createCaptureDb();
+      const captureAnalyzer = createCaptureAnalyzer(db);
+
+      const reviewContext = {
+        reviewId: 1,
+        worktreePath: '/tmp/test-worktree',
+        prMetadata: { head_sha: 'abc123' },
+        changedFiles: ['src/foo.js', 'src/bar.js'],
+        instructions: {
+          globalInstructions: 'Global: check for accessibility',
+          repoInstructions: 'Repo: follow style guide',
+          requestInstructions: null
+        }
+      };
+      const councilConfig = {
+        voices: [
+          { provider: 'claude', model: 'sonnet', tier: 'balanced' },
+          { provider: 'gemini', model: 'pro', tier: 'balanced' }
+        ],
+        levels: { '1': true, '2': true, '3': false },
+        consolidation: { provider: 'claude', model: 'opus', tier: 'balanced' }
+      };
+      // No runId — forces parent run creation
+      const options = { analysisId: 'test-analysis-id', progressCallback: null };
+
+      vi.spyOn(Analyzer.prototype, 'analyzeAllLevels').mockResolvedValue({
+        suggestions: buildMockSuggestions(2),
+        summary: 'Test'
+      });
+
+      await captureAnalyzer.runReviewerCentricCouncil(reviewContext, councilConfig, options);
+
+      // All inserts (parent + children) should have null customInstructions
+      expect(inserts.length).toBeGreaterThanOrEqual(1);
+      for (const insert of inserts) {
+        expect(insert.customInstructions).toBeNull();
+        expect(insert.globalInstructions).toBe('Global: check for accessibility');
+        expect(insert.repoInstructions).toBe('Repo: follow style guide');
+        expect(insert.requestInstructions).toBeNull();
+      }
+    });
+
+    it('should store only requestInstructions in customInstructions via analyzeAllLevels path', async () => {
+      // Restore any spy on analyzeAllLevels from other tests so we call the real method
+      vi.restoreAllMocks();
+
+      const { db, inserts } = createCaptureDb();
+      const captureAnalyzer = createCaptureAnalyzer(db);
+
+      // Mock the level analyzers to return empty results (we only care about run creation)
+      captureAnalyzer.analyzeLevel1Isolated = vi.fn().mockResolvedValue({ suggestions: [], status: 'success', summary: 'L1' });
+      captureAnalyzer.analyzeLevel2Isolated = vi.fn().mockResolvedValue({ suggestions: [], status: 'success', summary: 'L2' });
+      captureAnalyzer.analyzeLevel3Isolated = vi.fn().mockResolvedValue({ suggestions: [], status: 'success', summary: 'L3' });
+
+      const instructions = {
+        globalInstructions: 'Global: check for accessibility',
+        repoInstructions: 'Repo: follow style guide',
+        requestInstructions: 'Focus on security'
+      };
+
+      await captureAnalyzer.analyzeAllLevels(
+        1,                            // prId (reviewId)
+        '/tmp/test-worktree',         // worktreePath
+        { head_sha: 'abc123' },       // prMetadata
+        null,                         // progressCallback
+        instructions,
+        ['src/foo.js', 'src/bar.js'], // changedFiles
+        { analysisId: 'test-id', runId: 'test-run-id' }
+      );
+
+      expect(inserts.length).toBe(1);
+      const insert = inserts[0];
+      expect(insert.customInstructions).toBe('Focus on security');
+      expect(insert.customInstructions).not.toContain('Global:');
+      expect(insert.customInstructions).not.toContain('Repo:');
+      expect(insert.globalInstructions).toBe('Global: check for accessibility');
+      expect(insert.repoInstructions).toBe('Repo: follow style guide');
+      expect(insert.requestInstructions).toBe('Focus on security');
+    });
+
+    it('should store null in customInstructions via analyzeAllLevels when requestInstructions is null', async () => {
+      vi.restoreAllMocks();
+
+      const { db, inserts } = createCaptureDb();
+      const captureAnalyzer = createCaptureAnalyzer(db);
+
+      captureAnalyzer.analyzeLevel1Isolated = vi.fn().mockResolvedValue({ suggestions: [], status: 'success', summary: 'L1' });
+      captureAnalyzer.analyzeLevel2Isolated = vi.fn().mockResolvedValue({ suggestions: [], status: 'success', summary: 'L2' });
+      captureAnalyzer.analyzeLevel3Isolated = vi.fn().mockResolvedValue({ suggestions: [], status: 'success', summary: 'L3' });
+
+      const instructions = {
+        globalInstructions: 'Global: check for accessibility',
+        repoInstructions: 'Repo: follow style guide',
+        requestInstructions: null
+      };
+
+      await captureAnalyzer.analyzeAllLevels(
+        1,
+        '/tmp/test-worktree',
+        { head_sha: 'abc123' },
+        null,
+        instructions,
+        ['src/foo.js', 'src/bar.js'],
+        { analysisId: 'test-id', runId: 'test-run-id' }
+      );
+
+      expect(inserts.length).toBe(1);
+      const insert = inserts[0];
+      expect(insert.customInstructions).toBeNull();
+      expect(insert.globalInstructions).toBe('Global: check for accessibility');
+      expect(insert.repoInstructions).toBe('Repo: follow style guide');
+      expect(insert.requestInstructions).toBeNull();
     });
   });
 });
