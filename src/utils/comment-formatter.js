@@ -8,15 +8,17 @@ const { getEmoji } = require('./category-emoji');
 
 /**
  * Preset format templates for adopted comments.
- * Template placeholders: {emoji}, {category}, {severity}, {title}, {description}, {suggestion}
+ * Template placeholders: {emoji}, {category}, {severity}, {SEVERITY}, {title}, {description}, {suggestion}
+ * {severity} renders as Title Case (e.g., "Critical"), {SEVERITY} renders as UPPERCASE (e.g., "CRITICAL").
  * Conditional sections: {?field}...{/field} — content is kept when field is truthy, stripped when falsy.
+ * Nesting is supported: {?outer}...{?inner}...{/inner}...{/outer}
  */
 const PRESETS = {
   legacy: '{emoji} **{category}**: {description}{?suggestion}\n\n**Suggestion:** {suggestion}{/suggestion}',
   minimal: '[{category}] {description}{?suggestion}\n\n{suggestion}{/suggestion}',
   plain: '{description}{?suggestion}\n\n{suggestion}{/suggestion}',
   'emoji-only': '{emoji} {description}{?suggestion}\n\n{suggestion}{/suggestion}',
-  maximal: '{emoji} **{category}**{?title}: {title}{/title}\n\n{description}{?suggestion}\n\n**Suggestion:** {suggestion}{/suggestion}'
+  maximal: '{emoji} **{category}**{?title}: {title}{?severity} ({severity}){/severity}{/title}\n\n{description}{?suggestion}\n\n**Suggestion:** {suggestion}{/suggestion}'
 };
 
 /**
@@ -63,13 +65,20 @@ function capitalizeCategory(category) {
  * @returns {string} Template with conditional sections resolved
  */
 function processConditionalSections(template, values) {
-  return template.replace(/\{\?(\w+)\}([\s\S]*?)\{\/\1\}/g, (match, fieldName, content) => {
-    const value = values[fieldName];
-    if (value !== undefined && value !== null && value !== '') {
-      return content;
-    }
-    return '';
-  });
+  // Loop to resolve nested conditionals (outer pass exposes inner ones)
+  let result = template;
+  let prev;
+  do {
+    prev = result;
+    result = result.replace(/\{\?(\w+)\}([\s\S]*?)\{\/\1\}/g, (match, fieldName, content) => {
+      const value = values[fieldName];
+      if (value !== undefined && value !== null && value !== '') {
+        return content;
+      }
+      return '';
+    });
+  } while (result !== prev);
+  return result;
 }
 
 /**
@@ -113,10 +122,13 @@ function formatAdoptedComment(fields, formatConfig) {
   // Process conditional sections first, then replace individual placeholders
   const capitalizedSeverity = severity ? capitalizeCategory(severity) : '';
 
+  const uppercaseSeverity = severity ? severity.toUpperCase() : '';
+
   const fieldValues = {
     suggestion: suggestionText || '',
     title: title || '',
     severity: capitalizedSeverity,
+    SEVERITY: uppercaseSeverity,
     emoji,
     category: capitalizedCategory,
     description
@@ -128,6 +140,7 @@ function formatAdoptedComment(fields, formatConfig) {
   result = result.replace(/\{emoji\}/g, emoji);
   result = result.replace(/\{category\}/g, capitalizedCategory);
   result = result.replace(/\{severity\}/g, capitalizedSeverity);
+  result = result.replace(/\{SEVERITY\}/g, uppercaseSeverity);
   result = result.replace(/\{title\}/g, title || '');
   result = result.replace(/\{description\}/g, description);
   result = result.replace(/\{suggestion\}/g, suggestionText || '');
