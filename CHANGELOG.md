@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.0.6
+
+### Patch Changes
+
+- c3cfe3e: Fix slow local review page load for web UI-started sessions by removing blocking GitHub API calls from the metadata endpoint
+
 ## 3.0.5
 
 ### Patch Changes
