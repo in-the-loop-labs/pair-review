@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.0.5
+
+### Patch Changes
+
+- db5480f: Fix slow local review page load by removing blocking GitHub API calls from the critical path. Base branch detection now runs in the background after the page responds and is cached for subsequent scope changes.
+- e59b7dc: Fix PR description popover clipped by overflow:hidden on header container. The popover is now appended to document.body with fixed positioning so it renders above all content regardless of ancestor overflow rules.
+
 ## 3.0.4
 
 ### Patch Changes
