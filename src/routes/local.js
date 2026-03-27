@@ -68,30 +68,24 @@ function deleteLocalReviewDiff(reviewId) {
 
 /**
  * Check whether branch scope should be selectable in the scope range selector.
- * Returns true when the branch has commits ahead of the base branch.
- * Non-fatal: returns false on any error.
+ * Returns true when the current branch is a non-default, non-detached branch,
+ * or when the scope already includes branch.
+ *
+ * @param {string} branchName - Current branch name
+ * @param {string} scopeStart - Current scope start stop
+ * @param {string} localPath - Absolute path to the repository (used to detect the actual default branch)
  */
-async function checkBranchAvailable(localPath, branchName, scopeStart, config, repositoryName) {
+function isBranchAvailable(branchName, scopeStart, localPath) {
   if (includesBranch(scopeStart)) return true;
-  if (!branchName || branchName === 'HEAD' || branchName === 'unknown' || !localPath) return false;
-  try {
-    const baseBranch = require('../git/base-branch');
-    const depsOverride = getGitHubToken(config) ? { getGitHubToken: () => getGitHubToken(config) } : undefined;
-    const detection = await baseBranch.detectBaseBranch(localPath, branchName, {
-      repository: repositoryName,
-      enableGraphite: config.enable_graphite === true,
-      _deps: depsOverride
-    });
-    if (detection) {
-      // Lazy require to ensure testability via vi.spyOn on the module exports
-      const localReview = require('../local-review');
-      const commitCount = await localReview.getBranchCommitCount(localPath, detection.baseBranch);
-      return commitCount > 0;
-    }
-  } catch {
-    // Non-fatal — branch stop stays disabled
+  if (!branchName || branchName === 'HEAD' || branchName === 'unknown') return false;
+
+  const { getDefaultBranch } = require('../git/base-branch');
+  const defaultBranch = localPath ? getDefaultBranch(localPath) : null;
+  // If detection fails, fall back to checking main/master
+  if (defaultBranch) {
+    return branchName !== defaultBranch;
   }
-  return false;
+  return branchName !== 'main' && branchName !== 'master';
 }
 
 /**
@@ -506,6 +500,7 @@ router.post('/api/local/start', async (req, res) => {
  * Get local review metadata
  */
 router.get('/api/local/:reviewId', async (req, res) => {
+  const tEndpoint = Date.now();
   try {
     const reviewId = parseInt(req.params.reviewId);
 
@@ -602,13 +597,15 @@ router.get('/api/local/:reviewId', async (req, res) => {
 
     // Determine if Branch stop should be selectable in the scope range selector.
     // This is independent of branchInfo (which guards on no uncommitted changes).
-    // Branch is available when: not detached HEAD, not on default branch, and has commits ahead.
-    const branchAvailable = Boolean(branchInfo) || await checkBranchAvailable(
-      review.local_path, branchName, scopeStart, req.app.get('config') || {}, repositoryName
-    );
+    // Branch is available when: not detached HEAD, not on default branch.
+    const branchAvailable = Boolean(branchInfo) || isBranchAvailable(branchName, scopeStart, review.local_path);
 
     // Compute SHA abbreviation length from the repo's git config
     const shaAbbrevLength = getShaAbbrevLength(review.local_path);
+    const metadataElapsed = Date.now() - tEndpoint;
+    if (metadataElapsed > 200) {
+      logger.debug(`[perf] metadata#${reviewId} took ${metadataElapsed}ms (threshold: 200ms)`);
+    }
 
     res.json({
       id: review.id,
@@ -629,6 +626,29 @@ router.get('/api/local/:reviewId', async (req, res) => {
       createdAt: review.created_at,
       updatedAt: review.updated_at
     });
+
+    // Background: pre-cache base branch detection so set-scope is fast later
+    if (!includesBranch(scopeStart) && !review.local_base_branch
+        && branchName && branchName !== 'HEAD' && branchName !== 'unknown'
+        && repositoryName && repositoryName.includes('/')) {
+      const bgConfig = req.app.get('config') || {};
+      const bgToken = getGitHubToken(bgConfig);
+      const bgT0 = Date.now();
+      const { detectBaseBranch } = require('../git/base-branch');
+      detectBaseBranch(review.local_path, branchName, {
+        repository: repositoryName,
+        enableGraphite: bgConfig.enable_graphite === true,
+        _deps: bgToken ? { getGitHubToken: () => bgToken } : undefined
+      }).then(detection => {
+        if (detection && detection.baseBranch) {
+          return reviewRepo.updateReview(reviewId, { local_base_branch: detection.baseBranch });
+        }
+      }).then(() => {
+        logger.debug(`[perf] metadata#${reviewId} background-detectBaseBranch: ${Date.now() - bgT0}ms`);
+      }).catch(err => {
+        logger.warn(`Background base branch detection failed: ${err.message}`);
+      });
+    }
 
     // Fire review.loaded hook (session already exists to be fetched by ID)
     const hookConfig = req.app.get('config') || {};
@@ -704,6 +724,7 @@ router.patch('/api/local/:reviewId/name', async (req, res) => {
  * Get local diff
  */
 router.get('/api/local/:reviewId/diff', async (req, res) => {
+  const tEndpoint = Date.now();
   try {
     const reviewId = parseInt(req.params.reviewId);
 
@@ -781,6 +802,10 @@ router.get('/api/local/:reviewId/diff', async (req, res) => {
       }
     }
 
+    const diffElapsed = Date.now() - tEndpoint;
+    if (diffElapsed > 200) {
+      logger.debug(`[perf] diff#${reviewId} took ${diffElapsed}ms (threshold: 200ms)`);
+    }
     res.json({
       diff: diffContent || '',
       generated_files: generatedFiles,
@@ -805,6 +830,7 @@ router.get('/api/local/:reviewId/diff', async (req, res) => {
  * Uses a digest of the diff content for accurate change detection
  */
 router.get('/api/local/:reviewId/check-stale', async (req, res) => {
+  const tEndpoint = Date.now();
   try {
     const reviewId = parseInt(req.params.reviewId);
 
@@ -861,6 +887,10 @@ router.get('/api/local/:reviewId/check-stale', async (req, res) => {
 
     // When branch is in scope and HEAD changed, early return (existing behavior)
     if (includesBranch(scopeStart) && headShaChanged) {
+      const staleEarlyElapsed = Date.now() - tEndpoint;
+      if (staleEarlyElapsed > 200) {
+        logger.debug(`[perf] check-stale#${reviewId} took ${staleEarlyElapsed}ms (threshold: 200ms)`);
+      }
       return res.json({
         isStale: true,
         headShaChanged,
@@ -918,6 +948,10 @@ router.get('/api/local/:reviewId/check-stale', async (req, res) => {
 
     const isStale = storedDiffData.digest !== currentDigest;
 
+    const staleElapsed = Date.now() - tEndpoint;
+    if (staleElapsed > 200) {
+      logger.debug(`[perf] check-stale#${reviewId} took ${staleElapsed}ms (threshold: 200ms)`);
+    }
     res.json({
       isStale,
       storedDigest: storedDiffData.digest,
@@ -1381,12 +1415,10 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
 
     // Recompute branchAvailable so the frontend can update the scope selector
     // (e.g. after a commit creates the first branch-ahead commit).
-    const config = req.app.get('config') || {};
+    // Lazy require to ensure testability via vi.spyOn on the module exports.
     let branchName;
-    try { branchName = await getCurrentBranch(localPath); } catch (_) { branchName = review.local_head_branch || null; }
-    const branchAvailable = await checkBranchAvailable(
-      localPath, branchName, scopeStart, config, review.repository
-    );
+    try { branchName = await require('../local-review').getCurrentBranch(localPath); } catch (_) { branchName = review.local_head_branch || null; }
+    const branchAvailable = isBranchAvailable(branchName, scopeStart, localPath);
 
     // Non-branch HEAD change: skip diff computation entirely — the old diff is
     // preserved until the user decides (via resolve-head-change) what to do.
@@ -1495,8 +1527,8 @@ router.post('/api/local/:reviewId/resolve-head-change', async (req, res) => {
 
       // Persist SHA and branch together in a single write so SQLite only
       // ever sees the final identity tuple — no transient intermediate state.
-      await reviewRepo.updateReview(reviewId, { local_head_sha: newHeadSha, local_head_branch: headBranch });
-      logger.log('API', `Updated HEAD SHA and branch on session ${reviewId}`, 'cyan');
+      await reviewRepo.updateReview(reviewId, { local_head_sha: newHeadSha, local_head_branch: headBranch, local_base_branch: null });
+      logger.log('API', `Updated HEAD SHA and branch on session ${reviewId} (cleared cached base branch)`, 'cyan');
 
       // Recompute and persist diff
       const scopedResult = await generateScopedDiff(localPath, scopeStart, scopeEnd, review.local_base_branch);
@@ -1510,10 +1542,7 @@ router.post('/api/local/:reviewId/resolve-head-change', async (req, res) => {
 
       // Recompute branchAvailable — the commit may have created the first
       // branch-ahead commit, making the Branch scope stop selectable.
-      const config = req.app.get('config') || {};
-      const branchAvailable = await checkBranchAvailable(
-        localPath, headBranch, scopeStart, config, review.repository
-      );
+      const branchAvailable = isBranchAvailable(headBranch, scopeStart, localPath);
 
       return res.json({ success: true, action: 'updated', branchAvailable });
     }
@@ -1597,20 +1626,26 @@ router.post('/api/local/:reviewId/set-scope', async (req, res) => {
     let baseBranch = requestBaseBranch || null;
     let currentBranch = null;
     if (includesBranch(scopeStart)) {
-      currentBranch = await getCurrentBranch(localPath);
+      currentBranch = await require('../local-review').getCurrentBranch(localPath);
       if (!baseBranch) {
-        const { detectBaseBranch } = require('../git/base-branch');
-        const config = req.app.get('config') || {};
-        const token = getGitHubToken(config);
-        const detection = await detectBaseBranch(localPath, currentBranch, {
-          repository: review.repository,
-          enableGraphite: config.enable_graphite === true,
-          _deps: token ? { getGitHubToken: () => token } : undefined
-        });
-        if (!detection) {
-          return res.status(400).json({ error: 'Could not detect base branch' });
+        // Use cached base branch from background detection if available
+        if (review.local_base_branch && review.local_head_branch === currentBranch) {
+          baseBranch = review.local_base_branch;
+          logger.debug(`[perf] set-scope#${reviewId} using cached base branch: ${baseBranch}`);
+        } else {
+          const { detectBaseBranch } = require('../git/base-branch');
+          const config = req.app.get('config') || {};
+          const token = getGitHubToken(config);
+          const detection = await detectBaseBranch(localPath, currentBranch, {
+            repository: review.repository,
+            enableGraphite: config.enable_graphite === true,
+            _deps: token ? { getGitHubToken: () => token } : undefined
+          });
+          if (!detection) {
+            return res.status(400).json({ error: 'Could not detect base branch' });
+          }
+          baseBranch = detection.baseBranch;
         }
-        baseBranch = detection.baseBranch;
       }
 
       // Validate branch name to prevent shell injection
