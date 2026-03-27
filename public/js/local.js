@@ -73,7 +73,15 @@ class LocalManager {
     const autoAnalyze = new URLSearchParams(window.location.search).get('analyze');
     if (autoAnalyze === 'true' && !window.prManager.isAnalyzing) {
       try {
-        await this.startLocalAnalysis(null, {});
+        // Fetch repo settings so we honour the repository's default provider/council
+        const manager = window.prManager;
+        const [repoSettings, reviewSettings] = await Promise.all([
+          manager.fetchRepoSettings().catch(() => null),
+          manager.fetchLastReviewSettings().catch(() => ({ custom_instructions: '', last_council_id: null }))
+        ]);
+        const config = await manager._buildDefaultAnalysisConfig(repoSettings, reviewSettings);
+
+        await this.startLocalAnalysis(null, config);
       } finally {
         const cleanUrl = new URL(window.location);
         cleanUrl.searchParams.delete('analyze');
