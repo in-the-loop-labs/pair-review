@@ -657,7 +657,7 @@ class LocalManager {
     try {
       // Show loading state
       refreshBtn.disabled = true;
-      refreshBtn.classList.add('btn-loading');
+      refreshBtn.classList.add('refreshing');
 
       const response = await fetch(`/api/local/${this.reviewId}/refresh`, {
         method: 'POST'
@@ -708,7 +708,7 @@ class LocalManager {
       // Reset button state
       if (refreshBtn) {
         refreshBtn.disabled = false;
-        refreshBtn.classList.remove('btn-loading');
+        refreshBtn.classList.remove('refreshing');
       }
     }
   }

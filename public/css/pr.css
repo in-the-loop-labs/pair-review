@@ -501,16 +501,19 @@
 }
 
 /* Refresh button spinner animation */
-#refresh-pr .spinner-icon {
+#refresh-pr .spinner-icon,
+#local-refresh-btn .spinner-icon {
   display: none;
   animation: spin 1s linear infinite;
 }
 
-#refresh-pr.refreshing .refresh-icon {
+#refresh-pr.refreshing .refresh-icon,
+#local-refresh-btn.refreshing .refresh-icon {
   display: none !important;
 }
 
-#refresh-pr.refreshing .spinner-icon {
+#refresh-pr.refreshing .spinner-icon,
+#local-refresh-btn.refreshing .spinner-icon {
   display: inline-block !important;
 }
 
