@@ -2798,6 +2798,11 @@ class ReviewRepository {
       params.push(updates.name);
     }
 
+    if (updates.local_base_branch !== undefined) {
+      setClauses.push('local_base_branch = ?');
+      params.push(updates.local_base_branch);
+    }
+
     if (updates.local_head_branch !== undefined) {
       setClauses.push('local_head_branch = ?');
       params.push(updates.local_head_branch);
