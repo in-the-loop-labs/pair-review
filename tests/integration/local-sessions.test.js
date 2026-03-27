@@ -659,6 +659,61 @@ describe('Local Sessions API', () => {
       expect(review.local_scope_end).toBe('branch');
       expect(review.local_base_branch).toBe('main');
     });
+
+    it('should use cached local_base_branch instead of calling detectBaseBranch', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/path/cached-base-with-branch',
+        localHeadSha: 'shaCachedBaseWithBranch',
+        repository: 'owner/cached-base-repo',
+        localBaseBranch: 'develop',
+        localHeadBranch: 'feature-branch'
+      });
+
+      // Spy on detectBaseBranch to verify it is NOT called
+      const detectSpy = vi.spyOn(baseBranchModule, 'detectBaseBranch');
+
+      // Mock getCurrentBranch to return a feature branch
+      localReviewModule.getCurrentBranch.mockResolvedValue('feature-branch');
+      localReviewModule.findMergeBase.mockResolvedValue('abc123mergebase');
+
+      const res = await request(app)
+        .post(`/api/local/${id}/set-scope`)
+        .send({ scopeStart: 'branch', scopeEnd: 'branch' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.baseBranch).toBe('develop');
+      // detectBaseBranch should not have been called since cached value was available
+      expect(detectSpy).not.toHaveBeenCalled();
+    });
+
+    it('should fall back to live detectBaseBranch when no cached base branch', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/path/no-cache',
+        localHeadSha: 'shaNoCachedBase',
+        repository: 'owner/no-cache-repo'
+      });
+
+      // Spy on detectBaseBranch to verify it IS called
+      const detectSpy = vi.spyOn(baseBranchModule, 'detectBaseBranch')
+        .mockResolvedValue({ baseBranch: 'main', source: 'github' });
+
+      // Mock getCurrentBranch to return a feature branch
+      localReviewModule.getCurrentBranch.mockResolvedValue('feature-branch');
+      localReviewModule.findMergeBase.mockResolvedValue('abc123mergebase');
+
+      const res = await request(app)
+        .post(`/api/local/${id}/set-scope`)
+        .send({ scopeStart: 'branch', scopeEnd: 'branch' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.baseBranch).toBe('main');
+      // detectBaseBranch should have been called since no cached value
+      expect(detectSpy).toHaveBeenCalledOnce();
+    });
   });
 
   describe('POST /api/local/:reviewId/branch-review-preference', () => {
@@ -1454,7 +1509,7 @@ describe('Local Sessions API', () => {
       expect(dbDiff.digest).toBe('digest123');
     });
 
-    it('should return branchAvailable: true when branch has commits ahead after HEAD change', async () => {
+    it('should return branchAvailable: true when on a non-default feature branch after HEAD change', async () => {
       const reviewRepo = new ReviewRepository(db);
       const id = await reviewRepo.upsertLocalReview({
         localPath: '/mock/repo',
@@ -1466,9 +1521,8 @@ describe('Local Sessions API', () => {
       // Mock HEAD change
       localReviewModule.getHeadSha.mockResolvedValue('sha-after');
 
-      // Mock branch detection: branch has commits ahead
-      vi.spyOn(baseBranchModule, 'detectBaseBranch').mockResolvedValue({ baseBranch: 'main' });
-      localReviewModule.getBranchCommitCount.mockResolvedValue(2);
+      // Mock getCurrentBranch to return a non-default branch name
+      localReviewModule.getCurrentBranch.mockResolvedValue('feature-branch');
 
       const res = await request(app)
         .post(`/api/local/${id}/refresh`)
@@ -1479,21 +1533,20 @@ describe('Local Sessions API', () => {
       expect(res.body.branchAvailable).toBe(true);
     });
 
-    it('should return branchAvailable: false when branch has no commits ahead', async () => {
+    it('should return branchAvailable: false when on a default branch (main)', async () => {
       const reviewRepo = new ReviewRepository(db);
       const id = await reviewRepo.upsertLocalReview({
         localPath: '/mock/repo',
         localHeadSha: 'sha-before',
         repository: 'owner/repo',
-        localHeadBranch: 'feature-branch'
+        localHeadBranch: 'main'
       });
 
       // Mock HEAD change
       localReviewModule.getHeadSha.mockResolvedValue('sha-after');
 
-      // Mock branch detection: no commits ahead
-      vi.spyOn(baseBranchModule, 'detectBaseBranch').mockResolvedValue({ baseBranch: 'main' });
-      localReviewModule.getBranchCommitCount.mockResolvedValue(0);
+      // getCurrentBranch returns 'main' by default (from beforeEach),
+      // which is a default branch name so branchAvailable should be false
 
       const res = await request(app)
         .post(`/api/local/${id}/refresh`)
@@ -1505,7 +1558,7 @@ describe('Local Sessions API', () => {
   });
 
   describe('POST /api/local/:reviewId/resolve-head-change (branchAvailable)', () => {
-    it('action "update" should return branchAvailable: true when branch has commits ahead', async () => {
+    it('action "update" should return branchAvailable: true when on a non-default feature branch', async () => {
       const reviewRepo = new ReviewRepository(db);
       const id = await reviewRepo.upsertLocalReview({
         localPath: '/mock/repo',
@@ -1514,9 +1567,8 @@ describe('Local Sessions API', () => {
         localHeadBranch: 'feature-branch'
       });
 
-      // Mock branch detection: branch has commits ahead
-      vi.spyOn(baseBranchModule, 'detectBaseBranch').mockResolvedValue({ baseBranch: 'main' });
-      localReviewModule.getBranchCommitCount.mockResolvedValue(3);
+      // Mock getCurrentBranch to return a non-default branch name
+      localReviewModule.getCurrentBranch.mockResolvedValue('feature-branch');
 
       const res = await request(app)
         .post(`/api/local/${id}/resolve-head-change`)
@@ -1527,18 +1579,17 @@ describe('Local Sessions API', () => {
       expect(res.body.branchAvailable).toBe(true);
     });
 
-    it('action "update" should return branchAvailable: false when no commits ahead', async () => {
+    it('action "update" should return branchAvailable: false when on a default branch (main)', async () => {
       const reviewRepo = new ReviewRepository(db);
       const id = await reviewRepo.upsertLocalReview({
         localPath: '/mock/repo',
         localHeadSha: 'oldsha',
         repository: 'owner/repo',
-        localHeadBranch: 'feature-branch'
+        localHeadBranch: 'main'
       });
 
-      // Mock branch detection: no commits ahead
-      vi.spyOn(baseBranchModule, 'detectBaseBranch').mockResolvedValue({ baseBranch: 'main' });
-      localReviewModule.getBranchCommitCount.mockResolvedValue(0);
+      // getCurrentBranch returns 'main' by default (from beforeEach),
+      // which is a default branch name so branchAvailable should be false
 
       const res = await request(app)
         .post(`/api/local/${id}/resolve-head-change`)
