@@ -1,6 +1,6 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 import { describe, it, expect, vi } from 'vitest';
-const { detectBaseBranch } = require('../../src/git/base-branch');
+const { detectBaseBranch, getDefaultBranch } = require('../../src/git/base-branch');
 
 /**
  * Create mock deps for detectBaseBranch testing.
@@ -221,5 +221,73 @@ describe('detectBaseBranch', () => {
     });
     // Should skip the PR result (base === current) and fall back to default branch
     expect(result).toEqual({ baseBranch: 'main', source: 'default-branch' });
+  });
+});
+
+describe('getDefaultBranch', () => {
+  it('returns branch name from symbolic-ref', () => {
+    const execSync = vi.fn((cmd) => {
+      if (cmd === 'git symbolic-ref refs/remotes/origin/HEAD') {
+        return 'refs/remotes/origin/main\n';
+      }
+      throw new Error(`unexpected: ${cmd}`);
+    });
+
+    const result = getDefaultBranch('/repo', { execSync });
+    expect(result).toBe('main');
+    expect(execSync).toHaveBeenCalledWith(
+      'git symbolic-ref refs/remotes/origin/HEAD',
+      expect.objectContaining({ cwd: '/repo' })
+    );
+  });
+
+  it('falls back to main when symbolic-ref fails', () => {
+    const execSync = vi.fn((cmd) => {
+      if (cmd === 'git symbolic-ref refs/remotes/origin/HEAD') {
+        throw new Error('not a symbolic ref');
+      }
+      if (cmd === 'git rev-parse --verify refs/heads/main') {
+        return 'abc123\n';
+      }
+      throw new Error(`unexpected: ${cmd}`);
+    });
+
+    const result = getDefaultBranch('/repo', { execSync });
+    expect(result).toBe('main');
+  });
+
+  it('falls back to master when symbolic-ref fails and main does not exist', () => {
+    const execSync = vi.fn((cmd) => {
+      if (cmd === 'git symbolic-ref refs/remotes/origin/HEAD') {
+        throw new Error('not a symbolic ref');
+      }
+      if (cmd === 'git rev-parse --verify refs/heads/main') {
+        throw new Error('not found');
+      }
+      if (cmd === 'git rev-parse --verify refs/heads/master') {
+        return 'abc123\n';
+      }
+      throw new Error(`unexpected: ${cmd}`);
+    });
+
+    const result = getDefaultBranch('/repo', { execSync });
+    expect(result).toBe('master');
+  });
+
+  it('returns null when no default branch can be determined', () => {
+    const execSync = vi.fn(() => { throw new Error('fail'); });
+
+    const result = getDefaultBranch('/repo', { execSync });
+    expect(result).toBeNull();
+  });
+
+  it('returns null when no localPath is provided', () => {
+    const execSync = vi.fn();
+
+    expect(getDefaultBranch(null, { execSync })).toBeNull();
+    expect(getDefaultBranch(undefined, { execSync })).toBeNull();
+    expect(getDefaultBranch('', { execSync })).toBeNull();
+    // execSync should never have been called
+    expect(execSync).not.toHaveBeenCalled();
   });
 });
