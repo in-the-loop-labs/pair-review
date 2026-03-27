@@ -3053,6 +3053,23 @@ describe('Config Endpoints', () => {
       expect(response.status).toBe(200);
       expect(response.body.comment_format).toBe('minimal');
     });
+
+    it('should return chat_enter_to_send as true by default', async () => {
+      const response = await request(app)
+        .get('/api/config');
+
+      expect(response.status).toBe(200);
+      expect(response.body.chat_enter_to_send).toBe(true);
+    });
+
+    it('should return chat_enter_to_send as false when disabled', async () => {
+      app.set('config', { ...app.get('config'), chat: { enter_to_send: false } });
+
+      const response = await request(app)
+        .get('/api/config');
+
+      expect(response.body.chat_enter_to_send).toBe(false);
+    });
   });
 });
 

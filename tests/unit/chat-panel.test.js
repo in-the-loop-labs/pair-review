@@ -1995,82 +1995,181 @@ describe('ChatPanel', () => {
   });
 
   // -----------------------------------------------------------------------
-  // Keyboard shortcuts (Cmd+Enter / Ctrl+Enter to send)
+  // Keyboard shortcuts (Enter behavior — configurable)
   // -----------------------------------------------------------------------
   describe('Keyboard shortcuts', () => {
-    it('should NOT send on plain Enter', () => {
-      const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
-      chatPanel.inputEl.value = 'hello';
-
-      // Simulate the keydown handler logic directly
-      const handler = chatPanel.inputEl.addEventListener.mock.calls
+    function getKeydownHandler(panel) {
+      return panel.inputEl.addEventListener.mock.calls
         .find(c => c[0] === 'keydown')?.[1];
-      expect(handler).toBeDefined();
+    }
 
-      const event = { key: 'Enter', metaKey: false, ctrlKey: false, shiftKey: false, preventDefault: vi.fn() };
-      handler(event);
+    describe('when _enterToSend is true (default)', () => {
+      it('should send on plain Enter', () => {
+        const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
+        chatPanel.inputEl.value = 'hello';
+        chatPanel.isStreaming = false;
 
-      expect(sendSpy).not.toHaveBeenCalled();
-      expect(event.preventDefault).not.toHaveBeenCalled();
+        const handler = getKeydownHandler(chatPanel);
+        expect(handler).toBeDefined();
+
+        const event = { key: 'Enter', metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, preventDefault: vi.fn() };
+        handler(event);
+
+        expect(event.preventDefault).toHaveBeenCalled();
+        expect(sendSpy).toHaveBeenCalled();
+      });
+
+      it('should NOT send on Shift+Enter (inserts newline)', () => {
+        const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
+        chatPanel.inputEl.value = 'hello';
+
+        const handler = getKeydownHandler(chatPanel);
+        const event = { key: 'Enter', metaKey: false, ctrlKey: false, shiftKey: true, altKey: false, preventDefault: vi.fn() };
+        handler(event);
+
+        expect(sendSpy).not.toHaveBeenCalled();
+        expect(event.preventDefault).not.toHaveBeenCalled();
+      });
+
+      it('should NOT send on plain Enter when input is empty', () => {
+        const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
+        chatPanel.inputEl.value = '';
+
+        const handler = getKeydownHandler(chatPanel);
+        const event = { key: 'Enter', metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, preventDefault: vi.fn() };
+        handler(event);
+
+        expect(event.preventDefault).toHaveBeenCalled();
+        expect(sendSpy).not.toHaveBeenCalled();
+      });
+
+      it('should NOT send on plain Enter when streaming', () => {
+        const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
+        chatPanel.inputEl.value = 'hello';
+        chatPanel.isStreaming = true;
+
+        const handler = getKeydownHandler(chatPanel);
+        const event = { key: 'Enter', metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, preventDefault: vi.fn() };
+        handler(event);
+
+        expect(event.preventDefault).toHaveBeenCalled();
+        expect(sendSpy).not.toHaveBeenCalled();
+      });
     });
 
-    it('should send on Cmd+Enter (metaKey)', () => {
-      const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
-      chatPanel.inputEl.value = 'hello';
-      chatPanel.isStreaming = false;
+    describe('when _enterToSend is false', () => {
+      beforeEach(() => {
+        chatPanel._enterToSend = false;
+      });
 
-      const handler = chatPanel.inputEl.addEventListener.mock.calls
-        .find(c => c[0] === 'keydown')?.[1];
+      it('should NOT send on plain Enter (inserts newline)', () => {
+        const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
+        chatPanel.inputEl.value = 'hello';
 
-      const event = { key: 'Enter', metaKey: true, ctrlKey: false, preventDefault: vi.fn() };
-      handler(event);
+        const handler = getKeydownHandler(chatPanel);
+        expect(handler).toBeDefined();
 
-      expect(event.preventDefault).toHaveBeenCalled();
-      expect(sendSpy).toHaveBeenCalled();
+        const event = { key: 'Enter', metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, preventDefault: vi.fn() };
+        handler(event);
+
+        expect(sendSpy).not.toHaveBeenCalled();
+        expect(event.preventDefault).not.toHaveBeenCalled();
+      });
+
+      it('should send on Cmd+Enter (metaKey)', () => {
+        const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
+        chatPanel.inputEl.value = 'hello';
+        chatPanel.isStreaming = false;
+
+        const handler = getKeydownHandler(chatPanel);
+        const event = { key: 'Enter', metaKey: true, ctrlKey: false, shiftKey: false, altKey: false, preventDefault: vi.fn() };
+        handler(event);
+
+        expect(event.preventDefault).toHaveBeenCalled();
+        expect(sendSpy).toHaveBeenCalled();
+      });
+
+      it('should send on Ctrl+Enter', () => {
+        const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
+        chatPanel.inputEl.value = 'hello';
+        chatPanel.isStreaming = false;
+
+        const handler = getKeydownHandler(chatPanel);
+        const event = { key: 'Enter', metaKey: false, ctrlKey: true, shiftKey: false, altKey: false, preventDefault: vi.fn() };
+        handler(event);
+
+        expect(event.preventDefault).toHaveBeenCalled();
+        expect(sendSpy).toHaveBeenCalled();
+      });
+
+      it('should NOT send on Cmd+Enter when input is empty', () => {
+        const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
+        chatPanel.inputEl.value = '';
+
+        const handler = getKeydownHandler(chatPanel);
+        const event = { key: 'Enter', metaKey: true, ctrlKey: false, shiftKey: false, altKey: false, preventDefault: vi.fn() };
+        handler(event);
+
+        expect(event.preventDefault).toHaveBeenCalled();
+        expect(sendSpy).not.toHaveBeenCalled();
+      });
+
+      it('should NOT send on Cmd+Enter when streaming', () => {
+        const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
+        chatPanel.inputEl.value = 'hello';
+        chatPanel.isStreaming = true;
+
+        const handler = getKeydownHandler(chatPanel);
+        const event = { key: 'Enter', metaKey: true, ctrlKey: false, shiftKey: false, altKey: false, preventDefault: vi.fn() };
+        handler(event);
+
+        expect(event.preventDefault).toHaveBeenCalled();
+        expect(sendSpy).not.toHaveBeenCalled();
+      });
     });
 
-    it('should send on Ctrl+Enter', () => {
-      const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
-      chatPanel.inputEl.value = 'hello';
-      chatPanel.isStreaming = false;
+    describe('IME composition', () => {
+      it('should NOT send when isComposing is true (enter_to_send mode)', () => {
+        chatPanel._enterToSend = true;
+        const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
+        chatPanel.inputEl.value = 'こんにち';
+        chatPanel.isStreaming = false;
 
-      const handler = chatPanel.inputEl.addEventListener.mock.calls
-        .find(c => c[0] === 'keydown')?.[1];
+        const handler = getKeydownHandler(chatPanel);
+        const event = { key: 'Enter', metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, isComposing: true, preventDefault: vi.fn() };
+        handler(event);
 
-      const event = { key: 'Enter', metaKey: false, ctrlKey: true, preventDefault: vi.fn() };
-      handler(event);
+        expect(sendSpy).not.toHaveBeenCalled();
+        expect(event.preventDefault).not.toHaveBeenCalled();
+      });
 
-      expect(event.preventDefault).toHaveBeenCalled();
-      expect(sendSpy).toHaveBeenCalled();
-    });
+      it('should NOT send when isComposing is true (cmd+enter mode)', () => {
+        chatPanel._enterToSend = false;
+        const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
+        chatPanel.inputEl.value = 'こんにち';
+        chatPanel.isStreaming = false;
 
-    it('should NOT send on Cmd+Enter when input is empty', () => {
-      const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
-      chatPanel.inputEl.value = '';
+        const handler = getKeydownHandler(chatPanel);
+        const event = { key: 'Enter', metaKey: true, ctrlKey: false, shiftKey: false, altKey: false, isComposing: true, preventDefault: vi.fn() };
+        handler(event);
 
-      const handler = chatPanel.inputEl.addEventListener.mock.calls
-        .find(c => c[0] === 'keydown')?.[1];
+        expect(sendSpy).not.toHaveBeenCalled();
+        expect(event.preventDefault).not.toHaveBeenCalled();
+      });
 
-      const event = { key: 'Enter', metaKey: true, ctrlKey: false, preventDefault: vi.fn() };
-      handler(event);
+      it('should send normally when isComposing is false', () => {
+        chatPanel._enterToSend = true;
+        const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
+        chatPanel.inputEl.value = 'こんにちは';
+        chatPanel.isStreaming = false;
 
-      expect(event.preventDefault).toHaveBeenCalled();
-      expect(sendSpy).not.toHaveBeenCalled();
-    });
+        const handler = getKeydownHandler(chatPanel);
+        const event = { key: 'Enter', metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, isComposing: false, preventDefault: vi.fn() };
+        handler(event);
 
-    it('should NOT send on Cmd+Enter when streaming', () => {
-      const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
-      chatPanel.inputEl.value = 'hello';
-      chatPanel.isStreaming = true;
-
-      const handler = chatPanel.inputEl.addEventListener.mock.calls
-        .find(c => c[0] === 'keydown')?.[1];
-
-      const event = { key: 'Enter', metaKey: true, ctrlKey: false, preventDefault: vi.fn() };
-      handler(event);
-
-      expect(event.preventDefault).toHaveBeenCalled();
-      expect(sendSpy).not.toHaveBeenCalled();
+        expect(event.preventDefault).toHaveBeenCalled();
+        expect(sendSpy).toHaveBeenCalled();
+      });
     });
   });
 
