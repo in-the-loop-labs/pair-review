@@ -1707,7 +1707,7 @@ router.post('/api/local/:reviewId/set-scope', async (req, res) => {
       currentBranch = await getCurrentBranch(localPath);
       if (!baseBranch) {
         // Use cached base branch from background detection if available
-        if (review.local_base_branch) {
+        if (review.local_base_branch && review.local_head_branch === currentBranch) {
           baseBranch = review.local_base_branch;
           logger.debug(`[perf] set-scope#${reviewId} using cached base branch: ${baseBranch}`);
         } else {
