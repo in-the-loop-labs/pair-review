@@ -399,6 +399,51 @@ class PRManager {
   }
 
   /**
+   * Build analysis config from repo defaults (no modal interaction).
+   * Used by auto-analyze (--ai) to honour the repository's default provider/council.
+   * When the default is a council, fetches the council config from the server so the
+   * progress modal can render the voice/level layout.
+   * @param {Object|null} repoSettings - Repo settings from fetchRepoSettings()
+   * @param {Object} reviewSettings - Review settings from fetchLastReviewSettings()
+   * @returns {Promise<Object>} Config object suitable for startAnalysis / startLocalAnalysis
+   */
+  async _buildDefaultAnalysisConfig(repoSettings, reviewSettings) {
+    const defaultTab = repoSettings?.default_tab || 'single';
+    const councilId = repoSettings?.default_council_id || reviewSettings?.last_council_id || null;
+
+    if ((defaultTab === 'council' || defaultTab === 'advanced') && councilId) {
+      // Fetch the full council config so the progress modal can render correctly
+      let councilConfig = null;
+      let councilName = null;
+      try {
+        const resp = await fetch(`/api/councils/${councilId}`);
+        if (resp.ok) {
+          const data = await resp.json();
+          councilConfig = data.council?.config || null;
+          councilName = data.council?.name || null;
+        }
+      } catch (e) {
+        console.warn('Failed to fetch council config for auto-analyze:', e);
+      }
+
+      return {
+        isCouncil: true,
+        councilId,
+        councilConfig,
+        councilName,
+        configType: defaultTab,
+        customInstructions: null
+      };
+    }
+
+    return {
+      provider: repoSettings?.default_provider || 'claude',
+      model: repoSettings?.default_model || 'opus',
+      customInstructions: null
+    };
+  }
+
+  /**
    * Auto-trigger analysis if ?analyze=true is present in the URL.
    * Skips refresh if data was just loaded fresh by loadPR (to avoid redundant fetches).
    * Otherwise, refreshes PR data first to ensure we analyze the latest code.
@@ -428,7 +473,14 @@ class PRManager {
           }
         }
 
-        await this.startAnalysis(owner, repo, prNumber, null, {});
+        // Fetch repo settings so we honour the repository's default provider/council
+        const [repoSettings, reviewSettings] = await Promise.all([
+          this.fetchRepoSettings().catch(() => null),
+          this.fetchLastReviewSettings().catch(() => ({ custom_instructions: '', last_council_id: null }))
+        ]);
+        const config = await this._buildDefaultAnalysisConfig(repoSettings, reviewSettings);
+
+        await this.startAnalysis(owner, repo, prNumber, null, config);
       } finally {
         this._autoAnalyzeRequested = false;
         const cleanUrl = new URL(window.location);
