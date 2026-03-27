@@ -11,6 +11,7 @@ const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
 const { CouncilRepository } = require('../database');
+const { getProviderClass } = require('../ai/provider');
 
 const router = express.Router();
 
@@ -129,12 +130,20 @@ function validateCouncilFormat(config) {
     return 'config.levels is required and must be an object';
   }
 
-  const validLevels = ['1', '2', '3'];
-  const hasEnabled = Object.entries(config.levels).some(([key, val]) =>
-    validLevels.includes(key) && val === true
-  );
-  if (!hasEnabled) {
-    return 'At least one level (1, 2, or 3) must be enabled';
+  // Skip level requirement when all voices are executable providers
+  const allExecutable = config.voices.every(v => {
+    const ProviderClass = getProviderClass(v.provider);
+    return ProviderClass?.isExecutable;
+  });
+
+  if (!allExecutable) {
+    const validLevels = ['1', '2', '3'];
+    const hasEnabled = Object.entries(config.levels).some(([key, val]) =>
+      validLevels.includes(key) && val === true
+    );
+    if (!hasEnabled) {
+      return 'At least one level (1, 2, or 3) must be enabled for non-executable providers';
+    }
   }
 
   // Validate consolidation (optional)

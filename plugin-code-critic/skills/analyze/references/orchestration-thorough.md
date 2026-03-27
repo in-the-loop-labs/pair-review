@@ -66,6 +66,7 @@ Each level provides suggestions as a JSON array with the following schema per it
 - title: brief title
 - description: full explanation
 - suggestion: remediation advice
+- severity: "critical", "medium", or "minor" (omit for praise items)
 - confidence: 0.0-1.0 score
 - reasoning: (optional) array of strings with step-by-step reasoning
 - is_file_level: true if this is a file-level suggestion (no line numbers)
@@ -112,6 +113,12 @@ When levels disagree (e.g., Level 1 flags an issue that Level 3 says follows cod
 - Use the clearest framing, regardless of which level provided it
 - Do NOT mention which level found the issue - focus on the insight itself
 - When merging would lose important nuance, keep suggestions distinct
+- **Assess severity** based on the evidence and reasoning across input levels. When levels assign different severities, evaluate the supporting evidence rather than defaulting to the highest. When truly uncertain, preserve the highest severity. Omit severity for praise items.
+
+**Severity Definitions:**
+- **critical**: Production incidents, system failures, or security vulnerabilities — runtime crashes, data corruption or loss, race conditions, deadlocks, breaking changes, changes that will cause existing tests to fail
+- **medium**: Degraded functionality or reliability — missing error handling, N+1 queries, missing validation, missing or poor test coverage for new functionality
+- **minor**: Code quality concerns — documentation gaps, minor optimizations, style inconsistencies
 
 ### 2. Priority-Based Curation
 Prioritize suggestions carefully based on impact and urgency:
@@ -232,6 +239,7 @@ Output JSON with this structure:
     "line": 42,
     "old_or_new": "NEW",
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
+    "severity": "critical|medium|minor (omit for praise)",
     "title": "Brief title describing the curated insight",
     "description": "Clear explanation of the issue and why this guidance matters to the human reviewer",
     "suggestion": "Specific, actionable guidance for the reviewer (omit for praise items)",
@@ -241,6 +249,7 @@ Output JSON with this structure:
   "fileLevelSuggestions": [{
     "file": "path/to/file",
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
+    "severity": "critical|medium|minor (omit for praise)",
     "title": "Brief title describing file-level concern",
     "description": "Explanation of the file-level observation",
     "suggestion": "How to address the file-level concern (omit for praise items)",

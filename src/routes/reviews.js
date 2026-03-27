@@ -533,6 +533,7 @@ router.get('/api/reviews/:reviewId/suggestions', validateReviewId, async (req, r
         reasoning,
         status,
         is_file_level,
+        severity,
         created_at,
         updated_at
       FROM comments
@@ -564,7 +565,8 @@ router.get('/api/reviews/:reviewId/suggestions', validateReviewId, async (req, r
         body: row.body,
         suggestionText: row.suggestion_text,
         category: row.type,
-        title: row.title
+        title: row.title,
+        severity: row.severity
       }, formatConfig);
 
       return {
@@ -694,7 +696,8 @@ router.post('/api/reviews/:reviewId/suggestions/:id/adopt', validateReviewId, as
       body: suggestion.body,
       suggestionText: suggestion.suggestion_text,
       category: suggestion.type,
-      title: suggestion.title
+      title: suggestion.title,
+      severity: suggestion.severity
     }, formatConfig);
 
     // Atomically adopt: create user comment and update suggestion status in one transaction

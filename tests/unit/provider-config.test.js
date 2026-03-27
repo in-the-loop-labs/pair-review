@@ -311,6 +311,67 @@ describe('Provider Configuration', () => {
 
       expect(opencode.installInstructions).toBe('Custom install instructions');
     });
+
+    it('should give built-in providers default capabilities', () => {
+      const providers = getAllProvidersInfo();
+      const claude = providers.find(p => p.id === 'claude');
+
+      expect(claude).toBeDefined();
+      expect(claude.capabilities).toEqual({
+        review_levels: true,
+        custom_instructions: true
+      });
+    });
+
+    it('should surface configured capabilities for executable providers', () => {
+      applyConfigOverrides({
+        providers: {
+          'my-tool': {
+            type: 'executable',
+            command: '/usr/bin/my-tool',
+            capabilities: {
+              review_levels: true,
+              custom_instructions: false
+            },
+            models: [
+              { id: 'default', tier: 'balanced', default: true }
+            ]
+          }
+        }
+      });
+
+      const providers = getAllProvidersInfo();
+      const myTool = providers.find(p => p.id === 'my-tool');
+
+      expect(myTool).toBeDefined();
+      expect(myTool.capabilities).toEqual({
+        review_levels: true,
+        custom_instructions: false
+      });
+    });
+
+    it('should default executable provider capabilities to false when not configured', () => {
+      applyConfigOverrides({
+        providers: {
+          'bare-tool': {
+            type: 'executable',
+            command: '/usr/bin/bare-tool',
+            models: [
+              { id: 'default', tier: 'balanced', default: true }
+            ]
+          }
+        }
+      });
+
+      const providers = getAllProvidersInfo();
+      const bareTool = providers.find(p => p.id === 'bare-tool');
+
+      expect(bareTool).toBeDefined();
+      expect(bareTool.capabilities).toEqual({
+        review_levels: false,
+        custom_instructions: false
+      });
+    });
   });
 
   describe('model merging (built-in + config)', () => {

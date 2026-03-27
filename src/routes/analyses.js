@@ -396,7 +396,10 @@ router.post('/api/analyses/:id/cancel', async (req, res) => {
           : analysis.levels?.[3],
         4: analysis.levels?.[4]?.status === 'running'
           ? { status: 'cancelled', progress: 'Cancelled' }
-          : analysis.levels?.[4]
+          : analysis.levels?.[4],
+        exec: analysis.levels?.exec?.status === 'running'
+          ? { status: 'cancelled', progress: 'Cancelled' }
+          : analysis.levels?.exec
       }
     };
 
@@ -522,7 +525,8 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
       1: isLevelEnabled(councilConfig, '1') ? { status: 'running', progress: 'Starting...' } : { status: 'skipped', progress: 'Skipped' },
       2: isLevelEnabled(councilConfig, '2') ? { status: 'running', progress: 'Starting...' } : { status: 'skipped', progress: 'Skipped' },
       3: isLevelEnabled(councilConfig, '3') ? { status: 'running', progress: 'Starting...' } : { status: 'skipped', progress: 'Skipped' },
-      4: { status: 'pending', progress: 'Pending' }
+      4: { status: 'pending', progress: 'Pending' },
+      exec: { status: 'pending', progress: 'Pending' }
     },
     isCouncil: true,
     councilConfig,
@@ -608,7 +612,7 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
           4: { status: 'completed', progress: 'Results finalized' }
         }
       };
-      for (const levelKey of ['1', '2', '3']) {
+      for (const levelKey of ['1', '2', '3', 'exec']) {
         if (currentStatus.levels?.[levelKey]?.status === 'running') {
           completedStatus.levels[levelKey] = { status: 'completed', progress: 'Complete' };
         }

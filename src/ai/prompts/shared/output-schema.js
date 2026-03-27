@@ -22,6 +22,7 @@ const ORCHESTRATION_INPUT_SCHEMA_DOCS = `Each level provides suggestions as a JS
 - title: brief title
 - description: full explanation
 - suggestion: remediation advice
+- severity: "critical", "medium", or "minor" (omit for praise items)
 - confidence: 0.0-1.0 score
 - reasoning: (optional) array of strings with step-by-step reasoning
 - is_file_level: true if this is a file-level suggestion (no line numbers)`;
@@ -37,6 +38,7 @@ const LEVEL1_OUTPUT_SCHEMA = {
     line_end: 42,
     old_or_new: 'NEW',
     type: 'bug|improvement|praise|suggestion|design|performance|security|code-style',
+    severity: 'critical|medium|minor (omit for praise)',
     title: 'Brief title',
     description: 'Detailed explanation',
     suggestion: 'How to fix/improve (omit this field for praise items - no action needed)',
@@ -57,6 +59,7 @@ const LEVEL2_OUTPUT_SCHEMA = {
     line_end: 42,
     old_or_new: 'NEW',
     type: 'bug|improvement|praise|suggestion|design|performance|security|code-style',
+    severity: 'critical|medium|minor (omit for praise)',
     title: 'Brief title',
     description: 'Detailed explanation mentioning why full file context was needed',
     suggestion: 'How to fix/improve based on file context (omit for praise items)',
@@ -66,6 +69,7 @@ const LEVEL2_OUTPUT_SCHEMA = {
   fileLevelSuggestions: [{
     file: 'path/to/file',
     type: 'bug|improvement|praise|suggestion|design|performance|security|code-style',
+    severity: 'critical|medium|minor (omit for praise)',
     title: 'Brief title describing file-level concern',
     description: 'Explanation of the file-level observation (architecture, organization, naming, etc.)',
     suggestion: 'How to address the file-level concern (omit for praise items)',
@@ -86,6 +90,7 @@ const LEVEL3_OUTPUT_SCHEMA = {
     line_end: 42,
     old_or_new: 'NEW',
     type: 'bug|improvement|praise|suggestion|design|performance|security|code-style',
+    severity: 'critical|medium|minor (omit for praise)',
     title: 'Brief title',
     description: 'Detailed explanation mentioning why codebase context was needed',
     suggestion: 'How to fix/improve based on codebase context (omit for praise items)',
@@ -95,6 +100,7 @@ const LEVEL3_OUTPUT_SCHEMA = {
   fileLevelSuggestions: [{
     file: 'path/to/file',
     type: 'bug|improvement|praise|suggestion|design|performance|security|code-style',
+    severity: 'critical|medium|minor (omit for praise)',
     title: 'Brief title describing file-level concern',
     description: 'Explanation of the file-level observation from codebase perspective',
     suggestion: 'How to address the file-level concern (omit for praise items)',
@@ -115,6 +121,7 @@ const ORCHESTRATION_OUTPUT_SCHEMA = {
     line_end: 42,
     old_or_new: 'NEW',
     type: 'bug|improvement|praise|suggestion|design|performance|security|code-style',
+    severity: 'critical|medium|minor (omit for praise)',
     title: 'Brief title describing the curated insight',
     description: 'Clear explanation of the issue and why this guidance matters to the human reviewer',
     suggestion: 'Specific, actionable guidance for the reviewer (omit for praise items)',
@@ -124,6 +131,7 @@ const ORCHESTRATION_OUTPUT_SCHEMA = {
   fileLevelSuggestions: [{
     file: 'path/to/file',
     type: 'bug|improvement|praise|suggestion|design|performance|security|code-style',
+    severity: 'critical|medium|minor (omit for praise)',
     title: 'Brief title describing file-level concern',
     description: 'Explanation of the file-level observation',
     suggestion: 'How to address the file-level concern (omit for praise items)',

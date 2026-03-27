@@ -411,7 +411,7 @@ function createMCPServer(db, options = {}) {
         SELECT
           id, ai_run_id, ai_level, ai_confidence,
           file, line_start, line_end, type, title, body,
-          reasoning, status, is_file_level, created_at
+          reasoning, status, is_file_level, severity, created_at
         FROM comments
         WHERE ${conditions.join('\n          AND ')}
         ORDER BY file, line_start
@@ -433,6 +433,7 @@ function createMCPServer(db, options = {}) {
               body: s.body,
               type: s.type,
               ai_confidence: s.ai_confidence,
+              severity: s.severity,
               status: s.status,
               reasoning: safeParseJson(s.reasoning),
             }))

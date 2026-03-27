@@ -161,7 +161,7 @@ describe('validateCouncilConfig', () => {
         voices: [{ provider: 'claude', model: 'opus' }],
         levels: { '1': false, '2': false, '3': false }
       };
-      expect(validateCouncilConfig(config, 'council')).toBe('At least one level (1, 2, or 3) must be enabled');
+      expect(validateCouncilConfig(config, 'council')).toBe('At least one level (1, 2, or 3) must be enabled for non-executable providers');
     });
 
     it('should reject council config with empty levels', () => {
@@ -169,7 +169,7 @@ describe('validateCouncilConfig', () => {
         voices: [{ provider: 'claude', model: 'opus' }],
         levels: {}
       };
-      expect(validateCouncilConfig(config, 'council')).toBe('At least one level (1, 2, or 3) must be enabled');
+      expect(validateCouncilConfig(config, 'council')).toBe('At least one level (1, 2, or 3) must be enabled for non-executable providers');
     });
 
     it('should reject consolidation without provider', () => {
@@ -188,6 +188,24 @@ describe('validateCouncilConfig', () => {
         consolidation: { provider: 'claude' }
       };
       expect(validateCouncilConfig(config, 'council')).toContain('consolidation.provider and consolidation.model');
+    });
+
+    describe('all-executable council', () => {
+      it('should return null for all-executable council with all levels disabled', () => {
+        // Register a fake executable provider via the CJS provider registry
+        // (councils.js uses require() which shares the same registry instance)
+        const { registerProvider } = require('../../src/ai/provider');
+        class FakeExecutableProvider {
+          static isExecutable = true;
+        }
+        registerProvider('test-exec-provider', FakeExecutableProvider);
+
+        const config = {
+          voices: [{ provider: 'test-exec-provider', model: 'default' }],
+          levels: { '1': false, '2': false, '3': false }
+        };
+        expect(validateCouncilConfig(config, 'council')).toBeNull();
+      });
     });
   });
 

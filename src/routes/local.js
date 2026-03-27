@@ -31,6 +31,9 @@ const { getGeneratedFilePatterns } = require('../git/gitattributes');
 const { getShaAbbrevLength } = require('../git/sha-abbrev');
 const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
 const { TIERS, TIER_ALIASES, VALID_TIERS, resolveTier } = require('../ai/prompts/config');
+const { getProviderClass, createProvider } = require('../ai/provider');
+const { CommentRepository } = require('../database');
+const { runExecutableAnalysis } = require('./executable-analysis');
 const {
   activeAnalyses,
   localReviewDiffs,
@@ -40,7 +43,8 @@ const {
   broadcastProgress,
   CancellationError,
   createProgressCallback,
-  parseEnabledLevels
+  parseEnabledLevels,
+  registerProcess: registerProcessForCancellation
 } = require('./shared');
 
 const router = express.Router();
@@ -940,6 +944,61 @@ router.get('/api/local/:reviewId/check-stale', async (req, res) => {
 });
 
 /**
+ * Handle analysis for executable providers (external CLI tools).
+ * Spawns the external CLI, maps its output to suggestions, and stores results.
+ */
+async function handleExecutableAnalysis(req, res, {
+  reviewId, review, localPath, repository, selectedProvider, selectedModel,
+  repoInstructions, requestInstructions, combinedInstructions, runId, analysisId, reviewRepo
+}) {
+  return runExecutableAnalysis(req, res, {
+    reviewId,
+    review,
+    selectedProvider,
+    selectedModel,
+    repoInstructions,
+    requestInstructions,
+    runId,
+    analysisId,
+    repository,
+    reviewType: review.review_type || 'local',
+    headSha: review.local_head_sha
+  }, {
+    activeAnalyses,
+    reviewToAnalysisId,
+    broadcastProgress,
+    broadcastReviewEvent,
+    registerProcessForCancellation
+  }, {
+    logLabel: `Review #${reviewId}`,
+    buildContext: (r, { selectedModel: model, requestInstructions: customInstructions }) => ({
+      title: null,
+      description: null,
+      cwd: localPath,
+      model,
+      baseSha: null,
+      headSha: r.local_head_sha || null,
+      baseBranch: r.local_base_branch || null,
+      headBranch: r.local_head_branch || null,
+      customInstructions: customInstructions || null
+    }),
+    buildHookPayload: () => ({
+      mode: review.review_type || 'local',
+      localContext: { path: localPath, branch: review.local_head_branch, headSha: review.local_head_sha }
+    }),
+    onSuccess: async (_db, _runId, { summary }) => {
+      if (summary) {
+        try {
+          await reviewRepo.updateSummary(reviewId, summary);
+        } catch (e) {
+          logger.warn(`Failed to save summary: ${e.message}`);
+        }
+      }
+    }
+  });
+}
+
+/**
  * Start Level 1 AI analysis for local review
  */
 router.post('/api/local/:reviewId/analyses', async (req, res) => {
@@ -1029,6 +1088,25 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
     // Create unified run/analysis ID
     const runId = uuidv4();
     const analysisId = runId;
+
+    // Check if selected provider is an executable provider (external tool)
+    const ProviderClass = getProviderClass(selectedProvider);
+    if (ProviderClass?.isExecutable) {
+      return handleExecutableAnalysis(req, res, {
+        reviewId,
+        review,
+        localPath,
+        repository,
+        selectedProvider,
+        selectedModel,
+        repoInstructions,
+        requestInstructions,
+        combinedInstructions,
+        runId,
+        analysisId,
+        reviewRepo
+      });
+    }
 
     // Extract scope early — needed for both analysis run creation and diff generation
     const scopeStart = review.local_scope_start || DEFAULT_SCOPE.start;
@@ -1883,7 +1961,9 @@ router.post('/api/local/:reviewId/analyses/council', async (req, res) => {
       title: review.name || (councilHasBranch ? `Branch changes: ${review.local_base_branch}..HEAD` : 'Local changes'),
       description: '',
       base_sha: analysisBaseSha,
-      head_sha: review.local_head_sha
+      head_sha: review.local_head_sha,
+      base_branch: review.local_base_branch || null,
+      head_branch: review.local_head_branch || null
     };
 
     const analyzer = new Analyzer(db, 'council', 'council');

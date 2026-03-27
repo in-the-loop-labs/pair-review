@@ -71,8 +71,10 @@ describe('comment-formatter', () => {
       expect(PRESETS.legacy).toContain('{/suggestion}');
     });
 
-    it('has maximal preset with conditional title and suggestion', () => {
+    it('has maximal preset with conditional severity, title, and suggestion', () => {
       expect(PRESETS.maximal).toBeDefined();
+      expect(PRESETS.maximal).toContain('{?severity}');
+      expect(PRESETS.maximal).toContain('{/severity}');
       expect(PRESETS.maximal).toContain('{?title}');
       expect(PRESETS.maximal).toContain('{/title}');
       expect(PRESETS.maximal).toContain('{?suggestion}');
@@ -161,6 +163,30 @@ describe('comment-formatter', () => {
       );
       expect(result).toBe('start');
     });
+
+    it('resolves nested conditionals when both outer and inner are truthy', () => {
+      const result = processConditionalSections(
+        '**Cat**{?title}: {title}{?severity} ({severity}){/severity}{/title}',
+        { title: 'My Title', severity: 'Critical' }
+      );
+      expect(result).toBe('**Cat**: {title} ({severity})');
+    });
+
+    it('resolves nested conditionals when outer truthy, inner falsy', () => {
+      const result = processConditionalSections(
+        '**Cat**{?title}: {title}{?severity} ({severity}){/severity}{/title}',
+        { title: 'My Title', severity: '' }
+      );
+      expect(result).toBe('**Cat**: {title}');
+    });
+
+    it('strips entire outer block including inner when outer is falsy', () => {
+      const result = processConditionalSections(
+        '**Cat**{?title}: {title}{?severity} ({severity}){/severity}{/title}',
+        { title: '', severity: 'Critical' }
+      );
+      expect(result).toBe('**Cat**');
+    });
   });
 
   describe('formatAdoptedComment', () => {
@@ -174,7 +200,19 @@ describe('comment-formatter', () => {
       expect(result).toBe('🐛 **Bug**: There is a null check missing\n\n**Suggestion:** Add a null check before accessing the property');
     });
 
-    it('formats with maximal preset including title', () => {
+    it('formats with maximal preset including severity and title', () => {
+      const config = resolveFormat('maximal');
+      const result = formatAdoptedComment({
+        body: 'There is a null check missing',
+        suggestionText: 'Add a null check before accessing the property',
+        category: 'bug',
+        title: 'Null Safety Issue',
+        severity: 'critical'
+      }, config);
+      expect(result).toBe('🐛 **Bug**: Null Safety Issue (Critical)\n\nThere is a null check missing\n\n**Suggestion:** Add a null check before accessing the property');
+    });
+
+    it('formats with maximal preset with title but no severity', () => {
       const config = resolveFormat('maximal');
       const result = formatAdoptedComment({
         body: 'There is a null check missing',
@@ -185,15 +223,36 @@ describe('comment-formatter', () => {
       expect(result).toBe('🐛 **Bug**: Null Safety Issue\n\nThere is a null check missing\n\n**Suggestion:** Add a null check before accessing the property');
     });
 
-    it('formats with maximal preset without title (strips title block)', () => {
+    it('formats with maximal preset with severity but no title (severity hidden)', () => {
+      const config = resolveFormat('maximal');
+      const result = formatAdoptedComment({
+        body: 'Missing null check',
+        suggestionText: 'Add null check',
+        category: 'bug',
+        severity: 'medium'
+      }, config);
+      // Severity is nested inside title conditional, so it's suppressed without a title
+      expect(result).toBe('🐛 **Bug**\n\nMissing null check\n\n**Suggestion:** Add null check');
+    });
+
+    it('formats with maximal preset without title or severity', () => {
       const config = resolveFormat('maximal');
       const result = formatAdoptedComment({
         body: 'Missing null check',
         suggestionText: 'Add null check',
         category: 'bug'
       }, config);
-      // With conditional syntax, the ": {title}" block is stripped when title is missing
       expect(result).toBe('🐛 **Bug**\n\nMissing null check\n\n**Suggestion:** Add null check');
+    });
+
+    it('formats maximal praise with no severity (clean degradation)', () => {
+      const config = resolveFormat('maximal');
+      const result = formatAdoptedComment({
+        body: 'Well-structured error handling',
+        category: 'praise',
+        title: 'Good Error Handling'
+      }, config);
+      expect(result).toBe('⭐ **Praise**: Good Error Handling\n\nWell-structured error handling');
     });
 
     it('formats with minimal preset', () => {
@@ -272,6 +331,30 @@ describe('comment-formatter', () => {
         category: 'bug'
       }, config);
       expect(result).toBe('🔴 Missing null check');
+    });
+
+    it('supports {SEVERITY} uppercase placeholder in custom templates', () => {
+      const config = resolveFormat({
+        template: '{emoji} **{category}**{?SEVERITY}: [{SEVERITY}]{/SEVERITY}{?title} {title}{/title}\n\n{description}'
+      });
+      const result = formatAdoptedComment({
+        body: 'Null pointer dereference',
+        category: 'bug',
+        title: 'Null Safety',
+        severity: 'critical'
+      }, config);
+      expect(result).toBe('🐛 **Bug**: [CRITICAL] Null Safety\n\nNull pointer dereference');
+    });
+
+    it('{SEVERITY} is empty when severity is absent', () => {
+      const config = resolveFormat({
+        template: '**{category}**{?SEVERITY} [{SEVERITY}]{/SEVERITY}: {description}'
+      });
+      const result = formatAdoptedComment({
+        body: 'Nice work',
+        category: 'praise'
+      }, config);
+      expect(result).toBe('**Praise**: Nice work');
     });
 
     it('uses title placeholder', () => {

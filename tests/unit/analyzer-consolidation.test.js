@@ -37,7 +37,7 @@ describe('_intraLevelConsolidate prompt construction (source verification)', () 
    * Extract the body of _intraLevelConsolidate for focused assertions.
    */
   const methodMatch = analyzerSource.match(
-    /async _intraLevelConsolidate\(level, suggestions, prMetadata, customInstructions, worktreePath, orchConfig\)\s*\{([\s\S]*?)\n  \}/
+    /async _intraLevelConsolidate\(level, voiceGroups, prMetadata, customInstructions, worktreePath, orchConfig\)\s*\{([\s\S]*?)\n  \}/
   );
   const methodBody = methodMatch ? methodMatch[1] : '';
 
@@ -75,6 +75,24 @@ describe('_intraLevelConsolidate prompt construction (source verification)', () 
   it('should reference prMetadata.pr_number (not prMetadata.number) in review description', () => {
     expect(methodBody).toContain('prMetadata.pr_number');
     expect(methodBody).not.toMatch(/prMetadata\.number(?!_)/); // .number not followed by _
+  });
+
+  it('should format per-reviewer groups with Review Focus when customInstructions present', () => {
+    expect(methodBody).toContain('**Review Focus:**');
+    expect(methodBody).toContain('g.customInstructions');
+  });
+
+  it('should include Summary section when voice group has a summary', () => {
+    expect(methodBody).toContain('**Summary:**');
+    expect(methodBody).toContain('g.summary');
+  });
+
+  it('should compute suggestionCount from voiceGroups', () => {
+    expect(methodBody).toMatch(/voiceGroups\.reduce\(\s*\(sum,\s*g\)\s*=>\s*sum\s*\+\s*g\.suggestions\.length/);
+  });
+
+  it('should join per-reviewer sections with separator', () => {
+    expect(methodBody).toContain("'\\n\\n---\\n\\n'");
   });
 });
 
@@ -119,6 +137,97 @@ describe('_crossVoiceConsolidate prompt construction (source verification)', () 
 
   it('should compute suggestionCount as sum of all voice review suggestion counts', () => {
     expect(methodBody).toMatch(/suggestionCount:\s*voiceReviews\.reduce\(\s*\(sum,\s*v\)\s*=>\s*sum\s*\+\s*v\.suggestionCount/);
+  });
+
+  it('should include Review Focus block when customInstructions present', () => {
+    expect(methodBody).toContain('**Review Focus:**');
+    expect(methodBody).toContain('v.customInstructions');
+  });
+
+  it('should join voice descriptions with separator', () => {
+    expect(methodBody).toContain("'\\n\\n---\\n\\n'");
+  });
+});
+
+describe('Per-reviewer context threading (source verification)', () => {
+  it('voiceReviews assembly should include customInstructions field', () => {
+    // In runReviewerCentricCouncil, voiceReviews map should include customInstructions
+    const voiceReviewsMatch = analyzerSource.match(
+      /const voiceReviews = successfulVoices\.map\(v => \(\{([\s\S]*?)\}\)\);/
+    );
+    expect(voiceReviewsMatch).not.toBeNull();
+    expect(voiceReviewsMatch[1]).toContain('customInstructions: v.customInstructions');
+  });
+
+  it('voice promise returns should include customInstructions in runReviewerCentricCouncil', () => {
+    // Both executable and native provider returns should have customInstructions
+    const executableReturn = analyzerSource.match(/return \{ voiceKey, reviewerLabel, childRunId, result: validatedResult.*isExecutable: true.*\}/);
+    expect(executableReturn).not.toBeNull();
+    expect(executableReturn[0]).toContain('customInstructions: voice.customInstructions');
+
+    const nativeReturn = analyzerSource.match(/return \{ voiceKey, reviewerLabel, childRunId, result, provider:.*isExecutable: false.*\}/);
+    expect(nativeReturn).not.toBeNull();
+    expect(nativeReturn[0]).toContain('customInstructions: voice.customInstructions');
+  });
+
+  it('voiceTasks in runCouncilAnalysis should include voiceCustomInstructions', () => {
+    // voiceTasks.push should have voiceCustomInstructions separate from customInstructions
+    const voiceTasksMatch = analyzerSource.match(
+      /voiceTasks\.push\(\{([\s\S]*?)\}\);/
+    );
+    expect(voiceTasksMatch).not.toBeNull();
+    expect(voiceTasksMatch[1]).toContain('voiceCustomInstructions: voice.customInstructions');
+  });
+
+  it('_intraLevelConsolidate call site should build voiceGroups from successfulVoicesForLevel', () => {
+    // The call site should build voiceGroups before calling _intraLevelConsolidate
+    expect(analyzerSource).toContain('const voiceGroups = successfulVoicesForLevel.map');
+    expect(analyzerSource).toContain('customInstructions: task.voiceCustomInstructions');
+  });
+
+  it('_intraLevelConsolidate call site should include summary in voiceGroups', () => {
+    expect(analyzerSource).toContain('summary: voiceResults[idx].value.summary');
+  });
+});
+
+describe('Consolidation prompt templates (direct tests)', () => {
+  it('thorough consolidation template should contain reviewer-context-guidance section', () => {
+    const thorough = require('../../src/ai/prompts/baseline/consolidation/thorough');
+    expect(thorough.taggedPrompt).toContain('name="reviewer-context-guidance"');
+    expect(thorough.taggedPrompt).toContain('Reviewer Context Awareness');
+    expect(thorough.defaultOrder).toContain('reviewer-context-guidance');
+    const sectionIdx = thorough.defaultOrder.indexOf('reviewer-context-guidance');
+    expect(thorough.defaultOrder[sectionIdx + 1]).toBe('input-suggestions');
+  });
+
+  it('balanced consolidation template should contain reviewer-context-guidance section', () => {
+    const balanced = require('../../src/ai/prompts/baseline/consolidation/balanced');
+    expect(balanced.taggedPrompt).toContain('name="reviewer-context-guidance"');
+    expect(balanced.taggedPrompt).toContain('Reviewer Context Awareness');
+    expect(balanced.defaultOrder).toContain('reviewer-context-guidance');
+    const sectionIdx = balanced.defaultOrder.indexOf('reviewer-context-guidance');
+    expect(balanced.defaultOrder[sectionIdx + 1]).toBe('input-suggestions');
+  });
+
+  it('fast consolidation template should contain reviewer-context-guidance section', () => {
+    const fast = require('../../src/ai/prompts/baseline/consolidation/fast');
+    expect(fast.taggedPrompt).toContain('name="reviewer-context-guidance"');
+    expect(fast.taggedPrompt).toContain('Reviewer Context');
+    expect(fast.defaultOrder).toContain('reviewer-context-guidance');
+    const sectionIdx = fast.defaultOrder.indexOf('reviewer-context-guidance');
+    expect(fast.defaultOrder[sectionIdx + 1]).toBe('input-suggestions');
+  });
+
+  it('all tiers should have reviewer-context-guidance in sections metadata', () => {
+    const thorough = require('../../src/ai/prompts/baseline/consolidation/thorough');
+    const balanced = require('../../src/ai/prompts/baseline/consolidation/balanced');
+    const fast = require('../../src/ai/prompts/baseline/consolidation/fast');
+
+    for (const template of [thorough, balanced, fast]) {
+      const section = template.sections.find(s => s.name === 'reviewer-context-guidance');
+      expect(section).toBeDefined();
+      expect(section.required).toBe(true);
+    }
   });
 });
 

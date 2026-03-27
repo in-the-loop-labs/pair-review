@@ -117,6 +117,13 @@ Your role is strictly to analyze and report findings.
 
 Note: You may optionally use parallel read-only Tasks to analyze different parts of the changes if that would be helpful for a thorough analysis.
 
+### Severity Classification
+Assign a severity to each suggestion (except praise):
+- **critical**: Production incidents, system failures, or security vulnerabilities — runtime crashes, data corruption or loss, race conditions, deadlocks, breaking changes, changes that will cause existing tests to fail
+- **medium**: Degraded functionality or reliability — missing error handling, N+1 queries, missing validation, missing or poor test coverage for new functionality
+- **minor**: Code quality concerns — documentation gaps, minor optimizations, style inconsistencies
+Omit severity for praise items.
+
 ## Output Format
 
 **>>> CRITICAL: Output ONLY valid JSON. No markdown, no ```json blocks. Start with { end with }. <<<**
@@ -129,6 +136,7 @@ Output JSON with this structure:
     "line": 42,
     "old_or_new": "NEW",
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
+    "severity": "critical|medium|minor (omit for praise)",
     "title": "Brief title",
     "description": "Detailed explanation",
     "suggestion": "How to fix/improve (omit this field for praise items - no action needed)",

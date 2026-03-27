@@ -117,6 +117,7 @@ function createTestCouncilProgressModal() {
   modal.isRunningInBackground = false;
   modal.councilConfig = null;
   modal._voiceStates = {};
+  modal._executableVoices = new Set();
 
   return { modal, modalContainer };
 }
@@ -842,6 +843,56 @@ describe('CouncilProgressModal', () => {
       const voiceKeyMatches = capturedHTML.match(/data-voice-key="/g);
       expect(voiceKeyMatches).toHaveLength(1);
     });
+
+    it('renders single exec row for executable provider voices', () => {
+      const { modal, modalContainer } = createTestCouncilProgressModal();
+
+      let capturedHTML = '';
+      const bodyEl = {
+        get innerHTML() { return capturedHTML; },
+        set innerHTML(val) { capturedHTML = val; }
+      };
+
+      modalContainer.querySelector = vi.fn((sel) => {
+        if (sel === '.council-progress-body') return bodyEl;
+        return null;
+      });
+
+      // Set up window.analysisConfigModal.providers to mark 'my-tool' as executable
+      window.analysisConfigModal = {
+        providers: {
+          claude: { isExecutable: false },
+          'my-tool': { isExecutable: true }
+        }
+      };
+
+      const config = {
+        voices: [
+          { provider: 'claude', model: 'opus', tier: 'thorough' },
+          { provider: 'my-tool', model: 'default', tier: 'balanced' }
+        ],
+        levels: { '1': true, '2': true, '3': true },
+        consolidation: { provider: 'claude', model: 'sonnet', tier: 'balanced' }
+      };
+
+      modal._rebuildBodyVoiceCentric(config);
+
+      // Native voice should have L1/L2/L3 + consolidation children
+      expect(capturedHTML).toContain('data-vc-voice="claude-opus" data-vc-level="1"');
+      expect(capturedHTML).toContain('data-vc-voice="claude-opus" data-vc-level="2"');
+      expect(capturedHTML).toContain('data-vc-voice="claude-opus" data-vc-level="3"');
+      expect(capturedHTML).toContain('data-vc-voice="claude-opus" data-vc-level="4"');
+
+      // Executable voice should have single exec row, no L1/L2/L3
+      expect(capturedHTML).toContain('data-vc-voice="my-tool-default-1" data-vc-level="exec"');
+      expect(capturedHTML).not.toContain('data-vc-voice="my-tool-default-1" data-vc-level="1"');
+      expect(capturedHTML).not.toContain('data-vc-voice="my-tool-default-1" data-vc-level="4"');
+
+      // Exec row should show pending state and "Running analysis" label
+      expect(capturedHTML).toContain('Running analysis');
+
+      delete window.analysisConfigModal;
+    });
   });
 
   describe('reopenFromBackground', () => {
@@ -1096,6 +1147,80 @@ describe('CouncilProgressModal', () => {
     });
   });
 
+  describe('_updateVoiceCentric — executable voice (level exec)', () => {
+    it('updates executable voice row when status.levels.exec has voices map', () => {
+      const { modal } = createTestCouncilProgressModal();
+
+      modal._renderMode = 'council';
+
+      const setLevelStateSpy = vi.spyOn(modal, '_setVoiceCentricLevelState').mockImplementation(() => {});
+      vi.spyOn(modal, '_refreshAllVoiceHeaders').mockImplementation(() => {});
+      vi.spyOn(modal, '_updateConsolidation').mockImplementation(() => {});
+
+      const status = {
+        levels: {
+          exec: {
+            status: 'running',
+            voices: {
+              'my-tool-default': { status: 'running', progress: 'Analyzing...' }
+            }
+          }
+        }
+      };
+
+      modal._updateVoiceCentric(status);
+
+      expect(setLevelStateSpy).toHaveBeenCalledWith('my-tool-default', 'exec', 'running', {
+        status: 'running',
+        progress: 'Analyzing...'
+      });
+    });
+
+    it('updates executable voice stream text when exec level has voiceId and streamEvent', () => {
+      const { modal } = createTestCouncilProgressModal();
+
+      modal._renderMode = 'council';
+
+      vi.spyOn(modal, '_setVoiceCentricLevelState').mockImplementation(() => {});
+      vi.spyOn(modal, '_refreshAllVoiceHeaders').mockImplementation(() => {});
+      vi.spyOn(modal, '_updateConsolidation').mockImplementation(() => {});
+      const setStreamTextSpy = vi.spyOn(modal, '_setVoiceCentricStreamText').mockImplementation(() => {});
+
+      const status = {
+        levels: {
+          exec: {
+            status: 'running',
+            voiceId: 'my-tool-default',
+            streamEvent: { text: 'Processing files...' }
+          }
+        }
+      };
+
+      modal._updateVoiceCentric(status);
+
+      expect(setStreamTextSpy).toHaveBeenCalledWith('my-tool-default', 'exec', 'Processing files...');
+    });
+
+    it('does not crash when status.levels has no exec key', () => {
+      const { modal } = createTestCouncilProgressModal();
+
+      modal._renderMode = 'council';
+
+      vi.spyOn(modal, '_setVoiceCentricLevelState').mockImplementation(() => {});
+      vi.spyOn(modal, '_refreshAllVoiceHeaders').mockImplementation(() => {});
+      vi.spyOn(modal, '_updateConsolidation').mockImplementation(() => {});
+
+      const status = {
+        levels: {
+          1: { status: 'running', voices: { 'claude-opus': { status: 'running' } } }
+        }
+      };
+
+      // Should not throw
+      expect(() => modal._updateVoiceCentric(status)).not.toThrow();
+    });
+  });
+
   describe('_updateConsolidation — streaming snippet', () => {
     function createConsolidationDOM(modal) {
       const snippetEl = createMockElement('div');
@@ -1317,6 +1442,32 @@ describe('CouncilProgressModal', () => {
 
       await vi.waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
       expect(updateSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('_formatVoiceLabel', () => {
+    it('includes tier in parentheses for regular providers', () => {
+      const { modal } = createTestCouncilProgressModal();
+      const voice = { provider: 'claude', model: 'sonnet-4-5', tier: 'balanced' };
+      expect(modal._formatVoiceLabel(voice)).toBe('Claude sonnet-4-5 (Balanced)');
+    });
+
+    it('defaults tier to Balanced when not specified', () => {
+      const { modal } = createTestCouncilProgressModal();
+      const voice = { provider: 'gemini', model: 'gemini-2-5-pro' };
+      expect(modal._formatVoiceLabel(voice)).toBe('Gemini gemini-2-5-pro (Balanced)');
+    });
+
+    it('omits tier suffix for executable providers', () => {
+      const { modal } = createTestCouncilProgressModal();
+      const voice = { provider: 'binks', model: 'default', tier: 'thorough' };
+      expect(modal._formatVoiceLabel(voice, { isExecutable: true })).toBe('Binks default');
+    });
+
+    it('omits tier suffix for executable providers without explicit tier', () => {
+      const { modal } = createTestCouncilProgressModal();
+      const voice = { provider: 'custom-tool', model: 'v1' };
+      expect(modal._formatVoiceLabel(voice, { isExecutable: true })).toBe('Custom-tool v1');
     });
   });
 });

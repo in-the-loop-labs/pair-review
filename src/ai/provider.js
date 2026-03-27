@@ -446,6 +446,21 @@ function applyConfigOverrides(config) {
   for (const [providerId, providerConfig] of Object.entries(providersConfig)) {
     logger.debug(`Applying config overrides for provider: ${providerId}`);
 
+    // Executable providers: dynamically create and register a provider class
+    if (providerConfig.type === 'executable') {
+      if (!providerConfig.command) {
+        logger.warn(`Executable provider "${providerId}" missing required "command" field`);
+        continue;
+      }
+      // Lazy-require to avoid circular dependency
+      const { createExecutableProviderClass } = require('./executable-provider');
+      const ExecClass = createExecutableProviderClass(providerId, providerConfig);
+      registerProvider(providerId, ExecClass);
+      providerConfigOverrides.set(providerId, { ...providerConfig, models: ExecClass.getModels() });
+      logger.debug(`Registered executable provider: ${providerId}`);
+      continue;
+    }
+
     // Process models if specified - infer defaults for each
     let processedModels = null;
     if (Array.isArray(providerConfig.models) && providerConfig.models.length > 0) {
@@ -543,12 +558,20 @@ function getAllProvidersInfo() {
     // Use overridden install instructions if available
     const installInstructions = overrides?.installInstructions || ProviderClass.getInstallInstructions();
 
+    // Build capabilities: executable providers define their own, others get defaults
+    const capabilities = ProviderClass.capabilities || {
+      review_levels: true,
+      custom_instructions: true
+    };
+
     providers.push({
       id,
       name: ProviderClass.getProviderName(),
       models,
       defaultModel,
-      installInstructions
+      installInstructions,
+      capabilities,
+      isExecutable: ProviderClass.isExecutable || false
     });
   }
   return providers;

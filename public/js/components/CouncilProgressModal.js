@@ -23,6 +23,11 @@ class CouncilProgressModal {
     // Track per-voice completion state
     this._voiceStates = {};
 
+    // Track which voice keys are executable providers.
+    // Populated from progress events (levels.exec.voices) and persisted
+    // across show()/hide() cycles so reopened modals render correctly.
+    this._executableVoices = new Set();
+
     this._createModal();
     this._setupEventListeners();
   }
@@ -54,9 +59,12 @@ class CouncilProgressModal {
     // Detect rendering mode
     const configType = options.configType || (councilConfig ? 'advanced' : 'single');
     this._renderMode = configType;
+    this._noLevels = options.noLevels || false;
 
     // Rebuild DOM based on mode
-    if (configType === 'single') {
+    if (configType === 'single' && this._noLevels) {
+      this._rebuildBodyNoLevels();
+    } else if (configType === 'single') {
       const enabledLevels = options.enabledLevels || [1, 2, 3];
       this._rebuildBodySingleModel(enabledLevels);
     } else if (configType === 'council') {
@@ -239,9 +247,32 @@ class CouncilProgressModal {
    * @param {Object} status
    */
   updateProgress(status) {
+    // No-levels mode: update the single row based on overall status
+    if (this._noLevels) {
+      this._updateNoLevelsProgress(status);
+      // Terminal states
+      if (status.status === 'completed') {
+        this._handleCompletion(status);
+      } else if (status.status === 'failed') {
+        this._handleFailure(status);
+      } else if (status.status === 'cancelled') {
+        this._handleCancellation(status);
+      }
+      return;
+    }
+
     if (!status.levels || typeof status.levels !== 'object') {
       console.warn('Council progress: invalid status structure', status);
       return;
+    }
+
+    // Track executable voice keys from exec level data so that reopened
+    // modals can render executable reviewers correctly without relying on
+    // the config modal's provider cache (which may be empty on reopen).
+    if (status.levels.exec?.voices) {
+      for (const voiceKey of Object.keys(status.levels.exec.voices)) {
+        this._executableVoices.add(voiceKey);
+      }
     }
 
     if (this._renderMode === 'single') {
@@ -289,6 +320,63 @@ class CouncilProgressModal {
       this._handleFailure(status);
     } else if (status.status === 'cancelled') {
       this._handleCancellation(status);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // No-levels progress
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Update the single row for no-levels providers.
+   * Maps overall analysis status to the single "Running analysis..." row.
+   */
+  _updateNoLevelsProgress(status) {
+    const header = this.modal.querySelector('.council-level-header[data-level="analysis"]');
+    if (!header) return;
+
+    const iconEl = header.querySelector('.council-level-icon');
+    const statusEl = header.querySelector('.council-level-status');
+    if (!iconEl || !statusEl) return;
+
+    // Derive state from overall status or from any level status
+    let state = 'pending';
+    if (status.status === 'running' || status.status === 'in_progress') {
+      state = 'running';
+    } else if (status.status === 'completed') {
+      state = 'completed';
+    } else if (status.status === 'failed') {
+      state = 'failed';
+    } else if (status.status === 'cancelled') {
+      state = 'cancelled';
+    } else if (status.levels) {
+      // Fall back to checking individual levels
+      const levelValues = Object.values(status.levels);
+      if (levelValues.some(l => l.status === 'running')) state = 'running';
+      else if (levelValues.some(l => l.status === 'completed')) state = 'running';
+    }
+
+    this._renderState(iconEl, statusEl, state, 'council-level');
+
+    // Show stream event text in the snippet element
+    const levelEl = header.closest('.council-level');
+    const snippetEl = levelEl?.querySelector('.council-level-snippet');
+    if (snippetEl) {
+      // Check for stream events in any level
+      let streamText = null;
+      if (status.levels) {
+        for (const lvl of Object.values(status.levels)) {
+          if (lvl.streamEvent?.text) {
+            streamText = lvl.streamEvent.text;
+          }
+        }
+      }
+      if (state === 'running' && streamText) {
+        snippetEl.textContent = streamText;
+        snippetEl.style.display = 'block';
+      } else if (state !== 'running') {
+        snippetEl.style.display = 'none';
+      }
     }
   }
 
@@ -515,6 +603,55 @@ class CouncilProgressModal {
       // Update stream event text for the currently active voice
       if (levelStatus.streamEvent?.text && levelStatus.voiceId) {
         this._setVoiceCentricStreamText(levelStatus.voiceId, level, levelStatus.streamEvent.text);
+      }
+    }
+
+    // Handle executable voice updates (level 'exec'):
+    // Executable voices emit progress with level: 'exec' instead of numeric 1/2/3.
+    // The single "Running analysis..." row uses data-vc-level="exec".
+    const execLevel = status.levels?.exec;
+    if (execLevel) {
+      if (execLevel.voices) {
+        // Check if any exec voice was rendered with native L1/L2/L3 structure
+        // instead of the single exec row. This happens when the modal was opened
+        // before _executableVoices was populated. If so, re-render the full body.
+        let needsRerender = false;
+        for (const voiceId of Object.keys(execLevel.voices)) {
+          const execEl = this.modal.querySelector(`[data-vc-voice="${voiceId}"][data-vc-level="exec"]`);
+          if (!execEl) {
+            // Voice exists in exec progress but has no exec DOM element — was likely
+            // rendered with native structure. Re-render to fix.
+            needsRerender = true;
+            break;
+          }
+        }
+        if (needsRerender && this.councilConfig) {
+          this._rebuildBodyVoiceCentric(this.councilConfig);
+          // Re-apply all progress to the fresh DOM
+          this._updateVoiceCentric(status);
+          return;
+        }
+
+        for (const [voiceId, vStatus] of Object.entries(execLevel.voices)) {
+          this._setVoiceCentricLevelState(voiceId, 'exec', vStatus.status || 'running', vStatus);
+        }
+      } else if (execLevel.status && execLevel.status !== 'pending') {
+        // Aggregate terminal update without per-voice breakdown (completion/cancellation
+        // paths may collapse exec progress to just { status, progress }). Propagate the
+        // status to every rendered exec row, mirroring the pattern used for numeric levels
+        // with shared terminal state in _updateVoiceFromLevelStatus.
+        const terminalState = execLevel.status;
+        const execEls = this.modal.querySelectorAll('[data-vc-level="exec"]');
+        execEls.forEach(el => {
+          const voiceKey = el.dataset.vcVoice;
+          const stateKey = `${voiceKey}:exec`;
+          if (this._voiceStates[stateKey] !== 'completed' && this._voiceStates[stateKey] !== 'failed') {
+            this._setVoiceCentricLevelState(voiceKey, 'exec', terminalState, execLevel);
+          }
+        });
+      }
+      if (execLevel.streamEvent?.text && execLevel.voiceId) {
+        this._setVoiceCentricStreamText(execLevel.voiceId, 'exec', execLevel.streamEvent.text);
       }
     }
 
@@ -1073,6 +1210,26 @@ class CouncilProgressModal {
       }
     }
 
+    // Executable voices don't require enabled levels — add any not already captured
+    // (handles all-executable councils where no levels are enabled).
+    // Use _executableVoices (populated from progress events) as primary source,
+    // falling back to the config modal's provider cache. This ensures executable
+    // voices render correctly even when the modal is reopened for an already-running
+    // analysis where the config modal cache may be empty.
+    if (config.voices) {
+      const providersInfo = window.analysisConfigModal?.providers || {};
+      for (const voice of config.voices) {
+        const isExec = providersInfo[voice.provider]?.isExecutable || false;
+        if (isExec) {
+          const sig = `${voice.provider}|${voice.model}|${voice.tier || 'balanced'}|${voice.customInstructions || ''}`;
+          if (!seenSignatures.has(sig)) {
+            seenSignatures.add(sig);
+            uniqueVoices.push(voice);
+          }
+        }
+      }
+    }
+
     // Build voiceMap: voiceKey -> { voice, levels } using deduplicated array indices
     const voiceMap = new Map();
     uniqueVoices.forEach((voice, idx) => {
@@ -1080,11 +1237,33 @@ class CouncilProgressModal {
       voiceMap.set(voiceKey, { voice, levels: enabledLevelNums });
     });
 
+    // Also add any executable voices known from progress events but not yet
+    // in the voiceMap (covers the case where config modal providers cache is
+    // empty but we've already seen exec-level progress data).
+    for (const execVoiceKey of this._executableVoices) {
+      if (!voiceMap.has(execVoiceKey)) {
+        // Find the matching voice in config.voices by key pattern
+        const configVoices = config.voices || [];
+        const matchingVoice = configVoices.find((v, idx) => {
+          const candidateKey = `${v.provider}-${v.model}${idx > 0 ? `-${idx}` : ''}`;
+          return candidateKey === execVoiceKey;
+        });
+        if (matchingVoice) {
+          voiceMap.set(execVoiceKey, { voice: matchingVoice, levels: enabledLevelNums });
+        }
+      }
+    }
+
     let html = '<div class="council-progress-tree">';
 
-    // Build a parent row for each unique voice
+    // Build a parent row for each unique voice.
+    // Determine executable status from: (1) _executableVoices set (populated from
+    // progress events), or (2) config modal provider cache as fallback.
+    const providersMap = window.analysisConfigModal?.providers || {};
+
     for (const [voiceKey, { voice, levels }] of voiceMap) {
-      const label = this._formatVoiceLabel(voice);
+      const isExecutable = this._executableVoices.has(voiceKey) || (providersMap[voice.provider]?.isExecutable || false);
+      const label = this._formatVoiceLabel(voice, { isExecutable });
 
       html += `
         <div class="council-level" data-voice-key="${voiceKey}">
@@ -1096,31 +1275,46 @@ class CouncilProgressModal {
           <div class="council-level-children">
       `;
 
-      // Level children (orchestration row is always last, added separately below)
-      levels.forEach((levelNum) => {
-        const connectorClass = 'connector-mid';
+      if (isExecutable) {
+        // Executable voices: single "Running analysis..." row instead of L1/L2/L3
         html += `
-          <div class="council-voice ${connectorClass}" data-vc-voice="${voiceKey}" data-vc-level="${levelNum}">
-            <span class="council-voice-connector ${connectorClass}"></span>
-            <span class="council-voice-icon running"><span class="council-spinner"></span></span>
-            <span class="council-voice-label">Level ${levelNum} \u2014 ${levelNames[levelNum]}</span>
-            <span class="council-voice-status running">Running...</span>
+          <div class="council-voice connector-last" data-vc-voice="${voiceKey}" data-vc-level="exec">
+            <span class="council-voice-connector connector-last"></span>
+            <span class="council-voice-icon pending">\u25CB</span>
+            <span class="council-voice-label">Running analysis\u2026</span>
+            <span class="council-voice-status pending">Pending</span>
             <div class="council-voice-detail">
               <div class="council-voice-snippet" style="display: none;"></div>
             </div>
           </div>
         `;
-      });
+      } else {
+        // Native voices: L1/L2/L3 children + orchestration
+        levels.forEach((levelNum) => {
+          const connectorClass = 'connector-mid';
+          html += `
+            <div class="council-voice ${connectorClass}" data-vc-voice="${voiceKey}" data-vc-level="${levelNum}">
+              <span class="council-voice-connector ${connectorClass}"></span>
+              <span class="council-voice-icon running"><span class="council-spinner"></span></span>
+              <span class="council-voice-label">Level ${levelNum} \u2014 ${levelNames[levelNum]}</span>
+              <span class="council-voice-status running">Running...</span>
+              <div class="council-voice-detail">
+                <div class="council-voice-snippet" style="display: none;"></div>
+              </div>
+            </div>
+          `;
+        });
 
-      // Orchestration child (always last)
-      html += `
-          <div class="council-voice connector-last" data-vc-voice="${voiceKey}" data-vc-level="4">
-            <span class="council-voice-connector connector-last"></span>
-            <span class="council-voice-icon pending">\u25CB</span>
-            <span class="council-voice-label">Consolidation</span>
-            <span class="council-voice-status pending">Pending</span>
-          </div>
-      `;
+        // Orchestration child (always last)
+        html += `
+            <div class="council-voice connector-last" data-vc-voice="${voiceKey}" data-vc-level="4">
+              <span class="council-voice-connector connector-last"></span>
+              <span class="council-voice-icon pending">\u25CB</span>
+              <span class="council-voice-label">Consolidation</span>
+              <span class="council-voice-status pending">Pending</span>
+            </div>
+        `;
+      }
 
       html += `
           </div>
@@ -1203,6 +1397,28 @@ class CouncilProgressModal {
 
     html += '</div>';
     body.innerHTML = html;
+  }
+
+  /**
+   * Rebuild the modal body for no-levels providers (e.g., executable providers).
+   * Shows a single "Running analysis..." entry instead of the L1/L2/L3 breakdown.
+   */
+  _rebuildBodyNoLevels() {
+    const body = this.modal.querySelector('.council-progress-body');
+    if (!body) return;
+
+    body.innerHTML = `
+      <div class="council-progress-tree">
+        <div class="council-level" data-level="analysis">
+          <div class="council-level-header" data-level="analysis">
+            <span class="council-level-icon pending">\u25CB</span>
+            <span class="council-level-title">Running analysis\u2026</span>
+            <span class="council-level-status pending">Pending</span>
+          </div>
+          <div class="council-level-snippet" style="display: none;"></div>
+        </div>
+      </div>
+    `;
   }
 
   _resetFooter() {
@@ -1404,9 +1620,10 @@ class CouncilProgressModal {
    * Example: { provider: 'claude', model: 'sonnet-4-5', tier: 'balanced' }
    *       -> "Claude sonnet-4-5 (Balanced)"
    */
-  _formatVoiceLabel(voice) {
+  _formatVoiceLabel(voice, { isExecutable = false } = {}) {
     const provider = this._capitalize(voice.provider || 'unknown');
     const model = voice.model || 'default';
+    if (isExecutable) return `${provider} ${model}`;
     const tier = this._capitalize(voice.tier || 'balanced');
     return `${provider} ${model} (${tier})`;
   }

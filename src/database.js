@@ -20,7 +20,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 34;
+const CURRENT_SCHEMA_VERSION = 35;
 
 /**
  * Database schema SQL statements
@@ -95,6 +95,8 @@ const SCHEMA_SQL = {
 
       voice_id TEXT,
       is_raw INTEGER DEFAULT 0,
+
+      severity TEXT,
 
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -1585,6 +1587,24 @@ const MIGRATIONS = {
     }
 
     console.log('Migration to schema version 34 complete');
+  },
+
+  // Migration to version 35: Add severity column to comments table
+  35: (db) => {
+    console.log('Running migration to schema version 35...');
+
+    const addColumnIfNotExists = (table, column, definition) => {
+      const tableInfo = db.prepare(`PRAGMA table_info(${table})`).all();
+      const columnExists = tableInfo.some(col => col.name === column);
+      if (!columnExists) {
+        db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`).run();
+        console.log(`  Added column ${column} to ${table}`);
+      }
+    };
+
+    addColumnIfNotExists('comments', 'severity', 'TEXT');
+
+    console.log('Migration to schema version 35 complete');
   }
 };
 
@@ -2588,6 +2608,7 @@ class CommentRepository {
         status,
         parent_id,
         is_file_level,
+        severity,
         created_at,
         updated_at
       FROM comments
@@ -2655,8 +2676,8 @@ class CommentRepository {
       await run(this.db, `
         INSERT INTO comments (
           review_id, source, author, ai_run_id, ai_level, ai_confidence,
-          file, line_start, line_end, side, type, title, body, suggestion_text, reasoning, status, is_file_level
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          file, line_start, line_end, side, type, title, body, suggestion_text, reasoning, status, is_file_level, severity
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         reviewId,
         'ai',
@@ -2674,7 +2695,8 @@ class CommentRepository {
         suggestionText,
         suggestion.reasoning ? JSON.stringify(suggestion.reasoning) : null,
         'active',
-        isFileLevel
+        isFileLevel,
+        suggestion.severity ?? null
       ]);
     }
   }

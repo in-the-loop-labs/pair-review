@@ -231,11 +231,13 @@ function createProgressCallback(analysisId) {
         }
       }
 
-      // Per-voice orchestration streams: store in voices map, not shared state.
-      // This prevents per-reviewer orchestration (within each voice's analysis)
-      // from overwriting the shared consolidation streamEvent/consolidationStep.
-      const isPerVoiceOrchestration = (level === 'orchestration' || consolidationMatch) && progressUpdate.voiceId;
-      if (isPerVoiceOrchestration) {
+      // Per-voice streams for orchestration and exec levels: store in voices map.
+      // For orchestration: prevents per-reviewer orchestration from overwriting
+      // the shared consolidation streamEvent/consolidationStep.
+      // For exec: ensures exec.voices[voiceId] stays updated with stream events
+      // so the frontend can render both state and stream text from the same object.
+      const isPerVoiceStream = ((level === 'orchestration' || consolidationMatch) || level === 'exec') && progressUpdate.voiceId;
+      if (isPerVoiceStream) {
         if (!currentStatus.levels[levelKey].voices) {
           currentStatus.levels[levelKey].voices = {};
         }
@@ -293,6 +295,32 @@ function createProgressCallback(analysisId) {
       } else {
         // Non-voice update (single-model mode)
         currentStatus.levels[level] = {
+          status: progressUpdate.status || 'running',
+          progress: progressUpdate.progress || 'In progress...',
+          streamEvent: undefined,
+          voiceId: undefined
+        };
+      }
+    }
+
+    // Handle executable voice progress (level === 'exec').
+    // Executable voices run a single analysis step instead of L1/L2/L3.
+    // Track per-voice state in levels.exec.voices, mirroring the L1-L3 pattern.
+    if (level === 'exec' && currentStatus.levels.exec) {
+      if (progressUpdate.voiceId) {
+        if (!currentStatus.levels.exec.voices) {
+          currentStatus.levels.exec.voices = {};
+        }
+        currentStatus.levels.exec.voices[progressUpdate.voiceId] = {
+          status: progressUpdate.status || 'running',
+          progress: progressUpdate.progress || 'In progress...'
+        };
+        currentStatus.levels.exec.voiceId = progressUpdate.voiceId;
+        currentStatus.levels.exec.status = progressUpdate.status || 'running';
+        currentStatus.levels.exec.progress = progressUpdate.progress || 'In progress...';
+        currentStatus.levels.exec.streamEvent = undefined;
+      } else {
+        currentStatus.levels.exec = {
           status: progressUpdate.status || 'running',
           progress: progressUpdate.progress || 'In progress...',
           streamEvent: undefined,

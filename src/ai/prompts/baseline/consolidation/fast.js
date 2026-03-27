@@ -52,6 +52,11 @@ Merge suggestions from multiple AI reviewers. Deduplicate. Resolve conflicts. Ke
 {{customInstructions}}
 </section>
 
+<section name="reviewer-context-guidance" required="true" tier="fast">
+### Reviewer Context
+Reviewers may have custom instructions below. Only boost findings when instructions indicate domain expertise relevant to the finding (e.g., "focus on security" boosts security findings). Persona/methodology instructions (e.g., "be thorough") don't confer specialist weight. In domain conflicts, prefer the domain-focused reviewer.
+</section>
+
 <section name="input-suggestions" locked="true">
 ## Input: {{reviewerCount}} Reviewer(s), {{suggestionCount}} Total Suggestions
 
@@ -64,6 +69,8 @@ Merge suggestions from multiple AI reviewers. Deduplicate. Resolve conflicts. Ke
 - When reviewers disagree, keep the more specific analysis.
 - Preserve unique insights from individual reviewers.
 - Drop very low confidence (< 0.3) items unless multiple reviewers agree.
+- Assess severity using evidence across reviewers; preserve highest when uncertain. Omit for praise.
+- Severity: critical (crashes, security, data loss, race conditions, breaking changes, test failures), medium (degraded functionality, missing error handling/validation/test coverage), minor (code quality, docs, optimizations).
 </section>
 
 <section name="output-schema" locked="true">
@@ -74,6 +81,7 @@ Merge suggestions from multiple AI reviewers. Deduplicate. Resolve conflicts. Ke
     "line": 42,
     "old_or_new": "NEW",
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
+    "severity": "critical|medium|minor (omit for praise)",
     "title": "Brief title",
     "description": "Detailed explanation",
     "suggestion": "How to fix/improve (omit for praise)",
@@ -82,6 +90,7 @@ Merge suggestions from multiple AI reviewers. Deduplicate. Resolve conflicts. Ke
   "fileLevelSuggestions": [{
     "file": "path/to/file",
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
+    "severity": "critical|medium|minor (omit for praise)",
     "title": "Brief title describing file-level concern",
     "description": "Explanation of the file-level observation",
     "suggestion": "How to address the file-level concern (omit for praise items)",
@@ -121,6 +130,7 @@ const sections = [
   { name: 'critical-output', locked: true },
   { name: 'role-description', required: true, tier: ['fast'] },
   { name: 'custom-instructions', optional: true, tier: ['fast', 'balanced', 'thorough'] },
+  { name: 'reviewer-context-guidance', required: true, tier: ['fast'] },
   { name: 'input-suggestions', locked: true },
   { name: 'consolidation-rules', required: true, tier: ['fast'] },
   { name: 'output-schema', locked: true },
@@ -139,6 +149,7 @@ const defaultOrder = [
   'critical-output',
   'role-description',
   'custom-instructions',
+  'reviewer-context-guidance',
   'input-suggestions',
   'consolidation-rules',
   'output-schema',

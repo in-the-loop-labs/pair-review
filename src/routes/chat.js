@@ -268,7 +268,7 @@ router.post('/api/chat/session', async (req, res) => {
           SELECT
             id, ai_run_id, ai_level, ai_confidence,
             file, line_start, line_end, type, title, body,
-            reasoning, status, is_file_level
+            reasoning, status, is_file_level, severity
           FROM comments
           WHERE review_id = ?
             AND source = 'ai'
@@ -323,7 +323,7 @@ router.post('/api/chat/session', async (req, res) => {
       initialContext: initialContextWithPort
     });
 
-    logger.info(`Chat session created: ${session.id} (provider=${provider}, model=${model})`);
+    logger.info(`Chat session created: ${session.id} (provider=${provider})`);
 
     // Register broadcast listeners so events reach all connected clients
     registerChatBroadcast(chatSessionManager, session.id, serverPort);
@@ -622,7 +622,7 @@ router.get('/api/chat/analysis-context/:runId', async (req, res) => {
       SELECT
         id, ai_run_id, ai_level, ai_confidence,
         file, line_start, line_end, type, title, body,
-        reasoning, status, is_file_level
+        reasoning, status, is_file_level, severity
       FROM comments
       WHERE review_id = ?
         AND source = 'ai'

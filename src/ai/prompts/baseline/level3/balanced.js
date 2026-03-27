@@ -120,6 +120,15 @@ You may use parallel read-only Tasks to explore different areas of the codebase 
 {{sparseCheckoutGuidance}}
 </section>
 
+<section name="severity-classification" required="true">
+### Severity Classification
+Assign a severity to each suggestion (except praise):
+- **critical**: Production incidents, system failures, or security vulnerabilities — runtime crashes, data corruption or loss, race conditions, deadlocks, breaking changes, changes that will cause existing tests to fail
+- **medium**: Degraded functionality or reliability — missing error handling, N+1 queries, missing validation, missing or poor test coverage for new functionality
+- **minor**: Code quality concerns — documentation gaps, minor optimizations, style inconsistencies
+Omit severity for praise items.
+</section>
+
 <section name="output-schema" locked="true">
 ## Output Format
 
@@ -133,6 +142,7 @@ Output JSON with this structure:
     "line": 42,
     "old_or_new": "NEW",
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
+    "severity": "critical|medium|minor (omit for praise)",
     "title": "Brief title",
     "description": "Detailed explanation mentioning why codebase context was needed",
     "suggestion": "How to fix/improve based on codebase context (omit for praise items)",
@@ -142,6 +152,7 @@ Output JSON with this structure:
   "fileLevelSuggestions": [{
     "file": "path/to/file",
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
+    "severity": "critical|medium|minor (omit for praise)",
     "title": "Brief title describing file-level concern",
     "description": "Explanation of the file-level observation from codebase perspective",
     "suggestion": "How to address the file-level concern (omit for praise items)",
@@ -230,6 +241,7 @@ const sections = [
   { name: 'focus-areas', required: true, tier: ['balanced'] },
   { name: 'available-commands', required: true, tier: ['balanced'] },
   { name: 'sparse-checkout', optional: true, tier: ['fast', 'balanced', 'thorough'] },
+  { name: 'severity-classification', required: true },
   { name: 'output-schema', locked: true },
   { name: 'diff-instructions', required: true, tier: ['balanced'] },
   { name: 'file-level-guidance', optional: true, tier: ['balanced', 'thorough'] },
@@ -252,6 +264,7 @@ const defaultOrder = [
   'focus-areas',
   'available-commands',
   'sparse-checkout',
+  'severity-classification',
   'output-schema',
   'diff-instructions',
   'file-level-guidance',

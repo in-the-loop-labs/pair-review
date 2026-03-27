@@ -44,6 +44,12 @@ class ChatSessionManager {
    * @returns {Promise<{id: number, status: string}>}
    */
   async createSession({ provider, model, reviewId, contextCommentId, systemPrompt, cwd, initialContext }) {
+    // Resolve provider definition once — used for model fallback and bridge construction
+    const providerDef = getChatProvider(provider);
+
+    // Resolve model: explicit request value > provider config default
+    const resolvedModel = model || providerDef?.model || null;
+
     // Insert session record into DB
     const stmt = this._db.prepare(`
       INSERT INTO chat_sessions (review_id, context_comment_id, provider, model, status)
@@ -53,20 +59,20 @@ class ChatSessionManager {
       reviewId,
       contextCommentId || null,
       provider,
-      model || null
+      resolvedModel
     );
     const sessionId = Number(result.lastInsertRowid);
 
-    logger.info(`[ChatSession] Creating session ${sessionId} (provider=${provider}, review=${reviewId})`);
+    logger.info(`[ChatSession] Creating session ${sessionId} (provider=${provider}, model=${resolvedModel}, review=${reviewId})`);
 
     // Create and start the bridge
     // Chat sessions get bash for git commands; review analysis uses the safe default
     const bridge = this._createBridge(provider, {
       provider,
-      model,
+      model: resolvedModel,
       cwd,
       systemPrompt,
-    });
+    }, providerDef);
 
     const listeners = {
       delta: new Set(),
@@ -530,39 +536,38 @@ class ChatSessionManager {
    * ACP providers get an AcpBridge; everything else gets a PiBridge with tools/skills.
    * @param {string} provider
    * @param {Object} options - Bridge constructor options
+   * @param {Object} [providerDef] - Pre-resolved provider definition (avoids redundant getChatProvider calls)
    * @returns {PiBridge|AcpBridge}
    */
-  _createBridge(provider, options) {
+  _createBridge(provider, options, providerDef) {
+    const def = providerDef || getChatProvider(provider);
     if (isAcpProvider(provider)) {
-      const providerDef = getChatProvider(provider);
       return new AcpBridge({
         ...options,
-        model: options.model || providerDef?.model,
-        acpCommand: providerDef?.command,
-        acpArgs: providerDef?.args,
-        env: providerDef?.env,
-        useShell: providerDef?.useShell,
+        model: options.model || def?.model,
+        acpCommand: def?.command,
+        acpArgs: def?.args,
+        env: def?.env,
+        useShell: def?.useShell,
       });
     }
     if (isClaudeCodeProvider(provider)) {
-      const providerDef = getChatProvider(provider);
       return new ClaudeCodeBridge({
         ...options,
-        model: options.model || providerDef?.model,
-        claudeCommand: providerDef?.command,
-        env: providerDef?.env,
-        useShell: providerDef?.useShell,
+        model: options.model || def?.model,
+        claudeCommand: def?.command,
+        env: def?.env,
+        useShell: def?.useShell,
       });
     }
     if (isCodexProvider(provider)) {
-      const providerDef = getChatProvider(provider);
       return new CodexBridge({
         ...options,
-        model: options.model || providerDef?.model,
-        codexCommand: providerDef?.command,
-        codexArgs: providerDef?.args,
-        env: providerDef?.env,
-        useShell: providerDef?.useShell,
+        model: options.model || def?.model,
+        codexCommand: def?.command,
+        codexArgs: def?.args,
+        env: def?.env,
+        useShell: def?.useShell,
       });
     }
     // Pi provider — resolve config overrides (command, model, env) from provider def.
@@ -570,14 +575,13 @@ class ChatSessionManager {
     // which would forward it as `--provider pi` to the Pi CLI.  The CLI's --provider flag
     // expects a model provider ("google", "anthropic", etc.) and should only come from
     // explicit user configuration (providerDef.provider).
-    const providerDef = getChatProvider(provider);
     return new PiBridge({
       ...options,
-      provider: providerDef?.provider || null,
-      model: options.model || providerDef?.model,
-      piCommand: providerDef?.command,
-      env: providerDef?.env,
-      useShell: providerDef?.useShell,
+      provider: def?.provider || null,
+      model: options.model || def?.model,
+      piCommand: def?.command,
+      env: def?.env,
+      useShell: def?.useShell,
       tools: CHAT_TOOLS,
       extensions: [taskExtensionDir],
     });

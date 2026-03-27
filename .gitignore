@@ -19,3 +19,4 @@ test-results/
 .critic-loop/
 examples/
 .pair-review/config.local.json
+pr.diff

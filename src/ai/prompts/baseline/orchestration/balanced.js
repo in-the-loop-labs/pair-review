@@ -82,6 +82,12 @@ ${ORCHESTRATION_INPUT_SCHEMA_DOCS}
 - **Preserve unique insights** that only one level discovered
 - **Prefer preserving line-level suggestions** over file-level suggestions when curating
 - **Do NOT mention which level found the issue** - focus on the insight itself
+- **Assess severity** based on the evidence and reasoning across input levels. When levels assign different severities, evaluate the supporting evidence rather than defaulting to the highest. When truly uncertain, preserve the highest severity. Omit severity for praise items.
+
+**Severity Definitions:**
+- **critical**: Production incidents, system failures, or security vulnerabilities — runtime crashes, data corruption or loss, race conditions, deadlocks, breaking changes, changes that will cause existing tests to fail
+- **medium**: Degraded functionality or reliability — missing error handling, N+1 queries, missing validation, missing or poor test coverage for new functionality
+- **minor**: Code quality concerns — documentation gaps, minor optimizations, style inconsistencies
 </section>
 
 <section name="priority-curation" required="true">
@@ -123,6 +129,7 @@ Output JSON with this structure:
     "line": 42,
     "old_or_new": "NEW",
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
+    "severity": "critical|medium|minor (omit for praise)",
     "title": "Brief title describing the curated insight",
     "description": "Clear explanation of the issue and why this guidance matters to the human reviewer",
     "suggestion": "Specific, actionable guidance for the reviewer. For praise items this can be omitted. For other types always include specific, actionable suggestions.",
@@ -132,6 +139,7 @@ Output JSON with this structure:
   "fileLevelSuggestions": [{
     "file": "path/to/file",
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
+    "severity": "critical|medium|minor (omit for praise)",
     "title": "Brief title describing file-level concern",
     "description": "Explanation of the file-level observation",
     "suggestion": "How to address the file-level concern (omit for praise items)",
