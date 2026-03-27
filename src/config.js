@@ -31,7 +31,7 @@ const DEFAULT_CONFIG = {
   enable_chat: true,  // When true, enables the chat panel feature (uses chat_provider)
   chat_provider: "pi",  // Chat provider: 'pi', 'copilot-acp', 'gemini-acp', 'opencode-acp', 'cursor-acp', 'codex'
   comment_format: "legacy",  // Comment format preset or custom template for adopted suggestions
-  chat: { enable_shortcuts: true },  // Chat panel settings (enable_shortcuts: show action shortcut buttons)
+  chat: { enable_shortcuts: true, enter_to_send: true },  // Chat panel settings (enable_shortcuts: show action shortcut buttons, enter_to_send: Enter sends message instead of newline)
   providers: {},  // Custom AI analysis provider configurations (overrides built-in defaults)
   chat_providers: {},  // Custom chat provider configurations (overrides built-in defaults)
   monorepos: {},  // Monorepo configurations: { "owner/repo": { path: "~/path/to/clone" } }

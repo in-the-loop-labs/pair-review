@@ -14,7 +14,8 @@
   "yolo": false,
   "skip_update_notifier": false,
   "chat": {
-    "enable_shortcuts": true
+    "enable_shortcuts": true,
+    "enter_to_send": true
   },
 
   "providers": {

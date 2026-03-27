@@ -28,6 +28,7 @@
             window.__pairReview.share = config.share || null;
             window.__pairReview.enableGraphite = config.enable_graphite === true;
             window.__pairReview.chatSpinner = config.chat_spinner || 'dots';
+            window.__pairReview.chatEnterToSend = config.chat_enter_to_send !== false;
             document.documentElement.setAttribute('data-chat', state);
             const shortcutsState = config.chat_enable_shortcuts === false ? 'disabled' : 'enabled';
             document.documentElement.setAttribute('data-chat-shortcuts', shortcutsState);

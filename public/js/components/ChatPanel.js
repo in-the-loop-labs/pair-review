@@ -43,6 +43,7 @@ class ChatPanel {
     this._sessionWarm = false; // true once the session has been used in this page load
     this._activeProvider = window.__pairReview?.chatProvider || 'pi';
     this._chatProviders = window.__pairReview?.chatProviders || [];
+    this._enterToSend = window.__pairReview?.chatEnterToSend ?? true;
 
     this._render();
     this._bindEvents();
@@ -141,7 +142,7 @@ class ChatPanel {
         <div class="chat-panel__input-area">
           <textarea class="chat-panel__input" placeholder="Ask about this review..." rows="1"></textarea>
           <div class="chat-panel__input-footer">
-            <span class="chat-panel__input-hint">${typeof navigator !== 'undefined' && navigator.platform?.includes('Mac') ? '\u2318' : 'Ctrl'}+Enter to send</span>
+            <span class="chat-panel__input-hint" title="Configure with chat.enter_to_send">${this._enterToSend ? 'Enter to send, Shift+Enter for newline' : `${typeof navigator !== 'undefined' && navigator.platform?.includes('Mac') ? '\u2318' : 'Ctrl'}+Enter to send`}</span>
             <div class="chat-panel__input-actions">
               <button class="chat-panel__send-btn" title="Send" disabled>
                 <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
@@ -250,10 +251,26 @@ class ChatPanel {
 
     // Keyboard shortcuts
     this.inputEl.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-        e.preventDefault();
-        if (this.inputEl.value.trim() && !this.isStreaming) {
-          this.sendMessage();
+      if (e.key === 'Enter') {
+        // Ignore Enter during IME composition (e.g. CJK input) so the
+        // composition-confirming keystroke is not swallowed.
+        if (e.isComposing) return;
+
+        if (this._enterToSend) {
+          // Enter sends, Shift+Enter inserts newline
+          if (e.shiftKey) return; // let browser insert newline
+          e.preventDefault();
+          if (this.inputEl.value.trim() && !this.isStreaming) {
+            this.sendMessage();
+          }
+        } else {
+          // Cmd+Enter / Ctrl+Enter sends, plain Enter inserts newline
+          if (e.metaKey || e.ctrlKey) {
+            e.preventDefault();
+            if (this.inputEl.value.trim() && !this.isStreaming) {
+              this.sendMessage();
+            }
+          }
         }
       }
     });

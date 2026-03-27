@@ -1138,6 +1138,7 @@
         window.__pairReview.chatProviders = chatProviders;
         window.__pairReview.enableGraphite = config.enable_graphite === true;
         window.__pairReview.chatSpinner = config.chat_spinner || 'dots';
+        window.__pairReview.chatEnterToSend = config.chat_enter_to_send !== false;
 
         // Set chat feature state based on config and provider availability
         let chatState = 'disabled';

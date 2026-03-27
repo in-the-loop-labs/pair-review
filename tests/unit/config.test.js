@@ -913,7 +913,7 @@ describe('config.js', () => {
 
       const { config } = await loadConfig();
 
-      expect(config.chat).toEqual({ enable_shortcuts: false });
+      expect(config.chat).toEqual({ enable_shortcuts: false, enter_to_send: true });
     });
 
     it('should three-way merge defaults, global, and project for nested objects', async () => {
@@ -924,7 +924,7 @@ describe('config.js', () => {
 
       const { config } = await loadConfig();
 
-      expect(config.chat).toEqual({ enable_shortcuts: false, some_future_key: true });
+      expect(config.chat).toEqual({ enable_shortcuts: false, enter_to_send: true, some_future_key: true });
     });
 
     it('should let project config override global for the same nested key', async () => {
@@ -955,7 +955,7 @@ describe('config.js', () => {
 
       const { config } = await loadConfig();
 
-      expect(config.chat).toEqual({ enable_shortcuts: true });
+      expect(config.chat).toEqual({ enable_shortcuts: true, enter_to_send: true });
     });
 
     // --- config.local.json tests ---
@@ -1011,6 +1011,7 @@ describe('config.js', () => {
 
       expect(config.chat).toEqual({
         enable_shortcuts: true,  // from DEFAULT_CONFIG
+        enter_to_send: true,     // from DEFAULT_CONFIG
         a: 'global',
         b: 'global-local',
         c: 'project',
