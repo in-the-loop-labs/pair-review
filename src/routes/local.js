@@ -1704,7 +1704,7 @@ router.post('/api/local/:reviewId/set-scope', async (req, res) => {
     let baseBranch = requestBaseBranch || null;
     let currentBranch = null;
     if (includesBranch(scopeStart)) {
-      currentBranch = await getCurrentBranch(localPath);
+      currentBranch = await require('../local-review').getCurrentBranch(localPath);
       if (!baseBranch) {
         // Use cached base branch from background detection if available
         if (review.local_base_branch && review.local_head_branch === currentBranch) {

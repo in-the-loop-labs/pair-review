@@ -663,10 +663,11 @@ describe('Local Sessions API', () => {
     it('should use cached local_base_branch instead of calling detectBaseBranch', async () => {
       const reviewRepo = new ReviewRepository(db);
       const id = await reviewRepo.upsertLocalReview({
-        localPath: '/path/cached-base',
-        localHeadSha: 'shaCachedBase',
+        localPath: '/path/cached-base-with-branch',
+        localHeadSha: 'shaCachedBaseWithBranch',
         repository: 'owner/cached-base-repo',
-        localBaseBranch: 'develop'
+        localBaseBranch: 'develop',
+        localHeadBranch: 'feature-branch'
       });
 
       // Spy on detectBaseBranch to verify it is NOT called
