@@ -8,38 +8,69 @@
  * default rather than hard-coding 'claude'/'opus'.
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-// PRManager is a browser-side IIFE that attaches to `window`.  We need
-// just enough global stubs to let the module load, then we test the
-// pure helper method directly.
+// Import the actual PRManager class from production code
+const { PRManager } = require('../../public/js/pr.js');
 
-// Minimal globals expected during module load
-globalThis.window = globalThis.window || globalThis;
-globalThis.document = globalThis.document || {
-  getElementById: () => null,
-  querySelector: () => null,
-  querySelectorAll: () => [],
-  addEventListener: () => {},
-  createElement: () => ({
-    classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
-    setAttribute() {},
-    getAttribute() {},
-    appendChild() {},
-    addEventListener() {},
-    style: {},
-    dataset: {},
-  }),
-  body: { appendChild() {}, classList: { add() {}, remove() {} } },
-};
-globalThis.localStorage = globalThis.localStorage || { getItem: () => null, setItem: () => {}, removeItem: () => {} };
-globalThis.fetch = globalThis.fetch || (() => Promise.resolve({ ok: true, json: () => Promise.resolve({}) }));
-globalThis.history = globalThis.history || { replaceState() {} };
-globalThis.MutationObserver = globalThis.MutationObserver || class { observe() {} disconnect() {} };
-globalThis.IntersectionObserver = globalThis.IntersectionObserver || class { observe() {} disconnect() {} };
-globalThis.URLSearchParams = globalThis.URLSearchParams || URL.prototype.searchParams?.constructor || class { get() { return null; } };
+let saved;
 
-const { PRManager } = await import('../../public/js/pr.js');
+beforeEach(() => {
+  vi.resetAllMocks();
+
+  // Save original globalThis values so we can restore them in afterEach
+  saved = {
+    window: globalThis.window,
+    document: globalThis.document,
+    localStorage: globalThis.localStorage,
+    fetch: globalThis.fetch,
+    history: globalThis.history,
+    MutationObserver: globalThis.MutationObserver,
+    IntersectionObserver: globalThis.IntersectionObserver,
+    URLSearchParams: globalThis.URLSearchParams,
+  };
+
+  globalThis.window = globalThis;
+  globalThis.document = {
+    getElementById: () => null,
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    addEventListener: () => {},
+    createElement: () => ({
+      classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
+      setAttribute() {},
+      getAttribute() {},
+      appendChild() {},
+      addEventListener() {},
+      style: {},
+      dataset: {},
+    }),
+    body: { appendChild() {}, classList: { add() {}, remove() {} } },
+  };
+  globalThis.localStorage = { getItem: () => null, setItem: () => {}, removeItem: () => {} };
+  globalThis.fetch = vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({}) }));
+  globalThis.history = { replaceState() {} };
+  globalThis.MutationObserver = class { observe() {} disconnect() {} };
+  globalThis.IntersectionObserver = class { observe() {} disconnect() {} };
+  globalThis.URLSearchParams = class { get() { return null; } };
+
+  vi.spyOn(console, 'error').mockImplementation(() => {});
+  vi.spyOn(console, 'log').mockImplementation(() => {});
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+});
+
+afterEach(() => {
+  globalThis.window = saved.window;
+  globalThis.document = saved.document;
+  globalThis.localStorage = saved.localStorage;
+  globalThis.fetch = saved.fetch;
+  globalThis.history = saved.history;
+  globalThis.MutationObserver = saved.MutationObserver;
+  globalThis.IntersectionObserver = saved.IntersectionObserver;
+  globalThis.URLSearchParams = saved.URLSearchParams;
+
+  vi.restoreAllMocks();
+});
 
 describe('PRManager._buildDefaultAnalysisConfig', () => {
   let manager;
@@ -197,5 +228,11 @@ describe('PRManager._buildDefaultAnalysisConfig', () => {
     expect(config.councilConfig).toBeNull();
     expect(config.councilName).toBeNull();
     expect(config.isCouncil).toBe(true);
+  });
+
+  it('does not forward custom_instructions from reviewSettings', async () => {
+    const reviewSettings = { custom_instructions: 'Be extra strict' };
+    const config = await manager._buildDefaultAnalysisConfig(null, reviewSettings);
+    expect(config.customInstructions).toBeNull();
   });
 });
