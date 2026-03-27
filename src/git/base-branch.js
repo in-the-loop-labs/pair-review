@@ -171,46 +171,43 @@ function tryDefaultBranch(repoPath, currentBranch, deps) {
 }
 
 /**
- * Synchronously detect the default branch for a repository.
+ * Synchronously detect the default branch for a repository using only
+ * local refs (no network I/O).
  *
- * Uses the same logic as tryDefaultBranch but returns just the branch name
- * (or null). Suitable for call sites that need a quick, synchronous answer
- * without the full detectBaseBranch priority chain.
+ * Priority:
+ *   1. `git symbolic-ref refs/remotes/origin/HEAD` — reads the local ref
+ *      that `git clone` sets automatically.
+ *   2. Check whether `refs/heads/main` or `refs/heads/master` exist locally.
  *
- * @param {string} repoPath - Absolute path to the repository
+ * @param {string} localPath - Absolute path to the repository
  * @param {Object} [_deps] - Dependency overrides for testing
  * @returns {string|null} Default branch name, or null if it cannot be determined
  */
-function getDefaultBranch(repoPath, _deps) {
+function getDefaultBranch(localPath, _deps) {
+  if (!localPath) return null;
   const deps = { ...defaults, ..._deps };
 
-  // Try `git remote show origin`
+  // Try symbolic-ref (set by git clone)
   try {
-    const output = deps.execSync('git remote show origin', {
-      cwd: repoPath,
+    const ref = deps.execSync('git symbolic-ref refs/remotes/origin/HEAD', {
+      cwd: localPath,
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 5000
-    });
-
-    const match = output.match(/HEAD branch:\s*(.+)/);
-    if (match) {
-      const branch = match[1].trim();
-      if (branch && branch !== '(unknown)') {
-        return branch;
-      }
-    }
+    }).trim();
+    // ref looks like "refs/remotes/origin/main"
+    const branch = ref.replace(/^refs\/remotes\/origin\//, '');
+    if (branch && branch !== ref) return branch;
   } catch {
-    // No remote or network issue — try local refs
+    // origin/HEAD not set — fall through to local check
   }
 
   // Fallback: check if main or master exists locally
   for (const candidate of ['main', 'master']) {
     try {
-      deps.execSync(`git rev-parse --verify ${candidate}`, {
-        cwd: repoPath,
+      deps.execSync(`git rev-parse --verify refs/heads/${candidate}`, {
+        cwd: localPath,
         encoding: 'utf8',
-        stdio: ['pipe', 'pipe', 'pipe']
+        stdio: ['pipe', 'pipe', 'pipe'],
       });
       return candidate;
     } catch {

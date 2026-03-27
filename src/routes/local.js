@@ -32,6 +32,7 @@ const { getShaAbbrevLength } = require('../git/sha-abbrev');
 const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
 const { TIERS, TIER_ALIASES, VALID_TIERS, resolveTier } = require('../ai/prompts/config');
 const { getProviderClass, createProvider } = require('../ai/provider');
+const { getDefaultBranch } = require('../git/base-branch');
 const { CommentRepository } = require('../database');
 const { runExecutableAnalysis } = require('./executable-analysis');
 const {
@@ -83,9 +84,8 @@ function isBranchAvailable(branchName, scopeStart, localPath) {
   if (includesBranch(scopeStart)) return true;
   if (!branchName || branchName === 'HEAD' || branchName === 'unknown') return false;
 
-  const { getDefaultBranch } = require('../git/base-branch');
-  const defaultBranch = localPath ? getDefaultBranch(localPath) : null;
-  // If detection fails, fall back to checking main/master
+  // Detect the default branch using only local refs (no network).
+  const defaultBranch = getDefaultBranch(localPath);
   if (defaultBranch) {
     return branchName !== defaultBranch;
   }
@@ -565,19 +565,14 @@ router.get('/api/local/:reviewId', async (req, res) => {
     const baseBranch = review.local_base_branch || null;
 
     // When scope does NOT include branch, check for branch detection info
-    // Frontend uses this to suggest expanding scope to include branch
+    // Frontend uses this to suggest expanding scope to include branch.
+    // Only use already-cached results here — never block the response on
+    // GitHub API calls.  Background detection (after res.json) will populate
+    // the cache for subsequent requests.
     let branchInfo = null;
     const cachedDiff = getLocalReviewDiff(reviewId);
     if (!includesBranch(scopeStart) && cachedDiff?.branchInfo) {
       branchInfo = cachedDiff.branchInfo;
-    } else if (!includesBranch(scopeStart) && !cachedDiff && review.local_path) {
-      // No cache (web UI started session) — run detection on-demand
-      const config = req.app.get('config') || {};
-      branchInfo = await detectAndBuildBranchInfo(review.local_path, branchName, {
-        repository: repositoryName,
-        githubToken: getGitHubToken(config),
-        enableGraphite: config.enable_graphite === true
-      });
     }
 
     // Check repo settings for auto_branch_review preference
