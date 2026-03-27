@@ -21,6 +21,7 @@ Pair-Review is a local web application that assists human reviewers with GitHub 
 - **Human-in-the-loop**: AI suggests, human decides
 - **Local-first**: All data and processing happens locally
 - **Progressive Enhancement**: Start simple, add features incrementally
+- **No hot-reload**: Configuration is loaded once at startup. Do not flag missing cleanup on config reapply — it cannot occur at runtime.
 
 ## Core Workflow
 1. User runs `npx pair-review <PR-number-or-URL>`

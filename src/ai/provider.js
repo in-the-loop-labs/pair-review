@@ -424,9 +424,40 @@ function resolveDefaultModel(models) {
 }
 
 /**
- * Apply configuration overrides for all providers
- * Call this after all providers have registered and config is loaded
- * Clears any existing overrides before applying new ones.
+ * Create an aliased provider class that reuses an existing provider's implementation
+ * but with a different ID, name, and config overrides.
+ *
+ * @param {string} aliasId - New provider ID (e.g., 'pi-reskin')
+ * @param {typeof AIProvider} BaseClass - The base provider class to alias
+ * @param {Object} aliasConfig - Config for the alias (name, models, etc.)
+ * @returns {typeof AIProvider} A subclass with overridden static metadata
+ */
+function createAliasedProviderClass(aliasId, BaseClass, aliasConfig) {
+  const processedModels = Array.isArray(aliasConfig.models) && aliasConfig.models.length > 0
+    ? aliasConfig.models.map(inferModelDefaults)
+    : null;
+
+  class AliasedProvider extends BaseClass {}
+
+  // Override static metadata so the alias has its own identity
+  AliasedProvider.getProviderName = () => aliasConfig.name || aliasId;
+  AliasedProvider.getProviderId = () => aliasId;
+  if (processedModels) {
+    AliasedProvider.getModels = () => processedModels;
+    AliasedProvider.getDefaultModel = () => resolveDefaultModel(processedModels);
+  }
+  if (aliasConfig.installInstructions) {
+    AliasedProvider.getInstallInstructions = () => aliasConfig.installInstructions;
+  }
+
+  return AliasedProvider;
+}
+
+/**
+ * Apply configuration overrides for all providers.
+ * Called once at startup after all providers have self-registered.
+ * Does not support re-application — the provider registry is intentionally
+ * not cleaned between calls (aliased/executable classes persist).
  * @param {Object} config - Configuration object from loadConfig()
  */
 function applyConfigOverrides(config) {
@@ -458,6 +489,32 @@ function applyConfigOverrides(config) {
       registerProvider(providerId, ExecClass);
       providerConfigOverrides.set(providerId, { ...providerConfig, models: ExecClass.getModels() });
       logger.debug(`Registered executable provider: ${providerId}`);
+      continue;
+    }
+
+    // Type matching a registered provider ID creates an alias of that provider
+    if (providerConfig.type && providerConfig.type !== providerId && providerRegistry.has(providerConfig.type)) {
+      const BaseClass = providerRegistry.get(providerConfig.type);
+      const AliasClass = createAliasedProviderClass(providerId, BaseClass, providerConfig);
+      registerProvider(providerId, AliasClass);
+
+      // Aliases reuse the base provider's implementation class, not its config.
+      // Only universal override fields are forwarded; provider-specific fields
+      // (e.g. codex args) must be explicitly set in the alias config.
+      providerConfigOverrides.set(providerId, {
+        command: providerConfig.command,
+        installInstructions: providerConfig.installInstructions,
+        extra_args: providerConfig.extra_args,
+        env: providerConfig.env,
+        models: AliasClass.getModels() !== BaseClass.getModels() ? AliasClass.getModels() : null
+      });
+      logger.debug(`Registered aliased provider: ${providerId} (base: ${providerConfig.type})`);
+      continue;
+    }
+
+    // Unknown type: warn and skip (self-referential type falls through to standard override path)
+    if (providerConfig.type && providerConfig.type !== providerId) {
+      logger.warn(`Provider "${providerId}" has unknown type "${providerConfig.type}" — no matching registered provider`);
       continue;
     }
 
@@ -679,6 +736,7 @@ module.exports = {
   testProviderAvailability,
   // Config override support
   applyConfigOverrides,
+  createAliasedProviderClass,
   getProviderConfigOverrides,
   inferModelDefaults,
   resolveDefaultModel,
