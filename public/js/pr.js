@@ -970,11 +970,8 @@ class PRManager {
     const toggle = document.getElementById('pr-description-toggle');
     if (!toggle) return;
 
-    const wrapper = toggle.closest('.pr-title-wrapper');
-    if (!wrapper) return;
-
     const closePopover = () => {
-      const existing = wrapper.querySelector('.pr-description-popover');
+      const existing = document.querySelector('.pr-description-popover');
       if (existing) existing.remove();
       toggle.classList.remove('active');
       toggle.setAttribute('aria-expanded', 'false');
@@ -982,7 +979,7 @@ class PRManager {
 
     toggle.addEventListener('click', (e) => {
       e.stopPropagation();
-      const existing = wrapper.querySelector('.pr-description-popover');
+      const existing = document.querySelector('.pr-description-popover');
       if (existing) {
         closePopover();
         return;
@@ -1017,7 +1014,16 @@ class PRManager {
 
       popover.append(arrow, header, content);
 
-      wrapper.appendChild(popover);
+      // Position relative to the toggle button
+      const rect = toggle.getBoundingClientRect();
+      popover.style.position = 'fixed';
+      popover.style.top = `${rect.bottom + 8}px`;
+      popover.style.left = `${rect.left + rect.width / 2}px`;
+      popover.style.transform = 'translateX(-50%)';
+
+      // Append to document.body to escape overflow:hidden on .header-center
+      document.body.appendChild(popover);
+
       toggle.classList.add('active');
       toggle.setAttribute('aria-expanded', 'true');
 

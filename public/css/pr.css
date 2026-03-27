@@ -6000,12 +6000,8 @@ body::before {
   color: var(--color-accent, #2f81f7);
 }
 
-/* PR description popover */
+/* PR description popover - appended to document.body with fixed positioning */
 .pr-description-popover {
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 50%;
-  transform: translateX(-50%);
   z-index: 1000;
   width: min(500px, 90vw);
   background: var(--color-bg-primary, #0d1117);
