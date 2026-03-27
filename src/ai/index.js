@@ -20,7 +20,8 @@ const {
   getProviderConfigOverrides,
   inferModelDefaults,
   resolveDefaultModel,
-  prettifyModelId
+  prettifyModelId,
+  createAliasedProviderClass
 } = require('./provider');
 
 // Load the availability checking module
@@ -73,8 +74,9 @@ module.exports = {
   resolveDefaultModel,
   prettifyModelId,
 
-  // Executable provider factory
+  // Provider factories
   createExecutableProviderClass,
+  createAliasedProviderClass,
 
   // Provider availability checking
   getCachedAvailability,

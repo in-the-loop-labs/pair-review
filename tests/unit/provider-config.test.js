@@ -17,6 +17,7 @@ import {
   getProviderConfigOverrides,
   getAllProvidersInfo,
   getRegisteredProviderIds,
+  getProviderClass,
   createProvider
 } from '../../src/ai/index.js';
 
@@ -615,6 +616,191 @@ describe('Provider Configuration', () => {
 
       expect(provider.args).toContain('--allowedTools');
       expect(provider.args).not.toContain('--dangerously-skip-permissions');
+    });
+  });
+
+  describe('aliased providers (type = existing provider)', () => {
+    beforeEach(() => {
+      applyConfigOverrides({ providers: {} });
+    });
+
+    it('should register an aliased provider that reuses the base class', () => {
+      applyConfigOverrides({
+        providers: {
+          'pi-reskin': {
+            type: 'pi',
+            name: 'Pi Reskin',
+            models: [{ id: 'default', tier: 'balanced', default: true }]
+          }
+        }
+      });
+
+      expect(getRegisteredProviderIds()).toContain('pi-reskin');
+      const AliasClass = getProviderClass('pi-reskin');
+      const BaseClass = getProviderClass('pi');
+      expect(AliasClass.prototype).toBeInstanceOf(BaseClass);
+    });
+
+    it('should override static metadata on the aliased class', () => {
+      applyConfigOverrides({
+        providers: {
+          'pi-reskin': {
+            type: 'pi',
+            name: 'Pi Reskin',
+            models: [
+              { id: 'custom-model', tier: 'thorough', default: true }
+            ]
+          }
+        }
+      });
+
+      const AliasClass = getProviderClass('pi-reskin');
+      expect(AliasClass.getProviderName()).toBe('Pi Reskin');
+      expect(AliasClass.getProviderId()).toBe('pi-reskin');
+      expect(AliasClass.getModels()).toHaveLength(1);
+      expect(AliasClass.getModels()[0].id).toBe('custom-model');
+      expect(AliasClass.getDefaultModel()).toBe('custom-model');
+    });
+
+    it('should preserve base class models when alias defines none', () => {
+      applyConfigOverrides({
+        providers: {
+          'pi-reskin': {
+            type: 'pi',
+            name: 'Pi Reskin'
+          }
+        }
+      });
+
+      const AliasClass = getProviderClass('pi-reskin');
+      const BaseClass = getProviderClass('pi');
+      // Without model overrides, should inherit from base
+      expect(AliasClass.getModels()).toEqual(BaseClass.getModels());
+    });
+
+    it('should store config overrides for the aliased provider', () => {
+      applyConfigOverrides({
+        providers: {
+          'pi-reskin': {
+            type: 'pi',
+            name: 'Pi Reskin',
+            command: '/custom/pi',
+            extra_args: ['--custom-flag'],
+            env: { CUSTOM_VAR: 'value' }
+          }
+        }
+      });
+
+      const overrides = getProviderConfigOverrides('pi-reskin');
+      expect(overrides.command).toBe('/custom/pi');
+      expect(overrides.extra_args).toEqual(['--custom-flag']);
+      expect(overrides.env).toEqual({ CUSTOM_VAR: 'value' });
+    });
+
+    it('should create a functional provider instance from alias', () => {
+      applyConfigOverrides({
+        providers: {
+          'pi-reskin': {
+            type: 'pi',
+            name: 'Pi Reskin',
+            command: '/custom/pi',
+            models: [{ id: 'default', tier: 'balanced', default: true }]
+          }
+        }
+      });
+
+      const provider = createProvider('pi-reskin');
+      expect(provider).toBeDefined();
+      // Pi provider stores command as piCmd, not command
+      expect(provider.piCmd).toBe('/custom/pi');
+    });
+
+    it('should appear in getAllProvidersInfo', () => {
+      applyConfigOverrides({
+        providers: {
+          'pi-reskin': {
+            type: 'pi',
+            name: 'Pi Reskin',
+            models: [{ id: 'default', tier: 'balanced', default: true }]
+          }
+        }
+      });
+
+      const providers = getAllProvidersInfo();
+      const alias = providers.find(p => p.id === 'pi-reskin');
+      expect(alias).toBeDefined();
+      expect(alias.name).toBe('Pi Reskin');
+    });
+
+    it('should not affect the base provider', () => {
+      const baseBefore = getProviderClass('pi');
+      const baseNameBefore = baseBefore.getProviderName();
+
+      applyConfigOverrides({
+        providers: {
+          'pi-reskin': {
+            type: 'pi',
+            name: 'Pi Reskin',
+            command: '/different/command'
+          }
+        }
+      });
+
+      const baseAfter = getProviderClass('pi');
+      expect(baseAfter.getProviderName()).toBe(baseNameBefore);
+      // Base provider should not have the alias overrides
+      expect(getProviderConfigOverrides('pi')).toBeUndefined();
+    });
+
+    it('should warn and skip for unknown type', () => {
+      applyConfigOverrides({
+        providers: {
+          'unknown-alias': {
+            type: 'nonexistent-provider',
+            name: 'Should Not Register'
+          }
+        }
+      });
+
+      expect(getRegisteredProviderIds()).not.toContain('unknown-alias');
+    });
+
+    it('should work with any built-in provider as base', () => {
+      applyConfigOverrides({
+        providers: {
+          'claude-custom': {
+            type: 'claude',
+            name: 'Custom Claude',
+            extra_args: ['--special']
+          }
+        }
+      });
+
+      expect(getRegisteredProviderIds()).toContain('claude-custom');
+      const AliasClass = getProviderClass('claude-custom');
+      expect(AliasClass.getProviderName()).toBe('Custom Claude');
+      expect(AliasClass.getProviderId()).toBe('claude-custom');
+    });
+
+    it('should treat self-referential type as standard override, not alias', () => {
+      const originalClass = getProviderClass('pi');
+
+      applyConfigOverrides({
+        providers: {
+          pi: {
+            type: 'pi',
+            name: 'Custom Pi',
+            command: '/custom/pi'
+          }
+        }
+      });
+
+      // Class should not be replaced — still the original PiProvider
+      expect(getProviderClass('pi')).toBe(originalClass);
+      // Config overrides should be applied via the standard path
+      const overrides = getProviderConfigOverrides('pi');
+      expect(overrides).toBeDefined();
+      expect(overrides.command).toBe('/custom/pi');
     });
   });
 });
