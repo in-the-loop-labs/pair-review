@@ -34,8 +34,8 @@ const { scopeIncludes } = require('../local-scope');
 /**
  * Generate a diff for the executable provider and write it to a file.
  *
- * Local mode: scope-aware diff via generateScopedDiff (checked first).
  * PR mode: uses baseSha...headSha (three-dot merge-base diff).
+ * Local mode: scope-aware diff via generateScopedDiff.
  *
  * Uses GIT_DIFF_FLAGS for normalized output and git-default context (3 lines).
  * Additional flags can be passed via diffArgs (from provider config.diff_args).
@@ -55,7 +55,14 @@ async function generateDiffForExecutable(cwd, context, diffArgs, outputPath) {
   let diff;
   const extraFlags = diffArgs.length > 0 ? ' ' + diffArgs.join(' ') : '';
 
-  if (context.scopeStart && context.scopeEnd) {
+  if (context.baseSha && context.headSha) {
+    // PR mode: straightforward base...head diff
+    const { stdout } = await execPromise(
+      `git diff ${GIT_DIFF_FLAGS}${extraFlags} ${context.baseSha}...${context.headSha}`,
+      { cwd, maxBuffer: 50 * 1024 * 1024 }
+    );
+    diff = stdout;
+  } else if (context.scopeStart && context.scopeEnd) {
     // Local mode: scope-aware diff generation
     // Note: diffArgs are passed as extraArgs to generateScopedDiff, which handles
     // appending them to the git diff command internally (extraFlags is not used here).
@@ -67,13 +74,6 @@ async function generateDiffForExecutable(cwd, context, diffArgs, outputPath) {
       { contextLines: 3, extraArgs: diffArgs }
     );
     diff = result.diff;
-  } else if (context.baseSha && context.headSha) {
-    // PR mode: straightforward base...head diff
-    const { stdout } = await execPromise(
-      `git diff ${GIT_DIFF_FLAGS}${extraFlags} ${context.baseSha}...${context.headSha}`,
-      { cwd, maxBuffer: 50 * 1024 * 1024 }
-    );
-    diff = stdout;
   } else {
     // Fallback: simple working-tree diff
     const { stdout } = await execPromise(
@@ -98,8 +98,15 @@ async function generateDiffForExecutable(cwd, context, diffArgs, outputPath) {
  */
 async function getChangedFiles(cwd, context) {
   try {
-    // Scope-aware file list checked first — when both scope and SHA fields
-    // are present, scope is the more specific intent.
+    if (context.baseSha && context.headSha) {
+      const { stdout } = await execPromise(
+        `git diff ${GIT_DIFF_FLAGS} ${context.baseSha}...${context.headSha} --name-only`,
+        { cwd }
+      );
+      return stdout.trim().split('\n').filter(f => f.length > 0);
+    }
+
+    // Local mode: scope-aware file list
     const { scopeStart, scopeEnd, baseBranch } = context;
     const commands = [];
 
@@ -130,13 +137,6 @@ async function getChangedFiles(cwd, context) {
           execPromise('git ls-files --others --exclude-standard', { cwd }).then(r => r.stdout)
         );
       }
-    } else if (context.baseSha && context.headSha) {
-      // PR mode: straightforward base...head diff
-      const { stdout } = await execPromise(
-        `git diff ${GIT_DIFF_FLAGS} ${context.baseSha}...${context.headSha} --name-only`,
-        { cwd }
-      );
-      return stdout.trim().split('\n').filter(f => f.length > 0);
     } else {
       // Fallback: no scope info — include unstaged + untracked + staged
       commands.push(
