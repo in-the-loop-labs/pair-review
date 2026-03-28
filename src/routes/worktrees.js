@@ -154,7 +154,8 @@ router.get('/api/worktrees/recent', async (req, res) => {
         json_extract(pm.pr_data, '$.html_url') as html_url,
         w.id as worktree_id,
         w.path as worktree_path,
-        w.branch
+        w.branch,
+        (SELECT r.id FROM reviews r WHERE r.pr_number = pm.pr_number AND r.repository = pm.repository COLLATE NOCASE ORDER BY r.updated_at DESC LIMIT 1) as review_id
       FROM pr_metadata pm
       LEFT JOIN worktrees w ON pm.pr_number = w.pr_number AND pm.repository = w.repository COLLATE NOCASE
       WHERE pm.title IS NOT NULL AND pm.title != ''
@@ -195,7 +196,8 @@ router.get('/api/worktrees/recent', async (req, res) => {
         last_accessed_at: row.last_accessed_at,
         created_at: row.created_at,
         storage_status: storageStatus,
-        html_url: row.html_url || null
+        html_url: row.html_url || null,
+        review_id: row.review_id || null
       });
     }
 

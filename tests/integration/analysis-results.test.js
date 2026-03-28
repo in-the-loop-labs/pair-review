@@ -723,3 +723,101 @@ describe('POST /api/analyses/results', () => {
     expect(prPayload.type).toBe('review:analysis_completed');
   });
 });
+
+describe('GET /api/analyses/active', () => {
+  const { activeAnalyses } = require('../../src/routes/shared');
+  let db;
+  let app;
+
+  beforeEach(() => {
+    activeAnalyses.clear();
+    db = createTestDatabase();
+    app = createTestApp(db);
+  });
+
+  afterEach(() => {
+    activeAnalyses.clear();
+    if (db) closeTestDatabase(db);
+  });
+
+  it('should return empty array when no active analyses', async () => {
+    const res = await request(app).get('/api/analyses/active').expect(200);
+    expect(res.body.active).toEqual([]);
+  });
+
+  it('should return only running analyses', async () => {
+    activeAnalyses.set('running-1', {
+      id: 'running-1',
+      reviewId: 10,
+      reviewType: 'pr',
+      repository: 'owner/repo',
+      prNumber: 42,
+      status: 'running'
+    });
+    activeAnalyses.set('completed-1', {
+      id: 'completed-1',
+      reviewId: 20,
+      status: 'completed'
+    });
+    activeAnalyses.set('failed-1', {
+      id: 'failed-1',
+      reviewId: 30,
+      status: 'failed'
+    });
+
+    const res = await request(app).get('/api/analyses/active').expect(200);
+    expect(res.body.active).toHaveLength(1);
+    expect(res.body.active[0]).toEqual({
+      analysisId: 'running-1',
+      reviewId: 10,
+      reviewType: 'pr',
+      repository: 'owner/repo',
+      prNumber: 42
+    });
+  });
+
+  it('should return multiple running analyses', async () => {
+    activeAnalyses.set('pr-analysis', {
+      id: 'pr-analysis',
+      reviewId: 5,
+      reviewType: 'pr',
+      repository: 'org/project',
+      prNumber: 99,
+      status: 'running'
+    });
+    activeAnalyses.set('local-analysis', {
+      id: 'local-analysis',
+      reviewId: 8,
+      reviewType: 'local',
+      repository: 'my-project',
+      status: 'running'
+    });
+
+    const res = await request(app).get('/api/analyses/active').expect(200);
+    expect(res.body.active).toHaveLength(2);
+
+    const prEntry = res.body.active.find(a => a.reviewType === 'pr');
+    expect(prEntry.prNumber).toBe(99);
+
+    const localEntry = res.body.active.find(a => a.reviewType === 'local');
+    expect(localEntry.prNumber).toBeNull();
+  });
+
+  it('should handle missing optional fields gracefully', async () => {
+    activeAnalyses.set('minimal', {
+      id: 'minimal',
+      reviewId: 1,
+      status: 'running'
+    });
+
+    const res = await request(app).get('/api/analyses/active').expect(200);
+    expect(res.body.active).toHaveLength(1);
+    expect(res.body.active[0]).toEqual({
+      analysisId: 'minimal',
+      reviewId: 1,
+      reviewType: null,
+      repository: null,
+      prNumber: null
+    });
+  });
+});

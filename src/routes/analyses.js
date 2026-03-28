@@ -300,6 +300,25 @@ router.post('/api/analyses/results', async (req, res) => {
   }
 });
 
+/**
+ * List currently active (running) analyses across all reviews.
+ * Returns lightweight projections from the in-memory activeAnalyses map.
+ */
+router.get('/api/analyses/active', (req, res) => {
+  const active = [];
+  for (const status of activeAnalyses.values()) {
+    if (status.status !== 'running') continue;
+    active.push({
+      analysisId: status.id,
+      reviewId: status.reviewId,
+      reviewType: status.reviewType || null,
+      repository: status.repository || null,
+      prNumber: status.prNumber || null
+    });
+  }
+  res.json({ active });
+});
+
 // ==========================================================================
 // Parameterised :id routes — registered AFTER static paths
 // ==========================================================================
