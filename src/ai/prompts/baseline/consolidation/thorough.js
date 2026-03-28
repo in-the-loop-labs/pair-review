@@ -152,6 +152,14 @@ Assess severity based on the evidence and reasoning across all reviewers. When r
 Note: Confidence is about certainty of value, not severity.
 </section>
 
+<section name="balanced-output" required="true" tier="thorough">
+### 7. Balanced Output
+- **Deduplicate, don't concatenate**: If two reviewers flagged the same issue, merge them into one suggestion. If three reviewers each found one style nit, consider whether one representative example suffices. Distinct findings should each be preserved — the goal is to eliminate redundancy, not to reduce count.
+- **Limit praise** to 2–3 most noteworthy items across all reviewers. Praise should highlight genuinely commendable patterns, not routine correctness.
+- **Avoid suggestion overload** — a review with 30 suggestions is harder to act on than one with 12 well-chosen ones. Aim for quality over quantity.
+- **Include confidence scores** that reflect cross-reviewer agreement: consensus findings get boosted, lone findings keep their original confidence.
+</section>
+
 <section name="summary-synthesis" required="true" tier="thorough">
 ## Summary Synthesis Guidance
 The summary field should synthesize the findings, not list them.
@@ -160,7 +168,7 @@ The summary field should synthesize the findings, not list them.
 - **Lead with the most important insight**: What should the reviewer focus on first?
 - **Connect the dots**: How do individual findings relate to each other?
 - **Calibrate severity**: Is this code fundamentally sound with minor issues, or are there structural problems?
-- **Draw on reviewer summaries**: Each reviewer may include a summary of their overall assessment. Use these to inform your synthesis — they capture the reviewer's high-level conclusions and priorities that may not be fully reflected in individual suggestions.
+- **Draw on reviewer summaries**: Use these as evidence for your own synthesis — integrate their insights into a cohesive conclusion rather than listing them individually.
 - **Write as a single reviewer**: Do not mention consolidation, merging, or multiple reviewers -- unless specifically requested
 </section>
 
@@ -195,7 +203,7 @@ Output JSON with this structure:
     "confidence": 0.0-1.0,
     "reasoning": ["Step-by-step reasoning explaining why this issue was flagged"]
   }],
-  "summary": "Brief summary of the key findings and their significance. Draw on reviewer summaries for high-level conclusions. Write as if a single reviewer produced this analysis — do not mention 'consolidation', 'merging', or 'multiple reviewers' unless specifically requested."
+  "summary": "Single cohesive paragraph synthesizing key findings and their significance. Write as a single reviewer — do not mention consolidation, merging, or multiple reviewers."
 }
 
 ### GitHub Suggestion Syntax
@@ -255,6 +263,7 @@ const sections = [
   { name: 'input-suggestions', locked: true },
   { name: 'consolidation-rules', required: true, tier: ['thorough'] },
   { name: 'consensus-handling', required: true, tier: ['thorough'] },
+  { name: 'balanced-output', required: true, tier: ['thorough'] },
   { name: 'summary-synthesis', required: true, tier: ['thorough'] },
   { name: 'output-schema', locked: true },
   { name: 'diff-instructions', required: true, tier: ['thorough'] },
@@ -276,6 +285,7 @@ const defaultOrder = [
   'input-suggestions',
   'consolidation-rules',
   'consensus-handling',
+  'balanced-output',
   'summary-synthesis',
   'output-schema',
   'diff-instructions',

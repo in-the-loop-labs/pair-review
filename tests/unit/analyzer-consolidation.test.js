@@ -190,6 +190,88 @@ describe('Per-reviewer context threading (source verification)', () => {
   });
 });
 
+describe('runReviewerCentricCouncil below-threshold skip removal (source verification)', () => {
+  /**
+   * Extract the body of runReviewerCentricCouncil for focused assertions.
+   */
+  const methodMatch = analyzerSource.match(
+    /async runReviewerCentricCouncil\([^)]*\)\s*\{([\s\S]*?)\n  async runCouncilAnalysis/
+  );
+  const methodBody = methodMatch ? methodMatch[1] : '';
+
+  it('should extract the method body successfully', () => {
+    expect(methodBody.length).toBeGreaterThan(100);
+  });
+
+  it('should NOT contain COUNCIL_CONSOLIDATION_THRESHOLD check', () => {
+    expect(methodBody).not.toContain('COUNCIL_CONSOLIDATION_THRESHOLD');
+  });
+
+  it('should still contain single-voice shortcut', () => {
+    expect(methodBody).toContain('successfulVoices.length === 1');
+  });
+
+  it('should NOT collect voiceSummaries array', () => {
+    expect(methodBody).not.toContain('voiceSummaries');
+  });
+
+  it('should always proceed to cross-reviewer consolidation for multiple voices', () => {
+    expect(methodBody).toContain('Starting cross-reviewer consolidation');
+  });
+});
+
+describe('runCouncilAnalysis below-threshold skip removal (source verification)', () => {
+  const methodMatch = analyzerSource.match(
+    /async runCouncilAnalysis\([^)]*\)\s*\{([\s\S]*?)\n  async /
+  );
+  const methodBody = methodMatch ? methodMatch[1] : '';
+
+  it('should extract the method body successfully', () => {
+    expect(methodBody.length).toBeGreaterThan(100);
+  });
+
+  it('should NOT contain COUNCIL_CONSOLIDATION_THRESHOLD check', () => {
+    expect(methodBody).not.toContain('COUNCIL_CONSOLIDATION_THRESHOLD');
+  });
+
+  it('should still contain single-voice shortcut', () => {
+    expect(methodBody).toContain('voiceSuccessCount === 1');
+  });
+
+  it('should always proceed to consolidation for multi-voice results', () => {
+    expect(methodBody).toContain('Cross-level consolidation');
+  });
+});
+
+describe('_crossVoiceConsolidate summary extraction (source verification)', () => {
+  const methodMatch = analyzerSource.match(
+    /async _crossVoiceConsolidate\(voiceReviews, prMetadata, customInstructions, worktreePath, config\)\s*\{([\s\S]*?)\n  \}/
+  );
+  const methodBody = methodMatch ? methodMatch[1] : '';
+
+  it('should extract the method body successfully', () => {
+    expect(methodBody.length).toBeGreaterThan(100);
+  });
+
+  it('should extract summary from response.raw via extractJSON', () => {
+    expect(methodBody).toContain('response.raw');
+    expect(methodBody).toContain('extractJSON');
+  });
+
+  it('should check response.summary first', () => {
+    expect(methodBody).toContain('response.summary');
+  });
+
+  it('should use let for summary variable (not const with fallback)', () => {
+    expect(methodBody).toMatch(/let summary/);
+  });
+
+  it('should fall back to individual reviewer summaries instead of generic consolidation text', () => {
+    expect(methodBody).toContain('reviewerSummaries');
+    expect(methodBody).not.toContain('Consolidated ${voiceReviews.length}');
+  });
+});
+
 describe('Consolidation prompt templates (direct tests)', () => {
   it('thorough consolidation template should contain reviewer-context-guidance section', () => {
     const thorough = require('../../src/ai/prompts/baseline/consolidation/thorough');
@@ -227,6 +309,99 @@ describe('Consolidation prompt templates (direct tests)', () => {
       const section = template.sections.find(s => s.name === 'reviewer-context-guidance');
       expect(section).toBeDefined();
       expect(section.required).toBe(true);
+    }
+  });
+
+  it('all tiers should have balanced-output and summary-synthesis sections', () => {
+    const thorough = require('../../src/ai/prompts/baseline/consolidation/thorough');
+    const balanced = require('../../src/ai/prompts/baseline/consolidation/balanced');
+    const fast = require('../../src/ai/prompts/baseline/consolidation/fast');
+
+    for (const template of [thorough, balanced, fast]) {
+      expect(template.taggedPrompt).toContain('name="balanced-output"');
+      expect(template.taggedPrompt).toContain('name="summary-synthesis"');
+      expect(template.defaultOrder).toContain('balanced-output');
+      expect(template.defaultOrder).toContain('summary-synthesis');
+
+      const balancedSection = template.sections.find(s => s.name === 'balanced-output');
+      expect(balancedSection).toBeDefined();
+      expect(balancedSection.required).toBe(true);
+
+      const synthSection = template.sections.find(s => s.name === 'summary-synthesis');
+      expect(synthSection).toBeDefined();
+      expect(synthSection.required).toBe(true);
+    }
+  });
+
+  it('priority-curation should NOT exist in any tier', () => {
+    const thorough = require('../../src/ai/prompts/baseline/consolidation/thorough');
+    const balanced = require('../../src/ai/prompts/baseline/consolidation/balanced');
+    const fast = require('../../src/ai/prompts/baseline/consolidation/fast');
+
+    for (const template of [thorough, balanced, fast]) {
+      expect(template.taggedPrompt).not.toContain('name="priority-curation"');
+      expect(template.defaultOrder).not.toContain('priority-curation');
+      expect(template.sections.find(s => s.name === 'priority-curation')).toBeUndefined();
+    }
+  });
+
+  it('balanced-output should appear before summary-synthesis in defaultOrder', () => {
+    const thorough = require('../../src/ai/prompts/baseline/consolidation/thorough');
+    const balanced = require('../../src/ai/prompts/baseline/consolidation/balanced');
+    const fast = require('../../src/ai/prompts/baseline/consolidation/fast');
+
+    for (const template of [thorough, balanced, fast]) {
+      const balancedIdx = template.defaultOrder.indexOf('balanced-output');
+      const synthIdx = template.defaultOrder.indexOf('summary-synthesis');
+      expect(balancedIdx).toBeLessThan(synthIdx);
+    }
+  });
+
+  it('summary field in output-schema should use synthesis language', () => {
+    const thorough = require('../../src/ai/prompts/baseline/consolidation/thorough');
+    const balanced = require('../../src/ai/prompts/baseline/consolidation/balanced');
+    const fast = require('../../src/ai/prompts/baseline/consolidation/fast');
+
+    for (const template of [thorough, balanced, fast]) {
+      // Check within the output-schema section specifically to avoid
+      // false positives from the summary-synthesis section
+      const parsed = template.parseSections();
+      const outputSchema = parsed.find(s => s.name === 'output-schema');
+      expect(outputSchema).toBeDefined();
+      expect(outputSchema.content).toContain('single');
+      expect(outputSchema.content).toContain('reviewer');
+      expect(outputSchema.content).not.toContain('Draw on reviewer summaries for high-level conclusions');
+    }
+  });
+
+  it('balanced-output should use deduplication framing, not count reduction', () => {
+    const thorough = require('../../src/ai/prompts/baseline/consolidation/thorough');
+    const balanced = require('../../src/ai/prompts/baseline/consolidation/balanced');
+    const fast = require('../../src/ai/prompts/baseline/consolidation/fast');
+
+    for (const template of [thorough, balanced, fast]) {
+      expect(template.taggedPrompt).toContain('Deduplicate');
+      expect(template.taggedPrompt).not.toContain('Your output should contain *fewer* suggestions');
+    }
+  });
+
+  it('parseSections should return balanced-output and summary-synthesis as required sections', () => {
+    const thorough = require('../../src/ai/prompts/baseline/consolidation/thorough');
+    const balanced = require('../../src/ai/prompts/baseline/consolidation/balanced');
+    const fast = require('../../src/ai/prompts/baseline/consolidation/fast');
+
+    for (const template of [thorough, balanced, fast]) {
+      const parsed = template.parseSections();
+
+      const balancedSection = parsed.find(s => s.name === 'balanced-output');
+      expect(balancedSection).toBeDefined();
+      expect(balancedSection.required).toBe(true);
+      expect(balancedSection.content.length).toBeGreaterThan(10);
+
+      const synthSection = parsed.find(s => s.name === 'summary-synthesis');
+      expect(synthSection).toBeDefined();
+      expect(synthSection.required).toBe(true);
+      expect(synthSection.content.length).toBeGreaterThan(10);
     }
   });
 });

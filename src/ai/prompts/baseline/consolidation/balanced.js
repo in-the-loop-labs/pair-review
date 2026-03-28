@@ -108,6 +108,22 @@ Assess severity based on the evidence and reasoning across all reviewers. When r
 - **Contradiction**: Use your judgment; prefer the more actionable analysis
 </section>
 
+<section name="balanced-output" required="true">
+### 7. Balanced Output
+- **Deduplicate, don't concatenate**: If two reviewers flagged the same issue, merge them into one suggestion. Distinct findings should each be preserved — the goal is to eliminate redundancy, not to reduce count.
+- **Limit praise** to 2–3 most noteworthy items across all reviewers
+- **Avoid suggestion overload** — aim for quality over quantity
+- **Include confidence scores** reflecting cross-reviewer agreement
+</section>
+
+<section name="summary-synthesis" required="true">
+## Summary Synthesis
+The summary field should synthesize the findings, not list them.
+- Synthesize the key findings into a single cohesive paragraph
+- **Draw on reviewer summaries**: Use these as evidence for your own synthesis — integrate their insights into a cohesive conclusion rather than listing them individually
+- Write as if a single reviewer produced this analysis — do not mention consolidation, merging, or multiple reviewers
+</section>
+
 <section name="output-schema" locked="true">
 ## Output Format
 
@@ -139,7 +155,7 @@ Output JSON with this structure:
     "confidence": 0.0-1.0,
     "reasoning": ["Step-by-step reasoning explaining why this issue was flagged (optional)"]
   }],
-  "summary": "Brief consolidation summary. Draw on reviewer summaries for high-level conclusions. Write as if a single reviewer produced this analysis — do not mention 'consolidation', 'merging', or 'multiple reviewers' unless specifically requested."
+  "summary": "Single cohesive paragraph summarizing key findings. Write as a single reviewer."
 }
 
 ### GitHub Suggestion Syntax
@@ -182,6 +198,8 @@ const sections = [
   { name: 'input-suggestions', locked: true },
   { name: 'consolidation-rules', required: true },
   { name: 'consensus-handling', required: true },
+  { name: 'balanced-output', required: true },
+  { name: 'summary-synthesis', required: true },
   { name: 'output-schema', locked: true },
   { name: 'diff-instructions', required: true },
   { name: 'guidelines', required: true }
@@ -201,6 +219,8 @@ const defaultOrder = [
   'input-suggestions',
   'consolidation-rules',
   'consensus-handling',
+  'balanced-output',
+  'summary-synthesis',
   'output-schema',
   'diff-instructions',
   'guidelines'
