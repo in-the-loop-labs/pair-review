@@ -719,10 +719,9 @@ class PRManager {
    */
   async loadAndDisplayFiles(owner, repo, number) {
     try {
-      let diffUrl = `/api/pr/${owner}/${repo}/${number}/diff`;
-      if (this.hideWhitespace) {
-        diffUrl += '?w=1';
-      }
+      const diffUrl = this.hideWhitespace
+        ? `/api/pr/${owner}/${repo}/${number}/diff?w=1`
+        : `/api/pr/${owner}/${repo}/${number}/diff`;
       const response = await fetch(diffUrl);
 
       if (response.ok) {
@@ -4723,6 +4722,7 @@ class PRManager {
 
         this._hideStaleBadge();
         this._stalenessPromise = null;
+
         console.log('PR refreshed successfully');
       }
     } catch (error) {

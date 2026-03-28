@@ -288,6 +288,17 @@ describe('PR Management Endpoints', () => {
       expect(response.body.data.base_branch).toBe('main');
       expect(response.body.data.head_branch).toBe('feature-branch');
     });
+
+    it('should return stack_data as null when enable_graphite is not configured', async () => {
+      await insertTestPR(db, 1, 'owner/repo');
+      await insertTestWorktree(db, 1, 'owner/repo');
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1');
+
+      expect(response.status).toBe(200);
+      expect(response.body.data.stack_data).toBeNull();
+    });
   });
 
   describe('GET /api/pr/:owner/:repo/:number/diff', () => {
@@ -379,6 +390,7 @@ describe('PR Management Endpoints', () => {
       expect(response.body.stats.additions).toBe(10);
       expect(response.body.stats.deletions).toBe(5);
     });
+
   });
 
   describe('GET /api/prs', () => {
@@ -4150,6 +4162,22 @@ describe('Local Review Diff Generated Files', () => {
       expect(response.status).toBe(200);
       // The key assertion: b/test.js must be correctly identified, not just "test.js"
       expect(response.body.generated_files).toEqual(['b/test.js']);
+    });
+
+    it('should fall through to cached diff when ?base= is set but generateScopedDiff fails', async () => {
+      localReviewDiffs.set(reviewId, {
+        diff: sampleDiff,
+        stats: { unstagedChanges: 2, untrackedFiles: 0 }
+      });
+
+      // ?base=some-branch triggers the regeneration path, but generateScopedDiff
+      // will fail (tempDir is not a real git repo), so it should fall through to cached diff
+      const response = await request(app)
+        .get(`/api/local/${reviewId}/diff?base=some-branch`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.diff).toBe(sampleDiff);
+      expect(response.body.stats).toBeDefined();
     });
   });
 });

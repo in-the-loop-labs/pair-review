@@ -489,6 +489,60 @@ class LocalManager {
       });
     };
 
+    // Base branch override for stack-aware diff in local mode
+    manager.currentBaseOverride = null;
+
+    // Render the base branch selector dropdown for stacked branches.
+    // When a local review has stack_data with 3+ entries, the user can pick
+    // which ancestor branch to diff against.
+    // Render the base branch selector when a Graphite stack has multiple ancestors.
+    // When shown, the selector replaces the static base branch text in the toolbar.
+    manager.renderBaseBranchSelector = function(pr) {
+      const selectorWrap = document.getElementById('base-branch-selector-wrap');
+      const sel = document.getElementById('base-branch-select');
+      const staticBase = document.getElementById('toolbar-base-branch-static');
+      if (!selectorWrap || !sel) return;
+
+      // Hide selector if no stack data or fewer than 3 entries (need at least 2 ancestors to switch between)
+      if (!pr.stack_data || pr.stack_data.length < 3) {
+        selectorWrap.setAttribute('hidden', '');
+        if (staticBase) staticBase.removeAttribute('hidden');
+        return;
+      }
+
+      // Ancestors = all stack entries except the last (current branch)
+      const ancestors = pr.stack_data.slice(0, -1);
+
+      // Build options using createElement for XSS safety
+      sel.innerHTML = '';
+      for (const entry of ancestors) {
+        const option = document.createElement('option');
+        option.value = entry.branch;
+        option.textContent = entry.prNumber ? `${entry.branch} (#${entry.prNumber})` : entry.branch;
+        if (entry.branch === pr.base_branch) {
+          option.selected = true;
+        }
+        sel.appendChild(option);
+      }
+
+      // Show selector, hide static text
+      selectorWrap.removeAttribute('hidden');
+      if (staticBase) staticBase.setAttribute('hidden', '');
+
+      // Wire up change listener (idempotent via data-listener-added pattern)
+      if (!sel.hasAttribute('data-listener-added')) {
+        sel.setAttribute('data-listener-added', 'true');
+        sel.addEventListener('change', async () => {
+          manager.currentBaseOverride = sel.value;
+          // If selection matches the original base, clear the override
+          if (sel.value === manager.currentPR.base_branch) {
+            manager.currentBaseOverride = null;
+          }
+          await self.loadLocalDiff();
+        });
+      }
+    };
+
     console.log('PRManager patched for local mode');
   }
 
@@ -809,6 +863,13 @@ class LocalManager {
       );
     }
 
+    // Reset base branch override before reloading diff so the fetch uses the default base
+    manager.currentBaseOverride = null;
+    const baseSel = document.getElementById('base-branch-select');
+    if (baseSel && manager.currentPR?.base_branch) {
+      baseSel.value = manager.currentPR.base_branch;
+    }
+
     // Reload the diff display
     await this.loadLocalDiff();
 
@@ -957,7 +1018,8 @@ class LocalManager {
         head_sha: reviewData.localHeadSha,
         shaAbbrevLength: reviewData.shaAbbrevLength || 7,
         reviewType: 'local',
-        localPath: reviewData.localPath
+        localPath: reviewData.localPath,
+        stack_data: reviewData.stackData || null
       };
 
       // Re-initialize DiffOptionsDropdown with scope options
@@ -1141,54 +1203,19 @@ class LocalManager {
       pathText.title = fullPath;
     }
 
-    // Update branch name (header badge)
+    // Update branch name in header badge
     const branchText = document.getElementById('local-branch-text');
     if (branchText) {
       branchText.textContent = reviewData.branch || 'unknown';
     }
 
-    // Set descriptive tab title
-    if (window.tabTitle && reviewData.branch) {
-      window.tabTitle.setBase(reviewData.branch);
-    }
-
-    // Show base branch badge when branch is in scope
-    const LS = window.LocalScope;
-    const scopeStart = this.scopeStart || (LS ? LS.DEFAULT_SCOPE.start : 'unstaged');
-    const scopeEnd = this.scopeEnd || (LS ? LS.DEFAULT_SCOPE.end : 'untracked');
-    const hasBranch = LS ? LS.scopeIncludes(scopeStart, scopeEnd, 'branch') : false;
-
-    const branchVs = document.getElementById('local-branch-vs');
-    const baseBranchEl = document.getElementById('local-base-branch');
-    const baseBranchText = document.getElementById('local-base-branch-text');
-    if (hasBranch && reviewData.baseBranch) {
-      if (branchVs) branchVs.style.display = '';
-      if (baseBranchEl) baseBranchEl.style.display = '';
-      if (baseBranchText) baseBranchText.textContent = reviewData.baseBranch;
-    } else {
-      if (branchVs) branchVs.style.display = 'none';
-      if (baseBranchEl) baseBranchEl.style.display = 'none';
-    }
-
-    // Update refresh button tooltip based on scope
-    const refreshBtn = document.getElementById('local-refresh-btn');
-    if (refreshBtn) {
-      const scopeLabel = LS ? LS.scopeLabel(scopeStart, scopeEnd) : 'directory';
-      refreshBtn.title = `Refresh diff (${scopeLabel})`;
-    }
-
-    // Update branch name (toolbar) and wire up copy button
-    const branchName = document.getElementById('pr-branch-name');
-    if (branchName) {
-      branchName.textContent = reviewData.branch || 'unknown';
-    }
-
-    const branchCopy = document.getElementById('pr-branch-copy');
+    // Wire up header branch copy button
+    const branchCopy = document.getElementById('local-branch-copy');
     if (branchCopy && !branchCopy.hasAttribute('data-listener-added')) {
       branchCopy.setAttribute('data-listener-added', 'true');
       branchCopy.addEventListener('click', async (e) => {
         e.stopPropagation();
-        const branch = branchName ? branchName.textContent : '';
+        const branch = branchText ? branchText.textContent : '';
         if (!branch || branch === '--' || branch === 'unknown') return;
         try {
           await navigator.clipboard.writeText(branch);
@@ -1198,6 +1225,46 @@ class LocalManager {
           console.error('Failed to copy branch name:', err);
         }
       });
+    }
+
+    // Set descriptive tab title
+    if (window.tabTitle && reviewData.branch) {
+      window.tabTitle.setBase(reviewData.branch);
+    }
+
+    // Show base branch in toolbar when branch is in scope
+    const LS = window.LocalScope;
+    const scopeStart = this.scopeStart || (LS ? LS.DEFAULT_SCOPE.start : 'unstaged');
+    const scopeEnd = this.scopeEnd || (LS ? LS.DEFAULT_SCOPE.end : 'untracked');
+    const hasBranch = LS ? LS.scopeIncludes(scopeStart, scopeEnd, 'branch') : false;
+
+    // Toolbar base branch display (static text, selector is wired separately)
+    const toolbarBaseWrap = document.getElementById('toolbar-base-branch-wrap');
+    const toolbarBaseStatic = document.getElementById('toolbar-base-branch-static');
+    const toolbarBaseText = document.getElementById('toolbar-base-branch-text');
+    if (hasBranch && reviewData.baseBranch) {
+      if (toolbarBaseText) toolbarBaseText.textContent = reviewData.baseBranch;
+      if (toolbarBaseWrap) toolbarBaseWrap.removeAttribute('hidden');
+    } else {
+      if (toolbarBaseWrap) toolbarBaseWrap.setAttribute('hidden', '');
+    }
+
+    // Hide header branch display — toolbar now shows branch info
+    const branchVs = document.getElementById('local-branch-vs');
+    const baseBranchEl = document.getElementById('local-base-branch');
+    const baseBranchText = document.getElementById('local-base-branch-text');
+    if (branchVs) branchVs.style.display = 'none';
+    if (baseBranchEl) baseBranchEl.style.display = 'none';
+    // Keep baseBranchText updated for data purposes even though header is hidden
+    if (baseBranchText && reviewData.baseBranch) {
+      baseBranchText.textContent = reviewData.baseBranch;
+    }
+
+    // Update refresh button tooltip based on scope
+    const refreshBtn = document.getElementById('local-refresh-btn');
+    if (refreshBtn) {
+      const scopeLabel = LS ? LS.scopeLabel(scopeStart, scopeEnd) : 'directory';
+      refreshBtn.title = `Refresh diff (${scopeLabel})`;
     }
 
     // Update commit SHA and wire up copy button
@@ -1265,6 +1332,12 @@ class LocalManager {
         settingsLink.style.display = 'none';
       }
     }
+
+    // Render base branch selector for stacked branches
+    const manager = window.prManager;
+    if (manager?.renderBaseBranchSelector) {
+      manager.renderBaseBranchSelector(manager.currentPR);
+    }
   }
 
   /**
@@ -1311,10 +1384,11 @@ class LocalManager {
     const manager = window.prManager;
 
     try {
-      let diffUrl = `/api/local/${this.reviewId}/diff`;
-      if (manager.hideWhitespace) {
-        diffUrl += '?w=1';
-      }
+      const params = new URLSearchParams();
+      if (manager.hideWhitespace) params.set('w', '1');
+      if (manager.currentBaseOverride) params.set('base', manager.currentBaseOverride);
+      const queryString = params.toString();
+      const diffUrl = `/api/local/${this.reviewId}/diff${queryString ? '?' + queryString : ''}`;
       const response = await fetch(diffUrl);
 
       if (!response.ok) {
@@ -1483,6 +1557,11 @@ class LocalManager {
       manager.currentPR.title = hasBranch
         ? `Branch Changes - ${manager.currentPR.head_branch} vs ${manager.currentPR.base_branch}`
         : `Local Changes - ${manager.currentPR.head_branch}`;
+    }
+
+    // Reset base branch override on scope change (base branch context may differ)
+    if (manager) {
+      manager.currentBaseOverride = null;
     }
 
     // Update header and reload diff

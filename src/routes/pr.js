@@ -32,7 +32,10 @@ const { broadcastReviewEvent } = require('../events/review-events');
 const { fireHooks, hasHooks } = require('../hooks/hook-runner');
 const { buildReviewStartedPayload, buildReviewLoadedPayload, buildAnalysisStartedPayload, buildAnalysisCompletedPayload, getCachedUser } = require('../hooks/payloads');
 const simpleGit = require('simple-git');
+const { execSync } = require('child_process');
+const { readFileSync } = require('fs');
 const { GIT_DIFF_FLAGS_ARRAY, GIT_DIFF_SUMMARY_FLAGS_ARRAY } = require('../git/diff-flags');
+const { tryGraphiteState, readGraphitePRInfo, enrichStackWithPRInfo } = require('../git/base-branch');
 const {
   activeAnalyses,
   reviewToAnalysisId,
@@ -233,6 +236,25 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
       ? getShaAbbrevLength(extendedData.worktree_path)
       : DEFAULT_SHA_ABBREV_LENGTH;
 
+    // Detect Graphite stack if enabled
+    let stackData = null;
+    {
+      const stackConfig = req.app.get('config') || {};
+      if (stackConfig.enable_graphite === true && extendedData.worktree_path && prMetadata.head_branch) {
+        try {
+          const graphiteResult = tryGraphiteState(extendedData.worktree_path, prMetadata.head_branch, { execSync, readFileSync });
+          if (graphiteResult?.stack) {
+            const prInfo = readGraphitePRInfo(extendedData.worktree_path, { execSync, readFileSync });
+            stackData = prInfo?.prInfos
+              ? enrichStackWithPRInfo(graphiteResult.stack, prInfo.prInfos)
+              : graphiteResult.stack;
+          }
+        } catch {
+          // Non-fatal — stack detection is an enhancement
+        }
+      }
+    }
+
     // Prepare response
     // Use review.id instead of prMetadata.id to avoid ID collision with local mode
     const response = {
@@ -250,6 +272,7 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
         head_branch: prMetadata.head_branch,
         head_sha: extendedData.head_sha || null,  // Head commit SHA for GitHub API comments
         node_id: extendedData.node_id || null,  // GraphQL node ID for review submission
+        stack_data: stackData,
         shaAbbrevLength,
         created_at: prMetadata.created_at,
         updated_at: prMetadata.updated_at,
@@ -410,6 +433,22 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
     const parsedData = prMetadata.pr_data ? JSON.parse(prMetadata.pr_data) : {};
     const [repoOwner, repoName] = repository.split('/');
 
+    // Detect Graphite stack if enabled
+    let stackData = null;
+    if (config.enable_graphite === true && worktreePath && prData.head_branch) {
+      try {
+        const graphiteResult = tryGraphiteState(worktreePath, prData.head_branch, { execSync, readFileSync });
+        if (graphiteResult?.stack) {
+          const prInfo = readGraphitePRInfo(worktreePath, { execSync, readFileSync });
+          stackData = prInfo?.prInfos
+            ? enrichStackWithPRInfo(graphiteResult.stack, prInfo.prInfos)
+            : graphiteResult.stack;
+        }
+      } catch {
+        // Non-fatal — stack detection is an enhancement
+      }
+    }
+
     // Use review.id instead of prMetadata.id to avoid ID collision with local mode
     const response = {
       success: true,
@@ -424,6 +463,7 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
         state: parsedData.state || 'open',
         base_branch: prMetadata.base_branch,
         head_branch: prMetadata.head_branch,
+        stack_data: stackData,
         created_at: prMetadata.created_at,
         updated_at: prMetadata.updated_at,
         file_changes: parsedData.changed_files ? parsedData.changed_files.length : 0,
@@ -696,7 +736,7 @@ router.get('/api/pr/:owner/:repo/:number/diff', async (req, res) => {
     const worktreeRepo = new WorktreeRepository(db);
     const worktreeRecord = await worktreeRepo.findByPR(prNumber, repository);
 
-    // When ?w=1, regenerate the diff from the worktree with whitespace changes hidden
+    // When ?w=1, regenerate the diff from the worktree with whitespace hidden
     const hideWhitespace = req.query.w === '1';
     let diffContent = prData.diff || '';
     let changedFiles = prData.changed_files || [];
@@ -706,24 +746,16 @@ router.get('/api/pr/:owner/:repo/:number/diff', async (req, res) => {
         const worktreePath = worktreeRecord.path;
         await fs.access(worktreePath);
         const git = simpleGit(worktreePath);
+
         const baseSha = prData.base_sha;
         const headSha = prData.head_sha;
 
         if (baseSha && headSha) {
-          // Regenerate diff with -w flag to ignore whitespace changes
-          diffContent = await git.diff([
-            `${baseSha}...${headSha}`,
-            '--unified=3',
-            '-w',
-            ...GIT_DIFF_FLAGS_ARRAY
-          ]);
+          const diffArgs = [`${baseSha}...${headSha}`, '--unified=3', ...GIT_DIFF_FLAGS_ARRAY, '-w'];
+          diffContent = await git.diff(diffArgs);
 
-          // Regenerate changed files stats with -w flag
-          const diffSummary = await git.diffSummary([
-            `${baseSha}...${headSha}`,
-            '-w',
-            ...GIT_DIFF_SUMMARY_FLAGS_ARRAY
-          ]);
+          const summaryArgs = [`${baseSha}...${headSha}`, ...GIT_DIFF_SUMMARY_FLAGS_ARRAY, '-w'];
+          const diffSummary = await git.diffSummary(summaryArgs);
           const gitattributes = await getGeneratedFilePatterns(worktreePath);
           changedFiles = diffSummary.files.map(file => {
             const resolvedFile = resolveRenamedFile(file.file);
@@ -743,7 +775,7 @@ router.get('/api/pr/:owner/:repo/:number/diff', async (req, res) => {
           });
         }
       } catch (wsError) {
-        logger.warn(`Could not generate whitespace-filtered diff for PR #${prNumber}: ${wsError.message}`);
+        logger.warn(`Could not generate diff for PR #${prNumber}: ${wsError.message}`);
         // Fall back to cached diff (diffContent and changedFiles already set from prData)
       }
     } else if (worktreeRecord && worktreeRecord.path) {
@@ -760,9 +792,8 @@ router.get('/api/pr/:owner/:repo/:number/diff', async (req, res) => {
       }
     }
 
-    // When hideWhitespace is active and diff was regenerated, compute
-    // aggregate stats from the regenerated changedFiles instead of using
-    // stale cached values from prData.
+    // When diff was regenerated (whitespace), compute aggregate stats from
+    // the regenerated changedFiles instead of using stale cached values from prData.
     const additions = hideWhitespace
       ? changedFiles.reduce((sum, f) => sum + (f.insertions || 0), 0)
       : (prData.additions || 0);

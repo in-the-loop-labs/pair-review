@@ -32,7 +32,8 @@ const { getShaAbbrevLength } = require('../git/sha-abbrev');
 const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
 const { TIERS, TIER_ALIASES, VALID_TIERS, resolveTier } = require('../ai/prompts/config');
 const { getProviderClass, createProvider } = require('../ai/provider');
-const { getDefaultBranch } = require('../git/base-branch');
+const { readFileSync } = require('fs');
+const { getDefaultBranch, tryGraphiteState, readGraphitePRInfo, enrichStackWithPRInfo } = require('../git/base-branch');
 const { CommentRepository } = require('../database');
 const { runExecutableAnalysis, getChangedFiles } = require('./executable-analysis');
 const {
@@ -621,6 +622,24 @@ router.get('/api/local/:reviewId', async (req, res) => {
 
     // Compute SHA abbreviation length from the repo's git config
     const shaAbbrevLength = getShaAbbrevLength(review.local_path);
+
+    // Detect Graphite stack if enabled
+    let stackData = null;
+    const localConfig = req.app.get('config') || {};
+    if (localConfig.enable_graphite === true && review.local_path && branchName && branchName !== 'unknown' && branchName !== 'HEAD') {
+      try {
+        const graphiteResult = tryGraphiteState(review.local_path, branchName, { execSync, readFileSync });
+        if (graphiteResult?.stack) {
+          const prInfo = readGraphitePRInfo(review.local_path, { execSync, readFileSync });
+          stackData = prInfo?.prInfos
+            ? enrichStackWithPRInfo(graphiteResult.stack, prInfo.prInfos)
+            : graphiteResult.stack;
+        }
+      } catch {
+        // Non-fatal — stack detection is an enhancement
+      }
+    }
+
     const metadataElapsed = Date.now() - tEndpoint;
     if (metadataElapsed > 200) {
       logger.debug(`[perf] metadata#${reviewId} took ${metadataElapsed}ms (threshold: 200ms)`);
@@ -641,6 +660,7 @@ router.get('/api/local/:reviewId', async (req, res) => {
       baseBranch,
       branchInfo,
       branchAvailable,
+      stackData,
       shaAbbrevLength,
       createdAt: review.created_at,
       updatedAt: review.updated_at
@@ -764,18 +784,20 @@ router.get('/api/local/:reviewId/diff', async (req, res) => {
       });
     }
 
-    // When ?w=1, regenerate the diff with whitespace changes hidden (transient view, not cached)
+    // When ?w=1 or ?base=<branch>, regenerate the diff (transient view, not cached)
     const hideWhitespace = req.query.w === '1';
+    const baseBranchOverride = req.query.base;
     const scopeStart = review.local_scope_start || DEFAULT_SCOPE.start;
     const scopeEnd = review.local_scope_end || DEFAULT_SCOPE.end;
+    const baseBranch = baseBranchOverride || review.local_base_branch;
     let diffData;
 
-    if (hideWhitespace && review.local_path) {
+    if ((hideWhitespace || baseBranchOverride) && review.local_path) {
       try {
-        const wsResult = await generateScopedDiff(review.local_path, scopeStart, scopeEnd, review.local_base_branch, { hideWhitespace: true });
+        const wsResult = await generateScopedDiff(review.local_path, scopeStart, scopeEnd, baseBranch, { hideWhitespace });
         diffData = { diff: wsResult.diff, stats: wsResult.stats };
       } catch (wsError) {
-        logger.warn(`Could not generate whitespace-filtered diff for review #${reviewId}: ${wsError.message}`);
+        logger.warn(`Could not generate diff for review #${reviewId}: ${wsError.message}`);
         // Fall through to cached diff below
       }
     }

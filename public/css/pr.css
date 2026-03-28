@@ -6481,6 +6481,96 @@ body:not([data-theme="dark"]) .theme-icon-light {
   text-overflow: ellipsis;
 }
 
+/* Accessible visually-hidden utility */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Base branch selector */
+.toolbar-base-branch-wrap {
+  display: none;
+  align-items: center;
+}
+
+.toolbar-base-branch-wrap:not([hidden]) {
+  display: inline-flex;
+}
+
+.base-branch-selector-wrap {
+  display: none;
+  align-items: center;
+}
+
+.base-branch-selector-wrap:not([hidden]) {
+  display: inline-flex;
+}
+
+.base-branch-vs {
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+  margin: 0 6px;
+}
+
+.toolbar-base-branch-static[hidden] {
+  display: none;
+}
+
+.toolbar-base-branch-static {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  background-color: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border-primary);
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 260px;
+}
+
+.toolbar-base-branch-static svg {
+  color: var(--color-text-tertiary);
+  flex-shrink: 0;
+}
+
+.toolbar-base-branch-static span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.base-branch-select {
+  font-size: 11px;
+  padding: 2px 8px;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border-primary);
+  border-radius: 6px;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  max-width: 260px;
+  font-family: var(--font-mono);
+}
+
+.base-branch-select:hover {
+  background: var(--color-bg-secondary);
+}
+
+.base-branch-select:focus {
+  outline: 2px solid var(--color-accent-primary);
+  outline-offset: -2px;
+}
+
 /* Shared copy button styles for toolbar (branch + commit) */
 .toolbar-copy-btn {
   display: inline-flex;
