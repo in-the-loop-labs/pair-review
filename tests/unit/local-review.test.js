@@ -547,6 +547,140 @@ describe('generateScopedDiff', () => {
       expect(result.stats.untrackedFiles).toBe(0);
     });
   });
+
+  describe('contextLines option', () => {
+    it('should default to --unified=25 when no contextLines option is provided', async () => {
+      await fs.writeFile(path.join(testDir, 'file.txt'), 'modified\n');
+
+      const result = await generateScopedDiff(testDir, 'unstaged', 'untracked');
+
+      // The diff should use --unified=25 (default), which shows 25 context lines
+      // We can verify this indirectly: the diff was generated without error
+      expect(result.diff).toContain('diff --git a/file.txt b/file.txt');
+    });
+
+    it('should use custom contextLines when provided', async () => {
+      // Create a file with many lines so context line count matters
+      const lines = [];
+      for (let i = 1; i <= 50; i++) lines.push(`line ${i}`);
+      await fs.writeFile(path.join(testDir, 'file.txt'), lines.join('\n') + '\n');
+      execSync('git add file.txt', { cwd: testDir, stdio: 'pipe' });
+      execSync('git commit -m "Add many lines"', { cwd: testDir, stdio: 'pipe' });
+
+      // Modify a line in the middle
+      lines[25] = 'MODIFIED line 26';
+      await fs.writeFile(path.join(testDir, 'file.txt'), lines.join('\n') + '\n');
+
+      // With contextLines: 3, we get fewer context lines
+      const result3 = await generateScopedDiff(testDir, 'unstaged', 'unstaged', null, { contextLines: 3 });
+      // With default (25), we get more context lines
+      const resultDefault = await generateScopedDiff(testDir, 'unstaged', 'unstaged');
+
+      // The diff with 3 context lines should be shorter than with 25
+      expect(result3.diff.length).toBeLessThan(resultDefault.diff.length);
+      // Both should contain the modification
+      expect(result3.diff).toContain('MODIFIED line 26');
+      expect(resultDefault.diff).toContain('MODIFIED line 26');
+    });
+  });
+
+  describe('extraArgs option', () => {
+    it('should append extraArgs to git diff commands', async () => {
+      // Create files with whitespace-only changes
+      await fs.writeFile(path.join(testDir, 'file.txt'), 'hello world\n');
+      execSync('git add file.txt', { cwd: testDir, stdio: 'pipe' });
+      execSync('git commit -m "Add file"', { cwd: testDir, stdio: 'pipe' });
+
+      // Make a whitespace-only change
+      await fs.writeFile(path.join(testDir, 'file.txt'), 'hello  world\n');
+
+      // Without -w, the diff should show the whitespace change
+      const resultWithout = await generateScopedDiff(testDir, 'unstaged', 'unstaged');
+      expect(resultWithout.diff).toContain('file.txt');
+
+      // With -w (ignore whitespace), git should produce no diff
+      const resultWith = await generateScopedDiff(testDir, 'unstaged', 'unstaged', null, { extraArgs: ['-w'] });
+      // The -w flag causes git to ignore whitespace changes entirely
+      expect(resultWith.diff).toBeFalsy();
+    });
+
+    it('should work together with contextLines', async () => {
+      // Create a file with many lines
+      const lines = [];
+      for (let i = 1; i <= 50; i++) lines.push(`line ${i}`);
+      await fs.writeFile(path.join(testDir, 'file.txt'), lines.join('\n') + '\n');
+      execSync('git add file.txt', { cwd: testDir, stdio: 'pipe' });
+      execSync('git commit -m "Add lines"', { cwd: testDir, stdio: 'pipe' });
+
+      // Make a real change
+      lines[25] = 'CHANGED line 26';
+      await fs.writeFile(path.join(testDir, 'file.txt'), lines.join('\n') + '\n');
+
+      // Use both options together
+      const result = await generateScopedDiff(testDir, 'unstaged', 'unstaged', null, {
+        contextLines: 3,
+        extraArgs: ['--stat']
+      });
+
+      // Should contain the change
+      expect(result.diff).toContain('CHANGED line 26');
+      // --stat appends a summary at the end of the diff
+      expect(result.diff).toContain('1 file changed');
+    });
+  });
+
+  describe('untracked file options threading', () => {
+    it('should apply contextLines to untracked file diffs', async () => {
+      // Create a large untracked file so context line count is visible
+      const lines = [];
+      for (let i = 1; i <= 50; i++) lines.push(`new line ${i}`);
+      await fs.writeFile(path.join(testDir, 'big-new.txt'), lines.join('\n') + '\n');
+
+      // With contextLines: 3, the diff header should use --unified=3
+      const result3 = await generateScopedDiff(testDir, 'untracked', 'untracked', null, { contextLines: 3 });
+      // With default (25), the diff header should use --unified=25
+      const resultDefault = await generateScopedDiff(testDir, 'untracked', 'untracked');
+
+      // Both should contain the untracked file
+      expect(result3.diff).toContain('big-new.txt');
+      expect(resultDefault.diff).toContain('big-new.txt');
+      // The diff with 3 context lines should have @@ -0,0 +1,50 @@ style header
+      // Both produce the same output for new files (all lines are additions),
+      // but the flag should be threaded through without error
+      expect(result3.diff).toContain('new line 1');
+      expect(resultDefault.diff).toContain('new line 1');
+    });
+
+    it('should apply extraArgs to untracked file diffs', async () => {
+      // Create an untracked file
+      await fs.writeFile(path.join(testDir, 'new-file.txt'), 'new content\n');
+
+      // extraArgs like --stat should be applied to untracked file diffs too
+      const result = await generateScopedDiff(testDir, 'untracked', 'untracked', null, {
+        extraArgs: ['--stat']
+      });
+
+      // Should contain the untracked file diff
+      expect(result.diff).toContain('new-file.txt');
+      // --stat appends a summary to each file diff
+      expect(result.diff).toContain('1 file changed');
+    });
+
+    it('should apply both contextLines and extraArgs to untracked file diffs in mixed scope', async () => {
+      // Make an unstaged change AND an untracked file
+      await fs.writeFile(path.join(testDir, 'file.txt'), 'modified content\n');
+      await fs.writeFile(path.join(testDir, 'brand-new.txt'), 'brand new content\n');
+
+      const result = await generateScopedDiff(testDir, 'unstaged', 'untracked', null, {
+        contextLines: 3,
+        extraArgs: ['--stat']
+      });
+
+      // Should contain both tracked and untracked changes
+      expect(result.diff).toContain('file.txt');
+      expect(result.diff).toContain('brand-new.txt');
+    });
+  });
 });
 
 describe('computeScopedDigest', () => {

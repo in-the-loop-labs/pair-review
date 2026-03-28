@@ -208,10 +208,12 @@
         "title": "--title",
         "description": "--description",
         "output_dir": "--output-dir",
+        "diff_path": "--diff-path",
         "head_sha": "--sha",
         "model": "--model",
         "head_branch": "--branch"
       },
+      "diff_args": [],
       "output_glob": "**/results.json",
       "mapping_instructions": "The tool outputs JSON with a 'findings' array and a 'summary' string. Each finding has: category (bug/style/perf), priority (high/medium/low), title, body, fix, path, start_line, end_line. Map path to file, body to description, fix to suggestion. Map priority to severity: high=critical, medium=medium, low=minor. Map confidence: high=0.9, medium=0.7, low=0.4.",
       "env": {},

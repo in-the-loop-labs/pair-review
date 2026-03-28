@@ -30,8 +30,12 @@ vi.mock('../../src/git/gitattributes', () => ({
 
 vi.mock('../../src/local-review', () => ({
   generateScopedDiff: vi.fn().mockResolvedValue({ diff: '', stats: {}, mergeBaseSha: null }),
-  computeScopedDigest: vi.fn().mockResolvedValue('abc123')
+  computeScopedDigest: vi.fn().mockResolvedValue('abc123'),
+  findMergeBase: vi.fn().mockResolvedValue('abc123')
 }));
+
+const executableAnalysis = require('../../src/routes/executable-analysis');
+vi.spyOn(executableAnalysis, 'getChangedFiles').mockResolvedValue(['mock-file.js']);
 
 const { GitWorktreeManager } = require('../../src/git/worktree');
 vi.spyOn(GitWorktreeManager.prototype, 'worktreeExists').mockResolvedValue(true);

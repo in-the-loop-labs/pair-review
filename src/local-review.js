@@ -394,9 +394,11 @@ async function findMergeBase(repoPath, baseBranch) {
  * @param {string} repoPath - Path to the git repository
  * @param {Array} untrackedFiles - Array from getUntrackedFiles()
  * @param {string} wFlag - Whitespace flag (e.g. ' -w' or '')
+ * @param {string} [contextFlag=''] - Unified context flag (e.g. ' --unified=3')
+ * @param {string} [extraArgsStr=''] - Additional git diff flags (e.g. ' --patience')
  * @returns {string} Combined diff text for untracked files
  */
-function generateUntrackedDiffs(repoPath, untrackedFiles, wFlag) {
+function generateUntrackedDiffs(repoPath, untrackedFiles, wFlag, contextFlag = '', extraArgsStr = '') {
   let diff = '';
   for (const untracked of untrackedFiles) {
     if (!untracked.skipped) {
@@ -404,7 +406,7 @@ function generateUntrackedDiffs(repoPath, untrackedFiles, wFlag) {
         const filePath = path.join(repoPath, untracked.file);
         let fileDiff;
         try {
-          fileDiff = execSync(`git diff --no-index ${GIT_DIFF_FLAGS}${wFlag} -- /dev/null "${filePath}"`, {
+          fileDiff = execSync(`git diff --no-index ${GIT_DIFF_FLAGS}${contextFlag}${extraArgsStr}${wFlag} -- /dev/null "${filePath}"`, {
             cwd: repoPath,
             encoding: 'utf8',
             stdio: ['pipe', 'pipe', 'pipe'],
@@ -450,10 +452,14 @@ function generateUntrackedDiffs(repoPath, untrackedFiles, wFlag) {
  * @param {string} [baseBranch] - Base branch name (required when branch is in scope)
  * @param {Object} [options]
  * @param {boolean} [options.hideWhitespace] - Whether to hide whitespace changes
+ * @param {number} [options.contextLines=25] - Number of unified context lines (--unified=N). Defaults to 25.
+ * @param {string[]} [options.extraArgs=[]] - Additional git diff flags appended to each diff command
  * @returns {Promise<{diff: string, stats: Object, mergeBaseSha: string|null}>}
  */
 async function generateScopedDiff(repoPath, scopeStart, scopeEnd, baseBranch, options = {}) {
   const wFlag = options.hideWhitespace ? ' -w' : '';
+  const contextFlag = ` --unified=${options.contextLines ?? 25}`;
+  const extraArgsStr = (options.extraArgs || []).length > 0 ? ' ' + options.extraArgs.join(' ') : '';
   const stats = {
     trackedChanges: 0,
     untrackedFiles: 0,
@@ -481,37 +487,37 @@ async function generateScopedDiff(repoPath, scopeStart, scopeEnd, baseBranch, op
   try {
     if (hasBranch && !hasStaged && !hasUnstaged) {
       // Branch only → committed changes since merge-base
-      diff = execSync(`git diff ${mergeBaseSha}..HEAD ${GIT_DIFF_FLAGS} --unified=25${wFlag}`, {
+      diff = execSync(`git diff ${mergeBaseSha}..HEAD ${GIT_DIFF_FLAGS}${contextFlag}${extraArgsStr}${wFlag}`, {
         cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
         maxBuffer: 50 * 1024 * 1024
       });
     } else if (hasBranch && hasStaged && !hasUnstaged) {
       // Branch–Staged → staged changes relative to merge-base
-      diff = execSync(`git diff --cached ${mergeBaseSha} ${GIT_DIFF_FLAGS} --unified=25${wFlag}`, {
+      diff = execSync(`git diff --cached ${mergeBaseSha} ${GIT_DIFF_FLAGS}${contextFlag}${extraArgsStr}${wFlag}`, {
         cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
         maxBuffer: 50 * 1024 * 1024
       });
     } else if (hasBranch && hasUnstaged) {
       // Branch–Unstaged (or Branch–Untracked) → working tree vs merge-base
-      diff = execSync(`git diff ${mergeBaseSha} ${GIT_DIFF_FLAGS} --unified=25${wFlag}`, {
+      diff = execSync(`git diff ${mergeBaseSha} ${GIT_DIFF_FLAGS}${contextFlag}${extraArgsStr}${wFlag}`, {
         cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
         maxBuffer: 50 * 1024 * 1024
       });
     } else if (hasStaged && !hasUnstaged) {
       // Staged only → cached changes
-      diff = execSync(`git diff --cached ${GIT_DIFF_FLAGS} --unified=25${wFlag}`, {
+      diff = execSync(`git diff --cached ${GIT_DIFF_FLAGS}${contextFlag}${extraArgsStr}${wFlag}`, {
         cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
         maxBuffer: 50 * 1024 * 1024
       });
     } else if (hasStaged && hasUnstaged) {
       // Staged–Unstaged (or Staged–Untracked) → all changes vs HEAD
-      diff = execSync(`git diff HEAD ${GIT_DIFF_FLAGS} --unified=25${wFlag}`, {
+      diff = execSync(`git diff HEAD ${GIT_DIFF_FLAGS}${contextFlag}${extraArgsStr}${wFlag}`, {
         cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
         maxBuffer: 50 * 1024 * 1024
       });
     } else if (hasUnstaged) {
       // Unstaged only or Unstaged–Untracked → working tree changes
-      diff = execSync(`git diff ${GIT_DIFF_FLAGS} --unified=25${wFlag}`, {
+      diff = execSync(`git diff ${GIT_DIFF_FLAGS}${contextFlag}${extraArgsStr}${wFlag}`, {
         cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
         maxBuffer: 50 * 1024 * 1024
       });
@@ -555,7 +561,7 @@ async function generateScopedDiff(repoPath, scopeStart, scopeEnd, baseBranch, op
     const untrackedFiles = await getUntrackedFiles(repoPath);
     stats.untrackedFiles = untrackedFiles.length;
 
-    const untrackedDiff = generateUntrackedDiffs(repoPath, untrackedFiles, wFlag);
+    const untrackedDiff = generateUntrackedDiffs(repoPath, untrackedFiles, wFlag, contextFlag, extraArgsStr);
     if (untrackedDiff) {
       if (diff) diff += '\n';
       diff += untrackedDiff;

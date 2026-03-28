@@ -25,6 +25,7 @@ const { AnalysisRunRepository, CommentRepository } = require('../database');
 const { mergeInstructions } = require('../utils/instructions');
 const { GitWorktreeManager } = require('../git/worktree');
 const { buildSparseCheckoutGuidance } = require('./prompts/sparse-checkout-guidance');
+const { generateDiffForExecutable } = require('../routes/executable-analysis');
 
 
 // GIT_DIFF_FLAGS imported from ../git/diff-flags
@@ -134,8 +135,28 @@ async function runExecutableVoice(voiceProvider, reviewId, worktreePath, prMetad
       headSha: prMetadata.head_sha || null,
       baseBranch: prMetadata.base_branch || null,
       headBranch: prMetadata.head_branch || null,
+      scopeStart: prMetadata.scopeStart || null,
+      scopeEnd: prMetadata.scopeEnd || null,
       customInstructions: requestInstructions || null,
     };
+
+    // Generate scoped diff file when provider expects diff_path
+    if (voiceProvider.contextArgs?.diff_path) {
+      const diffPath = path.join(tmpDir, 'review.diff');
+      try {
+        await generateDiffForExecutable(
+          worktreePath,
+          executableContext,
+          voiceProvider.diffArgs || [],
+          diffPath
+        );
+        executableContext.diffPath = diffPath;
+      } catch (diffError) {
+        logger.warn(
+          `${logPrefix || ''}Failed to generate diff for executable voice: ${diffError.message} — continuing without diff`
+        );
+      }
+    }
 
     // Emit initial running status (non-stream) so the progress modal
     // populates exec.voices[voiceId] and transitions from Pending to Running
