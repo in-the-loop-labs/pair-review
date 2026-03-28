@@ -1335,6 +1335,11 @@ class VoiceCentricConfigTab {
     }
     this._markClean();
     await this.loadCouncils();
+    const selector = this.modal.querySelector('#vc-council-selector');
+    if (selector) {
+      selector.value = this.selectedCouncilId;
+      selector.classList.remove('new-council-selected');
+    }
   }
 
   async _postCouncil(name, config) {
