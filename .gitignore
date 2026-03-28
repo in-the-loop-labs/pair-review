@@ -20,3 +20,4 @@ test-results/
 examples/
 .pair-review/config.local.json
 pr.diff
+.task-context.md

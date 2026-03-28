@@ -1,9 +1,12 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 const { execSync } = require('child_process');
+const { readFileSync } = require('fs');
+const path = require('path');
 const logger = require('../utils/logger');
 
 const defaults = {
   execSync,
+  readFileSync,
   // Callers should pass a resolved token via _deps.getGitHubToken.
   // This default returns empty so GitHub lookup is silently skipped
   // when no token is provided — never re-resolve config internally.
@@ -18,7 +21,7 @@ const defaults = {
  * Detect the base branch for the current branch.
  *
  * Priority:
- *   1. Graphite — `gt trunk` and `gt parent`
+ *   1. Graphite — `gt state` (single call for trunk, parent, and stack)
  *   2. GitHub PR — look up an open PR for this branch
  *   3. Default branch — `git remote show origin` or local main/master
  *
@@ -28,7 +31,7 @@ const defaults = {
  * @param {string} [options.repository] - owner/repo string (needed for GitHub lookup)
  * @param {boolean} [options.enableGraphite] - When true, try Graphite CLI for parent branch
  * @param {Object} [options._deps] - Dependency overrides for testing
- * @returns {Promise<{baseBranch: string, source: string, prNumber?: number}|null>}
+ * @returns {Promise<{baseBranch: string, source: string, prNumber?: number, stack?: Array}|null>}
  */
 async function detectBaseBranch(repoPath, currentBranch, options = {}) {
   const deps = { ...defaults, ...options._deps };
@@ -40,7 +43,7 @@ async function detectBaseBranch(repoPath, currentBranch, options = {}) {
 
   // 1. Graphite (only when enabled via config)
   if (options.enableGraphite) {
-    const graphiteResult = tryGraphite(repoPath, currentBranch, deps);
+    const graphiteResult = tryGraphiteState(repoPath, currentBranch, deps);
     if (graphiteResult) return graphiteResult;
   }
 
@@ -56,46 +59,127 @@ async function detectBaseBranch(repoPath, currentBranch, options = {}) {
 }
 
 /**
- * Try Graphite CLI to find the parent branch.
+ * Try Graphite CLI `gt state` to find the parent branch and build the stack.
+ * Single execSync call replaces the previous 3 serial calls.
  */
-function tryGraphite(repoPath, currentBranch, deps) {
+function tryGraphiteState(repoPath, currentBranch, deps) {
   try {
-    // Check if gt is installed
-    deps.execSync('which gt', {
+    const raw = deps.execSync('gt state', {
+      cwd: repoPath,
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 3000
+      timeout: 5000
     });
 
-    // Get trunk branch
-    const trunk = deps.execSync('gt trunk', {
-      cwd: repoPath,
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 3000
-    }).trim();
+    const state = JSON.parse(raw);
+    const trunk = Object.entries(state).find(([, v]) => v.trunk)?.[0];
+    const entry = state[currentBranch];
+    const parent = entry?.parents?.[0]?.ref;
 
-    // Get parent branch
-    const parent = deps.execSync('gt parent', {
-      cwd: repoPath,
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 3000
-    }).trim();
-
-    if (parent && parent !== currentBranch) {
-      return { baseBranch: parent, source: 'graphite' };
+    if (!entry || !parent || parent === currentBranch) {
+      return null;
     }
 
-    // If parent is ourselves or empty, try trunk
-    if (trunk && trunk !== currentBranch) {
-      return { baseBranch: trunk, source: 'graphite' };
-    }
-  } catch {
-    // Graphite not installed or failed — fall through silently
+    const stack = buildStack(state, currentBranch, trunk);
+    return { baseBranch: parent, source: 'graphite', stack };
+  } catch (error) {
+    logger.debug(`Graphite state failed: ${error.message}`);
   }
 
   return null;
+}
+
+/**
+ * Walk from currentBranch up via parents[0].ref to build the stack,
+ * ordered trunk-first. Includes cycle protection.
+ *
+ * @param {Object} state - Parsed `gt state` output
+ * @param {string} currentBranch - Current branch name
+ * @param {string|undefined} trunk - Trunk branch name
+ * @returns {Array<{branch: string, parentBranch: string|null, parentSha: string|null, isTrunk: boolean}>}
+ */
+function buildStack(state, currentBranch, trunk) {
+  const entries = [];
+  const visited = new Set();
+  let branch = currentBranch;
+
+  while (branch && !visited.has(branch)) {
+    visited.add(branch);
+    const info = state[branch];
+    if (!info) break;
+
+    const parentRef = info.parents?.[0]?.ref || null;
+    const parentSha = info.parents?.[0]?.sha || null;
+    entries.push({
+      branch,
+      parentBranch: parentRef,
+      parentSha,
+      isTrunk: !!info.trunk
+    });
+
+    branch = parentRef;
+  }
+
+  entries.reverse();
+
+  // If the walk terminated before reaching the trunk, prepend it
+  if (trunk && !visited.has(trunk) && state[trunk]) {
+    entries.unshift({
+      branch: trunk,
+      parentBranch: null,
+      parentSha: null,
+      isTrunk: true
+    });
+  }
+
+  return entries;
+}
+
+/**
+ * Read Graphite PR info from the `.graphite_pr_info` file in the git dir.
+ *
+ * @param {string} repoPath - Absolute path to the repository
+ * @param {Object} deps - Dependencies (execSync, readFileSync)
+ * @returns {Object|null} Parsed PR info object with `prInfos` array, or null
+ */
+function readGraphitePRInfo(repoPath, deps) {
+  try {
+    const gitCommonDir = deps.execSync('git rev-parse --git-common-dir', {
+      cwd: repoPath,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe']
+    }).trim();
+
+    const prInfoPath = path.resolve(repoPath, gitCommonDir, '.graphite_pr_info');
+    const raw = deps.readFileSync(prInfoPath, 'utf8');
+    return JSON.parse(raw);
+  } catch (error) {
+    logger.debug(`Graphite PR info read failed: ${error.message}`);
+    return null;
+  }
+}
+
+/**
+ * Enrich stack entries with PR numbers from Graphite PR info.
+ *
+ * @param {Array} stack - Stack entries from buildStack
+ * @param {Array} prInfos - Array of PR info objects with headRefName and prNumber
+ * @returns {Array} New array of stack entries, each with optional prNumber
+ */
+function enrichStackWithPRInfo(stack, prInfos) {
+  if (!prInfos || !Array.isArray(prInfos)) return stack;
+
+  const prMap = new Map();
+  for (const info of prInfos) {
+    if (info.headRefName) {
+      prMap.set(info.headRefName, info.prNumber);
+    }
+  }
+
+  return stack.map(entry => {
+    const prNumber = prMap.get(entry.branch);
+    return prNumber != null ? { ...entry, prNumber } : { ...entry };
+  });
 }
 
 /**
@@ -218,4 +302,4 @@ function getDefaultBranch(localPath, _deps) {
   return null;
 }
 
-module.exports = { detectBaseBranch, getDefaultBranch };
+module.exports = { detectBaseBranch, getDefaultBranch, tryGraphiteState, buildStack, readGraphitePRInfo, enrichStackWithPRInfo };
