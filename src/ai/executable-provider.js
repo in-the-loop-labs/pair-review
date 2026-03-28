@@ -129,6 +129,7 @@ function createExecutableProviderClass(id, config) {
         ...(configOverrides.extra_args || [])
       ];
       this.contextArgs = config.context_args || {};
+      this.diffArgs = config.diff_args || [];
       this.outputGlob = config.output_glob || '**/results.json';
       this.mappingInstructions = config.mapping_instructions || '';
       this.timeout = config.timeout || 600000; // Default 10 minutes

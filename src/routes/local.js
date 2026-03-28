@@ -34,7 +34,7 @@ const { TIERS, TIER_ALIASES, VALID_TIERS, resolveTier } = require('../ai/prompts
 const { getProviderClass, createProvider } = require('../ai/provider');
 const { getDefaultBranch } = require('../git/base-branch');
 const { CommentRepository } = require('../database');
-const { runExecutableAnalysis } = require('./executable-analysis');
+const { runExecutableAnalysis, getChangedFiles } = require('./executable-analysis');
 const {
   activeAnalyses,
   localReviewDiffs,
@@ -69,6 +69,26 @@ function setLocalReviewDiff(reviewId, value) {
 }
 function deleteLocalReviewDiff(reviewId) {
   localReviewDiffs.delete(toIntKey(reviewId));
+}
+
+/**
+ * Guard: reject the request if the review's scope resolves to zero changed files.
+ * Returns true if the guard fired (response already sent), false otherwise.
+ */
+async function rejectIfEmptyScope(res, review, localPath) {
+  const scopeContext = {
+    scopeStart: review.local_scope_start || DEFAULT_SCOPE.start,
+    scopeEnd: review.local_scope_end || DEFAULT_SCOPE.end,
+    baseBranch: review.local_base_branch || null,
+  };
+  const changedFiles = await getChangedFiles(localPath, scopeContext);
+  if (changedFiles.length === 0) {
+    res.status(409).json({
+      error: 'No changes found in the selected scope. Check that your scope includes files with modifications, or adjust the scope range.'
+    });
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -1009,6 +1029,8 @@ async function handleExecutableAnalysis(req, res, {
       headSha: r.local_head_sha || null,
       baseBranch: r.local_base_branch || null,
       headBranch: r.local_head_branch || null,
+      scopeStart: r.local_scope_start || DEFAULT_SCOPE.start,
+      scopeEnd: r.local_scope_end || DEFAULT_SCOPE.end,
       customInstructions: customInstructions || null
     }),
     buildHookPayload: () => ({
@@ -1071,6 +1093,9 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
 
     const localPath = review.local_path;
     const repository = review.repository;
+
+    // Guard: reject if scope resolves to zero changed files
+    if (await rejectIfEmptyScope(res, review, localPath)) return;
 
     // Fetch repo settings for default instructions
     const repoSettingsRepo = new RepoSettingsRepository(db);
@@ -1971,6 +1996,9 @@ router.post('/api/local/:reviewId/analyses/council', async (req, res) => {
 
     const localPath = review.local_path;
 
+    // Guard: reject if scope resolves to zero changed files
+    if (await rejectIfEmptyScope(res, review, localPath)) return;
+
     const councilScopeStart = review.local_scope_start || DEFAULT_SCOPE.start;
     const councilScopeEnd = review.local_scope_end || DEFAULT_SCOPE.end;
     const councilHasBranch = includesBranch(councilScopeStart);
@@ -1993,7 +2021,9 @@ router.post('/api/local/:reviewId/analyses/council', async (req, res) => {
       base_sha: analysisBaseSha,
       head_sha: review.local_head_sha,
       base_branch: review.local_base_branch || null,
-      head_branch: review.local_head_branch || null
+      head_branch: review.local_head_branch || null,
+      scopeStart: councilScopeStart,
+      scopeEnd: councilScopeEnd,
     };
 
     const analyzer = new Analyzer(db, 'council', 'council');

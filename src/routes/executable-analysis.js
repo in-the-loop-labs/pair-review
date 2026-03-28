@@ -28,34 +28,128 @@ const { buildAnalysisStartedPayload, buildAnalysisCompletedPayload, getCachedUse
 const { normalizePath, resolveRenamedFile } = require('../utils/paths');
 const { buildFileLineCountMap, validateSuggestionLineNumbers } = require('../utils/line-validation');
 const { GIT_DIFF_FLAGS } = require('../git/diff-flags');
+const { generateScopedDiff, findMergeBase } = require('../local-review');
+const { scopeIncludes } = require('../local-scope');
+
+/**
+ * Generate a diff for the executable provider and write it to a file.
+ *
+ * Local mode: scope-aware diff via generateScopedDiff (checked first).
+ * PR mode: uses baseSha...headSha (three-dot merge-base diff).
+ *
+ * Uses GIT_DIFF_FLAGS for normalized output and git-default context (3 lines).
+ * Additional flags can be passed via diffArgs (from provider config.diff_args).
+ *
+ * @param {string} cwd - Working directory (repo path)
+ * @param {Object} context - Executable context
+ * @param {string|null} context.baseSha - Base SHA (PR mode)
+ * @param {string|null} context.headSha - Head SHA (PR mode)
+ * @param {string|null} context.scopeStart - Scope start stop (local mode)
+ * @param {string|null} context.scopeEnd - Scope end stop (local mode)
+ * @param {string|null} context.baseBranch - Base branch (local mode, for merge-base)
+ * @param {string[]} diffArgs - Extra git diff flags from provider config
+ * @param {string} outputPath - Path to write the diff file
+ * @returns {Promise<string>} The diff content
+ */
+async function generateDiffForExecutable(cwd, context, diffArgs, outputPath) {
+  let diff;
+  const extraFlags = diffArgs.length > 0 ? ' ' + diffArgs.join(' ') : '';
+
+  if (context.scopeStart && context.scopeEnd) {
+    // Local mode: scope-aware diff generation
+    // Note: diffArgs are passed as extraArgs to generateScopedDiff, which handles
+    // appending them to the git diff command internally (extraFlags is not used here).
+    const result = await generateScopedDiff(
+      cwd,
+      context.scopeStart,
+      context.scopeEnd,
+      context.baseBranch || null,
+      { contextLines: 3, extraArgs: diffArgs }
+    );
+    diff = result.diff;
+  } else if (context.baseSha && context.headSha) {
+    // PR mode: straightforward base...head diff
+    const { stdout } = await execPromise(
+      `git diff ${GIT_DIFF_FLAGS}${extraFlags} ${context.baseSha}...${context.headSha}`,
+      { cwd, maxBuffer: 50 * 1024 * 1024 }
+    );
+    diff = stdout;
+  } else {
+    // Fallback: simple working-tree diff
+    const { stdout } = await execPromise(
+      `git diff ${GIT_DIFF_FLAGS}${extraFlags}`,
+      { cwd, maxBuffer: 50 * 1024 * 1024 }
+    );
+    diff = stdout;
+  }
+
+  await fsPromises.writeFile(outputPath, diff || '', 'utf-8');
+  return diff;
+}
 
 /**
  * Get the list of changed files from git for suggestion validation.
- * PR mode uses base...head diff; local mode uses unstaged + untracked + staged.
+ * PR mode uses base...head diff.
+ * Local mode is scope-aware: only includes files from the scope stops
+ * (branch, staged, unstaged, untracked) that were included in the diff.
  * @param {string} cwd - Working directory
- * @param {Object} context - Executable context with baseSha/headSha
+ * @param {Object} context - Executable context with baseSha/headSha or scope fields
  * @returns {Promise<string[]>} Changed file paths
  */
 async function getChangedFiles(cwd, context) {
   try {
-    if (context.baseSha && context.headSha) {
+    // Scope-aware file list checked first — when both scope and SHA fields
+    // are present, scope is the more specific intent.
+    const { scopeStart, scopeEnd, baseBranch } = context;
+    const commands = [];
+
+    if (scopeStart && scopeEnd) {
+      const hasBranch = scopeIncludes(scopeStart, scopeEnd, 'branch');
+      const hasStaged = scopeIncludes(scopeStart, scopeEnd, 'staged');
+      const hasUnstaged = scopeIncludes(scopeStart, scopeEnd, 'unstaged');
+      const hasUntracked = scopeIncludes(scopeStart, scopeEnd, 'untracked');
+
+      if (hasBranch && baseBranch) {
+        const mergeBase = await findMergeBase(cwd, baseBranch);
+        commands.push(
+          execPromise(`git diff ${GIT_DIFF_FLAGS} ${mergeBase}..HEAD --name-only`, { cwd }).then(r => r.stdout)
+        );
+      }
+      if (hasStaged) {
+        commands.push(
+          execPromise(`git diff ${GIT_DIFF_FLAGS} --cached --name-only`, { cwd }).then(r => r.stdout)
+        );
+      }
+      if (hasUnstaged) {
+        commands.push(
+          execPromise(`git diff ${GIT_DIFF_FLAGS} --name-only`, { cwd }).then(r => r.stdout)
+        );
+      }
+      if (hasUntracked) {
+        commands.push(
+          execPromise('git ls-files --others --exclude-standard', { cwd }).then(r => r.stdout)
+        );
+      }
+    } else if (context.baseSha && context.headSha) {
+      // PR mode: straightforward base...head diff
       const { stdout } = await execPromise(
         `git diff ${GIT_DIFF_FLAGS} ${context.baseSha}...${context.headSha} --name-only`,
         { cwd }
       );
       return stdout.trim().split('\n').filter(f => f.length > 0);
+    } else {
+      // Fallback: no scope info — include unstaged + untracked + staged
+      commands.push(
+        execPromise(`git diff ${GIT_DIFF_FLAGS} --name-only`, { cwd }).then(r => r.stdout),
+        execPromise('git ls-files --others --exclude-standard', { cwd }).then(r => r.stdout),
+        execPromise(`git diff ${GIT_DIFF_FLAGS} --cached --name-only`, { cwd }).then(r => r.stdout)
+      );
     }
-    // Local mode: unstaged + untracked + staged
-    const [unstaged, untracked, staged] = await Promise.all([
-      execPromise(`git diff ${GIT_DIFF_FLAGS} --name-only`, { cwd }).then(r => r.stdout),
-      execPromise('git ls-files --others --exclude-standard', { cwd }).then(r => r.stdout),
-      execPromise(`git diff ${GIT_DIFF_FLAGS} --cached --name-only`, { cwd }).then(r => r.stdout)
-    ]);
-    const all = [
-      ...unstaged.trim().split('\n'),
-      ...untracked.trim().split('\n'),
-      ...staged.trim().split('\n')
-    ].filter(f => f.length > 0);
+
+    const results = await Promise.all(commands);
+    const all = results
+      .flatMap(output => output.trim().split('\n'))
+      .filter(f => f.length > 0);
     return [...new Set(all)];
   } catch (error) {
     logger.warn(`Could not get changed files list: ${error.message}`);
@@ -230,11 +324,25 @@ async function runExecutableAnalysis(req, res, params, shared, callbacks) {
       };
       const cwd = executableContext.cwd || process.cwd();
 
+      // Only generate a diff file when the provider's context_args maps diff_path to a CLI flag
+      if (provider.contextArgs?.diff_path) {
+        const diffPath = path.join(tmpDir, 'review.diff');
+        try {
+          await generateDiffForExecutable(cwd, executableContext, provider.diffArgs || [], diffPath);
+          executableContext.diffPath = diffPath;
+        } catch (diffError) {
+          logger.warn(`Failed to generate diff for executable: ${diffError.message} — continuing without diff`);
+        }
+      }
+
       logger.section(`Executable Provider Analysis - ${logLabel}`);
       logger.log('API', `Provider: ${selectedProvider}`, 'cyan');
       logger.log('API', `Model: ${selectedModel}`, 'cyan');
       logger.log('API', `Working dir: ${cwd}`, 'magenta');
       logger.log('API', `Output dir: ${tmpDir}`, 'magenta');
+      if (executableContext.diffPath) {
+        logger.log('API', `Diff file: ${executableContext.diffPath}`, 'magenta');
+      }
 
       // Throttled stream event handler — avoids flooding WebSocket
       let lastBroadcastTime = 0;
@@ -383,4 +491,4 @@ async function runExecutableAnalysis(req, res, params, shared, callbacks) {
   })();
 }
 
-module.exports = { runExecutableAnalysis };
+module.exports = { runExecutableAnalysis, generateDiffForExecutable, getChangedFiles };

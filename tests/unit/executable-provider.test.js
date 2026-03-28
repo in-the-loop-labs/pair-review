@@ -224,6 +224,18 @@ describe('createExecutableProviderClass', () => {
       expect(new (createExecutableProviderClass('t', { command: 'x' }))().baseArgs).toEqual([]);
     });
 
+    it('stores diffArgs from config.diff_args', () => {
+      const P = createExecutableProviderClass('t', {
+        command: 'x', diff_args: ['--ignore-all-space', '-M']
+      });
+      expect(new P().diffArgs).toEqual(['--ignore-all-space', '-M']);
+    });
+
+    it('defaults diffArgs to empty array when not in config', () => {
+      const P = createExecutableProviderClass('t', { command: 'x' });
+      expect(new P().diffArgs).toEqual([]);
+    });
+
     it('stores contextArgs, outputGlob, mappingInstructions', () => {
       const i = new (createExecutableProviderClass('t', {
         command: 'x', context_args: { title: '--t' },
