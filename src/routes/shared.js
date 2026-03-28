@@ -108,13 +108,50 @@ function determineCompletionInfo(result) {
   };
 }
 
+// Track which analysisIds have been announced on the index topic
+const _indexAnnouncedIds = new Set();
+
+/**
+ * Broadcast an analysis status change on the `index:analyses` topic
+ * so the index page can show/hide spinners in real time.
+ * @param {Object} data - Event data (type, analysisId, reviewId, etc.)
+ */
+function broadcastIndexAnalysisEvent(data) {
+  ws.broadcast('index:analyses', data);
+}
+
 /**
  * Broadcast progress update to all WebSocket clients subscribed to `analysis:{analysisId}`.
+ * Also emits index-level start/end events for the index page spinners.
  * @param {string} analysisId - Analysis ID
  * @param {Object} progressData - Progress data to broadcast
  */
 function broadcastProgress(analysisId, progressData) {
   ws.broadcast('analysis:' + analysisId, { type: 'progress', ...progressData });
+
+  // Emit index-level events for analysis lifecycle transitions
+  const status = progressData.status;
+  if (status === 'running' && !_indexAnnouncedIds.has(analysisId)) {
+    _indexAnnouncedIds.add(analysisId);
+    broadcastIndexAnalysisEvent({
+      type: 'analysis_started',
+      analysisId,
+      reviewId: progressData.reviewId,
+      reviewType: progressData.reviewType || null,
+      repository: progressData.repository || null,
+      prNumber: progressData.prNumber || null
+    });
+  } else if (['completed', 'failed', 'cancelled'].includes(status) && _indexAnnouncedIds.has(analysisId)) {
+    _indexAnnouncedIds.delete(analysisId);
+    broadcastIndexAnalysisEvent({
+      type: 'analysis_ended',
+      analysisId,
+      reviewId: progressData.reviewId,
+      reviewType: progressData.reviewType || null,
+      repository: progressData.repository || null,
+      prNumber: progressData.prNumber || null
+    });
+  }
 }
 
 /**
@@ -439,6 +476,8 @@ module.exports = {
   getModel,
   determineCompletionInfo,
   broadcastProgress,
+  broadcastIndexAnalysisEvent,
+  _indexAnnouncedIds,
   broadcastSetupProgress,
   registerProcess,
   killProcesses,

@@ -16,6 +16,7 @@ import {
   activeAnalyses,
   createProgressCallback,
   broadcastProgress,
+  _indexAnnouncedIds,
   parseEnabledLevels
 } from '../../src/routes/shared.js';
 
@@ -1511,5 +1512,114 @@ describe('parseEnabledLevels', () => {
       const result = parseEnabledLevels({ 1: true, 2: true, 3: true }, true);
       expect(result).toEqual({ 1: true, 2: true, 3: true });
     });
+  });
+});
+
+describe('broadcastProgress index:analyses integration', () => {
+  let broadcastSpy;
+
+  beforeEach(() => {
+    activeAnalyses.clear();
+    _indexAnnouncedIds.clear();
+    broadcastSpy = vi.spyOn(ws, 'broadcast').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    broadcastSpy.mockRestore();
+    activeAnalyses.clear();
+    _indexAnnouncedIds.clear();
+  });
+
+  it('should broadcast analysis_started on first running status', () => {
+    const analysisId = 'idx-test-1';
+    const status = {
+      id: analysisId,
+      reviewId: 42,
+      reviewType: 'pr',
+      repository: 'owner/repo',
+      prNumber: 123,
+      status: 'running'
+    };
+
+    broadcastProgress(analysisId, status);
+
+    const indexCalls = broadcastSpy.mock.calls.filter(c => c[0] === 'index:analyses');
+    expect(indexCalls).toHaveLength(1);
+    expect(indexCalls[0][1]).toEqual({
+      type: 'analysis_started',
+      analysisId,
+      reviewId: 42,
+      reviewType: 'pr',
+      repository: 'owner/repo',
+      prNumber: 123
+    });
+    expect(_indexAnnouncedIds.has(analysisId)).toBe(true);
+  });
+
+  it('should not broadcast analysis_started twice for same analysisId', () => {
+    const analysisId = 'idx-test-2';
+    const status = { id: analysisId, reviewId: 10, status: 'running' };
+
+    broadcastProgress(analysisId, status);
+    broadcastProgress(analysisId, status);
+
+    const indexCalls = broadcastSpy.mock.calls.filter(c => c[0] === 'index:analyses');
+    expect(indexCalls).toHaveLength(1);
+  });
+
+  it('should broadcast analysis_ended on completed status', () => {
+    const analysisId = 'idx-test-3';
+
+    // First announce start
+    broadcastProgress(analysisId, { status: 'running', reviewId: 5, reviewType: 'local' });
+    broadcastSpy.mockClear();
+
+    // Then complete
+    broadcastProgress(analysisId, { status: 'completed', reviewId: 5, reviewType: 'local' });
+
+    const indexCalls = broadcastSpy.mock.calls.filter(c => c[0] === 'index:analyses');
+    expect(indexCalls).toHaveLength(1);
+    expect(indexCalls[0][1]).toEqual({
+      type: 'analysis_ended',
+      analysisId,
+      reviewId: 5,
+      reviewType: 'local',
+      repository: null,
+      prNumber: null
+    });
+    expect(_indexAnnouncedIds.has(analysisId)).toBe(false);
+  });
+
+  it('should broadcast analysis_ended on failed status', () => {
+    const analysisId = 'idx-test-4';
+
+    broadcastProgress(analysisId, { status: 'running', reviewId: 7 });
+    broadcastSpy.mockClear();
+
+    broadcastProgress(analysisId, { status: 'failed', reviewId: 7 });
+
+    const indexCalls = broadcastSpy.mock.calls.filter(c => c[0] === 'index:analyses');
+    expect(indexCalls).toHaveLength(1);
+    expect(indexCalls[0][1].type).toBe('analysis_ended');
+  });
+
+  it('should broadcast analysis_ended on cancelled status', () => {
+    const analysisId = 'idx-test-5';
+
+    broadcastProgress(analysisId, { status: 'running', reviewId: 8 });
+    broadcastSpy.mockClear();
+
+    broadcastProgress(analysisId, { status: 'cancelled', reviewId: 8 });
+
+    const indexCalls = broadcastSpy.mock.calls.filter(c => c[0] === 'index:analyses');
+    expect(indexCalls).toHaveLength(1);
+    expect(indexCalls[0][1].type).toBe('analysis_ended');
+  });
+
+  it('should not broadcast analysis_ended if never announced', () => {
+    broadcastProgress('never-started', { status: 'completed', reviewId: 1 });
+
+    const indexCalls = broadcastSpy.mock.calls.filter(c => c[0] === 'index:analyses');
+    expect(indexCalls).toHaveLength(0);
   });
 });

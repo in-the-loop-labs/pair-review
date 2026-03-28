@@ -553,6 +553,9 @@
       container.classList.remove('recent-reviews-loading');
       localReviewsPagination.loaded = true;
 
+      // Apply analysis-in-progress spinners to any rows with active analyses
+      fetchAndApplyActiveAnalyses();
+
     } catch (error) {
       console.error('Error loading local reviews:', error);
       container.innerHTML =
@@ -592,6 +595,9 @@
 
       tbody.insertAdjacentHTML('beforeend', data.sessions.map(renderLocalReviewRow).join(''));
       if (localSelection.active) localSelection.onRowsAdded();
+
+      // Apply analysis spinners to newly added rows
+      fetchAndApplyActiveAnalyses();
 
       localReviewsPagination.lastTimestamp = data.sessions[data.sessions.length - 1].updated_at;
       localReviewsPagination.hasMore = !!data.hasMore;
@@ -764,8 +770,10 @@
       ? '<a href="https://github.com/' + encodeURIComponent(review.author) + '" target="_blank" rel="noopener">' + escapeHtml(review.author) + '</a>'
       : '';
 
+    var reviewIdAttr = review.review_id ? ' data-analysis-review-id="' + review.review_id + '"' : '';
+
     return '' +
-      '<tr data-review-id="' + review.id + '">' +
+      '<tr data-review-id="' + review.id + '"' + reviewIdAttr + '>' +
         '<td class="col-repo">' + escapeHtml(review.repository) + '</td>' +
         '<td class="col-pr"><a href="' + link + '">#' + review.pr_number + '</a></td>' +
         '<td class="col-title" title="' + escapeHtml(review.pr_title) + '">' + escapeHtml(review.pr_title) + '</td>' +
@@ -927,6 +935,9 @@
       container.innerHTML = html;
       container.classList.remove('recent-reviews-loading');
 
+      // Apply analysis-in-progress spinners to any rows with active analyses
+      fetchAndApplyActiveAnalyses();
+
     } catch (error) {
       console.error('Error loading recent reviews:', error);
       container.innerHTML =
@@ -991,6 +1002,9 @@
       // Append new rows to the existing table body
       tbody.insertAdjacentHTML('beforeend', data.reviews.map(renderRecentReviewRow).join(''));
       if (prSelection.active) prSelection.onRowsAdded();
+
+      // Apply analysis spinners to newly added rows
+      fetchAndApplyActiveAnalyses();
 
       // Update pagination state - advance the cursor
       recentReviewsPagination.lastTimestamp = data.reviews[data.reviews.length - 1].last_accessed_at;
@@ -1923,5 +1937,108 @@
       setFormLoading('local', false);
     }
   });
+
+  // ─── Analysis-in-progress Spinners ──────────────────────────────────────────
+
+  /** Set of reviewIds (integers) that currently have a spinner on the page */
+  var activeSpinnerReviewIds = new Set();
+
+  /**
+   * Find a table row matching the given reviewId.
+   * Checks both PR rows (data-analysis-review-id) and local rows (data-session-id).
+   * @param {number} reviewId - The reviews.id to find
+   * @returns {HTMLElement|null}
+   */
+  function findRowByReviewId(reviewId) {
+    return document.querySelector(
+      'tr[data-analysis-review-id="' + reviewId + '"], tr[data-session-id="' + reviewId + '"]'
+    );
+  }
+
+  /**
+   * Add a spinner to the title/name cell of a row.
+   * @param {HTMLElement} row - The <tr> element
+   * @param {number} reviewId - The reviewId to track
+   */
+  function addSpinnerToRow(row, reviewId) {
+    if (row.querySelector('.index-analysis-spinner')) return;
+
+    var spinner = document.createElement('span');
+    spinner.className = 'index-analysis-spinner';
+    spinner.title = 'Analysis in progress';
+
+    // PR rows: prepend in .col-title; local rows: prepend in .col-local-name
+    var cell = row.querySelector('.col-title') || row.querySelector('.col-local-name');
+    if (cell) {
+      cell.insertBefore(spinner, cell.firstChild);
+    }
+    activeSpinnerReviewIds.add(reviewId);
+  }
+
+  /**
+   * Remove a spinner from a row.
+   * @param {HTMLElement} row - The <tr> element
+   * @param {number} reviewId - The reviewId to untrack
+   */
+  function removeSpinnerFromRow(row, reviewId) {
+    var spinner = row.querySelector('.index-analysis-spinner');
+    if (spinner) spinner.remove();
+    activeSpinnerReviewIds.delete(reviewId);
+  }
+
+  /**
+   * Fetch active analyses and apply/remove spinners to matching rows.
+   */
+  function fetchAndApplyActiveAnalyses() {
+    fetch('/api/analyses/active')
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        if (!data.active) return;
+
+        var activeReviewIds = new Set();
+        data.active.forEach(function (entry) {
+          var rid = entry.reviewId;
+          if (rid == null) return;
+          activeReviewIds.add(rid);
+          var row = findRowByReviewId(rid);
+          if (row) addSpinnerToRow(row, rid);
+        });
+
+        // Remove spinners for analyses that are no longer active
+        activeSpinnerReviewIds.forEach(function (rid) {
+          if (!activeReviewIds.has(rid)) {
+            var row = findRowByReviewId(rid);
+            if (row) removeSpinnerFromRow(row, rid);
+            else activeSpinnerReviewIds.delete(rid);
+          }
+        });
+      })
+      .catch(function () { /* ignore — spinners are best-effort */ });
+  }
+
+  // Subscribe to real-time analysis events via WebSocket
+  if (window.wsClient) {
+    window.wsClient.connect();
+    window.wsClient.subscribe('index:analyses', function (msg) {
+      var reviewId = msg.reviewId;
+      if (reviewId == null) return;
+
+      if (msg.type === 'analysis_started') {
+        var row = findRowByReviewId(reviewId);
+        if (row) addSpinnerToRow(row, reviewId);
+      } else if (msg.type === 'analysis_ended') {
+        var endRow = findRowByReviewId(reviewId);
+        if (endRow) removeSpinnerFromRow(endRow, reviewId);
+        else activeSpinnerReviewIds.delete(reviewId);
+      }
+    });
+
+    // On reconnect, re-fetch active analyses to catch anything missed
+    window.addEventListener('wsReconnected', fetchAndApplyActiveAnalyses);
+  }
+
+  // Expose for use after data loads (loadRecentReviews / loadLocalReviews)
+  window.__pairReview = window.__pairReview || {};
+  window.__pairReview.refreshAnalysisSpinners = fetchAndApplyActiveAnalyses;
 
 })();
