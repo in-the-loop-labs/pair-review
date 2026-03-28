@@ -111,110 +111,17 @@ describe('Council analysis summary propagation', () => {
     });
   });
 
-  describe('threshold bypass path (below COUNCIL_CONSOLIDATION_THRESHOLD)', () => {
-    const multiVoiceConfig = {
-      levels: {
-        '1': {
-          enabled: true,
-          voices: [{ provider: 'claude', model: 'sonnet', tier: 'fast' }]
-        },
-        '2': {
-          enabled: true,
-          voices: [{ provider: 'claude', model: 'sonnet', tier: 'balanced' }]
-        }
-      }
-    };
-
-    it('should propagate voice summary when total suggestions are below threshold', async () => {
-      const voiceCall = vi.fn();
-
-      // First voice (L1): 2 suggestions with a summary
-      // Second voice (L2): 1 suggestion with a summary
-      // Total = 3 suggestions, below threshold of 8
-      voiceCall.mockResolvedValueOnce({
-        suggestions: [
-          { file: 'src/foo.js', line_start: 1, line_end: 1, type: 'bug', title: 'Bug 1', confidence: 0.9 },
-          { file: 'src/bar.js', line_start: 5, line_end: 5, type: 'bug', title: 'Bug 2', confidence: 0.8 }
-        ],
-        summary: 'Level 1 found two bugs in error handling'
-      }).mockResolvedValueOnce({
-        suggestions: [
-          { file: 'src/foo.js', line_start: 20, line_end: 25, type: 'improvement', title: 'Refactor suggestion', confidence: 0.7 }
-        ],
-        summary: 'Level 2 identified a refactoring opportunity'
-      });
-
-      vi.spyOn(analyzer, '_executeCouncilVoice').mockImplementation(() => voiceCall());
-
-      const result = await analyzer.runCouncilAnalysis(reviewContext, multiVoiceConfig, { runId: 'test-run' });
-
-      // Should join both summaries since there are multiple voices
-      expect(result.summary).toContain('Level 1 found two bugs in error handling');
-      expect(result.summary).toContain('Level 2 identified a refactoring opportunity');
+  describe('runCouncilAnalysis always consolidates multi-voice results (source verification)', () => {
+    it('should NOT contain COUNCIL_CONSOLIDATION_THRESHOLD check', () => {
+      // The threshold guard was removed so consolidation always runs for multi-voice councils.
+      // This verifies the code change at the source level.
+      const src = Analyzer.prototype.runCouncilAnalysis.toString();
+      expect(src).not.toContain('COUNCIL_CONSOLIDATION_THRESHOLD');
     });
 
-    it('should propagate single voice summary when only one voice has a summary', async () => {
-      const voiceCall = vi.fn();
-
-      voiceCall.mockResolvedValueOnce({
-        suggestions: [
-          { file: 'src/foo.js', line_start: 1, line_end: 1, type: 'bug', title: 'Bug 1', confidence: 0.9 }
-        ],
-        summary: 'Found a critical issue'
-      }).mockResolvedValueOnce({
-        suggestions: [
-          { file: 'src/bar.js', line_start: 5, line_end: 5, type: 'improvement', title: 'Style', confidence: 0.6 }
-        ],
-        summary: null
-      });
-
-      vi.spyOn(analyzer, '_executeCouncilVoice').mockImplementation(() => voiceCall());
-
-      const result = await analyzer.runCouncilAnalysis(reviewContext, multiVoiceConfig, { runId: 'test-run' });
-
-      expect(result.summary).toBe('Found a critical issue');
-    });
-
-    it('should propagate summary when all voices return 0 suggestions but have summaries', async () => {
-      const voiceCall = vi.fn();
-
-      voiceCall.mockResolvedValueOnce({
-        suggestions: [],
-        summary: 'Level 1: No issues found in changed lines'
-      }).mockResolvedValueOnce({
-        suggestions: [],
-        summary: 'Level 2: File context looks consistent'
-      });
-
-      vi.spyOn(analyzer, '_executeCouncilVoice').mockImplementation(() => voiceCall());
-
-      const result = await analyzer.runCouncilAnalysis(reviewContext, multiVoiceConfig, { runId: 'test-run' });
-
-      // Both summaries should be joined
-      expect(result.summary).toContain('Level 1: No issues found in changed lines');
-      expect(result.summary).toContain('Level 2: File context looks consistent');
-      expect(result.suggestions).toEqual([]);
-    });
-
-    it('should use generic fallback when no voice returns a summary', async () => {
-      const voiceCall = vi.fn();
-
-      voiceCall.mockResolvedValueOnce({
-        suggestions: [
-          { file: 'src/foo.js', line_start: 1, line_end: 1, type: 'bug', title: 'Bug', confidence: 0.9 }
-        ],
-        summary: null
-      }).mockResolvedValueOnce({
-        suggestions: [],
-        summary: null
-      });
-
-      vi.spyOn(analyzer, '_executeCouncilVoice').mockImplementation(() => voiceCall());
-
-      const result = await analyzer.runCouncilAnalysis(reviewContext, multiVoiceConfig, { runId: 'test-run' });
-
-      expect(result.summary).toContain('Council analysis complete');
-      expect(result.summary).toContain('consolidation skipped');
+    it('should still contain single-voice shortcut', () => {
+      const src = Analyzer.prototype.runCouncilAnalysis.toString();
+      expect(src).toContain('voiceSuccessCount === 1');
     });
   });
 

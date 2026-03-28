@@ -26,8 +26,6 @@ const { mergeInstructions } = require('../utils/instructions');
 const { GitWorktreeManager } = require('../git/worktree');
 const { buildSparseCheckoutGuidance } = require('./prompts/sparse-checkout-guidance');
 
-/** Minimum total suggestion count across all voices before consolidation is applied */
-const COUNCIL_CONSOLIDATION_THRESHOLD = 8;
 
 // GIT_DIFF_FLAGS imported from ../git/diff-flags
 
@@ -3037,15 +3035,15 @@ File-level suggestions should NOT have a line number. They apply to the entire f
     // Collect successful results
     const successfulVoices = [];
     const allVoiceSuggestions = [];
-    const voiceSummaries = [];
+    const allVoiceFileLevelSuggestions = [];
 
     for (let i = 0; i < voiceResults.length; i++) {
       const settled = voiceResults[i];
       if (settled.status === 'fulfilled' && settled.value.result?.suggestions) {
         successfulVoices.push(settled.value);
         allVoiceSuggestions.push(...settled.value.result.suggestions);
-        if (settled.value.result.summary) {
-          voiceSummaries.push(settled.value.result.summary);
+        if (settled.value.result.fileLevelSuggestions) {
+          allVoiceFileLevelSuggestions.push(...settled.value.result.fileLevelSuggestions);
         }
         logger.success(`[ReviewerCouncil] ${settled.value.reviewerLabel}: ${settled.value.result.suggestions.length} suggestions`);
       } else {
@@ -3094,34 +3092,6 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 
     // Multiple voices: cross-voice consolidation
     const totalSuggestionCount = allVoiceSuggestions.length;
-
-    // If below consolidation threshold, skip
-    if (totalSuggestionCount < COUNCIL_CONSOLIDATION_THRESHOLD) {
-      logger.info(`[ReviewerCouncil] ${totalSuggestionCount} total suggestions below threshold (${COUNCIL_CONSOLIDATION_THRESHOLD}) — skipping consolidation`);
-      const summary = voiceSummaries.length > 1 ? voiceSummaries.join('\n\n') : voiceSummaries[0];
-
-      const finalSuggestions = this.validateAndFinalizeSuggestions(
-        allVoiceSuggestions, fileLineCountMap, validFiles
-      );
-      await this.storeSuggestions(reviewId, parentRunId, finalSuggestions, null, validFiles);
-
-      try {
-        await analysisRunRepo.update(parentRunId, {
-          status: 'completed',
-          summary: summary || `Review council complete: ${finalSuggestions.length} suggestions`,
-          totalSuggestions: finalSuggestions.length,
-          filesAnalyzed: validFiles.length
-        });
-      } catch (err) {
-        logger.warn(`[ReviewerCouncil] Failed to update parent run: ${err.message}`);
-      }
-
-      return {
-        runId: parentRunId,
-        suggestions: finalSuggestions,
-        summary: summary || `Reviewer-centric council complete: ${finalSuggestions.length} suggestions`
-      };
-    }
 
     // Run cross-reviewer consolidation
     logger.info(`[ReviewerCouncil] Starting cross-reviewer consolidation of ${successfulVoices.length} reviewers (${totalSuggestionCount} total suggestions)`);
@@ -3198,7 +3168,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 
       // Fallback: use all voice suggestions combined
       const fallbackSuggestions = this.validateAndFinalizeSuggestions(
-        allVoiceSuggestions, fileLineCountMap, validFiles
+        [...allVoiceSuggestions, ...allVoiceFileLevelSuggestions], fileLineCountMap, validFiles
       );
       await this.storeSuggestions(reviewId, parentRunId, fallbackSuggestions, null, validFiles);
 
@@ -3407,30 +3377,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       };
     }
 
-    // Check if total suggestion count is below consolidation threshold
-    const totalSuggestionCount = Object.values(levelSuggestions).reduce((sum, arr) => sum + arr.length, 0);
-    if (totalSuggestionCount < COUNCIL_CONSOLIDATION_THRESHOLD) {
-      logger.info(`[Council] ${totalSuggestionCount} total suggestions below threshold (${COUNCIL_CONSOLIDATION_THRESHOLD}) — skipping consolidation`);
-      const allSuggestions = Object.values(levelSuggestions).flat();
-      const finalSuggestions = this.validateAndFinalizeSuggestions(
-        allSuggestions, fileLineCountMap, validFiles
-      );
-      await this.storeSuggestions(reviewId, runId, finalSuggestions, null, validFiles);
-
-      // Prefer voice summaries over generic placeholders. When multiple voices
-      // produced summaries, join them so no insight is lost.
-      const thresholdSummary = voiceSummaries.length > 1
-        ? voiceSummaries.join('\n\n')
-        : bestVoiceSummary;
-
-      return {
-        runId,
-        suggestions: finalSuggestions,
-        summary: thresholdSummary || `Council analysis complete: ${finalSuggestions.length} suggestions (consolidation skipped — below threshold)`
-      };
-    }
-
-    // Store raw per-reviewer suggestions (only when consolidation will occur)
+    // Store raw per-reviewer suggestions before consolidation
     logger.info(`[Council] Storing ${rawSuggestions.length} raw reviewer suggestions`);
     await this._storeCouncilSuggestions(reviewId, runId, rawSuggestions, validFiles);
 
@@ -3870,7 +3817,26 @@ File-level suggestions should NOT have a line number. They apply to the entire f
     });
 
     const suggestions = this.parseResponse(response, 'consolidation');
-    const summary = response.summary || `Consolidated ${voiceReviews.length} reviewer outputs into ${suggestions.length} suggestions`;
+
+    // Extract summary from response, falling back to raw JSON extraction (same pattern as orchestrateWithAI)
+    let summary;
+    if (response.summary) {
+      summary = response.summary;
+    } else if (response.raw) {
+      const extracted = extractJSON(response.raw, 'consolidation');
+      if (extracted.success && extracted.data.summary) {
+        summary = extracted.data.summary;
+      }
+    }
+    if (!summary) {
+      // Fall back to individual reviewer summaries rather than generic consolidation text
+      const reviewerSummaries = voiceReviews
+        .filter(v => v.summary)
+        .map(v => v.summary);
+      summary = reviewerSummaries.length > 0
+        ? reviewerSummaries.join('\n\n')
+        : `Review complete: ${suggestions.length} suggestions`;
+    }
 
     return { suggestions, summary };
   }

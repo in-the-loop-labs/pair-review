@@ -73,6 +73,14 @@ Reviewers may have custom instructions below. Only boost findings when instructi
 - Severity: critical (crashes, security, data loss, race conditions, breaking changes, test failures), medium (degraded functionality, missing error handling/validation/test coverage), minor (code quality, docs, optimizations).
 </section>
 
+<section name="balanced-output" required="true" tier="fast">
+Deduplicate, don't concatenate: merge duplicate findings, preserve distinct ones. Max 2 praise items.
+</section>
+
+<section name="summary-synthesis" required="true" tier="fast">
+Draw on reviewer summaries as evidence for your own synthesis. Write one cohesive paragraph — no mention of consolidation/merging.
+</section>
+
 <section name="output-schema" locked="true">
 ## JSON Schema
 {
@@ -96,7 +104,7 @@ Reviewers may have custom instructions below. Only boost findings when instructi
     "suggestion": "How to address the file-level concern (omit for praise items)",
     "confidence": 0.0-1.0
   }],
-  "summary": "Key findings as if from single reviewer (no mention of consolidation/merging)"
+  "summary": "Single cohesive paragraph of key findings. Write as single reviewer."
 }
 
 ### GitHub Suggestion Syntax
@@ -133,6 +141,8 @@ const sections = [
   { name: 'reviewer-context-guidance', required: true, tier: ['fast'] },
   { name: 'input-suggestions', locked: true },
   { name: 'consolidation-rules', required: true, tier: ['fast'] },
+  { name: 'balanced-output', required: true, tier: ['fast'] },
+  { name: 'summary-synthesis', required: true, tier: ['fast'] },
   { name: 'output-schema', locked: true },
   { name: 'diff-instructions', required: true, tier: ['fast'] },
   { name: 'guidelines', required: true, tier: ['fast'] }
@@ -152,6 +162,8 @@ const defaultOrder = [
   'reviewer-context-guidance',
   'input-suggestions',
   'consolidation-rules',
+  'balanced-output',
+  'summary-synthesis',
   'output-schema',
   'diff-instructions',
   'guidelines'

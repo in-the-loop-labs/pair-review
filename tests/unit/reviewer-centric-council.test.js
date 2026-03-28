@@ -4,7 +4,7 @@
  *
  * Verifies:
  * - Single-voice path: analyzeAllLevels runs directly on parent run (no child run)
- * - Below-threshold path (suggestions < COUNCIL_CONSOLIDATION_THRESHOLD)
+ * - Multi-voice consolidation always runs (even for few suggestions)
  * - custom_instructions column stores only request-level instructions (regression)
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -277,10 +277,10 @@ describe('runReviewerCentricCouncil', () => {
     });
   });
 
-  describe('below-threshold path (< COUNCIL_CONSOLIDATION_THRESHOLD)', () => {
-    it('should call storeSuggestions with parent run ID when suggestions are below threshold', async () => {
+  describe('multi-voice consolidation (always runs)', () => {
+    it('should call _crossVoiceConsolidate even when suggestion count is below threshold', async () => {
       // Use two voices so we don't hit the single-voice path,
-      // but keep total suggestions below 8 (the threshold)
+      // but keep total suggestions below 8 (the old threshold)
       const { reviewContext, councilConfig, options } = buildTestContext({
         extraVoices: [{ provider: 'gemini', model: 'pro', tier: 'balanced' }]
       });
@@ -298,29 +298,25 @@ describe('runReviewerCentricCouncil', () => {
         return { suggestions: voice2Suggestions, summary: 'Voice 2 summary' };
       });
 
-      const allSuggestions = [...voice1Suggestions, ...voice2Suggestions];
-      analyzer.validateAndFinalizeSuggestions = vi.fn().mockReturnValue(allSuggestions);
+      const consolidatedSuggestions = buildMockSuggestions(4);
+      const consolidateSpy = vi.spyOn(analyzer, '_crossVoiceConsolidate').mockResolvedValue({
+        suggestions: consolidatedSuggestions,
+        summary: 'Consolidated summary'
+      });
+
+      analyzer.validateAndFinalizeSuggestions = vi.fn().mockReturnValue(consolidatedSuggestions);
 
       const result = await analyzer.runReviewerCentricCouncil(reviewContext, councilConfig, options);
 
-      // 5 total suggestions < 8 threshold, so should skip consolidation
-      // and store directly under parent run ID
-      expect(analyzer.storeSuggestions).toHaveBeenCalledWith(
-        reviewContext.reviewId,
-        'parent-run-id',
-        allSuggestions,
-        null,
-        expect.any(Array)
-      );
+      // _crossVoiceConsolidate MUST be called even with only 5 total suggestions
+      expect(consolidateSpy).toHaveBeenCalledOnce();
 
-      // Verify validateAndFinalizeSuggestions was called
-      expect(analyzer.validateAndFinalizeSuggestions).toHaveBeenCalled();
-
-      expect(result.runId).toBe('parent-run-id');
-      expect(result.suggestions).toEqual(allSuggestions);
+      // Result should use the consolidated output, not raw concatenation
+      expect(result.suggestions).toEqual(consolidatedSuggestions);
+      expect(result.summary).toBe('Consolidated summary');
     });
 
-    it('should store validated suggestions (not raw) for below-threshold path', async () => {
+    it('should use consolidated result (not raw voice concatenation) for storage', async () => {
       const { reviewContext, councilConfig, options } = buildTestContext({
         extraVoices: [{ provider: 'gemini', model: 'pro', tier: 'balanced' }]
       });
@@ -337,25 +333,31 @@ describe('runReviewerCentricCouncil', () => {
         return { suggestions: voice2Suggestions, summary: 'V2' };
       });
 
-      // Simulate validation filtering out one suggestion
-      const filteredSuggestions = [...voice1Suggestions, voice2Suggestions[0]];
-      analyzer.validateAndFinalizeSuggestions = vi.fn().mockReturnValue(filteredSuggestions);
+      // Consolidation produces a different (deduplicated/merged) set
+      const consolidatedSuggestions = buildMockSuggestions(3);
+      vi.spyOn(analyzer, '_crossVoiceConsolidate').mockResolvedValue({
+        suggestions: consolidatedSuggestions,
+        summary: 'Merged review'
+      });
+
+      analyzer.validateAndFinalizeSuggestions = vi.fn().mockReturnValue(consolidatedSuggestions);
 
       const result = await analyzer.runReviewerCentricCouncil(reviewContext, councilConfig, options);
 
-      // storeSuggestions should receive the validated (filtered) list
+      // storeSuggestions should receive consolidated suggestions, not raw voice output
       expect(analyzer.storeSuggestions).toHaveBeenCalledWith(
         reviewContext.reviewId,
         'parent-run-id',
-        filteredSuggestions,
+        consolidatedSuggestions,
         null,
         expect.any(Array)
       );
 
-      expect(result.suggestions).toEqual(filteredSuggestions);
+      expect(result.suggestions).toEqual(consolidatedSuggestions);
+      expect(result.suggestions).not.toEqual([...voice1Suggestions, ...voice2Suggestions]);
     });
 
-    it('should return validated suggestions with correct count after filtering', async () => {
+    it('should pass validated consolidated suggestions through to result', async () => {
       const { reviewContext, councilConfig, options } = buildTestContext({
         extraVoices: [{ provider: 'gemini', model: 'pro', tier: 'balanced' }]
       });
@@ -372,18 +374,23 @@ describe('runReviewerCentricCouncil', () => {
         return { suggestions: voice2Suggestions, summary: 'V2' };
       });
 
-      // Simulate validation removing 3 of 5 suggestions
-      const filteredSuggestions = [voice1Suggestions[0], voice2Suggestions[0]];
+      const consolidatedSuggestions = buildMockSuggestions(4);
+      vi.spyOn(analyzer, '_crossVoiceConsolidate').mockResolvedValue({
+        suggestions: consolidatedSuggestions,
+        summary: 'Consolidated'
+      });
+
+      // Simulate validation filtering out one consolidated suggestion
+      const filteredSuggestions = consolidatedSuggestions.slice(0, 3);
       analyzer.validateAndFinalizeSuggestions = vi.fn().mockReturnValue(filteredSuggestions);
 
       const result = await analyzer.runReviewerCentricCouncil(reviewContext, councilConfig, options);
 
-      // Return value should reflect validated count (2), not raw count (5)
+      // Return value should reflect validated count (3), not raw consolidated count (4)
       expect(result.suggestions).toEqual(filteredSuggestions);
-      expect(result.suggestions).toHaveLength(2);
-      expect(result.summary).toContain(`${filteredSuggestions.length}`);
+      expect(result.suggestions).toHaveLength(3);
 
-      // storeSuggestions should receive the validated list
+      // storeSuggestions should receive the validated (filtered) consolidated list
       expect(analyzer.storeSuggestions).toHaveBeenCalledWith(
         reviewContext.reviewId,
         'parent-run-id',
