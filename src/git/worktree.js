@@ -903,6 +903,61 @@ class GitWorktreeManager {
   }
 
   /**
+   * Checkout a different PR branch in an existing worktree.
+   *
+   * Used by stack analysis to switch the shared worktree between PRs.
+   * Stores a persistent ref (refs/remotes/<remote>/pr-<N>) instead of
+   * overwriting FETCH_HEAD, so multiple PR heads can coexist.
+   *
+   * @param {string} worktreePath - Absolute path to the worktree
+   * @param {number} prNumber - PR number to checkout
+   * @param {Object} [options={}]
+   * @param {string} [options.remote='origin'] - Git remote name (overridden by resolveRemoteForPR if prData provided)
+   * @param {Object} [options.prData=null] - PR data from GitHub API (for fork remote resolution)
+   * @param {Object} [options.prInfo=null] - PR info { owner, repo, number } (for fork remote resolution)
+   * @returns {Promise<string>} The HEAD SHA after checkout
+   * @throws {Error} If the worktree has uncommitted changes
+   */
+  async checkoutBranch(worktreePath, prNumber, options = {}) {
+    const { remote: defaultRemote = 'origin', prData = null, prInfo = null } = options;
+
+    try {
+      // 1. Reject if worktree has uncommitted changes
+      const hasChanges = await this.hasLocalChanges(worktreePath);
+      if (hasChanges) {
+        throw new Error(`Worktree has uncommitted changes. Cannot checkout PR #${prNumber} at: ${worktreePath}`);
+      }
+
+      const git = simpleGit(worktreePath);
+
+      // 2. Resolve the correct remote (handles fork PRs)
+      const remote = (prData || prInfo)
+        ? await this.resolveRemoteForPR(git, prData, prInfo)
+        : defaultRemote;
+
+      // 3. Fetch PR head into a persistent ref
+      console.log(`Fetching PR #${prNumber} head from ${remote} into refs/remotes/${remote}/pr-${prNumber}...`);
+      await git.fetch([remote, `+refs/pull/${prNumber}/head:refs/remotes/${remote}/pr-${prNumber}`]);
+
+      // 4. Reset worktree to the fetched ref
+      console.log(`Resetting worktree to refs/remotes/${remote}/pr-${prNumber}...`);
+      await git.raw(['reset', '--hard', `refs/remotes/${remote}/pr-${prNumber}`]);
+
+      // 5. Return the new HEAD SHA
+      const headSha = (await git.revparse(['HEAD'])).trim();
+      console.log(`Worktree checked out PR #${prNumber} at ${headSha}`);
+      return headSha;
+
+    } catch (error) {
+      if (error.message.includes('uncommitted changes')) {
+        throw error;
+      }
+      console.error(`Error checking out PR #${prNumber}:`, error);
+      throw new Error(`Failed to checkout PR #${prNumber}: ${error.message}`);
+    }
+  }
+
+  /**
    * Cleanup stale worktrees that haven't been accessed within the retention period
    * @param {number} retentionDays - Number of days to retain worktrees (default: 7)
    * @returns {Promise<Object>} Cleanup result with count and details

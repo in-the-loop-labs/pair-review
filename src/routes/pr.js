@@ -295,6 +295,30 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
       }
     };
 
+    // Include Graphite stack data when enabled
+    const appConfig = req.app.get('config') || {};
+    if (appConfig.enable_graphite && extendedData.worktree_path) {
+      try {
+        const graphiteState = tryGraphiteState(extendedData.worktree_path);
+        if (graphiteState) {
+          // Build branch→prNumber map from database
+          const allPRs = await query(db, `
+            SELECT pr_number, head_branch FROM pr_metadata WHERE repository = ? COLLATE NOCASE
+          `, [repository]);
+          const prNumbersByBranch = {};
+          for (const pr of allPRs) {
+            if (pr.head_branch) prNumbersByBranch[pr.head_branch] = pr.pr_number;
+          }
+          const stack = enrichStackWithPRInfo(graphiteState, prMetadata.head_branch, { prNumbersByBranch });
+          if (stack) {
+            response.data.stack_data = stack;
+          }
+        }
+      } catch (stackError) {
+        logger.debug('Failed to get Graphite stack data:', stackError.message);
+      }
+    }
+
     res.json(response);
 
     // Fire review hook (after response, non-blocking)

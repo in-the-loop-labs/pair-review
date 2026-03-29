@@ -232,9 +232,15 @@ class StackAnalysisDialog {
     const selectedPRNumbers = this._getSelectedPRNumbers();
     if (selectedPRNumbers.length === 0) return;
 
+    // Build prList with titles for the progress modal
+    const selectedSet = new Set(selectedPRNumbers);
+    const prList = (this._stackData || [])
+      .filter(pr => selectedSet.has(pr.prNumber))
+      .map(pr => ({ prNumber: pr.prNumber, title: pr.title || pr.branch || '' }));
+
     this._cleanup();
     if (this._resolve) {
-      this._resolve({ selectedPRNumbers });
+      this._resolve({ selectedPRNumbers, prList });
       this._resolve = null;
     }
   }

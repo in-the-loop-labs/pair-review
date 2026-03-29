@@ -13218,6 +13218,11 @@ body.resizing * {
   z-index: 1000;
 }
 
+.stack-dialog-backdrop {
+  position: absolute;
+  inset: 0;
+}
+
 .stack-dialog {
   background: var(--color-bg-elevated, #fff);
   border: 1px solid var(--color-border-primary, #d1d9e0);
@@ -13294,11 +13299,15 @@ body.resizing * {
 }
 
 .stack-dialog-pr-current {
+  font-weight: 600;
+}
+
+.stack-dialog-current-badge {
   flex-shrink: 0;
-  color: var(--color-accent-ai, #f59e0b);
-  font-size: 14px;
   width: 16px;
   text-align: center;
+  color: var(--color-accent-ai, #f59e0b);
+  font-size: 14px;
 }
 
 .stack-dialog-loading {
@@ -13317,13 +13326,56 @@ body.resizing * {
   margin-bottom: 0;
 }
 
-.stack-dialog-actions {
+.stack-dialog-pr-list {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.stack-dialog-pr-number {
+  flex-shrink: 0;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace);
+  color: var(--color-text-secondary, #656d76);
+}
+
+.stack-dialog-pr-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stack-dialog-pr-branch {
+  flex-shrink: 0;
+  color: var(--color-text-secondary, #656d76);
+  font-size: 12px;
+}
+
+.stack-dialog-analyzed-badge {
+  flex-shrink: 0;
+  color: var(--color-accent-emphasis, #1a7f37);
+  font-size: 11px;
+}
+
+.stack-dialog-note {
+  color: var(--color-text-secondary, #656d76);
+  font-size: 12px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.06));
+}
+
+.stack-dialog-error {
+  padding: 16px;
+  color: var(--color-danger, #cf222e);
+}
+
+.stack-dialog-controls {
   display: flex;
   gap: 8px;
   margin-bottom: 12px;
 }
 
-.stack-dialog-actions button {
+.stack-dialog-controls button {
   background: none;
   border: none;
   color: var(--color-accent-primary, #0969da);
@@ -13332,7 +13384,7 @@ body.resizing * {
   padding: 2px 4px;
 }
 
-.stack-dialog-actions button:hover {
+.stack-dialog-controls button:hover {
   text-decoration: underline;
 }
 
@@ -13368,8 +13420,29 @@ body.resizing * {
   color: var(--color-text-secondary, #8b949e);
 }
 
-[data-theme="dark"] .stack-dialog-actions button {
+[data-theme="dark"] .stack-dialog-controls button {
   color: var(--color-accent-primary, #58a6ff);
+}
+
+[data-theme="dark"] .stack-dialog-pr-number {
+  color: var(--color-text-secondary, #8b949e);
+}
+
+[data-theme="dark"] .stack-dialog-pr-branch {
+  color: var(--color-text-secondary, #8b949e);
+}
+
+[data-theme="dark"] .stack-dialog-analyzed-badge {
+  color: var(--color-accent-emphasis-hover, #2ea043);
+}
+
+[data-theme="dark"] .stack-dialog-note {
+  color: var(--color-text-secondary, #8b949e);
+  border-color: var(--color-border-subtle, rgba(255, 255, 255, 0.06));
+}
+
+[data-theme="dark"] .stack-dialog-error {
+  color: var(--color-danger, #f85149);
 }
 
 /* ============================================
@@ -13384,6 +13457,11 @@ body.resizing * {
   align-items: center;
   justify-content: center;
   z-index: 1000;
+}
+
+.stack-progress-backdrop {
+  position: absolute;
+  inset: 0;
 }
 
 .stack-progress-modal {
@@ -13439,6 +13517,11 @@ body.resizing * {
   border-top: 1px solid var(--color-border-primary, #d1d9e0);
 }
 
+.stack-progress-pr-list {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
 .stack-progress-pr-row {
   display: flex;
   align-items: center;
@@ -13462,10 +13545,27 @@ body.resizing * {
   font-size: 14px;
 }
 
-.stack-progress-pr-detail {
+.stack-progress-pr-label {
   flex: 1;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--color-text-primary, #1f2328);
+}
+
+.stack-progress-pr-link {
+  cursor: pointer;
+  color: var(--color-accent-primary, #0969da);
+}
+
+.stack-progress-pr-link:hover {
+  text-decoration: underline;
+}
+
+.stack-progress-pr-detail {
+  flex-shrink: 0;
+  color: var(--color-text-secondary, #656d76);
 }
 
 .stack-progress-pr-detail a {
@@ -13521,8 +13621,16 @@ body.resizing * {
   border-color: var(--color-border-subtle, rgba(255, 255, 255, 0.06));
 }
 
-[data-theme="dark"] .stack-progress-pr-detail {
+[data-theme="dark"] .stack-progress-pr-label {
   color: var(--color-text-primary, #c9d1d9);
+}
+
+[data-theme="dark"] .stack-progress-pr-link {
+  color: var(--color-accent-primary, #58a6ff);
+}
+
+[data-theme="dark"] .stack-progress-pr-detail {
+  color: var(--color-text-secondary, #8b949e);
 }
 
 [data-theme="dark"] .stack-progress-pr-detail a {

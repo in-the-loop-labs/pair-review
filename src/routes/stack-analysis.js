@@ -46,7 +46,8 @@ const {
   broadcastProgress,
   createProgressCallback,
   parseEnabledLevels,
-  registerProcess: registerProcessForCancellation
+  registerProcess: registerProcessForCancellation,
+  killProcesses
 } = require('./shared');
 const { broadcastReviewEvent } = require('../events/review-events');
 const analysesRouter = require('./analyses');
@@ -333,11 +334,11 @@ async function executeStackAnalysis(params) {
     if (originalHead) {
       try {
         if (originalBranch && originalBranch !== 'HEAD') {
-          execSync(`git checkout ${originalBranch}`, {
+          deps.execSync(`git checkout ${originalBranch}`, {
             cwd: worktreePath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe']
           });
         } else {
-          execSync(`git reset --hard ${originalHead}`, {
+          deps.execSync(`git reset --hard ${originalHead}`, {
             cwd: worktreePath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe']
           });
         }
@@ -837,7 +838,6 @@ router.post('/api/analyses/stack/:stackAnalysisId/cancel', (req, res) => {
     const currentPRStatus = state.prStatuses.get(state.currentPRNumber);
     if (currentPRStatus?.analysisId) {
       // Kill processes for the current analysis
-      const { killProcesses } = require('./shared');
       killProcesses(currentPRStatus.analysisId);
     }
   }

@@ -1261,13 +1261,15 @@ class PRManager {
         return;
       }
 
-      const selectedPRNumbers = await this.stackAnalysisDialog.show(owner, repo, number);
-      if (!selectedPRNumbers || selectedPRNumbers.length === 0) return; // User cancelled
+      const dialogResult = await this.stackAnalysisDialog.open(owner, repo, number);
+      if (!dialogResult) return; // User cancelled
+      const { selectedPRNumbers, prList } = dialogResult;
+      if (!selectedPRNumbers || selectedPRNumbers.length === 0) return;
 
       // Open analysis config modal
       if (!this.analysisConfigModal) {
         console.warn('AnalysisConfigModal not initialized, proceeding with defaults');
-        await this.startStackAnalysis(owner, repo, number, selectedPRNumbers, {});
+        await this.startStackAnalysis(owner, repo, number, selectedPRNumbers, {}, prList);
         return;
       }
 
@@ -1312,7 +1314,7 @@ class PRManager {
         localStorage.removeItem(instructionsStorageKey);
       }
 
-      await this.startStackAnalysis(owner, repo, number, selectedPRNumbers, config);
+      await this.startStackAnalysis(owner, repo, number, selectedPRNumbers, config, prList);
 
     } catch (error) {
       console.error('Error triggering stack analysis:', error);
@@ -1327,8 +1329,9 @@ class PRManager {
    * @param {number} number - Current PR number
    * @param {Array<number>} selectedPRNumbers - PRs to analyze
    * @param {Object} analysisConfig - Analysis configuration from the config modal
+   * @param {Array<Object>} [prList] - PR metadata with titles from the selection dialog
    */
-  async startStackAnalysis(owner, repo, number, selectedPRNumbers, analysisConfig) {
+  async startStackAnalysis(owner, repo, number, selectedPRNumbers, analysisConfig, prList) {
     try {
       const response = await fetch(`/api/pr/${owner}/${repo}/${number}/analyses/stack`, {
         method: 'POST',
@@ -1346,9 +1349,15 @@ class PRManager {
 
       const result = await response.json();
 
+      // Merge titles from dialog into backend response
+      const prAnalysesWithTitles = (result.prAnalyses || []).map(pr => {
+        const info = (prList || []).find(p => p.prNumber === pr.prNumber);
+        return { ...pr, title: info?.title || pr.title };
+      });
+
       // Open stack progress modal
       if (this.stackProgressModal) {
-        this.stackProgressModal.show(result.stackAnalysisId, result.prAnalyses, {
+        this.stackProgressModal.open(result.stackAnalysisId, prAnalysesWithTitles, {
           owner, repo
         });
       }
