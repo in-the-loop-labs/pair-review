@@ -6,8 +6,12 @@ export default defineConfig({
     environment: 'node',
 
     // Suppress browser opening during tests
+    // Isolate test git repos from developer's global/system git config
+    // (prevents hangs from e.g. commit.gpgsign requiring TTY-based pinentry)
     env: {
       PAIR_REVIEW_NO_OPEN: '1',
+      GIT_CONFIG_NOSYSTEM: '1',
+      GIT_CONFIG_GLOBAL: '/dev/null',
     },
 
     // Test file patterns
