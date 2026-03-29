@@ -54,7 +54,7 @@ const { CommentRepository } = require('../database');
 const { runExecutableAnalysis } = require('./executable-analysis');
 const analysesRouter = require('./analyses');
 const { worktreeLock } = require('../git/worktree-lock');
-const { tryGraphiteState, enrichStackWithPRInfo } = require('../git/base-branch');
+const { getRawGraphiteState, buildStackWithPRNumbers } = require('../git/base-branch');
 
 const router = express.Router();
 
@@ -299,7 +299,7 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
     const appConfig = req.app.get('config') || {};
     if (appConfig.enable_graphite && extendedData.worktree_path) {
       try {
-        const graphiteState = tryGraphiteState(extendedData.worktree_path);
+        const graphiteState = getRawGraphiteState(extendedData.worktree_path);
         if (graphiteState) {
           // Build branch→prNumber map from database
           const allPRs = await query(db, `
@@ -309,7 +309,7 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
           for (const pr of allPRs) {
             if (pr.head_branch) prNumbersByBranch[pr.head_branch] = pr.pr_number;
           }
-          const stack = enrichStackWithPRInfo(graphiteState, prMetadata.head_branch, { prNumbersByBranch });
+          const stack = buildStackWithPRNumbers(graphiteState, prMetadata.head_branch, { prNumbersByBranch });
           if (stack) {
             response.data.stack_data = stack;
           }
@@ -2301,7 +2301,7 @@ router.get('/api/pr/:owner/:repo/:number/stack-info', async (req, res) => {
     }
 
     // Get Graphite stack state
-    const graphiteState = tryGraphiteState(worktreePath);
+    const graphiteState = getRawGraphiteState(worktreePath);
     if (!graphiteState) {
       return res.json({ stack: [] });
     }
@@ -2319,7 +2319,7 @@ router.get('/api/pr/:owner/:repo/:number/stack-info', async (req, res) => {
     }
 
     // Enrich stack with PR info
-    const stack = enrichStackWithPRInfo(graphiteState, prMetadata.head_branch, { prNumbersByBranch });
+    const stack = buildStackWithPRNumbers(graphiteState, prMetadata.head_branch, { prNumbersByBranch });
     if (!stack) {
       return res.json({ stack: [] });
     }
