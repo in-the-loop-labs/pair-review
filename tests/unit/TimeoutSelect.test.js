@@ -232,8 +232,8 @@ describe('TimeoutSelect', () => {
   // -- Static TIMEOUT_OPTIONS -----------------------------------------------
 
   describe('static TIMEOUT_OPTIONS', () => {
-    it('should be an array with 4 default entries', () => {
-      expect(TimeoutSelect.TIMEOUT_OPTIONS).toHaveLength(4);
+    it('should be an array with 6 default entries', () => {
+      expect(TimeoutSelect.TIMEOUT_OPTIONS).toHaveLength(6);
     });
 
     it('should have 600000 (10m) as the default selected value', () => {
@@ -245,7 +245,7 @@ describe('TimeoutSelect', () => {
 
     it('should contain expected timeout values', () => {
       const values = TimeoutSelect.TIMEOUT_OPTIONS.map(o => o.value);
-      expect(values).toEqual(['300000', '600000', '900000', '1800000']);
+      expect(values).toEqual(['300000', '600000', '900000', '1800000', '2700000', '3600000']);
     });
   });
 
@@ -261,7 +261,7 @@ describe('TimeoutSelect', () => {
     it('should create option buttons for each option', () => {
       const ts = new TimeoutSelect();
       const items = ts.el.querySelectorAll('.timeout-select-option');
-      expect(items).toHaveLength(4);
+      expect(items).toHaveLength(6);
     });
 
     it('should accept custom options', () => {
@@ -776,9 +776,9 @@ describe('TimeoutSelect', () => {
 
       const ts = TimeoutSelect.mount(mountSpan);
 
-      // Should have 4 options (from TIMEOUT_OPTIONS)
+      // Should have 6 options (from TIMEOUT_OPTIONS)
       const items = ts.el.querySelectorAll('.timeout-select-option');
-      expect(items).toHaveLength(4);
+      expect(items).toHaveLength(6);
       expect(ts.value).toBe('600000');
     });
 

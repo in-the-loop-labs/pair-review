@@ -289,7 +289,7 @@ class AdvancedConfigTab {
         '2': { enabled: true, voices: [] },
         '3': { enabled: true, voices: [] }
       },
-      consolidation: { provider: this._defaultProvider || 'claude', model: this._defaultModel || 'sonnet', tier: 'balanced', timeout: AdvancedConfigTab.DEFAULT_TIMEOUT }
+      consolidation: { provider: this._defaultProvider || 'claude', model: this._defaultModel || 'sonnet', tier: 'balanced', timeout: this._getProviderDefaultTimeout(this._defaultProvider || 'claude') }
     };
   }
 
@@ -605,10 +605,11 @@ class AdvancedConfigTab {
       }
     });
 
-    // Provider change -> update model dropdowns
+    // Provider change -> update model dropdowns + timeout default
     panel.addEventListener('change', (e) => {
       if (e.target.classList.contains('voice-provider')) {
         this._updateModelDropdown(e.target);
+        this._applyProviderDefaultTimeout(e.target);
       }
       // Model change -> update tier to match model's recommended tier
       if (e.target.classList.contains('voice-model')) {
@@ -805,6 +806,7 @@ class AdvancedConfigTab {
     const newProviderSelect = voiceList.querySelector(`.voice-provider[data-level="${level}"][data-index="${index}"]`);
     if (newProviderSelect) {
       this._populateProviderDropdown(newProviderSelect);
+      this._applyProviderDefaultTimeout(newProviderSelect);
     }
 
     // Update remove button visibility for this level
@@ -895,6 +897,16 @@ class AdvancedConfigTab {
   }
 
   /**
+   * Get the default timeout for a provider, falling back to the static DEFAULT_TIMEOUT.
+   * @param {string} providerId - Provider ID (e.g., 'pi', 'claude')
+   * @returns {number} Default timeout in ms
+   */
+  _getProviderDefaultTimeout(providerId) {
+    const provider = this.providers[providerId];
+    return provider?.defaultTimeout ?? AdvancedConfigTab.DEFAULT_TIMEOUT;
+  }
+
+  /**
    * Update the clock/timeout icon styling to indicate non-default timeout.
    * @param {Element} panel - The council panel element
    * @param {string} level - Level number
@@ -906,7 +918,9 @@ class AdvancedConfigTab {
     const iconBtn = wrapper?.querySelector(`.toggle-timeout-icon[data-level="${level}"][data-index="${index}"]`);
     if (!iconBtn) return;
 
-    const isNonDefault = parseInt(value, 10) !== AdvancedConfigTab.DEFAULT_TIMEOUT;
+    const providerId = wrapper?.querySelector('.voice-provider')?.value;
+    const defaultTimeout = this._getProviderDefaultTimeout(providerId);
+    const isNonDefault = parseInt(value, 10) !== defaultTimeout;
     iconBtn.classList.toggle('has-custom-timeout', isNonDefault);
   }
 
@@ -914,7 +928,10 @@ class AdvancedConfigTab {
     const iconBtn = panel.querySelector('#adv-orchestration-timeout-toggle');
     if (!iconBtn) return;
 
-    const isNonDefault = parseInt(value, 10) !== AdvancedConfigTab.DEFAULT_TIMEOUT;
+    const orchRow = panel.querySelector('#orchestration-voice');
+    const providerId = orchRow?.querySelector('.voice-provider')?.value;
+    const defaultTimeout = this._getProviderDefaultTimeout(providerId);
+    const isNonDefault = parseInt(value, 10) !== defaultTimeout;
     iconBtn.classList.toggle('has-custom-timeout', isNonDefault);
   }
 
@@ -927,6 +944,48 @@ class AdvancedConfigTab {
       ? AdvancedConfigTab.SPEECH_BUBBLE_SVG_SOLID
       : AdvancedConfigTab.SPEECH_BUBBLE_SVG;
     iconBtn.classList.toggle('has-instructions', hasContent);
+  }
+
+  /**
+   * When a voice's provider changes, update its timeout to the new provider's default,
+   * preserving explicit user overrides via Math.max when the user had customized the value.
+   * @param {HTMLSelectElement} providerSelect - The provider dropdown that changed
+   */
+  _applyProviderDefaultTimeout(providerSelect) {
+    const panel = this.modal.querySelector('#tab-panel-advanced');
+    if (!panel) return;
+
+    const providerId = providerSelect.value;
+    const newDefault = this._getProviderDefaultTimeout(providerId);
+    const oldProviderId = providerSelect.dataset.previousProvider;
+    const oldDefault = oldProviderId ? this._getProviderDefaultTimeout(oldProviderId) : null;
+
+    const isOrchestration = providerSelect.dataset.target === 'orchestration';
+    if (isOrchestration) {
+      const timeoutEl = panel.querySelector('#adv-orchestration-timeout');
+      if (timeoutEl) {
+        const currentValue = parseInt(timeoutEl.value, 10);
+        const resolvedTimeout = (oldDefault !== null && currentValue !== oldDefault)
+          ? Math.max(currentValue, newDefault)
+          : newDefault;
+        timeoutEl.value = String(resolvedTimeout);
+        this._updateOrchestrationTimeoutIcon(panel, String(resolvedTimeout));
+      }
+    } else {
+      const { level, index } = providerSelect.dataset;
+      const wrapper = providerSelect.closest('.participant-wrapper');
+      const timeoutEl = wrapper?.querySelector('.adv-timeout');
+      if (timeoutEl) {
+        const currentValue = parseInt(timeoutEl.value, 10);
+        const resolvedTimeout = (oldDefault !== null && currentValue !== oldDefault)
+          ? Math.max(currentValue, newDefault)
+          : newDefault;
+        timeoutEl.value = String(resolvedTimeout);
+        this._updateTimeoutIcon(panel, level, index, String(resolvedTimeout));
+      }
+    }
+
+    providerSelect.dataset.previousProvider = providerId;
   }
 
   // --- Dirty state tracking ---
@@ -1108,6 +1167,7 @@ class AdvancedConfigTab {
           if (providerSelect) {
             this._populateProviderDropdown(providerSelect);
             providerSelect.value = voice.provider;
+            providerSelect.dataset.previousProvider = voice.provider;
             this._updateModelDropdown(providerSelect);
             const modelSelect = row.querySelector('.voice-model');
             if (modelSelect) modelSelect.value = voice.model;
@@ -1121,13 +1181,17 @@ class AdvancedConfigTab {
             TimeoutSelect.mount(mount, { className: 'adv-timeout', title: 'Per-reviewer timeout' });
           }
           const timeoutEl = row?.querySelector('.adv-timeout');
+          const providerDefaultTimeout = this._getProviderDefaultTimeout(voice.provider);
           if (timeoutEl && voice.timeout) {
             timeoutEl.value = String(voice.timeout);
-            // Show the dropdown if non-default
-            if (voice.timeout !== AdvancedConfigTab.DEFAULT_TIMEOUT) {
+            // Show the dropdown if non-default for this provider
+            if (voice.timeout !== providerDefaultTimeout) {
               timeoutEl.style.display = '';
             }
             this._updateTimeoutIcon(panel, String(level), String(i), String(voice.timeout));
+          } else if (timeoutEl) {
+            // No saved timeout — apply the provider's default
+            timeoutEl.value = String(providerDefaultTimeout);
           }
 
           if (voice.customInstructions) {
@@ -1156,6 +1220,7 @@ class AdvancedConfigTab {
         if (providerSelect) {
           this._populateProviderDropdown(providerSelect);
           providerSelect.value = consolSection.provider;
+          providerSelect.dataset.previousProvider = consolSection.provider;
           this._updateModelDropdown(providerSelect);
           const modelSelect = orchRow.querySelector('.voice-model');
           if (modelSelect) modelSelect.value = consolSection.model;
@@ -1166,13 +1231,18 @@ class AdvancedConfigTab {
 
       // Restore consolidation timeout
       const orchTimeoutSelect = panel.querySelector('#adv-orchestration-timeout');
+      const orchProviderDefaultTimeout = this._getProviderDefaultTimeout(consolSection.provider);
       if (orchTimeoutSelect && consolSection.timeout) {
         orchTimeoutSelect.value = String(consolSection.timeout);
-        // Show the dropdown if non-default
-        if (consolSection.timeout !== AdvancedConfigTab.DEFAULT_TIMEOUT) {
+        // Show the dropdown if non-default for this provider
+        if (consolSection.timeout !== orchProviderDefaultTimeout) {
           orchTimeoutSelect.style.display = '';
         }
         this._updateOrchestrationTimeoutIcon(panel, String(consolSection.timeout));
+      } else if (orchTimeoutSelect) {
+        // No saved timeout — apply the provider's default
+        orchTimeoutSelect.value = String(orchProviderDefaultTimeout);
+        this._updateOrchestrationTimeoutIcon(panel, String(orchProviderDefaultTimeout));
       }
 
       // Restore consolidation custom instructions
