@@ -178,6 +178,15 @@ class PRManager {
       set: (v) => { this.lineTracker.potentialDragStart = v; }
     });
 
+    // Stack analysis components
+    this.stackAnalysisDialog = window.StackAnalysisDialog ? new window.StackAnalysisDialog() : null;
+    this.stackProgressModal = window.StackProgressModal ? new window.StackProgressModal() : null;
+    // Track open state of split button and stack nav dropdowns
+    this._analyzeDropdownOpen = false;
+    this._stackNavOpen = false;
+    this._closeAnalyzeDropdown = null;
+    this._closeStackNav = null;
+
     // Initialize event handlers and UI
     this.setupEventHandlers();
     this.initTheme();
@@ -885,11 +894,12 @@ class PRManager {
     if (breadcrumbRepo) breadcrumbRepo.textContent = pr.repo;
     if (breadcrumbPr) breadcrumbPr.textContent = `#${pr.number}`;
 
-    // Update title
+    // Update title — wrap in stack nav dropdown when stack data is available
     const titleElement = document.getElementById('pr-title-text');
     if (titleElement) {
       titleElement.textContent = pr.title;
     }
+    this._renderStackNavDropdown(pr);
 
     // Show/hide PR description info button
     const descToggle = document.getElementById('pr-description-toggle');
@@ -1012,6 +1022,343 @@ class PRManager {
 
     // Update pending draft indicator in toolbar
     this.updatePendingDraftIndicator(pr.pendingDraft);
+
+    // Render analyze split button when stack data is available
+    this._renderAnalyzeSplitButton(pr);
+  }
+
+  /**
+   * Render the analyze split button when stack data is available.
+   * Wraps the existing #analyze-btn with a dropdown toggle for "Analyze Stack".
+   * @param {Object} pr - PR data with optional stack_data
+   */
+  _renderAnalyzeSplitButton(pr) {
+    const analyzeBtn = document.getElementById('analyze-btn');
+    if (!analyzeBtn) return;
+
+    // Remove existing split container if present (re-render safe)
+    const existingContainer = document.getElementById('analyze-split-container');
+    if (existingContainer) {
+      // Move analyze button back out of the container before removing
+      existingContainer.parentNode.insertBefore(analyzeBtn, existingContainer);
+      existingContainer.remove();
+    }
+    // Clean up previous outside-click handler
+    if (this._closeAnalyzeDropdown) {
+      document.removeEventListener('click', this._closeAnalyzeDropdown);
+      this._closeAnalyzeDropdown = null;
+    }
+
+    // Determine stack PRs (non-trunk entries with PR numbers)
+    const stackPRs = this._getStackPRs(pr);
+    if (stackPRs.length < 2) return; // No meaningful stack
+
+    // Create split button container
+    const container = document.createElement('div');
+    container.className = 'analyze-split-container';
+    container.id = 'analyze-split-container';
+
+    // Insert container where analyze button is, then move button inside
+    analyzeBtn.parentNode.insertBefore(container, analyzeBtn);
+    container.appendChild(analyzeBtn);
+
+    // Dropdown toggle (chevron)
+    const toggle = document.createElement('button');
+    toggle.className = 'analyze-dropdown-toggle';
+    toggle.id = 'analyze-stack-toggle';
+    toggle.type = 'button';
+    toggle.setAttribute('aria-label', 'Stack analysis options');
+    toggle.setAttribute('aria-haspopup', 'true');
+    toggle.setAttribute('aria-expanded', 'false');
+    toggle.innerHTML = `
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+        <path d="M4.427 7.427l3.396 3.396a.25.25 0 00.354 0l3.396-3.396A.25.25 0 0011.396 7H4.604a.25.25 0 00-.177.427z"/>
+      </svg>
+    `;
+    container.appendChild(toggle);
+
+    // Dropdown menu
+    const menu = document.createElement('div');
+    menu.className = 'analyze-dropdown-menu';
+    menu.id = 'analyze-dropdown-menu';
+    const itemBtn = document.createElement('button');
+    itemBtn.className = 'analyze-dropdown-item';
+    itemBtn.id = 'analyze-stack-btn';
+    itemBtn.type = 'button';
+    itemBtn.textContent = `Analyze Stack (${stackPRs.length} PRs)`;
+    menu.appendChild(itemBtn);
+    container.appendChild(menu);
+
+    // Event: toggle dropdown
+    toggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const isOpen = container.classList.toggle('open');
+      toggle.setAttribute('aria-expanded', String(isOpen));
+    });
+
+    // Event: click stack analysis item
+    itemBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      container.classList.remove('open');
+      toggle.setAttribute('aria-expanded', 'false');
+      this.triggerStackAnalysis();
+    });
+
+    // Close dropdown on outside click
+    this._closeAnalyzeDropdown = (e) => {
+      if (!container.contains(e.target)) {
+        container.classList.remove('open');
+        toggle.setAttribute('aria-expanded', 'false');
+      }
+    };
+    document.addEventListener('click', this._closeAnalyzeDropdown);
+  }
+
+  /**
+   * Render the stack navigation dropdown around the PR title.
+   * Replaces static title with a clickable dropdown when stack data has multiple PRs.
+   * @param {Object} pr - PR data with optional stack_data
+   */
+  _renderStackNavDropdown(pr) {
+    const titleWrapper = document.querySelector('.pr-title-wrapper');
+    if (!titleWrapper) return;
+
+    // Remove existing stack nav if present (re-render safe)
+    const existingNav = titleWrapper.querySelector('.stack-nav-dropdown');
+    if (existingNav) {
+      // Restore the title element outside the nav wrapper
+      const titleEl = existingNav.querySelector('#pr-title-text');
+      if (titleEl) {
+        titleWrapper.insertBefore(titleEl, existingNav);
+      }
+      existingNav.remove();
+    }
+    // Clean up previous outside-click handler
+    if (this._closeStackNav) {
+      document.removeEventListener('click', this._closeStackNav);
+      this._closeStackNav = null;
+    }
+
+    const stackPRs = this._getStackPRs(pr);
+    if (stackPRs.length < 2) return; // No meaningful stack
+
+    const titleElement = document.getElementById('pr-title-text');
+    if (!titleElement) return;
+
+    // Create dropdown wrapper
+    const dropdown = document.createElement('div');
+    dropdown.className = 'stack-nav-dropdown';
+
+    // Create trigger button wrapping the title
+    const trigger = document.createElement('button');
+    trigger.className = 'stack-nav-trigger';
+    trigger.type = 'button';
+    trigger.setAttribute('aria-haspopup', 'true');
+    trigger.setAttribute('aria-expanded', 'false');
+
+    // Move title into trigger
+    titleWrapper.insertBefore(dropdown, titleElement);
+    dropdown.appendChild(trigger);
+    trigger.appendChild(titleElement);
+
+    // Add chevron
+    const chevron = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    chevron.classList.add('stack-nav-chevron');
+    chevron.setAttribute('viewBox', '0 0 16 16');
+    chevron.setAttribute('width', '14');
+    chevron.setAttribute('height', '14');
+    chevron.innerHTML = '<path d="M4.427 7.427l3.396 3.396a.25.25 0 00.354 0l3.396-3.396A.25.25 0 0011.396 7H4.604a.25.25 0 00-.177.427z"/>';
+    trigger.appendChild(chevron);
+
+    // Create menu
+    const menu = document.createElement('div');
+    menu.className = 'stack-nav-menu';
+    dropdown.appendChild(menu);
+
+    // Populate menu items
+    for (const stackPR of stackPRs) {
+      const item = document.createElement('div');
+      item.className = 'stack-nav-item';
+      if (stackPR.prNumber === pr.number) {
+        item.classList.add('current');
+      }
+      item.dataset.pr = stackPR.prNumber;
+
+      const statusDot = document.createElement('span');
+      statusDot.className = 'stack-nav-status';
+      if (stackPR.hasAnalysis) {
+        statusDot.classList.add('analyzed');
+      }
+      item.appendChild(statusDot);
+
+      const numberSpan = document.createElement('span');
+      numberSpan.className = 'stack-nav-number';
+      numberSpan.textContent = `#${stackPR.prNumber}`;
+      item.appendChild(numberSpan);
+
+      const titleSpan = document.createElement('span');
+      titleSpan.className = 'stack-nav-title';
+      titleSpan.textContent = stackPR.title || stackPR.branch || '';
+      item.appendChild(titleSpan);
+
+      // Navigate on click
+      item.addEventListener('click', () => {
+        if (stackPR.prNumber !== pr.number) {
+          window.location.href = `/pr/${encodeURIComponent(pr.owner)}/${encodeURIComponent(pr.repo)}/${stackPR.prNumber}`;
+        }
+        dropdown.classList.remove('open');
+        trigger.setAttribute('aria-expanded', 'false');
+      });
+
+      menu.appendChild(item);
+    }
+
+    // Toggle dropdown
+    trigger.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const isOpen = dropdown.classList.toggle('open');
+      trigger.setAttribute('aria-expanded', String(isOpen));
+    });
+
+    // Close on outside click
+    this._closeStackNav = (e) => {
+      if (!dropdown.contains(e.target)) {
+        dropdown.classList.remove('open');
+        trigger.setAttribute('aria-expanded', 'false');
+      }
+    };
+    document.addEventListener('click', this._closeStackNav);
+  }
+
+  /**
+   * Extract non-trunk stack PRs from PR data.
+   * @param {Object} pr - PR data with optional stack_data
+   * @returns {Array<Object>} Stack PR entries with prNumber, title, branch, hasAnalysis
+   */
+  _getStackPRs(pr) {
+    if (!pr.stack_data || !Array.isArray(pr.stack_data)) return [];
+    return pr.stack_data.filter(entry => !entry.isTrunk && entry.prNumber);
+  }
+
+  /**
+   * Trigger stack analysis flow:
+   * 1. Open StackAnalysisDialog to select PRs
+   * 2. Open AnalysisConfigModal for analysis config
+   * 3. Call startStackAnalysis()
+   */
+  async triggerStackAnalysis() {
+    if (!this.currentPR) {
+      this.showError('No PR loaded');
+      return;
+    }
+
+    const { owner, repo, number } = this.currentPR;
+
+    try {
+      // Open stack selection dialog
+      if (!this.stackAnalysisDialog) {
+        console.warn('StackAnalysisDialog not initialized');
+        return;
+      }
+
+      const selectedPRNumbers = await this.stackAnalysisDialog.show(owner, repo, number);
+      if (!selectedPRNumbers || selectedPRNumbers.length === 0) return; // User cancelled
+
+      // Open analysis config modal
+      if (!this.analysisConfigModal) {
+        console.warn('AnalysisConfigModal not initialized, proceeding with defaults');
+        await this.startStackAnalysis(owner, repo, number, selectedPRNumbers, {});
+        return;
+      }
+
+      // Fetch settings in parallel
+      const [repoSettings, reviewSettings] = await Promise.all([
+        this.fetchRepoSettings().catch(() => null),
+        this.fetchLastReviewSettings().catch(() => ({ custom_instructions: '', last_council_id: null }))
+      ]);
+
+      const currentModel = repoSettings?.default_model || 'opus';
+      const currentProvider = repoSettings?.default_provider || 'claude';
+      const tabStorageKey = PRManager.getRepoStorageKey('pair-review-tab', owner, repo);
+      const rememberedTab = localStorage.getItem(tabStorageKey);
+      const defaultTab = rememberedTab || repoSettings?.default_tab || 'single';
+      const instructionsStorageKey = PRManager.getRepoStorageKey('pair-review-instructions', owner, repo);
+      const lastInstructions = reviewSettings.custom_instructions
+        ?? localStorage.getItem(instructionsStorageKey)
+        ?? '';
+      const lastCouncilId = reviewSettings.last_council_id;
+
+      this.analysisConfigModal.onTabChange = (tabId) => {
+        localStorage.setItem(tabStorageKey, tabId);
+      };
+
+      const config = await this.analysisConfigModal.show({
+        currentModel,
+        currentProvider,
+        defaultTab,
+        repoInstructions: repoSettings?.default_instructions || '',
+        lastInstructions,
+        lastCouncilId,
+        defaultCouncilId: repoSettings?.default_council_id || null
+      });
+
+      if (!config) return; // User cancelled
+
+      // Persist custom instructions
+      const submittedInstructions = config.customInstructions || '';
+      if (submittedInstructions) {
+        localStorage.setItem(instructionsStorageKey, submittedInstructions);
+      } else {
+        localStorage.removeItem(instructionsStorageKey);
+      }
+
+      await this.startStackAnalysis(owner, repo, number, selectedPRNumbers, config);
+
+    } catch (error) {
+      console.error('Error triggering stack analysis:', error);
+      this.showError(`Failed to start stack analysis: ${error.message}`);
+    }
+  }
+
+  /**
+   * Start stack analysis by posting to the backend and opening the progress modal.
+   * @param {string} owner - Repository owner
+   * @param {string} repo - Repository name
+   * @param {number} number - Current PR number
+   * @param {Array<number>} selectedPRNumbers - PRs to analyze
+   * @param {Object} analysisConfig - Analysis configuration from the config modal
+   */
+  async startStackAnalysis(owner, repo, number, selectedPRNumbers, analysisConfig) {
+    try {
+      const response = await fetch(`/api/pr/${owner}/${repo}/${number}/analyses/stack`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prNumbers: selectedPRNumbers,
+          analysisConfig
+        })
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.error || 'Failed to start stack analysis');
+      }
+
+      const result = await response.json();
+
+      // Open stack progress modal
+      if (this.stackProgressModal) {
+        this.stackProgressModal.show(result.stackAnalysisId, result.prAnalyses, {
+          owner, repo
+        });
+      }
+
+    } catch (error) {
+      console.error('Error starting stack analysis:', error);
+      if (window.toast) {
+        window.toast.showError(`Stack analysis failed: ${error.message}`);
+      }
+    }
   }
 
   /**

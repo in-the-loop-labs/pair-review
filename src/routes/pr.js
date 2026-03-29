@@ -53,6 +53,8 @@ const { getProviderClass, createProvider } = require('../ai/provider');
 const { CommentRepository } = require('../database');
 const { runExecutableAnalysis } = require('./executable-analysis');
 const analysesRouter = require('./analyses');
+const { worktreeLock } = require('../git/worktree-lock');
+const { tryGraphiteState, enrichStackWithPRInfo } = require('../git/base-branch');
 
 const router = express.Router();
 
@@ -356,6 +358,20 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
     if (!githubToken) {
       return res.status(401).json({ error: 'GitHub token not configured' });
     }
+
+    // Check if worktree is locked before modifying it
+    const worktreeManagerForLock = new GitWorktreeManager(db);
+    const existingWorktreePath = await worktreeManagerForLock.getWorktreePath({ owner, repo, number: prNumber });
+    if (existingWorktreePath) {
+      const lockState = worktreeLock.isLocked(existingWorktreePath);
+      if (lockState.locked) {
+        return res.status(409).json({
+          error: 'Worktree is in use by stack analysis',
+          holderId: lockState.holderId
+        });
+      }
+    }
+
     const githubClient = new GitHubClient(githubToken);
     const prData = await githubClient.fetchPullRequest(owner, repo, prNumber);
 
@@ -1619,6 +1635,17 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
       });
     }
 
+    // Reject if worktree is locked by another operation (e.g. stack analysis)
+    if (worktreePath) {
+      const lockState = worktreeLock.isLocked(worktreePath);
+      if (lockState.locked) {
+        return res.status(409).json({
+          error: 'Worktree is in use by stack analysis',
+          holderId: lockState.holderId
+        });
+      }
+    }
+
     const appConfig = req.app.get('config') || {};
     const globalInstructions = appConfig.globalInstructions || null;
 
@@ -2207,6 +2234,119 @@ router.get('/api/pr/:owner/:repo/:number/share', async (req, res) => {
   } catch (error) {
     logger.error('Error generating share data:', error);
     res.status(500).json({ error: 'Failed to generate share data' });
+  }
+});
+
+/**
+ * Get enriched stack info for a PR's Graphite stack.
+ * Returns all branches in the stack with PR numbers, titles, analysis status,
+ * and worktree ownership — used by the stack selection dialog.
+ */
+router.get('/api/pr/:owner/:repo/:number/stack-info', async (req, res) => {
+  try {
+    const { owner, repo, number } = req.params;
+    const prNumber = parseInt(number);
+
+    if (isNaN(prNumber) || prNumber <= 0) {
+      return res.status(400).json({ error: 'Invalid pull request number' });
+    }
+
+    const repository = normalizeRepository(owner, repo);
+    const db = req.app.get('db');
+    const config = req.app.get('config') || {};
+
+    if (!config.enable_graphite) {
+      return res.status(404).json({ error: 'Graphite integration is not enabled' });
+    }
+
+    // Get the current PR's head branch
+    const prMetadata = await queryOne(db, `
+      SELECT head_branch, pr_data FROM pr_metadata
+      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
+    `, [prNumber, repository]);
+
+    if (!prMetadata) {
+      return res.status(404).json({ error: `Pull request #${prNumber} not found` });
+    }
+
+    // Find the worktree path for running gt state
+    const worktreeManager = new GitWorktreeManager(db);
+    const worktreePath = await worktreeManager.getWorktreePath({ owner, repo, number: prNumber });
+    if (!worktreePath) {
+      return res.status(404).json({ error: 'Worktree not found for this PR' });
+    }
+
+    // Get Graphite stack state
+    const graphiteState = tryGraphiteState(worktreePath);
+    if (!graphiteState) {
+      return res.json({ stack: [] });
+    }
+
+    // Build branch→prNumber map from database (cached PRs)
+    const allPRs = await query(db, `
+      SELECT pr_number, head_branch FROM pr_metadata
+      WHERE repository = ? COLLATE NOCASE
+    `, [repository]);
+    const prNumbersByBranch = {};
+    for (const pr of allPRs) {
+      if (pr.head_branch) {
+        prNumbersByBranch[pr.head_branch] = pr.pr_number;
+      }
+    }
+
+    // Enrich stack with PR info
+    const stack = enrichStackWithPRInfo(graphiteState, prMetadata.head_branch, { prNumbersByBranch });
+    if (!stack) {
+      return res.json({ stack: [] });
+    }
+
+    // For each non-trunk entry with a PR number, look up title, analysis status, worktree
+    const enrichedStack = [];
+    const worktreeRepo = new WorktreeRepository(db);
+    const analysisRunRepo = new AnalysisRunRepository(db);
+
+    for (const entry of stack) {
+      if (entry.isTrunk) {
+        enrichedStack.push(entry);
+        continue;
+      }
+
+      const enriched = { ...entry };
+
+      if (entry.prNumber) {
+        // Look up title from pr_metadata
+        const meta = await queryOne(db, `
+          SELECT title FROM pr_metadata
+          WHERE pr_number = ? AND repository = ? COLLATE NOCASE
+        `, [entry.prNumber, repository]);
+        enriched.title = meta?.title || null;
+
+        // Check if there's an analysis run
+        const reviewRepo = new ReviewRepository(db);
+        const review = await reviewRepo.getReviewByPR(entry.prNumber, repository);
+        if (review) {
+          const latestRun = await analysisRunRepo.getLatestByReviewId(review.id);
+          enriched.hasAnalysis = latestRun?.status === 'completed';
+        } else {
+          enriched.hasAnalysis = false;
+        }
+
+        // Check if it has its own worktree
+        const wt = await worktreeRepo.findByPR(entry.prNumber, repository);
+        enriched.hasOwnWorktree = wt != null && wt.path !== worktreePath;
+      } else {
+        enriched.title = null;
+        enriched.hasAnalysis = false;
+        enriched.hasOwnWorktree = false;
+      }
+
+      enrichedStack.push(enriched);
+    }
+
+    res.json({ stack: enrichedStack });
+  } catch (error) {
+    logger.error('Error fetching stack info:', error);
+    res.status(500).json({ error: 'Failed to fetch stack info' });
   }
 });
 
