@@ -449,6 +449,9 @@ function createAliasedProviderClass(aliasId, BaseClass, aliasConfig) {
   if (aliasConfig.installInstructions) {
     AliasedProvider.getInstallInstructions = () => aliasConfig.installInstructions;
   }
+  if (aliasConfig.defaultTimeout != null) {
+    AliasedProvider.defaultTimeout = aliasConfig.defaultTimeout;
+  }
 
   return AliasedProvider;
 }
@@ -628,7 +631,8 @@ function getAllProvidersInfo() {
       defaultModel,
       installInstructions,
       capabilities,
-      isExecutable: ProviderClass.isExecutable || false
+      isExecutable: ProviderClass.isExecutable || false,
+      ...(ProviderClass.defaultTimeout != null ? { defaultTimeout: ProviderClass.defaultTimeout } : {})
     });
   }
   return providers;

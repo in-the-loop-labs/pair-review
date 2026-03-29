@@ -240,7 +240,7 @@ class PiProvider extends AIProvider {
    */
   async execute(prompt, options = {}) {
     return new Promise((resolve, reject) => {
-      const { cwd = process.cwd(), timeout = 300000, level = 'unknown', analysisId, registerProcess, onStreamEvent, logPrefix } = options;
+      const { cwd = process.cwd(), timeout = 900000, level = 'unknown', analysisId, registerProcess, onStreamEvent, logPrefix } = options;
 
       const levelPrefix = logPrefix || `[Level ${level}]`;
       logger.info(`${levelPrefix} Executing Pi CLI...`);
@@ -849,6 +849,9 @@ class PiProvider extends AIProvider {
     return 'Install Pi: npm install -g @mariozechner/pi-coding-agent\n' +
            'Or visit: https://github.com/badlogic/pi-mono';
   }
+
+  /** Default timeout in ms (15 minutes) — Pi is slower than most providers */
+  static defaultTimeout = 900000;
 }
 
 // Register this provider

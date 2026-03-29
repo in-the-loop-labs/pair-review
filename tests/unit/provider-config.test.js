@@ -18,7 +18,8 @@ import {
   getAllProvidersInfo,
   getRegisteredProviderIds,
   getProviderClass,
-  createProvider
+  createProvider,
+  createAliasedProviderClass
 } from '../../src/ai/index.js';
 
 describe('Provider Configuration', () => {
@@ -561,6 +562,18 @@ describe('Provider Configuration', () => {
       // 'multi-model' should be unaffected
       expect(pi.models.find(m => m.id === 'multi-model').tier).toBe('thorough');
     });
+
+    it('should include defaultTimeout for providers that define it', () => {
+      const providers = getAllProvidersInfo();
+      const pi = providers.find(p => p.id === 'pi');
+      expect(pi.defaultTimeout).toBe(900000); // 15 minutes
+    });
+
+    it('should not include defaultTimeout for providers that do not define it', () => {
+      const providers = getAllProvidersInfo();
+      const claude = providers.find(p => p.id === 'claude');
+      expect(claude.defaultTimeout).toBeUndefined();
+    });
   });
 
   describe('yolo mode propagation', () => {
@@ -801,6 +814,150 @@ describe('Provider Configuration', () => {
       const overrides = getProviderConfigOverrides('pi');
       expect(overrides).toBeDefined();
       expect(overrides.command).toBe('/custom/pi');
+    });
+
+    it('should forward defaultTimeout to the aliased class', () => {
+      applyConfigOverrides({
+        providers: {
+          'pi-custom': {
+            type: 'pi',
+            name: 'Pi Custom',
+            defaultTimeout: 1200000,
+            models: [{ id: 'default', tier: 'balanced', default: true }]
+          }
+        }
+      });
+
+      const AliasClass = getProviderClass('pi-custom');
+      expect(AliasClass.defaultTimeout).toBe(1200000);
+    });
+
+    it('should inherit base class defaultTimeout when alias does not define one', () => {
+      applyConfigOverrides({
+        providers: {
+          'pi-inherit': {
+            type: 'pi',
+            name: 'Pi Inherit',
+            models: [{ id: 'default', tier: 'balanced', default: true }]
+          }
+        }
+      });
+
+      const AliasClass = getProviderClass('pi-inherit');
+      const BaseClass = getProviderClass('pi');
+      // Pi's base class has defaultTimeout = 900000
+      // Without an explicit override, the alias inherits from the base prototype chain
+      expect(BaseClass.defaultTimeout).toBe(900000);
+      // The alias should NOT have its own defaultTimeout property set
+      expect(Object.hasOwn(AliasClass, 'defaultTimeout')).toBe(false);
+    });
+
+    it('should surface aliased defaultTimeout in getAllProvidersInfo', () => {
+      applyConfigOverrides({
+        providers: {
+          'pi-slow': {
+            type: 'pi',
+            name: 'Pi Slow',
+            defaultTimeout: 1800000,
+            models: [{ id: 'default', tier: 'balanced', default: true }]
+          }
+        }
+      });
+
+      const providers = getAllProvidersInfo();
+      const alias = providers.find(p => p.id === 'pi-slow');
+      expect(alias).toBeDefined();
+      expect(alias.defaultTimeout).toBe(1800000);
+    });
+
+    it('should surface aliased defaultTimeout: 0 in getAllProvidersInfo', () => {
+      applyConfigOverrides({
+        providers: {
+          'pi-zero-timeout': {
+            type: 'pi',
+            name: 'Pi Zero Timeout',
+            defaultTimeout: 0,
+            models: [{ id: 'default', tier: 'balanced', default: true }]
+          }
+        }
+      });
+
+      const providers = getAllProvidersInfo();
+      const alias = providers.find(p => p.id === 'pi-zero-timeout');
+      expect(alias).toBeDefined();
+      expect(alias.defaultTimeout).toBe(0);
+    });
+
+    it('should not set defaultTimeout on alias when not provided', () => {
+      applyConfigOverrides({
+        providers: {
+          'claude-alias': {
+            type: 'claude',
+            name: 'Claude Alias'
+          }
+        }
+      });
+
+      const AliasClass = getProviderClass('claude-alias');
+      // Claude has no defaultTimeout, alias should not either
+      expect(Object.hasOwn(AliasClass, 'defaultTimeout')).toBe(false);
+    });
+  });
+
+  describe('createAliasedProviderClass defaultTimeout forwarding', () => {
+    it('should set defaultTimeout as static property on alias class', () => {
+      const BaseClass = getProviderClass('claude');
+      const AliasClass = createAliasedProviderClass('test-alias', BaseClass, {
+        name: 'Test Alias',
+        defaultTimeout: 1500000
+      });
+
+      expect(AliasClass.defaultTimeout).toBe(1500000);
+    });
+
+    it('should not set defaultTimeout when not provided in config', () => {
+      const BaseClass = getProviderClass('claude');
+      const AliasClass = createAliasedProviderClass('test-alias-no-timeout', BaseClass, {
+        name: 'Test Alias No Timeout'
+      });
+
+      // Should not have its own defaultTimeout property
+      expect(Object.hasOwn(AliasClass, 'defaultTimeout')).toBe(false);
+    });
+
+    it('should not set defaultTimeout when value is null', () => {
+      const BaseClass = getProviderClass('claude');
+      const AliasClass = createAliasedProviderClass('test-alias-null', BaseClass, {
+        name: 'Test Alias Null',
+        defaultTimeout: null
+      });
+
+      expect(Object.hasOwn(AliasClass, 'defaultTimeout')).toBe(false);
+    });
+
+    it('should set defaultTimeout when value is 0', () => {
+      const BaseClass = getProviderClass('claude');
+      const AliasClass = createAliasedProviderClass('test-alias-zero', BaseClass, {
+        name: 'Test Alias Zero',
+        defaultTimeout: 0
+      });
+
+      // 0 is not null/undefined, so it should be set
+      // The check is `aliasConfig.defaultTimeout != null` — 0 passes this
+      expect(AliasClass.defaultTimeout).toBe(0);
+    });
+
+    it('should inherit base defaultTimeout through prototype chain', () => {
+      const BaseClass = getProviderClass('pi');
+      const AliasClass = createAliasedProviderClass('pi-proto-test', BaseClass, {
+        name: 'Pi Proto Test'
+      });
+
+      // Pi has defaultTimeout = 900000 on the class
+      // Alias does not override it, so accessing it traverses the prototype
+      expect(BaseClass.defaultTimeout).toBe(900000);
+      // The alias should not have its own
+      expect(Object.hasOwn(AliasClass, 'defaultTimeout')).toBe(false);
     });
   });
 });

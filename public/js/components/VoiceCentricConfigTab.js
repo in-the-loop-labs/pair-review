@@ -525,12 +525,13 @@ class VoiceCentricConfigTab {
       }
     });
 
-    // Provider change -> update model dropdowns + executable state
+    // Provider change -> update model dropdowns + executable state + timeout default
     panel.addEventListener('change', (e) => {
       if (e.target.classList.contains('voice-provider')) {
         this._updateModelDropdown(e.target);
         this._updateExecutableState(e.target);
         this._updateLevelToggleState();
+        this._applyProviderDefaultTimeout(e.target);
       }
       // Model change -> update tier to match model's recommended tier
       if (e.target.classList.contains('voice-model')) {
@@ -603,6 +604,7 @@ class VoiceCentricConfigTab {
     const newProviderSelect = list.querySelector(`.voice-provider[data-index="${index}"]`);
     if (newProviderSelect) {
       this._populateProviderDropdown(newProviderSelect);
+      this._applyProviderDefaultTimeout(newProviderSelect);
       this._updateExecutableState(newProviderSelect);
     }
 
@@ -675,6 +677,16 @@ class VoiceCentricConfigTab {
   }
 
   /**
+   * Get the default timeout for a provider, falling back to the static DEFAULT_TIMEOUT.
+   * @param {string} providerId - Provider ID (e.g., 'pi', 'claude')
+   * @returns {number} Default timeout in ms
+   */
+  _getProviderDefaultTimeout(providerId) {
+    const provider = this.providers[providerId];
+    return provider?.defaultTimeout ?? VoiceCentricConfigTab.DEFAULT_TIMEOUT;
+  }
+
+  /**
    * Update the clock/timeout icon styling to indicate non-default timeout.
    * @param {Element} panel - The council panel element
    * @param {string} index - Reviewer index
@@ -685,7 +697,9 @@ class VoiceCentricConfigTab {
     const iconBtn = wrapper?.querySelector(`.toggle-timeout-icon[data-index="${index}"]`);
     if (!iconBtn) return;
 
-    const isNonDefault = parseInt(value, 10) !== VoiceCentricConfigTab.DEFAULT_TIMEOUT;
+    const providerId = wrapper?.querySelector('.voice-provider')?.value;
+    const defaultTimeout = this._getProviderDefaultTimeout(providerId);
+    const isNonDefault = parseInt(value, 10) !== defaultTimeout;
     iconBtn.classList.toggle('has-custom-timeout', isNonDefault);
   }
 
@@ -693,8 +707,54 @@ class VoiceCentricConfigTab {
     const iconBtn = panel.querySelector('#vc-orchestration-timeout-toggle');
     if (!iconBtn) return;
 
-    const isNonDefault = parseInt(value, 10) !== VoiceCentricConfigTab.DEFAULT_TIMEOUT;
+    const orchRow = panel.querySelector('#vc-orchestration-voice');
+    const providerId = orchRow?.querySelector('.voice-provider')?.value;
+    const defaultTimeout = this._getProviderDefaultTimeout(providerId);
+    const isNonDefault = parseInt(value, 10) !== defaultTimeout;
     iconBtn.classList.toggle('has-custom-timeout', isNonDefault);
+  }
+
+  /**
+   * When a voice's provider changes, update its timeout to the new provider's default,
+   * preserving explicit user overrides via Math.max when the user had customized the value.
+   * @param {HTMLSelectElement} providerSelect - The provider dropdown that changed
+   */
+  _applyProviderDefaultTimeout(providerSelect) {
+    const panel = this.modal.querySelector('#tab-panel-council');
+    if (!panel) return;
+
+    const providerId = providerSelect.value;
+    const newDefault = this._getProviderDefaultTimeout(providerId);
+    const oldProviderId = providerSelect.dataset.previousProvider;
+    const oldDefault = oldProviderId ? this._getProviderDefaultTimeout(oldProviderId) : null;
+
+    // Determine which timeout element to update
+    const isOrchestration = providerSelect.dataset.target === 'orchestration';
+    if (isOrchestration) {
+      const timeoutEl = panel.querySelector('#vc-orchestration-timeout');
+      if (timeoutEl) {
+        const currentValue = parseInt(timeoutEl.value, 10);
+        const resolvedTimeout = (oldDefault !== null && currentValue !== oldDefault)
+          ? Math.max(currentValue, newDefault)
+          : newDefault;
+        timeoutEl.value = String(resolvedTimeout);
+        this._updateOrchestrationTimeoutIcon(panel, String(resolvedTimeout));
+      }
+    } else {
+      const idx = providerSelect.dataset.index;
+      const wrapper = providerSelect.closest('.vc-reviewer');
+      const timeoutEl = wrapper?.querySelector('.vc-timeout');
+      if (timeoutEl) {
+        const currentValue = parseInt(timeoutEl.value, 10);
+        const resolvedTimeout = (oldDefault !== null && currentValue !== oldDefault)
+          ? Math.max(currentValue, newDefault)
+          : newDefault;
+        timeoutEl.value = String(resolvedTimeout);
+        this._updateTimeoutIcon(panel, idx, String(resolvedTimeout));
+      }
+    }
+
+    providerSelect.dataset.previousProvider = providerId;
   }
 
   // --- Dropdown / model management ---
@@ -894,10 +954,11 @@ class VoiceCentricConfigTab {
   // --- Config read/write ---
 
   _defaultConfig() {
+    const defaultTimeout = this._getProviderDefaultTimeout(this._defaultProvider);
     return {
-      voices: [{ provider: this._defaultProvider, model: this._defaultModel, tier: 'balanced', timeout: VoiceCentricConfigTab.DEFAULT_TIMEOUT }],
+      voices: [{ provider: this._defaultProvider, model: this._defaultModel, tier: 'balanced', timeout: defaultTimeout }],
       enabledLevels: [1, 2, 3],
-      orchestration: { provider: this._defaultProvider, model: this._defaultModel, tier: 'balanced', timeout: VoiceCentricConfigTab.DEFAULT_TIMEOUT }
+      orchestration: { provider: this._defaultProvider, model: this._defaultModel, tier: 'balanced', timeout: defaultTimeout }
     };
   }
 
@@ -1027,7 +1088,7 @@ class VoiceCentricConfigTab {
       list.innerHTML = '';
       const voices = vcConfig.voices || [];
       if (voices.length === 0) {
-        voices.push({ provider: this._defaultProvider, model: this._defaultModel, tier: 'balanced', timeout: VoiceCentricConfigTab.DEFAULT_TIMEOUT });
+        voices.push({ provider: this._defaultProvider, model: this._defaultModel, tier: 'balanced', timeout: this._getProviderDefaultTimeout(this._defaultProvider) });
       }
       voices.forEach((voice, i) => {
         const wrapper = document.createElement('div');
@@ -1042,6 +1103,7 @@ class VoiceCentricConfigTab {
         if (providerSelect) {
           this._populateProviderDropdown(providerSelect);
           providerSelect.value = voice.provider;
+          providerSelect.dataset.previousProvider = voice.provider;
           this._updateModelDropdown(providerSelect);
           this._updateExecutableState(providerSelect);
           const modelSelect = row.querySelector('.voice-model');
@@ -1054,13 +1116,17 @@ class VoiceCentricConfigTab {
             TimeoutSelect.mount(mount, { className: 'vc-timeout', title: 'Per-reviewer timeout' });
           }
           const timeoutEl = row.querySelector('.vc-timeout');
+          const providerDefaultTimeout = this._getProviderDefaultTimeout(voice.provider);
           if (timeoutEl && voice.timeout) {
             timeoutEl.value = String(voice.timeout);
-            // Show the dropdown if non-default
-            if (voice.timeout !== VoiceCentricConfigTab.DEFAULT_TIMEOUT) {
+            // Show the dropdown if non-default for this provider
+            if (voice.timeout !== providerDefaultTimeout) {
               timeoutEl.style.display = '';
             }
             this._updateTimeoutIcon(panel, String(i), String(voice.timeout));
+          } else if (timeoutEl) {
+            // No saved timeout — apply the provider's default
+            timeoutEl.value = String(providerDefaultTimeout);
           }
         }
 
@@ -1092,6 +1158,7 @@ class VoiceCentricConfigTab {
         if (providerSelect) {
           this._populateProviderDropdown(providerSelect);
           providerSelect.value = vcConfig.orchestration.provider;
+          providerSelect.dataset.previousProvider = vcConfig.orchestration.provider;
           this._updateModelDropdown(providerSelect);
           const modelSelect = orchRow.querySelector('.voice-model');
           if (modelSelect) modelSelect.value = vcConfig.orchestration.model;
@@ -1102,13 +1169,18 @@ class VoiceCentricConfigTab {
 
       // Restore orchestration timeout
       const orchTimeoutSelect = panel.querySelector('#vc-orchestration-timeout');
+      const orchProviderDefaultTimeout = this._getProviderDefaultTimeout(vcConfig.orchestration.provider);
       if (orchTimeoutSelect && vcConfig.orchestration.timeout) {
         orchTimeoutSelect.value = String(vcConfig.orchestration.timeout);
-        // Show the dropdown if non-default
-        if (vcConfig.orchestration.timeout !== VoiceCentricConfigTab.DEFAULT_TIMEOUT) {
+        // Show the dropdown if non-default for this provider
+        if (vcConfig.orchestration.timeout !== orchProviderDefaultTimeout) {
           orchTimeoutSelect.style.display = '';
         }
         this._updateOrchestrationTimeoutIcon(panel, String(vcConfig.orchestration.timeout));
+      } else if (orchTimeoutSelect) {
+        // No saved timeout — apply the provider's default
+        orchTimeoutSelect.value = String(orchProviderDefaultTimeout);
+        this._updateOrchestrationTimeoutIcon(panel, String(orchProviderDefaultTimeout));
       }
 
       // Restore orchestration custom instructions
