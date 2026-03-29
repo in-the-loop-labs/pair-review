@@ -275,6 +275,28 @@ class AnalysisConfigModal {
             </div>
           </section>
 
+          <!-- Exclude Previous Findings -->
+          <details class="config-section exclude-previous-section">
+            <summary class="section-title">
+              Exclude Previous Findings
+              <span class="section-hint">(optional)</span>
+            </summary>
+            <div class="exclude-previous-options">
+              <label class="remember-toggle">
+                <input type="checkbox" id="exclude-github-comments" />
+                <span class="toggle-switch"></span>
+                <span class="toggle-label">GitHub PR review comments</span>
+              </label>
+              <p class="option-hint">Skip issues already noted in inline PR review comments</p>
+              <label class="remember-toggle">
+                <input type="checkbox" id="exclude-pr-feedback" />
+                <span class="toggle-switch"></span>
+                <span class="toggle-label">Existing pair-review feedback</span>
+              </label>
+              <p class="option-hint">Skip issues from previous AI suggestions and reviewer comments</p>
+            </div>
+          </details>
+
           <!-- Focus Presets - Hidden for now, may reintroduce later -->
           <section class="config-section" style="display: none;">
             <h4 class="section-title">
@@ -752,7 +774,8 @@ class AnalysisConfigModal {
         councilName: selectedCouncil?.name || null,
         councilConfig: councilConfig,
         customInstructions: this.modal.querySelector('#vc-custom-instructions')?.value?.trim() || '',
-        repoInstructions: this.repoInstructions
+        repoInstructions: this.repoInstructions,
+        excludePrevious: this._getAndSaveExcludePrevious()
       };
 
       if (this.onSubmit) this.onSubmit(config);
@@ -777,7 +800,8 @@ class AnalysisConfigModal {
         councilName: selectedCouncil?.name || null,
         councilConfig: councilConfig,
         customInstructions: this.modal.querySelector('#council-custom-instructions')?.value?.trim() || '',
-        repoInstructions: this.repoInstructions
+        repoInstructions: this.repoInstructions,
+        excludePrevious: this._getAndSaveExcludePrevious()
       };
 
       if (this.onSubmit) this.onSubmit(config);
@@ -802,7 +826,8 @@ class AnalysisConfigModal {
       repoInstructions: this.repoInstructions,
       enabledLevels: [...this.enabledLevels],
       skipLevel3: !this.enabledLevels.includes(3),
-      noLevels
+      noLevels,
+      excludePrevious: this._getAndSaveExcludePrevious()
     };
 
     if (this.onSubmit) this.onSubmit(config);
@@ -940,6 +965,9 @@ class AnalysisConfigModal {
       }
     }
 
+    // Restore exclude-previous checkbox state from localStorage
+    this._restoreExcludePrevious(options);
+
     // Remove loading state and reveal content
     this._showLoading(false);
 
@@ -998,12 +1026,22 @@ class AnalysisConfigModal {
         <button class="analysis-tab" data-tab="advanced">Advanced</button>
       `;
 
+      // Hoist the exclude-previous section out of the single-model panel
+      // so it remains visible across all tabs.
+      const excludePreviousSection = singlePanel.querySelector('.exclude-previous-section');
+
       // Assemble
       modalBody.innerHTML = '';
       modalBody.appendChild(tabBar);
       modalBody.appendChild(singlePanel);
       modalBody.appendChild(councilPanel);
       modalBody.appendChild(advancedPanel);
+
+      // Place the exclude-previous section after all tab panels,
+      // just before the modal footer, so it's visible on every tab.
+      if (excludePreviousSection) {
+        modalBody.appendChild(excludePreviousSection);
+      }
 
       // Tab click listeners
       tabBar.querySelectorAll('.analysis-tab').forEach(tab => {
@@ -1255,6 +1293,73 @@ class AnalysisConfigModal {
       this.onSubmit = null;
       this.onCancel = null;
     }, 200);
+  }
+
+  /**
+   * Restore exclude-previous checkbox state from localStorage.
+   * Disables the GitHub checkbox when there is no PR or no GitHub token.
+   * @param {Object} options - show() options
+   * @private
+   */
+  _restoreExcludePrevious(options) {
+    const githubCb = this.modal.querySelector('#exclude-github-comments');
+    const feedbackCb = this.modal.querySelector('#exclude-pr-feedback');
+    if (!githubCb || !feedbackCb) return;
+
+    // Restore saved state
+    let saved = { github: false, feedback: false };
+    try {
+      const raw = localStorage.getItem('pair-review-exclude-previous');
+      if (raw) saved = JSON.parse(raw);
+    } catch (_) { /* ignore parse errors */ }
+
+    githubCb.checked = !!saved.github;
+    feedbackCb.checked = !!saved.feedback;
+
+    // Disable the GitHub checkbox when it cannot be used
+    const canUseGithub = options.hasPr !== false && options.hasGithubToken !== false;
+    githubCb.disabled = !canUseGithub;
+    if (!canUseGithub) {
+      const label = githubCb.closest('.remember-toggle');
+      if (label) label.title = 'Not available — requires a PR with a GitHub token';
+    } else {
+      const label = githubCb.closest('.remember-toggle');
+      if (label) label.title = '';
+    }
+  }
+
+  /**
+   * Read current exclude-previous checkbox state, save to localStorage,
+   * and return the config object.
+   * @returns {{ github: boolean, feedback: boolean }}
+   * @private
+   */
+  _getAndSaveExcludePrevious() {
+    const githubCb = this.modal.querySelector('#exclude-github-comments');
+    const feedbackCb = this.modal.querySelector('#exclude-pr-feedback');
+
+    // When the GitHub checkbox is disabled, preserve the existing localStorage
+    // value for `github` so the user's preference survives contexts where the
+    // option is unavailable.
+    let preservedGithub = false;
+    if (githubCb?.disabled) {
+      try {
+        const raw = localStorage.getItem('pair-review-exclude-previous');
+        if (raw) {
+          const prev = JSON.parse(raw);
+          preservedGithub = !!prev.github;
+        }
+      } catch (_) { /* ignore parse errors */ }
+    }
+
+    const state = {
+      github: githubCb?.disabled ? preservedGithub : !!githubCb?.checked,
+      feedback: !!feedbackCb?.checked
+    };
+    try {
+      localStorage.setItem('pair-review-exclude-previous', JSON.stringify(state));
+    } catch (_) { /* ignore storage errors */ }
+    return state;
   }
 
   /**

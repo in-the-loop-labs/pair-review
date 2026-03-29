@@ -25,6 +25,7 @@ const { ORCHESTRATION_INPUT_SCHEMA_DOCS } = require('../../shared/output-schema'
  * - {{reviewIntro}} - Review introduction line
  * - {{prContext}} - PR context section (optional, may be empty)
  * - {{customInstructions}} - Custom instructions section (optional)
+ * - {{dedupInstructions}} - Dedup instructions section (optional)
  * - {{lineNumberGuidance}} - Line number guidance section
  * - {{level1Count}} - Number of Level 1 suggestions
  * - {{level2Count}} - Number of Level 2 suggestions
@@ -56,6 +57,10 @@ You are helping a human reviewer by intelligently curating and merging suggestio
 
 <section name="custom-instructions" optional="true">
 {{customInstructions}}
+</section>
+
+<section name="dedup-instructions" optional="true">
+{{dedupInstructions}}
 </section>
 
 <section name="input-suggestions" locked="true">
@@ -207,6 +212,7 @@ const sections = [
   { name: 'critical-output', locked: true },
   { name: 'role-description', required: true },
   { name: 'custom-instructions', optional: true },
+  { name: 'dedup-instructions', optional: true },
   { name: 'input-suggestions', locked: true },
   { name: 'intelligent-merging', required: true },
   { name: 'priority-curation', required: true },
@@ -228,6 +234,7 @@ const defaultOrder = [
   'critical-output',
   'role-description',
   'custom-instructions',
+  'dedup-instructions',
   'input-suggestions',
   'intelligent-merging',
   'priority-curation',

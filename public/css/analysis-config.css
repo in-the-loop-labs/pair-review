@@ -1,0 +1,77 @@
+/* Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0 */
+
+/* Exclude Previous Findings — collapsible <details> section */
+
+.exclude-previous-section {
+  margin-bottom: 20px;
+  border: 1px solid var(--color-border-primary);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.exclude-previous-section > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 10px 14px;
+  background: var(--color-bg-secondary);
+  transition: background 0.15s ease;
+}
+
+.exclude-previous-section > summary::-webkit-details-marker {
+  display: none;
+}
+
+.exclude-previous-section > summary::marker {
+  content: '';
+}
+
+.exclude-previous-section > summary:hover {
+  background: var(--color-bg-tertiary);
+}
+
+/* Disclosure triangle via pseudo-element on the summary title */
+.exclude-previous-section > summary.section-title::before {
+  content: '';
+  display: inline-block;
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 5px 0 5px 7px;
+  border-color: transparent transparent transparent var(--color-text-tertiary);
+  transition: transform 0.15s ease;
+  flex-shrink: 0;
+}
+
+.exclude-previous-section[open] > summary.section-title::before {
+  transform: rotate(90deg);
+}
+
+.exclude-previous-options {
+  padding: 4px 14px 14px;
+}
+
+.exclude-previous-options .remember-toggle:first-child {
+  margin-top: 4px;
+}
+
+/* Disabled toggle style */
+.exclude-previous-options .remember-toggle:has(input:disabled) {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.exclude-previous-options .remember-toggle input:disabled + .toggle-switch {
+  cursor: not-allowed;
+}
+
+/* Hint text under each checkbox */
+.option-hint {
+  margin: 2px 0 10px 46px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--color-text-tertiary);
+}
+
+.option-hint:last-child {
+  margin-bottom: 0;
+}

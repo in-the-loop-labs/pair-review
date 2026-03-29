@@ -1085,7 +1085,7 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
     }
 
     // Extract optional provider, model, tier, customInstructions and skipLevel3 from request body
-    const { provider: requestProvider, model: requestModel, tier: requestTier, customInstructions: rawInstructions, skipLevel3: requestSkipLevel3, enabledLevels: requestEnabledLevels } = req.body || {};
+    const { provider: requestProvider, model: requestModel, tier: requestTier, customInstructions: rawInstructions, skipLevel3: requestSkipLevel3, enabledLevels: requestEnabledLevels, excludePrevious } = req.body || {};
 
     // Trim and validate custom instructions
     const MAX_INSTRUCTIONS_LENGTH = 5000;
@@ -1305,7 +1305,7 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
     const progressCallback = createProgressCallback(analysisId);
 
     // Start analysis asynchronously (skipRunCreation since we created the record above; also passes changedFiles for local mode path validation, tier for prompt selection, and skipLevel3 flag)
-    analyzer.analyzeLevel1(reviewId, localPath, localMetadata, progressCallback, { globalInstructions, repoInstructions, requestInstructions }, changedFiles, { analysisId, runId, skipRunCreation: true, tier, skipLevel3: requestSkipLevel3, enabledLevels: levelsConfig })
+    analyzer.analyzeLevel1(reviewId, localPath, localMetadata, progressCallback, { globalInstructions, repoInstructions, requestInstructions }, changedFiles, { analysisId, runId, skipRunCreation: true, tier, skipLevel3: requestSkipLevel3, enabledLevels: levelsConfig, excludePrevious, serverPort: req.socket.localPort })
       .then(async result => {
         logger.section('Local Analysis Results');
         logger.success(`Analysis complete for local review #${reviewId}`);
@@ -1975,7 +1975,7 @@ router.post('/api/local/:reviewId/review-settings', async (req, res) => {
 router.post('/api/local/:reviewId/analyses/council', async (req, res) => {
   try {
     const reviewId = parseInt(req.params.reviewId, 10);
-    const { councilId, councilConfig: inlineConfig, customInstructions: rawInstructions, configType: requestConfigType } = req.body || {};
+    const { councilId, councilConfig: inlineConfig, customInstructions: rawInstructions, configType: requestConfigType, excludePrevious } = req.body || {};
 
     if (isNaN(reviewId) || reviewId <= 0) {
       return res.status(400).json({ error: 'Invalid review ID' });
@@ -2078,6 +2078,7 @@ router.post('/api/local/:reviewId/analyses/council', async (req, res) => {
 
     // Import launchCouncilAnalysis from analyses.js
     const analysesRouter = require('./analyses');
+    const localCouncilConfig = req.app.get('config') || {};
     const { analysisId, runId } = await analysesRouter.launchCouncilAnalysis(
       db,
       {
@@ -2089,7 +2090,9 @@ router.post('/api/local/:reviewId/analyses/council', async (req, res) => {
         headSha: review.local_head_sha,
         logLabel: `local review #${reviewId}`,
         initialStatusExtra: { reviewId, reviewType: 'local' },
-        config: req.app.get('config') || {},
+        config: localCouncilConfig,
+        excludePrevious,
+        serverPort: req.socket.localPort,
         hookContext: {
           mode: 'local',
           localContext: { path: localPath, branch: review.local_head_branch, headSha: review.local_head_sha },
@@ -2098,7 +2101,7 @@ router.post('/api/local/:reviewId/analyses/council', async (req, res) => {
       },
       councilConfig,
       councilId,
-      { globalInstructions: (req.app.get('config') || {}).globalInstructions || null, repoInstructions, requestInstructions },
+      { globalInstructions: localCouncilConfig.globalInstructions || null, repoInstructions, requestInstructions },
       configType
     );
 

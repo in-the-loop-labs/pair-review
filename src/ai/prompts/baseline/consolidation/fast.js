@@ -23,6 +23,7 @@
  * - {{reviewIntro}} - Review introduction line
  * - {{lineNumberGuidance}} - Line number guidance section
  * - {{customInstructions}} - Custom instructions section (optional)
+ * - {{dedupInstructions}} - Dedup instructions section (optional)
  * - {{reviewerSuggestions}} - Formatted reviewer suggestions input
  * - {{suggestionCount}} - Total number of input suggestions
  * - {{reviewerCount}} - Number of reviewers being consolidated
@@ -50,6 +51,10 @@ Merge suggestions from multiple AI reviewers. Deduplicate. Resolve conflicts. Ke
 
 <section name="custom-instructions" optional="true" tier="fast,balanced,thorough">
 {{customInstructions}}
+</section>
+
+<section name="dedup-instructions" optional="true">
+{{dedupInstructions}}
 </section>
 
 <section name="reviewer-context-guidance" required="true" tier="fast">
@@ -138,6 +143,7 @@ const sections = [
   { name: 'critical-output', locked: true },
   { name: 'role-description', required: true, tier: ['fast'] },
   { name: 'custom-instructions', optional: true, tier: ['fast', 'balanced', 'thorough'] },
+  { name: 'dedup-instructions', optional: true },
   { name: 'reviewer-context-guidance', required: true, tier: ['fast'] },
   { name: 'input-suggestions', locked: true },
   { name: 'consolidation-rules', required: true, tier: ['fast'] },
@@ -159,6 +165,7 @@ const defaultOrder = [
   'critical-output',
   'role-description',
   'custom-instructions',
+  'dedup-instructions',
   'reviewer-context-guidance',
   'input-suggestions',
   'consolidation-rules',

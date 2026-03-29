@@ -32,6 +32,7 @@ const { ORCHESTRATION_INPUT_SCHEMA_DOCS } = require('../../shared/output-schema'
  * - {{reviewIntro}} - Review introduction line
  * - {{prContext}} - PR context section (optional, may be empty)
  * - {{customInstructions}} - Custom instructions section (optional)
+ * - {{dedupInstructions}} - Dedup instructions section (optional)
  * - {{lineNumberGuidance}} - Line number guidance section
  * - {{level1Count}} - Number of Level 1 suggestions
  * - {{level2Count}} - Number of Level 2 suggestions
@@ -83,6 +84,10 @@ Quality matters more than speed for this orchestration level. It's better to sur
 
 <section name="custom-instructions" optional="true" tier="balanced,thorough">
 {{customInstructions}}
+</section>
+
+<section name="dedup-instructions" optional="true">
+{{dedupInstructions}}
 </section>
 
 <section name="input-suggestions" locked="true">
@@ -388,6 +393,7 @@ const sections = [
   { name: 'role-description', required: true, tier: ['thorough'] },
   { name: 'reasoning-encouragement', required: true, tier: ['thorough'] },
   { name: 'custom-instructions', optional: true, tier: ['balanced', 'thorough'] },
+  { name: 'dedup-instructions', optional: true },
   { name: 'input-suggestions', locked: true },
   { name: 'intelligent-merging', required: true, tier: ['thorough'] },
   { name: 'priority-curation', required: true, tier: ['thorough'] },
@@ -413,6 +419,7 @@ const defaultOrder = [
   'role-description',
   'reasoning-encouragement',
   'custom-instructions',
+  'dedup-instructions',
   'input-suggestions',
   'intelligent-merging',
   'priority-curation',

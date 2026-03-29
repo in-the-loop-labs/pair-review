@@ -20,7 +20,7 @@ const {
   isCheckInProgress
 } = require('../ai');
 const { normalizeRepository } = require('../utils/paths');
-const { isRunningViaNpx } = require('../config');
+const { isRunningViaNpx, getGitHubToken } = require('../config');
 const { version } = require('../../package.json');
 const { getAllChatProviders, getAllCachedChatAvailability } = require('../chat/chat-providers');
 const logger = require('../utils/logger');
@@ -44,6 +44,7 @@ router.get('/api/config', (req, res) => {
   res.json({
     version,
     theme: config.theme || 'light',
+    has_github_token: Boolean(getGitHubToken(config)),
     comment_button_action: config.comment_button_action || 'submit',
     comment_format: config.comment_format || 'legacy',
     // Include npx detection for frontend command examples

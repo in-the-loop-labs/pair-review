@@ -28,6 +28,7 @@ const { ORCHESTRATION_INPUT_SCHEMA_DOCS } = require('../../shared/output-schema'
  * - {{reviewIntro}} - Review introduction line
  * - {{prContext}} - PR context section (optional, may be empty)
  * - {{customInstructions}} - Custom instructions section (optional)
+ * - {{dedupInstructions}} - Dedup instructions section (optional)
  * - {{lineNumberGuidance}} - Line number guidance section
  * - {{level1Count}} - Number of Level 1 suggestions
  * - {{level2Count}} - Number of Level 2 suggestions
@@ -59,6 +60,10 @@ Curate and merge 3-level suggestions. Remove duplicates. Keep high-value items o
 
 <section name="custom-instructions" optional="true" tier="fast,balanced,thorough">
 {{customInstructions}}
+</section>
+
+<section name="dedup-instructions" optional="true">
+{{dedupInstructions}}
 </section>
 
 <section name="input-suggestions" locked="true">
@@ -156,6 +161,7 @@ const sections = [
   { name: 'critical-output', locked: true },
   { name: 'role-description', required: true, tier: ['fast'] },
   { name: 'custom-instructions', optional: true, tier: ['fast', 'balanced', 'thorough'] },
+  { name: 'dedup-instructions', optional: true },
   { name: 'input-suggestions', locked: true },
   { name: 'intelligent-merging', required: true, tier: ['fast'] },
   { name: 'priority-curation', required: true, tier: ['fast'] },
@@ -177,6 +183,7 @@ const defaultOrder = [
   'critical-output',
   'role-description',
   'custom-instructions',
+  'dedup-instructions',
   'input-suggestions',
   'intelligent-merging',
   'priority-curation',
