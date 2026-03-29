@@ -31,6 +31,15 @@ class GitWorktreeManager {
   }
 
   /**
+   * Create a simple-git instance for a path. Extracted for testability.
+   * @param {string} dirPath
+   * @returns {import('simple-git').SimpleGit}
+   */
+  _gitFor(dirPath) {
+    return simpleGit(dirPath);
+  }
+
+  /**
    * Apply the name template to generate a worktree directory name
    * @param {Object} context - Template context variables
    * @param {string} context.id - Random worktree ID
@@ -928,7 +937,7 @@ class GitWorktreeManager {
         throw new Error(`Worktree has uncommitted changes. Cannot checkout PR #${prNumber} at: ${worktreePath}`);
       }
 
-      const git = simpleGit(worktreePath);
+      const git = this._gitFor(worktreePath);
 
       // 2. Resolve the correct remote (handles fork PRs)
       const remote = (prData || prInfo)
