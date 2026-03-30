@@ -842,7 +842,7 @@ router.post('/mcp', async (req, res) => {
   try {
     const db = req.app.get('db');
     const config = req.app.get('config') || {};
-    const server = createMCPServer(db, { config });
+    const server = createMCPServer(db, { config, port: req.socket.localPort });
 
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,

@@ -3751,6 +3751,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
     const prompt = promptBuilder.build({
       reviewIntro: `You are consolidating Level ${level} code review suggestions from multiple independent AI reviewers for ${reviewDescription}.`,
       customInstructions: customInstructions ? this.buildCustomInstructionsSection(customInstructions) : '',
+      dedupInstructions: '',
       lineNumberGuidance: this.buildOrchestrationLineNumberGuidance(worktreePath),
       reviewerSuggestions,
       suggestionCount,
