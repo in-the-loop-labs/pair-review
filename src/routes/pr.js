@@ -153,6 +153,62 @@ async function syncPendingDraftFromGitHub(githubReviewRepo, reviewId, githubPend
 }
 
 /**
+ * Enrich stack entries with PR titles from the database.
+ * Queries pr_metadata for all stack PRs in one batch and attaches titles.
+ * When a config with a GitHub token is provided, fetches missing titles
+ * from the GitHub API and caches them in pr_metadata for future use.
+ *
+ * @param {Object} db - Database connection
+ * @param {Array} stackData - Stack entries with optional prNumber
+ * @param {string} repository - Normalized repository string (owner/repo)
+ * @param {Object} [options] - Optional parameters
+ * @param {Object} [options.config] - App config (for GitHub token lookup)
+ * @returns {Promise<Array>} Stack entries with title field added
+ */
+async function enrichStackWithTitles(db, stackData, repository, options = {}) {
+  if (!stackData || !Array.isArray(stackData)) return stackData;
+
+  const prNumbers = stackData.filter(e => e.prNumber).map(e => e.prNumber);
+  if (prNumbers.length === 0) return stackData;
+
+  const placeholders = prNumbers.map(() => '?').join(',');
+  const rows = await query(db, `
+    SELECT pr_number, title FROM pr_metadata
+    WHERE pr_number IN (${placeholders}) AND repository = ? COLLATE NOCASE
+  `, [...prNumbers, repository]);
+
+  const titleMap = new Map();
+  for (const row of rows) {
+    if (row.title) titleMap.set(row.pr_number, row.title);
+  }
+
+  // Fetch missing titles from GitHub API
+  const missingPRs = prNumbers.filter(n => !titleMap.has(n));
+  if (missingPRs.length > 0 && options.config) {
+    const ghToken = getGitHubToken(options.config);
+    if (ghToken) {
+      const [owner, repo] = repository.split('/');
+      const ghClient = new GitHubClient(ghToken);
+      const results = await Promise.allSettled(
+        missingPRs.map(n => ghClient.fetchPullRequest(owner, repo, n))
+      );
+      for (let i = 0; i < missingPRs.length; i++) {
+        if (results[i].status === 'fulfilled' && results[i].value?.title) {
+          titleMap.set(missingPRs[i], results[i].value.title);
+        }
+      }
+    }
+  }
+
+  return stackData.map(entry => {
+    if (entry.prNumber && titleMap.has(entry.prNumber)) {
+      return { ...entry, title: titleMap.get(entry.prNumber) };
+    }
+    return entry;
+  });
+}
+
+/**
  * Get pull request data by owner, repo, and number
  */
 router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
@@ -250,6 +306,7 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
             stackData = prInfo?.prInfos
               ? enrichStackWithPRInfo(graphiteResult.stack, prInfo.prInfos)
               : graphiteResult.stack;
+            stackData = await enrichStackWithTitles(db, stackData, repository, { config: stackConfig });
           }
         } catch {
           // Non-fatal — stack detection is an enhancement
@@ -309,8 +366,18 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
           for (const pr of allPRs) {
             if (pr.head_branch) prNumbersByBranch[pr.head_branch] = pr.pr_number;
           }
-          const stack = buildStackWithPRNumbers(graphiteState, prMetadata.head_branch, { prNumbersByBranch });
+          // Fill in missing PR numbers from Graphite's .graphite_pr_info
+          const graphitePRInfo = readGraphitePRInfo(extendedData.worktree_path, { execSync, readFileSync });
+          if (graphitePRInfo?.prInfos) {
+            for (const info of graphitePRInfo.prInfos) {
+              if (info.headRefName && info.prNumber && !prNumbersByBranch[info.headRefName]) {
+                prNumbersByBranch[info.headRefName] = info.prNumber;
+              }
+            }
+          }
+          let stack = buildStackWithPRNumbers(graphiteState, prMetadata.head_branch, { prNumbersByBranch });
           if (stack) {
+            stack = await enrichStackWithTitles(db, stack, repository, { config: appConfig });
             response.data.stack_data = stack;
           }
         }
@@ -483,6 +550,7 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
           stackData = prInfo?.prInfos
             ? enrichStackWithPRInfo(graphiteResult.stack, prInfo.prInfos)
             : graphiteResult.stack;
+          stackData = await enrichStackWithTitles(db, stackData, repository, { config });
         }
       } catch {
         // Non-fatal — stack detection is an enhancement
@@ -2317,6 +2385,15 @@ router.get('/api/pr/:owner/:repo/:number/stack-info', async (req, res) => {
         prNumbersByBranch[pr.head_branch] = pr.pr_number;
       }
     }
+    // Fill in missing PR numbers from Graphite's .graphite_pr_info
+    const graphitePRInfo = readGraphitePRInfo(worktreePath, { execSync, readFileSync });
+    if (graphitePRInfo?.prInfos) {
+      for (const info of graphitePRInfo.prInfos) {
+        if (info.headRefName && info.prNumber && !prNumbersByBranch[info.headRefName]) {
+          prNumbersByBranch[info.headRefName] = info.prNumber;
+        }
+      }
+    }
 
     // Enrich stack with PR info
     const stack = buildStackWithPRNumbers(graphiteState, prMetadata.head_branch, { prNumbersByBranch });
@@ -2338,12 +2415,25 @@ router.get('/api/pr/:owner/:repo/:number/stack-info', async (req, res) => {
       const enriched = { ...entry };
 
       if (entry.prNumber) {
-        // Look up title from pr_metadata
+        // Look up title from pr_metadata, fall back to GitHub API
         const meta = await queryOne(db, `
           SELECT title FROM pr_metadata
           WHERE pr_number = ? AND repository = ? COLLATE NOCASE
         `, [entry.prNumber, repository]);
         enriched.title = meta?.title || null;
+
+        if (!enriched.title) {
+          try {
+            const githubToken = getGitHubToken(config);
+            if (githubToken) {
+              const ghClient = new GitHubClient(githubToken);
+              const prData = await ghClient.fetchPullRequest(owner, repo, entry.prNumber);
+              enriched.title = prData?.title || null;
+            }
+          } catch (e) {
+            logger.debug(`Failed to fetch title for PR #${entry.prNumber} from GitHub: ${e.message}`);
+          }
+        }
 
         // Check if there's an analysis run
         const reviewRepo = new ReviewRepository(db);

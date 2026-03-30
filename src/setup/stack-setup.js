@@ -3,10 +3,8 @@
  * Stack PR Setup Utility
  *
  * Lightweight setup for individual PRs during stack analysis.
- * Runs AFTER checkoutBranch() has already placed the correct branch
- * in the shared worktree, so all SHAs are available for diff generation.
- *
- * Reuses storePRData() from pr-setup.js for database persistence.
+ * Fetches PR data (or accepts pre-fetched data), generates diffs,
+ * and stores metadata via storePRData().
  */
 
 const { storePRData } = require('./pr-setup');
@@ -16,8 +14,9 @@ const logger = require('../utils/logger');
 /**
  * Set up a single PR within a stack analysis context.
  *
- * Fetches PR data from GitHub, generates a diff in the (already checked-out)
- * worktree, and stores everything in the database via storePRData().
+ * Fetches PR data from GitHub (or uses pre-fetched data when provided),
+ * generates a diff in the worktree, and stores everything in the database
+ * via storePRData().
  *
  * @param {Object} params
  * @param {Object} params.db - Database instance
@@ -25,16 +24,22 @@ const logger = require('../utils/logger');
  * @param {string} params.repo - Repository name
  * @param {number} params.prNumber - Pull request number
  * @param {string} params.githubToken - GitHub personal access token
- * @param {string} params.worktreePath - Path to the shared worktree (already checked out to this PR)
+ * @param {string} params.worktreePath - Path to the per-PR worktree
  * @param {import('../git/worktree').GitWorktreeManager} params.worktreeManager - Worktree manager instance
+ * @param {Object} [params.prData] - Pre-fetched PR data from GitHub (skips API call when provided)
  * @returns {Promise<{ reviewId: number, prMetadata: Object, prData: Object, isNew: boolean }>}
  */
-async function setupStackPR({ db, owner, repo, prNumber, githubToken, worktreePath, worktreeManager }) {
+async function setupStackPR({ db, owner, repo, prNumber, githubToken, worktreePath, worktreeManager, prData: prefetchedPRData }) {
   logger.info(`Setting up stack PR #${prNumber} for ${owner}/${repo}`);
 
-  // 1. Fetch PR data from GitHub
+  // 1. Fetch PR data from GitHub (or use pre-fetched data)
   const githubClient = new GitHubClient(githubToken);
-  const prData = await githubClient.fetchPullRequest(owner, repo, prNumber);
+  let prData;
+  if (prefetchedPRData) {
+    prData = prefetchedPRData;
+  } else {
+    prData = await githubClient.fetchPullRequest(owner, repo, prNumber);
+  }
   logger.info(`Fetched PR #${prNumber}: "${prData.title}"`);
 
   // 2. Fetch changed files list from GitHub API

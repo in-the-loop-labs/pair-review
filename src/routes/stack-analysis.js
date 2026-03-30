@@ -2,14 +2,13 @@
 /**
  * Stack Analysis Routes & Orchestrator
  *
- * Provides endpoints for analyzing a Graphite stack of PRs sequentially:
+ * Provides endpoints for analyzing a Graphite stack of PRs in parallel:
  * - POST /api/pr/:owner/:repo/:number/analyses/stack — start stack analysis
  * - GET  /api/analyses/stack/:stackAnalysisId        — get stack analysis status
  * - POST /api/analyses/stack/:stackAnalysisId/cancel  — cancel stack analysis
  *
- * The orchestrator checks out each PR's branch in the shared worktree,
- * runs the configured analysis (single, council, or executable), awaits
- * completion, then moves to the next PR (bottom-up order).
+ * The orchestrator creates per-PR worktrees and runs analyses in parallel,
+ * using the configured analysis type (single, council, or executable).
  */
 
 const express = require('express');
@@ -21,7 +20,6 @@ const { mergeInstructions } = require('../utils/instructions');
 const { GitWorktreeManager } = require('../git/worktree');
 const { GitHubClient } = require('../github/client');
 const { getGitHubToken } = require('../config');
-const { worktreeLock } = require('../git/worktree-lock');
 const { setupStackPR } = require('../setup/stack-setup');
 const Analyzer = require('../ai/analyzer');
 const { getProviderClass, createProvider } = require('../ai/provider');
@@ -31,7 +29,6 @@ const ws = require('../ws');
 const {
   query,
   queryOne,
-  WorktreeRepository,
   ReviewRepository,
   RepoSettingsRepository,
   AnalysisRunRepository,
@@ -63,12 +60,51 @@ const activeStackAnalyses = new Map();
 // ============================================================================
 
 /**
+ * Estimate the maximum wall-clock time for a council analysis based on its
+ * config.  The real per-call timeouts live inside the analyzer; this is a
+ * generous upper bound so the stack orchestrator doesn't give up too early.
+ *
+ * @param {Object} councilConfig - Resolved council configuration
+ * @param {string} configType - 'council' (voice-centric) or 'advanced' (level-centric)
+ * @returns {number} Timeout in milliseconds
+ */
+function estimateCouncilTimeout(councilConfig, configType) {
+  const DEFAULT_VOICE_TIMEOUT = 600_000;   // 10 min
+  const DEFAULT_CONSOL_TIMEOUT = 300_000;  //  5 min
+  const DEFAULT_ORCH_TIMEOUT = 600_000;    // 10 min
+  const MARGIN = 120_000;                  //  2 min safety margin
+
+  if (configType === 'council') {
+    // Voice-centric: all voices run in parallel, then one consolidation step
+    const maxVoiceTimeout = (councilConfig.voices || [])
+      .reduce((max, v) => Math.max(max, v.timeout || DEFAULT_VOICE_TIMEOUT), DEFAULT_VOICE_TIMEOUT);
+    const consolTimeout = councilConfig.consolidation?.timeout || DEFAULT_CONSOL_TIMEOUT;
+    return maxVoiceTimeout + consolTimeout + MARGIN;
+  }
+
+  // Level-centric (advanced): per-level voices (parallel) + per-level consolidation,
+  // then cross-level orchestration
+  const levels = councilConfig.levels || {};
+  let levelPhaseTotal = 0;
+  for (const lvl of Object.values(levels)) {
+    const voices = lvl.voices || [];
+    const maxVoice = voices.reduce((max, v) => Math.max(max, v.timeout || DEFAULT_VOICE_TIMEOUT), DEFAULT_VOICE_TIMEOUT);
+    const consolTimeout = lvl.consolidation?.timeout || DEFAULT_CONSOL_TIMEOUT;
+    levelPhaseTotal += maxVoice + consolTimeout;
+  }
+  const orchTimeout = (councilConfig.consolidation?.timeout
+    || councilConfig.orchestration?.timeout
+    || DEFAULT_ORCH_TIMEOUT);
+  return levelPhaseTotal + orchTimeout + MARGIN;
+}
+
+/**
  * Poll activeAnalyses until the given analysisId reaches a terminal state.
  * @param {string} analysisId
- * @param {number} [timeoutMs=600000] - Maximum wait time (default 10 min)
+ * @param {number} [timeoutMs=3600000] - Maximum wait time (default 60 min)
  * @returns {Promise<Object>} Terminal analysis status
  */
-function waitForAnalysisCompletion(analysisId, timeoutMs = 600000) {
+function waitForAnalysisCompletion(analysisId, timeoutMs = 3_600_000) {
   return new Promise((resolve, reject) => {
     const start = Date.now();
     const check = () => {
@@ -98,16 +134,22 @@ function waitForAnalysisCompletion(analysisId, timeoutMs = 600000) {
 
 function broadcastStackProgress(stackAnalysisId, state) {
   const prStatuses = [];
+  let runningCount = 0;
+  let completedCount = 0;
   for (const [prNum, prStatus] of state.prStatuses) {
     prStatuses.push({ prNumber: prNum, ...prStatus });
+    if (prStatus.status === 'running') runningCount++;
+    if (prStatus.status === 'completed') completedCount++;
   }
 
   ws.broadcast(`stack-analysis:${stackAnalysisId}`, {
     type: 'stack-progress',
     stackAnalysisId,
     status: state.status,
-    currentPRNumber: state.currentPRNumber,
-    currentPRIndex: state.currentPRIndex,
+    currentPRNumber: null,
+    currentPRIndex: null,
+    runningCount,
+    completedCount,
     totalPRs: state.totalPRs,
     prStatuses
   });
@@ -132,7 +174,8 @@ const defaults = {
 };
 
 /**
- * Execute sequential stack analysis across multiple PRs.
+ * Execute parallel stack analysis across multiple PRs.
+ * Creates per-PR worktrees and runs analyses concurrently.
  *
  * @param {Object} params
  * @param {Object} params.db - Database handle
@@ -141,7 +184,7 @@ const defaults = {
  * @param {string} params.repo - Repository name
  * @param {string} params.repository - Normalized owner/repo
  * @param {number} params.triggerPRNumber - The PR that triggered the stack analysis
- * @param {string} params.worktreePath - Shared worktree path
+ * @param {string} params.worktreePath - Trigger PR worktree path (used to resolve repo)
  * @param {number[]} params.prNumbers - PR numbers to analyze (bottom-up order)
  * @param {Object} params.analysisConfig - Analysis configuration from request
  * @param {string} params.stackAnalysisId - Unique ID for this stack analysis
@@ -150,8 +193,8 @@ const defaults = {
 async function executeStackAnalysis(params) {
   const {
     db, config, owner, repo, repository, triggerPRNumber,
-    worktreePath, prNumbers, analysisConfig, stackAnalysisId,
-    _deps
+    worktreePath: triggerWorktreePath, prNumbers, analysisConfig,
+    stackAnalysisId, _deps
   } = params;
 
   const deps = { ...defaults, ..._deps };
@@ -159,170 +202,122 @@ async function executeStackAnalysis(params) {
   const state = activeStackAnalyses.get(stackAnalysisId);
   if (!state) return;
 
-  let originalHead = null;
-  let originalBranch = null;
-
-  // Snapshot existing worktree records for hazard #1 mitigation
-  const worktreeRepo = new WorktreeRepository(db);
-  const originalWorktreeRecords = new Map();
-
   try {
-    // 1. Acquire lock
-    const acquired = worktreeLock.acquire(worktreePath, stackAnalysisId);
-    if (!acquired) {
-      state.status = 'failed';
-      state.error = 'Worktree is already locked by another operation';
-      activeStackAnalyses.set(stackAnalysisId, state);
-      broadcastStackProgress(stackAnalysisId, state);
-      return;
-    }
-
-    // 2. Record original HEAD + branch
+    // 1. Resolve repositoryPath from trigger worktree
+    const worktreeManager = new deps.GitWorktreeManager(db);
+    let repositoryPath;
     try {
-      originalHead = deps.execSync('git rev-parse HEAD', {
-        cwd: worktreePath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe']
-      }).trim();
-      originalBranch = deps.execSync('git rev-parse --abbrev-ref HEAD', {
-        cwd: worktreePath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe']
-      }).trim();
-    } catch (e) {
-      logger.warn(`Could not record original HEAD: ${e.message}`);
-    }
-
-    // Snapshot worktree records for selected PRs (hazard #1)
-    for (const prNum of prNumbers) {
-      const wt = await worktreeRepo.findByPR(prNum, repository);
-      if (wt) {
-        originalWorktreeRecords.set(prNum, { ...wt });
+      const owningRepoGit = await worktreeManager.resolveOwningRepo(triggerWorktreePath);
+      if (owningRepoGit) {
+        repositoryPath = (await owningRepoGit.raw(['rev-parse', '--show-toplevel'])).trim();
       }
+    } catch (e) {
+      logger.warn(`Failed to resolve owning repo for ${triggerWorktreePath}, falling back: ${e.message}`);
+      repositoryPath = triggerWorktreePath;
     }
+    if (!repositoryPath) repositoryPath = triggerWorktreePath;
 
-    // 3. Bulk fetch GitHub data for all selected PRs
-    const githubToken = deps.getGitHubToken(config);
-    let githubClient = null;
-    if (githubToken) {
-      githubClient = new deps.GitHubClient(githubToken);
-    }
-
-    // 4. Git fetch all PR refs in a single command
+    // 2. Bulk fetch all PR refs (runs against trigger worktree)
     const refspecs = prNumbers.map(n => `+refs/pull/${n}/head:refs/remotes/origin/pr-${n}`);
     try {
       deps.execSync(`git fetch origin ${refspecs.join(' ')}`, {
-        cwd: worktreePath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
+        cwd: triggerWorktreePath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
         timeout: 60000
       });
     } catch (fetchError) {
       logger.warn(`Bulk git fetch failed, will fetch per-PR: ${fetchError.message}`);
     }
 
-    // 5. For each PR (bottom-up order)
-    const worktreeManager = new deps.GitWorktreeManager(db);
+    // 3. Fetch all PR data from GitHub in parallel
+    const githubToken = deps.getGitHubToken(config);
+    const prDataMap = new Map();
+    if (githubToken) {
+      const githubClient = new deps.GitHubClient(githubToken);
+      const fetchResults = await Promise.allSettled(
+        prNumbers.map(async (prNum) => {
+          const prData = await githubClient.fetchPullRequest(owner, repo, prNum);
+          return { prNum, prData };
+        })
+      );
+      for (const result of fetchResults) {
+        if (result.status === 'fulfilled') {
+          prDataMap.set(result.value.prNum, result.value.prData);
+        } else {
+          logger.warn(`Failed to fetch PR data: ${result.reason?.message}`);
+        }
+      }
+    }
 
-    for (let i = 0; i < prNumbers.length; i++) {
-      const prNum = prNumbers[i];
+    // 4. Create per-PR worktrees serially (git worktree add locks .git/worktrees)
+    const worktreePathMap = new Map();
+    for (const prNum of prNumbers) {
+      if (state.cancelled) break;
 
-      // Check for cancellation
-      if (state.cancelled) {
-        logger.info(`Stack analysis ${stackAnalysisId} cancelled, stopping at PR #${prNum}`);
-        break;
+      const prData = prDataMap.get(prNum);
+      if (!prData) {
+        state.prStatuses.set(prNum, { status: 'failed', error: 'Failed to fetch PR data from GitHub' });
+        broadcastStackProgress(stackAnalysisId, state);
+        continue;
       }
 
-      state.currentPRNumber = prNum;
-      state.currentPRIndex = i;
-      state.prStatuses.set(prNum, { status: 'running' });
-      broadcastStackProgress(stackAnalysisId, state);
-
       try {
-        // 5a. Checkout branch
-        logger.info(`Stack analysis: checking out PR #${prNum}`);
-        await worktreeManager.checkoutBranch(worktreePath, prNum);
-
-        // 5b. Setup PR (creates/updates metadata, review, worktree records)
-        logger.info(`Stack analysis: setting up PR #${prNum}`);
-        const githubToken = deps.getGitHubToken(config);
-        await deps.setupStackPR({
-          db, owner, repo, prNumber: prNum,
-          githubToken, worktreePath, worktreeManager
-        });
-
-        // Fetch the full prMetadata from DB (includes id, head_sha, base_sha, etc.)
-        const prMetadataRepo = new PRMetadataRepository(db);
-        const prMetadata = await prMetadataRepo.getByPR(prNum, repository);
-        if (!prMetadata) {
-          throw new Error(`PR metadata not found for PR #${prNum} after setup`);
-        }
-
-        const reviewRepo = new ReviewRepository(db);
-        const { review } = await reviewRepo.getOrCreate({ prNumber: prNum, repository });
-        const reviewId = review.id;
-
-        // 5c. Resolve analysis config
-        const repoSettingsRepo = new RepoSettingsRepository(db);
-        const repoSettings = await repoSettingsRepo.getRepoSettings(repository);
-        const repoInstructions = repoSettings?.default_instructions || null;
-        const globalInstructions = config.globalInstructions || null;
-        const requestInstructions = analysisConfig.customInstructions || null;
-
-        const {
-          configType = 'single', provider: reqProvider, model: reqModel,
-          tier: reqTier, enabledLevels: reqEnabledLevels,
-          isCouncil, councilId, councilConfig: rawCouncilConfig
-        } = analysisConfig;
-
-        // 5d. Launch analysis based on config type
-        let analysisResult;
-
-        if (configType === 'council' || configType === 'advanced' || isCouncil) {
-          analysisResult = await launchStackCouncilAnalysis(deps, db, config, {
-            reviewId, worktreePath, prMetadata, prNum, owner, repo, repository,
-            globalInstructions, repoInstructions, requestInstructions,
-            councilId, rawCouncilConfig, configType
-          });
-        } else {
-          // Resolve provider/model
-          let selectedProvider = reqProvider || repoSettings?.default_provider || config.default_provider || config.provider || 'claude';
-          let selectedModel = reqModel || repoSettings?.default_model || config.default_model || config.model || 'opus';
-
-          const ProviderClass = deps.getProviderClass(selectedProvider);
-
-          if (ProviderClass?.isExecutable) {
-            analysisResult = await launchStackExecutableAnalysis(deps, db, config, {
-              reviewId, worktreePath, prMetadata, prNum, owner, repo, repository,
-              selectedProvider, selectedModel,
-              repoInstructions, requestInstructions
-            });
-          } else {
-            analysisResult = await launchStackSingleAnalysis(deps, db, config, {
-              reviewId, worktreePath, prMetadata, prNum, owner, repo, repository,
-              selectedProvider, selectedModel,
-              globalInstructions, repoInstructions, requestInstructions,
-              reqTier, reqEnabledLevels
-            });
-          }
-        }
-
-        // 5e. Record result
-        state.prStatuses.set(prNum, {
-          status: analysisResult.status === 'completed' ? 'completed' : 'failed',
-          analysisId: analysisResult.analysisId,
-          suggestionsCount: analysisResult.suggestionsCount || 0,
-          error: analysisResult.error || null
-        });
+        state.prStatuses.set(prNum, { status: 'setting_up' });
         broadcastStackProgress(stackAnalysisId, state);
 
-      } catch (prError) {
-        // 5f. On error: log, mark failed, continue
-        logger.error(`Stack analysis: PR #${prNum} failed: ${prError.message}`);
-        state.prStatuses.set(prNum, {
-          status: 'failed',
-          error: prError.message
-        });
+        const prInfo = { owner, repo, number: prNum };
+        const perPRWorktreePath = await worktreeManager.createWorktreeForPR(
+          prInfo, prData, repositoryPath
+        );
+        worktreePathMap.set(prNum, perPRWorktreePath);
+      } catch (wtError) {
+        logger.error(`Stack analysis: failed to create worktree for PR #${prNum}: ${wtError.message}`);
+        state.prStatuses.set(prNum, { status: 'failed', error: `Worktree creation failed: ${wtError.message}` });
         broadcastStackProgress(stackAnalysisId, state);
       }
     }
 
-    // Set final status
-    state.status = state.cancelled ? 'cancelled' : 'completed';
+    // 5. Launch analyses in parallel for all PRs with worktrees
+    const readyPRs = prNumbers.filter(prNum => worktreePathMap.has(prNum) && !state.cancelled);
+
+    await Promise.allSettled(
+      readyPRs.map(prNum => {
+        state.prStatuses.set(prNum, { status: 'running' });
+        broadcastStackProgress(stackAnalysisId, state);
+
+        // Surface analysisId as soon as the launcher creates it (before awaiting completion)
+        const onAnalysisIdReady = (analysisId) => {
+          const current = state.prStatuses.get(prNum);
+          if (current) {
+            current.analysisId = analysisId;
+            broadcastStackProgress(stackAnalysisId, state);
+          }
+        };
+
+        return analyzeStackPR(deps, db, config, {
+          owner, repo, repository, prNum,
+          worktreePath: worktreePathMap.get(prNum),
+          analysisConfig, stackAnalysisId, state,
+          githubToken, prData: prDataMap.get(prNum),
+          onAnalysisIdReady
+        }).then(result => {
+          state.prStatuses.set(prNum, {
+            status: result.status || 'failed',
+            analysisId: result.analysisId,
+            suggestionsCount: result.suggestionsCount || 0,
+            error: result.error || null
+          });
+          broadcastStackProgress(stackAnalysisId, state);
+        }).catch(error => {
+          logger.error(`Stack analysis: PR #${prNum} failed: ${error.message}`);
+          state.prStatuses.set(prNum, { status: 'failed', error: error.message });
+          broadcastStackProgress(stackAnalysisId, state);
+        });
+      })
+    );
+
+    // 6. Set final status
+    const anySucceeded = [...state.prStatuses.values()].some(s => s.status === 'completed');
+    state.status = state.cancelled ? 'cancelled' : (anySucceeded ? 'completed' : 'failed');
     state.completedAt = new Date().toISOString();
 
   } catch (outerError) {
@@ -330,43 +325,83 @@ async function executeStackAnalysis(params) {
     state.status = 'failed';
     state.error = outerError.message;
   } finally {
-    // 6. Restore original branch
-    if (originalHead) {
-      try {
-        if (originalBranch && originalBranch !== 'HEAD') {
-          deps.execSync(`git checkout ${originalBranch}`, {
-            cwd: worktreePath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe']
-          });
-        } else {
-          deps.execSync(`git reset --hard ${originalHead}`, {
-            cwd: worktreePath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe']
-          });
-        }
-      } catch (restoreError) {
-        logger.warn(`Failed to restore original branch: ${restoreError.message}`);
-      }
-    }
-
-    // Hazard #1 mitigation: restore worktree records for PRs that had different paths
-    for (const [prNum, original] of originalWorktreeRecords) {
-      try {
-        const current = await worktreeRepo.findByPR(prNum, repository);
-        if (current && current.path !== original.path) {
-          await worktreeRepo.updatePath(current.id, original.path);
-          logger.info(`Restored worktree path for PR #${prNum} to ${original.path}`);
-        }
-      } catch (restoreError) {
-        logger.warn(`Failed to restore worktree path for PR #${prNum}: ${restoreError.message}`);
-      }
-    }
-
-    // 7. Release lock
-    worktreeLock.release(worktreePath, stackAnalysisId);
-
-    // 8. Broadcast completion
     activeStackAnalyses.set(stackAnalysisId, state);
     broadcastStackProgress(stackAnalysisId, state);
   }
+}
+
+/**
+ * Run setup + analysis for a single PR in the stack.
+ * Called in parallel for all PRs.
+ */
+async function analyzeStackPR(deps, db, config, {
+  owner, repo, repository, prNum, worktreePath,
+  analysisConfig, stackAnalysisId, state, githubToken, prData,
+  onAnalysisIdReady
+}) {
+  // 1. Setup PR (generates diff, stores metadata)
+  const worktreeManager = new deps.GitWorktreeManager(db);
+  await deps.setupStackPR({
+    db, owner, repo, prNumber: prNum,
+    githubToken, worktreePath, worktreeManager, prData
+  });
+
+  // 2. Fetch prMetadata from DB
+  const prMetadataRepo = new PRMetadataRepository(db);
+  const prMetadata = await prMetadataRepo.getByPR(prNum, repository);
+  if (!prMetadata) {
+    throw new Error(`PR metadata not found for PR #${prNum} after setup`);
+  }
+
+  const reviewRepo = new ReviewRepository(db);
+  const { review } = await reviewRepo.getOrCreate({ prNumber: prNum, repository });
+  const reviewId = review.id;
+
+  // 3. Resolve analysis config
+  const repoSettingsRepo = new RepoSettingsRepository(db);
+  const repoSettings = await repoSettingsRepo.getRepoSettings(repository);
+  const repoInstructions = repoSettings?.default_instructions || null;
+  const globalInstructions = config.globalInstructions || null;
+  const requestInstructions = analysisConfig.customInstructions || null;
+
+  const {
+    configType = 'single', provider: reqProvider, model: reqModel,
+    tier: reqTier, enabledLevels: reqEnabledLevels,
+    isCouncil, councilId, councilConfig: rawCouncilConfig
+  } = analysisConfig;
+
+  // 4. Dispatch to launcher
+  let analysisResult;
+
+  if (configType === 'council' || configType === 'advanced' || isCouncil) {
+    analysisResult = await launchStackCouncilAnalysis(deps, db, config, {
+      reviewId, worktreePath, prMetadata, prNum, owner, repo, repository,
+      globalInstructions, repoInstructions, requestInstructions,
+      councilId, rawCouncilConfig, configType, onAnalysisIdReady
+    });
+  } else {
+    let selectedProvider = reqProvider || repoSettings?.default_provider || config.default_provider || config.provider || 'claude';
+    let selectedModel = reqModel || repoSettings?.default_model || config.default_model || config.model || 'opus';
+
+    const ProviderClass = deps.getProviderClass(selectedProvider);
+
+    if (ProviderClass?.isExecutable) {
+      analysisResult = await launchStackExecutableAnalysis(deps, db, config, {
+        reviewId, worktreePath, prMetadata, prNum, owner, repo, repository,
+        selectedProvider, selectedModel,
+        repoInstructions, requestInstructions, onAnalysisIdReady
+      });
+    } else {
+      analysisResult = await launchStackSingleAnalysis(deps, db, config, {
+        reviewId, worktreePath, prMetadata, prNum, owner, repo, repository,
+        selectedProvider, selectedModel,
+        globalInstructions, repoInstructions, requestInstructions,
+        reqTier, reqEnabledLevels, onAnalysisIdReady
+      });
+    }
+  }
+
+  return analysisResult;
 }
 
 // ============================================================================
@@ -380,10 +415,11 @@ async function launchStackSingleAnalysis(deps, db, config, {
   reviewId, worktreePath, prMetadata, prNum, owner, repo, repository,
   selectedProvider, selectedModel,
   globalInstructions, repoInstructions, requestInstructions,
-  reqTier, reqEnabledLevels
+  reqTier, reqEnabledLevels, onAnalysisIdReady
 }) {
   const runId = uuidv4();
   const analysisId = runId;
+  if (onAnalysisIdReady) onAnalysisIdReady(analysisId);
   const tier = reqTier ? resolveTier(reqTier) : 'balanced';
   const levelsConfig = parseEnabledLevels(reqEnabledLevels);
 
@@ -502,7 +538,7 @@ async function launchStackSingleAnalysis(deps, db, config, {
 async function launchStackCouncilAnalysis(deps, db, config, {
   reviewId, worktreePath, prMetadata, prNum, owner, repo, repository,
   globalInstructions, repoInstructions, requestInstructions,
-  councilId, rawCouncilConfig, configType
+  councilId, rawCouncilConfig, configType, onAnalysisIdReady
 }) {
   let councilConfig;
   let resolvedConfigType = configType;
@@ -565,8 +601,12 @@ async function launchStackCouncilAnalysis(deps, db, config, {
     resolvedConfigType
   );
 
-  // Wait for completion
-  const finalStatus = await deps.waitForAnalysisCompletion(analysisId);
+  if (onAnalysisIdReady) onAnalysisIdReady(analysisId);
+
+  // Wait for completion — use a timeout derived from the council config
+  const timeoutMs = estimateCouncilTimeout(councilConfig, resolvedConfigType);
+  logger.info(`Stack analysis: council timeout for PR #${prNum} estimated at ${Math.round(timeoutMs / 60000)}min`);
+  const finalStatus = await deps.waitForAnalysisCompletion(analysisId, timeoutMs);
 
   return {
     analysisId,
@@ -583,10 +623,11 @@ async function launchStackCouncilAnalysis(deps, db, config, {
 async function launchStackExecutableAnalysis(deps, db, config, {
   reviewId, worktreePath, prMetadata, prNum, owner, repo, repository,
   selectedProvider, selectedModel,
-  repoInstructions, requestInstructions
+  repoInstructions, requestInstructions, onAnalysisIdReady
 }) {
   const runId = uuidv4();
   const analysisId = runId;
+  if (onAnalysisIdReady) onAnalysisIdReady(analysisId);
 
   const reviewRepo = new ReviewRepository(db);
   const { review } = await reviewRepo.getOrCreate({ prNumber: prNum, repository });
@@ -725,15 +766,6 @@ router.post('/api/pr/:owner/:repo/:number/analyses/stack', async (req, res) => {
       return res.status(404).json({ error: 'Worktree not found for this PR. Please load the PR first.' });
     }
 
-    // Check lock
-    const lockState = worktreeLock.isLocked(worktreePath);
-    if (lockState.locked) {
-      return res.status(409).json({
-        error: 'Worktree is already locked by another operation',
-        holderId: lockState.holderId
-      });
-    }
-
     const stackAnalysisId = uuidv4();
 
     // Initialize tracking state
@@ -745,11 +777,8 @@ router.post('/api/pr/:owner/:repo/:number/analyses/stack', async (req, res) => {
     const state = {
       id: stackAnalysisId,
       status: 'running',
-      worktreePath,
-      originalBranch: null,
+      triggerWorktreePath: worktreePath,
       prStatuses,
-      currentPRNumber: null,
-      currentPRIndex: null,
       totalPRs: prNumbers.length,
       startedAt: new Date().toISOString(),
       cancelled: false,
@@ -799,8 +828,8 @@ router.get('/api/analyses/stack/:stackAnalysisId', (req, res) => {
   res.json({
     id: state.id,
     status: state.status,
-    currentPRNumber: state.currentPRNumber,
-    currentPRIndex: state.currentPRIndex,
+    currentPRNumber: null,
+    currentPRIndex: null,
     totalPRs: state.totalPRs,
     startedAt: state.startedAt,
     completedAt: state.completedAt,
@@ -830,15 +859,13 @@ router.post('/api/analyses/stack/:stackAnalysisId/cancel', (req, res) => {
 
   logger.info(`Cancelling stack analysis ${stackAnalysisId}`);
 
-  // Set cancelled flag — the orchestrator loop checks this
+  // Set cancelled flag — the orchestrator checks this
   state.cancelled = true;
 
-  // Cancel the currently running individual analysis
-  if (state.currentPRNumber) {
-    const currentPRStatus = state.prStatuses.get(state.currentPRNumber);
-    if (currentPRStatus?.analysisId) {
-      // Kill processes for the current analysis
-      killProcesses(currentPRStatus.analysisId);
+  // Cancel all currently running analyses
+  for (const [prNum, prStatus] of state.prStatuses) {
+    if (prStatus.status === 'running' && prStatus.analysisId) {
+      killProcesses(prStatus.analysisId);
     }
   }
 
@@ -856,3 +883,4 @@ module.exports = router;
 module.exports.activeStackAnalyses = activeStackAnalyses;
 module.exports.executeStackAnalysis = executeStackAnalysis;
 module.exports.waitForAnalysisCompletion = waitForAnalysisCompletion;
+module.exports.estimateCouncilTimeout = estimateCouncilTimeout;

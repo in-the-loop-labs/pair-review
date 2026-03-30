@@ -1175,31 +1175,59 @@ class PRManager {
     menu.className = 'stack-nav-menu';
     dropdown.appendChild(menu);
 
-    // Populate menu items
-    for (const stackPR of stackPRs) {
+    // Populate menu items (reversed: stack base at bottom)
+    const displayPRs = [...stackPRs].reverse();
+    for (const stackPR of displayPRs) {
+      const isCurrent = stackPR.prNumber === pr.number;
       const item = document.createElement('div');
       item.className = 'stack-nav-item';
-      if (stackPR.prNumber === pr.number) {
+      if (isCurrent) {
         item.classList.add('current');
       }
       item.dataset.pr = stackPR.prNumber;
 
-      const statusDot = document.createElement('span');
-      statusDot.className = 'stack-nav-status';
-      if (stackPR.hasAnalysis) {
-        statusDot.classList.add('analyzed');
+      // Left indicator column: star for current PR, empty spacer for others
+      const indicator = document.createElement('span');
+      indicator.className = 'stack-nav-indicator';
+      if (isCurrent) {
+        indicator.classList.add('current');
+        indicator.textContent = '\u2605';
       }
-      item.appendChild(statusDot);
+      item.appendChild(indicator);
+
+      // Text content column
+      const textCol = document.createElement('div');
+      textCol.className = 'stack-nav-text';
+
+      // Primary row: PR number + title
+      const primaryRow = document.createElement('div');
+      primaryRow.className = 'stack-nav-primary';
 
       const numberSpan = document.createElement('span');
       numberSpan.className = 'stack-nav-number';
       numberSpan.textContent = `#${stackPR.prNumber}`;
-      item.appendChild(numberSpan);
+      primaryRow.appendChild(numberSpan);
 
-      const titleSpan = document.createElement('span');
-      titleSpan.className = 'stack-nav-title';
-      titleSpan.textContent = stackPR.title || stackPR.branch || '';
-      item.appendChild(titleSpan);
+      if (stackPR.title) {
+        const titleSpan = document.createElement('span');
+        titleSpan.className = 'stack-nav-title';
+        titleSpan.textContent = stackPR.title;
+        primaryRow.appendChild(titleSpan);
+      }
+
+      textCol.appendChild(primaryRow);
+
+      // Secondary row: branch name
+      const branchRow = document.createElement('div');
+      branchRow.className = 'stack-nav-branch';
+      // SVG branch icon
+      branchRow.innerHTML = '<svg class="stack-nav-branch-icon" width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M11.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122V6A2.5 2.5 0 0110 8.5H6a1 1 0 00-1 1v1.128a2.251 2.251 0 11-1.5 0V5.372a2.25 2.25 0 111.5 0v1.836A2.492 2.492 0 016 7h4a1 1 0 001-1v-.628A2.25 2.25 0 019.5 3.25zM4.25 12a.75.75 0 100 1.5.75.75 0 000-1.5zM3.5 3.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0z"></path></svg>';
+      const branchName = document.createElement('span');
+      branchName.textContent = stackPR.branch || '';
+      branchRow.appendChild(branchName);
+      textCol.appendChild(branchRow);
+
+      item.appendChild(textCol);
 
       // Navigate on click
       item.addEventListener('click', () => {
@@ -1247,6 +1275,12 @@ class PRManager {
    * 3. Call startStackAnalysis()
    */
   async triggerStackAnalysis() {
+    // If a stack analysis is active (running but hidden), reopen its progress modal
+    if (this.stackProgressModal?.isActive) {
+      this.stackProgressModal.reopenFromBackground();
+      return;
+    }
+
     if (!this.currentPR) {
       this.showError('No PR loaded');
       return;
@@ -1355,10 +1389,28 @@ class PRManager {
         return { ...pr, title: info?.title || pr.title };
       });
 
+      // Set button to analyzing state so clicking it reopens the modal
+      this.setButtonAnalyzing(result.stackAnalysisId);
+
+      // Update dropdown item to show "Analyzing Stack..."
+      const stackBtn = document.getElementById('analyze-stack-btn');
+      if (stackBtn) {
+        stackBtn.textContent = 'Analyzing Stack...';
+      }
+
       // Open stack progress modal
       if (this.stackProgressModal) {
         this.stackProgressModal.open(result.stackAnalysisId, prAnalysesWithTitles, {
-          owner, repo
+          owner, repo,
+          onComplete: () => {
+            this.resetButton();
+            // Reset dropdown item text
+            const btn = document.getElementById('analyze-stack-btn');
+            if (btn) {
+              const stackPRs = this._getStackPRs(this.currentPR);
+              btn.textContent = `Analyze Stack (${stackPRs.length} PRs)`;
+            }
+          }
         });
       }
 
@@ -4316,6 +4368,10 @@ class PRManager {
     btn.classList.add('btn-analyzing');
     btn.disabled = false; // Keep clickable to reopen modal
 
+    // Also highlight the split dropdown toggle if present
+    const toggle = document.getElementById('analyze-stack-toggle');
+    if (toggle) toggle.classList.add('btn-analyzing');
+
     const btnText = btn.querySelector('.btn-text');
     if (btnText) {
       btnText.textContent = 'Analyzing...';
@@ -4336,6 +4392,10 @@ class PRManager {
 
     btn.classList.remove('btn-analyzing');
     btn.classList.add('btn-complete');
+
+    // Also clear the split dropdown toggle
+    const toggleComplete = document.getElementById('analyze-stack-toggle');
+    if (toggleComplete) toggleComplete.classList.remove('btn-analyzing');
 
     const btnText = btn.querySelector('.btn-text');
     if (btnText) {
@@ -4364,6 +4424,10 @@ class PRManager {
 
     btn.classList.remove('btn-analyzing', 'btn-complete');
     btn.disabled = false;
+
+    // Also clear the split dropdown toggle
+    const toggleReset = document.getElementById('analyze-stack-toggle');
+    if (toggleReset) toggleReset.classList.remove('btn-analyzing');
 
     const btnText = btn.querySelector('.btn-text');
     if (btnText) {
@@ -4537,7 +4601,7 @@ class PRManager {
   reopenModal() {
     if (!this.currentAnalysisId) return;
 
-    // Reopen the progress modal if it was tracking this analysis
+    // Reopen the per-PR progress modal (council/single analysis)
     if (window.councilProgressModal && window.councilProgressModal.currentAnalysisId === this.currentAnalysisId) {
       window.councilProgressModal.reopenFromBackground();
     }

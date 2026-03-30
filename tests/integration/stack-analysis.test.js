@@ -21,7 +21,6 @@ import { createTestDatabase, closeTestDatabase } from '../utils/schema';
 const { GitWorktreeManager } = require('../../src/git/worktree');
 const { GitHubClient } = require('../../src/github/client');
 const configModule = require('../../src/config');
-const { worktreeLock } = require('../../src/git/worktree-lock');
 
 // Spy on GitWorktreeManager prototype — the stack endpoint uses getWorktreePath
 vi.spyOn(GitWorktreeManager.prototype, 'getWorktreePath').mockResolvedValue('/tmp/worktree/test');
@@ -154,8 +153,6 @@ describe('POST /api/pr/:owner/:repo/:number/analyses/stack', () => {
   });
 
   afterEach(async () => {
-    // Force-clear all worktree locks (background executeStackAnalysis may have acquired one)
-    worktreeLock._locks.clear();
     // Clear the in-memory stack analyses map
     stackAnalysisRoutes.activeStackAnalyses.clear();
     if (db) closeTestDatabase(db);
@@ -251,24 +248,7 @@ describe('POST /api/pr/:owner/:repo/:number/analyses/stack', () => {
     expect(res.body.error).toMatch(/Invalid pull request number/);
   });
 
-  it('rejects with 409 when worktree is locked', async () => {
-    // Acquire the lock first
-    worktreeLock.acquire('/tmp/worktree/test', 'other-holder');
-
-    const res = await request(app)
-      .post('/api/pr/owner/repo/1/analyses/stack')
-      .send({
-        prNumbers: [1, 2],
-        analysisConfig: { configType: 'single', provider: 'claude' }
-      })
-      .expect(409);
-
-    expect(res.body.error).toMatch(/already locked/);
-    expect(res.body.holderId).toBe('other-holder');
-
-    // Clean up
-    worktreeLock.release('/tmp/worktree/test', 'other-holder');
-  });
+  // Lock check was removed — per-PR worktrees eliminate shared worktree contention
 
   it('returns 404 when worktree not found', async () => {
     vi.spyOn(GitWorktreeManager.prototype, 'getWorktreePath').mockResolvedValue(null);
@@ -314,8 +294,6 @@ describe('GET /api/analyses/stack/:stackAnalysisId', () => {
     stackAnalysisRoutes.activeStackAnalyses.set(stackAnalysisId, {
       id: stackAnalysisId,
       status: 'running',
-      currentPRNumber: 2,
-      currentPRIndex: 1,
       totalPRs: 3,
       startedAt: '2026-03-29T00:00:00.000Z',
       completedAt: null,
@@ -329,8 +307,8 @@ describe('GET /api/analyses/stack/:stackAnalysisId', () => {
 
     expect(res.body.id).toBe(stackAnalysisId);
     expect(res.body.status).toBe('running');
-    expect(res.body.currentPRNumber).toBe(2);
-    expect(res.body.currentPRIndex).toBe(1);
+    expect(res.body.currentPRNumber).toBeNull();
+    expect(res.body.currentPRIndex).toBeNull();
     expect(res.body.totalPRs).toBe(3);
     expect(res.body.prStatuses).toHaveLength(3);
     expect(res.body.prStatuses[0]).toEqual({

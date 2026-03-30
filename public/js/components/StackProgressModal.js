@@ -15,10 +15,10 @@ class StackProgressModal {
     this.owner = null;
     this.repo = null;
     this._wsStackUnsub = null;
-    this._wsAnalysisUnsub = null;
+    this._wsAnalysisUnsubs = new Map();
     this._onReconnect = null;
-    this._currentAnalysisId = null;
     this._prStatuses = [];
+    this._onComplete = null;
 
     this._createModal();
     this._setupEventListeners();
@@ -41,7 +41,7 @@ class StackProgressModal {
     this.prList = prList;
     this.owner = context.owner || null;
     this.repo = context.repo || null;
-    this._currentAnalysisId = null;
+    this._onComplete = context.onComplete || null;
     this._prStatuses = prList.map(pr => ({
       prNumber: pr.prNumber,
       title: pr.title || `PR #${pr.prNumber}`,
@@ -62,34 +62,40 @@ class StackProgressModal {
   }
 
   /**
-   * Hide the modal.
+   * Hide the modal. Keeps subscriptions alive if analysis is still running
+   * so it can be reopened later.
    */
   hide() {
     this.isVisible = false;
+    this.isRunningInBackground = !!this._wsStackUnsub;
     this.modal.style.display = 'none';
-
-    if (!this.isRunningInBackground) {
-      this._stopMonitoring();
-    }
   }
 
   /**
-   * Run the analysis in the background (hides modal but keeps subscriptions).
+   * Run the analysis in the background (same as hide — kept for API clarity).
    */
   runInBackground() {
-    this.isRunningInBackground = true;
     this.hide();
   }
 
   /**
-   * Reopen from background mode.
+   * Reopen the progress modal after it was hidden/backgrounded.
    */
   reopenFromBackground() {
-    this.isRunningInBackground = false;
     if (this.stackAnalysisId) {
+      this.isRunningInBackground = false;
       this.isVisible = true;
       this.modal.style.display = 'flex';
+      // Re-fetch status in case we missed updates
+      this._fetchStatus();
     }
+  }
+
+  /**
+   * Whether a stack analysis is actively running (for external callers).
+   */
+  get isActive() {
+    return !!this.stackAnalysisId && (this.isVisible || this.isRunningInBackground);
   }
 
   /**
@@ -108,7 +114,13 @@ class StackProgressModal {
     }
 
     this._stopMonitoring();
-    this.hide();
+    this.stackAnalysisId = null;
+    this.isRunningInBackground = false;
+    if (this._onComplete) {
+      this._onComplete('cancelled');
+    }
+    this.isVisible = false;
+    this.modal.style.display = 'none';
   }
 
   // ---------------------------------------------------------------------------
@@ -218,6 +230,7 @@ class StackProgressModal {
     switch (status) {
       case 'completed': return '\u2713';
       case 'running': return '<span class="council-spinner"></span>';
+      case 'setting_up': return '<span class="council-spinner"></span>';
       case 'pending': return '\u25CB';
       case 'failed': return '\u2717';
       case 'cancelled': return '\u2298';
@@ -231,6 +244,8 @@ class StackProgressModal {
         return pr.suggestionsCount != null ? `${pr.suggestionsCount} suggestions` : 'Complete';
       case 'running':
         return 'Analyzing...';
+      case 'setting_up':
+        return 'Setting up...';
       case 'pending':
         return 'Pending';
       case 'failed':
@@ -327,9 +342,11 @@ class StackProgressModal {
       this._wsStackUnsub();
       this._wsStackUnsub = null;
     }
-    if (this._wsAnalysisUnsub) {
-      this._wsAnalysisUnsub();
-      this._wsAnalysisUnsub = null;
+    if (this._wsAnalysisUnsubs) {
+      for (const unsub of this._wsAnalysisUnsubs.values()) {
+        unsub();
+      }
+      this._wsAnalysisUnsubs.clear();
     }
     if (this._onReconnect) {
       window.removeEventListener('wsReconnected', this._onReconnect);
@@ -358,73 +375,60 @@ class StackProgressModal {
       }
     }
 
-    // Track per-PR analysis subscription for the currently running PR
-    this._subscribeToCurrentPR(msg.currentPRNumber);
+    // Track per-PR analysis subscriptions for all running PRs
+    this._subscribeToRunningPRs(msg.prStatuses);
 
     // Update footer based on overall status
     this._updateFooter(msg.status || 'running');
 
     // Handle terminal states
     if (['completed', 'failed', 'cancelled'].includes(msg.status)) {
+      this.isRunningInBackground = false;
       this._stopMonitoring();
+      if (this._onComplete) {
+        this._onComplete(msg.status);
+      }
     }
   }
 
   /**
-   * Subscribe to the individual analysis WebSocket topic for the currently
-   * running PR, so we can show inline level progress.
+   * Subscribe to analysis WebSocket topics for all currently running PRs,
+   * so we can show inline level progress for each.
    */
-  _subscribeToCurrentPR(currentPRNumber) {
-    if (!currentPRNumber) return;
+  _subscribeToRunningPRs(prStatuses) {
+    if (!prStatuses || !window.wsClient) return;
 
-    const currentPR = this._prStatuses.find(p => p.prNumber === currentPRNumber);
-    if (!currentPR || !currentPR.analysisId) return;
+    const runningPRs = prStatuses.filter(p => p.status === 'running' && p.analysisId);
+    const runningAnalysisIds = new Set(runningPRs.map(p => p.analysisId));
 
-    // Already subscribed to this analysis
-    if (this._currentAnalysisId === currentPR.analysisId) return;
-
-    // Unsubscribe from previous
-    if (this._wsAnalysisUnsub) {
-      this._wsAnalysisUnsub();
-      this._wsAnalysisUnsub = null;
+    // Unsubscribe from analyses no longer running
+    for (const [analysisId, unsub] of this._wsAnalysisUnsubs) {
+      if (!runningAnalysisIds.has(analysisId)) {
+        unsub();
+        this._wsAnalysisUnsubs.delete(analysisId);
+      }
     }
 
-    this._currentAnalysisId = currentPR.analysisId;
-
-    this._wsAnalysisUnsub = window.wsClient.subscribe(
-      `analysis:${currentPR.analysisId}`,
-      (msg) => this._handleAnalysisProgress(currentPR.prNumber, msg)
-    );
+    // Subscribe to new running analyses
+    for (const pr of runningPRs) {
+      if (!this._wsAnalysisUnsubs.has(pr.analysisId)) {
+        const unsub = window.wsClient.subscribe(
+          `analysis:${pr.analysisId}`,
+          (msg) => this._handleAnalysisProgress(pr.prNumber, msg)
+        );
+        this._wsAnalysisUnsubs.set(pr.analysisId, unsub);
+      }
+    }
   }
 
   /**
-   * Handle individual PR analysis progress for inline level detail.
+   * Handle individual PR analysis progress (placeholder for future detail).
+   * Level-by-level detail (L1/L2/L3) was removed as it cluttered the UI
+   * without adding value in the stack context.
    */
-  _handleAnalysisProgress(prNumber, msg) {
-    if (msg.type !== 'progress') return;
-
-    const row = this.modal?.querySelector(`.stack-progress-pr-row[data-pr-number="${prNumber}"]`);
-    if (!row) return;
-
-    const detailEl = row.querySelector('.stack-progress-pr-detail');
-    if (!detailEl) return;
-
-    // Show current level progress if available
-    if (msg.levels && typeof msg.levels === 'object') {
-      const levelTexts = [];
-      for (let level = 1; level <= 3; level++) {
-        const lvl = msg.levels[level];
-        if (!lvl) continue;
-        if (lvl.status === 'completed') {
-          levelTexts.push(`L${level} \u2713`);
-        } else if (lvl.status === 'running') {
-          levelTexts.push(`L${level}...`);
-        }
-      }
-      if (levelTexts.length > 0) {
-        detailEl.textContent = levelTexts.join('  ');
-      }
-    }
+  _handleAnalysisProgress(_prNumber, _msg) {
+    // No-op: the stack-level progress handler already shows status per PR.
+    // Per-analysis subscriptions are kept for potential future use (e.g. %).
   }
 
   /**

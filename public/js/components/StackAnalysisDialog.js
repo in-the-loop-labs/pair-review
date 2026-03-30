@@ -140,8 +140,11 @@ class StackAnalysisDialog {
 
     this._stackData = prs;
 
+    // Display PRs in reverse order: tip of stack (top) first, base (bottom) last
+    const displayPRs = [...prs].reverse();
+
     // Find the lowest PR number for the bottom-up note
-    const lowestPR = Math.min(...prs.map(p => p.prNumber));
+    const lowestPR = prs[0]?.prNumber || Math.min(...prs.map(p => p.prNumber));
 
     let html = `
       <div class="stack-dialog-controls">
@@ -151,7 +154,7 @@ class StackAnalysisDialog {
       <div class="stack-dialog-pr-list">
     `;
 
-    for (const pr of prs) {
+    for (const pr of displayPRs) {
       const isCurrent = pr.prNumber === this._currentPRNumber;
       const currentClass = isCurrent ? ' stack-dialog-pr-current' : '';
       const currentBadge = isCurrent ? ' <span class="stack-dialog-current-badge">\u2605</span>' : '';
@@ -163,9 +166,9 @@ class StackAnalysisDialog {
         <label class="stack-dialog-pr-item${currentClass}">
           <input type="checkbox" class="stack-dialog-pr-checkbox" data-pr-number="${pr.prNumber}" checked />
           <span class="stack-dialog-pr-number">#${pr.prNumber}</span>
+          ${currentBadge}
           <span class="stack-dialog-pr-title">${this._escapeHtml(pr.title || pr.branch || '')}</span>
           <span class="stack-dialog-pr-branch">${this._escapeHtml(pr.branch || '')}</span>
-          ${currentBadge}
           ${analysisBadge}
         </label>
       `;
@@ -174,7 +177,13 @@ class StackAnalysisDialog {
     html += `
       </div>
       <div class="stack-dialog-note">
-        Bottom-up order: analysis starts from #${lowestPR}
+        <span class="stack-dialog-note-order">Stack base at bottom &mdash; analysis starts from #${lowestPR}</span>
+        <span class="stack-dialog-note-info" title="Each PR gets its own worktree (created automatically if needed). All selected PRs are analyzed in parallel.">
+          <svg class="stack-dialog-info-icon" width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8Zm8-6.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM6.5 7.75A.75.75 0 0 1 7.25 7h1a.75.75 0 0 1 .75.75v2.75h.25a.75.75 0 0 1 0 1.5h-2a.75.75 0 0 1 0-1.5h.25v-2h-.25a.75.75 0 0 1-.75-.75ZM8 6a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z"/>
+          </svg>
+          Each PR gets its own worktree (created automatically if needed). All selected PRs are analyzed in parallel.
+        </span>
       </div>
     `;
 
