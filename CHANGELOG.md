@@ -1,5 +1,28 @@
 # Changelog
 
+## 3.1.0
+
+### Minor Changes
+
+- c1f9999: Add aliased provider support: reuse any built-in provider under a new ID with different config overrides via `type` field
+- bc4c407: Add configurable Enter behavior for chat input. New `chat.enter_to_send` config option (default: `true`) makes Enter send messages and Shift/Alt+Enter insert newlines. Set to `false` to restore the previous Cmd/Ctrl+Enter behavior.
+- 7185c4f: Add exclude-previous-findings feature for AI analysis. When enabled, the AI reviewer is instructed to skip issues already identified in GitHub PR review comments or existing pair-review feedback, reducing duplicate suggestions across iterative analysis runs. Includes configurable checkboxes in the analysis config modal, dedup instructions injected into orchestration and consolidation prompts, and an excludeRunId parameter to prevent self-deduplication during council analysis.
+- fa09e8b: Add executable provider support for external CLI review tools. Any command-line tool can now participate as a review voice alongside built-in AI providers, with configurable model, CLI args, environment variables, and icon. Executable providers can also serve as council voices. Additionally, severity guidance (critical/medium/minor) is now included across all prompt tiers, the maximal comment format preset includes severity in parentheses after the title, and council consolidation prompts include per-reviewer context.
+- e155437: Add Graphite stack-aware base branch selector. When reviewing a stacked PR (or local branch) in a Graphite-managed repository, a dropdown in the toolbar lets you change the diff base to any ancestor in the stack. This replaces the previous 3-call Graphite detection with a single efficient `gt state` call and reads PR numbers from Graphite's local cache.
+- 41e9c28: Add global-instructions.md support for all review prompts. Place a `global-instructions.md` file in `~/.pair-review/` to inject instructions that apply to every review across all repositories, before repo and custom instructions.
+- 20c5f9e: Show analysis-in-progress spinners on the index page. Entries on the Pull Requests and Local Reviews tabs now display a rotating indicator when an AI analysis is running in the background, with real-time updates via WebSocket.
+
+### Patch Changes
+
+- b2e93b4: Add comment format template hint to chat sessions so the AI follows the configured format when creating or editing comments
+- 35aeb05: Fix `--ai` flag ignoring repository default provider when it is a council or advanced configuration. Auto-analyze now fetches repo settings and honours the configured default tab, provider, and council.
+- 3955938: Fix council consolidation producing concatenated summaries and duplicate suggestions. Remove threshold guard that skipped AI consolidation for small suggestion counts, fix summary extraction from raw provider responses, and strengthen consolidation prompts with priority curation and output reduction guidance.
+- 0dfc20d: Fix council not being selected in dropdown after saving
+- 25fe2f3: Fix analysis run storing merged instructions in the custom_instructions column instead of only user-provided custom instructions.
+- 501405d: Add spinner animation to the local mode refresh button, matching the existing PR mode behavior.
+- ed6877f: Use provider-specific default timeout for Pi and other providers with custom timeouts in council configuration UI
+- 485cb14: Remove unused PATCH /api/config route that was never called by the frontend UI
+
 ## 3.0.6
 
 ### Patch Changes
