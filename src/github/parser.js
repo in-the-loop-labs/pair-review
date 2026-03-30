@@ -113,7 +113,7 @@ class PRArgumentParser {
    */
   parseGraphiteURL(url) {
     // Match Graphite PR URL pattern: https://app.graphite.{dev|com}/github/pr/owner/repo/number[/optional-title]
-    const match = url.match(/^https:\/\/app\.graphite\.(?:dev|com)\/github\/pr\/([^\/]+)\/([^\/]+)\/(\d+)(?:\/.*)?$/);
+    const match = url.match(/^https:\/\/app\.graphite\.(?:dev|com)\/github\/pr\/([^\/]+)\/([^\/]+)\/(\d+)(?:\/[^?]*)?(?:\?.*)?$/);
 
     if (!match) {
       throw new Error('Invalid Graphite URL format. Expected: https://app.graphite.com/github/pr/owner/repo/number');
