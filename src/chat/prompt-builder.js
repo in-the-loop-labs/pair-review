@@ -18,9 +18,10 @@ const logger = require('../utils/logger');
  * @param {Object} options.review - Review metadata {id, pr_number, repository, review_type, local_path, name}
  * @param {Object} [options.prData] - PR data with base_sha/head_sha (for PR reviews)
  * @param {string} [options.chatInstructions] - Custom instructions from repo settings to append to system prompt
+ * @param {string} [options.commentFormatTemplate] - Resolved comment format template for consistent comment formatting
  * @returns {string} System prompt for the chat agent
  */
-function buildChatPrompt({ review, prData, chatInstructions }) {
+function buildChatPrompt({ review, prData, chatInstructions, commentFormatTemplate }) {
   const sections = [];
 
   // Role
@@ -52,6 +53,21 @@ function buildChatPrompt({ review, prData, chatInstructions }) {
     domainLines.push(`- The internal review ID for this session to use with API requests is: ${review.id} (e.g. \`/api/reviews/${review.id}/comments\`).`);
   }
   sections.push(domainLines.join('\n'));
+
+  // Comment format template — injected when the user has a configured format
+  if (commentFormatTemplate) {
+    sections.push(
+      '## Comment format\n\n' +
+      'When creating or editing review comments, use this template:\n' +
+      '<template>\n' +
+      commentFormatTemplate + '\n' +
+      '</template>\n\n' +
+      'Template placeholders: {emoji}, {category}, {title}, {severity}, {SEVERITY}, {description}, {suggestion}.\n' +
+      '{severity} renders as Title Case (e.g. "Critical"), {SEVERITY} renders as UPPERCASE (e.g. "CRITICAL").\n' +
+      'Conditional sections: {?field}...{/field} — include content only when the field has a value.\n' +
+      'Always follow this format for consistency with the reviewer\'s preferences.'
+    );
+  }
 
   // API Access — cheat-sheet is injected into initial context; full docs available via GET /api.md
   sections.push(

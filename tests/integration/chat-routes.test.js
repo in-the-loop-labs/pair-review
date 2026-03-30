@@ -261,6 +261,33 @@ describe('Chat Routes', () => {
       expect(res.status).toBe(404);
       expect(res.body.error).toContain('Review not found');
     });
+
+    it('should include comment format in system prompt when config has comment_format', async () => {
+      app.set('config', { comment_format: 'minimal' });
+
+      const res = await request(app)
+        .post('/api/chat/session')
+        .send({ provider: 'pi', reviewId: 1 });
+
+      expect(res.status).toBe(200);
+      const callArgs = mockManager.createSession.mock.calls[0][0];
+      expect(callArgs.systemPrompt).toContain('## Comment format');
+      expect(callArgs.systemPrompt).toContain('[{category}] {description}');
+    });
+
+    it('should use default comment format when config has no comment_format', async () => {
+      app.set('config', {});
+
+      const res = await request(app)
+        .post('/api/chat/session')
+        .send({ provider: 'pi', reviewId: 1 });
+
+      expect(res.status).toBe(200);
+      const callArgs = mockManager.createSession.mock.calls[0][0];
+      // Default (legacy) format is always injected
+      expect(callArgs.systemPrompt).toContain('## Comment format');
+      expect(callArgs.systemPrompt).toContain('{emoji} **{category}**');
+    });
   });
 
   describe('POST /api/chat/session/:id/message', () => {
@@ -475,6 +502,9 @@ describe('Chat Routes', () => {
         "INSERT INTO chat_sessions (id, review_id, provider, status, agent_session_id) VALUES (5, 1, 'pi', 'closed', '/tmp/session.json')"
       ).run();
 
+      // Set config with comment_format so the auto-resume path includes it
+      app.set('config', { comment_format: 'minimal' });
+
       // Session is NOT active in memory
       mockManager.isSessionActive.mockReturnValue(false);
       mockManager.getSession.mockReturnValue({
@@ -500,6 +530,14 @@ describe('Chat Routes', () => {
         'hello after restart',
         expect.objectContaining({
           context: expect.stringContaining('Server port:')
+        })
+      );
+      // Comment format template should be included in auto-resume context
+      expect(mockManager.sendMessage).toHaveBeenCalledWith(
+        5,
+        'hello after restart',
+        expect.objectContaining({
+          context: expect.stringContaining('[Comment format template:')
         })
       );
     });
@@ -600,6 +638,31 @@ describe('Chat Routes', () => {
         expect.stringContaining('Server port:')
       );
       expect(mockManager.saveContextMessage).not.toHaveBeenCalled();
+    });
+
+    it('should include comment format template in resume context', async () => {
+      app.set('config', { comment_format: 'minimal' });
+      mockManager.isSessionActive.mockReturnValue(false);
+      mockManager.getSession.mockReturnValue({
+        id: 1,
+        review_id: 1,
+        agent_session_id: '/tmp/session.json',
+        status: 'closed'
+      });
+
+      const res = await request(app)
+        .post('/api/chat/session/1/resume');
+
+      expect(res.status).toBe(200);
+      expect(mockManager.setResumeContext).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('[Comment format template:')
+      );
+      // The minimal preset template should be in the resume context
+      expect(mockManager.setResumeContext).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('[{category}] {description}')
+      );
     });
 
     it('should return 404 for unknown session', async () => {

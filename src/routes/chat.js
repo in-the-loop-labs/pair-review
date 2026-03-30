@@ -20,6 +20,7 @@ const logger = require('../utils/logger');
 const ws = require('../ws');
 const { fireHooks, hasHooks } = require('../hooks/hook-runner');
 const { buildChatStartedPayload, buildChatResumedPayload, buildChatHookContext, getCachedUser } = require('../hooks/payloads');
+const { resolveFormat } = require('../utils/comment-formatter');
 
 /**
  * Fire a chat hook event (non-blocking). Skips async work when no hooks are configured.
@@ -259,8 +260,10 @@ router.post('/api/chat/session', async (req, res) => {
 
       const chatInstructions = await getChatInstructions(db, review);
       const prData = await fetchPrData(db, review);
+      const config = req.app.get('config') || {};
+      const formatConfig = resolveFormat(config.comment_format);
 
-      finalSystemPrompt = buildChatPrompt({ review, prData, chatInstructions });
+      finalSystemPrompt = buildChatPrompt({ review, prData, chatInstructions, commentFormatTemplate: formatConfig.template });
 
       if (!skipAnalysisContext) {
         // Fetch all AI suggestions from the latest analysis run
@@ -390,8 +393,10 @@ router.post('/api/chat/session/:id/message', async (req, res) => {
       }
       const chatInstructions = await getChatInstructions(db, review);
       const prData = await fetchPrData(db, review);
+      const config = req.app.get('config') || {};
+      const fmtConfig = resolveFormat(config.comment_format);
 
-      const systemPrompt = buildChatPrompt({ review, prData, chatInstructions });
+      const systemPrompt = buildChatPrompt({ review, prData, chatInstructions, commentFormatTemplate: fmtConfig.template });
       const cwd = await resolveReviewCwd(db, review);
 
       try {
@@ -405,7 +410,7 @@ router.post('/api/chat/session/:id/message', async (req, res) => {
         // Inject port correction so the agent knows the current server address,
         // even if the conversational history has a stale port from session creation.
         const serverPort = req.socket.localPort;
-        portCorrectionContext = `[Server port: ${serverPort}] The pair-review API is at http://localhost:${serverPort}`;
+        portCorrectionContext = `[Server port: ${serverPort}] The pair-review API is at http://localhost:${serverPort}\n\n[Comment format template: ${fmtConfig.template}]`;
         // Note: we intentionally do NOT re-inject the API cheat sheet on resume.
         // The agent already has the endpoint shapes from the original session context —
         // it only needs the updated port to adjust its curl calls.
@@ -530,8 +535,10 @@ router.post('/api/chat/session/:id/resume', async (req, res) => {
     // initial session's context.
     const chatInstructions = await getChatInstructions(db, review);
     const prData = await fetchPrData(db, review);
+    const config = req.app.get('config') || {};
+    const fmtConfig = resolveFormat(config.comment_format);
 
-    const systemPrompt = buildChatPrompt({ review, prData, chatInstructions });
+    const systemPrompt = buildChatPrompt({ review, prData, chatInstructions, commentFormatTemplate: fmtConfig.template });
     const cwd = await resolveReviewCwd(db, review);
 
     await chatSessionManager.resumeSession(sessionId, { systemPrompt, cwd });
@@ -544,7 +551,7 @@ router.post('/api/chat/session/:id/resume', async (req, res) => {
     // Uses resumeContext (consumed on next sendMessage) instead of saveContextMessage
     // (which only writes to DB and never reaches the agent process).
     chatSessionManager.setResumeContext(sessionId,
-      `[Server port: ${serverPort}] The pair-review API is at http://localhost:${serverPort}`
+      `[Server port: ${serverPort}] The pair-review API is at http://localhost:${serverPort}\n\n[Comment format template: ${fmtConfig.template}]`
     );
 
     logger.info(`[ChatRoute] Explicitly resumed session ${sessionId}`);

@@ -163,6 +163,67 @@ describe('buildChatPrompt', () => {
     });
   });
 
+  describe('commentFormatTemplate', () => {
+    it('should include comment format section when commentFormatTemplate is provided', () => {
+      const template = '{emoji} **{category}**: {description}';
+      const prompt = buildChatPrompt({
+        review: { repository: 'owner/repo', pr_number: 1 },
+        commentFormatTemplate: template
+      });
+
+      expect(prompt).toContain('## Comment format');
+      expect(prompt).toContain('<template>');
+      expect(prompt).toContain(template);
+      expect(prompt).toContain('</template>');
+      expect(prompt).toContain('Template placeholders: {emoji}, {category}, {title}, {severity}, {SEVERITY}, {description}, {suggestion}.');
+      expect(prompt).toContain('{severity} renders as Title Case (e.g. "Critical"), {SEVERITY} renders as UPPERCASE (e.g. "CRITICAL").');
+      expect(prompt).toContain('Conditional sections: {?field}...{/field}');
+    });
+
+    it('should place comment format section after domain model and before API Access', () => {
+      const prompt = buildChatPrompt({
+        review: { id: 1, repository: 'owner/repo', pr_number: 1 },
+        commentFormatTemplate: '{emoji} {description}'
+      });
+
+      const domainIdx = prompt.indexOf('## pair-review app domain model');
+      const formatIdx = prompt.indexOf('## Comment format');
+      const apiIdx = prompt.indexOf('## API Access');
+
+      expect(domainIdx).toBeGreaterThan(-1);
+      expect(formatIdx).toBeGreaterThan(-1);
+      expect(apiIdx).toBeGreaterThan(-1);
+      expect(domainIdx).toBeLessThan(formatIdx);
+      expect(formatIdx).toBeLessThan(apiIdx);
+    });
+
+    it('should not include comment format section when commentFormatTemplate is null', () => {
+      const prompt = buildChatPrompt({
+        review: { repository: 'owner/repo', pr_number: 1 },
+        commentFormatTemplate: null
+      });
+
+      expect(prompt).not.toContain('## Comment format');
+    });
+
+    it('should not include comment format section when commentFormatTemplate is undefined', () => {
+      const prompt = buildChatPrompt({
+        review: { repository: 'owner/repo', pr_number: 1 }
+      });
+
+      expect(prompt).not.toContain('## Comment format');
+    });
+
+    it('should not include comment format section when commentFormatTemplate is empty string', () => {
+      const prompt = buildChatPrompt({
+        review: { repository: 'owner/repo', pr_number: 1 },
+        commentFormatTemplate: ''
+      });
+
+      expect(prompt).not.toContain('## Comment format');
+    });
+  });
+
   describe('general prompt structure', () => {
     it('should always include role and instructions', () => {
       const prompt = buildChatPrompt({
