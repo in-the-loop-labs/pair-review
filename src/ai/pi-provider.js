@@ -776,7 +776,8 @@ class PiProvider extends AIProvider {
 
       // Log the actual command for debugging config/override issues
       const fullCmd = useShell ? command : `${command} ${args.join(' ')}`;
-      logger.debug(`Pi availability check: ${fullCmd}`);
+      const name = this.constructor.getProviderName();
+      logger.debug(`${name} availability check: ${fullCmd}`);
 
       const pi = spawn(command, args, {
         env: {
@@ -787,8 +788,6 @@ class PiProvider extends AIProvider {
         shell: useShell
       });
 
-      logger.debug(`Pi CLI spawn: ${command} ${args.join(' ')}`);
-
       let stdout = '';
       let settled = false;
 
@@ -796,7 +795,7 @@ class PiProvider extends AIProvider {
       const availabilityTimeout = setTimeout(() => {
         if (settled) return;
         settled = true;
-        logger.warn('Pi CLI availability check timed out after 10s');
+        logger.warn(`${name} CLI availability check timed out after 10s`);
         try { pi.kill(); } catch { /* ignore */ }
         resolve(false);
       }, 10000);
@@ -810,10 +809,10 @@ class PiProvider extends AIProvider {
         settled = true;
         clearTimeout(availabilityTimeout);
         if (code === 0) {
-          logger.info(`Pi CLI available: ${stdout.trim()}`);
+          logger.info(`${name} CLI available: ${stdout.trim()}`);
           resolve(true);
         } else {
-          logger.warn('Pi CLI not available or returned unexpected output');
+          logger.warn(`${name} CLI not available or returned unexpected output`);
           resolve(false);
         }
       });
@@ -822,7 +821,7 @@ class PiProvider extends AIProvider {
         if (settled) return;
         settled = true;
         clearTimeout(availabilityTimeout);
-        logger.warn(`Pi CLI not available: ${error.message}`);
+        logger.warn(`${name} CLI not available: ${error.message}`);
         resolve(false);
       });
     });
