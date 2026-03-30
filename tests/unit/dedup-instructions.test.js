@@ -164,9 +164,57 @@ describe('buildDedupInstructions', () => {
     expect(buildDedupInstructions({ github: true, feedback: true }, {})).toBe('');
   });
 
-  // ── Empty context object ──────────────────────────────────────────
+  // ── Undefined context ────────────────────────────────────────────
 
-  it('handles empty context object gracefully', () => {
-    expect(buildDedupInstructions({ github: true, feedback: true }, {})).toBe('');
+  it('handles undefined context gracefully', () => {
+    expect(buildDedupInstructions({ github: true, feedback: true }, undefined)).toBe('');
+  });
+
+  // ── excludeRunIds array support ─────────────────────────────────
+
+  it('excludeRunIds array produces comma-separated excludeRunId in the curl URL', () => {
+    const result = buildDedupInstructions({ feedback: true }, {
+      reviewId: 13,
+      serverPort: 8080,
+      excludeRunIds: ['parent-run', 'child-run-1', 'child-run-2'],
+    });
+    expect(result).toContain('&excludeRunId=parent-run,child-run-1,child-run-2"');
+  });
+
+  it('single-element excludeRunIds works the same as runId', () => {
+    const resultArray = buildDedupInstructions({ feedback: true }, {
+      reviewId: 13,
+      serverPort: 8080,
+      excludeRunIds: ['run-abc-123'],
+    });
+    const resultSingle = buildDedupInstructions({ feedback: true }, {
+      reviewId: 13,
+      serverPort: 8080,
+      runId: 'run-abc-123',
+    });
+    expect(resultArray).toContain('&excludeRunId=run-abc-123"');
+    expect(resultSingle).toContain('&excludeRunId=run-abc-123"');
+    expect(resultArray).toBe(resultSingle);
+  });
+
+  it('excludeRunIds takes precedence over runId when both are provided', () => {
+    const result = buildDedupInstructions({ feedback: true }, {
+      reviewId: 13,
+      serverPort: 8080,
+      runId: 'should-be-ignored',
+      excludeRunIds: ['id-a', 'id-b'],
+    });
+    expect(result).toContain('&excludeRunId=id-a,id-b"');
+    expect(result).not.toContain('should-be-ignored');
+  });
+
+  it('empty excludeRunIds array falls back to runId', () => {
+    const result = buildDedupInstructions({ feedback: true }, {
+      reviewId: 13,
+      serverPort: 8080,
+      runId: 'fallback-run',
+      excludeRunIds: [],
+    });
+    expect(result).toContain('&excludeRunId=fallback-run"');
   });
 });

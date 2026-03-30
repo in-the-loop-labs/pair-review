@@ -2026,6 +2026,35 @@ describe('AI Suggestion Endpoints', () => {
       expect(suggestions[0].body).toBe('Run A suggestion');
     });
 
+    it('should exclude suggestions from multiple runs when allRuns=true&excludeRunId has comma-separated IDs', async () => {
+      const time1 = '2024-01-01 10:00:00';
+      const time2 = '2024-01-01 11:00:00';
+      const time3 = '2024-01-01 12:00:00';
+
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id, created_at)
+        VALUES (?, 'ai', 'file.js', 10, NULL, 'Run A keep', 'active', 'multi-excl-a', ?)
+      `, [prId, time1]);
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id, created_at)
+        VALUES (?, 'ai', 'file.js', 20, NULL, 'Run B exclude', 'active', 'multi-excl-b', ?)
+      `, [prId, time2]);
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id, created_at)
+        VALUES (?, 'ai', 'file.js', 30, NULL, 'Run C exclude', 'active', 'multi-excl-c', ?)
+      `, [prId, time3]);
+
+      // Exclude both run B and run C via comma-separated excludeRunId
+      const response = await request(app)
+        .get(`/api/reviews/${prId}/suggestions?allRuns=true&excludeRunId=multi-excl-b,multi-excl-c`);
+      const suggestions = response.body.suggestions.filter(s =>
+        s.ai_run_id?.startsWith('multi-excl-')
+      );
+      expect(suggestions.length).toBe(1);
+      expect(suggestions[0].ai_run_id).toBe('multi-excl-a');
+      expect(suggestions[0].body).toBe('Run A keep');
+    });
+
     it('should ignore excludeRunId when allRuns is not set', async () => {
       const oldTime = '2024-01-01 10:00:00';
       const newTime = '2024-01-01 11:00:00';

@@ -193,16 +193,33 @@ async function runExecutableVoice(voiceProvider, reviewId, worktreePath, prMetad
 }
 
 /**
+ * Build the dedup context object from PR metadata and run identifiers.
+ *
+ * @param {Object} prMetadata - PR metadata with repository and pr_number
+ * @param {Object} ids - { reviewId, serverPort, runId, excludeRunIds }
+ * @param {string} [ids.runId] - Single run ID to exclude (backward compat)
+ * @param {string[]} [ids.excludeRunIds] - Array of run IDs to exclude (takes precedence over runId)
+ * @returns {Object} { owner, repo, pullNumber, reviewId, serverPort, runId, excludeRunIds }
+ */
+function buildDedupContext(prMetadata, { reviewId, serverPort, runId, excludeRunIds }) {
+  const [owner, repo] = prMetadata.repository?.split('/') || [];
+  return { owner, repo, pullNumber: prMetadata.pr_number, reviewId, serverPort, runId, excludeRunIds };
+}
+
+/**
  * Build dedup instructions text for excluding previously identified issues.
  *
  * @param {Object|null} excludePrevious - { github: bool, feedback: bool } (or falsy if disabled)
- * @param {Object} context - { owner, repo, pullNumber, reviewId, serverPort, runId }
+ * @param {Object} context - { owner, repo, pullNumber, reviewId, serverPort, runId, excludeRunIds }
+ * @param {string} [context.runId] - Single run ID to exclude (backward compat)
+ * @param {string[]} [context.excludeRunIds] - Array of run IDs to exclude (takes precedence over runId)
  * @returns {string} Instruction text for the dedup-instructions prompt section, or empty string
  */
 function buildDedupInstructions(excludePrevious, context) {
   if (!excludePrevious || (!excludePrevious.github && !excludePrevious.feedback)) {
     return '';
   }
+  context = context || {};
 
   const sections = [];
 
@@ -221,7 +238,8 @@ A suggestion is a duplicate if it matches on **all three** of: (1) same file, (2
   }
 
   if (excludePrevious.feedback && context.reviewId && context.serverPort) {
-    const excludeParam = context.runId ? `&excludeRunId=${context.runId}` : '';
+    const excludeRunIds = context.excludeRunIds?.length ? context.excludeRunIds : (context.runId ? [context.runId] : []);
+    const excludeParam = excludeRunIds.length ? `&excludeRunId=${excludeRunIds.join(',')}` : '';
     sections.push(`### Existing Pair-Review Feedback
 Fetch previous AI suggestions:
 \`\`\`
@@ -490,14 +508,7 @@ class Analyzer {
         };
 
         // Build dedup context from prMetadata and options
-        const dedupContext = {
-          owner: prMetadata.repository?.split('/')[0],
-          repo: prMetadata.repository?.split('/')[1],
-          pullNumber: prMetadata.pr_number,
-          reviewId: prId,
-          serverPort,
-          runId
-        };
+        const dedupContext = buildDedupContext(prMetadata, { reviewId: prId, serverPort, runId });
 
         const orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata, mergedInstructions, worktreePath, { analysisId, tier, progressCallback, timeout: executionTimeout, logPrefix, reviewerNum, excludePrevious, dedupContext });
 
@@ -3233,14 +3244,9 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       }));
 
       // Build dedup context for cross-voice consolidation
-      const dedupContext = {
-        owner: prMetadata.repository?.split('/')[0],
-        repo: prMetadata.repository?.split('/')[1],
-        pullNumber: prMetadata.pr_number,
-        reviewId,
-        serverPort,
-        runId: parentRunId
-      };
+      // Exclude both parent and child run IDs so the dedup fetch doesn't include the current run's results
+      const childRunIds = successfulVoices.map(v => v.childRunId).filter(Boolean);
+      const dedupContext = buildDedupContext(prMetadata, { reviewId, serverPort, runId: parentRunId, excludeRunIds: [parentRunId, ...childRunIds] });
 
       const consolidated = await this._crossVoiceConsolidate(
         voiceReviews, prMetadata, consolInstructions, worktreePath,
@@ -3575,14 +3581,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       };
 
       // Build dedup context for cross-level orchestration
-      const dedupContext = {
-        owner: prMetadata.repository?.split('/')[0],
-        repo: prMetadata.repository?.split('/')[1],
-        pullNumber: prMetadata.pr_number,
-        reviewId,
-        serverPort,
-        runId
-      };
+      const dedupContext = buildDedupContext(prMetadata, { reviewId, serverPort, runId });
 
       const orchestrationResult = await this.orchestrateWithAI(
         allSuggestions, prMetadata, orchInstructions, worktreePath,
@@ -3987,4 +3986,5 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 }
 
 module.exports = Analyzer;
+module.exports.buildDedupContext = buildDedupContext;
 module.exports.buildDedupInstructions = buildDedupInstructions;

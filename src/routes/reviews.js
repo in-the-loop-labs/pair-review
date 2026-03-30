@@ -457,7 +457,7 @@ router.get('/api/reviews/:reviewId/suggestions/check', validateReviewId, async (
  *   - levels: comma-separated list of levels (e.g., 'final,1,2'). Default: 'final'
  *   - runId: specific analysis run ID. Default: latest run
  *   - allRuns: when 'true', return suggestions from all analysis runs instead of only the latest
- *   - excludeRunId: when used with allRuns=true, exclude suggestions from this specific run ID
+ *   - excludeRunId: when used with allRuns=true, exclude suggestions from specific run ID(s). Supports comma-separated values (e.g., 'id1,id2')
  */
 router.get('/api/reviews/:reviewId/suggestions', validateReviewId, async (req, res) => {
   try {
@@ -476,8 +476,9 @@ router.get('/api/reviews/:reviewId/suggestions', validateReviewId, async (req, r
     // Parse allRuns flag — when true, skip the "latest run only" filter
     const allRuns = req.query.allRuns === 'true';
 
-    // Parse optional excludeRunId — when used with allRuns=true, exclude suggestions from this run
-    const excludeRunId = req.query.excludeRunId;
+    // Parse optional excludeRunId — when used with allRuns=true, exclude suggestions from these runs
+    // Supports comma-separated values for excluding multiple run IDs (e.g., excludeRunId=id1,id2)
+    const excludeRunIds = req.query.excludeRunId ? req.query.excludeRunId.split(',').filter(Boolean) : [];
 
     // Build level filter clause
     const levelConditions = [];
@@ -501,10 +502,10 @@ router.get('/api/reviews/:reviewId/suggestions', validateReviewId, async (req, r
     let runIdFilter;
     let queryParams;
     if (allRuns) {
-      if (excludeRunId) {
-        // Return suggestions from all runs except the excluded one
-        runIdFilter = 'ai_run_id != ?';
-        queryParams = [reviewId, excludeRunId];
+      if (excludeRunIds.length > 0) {
+        // Return suggestions from all runs except the excluded ones
+        runIdFilter = `ai_run_id NOT IN (${excludeRunIds.map(() => '?').join(', ')})`;
+        queryParams = [reviewId, ...excludeRunIds];
       } else {
         // No run ID filter — return suggestions from all analysis runs
         runIdFilter = '1 = 1';
