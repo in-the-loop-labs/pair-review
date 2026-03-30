@@ -1941,6 +1941,142 @@ describe('AI Suggestion Endpoints', () => {
       expect(activeSuggestion).toBeDefined();
       expect(activeSuggestion.body).toBe('Active suggestion');
     });
+
+    it('should return suggestions from all runs when allRuns=true', async () => {
+      const oldTime = '2024-01-01 10:00:00';
+      const newTime = '2024-01-01 11:00:00';
+
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id, created_at)
+        VALUES (?, 'ai', 'file.js', 10, NULL, 'Old run suggestion', 'active', 'allruns-1', ?)
+      `, [prId, oldTime]);
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id, created_at)
+        VALUES (?, 'ai', 'file.js', 20, NULL, 'New run suggestion', 'active', 'allruns-2', ?)
+      `, [prId, newTime]);
+
+      // Default: only latest run
+      const defaultResponse = await request(app)
+        .get(`/api/reviews/${prId}/suggestions`);
+      const defaultSuggestions = defaultResponse.body.suggestions.filter(s =>
+        s.ai_run_id === 'allruns-1' || s.ai_run_id === 'allruns-2'
+      );
+      expect(defaultSuggestions.length).toBe(1);
+      expect(defaultSuggestions[0].ai_run_id).toBe('allruns-2');
+
+      // allRuns=true: both runs
+      const allRunsResponse = await request(app)
+        .get(`/api/reviews/${prId}/suggestions?allRuns=true`);
+      const allRunsSuggestions = allRunsResponse.body.suggestions.filter(s =>
+        s.ai_run_id === 'allruns-1' || s.ai_run_id === 'allruns-2'
+      );
+      expect(allRunsSuggestions.length).toBe(2);
+    });
+
+    it('should return all suggestions from all runs including dismissed when allRuns is set', async () => {
+      const oldTime = '2024-01-01 10:00:00';
+      const newTime = '2024-01-01 11:00:00';
+
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id, created_at)
+        VALUES (?, 'ai', 'file.js', 10, NULL, 'Old active', 'active', 'both-1', ?)
+      `, [prId, oldTime]);
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id, created_at)
+        VALUES (?, 'ai', 'file.js', 20, NULL, 'Old dismissed', 'dismissed', 'both-1', ?)
+      `, [prId, oldTime]);
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id, created_at)
+        VALUES (?, 'ai', 'file.js', 30, NULL, 'New active', 'active', 'both-2', ?)
+      `, [prId, newTime]);
+
+      const response = await request(app)
+        .get(`/api/reviews/${prId}/suggestions?allRuns=true`);
+      const suggestions = response.body.suggestions.filter(s =>
+        s.ai_run_id === 'both-1' || s.ai_run_id === 'both-2'
+      );
+      // Should return all 3: old active, old dismissed, new active
+      expect(suggestions.length).toBe(3);
+      expect(suggestions.some(s => s.body === 'Old active')).toBe(true);
+      expect(suggestions.some(s => s.body === 'Old dismissed')).toBe(true);
+      expect(suggestions.some(s => s.body === 'New active')).toBe(true);
+    });
+
+    it('should exclude suggestions from a specific run when allRuns=true&excludeRunId is set', async () => {
+      const oldTime = '2024-01-01 10:00:00';
+      const newTime = '2024-01-01 11:00:00';
+
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id, created_at)
+        VALUES (?, 'ai', 'file.js', 10, NULL, 'Run A suggestion', 'active', 'exclude-run-a', ?)
+      `, [prId, oldTime]);
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id, created_at)
+        VALUES (?, 'ai', 'file.js', 20, NULL, 'Run B suggestion', 'active', 'exclude-run-b', ?)
+      `, [prId, newTime]);
+
+      // allRuns=true with excludeRunId: should exclude the specified run
+      const response = await request(app)
+        .get(`/api/reviews/${prId}/suggestions?allRuns=true&excludeRunId=exclude-run-b`);
+      const suggestions = response.body.suggestions.filter(s =>
+        s.ai_run_id === 'exclude-run-a' || s.ai_run_id === 'exclude-run-b'
+      );
+      expect(suggestions.length).toBe(1);
+      expect(suggestions[0].ai_run_id).toBe('exclude-run-a');
+      expect(suggestions[0].body).toBe('Run A suggestion');
+    });
+
+    it('should exclude suggestions from multiple runs when allRuns=true&excludeRunId has comma-separated IDs', async () => {
+      const time1 = '2024-01-01 10:00:00';
+      const time2 = '2024-01-01 11:00:00';
+      const time3 = '2024-01-01 12:00:00';
+
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id, created_at)
+        VALUES (?, 'ai', 'file.js', 10, NULL, 'Run A keep', 'active', 'multi-excl-a', ?)
+      `, [prId, time1]);
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id, created_at)
+        VALUES (?, 'ai', 'file.js', 20, NULL, 'Run B exclude', 'active', 'multi-excl-b', ?)
+      `, [prId, time2]);
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id, created_at)
+        VALUES (?, 'ai', 'file.js', 30, NULL, 'Run C exclude', 'active', 'multi-excl-c', ?)
+      `, [prId, time3]);
+
+      // Exclude both run B and run C via comma-separated excludeRunId
+      const response = await request(app)
+        .get(`/api/reviews/${prId}/suggestions?allRuns=true&excludeRunId=multi-excl-b,multi-excl-c`);
+      const suggestions = response.body.suggestions.filter(s =>
+        s.ai_run_id?.startsWith('multi-excl-')
+      );
+      expect(suggestions.length).toBe(1);
+      expect(suggestions[0].ai_run_id).toBe('multi-excl-a');
+      expect(suggestions[0].body).toBe('Run A keep');
+    });
+
+    it('should ignore excludeRunId when allRuns is not set', async () => {
+      const oldTime = '2024-01-01 10:00:00';
+      const newTime = '2024-01-01 11:00:00';
+
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id, created_at)
+        VALUES (?, 'ai', 'file.js', 10, NULL, 'Ignore exclude old', 'active', 'ignore-excl-1', ?)
+      `, [prId, oldTime]);
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id, created_at)
+        VALUES (?, 'ai', 'file.js', 20, NULL, 'Ignore exclude new', 'active', 'ignore-excl-2', ?)
+      `, [prId, newTime]);
+
+      // excludeRunId without allRuns: should be ignored, only latest run returned
+      const response = await request(app)
+        .get(`/api/reviews/${prId}/suggestions?excludeRunId=ignore-excl-2`);
+      const suggestions = response.body.suggestions.filter(s =>
+        s.ai_run_id === 'ignore-excl-1' || s.ai_run_id === 'ignore-excl-2'
+      );
+      expect(suggestions.length).toBe(1);
+      expect(suggestions[0].ai_run_id).toBe('ignore-excl-2');
+    });
   });
 
   describe('POST /api/reviews/:reviewId/suggestions/:id/status', () => {
@@ -5159,6 +5295,65 @@ describe('Local Review File-Level Comments', () => {
       const activeSuggestion = testSuggestions.find(s => s.status === 'active');
       expect(activeSuggestion).toBeDefined();
       expect(activeSuggestion.body).toBe('Active suggestion');
+    });
+
+    it('should return suggestions from all runs when allRuns=true (local mode)', async () => {
+      const oldTime = '2024-01-01 10:00:00';
+      const newTime = '2024-01-01 11:00:00';
+
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id, created_at)
+        VALUES (?, 'ai', 'file.js', 10, NULL, 'Old run suggestion', 'active', 'local-allruns-1', ?)
+      `, [reviewId, oldTime]);
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id, created_at)
+        VALUES (?, 'ai', 'file.js', 20, NULL, 'New run suggestion', 'active', 'local-allruns-2', ?)
+      `, [reviewId, newTime]);
+
+      // Default: only latest run
+      const defaultResponse = await request(app)
+        .get(`/api/reviews/${reviewId}/suggestions`);
+      const defaultSuggestions = defaultResponse.body.suggestions.filter(s =>
+        s.ai_run_id === 'local-allruns-1' || s.ai_run_id === 'local-allruns-2'
+      );
+      expect(defaultSuggestions.length).toBe(1);
+      expect(defaultSuggestions[0].ai_run_id).toBe('local-allruns-2');
+
+      // allRuns=true: both runs
+      const allRunsResponse = await request(app)
+        .get(`/api/reviews/${reviewId}/suggestions?allRuns=true`);
+      const allRunsSuggestions = allRunsResponse.body.suggestions.filter(s =>
+        s.ai_run_id === 'local-allruns-1' || s.ai_run_id === 'local-allruns-2'
+      );
+      expect(allRunsSuggestions.length).toBe(2);
+    });
+
+    it('should return all suggestions from all runs including dismissed when allRuns is set (local mode)', async () => {
+      const oldTime = '2024-01-01 10:00:00';
+      const newTime = '2024-01-01 11:00:00';
+
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id, created_at)
+        VALUES (?, 'ai', 'file.js', 10, NULL, 'Old active', 'active', 'local-both-1', ?)
+      `, [reviewId, oldTime]);
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id, created_at)
+        VALUES (?, 'ai', 'file.js', 20, NULL, 'Old dismissed', 'dismissed', 'local-both-1', ?)
+      `, [reviewId, oldTime]);
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id, created_at)
+        VALUES (?, 'ai', 'file.js', 30, NULL, 'New active', 'active', 'local-both-2', ?)
+      `, [reviewId, newTime]);
+
+      const response = await request(app)
+        .get(`/api/reviews/${reviewId}/suggestions?allRuns=true`);
+      const suggestions = response.body.suggestions.filter(s =>
+        s.ai_run_id === 'local-both-1' || s.ai_run_id === 'local-both-2'
+      );
+      expect(suggestions.length).toBe(3);
+      expect(suggestions.some(s => s.body === 'Old active')).toBe(true);
+      expect(suggestions.some(s => s.body === 'Old dismissed')).toBe(true);
+      expect(suggestions.some(s => s.body === 'New active')).toBe(true);
     });
   });
 });

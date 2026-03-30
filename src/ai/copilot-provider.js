@@ -169,6 +169,8 @@ class CopilotProvider extends AIProvider {
           '--allow-tool', 'shell(find)',          // File finding
           '--allow-tool', 'shell(grep)',          // Pattern searching
           '--allow-tool', 'shell(rg)',            // Ripgrep (fast pattern searching)
+          '--allow-tool', 'shell(gh)',             // GitHub CLI (fetch previous findings for dedup)
+          '--allow-tool', 'shell(curl)',           // HTTP requests (fetch previous findings for dedup)
           // Deny dangerous shell commands (takes precedence over allow)
           '--deny-tool', 'shell(rm)',
           '--deny-tool', 'shell(mv)',

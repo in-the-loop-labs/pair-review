@@ -123,7 +123,7 @@ class CodexProvider extends AIProvider {
     // Shell env args prevent login shell from reconstructing PATH (orthogonal to
     // sandbox permissions). Overridable via configOverrides.args following the
     // same two-tier pattern as chat-providers.js: args replaces, extra_args appends.
-    const defaultShellEnvArgs = ['-c', 'allow_login_shell=false', '-c', 'shell_environment_policy.include_only=["PATH","HOME","USER"]'];
+    const defaultShellEnvArgs = ['-c', 'allow_login_shell=false', '-c', 'shell_environment_policy.include_only=["PATH","HOME","USER","GH_TOKEN","GITHUB_TOKEN"]'];
     const configArgs = configOverrides.args || defaultShellEnvArgs;
     const baseArgs = ['exec', '-m', model, '--json', ...sandboxArgs, ...configArgs, '-'];
     const providerArgs = configOverrides.extra_args || [];

@@ -458,6 +458,10 @@ function createMCPServer(db, options = {}) {
         .describe('Whether to skip Level 3 (codebase context) analysis'),
       tier: z.enum(ALL_TIER_VALUES).default('balanced')
         .describe('Analysis tier: fast (surface), balanced (standard), or thorough (deep)'),
+      excludePrevious: z.object({
+        github: z.boolean().optional().describe('Exclude GitHub PR inline review comments'),
+        feedback: z.boolean().optional().describe('Exclude existing pair-review suggestions and comments')
+      }).optional().describe('Exclude previously identified issues from results'),
     },
     async (args) => {
       // Track analysisId and reviewId for cleanup in catch block (must be outside try scope)
@@ -631,7 +635,7 @@ function createMCPServer(db, options = {}) {
           });
 
           // Launch analysis asynchronously (skipRunCreation since we created the record above)
-          analyzer.analyzeLevel1(reviewId, localPath, localMetadata, progressCallback, { repoInstructions, requestInstructions }, changedFiles, { analysisId, runId, skipRunCreation: true, tier, skipLevel3: args.skipLevel3 })
+          analyzer.analyzeLevel1(reviewId, localPath, localMetadata, progressCallback, { repoInstructions, requestInstructions }, changedFiles, { analysisId, runId, skipRunCreation: true, tier, skipLevel3: args.skipLevel3, excludePrevious: args.excludePrevious, serverPort: (options.port || config.port || 7247) })
             .then(result => handleAnalysisCompletion(analysisId, runId, result, async (r) => {
               if (r.summary) {
                 try { await reviewRepo.updateSummary(reviewId, r.summary); } catch (_) { /* ignore */ }
@@ -764,7 +768,7 @@ function createMCPServer(db, options = {}) {
           });
 
           // Launch analysis asynchronously (skipRunCreation since we created the record above)
-          analyzer.analyzeLevel1(review.id, worktreePath, prMetadata, progressCallback, { repoInstructions, requestInstructions }, null, { analysisId, runId, skipRunCreation: true, tier, skipLevel3: args.skipLevel3 })
+          analyzer.analyzeLevel1(review.id, worktreePath, prMetadata, progressCallback, { repoInstructions, requestInstructions }, null, { analysisId, runId, skipRunCreation: true, tier, skipLevel3: args.skipLevel3, excludePrevious: args.excludePrevious, serverPort: (options.port || config.port || 7247) })
             .then(result => handleAnalysisCompletion(analysisId, runId, result, async (r) => {
               try { await prMetadataRepo.updateLastAiRunId(prMetadata.id, r.runId); } catch (_) { /* ignore */ }
               if (r.summary) {
@@ -838,7 +842,7 @@ router.post('/mcp', async (req, res) => {
   try {
     const db = req.app.get('db');
     const config = req.app.get('config') || {};
-    const server = createMCPServer(db, { config });
+    const server = createMCPServer(db, { config, port: req.socket.localPort });
 
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,

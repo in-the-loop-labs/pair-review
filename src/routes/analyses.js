@@ -491,6 +491,8 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
     onSuccess,
     runUpdateExtra,
     config: modeConfig,
+    excludePrevious,
+    serverPort,
     hookContext = {},
   } = modeContext;
 
@@ -591,8 +593,8 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
   };
 
   const analysisPromise = isVoiceCentric
-    ? analyzer.runReviewerCentricCouncil(reviewContext, councilConfig, { analysisId, runId, progressCallback })
-    : analyzer.runCouncilAnalysis(reviewContext, councilConfig, { analysisId, runId, progressCallback });
+    ? analyzer.runReviewerCentricCouncil(reviewContext, councilConfig, { analysisId, runId, progressCallback, excludePrevious, serverPort })
+    : analyzer.runCouncilAnalysis(reviewContext, councilConfig, { analysisId, runId, progressCallback, excludePrevious, serverPort });
 
   analysisPromise
     .then(async result => {

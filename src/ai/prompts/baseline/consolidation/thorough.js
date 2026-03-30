@@ -27,6 +27,7 @@
  * - {{reviewIntro}} - Review introduction line
  * - {{lineNumberGuidance}} - Line number guidance section
  * - {{customInstructions}} - Custom instructions section (optional)
+ * - {{dedupInstructions}} - Dedup instructions section (optional)
  * - {{reviewerSuggestions}} - Formatted reviewer suggestions input
  * - {{suggestionCount}} - Total number of input suggestions
  * - {{reviewerCount}} - Number of reviewers being consolidated
@@ -67,6 +68,10 @@ Take your time to analyze the reviewer findings thoroughly. For each cluster of 
 
 <section name="custom-instructions" optional="true" tier="balanced,thorough">
 {{customInstructions}}
+</section>
+
+<section name="dedup-instructions" optional="true">
+{{dedupInstructions}}
 </section>
 
 <section name="reviewer-context-guidance" required="true" tier="thorough">
@@ -259,6 +264,7 @@ const sections = [
   { name: 'role-description', required: true, tier: ['thorough'] },
   { name: 'reasoning-encouragement', required: true, tier: ['thorough'] },
   { name: 'custom-instructions', optional: true, tier: ['balanced', 'thorough'] },
+  { name: 'dedup-instructions', optional: true },
   { name: 'reviewer-context-guidance', required: true, tier: ['thorough'] },
   { name: 'input-suggestions', locked: true },
   { name: 'consolidation-rules', required: true, tier: ['thorough'] },
@@ -281,6 +287,7 @@ const defaultOrder = [
   'role-description',
   'reasoning-encouragement',
   'custom-instructions',
+  'dedup-instructions',
   'reviewer-context-guidance',
   'input-suggestions',
   'consolidation-rules',

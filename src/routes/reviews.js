@@ -456,6 +456,8 @@ router.get('/api/reviews/:reviewId/suggestions/check', validateReviewId, async (
  * Query params:
  *   - levels: comma-separated list of levels (e.g., 'final,1,2'). Default: 'final'
  *   - runId: specific analysis run ID. Default: latest run
+ *   - allRuns: when 'true', return suggestions from all analysis runs instead of only the latest
+ *   - excludeRunId: when used with allRuns=true, exclude suggestions from specific run ID(s). Supports comma-separated values (e.g., 'id1,id2')
  */
 router.get('/api/reviews/:reviewId/suggestions', validateReviewId, async (req, res) => {
   try {
@@ -470,6 +472,13 @@ router.get('/api/reviews/:reviewId/suggestions', validateReviewId, async (req, r
     // Parse optional runId query parameter to fetch suggestions from a specific analysis run
     // If not provided, defaults to the latest run
     const runIdParam = req.query.runId;
+
+    // Parse allRuns flag — when true, skip the "latest run only" filter
+    const allRuns = req.query.allRuns === 'true';
+
+    // Parse optional excludeRunId — when used with allRuns=true, exclude suggestions from these runs
+    // Supports comma-separated values for excluding multiple run IDs (e.g., excludeRunId=id1,id2)
+    const excludeRunIds = req.query.excludeRunId ? req.query.excludeRunId.split(',').filter(Boolean) : [];
 
     // Build level filter clause
     const levelConditions = [];
@@ -487,10 +496,22 @@ router.get('/api/reviews/:reviewId/suggestions', validateReviewId, async (req, r
       : 'ai_level IS NULL';
 
     // Build the run ID filter clause
-    // If a specific runId is provided, use it directly; otherwise use subquery for latest
+    // allRuns=true skips run filtering entirely — return suggestions from all runs
+    // runId param targets a specific run
+    // Default: subquery for the latest run only
     let runIdFilter;
     let queryParams;
-    if (runIdParam) {
+    if (allRuns) {
+      if (excludeRunIds.length > 0) {
+        // Return suggestions from all runs except the excluded ones
+        runIdFilter = `ai_run_id NOT IN (${excludeRunIds.map(() => '?').join(', ')})`;
+        queryParams = [reviewId, ...excludeRunIds];
+      } else {
+        // No run ID filter — return suggestions from all analysis runs
+        runIdFilter = '1 = 1';
+        queryParams = [reviewId];
+      }
+    } else if (runIdParam) {
       runIdFilter = 'ai_run_id = ?';
       queryParams = [reviewId, runIdParam];
     } else {
@@ -513,6 +534,8 @@ router.get('/api/reviews/:reviewId/suggestions', validateReviewId, async (req, r
         )`;
       queryParams = [reviewId, reviewId];
     }
+
+    const statusFilter = "status IN ('active', 'dismissed', 'adopted', 'draft', 'submitted')";
 
     const rows = await query(db, `
       SELECT
@@ -540,7 +563,7 @@ router.get('/api/reviews/:reviewId/suggestions', validateReviewId, async (req, r
       WHERE review_id = ?
         AND source = 'ai'
         AND ${levelFilter}
-        AND status IN ('active', 'dismissed', 'adopted', 'draft', 'submitted')
+        AND ${statusFilter}
         AND (is_raw = 0 OR is_raw IS NULL)
         AND ${runIdFilter}
       ORDER BY

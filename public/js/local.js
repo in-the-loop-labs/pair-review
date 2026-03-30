@@ -268,10 +268,11 @@ class LocalManager {
           ? manager._stalenessPromise
           : self._fetchLocalStaleness();
         manager._stalenessPromise = null; // consume it
-        const [staleResult, repoSettings, reviewSettings] = await Promise.all([
+        const [staleResult, repoSettings, reviewSettings, appConfig] = await Promise.all([
           staleCheckWithTimeout,
           manager.fetchRepoSettings().catch(() => null),
-          manager.fetchLastReviewSettings().catch(() => ({ custom_instructions: '', last_council_id: null }))
+          manager.fetchLastReviewSettings().catch(() => ({ custom_instructions: '', last_council_id: null })),
+          fetch('/api/config').then(r => r.ok ? r.json() : {}).catch(() => ({}))
         ]);
         console.debug(`[Analyze] parallel-fetch (stale+settings): ${Math.round(performance.now() - _tParallel0)}ms`);
 
@@ -337,7 +338,9 @@ class LocalManager {
           repoInstructions: repoSettings?.default_instructions || '',
           lastInstructions: lastInstructions,
           lastCouncilId,
-          defaultCouncilId: repoSettings?.default_council_id || null
+          defaultCouncilId: repoSettings?.default_council_id || null,
+          hasPr: false,
+          hasGithubToken: Boolean(appConfig.has_github_token)
         });
 
         if (!config) {
@@ -572,7 +575,8 @@ class LocalManager {
           councilId: config.councilId || undefined,
           councilConfig: config.councilConfig || undefined,
           configType: config.configType || 'advanced',
-          customInstructions: config.customInstructions || null
+          customInstructions: config.customInstructions || null,
+          excludePrevious: config.excludePrevious || undefined
         };
       } else {
         analyzeUrl = `/api/local/${this.reviewId}/analyses`;
@@ -582,7 +586,8 @@ class LocalManager {
           tier: config.tier || 'balanced',
           customInstructions: config.customInstructions || null,
           enabledLevels: config.enabledLevels || [1, 2, 3],
-          skipLevel3: config.skipLevel3 || false
+          skipLevel3: config.skipLevel3 || false,
+          excludePrevious: config.excludePrevious || undefined
         };
       }
 

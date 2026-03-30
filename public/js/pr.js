@@ -4275,10 +4275,11 @@ class PRManager {
         : this._fetchStaleness(owner, repo, number);
       this._stalenessPromise = null; // consume it
 
-      const [staleResult, repoSettings, reviewSettings] = await Promise.all([
+      const [staleResult, repoSettings, reviewSettings, appConfig] = await Promise.all([
         staleCheckWithTimeout,
         this.fetchRepoSettings(),
-        this.fetchLastReviewSettings()
+        this.fetchLastReviewSettings(),
+        fetch('/api/config').then(r => r.ok ? r.json() : {}).catch(() => ({}))
       ]);
       console.debug(`[Analyze] parallel-fetch (stale+settings): ${Math.round(performance.now() - _tParallel0)}ms`);
 
@@ -4352,7 +4353,9 @@ class PRManager {
         repoInstructions: repoSettings?.default_instructions || '',
         lastInstructions: lastInstructions,
         lastCouncilId,
-        defaultCouncilId: repoSettings?.default_council_id || null
+        defaultCouncilId: repoSettings?.default_council_id || null,
+        hasPr: true,
+        hasGithubToken: Boolean(appConfig.has_github_token)
       });
 
       // If user cancelled, do nothing
@@ -4420,7 +4423,8 @@ class PRManager {
           councilId: config.councilId || undefined,
           councilConfig: config.councilConfig || undefined,
           configType: config.configType || 'advanced',
-          customInstructions: config.customInstructions || null
+          customInstructions: config.customInstructions || null,
+          excludePrevious: config.excludePrevious || undefined
         };
       } else {
         analyzeUrl = `/api/pr/${owner}/${repo}/${number}/analyses`;
@@ -4430,7 +4434,8 @@ class PRManager {
           tier: config.tier || 'balanced',
           customInstructions: config.customInstructions || null,
           enabledLevels: config.enabledLevels || [1, 2, 3],
-          skipLevel3: config.skipLevel3 || false
+          skipLevel3: config.skipLevel3 || false,
+          excludePrevious: config.excludePrevious || undefined
         };
       }
 

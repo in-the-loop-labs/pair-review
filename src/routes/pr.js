@@ -1575,7 +1575,7 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
     const { owner, repo, number } = req.params;
     const prNumber = parseInt(number);
 
-    const { provider: requestProvider, model: requestModel, tier: requestTier, customInstructions: rawInstructions, skipLevel3: requestSkipLevel3, enabledLevels: requestEnabledLevels } = req.body || {};
+    const { provider: requestProvider, model: requestModel, tier: requestTier, customInstructions: rawInstructions, skipLevel3: requestSkipLevel3, enabledLevels: requestEnabledLevels, excludePrevious } = req.body || {};
 
     const MAX_INSTRUCTIONS_LENGTH = 5000;
     let requestInstructions = rawInstructions?.trim() || null;
@@ -1760,7 +1760,7 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
 
     const progressCallback = createProgressCallback(analysisId);
 
-    analyzer.analyzeLevel1(review.id, worktreePath, prMetadata, progressCallback, { globalInstructions, repoInstructions, requestInstructions }, null, { analysisId, runId, skipRunCreation: true, tier, skipLevel3: requestSkipLevel3, enabledLevels: levelsConfig })
+    analyzer.analyzeLevel1(review.id, worktreePath, prMetadata, progressCallback, { globalInstructions, repoInstructions, requestInstructions }, null, { analysisId, runId, skipRunCreation: true, tier, skipLevel3: requestSkipLevel3, enabledLevels: levelsConfig, excludePrevious, serverPort: req.socket.localPort })
       .then(async result => {
         logger.section('Analysis Results');
         logger.success(`Analysis complete for PR #${prNumber}`);
@@ -1930,7 +1930,7 @@ router.post('/api/pr/:owner/:repo/:number/analyses/council', async (req, res) =>
   try {
     const { owner, repo, number } = req.params;
     const prNumber = parseInt(number);
-    const { councilId, councilConfig: inlineConfig, customInstructions: rawInstructions, configType: requestConfigType } = req.body || {};
+    const { councilId, councilConfig: inlineConfig, customInstructions: rawInstructions, configType: requestConfigType, excludePrevious } = req.body || {};
 
     if (isNaN(prNumber) || prNumber <= 0) {
       return res.status(400).json({ error: 'Invalid pull request number' });
@@ -1989,6 +1989,7 @@ router.post('/api/pr/:owner/:repo/:number/analyses/council', async (req, res) =>
       await reviewRepo.upsertCustomInstructions(prNumber, repository, requestInstructions);
     }
 
+    const prCouncilConfig = req.app.get('config') || {};
     const { analysisId, runId } = await analysesRouter.launchCouncilAnalysis(
       db,
       {
@@ -2000,7 +2001,9 @@ router.post('/api/pr/:owner/:repo/:number/analyses/council', async (req, res) =>
         headSha: prMetadata.head_sha,
         logLabel: `PR #${prNumber}`,
         initialStatusExtra: { prNumber, reviewType: 'pr' },
-        config: req.app.get('config') || {},
+        config: prCouncilConfig,
+        excludePrevious,
+        serverPort: req.socket.localPort,
         hookContext: {
           mode: 'pr',
           prContext: {
@@ -2018,7 +2021,7 @@ router.post('/api/pr/:owner/:repo/:number/analyses/council', async (req, res) =>
       },
       councilConfig,
       councilId,
-      { globalInstructions: (req.app.get('config') || {}).globalInstructions || null, repoInstructions, requestInstructions },
+      { globalInstructions: prCouncilConfig.globalInstructions || null, repoInstructions, requestInstructions },
       configType
     );
 

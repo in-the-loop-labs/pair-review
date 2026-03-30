@@ -192,6 +192,76 @@ async function runExecutableVoice(voiceProvider, reviewId, worktreePath, prMetad
   }
 }
 
+/**
+ * Build the dedup context object from PR metadata and run identifiers.
+ *
+ * @param {Object} prMetadata - PR metadata with repository and pr_number
+ * @param {Object} ids - { reviewId, serverPort, runId, excludeRunIds }
+ * @param {string} [ids.runId] - Single run ID to exclude (backward compat)
+ * @param {string[]} [ids.excludeRunIds] - Array of run IDs to exclude (takes precedence over runId)
+ * @returns {Object} { owner, repo, pullNumber, reviewId, serverPort, runId, excludeRunIds }
+ */
+function buildDedupContext(prMetadata, { reviewId, serverPort, runId, excludeRunIds }) {
+  const [owner, repo] = prMetadata.repository?.split('/') || [];
+  return { owner, repo, pullNumber: prMetadata.pr_number, reviewId, serverPort, runId, excludeRunIds };
+}
+
+/**
+ * Build dedup instructions text for excluding previously identified issues.
+ *
+ * @param {Object|null} excludePrevious - { github: bool, feedback: bool } (or falsy if disabled)
+ * @param {Object} context - { owner, repo, pullNumber, reviewId, serverPort, runId, excludeRunIds }
+ * @param {string} [context.runId] - Single run ID to exclude (backward compat)
+ * @param {string[]} [context.excludeRunIds] - Array of run IDs to exclude (takes precedence over runId)
+ * @returns {string} Instruction text for the dedup-instructions prompt section, or empty string
+ */
+function buildDedupInstructions(excludePrevious, context) {
+  if (!excludePrevious || (!excludePrevious.github && !excludePrevious.feedback)) {
+    return '';
+  }
+  context = context || {};
+
+  const sections = [];
+
+  sections.push(`## Exclude Previously Identified Issues
+
+After consolidating suggestions, check your results against previously identified issues and remove any that are duplicates or substantially similar. If you have zero suggestions after consolidation, skip this step entirely.`);
+
+  if (excludePrevious.github && context.owner && context.repo && context.pullNumber) {
+    sections.push(`### GitHub PR Review Comments
+Fetch inline review comments:
+\`\`\`
+gh api repos/${context.owner}/${context.repo}/pulls/${context.pullNumber}/comments --paginate
+\`\`\`
+Each comment has \`path\` (file), \`line\`/\`original_line\` (line number), and \`body\` (content).
+A suggestion is a duplicate if it matches on **all three** of: (1) same file, (2) overlapping or adjacent line range (within 5 lines), and (3) substantially similar issue — i.e., the same category of issue (error handling, validation, naming, etc.) applied to the same code. If a previous comment partially overlaps your suggestion — e.g., it flags missing error handling while your suggestion flags missing error handling *and* input validation — keep only the novel portion that the previous comment does not address. If there is no novel portion, exclude it entirely.`);
+  }
+
+  if (excludePrevious.feedback && context.reviewId && context.serverPort) {
+    const excludeRunIds = context.excludeRunIds?.length ? context.excludeRunIds : (context.runId ? [context.runId] : []);
+    const excludeParam = excludeRunIds.length ? `&excludeRunId=${excludeRunIds.join(',')}` : '';
+    sections.push(`### Existing Pair-Review Feedback
+Fetch previous AI suggestions:
+\`\`\`
+curl -s "http://localhost:${context.serverPort}/api/reviews/${context.reviewId}/suggestions?allRuns=true&levels=final${excludeParam}"
+\`\`\`
+Fetch previous user comments:
+\`\`\`
+curl -s "http://localhost:${context.serverPort}/api/reviews/${context.reviewId}/comments?includeDismissed=true"
+\`\`\`
+A suggestion is a duplicate if it targets the same file and overlapping lines and raises the same category of issue as a previous suggestion or comment. For partial overlaps — where your suggestion covers a superset of what was previously flagged — narrow your suggestion to address only the novel aspect. If nothing novel remains, exclude it.`);
+  }
+
+  if (sections.length <= 1) {
+    // Only the header was added, no actual sources — return empty
+    return '';
+  }
+
+  sections.push('Report how many suggestions were excluded in your summary.');
+
+  return sections.join('\n\n');
+}
+
 class Analyzer {
   /**
    * @param {Object} database - Database instance
@@ -236,11 +306,13 @@ class Analyzer {
    * @param {boolean} [options.skipLevel3] - Skip Level 3 codebase context analysis (deprecated: use enabledLevels)
    * @param {Object} [options.enabledLevels] - Which levels to run, e.g. {1: true, 2: true, 3: false}
    * @param {string} [options.tier='balanced'] - Analysis tier (fast, balanced, thorough)
+   * @param {Object} [options.excludePrevious] - { github: bool, feedback: bool } for dedup
+   * @param {number} [options.serverPort] - Server port for dedup API calls
    * @returns {Promise<Object>} Analysis results
    */
   async analyzeAllLevels(prId, worktreePath, prMetadata, progressCallback = null, instructions = null, changedFiles = null, options = {}) {
     const runId = options.runId || uuidv4();
-    const { analysisId, skipRunCreation, skipLevel3, reviewerNum } = options;
+    const { analysisId, skipRunCreation, skipLevel3, reviewerNum, excludePrevious, serverPort } = options;
     const logPrefix = options.logPrefix || '';
     const executionTimeout = options.timeout || 600000; // Default 10 minutes
 
@@ -435,7 +507,10 @@ class Analyzer {
           level3: levelResults.level3.suggestions
         };
 
-        const orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata, mergedInstructions, worktreePath, { analysisId, tier, progressCallback, timeout: executionTimeout, logPrefix, reviewerNum });
+        // Build dedup context from prMetadata and options
+        const dedupContext = buildDedupContext(prMetadata, { reviewId: prId, serverPort, runId });
+
+        const orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata, mergedInstructions, worktreePath, { analysisId, tier, progressCallback, timeout: executionTimeout, logPrefix, reviewerNum, excludePrevious, dedupContext });
 
         // Report orchestration step as completed
         if (progressCallback) {
@@ -2548,10 +2623,12 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @param {string} worktreePath - Path to the git worktree
    * @param {Object} options - Additional options
    * @param {string} options.analysisId - Analysis ID for process tracking (enables cancellation)
+   * @param {Object} [options.excludePrevious] - { github: bool, feedback: bool } for dedup
+   * @param {Object} [options.dedupContext] - { owner, repo, pullNumber, reviewId, serverPort }
    * @returns {Promise<Array>} Curated suggestions array
    */
   async orchestrateWithAI(allSuggestions, prMetadata, customInstructions = null, worktreePath = null, options = {}) {
-    const { analysisId, tier = 'balanced', progressCallback, providerOverride, modelOverride, timeout = 600000, logPrefix: lp = '', reviewerNum } = options;
+    const { analysisId, tier = 'balanced', progressCallback, providerOverride, modelOverride, timeout = 600000, logPrefix: lp = '', reviewerNum, excludePrevious, dedupContext } = options;
     // Build adapter-level log prefix: when reviewerNum is set (council mode),
     // use compact format like [R1 Orch] so concurrent reviewers are disambiguated
     const adapterLogPrefix = reviewerNum ? `[R${reviewerNum} Orch]` : '';
@@ -2573,7 +2650,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       const aiProvider = createProvider(providerOverride || this.provider, modelOverride || this.model);
 
       // Build the consolidation prompt
-      const prompt = this.buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions, worktreePath, tier, lp);
+      const prompt = this.buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions, worktreePath, tier, lp, { excludePrevious, dedupContext });
 
       // Execute AI for cross-level consolidation
       logger.info(`${lp}[Consolidation] Running AI consolidation to curate and merge suggestions...`);
@@ -2684,9 +2761,12 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @param {string} worktreePath - Path to the git worktree
    * @param {string} tier - Capability tier: 'fast', 'balanced', or 'thorough' (default: 'balanced')
    * @param {string} logPrefix - Optional log prefix for reviewer identification in council mode
+   * @param {Object} [dedupOptions] - Dedup options
+   * @param {Object} [dedupOptions.excludePrevious] - { github: bool, feedback: bool }
+   * @param {Object} [dedupOptions.dedupContext] - { owner, repo, pullNumber, reviewId, serverPort }
    * @returns {string} Orchestration prompt
    */
-  buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions = null, worktreePath = null, tier = 'balanced', logPrefix = '') {
+  buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions = null, worktreePath = null, tier = 'balanced', logPrefix = '', dedupOptions = {}) {
     logger.debug(`${logPrefix}[Consolidation] Building consolidation prompt with tier: ${tier}`);
     const promptBuilder = getPromptBuilder('orchestration', tier, this.provider);
 
@@ -2700,6 +2780,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       reviewIntro: `You are orchestrating AI-powered code review suggestions for ${reviewDescription}.`,
       customInstructions: customInstructions ? this.buildCustomInstructionsSection(customInstructions) : '',
       lineNumberGuidance: this.buildOrchestrationLineNumberGuidance(worktreePath),
+      dedupInstructions: buildDedupInstructions(dedupOptions.excludePrevious, dedupOptions.dedupContext || {}),
       level1Count: allSuggestions.level1?.length || 0,
       level2Count: allSuggestions.level2?.length || 0,
       level3Count: allSuggestions.level3?.length || 0,
@@ -2730,11 +2811,13 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @param {string} options.analysisId - Analysis ID for process tracking
    * @param {string} [options.runId] - Pre-generated parent run ID
    * @param {Function} [options.progressCallback] - Progress callback
+   * @param {Object} [options.excludePrevious] - { github: bool, feedback: bool } for dedup
+   * @param {number} [options.serverPort] - Server port for dedup API calls
    * @returns {Promise<Object>} Analysis results { runId, suggestions, summary }
    */
   async runReviewerCentricCouncil(reviewContext, councilConfig, options = {}) {
     const { reviewId, worktreePath, prMetadata, changedFiles, instructions } = reviewContext;
-    const { analysisId, progressCallback } = options;
+    const { analysisId, progressCallback, excludePrevious, serverPort } = options;
     const parentRunId = options.runId || uuidv4();
 
     logger.section('Review Council Analysis Starting (Reviewer-Centric)');
@@ -2900,7 +2983,9 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           tier: voiceTier,
           timeout: voiceTimeout,
           logPrefix: `[${reviewerLabel}] `,
-          reviewerNum: 1
+          reviewerNum: 1,
+          excludePrevious,
+          serverPort
         }
       );
 
@@ -2993,6 +3078,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           return { voiceKey, reviewerLabel, childRunId, result: validatedResult, provider: voice.provider, model: voice.model, isExecutable: true, customInstructions: voice.customInstructions || null };
         }
 
+        // Note: excludePrevious/serverPort omitted intentionally — dedup runs once
+        // during cross-voice consolidation, not per-voice.
         const result = await voiceAnalyzer.analyzeAllLevels(
           reviewId,
           worktreePath,
@@ -3084,7 +3171,10 @@ File-level suggestions should NOT have a line number. They apply to the entire f
     }
 
     // Single voice: use directly, no consolidation
-    if (successfulVoices.length === 1) {
+    // But if dedup (exclude-previous) is enabled, we must go through consolidation
+    // so that previous suggestions are filtered out.
+    const hasExcludePrevious = excludePrevious && (excludePrevious.github || excludePrevious.feedback);
+    if (successfulVoices.length === 1 && !hasExcludePrevious) {
       logger.info('[ReviewerCouncil] Single reviewer result — skipping consolidation');
       const singleResult = successfulVoices[0].result;
 
@@ -3153,9 +3243,14 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         summary: v.result.summary
       }));
 
+      // Build dedup context for cross-voice consolidation
+      // Exclude both parent and child run IDs so the dedup fetch doesn't include the current run's results
+      const childRunIds = successfulVoices.map(v => v.childRunId).filter(Boolean);
+      const dedupContext = buildDedupContext(prMetadata, { reviewId, serverPort, runId: parentRunId, excludeRunIds: [parentRunId, ...childRunIds] });
+
       const consolidated = await this._crossVoiceConsolidate(
         voiceReviews, prMetadata, consolInstructions, worktreePath,
-        { provider: consolProvider, model: consolModel, tier: consolTier, timeout: consolConfig.timeout, analysisId, progressCallback }
+        { provider: consolProvider, model: consolModel, tier: consolTier, timeout: consolConfig.timeout, analysisId, progressCallback, excludePrevious, dedupContext }
       );
 
       const finalSuggestions = this.validateAndFinalizeSuggestions(
@@ -3231,11 +3326,13 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @param {string} options.analysisId - Analysis ID for process tracking
    * @param {string} [options.runId] - Pre-generated run ID
    * @param {Function} [options.progressCallback] - Progress callback
+   * @param {Object} [options.excludePrevious] - { github: bool, feedback: bool } for dedup
+   * @param {number} [options.serverPort] - Server port for dedup API calls
    * @returns {Promise<Object>} Analysis results
    */
   async runCouncilAnalysis(reviewContext, councilConfig, options = {}) {
     const { reviewId, worktreePath, prMetadata, changedFiles, instructions } = reviewContext;
-    const { analysisId, progressCallback } = options;
+    const { analysisId, progressCallback, excludePrevious, serverPort } = options;
     const runId = options.runId || uuidv4();
 
     logger.section('Review Council Analysis Starting');
@@ -3381,7 +3478,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       }
     }
 
-    if (voiceSuccessCount === 1 && successfulVoiceLevels.size === 1) {
+    const hasExcludePrevious = excludePrevious && (excludePrevious.github || excludePrevious.feedback);
+    if (voiceSuccessCount === 1 && successfulVoiceLevels.size === 1 && !hasExcludePrevious) {
       // Single voice, single level — skip all consolidation
       logger.info('[Council] Single reviewer result — skipping consolidation');
       const singleLevel = [...successfulVoiceLevels][0];
@@ -3482,9 +3580,12 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         level3: consolidatedPerLevel[3] || []
       };
 
+      // Build dedup context for cross-level orchestration
+      const dedupContext = buildDedupContext(prMetadata, { reviewId, serverPort, runId });
+
       const orchestrationResult = await this.orchestrateWithAI(
         allSuggestions, prMetadata, orchInstructions, worktreePath,
-        { analysisId, tier: orchTier, progressCallback, providerOverride: orchProvider, modelOverride: orchModel, timeout: orchConfig.timeout || 600000 }
+        { analysisId, tier: orchTier, progressCallback, providerOverride: orchProvider, modelOverride: orchModel, timeout: orchConfig.timeout || 600000, excludePrevious, dedupContext }
       );
 
       // Report cross-level orchestration step as completed
@@ -3650,6 +3751,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
     const prompt = promptBuilder.build({
       reviewIntro: `You are consolidating Level ${level} code review suggestions from multiple independent AI reviewers for ${reviewDescription}.`,
       customInstructions: customInstructions ? this.buildCustomInstructionsSection(customInstructions) : '',
+      dedupInstructions: '',
       lineNumberGuidance: this.buildOrchestrationLineNumberGuidance(worktreePath),
       reviewerSuggestions,
       suggestionCount,
@@ -3787,12 +3889,12 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @param {Object} prMetadata - PR metadata
    * @param {string} customInstructions - Merged custom instructions
    * @param {string} worktreePath - Worktree path
-   * @param {Object} config - { provider, model, tier, timeout, analysisId, progressCallback }
+   * @param {Object} config - { provider, model, tier, timeout, analysisId, progressCallback, excludePrevious, dedupContext }
    * @returns {Promise<Object>} { suggestions, summary }
    * @private
    */
   async _crossVoiceConsolidate(voiceReviews, prMetadata, customInstructions, worktreePath, config) {
-    const { provider, model, tier, timeout, analysisId, progressCallback } = config;
+    const { provider, model, tier, timeout, analysisId, progressCallback, excludePrevious, dedupContext } = config;
 
     const aiProvider = createProvider(provider, model);
 
@@ -3821,6 +3923,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       reviewIntro: `You are consolidating code review results from ${voiceReviews.length} independent AI reviewers for ${reviewDescription}. Each reviewer independently analyzed the same code changes and produced a complete review.`,
       customInstructions: customInstructions ? this.buildCustomInstructionsSection(customInstructions) : '',
       lineNumberGuidance: this.buildOrchestrationLineNumberGuidance(worktreePath),
+      dedupInstructions: buildDedupInstructions(excludePrevious, dedupContext || {}),
       reviewerSuggestions: voiceDescriptions,
       suggestionCount: voiceReviews.reduce((sum, v) => sum + v.suggestionCount, 0),
       reviewerCount: voiceReviews.length
@@ -3884,3 +3987,5 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 }
 
 module.exports = Analyzer;
+module.exports.buildDedupContext = buildDedupContext;
+module.exports.buildDedupInstructions = buildDedupInstructions;

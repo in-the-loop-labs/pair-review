@@ -22,6 +22,7 @@
  * - {{reviewIntro}} - Review introduction line
  * - {{lineNumberGuidance}} - Line number guidance section
  * - {{customInstructions}} - Custom instructions section (optional)
+ * - {{dedupInstructions}} - Dedup instructions section (optional)
  * - {{reviewerSuggestions}} - Formatted reviewer suggestions input
  * - {{suggestionCount}} - Total number of input suggestions
  * - {{reviewerCount}} - Number of reviewers being consolidated
@@ -49,6 +50,10 @@ Multiple independent AI reviewers have analyzed the same code changes. Your job 
 
 <section name="custom-instructions" optional="true">
 {{customInstructions}}
+</section>
+
+<section name="dedup-instructions" optional="true">
+{{dedupInstructions}}
 </section>
 
 <section name="reviewer-context-guidance" required="true">
@@ -194,6 +199,7 @@ const sections = [
   { name: 'critical-output', locked: true },
   { name: 'role-description', required: true },
   { name: 'custom-instructions', optional: true },
+  { name: 'dedup-instructions', optional: true },
   { name: 'reviewer-context-guidance', required: true },
   { name: 'input-suggestions', locked: true },
   { name: 'consolidation-rules', required: true },
@@ -215,6 +221,7 @@ const defaultOrder = [
   'critical-output',
   'role-description',
   'custom-instructions',
+  'dedup-instructions',
   'reviewer-context-guidance',
   'input-suggestions',
   'consolidation-rules',

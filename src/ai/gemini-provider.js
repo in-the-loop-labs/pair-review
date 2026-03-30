@@ -143,6 +143,8 @@ class GeminiProvider extends AIProvider {
         'run_shell_command(find)',         // File finding
         'run_shell_command(grep)',         // Pattern searching
         'run_shell_command(rg)',           // Ripgrep (fast pattern searching)
+        'run_shell_command(gh)',           // GitHub CLI (fetch previous findings for dedup)
+        'run_shell_command(curl)',         // HTTP requests (fetch previous findings for dedup)
         // git-diff-lines is added to PATH via BIN_DIR so bare command works
         'run_shell_command(git-diff-lines)', // Custom annotated diff tool
       ].join(',');

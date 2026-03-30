@@ -39,6 +39,9 @@ const SKILL_DEFAULTS = {
   changedFiles:
     '[Changed files list provided by the orchestrating agent]',
 
+  // Dedup instructions — empty by default (section collapses)
+  dedupInstructions: '',
+
   // Orchestration data markers
   level1Count: '[N]',
   level2Count: '[N]',

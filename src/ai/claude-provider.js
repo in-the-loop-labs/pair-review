@@ -171,6 +171,8 @@ class ClaudeProvider extends AIProvider {
         'Bash(grep *)',
         'Bash(find *)',
         'Bash(rg *)',
+        'Bash(gh *)',              // GitHub CLI (fetch previous findings for dedup)
+        'Bash(curl *)',            // HTTP requests (fetch previous findings for dedup)
       ].join(',');
       permissionArgs = ['--allowedTools', allowedTools];
     }

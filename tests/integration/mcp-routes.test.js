@@ -152,6 +152,7 @@ describe('MCP Routes Integration', () => {
       const result = extractResult(res);
       expect(result.result).toBeDefined();
       const toolNames = result.result.tools.map(t => t.name);
+      expect(toolNames).toContain('get_server_info');
       expect(toolNames).toContain('get_analysis_prompt');
       expect(toolNames).toContain('get_user_comments');
       expect(toolNames).toContain('get_ai_analysis_runs');
@@ -159,7 +160,7 @@ describe('MCP Routes Integration', () => {
       expect(toolNames).toContain('start_analysis');
       expect(toolNames).not.toContain('get_analysis_status');
       expect(toolNames).not.toContain('get_ai_analysis_run');
-      expect(result.result.tools).toHaveLength(5);
+      expect(result.result.tools).toHaveLength(6);
     });
   });
 
