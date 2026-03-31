@@ -1527,6 +1527,23 @@ class LocalManager {
   }
 
   /**
+   * Build a notification string describing a scope change for the chat agent.
+   * @param {string} prefix - Leading message (e.g. "Diff scope changed to X.")
+   * @param {{ description: string, diffCommand: string, excludes: string, includesUntracked: boolean }|null} hints - Scope git hints
+   * @returns {string} Formatted notification text
+   */
+  _buildScopeNotification(prefix, hints) {
+    const parts = [prefix];
+    if (hints) {
+      parts.push(`Scope: ${hints.description}`);
+      parts.push(`Diff command: \`${hints.diffCommand}\``);
+      if (hints.excludes) parts.push(hints.excludes);
+      if (hints.includesUntracked) parts.push('Untracked files are included. List them with: `git ls-files --others --exclude-standard`');
+    }
+    return parts.join('\n');
+  }
+
+  /**
    * Apply the result of a scope-change POST to local state, UI, and diff.
    * Shared by _handleScopeChange and showBranchReviewDialog.handleConfirm.
    * @param {string} scopeStart - New start stop
@@ -1617,9 +1634,11 @@ class LocalManager {
       // Notify chat agent about scope change
       if (window.chatPanel) {
         const label = LS ? LS.scopeLabel(scopeStart, scopeEnd) : `${scopeStart}\u2013${scopeEnd}`;
-        window.chatPanel.queueDiffStateNotification(
-          `Diff scope changed to ${label}. The set of reviewed files has changed.`
+        const hints = LS ? LS.scopeGitHints(scopeStart, scopeEnd, this.localData?.baseBranch) : null;
+        const notification = this._buildScopeNotification(
+          `Diff scope changed to ${label}. The set of reviewed files has changed.`, hints
         );
+        window.chatPanel.queueDiffStateNotification(notification);
       }
 
       if (window.toast) {
@@ -1752,9 +1771,11 @@ class LocalManager {
 
         if (window.chatPanel) {
           const label = LS ? LS.scopeLabel('branch', newEnd) : 'branch';
-          window.chatPanel.queueDiffStateNotification(
-            `Diff scope changed to ${label} via branch review. The set of reviewed files has changed.`
+          const hints = LS ? LS.scopeGitHints('branch', newEnd, branchInfo.baseBranch) : null;
+          const notification = self._buildScopeNotification(
+            `Diff scope changed to ${label} via branch review. The set of reviewed files has changed.`, hints
           );
+          window.chatPanel.queueDiffStateNotification(notification);
         }
 
         if (window.toast) {
