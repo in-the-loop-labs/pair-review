@@ -16,7 +16,7 @@ const express = require('express');
 const { execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs').promises;
-const { queryOne, run, ReviewRepository, RepoSettingsRepository, AnalysisRunRepository, CouncilRepository } = require('../database');
+const { query, queryOne, run, ReviewRepository, RepoSettingsRepository, AnalysisRunRepository, CouncilRepository } = require('../database');
 const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
@@ -32,8 +32,7 @@ const { getShaAbbrevLength } = require('../git/sha-abbrev');
 const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
 const { TIERS, TIER_ALIASES, VALID_TIERS, resolveTier } = require('../ai/prompts/config');
 const { getProviderClass, createProvider } = require('../ai/provider');
-const { readFileSync } = require('fs');
-const { getDefaultBranch, tryGraphiteState, readGraphitePRInfo, enrichStackWithPRInfo } = require('../git/base-branch');
+const { getDefaultBranch, tryGraphiteState } = require('../git/base-branch');
 const { CommentRepository } = require('../database');
 const { runExecutableAnalysis, getChangedFiles } = require('./executable-analysis');
 const {
@@ -628,12 +627,17 @@ router.get('/api/local/:reviewId', async (req, res) => {
     const localConfig = req.app.get('config') || {};
     if (localConfig.enable_graphite === true && review.local_path && branchName && branchName !== 'unknown' && branchName !== 'HEAD') {
       try {
-        const graphiteResult = tryGraphiteState(review.local_path, branchName, { execSync, readFileSync });
+        const graphiteResult = tryGraphiteState(review.local_path, branchName, { execSync });
         if (graphiteResult?.stack) {
-          const prInfo = readGraphitePRInfo(review.local_path, { execSync, readFileSync });
-          stackData = prInfo?.prInfos
-            ? enrichStackWithPRInfo(graphiteResult.stack, prInfo.prInfos)
-            : graphiteResult.stack;
+          // Enrich with PR numbers from pr_metadata DB
+          const allPRs = repositoryName
+            ? await query(db, 'SELECT pr_number, head_branch FROM pr_metadata WHERE repository = ? COLLATE NOCASE', [repositoryName])
+            : [];
+          const prMap = new Map(allPRs.filter(p => p.head_branch).map(p => [p.head_branch, p.pr_number]));
+          stackData = graphiteResult.stack.map(entry => {
+            const prNumber = prMap.get(entry.branch);
+            return prNumber != null ? { ...entry, prNumber } : entry;
+          });
         }
       } catch {
         // Non-fatal — stack detection is an enhancement

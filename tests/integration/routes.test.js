@@ -113,6 +113,10 @@ vi.mock('../../src/git/gitattributes', () => ({
   })
 }));
 
+// Mock stack-walker to prevent real GitHub GraphQL calls during PR data fetch
+vi.mock('../../src/github/stack-walker', () => ({
+  walkPRStack: vi.fn().mockResolvedValue(null)
+}));
 
 // Note: vi.mock for config doesn't work with CommonJS require() - using vi.spyOn above instead
 
@@ -289,7 +293,7 @@ describe('PR Management Endpoints', () => {
       expect(response.body.data.head_branch).toBe('feature-branch');
     });
 
-    it('should return stack_data as null when enable_graphite is not configured', async () => {
+    it('should return stack_data as null when walkPRStack returns null', async () => {
       await insertTestPR(db, 1, 'owner/repo');
       await insertTestWorktree(db, 1, 'owner/repo');
 

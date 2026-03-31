@@ -13171,8 +13171,7 @@ body.resizing * {
   left: 50%;
   transform: translateX(-50%);
   margin-top: 8px;
-  min-width: 360px;
-  max-width: 520px;
+  width: max(420px, min(600px, 50vw));
   background: var(--color-bg-elevated, #fff);
   border: 1px solid var(--color-border-primary, #d1d9e0);
   border-radius: var(--radius-sm, 6px);
@@ -13190,13 +13189,13 @@ body.resizing * {
 .stack-nav-item {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
-  padding: 10px 16px;
+  padding: 10px 16px 10px 36px;
   cursor: pointer;
   text-decoration: none;
   color: var(--color-text-primary, #1f2328);
   transition: background 0.1s ease;
   font-size: 14px;
+  position: relative;
 }
 
 .stack-nav-item:hover {
@@ -13207,18 +13206,13 @@ body.resizing * {
   background: var(--color-accent-lighter, rgba(88, 166, 255, 0.08));
 }
 
-/* Indicator column: star for current PR */
-.stack-nav-indicator {
-  flex: 0 0 16px;
-  width: 16px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  align-self: center;
-  overflow: hidden;
-}
-
-.stack-nav-indicator.current {
+/* Star indicator for current PR — absolutely positioned, outside flex flow */
+.stack-nav-item.current::before {
+  content: '\2605';
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
   color: var(--color-accent-ai, #f59e0b);
   font-size: 14px;
   line-height: 1;
@@ -13233,7 +13227,7 @@ body.resizing * {
   gap: 2px;
 }
 
-/* Primary row: PR number + title */
+/* Primary row: PR number + title inline */
 .stack-nav-primary {
   display: flex;
   align-items: baseline;
@@ -13242,18 +13236,16 @@ body.resizing * {
 }
 
 .stack-nav-number {
-  flex-shrink: 0;
   color: var(--color-accent-ai, #f59e0b);
   font-weight: 600;
   font-size: 13px;
+  font-variant-numeric: tabular-nums;
 }
 
 .stack-nav-title {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  flex: 1;
-  min-width: 0;
   font-weight: 600;
   font-size: 14px;
   color: var(--color-text-primary, #1f2328);

@@ -71,7 +71,12 @@ vi.mock('../../src/events/review-events', () => ({
   broadcastReviewEvent: vi.fn()
 }));
 
-// Load route modules
+// Mock stack-walker using vi.spyOn so the spy reference is captured by pr.js
+// when it destructures walkPRStack at load time
+const stackWalkerModule = require('../../src/github/stack-walker');
+vi.spyOn(stackWalkerModule, 'walkPRStack').mockResolvedValue(null);
+
+// Load route modules (pr.js will capture the spy reference for walkPRStack)
 const stackAnalysisRoutes = require('../../src/routes/stack-analysis');
 const prRoutes = require('../../src/routes/pr');
 
@@ -90,7 +95,6 @@ function createTestApp(db, config = {}) {
     github_token: 'test-token',
     port: 7247,
     theme: 'light',
-    enable_graphite: true,
     ...config
   });
 
@@ -418,34 +422,16 @@ describe('GET /api/pr/:owner/:repo/:number/stack-info', () => {
     app = createTestApp(db);
     await insertTestPR(db, 1);
     await insertTestWorktree(db, 1);
+    // Restore spy implementations that vi.clearAllMocks() wipes.
+    // pr.js captured getGitHubToken via destructuring at load time, so it holds
+    // the original spy reference — re-setting its mock impl is required.
+    configModule.getGitHubToken.mockReturnValue('test-token');
   });
 
   afterEach(async () => {
     if (db) closeTestDatabase(db);
     vi.clearAllMocks();
     vi.spyOn(GitWorktreeManager.prototype, 'getWorktreePath').mockResolvedValue('/tmp/worktree/test');
-  });
-
-  it('returns 404 when Graphite is not enabled', async () => {
-    const appNoGraphite = createTestApp(db, { enable_graphite: false });
-
-    const res = await request(appNoGraphite)
-      .get('/api/pr/owner/repo/1/stack-info')
-      .expect(404);
-
-    expect(res.body.error).toMatch(/Graphite integration is not enabled/);
-  });
-
-  it('returns 404 when config has no enable_graphite', async () => {
-    // Config without enable_graphite at all — the default createTestApp sets it,
-    // so override with a false value.
-    const appNoGraphite = createTestApp(db, { enable_graphite: undefined });
-
-    const res = await request(appNoGraphite)
-      .get('/api/pr/owner/repo/1/stack-info')
-      .expect(404);
-
-    expect(res.body.error).toMatch(/Graphite integration is not enabled/);
   });
 
   it('returns 400 for invalid PR number', async () => {
@@ -456,21 +442,52 @@ describe('GET /api/pr/:owner/:repo/:number/stack-info', () => {
     expect(res.body.error).toMatch(/Invalid pull request number/);
   });
 
-  it('returns 404 when PR metadata not found', async () => {
-    const res = await request(app)
-      .get('/api/pr/owner/repo/999/stack-info')
-      .expect(404);
+  it('returns empty stack when no GitHub token is available', async () => {
+    // Override getGitHubToken to return empty string (no token)
+    configModule.getGitHubToken.mockReturnValue('');
+    const appNoToken = createTestApp(db, { github_token: undefined });
+    appNoToken.set('githubToken', null);
 
-    expect(res.body.error).toMatch(/not found/);
+    const res = await request(appNoToken)
+      .get('/api/pr/owner/repo/1/stack-info')
+      .expect(200);
+
+    expect(res.body.stack).toEqual([]);
   });
 
-  it('returns 404 when worktree not found', async () => {
-    vi.spyOn(GitWorktreeManager.prototype, 'getWorktreePath').mockResolvedValue(null);
+  it('returns enriched stack data from walkPRStack', async () => {
+    stackWalkerModule.walkPRStack.mockResolvedValue([
+      { branch: 'main', isTrunk: true },
+      { branch: 'feat-1', isTrunk: false, prNumber: 1, title: 'Feature 1', state: 'OPEN' },
+      { branch: 'feat-2', isTrunk: false, prNumber: 2, title: 'Feature 2', state: 'OPEN' }
+    ]);
 
     const res = await request(app)
       .get('/api/pr/owner/repo/1/stack-info')
-      .expect(404);
+      .expect(200);
 
-    expect(res.body.error).toMatch(/Worktree not found/);
+    expect(res.body.stack).toHaveLength(3);
+    expect(res.body.stack[0]).toMatchObject({ branch: 'main', isTrunk: true });
+    expect(res.body.stack[1]).toMatchObject({ branch: 'feat-1', prNumber: 1, title: 'Feature 1' });
+  });
+
+  it('returns empty stack when walkPRStack throws', async () => {
+    stackWalkerModule.walkPRStack.mockRejectedValue(new Error('GraphQL rate limit'));
+
+    const res = await request(app)
+      .get('/api/pr/owner/repo/1/stack-info')
+      .expect(200);
+
+    expect(res.body.stack).toEqual([]);
+  });
+
+  it('returns empty stack when walkPRStack returns null', async () => {
+    stackWalkerModule.walkPRStack.mockResolvedValue(null);
+
+    const res = await request(app)
+      .get('/api/pr/owner/repo/1/stack-info')
+      .expect(200);
+
+    expect(res.body.stack).toEqual([]);
   });
 });

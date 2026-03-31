@@ -1,12 +1,9 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 const { execSync } = require('child_process');
-const { readFileSync } = require('fs');
-const path = require('path');
 const logger = require('../utils/logger');
 
 const defaults = {
   execSync,
-  readFileSync,
   // Callers should pass a resolved token via _deps.getGitHubToken.
   // This default returns empty so GitHub lookup is silently skipped
   // when no token is provided — never re-resolve config internally.
@@ -136,53 +133,6 @@ function buildStack(state, currentBranch, trunk) {
 }
 
 /**
- * Read Graphite PR info from the `.graphite_pr_info` file in the git dir.
- *
- * @param {string} repoPath - Absolute path to the repository
- * @param {Object} deps - Dependencies (execSync, readFileSync)
- * @returns {Object|null} Parsed PR info object with `prInfos` array, or null
- */
-function readGraphitePRInfo(repoPath, deps) {
-  try {
-    const gitCommonDir = deps.execSync('git rev-parse --git-common-dir', {
-      cwd: repoPath,
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe']
-    }).trim();
-
-    const prInfoPath = path.resolve(repoPath, gitCommonDir, '.graphite_pr_info');
-    const raw = deps.readFileSync(prInfoPath, 'utf8');
-    return JSON.parse(raw);
-  } catch (error) {
-    logger.debug(`Graphite PR info read failed: ${error.message}`);
-    return null;
-  }
-}
-
-/**
- * Enrich stack entries with PR numbers from Graphite PR info.
- *
- * @param {Array} stack - Stack entries from buildStack
- * @param {Array} prInfos - Array of PR info objects with headRefName and prNumber
- * @returns {Array} New array of stack entries, each with optional prNumber
- */
-function enrichStackWithPRInfo(stack, prInfos) {
-  if (!prInfos || !Array.isArray(prInfos)) return stack;
-
-  const prMap = new Map();
-  for (const info of prInfos) {
-    if (info.headRefName) {
-      prMap.set(info.headRefName, info.prNumber);
-    }
-  }
-
-  return stack.map(entry => {
-    const prNumber = prMap.get(entry.branch);
-    return prNumber != null ? { ...entry, prNumber } : { ...entry };
-  });
-}
-
-/**
  * Try GitHub API to find an open PR for this branch.
  */
 async function tryGitHubPR(repoPath, currentBranch, repository, deps) {
@@ -302,4 +252,4 @@ function getDefaultBranch(localPath, _deps) {
   return null;
 }
 
-module.exports = { detectBaseBranch, getDefaultBranch, tryGraphiteState, buildStack, readGraphitePRInfo, enrichStackWithPRInfo };
+module.exports = { detectBaseBranch, getDefaultBranch, tryGraphiteState, buildStack };

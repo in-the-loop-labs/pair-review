@@ -1186,20 +1186,11 @@ class PRManager {
       }
       item.dataset.pr = stackPR.prNumber;
 
-      // Left indicator column: star for current PR, empty spacer for others
-      const indicator = document.createElement('span');
-      indicator.className = 'stack-nav-indicator';
-      if (isCurrent) {
-        indicator.classList.add('current');
-        indicator.textContent = '\u2605';
-      }
-      item.appendChild(indicator);
-
       // Text content column
       const textCol = document.createElement('div');
       textCol.className = 'stack-nav-text';
 
-      // Primary row: PR number + title
+      // Primary row: PR number + title inline
       const primaryRow = document.createElement('div');
       primaryRow.className = 'stack-nav-primary';
 

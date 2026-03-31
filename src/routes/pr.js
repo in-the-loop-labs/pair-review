@@ -32,10 +32,8 @@ const { broadcastReviewEvent } = require('../events/review-events');
 const { fireHooks, hasHooks } = require('../hooks/hook-runner');
 const { buildReviewStartedPayload, buildReviewLoadedPayload, buildAnalysisStartedPayload, buildAnalysisCompletedPayload, getCachedUser } = require('../hooks/payloads');
 const simpleGit = require('simple-git');
-const { execSync } = require('child_process');
-const { readFileSync } = require('fs');
 const { GIT_DIFF_FLAGS_ARRAY, GIT_DIFF_SUMMARY_FLAGS_ARRAY } = require('../git/diff-flags');
-const { tryGraphiteState, readGraphitePRInfo, enrichStackWithPRInfo } = require('../git/base-branch');
+const { walkPRStack, DEFAULT_TRUNK_BRANCHES } = require('../github/stack-walker');
 const {
   activeAnalyses,
   reviewToAnalysisId,
@@ -54,8 +52,6 @@ const { CommentRepository } = require('../database');
 const { runExecutableAnalysis } = require('./executable-analysis');
 const analysesRouter = require('./analyses');
 const { worktreeLock } = require('../git/worktree-lock');
-const { getRawGraphiteState, buildStackWithPRNumbers } = require('../git/base-branch');
-
 const router = express.Router();
 
 /**
@@ -153,62 +149,6 @@ async function syncPendingDraftFromGitHub(githubReviewRepo, reviewId, githubPend
 }
 
 /**
- * Enrich stack entries with PR titles from the database.
- * Queries pr_metadata for all stack PRs in one batch and attaches titles.
- * When a config with a GitHub token is provided, fetches missing titles
- * from the GitHub API and caches them in pr_metadata for future use.
- *
- * @param {Object} db - Database connection
- * @param {Array} stackData - Stack entries with optional prNumber
- * @param {string} repository - Normalized repository string (owner/repo)
- * @param {Object} [options] - Optional parameters
- * @param {Object} [options.config] - App config (for GitHub token lookup)
- * @returns {Promise<Array>} Stack entries with title field added
- */
-async function enrichStackWithTitles(db, stackData, repository, options = {}) {
-  if (!stackData || !Array.isArray(stackData)) return stackData;
-
-  const prNumbers = stackData.filter(e => e.prNumber).map(e => e.prNumber);
-  if (prNumbers.length === 0) return stackData;
-
-  const placeholders = prNumbers.map(() => '?').join(',');
-  const rows = await query(db, `
-    SELECT pr_number, title FROM pr_metadata
-    WHERE pr_number IN (${placeholders}) AND repository = ? COLLATE NOCASE
-  `, [...prNumbers, repository]);
-
-  const titleMap = new Map();
-  for (const row of rows) {
-    if (row.title) titleMap.set(row.pr_number, row.title);
-  }
-
-  // Fetch missing titles from GitHub API
-  const missingPRs = prNumbers.filter(n => !titleMap.has(n));
-  if (missingPRs.length > 0 && options.config) {
-    const ghToken = getGitHubToken(options.config);
-    if (ghToken) {
-      const [owner, repo] = repository.split('/');
-      const ghClient = new GitHubClient(ghToken);
-      const results = await Promise.allSettled(
-        missingPRs.map(n => ghClient.fetchPullRequest(owner, repo, n))
-      );
-      for (let i = 0; i < missingPRs.length; i++) {
-        if (results[i].status === 'fulfilled' && results[i].value?.title) {
-          titleMap.set(missingPRs[i], results[i].value.title);
-        }
-      }
-    }
-  }
-
-  return stackData.map(entry => {
-    if (entry.prNumber && titleMap.has(entry.prNumber)) {
-      return { ...entry, title: titleMap.get(entry.prNumber) };
-    }
-    return entry;
-  });
-}
-
-/**
  * Get pull request data by owner, repo, and number
  */
 router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
@@ -294,22 +234,20 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
       ? getShaAbbrevLength(extendedData.worktree_path)
       : DEFAULT_SHA_ABBREV_LENGTH;
 
-    // Detect Graphite stack if enabled
+    // Detect PR stack via GitHub GraphQL chain-walking
     let stackData = null;
     {
       const stackConfig = req.app.get('config') || {};
-      if (stackConfig.enable_graphite === true && extendedData.worktree_path && prMetadata.head_branch) {
+      const githubToken = getGitHubToken(stackConfig) || req.app.get('githubToken');
+      if (githubToken) {
         try {
-          const graphiteResult = tryGraphiteState(extendedData.worktree_path, prMetadata.head_branch, { execSync, readFileSync });
-          if (graphiteResult?.stack) {
-            const prInfo = readGraphitePRInfo(extendedData.worktree_path, { execSync, readFileSync });
-            stackData = prInfo?.prInfos
-              ? enrichStackWithPRInfo(graphiteResult.stack, prInfo.prInfos)
-              : graphiteResult.stack;
-            stackData = await enrichStackWithTitles(db, stackData, repository, { config: stackConfig });
-          }
-        } catch {
-          // Non-fatal — stack detection is an enhancement
+          const ghClient = new GitHubClient(githubToken);
+          const defaultBranch = extendedData.repository?.default_branch;
+          stackData = await walkPRStack(ghClient, repoOwner, repoName, prNumber, {
+            defaultBranches: [defaultBranch, ...DEFAULT_TRUNK_BRANCHES].filter(Boolean)
+          });
+        } catch (stackError) {
+          logger.debug('Failed to walk PR stack:', stackError.message);
         }
       }
     }
@@ -351,40 +289,6 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
         } : null
       }
     };
-
-    // Include Graphite stack data when enabled
-    const appConfig = req.app.get('config') || {};
-    if (appConfig.enable_graphite && extendedData.worktree_path) {
-      try {
-        const graphiteState = getRawGraphiteState(extendedData.worktree_path);
-        if (graphiteState) {
-          // Build branch→prNumber map from database
-          const allPRs = await query(db, `
-            SELECT pr_number, head_branch FROM pr_metadata WHERE repository = ? COLLATE NOCASE
-          `, [repository]);
-          const prNumbersByBranch = {};
-          for (const pr of allPRs) {
-            if (pr.head_branch) prNumbersByBranch[pr.head_branch] = pr.pr_number;
-          }
-          // Fill in missing PR numbers from Graphite's .graphite_pr_info
-          const graphitePRInfo = readGraphitePRInfo(extendedData.worktree_path, { execSync, readFileSync });
-          if (graphitePRInfo?.prInfos) {
-            for (const info of graphitePRInfo.prInfos) {
-              if (info.headRefName && info.prNumber && !prNumbersByBranch[info.headRefName]) {
-                prNumbersByBranch[info.headRefName] = info.prNumber;
-              }
-            }
-          }
-          let stack = buildStackWithPRNumbers(graphiteState, prMetadata.head_branch, { prNumbersByBranch });
-          if (stack) {
-            stack = await enrichStackWithTitles(db, stack, repository, { config: appConfig });
-            response.data.stack_data = stack;
-          }
-        }
-      } catch (stackError) {
-        logger.debug('Failed to get Graphite stack data:', stackError.message);
-      }
-    }
 
     res.json(response);
 
@@ -540,20 +444,20 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
     const parsedData = prMetadata.pr_data ? JSON.parse(prMetadata.pr_data) : {};
     const [repoOwner, repoName] = repository.split('/');
 
-    // Detect Graphite stack if enabled
+    // Refresh stack data via GitHub GraphQL
     let stackData = null;
-    if (config.enable_graphite === true && worktreePath && prData.head_branch) {
-      try {
-        const graphiteResult = tryGraphiteState(worktreePath, prData.head_branch, { execSync, readFileSync });
-        if (graphiteResult?.stack) {
-          const prInfo = readGraphitePRInfo(worktreePath, { execSync, readFileSync });
-          stackData = prInfo?.prInfos
-            ? enrichStackWithPRInfo(graphiteResult.stack, prInfo.prInfos)
-            : graphiteResult.stack;
-          stackData = await enrichStackWithTitles(db, stackData, repository, { config });
+    {
+      const githubToken = getGitHubToken(config) || req.app.get('githubToken');
+      if (githubToken) {
+        try {
+          const ghClient = new GitHubClient(githubToken);
+          const defaultBranch = prData.repository?.default_branch;
+          stackData = await walkPRStack(ghClient, ...repository.split('/'), prNumber, {
+            defaultBranches: [defaultBranch, ...DEFAULT_TRUNK_BRANCHES].filter(Boolean)
+          });
+        } catch (stackError) {
+          logger.debug('Failed to walk PR stack on refresh:', stackError.message);
         }
-      } catch {
-        // Non-fatal — stack detection is an enhancement
       }
     }
 
@@ -2330,7 +2234,7 @@ router.get('/api/pr/:owner/:repo/:number/share', async (req, res) => {
 });
 
 /**
- * Get enriched stack info for a PR's Graphite stack.
+ * Get enriched stack info for a PR stack via GitHub GraphQL chain-walking.
  * Returns all branches in the stack with PR numbers, titles, analysis status,
  * and worktree ownership — used by the stack selection dialog.
  */
@@ -2347,64 +2251,38 @@ router.get('/api/pr/:owner/:repo/:number/stack-info', async (req, res) => {
     const db = req.app.get('db');
     const config = req.app.get('config') || {};
 
-    if (!config.enable_graphite) {
-      return res.status(404).json({ error: 'Graphite integration is not enabled' });
-    }
-
-    // Get the current PR's head branch
-    const prMetadata = await queryOne(db, `
-      SELECT head_branch, pr_data FROM pr_metadata
-      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
-    `, [prNumber, repository]);
-
-    if (!prMetadata) {
-      return res.status(404).json({ error: `Pull request #${prNumber} not found` });
-    }
-
-    // Find the worktree path for running gt state
-    const worktreeManager = new GitWorktreeManager(db);
-    const worktreePath = await worktreeManager.getWorktreePath({ owner, repo, number: prNumber });
-    if (!worktreePath) {
-      return res.status(404).json({ error: 'Worktree not found for this PR' });
-    }
-
-    // Get Graphite stack state
-    const graphiteState = getRawGraphiteState(worktreePath);
-    if (!graphiteState) {
+    const githubToken = getGitHubToken(config) || req.app.get('githubToken');
+    if (!githubToken) {
       return res.json({ stack: [] });
     }
 
-    // Build branch→prNumber map from database (cached PRs)
-    const allPRs = await query(db, `
-      SELECT pr_number, head_branch FROM pr_metadata
-      WHERE repository = ? COLLATE NOCASE
-    `, [repository]);
-    const prNumbersByBranch = {};
-    for (const pr of allPRs) {
-      if (pr.head_branch) {
-        prNumbersByBranch[pr.head_branch] = pr.pr_number;
-      }
-    }
-    // Fill in missing PR numbers from Graphite's .graphite_pr_info
-    const graphitePRInfo = readGraphitePRInfo(worktreePath, { execSync, readFileSync });
-    if (graphitePRInfo?.prInfos) {
-      for (const info of graphitePRInfo.prInfos) {
-        if (info.headRefName && info.prNumber && !prNumbersByBranch[info.headRefName]) {
-          prNumbersByBranch[info.headRefName] = info.prNumber;
-        }
-      }
-    }
+    // Look up pr_data to extract default_branch for stack walking
+    const prMetadataRow = await queryOne(db, `
+      SELECT pr_data FROM pr_metadata
+      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
+    `, [prNumber, repository]);
+    const parsedPrData = prMetadataRow?.pr_data ? JSON.parse(prMetadataRow.pr_data) : {};
+    const defaultBranch = parsedPrData.repository?.default_branch;
 
-    // Enrich stack with PR info
-    const stack = buildStackWithPRNumbers(graphiteState, prMetadata.head_branch, { prNumbersByBranch });
+    const ghClient = new GitHubClient(githubToken);
+    let stack;
+    try {
+      stack = await walkPRStack(ghClient, ...repository.split('/'), prNumber, {
+        defaultBranches: [defaultBranch, ...DEFAULT_TRUNK_BRANCHES].filter(Boolean)
+      });
+    } catch (walkError) {
+      logger.debug('Failed to walk PR stack for stack-info:', walkError.message);
+      return res.json({ stack: [] });
+    }
     if (!stack) {
       return res.json({ stack: [] });
     }
 
-    // For each non-trunk entry with a PR number, look up title, analysis status, worktree
+    // For each non-trunk entry with a PR number, look up analysis status and worktree
     const enrichedStack = [];
     const worktreeRepo = new WorktreeRepository(db);
     const analysisRunRepo = new AnalysisRunRepository(db);
+    const reviewRepo = new ReviewRepository(db);
 
     for (const entry of stack) {
       if (entry.isTrunk) {
@@ -2415,28 +2293,9 @@ router.get('/api/pr/:owner/:repo/:number/stack-info', async (req, res) => {
       const enriched = { ...entry };
 
       if (entry.prNumber) {
-        // Look up title from pr_metadata, fall back to GitHub API
-        const meta = await queryOne(db, `
-          SELECT title FROM pr_metadata
-          WHERE pr_number = ? AND repository = ? COLLATE NOCASE
-        `, [entry.prNumber, repository]);
-        enriched.title = meta?.title || null;
-
-        if (!enriched.title) {
-          try {
-            const githubToken = getGitHubToken(config);
-            if (githubToken) {
-              const ghClient = new GitHubClient(githubToken);
-              const prData = await ghClient.fetchPullRequest(owner, repo, entry.prNumber);
-              enriched.title = prData?.title || null;
-            }
-          } catch (e) {
-            logger.debug(`Failed to fetch title for PR #${entry.prNumber} from GitHub: ${e.message}`);
-          }
-        }
+        enriched.title = entry.title || null;
 
         // Check if there's an analysis run
-        const reviewRepo = new ReviewRepository(db);
         const review = await reviewRepo.getReviewByPR(entry.prNumber, repository);
         if (review) {
           const latestRun = await analysisRunRepo.getLatestByReviewId(review.id);
@@ -2447,7 +2306,7 @@ router.get('/api/pr/:owner/:repo/:number/stack-info', async (req, res) => {
 
         // Check if it has its own worktree
         const wt = await worktreeRepo.findByPR(entry.prNumber, repository);
-        enriched.hasOwnWorktree = wt != null && wt.path !== worktreePath;
+        enriched.hasOwnWorktree = wt != null;
       } else {
         enriched.title = null;
         enriched.hasAnalysis = false;
