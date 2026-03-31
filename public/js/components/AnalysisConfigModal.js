@@ -616,6 +616,9 @@ class AnalysisConfigModal {
     if (this.selectedModel) {
       this.selectModel(this.selectedModel);
     }
+
+    // Update exclude-previous section based on provider's exclude_previous capability
+    this._updateExcludePreviousState();
   }
 
   /**
@@ -827,7 +830,9 @@ class AnalysisConfigModal {
       enabledLevels: [...this.enabledLevels],
       skipLevel3: !this.enabledLevels.includes(3),
       noLevels,
-      excludePrevious: this._getAndSaveExcludePrevious()
+      excludePrevious: selectedProvider?.capabilities?.exclude_previous === false
+        ? undefined
+        : this._getAndSaveExcludePrevious()
     };
 
     if (this.onSubmit) this.onSubmit(config);
@@ -1151,6 +1156,9 @@ class AnalysisConfigModal {
         dirtyHintContainer.style.display = 'none';
       }
     }
+
+    // Re-evaluate exclude-previous section based on new tab context
+    this._updateExcludePreviousState();
   }
 
   /**
@@ -1360,6 +1368,49 @@ class AnalysisConfigModal {
       localStorage.setItem('pair-review-exclude-previous', JSON.stringify(state));
     } catch (_) { /* ignore storage errors */ }
     return state;
+  }
+
+  /**
+   * Update the exclude-previous section's enabled/disabled state based on
+   * the active tab and the selected provider's capabilities.
+   *
+   * Council/Advanced tabs: always enabled (orchestration handles dedup).
+   * Single Model tab: disabled when provider has exclude_previous === false.
+   *
+   * This only toggles the visual state of the entire section — individual
+   * checkbox checked/disabled state is never modified, so persisted
+   * localStorage values remain untouched.
+   * @private
+   */
+  _updateExcludePreviousState() {
+    const section = this.modal.querySelector('.exclude-previous-section');
+    if (!section) return;
+
+    const provider = this.providers[this.selectedProvider];
+    const disabledByCapability = this.activeTab === 'single'
+      && provider?.capabilities?.exclude_previous === false;
+
+    const existingNote = section.querySelector('.executable-provider-exclude-note');
+
+    if (disabledByCapability) {
+      section.classList.add('exclude-previous-disabled');
+      section.setAttribute('open', '');  // Ensure note is visible even if section was collapsed
+
+      if (!existingNote) {
+        const note = document.createElement('div');
+        note.className = 'executable-provider-note executable-provider-exclude-note';
+        note.textContent = 'This provider does not support excluding previous findings.';
+        const options = section.querySelector('.exclude-previous-options');
+        if (options) {
+          section.insertBefore(note, options);
+        } else {
+          section.appendChild(note);
+        }
+      }
+    } else {
+      section.classList.remove('exclude-previous-disabled');
+      if (existingNote) existingNote.remove();
+    }
   }
 
   /**

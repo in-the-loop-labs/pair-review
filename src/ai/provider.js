@@ -621,7 +621,8 @@ function getAllProvidersInfo() {
     // Build capabilities: executable providers define their own, others get defaults
     const capabilities = ProviderClass.capabilities || {
       review_levels: true,
-      custom_instructions: true
+      custom_instructions: true,
+      exclude_previous: true
     };
 
     providers.push({
