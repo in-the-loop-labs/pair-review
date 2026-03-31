@@ -622,7 +622,8 @@ function getAllProvidersInfo() {
     const capabilities = ProviderClass.capabilities || {
       review_levels: true,
       custom_instructions: true,
-      exclude_previous: true
+      exclude_previous: true,
+      consolidation: true
     };
 
     providers.push({

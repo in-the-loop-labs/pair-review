@@ -322,7 +322,8 @@ describe('Provider Configuration', () => {
       expect(claude.capabilities).toEqual({
         review_levels: true,
         custom_instructions: true,
-        exclude_previous: true
+        exclude_previous: true,
+        consolidation: true
       });
     });
 
@@ -350,7 +351,8 @@ describe('Provider Configuration', () => {
       expect(myTool.capabilities).toEqual({
         review_levels: true,
         custom_instructions: false,
-        exclude_previous: false
+        exclude_previous: false,
+        consolidation: false
       });
     });
 
@@ -374,7 +376,8 @@ describe('Provider Configuration', () => {
       expect(bareTool.capabilities).toEqual({
         review_levels: false,
         custom_instructions: false,
-        exclude_previous: false
+        exclude_previous: false,
+        consolidation: false
       });
     });
   });

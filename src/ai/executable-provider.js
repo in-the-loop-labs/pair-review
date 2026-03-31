@@ -87,6 +87,7 @@ ${rawOutput}`;
  * @param {boolean} config.capabilities.review_levels - Whether the tool supports L1/L2/L3 analysis
  * @param {boolean} config.capabilities.custom_instructions - Whether the tool supports custom instructions
  * @param {boolean} config.capabilities.exclude_previous - Whether the tool supports excluding previous findings
+ * @param {boolean} config.capabilities.consolidation - Whether the tool can be used for consolidation
  * @param {Object} config.context_args - Maps context keys to CLI flags
  * @param {string} config.output_glob - Glob pattern to find result file
  * @param {string} config.mapping_instructions - Tool-specific mapping instructions for LLM
@@ -527,7 +528,8 @@ function createExecutableProviderClass(id, config) {
   ExecProvider.capabilities = {
     review_levels: caps.review_levels !== undefined ? caps.review_levels : false,
     custom_instructions: caps.custom_instructions !== undefined ? caps.custom_instructions : false,
-    exclude_previous: caps.exclude_previous !== undefined ? caps.exclude_previous : false
+    exclude_previous: caps.exclude_previous !== undefined ? caps.exclude_previous : false,
+    consolidation: caps.consolidation !== undefined ? caps.consolidation : false
   };
 
   return ExecProvider;
