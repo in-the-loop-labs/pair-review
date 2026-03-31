@@ -15,7 +15,7 @@ const crypto = require('crypto');
 const { activeSetups, broadcastSetupProgress } = require('./shared');
 const { setupPRReview } = require('../setup/pr-setup');
 const { setupLocalReview } = require('../setup/local-setup');
-const { getGitHubToken } = require('../config');
+const { getGitHubToken, expandPath } = require('../config');
 const { queryOne } = require('../database');
 const { normalizeRepository } = require('../utils/paths');
 const logger = require('../utils/logger');
@@ -143,12 +143,13 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
  */
 router.post('/api/setup/local', async (req, res) => {
   try {
-    const { path: targetPath } = req.body;
+    const { path: rawPath } = req.body;
 
-    if (!targetPath) {
+    if (!rawPath) {
       return res.status(400).json({ error: 'Missing required field: path' });
     }
 
+    const targetPath = expandPath(rawPath);
     const db = req.app.get('db');
 
     // Concurrency guard
