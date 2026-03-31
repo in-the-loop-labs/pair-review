@@ -1469,5 +1469,41 @@ describe('CouncilProgressModal', () => {
       const voice = { provider: 'custom-tool', model: 'v1' };
       expect(modal._formatVoiceLabel(voice, { isExecutable: true })).toBe('Custom-tool v1');
     });
+
+    it('uses display name from providers map when available', () => {
+      const { modal } = createTestCouncilProgressModal();
+      window.analysisConfigModal = {
+        providers: {
+          'my-review-tool': { name: 'My Review Tool', isExecutable: true }
+        }
+      };
+      const voice = { provider: 'my-review-tool', model: 'default' };
+      expect(modal._formatVoiceLabel(voice, { isExecutable: true })).toBe('My Review Tool default');
+      delete window.analysisConfigModal;
+    });
+
+    it('falls back to capitalized id when providers map has no name', () => {
+      const { modal } = createTestCouncilProgressModal();
+      window.analysisConfigModal = {
+        providers: {
+          'my-tool': { isExecutable: true }
+        }
+      };
+      const voice = { provider: 'my-tool', model: 'v2' };
+      expect(modal._formatVoiceLabel(voice, { isExecutable: true })).toBe('My-tool v2');
+      delete window.analysisConfigModal;
+    });
+
+    it('uses display name for native providers too', () => {
+      const { modal } = createTestCouncilProgressModal();
+      window.analysisConfigModal = {
+        providers: {
+          claude: { name: 'Claude', isExecutable: false }
+        }
+      };
+      const voice = { provider: 'claude', model: 'opus-4', tier: 'thorough' };
+      expect(modal._formatVoiceLabel(voice)).toBe('Claude opus-4 (Thorough)');
+      delete window.analysisConfigModal;
+    });
   });
 });
