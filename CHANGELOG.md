@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.1.2
+
+### Patch Changes
+
+- 5fda142: Support Graphite `/pull/` URL format (e.g. `https://app.graphite.com/github/owner/repo/pull/number`) in addition to the existing `/pr/` format
+
 ## 3.1.1
 
 ### Patch Changes
