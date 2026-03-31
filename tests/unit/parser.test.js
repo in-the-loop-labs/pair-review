@@ -62,6 +62,16 @@ describe('PRArgumentParser', () => {
       expect(result).toEqual({ owner: 'shop', repo: 'world', number: 337891 });
     });
 
+    it('should parse Graphite /pull/ URL with protocol', () => {
+      const result = parser.parsePRUrl('https://app.graphite.com/github/shop/world/pull/540063');
+      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 540063 });
+    });
+
+    it('should parse Graphite /pull/ URL without protocol', () => {
+      const result = parser.parsePRUrl('app.graphite.com/github/shop/world/pull/540063');
+      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 540063 });
+    });
+
     it('should parse Graphite .dev URL without protocol', () => {
       const result = parser.parsePRUrl('app.graphite.dev/github/pr/shop/world/337891');
       expect(result).toEqual({ owner: 'shop', repo: 'world', number: 337891 });
@@ -153,6 +163,26 @@ describe('PRArgumentParser', () => {
     it('should throw error for Graphite URL with wrong path structure', () => {
       expect(() => parser.parseGraphiteURL('https://app.graphite.dev/gitlab/pr/owner/repo/123')).toThrow('Invalid Graphite URL format');
     });
+
+    it('should parse Graphite /pull/ URL with .com domain', () => {
+      const result = parser.parseGraphiteURL('https://app.graphite.com/github/shop/world/pull/540063');
+      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 540063 });
+    });
+
+    it('should parse Graphite /pull/ URL with .dev domain', () => {
+      const result = parser.parseGraphiteURL('https://app.graphite.dev/github/shop/world/pull/540063');
+      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 540063 });
+    });
+
+    it('should parse Graphite /pull/ URL with title segment', () => {
+      const result = parser.parseGraphiteURL('https://app.graphite.com/github/shop/world/pull/540063/fix-something');
+      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 540063 });
+    });
+
+    it('should parse Graphite /pull/ URL with query parameters', () => {
+      const result = parser.parseGraphiteURL('https://app.graphite.com/github/shop/world/pull/540063?ref=gt-pasteable-stack');
+      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 540063 });
+    });
   });
 
   describe('parseProtocolURL', () => {
@@ -203,6 +233,11 @@ describe('PRArgumentParser', () => {
     it('should parse Graphite URL with title', async () => {
       const result = await parser.parsePRArguments(['https://app.graphite.com/github/pr/shop/world/338808/%5BConveyor%5D-Minor-update-to-audit-release-cycle-help']);
       expect(result).toEqual({ owner: 'shop', repo: 'world', number: 338808 });
+    });
+
+    it('should parse Graphite /pull/ URL', async () => {
+      const result = await parser.parsePRArguments(['https://app.graphite.com/github/shop/world/pull/540063']);
+      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 540063 });
     });
 
     it('should parse PR number and fetch repo from git remote', async () => {
