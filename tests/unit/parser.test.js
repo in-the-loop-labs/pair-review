@@ -128,6 +128,11 @@ describe('PRArgumentParser', () => {
       expect(result).toEqual({ owner: 'my-org', repo: 'my-repo', number: 12345 });
     });
 
+    it('should parse Graphite URL with query parameters', () => {
+      const result = parser.parseGraphiteURL('https://app.graphite.com/github/pr/my-org/my-repo/123?ref=gt-pasteable-stack');
+      expect(result).toEqual({ owner: 'my-org', repo: 'my-repo', number: 123 });
+    });
+
     it('should handle org/repo with hyphens', () => {
       const result = parser.parseGraphiteURL('https://app.graphite.dev/github/pr/my-cool-org/my-cool-repo/999');
       expect(result).toEqual({ owner: 'my-cool-org', repo: 'my-cool-repo', number: 999 });
