@@ -168,17 +168,22 @@ describe('createExecutableProviderClass', () => {
 
     it('sets capabilities from config', () => {
       const withCaps = createExecutableProviderClass('t1', {
-        capabilities: { review_levels: true, custom_instructions: true }
+        capabilities: { review_levels: true, custom_instructions: true, exclude_previous: true }
       });
-      expect(withCaps.capabilities).toEqual({ review_levels: true, custom_instructions: true });
+      expect(withCaps.capabilities).toEqual({ review_levels: true, custom_instructions: true, exclude_previous: true });
 
       const withPartialCaps = createExecutableProviderClass('t2', {
         capabilities: { review_levels: true }
       });
-      expect(withPartialCaps.capabilities).toEqual({ review_levels: true, custom_instructions: false });
+      expect(withPartialCaps.capabilities).toEqual({ review_levels: true, custom_instructions: false, exclude_previous: false });
 
       const withNoCaps = createExecutableProviderClass('t3', {});
-      expect(withNoCaps.capabilities).toEqual({ review_levels: false, custom_instructions: false });
+      expect(withNoCaps.capabilities).toEqual({ review_levels: false, custom_instructions: false, exclude_previous: false });
+
+      const withExcludePrevious = createExecutableProviderClass('t4', {
+        capabilities: { exclude_previous: true }
+      });
+      expect(withExcludePrevious.capabilities).toEqual({ review_levels: false, custom_instructions: false, exclude_previous: true });
     });
 
     it('sets getInstallInstructions from config', () => {
