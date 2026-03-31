@@ -33,6 +33,78 @@ describe('buildChatPrompt', () => {
       expect(prompt).toContain('/home/user/project');
     });
 
+    it('should use scope fields for local review diff instructions', () => {
+      const prompt = buildChatPrompt({
+        review: {
+          review_type: 'local',
+          local_path: '/home/user/project',
+          local_scope_start: 'branch',
+          local_scope_end: 'untracked',
+          local_base_branch: 'main'
+        }
+      });
+
+      expect(prompt).toContain('Branch\u2013Untracked');
+      expect(prompt).toContain('$(git merge-base main HEAD)');
+      expect(prompt).not.toContain('unstaged and untracked local changes');
+    });
+
+    it('should fall back to default scope when scope fields are missing', () => {
+      const prompt = buildChatPrompt({
+        review: { review_type: 'local', local_path: '/home/user/project' }
+      });
+
+      expect(prompt).toContain('Unstaged\u2013Untracked');
+      expect(prompt).toContain('git diff --no-ext-diff');
+    });
+
+    it('should include untracked hint when untracked is in scope', () => {
+      const prompt = buildChatPrompt({
+        review: {
+          review_type: 'local',
+          local_path: '/p',
+          local_scope_start: 'staged',
+          local_scope_end: 'untracked'
+        }
+      });
+
+      expect(prompt).toContain('git ls-files --others --exclude-standard');
+    });
+
+    it('should not include untracked hint when untracked is not in scope', () => {
+      const prompt = buildChatPrompt({
+        review: {
+          review_type: 'local',
+          local_path: '/p',
+          local_scope_start: 'staged',
+          local_scope_end: 'staged'
+        }
+      });
+
+      expect(prompt).not.toContain('git ls-files --others --exclude-standard');
+    });
+
+    it('should include excludes text for staged-only scope', () => {
+      const prompt = buildChatPrompt({
+        review: {
+          review_type: 'local',
+          local_path: '/p',
+          local_scope_start: 'staged',
+          local_scope_end: 'staged'
+        }
+      });
+
+      expect(prompt).toContain('NOT included in the review');
+    });
+
+    it('should mention that scope can change during session', () => {
+      const prompt = buildChatPrompt({
+        review: { review_type: 'local', local_path: '/p' }
+      });
+
+      expect(prompt).toContain('Diff State Update');
+    });
+
     it('should handle null review gracefully', () => {
       const prompt = buildChatPrompt({ review: null });
 
