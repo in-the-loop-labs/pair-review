@@ -1621,7 +1621,8 @@ class CouncilProgressModal {
    *       -> "Claude sonnet-4-5 (Balanced)"
    */
   _formatVoiceLabel(voice, { isExecutable = false } = {}) {
-    const provider = this._capitalize(voice.provider || 'unknown');
+    const providersMap = window.analysisConfigModal?.providers || {};
+    const provider = providersMap[voice.provider]?.name || this._capitalize(voice.provider || 'unknown');
     const model = voice.model || 'default';
     if (isExecutable) return `${provider} ${model}`;
     const tier = this._capitalize(voice.tier || 'balanced');
