@@ -385,6 +385,7 @@ function showWelcomeMessage() {
  */
 function expandPath(p) {
   if (!p) return p;
+  if (p === '~') return os.homedir();
   if (p.startsWith('~/')) {
     return path.join(os.homedir(), p.slice(2));
   }

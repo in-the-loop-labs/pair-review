@@ -274,9 +274,9 @@ describe('config.js', () => {
       expect(result).toBe('');
     });
 
-    it('should handle ~ alone (not followed by /)', () => {
+    it('should expand bare ~ to home directory', () => {
       const result = expandPath('~');
-      expect(result).toBe('~');
+      expect(result).toBe(os.homedir());
     });
 
     it('should handle paths with ~ in the middle', () => {
