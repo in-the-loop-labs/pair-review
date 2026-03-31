@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.1.1
+
+### Patch Changes
+
+- bbc23e0: Make chat agent scope-aware for local reviews: system prompt now reflects the current diff scope with accurate git commands, and scope-change notifications include actionable diff command guidance.
+- aaea86f: Add exclude_previous capability for executable providers to disable the Exclude Previous Findings control when the provider does not support it
+- 802919b: Handle query strings in Graphite URLs when parsing PR references
+- aba74d9: Add `consolidation` capability flag to providers, filtering non-consolidation-capable providers from the consolidation dropdown in council config dialogs
+- 103c434: Use provider display name instead of ID in council progress dialog
+
 ## 3.1.0
 
 ### Minor Changes
