@@ -203,7 +203,8 @@
       "capabilities": {
         "review_levels": false,
         "custom_instructions": false,
-        "exclude_previous": false
+        "exclude_previous": false,
+        "consolidation": false
       },
       "context_args": {
         "title": "--title",
