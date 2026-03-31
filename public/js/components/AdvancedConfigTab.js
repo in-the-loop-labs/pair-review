@@ -705,10 +705,13 @@ class AdvancedConfigTab {
 
   _populateProviderDropdown(select) {
     const currentValue = select.value;
+    const isConsolidation = select.dataset.target === 'orchestration';
     select.innerHTML = '';
     const providerIds = Object.keys(this.providers).filter(id => {
       const p = this.providers[id];
-      return !p.availability || p.availability.available;
+      if (p.availability && !p.availability.available) return false;
+      if (isConsolidation && p.capabilities?.consolidation === false) return false;
+      return true;
     }).sort((a, b) => (this.providers[a].name || a).localeCompare(this.providers[b].name || b));
 
     for (const id of providerIds) {
