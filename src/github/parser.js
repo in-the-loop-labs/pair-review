@@ -30,7 +30,7 @@ class PRArgumentParser {
     // Check if input is a PR number
     const prNumber = parseInt(input);
     if (isNaN(prNumber) || prNumber <= 0) {
-      throw new Error('Invalid input format. Expected: PR number, GitHub URL (https://github.com/owner/repo/pull/number), Graphite URL (https://app.graphite.com/github/pr/owner/repo/number), or pair-review:// URL');
+      throw new Error('Invalid input format. Expected: PR number, GitHub URL (https://github.com/owner/repo/pull/number), Graphite URL (https://app.graphite.com/github/pr/owner/repo/number or https://app.graphite.com/github/owner/repo/pull/number), or pair-review:// URL');
     }
 
     // Parse repository from current directory's git remote
@@ -112,14 +112,18 @@ class PRArgumentParser {
    * @returns {Object} Parsed information { owner, repo, number }
    */
   parseGraphiteURL(url) {
-    // Match Graphite PR URL pattern: https://app.graphite.{dev|com}/github/pr/owner/repo/number[/optional-title]
-    const match = url.match(/^https:\/\/app\.graphite\.(?:dev|com)\/github\/pr\/([^\/]+)\/([^\/]+)\/(\d+)(?:\/[^?]*)?(?:\?.*)?$/);
+    // Match Graphite PR URL patterns:
+    //   https://app.graphite.{dev|com}/github/pr/owner/repo/number[/optional-title]
+    //   https://app.graphite.{dev|com}/github/owner/repo/pull/number[/optional-title]
+    const match = url.match(/^https:\/\/app\.graphite\.(?:dev|com)\/github\/(?:pr\/([^\/]+)\/([^\/]+)\/(\d+)|([^\/]+)\/([^\/]+)\/pull\/(\d+))(?:\/[^?]*)?(?:\?.*)?$/);
 
     if (!match) {
-      throw new Error('Invalid Graphite URL format. Expected: https://app.graphite.com/github/pr/owner/repo/number');
+      throw new Error('Invalid Graphite URL format. Expected: https://app.graphite.com/github/pr/owner/repo/number or https://app.graphite.com/github/owner/repo/pull/number');
     }
 
-    const [, owner, repo, numberStr] = match;
+    const owner = match[1] || match[4];
+    const repo = match[2] || match[5];
+    const numberStr = match[3] || match[6];
     return this._createPRInfo(owner, repo, numberStr, 'Graphite');
   }
 
@@ -156,7 +160,7 @@ class PRArgumentParser {
         ? 'https://github.com/owner/repo/pull/number'
         : source === 'pair-review://'
           ? 'pair-review://pr/owner/repo/number'
-          : 'https://app.graphite.com/github/pr/owner/repo/number';
+          : 'https://app.graphite.com/github/pr/owner/repo/number or https://app.graphite.com/github/owner/repo/pull/number';
       throw new Error(`Invalid ${source} URL format. Expected: ${exampleUrl}`);
     }
 
