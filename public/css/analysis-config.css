@@ -81,3 +81,23 @@
 .option-hint:last-child {
   margin-bottom: 0;
 }
+
+/* Section disabled by provider capability —
+   pointer-events on the section blocks interaction; opacity is applied
+   only to the options area so the note remains clearly readable and
+   the already-disabled GitHub toggle doesn't double-dim. */
+.exclude-previous-section.exclude-previous-disabled {
+  pointer-events: none;
+}
+
+.exclude-previous-section.exclude-previous-disabled > summary {
+  opacity: 0.5;
+}
+
+.exclude-previous-section.exclude-previous-disabled .exclude-previous-options {
+  opacity: 0.5;
+}
+
+.exclude-previous-section .executable-provider-note {
+  margin: 8px 14px;
+}

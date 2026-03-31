@@ -202,7 +202,8 @@
       "name": "My Review Tool",
       "capabilities": {
         "review_levels": false,
-        "custom_instructions": false
+        "custom_instructions": false,
+        "exclude_previous": false
       },
       "context_args": {
         "title": "--title",
