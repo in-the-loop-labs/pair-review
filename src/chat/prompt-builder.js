@@ -8,6 +8,7 @@
  */
 
 const logger = require('../utils/logger');
+const { scopeGitHints, DEFAULT_SCOPE } = require('../local-scope');
 
 /**
  * Build a lean system prompt for chat sessions.
@@ -140,9 +141,27 @@ function buildReviewContext(review, prData) {
     lines.push(`This is a local code review for: ${name}`);
     lines.push('');
     lines.push('## Viewing Code Changes');
-    lines.push('The changes under review are **unstaged and untracked local changes**. Staged changes (`git diff --no-ext-diff --cached`) are treated as already reviewed.');
-    lines.push('To see the diff under review: `git diff --no-ext-diff`');
-    lines.push('Do NOT use `git diff HEAD~1` or `git log` — those show committed history, not the changes under review.');
+
+    const scopeStart = review.local_scope_start || DEFAULT_SCOPE.start;
+    const scopeEnd = review.local_scope_end || DEFAULT_SCOPE.end;
+    const baseBranch = review.local_base_branch || null;
+    const hints = scopeGitHints(scopeStart, scopeEnd, baseBranch);
+
+    if (hints) {
+      lines.push(`The current diff scope is **${hints.label}**: ${hints.description}`);
+      lines.push(`To see the diff under review: \`${hints.diffCommand}\``);
+      if (hints.includesUntracked) {
+        lines.push('Untracked files are included. List them with: `git ls-files --others --exclude-standard`');
+      }
+      if (hints.excludes) {
+        lines.push(hints.excludes);
+      }
+    } else {
+      lines.push('The changes under review are **unstaged and untracked local changes**. Staged changes (`git diff --no-ext-diff --cached`) are treated as already reviewed.');
+      lines.push('To see the diff under review: `git diff --no-ext-diff`');
+      lines.push('Do NOT use `git diff HEAD~1` or `git log` — those show committed history, not the changes under review.');
+    }
+    lines.push('The diff scope can change during this session. If you receive a "[Diff State Update]" notification, follow the updated diff command it provides.');
   } else {
     const parts = [];
     if (review.repository) {
