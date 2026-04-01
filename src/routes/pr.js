@@ -32,10 +32,8 @@ const { broadcastReviewEvent } = require('../events/review-events');
 const { fireHooks, hasHooks } = require('../hooks/hook-runner');
 const { buildReviewStartedPayload, buildReviewLoadedPayload, buildAnalysisStartedPayload, buildAnalysisCompletedPayload, getCachedUser } = require('../hooks/payloads');
 const simpleGit = require('simple-git');
-const { execSync } = require('child_process');
-const { readFileSync } = require('fs');
 const { GIT_DIFF_FLAGS_ARRAY, GIT_DIFF_SUMMARY_FLAGS_ARRAY } = require('../git/diff-flags');
-const { tryGraphiteState, readGraphitePRInfo, enrichStackWithPRInfo } = require('../git/base-branch');
+const { walkPRStack, DEFAULT_TRUNK_BRANCHES } = require('../github/stack-walker');
 const {
   activeAnalyses,
   reviewToAnalysisId,
@@ -53,7 +51,7 @@ const { getProviderClass, createProvider } = require('../ai/provider');
 const { CommentRepository } = require('../database');
 const { runExecutableAnalysis } = require('./executable-analysis');
 const analysesRouter = require('./analyses');
-
+const { worktreeLock } = require('../git/worktree-lock');
 const router = express.Router();
 
 /**
@@ -236,21 +234,20 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
       ? getShaAbbrevLength(extendedData.worktree_path)
       : DEFAULT_SHA_ABBREV_LENGTH;
 
-    // Detect Graphite stack if enabled
+    // Detect PR stack via GitHub GraphQL chain-walking
     let stackData = null;
     {
       const stackConfig = req.app.get('config') || {};
-      if (stackConfig.enable_graphite === true && extendedData.worktree_path && prMetadata.head_branch) {
+      const githubToken = getGitHubToken(stackConfig) || req.app.get('githubToken');
+      if (githubToken) {
         try {
-          const graphiteResult = tryGraphiteState(extendedData.worktree_path, prMetadata.head_branch, { execSync, readFileSync });
-          if (graphiteResult?.stack) {
-            const prInfo = readGraphitePRInfo(extendedData.worktree_path, { execSync, readFileSync });
-            stackData = prInfo?.prInfos
-              ? enrichStackWithPRInfo(graphiteResult.stack, prInfo.prInfos)
-              : graphiteResult.stack;
-          }
-        } catch {
-          // Non-fatal — stack detection is an enhancement
+          const ghClient = new GitHubClient(githubToken);
+          const defaultBranch = extendedData.repository?.default_branch;
+          stackData = await walkPRStack(ghClient, repoOwner, repoName, prNumber, {
+            defaultBranches: [defaultBranch, ...DEFAULT_TRUNK_BRANCHES].filter(Boolean)
+          });
+        } catch (stackError) {
+          logger.debug('Failed to walk PR stack:', stackError.message);
         }
       }
     }
@@ -356,6 +353,20 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
     if (!githubToken) {
       return res.status(401).json({ error: 'GitHub token not configured' });
     }
+
+    // Check if worktree is locked before modifying it
+    const worktreeManagerForLock = new GitWorktreeManager(db);
+    const existingWorktreePath = await worktreeManagerForLock.getWorktreePath({ owner, repo, number: prNumber });
+    if (existingWorktreePath) {
+      const lockState = worktreeLock.isLocked(existingWorktreePath);
+      if (lockState.locked) {
+        return res.status(409).json({
+          error: 'Worktree is in use by stack analysis',
+          holderId: lockState.holderId
+        });
+      }
+    }
+
     const githubClient = new GitHubClient(githubToken);
     const prData = await githubClient.fetchPullRequest(owner, repo, prNumber);
 
@@ -433,19 +444,20 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
     const parsedData = prMetadata.pr_data ? JSON.parse(prMetadata.pr_data) : {};
     const [repoOwner, repoName] = repository.split('/');
 
-    // Detect Graphite stack if enabled
+    // Refresh stack data via GitHub GraphQL
     let stackData = null;
-    if (config.enable_graphite === true && worktreePath && prData.head_branch) {
-      try {
-        const graphiteResult = tryGraphiteState(worktreePath, prData.head_branch, { execSync, readFileSync });
-        if (graphiteResult?.stack) {
-          const prInfo = readGraphitePRInfo(worktreePath, { execSync, readFileSync });
-          stackData = prInfo?.prInfos
-            ? enrichStackWithPRInfo(graphiteResult.stack, prInfo.prInfos)
-            : graphiteResult.stack;
+    {
+      const githubToken = getGitHubToken(config) || req.app.get('githubToken');
+      if (githubToken) {
+        try {
+          const ghClient = new GitHubClient(githubToken);
+          const defaultBranch = prData.repository?.default_branch;
+          stackData = await walkPRStack(ghClient, ...repository.split('/'), prNumber, {
+            defaultBranches: [defaultBranch, ...DEFAULT_TRUNK_BRANCHES].filter(Boolean)
+          });
+        } catch (stackError) {
+          logger.debug('Failed to walk PR stack on refresh:', stackError.message);
         }
-      } catch {
-        // Non-fatal — stack detection is an enhancement
       }
     }
 
@@ -1619,6 +1631,17 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
       });
     }
 
+    // Reject if worktree is locked by another operation (e.g. stack analysis)
+    if (worktreePath) {
+      const lockState = worktreeLock.isLocked(worktreePath);
+      if (lockState.locked) {
+        return res.status(409).json({
+          error: 'Worktree is in use by stack analysis',
+          holderId: lockState.holderId
+        });
+      }
+    }
+
     const appConfig = req.app.get('config') || {};
     const globalInstructions = appConfig.globalInstructions || null;
 
@@ -2207,6 +2230,96 @@ router.get('/api/pr/:owner/:repo/:number/share', async (req, res) => {
   } catch (error) {
     logger.error('Error generating share data:', error);
     res.status(500).json({ error: 'Failed to generate share data' });
+  }
+});
+
+/**
+ * Get enriched stack info for a PR stack via GitHub GraphQL chain-walking.
+ * Returns all branches in the stack with PR numbers, titles, analysis status,
+ * and worktree ownership — used by the stack selection dialog.
+ */
+router.get('/api/pr/:owner/:repo/:number/stack-info', async (req, res) => {
+  try {
+    const { owner, repo, number } = req.params;
+    const prNumber = parseInt(number);
+
+    if (isNaN(prNumber) || prNumber <= 0) {
+      return res.status(400).json({ error: 'Invalid pull request number' });
+    }
+
+    const repository = normalizeRepository(owner, repo);
+    const db = req.app.get('db');
+    const config = req.app.get('config') || {};
+
+    const githubToken = getGitHubToken(config) || req.app.get('githubToken');
+    if (!githubToken) {
+      return res.json({ stack: [] });
+    }
+
+    // Look up pr_data to extract default_branch for stack walking
+    const prMetadataRow = await queryOne(db, `
+      SELECT pr_data FROM pr_metadata
+      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
+    `, [prNumber, repository]);
+    const parsedPrData = prMetadataRow?.pr_data ? JSON.parse(prMetadataRow.pr_data) : {};
+    const defaultBranch = parsedPrData.repository?.default_branch;
+
+    const ghClient = new GitHubClient(githubToken);
+    let stack;
+    try {
+      stack = await walkPRStack(ghClient, ...repository.split('/'), prNumber, {
+        defaultBranches: [defaultBranch, ...DEFAULT_TRUNK_BRANCHES].filter(Boolean)
+      });
+    } catch (walkError) {
+      logger.debug('Failed to walk PR stack for stack-info:', walkError.message);
+      return res.json({ stack: [] });
+    }
+    if (!stack) {
+      return res.json({ stack: [] });
+    }
+
+    // For each non-trunk entry with a PR number, look up analysis status and worktree
+    const enrichedStack = [];
+    const worktreeRepo = new WorktreeRepository(db);
+    const analysisRunRepo = new AnalysisRunRepository(db);
+    const reviewRepo = new ReviewRepository(db);
+
+    for (const entry of stack) {
+      if (entry.isTrunk) {
+        enrichedStack.push(entry);
+        continue;
+      }
+
+      const enriched = { ...entry };
+
+      if (entry.prNumber) {
+        enriched.title = entry.title || null;
+
+        // Check if there's an analysis run
+        const review = await reviewRepo.getReviewByPR(entry.prNumber, repository);
+        if (review) {
+          const latestRun = await analysisRunRepo.getLatestByReviewId(review.id);
+          enriched.hasAnalysis = latestRun?.status === 'completed';
+        } else {
+          enriched.hasAnalysis = false;
+        }
+
+        // Check if it has its own worktree
+        const wt = await worktreeRepo.findByPR(entry.prNumber, repository);
+        enriched.hasOwnWorktree = wt != null;
+      } else {
+        enriched.title = null;
+        enriched.hasAnalysis = false;
+        enriched.hasOwnWorktree = false;
+      }
+
+      enrichedStack.push(enriched);
+    }
+
+    res.json({ stack: enrichedStack });
+  } catch (error) {
+    logger.error('Error fetching stack info:', error);
+    res.status(500).json({ error: 'Failed to fetch stack info' });
   }
 });
 
