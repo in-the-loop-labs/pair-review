@@ -1,0 +1,5 @@
+{
+  "providers": {
+    "pi": { "extra_args": ["--no-skills"] }
+  }
+}
