@@ -57,11 +57,29 @@ class DiffOptionsDropdown {
     this._outsideClickHandler = null;
     this._escapeHandler = null;
 
-    // Scope state
-    const LS = window.LocalScope;
+    // Scope state — resolve LocalScope with inline fallback so the scope selector
+    // renders even if window.LocalScope failed to load (race condition guard).
+    const FALLBACK_STOPS = ['branch', 'staged', 'unstaged', 'untracked']; // Keep in sync with local-scope.js:STOPS
+    const FALLBACK_DEFAULT = { start: 'unstaged', end: 'untracked' };
+    this._localScope = window.LocalScope || {
+      STOPS: FALLBACK_STOPS,
+      DEFAULT_SCOPE: FALLBACK_DEFAULT,
+      isValidScope: (s, e) => {
+        const si = FALLBACK_STOPS.indexOf(s);
+        const ei = FALLBACK_STOPS.indexOf(e);
+        return si !== -1 && ei !== -1 && si <= ei;
+      },
+      scopeIncludes: (s, e, stop) => {
+        const si = FALLBACK_STOPS.indexOf(s);
+        const ei = FALLBACK_STOPS.indexOf(e);
+        const ti = FALLBACK_STOPS.indexOf(stop);
+        return ti !== -1 && ti >= si && ti <= ei;
+      }
+    };
+    const LS = this._localScope;
     this._branchAvailable = Boolean(branchAvailable);
-    this._scopeStart = (initialScope && initialScope.start) || (LS ? LS.DEFAULT_SCOPE.start : 'unstaged');
-    this._scopeEnd = (initialScope && initialScope.end) || (LS ? LS.DEFAULT_SCOPE.end : 'untracked');
+    this._scopeStart = (initialScope && initialScope.start) || LS.DEFAULT_SCOPE.start;
+    this._scopeEnd = (initialScope && initialScope.end) || LS.DEFAULT_SCOPE.end;
     this._scopeStops = [];
     this._scopeTrackEl = null;
     this._scopeDebounceTimer = null;
@@ -144,7 +162,7 @@ class DiffOptionsDropdown {
   /** Programmatically set scope. */
   set scope(val) {
     if (!val) return;
-    const LS = window.LocalScope;
+    const LS = this._localScope;
     if (LS && !LS.isValidScope(val.start, val.end)) return;
     this._scopeStart = val.start;
     this._scopeEnd = val.end;
@@ -188,8 +206,11 @@ class DiffOptionsDropdown {
     popover.style.zIndex = '1100';
     popover.style.transition = 'opacity 0.15s ease, transform 0.15s ease';
 
-    // Scope selector first — only in local mode
-    if (window.PAIR_REVIEW_LOCAL_MODE && window.LocalScope) {
+    // Scope selector first — only in local mode.
+    // Belt-and-suspenders: also render when scope callbacks were explicitly provided,
+    // in case a race condition prevents the globals from being set in time.
+    const hasLocalScope = (window.PAIR_REVIEW_LOCAL_MODE && window.LocalScope) || this._onScopeChange;
+    if (hasLocalScope) {
       this._renderScopeSelector(popover);
 
       // Divider between scope selector and whitespace checkbox
@@ -261,7 +282,7 @@ class DiffOptionsDropdown {
   }
 
   _renderScopeSelector(popover) {
-    const LS = window.LocalScope;
+    const LS = this._localScope;
 
     // Section container — generous horizontal padding so dots/labels breathe
     const section = document.createElement('div');
@@ -382,7 +403,7 @@ class DiffOptionsDropdown {
   }
 
   _handleStopClick(clickedStop, event) {
-    const LS = window.LocalScope;
+    const LS = this._localScope;
     if (!LS) return;
 
     // Branch disabled? Ignore.
@@ -457,7 +478,7 @@ class DiffOptionsDropdown {
   }
 
   _updateScopeUI() {
-    const LS = window.LocalScope;
+    const LS = this._localScope;
     if (!LS || !this._scopeStops.length) return;
 
     const stops = LS.STOPS;
@@ -474,13 +495,16 @@ class DiffOptionsDropdown {
       const isAdjacent = !included && (i === si - 1 || i === ei + 1);
       const clickable = !disabled && (isBoundary || isAdjacent);
 
+      // Tooltip for disabled branch stop
+      containerEl.title = disabled ? 'No feature branch detected' : '';
+
       if (disabled) {
         // Disabled state
         dotEl.style.background = 'var(--color-bg-tertiary, #f6f8fa)';
         dotEl.style.borderColor = 'var(--color-border-secondary, #e1e4e8)';
         dotEl.style.boxShadow = 'none';
         labelEl.style.color = 'var(--color-text-tertiary, #8b949e)';
-        containerEl.style.cursor = 'not-allowed';
+        containerEl.style.cursor = 'default';
         containerEl.style.opacity = '0.5';
       } else if (included) {
         // Included (filled) state
