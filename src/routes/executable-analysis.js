@@ -55,15 +55,10 @@ async function generateDiffForExecutable(cwd, context, diffArgs, outputPath) {
   let diff;
   const extraFlags = diffArgs.length > 0 ? ' ' + diffArgs.join(' ') : '';
 
-  if (context.baseSha && context.headSha) {
-    // PR mode: straightforward base...head diff
-    const { stdout } = await execPromise(
-      `git diff ${GIT_DIFF_FLAGS}${extraFlags} ${context.baseSha}...${context.headSha}`,
-      { cwd, maxBuffer: 50 * 1024 * 1024 }
-    );
-    diff = stdout;
-  } else if (context.scopeStart && context.scopeEnd) {
-    // Local mode: scope-aware diff generation
+  if (context.scopeStart && context.scopeEnd) {
+    // Local mode: scope-aware diff generation (checked first because local reviews
+    // may also carry baseSha/headSha pointing at the same commit, which would
+    // produce an empty diff if the SHA path ran instead).
     // Note: diffArgs are passed as extraArgs to generateScopedDiff, which handles
     // appending them to the git diff command internally (extraFlags is not used here).
     const result = await generateScopedDiff(
@@ -74,6 +69,13 @@ async function generateDiffForExecutable(cwd, context, diffArgs, outputPath) {
       { contextLines: 3, extraArgs: diffArgs }
     );
     diff = result.diff;
+  } else if (context.baseSha && context.headSha) {
+    // PR mode: straightforward base...head diff
+    const { stdout } = await execPromise(
+      `git diff ${GIT_DIFF_FLAGS}${extraFlags} ${context.baseSha}...${context.headSha}`,
+      { cwd, maxBuffer: 50 * 1024 * 1024 }
+    );
+    diff = stdout;
   } else {
     // Fallback: simple working-tree diff
     const { stdout } = await execPromise(
