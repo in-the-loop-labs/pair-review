@@ -383,13 +383,43 @@ class DiffOptionsDropdown {
       stopEl.appendChild(dot);
       stopEl.appendChild(labelEl);
 
+      // Custom tooltip element (positioned above the dot, hidden by default)
+      const tooltipEl = document.createElement('div');
+      tooltipEl.style.position = 'absolute';
+      tooltipEl.style.bottom = '100%';
+      tooltipEl.style.left = '50%';
+      tooltipEl.style.transform = 'translateX(-50%)';
+      tooltipEl.style.marginBottom = '6px';
+      tooltipEl.style.padding = '4px 8px';
+      tooltipEl.style.fontSize = '11px';
+      tooltipEl.style.lineHeight = '1.3';
+      tooltipEl.style.color = 'var(--color-text-on-emphasis, #ffffff)';
+      tooltipEl.style.background = 'var(--color-neutral-emphasis, #24292f)';
+      tooltipEl.style.borderRadius = '4px';
+      tooltipEl.style.whiteSpace = 'nowrap';
+      tooltipEl.style.pointerEvents = 'none';
+      tooltipEl.style.opacity = '0';
+      tooltipEl.style.transition = 'opacity 0.12s ease';
+      tooltipEl.style.zIndex = '2';
+      stopEl.style.position = 'relative';
+      stopEl.appendChild(tooltipEl);
+
+      stopEl.addEventListener('mouseenter', () => {
+        if (tooltipEl.textContent) {
+          tooltipEl.style.opacity = '1';
+        }
+      });
+      stopEl.addEventListener('mouseleave', () => {
+        tooltipEl.style.opacity = '0';
+      });
+
       stopEl.addEventListener('click', (e) => {
         e.stopPropagation();
         this._handleStopClick(stop, e);
       });
 
       stopsRow.appendChild(stopEl);
-      this._scopeStops.push({ stop, dotEl: dot, labelEl, containerEl: stopEl });
+      this._scopeStops.push({ stop, dotEl: dot, labelEl, containerEl: stopEl, tooltipEl });
     });
 
     trackContainer.appendChild(stopsRow);
@@ -417,10 +447,14 @@ class DiffOptionsDropdown {
     let newStart = this._scopeStart;
     let newEnd = this._scopeEnd;
 
-    // Alt/Option-click: solo-select this single stop
+    // 'unstaged' is always included — the AI reads files from the working
+    // tree, so the diff must always cover at least the unstaged state.
+    const ui = stops.indexOf('unstaged');
+
+    // Alt/Option-click: select this stop with minimum scope including unstaged
     if (event && event.altKey) {
-      newStart = clickedStop;
-      newEnd = clickedStop;
+      newStart = stops[Math.min(ci, ui)];
+      newEnd = stops[Math.max(ci, ui)];
     } else {
       // Checkbox-like toggle with contiguity constraint
       const included = ci >= si && ci <= ei;
@@ -428,6 +462,7 @@ class DiffOptionsDropdown {
       if (included) {
         // Toggling OFF — only allowed at boundaries, and range must have >1 stop
         if (si === ei) return;
+        if (clickedStop === 'unstaged') return; // unstaged is mandatory
         if (ci === si) {
           newStart = stops[si + 1];
         } else if (ci === ei) {
@@ -485,18 +520,33 @@ class DiffOptionsDropdown {
     const si = stops.indexOf(this._scopeStart);
     const ei = stops.indexOf(this._scopeEnd);
 
-    this._scopeStops.forEach(({ stop, dotEl, labelEl, containerEl }, i) => {
+    this._scopeStops.forEach(({ stop, dotEl, labelEl, containerEl, tooltipEl }, i) => {
       const included = LS.scopeIncludes(this._scopeStart, this._scopeEnd, stop);
       const isBranch = stop === 'branch';
       const disabled = isBranch && !this._branchAvailable;
 
-      // Determine if clicking this stop would do anything (for cursor hint)
-      const isBoundary = included && (i === si || i === ei) && si !== ei;
+      // Determine if clicking this stop would do anything (for cursor hint).
+      // 'unstaged' is mandatory and cannot be toggled off, so it is never a
+      // clickable boundary even when it sits at a range edge.
+      const isMandatory = stop === 'unstaged';
+      const atRangeEdge = included && (i === si || i === ei) && si !== ei;
+      const isBoundary = atRangeEdge && !isMandatory;
       const isAdjacent = !included && (i === si - 1 || i === ei + 1);
       const clickable = !disabled && (isBoundary || isAdjacent);
 
       // Tooltip for disabled branch stop
       containerEl.title = disabled ? 'No feature branch detected' : '';
+
+      // Mandatory stop sitting at a range edge — user might expect to toggle
+      // it off but can't.  Show not-allowed cursor and explanatory tooltip.
+      const mandatoryEdge = isMandatory && atRangeEdge;
+
+      // Update tooltip text (empty string hides the tooltip on hover)
+      if (tooltipEl) {
+        tooltipEl.textContent = mandatoryEdge
+          ? 'Unstaged changes are always included \u2014 the agent reads from your working tree'
+          : '';
+      }
 
       if (disabled) {
         // Disabled state
@@ -513,7 +563,7 @@ class DiffOptionsDropdown {
         dotEl.style.boxShadow = '0 0 0 2px rgba(139, 92, 246, 0.2)';
         labelEl.style.color = 'var(--color-text-primary, #24292f)';
         labelEl.style.fontWeight = '600';
-        containerEl.style.cursor = clickable ? 'pointer' : 'default';
+        containerEl.style.cursor = clickable ? 'pointer' : (mandatoryEdge ? 'not-allowed' : 'default');
         containerEl.style.opacity = '1';
       } else {
         // Excluded (empty) state

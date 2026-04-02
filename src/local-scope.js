@@ -4,10 +4,29 @@ const STOPS = ['branch', 'staged', 'unstaged', 'untracked'];
 
 const DEFAULT_SCOPE = { start: 'unstaged', end: 'untracked' };
 
+const UNSTAGED_INDEX = STOPS.indexOf('unstaged');
+
 function isValidScope(start, end) {
   const si = STOPS.indexOf(start);
   const ei = STOPS.indexOf(end);
-  return si !== -1 && ei !== -1 && si <= ei;
+  // Scope must be contiguous AND must include the 'unstaged' stop.
+  // This ensures the diff always covers the working tree state that AI models
+  // see when reading files, since we cannot modify local git state.
+  return si !== -1 && ei !== -1 && si <= ei && si <= UNSTAGED_INDEX && ei >= UNSTAGED_INDEX;
+}
+
+function normalizeScope(start, end) {
+  if (isValidScope(start, end)) return { start, end };
+  const si = STOPS.indexOf(start);
+  const ei = STOPS.indexOf(end);
+  if (si === -1 || ei === -1) return { start: DEFAULT_SCOPE.start, end: DEFAULT_SCOPE.end };
+  const newEi = Math.max(ei, UNSTAGED_INDEX);
+  const newSi = Math.min(si, UNSTAGED_INDEX);
+  const finalSi = Math.min(newSi, newEi);
+  const newStart = STOPS[finalSi];
+  const newEnd = STOPS[newEi];
+  if (isValidScope(newStart, newEnd)) return { start: newStart, end: newEnd };
+  return { start: DEFAULT_SCOPE.start, end: DEFAULT_SCOPE.end };
 }
 
 function scopeIncludes(start, end, stop) {
@@ -27,9 +46,16 @@ function fromLegacyMode(localMode) {
     return { start: 'unstaged', end: 'untracked' };
   }
   if (localMode === 'branch') {
-    return { start: 'branch', end: 'branch' };
+    return { start: 'branch', end: 'unstaged' };
   }
   return { start: DEFAULT_SCOPE.start, end: DEFAULT_SCOPE.end };
+}
+
+function reviewScope(review) {
+  return normalizeScope(
+    review.local_scope_start || DEFAULT_SCOPE.start,
+    review.local_scope_end || DEFAULT_SCOPE.end
+  );
 }
 
 function scopeLabel(start, end) {
@@ -57,16 +83,6 @@ function scopeGitHints(start, end, baseBranch) {
 
   const key = start + '-' + end;
   const hints = {
-    'branch-branch': {
-      description: 'Committed changes on this branch since the merge-base.',
-      diffCommand: 'git diff --no-ext-diff ' + mb + '..HEAD',
-      excludes: 'Staged, unstaged, and untracked changes are NOT included in the review.'
-    },
-    'branch-staged': {
-      description: 'Committed changes plus staged changes, relative to the merge-base.',
-      diffCommand: 'git diff --no-ext-diff --cached ' + mb,
-      excludes: 'Unstaged and untracked changes are NOT included in the review.'
-    },
     'branch-unstaged': {
       description: 'All tracked changes (committed, staged, and unstaged) relative to the merge-base.',
       diffCommand: 'git diff --no-ext-diff ' + mb,
@@ -76,11 +92,6 @@ function scopeGitHints(start, end, baseBranch) {
       description: 'All changes (committed, staged, unstaged, and untracked) relative to the merge-base.',
       diffCommand: 'git diff --no-ext-diff ' + mb,
       excludes: ''
-    },
-    'staged-staged': {
-      description: 'Only staged changes (added to the index but not yet committed).',
-      diffCommand: 'git diff --no-ext-diff --cached',
-      excludes: 'Unstaged, untracked, and committed branch changes are NOT included in the review.'
     },
     'staged-unstaged': {
       description: 'Staged and unstaged changes relative to HEAD.',
@@ -101,11 +112,6 @@ function scopeGitHints(start, end, baseBranch) {
       description: 'Unstaged and untracked local changes.',
       diffCommand: 'git diff --no-ext-diff',
       excludes: 'Staged changes (`git diff --no-ext-diff --cached`) are treated as already reviewed.'
-    },
-    'untracked-untracked': {
-      description: 'Only untracked files (new files not yet added to git).',
-      diffCommand: 'git ls-files --others --exclude-standard',
-      excludes: 'Tracked file changes (staged, unstaged, committed) are NOT included in the review.'
     }
   };
 
@@ -117,7 +123,7 @@ function scopeGitHints(start, end, baseBranch) {
     description: entry.description,
     diffCommand: entry.diffCommand,
     excludes: entry.excludes,
-    includesUntracked: incUntracked && key !== 'untracked-untracked'
+    includesUntracked: incUntracked
   };
 }
 
@@ -125,6 +131,8 @@ const LocalScope = {
   STOPS,
   DEFAULT_SCOPE,
   isValidScope,
+  normalizeScope,
+  reviewScope,
   scopeIncludes,
   includesBranch,
   fromLegacyMode,

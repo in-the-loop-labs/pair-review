@@ -77,20 +77,20 @@ describe('buildChatPrompt', () => {
           review_type: 'local',
           local_path: '/p',
           local_scope_start: 'staged',
-          local_scope_end: 'staged'
+          local_scope_end: 'unstaged'
         }
       });
 
       expect(prompt).not.toContain('git ls-files --others --exclude-standard');
     });
 
-    it('should include excludes text for staged-only scope', () => {
+    it('should include excludes text for staged-unstaged scope', () => {
       const prompt = buildChatPrompt({
         review: {
           review_type: 'local',
           local_path: '/p',
           local_scope_start: 'staged',
-          local_scope_end: 'staged'
+          local_scope_end: 'unstaged'
         }
       });
 

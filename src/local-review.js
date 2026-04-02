@@ -10,7 +10,7 @@ const { fireHooks, hasHooks } = require('./hooks/hook-runner');
 const { buildReviewStartedPayload, buildReviewLoadedPayload, getCachedUser } = require('./hooks/payloads');
 
 const execAsync = promisify(exec);
-const { STOPS, scopeIncludes, includesBranch, DEFAULT_SCOPE, scopeLabel } = require('./local-scope');
+const { STOPS, scopeIncludes, includesBranch, DEFAULT_SCOPE, scopeLabel, reviewScope } = require('./local-scope');
 const { initializeDatabase, ReviewRepository, RepoSettingsRepository } = require('./database');
 const { startServer } = require('./server');
 const { localReviewDiffs } = require('./routes/shared');
@@ -472,6 +472,13 @@ async function generateScopedDiff(repoPath, scopeStart, scopeEnd, baseBranch, op
   const hasUnstaged = scopeIncludes(scopeStart, scopeEnd, 'unstaged');
   const hasUntracked = scopeIncludes(scopeStart, scopeEnd, 'untracked');
 
+  // Fail fast if the scope is invalid. scopeIncludes returns false for all
+  // stops when the scope is invalid, so all four flags would be false and the
+  // branching logic below would silently produce a wrong diff.
+  if (!hasUnstaged) {
+    throw new Error(`Invalid scope ${scopeStart}..${scopeEnd}: scope must include 'unstaged'`);
+  }
+
   let mergeBaseSha = null;
   let diff = '';
 
@@ -483,46 +490,30 @@ async function generateScopedDiff(repoPath, scopeStart, scopeEnd, baseBranch, op
     mergeBaseSha = await findMergeBase(repoPath, baseBranch);
   }
 
-  // Build the git diff command based on scope range
+  // Build the git diff command based on scope range.
+  // hasUnstaged is always true by invariant — isValidScope requires the scope
+  // to include 'unstaged', since AI models read files from the working tree
+  // and the diff must cover at least the unstaged state.
   try {
-    if (hasBranch && !hasStaged && !hasUnstaged) {
-      // Branch only → committed changes since merge-base
-      diff = execSync(`git diff ${mergeBaseSha}..HEAD ${GIT_DIFF_FLAGS}${contextFlag}${extraArgsStr}${wFlag}`, {
-        cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
-        maxBuffer: 50 * 1024 * 1024
-      });
-    } else if (hasBranch && hasStaged && !hasUnstaged) {
-      // Branch–Staged → staged changes relative to merge-base
-      diff = execSync(`git diff --cached ${mergeBaseSha} ${GIT_DIFF_FLAGS}${contextFlag}${extraArgsStr}${wFlag}`, {
-        cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
-        maxBuffer: 50 * 1024 * 1024
-      });
-    } else if (hasBranch && hasUnstaged) {
-      // Branch–Unstaged (or Branch–Untracked) → working tree vs merge-base
+    if (hasBranch) {
+      // Branch scope → working tree vs merge-base (includes committed + staged + unstaged)
       diff = execSync(`git diff ${mergeBaseSha} ${GIT_DIFF_FLAGS}${contextFlag}${extraArgsStr}${wFlag}`, {
         cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
         maxBuffer: 50 * 1024 * 1024
       });
-    } else if (hasStaged && !hasUnstaged) {
-      // Staged only → cached changes
-      diff = execSync(`git diff --cached ${GIT_DIFF_FLAGS}${contextFlag}${extraArgsStr}${wFlag}`, {
-        cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
-        maxBuffer: 50 * 1024 * 1024
-      });
-    } else if (hasStaged && hasUnstaged) {
-      // Staged–Unstaged (or Staged–Untracked) → all changes vs HEAD
+    } else if (hasStaged) {
+      // Staged + Unstaged scope → all changes vs HEAD
       diff = execSync(`git diff HEAD ${GIT_DIFF_FLAGS}${contextFlag}${extraArgsStr}${wFlag}`, {
         cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
         maxBuffer: 50 * 1024 * 1024
       });
-    } else if (hasUnstaged) {
-      // Unstaged only or Unstaged–Untracked → working tree changes
+    } else {
+      // Unstaged only (or Unstaged–Untracked) → working tree changes
       diff = execSync(`git diff ${GIT_DIFF_FLAGS}${contextFlag}${extraArgsStr}${wFlag}`, {
         cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
         maxBuffer: 50 * 1024 * 1024
       });
     }
-    // hasUntracked-only: no git diff needed, just untracked files below
   } catch (error) {
     if (error.message && error.message.includes('maxBuffer')) {
       throw new Error('Diff output exceeded maximum buffer size (50MB).');
@@ -798,8 +789,8 @@ async function handleLocalReview(targetPath, flags = {}) {
     }
 
     // Read scope from session (or use defaults for new sessions)
-    const scopeStart = existingReview?.local_scope_start || DEFAULT_SCOPE.start;
-    const scopeEnd = existingReview?.local_scope_end || DEFAULT_SCOPE.end;
+    // Use reviewScope() to normalize legacy scopes that may not include 'unstaged'
+    const { start: scopeStart, end: scopeEnd } = existingReview ? reviewScope(existingReview) : DEFAULT_SCOPE;
 
     // Fire review hook (non-blocking)
     const hookEvent = existingReview ? 'review.loaded' : 'review.started';
@@ -937,7 +928,7 @@ async function computeLocalDiffDigest(localPath) {
  * @returns {Promise<{diff: string, stats: Object, mergeBaseSha: string}>}
  */
 async function generateBranchDiff(repoPath, baseBranch, options = {}) {
-  return generateScopedDiff(repoPath, 'branch', 'branch', baseBranch, options);
+  return generateScopedDiff(repoPath, 'branch', 'unstaged', baseBranch, options);
 }
 
 /**
