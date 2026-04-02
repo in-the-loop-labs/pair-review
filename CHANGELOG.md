@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.1.3
+
+### Patch Changes
+
+- 6933b90: Constrain local review diff scope to always include unstaged changes, ensuring the diff matches the working tree files AI reviewers read
+- 1b9dba2: Fix executable provider council analysis: emit completion/failure progress for council dialog, reorder diff generation to prioritize scope-aware path over SHA path for local reviews, and stop passing synthetic title/description to executable providers in local mode
+- 174c795: Fix diff scope selector not rendering in the diff options dropdown in local mode
+- 1477b3c: Support tilde (~) in the local review path input, expanding it to the user's home directory
+
 ## 3.1.2
 
 ### Patch Changes
