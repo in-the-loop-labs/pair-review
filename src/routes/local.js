@@ -2038,8 +2038,8 @@ router.post('/api/local/:reviewId/analyses/council', async (req, res) => {
     const prMetadata = {
       reviewType: 'local',
       repository: review.repository,
-      title: review.name || (councilHasBranch ? `Branch changes: ${review.local_base_branch}..HEAD` : 'Local changes'),
-      description: '',
+      title: null,
+      description: null,
       base_sha: analysisBaseSha,
       head_sha: review.local_head_sha,
       base_branch: review.local_base_branch || null,

@@ -126,8 +126,8 @@ async function runExecutableVoice(voiceProvider, reviewId, worktreePath, prMetad
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pair-review-exec-'));
   try {
     const executableContext = {
-      title: prMetadata.title || '',
-      description: prMetadata.description || '',
+      title: prMetadata.title || null,
+      description: prMetadata.description || null,
       cwd: worktreePath,
       outputDir: tmpDir,
       model: voiceProvider.resolvedModel !== undefined ? voiceProvider.resolvedModel : (voiceProvider.model || null),
@@ -176,11 +176,16 @@ async function runExecutableVoice(voiceProvider, reviewId, worktreePath, prMetad
     });
 
     if (!result?.success || !result?.data) {
+      if (progressCallback) {
+        progressCallback({ level: 'exec', status: 'failed', progress: 'External tool returned no data' });
+      }
       throw new Error(`${logPrefix || ''}Executable provider returned no data`);
     }
 
+    const suggestions = result.data.suggestions || [];
+
     return {
-      suggestions: result.data.suggestions || [],
+      suggestions,
       summary: result.data.summary || ''
     };
   } finally {
@@ -2948,6 +2953,10 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         const finalSuggestions = this.validateAndFinalizeSuggestions(result.suggestions, fileLineCountMap, validFiles);
         await this.storeSuggestions(reviewId, parentRunId, finalSuggestions, null, validFiles);
 
+        if (progressCallback) {
+          progressCallback({ level: 'exec', status: 'completed', progress: `External tool complete: ${finalSuggestions.length} suggestions` });
+        }
+
         try {
           await analysisRunRepo.update(parentRunId, {
             status: 'completed',
@@ -3074,6 +3083,10 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           // Store validated voice suggestions
           await commentRepo.bulkInsertAISuggestions(reviewId, childRunId, validatedSuggestions, null);
 
+          if (voiceProgressCallback) {
+            voiceProgressCallback({ level: 'exec', status: 'completed', progress: `External tool complete: ${validatedSuggestions.length} suggestions` });
+          }
+
           const validatedResult = { ...result, suggestions: validatedSuggestions };
           return { voiceKey, reviewerLabel, childRunId, result: validatedResult, provider: voice.provider, model: voice.model, isExecutable: true, customInstructions: voice.customInstructions || null };
         }
@@ -3120,6 +3133,11 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           });
         } catch (err) {
           logger.warn(`[ReviewerCouncil] Failed to update child run ${childRunId}: ${err.message}`);
+        }
+        // Notify the progress dialog so the voice row stops spinning
+        if (isExecutable && voiceProgressCallback) {
+          const terminalStatus = error.isCancellation ? 'cancelled' : 'failed';
+          voiceProgressCallback({ level: 'exec', status: terminalStatus, progress: error.message || 'Voice failed' });
         }
         throw error;
       }
