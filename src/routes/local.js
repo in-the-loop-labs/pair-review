@@ -26,7 +26,7 @@ const { buildReviewStartedPayload, buildReviewLoadedPayload, buildAnalysisStarte
 const { mergeInstructions } = require('../utils/instructions');
 const { getGitHubToken } = require('../config');
 const { generateScopedDiff, computeScopedDigest, getBranchCommitCount, getFirstCommitSubject, detectAndBuildBranchInfo, findMergeBase, getCurrentBranch, getRepositoryName } = require('../local-review');
-const { STOPS, isValidScope, scopeIncludes, includesBranch, DEFAULT_SCOPE } = require('../local-scope');
+const { STOPS, isValidScope, normalizeScope, reviewScope, includesBranch, DEFAULT_SCOPE } = require('../local-scope');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
 const { getShaAbbrevLength } = require('../git/sha-abbrev');
 const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
@@ -76,9 +76,10 @@ function deleteLocalReviewDiff(reviewId) {
  * Returns true if the guard fired (response already sent), false otherwise.
  */
 async function rejectIfEmptyScope(res, review, localPath) {
+  const { start: scopeStart, end: scopeEnd } = reviewScope(review);
   const scopeContext = {
-    scopeStart: review.local_scope_start || DEFAULT_SCOPE.start,
-    scopeEnd: review.local_scope_end || DEFAULT_SCOPE.end,
+    scopeStart,
+    scopeEnd,
     baseBranch: review.local_base_branch || null,
   };
   const changedFiles = await getChangedFiles(localPath, scopeContext);
@@ -460,8 +461,7 @@ router.post('/api/local/start', async (req, res) => {
     const config = req.app.get('config') || {};
     // Generate diff using default scope
     logger.log('API', `Starting local review for ${repoPath}`, 'cyan');
-    const scopeStart = existing?.local_scope_start || DEFAULT_SCOPE.start;
-    const scopeEnd = existing?.local_scope_end || DEFAULT_SCOPE.end;
+    const { start: scopeStart, end: scopeEnd } = existing ? reviewScope(existing) : DEFAULT_SCOPE;
 
     // Fire review hook (non-blocking, after scope is resolved)
     const hookEvent = existing ? 'review.loaded' : 'review.started';
@@ -579,9 +579,11 @@ router.get('/api/local/:reviewId', async (req, res) => {
       }
     }
 
-    // Build scope info for the response
-    const scopeStart = review.local_scope_start || DEFAULT_SCOPE.start;
-    const scopeEnd = review.local_scope_end || DEFAULT_SCOPE.end;
+    // Build scope info for the response.
+    // normalizeScope clamps any legacy invalid scopes (e.g. branch-only,
+    // staged-only) to always include 'unstaged', since AI models read files
+    // from the working tree and the diff must match what they see.
+    const { start: scopeStart, end: scopeEnd } = reviewScope(review);
     const baseBranch = review.local_base_branch || null;
 
     // When scope does NOT include branch, check for branch detection info
@@ -697,8 +699,7 @@ router.get('/api/local/:reviewId', async (req, res) => {
     const hookConfig = req.app.get('config') || {};
     if (hasHooks('review.loaded', hookConfig)) {
       getCachedUser(hookConfig).then(user => {
-        const hookScopeStart = review.local_scope_start || DEFAULT_SCOPE.start;
-        const hookScopeEnd = review.local_scope_end || DEFAULT_SCOPE.end;
+        const { start: hookScopeStart, end: hookScopeEnd } = reviewScope(review);
         const si = STOPS.indexOf(hookScopeStart);
         const ei = STOPS.indexOf(hookScopeEnd);
         const scope = STOPS.slice(si, ei + 1);
@@ -791,8 +792,7 @@ router.get('/api/local/:reviewId/diff', async (req, res) => {
     // When ?w=1 or ?base=<branch>, regenerate the diff (transient view, not cached)
     const hideWhitespace = req.query.w === '1';
     const baseBranchOverride = req.query.base;
-    const scopeStart = review.local_scope_start || DEFAULT_SCOPE.start;
-    const scopeEnd = review.local_scope_end || DEFAULT_SCOPE.end;
+    const { start: scopeStart, end: scopeEnd } = reviewScope(review);
     const baseBranch = baseBranchOverride || review.local_base_branch;
     let diffData;
 
@@ -904,8 +904,7 @@ router.get('/api/local/:reviewId/check-stale', async (req, res) => {
       });
     }
 
-    const scopeStart = review.local_scope_start || DEFAULT_SCOPE.start;
-    const scopeEnd = review.local_scope_end || DEFAULT_SCOPE.end;
+    const { start: scopeStart, end: scopeEnd } = reviewScope(review);
 
     // Always check HEAD SHA for supplementary fields
     let headShaChanged = false;
@@ -1046,19 +1045,22 @@ async function handleExecutableAnalysis(req, res, {
     registerProcessForCancellation
   }, {
     logLabel: `Review #${reviewId}`,
-    buildContext: (r, { selectedModel: model, requestInstructions: customInstructions }) => ({
-      title: null,
-      description: null,
-      cwd: localPath,
-      model,
-      baseSha: null,
-      headSha: r.local_head_sha || null,
-      baseBranch: r.local_base_branch || null,
-      headBranch: r.local_head_branch || null,
-      scopeStart: r.local_scope_start || DEFAULT_SCOPE.start,
-      scopeEnd: r.local_scope_end || DEFAULT_SCOPE.end,
-      customInstructions: customInstructions || null
-    }),
+    buildContext: (r, { selectedModel: model, requestInstructions: customInstructions }) => {
+      const { start: scopeStart, end: scopeEnd } = reviewScope(r);
+      return {
+        title: null,
+        description: null,
+        cwd: localPath,
+        model,
+        baseSha: null,
+        headSha: r.local_head_sha || null,
+        baseBranch: r.local_base_branch || null,
+        headBranch: r.local_head_branch || null,
+        scopeStart,
+        scopeEnd,
+        customInstructions: customInstructions || null
+      };
+    },
     buildHookPayload: () => ({
       mode: review.review_type || 'local',
       localContext: { path: localPath, branch: review.local_head_branch, headSha: review.local_head_sha }
@@ -1189,8 +1191,7 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
     }
 
     // Extract scope early — needed for both analysis run creation and diff generation
-    const scopeStart = review.local_scope_start || DEFAULT_SCOPE.start;
-    const scopeEnd = review.local_scope_end || DEFAULT_SCOPE.end;
+    const { start: scopeStart, end: scopeEnd } = reviewScope(review);
 
     // Create DB analysis_runs record immediately so it's queryable for polling
     const analysisRunRepo = new AnalysisRunRepository(db);
@@ -1285,13 +1286,14 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
       reviewType: 'local'
     };
 
-    // Get changed files for local mode path validation
-    // When branch is in scope, pass null so analyzer falls through to getChangedFilesList
-    // which correctly uses git diff base_sha...head_sha --name-only
-    const hasStaged = scopeIncludes(scopeStart, scopeEnd, 'staged');
-    const changedFiles = hasBranch
-      ? null
-      : await analyzer.getLocalChangedFiles(localPath, { includeStaged: hasStaged });
+    // Get changed files for local mode path validation.
+    // Use the scope-aware helper so the file list matches the generated diff
+    // (covers branch, staged, unstaged, and untracked stops as appropriate).
+    const changedFiles = await getChangedFiles(localPath, {
+      scopeStart,
+      scopeEnd,
+      baseBranch: review.local_base_branch || null,
+    });
 
     // Log analysis start
     logger.section(`Local AI Analysis Request - Review #${reviewId}`);
@@ -1301,7 +1303,7 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
     logger.log('API', `Provider: ${selectedProvider}`, 'cyan');
     logger.log('API', `Model: ${selectedModel}`, 'cyan');
     logger.log('API', `Tier: ${tier}`, 'cyan');
-    logger.log('API', `Changed files: ${changedFiles ? changedFiles.length : '(branch mode)'}`, 'cyan');
+    logger.log('API', `Changed files: ${changedFiles.length}`, 'cyan');
     if (combinedInstructions) {
       logger.log('API', `Custom instructions: ${combinedInstructions.length} chars`, 'cyan');
     }
@@ -1512,8 +1514,7 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
 
     // Check if HEAD has changed
     const { getHeadSha } = require('../local-review');
-    const scopeStart = review.local_scope_start || DEFAULT_SCOPE.start;
-    const scopeEnd = review.local_scope_end || DEFAULT_SCOPE.end;
+    const { start: scopeStart, end: scopeEnd } = reviewScope(review);
     const hasBranch = includesBranch(scopeStart);
     let currentHeadSha;
     let headShaChanged = false;
@@ -1631,8 +1632,7 @@ router.post('/api/local/:reviewId/resolve-head-change', async (req, res) => {
       return res.status(400).json({ error: 'Local review is missing path information' });
     }
 
-    const scopeStart = review.local_scope_start || DEFAULT_SCOPE.start;
-    const scopeEnd = review.local_scope_end || DEFAULT_SCOPE.end;
+    const { start: scopeStart, end: scopeEnd } = reviewScope(review);
 
     if (action === 'update') {
       // Read live branch — may differ from stored value after a checkout.
@@ -1792,7 +1792,7 @@ router.post('/api/local/:reviewId/set-scope', async (req, res) => {
     await reviewRepo.updateLocalHeadSha(reviewId, headSha);
 
     // Auto-name review from first commit subject when branch is newly in scope
-    const oldScopeStart = review.local_scope_start || DEFAULT_SCOPE.start;
+    const { start: oldScopeStart } = reviewScope(review);
     if (!review.name && includesBranch(scopeStart) && !includesBranch(oldScopeStart) && baseBranch) {
       const firstSubject = await getFirstCommitSubject(localPath, baseBranch);
       if (firstSubject) {
@@ -2025,8 +2025,7 @@ router.post('/api/local/:reviewId/analyses/council', async (req, res) => {
     // Guard: reject if scope resolves to zero changed files
     if (await rejectIfEmptyScope(res, review, localPath)) return;
 
-    const councilScopeStart = review.local_scope_start || DEFAULT_SCOPE.start;
-    const councilScopeEnd = review.local_scope_end || DEFAULT_SCOPE.end;
+    const { start: councilScopeStart, end: councilScopeEnd } = reviewScope(review);
     const councilHasBranch = includesBranch(councilScopeStart);
 
     // Compute merge-base when branch is in scope
@@ -2053,10 +2052,13 @@ router.post('/api/local/:reviewId/analyses/council', async (req, res) => {
     };
 
     const analyzer = new Analyzer(db, 'council', 'council');
-    const councilHasStaged = scopeIncludes(councilScopeStart, councilScopeEnd, 'staged');
-    const changedFiles = councilHasBranch
-      ? null
-      : await analyzer.getLocalChangedFiles(localPath, { includeStaged: councilHasStaged });
+    // Use the scope-aware helper so the file list matches the generated diff
+    // (covers branch, staged, unstaged, and untracked stops as appropriate).
+    const changedFiles = await getChangedFiles(localPath, {
+      scopeStart: councilScopeStart,
+      scopeEnd: councilScopeEnd,
+      baseBranch: review.local_base_branch || null,
+    });
 
     // Generate and cache diff
     try {

@@ -534,6 +534,43 @@ describe('Local Sessions API', () => {
       expect(res.body.error).toMatch(/invalid scope/i);
     });
 
+    it('should return 400 for scopes that do not include the unstaged stop', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/path/no-unstaged',
+        localHeadSha: 'shaNoUnstaged',
+        repository: 'owner/no-unstaged-repo'
+      });
+
+      // branch..branch (end < unstaged index)
+      let res = await request(app)
+        .post(`/api/local/${id}/set-scope`)
+        .send({ scopeStart: 'branch', scopeEnd: 'branch' });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/invalid scope/i);
+
+      // branch..staged (end < unstaged index)
+      res = await request(app)
+        .post(`/api/local/${id}/set-scope`)
+        .send({ scopeStart: 'branch', scopeEnd: 'staged' });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/invalid scope/i);
+
+      // staged..staged (end < unstaged index)
+      res = await request(app)
+        .post(`/api/local/${id}/set-scope`)
+        .send({ scopeStart: 'staged', scopeEnd: 'staged' });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/invalid scope/i);
+
+      // untracked..untracked (start > unstaged index)
+      res = await request(app)
+        .post(`/api/local/${id}/set-scope`)
+        .send({ scopeStart: 'untracked', scopeEnd: 'untracked' });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/invalid scope/i);
+    });
+
     it('should return 400 when scopeStart is missing', async () => {
       const reviewRepo = new ReviewRepository(db);
       const id = await reviewRepo.upsertLocalReview({
@@ -646,7 +683,7 @@ describe('Local Sessions API', () => {
 
       const res = await request(app)
         .post(`/api/local/${id}/set-scope`)
-        .send({ scopeStart: 'branch', scopeEnd: 'branch', baseBranch: 'main' });
+        .send({ scopeStart: 'branch', scopeEnd: 'unstaged', baseBranch: 'main' });
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
@@ -656,7 +693,7 @@ describe('Local Sessions API', () => {
       // Verify DB columns are persisted
       const review = await reviewRepo.getLocalReviewById(id);
       expect(review.local_scope_start).toBe('branch');
-      expect(review.local_scope_end).toBe('branch');
+      expect(review.local_scope_end).toBe('unstaged');
       expect(review.local_base_branch).toBe('main');
     });
 
@@ -679,7 +716,7 @@ describe('Local Sessions API', () => {
 
       const res = await request(app)
         .post(`/api/local/${id}/set-scope`)
-        .send({ scopeStart: 'branch', scopeEnd: 'branch' });
+        .send({ scopeStart: 'branch', scopeEnd: 'unstaged' });
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
@@ -706,7 +743,7 @@ describe('Local Sessions API', () => {
 
       const res = await request(app)
         .post(`/api/local/${id}/set-scope`)
-        .send({ scopeStart: 'branch', scopeEnd: 'branch' });
+        .send({ scopeStart: 'branch', scopeEnd: 'unstaged' });
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
@@ -997,14 +1034,14 @@ describe('Local Sessions API', () => {
         localHeadSha: 'sha-feature-a',
         repository: 'owner/repo'
       });
-      await reviewRepo.updateLocalScope(id1, 'branch', 'branch', 'main', 'feature-a');
+      await reviewRepo.updateLocalScope(id1, 'branch', 'unstaged', 'main', 'feature-a');
 
       const id2 = await reviewRepo.upsertLocalReview({
         localPath: '/repo',
         localHeadSha: 'sha-feature-b',
         repository: 'owner/repo'
       });
-      await reviewRepo.updateLocalScope(id2, 'branch', 'branch', 'main', 'feature-b');
+      await reviewRepo.updateLocalScope(id2, 'branch', 'unstaged', 'main', 'feature-b');
 
       expect(id1).not.toBe(id2);
 
@@ -1023,7 +1060,7 @@ describe('Local Sessions API', () => {
         localHeadSha: 'sha-old',
         repository: 'owner/repo'
       });
-      await reviewRepo.updateLocalScope(id1, 'branch', 'branch', 'main', 'feature-a');
+      await reviewRepo.updateLocalScope(id1, 'branch', 'unstaged', 'main', 'feature-a');
 
       // Simulate finding the session on the same branch with a new HEAD
       const found = await reviewRepo.getLocalBranchScopeReview('/repo', 'feature-a');
@@ -1039,7 +1076,7 @@ describe('Local Sessions API', () => {
         localHeadSha: 'sha-1',
         repository: 'owner/repo'
       });
-      await reviewRepo.updateLocalScope(id, 'branch', 'branch', 'main', 'feature-a');
+      await reviewRepo.updateLocalScope(id, 'branch', 'unstaged', 'main', 'feature-a');
 
       const found = await reviewRepo.getLocalBranchScopeReview('/repo', 'feature-b');
       expect(found).toBeNull();
@@ -1059,7 +1096,7 @@ describe('Local Sessions API', () => {
       expect(review.local_head_branch).toBeNull();
 
       // Set when entering branch scope
-      await reviewRepo.updateLocalScope(id, 'branch', 'branch', 'main', 'my-branch');
+      await reviewRepo.updateLocalScope(id, 'branch', 'unstaged', 'main', 'my-branch');
       review = await reviewRepo.getLocalReviewById(id);
       expect(review.local_head_branch).toBe('my-branch');
 
@@ -1082,7 +1119,7 @@ describe('Local Sessions API', () => {
 
       // Switch scope to branch mode (stores headBranch via updateLocalScope)
       const reviewRepo = new ReviewRepository(db);
-      await reviewRepo.updateLocalScope(sessionA, 'branch', 'branch', 'main', 'feature-a');
+      await reviewRepo.updateLocalScope(sessionA, 'branch', 'unstaged', 'main', 'feature-a');
 
       // Start session on feature-b (different branch)
       localReviewModule.getCurrentBranch.mockResolvedValue('feature-b');
@@ -1486,7 +1523,7 @@ describe('Local Sessions API', () => {
       });
 
       // Set scope to branch
-      await reviewRepo.updateLocalScope(id, 'branch', 'branch', 'main', 'feature-x');
+      await reviewRepo.updateLocalScope(id, 'branch', 'unstaged', 'main', 'feature-x');
 
       // Mock getHeadSha to return a different SHA
       localReviewModule.getHeadSha.mockResolvedValue('sha-branch-new');

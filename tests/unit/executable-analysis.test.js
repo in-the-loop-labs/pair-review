@@ -319,30 +319,44 @@ describe('getChangedFiles', () => {
   describe('local mode with scope', () => {
     it('includes branch files when scope includes branch', async () => {
       mockFindMergeBase.mockResolvedValue('merge-base-sha');
-      mockExecForCalls({
-        'merge-base-sha..HEAD': 'branch-file.js\n',
-        '--cached': '',
-        'ls-files': ''
+      mockExec.mockImplementation((cmd, opts, cb) => {
+        const callback = typeof opts === 'function' ? opts : cb;
+        if (cmd.includes('merge-base-sha..HEAD')) {
+          process.nextTick(() => callback(null, { stdout: 'branch-file.js\n', stderr: '' }));
+        } else if (cmd.includes('--name-only') && !cmd.includes('--cached') && !cmd.includes('..')) {
+          process.nextTick(() => callback(null, { stdout: 'unstaged-file.js\n', stderr: '' }));
+        } else {
+          process.nextTick(() => callback(null, { stdout: '', stderr: '' }));
+        }
       });
 
       const files = await getChangedFiles('/repo', {
-        scopeStart: 'branch', scopeEnd: 'branch', baseBranch: 'main'
+        scopeStart: 'branch', scopeEnd: 'unstaged', baseBranch: 'main'
       });
 
       expect(files).toContain('branch-file.js');
+      expect(files).toContain('unstaged-file.js');
       expect(mockFindMergeBase).toHaveBeenCalledWith('/repo', 'main');
     });
 
     it('includes staged files when scope includes staged', async () => {
-      mockExecForCalls({
-        '--cached': 'staged.js\n'
+      mockExec.mockImplementation((cmd, opts, cb) => {
+        const callback = typeof opts === 'function' ? opts : cb;
+        if (cmd.includes('--cached')) {
+          process.nextTick(() => callback(null, { stdout: 'staged.js\n', stderr: '' }));
+        } else if (cmd.includes('--name-only') && !cmd.includes('--cached') && !cmd.includes('..')) {
+          process.nextTick(() => callback(null, { stdout: 'unstaged.js\n', stderr: '' }));
+        } else {
+          process.nextTick(() => callback(null, { stdout: '', stderr: '' }));
+        }
       });
 
       const files = await getChangedFiles('/repo', {
-        scopeStart: 'staged', scopeEnd: 'staged'
+        scopeStart: 'staged', scopeEnd: 'unstaged'
       });
 
-      expect(files).toEqual(['staged.js']);
+      expect(files).toContain('staged.js');
+      expect(files).toContain('unstaged.js');
     });
 
     it('includes unstaged files when scope includes unstaged', async () => {
@@ -364,15 +378,23 @@ describe('getChangedFiles', () => {
     });
 
     it('includes untracked files when scope includes untracked', async () => {
-      mockExecForCalls({
-        'ls-files': 'untracked.js\n'
+      mockExec.mockImplementation((cmd, opts, cb) => {
+        const callback = typeof opts === 'function' ? opts : cb;
+        if (cmd.includes('ls-files')) {
+          process.nextTick(() => callback(null, { stdout: 'untracked.js\n', stderr: '' }));
+        } else if (cmd.includes('--name-only') && !cmd.includes('--cached') && !cmd.includes('..')) {
+          process.nextTick(() => callback(null, { stdout: 'unstaged.js\n', stderr: '' }));
+        } else {
+          process.nextTick(() => callback(null, { stdout: '', stderr: '' }));
+        }
       });
 
       const files = await getChangedFiles('/repo', {
-        scopeStart: 'untracked', scopeEnd: 'untracked'
+        scopeStart: 'unstaged', scopeEnd: 'untracked'
       });
 
-      expect(files).toEqual(['untracked.js']);
+      expect(files).toContain('untracked.js');
+      expect(files).toContain('unstaged.js');
     });
 
     it('includes branch + staged + unstaged + untracked for full scope', async () => {
@@ -431,24 +453,31 @@ describe('getChangedFiles', () => {
       expect(files).toEqual(['shared.js']);
     });
 
-    it('does NOT include untracked files when scope is branch-only', async () => {
+    it('does NOT include untracked files when scope excludes untracked', async () => {
       mockFindMergeBase.mockResolvedValue('mb-sha');
       mockExec.mockImplementation((cmd, opts, cb) => {
         const callback = typeof opts === 'function' ? opts : cb;
         if (cmd.includes('mb-sha..HEAD')) {
           process.nextTick(() => callback(null, { stdout: 'branch.js\n', stderr: '' }));
+        } else if (cmd.includes('--cached')) {
+          process.nextTick(() => callback(null, { stdout: 'staged.js\n', stderr: '' }));
+        } else if (cmd.includes('--name-only') && !cmd.includes('--cached') && !cmd.includes('..')) {
+          process.nextTick(() => callback(null, { stdout: 'unstaged.js\n', stderr: '' }));
         } else {
           process.nextTick(() => callback(null, { stdout: 'should-not-appear.js\n', stderr: '' }));
         }
       });
 
       const files = await getChangedFiles('/repo', {
-        scopeStart: 'branch', scopeEnd: 'branch', baseBranch: 'main'
+        scopeStart: 'branch', scopeEnd: 'unstaged', baseBranch: 'main'
       });
 
-      expect(files).toEqual(['branch.js']);
-      // Should only have made one exec call (for branch diff)
-      expect(mockExec).toHaveBeenCalledTimes(1);
+      expect(files).toContain('branch.js');
+      expect(files).toContain('staged.js');
+      expect(files).toContain('unstaged.js');
+      expect(files).not.toContain('should-not-appear.js');
+      // Should have made 3 exec calls (branch, staged, unstaged) but NOT untracked
+      expect(mockExec).toHaveBeenCalledTimes(3);
     });
   });
 
@@ -495,7 +524,7 @@ describe('getChangedFiles', () => {
       mockFindMergeBase.mockRejectedValue(new Error('no merge-base'));
 
       const files = await getChangedFiles('/repo', {
-        scopeStart: 'branch', scopeEnd: 'branch', baseBranch: 'main'
+        scopeStart: 'branch', scopeEnd: 'unstaged', baseBranch: 'main'
       });
 
       expect(files).toEqual([]);
@@ -503,14 +532,15 @@ describe('getChangedFiles', () => {
 
     it('returns empty array when branch scope has no baseBranch', async () => {
       // When hasBranch is true but baseBranch is null/undefined, the branch
-      // command is skipped entirely, resulting in no commands and an empty list.
+      // command is skipped. Staged and unstaged commands still run but return
+      // empty output, resulting in an empty list.
       mockExec.mockImplementation((cmd, opts, cb) => {
         const callback = typeof opts === 'function' ? opts : cb;
         process.nextTick(() => callback(null, { stdout: '', stderr: '' }));
       });
 
       const files = await getChangedFiles('/repo', {
-        scopeStart: 'branch', scopeEnd: 'branch', baseBranch: null
+        scopeStart: 'branch', scopeEnd: 'unstaged', baseBranch: null
       });
 
       expect(files).toEqual([]);

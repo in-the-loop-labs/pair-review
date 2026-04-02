@@ -8,7 +8,7 @@
  */
 
 const logger = require('../utils/logger');
-const { scopeGitHints, DEFAULT_SCOPE } = require('../local-scope');
+const { scopeGitHints, reviewScope } = require('../local-scope');
 
 /**
  * Build a lean system prompt for chat sessions.
@@ -142,8 +142,7 @@ function buildReviewContext(review, prData) {
     lines.push('');
     lines.push('## Viewing Code Changes');
 
-    const scopeStart = review.local_scope_start || DEFAULT_SCOPE.start;
-    const scopeEnd = review.local_scope_end || DEFAULT_SCOPE.end;
+    const { start: scopeStart, end: scopeEnd } = reviewScope(review);
     const baseBranch = review.local_base_branch || null;
     const hints = scopeGitHints(scopeStart, scopeEnd, baseBranch);
 

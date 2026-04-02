@@ -2,7 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import LocalScope from '../../src/local-scope.js';
 
-const { STOPS, DEFAULT_SCOPE, isValidScope, scopeIncludes, includesBranch, fromLegacyMode, scopeLabel, scopeGitHints } = LocalScope;
+const { STOPS, DEFAULT_SCOPE, isValidScope, normalizeScope, reviewScope, scopeIncludes, includesBranch, fromLegacyMode, scopeLabel, scopeGitHints } = LocalScope;
 
 describe('LocalScope', () => {
   describe('STOPS', () => {
@@ -19,20 +19,23 @@ describe('LocalScope', () => {
 
   describe('isValidScope', () => {
     const validCombinations = [
-      ['branch', 'branch'],
-      ['branch', 'staged'],
       ['branch', 'unstaged'],
       ['branch', 'untracked'],
-      ['staged', 'staged'],
       ['staged', 'unstaged'],
       ['staged', 'untracked'],
       ['unstaged', 'unstaged'],
       ['unstaged', 'untracked'],
-      ['untracked', 'untracked'],
     ];
 
     it.each(validCombinations)('accepts valid scope %s–%s', (start, end) => {
       expect(isValidScope(start, end)).toBe(true);
+    });
+
+    it('rejects scope that excludes unstaged', () => {
+      expect(isValidScope('branch', 'branch')).toBe(false);
+      expect(isValidScope('branch', 'staged')).toBe(false);
+      expect(isValidScope('staged', 'staged')).toBe(false);
+      expect(isValidScope('untracked', 'untracked')).toBe(false);
     });
 
     it('rejects reversed order (staged before branch)', () => {
@@ -70,11 +73,98 @@ describe('LocalScope', () => {
     });
   });
 
+  describe('normalizeScope', () => {
+    it('passes through already-valid scopes unchanged', () => {
+      expect(normalizeScope('branch', 'unstaged')).toEqual({ start: 'branch', end: 'unstaged' });
+      expect(normalizeScope('branch', 'untracked')).toEqual({ start: 'branch', end: 'untracked' });
+      expect(normalizeScope('staged', 'unstaged')).toEqual({ start: 'staged', end: 'unstaged' });
+      expect(normalizeScope('staged', 'untracked')).toEqual({ start: 'staged', end: 'untracked' });
+      expect(normalizeScope('unstaged', 'unstaged')).toEqual({ start: 'unstaged', end: 'unstaged' });
+      expect(normalizeScope('unstaged', 'untracked')).toEqual({ start: 'unstaged', end: 'untracked' });
+    });
+
+    it('clamps branch..branch to branch..unstaged', () => {
+      expect(normalizeScope('branch', 'branch')).toEqual({ start: 'branch', end: 'unstaged' });
+    });
+
+    it('clamps branch..staged to branch..unstaged', () => {
+      expect(normalizeScope('branch', 'staged')).toEqual({ start: 'branch', end: 'unstaged' });
+    });
+
+    it('clamps staged..staged to staged..unstaged', () => {
+      expect(normalizeScope('staged', 'staged')).toEqual({ start: 'staged', end: 'unstaged' });
+    });
+
+    it('clamps untracked..untracked to unstaged..untracked', () => {
+      expect(normalizeScope('untracked', 'untracked')).toEqual({ start: 'unstaged', end: 'untracked' });
+    });
+
+    it('falls back to DEFAULT_SCOPE for unknown start', () => {
+      expect(normalizeScope('bogus', 'unstaged')).toEqual(DEFAULT_SCOPE);
+    });
+
+    it('falls back to DEFAULT_SCOPE for unknown end', () => {
+      expect(normalizeScope('branch', 'bogus')).toEqual(DEFAULT_SCOPE);
+    });
+
+    it('falls back to DEFAULT_SCOPE for both unknown', () => {
+      expect(normalizeScope('foo', 'bar')).toEqual(DEFAULT_SCOPE);
+    });
+  });
+
+  describe('reviewScope', () => {
+    it('returns valid scope from review with valid fields', () => {
+      const review = { local_scope_start: 'branch', local_scope_end: 'untracked' };
+      expect(reviewScope(review)).toEqual({ start: 'branch', end: 'untracked' });
+    });
+
+    it('normalizes legacy scope that excludes unstaged (staged-only)', () => {
+      // Regression: legacy reviews stored scope_start=staged, scope_end=staged
+      // which excludes the mandatory 'unstaged' stop
+      const review = { local_scope_start: 'staged', local_scope_end: 'staged' };
+      expect(reviewScope(review)).toEqual({ start: 'staged', end: 'unstaged' });
+    });
+
+    it('normalizes legacy scope that excludes unstaged (branch-only)', () => {
+      const review = { local_scope_start: 'branch', local_scope_end: 'branch' };
+      expect(reviewScope(review)).toEqual({ start: 'branch', end: 'unstaged' });
+    });
+
+    it('normalizes legacy scope that excludes unstaged (branch-staged)', () => {
+      const review = { local_scope_start: 'branch', local_scope_end: 'staged' };
+      expect(reviewScope(review)).toEqual({ start: 'branch', end: 'unstaged' });
+    });
+
+    it('normalizes legacy scope that excludes unstaged (untracked-only)', () => {
+      const review = { local_scope_start: 'untracked', local_scope_end: 'untracked' };
+      expect(reviewScope(review)).toEqual({ start: 'unstaged', end: 'untracked' });
+    });
+
+    it('falls back to DEFAULT_SCOPE when fields are null', () => {
+      const review = { local_scope_start: null, local_scope_end: null };
+      expect(reviewScope(review)).toEqual(DEFAULT_SCOPE);
+    });
+
+    it('falls back to DEFAULT_SCOPE when fields are undefined', () => {
+      const review = {};
+      expect(reviewScope(review)).toEqual(DEFAULT_SCOPE);
+    });
+
+    it('falls back to DEFAULT_SCOPE when fields are empty strings', () => {
+      const review = { local_scope_start: '', local_scope_end: '' };
+      expect(reviewScope(review)).toEqual(DEFAULT_SCOPE);
+    });
+  });
+
   describe('scopeIncludes', () => {
     it('single-stop scope includes only that stop', () => {
-      expect(scopeIncludes('staged', 'staged', 'staged')).toBe(true);
-      expect(scopeIncludes('staged', 'staged', 'branch')).toBe(false);
-      expect(scopeIncludes('staged', 'staged', 'unstaged')).toBe(false);
+      expect(scopeIncludes('unstaged', 'unstaged', 'unstaged')).toBe(true);
+      expect(scopeIncludes('unstaged', 'unstaged', 'branch')).toBe(false);
+      expect(scopeIncludes('unstaged', 'unstaged', 'untracked')).toBe(false);
+    });
+
+    it('returns false for scope that excludes unstaged', () => {
+      expect(scopeIncludes('staged', 'staged', 'staged')).toBe(false);
     });
 
     it('branch–untracked includes all stops', () => {
@@ -123,8 +213,8 @@ describe('LocalScope', () => {
       expect(fromLegacyMode('uncommitted')).toEqual({ start: 'unstaged', end: 'untracked' });
     });
 
-    it('maps branch to branch–branch', () => {
-      expect(fromLegacyMode('branch')).toEqual({ start: 'branch', end: 'branch' });
+    it('maps branch to branch–unstaged', () => {
+      expect(fromLegacyMode('branch')).toEqual({ start: 'branch', end: 'unstaged' });
     });
 
     it('returns default scope for unknown mode', () => {
@@ -141,37 +231,37 @@ describe('LocalScope', () => {
   });
 
   describe('scopeLabel', () => {
-    it('returns single capitalized name for same start/end', () => {
-      expect(scopeLabel('branch', 'branch')).toBe('Branch');
-      expect(scopeLabel('staged', 'staged')).toBe('Staged');
+    it('returns single capitalized name for unstaged (only valid single-stop scope)', () => {
       expect(scopeLabel('unstaged', 'unstaged')).toBe('Unstaged');
-      expect(scopeLabel('untracked', 'untracked')).toBe('Untracked');
+    });
+
+    it('returns empty string for invalid single-stop scopes', () => {
+      expect(scopeLabel('branch', 'branch')).toBe('');
+      expect(scopeLabel('staged', 'staged')).toBe('');
+      expect(scopeLabel('untracked', 'untracked')).toBe('');
     });
 
     it('returns en-dash separated label for range', () => {
-      expect(scopeLabel('branch', 'staged')).toBe('Branch\u2013Staged');
       expect(scopeLabel('unstaged', 'untracked')).toBe('Unstaged\u2013Untracked');
       expect(scopeLabel('branch', 'untracked')).toBe('Branch\u2013Untracked');
       expect(scopeLabel('staged', 'untracked')).toBe('Staged\u2013Untracked');
+      expect(scopeLabel('branch', 'unstaged')).toBe('Branch\u2013Unstaged');
     });
 
     it('returns empty string for invalid scope', () => {
       expect(scopeLabel('untracked', 'branch')).toBe('');
       expect(scopeLabel('bogus', 'branch')).toBe('');
+      expect(scopeLabel('branch', 'staged')).toBe('');
     });
 
-    it('covers all 10 valid combinations', () => {
+    it('covers all 6 valid combinations', () => {
       const validCombinations = [
-        ['branch', 'branch', 'Branch'],
-        ['branch', 'staged', 'Branch\u2013Staged'],
         ['branch', 'unstaged', 'Branch\u2013Unstaged'],
         ['branch', 'untracked', 'Branch\u2013Untracked'],
-        ['staged', 'staged', 'Staged'],
         ['staged', 'unstaged', 'Staged\u2013Unstaged'],
         ['staged', 'untracked', 'Staged\u2013Untracked'],
         ['unstaged', 'unstaged', 'Unstaged'],
         ['unstaged', 'untracked', 'Unstaged\u2013Untracked'],
-        ['untracked', 'untracked', 'Untracked'],
       ];
       for (const [start, end, expected] of validCombinations) {
         expect(scopeLabel(start, end)).toBe(expected);
@@ -187,16 +277,12 @@ describe('LocalScope', () => {
 
     it('returns correct diff command for each scope', () => {
       const expected = [
-        ['branch', 'branch', 'git diff --no-ext-diff <merge-base>..HEAD'],
-        ['branch', 'staged', 'git diff --no-ext-diff --cached <merge-base>'],
         ['branch', 'unstaged', 'git diff --no-ext-diff <merge-base>'],
         ['branch', 'untracked', 'git diff --no-ext-diff <merge-base>'],
-        ['staged', 'staged', 'git diff --no-ext-diff --cached'],
         ['staged', 'unstaged', 'git diff --no-ext-diff HEAD'],
         ['staged', 'untracked', 'git diff --no-ext-diff HEAD'],
         ['unstaged', 'unstaged', 'git diff --no-ext-diff'],
         ['unstaged', 'untracked', 'git diff --no-ext-diff'],
-        ['untracked', 'untracked', 'git ls-files --others --exclude-standard'],
       ];
       for (const [start, end, cmd] of expected) {
         const hints = scopeGitHints(start, end);
@@ -205,9 +291,16 @@ describe('LocalScope', () => {
       }
     });
 
+    it('returns null for scopes that exclude unstaged', () => {
+      expect(scopeGitHints('branch', 'branch')).toBeNull();
+      expect(scopeGitHints('branch', 'staged')).toBeNull();
+      expect(scopeGitHints('staged', 'staged')).toBeNull();
+      expect(scopeGitHints('untracked', 'untracked')).toBeNull();
+    });
+
     it('substitutes baseBranch into merge-base command', () => {
-      const hints = scopeGitHints('branch', 'branch', 'main');
-      expect(hints.diffCommand).toBe('git diff --no-ext-diff $(git merge-base main HEAD)..HEAD');
+      const hints = scopeGitHints('branch', 'unstaged', 'main');
+      expect(hints.diffCommand).toBe('git diff --no-ext-diff $(git merge-base main HEAD)');
     });
 
     it('uses placeholder when baseBranch is not provided', () => {
@@ -218,16 +311,15 @@ describe('LocalScope', () => {
     it('sets includesUntracked correctly', () => {
       expect(scopeGitHints('branch', 'untracked').includesUntracked).toBe(true);
       expect(scopeGitHints('unstaged', 'untracked').includesUntracked).toBe(true);
-      expect(scopeGitHints('untracked', 'untracked').includesUntracked).toBe(false);
-      expect(scopeGitHints('branch', 'branch').includesUntracked).toBe(false);
-      expect(scopeGitHints('staged', 'staged').includesUntracked).toBe(false);
+      expect(scopeGitHints('staged', 'untracked').includesUntracked).toBe(true);
       expect(scopeGitHints('branch', 'unstaged').includesUntracked).toBe(false);
       expect(scopeGitHints('staged', 'unstaged').includesUntracked).toBe(false);
+      expect(scopeGitHints('unstaged', 'unstaged').includesUntracked).toBe(false);
     });
 
     it('label matches scopeLabel output', () => {
       const combos = [
-        ['branch', 'branch'],
+        ['branch', 'unstaged'],
         ['branch', 'untracked'],
         ['staged', 'unstaged'],
         ['unstaged', 'untracked'],
@@ -246,18 +338,17 @@ describe('LocalScope', () => {
     });
 
     it('excludes is non-empty for scopes that omit stops', () => {
-      expect(scopeGitHints('branch', 'branch').excludes).toBeTruthy();
-      expect(scopeGitHints('staged', 'staged').excludes).toBeTruthy();
+      expect(scopeGitHints('branch', 'unstaged').excludes).toBeTruthy();
+      expect(scopeGitHints('staged', 'unstaged').excludes).toBeTruthy();
       expect(scopeGitHints('unstaged', 'unstaged').excludes).toBeTruthy();
-      expect(scopeGitHints('untracked', 'untracked').excludes).toBeTruthy();
+      expect(scopeGitHints('unstaged', 'untracked').excludes).toBeTruthy();
     });
 
     it('has non-empty description for all valid scopes', () => {
       const validCombinations = [
-        ['branch', 'branch'], ['branch', 'staged'], ['branch', 'unstaged'], ['branch', 'untracked'],
-        ['staged', 'staged'], ['staged', 'unstaged'], ['staged', 'untracked'],
+        ['branch', 'unstaged'], ['branch', 'untracked'],
+        ['staged', 'unstaged'], ['staged', 'untracked'],
         ['unstaged', 'unstaged'], ['unstaged', 'untracked'],
-        ['untracked', 'untracked'],
       ];
       for (const [start, end] of validCombinations) {
         const hints = scopeGitHints(start, end);
