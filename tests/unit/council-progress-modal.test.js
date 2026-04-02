@@ -1201,6 +1201,62 @@ describe('CouncilProgressModal', () => {
       expect(setStreamTextSpy).toHaveBeenCalledWith('my-tool-default', 'exec', 'Processing files...');
     });
 
+    it('updates executable voice row to completed when status is completed', () => {
+      const { modal } = createTestCouncilProgressModal();
+
+      modal._renderMode = 'council';
+
+      const setLevelStateSpy = vi.spyOn(modal, '_setVoiceCentricLevelState').mockImplementation(() => {});
+      vi.spyOn(modal, '_refreshAllVoiceHeaders').mockImplementation(() => {});
+      vi.spyOn(modal, '_updateConsolidation').mockImplementation(() => {});
+
+      const status = {
+        levels: {
+          exec: {
+            status: 'completed',
+            voices: {
+              'my-tool-default': { status: 'completed', progress: 'External tool complete: 3 suggestions' }
+            }
+          }
+        }
+      };
+
+      modal._updateVoiceCentric(status);
+
+      expect(setLevelStateSpy).toHaveBeenCalledWith('my-tool-default', 'exec', 'completed', {
+        status: 'completed',
+        progress: 'External tool complete: 3 suggestions'
+      });
+    });
+
+    it('updates executable voice row to failed when status is failed', () => {
+      const { modal } = createTestCouncilProgressModal();
+
+      modal._renderMode = 'council';
+
+      const setLevelStateSpy = vi.spyOn(modal, '_setVoiceCentricLevelState').mockImplementation(() => {});
+      vi.spyOn(modal, '_refreshAllVoiceHeaders').mockImplementation(() => {});
+      vi.spyOn(modal, '_updateConsolidation').mockImplementation(() => {});
+
+      const status = {
+        levels: {
+          exec: {
+            status: 'failed',
+            voices: {
+              'my-tool-default': { status: 'failed', progress: 'External tool returned no data' }
+            }
+          }
+        }
+      };
+
+      modal._updateVoiceCentric(status);
+
+      expect(setLevelStateSpy).toHaveBeenCalledWith('my-tool-default', 'exec', 'failed', {
+        status: 'failed',
+        progress: 'External tool returned no data'
+      });
+    });
+
     it('does not crash when status.levels has no exec key', () => {
       const { modal } = createTestCouncilProgressModal();
 
