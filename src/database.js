@@ -20,7 +20,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 35;
+const CURRENT_SCHEMA_VERSION = 36;
 
 /**
  * Database schema SQL statements
@@ -1605,6 +1605,36 @@ const MIGRATIONS = {
     addColumnIfNotExists('comments', 'severity', 'TEXT');
 
     console.log('Migration to schema version 35 complete');
+  },
+
+  // Migration to version 36: Normalize diff scopes to always include 'unstaged'.
+  // AI models read files from the working tree, so the diff scope must always
+  // cover at least the unstaged state for review context to be coherent.
+  36: (db) => {
+    console.log('Running migration to schema version 36...');
+
+    // Expand scopes where end < unstaged (branch-only, branch-staged, staged-only)
+    const expandEnd = db.prepare(
+      `UPDATE reviews SET local_scope_end = 'unstaged'
+       WHERE local_scope_end IN ('branch', 'staged') AND review_type = 'local'`
+    );
+    const expandResult = expandEnd.run();
+    if (expandResult.changes > 0) {
+      console.log(`  Expanded scope end to 'unstaged' for ${expandResult.changes} review(s)`);
+    }
+
+    // Fix untracked-only → unstaged..untracked
+    const fixUntracked = db.prepare(
+      `UPDATE reviews SET local_scope_start = 'unstaged'
+       WHERE local_scope_start = 'untracked' AND local_scope_end = 'untracked'
+       AND review_type = 'local'`
+    );
+    const fixResult = fixUntracked.run();
+    if (fixResult.changes > 0) {
+      console.log(`  Normalized untracked-only scope for ${fixResult.changes} review(s)`);
+    }
+
+    console.log('Migration to schema version 36 complete');
   }
 };
 

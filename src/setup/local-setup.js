@@ -1,10 +1,10 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
-const { findGitRoot, getHeadSha, getCurrentBranch, getRepositoryName, generateLocalDiff, generateLocalReviewId, computeLocalDiffDigest, findMainGitRoot } = require('../local-review');
+const { findGitRoot, getHeadSha, getCurrentBranch, getRepositoryName, generateScopedDiff, generateLocalReviewId, computeScopedDigest, findMainGitRoot } = require('../local-review');
 const { ReviewRepository, RepoSettingsRepository } = require('../database');
 const { localReviewDiffs } = require('../routes/shared');
 const { fireHooks, hasHooks } = require('../hooks/hook-runner');
 const { buildReviewStartedPayload, buildReviewLoadedPayload, getCachedUser } = require('../hooks/payloads');
-const { STOPS, DEFAULT_SCOPE } = require('../local-scope');
+const { STOPS, DEFAULT_SCOPE, reviewScope } = require('../local-scope');
 const logger = require('../utils/logger');
 const path = require('path');
 const fs = require('fs').promises;
@@ -102,13 +102,16 @@ async function setupLocalReview({ db, targetPath, onProgress, config }) {
   // ── Step: diff ──────────────────────────────────────────────────────
   let diff, stats, digest;
   try {
+    const { start: scopeStart, end: scopeEnd } = existingReview ? reviewScope(existingReview) : DEFAULT_SCOPE;
+    const baseBranch = existingReview?.local_base_branch || null;
+
     progress({ step: 'diff', status: 'running', message: 'Generating diff for local changes...' });
 
-    const diffResult = await generateLocalDiff(repoPath);
+    const diffResult = await generateScopedDiff(repoPath, scopeStart, scopeEnd, baseBranch);
     diff = diffResult.diff;
     stats = diffResult.stats;
 
-    digest = await computeLocalDiffDigest(repoPath);
+    digest = await computeScopedDigest(repoPath, scopeStart, scopeEnd);
 
     progress({ step: 'diff', status: 'completed', message: `Diff ready: ${stats.unstagedChanges} unstaged, ${stats.untrackedFiles} untracked` });
   } catch (err) {
@@ -152,8 +155,7 @@ async function setupLocalReview({ db, targetPath, onProgress, config }) {
   if (config && hasHooks(hookEvent, config)) {
     getCachedUser(config).then(user => {
       const builder = existingReview ? buildReviewLoadedPayload : buildReviewStartedPayload;
-      const scopeStart = existingReview?.local_scope_start || DEFAULT_SCOPE.start;
-      const scopeEnd = existingReview?.local_scope_end || DEFAULT_SCOPE.end;
+      const { start: scopeStart, end: scopeEnd } = existingReview ? reviewScope(existingReview) : DEFAULT_SCOPE;
       const si = STOPS.indexOf(scopeStart);
       const ei = STOPS.indexOf(scopeEnd);
       const scope = STOPS.slice(si, ei + 1);
