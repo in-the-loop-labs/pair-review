@@ -406,7 +406,15 @@ class PierreBridge {
   _updateAnnotations(fileName) {
     const fileState = this.files.get(fileName);
     if (!fileState || !fileState.instance) return;
-    fileState.instance.setLineAnnotations(fileState.annotations);
+    // Sort so that at the same line, suggestions appear before comments.
+    // This matches the legacy rendering order where the suggestion row is
+    // inserted first, then the adopted comment row appears below it.
+    const typeOrder = { 'suggestion': 0, 'comment-form': 1, 'comment': 2 };
+    const sorted = [...fileState.annotations].sort((a, b) => {
+      if (a.lineNumber !== b.lineNumber || a.side !== b.side) return 0;
+      return (typeOrder[a.metadata.type] ?? 1) - (typeOrder[b.metadata.type] ?? 1);
+    });
+    fileState.instance.setLineAnnotations(sorted);
     // setLineAnnotations only stores data — rerender() is needed to
     // trigger the renderAnnotation callback and slot elements into the
     // light DOM of the <diffs-container> host.
