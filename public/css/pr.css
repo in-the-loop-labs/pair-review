@@ -13469,9 +13469,13 @@ body.resizing * {
   gap: 4px;
   color: var(--color-text-secondary, #656d76);
   font-size: 12px;
+}
+
+.stack-dialog-branch-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
 }
 
 .stack-dialog-branch-icon {

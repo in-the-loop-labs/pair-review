@@ -2298,9 +2298,8 @@ router.get('/api/pr/:owner/:repo/:number/stack-info', async (req, res) => {
         // Check if there's an analysis run matching the current head SHA
         const review = await reviewRepo.getReviewByPR(entry.prNumber, repository);
         if (review) {
-          const latestRun = await analysisRunRepo.getLatestByReviewId(review.id);
-          enriched.hasAnalysis = latestRun?.status === 'completed'
-            && latestRun.head_sha === enriched.headSha;
+          const latestRun = await analysisRunRepo.getLatestCompletedByReviewId(review.id);
+          enriched.hasAnalysis = latestRun?.head_sha === enriched.headSha;
         } else {
           enriched.hasAnalysis = false;
         }
