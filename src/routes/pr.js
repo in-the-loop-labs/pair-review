@@ -2295,11 +2295,12 @@ router.get('/api/pr/:owner/:repo/:number/stack-info', async (req, res) => {
       if (entry.prNumber) {
         enriched.title = entry.title || null;
 
-        // Check if there's an analysis run
+        // Check if there's an analysis run matching the current head SHA
         const review = await reviewRepo.getReviewByPR(entry.prNumber, repository);
         if (review) {
           const latestRun = await analysisRunRepo.getLatestByReviewId(review.id);
-          enriched.hasAnalysis = latestRun?.status === 'completed';
+          enriched.hasAnalysis = latestRun?.status === 'completed'
+            && latestRun.head_sha === enriched.headSha;
         } else {
           enriched.hasAnalysis = false;
         }

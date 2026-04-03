@@ -8,7 +8,7 @@ const FETCH_PR_QUERY = `
   query($owner: String!, $repo: String!, $number: Int!) {
     repository(owner: $owner, name: $repo) {
       pullRequest(number: $number) {
-        number title baseRefName headRefName state url
+        number title baseRefName headRefName headRefOid state url
       }
     }
   }
@@ -18,7 +18,7 @@ const FIND_PRS_BY_HEAD_QUERY = `
   query($owner: String!, $repo: String!, $branch: String!) {
     repository(owner: $owner, name: $repo) {
       pullRequests(headRefName: $branch, states: [OPEN, MERGED], first: 5, orderBy: {field: UPDATED_AT, direction: DESC}) {
-        nodes { number title baseRefName headRefName state url }
+        nodes { number title baseRefName headRefName headRefOid state url }
       }
     }
   }
@@ -28,7 +28,7 @@ const FIND_PRS_BY_BASE_QUERY = `
   query($owner: String!, $repo: String!, $branch: String!) {
     repository(owner: $owner, name: $repo) {
       pullRequests(baseRefName: $branch, states: [OPEN], first: 5, orderBy: {field: UPDATED_AT, direction: DESC}) {
-        nodes { number title baseRefName headRefName state url }
+        nodes { number title baseRefName headRefName headRefOid state url }
       }
     }
   }
@@ -115,6 +115,7 @@ async function walkPRStack(client, owner, repo, prNumber, _deps) {
       title: parentPR.title,
       state: parentPR.state,
       url: parentPR.url,
+      headSha: parentPR.headRefOid,
     });
 
     currentBase = parentPR.baseRefName;
@@ -161,6 +162,7 @@ async function walkPRStack(client, owner, repo, prNumber, _deps) {
       title: childPR.title,
       state: childPR.state,
       url: childPR.url,
+      headSha: childPR.headRefOid,
     });
 
     currentHead = childPR.headRefName;
@@ -182,6 +184,7 @@ async function walkPRStack(client, owner, repo, prNumber, _deps) {
       title: startPR.title,
       state: startPR.state,
       url: startPR.url,
+      headSha: startPR.headRefOid,
     },
     ...children,
   ];
