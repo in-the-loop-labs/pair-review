@@ -1312,6 +1312,9 @@ class CouncilProgressModal {
               <span class="council-voice-icon pending">\u25CB</span>
               <span class="council-voice-label">Consolidation</span>
               <span class="council-voice-status pending">Pending</span>
+              <div class="council-voice-detail">
+                <div class="council-voice-snippet" style="display: none;"></div>
+              </div>
             </div>
         `;
       }
