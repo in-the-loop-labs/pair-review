@@ -503,6 +503,11 @@ class CommentManager {
       // Refresh minimize-mode indicators so the new comment is reflected
       if (window.prManager?.commentMinimizer) {
         window.prManager.commentMinimizer.refreshIndicators();
+        // Auto-expand so the new comment stays visible in minimize mode
+        const newRow = document.querySelector(`.user-comment-row[data-comment-id="${commentData.id}"]`);
+        if (newRow) {
+          window.prManager.commentMinimizer.expandForElement(newRow);
+        }
       }
 
       window.chatPanel?.queueUserActionHint(`[User Action: created comment ${result.commentId}]`);

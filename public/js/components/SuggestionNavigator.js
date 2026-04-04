@@ -371,6 +371,8 @@ class SuggestionNavigator {
       if (suggestionEl) {
         const minimizer = window.prManager?.commentMinimizer;
         if (minimizer?.active) {
+          // Expand file-level comments so the target becomes visible
+          minimizer.expandForElement(suggestionEl);
           // Comments are minimized — scroll to the parent diff line instead
           const diffRow = minimizer.findDiffRowFor(suggestionEl);
           if (diffRow) {
