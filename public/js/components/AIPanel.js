@@ -807,8 +807,9 @@ class AIPanel {
                     const finding = this.findings.find(f => f.id === findingId);
                     if (finding) {
                         suggestionContext = {
+                            suggestionId: findingId ? String(findingId) : null,
                             title: finding.title || title,
-                            body: finding.body || '',
+                            body: finding.formattedBody || finding.body || '',
                             type: finding.type || '',
                             file: finding.file || file,
                             line_start: finding.line_start || null,
