@@ -32,6 +32,7 @@ class ChatPanel {
     this._pendingContext = [];
     this._pendingContextData = [];
     this._pendingDiffStateNotifications = [];
+    this._pendingUserActionHints = [];
     this._contextSource = null;   // 'suggestion' or 'user' — set when opened with context
     this._contextItemId = null;   // suggestion ID or comment ID from context
     this._contextLineMeta = null;  // { file, line_start, line_end } — set when opened with line context
@@ -667,6 +668,7 @@ class ChatPanel {
     this._pendingContext = [];
     this._pendingContextData = [];
     this._pendingDiffStateNotifications = [];
+    this._pendingUserActionHints = [];
     this._contextSource = null;
     this._contextItemId = null;
     this._contextLineMeta = null;
@@ -1030,6 +1032,7 @@ class ChatPanel {
     this._pendingContext = [];
     this._pendingContextData = [];
     this._pendingDiffStateNotifications = [];
+    this._pendingUserActionHints = [];
     this._contextSource = null;
     this._contextItemId = null;
     this._contextLineMeta = null;
@@ -1269,12 +1272,28 @@ class ChatPanel {
       this._pendingDiffStateNotifications = [];
     }
 
+    // Snapshot user-action-hints queue for error recovery (invisible to user, no UI cards)
+    const savedUserActionHints = this._pendingUserActionHints.slice();
+    let userActionPrefix = '';
+    if (this._pendingUserActionHints.length > 0) {
+      userActionPrefix = '[User Action Hints]\n' + this._pendingUserActionHints.join('\n');
+      this._pendingUserActionHints = [];
+    }
+
+    // Combine invisible prefixes (diff state + user action hints)
+    let invisiblePrefix = '';
+    if (diffStatePrefix && userActionPrefix) {
+      invisiblePrefix = diffStatePrefix + '\n\n' + userActionPrefix;
+    } else {
+      invisiblePrefix = diffStatePrefix || userActionPrefix;
+    }
+
     const savedContext = this._pendingContext;
     const savedContextData = this._pendingContextData;
     if (this._pendingContext.length > 0) {
       const userContext = this._pendingContext.join('\n\n');
-      payload.context = diffStatePrefix
-        ? diffStatePrefix + '\n\n' + userContext
+      payload.context = invisiblePrefix
+        ? invisiblePrefix + '\n\n' + userContext
         : userContext;
       payload.contextData = this._pendingContextData;
       this._pendingContext = [];
@@ -1287,8 +1306,8 @@ class ChatPanel {
         if (btn) btn.remove();
         delete card.dataset.contextIndex;
       });
-    } else if (diffStatePrefix) {
-      payload.context = diffStatePrefix;
+    } else if (invisiblePrefix) {
+      payload.context = invisiblePrefix;
     }
 
     // Lock analysis context card (not indexed, handled separately from pending context)
@@ -1353,6 +1372,7 @@ class ChatPanel {
       this._pendingContext = savedContext;
       this._pendingContextData = savedContextData;
       this._pendingDiffStateNotifications = [...savedDiffState, ...this._pendingDiffStateNotifications];
+      this._pendingUserActionHints = [...savedUserActionHints, ...this._pendingUserActionHints];
       // Restore removability on context cards that were locked before the failed send
       this._restoreRemovableCards();
       console.error('[ChatPanel] Error sending message:', error);
@@ -1369,6 +1389,16 @@ class ChatPanel {
    */
   queueDiffStateNotification(message) {
     this._pendingDiffStateNotifications.push(message);
+  }
+
+  /**
+   * Queue an invisible user-action hint for the chat agent.
+   * Like diff-state notifications, these do NOT render UI cards and survive panel close.
+   * Drained into the context parameter on the next sendMessage() call.
+   * @param {string} message - Description of the user action (e.g., "[User Action: adopted suggestion 42]")
+   */
+  queueUserActionHint(message) {
+    this._pendingUserActionHints.push(message);
   }
 
   /**

@@ -2941,6 +2941,11 @@ class PRManager {
       if (window.toast) {
         window.toast.showSuccess('Comment dismissed');
       }
+
+      if (apiResult.dismissedSuggestionId) {
+        window.chatPanel?.queueUserActionHint(`[User Action: dismissed suggestion ${apiResult.dismissedSuggestionId}]`);
+      }
+      window.chatPanel?.queueUserActionHint(`[User Action: dismissed comment ${commentId}]`);
     } catch (error) {
       console.error('Error deleting comment:', error);
       if (window.toast) {
@@ -2969,6 +2974,8 @@ class PRManager {
       if (window.toast) {
         window.toast.showSuccess('Comment restored');
       }
+
+      window.chatPanel?.queueUserActionHint(`[User Action: restored comment ${commentId}]`);
     } catch (error) {
       console.error('Error restoring comment:', error);
       if (window.toast) {
@@ -3449,6 +3456,7 @@ class PRManager {
             });
             this.displayUserComment(newComment, suggestionRow);
             this._notifyAdoption(suggestionId, newComment);
+            window.chatPanel?.queueUserActionHint(`[User Action: adopted suggestion ${suggestionId}]`);
           } catch (error) {
             console.error('Error saving edited suggestion:', error);
             alert(`Failed to save suggestion: ${error.message}`);
@@ -3494,6 +3502,7 @@ class PRManager {
 
       this.displayUserComment(result.newComment, result.suggestionRow);
       this._notifyAdoption(suggestionId, result.newComment);
+      window.chatPanel?.queueUserActionHint(`[User Action: adopted suggestion ${suggestionId}]`);
     } catch (error) {
       console.error('Error adopting suggestion:', error);
       alert(`Failed to adopt suggestion: ${error.message}`);
@@ -3557,6 +3566,8 @@ class PRManager {
       if (this.commentMinimizer) {
         this.commentMinimizer.refreshIndicators();
       }
+
+      window.chatPanel?.queueUserActionHint(`[User Action: dismissed suggestion ${suggestionId}]`);
     } catch (error) {
       console.error('Error dismissing suggestion:', error);
       alert('Failed to dismiss suggestion');
@@ -3612,6 +3623,8 @@ class PRManager {
       if (this.commentMinimizer) {
         this.commentMinimizer.refreshIndicators();
       }
+
+      window.chatPanel?.queueUserActionHint(`[User Action: restored suggestion ${suggestionId}]`);
     } catch (error) {
       console.error('Error restoring suggestion:', error);
       alert('Failed to restore suggestion');

@@ -322,6 +322,8 @@ class FileCommentManager {
         this.prManager.updateCommentCount();
       }
 
+      window.chatPanel?.queueUserActionHint(`[User Action: created comment ${result.commentId}]`);
+
     } catch (error) {
       console.error('Error saving file-level comment:', error);
       if (window.toast) {
@@ -619,6 +621,8 @@ class FileCommentManager {
         window.aiPanel.updateFindingStatus(suggestion.id, 'adopted');
       }
 
+      window.chatPanel?.queueUserActionHint(`[User Action: adopted suggestion ${suggestion.id}]`);
+
     } catch (error) {
       console.error('Error adopting suggestion:', error);
       if (window.toast) {
@@ -662,6 +666,8 @@ class FileCommentManager {
         window.aiPanel.updateFindingStatus(suggestionId, 'dismissed');
       }
 
+      window.chatPanel?.queueUserActionHint(`[User Action: dismissed suggestion ${suggestionId}]`);
+
     } catch (error) {
       console.error('Error dismissing suggestion:', error);
       if (window.toast) {
@@ -702,6 +708,8 @@ class FileCommentManager {
 
       // Update comment count (for consistency with dismissAISuggestion)
       this.updateCommentCount(zone);
+
+      window.chatPanel?.queueUserActionHint(`[User Action: restored suggestion ${suggestionId}]`);
 
     } catch (error) {
       console.error('Error restoring suggestion:', error);
@@ -862,6 +870,8 @@ class FileCommentManager {
       if (window.aiPanel?.updateFindingStatus) {
         window.aiPanel.updateFindingStatus(suggestion.id, 'adopted');
       }
+
+      window.chatPanel?.queueUserActionHint(`[User Action: adopted suggestion ${suggestion.id}]`);
 
     } catch (error) {
       console.error('Error adopting suggestion with edit:', error);
@@ -1028,6 +1038,11 @@ class FileCommentManager {
       if (apiResult.dismissedSuggestionId && window.aiPanel?.updateFindingStatus) {
         window.aiPanel.updateFindingStatus(apiResult.dismissedSuggestionId, 'dismissed');
       }
+
+      if (apiResult.dismissedSuggestionId) {
+        window.chatPanel?.queueUserActionHint(`[User Action: dismissed suggestion ${apiResult.dismissedSuggestionId}]`);
+      }
+      window.chatPanel?.queueUserActionHint(`[User Action: dismissed comment ${commentId}]`);
 
     } catch (error) {
       console.error('Error deleting comment:', error);
