@@ -207,6 +207,13 @@ class PRManager {
       });
     }
 
+    // Initialize notification sounds dropdown (bell icon)
+    const notifBtn = document.getElementById('notification-toggle');
+    if (notifBtn && window.NotificationDropdown) {
+      const notifEvents = window.PAIR_REVIEW_LOCAL_MODE ? ['analysis'] : ['analysis', 'setup'];
+      this.notificationDropdown = new window.NotificationDropdown(notifBtn, { events: notifEvents });
+    }
+
     // In local mode, LocalManager handles init instead
     if (!window.PAIR_REVIEW_LOCAL_MODE) {
       this.init();
