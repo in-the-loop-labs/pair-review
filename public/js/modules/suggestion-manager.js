@@ -24,8 +24,9 @@ class SuggestionManager {
           reviewId: this.prManager?.currentPR?.id,
           suggestionId: chatBtn.dataset.suggestionId,
           suggestionContext: {
+            suggestionId: chatBtn.dataset.suggestionId || null,
             title: chatBtn.dataset.title || suggestionData.suggestionTitle || '',
-            body: suggestionData.suggestionText || '',
+            body: suggestionData.formattedBody || suggestionData.suggestionText || '',
             type: suggestionData.suggestionType || '',
             file: chatBtn.dataset.file || '',
             line_start: suggestionDiv?.dataset?.lineNumber ? parseInt(suggestionDiv.dataset.lineNumber) : null,

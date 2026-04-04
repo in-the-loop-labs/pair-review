@@ -17,12 +17,15 @@ class FileCommentManager {
       if (chatBtn && window.chatPanel) {
         e.stopPropagation();
         const suggestionCard = chatBtn.closest('.ai-suggestion');
-        const bodyText = suggestionCard?.dataset?.originalBody
-          ? JSON.parse(suggestionCard.dataset.originalBody) : '';
+        const bodyText = suggestionCard?.dataset?.formattedBody
+          ? JSON.parse(suggestionCard.dataset.formattedBody)
+          : suggestionCard?.dataset?.originalBody
+            ? JSON.parse(suggestionCard.dataset.originalBody) : '';
         window.chatPanel.open({
           reviewId: this.prManager?.currentPR?.id,
           suggestionId: chatBtn.dataset.suggestionId,
           suggestionContext: {
+            suggestionId: chatBtn.dataset.suggestionId || null,
             title: chatBtn.dataset.title || '',
             body: bodyText,
             type: suggestionCard?.querySelector('.ai-suggestion-badge')?.dataset?.type || '',
@@ -444,6 +447,7 @@ class FileCommentManager {
     // Store original markdown body for adopt functionality via extractSuggestionData
     // Use JSON.stringify to preserve newlines and special characters (matches line-level suggestions)
     card.dataset.originalBody = JSON.stringify(suggestion.body || '');
+    card.dataset.formattedBody = JSON.stringify(suggestion.formattedBody || '');
 
     // Store target info on the card for reliable retrieval in getFileAndLineInfo
     // File-level suggestions don't have line numbers, just the file name
