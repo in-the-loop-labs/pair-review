@@ -1071,9 +1071,9 @@ class AIPanel {
 
             if (targetElement) {
                 const minimizer = window.prManager?.commentMinimizer;
-                if (minimizer?.active && !isFileLevel) {
-                    // Comments are minimized — scroll to the parent diff line instead
-                    const diffRow = minimizer.findDiffRowFor(targetElement);
+                if (minimizer?.active) {
+                    minimizer.expandForElement(targetElement);
+                    const diffRow = isFileLevel ? null : minimizer.findDiffRowFor(targetElement);
                     (diffRow || targetElement).scrollIntoView({ behavior: 'smooth', block: 'center' });
                 } else {
                     targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });

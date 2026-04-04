@@ -313,8 +313,13 @@ class FileCommentManager {
       this.updateCommentCount(zone);
 
       // Refresh minimize-mode indicators so file-header counts stay current
-      if (this.prManager?.commentMinimizer?.active) {
+      if (this.prManager?.commentMinimizer) {
         this.prManager.commentMinimizer.refreshIndicators();
+        // Auto-expand so the new comment stays visible in minimize mode
+        const newCard = zone.querySelector(`.file-comment-card[data-comment-id="${commentData.id}"]`);
+        if (newCard) {
+          this.prManager.commentMinimizer.expandForElement(newCard);
+        }
       }
 
       // Notify AI Panel if available
@@ -612,8 +617,13 @@ class FileCommentManager {
       this.updateCommentCount(zone);
 
       // Refresh minimize-mode indicators so file-header counts stay current
-      if (this.prManager?.commentMinimizer?.active) {
+      if (this.prManager?.commentMinimizer) {
         this.prManager.commentMinimizer.refreshIndicators();
+        // Auto-expand so the new comment stays visible in minimize mode
+        const newCard = zone.querySelector(`.file-comment-card[data-comment-id="${commentData.id}"]`);
+        if (newCard) {
+          this.prManager.commentMinimizer.expandForElement(newCard);
+        }
       }
 
       // Update parent comment count for Preview button
@@ -672,7 +682,7 @@ class FileCommentManager {
       this.updateCommentCount(zone);
 
       // Refresh minimize-mode indicators so file-header counts stay current
-      if (this.prManager?.commentMinimizer?.active) {
+      if (this.prManager?.commentMinimizer) {
         this.prManager.commentMinimizer.refreshIndicators();
       }
 
@@ -877,8 +887,13 @@ class FileCommentManager {
       this.updateCommentCount(zone);
 
       // Refresh minimize-mode indicators so file-header counts stay current
-      if (this.prManager?.commentMinimizer?.active) {
+      if (this.prManager?.commentMinimizer) {
         this.prManager.commentMinimizer.refreshIndicators();
+        // Auto-expand so the new comment stays visible in minimize mode
+        const newCard = zone.querySelector(`.file-comment-card[data-comment-id="${commentData.id}"]`);
+        if (newCard) {
+          this.prManager.commentMinimizer.expandForElement(newCard);
+        }
       }
 
       // Update parent comment count for Preview button
@@ -1048,7 +1063,7 @@ class FileCommentManager {
       this.updateCommentCount(zone);
 
       // Refresh minimize-mode indicators so file-header counts stay current
-      if (this.prManager?.commentMinimizer?.active) {
+      if (this.prManager?.commentMinimizer) {
         this.prManager.commentMinimizer.refreshIndicators();
       }
 

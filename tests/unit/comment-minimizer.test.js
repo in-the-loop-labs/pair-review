@@ -1207,6 +1207,22 @@ describe('CommentMinimizer', () => {
         expect(indicator).toBeUndefined();
       });
 
+      it('should not inject indicator when all cards are collapsed', () => {
+        const { zone, header } = buildFileCommentsStructure([
+          { type: 'ai-suggestion', collapsed: true },
+          { type: 'ai-suggestion', collapsed: true },
+        ]);
+
+        mockFileQuerySelectorAll([zone]);
+
+        const cm = new CommentMinimizer();
+        cm._active = true;
+        cm.refreshIndicators();
+
+        const indicator = header._children.find(c => c.className === 'file-comment-indicator');
+        expect(indicator).toBeUndefined();
+      });
+
       it('should insert indicator before file-header-comment-btn', () => {
         const { zone, header, commentBtn } = buildFileCommentsStructure([
           { type: 'user-comment' },
