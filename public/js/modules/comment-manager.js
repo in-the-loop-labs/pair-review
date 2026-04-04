@@ -505,6 +505,8 @@ class CommentManager {
         window.prManager.commentMinimizer.refreshIndicators();
       }
 
+      window.chatPanel?.queueUserActionHint(`[User Action: created comment ${result.commentId}]`);
+
     } catch (error) {
       console.error('Error saving comment:', error);
       alert('Failed to save comment');

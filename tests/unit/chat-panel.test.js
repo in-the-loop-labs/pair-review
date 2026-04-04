@@ -1007,6 +1007,112 @@ describe('ChatPanel', () => {
   });
 
   // -----------------------------------------------------------------------
+  // queueUserActionHint
+  // -----------------------------------------------------------------------
+  describe('queueUserActionHint', () => {
+    it('should initialize _pendingUserActionHints as empty array', () => {
+      expect(chatPanel._pendingUserActionHints).toEqual([]);
+    });
+
+    it('should push a hint onto the array', () => {
+      chatPanel.queueUserActionHint('[User Action: adopted suggestion 42]');
+      expect(chatPanel._pendingUserActionHints).toEqual(['[User Action: adopted suggestion 42]']);
+    });
+
+    it('should accumulate multiple hints in order', () => {
+      chatPanel.queueUserActionHint('[User Action: adopted suggestion 1]');
+      chatPanel.queueUserActionHint('[User Action: dismissed suggestion 2]');
+      chatPanel.queueUserActionHint('[User Action: created comment 3]');
+      expect(chatPanel._pendingUserActionHints).toEqual([
+        '[User Action: adopted suggestion 1]',
+        '[User Action: dismissed suggestion 2]',
+        '[User Action: created comment 3]',
+      ]);
+    });
+
+    it('should survive close() — not cleared when panel is closed', () => {
+      chatPanel._pendingUserActionHints = ['[User Action: adopted suggestion 5]'];
+      chatPanel.close();
+      expect(chatPanel._pendingUserActionHints).toEqual(['[User Action: adopted suggestion 5]']);
+    });
+
+    it('should be cleared on _startNewConversation()', async () => {
+      chatPanel._pendingUserActionHints = ['[User Action: adopted suggestion 5]'];
+      await chatPanel._startNewConversation();
+      expect(chatPanel._pendingUserActionHints).toEqual([]);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // sendMessage — user action hints drain / error recovery
+  // -----------------------------------------------------------------------
+  describe('sendMessage user action hints integration', () => {
+    it('should include user action hints in payload context', async () => {
+      chatPanel.currentSessionId = 'sess-1';
+      chatPanel.isStreaming = false;
+      chatPanel.inputEl.value = 'hello';
+
+      chatPanel.queueUserActionHint('[User Action: adopted suggestion 42]');
+
+      global.fetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({}),
+      });
+
+      await chatPanel.sendMessage();
+
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      const [url, opts] = global.fetch.mock.calls[0];
+      expect(url).toBe('/api/chat/session/sess-1/message');
+      const body = JSON.parse(opts.body);
+      expect(body.context).toContain('[User Action Hints]');
+      expect(body.context).toContain('[User Action: adopted suggestion 42]');
+
+      // Queue should be drained
+      expect(chatPanel._pendingUserActionHints).toEqual([]);
+    });
+
+    it('should combine user action hints with diff state notifications', async () => {
+      chatPanel.currentSessionId = 'sess-1';
+      chatPanel.isStreaming = false;
+      chatPanel.inputEl.value = 'hello';
+
+      chatPanel.queueDiffStateNotification('User expanded file foo.js');
+      chatPanel.queueUserActionHint('[User Action: dismissed suggestion 7]');
+
+      global.fetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({}),
+      });
+
+      await chatPanel.sendMessage();
+
+      const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+      expect(body.context).toContain('[Diff State Update]');
+      expect(body.context).toContain('User expanded file foo.js');
+      expect(body.context).toContain('[User Action Hints]');
+      expect(body.context).toContain('[User Action: dismissed suggestion 7]');
+    });
+
+    it('should restore user action hints on send error', async () => {
+      chatPanel.currentSessionId = 'sess-1';
+      chatPanel.isStreaming = false;
+      chatPanel.inputEl.value = 'hello';
+
+      chatPanel.queueUserActionHint('[User Action: adopted suggestion 10]');
+
+      global.fetch.mockRejectedValueOnce(new Error('network failure'));
+
+      await chatPanel.sendMessage();
+
+      // Hints should be restored after the error
+      expect(chatPanel._pendingUserActionHints).toEqual([
+        '[User Action: adopted suggestion 10]',
+      ]);
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // _startNewConversation()
   // -----------------------------------------------------------------------
   describe('_startNewConversation()', () => {
