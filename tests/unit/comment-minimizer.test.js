@@ -9,6 +9,7 @@
  * - Toggle expand/collapse: _expandedLines Set and CSS classes
  * - findDiffRowFor (public): locates diff row from child element
  * - expandForElement: expands comments and updates indicator state
+ * - File-level: _refreshFileIndicators, _toggleFileComments, expandForElement for file cards
  *
  * IMPORTANT: These tests import the actual CommentMinimizer class from
  * production code to ensure tests verify real behavior.
@@ -955,6 +956,423 @@ describe('CommentMinimizer', () => {
 
       expect(cm._expandedLines.has(rows[0])).toBe(true);
       expect(rows[1].classList.contains('comment-expanded')).toBe(true);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // File-level comment minimization
+  // -------------------------------------------------------------------------
+  describe('file-level comments', () => {
+    /**
+     * Build a mock file-comment-card element.
+     * @param {'user-comment'|'ai-suggestion'} type
+     * @param {Object} opts - { adopted: boolean }
+     */
+    function buildFileCommentCard(type, opts = {}) {
+      const classes = new Set(['file-comment-card', type]);
+      if (opts.adopted) classes.add('adopted-comment');
+      if (opts.collapsed) classes.add('collapsed');
+      return {
+        classList: {
+          _set: classes,
+          contains(cls) { return this._set.has(cls); },
+          add(cls) { this._set.add(cls); },
+          remove(cls) { this._set.delete(cls); },
+        },
+      };
+    }
+
+    /**
+     * Build a mock file-comments-zone with cards inside it, wrapped in a
+     * .d2h-file-wrapper with a .d2h-file-header.
+     * Returns { zone, header, wrapper, cards }.
+     */
+    function buildFileCommentsStructure(cardSpecs) {
+      const cards = cardSpecs.map(spec => buildFileCommentCard(spec.type, spec));
+
+      const zoneClasses = new Set(['file-comments-zone']);
+      const zone = {
+        classList: {
+          _set: zoneClasses,
+          contains(cls) { return this._set.has(cls); },
+          add(cls) { this._set.add(cls); },
+          remove(cls) { this._set.delete(cls); },
+        },
+        querySelectorAll(selector) {
+          if (selector === '.file-comment-card') return cards;
+          return [];
+        },
+        closest(selector) {
+          if (selector === '.d2h-file-wrapper') return wrapper;
+          if (selector === '.file-comments-zone') return zone;
+          return null;
+        },
+        dataset: { fileName: 'test.js' },
+      };
+
+      const headerChildren = [];
+      const headerClasses = new Set(['d2h-file-header']);
+      const commentBtn = { className: 'file-header-comment-btn' };
+      headerChildren.push(commentBtn);
+
+      const header = {
+        classList: {
+          _set: headerClasses,
+          contains(cls) { return this._set.has(cls); },
+        },
+        querySelector(selector) {
+          if (selector === '.file-comment-indicator') {
+            return headerChildren.find(c => c.className === 'file-comment-indicator') || null;
+          }
+          if (selector === '.file-header-comment-btn') return commentBtn;
+          if (selector === '.d2h-file-header .file-comment-indicator') {
+            return headerChildren.find(c => c.className === 'file-comment-indicator') || null;
+          }
+          return null;
+        },
+        appendChild(child) { headerChildren.push(child); },
+        insertBefore(child, ref) {
+          const idx = headerChildren.indexOf(ref);
+          if (idx >= 0) headerChildren.splice(idx, 0, child);
+          else headerChildren.push(child);
+        },
+        _children: headerChildren,
+      };
+
+      const wrapper = {
+        classList: {
+          _set: new Set(['d2h-file-wrapper']),
+          contains(cls) { return this._set.has(cls); },
+        },
+        querySelector(selector) {
+          if (selector === '.d2h-file-header') return header;
+          if (selector === '.d2h-file-header .file-comment-indicator') {
+            return headerChildren.find(c => c.className === 'file-comment-indicator') || null;
+          }
+          return null;
+        },
+      };
+
+      return { zone, header, wrapper, cards, commentBtn };
+    }
+
+    /**
+     * Build a child element that resolves closest() to a file-comments-zone.
+     */
+    function buildFileCommentChild(zone) {
+      return {
+        closest(selector) {
+          if (selector === '.file-comments-zone') return zone;
+          if (selector === '.d2h-file-wrapper') return zone.closest('.d2h-file-wrapper');
+          // Not a line-level comment/suggestion row
+          if (selector.includes('user-comment-row') || selector.includes('ai-suggestion-row')) return null;
+          return null;
+        },
+        classList: {
+          _set: new Set(),
+          contains(cls) { return this._set.has(cls); },
+        },
+      };
+    }
+
+    /**
+     * Set up document.querySelectorAll to return file-comments zones and empty
+     * line-level results. Accepts an array of zones.
+     */
+    function mockFileQuerySelectorAll(zones) {
+      global.document.querySelectorAll = vi.fn((selector) => {
+        if (selector === '.file-comments-zone') return zones;
+        if (selector === '.user-comment-row') return [];
+        if (selector === '.ai-suggestion-row') return [];
+        if (selector === '.comment-indicator') return [];
+        if (selector === '.file-comment-indicator') return [];
+        if (selector === '.comment-expanded') return [];
+        if (selector === '.file-comments-expanded') return [];
+        return [];
+      });
+    }
+
+    describe('_refreshFileIndicators', () => {
+      it('should inject file-header indicator for zone with user comments', () => {
+        const { zone, header } = buildFileCommentsStructure([
+          { type: 'user-comment' },
+        ]);
+
+        mockFileQuerySelectorAll([zone]);
+
+        const cm = new CommentMinimizer();
+        cm._active = true;
+        cm.refreshIndicators();
+
+        // Indicator should have been inserted before the comment button
+        const indicator = header._children.find(c => c.className === 'file-comment-indicator');
+        expect(indicator).toBeTruthy();
+        expect(indicator.innerHTML).toContain('indicator-user');
+        expect(indicator.title).toBe('1 file comment');
+      });
+
+      it('should inject file-header indicator for zone with AI suggestions', () => {
+        const { zone, header } = buildFileCommentsStructure([
+          { type: 'ai-suggestion' },
+          { type: 'ai-suggestion' },
+        ]);
+
+        mockFileQuerySelectorAll([zone]);
+
+        const cm = new CommentMinimizer();
+        cm._active = true;
+        cm.refreshIndicators();
+
+        const indicator = header._children.find(c => c.className === 'file-comment-indicator');
+        expect(indicator).toBeTruthy();
+        expect(indicator.innerHTML).toContain('indicator-ai');
+        expect(indicator.title).toBe('2 suggestions');
+      });
+
+      it('should inject file-header indicator for zone with adopted suggestions', () => {
+        const { zone, header } = buildFileCommentsStructure([
+          { type: 'user-comment', adopted: true },
+        ]);
+
+        mockFileQuerySelectorAll([zone]);
+
+        const cm = new CommentMinimizer();
+        cm._active = true;
+        cm.refreshIndicators();
+
+        const indicator = header._children.find(c => c.className === 'file-comment-indicator');
+        expect(indicator).toBeTruthy();
+        expect(indicator.innerHTML).toContain('indicator-adopted');
+        expect(indicator.title).toBe('1 adopted');
+      });
+
+      it('should show combined counts for mixed file comment types', () => {
+        const { zone, header } = buildFileCommentsStructure([
+          { type: 'user-comment' },
+          { type: 'user-comment' },
+          { type: 'ai-suggestion' },
+          { type: 'user-comment', adopted: true },
+        ]);
+
+        mockFileQuerySelectorAll([zone]);
+
+        const cm = new CommentMinimizer();
+        cm._active = true;
+        cm.refreshIndicators();
+
+        const indicator = header._children.find(c => c.className === 'file-comment-indicator');
+        expect(indicator).toBeTruthy();
+        expect(indicator.innerHTML).toContain('indicator-user');
+        expect(indicator.innerHTML).toContain('indicator-ai');
+        expect(indicator.innerHTML).toContain('indicator-adopted');
+        // Total = 2 user + 1 AI + 1 adopted = 4
+        expect(indicator.innerHTML).toContain('<span class="indicator-count">4</span>');
+        expect(indicator.title).toBe('2 file comments, 1 adopted, 1 suggestion');
+      });
+
+      it('should skip collapsed cards (adopted/dismissed originals)', () => {
+        const { zone, header } = buildFileCommentsStructure([
+          { type: 'ai-suggestion', collapsed: true },  // dismissed or adopted original
+          { type: 'user-comment', adopted: true },      // adopted comment card
+          { type: 'ai-suggestion' },                     // active suggestion
+        ]);
+
+        mockFileQuerySelectorAll([zone]);
+
+        const cm = new CommentMinimizer();
+        cm._active = true;
+        cm.refreshIndicators();
+
+        const indicator = header._children.find(c => c.className === 'file-comment-indicator');
+        expect(indicator).toBeTruthy();
+        // Collapsed AI suggestion should not be counted
+        expect(indicator.innerHTML).toContain('indicator-adopted');
+        expect(indicator.innerHTML).toContain('indicator-ai');
+        expect(indicator.innerHTML).not.toContain('indicator-user');
+        // Total = 1 adopted + 1 AI = 2 (not 3)
+        expect(indicator.innerHTML).toContain('<span class="indicator-count">2</span>');
+        expect(indicator.title).toBe('1 adopted, 1 suggestion');
+      });
+
+      it('should not inject indicator for empty zone', () => {
+        const { zone, header } = buildFileCommentsStructure([]);
+
+        mockFileQuerySelectorAll([zone]);
+
+        const cm = new CommentMinimizer();
+        cm._active = true;
+        cm.refreshIndicators();
+
+        const indicator = header._children.find(c => c.className === 'file-comment-indicator');
+        expect(indicator).toBeUndefined();
+      });
+
+      it('should insert indicator before file-header-comment-btn', () => {
+        const { zone, header, commentBtn } = buildFileCommentsStructure([
+          { type: 'user-comment' },
+        ]);
+
+        mockFileQuerySelectorAll([zone]);
+
+        const cm = new CommentMinimizer();
+        cm._active = true;
+        cm.refreshIndicators();
+
+        // The indicator should come before the comment button in the children array
+        const indicatorIdx = header._children.findIndex(c => c.className === 'file-comment-indicator');
+        const commentBtnIdx = header._children.indexOf(commentBtn);
+        expect(indicatorIdx).toBeLessThan(commentBtnIdx);
+      });
+
+      it('should restore expanded class on indicator when zone is in _expandedFiles', () => {
+        const { zone, header } = buildFileCommentsStructure([
+          { type: 'user-comment' },
+        ]);
+
+        mockFileQuerySelectorAll([zone]);
+
+        const cm = new CommentMinimizer();
+        cm._active = true;
+        cm._expandedFiles.add(zone);
+        cm.refreshIndicators();
+
+        const indicator = header._children.find(c => c.className === 'file-comment-indicator');
+        expect(indicator.classList.contains('expanded')).toBe(true);
+      });
+    });
+
+    describe('_toggleFileComments', () => {
+      it('should expand then collapse file comments', () => {
+        const { zone } = buildFileCommentsStructure([
+          { type: 'user-comment' },
+        ]);
+
+        const cm = new CommentMinimizer();
+        const btn = buildMockButton();
+
+        // Expand
+        cm._toggleFileComments(zone, btn);
+        expect(cm._expandedFiles.has(zone)).toBe(true);
+        expect(btn.classList.contains('expanded')).toBe(true);
+        expect(zone.classList.contains('file-comments-expanded')).toBe(true);
+
+        // Collapse
+        cm._toggleFileComments(zone, btn);
+        expect(cm._expandedFiles.has(zone)).toBe(false);
+        expect(btn.classList.contains('expanded')).toBe(false);
+        expect(zone.classList.contains('file-comments-expanded')).toBe(false);
+      });
+    });
+
+    describe('expandForElement (file-level)', () => {
+      it('should expand file-comments-zone for element inside it', () => {
+        const { zone, wrapper } = buildFileCommentsStructure([
+          { type: 'user-comment' },
+        ]);
+
+        const child = buildFileCommentChild(zone);
+
+        const cm = new CommentMinimizer();
+        cm._active = true;
+        cm.expandForElement(child);
+
+        expect(cm._expandedFiles.has(zone)).toBe(true);
+        expect(zone.classList.contains('file-comments-expanded')).toBe(true);
+      });
+
+      it('should update file-header indicator button when expanding', () => {
+        const { zone, header, wrapper } = buildFileCommentsStructure([
+          { type: 'user-comment' },
+        ]);
+
+        // Simulate indicator already injected in the header
+        const indicatorBtn = buildMockButton('file-comment-indicator');
+        header._children.push(indicatorBtn);
+
+        const child = buildFileCommentChild(zone);
+
+        const cm = new CommentMinimizer();
+        cm._active = true;
+        cm.expandForElement(child);
+
+        expect(indicatorBtn.classList.contains('expanded')).toBe(true);
+      });
+
+      it('should not re-expand if zone is already expanded', () => {
+        const { zone } = buildFileCommentsStructure([
+          { type: 'user-comment' },
+        ]);
+
+        const child = buildFileCommentChild(zone);
+
+        const cm = new CommentMinimizer();
+        cm._active = true;
+        cm._expandedFiles.add(zone);
+
+        // Should exit early — class should NOT be added again
+        cm.expandForElement(child);
+
+        expect(cm._expandedFiles.has(zone)).toBe(true);
+        // Zone class was added during the pre-expand setup, not by expandForElement
+        expect(zone.classList.contains('file-comments-expanded')).toBe(false);
+      });
+    });
+
+    describe('setMinimized (file-level state)', () => {
+      it('should clear _expandedFiles when toggling', () => {
+        global.document.querySelectorAll = vi.fn(() => []);
+
+        const cm = new CommentMinimizer();
+        cm._expandedFiles.add('fake-zone');
+
+        cm.setMinimized(true);
+        expect(cm._expandedFiles.size).toBe(0);
+      });
+
+      it('should remove file-comments-expanded classes when disabling', () => {
+        const expandedZone = {
+          classList: {
+            _set: new Set(['file-comments-expanded']),
+            remove(cls) { this._set.delete(cls); },
+            contains(cls) { return this._set.has(cls); },
+          },
+        };
+
+        global.document.querySelectorAll = vi.fn((selector) => {
+          if (selector === '.comment-indicator') return [];
+          if (selector === '.file-comment-indicator') return [];
+          if (selector === '.comment-expanded') return [];
+          if (selector === '.file-comments-expanded') return [expandedZone];
+          return [];
+        });
+
+        const cm = new CommentMinimizer();
+        cm._active = true;
+        diffContainer.classList.add('comments-minimized');
+
+        cm.setMinimized(false);
+
+        expect(expandedZone.classList.contains('file-comments-expanded')).toBe(false);
+      });
+    });
+
+    describe('_removeAllIndicators (file-level)', () => {
+      it('should remove both line-level and file-level indicators', () => {
+        const lineIndicator = { remove: vi.fn() };
+        const fileIndicator = { remove: vi.fn() };
+
+        global.document.querySelectorAll = vi.fn((selector) => {
+          if (selector === '.comment-indicator') return [lineIndicator];
+          if (selector === '.file-comment-indicator') return [fileIndicator];
+          return [];
+        });
+
+        const cm = new CommentMinimizer();
+        cm._removeAllIndicators();
+
+        expect(lineIndicator.remove).toHaveBeenCalled();
+        expect(fileIndicator.remove).toHaveBeenCalled();
+      });
     });
   });
 });

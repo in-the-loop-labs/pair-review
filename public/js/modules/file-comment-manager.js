@@ -312,6 +312,11 @@ class FileCommentManager {
       // Update count badge
       this.updateCommentCount(zone);
 
+      // Refresh minimize-mode indicators so file-header counts stay current
+      if (this.prManager?.commentMinimizer?.active) {
+        this.prManager.commentMinimizer.refreshIndicators();
+      }
+
       // Notify AI Panel if available
       if (window.aiPanel?.addComment) {
         window.aiPanel.addComment(commentData);
@@ -606,6 +611,11 @@ class FileCommentManager {
       this.displayUserComment(zone, commentData);
       this.updateCommentCount(zone);
 
+      // Refresh minimize-mode indicators so file-header counts stay current
+      if (this.prManager?.commentMinimizer?.active) {
+        this.prManager.commentMinimizer.refreshIndicators();
+      }
+
       // Update parent comment count for Preview button
       if (this.prManager?.updateCommentCount) {
         this.prManager.updateCommentCount();
@@ -661,6 +671,11 @@ class FileCommentManager {
 
       this.updateCommentCount(zone);
 
+      // Refresh minimize-mode indicators so file-header counts stay current
+      if (this.prManager?.commentMinimizer?.active) {
+        this.prManager.commentMinimizer.refreshIndicators();
+      }
+
       // Update finding status in AI Panel (mark suggestion as dismissed)
       if (window.aiPanel?.updateFindingStatus) {
         window.aiPanel.updateFindingStatus(suggestionId, 'dismissed');
@@ -708,6 +723,11 @@ class FileCommentManager {
 
       // Update comment count (for consistency with dismissAISuggestion)
       this.updateCommentCount(zone);
+
+      // Refresh minimize-mode indicators so file-header counts stay current
+      if (this.prManager?.commentMinimizer) {
+        this.prManager.commentMinimizer.refreshIndicators();
+      }
 
       window.chatPanel?.queueUserActionHint(`[User Action: restored suggestion ${suggestionId}]`);
 
@@ -855,6 +875,11 @@ class FileCommentManager {
 
       this.displayUserComment(zone, commentData);
       this.updateCommentCount(zone);
+
+      // Refresh minimize-mode indicators so file-header counts stay current
+      if (this.prManager?.commentMinimizer?.active) {
+        this.prManager.commentMinimizer.refreshIndicators();
+      }
 
       // Update parent comment count for Preview button
       if (this.prManager?.updateCommentCount) {
@@ -1021,6 +1046,11 @@ class FileCommentManager {
       }
 
       this.updateCommentCount(zone);
+
+      // Refresh minimize-mode indicators so file-header counts stay current
+      if (this.prManager?.commentMinimizer?.active) {
+        this.prManager.commentMinimizer.refreshIndicators();
+      }
 
       // Update parent comment count
       if (this.prManager?.updateCommentCount) {

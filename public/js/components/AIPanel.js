@@ -1002,6 +1002,8 @@ class AIPanel {
             if (targetSuggestion) {
                 const minimizer = window.prManager?.commentMinimizer;
                 if (minimizer?.active) {
+                    // Expand file-level comments so the target becomes visible
+                    minimizer.expandForElement(targetSuggestion);
                     // Comments are minimized — scroll to the parent diff line instead
                     const diffRow = minimizer.findDiffRowFor(targetSuggestion);
                     (diffRow || targetSuggestion).scrollIntoView({ behavior: 'smooth', block: 'center' });

@@ -7467,6 +7467,79 @@ body.resizing * {
   display: table-row;
 }
 
+/* When minimize mode is active, hide file-level comment cards */
+.comments-minimized .file-comment-card {
+  display: none;
+}
+
+/* Per-file expansion override — clicking a file-header indicator reveals that file's cards */
+.comments-minimized .file-comments-zone.file-comments-expanded .file-comment-card {
+  display: block;
+}
+
+/* File-header comment indicator — matches header button sizing, only visible when minimized */
+.file-comment-indicator {
+  display: none;
+}
+
+.comments-minimized .file-comment-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--color-text-secondary, #656d76);
+  transition: background-color 0.15s, color 0.15s, border-color 0.15s;
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.comments-minimized .file-comment-indicator:hover {
+  background-color: rgba(130, 80, 223, 0.1);
+  border-color: var(--comment-primary, #8250df);
+}
+
+.comments-minimized .file-comment-indicator:has(.indicator-user),
+.comments-minimized .file-comment-indicator:has(.indicator-adopted) {
+  border-color: var(--comment-primary, #8250df);
+  color: var(--comment-primary, #8250df);
+}
+
+.comments-minimized .file-comment-indicator:has(.indicator-ai) {
+  border-color: var(--ai-accent, #d97706);
+  color: var(--ai-accent, #d97706);
+}
+
+.comments-minimized .file-comment-indicator.expanded {
+  border-width: 2px;
+}
+
+[data-theme="dark"] .comments-minimized .file-comment-indicator:has(.indicator-user),
+[data-theme="dark"] .comments-minimized .file-comment-indicator:has(.indicator-adopted) {
+  border-color: var(--comment-primary, #a371f7);
+  color: var(--comment-primary, #a371f7);
+}
+
+[data-theme="dark"] .comments-minimized .file-comment-indicator:has(.indicator-ai) {
+  border-color: var(--color-accent-ai, #fbbf24);
+  color: var(--color-accent-ai, #fbbf24);
+}
+
+[data-theme="dark"] .comments-minimized .file-comment-indicator:hover {
+  background-color: rgba(163, 113, 247, 0.15);
+}
+
+[data-theme="dark"] .comments-minimized .file-comment-indicator.expanded {
+  border-width: 2px;
+}
+
 /* Indicator button on the right edge of diff code cells */
 .comment-indicator {
   position: absolute;
