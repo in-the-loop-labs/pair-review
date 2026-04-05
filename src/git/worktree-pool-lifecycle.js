@@ -247,7 +247,7 @@ class WorktreePoolLifecycle {
       // Use -fd (not -fdx) to preserve gitignored files like node_modules that
       // the resetScript may depend on.
       await git.reset(['--hard', 'HEAD']);
-      await git.clean(['-fd']);
+      await git.clean('f', ['-d']);
 
       // Checkout new PR head
       await git.checkout([`refs/remotes/${remoteName}/pr-${prInfo.prNumber}`]);

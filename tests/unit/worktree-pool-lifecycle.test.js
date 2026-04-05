@@ -305,7 +305,7 @@ describe('WorktreePoolLifecycle', () => {
       await lifecycle._switchPoolWorktree(poolEntry, worktreeRecord, prInfo, prData, options);
 
       expect(deps._mockGit.reset).toHaveBeenCalledWith(['--hard', 'HEAD']);
-      expect(deps._mockGit.clean).toHaveBeenCalledWith(['-fd']);
+      expect(deps._mockGit.clean).toHaveBeenCalledWith('f', ['-d']);
     });
 
     it('clears all tracking state via usageTracker.clearWorktree', async () => {
