@@ -1,5 +1,39 @@
 # Changelog
 
+## 3.1.4
+
+### Patch Changes
+
+- 8ebaf47: Use formattedBody (including suggestion text and code examples) instead of raw body when building suggestion context for chat, and include suggestionId consistently across all chat context call sites
+- 628d575: Extend minimize comments mode to file-level comments
+
+  When minimize mode is active, file-level comment cards are now hidden alongside line-level comments. An indicator button is injected into each file header showing icons and counts for user comments, adopted suggestions, and AI suggestions — matching the existing line-level indicator pattern. Clicking the indicator toggles visibility of that file's comments.
+
+  Additional fixes:
+
+  - File-comment indicator hover now uses typed color variants (purple for user/adopted, amber for AI) matching line-level indicators
+  - Replace undefined `--ai-accent` CSS variable with canonical `--color-accent-ai` across all indicator styles
+  - Fix `scrollToComment` in AIPanel to call `expandForElement` before scrolling, so minimized comments become visible when navigated to
+  - Auto-expand newly created or adopted comments in minimize mode so they don't vanish immediately after creation
+
+- 35716b0: Fix missing stream text in council progress dialog for per-voice orchestration step
+- e1dd956: Fix Pi 0.65.0 compatibility by switching from stdin to @file syntax for prompt delivery
+
+  Pi analysis prompts are now written to a temp file and passed via `@filepath` positional argument instead of piped through stdin. This fixes an issue where stdin piping caused Pi to fall back to plain text output instead of JSONL, breaking streaming progress updates.
+
+- 1042475: Fix Pi chat provider ignoring extra_args from config overrides
+
+  The `extra_args` field in Pi chat provider config (e.g., `["--no-extensions", "-e", "..."]`) was correctly merged into the provider definition but silently dropped when constructing PiBridge. Now passed through and appended in `_buildArgs()`.
+
+- a137dbe: Update AI provider model configurations for April 2026
+
+  - Codex: Remove deprecated gpt-5.1-codex-mini, add gpt-5.4-nano and gpt-5.4-mini, new default gpt-5.4-mini
+  - Copilot: Add gpt-5.4-mini and gpt-5.4, update haiku 4.5 to 4.6, remove stale sonnet-4.5 and gpt-5.2-codex
+  - Gemini: Add gemini-3.1-flash-lite-preview fast tier option
+  - Claude: Update haiku display name to 4.6, remove stale sonnet-4.5
+
+- ee8659b: Send user action hints to the chat agent when the user adopts/dismisses suggestions or creates/dismisses comments directly in the review UI, so the agent stays informed without the user having to explain what they did.
+
 ## 3.1.3
 
 ### Patch Changes
