@@ -55,6 +55,7 @@ class CouncilProgressModal {
     this.councilConfig = councilConfig;
     this.isVisible = true;
     this._voiceStates = {};
+    this._completionHandled = false;
 
     // Detect rendering mode
     const configType = options.configType || (councilConfig ? 'advanced' : 'single');
@@ -903,6 +904,13 @@ class CouncilProgressModal {
   // ---------------------------------------------------------------------------
 
   _handleCompletion(status) {
+    // Guard against duplicate invocations (e.g. WebSocket retry + reconnect fetch race)
+    if (this._completionHandled) return;
+    this._completionHandled = true;
+
+    // Play notification sound before any async work so it fires promptly
+    if (window.notificationSounds) window.notificationSounds.playIfEnabled('analysis');
+
     if (this._renderMode === 'council') {
       // Voice-centric: mark all voice-level children as complete
       const vcEls = this.modal.querySelectorAll('[data-vc-voice][data-vc-level]');
