@@ -16,7 +16,10 @@
  * for cross-provider switching, which translates to `--provider <provider> --model <model>`.
  */
 
+const crypto = require('crypto');
 const path = require('path');
+const os = require('os');
+const fs = require('fs');
 const { spawn } = require('child_process');
 const { AIProvider, registerProvider, quoteShellArgs } = require('./provider');
 const logger = require('../utils/logger');
@@ -244,19 +247,23 @@ class PiProvider extends AIProvider {
 
       const levelPrefix = logPrefix || `[Level ${level}]`;
       logger.info(`${levelPrefix} Executing Pi CLI...`);
-      logger.info(`${levelPrefix} Writing prompt via stdin: ${prompt.length} bytes`);
+      logger.info(`${levelPrefix} Prompt: ${prompt.length} bytes`);
 
-      // Use stdin for prompt instead of CLI argument (avoids shell escaping issues)
-      // Pi reads from stdin when using -p with no positional message arguments
+      // Write prompt to a temp file and use Pi's @file syntax as a positional arg.
+      // This bypasses devx stdin interference that breaks --mode json output.
+      const tmpFile = path.join(os.tmpdir(), `pair-review-prompt-${Date.now()}-${process.pid}-${crypto.randomUUID()}.txt`);
+      fs.writeFileSync(tmpFile, prompt);
+      const cleanupTmpFile = () => { try { fs.unlinkSync(tmpFile); } catch { /* ignore */ } };
+
       let fullCommand;
       let fullArgs;
 
       if (this.useShell) {
-        fullCommand = `${this.piCmd} ${quoteShellArgs(this.baseArgs).join(' ')}`;
+        fullCommand = `${this.piCmd} ${quoteShellArgs([...this.baseArgs, `@${tmpFile}`]).join(' ')}`;
         fullArgs = [];
       } else {
         fullCommand = this.piCmd;
-        fullArgs = [...this.baseArgs];
+        fullArgs = [...this.baseArgs, `@${tmpFile}`];
       }
 
       const pi = spawn(fullCommand, fullArgs, {
@@ -268,6 +275,10 @@ class PiProvider extends AIProvider {
         },
         shell: this.useShell
       });
+
+      // Close stdin immediately — prompt is delivered via @file, but some
+      // wrappers (e.g., devx) keep the process alive until stdin is closed.
+      pi.stdin.end();
 
       const pid = pi.pid;
       logger.debug(`${levelPrefix} Pi CLI command: ${fullCommand} ${fullArgs.join(' ')}`);
@@ -340,6 +351,7 @@ class PiProvider extends AIProvider {
 
       // Handle completion
       pi.on('close', (code) => {
+        cleanupTmpFile();
         if (settled) return;  // Already settled by timeout or error
 
         // Flush any remaining stream parser buffer
@@ -413,7 +425,7 @@ class PiProvider extends AIProvider {
 
           // Use async IIFE to handle the async LLM extraction
           (async () => {
-            // Guard: if already settled (by timeout, stdin error, or cancellation),
+            // Guard: if already settled (by timeout, process error, or cancellation),
             // skip the LLM extraction entirely to avoid misleading log output
             if (settled) return;
 
@@ -437,6 +449,7 @@ class PiProvider extends AIProvider {
 
       // Handle errors
       pi.on('error', (error) => {
+        cleanupTmpFile();
         if (error.code === 'ENOENT') {
           logger.error(`${levelPrefix} Pi CLI not found. Please ensure Pi CLI is installed.`);
           settle(reject, new Error(`${levelPrefix} Pi CLI not found. ${PiProvider.getInstallInstructions()}`));
@@ -445,21 +458,6 @@ class PiProvider extends AIProvider {
           settle(reject, error);
         }
       });
-
-      // Handle stdin errors (e.g., EPIPE if process exits before write completes)
-      pi.stdin.on('error', (err) => {
-        logger.error(`${levelPrefix} stdin error: ${err.message}`);
-      });
-
-      // Send the prompt to stdin (Pi reads from stdin when using -p with no args)
-      pi.stdin.write(prompt, (err) => {
-        if (err) {
-          logger.error(`${levelPrefix} Failed to write prompt to stdin: ${err}`);
-          pi.kill('SIGTERM');
-          settle(reject, new Error(`${levelPrefix} Failed to write prompt to stdin: ${err}`));
-        }
-      });
-      pi.stdin.end();
     });
   }
 
@@ -740,14 +738,13 @@ class PiProvider extends AIProvider {
     // Build args consistently using the shared method, applying provider and model extra_args
     const args = this.buildArgsForModel(model);
 
-    // For extraction, we pass the prompt via stdin
-    // Pi reads from stdin when using -p with no positional message arguments
+    // Use @file syntax for prompt delivery (bypasses devx stdin interference)
     if (useShell) {
       return {
         command: `${piCmd} ${quoteShellArgs(args).join(' ')}`,
         args: [],
         useShell: true,
-        promptViaStdin: true,
+        promptViaFile: true,
         env: this.extraEnv
       };
     }
@@ -755,7 +752,7 @@ class PiProvider extends AIProvider {
       command: piCmd,
       args,
       useShell: false,
-      promptViaStdin: true,
+      promptViaFile: true,
       env: this.extraEnv
     };
   }
