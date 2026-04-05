@@ -60,10 +60,11 @@ describe('GeminiProvider', () => {
     it('should return array of models with expected structure', () => {
       const models = GeminiProvider.getModels();
       expect(Array.isArray(models)).toBe(true);
-      expect(models.length).toBe(3);
+      expect(models.length).toBe(4);
 
       // Check that we have the expected model IDs
       const modelIds = models.map(m => m.id);
+      expect(modelIds).toContain('gemini-3.1-flash-lite-preview');
       expect(modelIds).toContain('gemini-3-flash-preview');
       expect(modelIds).toContain('gemini-2.5-pro');
       expect(modelIds).toContain('gemini-3.1-pro-preview');

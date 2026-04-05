@@ -63,12 +63,11 @@ describe('ClaudeProvider', () => {
     it('should return array of models with expected structure', () => {
       const models = ClaudeProvider.getModels();
       expect(Array.isArray(models)).toBe(true);
-      expect(models.length).toBe(8);
+      expect(models.length).toBe(7);
 
       // Check that we have haiku, sonnet, and opus variants
       const modelIds = models.map(m => m.id);
       expect(modelIds).toContain('haiku');
-      expect(modelIds).toContain('sonnet-4.5');
       expect(modelIds).toContain('sonnet-4.6');
       expect(modelIds).toContain('opus-4.5');
       expect(modelIds).toContain('opus-4.6-low');
@@ -84,10 +83,6 @@ describe('ClaudeProvider', () => {
         tier: 'thorough',
         default: true
       });
-
-      // sonnet-4.5 should NOT have default: true
-      const sonnet = models.find(m => m.id === 'sonnet-4.5');
-      expect(sonnet.default).toBeUndefined();
 
       // Check opus variants have correct tiers
       for (const id of ['opus-4.6-low', 'opus-4.6-medium', 'opus-4.6-1m']) {

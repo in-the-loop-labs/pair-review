@@ -32,7 +32,7 @@ Each provider file has a `*_MODELS` array at the top defining models with:
 ### 1. Check CLI Overrides
 
 Read `~/.pair-review/config.json` to see if any provider commands are overridden.
-Look at `providers.<id>.command` for each provider. Common pattern: `devx <cli> --`.
+Look at `providers.<id>.command` for each provider.
 
 ### 2. Check CLI Availability
 
@@ -45,13 +45,13 @@ Using the command from config if overridden. Skip providers whose CLI is not ins
 ### 3. List Available Models
 
 Each CLI has different model listing commands:
-- **Gemini**: No list command; use web search or ask Gemini in text mode: `gemini -m gemini-2.5-flash -o text 'What models are available?'`
-- **Codex**: Check docs at developers.openai.com/codex/models/ or use web search
-- **Copilot**: Run `/model` in interactive mode, or check github.com/github/copilot-cli/releases
-- **Cursor Agent**: `agent --list-models` or `agent models`
-- **OpenCode**: `opencode models` (only shows bundled free models; provider models come from config)
+- **Gemini**: No native list command; use web search or ask Gemini in text mode: `gemini -m gemini-2.5-flash -o text 'What models are available?'`
+- **Codex**: No `--list-models` flag. Check docs at developers.openai.com/codex/models/ or use web search
+- **Copilot**: No native list command. Use `copilot -p 'list available models'` (non-interactive) or check docs.github.com/en/copilot/reference/ai-models/supported-models
+- **Cursor Agent**: `agent --list-models` — works great, comprehensive output
+- **OpenCode**: `opencode models` — lists all models in `provider/model-id` format (shows bundled + provider models)
 - **Claude**: `claude --help` or check docs at code.claude.com/docs/en/cli-reference
-- **Pi**: `pi --list-models`
+- **Pi**: `pi --list-models` — shows comprehensive table with provider, model, context, max-out, thinking, images columns.
 
 ### 4. Get Model Recommendations for Code Review
 
