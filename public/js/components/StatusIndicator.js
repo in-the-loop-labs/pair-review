@@ -110,6 +110,7 @@ class StatusIndicator {
    * @param {string} message - Completion message
    */
   showComplete(message = 'Analysis complete') {
+    if (window.notificationSounds) window.notificationSounds.playIfEnabled('analysis');
     this.updateText(message);
     this.showCheckmark();
     this.stopDotsAnimation();

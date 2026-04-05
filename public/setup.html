@@ -528,6 +528,7 @@
 
     <!-- WebSocket client -->
     <script src="/js/ws-client.js"></script>
+    <script src="/js/utils/notification-sounds.js"></script>
 
     <script>
         // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
@@ -817,6 +818,9 @@
                             renderSteps();
                             updateProgressBar();
                             showRedirect();
+
+                            // Play notification sound for PR setup completion
+                            if (window.notificationSounds && mode !== 'local') window.notificationSounds.playIfEnabled('setup');
 
                             // Small delay so the user sees the completed state
                             setTimeout(function() {
