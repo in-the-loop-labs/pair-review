@@ -3,22 +3,11 @@
 
 const fs = require('fs');
 const logger = require('../utils/logger');
-const { WorktreePoolRepository, WorktreeRepository, generatePoolWorktreeId } = require('../database');
+const { WorktreePoolRepository, WorktreeRepository, generateWorktreeId } = require('../database');
 const { GitWorktreeManager } = require('./worktree');
 const { WorktreePoolUsageTracker } = require('./worktree-pool-usage');
 const { normalizeRepository } = require('../utils/paths');
-
-/**
- * Error thrown when all pool slots for a repository are occupied.
- */
-class PoolExhaustedError extends Error {
-  constructor(repository, poolSize) {
-    super(`All ${poolSize} worktree pool slots for ${repository} are occupied. Close an existing review or wait for an analysis to complete.`);
-    this.name = 'PoolExhaustedError';
-    this.repository = repository;
-    this.poolSize = poolSize;
-  }
-}
+const { getRepoPoolSize } = require('../config');
 
 /**
  * Consolidates the worktree pool state machine: absorbs WorktreePoolManager
@@ -74,7 +63,7 @@ class WorktreePoolLifecycle {
    * 1. Pool worktree already assigned to this PR -> claim atomically, refresh and return
    * 2. Available (LRU) pool worktree exists -> claim atomically, switch to this PR
    * 3. Pool not full -> create a new pool worktree
-   * 4. All slots occupied -> throw PoolExhaustedError
+   * 4. All slots occupied -> create a standard non-pool worktree (slower fallback)
    *
    * @param {Object} prInfo - { owner, repo, prNumber, repository }
    * @param {Object} prData - { head: { sha, ref }, base: { sha, ref } }
@@ -125,15 +114,40 @@ class WorktreePoolLifecycle {
     }
 
     // 3. Pool not full -- atomically reserve a slot, then create
-    const poolId = generatePoolWorktreeId();
+    const poolId = generateWorktreeId();
     const reserved = await this._poolRepo.reserveSlot(poolId, repository, poolSize);
     if (reserved) {
       logger.info(`Reserved pool slot ${poolId} for PR #${prInfo.prNumber}, creating worktree`);
       return this._createPoolWorktree(prInfo, prData, repositoryPath, options, poolId);
     }
 
-    // 4. All slots occupied
-    throw new PoolExhaustedError(repository, poolSize);
+    // 4. All slots occupied — fall back to a standard non-pool worktree
+    //    (slower but functional; the pool is pre-warmed capacity, not a hard limit)
+    logger.warn(`Pool full for ${repository} (${poolSize} slots), creating non-pool worktree for PR #${prInfo.prNumber} — setup will be slower`);
+
+    const normalizedPrData = {
+      head_sha: prData.head?.sha || prData.head_sha,
+      head_branch: prData.head?.ref || prData.head_branch,
+      base_sha: prData.base?.sha || prData.base_sha,
+      base_branch: prData.base?.ref || prData.base_branch,
+      repository: prData.repository,
+    };
+
+    const normalizedPrInfo = {
+      owner: prInfo.owner,
+      repo: prInfo.repo,
+      number: prInfo.prNumber,
+    };
+
+    const worktreeManager = new this._GitWorktreeManager(this.db, options.worktreeConfig || {});
+    const { path: worktreePath, id: worktreeId } = await worktreeManager.createWorktreeForPR(
+      normalizedPrInfo,
+      normalizedPrData,
+      repositoryPath,
+      { worktreeSourcePath: options.worktreeSourcePath, checkoutScript: options.checkoutScript, checkoutTimeout: options.checkoutTimeout }
+    );
+
+    return { worktreePath, worktreeId };
   }
 
   /**
@@ -469,6 +483,12 @@ class WorktreePoolLifecycle {
       logger.info(`Pool startup: preserved ${preserved.length} active worktree(s)`);
     }
 
+    // 1b. Adopt existing non-pool worktrees into pool for pool-enabled repos
+    const adopted = await this._adoptExistingWorktrees();
+    for (const entry of adopted) {
+      preserved.push(entry);
+    }
+
     // 2. Wire up idle callback with retry logic (2 attempts, 1s delay)
     this._usageTracker.onIdle = async (worktreeId) => {
       for (let attempt = 1; attempt <= 2; attempt++) {
@@ -501,6 +521,73 @@ class WorktreePoolLifecycle {
 
     return preserved;
   }
+
+  /**
+   * Adopt existing non-pool worktrees into the pool for repos that have pool_size configured.
+   * Worktrees already in worktree_pool are skipped. Adoption stops at pool capacity.
+   *
+   * Returns adopted entries that have `status = 'in_use'` so the caller can
+   * rehydrate them with synthetic sessions (same as preserved entries).
+   *
+   * @returns {Promise<Array<{id: string, current_review_id: number}>>} Adopted in_use entries
+   * @private
+   */
+  async _adoptExistingWorktrees() {
+    const repos = this.config.repos || {};
+    const adoptedInUse = [];
+
+    for (const repoName of Object.keys(repos)) {
+      const poolSize = getRepoPoolSize(this.config, repoName);
+      if (!poolSize) continue;
+
+      // Count existing pool entries for this repo
+      const existingCount = await this._poolRepo.countForRepo(repoName);
+      if (existingCount >= poolSize) continue; // already at capacity
+
+      // Find worktrees for this repo that are NOT in the pool (includes review ID via JOIN)
+      const orphans = await this._poolRepo.findOrphanWorktrees(repoName);
+
+      let adopted = 0;
+      for (const orphan of orphans) {
+        if (existingCount + adopted >= poolSize) break; // respect capacity
+
+        // Skip orphans whose directory no longer exists on disk
+        if (!this._fs.existsSync(orphan.path)) {
+          logger.warn(`Pool startup: skipping adoption of ${orphan.id} — directory missing (${orphan.path})`);
+          continue;
+        }
+
+        if (orphan.reviewId) {
+          // Adopt as in_use with review ownership
+          await this._poolRepo.create({
+            id: orphan.id,
+            repository: orphan.repository,
+            path: orphan.path,
+            prNumber: orphan.pr_number,
+          });
+          await this._poolRepo.setCurrentReviewId(orphan.id, orphan.reviewId);
+          adoptedInUse.push({ id: orphan.id, current_review_id: orphan.reviewId });
+          logger.info(`Pool startup: adopted worktree ${orphan.id} for PR #${orphan.pr_number} (in_use, review ${orphan.reviewId})`);
+        } else {
+          // Adopt as available (no active review)
+          await this._poolRepo.create({
+            id: orphan.id,
+            repository: orphan.repository,
+            path: orphan.path,
+          });
+          logger.info(`Pool startup: adopted worktree ${orphan.id} for PR #${orphan.pr_number} (available, no review)`);
+        }
+
+        adopted++;
+      }
+
+      if (adopted > 0) {
+        logger.info(`Pool startup: adopted ${adopted} worktree(s) for ${repoName}`);
+      }
+    }
+
+    return adoptedInUse;
+  }
 }
 
-module.exports = { WorktreePoolLifecycle, PoolExhaustedError };
+module.exports = { WorktreePoolLifecycle };

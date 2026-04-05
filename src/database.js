@@ -1999,21 +1999,6 @@ function generateWorktreeId(length = 3) {
   return `pair-review--${randomPart}`;
 }
 
-/**
- * Generate a pool worktree ID with pool prefix
- * Format: pool-{random} where random is alphanumeric
- * @param {number} length - Length of the random part (default: 3)
- * @returns {string} Pool worktree ID in format "pool-xyz"
- */
-function generatePoolWorktreeId(length = 3) {
-  const chars = '0123456789abcdefghijklmnopqrstuvwxyz';
-  let randomPart = '';
-  for (let i = 0; i < length; i++) {
-    randomPart += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return `pool-${randomPart}`;
-}
-
 
 /**
  * WorktreeRepository class for managing worktree database records
@@ -2377,6 +2362,24 @@ class WorktreePoolRepository {
   async countForRepo(repository) {
     const row = await queryOne(this.db, `SELECT COUNT(*) as count FROM worktree_pool WHERE repository = ? COLLATE NOCASE`, [repository]);
     return row ? row.count : 0;
+  }
+
+  /**
+   * Find worktrees for a repository that are NOT in the pool.
+   * Joins reviews to get the review ID in one query (avoids N+1).
+   *
+   * @param {string} repository - Repository in "owner/repo" format
+   * @returns {Promise<Array<{id: string, path: string, pr_number: number, repository: string, reviewId: number|null}>>}
+   */
+  async findOrphanWorktrees(repository) {
+    return await query(this.db, `
+      SELECT w.id, w.path, w.pr_number, w.repository,
+             r.id AS reviewId
+      FROM worktrees w
+      LEFT JOIN worktree_pool wp ON w.id = wp.id
+      LEFT JOIN reviews r ON r.pr_number = w.pr_number AND r.repository = w.repository COLLATE NOCASE
+      WHERE w.repository = ? COLLATE NOCASE AND wp.id IS NULL
+    `, [repository]);
   }
 
   /**
@@ -4759,6 +4762,5 @@ module.exports = {
   CouncilRepository,
   ContextFileRepository,
   generateWorktreeId,
-  generatePoolWorktreeId,
   migrateExistingWorktrees
 };

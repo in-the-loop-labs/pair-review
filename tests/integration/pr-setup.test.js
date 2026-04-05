@@ -782,20 +782,25 @@ describe('pool-enabled PR setup', () => {
     expect(worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.releaseAfterHeadless).toHaveBeenCalledWith(poolWorktreeId);
   });
 
-  it('should propagate PoolExhaustedError when pool is full', async () => {
-    const { PoolExhaustedError } = worktreePoolLifecycleModule;
+  it('should succeed with non-pool fallback when pool is full (acquireForPR handles overflow)', async () => {
+    // acquireForPR now handles pool exhaustion internally by creating a non-pool
+    // worktree and returning it. The caller (setupPRReview) sees a normal result.
+    const nonPoolPath = '/tmp/non-pool-overflow-wt';
+    const nonPoolId = 'wt-overflow-123';
+    worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.acquireForPR.mockResolvedValue({
+      worktreePath: nonPoolPath,
+      worktreeId: nonPoolId,
+    });
 
-    worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.acquireForPR.mockRejectedValue(
-      new PoolExhaustedError(repository, 3)
+    const result = await setupPRReview({
+      db, owner, repo, prNumber, githubToken, config: testConfig,
+    });
+
+    expect(result.reviewUrl).toBe('/pr/owner/repo/42');
+    // setReviewOwner should still be called with the returned worktreeId
+    expect(worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.setReviewOwner).toHaveBeenCalledWith(
+      nonPoolId, expect.any(Number)
     );
-
-    await expect(
-      setupPRReview({ db, owner, repo, prNumber, githubToken, config: testConfig })
-    ).rejects.toThrow(PoolExhaustedError);
-
-    // releaseAfterHeadless should NOT be called because acquireForPR itself failed
-    // (poolWorktreeId is never set, so the catch block skips release)
-    expect(worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.releaseAfterHeadless).not.toHaveBeenCalled();
   });
 
   it('should not use pool when poolSize is 0', async () => {

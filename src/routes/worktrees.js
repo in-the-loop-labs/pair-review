@@ -12,7 +12,6 @@ const express = require('express');
 const { query, queryOne, run, ReviewRepository, WorktreePoolRepository } = require('../database');
 const { setupPRReview } = require('../setup/pr-setup');
 const { GitHubApiError } = require('../github/client');
-const { PoolExhaustedError } = require('../git/worktree-pool-lifecycle');
 const { GitWorktreeManager } = require('../git/worktree');
 const { activeAnalyses, reviewToAnalysisId, killProcesses, broadcastProgress } = require('./shared');
 const { AnalysisRunRepository } = require('../database');
@@ -85,14 +84,6 @@ router.post('/api/worktrees/create', async (req, res) => {
 
   } catch (error) {
     logger.error('Error creating worktree from web UI:', error);
-
-    if (error instanceof PoolExhaustedError) {
-      return res.status(409).json({
-        success: false,
-        error: error.message,
-        code: 'POOL_EXHAUSTED'
-      });
-    }
 
     // GitHubApiError carries a numeric HTTP status from the GitHub client,
     // so we can route errors precisely without fragile string matching.

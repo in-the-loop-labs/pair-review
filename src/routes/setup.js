@@ -18,7 +18,6 @@ const { setupLocalReview } = require('../setup/local-setup');
 const { getGitHubToken, expandPath } = require('../config');
 const { queryOne } = require('../database');
 const { normalizeRepository } = require('../utils/paths');
-const { PoolExhaustedError } = require('../git/worktree-pool-lifecycle');
 const logger = require('../utils/logger');
 
 const router = express.Router();
@@ -130,8 +129,7 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
         sendSetupEvent(setupId, 'complete', { reviewUrl: result.reviewUrl, title: result.title });
       } catch (err) {
         logger.error(`PR setup failed for ${setupKey}:`, err);
-        const code = err instanceof PoolExhaustedError ? 'POOL_EXHAUSTED' : undefined;
-        sendSetupEvent(setupId, 'error', { message: err.message, code });
+        sendSetupEvent(setupId, 'error', { message: err.message });
       } finally {
         activeSetups.delete(setupKey);
       }

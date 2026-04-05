@@ -13,7 +13,7 @@
 
 const { run, queryOne, WorktreeRepository, RepoSettingsRepository } = require('../database');
 const { GitWorktreeManager } = require('../git/worktree');
-const { WorktreePoolLifecycle, PoolExhaustedError } = require('../git/worktree-pool-lifecycle');
+const { WorktreePoolLifecycle } = require('../git/worktree-pool-lifecycle');
 const { GitHubClient } = require('../github/client');
 const { normalizeRepository } = require('../utils/paths');
 const { findMainGitRoot } = require('../local-review');
