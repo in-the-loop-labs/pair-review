@@ -980,6 +980,15 @@ describe('ChatSessionManager', () => {
       expect(bridge._constructorOptions.provider).toBe('google');
     });
 
+    it('should pass args from provider def as extraArgs to PiBridge', async () => {
+      mockChatProviders.getChatProvider.mockImplementationOnce(
+        () => ({ id: 'pi', type: 'pi', args: ['--no-extensions', '-e', '/tmp/ext'] })
+      );
+      await manager.createSession({ provider: 'pi', reviewId: 1 });
+      const bridge = _createdBridges[0];
+      expect(bridge._constructorOptions.extraArgs).toEqual(['--no-extensions', '-e', '/tmp/ext']);
+    });
+
     it('should pass model from provider def to ClaudeCodeBridge when no session model', async () => {
       mockChatProviders.getChatProvider.mockImplementationOnce(
         () => ({ id: 'claude', type: 'claude', command: 'claude', model: 'claude-sonnet-4-6' })
