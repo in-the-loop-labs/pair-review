@@ -20,7 +20,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 36;
+const CURRENT_SCHEMA_VERSION = 39;
 
 /**
  * Database schema SQL statements
@@ -277,6 +277,21 @@ const SCHEMA_SQL = {
       collection TEXT NOT NULL,
       fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
+  `,
+
+  worktree_pool: `
+    CREATE TABLE IF NOT EXISTS worktree_pool (
+      id TEXT PRIMARY KEY,
+      repository TEXT NOT NULL,
+      path TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL DEFAULT 'available'
+        CHECK(status IN ('available', 'in_use', 'switching', 'creating')),
+      current_pr_number INTEGER,
+      current_review_id INTEGER,
+      last_switched_at TEXT,
+      last_fetched_at TEXT,
+      created_at TEXT NOT NULL
+    )
   `
 };
 
@@ -315,7 +330,11 @@ const INDEX_SQL = [
   // Context files indexes
   'CREATE INDEX IF NOT EXISTS idx_context_files_review ON context_files(review_id)',
   // GitHub PR cache indexes
-  'CREATE UNIQUE INDEX IF NOT EXISTS idx_github_pr_cache_unique ON github_pr_cache(collection, owner, repo, number)'
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_github_pr_cache_unique ON github_pr_cache(collection, owner, repo, number)',
+  // Worktree pool indexes
+  'CREATE INDEX IF NOT EXISTS idx_worktree_pool_repo ON worktree_pool(repository)',
+  'CREATE INDEX IF NOT EXISTS idx_worktree_pool_status ON worktree_pool(repository, status)',
+  'CREATE INDEX IF NOT EXISTS idx_worktree_pool_lru ON worktree_pool(repository, status, last_switched_at)'
 ];
 
 /**
@@ -1635,6 +1654,83 @@ const MIGRATIONS = {
     }
 
     console.log('Migration to schema version 36 complete');
+  },
+
+  37: (db) => {
+    console.log('Running migration to schema version 37...');
+
+    if (!tableExists(db, 'worktree_pool')) {
+      db.exec(SCHEMA_SQL.worktree_pool);
+      console.log('  Created worktree_pool table');
+    }
+
+    db.exec('CREATE INDEX IF NOT EXISTS idx_worktree_pool_repo ON worktree_pool(repository)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_worktree_pool_status ON worktree_pool(repository, status)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_worktree_pool_lru ON worktree_pool(repository, status, last_switched_at)');
+
+    console.log('Migration to schema version 37 complete');
+  },
+
+  // Migration to version 38: Add current_review_id to worktree_pool for persistent ownership
+  38: (db) => {
+    console.log('Running migration to schema version 38...');
+
+    if (tableExists(db, 'worktree_pool') && !columnExists(db, 'worktree_pool', 'current_review_id')) {
+      db.prepare('ALTER TABLE worktree_pool ADD COLUMN current_review_id INTEGER').run();
+      console.log('  Added column current_review_id to worktree_pool');
+    }
+
+    console.log('Migration to schema version 38 complete');
+  },
+
+  39: (db) => {
+    console.log('Running migration to schema version 39: Add creating status to worktree_pool...');
+
+    if (!tableExists(db, 'worktree_pool')) {
+      console.log('  worktree_pool table does not exist, skipping');
+      console.log('Migration to schema version 39 complete');
+      return;
+    }
+
+    // SQLite does not support ALTER TABLE to modify CHECK constraints.
+    // Rebuild the table with the updated constraint.
+    db.pragma('foreign_keys = OFF');
+
+    db.prepare(`CREATE TABLE IF NOT EXISTS worktree_pool_rebuild (
+      id TEXT PRIMARY KEY,
+      repository TEXT NOT NULL,
+      path TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL DEFAULT 'available'
+        CHECK(status IN ('available', 'in_use', 'switching', 'creating')),
+      current_pr_number INTEGER,
+      current_review_id INTEGER,
+      last_switched_at TEXT,
+      last_fetched_at TEXT,
+      created_at TEXT NOT NULL
+    )`).run();
+
+    const cols = [
+      'id', 'repository', 'path', 'status',
+      'current_pr_number', 'current_review_id',
+      'last_switched_at', 'last_fetched_at', 'created_at'
+    ].join(', ');
+
+    const rebuild = db.transaction(() => {
+      db.prepare(`INSERT INTO worktree_pool_rebuild (${cols}) SELECT ${cols} FROM worktree_pool`).run();
+      db.prepare('DROP TABLE worktree_pool').run();
+      db.prepare('ALTER TABLE worktree_pool_rebuild RENAME TO worktree_pool').run();
+    });
+    rebuild();
+
+    db.pragma('foreign_keys = ON');
+
+    // Recreate indexes on the rebuilt table (must match INDEX_SQL definitions)
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_worktree_pool_repo ON worktree_pool(repository)').run();
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_worktree_pool_status ON worktree_pool(repository, status)').run();
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_worktree_pool_lru ON worktree_pool(repository, status, last_switched_at)').run();
+
+    console.log('  Rebuilt worktree_pool with creating status in CHECK constraint');
+    console.log('Migration to schema version 39 complete');
   }
 };
 
@@ -1904,6 +2000,22 @@ function generateWorktreeId(length = 3) {
 }
 
 /**
+ * Generate a pool worktree ID with pool prefix
+ * Format: pool-{random} where random is alphanumeric
+ * @param {number} length - Length of the random part (default: 3)
+ * @returns {string} Pool worktree ID in format "pool-xyz"
+ */
+function generatePoolWorktreeId(length = 3) {
+  const chars = '0123456789abcdefghijklmnopqrstuvwxyz';
+  let randomPart = '';
+  for (let i = 0; i < length; i++) {
+    randomPart += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return `pool-${randomPart}`;
+}
+
+
+/**
  * WorktreeRepository class for managing worktree database records
  */
 class WorktreeRepository {
@@ -2016,10 +2128,11 @@ class WorktreeRepository {
     const dateStr = olderThan instanceof Date ? olderThan.toISOString() : olderThan;
 
     const rows = await query(this.db, `
-      SELECT id, pr_number, repository, branch, path, created_at, last_accessed_at
-      FROM worktrees
-      WHERE last_accessed_at < ?
-      ORDER BY last_accessed_at ASC
+      SELECT w.id, w.pr_number, w.repository, w.branch, w.path, w.created_at, w.last_accessed_at
+      FROM worktrees w
+      LEFT JOIN worktree_pool wp ON w.id = wp.id
+      WHERE w.last_accessed_at < ? AND wp.id IS NULL
+      ORDER BY w.last_accessed_at ASC
     `, [dateStr]);
 
     return rows;
@@ -2106,12 +2219,378 @@ class WorktreeRepository {
   }
 
   /**
+   * Switch a worktree's PR assignment (for pool worktree switching).
+   * Unlike getOrCreate, this updates an existing record by ID rather than by PR number.
+   * Removes any conflicting non-pool worktree record for the target PR to avoid
+   * UNIQUE(pr_number, repository) violations when transitioning from non-pool to pool mode.
+   * @param {string} id - Worktree ID
+   * @param {number} prNumber - New PR number
+   * @param {string} branch - New branch name
+   * @returns {Promise<string[]>} Paths of deleted non-pool worktree records (for filesystem cleanup)
+   */
+  async switchPR(id, prNumber, branch) {
+    const now = new Date().toISOString();
+    let deletedPaths = [];
+    // Look up this worktree's repository so we can check for conflicts
+    const self = await queryOne(this.db, `SELECT repository FROM worktrees WHERE id = ?`, [id]);
+    if (self && self.repository) {
+      // Wrap SELECT + DELETE + UPDATE in a transaction to avoid partial state
+      await run(this.db, 'BEGIN IMMEDIATE');
+      try {
+        // Collect paths of conflicting non-pool worktree records before deleting
+        // (the caller needs these to clean up the actual git worktree directories on disk)
+        const conflicting = this.db.prepare(`
+          SELECT path FROM worktrees
+          WHERE pr_number = ? AND repository = ? COLLATE NOCASE AND id != ?
+            AND id NOT IN (SELECT id FROM worktree_pool)
+        `).all(prNumber, self.repository, id);
+        deletedPaths = conflicting.map(row => row.path).filter(Boolean);
+
+        // Remove any conflicting non-pool worktree record for the target PR
+        // (can exist when transitioning a repo from non-pool to pool mode)
+        await run(this.db, `
+          DELETE FROM worktrees
+          WHERE pr_number = ? AND repository = ? COLLATE NOCASE AND id != ?
+            AND id NOT IN (SELECT id FROM worktree_pool)
+        `, [prNumber, self.repository, id]);
+        await run(this.db, `UPDATE worktrees SET pr_number = ?, branch = ?, last_accessed_at = ? WHERE id = ?`, [prNumber, branch, now, id]);
+        await run(this.db, 'COMMIT');
+      } catch (err) {
+        await run(this.db, 'ROLLBACK');
+        throw err;
+      }
+    } else {
+      await run(this.db, `UPDATE worktrees SET pr_number = ?, branch = ?, last_accessed_at = ? WHERE id = ?`, [prNumber, branch, now, id]);
+    }
+    return deletedPaths;
+  }
+
+
+  /**
+   * Find a worktree record by its filesystem path.
+   * @param {string} worktreePath - Absolute path to the worktree
+   * @returns {Promise<Object|null>} Worktree record or null
+   */
+  async findByPath(worktreePath) {
+    return queryOne(this.db, `SELECT * FROM worktrees WHERE path = ?`, [worktreePath]);
+  }
+
+  /**
    * Count total worktrees in the database
    * @returns {Promise<number>} Total count
    */
   async count() {
     const result = await queryOne(this.db, 'SELECT COUNT(*) as count FROM worktrees');
     return result ? result.count : 0;
+  }
+}
+
+/**
+ * WorktreePoolRepository class for managing pool worktree database records
+ */
+class WorktreePoolRepository {
+  constructor(db) {
+    this.db = db;
+  }
+
+  /**
+   * Create a pool entry for a worktree.
+   * @param {object} params
+   * @param {string} params.id - Pool worktree ID (e.g., 'pool-abc')
+   * @param {string} params.repository - owner/repo
+   * @param {string} params.path - Absolute filesystem path
+   * @param {number} [params.prNumber] - If provided, insert as 'in_use' for this PR (avoids race with claimAvailable)
+   */
+  async create({ id, repository, path, prNumber }) {
+    const now = new Date().toISOString();
+    if (prNumber != null) {
+      await run(this.db, `INSERT INTO worktree_pool (id, repository, path, status, current_pr_number, last_switched_at, created_at) VALUES (?, ?, ?, 'in_use', ?, ?, ?)`, [id, repository, path, prNumber, now, now]);
+    } else {
+      await run(this.db, `INSERT INTO worktree_pool (id, repository, path, status, created_at) VALUES (?, ?, ?, 'available', ?)`, [id, repository, path, now]);
+    }
+  }
+
+  /**
+   * Find an available (evictable) pool worktree for a repository,
+   * ordered by LRU (oldest last_switched_at first, NULLs first).
+   */
+  async findAvailable(repository) {
+    return await queryOne(this.db, `
+      SELECT id, repository, path, status, current_pr_number, last_switched_at, last_fetched_at, created_at
+      FROM worktree_pool
+      WHERE repository = ? COLLATE NOCASE AND status = 'available'
+      ORDER BY last_switched_at ASC NULLS FIRST
+      LIMIT 1
+    `, [repository]);
+  }
+
+  /**
+   * Find a pool worktree currently assigned to a PR.
+   */
+  async findByPR(prNumber, repository) {
+    return await queryOne(this.db, `
+      SELECT id, repository, path, status, current_pr_number, last_switched_at, last_fetched_at, created_at
+      FROM worktree_pool
+      WHERE current_pr_number = ? AND repository = ? COLLATE NOCASE
+    `, [prNumber, repository]);
+  }
+
+  /**
+   * Count pool worktrees for a repository.
+   */
+  async countForRepo(repository) {
+    const row = await queryOne(this.db, `SELECT COUNT(*) as count FROM worktree_pool WHERE repository = ? COLLATE NOCASE`, [repository]);
+    return row ? row.count : 0;
+  }
+
+  /**
+   * Mark a pool worktree as in_use.
+   */
+  async markInUse(id, prNumber) {
+    const now = new Date().toISOString();
+    await run(this.db, `UPDATE worktree_pool SET status = 'in_use', current_pr_number = ?, last_switched_at = ?, current_review_id = NULL WHERE id = ?`, [prNumber, now, id]);
+  }
+
+  /**
+   * Mark a pool worktree as available (evictable).
+   * Clears current_review_id to release ownership.
+   */
+  async markAvailable(id) {
+    await run(this.db, `UPDATE worktree_pool SET status = 'available', current_review_id = NULL WHERE id = ?`, [id]);
+  }
+
+  /**
+   * Mark a pool worktree as switching (transitional state during PR switch).
+   */
+  async markSwitching(id) {
+    await run(this.db, `UPDATE worktree_pool SET status = 'switching' WHERE id = ?`, [id]);
+  }
+
+  /**
+   * Update last_fetched_at timestamp.
+   */
+  async updateLastFetched(id) {
+    const now = new Date().toISOString();
+    await run(this.db, `UPDATE worktree_pool SET last_fetched_at = ? WHERE id = ?`, [now, id]);
+  }
+
+  /**
+   * Find idle pool worktrees for a repository (status = 'available').
+   */
+  async findIdleForRepo(repository) {
+    return await query(this.db, `
+      SELECT id, repository, path, status, current_pr_number, last_switched_at, last_fetched_at, created_at
+      FROM worktree_pool
+      WHERE repository = ? COLLATE NOCASE AND status = 'available'
+      ORDER BY last_switched_at ASC NULLS FIRST
+    `, [repository]);
+  }
+
+  /**
+   * Find all pool worktrees for a repository.
+   */
+  async findAllForRepo(repository) {
+    return await query(this.db, `
+      SELECT id, repository, path, status, current_pr_number, last_switched_at, last_fetched_at, created_at
+      FROM worktree_pool
+      WHERE repository = ? COLLATE NOCASE
+    `, [repository]);
+  }
+
+  /**
+   * Find all pool worktrees for background fetch (excludes 'switching' status).
+   * Ordered by last_fetched_at ASC NULLS FIRST (coldest first).
+   */
+  async findAllForFetch(repository) {
+    return await query(this.db, `
+      SELECT id, path, last_fetched_at, status
+      FROM worktree_pool
+      WHERE repository = ? COLLATE NOCASE AND status != 'switching'
+      ORDER BY last_fetched_at ASC NULLS FIRST
+    `, [repository]);
+  }
+
+  /**
+   * Check if a worktree ID belongs to the pool.
+   */
+  async isPoolWorktree(id) {
+    const row = await queryOne(this.db, `SELECT id FROM worktree_pool WHERE id = ?`, [id]);
+    return !!row;
+  }
+
+  /**
+   * Get a pool entry by worktree ID, returning the full row including status.
+   * @param {string} id - Pool worktree ID
+   * @returns {Promise<Object|undefined>} Pool entry or undefined if not found
+   */
+  async getPoolEntry(id) {
+    return await queryOne(this.db, `
+      SELECT id, repository, path, status, current_pr_number, last_switched_at, last_fetched_at, created_at
+      FROM worktree_pool WHERE id = ?
+    `, [id]);
+  }
+
+  /**
+   * Delete a pool entry.
+   */
+  async delete(id) {
+    await run(this.db, `DELETE FROM worktree_pool WHERE id = ?`, [id]);
+  }
+
+  /**
+   * Find a pool worktree currently assigned to a review.
+   * @param {number} reviewId - The review ID
+   * @returns {Promise<{id: string}|undefined>} Pool entry with worktree ID, or undefined
+   */
+  async findByReviewId(reviewId) {
+    return await queryOne(this.db, `SELECT id FROM worktree_pool WHERE current_review_id = ? AND status = 'in_use'`, [reviewId]);
+  }
+
+  /**
+   * Set the current review ID for a pool worktree (persistent ownership).
+   * @param {string} id - Pool worktree ID
+   * @param {number|null} reviewId - Review ID that owns the worktree
+   */
+  async setCurrentReviewId(id, reviewId) {
+    await run(this.db, `UPDATE worktree_pool SET current_review_id = ? WHERE id = ?`, [reviewId, id]);
+  }
+
+  /**
+   * Atomically reserve a new pool slot if capacity allows.
+   * Uses BEGIN IMMEDIATE to serialize against concurrent callers, preventing
+   * two requests from both observing spare capacity and both creating slots.
+   *
+   * Inserts a placeholder row with status 'creating'. The caller must:
+   * - On success: call markInUse() to transition to 'in_use'
+   * - On failure: call deleteReservation() to remove the placeholder
+   *
+   * @param {string} id - Pool worktree ID (e.g., 'pool-abc')
+   * @param {string} repository - Repository in "owner/repo" format
+   * @param {number} poolSize - Maximum pool slots for this repository
+   * @returns {Promise<boolean>} true if the slot was reserved, false if at capacity
+   */
+  async reserveSlot(id, repository, poolSize) {
+    const reserveTx = this.db.transaction(() => {
+      const row = this.db.prepare(
+        `SELECT COUNT(*) as count FROM worktree_pool WHERE repository = ? COLLATE NOCASE`
+      ).get(repository);
+      const currentCount = row ? row.count : 0;
+      if (currentCount >= poolSize) {
+        return false;
+      }
+      const now = new Date().toISOString();
+      // Use a unique placeholder path to satisfy the UNIQUE constraint.
+      // finalizeReservation will replace it with the real path.
+      const placeholderPath = `__creating__${id}`;
+      this.db.prepare(
+        `INSERT INTO worktree_pool (id, repository, path, status, created_at) VALUES (?, ?, ?, 'creating', ?)`
+      ).run(id, repository, placeholderPath, now);
+      return true;
+    });
+    return reserveTx.immediate();
+  }
+
+  /**
+   * Finalize a reserved pool slot after successful worktree creation.
+   * Updates the placeholder row with the actual path and marks it in_use.
+   *
+   * @param {string} id - Pool worktree ID
+   * @param {string} path - Absolute filesystem path to the created worktree
+   * @param {number} prNumber - PR number to assign
+   */
+  async finalizeReservation(id, path, prNumber) {
+    const now = new Date().toISOString();
+    await run(this.db, `UPDATE worktree_pool SET path = ?, status = 'in_use', current_pr_number = ?, last_switched_at = ? WHERE id = ? AND status = 'creating'`, [path, prNumber, now, id]);
+  }
+
+  /**
+   * Delete a reserved pool slot placeholder (cleanup on creation failure).
+   *
+   * @param {string} id - Pool worktree ID to remove
+   */
+  async deleteReservation(id) {
+    await run(this.db, `DELETE FROM worktree_pool WHERE id = ? AND status = 'creating'`, [id]);
+  }
+
+  /**
+   * Atomically find and claim a pool worktree already assigned to a PR.
+   * Uses BEGIN IMMEDIATE to serialize against concurrent callers.
+   *
+   * @param {number} prNumber - PR number to find
+   * @param {string} repository - Repository in "owner/repo" format
+   * @returns {Promise<Object|null>} Claimed pool entry or null if not found
+   */
+  async claimByPR(prNumber, repository) {
+    const claimTx = this.db.transaction(() => {
+      const entry = this.db.prepare(`
+        SELECT id, repository, path, status, current_pr_number, last_switched_at, last_fetched_at, created_at
+        FROM worktree_pool
+        WHERE current_pr_number = ? AND repository = ? COLLATE NOCASE
+          AND status IN ('in_use', 'available')
+      `).get(prNumber, repository);
+      if (entry) {
+        const now = new Date().toISOString();
+        this.db.prepare(
+          `UPDATE worktree_pool SET status = 'in_use', current_pr_number = ?, last_switched_at = ?, current_review_id = NULL WHERE id = ?`
+        ).run(prNumber, now, entry.id);
+      }
+      return entry || null;
+    });
+    return claimTx.immediate();
+  }
+
+  /**
+   * Atomically find and claim the LRU available pool worktree for a repository.
+   * Uses BEGIN IMMEDIATE to serialize against concurrent callers.
+   * Marks the claimed entry as 'switching' so no other caller can grab it.
+   *
+   * @param {string} repository - Repository in "owner/repo" format
+   * @returns {Promise<Object|null>} Claimed pool entry or null if none available
+   */
+  async claimAvailable(repository) {
+    const claimTx = this.db.transaction(() => {
+      const entry = this.db.prepare(`
+        SELECT id, repository, path, status, current_pr_number, last_switched_at, last_fetched_at, created_at
+        FROM worktree_pool
+        WHERE repository = ? COLLATE NOCASE AND status = 'available'
+        ORDER BY last_switched_at ASC NULLS FIRST
+        LIMIT 1
+      `).get(repository);
+      if (entry) {
+        this.db.prepare(
+          `UPDATE worktree_pool SET status = 'switching' WHERE id = ?`
+        ).run(entry.id);
+      }
+      return entry || null;
+    });
+    return claimTx.immediate();
+  }
+
+  /**
+   * Reset stale pool entries on startup while preserving valid ownership.
+   * Entries are considered stale if: no review owner, interrupted switching,
+   * or the owning review has been deleted.
+   * @returns {Array<{id: string, current_review_id: number}>} Preserved entries for in-memory rehydration
+   */
+  async resetStaleAndPreserve() {
+    // Delete placeholder entries that were mid-creation when the server stopped.
+    // These have no valid path or worktree on disk — they cannot be recovered.
+    await run(this.db, `DELETE FROM worktree_pool WHERE status = 'creating'`);
+
+    // Reset entries that are stale: no review owner, interrupted switching, or review deleted
+    await run(this.db, `
+      UPDATE worktree_pool SET status = 'available', current_review_id = NULL
+      WHERE status != 'available' AND (
+        current_review_id IS NULL
+        OR status = 'switching'
+        OR current_review_id NOT IN (SELECT id FROM reviews)
+      )
+    `);
+    // Return preserved entries for in-memory rehydration
+    return await query(this.db, `
+      SELECT id, current_review_id FROM worktree_pool
+      WHERE status = 'in_use' AND current_review_id IS NOT NULL
+    `);
   }
 }
 
@@ -4234,6 +4713,7 @@ module.exports = {
   CURRENT_SCHEMA_VERSION,
   getDbPath,
   WorktreeRepository,
+  WorktreePoolRepository,
   RepoSettingsRepository,
   ReviewRepository,
   CommentRepository,
@@ -4243,5 +4723,6 @@ module.exports = {
   CouncilRepository,
   ContextFileRepository,
   generateWorktreeId,
+  generatePoolWorktreeId,
   migrateExistingWorktrees
 };

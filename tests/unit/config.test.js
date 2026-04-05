@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const childProcess = require('child_process');
-const { deepMerge, getGitHubToken, expandPath, getMonorepoPath, getMonorepoCheckoutScript, getMonorepoWorktreeDirectory, getMonorepoWorktreeNameTemplate, getMonorepoCheckoutTimeout, resolveMonorepoOptions, resolveDbName, warnIfDevModeWithoutDbName, loadConfig, shouldSkipUpdateNotifier, _resetTokenCache } = require('../../src/config');
+const { deepMerge, getGitHubToken, expandPath, resolveDbName, warnIfDevModeWithoutDbName, loadConfig, shouldSkipUpdateNotifier, _resetTokenCache, getRepoConfig, getRepoPath, getRepoCheckoutScript, getRepoWorktreeDirectory, getRepoWorktreeNameTemplate, getRepoCheckoutTimeout, resolveRepoOptions, getRepoResetScript, getRepoPoolSize, getRepoPoolFetchInterval } = require('../../src/config');
 
 describe('config.js', () => {
   describe('getGitHubToken', () => {
@@ -285,15 +285,15 @@ describe('config.js', () => {
     });
   });
 
-  describe('getMonorepoPath', () => {
-    it('should return expanded path for configured repository', () => {
+  describe('getRepoPath (legacy monorepos key)', () => {
+    it('should return expanded path for configured repository via monorepos key', () => {
       const config = {
         monorepos: {
           'owner/repo': { path: '~/monorepos/my-repo' }
         }
       };
 
-      const result = getMonorepoPath(config, 'owner/repo');
+      const result = getRepoPath(config, 'owner/repo');
       expect(result).toBe(`${os.homedir()}/monorepos/my-repo`);
     });
 
@@ -304,32 +304,32 @@ describe('config.js', () => {
         }
       };
 
-      const result = getMonorepoPath(config, 'owner/repo');
+      const result = getRepoPath(config, 'owner/repo');
       expect(result).toBe(null);
     });
 
-    it('should return null when config has no monorepos', () => {
+    it('should return null when config has no repos or monorepos', () => {
       const config = {};
 
-      const result = getMonorepoPath(config, 'owner/repo');
+      const result = getRepoPath(config, 'owner/repo');
       expect(result).toBe(null);
     });
 
-    it('should return null when monorepos is undefined', () => {
+    it('should return null when only unrelated keys exist', () => {
       const config = { github_token: 'token' };
 
-      const result = getMonorepoPath(config, 'owner/repo');
+      const result = getRepoPath(config, 'owner/repo');
       expect(result).toBe(null);
     });
 
-    it('should return null when monorepo config has no path', () => {
+    it('should return null when repo config has no path', () => {
       const config = {
         monorepos: {
           'owner/repo': { description: 'no path here' }
         }
       };
 
-      const result = getMonorepoPath(config, 'owner/repo');
+      const result = getRepoPath(config, 'owner/repo');
       expect(result).toBe(null);
     });
 
@@ -340,20 +340,20 @@ describe('config.js', () => {
         }
       };
 
-      const result = getMonorepoPath(config, 'owner/repo');
+      const result = getRepoPath(config, 'owner/repo');
       expect(result).toBe('/absolute/path/to/repo');
     });
   });
 
-  describe('getMonorepoCheckoutScript', () => {
-    it('should return checkout script for configured repository', () => {
+  describe('getRepoCheckoutScript (legacy monorepos key)', () => {
+    it('should return checkout script for configured repository via monorepos key', () => {
       const config = {
         monorepos: {
           'owner/repo': { checkout_script: './scripts/pr-checkout.sh' }
         }
       };
 
-      const result = getMonorepoCheckoutScript(config, 'owner/repo');
+      const result = getRepoCheckoutScript(config, 'owner/repo');
       expect(result).toBe('./scripts/pr-checkout.sh');
     });
 
@@ -364,38 +364,38 @@ describe('config.js', () => {
         }
       };
 
-      const result = getMonorepoCheckoutScript(config, 'owner/repo');
+      const result = getRepoCheckoutScript(config, 'owner/repo');
       expect(result).toBe(null);
     });
 
-    it('should return null when monorepo config has no checkout_script', () => {
+    it('should return null when repo config has no checkout_script', () => {
       const config = {
         monorepos: {
           'owner/repo': { path: '~/some/path' }
         }
       };
 
-      const result = getMonorepoCheckoutScript(config, 'owner/repo');
+      const result = getRepoCheckoutScript(config, 'owner/repo');
       expect(result).toBe(null);
     });
 
-    it('should return null when config has no monorepos', () => {
+    it('should return null when config has no repos or monorepos', () => {
       const config = {};
 
-      const result = getMonorepoCheckoutScript(config, 'owner/repo');
+      const result = getRepoCheckoutScript(config, 'owner/repo');
       expect(result).toBe(null);
     });
   });
 
-  describe('getMonorepoWorktreeDirectory', () => {
-    it('should return expanded path for configured repository', () => {
+  describe('getRepoWorktreeDirectory (legacy monorepos key)', () => {
+    it('should return expanded path for configured repository via monorepos key', () => {
       const config = {
         monorepos: {
           'owner/repo': { worktree_directory: '~/custom/worktrees' }
         }
       };
 
-      const result = getMonorepoWorktreeDirectory(config, 'owner/repo');
+      const result = getRepoWorktreeDirectory(config, 'owner/repo');
       expect(result).toBe(`${os.homedir()}/custom/worktrees`);
     });
 
@@ -406,25 +406,25 @@ describe('config.js', () => {
         }
       };
 
-      const result = getMonorepoWorktreeDirectory(config, 'owner/repo');
+      const result = getRepoWorktreeDirectory(config, 'owner/repo');
       expect(result).toBe(null);
     });
 
-    it('should return null when monorepo config has no worktree_directory', () => {
+    it('should return null when repo config has no worktree_directory', () => {
       const config = {
         monorepos: {
           'owner/repo': { path: '~/some/path' }
         }
       };
 
-      const result = getMonorepoWorktreeDirectory(config, 'owner/repo');
+      const result = getRepoWorktreeDirectory(config, 'owner/repo');
       expect(result).toBe(null);
     });
 
-    it('should return null when config has no monorepos', () => {
+    it('should return null when config has no repos or monorepos', () => {
       const config = {};
 
-      const result = getMonorepoWorktreeDirectory(config, 'owner/repo');
+      const result = getRepoWorktreeDirectory(config, 'owner/repo');
       expect(result).toBe(null);
     });
 
@@ -435,20 +435,20 @@ describe('config.js', () => {
         }
       };
 
-      const result = getMonorepoWorktreeDirectory(config, 'owner/repo');
+      const result = getRepoWorktreeDirectory(config, 'owner/repo');
       expect(result).toBe('/absolute/worktrees');
     });
   });
 
-  describe('getMonorepoWorktreeNameTemplate', () => {
-    it('should return template for configured repository', () => {
+  describe('getRepoWorktreeNameTemplate (legacy monorepos key)', () => {
+    it('should return template for configured repository via monorepos key', () => {
       const config = {
         monorepos: {
           'owner/repo': { worktree_name_template: '{id}/src' }
         }
       };
 
-      const result = getMonorepoWorktreeNameTemplate(config, 'owner/repo');
+      const result = getRepoWorktreeNameTemplate(config, 'owner/repo');
       expect(result).toBe('{id}/src');
     });
 
@@ -459,25 +459,25 @@ describe('config.js', () => {
         }
       };
 
-      const result = getMonorepoWorktreeNameTemplate(config, 'owner/repo');
+      const result = getRepoWorktreeNameTemplate(config, 'owner/repo');
       expect(result).toBe(null);
     });
 
-    it('should return null when monorepo config has no worktree_name_template', () => {
+    it('should return null when repo config has no worktree_name_template', () => {
       const config = {
         monorepos: {
           'owner/repo': { path: '~/some/path' }
         }
       };
 
-      const result = getMonorepoWorktreeNameTemplate(config, 'owner/repo');
+      const result = getRepoWorktreeNameTemplate(config, 'owner/repo');
       expect(result).toBe(null);
     });
 
-    it('should return null when config has no monorepos', () => {
+    it('should return null when config has no repos or monorepos', () => {
       const config = {};
 
-      const result = getMonorepoWorktreeNameTemplate(config, 'owner/repo');
+      const result = getRepoWorktreeNameTemplate(config, 'owner/repo');
       expect(result).toBe(null);
     });
 
@@ -488,20 +488,20 @@ describe('config.js', () => {
         }
       };
 
-      const result = getMonorepoWorktreeNameTemplate(config, 'owner/repo');
+      const result = getRepoWorktreeNameTemplate(config, 'owner/repo');
       expect(result).toBe('pr-{pr_number}/{owner}-{repo}/{id}');
     });
   });
 
-  describe('getMonorepoCheckoutTimeout', () => {
-    it('should return configured value converted to milliseconds', () => {
+  describe('getRepoCheckoutTimeout (legacy monorepos key)', () => {
+    it('should return configured value converted to milliseconds via monorepos key', () => {
       const config = {
         monorepos: {
           'owner/repo': { checkout_timeout_seconds: 120 }
         }
       };
 
-      const result = getMonorepoCheckoutTimeout(config, 'owner/repo');
+      const result = getRepoCheckoutTimeout(config, 'owner/repo');
       expect(result).toBe(120000);
     });
 
@@ -512,7 +512,7 @@ describe('config.js', () => {
         }
       };
 
-      const result = getMonorepoCheckoutTimeout(config, 'owner/repo');
+      const result = getRepoCheckoutTimeout(config, 'owner/repo');
       expect(result).toBe(300000);
     });
 
@@ -523,14 +523,14 @@ describe('config.js', () => {
         }
       };
 
-      const result = getMonorepoCheckoutTimeout(config, 'owner/repo');
+      const result = getRepoCheckoutTimeout(config, 'owner/repo');
       expect(result).toBe(300000);
     });
 
-    it('should return default when config has no monorepos', () => {
+    it('should return default when config has no repos or monorepos', () => {
       const config = {};
 
-      const result = getMonorepoCheckoutTimeout(config, 'owner/repo');
+      const result = getRepoCheckoutTimeout(config, 'owner/repo');
       expect(result).toBe(300000);
     });
 
@@ -541,7 +541,7 @@ describe('config.js', () => {
         }
       };
 
-      const result = getMonorepoCheckoutTimeout(config, 'owner/repo');
+      const result = getRepoCheckoutTimeout(config, 'owner/repo');
       expect(result).toBe(300000);
     });
 
@@ -553,30 +553,30 @@ describe('config.js', () => {
       };
 
       // Negative values are now correctly rejected by the > 0 guard
-      const result = getMonorepoCheckoutTimeout(config, 'owner/repo');
+      const result = getRepoCheckoutTimeout(config, 'owner/repo');
       expect(result).toBe(300000);
     });
   });
 
-  describe('resolveMonorepoOptions', () => {
-    it('should return null for both when no monorepo config exists', () => {
+  describe('resolveRepoOptions (legacy monorepos key)', () => {
+    it('should return null for both when no repo config exists', () => {
       const config = {};
 
-      const result = resolveMonorepoOptions(config, 'owner/repo');
+      const result = resolveRepoOptions(config, 'owner/repo');
 
       expect(result.checkoutScript).toBe(null);
       expect(result.checkoutTimeout).toBe(300000);
       expect(result.worktreeConfig).toBe(null);
     });
 
-    it('should return checkoutScript when only checkout_script is configured', () => {
+    it('should return checkoutScript when only checkout_script is configured via monorepos key', () => {
       const config = {
         monorepos: {
           'owner/repo': { checkout_script: './scripts/checkout.sh' }
         }
       };
 
-      const result = resolveMonorepoOptions(config, 'owner/repo');
+      const result = resolveRepoOptions(config, 'owner/repo');
 
       expect(result.checkoutScript).toBe('./scripts/checkout.sh');
       expect(result.checkoutTimeout).toBe(300000);
@@ -590,7 +590,7 @@ describe('config.js', () => {
         }
       };
 
-      const result = resolveMonorepoOptions(config, 'owner/repo');
+      const result = resolveRepoOptions(config, 'owner/repo');
 
       expect(result.checkoutScript).toBe(null);
       expect(result.checkoutTimeout).toBe(300000);
@@ -606,7 +606,7 @@ describe('config.js', () => {
         }
       };
 
-      const result = resolveMonorepoOptions(config, 'owner/repo');
+      const result = resolveRepoOptions(config, 'owner/repo');
 
       expect(result.checkoutScript).toBe(null);
       expect(result.checkoutTimeout).toBe(300000);
@@ -625,7 +625,7 @@ describe('config.js', () => {
         }
       };
 
-      const result = resolveMonorepoOptions(config, 'owner/repo');
+      const result = resolveRepoOptions(config, 'owner/repo');
 
       expect(result.checkoutScript).toBe(null);
       expect(result.checkoutTimeout).toBe(300000);
@@ -646,7 +646,7 @@ describe('config.js', () => {
         }
       };
 
-      const result = resolveMonorepoOptions(config, 'owner/repo');
+      const result = resolveRepoOptions(config, 'owner/repo');
 
       expect(result.checkoutScript).toBe('./scripts/pr-checkout.sh');
       expect(result.checkoutTimeout).toBe(300000);
@@ -666,7 +666,7 @@ describe('config.js', () => {
         }
       };
 
-      const result = resolveMonorepoOptions(config, 'owner/repo');
+      const result = resolveRepoOptions(config, 'owner/repo');
 
       expect(result.checkoutScript).toBe('./scripts/pr-checkout.sh');
       expect(result.checkoutTimeout).toBe(600000);
@@ -1153,6 +1153,43 @@ describe('config.js', () => {
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Malformed config'));
       warnSpy.mockRestore();
     });
+
+    it('should normalize monorepos key into repos when only monorepos is present', async () => {
+      mockReadFile({
+        global: {
+          port: 7247,
+          monorepos: {
+            'owner/repo': { path: '~/mono', pool_size: 3 }
+          }
+        },
+      });
+
+      const { config } = await loadConfig();
+
+      expect(config.repos).toBeDefined();
+      expect(config.repos['owner/repo']).toEqual({ path: '~/mono', pool_size: 3 });
+    });
+
+    it('should let repos values take precedence over monorepos when both exist', async () => {
+      mockReadFile({
+        global: {
+          port: 7247,
+          monorepos: {
+            'owner/repo': { path: '~/mono-path', pool_size: 2 }
+          },
+          repos: {
+            'owner/repo': { path: '~/repos-path' }
+          }
+        },
+      });
+
+      const { config } = await loadConfig();
+
+      // repos value should override monorepos for the path key
+      expect(config.repos['owner/repo'].path).toBe('~/repos-path');
+      // monorepos pool_size should be merged in (deep merge: monorepos is base, repos overrides)
+      expect(config.repos['owner/repo'].pool_size).toBe(2);
+    });
   });
 
   describe('shouldSkipUpdateNotifier', () => {
@@ -1251,5 +1288,226 @@ describe('config.js', () => {
       });
       expect(shouldSkipUpdateNotifier()).toBe(true);
     });
+  });
+
+  describe('getRepoConfig', () => {
+    it('should return entry from repos key', () => {
+      const config = {
+        repos: { 'owner/repo': { path: '~/my-repo' } }
+      };
+      expect(getRepoConfig(config, 'owner/repo')).toEqual({ path: '~/my-repo' });
+    });
+
+    it('should fall back to monorepos key', () => {
+      const config = {
+        monorepos: { 'owner/repo': { path: '~/legacy-repo' } }
+      };
+      expect(getRepoConfig(config, 'owner/repo')).toEqual({ path: '~/legacy-repo' });
+    });
+
+    it('should prefer repos over monorepos when both exist', () => {
+      const config = {
+        repos: { 'owner/repo': { path: '~/new-path' } },
+        monorepos: { 'owner/repo': { path: '~/old-path' } }
+      };
+      expect(getRepoConfig(config, 'owner/repo')).toEqual({ path: '~/new-path' });
+    });
+
+    it('should return null for unconfigured repository', () => {
+      const config = { repos: { 'other/repo': { path: '~/other' } } };
+      expect(getRepoConfig(config, 'owner/repo')).toBe(null);
+    });
+
+    it('should return null when neither repos nor monorepos exist', () => {
+      const config = {};
+      expect(getRepoConfig(config, 'owner/repo')).toBe(null);
+    });
+  });
+
+  describe('getRepoPath', () => {
+    it('should return expanded path from repos key', () => {
+      const config = {
+        repos: { 'owner/repo': { path: '~/repos/my-repo' } }
+      };
+      expect(getRepoPath(config, 'owner/repo')).toBe(`${os.homedir()}/repos/my-repo`);
+    });
+
+    it('should fall back to monorepos key', () => {
+      const config = {
+        monorepos: { 'owner/repo': { path: '~/monorepos/my-repo' } }
+      };
+      expect(getRepoPath(config, 'owner/repo')).toBe(`${os.homedir()}/monorepos/my-repo`);
+    });
+
+    it('should return null for unconfigured repository', () => {
+      const config = { repos: {} };
+      expect(getRepoPath(config, 'owner/repo')).toBe(null);
+    });
+
+    it('should return null when config has no path', () => {
+      const config = { repos: { 'owner/repo': { checkout_script: './script.sh' } } };
+      expect(getRepoPath(config, 'owner/repo')).toBe(null);
+    });
+
+  });
+
+  describe('getRepoResetScript', () => {
+    it('should return reset script when configured', () => {
+      const config = {
+        repos: { 'owner/repo': { reset_script: './scripts/reset.sh' } }
+      };
+      expect(getRepoResetScript(config, 'owner/repo')).toBe('./scripts/reset.sh');
+    });
+
+    it('should return null when not configured', () => {
+      const config = {
+        repos: { 'owner/repo': { path: '~/repo' } }
+      };
+      expect(getRepoResetScript(config, 'owner/repo')).toBe(null);
+    });
+
+    it('should return null for unconfigured repository', () => {
+      const config = {};
+      expect(getRepoResetScript(config, 'owner/repo')).toBe(null);
+    });
+
+    it('should fall back to monorepos key', () => {
+      const config = {
+        monorepos: { 'owner/repo': { reset_script: './legacy-reset.sh' } }
+      };
+      expect(getRepoResetScript(config, 'owner/repo')).toBe('./legacy-reset.sh');
+    });
+  });
+
+  describe('getRepoPoolSize', () => {
+    it('should return configured pool size', () => {
+      const config = {
+        repos: { 'owner/repo': { pool_size: 3 } }
+      };
+      expect(getRepoPoolSize(config, 'owner/repo')).toBe(3);
+    });
+
+    it('should return 0 when not configured', () => {
+      const config = {
+        repos: { 'owner/repo': { path: '~/repo' } }
+      };
+      expect(getRepoPoolSize(config, 'owner/repo')).toBe(0);
+    });
+
+    it('should return 0 for unconfigured repository', () => {
+      const config = {};
+      expect(getRepoPoolSize(config, 'owner/repo')).toBe(0);
+    });
+
+    it('should return 0 when pool_size is 0', () => {
+      const config = {
+        repos: { 'owner/repo': { pool_size: 0 } }
+      };
+      expect(getRepoPoolSize(config, 'owner/repo')).toBe(0);
+    });
+
+    it('should return 0 when pool_size is negative', () => {
+      const config = {
+        repos: { 'owner/repo': { pool_size: -1 } }
+      };
+      expect(getRepoPoolSize(config, 'owner/repo')).toBe(0);
+    });
+
+    it('should return 0 when pool_size is a string', () => {
+      const config = {
+        repos: { 'owner/repo': { pool_size: '3' } }
+      };
+      expect(getRepoPoolSize(config, 'owner/repo')).toBe(0);
+    });
+
+    it('should fall back to monorepos key when repos is missing', () => {
+      const config = {
+        monorepos: { 'owner/repo': { pool_size: 4 } }
+      };
+      expect(getRepoPoolSize(config, 'owner/repo')).toBe(4);
+    });
+  });
+
+  describe('getRepoPoolFetchInterval', () => {
+    it('should return configured interval', () => {
+      const config = {
+        repos: { 'owner/repo': { pool_fetch_interval_minutes: 15 } }
+      };
+      expect(getRepoPoolFetchInterval(config, 'owner/repo')).toBe(15);
+    });
+
+    it('should return null when not configured', () => {
+      const config = {
+        repos: { 'owner/repo': { path: '~/repo' } }
+      };
+      expect(getRepoPoolFetchInterval(config, 'owner/repo')).toBe(null);
+    });
+
+    it('should return null for unconfigured repository', () => {
+      const config = {};
+      expect(getRepoPoolFetchInterval(config, 'owner/repo')).toBe(null);
+    });
+
+    it('should return null when interval is 0', () => {
+      const config = {
+        repos: { 'owner/repo': { pool_fetch_interval_minutes: 0 } }
+      };
+      expect(getRepoPoolFetchInterval(config, 'owner/repo')).toBe(null);
+    });
+
+    it('should return null when interval is negative', () => {
+      const config = {
+        repos: { 'owner/repo': { pool_fetch_interval_minutes: -5 } }
+      };
+      expect(getRepoPoolFetchInterval(config, 'owner/repo')).toBe(null);
+    });
+
+    it('should return null when interval is a string', () => {
+      const config = {
+        repos: { 'owner/repo': { pool_fetch_interval_minutes: '15' } }
+      };
+      expect(getRepoPoolFetchInterval(config, 'owner/repo')).toBe(null);
+    });
+
+    it('should fall back to monorepos key when repos is missing', () => {
+      const config = {
+        monorepos: { 'owner/repo': { pool_fetch_interval_minutes: 20 } }
+      };
+      expect(getRepoPoolFetchInterval(config, 'owner/repo')).toBe(20);
+    });
+  });
+
+  describe('resolveRepoOptions', () => {
+    it('should return all defaults when no repo config exists', () => {
+      const config = {};
+      const result = resolveRepoOptions(config, 'owner/repo');
+
+      expect(result.checkoutScript).toBe(null);
+      expect(result.checkoutTimeout).toBe(300000);
+      expect(result.worktreeConfig).toBe(null);
+      expect(result.resetScript).toBe(null);
+      expect(result.poolSize).toBe(0);
+      expect(result.poolFetchIntervalMinutes).toBe(null);
+    });
+
+    it('should include new fields when configured', () => {
+      const config = {
+        repos: {
+          'owner/repo': {
+            checkout_script: './scripts/checkout.sh',
+            reset_script: './scripts/reset.sh',
+            pool_size: 5,
+            pool_fetch_interval_minutes: 10
+          }
+        }
+      };
+      const result = resolveRepoOptions(config, 'owner/repo');
+
+      expect(result.checkoutScript).toBe('./scripts/checkout.sh');
+      expect(result.resetScript).toBe('./scripts/reset.sh');
+      expect(result.poolSize).toBe(5);
+      expect(result.poolFetchIntervalMinutes).toBe(10);
+    });
+
   });
 });

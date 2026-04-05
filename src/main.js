@@ -1,10 +1,11 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 const fs = require('fs');
-const { loadConfig, getConfigDir, getGitHubToken, showWelcomeMessage, resolveDbName, resolveMonorepoOptions } = require('./config');
-const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository, ReviewRepository, RepoSettingsRepository, GitHubReviewRepository } = require('./database');
+const { loadConfig, getConfigDir, getGitHubToken, showWelcomeMessage, resolveDbName, resolveRepoOptions, getRepoPoolSize, getRepoPoolFetchInterval, getRepoResetScript } = require('./config');
+const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository, ReviewRepository, RepoSettingsRepository, GitHubReviewRepository, WorktreePoolRepository } = require('./database');
 const { PRArgumentParser } = require('./github/parser');
 const { GitHubClient } = require('./github/client');
 const { GitWorktreeManager } = require('./git/worktree');
+const { WorktreePoolManager } = require('./git/worktree-pool');
 const { startServer } = require('./server');
 const Analyzer = require('./ai/analyzer');
 const { applyConfigOverrides } = require('./ai');
@@ -19,6 +20,7 @@ const { GIT_DIFF_FLAGS_ARRAY, GIT_DIFF_SUMMARY_FLAGS_ARRAY } = require('./git/di
 const { getEmoji: getCategoryEmoji } = require('./utils/category-emoji');
 const open = (...args) => process.env.PAIR_REVIEW_NO_OPEN ? Promise.resolve() : import('open').then(({default: open}) => open(...args));
 const { registerProtocolHandler, unregisterProtocolHandler } = require('./protocol-handler');
+const { worktreePoolUsage } = require('./git/worktree-pool-usage');
 
 let db = null;
 
@@ -445,6 +447,46 @@ AI PROVIDERS:
       console.warn('Some worktrees could not be migrated:', migrationResult.errors);
     }
 
+    // Reset stale pool entries on startup (DB is the source of truth for review→worktree mappings)
+    const poolRepo = new WorktreePoolRepository(db);
+    const preserved = await poolRepo.resetStaleAndPreserve();
+    if (preserved.length > 0) {
+      logger.info(`Pool startup: preserved ${preserved.length} active worktree(s)`);
+    }
+
+    // Wire up idle callback to release pool worktrees (retry once on failure)
+    worktreePoolUsage.onIdle = async (worktreeId) => {
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          const poolRepoInner = new WorktreePoolRepository(db);
+          await poolRepoInner.markAvailable(worktreeId);
+          logger.info(`Pool worktree ${worktreeId} is now available`);
+          return;
+        } catch (err) {
+          if (attempt < 2) {
+            logger.warn(`Failed to release pool worktree ${worktreeId} (attempt ${attempt}), retrying: ${err.message}`);
+            await new Promise(r => setTimeout(r, 1000));
+          } else {
+            logger.error(`Failed to release pool worktree ${worktreeId} after ${attempt} attempts: ${err.message}`);
+          }
+        }
+      }
+    };
+
+    // Rehydrate in-memory usage tracker for preserved pool worktrees.
+    // Without this, worktrees preserved on restart would never have their
+    // grace-period timers started, leaving them permanently locked as in_use.
+    if (preserved.length > 0) {
+      logger.info(`Pool startup: preserved ${preserved.length} active worktree(s), starting grace periods`);
+      for (const entry of preserved) {
+        // Add then immediately remove a synthetic session to trigger the
+        // idle grace period timer.  If a real user reconnects before the
+        // timer fires, their WS session will cancel it automatically.
+        worktreePoolUsage.addSession(entry.id, 'startup-rehydration');
+        worktreePoolUsage.removeSession(entry.id, 'startup-rehydration');
+      }
+    }
+
     // Parse command line arguments including flags
     const { prArgs, flags } = parseArgs(args);
 
@@ -576,6 +618,7 @@ async function handlePullRequest(args, config, db, flags = {}) {
     // Async cleanup of stale worktrees and reviews (don't block startup)
     cleanupStaleWorktreesAsync(config);
     cleanupStaleReviewsAsync(config);
+    startPoolBackgroundFetches(db, config);
 
     let url = `http://localhost:${port}/pr/${prInfo.owner}/${prInfo.repo}/${prInfo.number}`;
     if (flags.ai) {
@@ -601,6 +644,7 @@ async function startServerOnly(config) {
   // Async cleanup of stale worktrees and reviews (don't block startup)
   cleanupStaleWorktreesAsync(config);
   cleanupStaleReviewsAsync(config);
+  startPoolBackgroundFetches(db, config);
 
   // Open browser to landing page
   const url = `http://localhost:${port}/`;
@@ -644,6 +688,8 @@ function formatAISuggestion(text, category) {
  */
 async function performHeadlessReview(args, config, db, flags, options) {
   let prInfo = null;
+  let poolWorktreeId = null;
+  let poolManager = null;
 
   try {
     // Get GitHub token (env var takes precedence over config)
@@ -746,6 +792,8 @@ async function performHeadlessReview(args, config, db, flags, options) {
       let checkoutScript;
       let checkoutTimeout;
       let worktreeConfig = null;
+      let poolSize = 0;
+      let resetScript = null;
       if (isMatchingRepo) {
         // Current directory is a checkout of the target repository
         repositoryPath = currentDir;
@@ -753,10 +801,12 @@ async function performHeadlessReview(args, config, db, flags, options) {
 
         // Resolve monorepo config options (checkout_script, worktree_directory, worktree_name_template)
         // even when running from inside the target repo, so they are not silently ignored.
-        const resolved = resolveMonorepoOptions(config, repository);
+        const resolved = resolveRepoOptions(config, repository);
         checkoutScript = resolved.checkoutScript;
         checkoutTimeout = resolved.checkoutTimeout;
         worktreeConfig = resolved.worktreeConfig;
+        poolSize = resolved.poolSize || 0;
+        resetScript = resolved.resetScript || null;
       } else {
         // Current directory is not the target repository - find or clone it
         console.log(`Current directory is not a checkout of ${prInfo.owner}/${prInfo.repo}, locating repository...`);
@@ -778,15 +828,34 @@ async function performHeadlessReview(args, config, db, flags, options) {
         checkoutScript = result.checkoutScript;
         checkoutTimeout = result.checkoutTimeout;
         worktreeConfig = result.worktreeConfig;
+        // findRepositoryPath doesn't return pool config; resolve from config directly
+        poolSize = config ? getRepoPoolSize(config, repository) : 0;
+        resetScript = config ? getRepoResetScript(config, repository) : null;
       }
 
-      console.log('Setting up git worktree...');
       const worktreeManager = new GitWorktreeManager(db, worktreeConfig || {});
-      worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, repositoryPath, {
-        worktreeSourcePath,
-        checkoutScript,
-        checkoutTimeout
-      });
+      if (poolSize > 0) {
+        // Pool mode: use WorktreePoolManager
+        console.log('Acquiring pool worktree...');
+        poolManager = new WorktreePoolManager(db, config);
+        const result = await poolManager.acquireForPR(
+          { owner: prInfo.owner, repo: prInfo.repo, prNumber: prInfo.number, repository },
+          prData,
+          repositoryPath,
+          { worktreeSourcePath, checkoutScript, checkoutTimeout, resetScript, worktreeConfig, poolSize }
+        );
+        worktreePath = result.worktreePath;
+        poolWorktreeId = result.worktreeId;
+        console.log('Pool worktree acquired');
+      } else {
+        // Non-pool mode: existing behavior
+        console.log('Setting up git worktree...');
+        ({ path: worktreePath } = await worktreeManager.createWorktreeForPR(prInfo, prData, repositoryPath, {
+          worktreeSourcePath,
+          checkoutScript,
+          checkoutTimeout
+        }));
+      }
 
       console.log('Generating unified diff...');
       diff = await worktreeManager.generateUnifiedDiff(worktreePath, prData);
@@ -798,6 +867,12 @@ async function performHeadlessReview(args, config, db, flags, options) {
     const { isNewReview, reviewId: storedReviewId } = await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath, {
       skipWorktreeRecord: !!flags.useCheckout
     });
+
+    // Persist review→worktree mapping in DB for pool usage tracking
+    if (poolWorktreeId) {
+      const poolRepo = new WorktreePoolRepository(db);
+      await poolRepo.setCurrentReviewId(poolWorktreeId, storedReviewId);
+    }
 
     // Fire review.started hook for new reviews (non-blocking)
     if (isNewReview) {
@@ -1039,7 +1114,20 @@ Found ${validSuggestions.length} suggestion${validSuggestions.length === 1 ? '' 
       // For other errors, show a clean message without stack trace
       console.error(`\n❌ Error: ${error.message}\n`);
     }
-    process.exit(1);
+    process.exitCode = 1;
+  } finally {
+    // Release pool worktree after headless review completes (success or failure).
+    // Headless reviews are fire-and-forget with no persistent browser session,
+    // so the pool slot must be freed immediately.
+    if (poolWorktreeId && poolManager) {
+      try {
+        await poolManager.release(poolWorktreeId);
+        worktreePoolUsage.clearWorktree(poolWorktreeId);
+        logger.info(`Released pool worktree ${poolWorktreeId} after headless review`);
+      } catch (releaseErr) {
+        logger.error(`Failed to release pool worktree ${poolWorktreeId}: ${releaseErr.message}`);
+      }
+    }
   }
 }
 
@@ -1076,6 +1164,59 @@ async function handleActionReview(args, config, db, flags = {}) {
     commentStatus: 'submitted',
     modeLabel: 'action review mode'
   });
+}
+
+/**
+ * Start periodic background fetches for pool worktrees.
+ * For each repo with pool_fetch_interval_minutes configured, run git fetch
+ * on all pool worktrees serially, coldest first.
+ * @param {Object} db - Database instance
+ * @param {Object} config - Configuration object
+ */
+function startPoolBackgroundFetches(db, config) {
+  const repos = config.repos || {};
+  for (const repoName of Object.keys(repos)) {
+    const intervalMinutes = getRepoPoolFetchInterval(config, repoName);
+    if (!intervalMinutes) continue;
+    const poolSize = getRepoPoolSize(config, repoName);
+    if (!poolSize) continue;
+
+    const intervalMs = intervalMinutes * 60 * 1000;
+    logger.info(`Scheduling background fetch for ${repoName} pool every ${intervalMinutes}m`);
+
+    let fetchInProgress = false;
+    const timer = setInterval(async () => {
+      if (fetchInProgress) {
+        logger.debug(`Skipping background fetch for ${repoName} — previous tick still running`);
+        return;
+      }
+      fetchInProgress = true;
+      try {
+        const poolRepo = new WorktreePoolRepository(db);
+        const worktrees = await poolRepo.findAllForFetch(repoName);
+
+        for (const entry of worktrees) {
+          logger.debug(`Background fetch for pool worktree ${entry.id} at ${entry.path}`);
+          try {
+            const git = simpleGit(entry.path);
+            const remotes = await git.getRemotes();
+            const remote = remotes.find(r => r.name === 'origin') || remotes[0];
+            if (remote) await git.fetch([remote.name]);
+            await poolRepo.updateLastFetched(entry.id);
+          } catch (fetchErr) {
+            logger.warn(`Background fetch failed for ${entry.id}: ${fetchErr.message}`);
+          }
+        }
+      } catch (err) {
+        logger.warn(`Background pool fetch error for ${repoName}: ${err.message}`);
+      } finally {
+        fetchInProgress = false;
+      }
+    }, intervalMs);
+
+    // Don't keep the process alive just for background fetches
+    if (timer.unref) timer.unref();
+  }
 }
 
 /**

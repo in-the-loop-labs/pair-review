@@ -16,8 +16,9 @@ const { activeSetups, broadcastSetupProgress } = require('./shared');
 const { setupPRReview } = require('../setup/pr-setup');
 const { setupLocalReview } = require('../setup/local-setup');
 const { getGitHubToken, expandPath } = require('../config');
-const { queryOne } = require('../database');
+const { queryOne, WorktreePoolRepository } = require('../database');
 const { normalizeRepository } = require('../utils/paths');
+const { PoolExhaustedError } = require('../git/worktree-pool');
 const logger = require('../utils/logger');
 
 const router = express.Router();
@@ -91,9 +92,21 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
         [prNumber, repository]
       );
       if (worktree) {
-        return res.json({ existing: true, reviewUrl: `/pr/${owner}/${repo}/${prNumber}` });
+        // If the worktree belongs to the pool, verify it is still actively
+        // owned (in_use). Pool slots retain their worktrees row after being
+        // released — markAvailable() clears ownership without deleting the
+        // record. A released slot may have been reassigned to a different PR,
+        // so we must fall through to re-run setup and reacquire a pool slot.
+        const poolRepo = new WorktreePoolRepository(db);
+        const poolEntry = await poolRepo.getPoolEntry(worktree.id);
+        if (poolEntry && poolEntry.status !== 'in_use') {
+          logger.info(`Pool worktree ${worktree.id} for ${repository} #${prNumber} is ${poolEntry.status}, re-running setup to reacquire`);
+        } else {
+          return res.json({ existing: true, reviewUrl: `/pr/${owner}/${repo}/${prNumber}` });
+        }
+      } else {
+        logger.info(`PR metadata exists but worktree missing for ${repository} #${prNumber}, re-running setup`);
       }
-      logger.info(`PR metadata exists but worktree missing for ${repository} #${prNumber}, re-running setup`);
     }
 
     // Start the async setup
@@ -116,7 +129,8 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
         sendSetupEvent(setupId, 'complete', { reviewUrl: result.reviewUrl, title: result.title });
       } catch (err) {
         logger.error(`PR setup failed for ${setupKey}:`, err);
-        sendSetupEvent(setupId, 'error', { message: err.message });
+        const code = err instanceof PoolExhaustedError ? 'POOL_EXHAUSTED' : undefined;
+        sendSetupEvent(setupId, 'error', { message: err.message, code });
       } finally {
         activeSetups.delete(setupKey);
       }

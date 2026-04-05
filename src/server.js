@@ -251,7 +251,12 @@ async function startServer(sharedDb = null) {
           // When a user deletes a worktree, metadata is preserved but the
           // worktree record is removed. Without this check the route serves
           // pr.html for a missing worktree, causing 404s on file fetches.
-          const worktree = await queryOne(db, 'SELECT id FROM worktrees WHERE pr_number = ? AND repository = ? COLLATE NOCASE', [prNumber, repository]);
+          const worktree = await queryOne(db, `
+            SELECT w.id FROM worktrees w
+            LEFT JOIN worktree_pool wp ON w.id = wp.id
+            WHERE w.pr_number = ? AND w.repository = ? COLLATE NOCASE
+              AND (wp.id IS NULL OR wp.status = 'in_use')
+          `, [prNumber, repository]);
           if (worktree) {
             // Update last_accessed_at so the recent reviews list reflects actual access
             run(db, 'UPDATE pr_metadata SET last_accessed_at = ? WHERE id = ?', [new Date().toISOString(), existing.id]).catch(err => logger.warn(`Failed to update last_accessed_at: ${err.message}`));
@@ -366,7 +371,7 @@ async function startServer(sharedDb = null) {
 
     server = app.listen(port, () => {
       console.log(`Server running on http://localhost:${port}`);
-      attachWebSocket(server);
+      attachWebSocket(server, db);
     });
 
     server.on('error', (error) => {

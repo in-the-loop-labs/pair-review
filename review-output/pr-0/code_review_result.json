@@ -1,0 +1,248 @@
+{
+  "status": "success",
+  "error_message": null,
+  "summary": "The new worktree-pool feature is close, but there are two medium-severity correctness issues in the pool state machine that can leave stale PR-to-worktree associations behind after release or startup, causing inconsistent routing and reuse decisions. There is also one minor reliability issue where the pool worktree ID namespace is small and lacks collision retries, which can cause sporadic creation failures over time.",
+  "comments": [],
+  "metadata": {
+    "type": "langgraph",
+    "name": "pr-review",
+    "run_id": null,
+    "model": "openai/gpt-5.4",
+    "repo": "in-the-loop-labs/pair-review",
+    "pr_id": "0",
+    "pr_commit_sha": null,
+    "runnable_commit_sha": null,
+    "duration_seconds": 76.5,
+    "tokens": {
+      "input": 57394,
+      "output": 2792,
+      "cache_read_input": 478208,
+      "cache_creation_input": null
+    },
+    "agents": [
+      {
+        "name": "general-0",
+        "model": "openai/gpt-5.4",
+        "tokens_usage": [
+          {
+            "model": "gpt-5.4-2026-03-05",
+            "input": 57394,
+            "output": 2792,
+            "cache_read_input": 478208
+          }
+        ],
+        "timeInS": 76.5,
+        "output": {
+          "comments_count": 3,
+          "summary": "The new worktree-pool feature is close, but there are two medium-severity correctness issues in the pool state machine that can leave stale PR-to-worktree associations behind after release or startup, causing inconsistent routing and reuse decisions. There is also one minor reliability issue where the pool worktree ID namespace is small and lacks collision retries, which can cause sporadic creation failures over time."
+        }
+      },
+      {
+        "name": "critic",
+        "model": "anthropic:claude-opus-4-6",
+        "tokens_usage": [
+          {
+            "model": "claude-opus-4-6",
+            "input": 82211,
+            "output": 15375,
+            "cache_read_input": 1008072
+          }
+        ],
+        "output": {
+          "comments_evaluated": 3,
+          "comments_passed": 0,
+          "comments_rejected": 3
+        }
+      }
+    ],
+    "tokens_usage": [
+      {
+        "model": "gpt-5.4-2026-03-05",
+        "input": 57394,
+        "output": 2792,
+        "cache_read_input": 478208
+      },
+      {
+        "model": "claude-opus-4-6",
+        "input": 82211,
+        "output": 15375,
+        "cache_read_input": 1008072
+      }
+    ],
+    "critics": {
+      "critic_models": [
+        "anthropic:claude-opus-4-6"
+      ],
+      "total_comments_evaluated": 3,
+      "comments_passed": 0,
+      "comments_filtered": 3,
+      "filtered_comments": [
+        {
+          "uuid": "5f07227f4f75019eb5ed4c80189a4ec3",
+          "type": "bug",
+          "severity": "medium",
+          "title": "Released pool slots retain stale PR ownership",
+          "description": "`markAvailable()` updates only `status = 'available'` and leaves `current_pr_number` unchanged. That means a released slot is marked reusable while still appearing assigned to its previous PR. Since `acquireForPR()` checks `findByPR(prNumber, repository)` before searching for available slots, a later request for that old PR can incorrectly rediscover and reuse a slot that has already been released or repurposed. The same stale association is preserved across restarts because `resetAllStatuses()` marks every row available without clearing `current_pr_number`. Existing tests only verify the status transition and do not cover this stale-assignment path.",
+          "suggestion": "Clear `current_pr_number` whenever a pool slot is released or globally reset.\n\n```js\nasync markAvailable(id) {\n  await run(this.db, `\n    UPDATE worktree_pool\n    SET status = 'available',\n        current_pr_number = NULL\n    WHERE id = ?\n  `, [id]);\n}\n\nasync resetAllStatuses() {\n  await run(this.db, `\n    UPDATE worktree_pool\n    SET status = 'available',\n        current_pr_number = NULL\n  `);\n}\n```",
+          "file_path": "src/database.js",
+          "line_start": 2268,
+          "line_end": 2342,
+          "original_agent_id": "general-0",
+          "agent_ids": [
+            "general-0"
+          ],
+          "critic_votes": [
+            {
+              "critic_model": "anthropic:claude-opus-4-6",
+              "is_valid": false,
+              "is_real_and_actionable": false,
+              "real_and_actionable_reasoning": "The comment claims that leaving `current_pr_number` unchanged in `markAvailable()` causes stale PR ownership that leads to incorrect slot reuse. After thorough analysis, this is not a real bug. The behavior is actually an optimization: when a slot is released (marked available), it retains `current_pr_number` because the slot still has that PR's data on disk. If the same PR is requested again, `findByPR()` in `acquireForPR()` finds the slot and calls `_refreshPoolWorktree()`, which refreshes the worktree and calls `markInUse()` — this is the optimal path, avoiding an unnecessary full switch. The comment's claim about 'repurposed' slots is incorrect: when a slot is switched to a different PR via `_switchPoolWorktree()`, `markInUse(id, newPrNumber)` updates `current_pr_number` to the new PR number, so `findByPR(oldPrNumber)` would NOT find it. For `resetAllStatuses()`, the same logic applies — slots retain their on-disk PR data after restart, so finding them via `findByPR` and refreshing is correct. Additionally, `_withRepoLock()` serializes all `acquireForPR` calls per repository, preventing any race conditions. The stale `current_pr_number` is effectively a warm-cache hint, not a bug.",
+              "is_introduced_by_pr": true,
+              "introduced_by_pr_reasoning": "The entire `WorktreePoolRepository` class including `markAvailable()`, `resetAllStatuses()`, and `findByPR()` are all new code added by this PR (visible in the diff with `+` prefixes at lines 446-587 of the diff). The `acquireForPR` logic in `worktree-pool.js` is also entirely new.",
+              "overall_reasoning": "While the code is introduced by this PR, the reported issue is not a real bug. The comment mischaracterizes the retention of `current_pr_number` after release as a defect, when it's actually a correct optimization pattern. A released pool slot retains its `current_pr_number` as a warm-cache indicator — if the same PR is requested again before the slot is evicted, the system can refresh it cheaply instead of doing a full switch. The 'repurposed' scenario the comment describes cannot happen because `markInUse()` (called during `_switchPoolWorktree`) updates `current_pr_number` to the new PR. The serialization via `_withRepoLock` prevents any concurrent access issues. Clearing `current_pr_number` on release (as the suggested fix proposes) would actually degrade performance by forcing unnecessary full switches when a warm slot could be reused. This is a theoretical concern about data hygiene, not an actual correctness bug."
+            }
+          ]
+        },
+        {
+          "uuid": "9922efe2788c03b79039e6be412f77a7",
+          "type": "bug",
+          "severity": "medium",
+          "title": "PR lookup treats non-active pool rows as active ownership",
+          "description": "`findByPR()` returns any row whose `current_pr_number` matches, regardless of whether the slot is `in_use`, `available`, or `switching`. As a result, stale or transitional rows can be treated as if they are still actively owned by that PR. `WorktreePoolManager.acquireForPR()` trusts this lookup as proof that the PR already has an assigned slot, so it can skip normal allocation logic and operate on a slot whose ownership is no longer valid. This is especially problematic when released rows still retain their previous PR number or when startup mass-resets rows to `available`. There is no test asserting that `findByPR()` only returns active assignments.",
+          "suggestion": "Restrict `findByPR()` to active assignments only by requiring `status = 'in_use'`.\n\n```js\nasync findByPR(prNumber, repository) {\n  return await queryOne(this.db, `\n    SELECT id, repository, path, status, current_pr_number, last_switched_at, last_fetched_at, created_at\n    FROM worktree_pool\n    WHERE current_pr_number = ? AND repository = ? AND status = 'in_use'\n  `, [prNumber, repository]);\n}\n```",
+          "file_path": "src/database.js",
+          "line_start": 2244,
+          "line_end": 2244,
+          "original_agent_id": "general-0",
+          "agent_ids": [
+            "general-0"
+          ],
+          "critic_votes": [
+            {
+              "critic_model": "anthropic:claude-opus-4-6",
+              "is_valid": false,
+              "is_real_and_actionable": false,
+              "real_and_actionable_reasoning": "The comment claims findByPR() returning non-active rows is a bug, but this is intentional design. The acquireForPR() decision tree (documented in comments at lines 71-75) explicitly says: 'Pool worktree already assigned to this PR -> refresh and return.' When a slot is released via markAvailable(), it retains current_pr_number as a cache hint — the worktree still contains the PR's files. When the same PR requests a worktree again, findByPR() finds this cached slot, and _refreshPoolWorktree() correctly refreshes it and marks it in_use. This is faster than evicting and switching. The 'switching' state concern is mitigated by the per-repo lock (_withRepoLock), which serializes all acquireForPR calls for the same repository. The startup resetAllStatuses() scenario is also handled correctly — slots retain their PR numbers as cache hints, and the first request for that PR gets a fast refresh instead of a full switch. Adding status = 'in_use' to findByPR() would actually break this cache-hit optimization, forcing unnecessary eviction and switching when the same PR requests a worktree after release.",
+              "is_introduced_by_pr": true,
+              "introduced_by_pr_reasoning": "The findByPR method in WorktreePoolRepository is entirely new code added by this PR (visible in the diff at line 483 with + prefix). However, the behavior is intentional, not a bug.",
+              "overall_reasoning": "This comment misidentifies intentional cache-hit behavior as a bug. The findByPR() method in WorktreePoolRepository deliberately returns any row matching the PR number regardless of status, because the status represents slot availability, not data validity. A slot marked 'available' with current_pr_number still contains that PR's worktree data — it's a warm cache. The acquireForPR() method's step 1 ('already assigned to this PR -> refresh and return') leverages this to avoid expensive eviction+switch operations when the same PR comes back. The _refreshPoolWorktree() method correctly transitions the slot back to 'in_use'. The suggested fix (adding status = 'in_use') would degrade performance by forcing unnecessary full switches when a cached slot exists. The per-repo lock prevents any race conditions with 'switching' status. This is a design choice, not a bug."
+            }
+          ]
+        },
+        {
+          "uuid": "9ff8f9089a76674e3c54f092f7ece3ba",
+          "type": "reliability",
+          "severity": "minor",
+          "title": "Pool worktree ID generation can collide without retry",
+          "description": "`generatePoolWorktreeId()` uses only 3 base-36 characters, giving a namespace of 46,656 IDs, and `_createPoolWorktree()` inserts the generated ID into `worktree_pool` without checking for collisions or retrying. Unlike the non-pool worktree path, which retries on ID collision, the pool path can fail with a primary-key violation once the installation has created and deleted enough pool slots over time. This would surface as intermittent review setup failures even when repository and filesystem state are otherwise healthy. There is no test covering collision handling for pool IDs.",
+          "suggestion": "Increase the ID length and add a retry loop before committing the new pool worktree ID.\n\n```js\n// src/database.js\nfunction generatePoolWorktreeId(length = 6) {\n  const chars = '0123456789abcdefghijklmnopqrstuvwxyz';\n  let randomPart = '';\n  for (let i = 0; i < length; i++) {\n    randomPart += chars.charAt(Math.floor(Math.random() * chars.length));\n  }\n  return `pool-${randomPart}`;\n}\n```\n\n```js\n// src/git/worktree-pool.js\nasync _createPoolWorktree(prInfo, prData, repositoryPath, options) {\n  const repository = prInfo.repository || normalizeRepository(prInfo.owner, prInfo.repo);\n  const { worktreeSourcePath, checkoutScript, checkoutTimeout, worktreeConfig } = options;\n\n  let poolId;\n  for (let attempt = 0; attempt < 10; attempt++) {\n    const candidate = generatePoolWorktreeId();\n    const existing = await this.poolRepo.isPoolWorktree(candidate);\n    if (!existing) {\n      poolId = candidate;\n      break;\n    }\n  }\n  if (!poolId) {\n    throw new Error('Failed to allocate unique pool worktree ID');\n  }\n\n  const poolWorktreeConfig = {\n    ...(worktreeConfig || {}),\n    nameTemplate: poolId,\n  };\n\n  // ... rest of method unchanged ...\n}\n```",
+          "file_path": "src/database.js",
+          "line_start": 1945,
+          "line_end": 1951,
+          "original_agent_id": "general-0",
+          "agent_ids": [
+            "general-0"
+          ],
+          "critic_votes": [
+            {
+              "critic_model": "anthropic:claude-opus-4-6",
+              "is_valid": false,
+              "is_real_and_actionable": false,
+              "real_and_actionable_reasoning": "The comment overstates the collision risk. The `generatePoolWorktreeId()` produces 46,656 possible IDs, but pool sizes are typically 3-5 worktrees per repository. The birthday paradox collision probability for 5 items in a 46,656 namespace is ~0.027%, which is negligible. More importantly, the `poolId` is primarily used as a filesystem directory name template (nameTemplate), NOT directly as the database primary key. The actual primary key inserted into `worktree_pool` is the `worktreeId` from the `worktrees` table (line 171: `worktreeRecord ? worktreeRecord.id : poolId`), which goes through the collision-retry logic in `WorktreeRepository.create()`. The `poolId` is only used as a DB key in the fallback case where `findByPath` returns null. Additionally, pool worktrees are designed to be long-lived and reused (switched between PRs), not frequently created and deleted, so the 'over time' accumulation scenario described in the comment doesn't match the actual usage pattern. The non-pool `generateWorktreeId()` uses the same 3-character namespace without issues. This is a theoretical maintainability concern about an astronomically unlikely collision, not a real bug causing incorrect behavior now.",
+              "is_introduced_by_pr": true,
+              "introduced_by_pr_reasoning": "The `generatePoolWorktreeId()` function and the `_createPoolWorktree` flow are both new code introduced by this PR, as confirmed by the diff showing these as added lines (+ prefix).",
+              "overall_reasoning": "While the code was introduced by this PR, the issue is not a real, actionable bug. The collision probability is negligible given typical pool sizes (3-5) vs the ID namespace (46,656). The poolId is primarily a directory name, not a DB primary key — the actual DB key goes through existing retry logic. Pool worktrees are long-lived and reused, not frequently created/deleted. The comment also includes a test coverage suggestion ('There is no test covering collision handling'), which we filter out. This is a theoretical maintainability concern, not a concrete bug causing incorrect behavior now."
+            }
+          ]
+        }
+      ],
+      "all_consensus": {
+        "9922efe2788c03b79039e6be412f77a7": {
+          "comment_uuid": "9922efe2788c03b79039e6be412f77a7",
+          "votes_passed": 0,
+          "votes_total": 1,
+          "passed_consensus": false,
+          "critic_votes": [
+            {
+              "critic_model": "anthropic:claude-opus-4-6",
+              "is_valid": false,
+              "is_real_and_actionable": false,
+              "real_and_actionable_reasoning": "The comment claims findByPR() returning non-active rows is a bug, but this is intentional design. The acquireForPR() decision tree (documented in comments at lines 71-75) explicitly says: 'Pool worktree already assigned to this PR -> refresh and return.' When a slot is released via markAvailable(), it retains current_pr_number as a cache hint — the worktree still contains the PR's files. When the same PR requests a worktree again, findByPR() finds this cached slot, and _refreshPoolWorktree() correctly refreshes it and marks it in_use. This is faster than evicting and switching. The 'switching' state concern is mitigated by the per-repo lock (_withRepoLock), which serializes all acquireForPR calls for the same repository. The startup resetAllStatuses() scenario is also handled correctly — slots retain their PR numbers as cache hints, and the first request for that PR gets a fast refresh instead of a full switch. Adding status = 'in_use' to findByPR() would actually break this cache-hit optimization, forcing unnecessary eviction and switching when the same PR requests a worktree after release.",
+              "is_introduced_by_pr": true,
+              "introduced_by_pr_reasoning": "The findByPR method in WorktreePoolRepository is entirely new code added by this PR (visible in the diff at line 483 with + prefix). However, the behavior is intentional, not a bug.",
+              "overall_reasoning": "This comment misidentifies intentional cache-hit behavior as a bug. The findByPR() method in WorktreePoolRepository deliberately returns any row matching the PR number regardless of status, because the status represents slot availability, not data validity. A slot marked 'available' with current_pr_number still contains that PR's worktree data — it's a warm cache. The acquireForPR() method's step 1 ('already assigned to this PR -> refresh and return') leverages this to avoid expensive eviction+switch operations when the same PR comes back. The _refreshPoolWorktree() method correctly transitions the slot back to 'in_use'. The suggested fix (adding status = 'in_use') would degrade performance by forcing unnecessary full switches when a cached slot exists. The per-repo lock prevents any race conditions with 'switching' status. This is a design choice, not a bug."
+            }
+          ]
+        },
+        "5f07227f4f75019eb5ed4c80189a4ec3": {
+          "comment_uuid": "5f07227f4f75019eb5ed4c80189a4ec3",
+          "votes_passed": 0,
+          "votes_total": 1,
+          "passed_consensus": false,
+          "critic_votes": [
+            {
+              "critic_model": "anthropic:claude-opus-4-6",
+              "is_valid": false,
+              "is_real_and_actionable": false,
+              "real_and_actionable_reasoning": "The comment claims that leaving `current_pr_number` unchanged in `markAvailable()` causes stale PR ownership that leads to incorrect slot reuse. After thorough analysis, this is not a real bug. The behavior is actually an optimization: when a slot is released (marked available), it retains `current_pr_number` because the slot still has that PR's data on disk. If the same PR is requested again, `findByPR()` in `acquireForPR()` finds the slot and calls `_refreshPoolWorktree()`, which refreshes the worktree and calls `markInUse()` — this is the optimal path, avoiding an unnecessary full switch. The comment's claim about 'repurposed' slots is incorrect: when a slot is switched to a different PR via `_switchPoolWorktree()`, `markInUse(id, newPrNumber)` updates `current_pr_number` to the new PR number, so `findByPR(oldPrNumber)` would NOT find it. For `resetAllStatuses()`, the same logic applies — slots retain their on-disk PR data after restart, so finding them via `findByPR` and refreshing is correct. Additionally, `_withRepoLock()` serializes all `acquireForPR` calls per repository, preventing any race conditions. The stale `current_pr_number` is effectively a warm-cache hint, not a bug.",
+              "is_introduced_by_pr": true,
+              "introduced_by_pr_reasoning": "The entire `WorktreePoolRepository` class including `markAvailable()`, `resetAllStatuses()`, and `findByPR()` are all new code added by this PR (visible in the diff with `+` prefixes at lines 446-587 of the diff). The `acquireForPR` logic in `worktree-pool.js` is also entirely new.",
+              "overall_reasoning": "While the code is introduced by this PR, the reported issue is not a real bug. The comment mischaracterizes the retention of `current_pr_number` after release as a defect, when it's actually a correct optimization pattern. A released pool slot retains its `current_pr_number` as a warm-cache indicator — if the same PR is requested again before the slot is evicted, the system can refresh it cheaply instead of doing a full switch. The 'repurposed' scenario the comment describes cannot happen because `markInUse()` (called during `_switchPoolWorktree`) updates `current_pr_number` to the new PR. The serialization via `_withRepoLock` prevents any concurrent access issues. Clearing `current_pr_number` on release (as the suggested fix proposes) would actually degrade performance by forcing unnecessary full switches when a warm slot could be reused. This is a theoretical concern about data hygiene, not an actual correctness bug."
+            }
+          ]
+        },
+        "9ff8f9089a76674e3c54f092f7ece3ba": {
+          "comment_uuid": "9ff8f9089a76674e3c54f092f7ece3ba",
+          "votes_passed": 0,
+          "votes_total": 1,
+          "passed_consensus": false,
+          "critic_votes": [
+            {
+              "critic_model": "anthropic:claude-opus-4-6",
+              "is_valid": false,
+              "is_real_and_actionable": false,
+              "real_and_actionable_reasoning": "The comment overstates the collision risk. The `generatePoolWorktreeId()` produces 46,656 possible IDs, but pool sizes are typically 3-5 worktrees per repository. The birthday paradox collision probability for 5 items in a 46,656 namespace is ~0.027%, which is negligible. More importantly, the `poolId` is primarily used as a filesystem directory name template (nameTemplate), NOT directly as the database primary key. The actual primary key inserted into `worktree_pool` is the `worktreeId` from the `worktrees` table (line 171: `worktreeRecord ? worktreeRecord.id : poolId`), which goes through the collision-retry logic in `WorktreeRepository.create()`. The `poolId` is only used as a DB key in the fallback case where `findByPath` returns null. Additionally, pool worktrees are designed to be long-lived and reused (switched between PRs), not frequently created and deleted, so the 'over time' accumulation scenario described in the comment doesn't match the actual usage pattern. The non-pool `generateWorktreeId()` uses the same 3-character namespace without issues. This is a theoretical maintainability concern about an astronomically unlikely collision, not a real bug causing incorrect behavior now.",
+              "is_introduced_by_pr": true,
+              "introduced_by_pr_reasoning": "The `generatePoolWorktreeId()` function and the `_createPoolWorktree` flow are both new code introduced by this PR, as confirmed by the diff showing these as added lines (+ prefix).",
+              "overall_reasoning": "While the code was introduced by this PR, the issue is not a real, actionable bug. The collision probability is negligible given typical pool sizes (3-5) vs the ID namespace (46,656). The poolId is primarily a directory name, not a DB primary key — the actual DB key goes through existing retry logic. Pool worktrees are long-lived and reused, not frequently created/deleted. The comment also includes a test coverage suggestion ('There is no test covering collision handling'), which we filter out. This is a theoretical maintainability concern, not a concrete bug causing incorrect behavior now."
+            }
+          ]
+        }
+      }
+    },
+    "final_state": {
+      "pr_id": 0,
+      "repo": "in-the-loop-labs/pair-review",
+      "pr_title": "Add configurable worktree pool for reusable git worktrees",
+      "pr_body": "Worktree pool with LRU eviction, usage tracking, background fetch, cleanup exemption",
+      "pr_diff_path": "/Users/tjwp/src/github.com/in-the-loop-labs/pair-review/binks-pr-cc3dfc890003.diff",
+      "worktree_path": "/Users/tjwp/src/github.com/in-the-loop-labs/pair-review",
+      "comments": [],
+      "summary": "The new worktree-pool feature is close, but there are two medium-severity correctness issues in the pool state machine that can leave stale PR-to-worktree associations behind after release or startup, causing inconsistent routing and reuse decisions. There is also one minor reliability issue where the pool worktree ID namespace is small and lacks collision retries, which can cause sporadic creation failures over time.",
+      "pr_commit_sha": null,
+      "runnable_commit_sha": null,
+      "run_id": null,
+      "thread_id": null,
+      "started_at": "2026-04-04T14:56:45.094575+00:00",
+      "ended_at": null,
+      "response_length": null,
+      "error_message": null,
+      "retry_count": 0,
+      "last_successful_node": null,
+      "clean_worktree": false,
+      "keep_checkout": false,
+      "temp_dir": null,
+      "force": true,
+      "incident_ids": null,
+      "judge_models": null,
+      "output_dir": "review-output",
+      "output_file_path": "review-output/pr-0/code_review_result.json",
+      "environment": "LOCAL",
+      "input_dir": null,
+      "fallback_models_remaining": [
+        "openai:gpt-5.2",
+        "anthropic:claude-sonnet-4-6"
+      ]
+    }
+  }
+}

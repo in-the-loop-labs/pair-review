@@ -1,6 +1,8 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 const { WebSocketServer } = require('ws');
 const logger = require('../utils/logger');
+const { worktreePoolUsage } = require('../git/worktree-pool-usage');
+const { WorktreePoolRepository } = require('../database');
 
 const HEARTBEAT_INTERVAL = 30000;
 
@@ -11,8 +13,9 @@ let heartbeatTimer = null;
  * Attach a WebSocket server to an existing HTTP server.
  * Operates in noServer mode, handling upgrade requests on the /ws path only.
  * @param {import('http').Server} httpServer
+ * @param {Object} [db] - Database instance for pool worktree lookups
  */
-function attachWebSocket(httpServer) {
+function attachWebSocket(httpServer, db) {
   wss = new WebSocketServer({ noServer: true });
 
   httpServer.on('upgrade', (request, socket, head) => {
@@ -27,8 +30,12 @@ function attachWebSocket(httpServer) {
     });
   });
 
+  let nextWsId = 1;
+
   wss.on('connection', (ws) => {
     ws._topics = new Set();
+    ws._wsId = nextWsId++;
+    ws._poolSessions = [];
     ws.isAlive = true;
 
     ws.on('pong', () => {
@@ -49,17 +56,62 @@ function attachWebSocket(httpServer) {
 
       if (action === 'subscribe') {
         ws._topics.add(topic);
+
+        // Track pool worktree usage for review topics
+        if (topic.startsWith('review:') && db) {
+          const reviewId = parseInt(topic.substring(7), 10);
+          if (!isNaN(reviewId)) {
+            const poolRepo = new WorktreePoolRepository(db);
+            poolRepo.findByReviewId(reviewId).then(poolResult => {
+              if (poolResult) {
+                // Guard against race: socket may have closed or unsubscribed
+                // while the async lookup was in flight
+                if (ws.readyState !== ws.OPEN || !ws._topics.has(topic)) {
+                  logger.debug(`WS: skipping pool session registration for ws-${ws._wsId} — socket closed or unsubscribed during lookup`);
+                  return;
+                }
+                const sessionKey = `ws-${ws._wsId}-${topic}`;
+                ws._poolSessions.push({ worktreeId: poolResult.id, sessionKey });
+                worktreePoolUsage.addSession(poolResult.id, sessionKey);
+              }
+            }).catch(err => {
+              logger.debug(`WS: pool worktree lookup failed for review ${reviewId}: ${err.message}`);
+            });
+          }
+        }
       } else if (action === 'unsubscribe') {
         ws._topics.delete(topic);
+
+        // Untrack pool worktree usage for review topics
+        if (topic.startsWith('review:') && ws._poolSessions.length > 0) {
+          const expectedKey = `ws-${ws._wsId}-${topic}`;
+          ws._poolSessions = ws._poolSessions.filter(s => {
+            if (s.sessionKey === expectedKey) {
+              worktreePoolUsage.removeSession(s.worktreeId, s.sessionKey);
+              return false;
+            }
+            return true;
+          });
+        }
       }
     });
 
     ws.on('close', () => {
+      // Clean up all pool worktree sessions
+      for (const { worktreeId, sessionKey } of ws._poolSessions) {
+        worktreePoolUsage.removeSession(worktreeId, sessionKey);
+      }
+      ws._poolSessions = [];
       ws._topics.clear();
     });
 
     ws.on('error', (err) => {
       logger.warn(`WS: client error: ${err.message}`);
+      // Clean up all pool worktree sessions
+      for (const { worktreeId, sessionKey } of ws._poolSessions) {
+        worktreePoolUsage.removeSession(worktreeId, sessionKey);
+      }
+      ws._poolSessions = [];
       ws._topics.clear();
     });
   });

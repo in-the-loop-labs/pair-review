@@ -74,7 +74,7 @@ vi.spyOn(GitWorktreeManager.prototype, 'worktreeExists').mockResolvedValue(true)
 vi.spyOn(GitWorktreeManager.prototype, 'generateUnifiedDiff').mockResolvedValue(mockWorktreeResponses.generateUnifiedDiff);
 vi.spyOn(GitWorktreeManager.prototype, 'getChangedFiles').mockResolvedValue(mockWorktreeResponses.getChangedFiles);
 vi.spyOn(GitWorktreeManager.prototype, 'updateWorktree').mockResolvedValue(mockWorktreeResponses.getWorktreePath);
-vi.spyOn(GitWorktreeManager.prototype, 'createWorktreeForPR').mockResolvedValue(mockWorktreeResponses.getWorktreePath);
+vi.spyOn(GitWorktreeManager.prototype, 'createWorktreeForPR').mockResolvedValue({ path: mockWorktreeResponses.getWorktreePath, id: 'test-wt-id' });
 vi.spyOn(GitWorktreeManager.prototype, 'pathExists').mockResolvedValue(true);
 
 // Spy on config module functions to prevent reading user's real config

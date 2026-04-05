@@ -838,6 +838,9 @@
                             unsub();
                             var failedStep = msg.step;
                             var errorMsg = msg.message || 'An unexpected error occurred';
+                            if (msg.code === 'POOL_EXHAUSTED') {
+                                errorMsg = 'All worktree pool slots are occupied. Close an existing review or wait for an analysis to complete.';
+                            }
 
                             if (failedStep) {
                                 stepStates[failedStep] = { status: 'error', message: errorMsg };

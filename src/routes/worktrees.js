@@ -9,10 +9,14 @@
  */
 
 const express = require('express');
-const { query, queryOne, run, ReviewRepository } = require('../database');
+const { query, queryOne, run, ReviewRepository, WorktreePoolRepository } = require('../database');
 const { setupPRReview } = require('../setup/pr-setup');
 const { GitHubApiError } = require('../github/client');
+const { PoolExhaustedError } = require('../git/worktree-pool');
+const { worktreePoolUsage } = require('../git/worktree-pool-usage');
 const { GitWorktreeManager } = require('../git/worktree');
+const { activeAnalyses, reviewToAnalysisId, killProcesses, broadcastProgress } = require('./shared');
+const { AnalysisRunRepository } = require('../database');
 const fs = require('fs').promises;
 const logger = require('../utils/logger');
 
@@ -81,6 +85,14 @@ router.post('/api/worktrees/create', async (req, res) => {
 
   } catch (error) {
     logger.error('Error creating worktree from web UI:', error);
+
+    if (error instanceof PoolExhaustedError) {
+      return res.status(409).json({
+        success: false,
+        error: error.message,
+        code: 'POOL_EXHAUSTED'
+      });
+    }
 
     // GitHubApiError carries a numeric HTTP status from the GitHub client,
     // so we can route errors precisely without fragile string matching.
@@ -173,12 +185,17 @@ router.get('/api/worktrees/recent', async (req, res) => {
           await fs.access(row.worktree_path);
           storageStatus = 'local';
         } catch {
-          // Worktree dir missing — clean up stale record asynchronously on first page
+          // Worktree dir missing — clean up stale record asynchronously on first page,
+          // but only if it's not a pool worktree (pool worktrees are managed separately)
           if (!before) {
             setImmediate(async () => {
               try {
-                await run(db, 'DELETE FROM worktrees WHERE id = ?', [row.worktree_id]);
-                logger.info(`Cleaned up stale worktree record ${row.worktree_id}`);
+                const poolRepo = new WorktreePoolRepository(db);
+                const isPool = await poolRepo.isPoolWorktree(row.worktree_id);
+                if (!isPool) {
+                  await run(db, 'DELETE FROM worktrees WHERE id = ?', [row.worktree_id]);
+                  logger.info(`Cleaned up stale worktree record ${row.worktree_id}`);
+                }
               } catch (err) {
                 logger.warn(`Failed to cleanup stale worktree: ${err.message}`);
               }
@@ -246,10 +263,17 @@ async function deleteReviewById(db, metadataId) {
     SELECT id, path FROM worktrees WHERE pr_number = ? AND repository = ? COLLATE NOCASE
   `, [prNumber, repository]);
 
+  // Check if this worktree belongs to the pool — pool worktrees are preserved
+  const poolRepo = new WorktreePoolRepository(db);
+  const isPool = worktree ? await poolRepo.isPoolWorktree(worktree.id) : false;
+
   // Delete all associated database records in a transaction
   await run(db, 'BEGIN TRANSACTION');
   try {
-    await run(db, 'DELETE FROM worktrees WHERE pr_number = ? AND repository = ? COLLATE NOCASE', [prNumber, repository]);
+    // Pool worktrees: keep the worktrees row and pool entry intact
+    if (!isPool) {
+      await run(db, 'DELETE FROM worktrees WHERE pr_number = ? AND repository = ? COLLATE NOCASE', [prNumber, repository]);
+    }
     await run(db, 'DELETE FROM chat_sessions WHERE review_id IN (SELECT id FROM reviews WHERE pr_number = ? AND repository = ? COLLATE NOCASE)', [prNumber, repository]);
     await run(db, `
       DELETE FROM comments WHERE review_id IN (
@@ -270,7 +294,37 @@ async function deleteReviewById(db, metadataId) {
   }
 
   // Clean up worktree AFTER successful DB commit so rollback doesn't orphan data
-  if (worktree && worktree.path) {
+  // Pool worktrees: skip filesystem cleanup, mark as available instead
+  if (isPool) {
+    // Cancel any active analyses reading from this worktree before returning
+    // the slot to the pool.  Without this, a reclaimed worktree could have its
+    // filesystem switched out from under a still-running analysis subprocess.
+    const activeAnalysisIds = worktreePoolUsage.getActiveAnalyses(worktree.id);
+    if (activeAnalysisIds.size > 0) {
+      const analysisRunRepo = new AnalysisRunRepository(db);
+      for (const analysisId of activeAnalysisIds) {
+        killProcesses(analysisId);
+        const analysis = activeAnalyses.get(analysisId);
+        if (analysis) {
+          const cancelledStatus = { ...analysis, status: 'cancelled', cancelledAt: new Date().toISOString(), progress: 'Cancelled — review deleted' };
+          activeAnalyses.set(analysisId, cancelledStatus);
+          broadcastProgress(analysisId, cancelledStatus);
+          if (analysis.reviewId) reviewToAnalysisId.delete(analysis.reviewId);
+        }
+        if (analysis?.runId) {
+          try { await analysisRunRepo.update(analysis.runId, { status: 'cancelled' }); } catch { /* best effort */ }
+        }
+      }
+      logger.info(`Cancelled ${activeAnalysisIds.size} active analysis(es) on pool worktree ${worktree.id}`);
+    }
+
+    // Purge all in-memory tracking (sessions, analyses, grace timers) so the
+    // slot cleanly returns to the pool.  clearWorktree does NOT fire onIdle —
+    // we handle availability directly below.
+    worktreePoolUsage.clearWorktree(worktree.id);
+    await poolRepo.markAvailable(worktree.id);
+    logger.info(`Pool worktree ${worktree.id} cleared and marked available after review deletion`);
+  } else if (worktree && worktree.path) {
     try {
       const worktreeManager = new GitWorktreeManager(db);
       await worktreeManager.cleanupWorktree(worktree.path);

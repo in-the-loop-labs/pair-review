@@ -14,7 +14,7 @@
  */
 
 const express = require('express');
-const { query, queryOne, run, withTransaction, WorktreeRepository, ReviewRepository, GitHubReviewRepository, RepoSettingsRepository, AnalysisRunRepository, PRMetadataRepository, CouncilRepository } = require('../database');
+const { query, queryOne, run, withTransaction, WorktreeRepository, ReviewRepository, GitHubReviewRepository, RepoSettingsRepository, AnalysisRunRepository, PRMetadataRepository, CouncilRepository, WorktreePoolRepository } = require('../database');
 const { GitWorktreeManager } = require('../git/worktree');
 const { GitHubClient } = require('../github/client');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
@@ -52,6 +52,7 @@ const { CommentRepository } = require('../database');
 const { runExecutableAnalysis } = require('./executable-analysis');
 const analysesRouter = require('./analyses');
 const { worktreeLock } = require('../git/worktree-lock');
+const { worktreePoolUsage } = require('../git/worktree-pool-usage');
 const router = express.Router();
 
 /**
@@ -1753,37 +1754,59 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
 
     broadcastProgress(analysisId, initialStatus);
     broadcastReviewEvent(review.id, { type: 'review:analysis_started', analysisId });
+
+    // Register analysis hold for pool worktree usage tracking.
+    // Wrapped in try so a synchronous exception in setup still cleans up the hold
+    // (the .finally() on the promise chain only covers async errors).
+    const poolRepo = new WorktreePoolRepository(req.app.get('db'));
+    const poolResult = await poolRepo.findByReviewId(review.id);
+    const poolWorktreeId = poolResult?.id;
     const analysisConfig = appConfig;
     const analysisPrContext = {
       number: prNumber, owner, repo,
       author: prMetadata.author, baseBranch: prMetadata.base_branch, headBranch: prMetadata.head_branch,
       baseSha: prMetadata.base_sha || null, headSha: prMetadata.head_sha || null,
     };
-    if (hasHooks('analysis.started', analysisConfig)) {
-      getCachedUser(analysisConfig).then(user => {
-        fireHooks('analysis.started', buildAnalysisStartedPayload({
-          reviewId: review.id, analysisId, provider, model, mode: 'pr', prContext: analysisPrContext, user,
-        }), analysisConfig);
-      }).catch(() => {});
+    let analysisPromise;
+    try {
+      if (poolWorktreeId) {
+        worktreePoolUsage.addAnalysis(poolWorktreeId, analysisId);
+      }
+      if (hasHooks('analysis.started', analysisConfig)) {
+        getCachedUser(analysisConfig).then(user => {
+          fireHooks('analysis.started', buildAnalysisStartedPayload({
+            reviewId: review.id, analysisId, provider, model, mode: 'pr', prContext: analysisPrContext, user,
+          }), analysisConfig);
+        }).catch(() => {});
+      }
+
+      const analyzer = new Analyzer(req.app.get('db'), model, provider);
+
+      logger.section(`AI Analysis Request - PR #${prNumber}`);
+      logger.log('API', `Repository: ${repository}`, 'magenta');
+      logger.log('API', `Worktree: ${worktreePath}`, 'magenta');
+      logger.log('API', `Analysis ID: ${analysisId}`, 'magenta');
+      logger.log('API', `Review ID: ${review.id}`, 'magenta');
+      logger.log('API', `Provider: ${provider}`, 'cyan');
+      logger.log('API', `Model: ${model}`, 'cyan');
+      logger.log('API', `Tier: ${tier}`, 'cyan');
+      if (combinedInstructions) {
+        logger.log('API', `Custom instructions: ${combinedInstructions.length} chars`, 'cyan');
+      }
+
+      const progressCallback = createProgressCallback(analysisId);
+
+      analysisPromise = analyzer.analyzeLevel1(review.id, worktreePath, prMetadata, progressCallback, { globalInstructions, repoInstructions, requestInstructions }, null, { analysisId, runId, skipRunCreation: true, tier, skipLevel3: requestSkipLevel3, enabledLevels: levelsConfig, excludePrevious, serverPort: req.socket.localPort });
+    } catch (setupError) {
+      // Synchronous setup failure — clean up the analysis hold immediately
+      reviewToAnalysisId.delete(review.id);
+      if (poolWorktreeId) {
+        worktreePoolUsage.removeAnalysis(poolWorktreeId, analysisId);
+      }
+      throw setupError;
     }
 
-    const analyzer = new Analyzer(req.app.get('db'), model, provider);
-
-    logger.section(`AI Analysis Request - PR #${prNumber}`);
-    logger.log('API', `Repository: ${repository}`, 'magenta');
-    logger.log('API', `Worktree: ${worktreePath}`, 'magenta');
-    logger.log('API', `Analysis ID: ${analysisId}`, 'magenta');
-    logger.log('API', `Review ID: ${review.id}`, 'magenta');
-    logger.log('API', `Provider: ${provider}`, 'cyan');
-    logger.log('API', `Model: ${model}`, 'cyan');
-    logger.log('API', `Tier: ${tier}`, 'cyan');
-    if (combinedInstructions) {
-      logger.log('API', `Custom instructions: ${combinedInstructions.length} chars`, 'cyan');
-    }
-
-    const progressCallback = createProgressCallback(analysisId);
-
-    analyzer.analyzeLevel1(review.id, worktreePath, prMetadata, progressCallback, { globalInstructions, repoInstructions, requestInstructions }, null, { analysisId, runId, skipRunCreation: true, tier, skipLevel3: requestSkipLevel3, enabledLevels: levelsConfig, excludePrevious, serverPort: req.socket.localPort })
+    analysisPromise
       .then(async result => {
         logger.section('Analysis Results');
         logger.success(`Analysis complete for PR #${prNumber}`);
@@ -1929,6 +1952,8 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
       .finally(() => {
         // Clean up review to analysis ID mapping (unified map)
         reviewToAnalysisId.delete(review.id);
+        // Remove pool worktree analysis hold
+        worktreePoolUsage.removeAnalysisById(analysisId);
       });
 
     res.json({

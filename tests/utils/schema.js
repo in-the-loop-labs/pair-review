@@ -246,6 +246,21 @@ const SCHEMA_SQL = {
       collection TEXT NOT NULL,
       fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
+  `,
+
+  worktree_pool: `
+    CREATE TABLE IF NOT EXISTS worktree_pool (
+      id TEXT PRIMARY KEY,
+      repository TEXT NOT NULL,
+      path TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL DEFAULT 'available'
+        CHECK(status IN ('available', 'in_use', 'switching', 'creating')),
+      current_pr_number INTEGER,
+      current_review_id INTEGER,
+      last_switched_at TEXT,
+      last_fetched_at TEXT,
+      created_at TEXT NOT NULL
+    )
   `
 };
 
@@ -286,7 +301,11 @@ const INDEX_SQL = [
   // Context files indexes
   'CREATE INDEX IF NOT EXISTS idx_context_files_review ON context_files(review_id)',
   // GitHub PR cache indexes
-  'CREATE UNIQUE INDEX IF NOT EXISTS idx_github_pr_cache_unique ON github_pr_cache(collection, owner, repo, number)'
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_github_pr_cache_unique ON github_pr_cache(collection, owner, repo, number)',
+  // Worktree pool indexes
+  'CREATE INDEX IF NOT EXISTS idx_worktree_pool_repo ON worktree_pool(repository)',
+  'CREATE INDEX IF NOT EXISTS idx_worktree_pool_status ON worktree_pool(repository, status)',
+  'CREATE INDEX IF NOT EXISTS idx_worktree_pool_lru ON worktree_pool(repository, status, last_switched_at)'
 ];
 
 /**

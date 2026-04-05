@@ -241,7 +241,7 @@ class GitWorktreeManager {
    *   When set, worktree is created with --no-checkout from the main git root (no sparse-checkout inheritance),
    *   and the script is executed before checkout with PR context as environment variables.
    * @param {number} [options.checkoutTimeout] - Timeout in ms for checkout script (default: 300000 = 5 minutes)
-   * @returns {Promise<string>} Path to created worktree
+   * @returns {Promise<{ path: string, id: string }>} Path and database ID of created worktree
    */
   async createWorktreeForPR(prInfo, prData, repositoryPath, options = {}) {
     const { worktreeSourcePath, checkoutScript, checkoutTimeout } = options;
@@ -265,7 +265,8 @@ class GitWorktreeManager {
         // Try to reuse existing worktree by refreshing it
         console.log(`Found existing worktree for PR #${prInfo.number} at ${worktreePath}`);
         try {
-          return await this.refreshWorktree(worktreeRecord, prInfo.number, prData, prInfo);
+          const refreshedPath = await this.refreshWorktree(worktreeRecord, prInfo.number, prData, prInfo);
+          return { path: refreshedPath, id: worktreeRecord.id };
         } catch (refreshError) {
           // If refresh fails due to uncommitted changes, propagate that error
           if (refreshError.message.includes('uncommitted changes')) {
@@ -302,7 +303,8 @@ class GitWorktreeManager {
 
         // Try to refresh and reuse the legacy worktree
         try {
-          return await this.refreshWorktree({ path: legacyPath, id: worktreeRecord?.id }, prInfo.number, prData, prInfo);
+          const refreshedPath = await this.refreshWorktree({ path: legacyPath, id: worktreeRecord?.id }, prInfo.number, prData, prInfo);
+          return { path: refreshedPath, id: worktreeRecord?.id };
         } catch (refreshError) {
           // If refresh fails due to uncommitted changes, propagate that error
           if (refreshError.message.includes('uncommitted changes')) {
@@ -448,18 +450,20 @@ class GitWorktreeManager {
       }
 
       // Store/update worktree record in database
+      let worktreeDbId;
       if (this.worktreeRepo) {
-        await this.worktreeRepo.getOrCreate({
+        const record = await this.worktreeRepo.getOrCreate({
           prNumber: prInfo.number,
           repository,
           branch: prData.head_branch || prData.base_branch,
           path: worktreePath
         });
+        worktreeDbId = record.id;
         console.log(`Worktree record stored in database`);
       }
 
       console.log(`Worktree created successfully at ${worktreePath}`);
-      return worktreePath;
+      return { path: worktreePath, id: worktreeDbId };
 
     } catch (error) {
       console.error('Error creating worktree:', error);

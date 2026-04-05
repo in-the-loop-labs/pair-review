@@ -34,7 +34,7 @@ const DEFAULT_CONFIG = {
   chat: { enable_shortcuts: true, enter_to_send: true },  // Chat panel settings (enable_shortcuts: show action shortcut buttons, enter_to_send: Enter sends message instead of newline)
   providers: {},  // Custom AI analysis provider configurations (overrides built-in defaults)
   chat_providers: {},  // Custom chat provider configurations (overrides built-in defaults)
-  monorepos: {},  // Monorepo configurations: { "owner/repo": { path: "~/path/to/clone" } }
+  repos: {},  // Repository configurations: { "owner/repo": { path: "~/path/to/clone" } }
   assisted_by_url: "https://github.com/in-the-loop-labs/pair-review",  // URL for "Review assisted by" footer link
   hooks: {},  // Hook commands per event: { "review.started": { "my_hook": { "command": "..." } } }
   enable_graphite: false,  // When true, shows Graphite links alongside GitHub links
@@ -221,6 +221,11 @@ async function loadConfig() {
     }
   }
 
+  // Normalize legacy monorepos key into repos (monorepos values are overridden by repos)
+  if (mergedConfig.monorepos) {
+    mergedConfig.repos = deepMerge(mergedConfig.monorepos, mergedConfig.repos);
+  }
+
   // Validate port
   if (!validatePort(mergedConfig.port)) {
     console.error(`Invalid port number ${mergedConfig.port}`);
@@ -393,83 +398,133 @@ function expandPath(p) {
 }
 
 /**
- * Gets the configured monorepo path for a repository
+ * Get repository configuration, checking `repos` key first, falling back to `monorepos`.
+ * @param {object} config
+ * @param {string} repository - owner/repo
+ * @returns {object|null}
+ */
+function getRepoConfig(config, repository) {
+  const reposSection = config.repos || {};
+  const entry = reposSection[repository];
+  if (entry) return entry;
+
+  const legacySection = config.monorepos || {};
+  return legacySection[repository] || null;
+}
+
+/**
+ * Gets the configured repository path
  * @param {Object} config - Configuration object from loadConfig()
  * @param {string} repository - Repository in "owner/repo" format
  * @returns {string|null} - Expanded path or null if not configured
  */
-function getMonorepoPath(config, repository) {
-  const monorepoConfig = config.monorepos?.[repository];
-  if (monorepoConfig?.path) {
-    return expandPath(monorepoConfig.path);
+function getRepoPath(config, repository) {
+  const repoConfig = getRepoConfig(config, repository);
+  if (repoConfig?.path) {
+    return expandPath(repoConfig.path);
   }
   return null;
 }
 
 /**
- * Gets the configured checkout script for a monorepo repository
+ * Gets the configured checkout script for a repository
  * @param {Object} config - Configuration object from loadConfig()
  * @param {string} repository - Repository in "owner/repo" format
  * @returns {string|null} - Checkout script path or null if not configured
  */
-function getMonorepoCheckoutScript(config, repository) {
-  const monorepoConfig = config.monorepos?.[repository];
-  return monorepoConfig?.checkout_script || null;
+function getRepoCheckoutScript(config, repository) {
+  const repoConfig = getRepoConfig(config, repository);
+  return repoConfig?.checkout_script || null;
 }
 
 /**
- * Gets the configured worktree directory for a monorepo repository
+ * Gets the configured worktree directory for a repository
  * @param {Object} config - Configuration object from loadConfig()
  * @param {string} repository - Repository in "owner/repo" format
  * @returns {string|null} - Expanded worktree directory path or null if not configured
  */
-function getMonorepoWorktreeDirectory(config, repository) {
-  const monorepoConfig = config.monorepos?.[repository];
-  if (monorepoConfig?.worktree_directory) {
-    return expandPath(monorepoConfig.worktree_directory);
+function getRepoWorktreeDirectory(config, repository) {
+  const repoConfig = getRepoConfig(config, repository);
+  if (repoConfig?.worktree_directory) {
+    return expandPath(repoConfig.worktree_directory);
   }
   return null;
 }
 
 /**
- * Gets the configured worktree name template for a monorepo repository
+ * Gets the configured worktree name template for a repository
  * @param {Object} config - Configuration object from loadConfig()
  * @param {string} repository - Repository in "owner/repo" format
  * @returns {string|null} - Template string or null if not configured
  */
-function getMonorepoWorktreeNameTemplate(config, repository) {
-  const monorepoConfig = config.monorepos?.[repository];
-  return monorepoConfig?.worktree_name_template || null;
+function getRepoWorktreeNameTemplate(config, repository) {
+  const repoConfig = getRepoConfig(config, repository);
+  return repoConfig?.worktree_name_template || null;
 }
 
 /**
- * Gets the configured checkout script timeout for a monorepo repository
+ * Gets the configured checkout script timeout for a repository
  * @param {Object} config - Configuration object from loadConfig()
  * @param {string} repository - Repository in "owner/repo" format
  * @returns {number} - Timeout in milliseconds (default: 300000 = 5 minutes)
  */
-function getMonorepoCheckoutTimeout(config, repository) {
-  const monorepoConfig = config.monorepos?.[repository];
-  if (monorepoConfig?.checkout_timeout_seconds > 0) {
-    return monorepoConfig.checkout_timeout_seconds * 1000;
+function getRepoCheckoutTimeout(config, repository) {
+  const repoConfig = getRepoConfig(config, repository);
+  if (repoConfig?.checkout_timeout_seconds > 0) {
+    return repoConfig.checkout_timeout_seconds * 1000;
   }
   return DEFAULT_CHECKOUT_TIMEOUT_MS; // 5 minutes default
 }
 
 /**
- * Resolves all monorepo worktree options for a repository into a single object.
+ * Gets the configured reset script for a repository
+ * @param {Object} config - Configuration object from loadConfig()
+ * @param {string} repository - Repository in "owner/repo" format
+ * @returns {string|null} - Reset script path or null if not configured
+ */
+function getRepoResetScript(config, repository) {
+  const repoConfig = getRepoConfig(config, repository);
+  return repoConfig?.reset_script || null;
+}
+
+/**
+ * Gets the configured pool size for a repository
+ * @param {Object} config - Configuration object from loadConfig()
+ * @param {string} repository - Repository in "owner/repo" format
+ * @returns {number} - Pool size (0 if not configured or invalid)
+ */
+function getRepoPoolSize(config, repository) {
+  const repoConfig = getRepoConfig(config, repository);
+  const size = repoConfig?.pool_size;
+  return (typeof size === 'number' && size > 0) ? size : 0;
+}
+
+/**
+ * Gets the configured pool fetch interval for a repository
+ * @param {Object} config - Configuration object from loadConfig()
+ * @param {string} repository - Repository in "owner/repo" format
+ * @returns {number|null} - Interval in minutes or null if not configured
+ */
+function getRepoPoolFetchInterval(config, repository) {
+  const repoConfig = getRepoConfig(config, repository);
+  const minutes = repoConfig?.pool_fetch_interval_minutes;
+  return (typeof minutes === 'number' && minutes > 0) ? minutes : null;
+}
+
+/**
+ * Resolves all repository worktree options into a single object.
  * Composite helper that combines the individual getters into the shape expected
  * by GitWorktreeManager and createWorktreeForPR.
  *
  * @param {Object} config - Configuration object from loadConfig()
  * @param {string} repository - Repository in "owner/repo" format
- * @returns {{ checkoutScript: string|null, checkoutTimeout: number, worktreeConfig: Object|null }}
+ * @returns {{ checkoutScript: string|null, checkoutTimeout: number, worktreeConfig: Object|null, resetScript: string|null, poolSize: number, poolFetchIntervalMinutes: number|null }}
  */
-function resolveMonorepoOptions(config, repository) {
-  const checkoutScript = getMonorepoCheckoutScript(config, repository);
-  const checkoutTimeout = getMonorepoCheckoutTimeout(config, repository);
-  const worktreeDirectory = getMonorepoWorktreeDirectory(config, repository);
-  const nameTemplate = getMonorepoWorktreeNameTemplate(config, repository);
+function resolveRepoOptions(config, repository) {
+  const checkoutScript = getRepoCheckoutScript(config, repository);
+  const checkoutTimeout = getRepoCheckoutTimeout(config, repository);
+  const worktreeDirectory = getRepoWorktreeDirectory(config, repository);
+  const nameTemplate = getRepoWorktreeNameTemplate(config, repository);
 
   let worktreeConfig = null;
   if (worktreeDirectory || nameTemplate) {
@@ -478,7 +533,11 @@ function resolveMonorepoOptions(config, repository) {
     if (nameTemplate) worktreeConfig.nameTemplate = nameTemplate;
   }
 
-  return { checkoutScript, checkoutTimeout, worktreeConfig };
+  const resetScript = getRepoResetScript(config, repository);
+  const poolSize = getRepoPoolSize(config, repository);
+  const poolFetchIntervalMinutes = getRepoPoolFetchInterval(config, repository);
+
+  return { checkoutScript, checkoutTimeout, worktreeConfig, resetScript, poolSize, poolFetchIntervalMinutes };
 }
 
 /**
@@ -558,12 +617,17 @@ module.exports = {
   isRunningViaNpx,
   showWelcomeMessage,
   expandPath,
-  getMonorepoPath,
-  getMonorepoCheckoutScript,
-  getMonorepoWorktreeDirectory,
-  getMonorepoWorktreeNameTemplate,
-  getMonorepoCheckoutTimeout,
-  resolveMonorepoOptions,
+  // New repo-prefixed names
+  getRepoConfig,
+  getRepoPath,
+  getRepoCheckoutScript,
+  getRepoWorktreeDirectory,
+  getRepoWorktreeNameTemplate,
+  getRepoCheckoutTimeout,
+  resolveRepoOptions,
+  getRepoResetScript,
+  getRepoPoolSize,
+  getRepoPoolFetchInterval,
   resolveDbName,
   warnIfDevModeWithoutDbName,
   shouldSkipUpdateNotifier,

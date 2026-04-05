@@ -298,7 +298,7 @@ async function globalSetup() {
   GitWorktreeManager.prototype.generateUnifiedDiff = async () => mockWorktreeResponses.generateUnifiedDiff;
   GitWorktreeManager.prototype.getChangedFiles = async () => mockWorktreeResponses.getChangedFiles;
   GitWorktreeManager.prototype.updateWorktree = async () => mockWorktreeResponses.getWorktreePath;
-  GitWorktreeManager.prototype.createWorktreeForPR = async () => mockWorktreeResponses.getWorktreePath;
+  GitWorktreeManager.prototype.createWorktreeForPR = async () => ({ path: mockWorktreeResponses.getWorktreePath, id: 'test-wt-id' });
   GitWorktreeManager.prototype.pathExists = async () => true;
 
   // Mock config (port is set dynamically after server starts via E2E_PORT env var)
@@ -642,6 +642,19 @@ async function globalSetup() {
     sendMessage: async () => ({ id: Date.now() }),
     closeSession: async () => {},
     getSession: (id) => db.prepare('SELECT * FROM chat_sessions WHERE id = ?').get(id) || null,
+    getSessionsWithMessageCount: (reviewId) =>
+      db.prepare(`
+        SELECT s.*, COUNT(m.id) AS message_count,
+          (SELECT content FROM chat_messages
+           WHERE session_id = s.id AND role = 'user' AND type = 'message'
+           ORDER BY id ASC LIMIT 1
+          ) AS first_message
+        FROM chat_sessions s
+        LEFT JOIN chat_messages m ON m.session_id = s.id AND m.type = 'message'
+        WHERE s.review_id = ?
+        GROUP BY s.id
+        ORDER BY s.updated_at DESC
+      `).all(reviewId),
     getSessionsForReview: (reviewId) =>
       db.prepare('SELECT * FROM chat_sessions WHERE review_id = ? ORDER BY created_at DESC').all(reviewId),
     getMessages: (sessionId) =>
