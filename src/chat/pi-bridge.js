@@ -35,6 +35,7 @@ class PiBridge extends EventEmitter {
    * @param {boolean} [options.useShell] - Use shell mode for multi-word commands
    * @param {string[]} [options.skills] - Array of skill file paths to load via --skill
    * @param {string[]} [options.extensions] - Array of extension directory paths to load via -e
+   * @param {string[]} [options.extraArgs] - Extra CLI args to append (e.g., from config extra_args)
    * @param {string} [options.sessionPath] - Path to a session file for resumption
    */
   constructor(options = {}) {
@@ -49,6 +50,7 @@ class PiBridge extends EventEmitter {
     this.useShell = options.useShell || false;
     this.skills = options.skills || [];
     this.extensions = options.extensions || [];
+    this.extraArgs = options.extraArgs || [];
     this.sessionPath = options.sessionPath || null;
 
     this._process = null;
@@ -286,6 +288,12 @@ class PiBridge extends EventEmitter {
     // These are additive — the user's auto-discovered extensions remain available.
     for (const ext of this.extensions) {
       args.push('-e', ext);
+    }
+
+    // Append extra args from provider config (e.g., extra_args in chat_providers).
+    // These go last so they can override earlier flags if needed.
+    if (this.extraArgs.length > 0) {
+      args.push(...this.extraArgs);
     }
 
     return args;
