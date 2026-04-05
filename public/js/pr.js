@@ -529,6 +529,11 @@ class PRManager {
       const prData = responseData.data || responseData;
       this.currentPR = prData;
 
+      // Update diff options dropdown with worktree path
+      if (this.diffOptionsDropdown && prData.worktree_path) {
+        this.diffOptionsDropdown.worktreePath = prData.worktree_path;
+      }
+
       // Render PR header with metadata
       this.renderPRHeader(prData);
 

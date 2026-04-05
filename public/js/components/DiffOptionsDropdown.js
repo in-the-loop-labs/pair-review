@@ -44,11 +44,12 @@ class DiffOptionsDropdown {
    * @param {{start:string,end:string}} [callbacks.initialScope]
    * @param {boolean} [callbacks.branchAvailable]
    */
-  constructor(buttonElement, { onToggleWhitespace, onToggleMinimize, onScopeChange, initialScope, branchAvailable }) {
+  constructor(buttonElement, { onToggleWhitespace, onToggleMinimize, onScopeChange, initialScope, branchAvailable, worktreePath }) {
     this._btn = buttonElement;
     this._onToggleWhitespace = onToggleWhitespace;
     this._onToggleMinimize = onToggleMinimize || (() => {});
     this._onScopeChange = onScopeChange || null;
+    this._worktreePath = worktreePath || null;
 
     this._popoverEl = null;
     this._checkbox = null;
@@ -169,6 +170,12 @@ class DiffOptionsDropdown {
     this._updateScopeUI();
   }
 
+  /** Set the worktree path (updates UI if popover already exists). */
+  set worktreePath(value) {
+    this._worktreePath = value || null;
+    this._updateWorktreeRow();
+  }
+
   /** Clear the scope status indicator (call after scope change completes). */
   clearScopeStatus() {
     if (this._scopeStatusEl) {
@@ -231,11 +238,17 @@ class DiffOptionsDropdown {
     const minCheckbox = minLabel.querySelector('input');
     popover.appendChild(minLabel);
 
+    // Worktree path row (placeholder — populated by _updateWorktreeRow)
+    this._worktreeRowEl = null;
+
     document.body.appendChild(popover);
 
     this._popoverEl = popover;
     this._checkbox = wsCheckbox;
     this._minimizeCheckbox = minCheckbox;
+
+    // Render worktree row if path is already known
+    this._updateWorktreeRow();
 
     // Respond to checkbox changes
     wsCheckbox.addEventListener('change', () => {
@@ -279,6 +292,69 @@ class DiffOptionsDropdown {
     label.appendChild(checkbox);
     label.appendChild(document.createTextNode(text));
     return label;
+  }
+
+  /**
+   * Render or update the worktree path row at the bottom of the popover.
+   */
+  _updateWorktreeRow() {
+    if (!this._popoverEl) return;
+
+    // Remove existing row if any
+    if (this._worktreeRowEl) {
+      this._worktreeRowEl.remove();
+      this._worktreeRowEl = null;
+    }
+    if (!this._worktreePath) return;
+
+    const basename = this._worktreePath.split('/').pop();
+
+    // Divider
+    const divider = document.createElement('div');
+    divider.style.height = '1px';
+    divider.style.background = 'var(--color-border-primary, #d0d7de)';
+    divider.style.margin = '0 20px';
+
+    // Row container
+    const row = document.createElement('div');
+    row.style.display = 'flex';
+    row.style.alignItems = 'center';
+    row.style.gap = '6px';
+    row.style.padding = '8px 12px';
+    row.style.fontSize = '0.8125rem';
+    row.style.color = 'var(--color-fg-muted, #656d76)';
+
+    const text = document.createElement('span');
+    text.textContent = `Worktree: ${basename}`;
+    text.style.overflow = 'hidden';
+    text.style.textOverflow = 'ellipsis';
+    text.style.whiteSpace = 'nowrap';
+    text.style.minWidth = '0';
+
+    const copyBtn = document.createElement('button');
+    copyBtn.title = 'Copy full path';
+    copyBtn.style.cssText = 'background:none;border:none;cursor:pointer;padding:2px;color:inherit;display:flex;flex-shrink:0;';
+    copyBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"/><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/></svg>';
+
+    const fullPath = this._worktreePath;
+    copyBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      navigator.clipboard.writeText(fullPath).then(() => {
+        const orig = text.textContent;
+        text.textContent = 'Copied!';
+        setTimeout(() => { text.textContent = orig; }, 1500);
+      });
+    });
+
+    row.appendChild(text);
+    row.appendChild(copyBtn);
+
+    // Use a container so we can remove both elements via one reference
+    const container = document.createElement('div');
+    container.appendChild(divider);
+    container.appendChild(row);
+    this._popoverEl.appendChild(container);
+    this._worktreeRowEl = container;
   }
 
   _renderScopeSelector(popover) {

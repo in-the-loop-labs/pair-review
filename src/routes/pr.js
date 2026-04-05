@@ -278,6 +278,7 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
         additions: extendedData.additions || 0,
         deletions: extendedData.deletions || 0,
         diff_content: extendedData.diff || '',
+        worktree_path: extendedData.worktree_path || null,
         html_url: extendedData.html_url || `https://github.com/${repoOwner}/${repoName}/pull/${prMetadata.pr_number}`,
         pendingDraft: pendingDraft ? {
           id: pendingDraft.id,
@@ -392,7 +393,8 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
       html_url: prData.html_url,
       base_sha: prData.base_sha,
       head_sha: prData.head_sha,
-      node_id: prData.node_id  // GraphQL node ID for PR (required for GraphQL review submission)
+      node_id: prData.node_id,  // GraphQL node ID for PR (required for GraphQL review submission)
+      worktree_path: worktreePath
     };
 
     // Update database with new data
@@ -485,7 +487,8 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
         html_url: parsedData.html_url || `https://github.com/${repoOwner}/${repoName}/pull/${prMetadata.pr_number}`,
         head_sha: parsedData.head_sha,
         base_sha: parsedData.base_sha,
-        node_id: parsedData.node_id
+        node_id: parsedData.node_id,
+        worktree_path: parsedData.worktree_path || null
       }
     };
 
