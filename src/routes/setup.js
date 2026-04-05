@@ -16,9 +16,9 @@ const { activeSetups, broadcastSetupProgress } = require('./shared');
 const { setupPRReview } = require('../setup/pr-setup');
 const { setupLocalReview } = require('../setup/local-setup');
 const { getGitHubToken, expandPath } = require('../config');
-const { queryOne, WorktreePoolRepository } = require('../database');
+const { queryOne } = require('../database');
 const { normalizeRepository } = require('../utils/paths');
-const { PoolExhaustedError } = require('../git/worktree-pool');
+const { PoolExhaustedError } = require('../git/worktree-pool-lifecycle');
 const logger = require('../utils/logger');
 
 const router = express.Router();
@@ -97,8 +97,8 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
         // released — markAvailable() clears ownership without deleting the
         // record. A released slot may have been reassigned to a different PR,
         // so we must fall through to re-run setup and reacquire a pool slot.
-        const poolRepo = new WorktreePoolRepository(db);
-        const poolEntry = await poolRepo.getPoolEntry(worktree.id);
+        const poolLifecycle = req.app.get('poolLifecycle');
+        const poolEntry = poolLifecycle ? await poolLifecycle.poolRepo.getPoolEntry(worktree.id) : null;
         if (poolEntry && poolEntry.status !== 'in_use') {
           logger.info(`Pool worktree ${worktree.id} for ${repository} #${prNumber} is ${poolEntry.status}, re-running setup to reacquire`);
         } else {
@@ -121,6 +121,7 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
           prNumber,
           githubToken,
           config,
+          poolLifecycle: req.app.get('poolLifecycle'),
           onProgress: (progress) => {
             sendSetupEvent(setupId, 'step', progress);
           }

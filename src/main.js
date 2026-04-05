@@ -5,7 +5,7 @@ const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, Work
 const { PRArgumentParser } = require('./github/parser');
 const { GitHubClient } = require('./github/client');
 const { GitWorktreeManager } = require('./git/worktree');
-const { WorktreePoolManager } = require('./git/worktree-pool');
+const { WorktreePoolLifecycle } = require('./git/worktree-pool-lifecycle');
 const { startServer } = require('./server');
 const Analyzer = require('./ai/analyzer');
 const { applyConfigOverrides } = require('./ai');
@@ -20,7 +20,6 @@ const { GIT_DIFF_FLAGS_ARRAY, GIT_DIFF_SUMMARY_FLAGS_ARRAY } = require('./git/di
 const { getEmoji: getCategoryEmoji } = require('./utils/category-emoji');
 const open = (...args) => process.env.PAIR_REVIEW_NO_OPEN ? Promise.resolve() : import('open').then(({default: open}) => open(...args));
 const { registerProtocolHandler, unregisterProtocolHandler } = require('./protocol-handler');
-const { worktreePoolUsage } = require('./git/worktree-pool-usage');
 
 let db = null;
 
@@ -447,45 +446,9 @@ AI PROVIDERS:
       console.warn('Some worktrees could not be migrated:', migrationResult.errors);
     }
 
-    // Reset stale pool entries on startup (DB is the source of truth for review→worktree mappings)
-    const poolRepo = new WorktreePoolRepository(db);
-    const preserved = await poolRepo.resetStaleAndPreserve();
-    if (preserved.length > 0) {
-      logger.info(`Pool startup: preserved ${preserved.length} active worktree(s)`);
-    }
-
-    // Wire up idle callback to release pool worktrees (retry once on failure)
-    worktreePoolUsage.onIdle = async (worktreeId) => {
-      for (let attempt = 1; attempt <= 2; attempt++) {
-        try {
-          const poolRepoInner = new WorktreePoolRepository(db);
-          await poolRepoInner.markAvailable(worktreeId);
-          logger.info(`Pool worktree ${worktreeId} is now available`);
-          return;
-        } catch (err) {
-          if (attempt < 2) {
-            logger.warn(`Failed to release pool worktree ${worktreeId} (attempt ${attempt}), retrying: ${err.message}`);
-            await new Promise(r => setTimeout(r, 1000));
-          } else {
-            logger.error(`Failed to release pool worktree ${worktreeId} after ${attempt} attempts: ${err.message}`);
-          }
-        }
-      }
-    };
-
-    // Rehydrate in-memory usage tracker for preserved pool worktrees.
-    // Without this, worktrees preserved on restart would never have their
-    // grace-period timers started, leaving them permanently locked as in_use.
-    if (preserved.length > 0) {
-      logger.info(`Pool startup: preserved ${preserved.length} active worktree(s), starting grace periods`);
-      for (const entry of preserved) {
-        // Add then immediately remove a synthetic session to trigger the
-        // idle grace period timer.  If a real user reconnects before the
-        // timer fires, their WS session will cancel it automatically.
-        worktreePoolUsage.addSession(entry.id, 'startup-rehydration');
-        worktreePoolUsage.removeSession(entry.id, 'startup-rehydration');
-      }
-    }
+    // Reset stale pool entries, wire idle callbacks, and rehydrate preserved entries
+    const poolLifecycle = new WorktreePoolLifecycle(db, config);
+    await poolLifecycle.resetAndRehydrate();
 
     // Parse command line arguments including flags
     const { prArgs, flags } = parseArgs(args);
@@ -552,11 +515,11 @@ AI PROVIDERS:
 
       // Check for --ai-review mode (takes precedence over --ai-draft and --ai)
       if (flags.aiReview) {
-        await handleActionReview(effectivePrArgs, config, db, flags);
+        await handleActionReview(effectivePrArgs, config, db, flags, poolLifecycle);
       } else if (flags.aiDraft) {
-        await handleDraftModeReview(effectivePrArgs, config, db, flags);
+        await handleDraftModeReview(effectivePrArgs, config, db, flags, poolLifecycle);
       } else {
-        await handlePullRequest(effectivePrArgs, config, db, flags);
+        await handlePullRequest(effectivePrArgs, config, db, flags, poolLifecycle);
       }
     } else {
       // Check if --ai or --ai-draft flags were used without PR identifier
@@ -572,7 +535,7 @@ AI PROVIDERS:
 
       // No PR arguments - just start the server
       console.log('No pull request specified. Starting server...');
-      await startServerOnly(config);
+      await startServerOnly(config, poolLifecycle);
     }
     
   } catch (error) {
@@ -587,8 +550,9 @@ AI PROVIDERS:
  * @param {Object} config - Application configuration
  * @param {Object} db - Database instance
  * @param {Object} flags - Parsed command line flags
+ * @param {import('./git/worktree-pool-lifecycle').WorktreePoolLifecycle} [poolLifecycle] - Pool lifecycle instance
  */
-async function handlePullRequest(args, config, db, flags = {}) {
+async function handlePullRequest(args, config, db, flags = {}, poolLifecycle = null) {
   try {
     // Get GitHub token (env var takes precedence over config)
     const githubToken = getGitHubToken(config);
@@ -613,7 +577,7 @@ async function handlePullRequest(args, config, db, flags = {}) {
     }
 
     // Start server and open browser to setup page
-    const port = await startServer(db);
+    const port = await startServer(db, poolLifecycle);
 
     // Async cleanup of stale worktrees and reviews (don't block startup)
     cleanupStaleWorktreesAsync(config);
@@ -637,9 +601,10 @@ async function handlePullRequest(args, config, db, flags = {}) {
 /**
  * Start server without PR context
  * @param {Object} config - Application configuration
+ * @param {import('./git/worktree-pool-lifecycle').WorktreePoolLifecycle} [poolLifecycle] - Pool lifecycle instance
  */
-async function startServerOnly(config) {
-  const port = await startServer(db);
+async function startServerOnly(config, poolLifecycle = null) {
+  const port = await startServer(db, poolLifecycle);
 
   // Async cleanup of stale worktrees and reviews (don't block startup)
   cleanupStaleWorktreesAsync(config);
@@ -685,11 +650,12 @@ function formatAISuggestion(text, category) {
  * @param {string} options.reviewEvent - 'DRAFT' or 'COMMENT'
  * @param {string} options.commentStatus - 'draft' or 'submitted'
  * @param {string} options.modeLabel - Display label for log messages (e.g., 'draft mode', 'action review mode')
+ * @param {import('../git/worktree-pool-lifecycle').WorktreePoolLifecycle} [externalPoolLifecycle] - Shared pool lifecycle instance (avoids creating a fresh singleton)
  */
-async function performHeadlessReview(args, config, db, flags, options) {
+async function performHeadlessReview(args, config, db, flags, options, externalPoolLifecycle = null) {
   let prInfo = null;
   let poolWorktreeId = null;
-  let poolManager = null;
+  let poolLifecycle = null;
 
   try {
     // Get GitHub token (env var takes precedence over config)
@@ -835,10 +801,10 @@ async function performHeadlessReview(args, config, db, flags, options) {
 
       const worktreeManager = new GitWorktreeManager(db, worktreeConfig || {});
       if (poolSize > 0) {
-        // Pool mode: use WorktreePoolManager
+        // Pool mode: use WorktreePoolLifecycle
         console.log('Acquiring pool worktree...');
-        poolManager = new WorktreePoolManager(db, config);
-        const result = await poolManager.acquireForPR(
+        poolLifecycle = externalPoolLifecycle || new WorktreePoolLifecycle(db, config);
+        const result = await poolLifecycle.acquireForPR(
           { owner: prInfo.owner, repo: prInfo.repo, prNumber: prInfo.number, repository },
           prData,
           repositoryPath,
@@ -869,9 +835,8 @@ async function performHeadlessReview(args, config, db, flags, options) {
     });
 
     // Persist review→worktree mapping in DB for pool usage tracking
-    if (poolWorktreeId) {
-      const poolRepo = new WorktreePoolRepository(db);
-      await poolRepo.setCurrentReviewId(poolWorktreeId, storedReviewId);
+    if (poolWorktreeId && poolLifecycle) {
+      await poolLifecycle.setReviewOwner(poolWorktreeId, storedReviewId);
     }
 
     // Fire review.started hook for new reviews (non-blocking)
@@ -1119,10 +1084,9 @@ Found ${validSuggestions.length} suggestion${validSuggestions.length === 1 ? '' 
     // Release pool worktree after headless review completes (success or failure).
     // Headless reviews are fire-and-forget with no persistent browser session,
     // so the pool slot must be freed immediately.
-    if (poolWorktreeId && poolManager) {
+    if (poolWorktreeId && poolLifecycle) {
       try {
-        await poolManager.release(poolWorktreeId);
-        worktreePoolUsage.clearWorktree(poolWorktreeId);
+        await poolLifecycle.releaseAfterHeadless(poolWorktreeId);
         logger.info(`Released pool worktree ${poolWorktreeId} after headless review`);
       } catch (releaseErr) {
         logger.error(`Failed to release pool worktree ${poolWorktreeId}: ${releaseErr.message}`);
@@ -1138,14 +1102,15 @@ Found ${validSuggestions.length} suggestion${validSuggestions.length === 1 ? '' 
  * @param {Object} config - Application configuration
  * @param {Object} db - Database instance
  * @param {Object} flags - Parsed command line flags
+ * @param {import('../git/worktree-pool-lifecycle').WorktreePoolLifecycle} [poolLifecycle] - Shared pool lifecycle instance
  */
-async function handleDraftModeReview(args, config, db, flags = {}) {
+async function handleDraftModeReview(args, config, db, flags = {}, poolLifecycle = null) {
   await performHeadlessReview(args, config, db, flags, {
     mode: 'draft',
     reviewEvent: 'DRAFT',
     commentStatus: 'draft',
     modeLabel: 'draft mode'
-  });
+  }, poolLifecycle);
 }
 
 /**
@@ -1156,14 +1121,15 @@ async function handleDraftModeReview(args, config, db, flags = {}) {
  * @param {Object} config - Application configuration
  * @param {Object} db - Database instance
  * @param {Object} flags - Parsed command line flags
+ * @param {import('../git/worktree-pool-lifecycle').WorktreePoolLifecycle} [poolLifecycle] - Shared pool lifecycle instance
  */
-async function handleActionReview(args, config, db, flags = {}) {
+async function handleActionReview(args, config, db, flags = {}, poolLifecycle = null) {
   await performHeadlessReview(args, config, db, flags, {
     mode: 'review',
     reviewEvent: 'COMMENT',
     commentStatus: 'submitted',
     modeLabel: 'action review mode'
-  });
+  }, poolLifecycle);
 }
 
 /**

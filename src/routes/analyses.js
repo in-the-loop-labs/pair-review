@@ -15,7 +15,7 @@
  */
 
 const express = require('express');
-const { queryOne, withTransaction, ReviewRepository, CommentRepository, AnalysisRunRepository, CouncilRepository, WorktreePoolRepository } = require('../database');
+const { queryOne, withTransaction, ReviewRepository, CommentRepository, AnalysisRunRepository, CouncilRepository } = require('../database');
 const Analyzer = require('../ai/analyzer');
 const { getTierForModel } = require('../ai/provider');
 const { v4: uuidv4 } = require('uuid');
@@ -36,7 +36,7 @@ const {
 const { generateLocalDiff, computeLocalDiffDigest, getCurrentBranch } = require('../local-review');
 const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
 const { TIERS, TIER_ALIASES, VALID_TIERS, resolveTier } = require('../ai/prompts/config');
-const { worktreePoolUsage } = require('../git/worktree-pool-usage');
+
 
 const router = express.Router();
 
@@ -566,17 +566,14 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
   broadcastReviewEvent(reviewId, { type: 'review:analysis_started', analysisId });
 
   // Register analysis hold for pool worktree usage tracking.
-  // Wrapped in try so a synchronous exception in setup still cleans up the hold
-  // (the .finally() on the promise chain only covers async errors).
-  const poolRepo = new WorktreePoolRepository(db);
-  const poolResult = await poolRepo.findByReviewId(reviewId);
-  const poolWorktreeId = poolResult?.id;
+  // startAnalysis is inside the try so a synchronous exception in setup still
+  // cleans up the hold (the .finally() on the promise chain only covers async errors).
+  const poolLifecycle = modeContext?.poolLifecycle;
+  let poolWorktreeId;
   const effectiveConfig = modeConfig || {};
   let analysisPromise;
   try {
-    if (poolWorktreeId) {
-      worktreePoolUsage.addAnalysis(poolWorktreeId, analysisId);
-    }
+    poolWorktreeId = await poolLifecycle?.startAnalysis(reviewId, analysisId);
     if (hasHooks('analysis.started', effectiveConfig)) {
       getCachedUser(effectiveConfig).then(user => {
         fireHooks('analysis.started', buildAnalysisStartedPayload({
@@ -612,7 +609,7 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
     // Synchronous setup failure — clean up the analysis hold immediately
     reviewToAnalysisId.delete(reviewId);
     if (poolWorktreeId) {
-      worktreePoolUsage.removeAnalysis(poolWorktreeId, analysisId);
+      poolLifecycle?.endAnalysis(analysisId);
     }
     throw setupError;
   }
@@ -722,7 +719,7 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
       // Clean up unified tracking map entry
       reviewToAnalysisId.delete(reviewId);
       // Remove pool worktree analysis hold
-      worktreePoolUsage.removeAnalysisById(analysisId);
+      poolLifecycle?.endAnalysis(analysisId);
     });
 
   return { analysisId, runId };

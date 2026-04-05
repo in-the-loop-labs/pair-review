@@ -14,7 +14,7 @@
  */
 
 const express = require('express');
-const { query, queryOne, run, withTransaction, WorktreeRepository, ReviewRepository, GitHubReviewRepository, RepoSettingsRepository, AnalysisRunRepository, PRMetadataRepository, CouncilRepository, WorktreePoolRepository } = require('../database');
+const { query, queryOne, run, withTransaction, WorktreeRepository, ReviewRepository, GitHubReviewRepository, RepoSettingsRepository, AnalysisRunRepository, PRMetadataRepository, CouncilRepository } = require('../database');
 const { GitWorktreeManager } = require('../git/worktree');
 const { GitHubClient } = require('../github/client');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
@@ -52,7 +52,6 @@ const { CommentRepository } = require('../database');
 const { runExecutableAnalysis } = require('./executable-analysis');
 const analysesRouter = require('./analyses');
 const { worktreeLock } = require('../git/worktree-lock');
-const { worktreePoolUsage } = require('../git/worktree-pool-usage');
 const router = express.Router();
 
 /**
@@ -1514,7 +1513,7 @@ router.post('/api/parse-pr-url', (req, res) => {
 async function handleExecutablePRAnalysis(req, res, {
   reviewId, review, prNumber, owner, repo, repository, worktreePath, prMetadata,
   selectedProvider, selectedModel, repoInstructions, requestInstructions,
-  combinedInstructions, runId, analysisId, reviewRepo
+  combinedInstructions, runId, analysisId, reviewRepo, poolLifecycle
 }) {
   const prContext = {
     number: prNumber, owner, repo,
@@ -1534,7 +1533,8 @@ async function handleExecutablePRAnalysis(req, res, {
     repository,
     reviewType: 'pr',
     headSha: prMetadata.head_sha,
-    extraInitialStatus: { prNumber }
+    extraInitialStatus: { prNumber },
+    poolLifecycle
   }, {
     activeAnalyses,
     reviewToAnalysisId,
@@ -1707,7 +1707,8 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
         combinedInstructions,
         runId,
         analysisId,
-        reviewRepo
+        reviewRepo,
+        poolLifecycle: req.app.get('poolLifecycle')
       });
     }
 
@@ -1756,11 +1757,10 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
     broadcastReviewEvent(review.id, { type: 'review:analysis_started', analysisId });
 
     // Register analysis hold for pool worktree usage tracking.
-    // Wrapped in try so a synchronous exception in setup still cleans up the hold
-    // (the .finally() on the promise chain only covers async errors).
-    const poolRepo = new WorktreePoolRepository(req.app.get('db'));
-    const poolResult = await poolRepo.findByReviewId(review.id);
-    const poolWorktreeId = poolResult?.id;
+    // startAnalysis is inside the try so a synchronous exception in setup still
+    // cleans up the hold (the .finally() on the promise chain only covers async errors).
+    const poolLifecycle = req.app.get('poolLifecycle');
+    let poolWorktreeId;
     const analysisConfig = appConfig;
     const analysisPrContext = {
       number: prNumber, owner, repo,
@@ -1769,9 +1769,7 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
     };
     let analysisPromise;
     try {
-      if (poolWorktreeId) {
-        worktreePoolUsage.addAnalysis(poolWorktreeId, analysisId);
-      }
+      poolWorktreeId = await poolLifecycle?.startAnalysis(review.id, analysisId);
       if (hasHooks('analysis.started', analysisConfig)) {
         getCachedUser(analysisConfig).then(user => {
           fireHooks('analysis.started', buildAnalysisStartedPayload({
@@ -1801,7 +1799,7 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
       // Synchronous setup failure — clean up the analysis hold immediately
       reviewToAnalysisId.delete(review.id);
       if (poolWorktreeId) {
-        worktreePoolUsage.removeAnalysis(poolWorktreeId, analysisId);
+        poolLifecycle?.endAnalysis(analysisId);
       }
       throw setupError;
     }
@@ -1953,7 +1951,7 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
         // Clean up review to analysis ID mapping (unified map)
         reviewToAnalysisId.delete(review.id);
         // Remove pool worktree analysis hold
-        worktreePoolUsage.removeAnalysisById(analysisId);
+        poolLifecycle?.endAnalysis(analysisId);
       });
 
     res.json({
@@ -2052,6 +2050,7 @@ router.post('/api/pr/:owner/:repo/:number/analyses/council', async (req, res) =>
         config: prCouncilConfig,
         excludePrevious,
         serverPort: req.socket.localPort,
+        poolLifecycle: req.app.get('poolLifecycle'),
         hookContext: {
           mode: 'pr',
           prContext: {

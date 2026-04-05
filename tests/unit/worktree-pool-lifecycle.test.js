@@ -1,7 +1,8 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { WorktreePoolManager, PoolExhaustedError } = require('../../src/git/worktree-pool.js');
+const { WorktreePoolLifecycle, PoolExhaustedError } = require('../../src/git/worktree-pool-lifecycle.js');
+const { GRACE_PERIOD_MS } = require('../../src/git/worktree-pool-usage.js');
 
 function createMockDeps() {
   const mockGit = {
@@ -24,6 +25,19 @@ function createMockDeps() {
     Object.assign(this, mockWorktreeManagerInstance);
   });
 
+  const mockUsageTracker = {
+    addSession: vi.fn(),
+    removeSession: vi.fn(),
+    addAnalysis: vi.fn(),
+    removeAnalysis: vi.fn(),
+    removeAnalysisById: vi.fn(),
+    clearWorktree: vi.fn(),
+    getActiveAnalyses: vi.fn().mockReturnValue(new Set()),
+    isInUse: vi.fn().mockReturnValue(false),
+    onIdle: null,
+    reset: vi.fn(),
+  };
+
   return {
     fs: {
       existsSync: vi.fn().mockReturnValue(true),
@@ -33,6 +47,7 @@ function createMockDeps() {
       claimAvailable: vi.fn().mockResolvedValue(null),
       findByPR: vi.fn().mockResolvedValue(null),
       findAvailable: vi.fn().mockResolvedValue(null),
+      findByReviewId: vi.fn().mockResolvedValue(null),
       countForRepo: vi.fn().mockResolvedValue(0),
       reserveSlot: vi.fn().mockResolvedValue(true),
       finalizeReservation: vi.fn().mockResolvedValue(undefined),
@@ -42,6 +57,8 @@ function createMockDeps() {
       markAvailable: vi.fn().mockResolvedValue(undefined),
       markSwitching: vi.fn().mockResolvedValue(undefined),
       delete: vi.fn().mockResolvedValue(undefined),
+      setCurrentReviewId: vi.fn().mockResolvedValue(undefined),
+      resetStaleAndPreserve: vi.fn().mockResolvedValue([]),
     },
     worktreeRepo: {
       findById: vi.fn().mockResolvedValue(null),
@@ -51,10 +68,12 @@ function createMockDeps() {
       updateLastAccessed: vi.fn().mockResolvedValue(true),
       delete: vi.fn().mockResolvedValue(true),
     },
+    usageTracker: mockUsageTracker,
     simpleGit: vi.fn(() => mockGit),
     GitWorktreeManager: MockGitWorktreeManager,
     _mockGit: mockGit,
     _mockWorktreeManagerInstance: mockWorktreeManagerInstance,
+    _mockUsageTracker: mockUsageTracker,
   };
 }
 
@@ -72,16 +91,23 @@ const options = {
   poolSize: 3,
 };
 
-describe('WorktreePoolManager', () => {
+describe('WorktreePoolLifecycle', () => {
   let deps;
-  let manager;
+  let lifecycle;
 
   beforeEach(() => {
     deps = createMockDeps();
-    manager = new WorktreePoolManager({}, {}, deps);
+    lifecycle = new WorktreePoolLifecycle({}, {}, deps);
   });
 
-  // ── acquireForPR ─────────────────────────────────────────────────────────
+  // ── poolRepo getter ─────────────────────────────────────────────────────
+  describe('poolRepo getter', () => {
+    it('returns the pool repository instance', () => {
+      expect(lifecycle.poolRepo).toBe(deps.poolRepo);
+    });
+  });
+
+  // ── acquireForPR (ported from WorktreePoolManager) ──────────────────────
   describe('acquireForPR', () => {
     it('refreshes when pool worktree is already assigned to the PR', async () => {
       const poolEntry = { id: 'pool-abc', path: '/tmp/worktree/pool-abc', current_pr_number: 123, repository: 'test/repo' };
@@ -89,7 +115,7 @@ describe('WorktreePoolManager', () => {
       deps.poolRepo.claimByPR.mockResolvedValue(poolEntry);
       deps.worktreeRepo.findById.mockResolvedValue(worktreeRecord);
 
-      const result = await manager.acquireForPR(prInfo, prData, '/tmp/source', options);
+      const result = await lifecycle.acquireForPR(prInfo, prData, '/tmp/source', options);
 
       expect(result.worktreePath).toBe('/tmp/worktree/pool-abc');
       expect(result.worktreeId).toBe('pool-abc');
@@ -109,11 +135,11 @@ describe('WorktreePoolManager', () => {
       deps.poolRepo.claimAvailable.mockResolvedValue(availableEntry);
       deps.worktreeRepo.findById.mockResolvedValue(worktreeRecord);
 
-      const result = await manager.acquireForPR(prInfo, prData, '/tmp/source', options);
+      const result = await lifecycle.acquireForPR(prInfo, prData, '/tmp/source', options);
 
       expect(result.worktreePath).toBe('/tmp/worktree/pool-xyz');
       expect(result.worktreeId).toBe('pool-xyz');
-      // claimAvailable already marked as switching — no separate markSwitching call
+      // claimAvailable already marked as switching -- no separate markSwitching call
       expect(deps.poolRepo.markSwitching).not.toHaveBeenCalled();
       expect(deps._mockGit.fetch).toHaveBeenCalled();
       expect(deps._mockGit.checkout).toHaveBeenCalled();
@@ -124,16 +150,21 @@ describe('WorktreePoolManager', () => {
       deps.poolRepo.claimAvailable.mockResolvedValue(null);
       deps.poolRepo.reserveSlot.mockResolvedValue(true);
 
-      const result = await manager.acquireForPR(prInfo, prData, '/tmp/source', options);
+      const result = await lifecycle.acquireForPR(prInfo, prData, '/tmp/source', options);
 
       expect(result.worktreePath).toBe('/tmp/worktree/pool-abc');
       expect(deps.poolRepo.reserveSlot).toHaveBeenCalledWith(
         expect.stringMatching(/^pool-/), 'test/repo', 3
       );
       expect(deps._mockWorktreeManagerInstance.createWorktreeForPR).toHaveBeenCalled();
+      // finalizeReservation must be called with the same poolId that was
+      // passed to reserveSlot, NOT the worktrees-table ID from createWorktreeForPR.
+      const reservedPoolId = deps.poolRepo.reserveSlot.mock.calls[0][0];
       expect(deps.poolRepo.finalizeReservation).toHaveBeenCalledWith(
-        'pool-abc', '/tmp/worktree/pool-abc', 123
+        reservedPoolId, '/tmp/worktree/pool-abc', 123
       );
+      // The returned worktreeId should be the poolId, not the worktrees-table ID
+      expect(result.worktreeId).toBe(reservedPoolId);
       // Old create and markInUse should NOT be called
       expect(deps.poolRepo.create).not.toHaveBeenCalled();
       expect(deps.poolRepo.markInUse).not.toHaveBeenCalled();
@@ -144,19 +175,19 @@ describe('WorktreePoolManager', () => {
       deps.poolRepo.claimAvailable.mockResolvedValue(null);
       deps.poolRepo.reserveSlot.mockResolvedValue(false);
 
-      await expect(manager.acquireForPR(prInfo, prData, '/tmp/source', options))
+      await expect(lifecycle.acquireForPR(prInfo, prData, '/tmp/source', options))
         .rejects.toThrow(PoolExhaustedError);
     });
 
     it('deletes orphaned pool entry when claimByPR returns entry with no worktree record and falls through', async () => {
       const orphanedEntry = { id: 'orphan-1', path: '/tmp/worktree/orphan-1', current_pr_number: 123, repository: 'test/repo' };
       deps.poolRepo.claimByPR.mockResolvedValue(orphanedEntry);
-      // findById returns null — orphaned
+      // findById returns null -- orphaned
       deps.worktreeRepo.findById.mockResolvedValue(null);
       deps.poolRepo.claimAvailable.mockResolvedValue(null);
       deps.poolRepo.reserveSlot.mockResolvedValue(true);
 
-      await manager.acquireForPR(prInfo, prData, '/tmp/source', options);
+      await lifecycle.acquireForPR(prInfo, prData, '/tmp/source', options);
 
       expect(deps.poolRepo.delete).toHaveBeenCalledWith('orphan-1');
       // Falls through to create a new worktree
@@ -167,11 +198,11 @@ describe('WorktreePoolManager', () => {
       const orphanedAvailable = { id: 'orphan-2', path: '/tmp/worktree/orphan-2', status: 'available', repository: 'test/repo' };
       deps.poolRepo.claimByPR.mockResolvedValue(null);
       deps.poolRepo.claimAvailable.mockResolvedValue(orphanedAvailable);
-      // findById returns null — orphaned
+      // findById returns null -- orphaned
       deps.worktreeRepo.findById.mockResolvedValue(null);
       deps.poolRepo.reserveSlot.mockResolvedValue(true);
 
-      await manager.acquireForPR(prInfo, prData, '/tmp/source', options);
+      await lifecycle.acquireForPR(prInfo, prData, '/tmp/source', options);
 
       expect(deps.poolRepo.delete).toHaveBeenCalledWith('orphan-2');
       // Falls through to create a new worktree
@@ -188,7 +219,7 @@ describe('WorktreePoolManager', () => {
       deps.poolRepo.claimAvailable.mockResolvedValue(null);
       deps.poolRepo.reserveSlot.mockResolvedValue(true);
 
-      await manager.acquireForPR(prInfo, prData, '/tmp/source', options);
+      await lifecycle.acquireForPR(prInfo, prData, '/tmp/source', options);
 
       expect(deps.fs.existsSync).toHaveBeenCalledWith('/tmp/worktree/stale-1');
       expect(deps.poolRepo.delete).toHaveBeenCalledWith('stale-1');
@@ -207,7 +238,7 @@ describe('WorktreePoolManager', () => {
       deps.fs.existsSync.mockReturnValue(false);
       deps.poolRepo.reserveSlot.mockResolvedValue(true);
 
-      await manager.acquireForPR(prInfo, prData, '/tmp/source', options);
+      await lifecycle.acquireForPR(prInfo, prData, '/tmp/source', options);
 
       expect(deps.fs.existsSync).toHaveBeenCalledWith('/tmp/worktree/stale-2');
       expect(deps.poolRepo.delete).toHaveBeenCalledWith('stale-2');
@@ -217,7 +248,7 @@ describe('WorktreePoolManager', () => {
     });
   });
 
-  // ── _switchPoolWorktree ──────────────────────────────────────────────────
+  // ── _switchPoolWorktree (ported from WorktreePoolManager) ───────────────
   describe('_switchPoolWorktree', () => {
     const poolEntry = { id: 'pool-xyz', path: '/tmp/worktree/pool-xyz' };
     const worktreeRecord = { id: 'pool-xyz', pr_number: 99, path: '/tmp/worktree/pool-xyz' };
@@ -229,18 +260,18 @@ describe('WorktreePoolManager', () => {
       deps._mockGit.clean.mockImplementation(() => { callOrder.push('clean'); return Promise.resolve(); });
       deps._mockGit.checkout.mockImplementation(() => { callOrder.push('checkout'); return Promise.resolve(); });
       deps.worktreeRepo.switchPR.mockImplementation(() => { callOrder.push('switchPR'); return Promise.resolve([]); });
+      deps._mockUsageTracker.clearWorktree.mockImplementation(() => { callOrder.push('clearWorktree'); });
       deps.poolRepo.markInUse.mockImplementation(() => { callOrder.push('markInUse'); return Promise.resolve(); });
 
-      await manager._switchPoolWorktree(poolEntry, worktreeRecord, prInfo, prData, options);
+      await lifecycle._switchPoolWorktree(poolEntry, worktreeRecord, prInfo, prData, options);
 
-      // markSwitching is NOT in this list — it was already done atomically by claimAvailable
-      expect(callOrder).toEqual(['fetch', 'reset', 'clean', 'checkout', 'switchPR', 'markInUse']);
+      expect(callOrder).toEqual(['fetch', 'reset', 'clean', 'checkout', 'switchPR', 'clearWorktree', 'markInUse']);
     });
 
     it('runs executeCheckoutScript when resetScript is provided', async () => {
       const optionsWithReset = { ...options, resetScript: '/bin/reset.sh' };
 
-      await manager._switchPoolWorktree(poolEntry, worktreeRecord, prInfo, prData, optionsWithReset);
+      await lifecycle._switchPoolWorktree(poolEntry, worktreeRecord, prInfo, prData, optionsWithReset);
 
       expect(deps._mockWorktreeManagerInstance.executeCheckoutScript).toHaveBeenCalledWith(
         '/bin/reset.sh',
@@ -258,26 +289,22 @@ describe('WorktreePoolManager', () => {
     });
 
     it('calls git reset --hard and git clean -fd before checkout', async () => {
-      await manager._switchPoolWorktree(poolEntry, worktreeRecord, prInfo, prData, options);
+      await lifecycle._switchPoolWorktree(poolEntry, worktreeRecord, prInfo, prData, options);
 
       expect(deps._mockGit.reset).toHaveBeenCalledWith(['--hard', 'HEAD']);
       expect(deps._mockGit.clean).toHaveBeenCalledWith(['-fd']);
     });
 
-    it('clears all tracking state via clearWorktree (not just review mappings)', async () => {
-      const { worktreePoolUsage } = require('../../src/git/worktree-pool-usage.js');
-      const clearSpy = vi.spyOn(worktreePoolUsage, 'clearWorktree');
+    it('clears all tracking state via usageTracker.clearWorktree', async () => {
+      await lifecycle._switchPoolWorktree(poolEntry, worktreeRecord, prInfo, prData, options);
 
-      await manager._switchPoolWorktree(poolEntry, worktreeRecord, prInfo, prData, options);
-
-      expect(clearSpy).toHaveBeenCalledWith('pool-xyz');
-      clearSpy.mockRestore();
+      expect(deps._mockUsageTracker.clearWorktree).toHaveBeenCalledWith('pool-xyz');
     });
 
     it('cleans up deleted non-pool worktree directories from switchPR', async () => {
       deps.worktreeRepo.switchPR.mockResolvedValue(['/tmp/legacy-wt-1', '/tmp/legacy-wt-2']);
 
-      await manager._switchPoolWorktree(poolEntry, worktreeRecord, prInfo, prData, options);
+      await lifecycle._switchPoolWorktree(poolEntry, worktreeRecord, prInfo, prData, options);
 
       expect(deps._mockWorktreeManagerInstance.cleanupWorktree).toHaveBeenCalledTimes(2);
       expect(deps._mockWorktreeManagerInstance.cleanupWorktree).toHaveBeenCalledWith('/tmp/legacy-wt-1');
@@ -288,8 +315,8 @@ describe('WorktreePoolManager', () => {
       deps.worktreeRepo.switchPR.mockResolvedValue(['/tmp/legacy-wt']);
       deps._mockWorktreeManagerInstance.cleanupWorktree.mockRejectedValue(new Error('cleanup failed'));
 
-      // Should not throw — cleanup errors are swallowed
-      const result = await manager._switchPoolWorktree(poolEntry, worktreeRecord, prInfo, prData, options);
+      // Should not throw -- cleanup errors are swallowed
+      const result = await lifecycle._switchPoolWorktree(poolEntry, worktreeRecord, prInfo, prData, options);
 
       expect(result.worktreeId).toBe('pool-xyz');
       expect(deps._mockWorktreeManagerInstance.cleanupWorktree).toHaveBeenCalledWith('/tmp/legacy-wt');
@@ -298,7 +325,7 @@ describe('WorktreePoolManager', () => {
     it('does not attempt cleanup when switchPR returns empty array', async () => {
       deps.worktreeRepo.switchPR.mockResolvedValue([]);
 
-      await manager._switchPoolWorktree(poolEntry, worktreeRecord, prInfo, prData, options);
+      await lifecycle._switchPoolWorktree(poolEntry, worktreeRecord, prInfo, prData, options);
 
       expect(deps._mockWorktreeManagerInstance.cleanupWorktree).not.toHaveBeenCalled();
     });
@@ -306,32 +333,39 @@ describe('WorktreePoolManager', () => {
     it('rolls back to available on failure', async () => {
       deps._mockGit.fetch.mockRejectedValue(new Error('fetch failed'));
 
-      await expect(manager._switchPoolWorktree(poolEntry, worktreeRecord, prInfo, prData, options))
+      await expect(lifecycle._switchPoolWorktree(poolEntry, worktreeRecord, prInfo, prData, options))
         .rejects.toThrow('fetch failed');
 
       expect(deps.poolRepo.markAvailable).toHaveBeenCalledWith('pool-xyz');
     });
   });
 
-  // ── _createPoolWorktree ──────────────────────────────────────────────────
+  // ── _createPoolWorktree (ported from WorktreePoolManager) ───────────────
   describe('_createPoolWorktree', () => {
-    it('finalizes the reservation on success', async () => {
-      const result = await manager._createPoolWorktree(prInfo, prData, '/tmp/source', options, 'pool-reserved');
+    it('finalizes the reservation on success and passes explicitId to createWorktreeForPR', async () => {
+      const result = await lifecycle._createPoolWorktree(prInfo, prData, '/tmp/source', options, 'pool-reserved');
 
       expect(deps._mockWorktreeManagerInstance.createWorktreeForPR).toHaveBeenCalled();
+      // Verify explicitId is passed so the worktrees-table record uses the pool ID
+      const createCall = deps._mockWorktreeManagerInstance.createWorktreeForPR.mock.calls[0];
+      expect(createCall[3]).toEqual(expect.objectContaining({ explicitId: 'pool-reserved' }));
+      // finalizeReservation must use the poolId ('pool-reserved'), NOT the
+      // worktrees-table ID ('pool-abc') returned by createWorktreeForPR.
       expect(deps.poolRepo.finalizeReservation).toHaveBeenCalledWith(
-        'pool-abc', '/tmp/worktree/pool-abc', 123
+        'pool-reserved', '/tmp/worktree/pool-abc', 123
       );
       // Old create and markInUse should NOT be called
       expect(deps.poolRepo.create).not.toHaveBeenCalled();
       expect(deps.poolRepo.markInUse).not.toHaveBeenCalled();
       expect(result.worktreePath).toBe('/tmp/worktree/pool-abc');
+      // The returned worktreeId should be the poolId, consistent with other methods
+      expect(result.worktreeId).toBe('pool-reserved');
     });
 
     it('deletes reservation on creation failure', async () => {
       deps._mockWorktreeManagerInstance.createWorktreeForPR.mockRejectedValue(new Error('clone failed'));
 
-      await expect(manager._createPoolWorktree(prInfo, prData, '/tmp/source', options, 'pool-reserved'))
+      await expect(lifecycle._createPoolWorktree(prInfo, prData, '/tmp/source', options, 'pool-reserved'))
         .rejects.toThrow('clone failed');
 
       expect(deps.poolRepo.deleteReservation).toHaveBeenCalledWith('pool-reserved');
@@ -342,20 +376,20 @@ describe('WorktreePoolManager', () => {
       deps._mockWorktreeManagerInstance.createWorktreeForPR.mockRejectedValue(new Error('clone failed'));
       deps.poolRepo.deleteReservation.mockRejectedValue(new Error('db error'));
 
-      await expect(manager._createPoolWorktree(prInfo, prData, '/tmp/source', options, 'pool-reserved'))
+      await expect(lifecycle._createPoolWorktree(prInfo, prData, '/tmp/source', options, 'pool-reserved'))
         .rejects.toThrow('clone failed');
 
       expect(deps.poolRepo.deleteReservation).toHaveBeenCalledWith('pool-reserved');
     });
   });
 
-  // ── _refreshPoolWorktree ─────────────────────────────────────────────────
+  // ── _refreshPoolWorktree (ported from WorktreePoolManager) ──────────────
   describe('_refreshPoolWorktree', () => {
     it('calls refreshWorktree and marks in use', async () => {
       const poolEntry = { id: 'pool-abc', path: '/tmp/worktree/pool-abc' };
       const worktreeRecord = { id: 'pool-abc', pr_number: 123, path: '/tmp/worktree/pool-abc' };
 
-      const result = await manager._refreshPoolWorktree(poolEntry, worktreeRecord, prInfo, prData);
+      const result = await lifecycle._refreshPoolWorktree(poolEntry, worktreeRecord, prInfo, prData);
 
       expect(deps._mockWorktreeManagerInstance.refreshWorktree).toHaveBeenCalledWith(
         worktreeRecord,
@@ -373,18 +407,231 @@ describe('WorktreePoolManager', () => {
     });
   });
 
-  // ── release ──────────────────────────────────────────────────────────────
+  // ── release (ported from WorktreePoolManager) ───────────────────────────
   describe('release', () => {
     it('marks the pool worktree as available', async () => {
-      await manager.release('pool-abc');
+      await lifecycle.release('pool-abc');
 
       expect(deps.poolRepo.markAvailable).toHaveBeenCalledWith('pool-abc');
+    });
+  });
+
+  // ── startSession ────────────────────────────────────────────────────────
+  describe('startSession', () => {
+    it('finds pool worktree and registers session', async () => {
+      deps.poolRepo.findByReviewId.mockResolvedValue({ id: 'pool-abc' });
+
+      const result = await lifecycle.startSession(42, 'ws-sess-1');
+
+      expect(deps.poolRepo.findByReviewId).toHaveBeenCalledWith(42);
+      expect(deps._mockUsageTracker.addSession).toHaveBeenCalledWith('pool-abc', 'ws-sess-1');
+      expect(result).toEqual({ worktreeId: 'pool-abc' });
+    });
+
+    it('returns null for non-pool review', async () => {
+      deps.poolRepo.findByReviewId.mockResolvedValue(null);
+
+      const result = await lifecycle.startSession(99, 'ws-sess-2');
+
+      expect(result).toBeNull();
+      expect(deps._mockUsageTracker.addSession).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── endSession ──────────────────────────────────────────────────────────
+  describe('endSession', () => {
+    it('delegates to usage tracker', () => {
+      lifecycle.endSession('pool-abc', 'ws-sess-1');
+
+      expect(deps._mockUsageTracker.removeSession).toHaveBeenCalledWith('pool-abc', 'ws-sess-1');
+    });
+  });
+
+  // ── startAnalysis ───────────────────────────────────────────────────────
+  describe('startAnalysis', () => {
+    it('finds pool worktree and registers analysis', async () => {
+      deps.poolRepo.findByReviewId.mockResolvedValue({ id: 'pool-xyz' });
+
+      const result = await lifecycle.startAnalysis(42, 'run-1');
+
+      expect(deps.poolRepo.findByReviewId).toHaveBeenCalledWith(42);
+      expect(deps._mockUsageTracker.addAnalysis).toHaveBeenCalledWith('pool-xyz', 'run-1');
+      expect(result).toBe('pool-xyz');
+    });
+
+    it('returns null for non-pool review', async () => {
+      deps.poolRepo.findByReviewId.mockResolvedValue(null);
+
+      const result = await lifecycle.startAnalysis(99, 'run-2');
+
+      expect(result).toBeNull();
+      expect(deps._mockUsageTracker.addAnalysis).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── endAnalysis ─────────────────────────────────────────────────────────
+  describe('endAnalysis', () => {
+    it('delegates to usage tracker removeAnalysisById', () => {
+      lifecycle.endAnalysis('run-1');
+
+      expect(deps._mockUsageTracker.removeAnalysisById).toHaveBeenCalledWith('run-1');
+    });
+  });
+
+  // ── releaseForDeletion ──────────────────────────────────────────────────
+  describe('releaseForDeletion', () => {
+    it('clears usage state then marks available (ordering matters)', async () => {
+      const callOrder = [];
+      deps._mockUsageTracker.clearWorktree.mockImplementation(() => { callOrder.push('clearWorktree'); });
+      deps.poolRepo.markAvailable.mockImplementation(() => { callOrder.push('markAvailable'); return Promise.resolve(); });
+
+      await lifecycle.releaseForDeletion('pool-abc');
+
+      expect(callOrder).toEqual(['clearWorktree', 'markAvailable']);
+      expect(deps._mockUsageTracker.clearWorktree).toHaveBeenCalledWith('pool-abc');
+      expect(deps.poolRepo.markAvailable).toHaveBeenCalledWith('pool-abc');
+    });
+  });
+
+  // ── releaseAfterHeadless ────────────────────────────────────────────────
+  describe('releaseAfterHeadless', () => {
+    it('clears usage state then marks available (ordering matters -- prevents race)', async () => {
+      const callOrder = [];
+      deps._mockUsageTracker.clearWorktree.mockImplementation(() => { callOrder.push('clearWorktree'); });
+      deps.poolRepo.markAvailable.mockImplementation(() => { callOrder.push('markAvailable'); return Promise.resolve(); });
+
+      await lifecycle.releaseAfterHeadless('pool-abc');
+
+      expect(callOrder).toEqual(['clearWorktree', 'markAvailable']);
+      expect(deps._mockUsageTracker.clearWorktree).toHaveBeenCalledWith('pool-abc');
+      expect(deps.poolRepo.markAvailable).toHaveBeenCalledWith('pool-abc');
+    });
+  });
+
+  // ── setReviewOwner ──────────────────────────────────────────────────────
+  describe('setReviewOwner', () => {
+    it('delegates to poolRepo.setCurrentReviewId', async () => {
+      await lifecycle.setReviewOwner('pool-abc', 42);
+
+      expect(deps.poolRepo.setCurrentReviewId).toHaveBeenCalledWith('pool-abc', 42);
+    });
+
+    it('supports null reviewId to clear ownership', async () => {
+      await lifecycle.setReviewOwner('pool-abc', null);
+
+      expect(deps.poolRepo.setCurrentReviewId).toHaveBeenCalledWith('pool-abc', null);
+    });
+  });
+
+  // ── getActiveAnalyses ───────────────────────────────────────────────────
+  describe('getActiveAnalyses', () => {
+    it('delegates to usage tracker', () => {
+      const mockSet = new Set(['run-1', 'run-2']);
+      deps._mockUsageTracker.getActiveAnalyses.mockReturnValue(mockSet);
+
+      const result = lifecycle.getActiveAnalyses('pool-abc');
+
+      expect(deps._mockUsageTracker.getActiveAnalyses).toHaveBeenCalledWith('pool-abc');
+      expect(result).toBe(mockSet);
+    });
+  });
+
+  // ── resetAndRehydrate ───────────────────────────────────────────────────
+  describe('resetAndRehydrate', () => {
+    it('calls resetStaleAndPreserve on the pool repo', async () => {
+      await lifecycle.resetAndRehydrate();
+
+      expect(deps.poolRepo.resetStaleAndPreserve).toHaveBeenCalled();
+    });
+
+    it('returns preserved entries', async () => {
+      const preserved = [{ id: 'pool-abc', current_review_id: 10 }];
+      deps.poolRepo.resetStaleAndPreserve.mockResolvedValue(preserved);
+
+      const result = await lifecycle.resetAndRehydrate();
+
+      expect(result).toEqual(preserved);
+    });
+
+    it('wires onIdle callback on the usage tracker', async () => {
+      await lifecycle.resetAndRehydrate();
+
+      expect(deps._mockUsageTracker.onIdle).toBeTypeOf('function');
+    });
+
+    it('onIdle callback marks worktree available', async () => {
+      await lifecycle.resetAndRehydrate();
+
+      // Invoke the wired-up onIdle callback
+      await deps._mockUsageTracker.onIdle('pool-abc');
+
+      expect(deps.poolRepo.markAvailable).toHaveBeenCalledWith('pool-abc');
+    });
+
+    it('onIdle callback retries once on failure then succeeds', async () => {
+      await lifecycle.resetAndRehydrate();
+
+      deps.poolRepo.markAvailable
+        .mockRejectedValueOnce(new Error('db busy'))
+        .mockResolvedValueOnce(undefined);
+
+      // Use fake timers to handle the 1s retry delay
+      vi.useFakeTimers();
+      const promise = deps._mockUsageTracker.onIdle('pool-abc');
+      // Advance past the 1s retry delay
+      await vi.advanceTimersByTimeAsync(1000);
+      await promise;
+      vi.useRealTimers();
+
+      expect(deps.poolRepo.markAvailable).toHaveBeenCalledTimes(2);
+    });
+
+    it('onIdle callback logs error after both attempts fail', async () => {
+      await lifecycle.resetAndRehydrate();
+
+      deps.poolRepo.markAvailable
+        .mockRejectedValueOnce(new Error('db busy'))
+        .mockRejectedValueOnce(new Error('db still busy'));
+
+      vi.useFakeTimers();
+      const promise = deps._mockUsageTracker.onIdle('pool-abc');
+      await vi.advanceTimersByTimeAsync(1000);
+      await promise;
+      vi.useRealTimers();
+
+      // Should not throw, just log. Both attempts were made.
+      expect(deps.poolRepo.markAvailable).toHaveBeenCalledTimes(2);
+    });
+
+    it('rehydrates preserved entries by triggering synthetic session cycle', async () => {
+      const preserved = [
+        { id: 'pool-abc', current_review_id: 10 },
+        { id: 'pool-xyz', current_review_id: 20 },
+      ];
+      deps.poolRepo.resetStaleAndPreserve.mockResolvedValue(preserved);
+
+      await lifecycle.resetAndRehydrate();
+
+      // Each preserved entry should have addSession then removeSession called
+      expect(deps._mockUsageTracker.addSession).toHaveBeenCalledWith('pool-abc', 'startup-rehydration');
+      expect(deps._mockUsageTracker.removeSession).toHaveBeenCalledWith('pool-abc', 'startup-rehydration');
+      expect(deps._mockUsageTracker.addSession).toHaveBeenCalledWith('pool-xyz', 'startup-rehydration');
+      expect(deps._mockUsageTracker.removeSession).toHaveBeenCalledWith('pool-xyz', 'startup-rehydration');
+    });
+
+    it('does not rehydrate when there are no preserved entries', async () => {
+      deps.poolRepo.resetStaleAndPreserve.mockResolvedValue([]);
+
+      await lifecycle.resetAndRehydrate();
+
+      expect(deps._mockUsageTracker.addSession).not.toHaveBeenCalled();
+      expect(deps._mockUsageTracker.removeSession).not.toHaveBeenCalled();
     });
   });
 });
 
 // ── PoolExhaustedError ───────────────────────────────────────────────────
-describe('PoolExhaustedError', () => {
+describe('PoolExhaustedError (from worktree-pool-lifecycle)', () => {
   it('has correct properties', () => {
     const error = new PoolExhaustedError('test/repo', 3);
 

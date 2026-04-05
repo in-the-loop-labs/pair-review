@@ -12,8 +12,7 @@ const express = require('express');
 const { query, queryOne, run, ReviewRepository, WorktreePoolRepository } = require('../database');
 const { setupPRReview } = require('../setup/pr-setup');
 const { GitHubApiError } = require('../github/client');
-const { PoolExhaustedError } = require('../git/worktree-pool');
-const { worktreePoolUsage } = require('../git/worktree-pool-usage');
+const { PoolExhaustedError } = require('../git/worktree-pool-lifecycle');
 const { GitWorktreeManager } = require('../git/worktree');
 const { activeAnalyses, reviewToAnalysisId, killProcesses, broadcastProgress } = require('./shared');
 const { AnalysisRunRepository } = require('../database');
@@ -68,6 +67,7 @@ router.post('/api/worktrees/create', async (req, res) => {
       prNumber: parsedPrNumber,
       githubToken,
       config,
+      poolLifecycle: req.app.get('poolLifecycle'),
       onProgress: (progress) => {
         logger.info(`[Setup] ${progress.step}: ${progress.message}`);
       }
@@ -243,10 +243,11 @@ router.get('/api/worktrees/recent', async (req, res) => {
  *
  * @param {object} db - Database handle
  * @param {number} metadataId - pr_metadata.id
+ * @param {import('../git/worktree-pool-lifecycle').WorktreePoolLifecycle} [poolLifecycle] - Pool lifecycle manager (optional)
  * @returns {{ success: boolean, message: string }}
  * @throws {Error} if deletion fails
  */
-async function deleteReviewById(db, metadataId) {
+async function deleteReviewById(db, metadataId, poolLifecycle) {
   const metadata = await queryOne(db, `
     SELECT id, pr_number, repository FROM pr_metadata WHERE id = ?
   `, [metadataId]);
@@ -264,7 +265,7 @@ async function deleteReviewById(db, metadataId) {
   `, [prNumber, repository]);
 
   // Check if this worktree belongs to the pool — pool worktrees are preserved
-  const poolRepo = new WorktreePoolRepository(db);
+  const poolRepo = poolLifecycle ? poolLifecycle.poolRepo : new WorktreePoolRepository(db);
   const isPool = worktree ? await poolRepo.isPoolWorktree(worktree.id) : false;
 
   // Delete all associated database records in a transaction
@@ -299,7 +300,7 @@ async function deleteReviewById(db, metadataId) {
     // Cancel any active analyses reading from this worktree before returning
     // the slot to the pool.  Without this, a reclaimed worktree could have its
     // filesystem switched out from under a still-running analysis subprocess.
-    const activeAnalysisIds = worktreePoolUsage.getActiveAnalyses(worktree.id);
+    const activeAnalysisIds = poolLifecycle ? poolLifecycle.getActiveAnalyses(worktree.id) : new Set();
     if (activeAnalysisIds.size > 0) {
       const analysisRunRepo = new AnalysisRunRepository(db);
       for (const analysisId of activeAnalysisIds) {
@@ -318,11 +319,11 @@ async function deleteReviewById(db, metadataId) {
       logger.info(`Cancelled ${activeAnalysisIds.size} active analysis(es) on pool worktree ${worktree.id}`);
     }
 
-    // Purge all in-memory tracking (sessions, analyses, grace timers) so the
-    // slot cleanly returns to the pool.  clearWorktree does NOT fire onIdle —
-    // we handle availability directly below.
-    worktreePoolUsage.clearWorktree(worktree.id);
-    await poolRepo.markAvailable(worktree.id);
+    // Release all in-memory tracking and mark the slot available in DB so it
+    // cleanly returns to the pool.
+    if (poolLifecycle) {
+      await poolLifecycle.releaseForDeletion(worktree.id);
+    }
     logger.info(`Pool worktree ${worktree.id} cleared and marked available after review deletion`);
   } else if (worktree && worktree.path) {
     try {
@@ -356,7 +357,8 @@ router.delete('/api/worktrees/:id', async (req, res) => {
     }
 
     const db = req.app.get('db');
-    const result = await deleteReviewById(db, metadataId);
+    const poolLifecycle = req.app.get('poolLifecycle');
+    const result = await deleteReviewById(db, metadataId, poolLifecycle);
 
     if (!result.success) {
       return res.status(404).json({
@@ -411,12 +413,13 @@ router.post('/api/worktrees/bulk-delete', async (req, res) => {
     }
 
     const db = req.app.get('db');
+    const poolLifecycle = req.app.get('poolLifecycle');
     let deleted = 0;
     const errors = [];
 
     for (const id of parsedIds) {
       try {
-        const result = await deleteReviewById(db, id);
+        const result = await deleteReviewById(db, id, poolLifecycle);
         if (result.success) {
           deleted++;
         } else {

@@ -8,6 +8,7 @@ const { applyConfigOverrides, checkAllProviders } = require('./ai');
 const { checkAllChatProviders } = require('./chat/chat-providers');
 const logger = require('./utils/logger');
 const { attachWebSocket, closeAll: closeAllWS } = require('./ws');
+const { WorktreePoolLifecycle } = require('./git/worktree-pool-lifecycle');
 
 let db = null;
 let server = null;
@@ -86,8 +87,9 @@ function findAvailablePort(app, startPort, maxAttempts = 20) {
 /**
  * Start the Express server
  * @param {sqlite3.Database} [sharedDb] - Optional shared database instance
+ * @param {import('./git/worktree-pool-lifecycle').WorktreePoolLifecycle} [sharedPoolLifecycle] - Optional shared pool lifecycle instance
  */
-async function startServer(sharedDb = null) {
+async function startServer(sharedDb = null, sharedPoolLifecycle = null) {
   try {
     // Load configuration
     const { config } = await loadConfig();
@@ -302,6 +304,16 @@ async function startServer(sharedDb = null) {
     app.set('githubToken', githubToken);
     app.set('config', config);
 
+    // Create or reuse the worktree pool lifecycle instance.
+    // When called from main.js, the shared instance (already rehydrated) is
+    // passed in.  When running standalone, create and rehydrate a fresh one.
+    let poolLifecycle = sharedPoolLifecycle;
+    if (!poolLifecycle) {
+      poolLifecycle = new WorktreePoolLifecycle(db, config);
+      await poolLifecycle.resetAndRehydrate();
+    }
+    app.set('poolLifecycle', poolLifecycle);
+
     // API routes - split into focused modules
     // Order matters: more specific routes must be mounted before general ones
     // to ensure proper route matching
@@ -371,7 +383,7 @@ async function startServer(sharedDb = null) {
 
     server = app.listen(port, () => {
       console.log(`Server running on http://localhost:${port}`);
-      attachWebSocket(server, db);
+      attachWebSocket(server, db, poolLifecycle);
     });
 
     server.on('error', (error) => {

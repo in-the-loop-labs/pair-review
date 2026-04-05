@@ -1,8 +1,6 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 const { WebSocketServer } = require('ws');
 const logger = require('../utils/logger');
-const { worktreePoolUsage } = require('../git/worktree-pool-usage');
-const { WorktreePoolRepository } = require('../database');
 
 const HEARTBEAT_INTERVAL = 30000;
 
@@ -13,9 +11,10 @@ let heartbeatTimer = null;
  * Attach a WebSocket server to an existing HTTP server.
  * Operates in noServer mode, handling upgrade requests on the /ws path only.
  * @param {import('http').Server} httpServer
- * @param {Object} [db] - Database instance for pool worktree lookups
+ * @param {Object} [db] - Database instance (unused, kept for signature compatibility)
+ * @param {Object} [poolLifecycle] - WorktreePoolLifecycle instance for pool session management
  */
-function attachWebSocket(httpServer, db) {
+function attachWebSocket(httpServer, db, poolLifecycle) {
   wss = new WebSocketServer({ noServer: true });
 
   httpServer.on('upgrade', (request, socket, head) => {
@@ -58,24 +57,23 @@ function attachWebSocket(httpServer, db) {
         ws._topics.add(topic);
 
         // Track pool worktree usage for review topics
-        if (topic.startsWith('review:') && db) {
+        if (topic.startsWith('review:') && poolLifecycle) {
           const reviewId = parseInt(topic.substring(7), 10);
           if (!isNaN(reviewId)) {
-            const poolRepo = new WorktreePoolRepository(db);
-            poolRepo.findByReviewId(reviewId).then(poolResult => {
-              if (poolResult) {
-                // Guard against race: socket may have closed or unsubscribed
-                // while the async lookup was in flight
+            const sessionKey = `ws-${ws._wsId}-${topic}`;
+            poolLifecycle.startSession(reviewId, sessionKey).then(result => {
+              if (result) {
+                // Race guard: socket may have closed or unsubscribed
+                // while the async lookup was in flight. Since startSession
+                // already registered the session internally, we must undo it.
                 if (ws.readyState !== ws.OPEN || !ws._topics.has(topic)) {
-                  logger.debug(`WS: skipping pool session registration for ws-${ws._wsId} — socket closed or unsubscribed during lookup`);
+                  poolLifecycle.endSession(result.worktreeId, sessionKey);
                   return;
                 }
-                const sessionKey = `ws-${ws._wsId}-${topic}`;
-                ws._poolSessions.push({ worktreeId: poolResult.id, sessionKey });
-                worktreePoolUsage.addSession(poolResult.id, sessionKey);
+                ws._poolSessions.push({ worktreeId: result.worktreeId, sessionKey });
               }
             }).catch(err => {
-              logger.debug(`WS: pool worktree lookup failed for review ${reviewId}: ${err.message}`);
+              logger.debug(`WS: pool session start failed: ${err.message}`);
             });
           }
         }
@@ -87,7 +85,7 @@ function attachWebSocket(httpServer, db) {
           const expectedKey = `ws-${ws._wsId}-${topic}`;
           ws._poolSessions = ws._poolSessions.filter(s => {
             if (s.sessionKey === expectedKey) {
-              worktreePoolUsage.removeSession(s.worktreeId, s.sessionKey);
+              poolLifecycle?.endSession(s.worktreeId, s.sessionKey);
               return false;
             }
             return true;
@@ -99,7 +97,7 @@ function attachWebSocket(httpServer, db) {
     ws.on('close', () => {
       // Clean up all pool worktree sessions
       for (const { worktreeId, sessionKey } of ws._poolSessions) {
-        worktreePoolUsage.removeSession(worktreeId, sessionKey);
+        poolLifecycle?.endSession(worktreeId, sessionKey);
       }
       ws._poolSessions = [];
       ws._topics.clear();
@@ -109,7 +107,7 @@ function attachWebSocket(httpServer, db) {
       logger.warn(`WS: client error: ${err.message}`);
       // Clean up all pool worktree sessions
       for (const { worktreeId, sessionKey } of ws._poolSessions) {
-        worktreePoolUsage.removeSession(worktreeId, sessionKey);
+        poolLifecycle?.endSession(worktreeId, sessionKey);
       }
       ws._poolSessions = [];
       ws._topics.clear();

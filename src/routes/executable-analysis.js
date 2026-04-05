@@ -22,7 +22,7 @@ const execPromise = promisify(exec);
 const fsPromises = require('fs').promises;
 const logger = require('../utils/logger');
 const { createProvider } = require('../ai/provider');
-const { AnalysisRunRepository, CommentRepository, WorktreePoolRepository } = require('../database');
+const { AnalysisRunRepository, CommentRepository } = require('../database');
 const { fireHooks, hasHooks } = require('../hooks/hook-runner');
 const { buildAnalysisStartedPayload, buildAnalysisCompletedPayload, getCachedUser } = require('../hooks/payloads');
 const { normalizePath, resolveRenamedFile } = require('../utils/paths');
@@ -30,7 +30,6 @@ const { buildFileLineCountMap, validateSuggestionLineNumbers } = require('../uti
 const { GIT_DIFF_FLAGS } = require('../git/diff-flags');
 const { generateScopedDiff, findMergeBase } = require('../local-review');
 const { scopeIncludes } = require('../local-scope');
-const { worktreePoolUsage } = require('../git/worktree-pool-usage');
 
 /**
  * Generate a diff for the executable provider and write it to a file.
@@ -293,17 +292,14 @@ async function runExecutableAnalysis(req, res, params, shared, callbacks) {
   broadcastReviewEvent(reviewId, { type: 'review:analysis_started', analysisId });
 
   // Register analysis hold for pool worktree usage tracking.
-  // Wrapped in try so a synchronous exception in setup still cleans up the hold
-  // (the .finally() inside the async IIFE only covers errors after it starts).
-  const poolRepo = new WorktreePoolRepository(db);
-  const poolResult = await poolRepo.findByReviewId(reviewId);
-  const poolWorktreeId = poolResult?.id;
+  // startAnalysis is inside the try so a synchronous exception in setup still
+  // cleans up the hold (the .finally() inside the async IIFE only covers errors after it starts).
+  const poolLifecycle = params.poolLifecycle;
+  let poolWorktreeId;
   const analysisHookConfig = req.app.get('config') || {};
   const hookPayloadFields = buildHookPayload(review, {});
   try {
-    if (poolWorktreeId) {
-      worktreePoolUsage.addAnalysis(poolWorktreeId, analysisId);
-    }
+    poolWorktreeId = await poolLifecycle?.startAnalysis(reviewId, analysisId);
 
     // 3. Fire analysis.started hook
     if (hasHooks('analysis.started', analysisHookConfig)) {
@@ -327,7 +323,7 @@ async function runExecutableAnalysis(req, res, params, shared, callbacks) {
     // Synchronous setup failure — clean up the analysis hold immediately
     reviewToAnalysisId.delete(reviewId);
     if (poolWorktreeId) {
-      worktreePoolUsage.removeAnalysis(poolWorktreeId, analysisId);
+      poolLifecycle?.endAnalysis(analysisId);
     }
     throw setupError;
   }
@@ -497,7 +493,7 @@ async function runExecutableAnalysis(req, res, params, shared, callbacks) {
       // clients can poll for final results via HTTP (matches local.js/pr.js).
       reviewToAnalysisId.delete(reviewId);
       // Remove pool worktree analysis hold
-      worktreePoolUsage.removeAnalysisById(analysisId);
+      poolLifecycle?.endAnalysis(analysisId);
 
       // Clean up temp directory (keep in debug mode for inspection)
       if (tmpDir) {

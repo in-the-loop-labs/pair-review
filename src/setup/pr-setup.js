@@ -11,9 +11,9 @@
  *   - setupPRReview: full orchestrator that wires the above together
  */
 
-const { run, queryOne, WorktreeRepository, RepoSettingsRepository, WorktreePoolRepository } = require('../database');
+const { run, queryOne, WorktreeRepository, RepoSettingsRepository } = require('../database');
 const { GitWorktreeManager } = require('../git/worktree');
-const { WorktreePoolManager, PoolExhaustedError } = require('../git/worktree-pool');
+const { WorktreePoolLifecycle, PoolExhaustedError } = require('../git/worktree-pool-lifecycle');
 const { GitHubClient } = require('../github/client');
 const { normalizeRepository } = require('../utils/paths');
 const { findMainGitRoot } = require('../local-review');
@@ -383,10 +383,11 @@ async function findRepositoryPath({ db, owner, repo, repository, prNumber, confi
  * @param {number} params.prNumber - Pull request number
  * @param {string} params.githubToken - GitHub PAT
  * @param {Object} [params.config] - Application config (for monorepo path lookup)
+ * @param {import('../git/worktree-pool-lifecycle').WorktreePoolLifecycle} [params.poolLifecycle] - Shared pool lifecycle instance (avoids creating a fresh singleton)
  * @param {Function} [params.onProgress] - Optional progress callback
  * @returns {Promise<{ reviewUrl: string, title: string }>}
  */
-async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, onProgress }) {
+async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, onProgress, poolLifecycle: externalPoolLifecycle }) {
   const repository = normalizeRepository(owner, repo);
   const progress = onProgress || (() => {});
 
@@ -433,12 +434,12 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, o
   let worktreePath;
   let worktreeManager;
   let poolWorktreeId = null;
-  let poolManager = null;
+  let poolLifecycle = null;
   if (poolSize > 0) {
-    // Pool mode: use WorktreePoolManager
+    // Pool mode: use WorktreePoolLifecycle
     progress({ step: 'worktree', status: 'running', message: 'Acquiring pool worktree...' });
-    poolManager = new WorktreePoolManager(db, config);
-    const result = await poolManager.acquireForPR(
+    poolLifecycle = externalPoolLifecycle || new WorktreePoolLifecycle(db, config);
+    const result = await poolLifecycle.acquireForPR(
       { owner, repo, prNumber, repository },
       prData,
       repositoryPath,
@@ -515,8 +516,7 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, o
 
   // Persist review→worktree mapping in DB for pool usage tracking
   if (poolWorktreeId) {
-    const poolRepo = new WorktreePoolRepository(db);
-    await poolRepo.setCurrentReviewId(poolWorktreeId, reviewId);
+    await poolLifecycle.setReviewOwner(poolWorktreeId, reviewId);
   }
 
   // Register the repository path for future sessions if it wasn't already known
@@ -552,9 +552,9 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, o
     // setCurrentReviewId maps the review to the worktree, the worktree would
     // be permanently leaked — no review owner means the idle grace period
     // mechanism can never fire to reclaim it.
-    if (poolWorktreeId && poolManager) {
+    if (poolWorktreeId && poolLifecycle) {
       try {
-        await poolManager.release(poolWorktreeId);
+        await poolLifecycle.releaseAfterHeadless(poolWorktreeId);
         logger.info(`Released pool worktree ${poolWorktreeId} after setup failure`);
       } catch (releaseErr) {
         logger.error(`Failed to release pool worktree ${poolWorktreeId} after setup failure: ${releaseErr.message}`);

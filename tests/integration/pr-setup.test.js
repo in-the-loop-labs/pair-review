@@ -30,9 +30,9 @@ import path from 'path';
 const configModule = require('../../src/config');
 const localReview = require('../../src/local-review');
 const { GitWorktreeManager } = require('../../src/git/worktree');
-const { RepoSettingsRepository, WorktreePoolRepository } = require('../../src/database');
+const { RepoSettingsRepository, WorktreePoolRepository, run, queryOne } = require('../../src/database');
 const { GitHubClient } = require('../../src/github/client');
-const worktreePoolModule = require('../../src/git/worktree-pool');
+const worktreePoolLifecycleModule = require('../../src/git/worktree-pool-lifecycle');
 const hooksPayloads = require('../../src/hooks/payloads');
 
 // Install spies BEFORE pr-setup.js is loaded so that its destructured
@@ -50,14 +50,15 @@ const hookRunnerModule = require('../../src/hooks/hook-runner');
 vi.spyOn(hookRunnerModule, 'fireHooks');
 
 // Spies for setupPRReview integration tests (pool-enabled path).
-// GitHubClient, WorktreePoolManager, and GitWorktreeManager are constructed
+// GitHubClient, WorktreePoolLifecycle, and GitWorktreeManager are constructed
 // inside setupPRReview via `new`, so we spy on their prototype methods
 // before pr-setup.js captures the class references.
 vi.spyOn(GitHubClient.prototype, 'repositoryExists');
 vi.spyOn(GitHubClient.prototype, 'fetchPullRequest');
 vi.spyOn(GitHubClient.prototype, 'fetchPullRequestFiles');
-vi.spyOn(worktreePoolModule.WorktreePoolManager.prototype, 'acquireForPR');
-vi.spyOn(worktreePoolModule.WorktreePoolManager.prototype, 'release');
+vi.spyOn(worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype, 'acquireForPR');
+vi.spyOn(worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype, 'releaseAfterHeadless');
+vi.spyOn(worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype, 'setReviewOwner');
 vi.spyOn(GitWorktreeManager.prototype, 'createWorktreeForPR');
 vi.spyOn(GitWorktreeManager.prototype, 'isSparseCheckoutEnabled');
 vi.spyOn(GitWorktreeManager.prototype, 'generateUnifiedDiff');
@@ -563,8 +564,7 @@ describe('storePRData returns isNewReview flag', () => {
     });
 
     // Verify the returned reviewId matches what's in the database
-    const { queryOne: qo } = require('../../src/database');
-    const row = await qo(db, 'SELECT id FROM reviews WHERE pr_number = ? AND repository = ? COLLATE NOCASE', [99, 'owner/repo']);
+    const row = await queryOne(db, 'SELECT id FROM reviews WHERE pr_number = ? AND repository = ? COLLATE NOCASE', [99, 'owner/repo']);
     expect(result.reviewId).toBe(row.id);
   });
 });
@@ -573,7 +573,7 @@ describe('storePRData returns isNewReview flag', () => {
 // Pool-enabled PR setup (setupPRReview with poolSize > 0)
 // ============================================================================
 // These tests exercise the pool code path inside setupPRReview, verifying that
-// WorktreePoolManager.acquireForPR is used instead of GitWorktreeManager.
+// WorktreePoolLifecycle.acquireForPR is used instead of GitWorktreeManager.
 // createWorktreeForPR, and that pool worktrees are properly released on failure
 // and linked to reviews on success.
 
@@ -637,12 +637,13 @@ describe('pool-enabled PR setup', () => {
       { filename: 'src/app.js', status: 'modified' },
     ]);
 
-    // Pool manager spies — acquireForPR returns a pool worktree
-    worktreePoolModule.WorktreePoolManager.prototype.acquireForPR.mockResolvedValue({
+    // Pool lifecycle spies — acquireForPR returns a pool worktree
+    worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.acquireForPR.mockResolvedValue({
       worktreePath: poolWorktreePath,
       worktreeId: poolWorktreeId,
     });
-    worktreePoolModule.WorktreePoolManager.prototype.release.mockResolvedValue(undefined);
+    worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.releaseAfterHeadless.mockResolvedValue(undefined);
+    worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.setReviewOwner.mockResolvedValue(undefined);
 
     // GitWorktreeManager prototype spies
     GitWorktreeManager.prototype.isSparseCheckoutEnabled.mockResolvedValue(false);
@@ -670,12 +671,12 @@ describe('pool-enabled PR setup', () => {
     });
 
     // Pool path was used (acquireForPR called, createWorktreeForPR NOT called)
-    expect(worktreePoolModule.WorktreePoolManager.prototype.acquireForPR).toHaveBeenCalledOnce();
+    expect(worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.acquireForPR).toHaveBeenCalledOnce();
     expect(GitWorktreeManager.prototype.createWorktreeForPR).not.toHaveBeenCalled();
 
     // Verify acquireForPR received the expected arguments
     const [prInfoArg, prDataArg, repoPathArg, optionsArg] =
-      worktreePoolModule.WorktreePoolManager.prototype.acquireForPR.mock.calls[0];
+      worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.acquireForPR.mock.calls[0];
     expect(prInfoArg).toEqual(
       expect.objectContaining({ owner, repo, prNumber, repository })
     );
@@ -687,55 +688,62 @@ describe('pool-enabled PR setup', () => {
     expect(result.title).toBe('Test PR');
   });
 
-  it('should persist review ID to pool entry via setCurrentReviewId', async () => {
+  it('should persist review ID to pool entry via setReviewOwner', async () => {
+    // Seed a real pool row so we can verify the DB state after setup.
+    // This row simulates what acquireForPR would have created: an in_use
+    // pool worktree with no review owner yet.
+    const now = new Date().toISOString();
+    await run(db, `
+      INSERT INTO worktree_pool (id, repository, path, status, current_pr_number, current_review_id, last_switched_at, created_at)
+      VALUES (?, ?, ?, 'in_use', ?, NULL, ?, ?)
+    `, [poolWorktreeId, repository, poolWorktreePath, prNumber, now, now]);
+
+    // Let setReviewOwner call through to the real DB implementation
+    // so the seeded pool row is actually updated.
+    const poolRepo = new WorktreePoolRepository(db);
+    worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.setReviewOwner
+      .mockImplementation((wtId, revId) => poolRepo.setCurrentReviewId(wtId, revId));
+
     await setupPRReview({
       db, owner, repo, prNumber, githubToken, config: testConfig,
     });
 
-    // Verify review was created in the database
-    const { queryOne: qo } = require('../../src/database');
-    const review = await qo(
+    // Primary assertion: verify current_review_id is set in the database
+    const poolRow = await queryOne(
+      db,
+      'SELECT current_review_id FROM worktree_pool WHERE id = ?',
+      [poolWorktreeId]
+    );
+    expect(poolRow).toBeTruthy();
+
+    const review = await queryOne(
       db,
       'SELECT id FROM reviews WHERE pr_number = ? AND repository = ? COLLATE NOCASE',
       [prNumber, repository]
     );
     expect(review).toBeTruthy();
+    expect(poolRow.current_review_id).toBe(review.id);
 
-    // Verify the pool entry has current_review_id set
-    const poolEntry = await qo(db, 'SELECT current_review_id FROM worktree_pool WHERE id = ?', [poolWorktreeId]);
-    // The pool entry is created by the mock's acquireForPR, not by real DB
-    // operations. However, storePRData creates the review row, and then
-    // setupPRReview calls poolRepo.setCurrentReviewId(poolWorktreeId, reviewId).
-    // Since WorktreePoolRepository is instantiated with the real db,
-    // setCurrentReviewId runs a real UPDATE. The pool row must exist first.
-    //
-    // To properly test this, we pre-seed a pool row and verify it gets updated.
-    // This test verifies the review was created — the next test covers the
-    // full setCurrentReviewId integration with a seeded pool row.
-    expect(review.id).toBeGreaterThan(0);
+    // Complementary spy check: setReviewOwner was called with correct args
+    expect(worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.setReviewOwner)
+      .toHaveBeenCalledOnce();
+    expect(worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.setReviewOwner)
+      .toHaveBeenCalledWith(poolWorktreeId, review.id);
   });
 
-  it('should call setCurrentReviewId on the pool entry after storing PR data', async () => {
-    // Pre-seed a worktree_pool row so that setCurrentReviewId's UPDATE has a target
-    const now = new Date().toISOString();
-    db.prepare(
-      'INSERT INTO worktree_pool (id, repository, path, status, current_pr_number, created_at) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(poolWorktreeId, repository, poolWorktreePath, 'in_use', prNumber, now);
-
+  it('should call setReviewOwner on the pool entry after storing PR data', async () => {
     await setupPRReview({
       db, owner, repo, prNumber, githubToken, config: testConfig,
     });
 
-    // Verify the pool row now has current_review_id set to the review ID
-    const { queryOne: qo } = require('../../src/database');
-    const review = await qo(
+    // Verify setReviewOwner was called after storePRData created the review
+    const review = await queryOne(
       db,
       'SELECT id FROM reviews WHERE pr_number = ? AND repository = ? COLLATE NOCASE',
       [prNumber, repository]
     );
-    const poolRow = await qo(db, 'SELECT current_review_id FROM worktree_pool WHERE id = ?', [poolWorktreeId]);
-    expect(poolRow).toBeTruthy();
-    expect(poolRow.current_review_id).toBe(review.id);
+    expect(worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.setReviewOwner)
+      .toHaveBeenCalledWith(poolWorktreeId, review.id);
   });
 
   it('should release pool worktree on failure after acquireForPR', async () => {
@@ -749,11 +757,11 @@ describe('pool-enabled PR setup', () => {
     ).rejects.toThrow('diff generation failed');
 
     // Pool worktree was acquired
-    expect(worktreePoolModule.WorktreePoolManager.prototype.acquireForPR).toHaveBeenCalledOnce();
+    expect(worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.acquireForPR).toHaveBeenCalledOnce();
 
     // Pool worktree was released after failure
-    expect(worktreePoolModule.WorktreePoolManager.prototype.release).toHaveBeenCalledOnce();
-    expect(worktreePoolModule.WorktreePoolManager.prototype.release).toHaveBeenCalledWith(poolWorktreeId);
+    expect(worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.releaseAfterHeadless).toHaveBeenCalledOnce();
+    expect(worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.releaseAfterHeadless).toHaveBeenCalledWith(poolWorktreeId);
   });
 
   it('should release pool worktree when storePRData fails', async () => {
@@ -770,14 +778,14 @@ describe('pool-enabled PR setup', () => {
     ).rejects.toThrow('getChangedFiles failed');
 
     // Pool worktree was released
-    expect(worktreePoolModule.WorktreePoolManager.prototype.release).toHaveBeenCalledOnce();
-    expect(worktreePoolModule.WorktreePoolManager.prototype.release).toHaveBeenCalledWith(poolWorktreeId);
+    expect(worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.releaseAfterHeadless).toHaveBeenCalledOnce();
+    expect(worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.releaseAfterHeadless).toHaveBeenCalledWith(poolWorktreeId);
   });
 
   it('should propagate PoolExhaustedError when pool is full', async () => {
-    const { PoolExhaustedError } = worktreePoolModule;
+    const { PoolExhaustedError } = worktreePoolLifecycleModule;
 
-    worktreePoolModule.WorktreePoolManager.prototype.acquireForPR.mockRejectedValue(
+    worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.acquireForPR.mockRejectedValue(
       new PoolExhaustedError(repository, 3)
     );
 
@@ -785,9 +793,9 @@ describe('pool-enabled PR setup', () => {
       setupPRReview({ db, owner, repo, prNumber, githubToken, config: testConfig })
     ).rejects.toThrow(PoolExhaustedError);
 
-    // release should NOT be called because acquireForPR itself failed
+    // releaseAfterHeadless should NOT be called because acquireForPR itself failed
     // (poolWorktreeId is never set, so the catch block skips release)
-    expect(worktreePoolModule.WorktreePoolManager.prototype.release).not.toHaveBeenCalled();
+    expect(worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.releaseAfterHeadless).not.toHaveBeenCalled();
   });
 
   it('should not use pool when poolSize is 0', async () => {
@@ -805,7 +813,7 @@ describe('pool-enabled PR setup', () => {
     });
 
     // Pool path NOT used
-    expect(worktreePoolModule.WorktreePoolManager.prototype.acquireForPR).not.toHaveBeenCalled();
+    expect(worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.acquireForPR).not.toHaveBeenCalled();
 
     // Non-pool createWorktreeForPR was used instead
     expect(GitWorktreeManager.prototype.createWorktreeForPR).toHaveBeenCalledOnce();
@@ -822,7 +830,7 @@ describe('pool-enabled PR setup', () => {
     ).rejects.toThrow('not found');
 
     // Neither acquire nor release should have been called
-    expect(worktreePoolModule.WorktreePoolManager.prototype.acquireForPR).not.toHaveBeenCalled();
-    expect(worktreePoolModule.WorktreePoolManager.prototype.release).not.toHaveBeenCalled();
+    expect(worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.acquireForPR).not.toHaveBeenCalled();
+    expect(worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.releaseAfterHeadless).not.toHaveBeenCalled();
   });
 });

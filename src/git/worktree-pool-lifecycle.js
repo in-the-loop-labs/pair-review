@@ -1,10 +1,12 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
+'use strict';
+
 const fs = require('fs');
 const logger = require('../utils/logger');
 const { WorktreePoolRepository, WorktreeRepository, generatePoolWorktreeId } = require('../database');
 const { GitWorktreeManager } = require('./worktree');
+const { WorktreePoolUsageTracker } = require('./worktree-pool-usage');
 const { normalizeRepository } = require('../utils/paths');
-const { worktreePoolUsage } = require('./worktree-pool-usage');
 
 /**
  * Error thrown when all pool slots for a repository are occupied.
@@ -19,34 +21,54 @@ class PoolExhaustedError extends Error {
 }
 
 /**
- * Manages a pool of reusable git worktrees per repository.
- *
- * Instead of creating and destroying worktrees per PR review, pool worktrees
- * persist and are switched between PRs via incremental fetch + checkout + reset_script.
+ * Consolidates the worktree pool state machine: absorbs WorktreePoolManager
+ * and composes WorktreePoolUsageTracker to provide a single entry point for
+ * all pool lifecycle operations (acquire, release, session/analysis tracking,
+ * startup rehydration).
  */
-class WorktreePoolManager {
+class WorktreePoolLifecycle {
   /**
    * @param {Object} db - Database instance
    * @param {Object} config - Configuration object from loadConfig()
    * @param {Object} [_deps={}] - Injected dependencies for testing
    */
   constructor(db, config, _deps = {}) {
+    const defaults = {
+      poolRepo: new WorktreePoolRepository(db),
+      worktreeRepo: new WorktreeRepository(db),
+      usageTracker: new WorktreePoolUsageTracker(),
+      fs: fs,
+      simpleGit: require('simple-git'),
+      GitWorktreeManager: GitWorktreeManager,
+    };
+    const deps = { ...defaults, ..._deps };
+
     this.db = db;
     this.config = config;
-    this.poolRepo = _deps.poolRepo || new WorktreePoolRepository(db);
-    this.worktreeRepo = _deps.worktreeRepo || new WorktreeRepository(db);
-    this.usageTracker = _deps.usageTracker || null;
-    this._fs = _deps.fs || fs;
-    this._simpleGit = _deps.simpleGit || require('simple-git');
-    this._GitWorktreeManager = _deps.GitWorktreeManager || GitWorktreeManager;
+    this._poolRepo = deps.poolRepo;
+    this._worktreeRepo = deps.worktreeRepo;
+    this._usageTracker = deps.usageTracker;
+    this._fs = deps.fs;
+    this._simpleGit = deps.simpleGit;
+    this._GitWorktreeManager = deps.GitWorktreeManager;
   }
+
+  /**
+   * Read-only accessor for the pool repository (used by callers that
+   * need direct DB queries, e.g. route handlers checking pool status).
+   */
+  get poolRepo() {
+    return this._poolRepo;
+  }
+
+  // ── Absorbed from WorktreePoolManager ────────────────────────────────────
 
   /**
    * Acquire a pool worktree for a PR review.
    *
    * Claim steps use DB-level serialization (BEGIN IMMEDIATE transactions in
    * poolRepo.claimByPR / claimAvailable) so that concurrent requests cannot
-   * grab the same slot — even across independent WorktreePoolManager instances.
+   * grab the same slot -- even across independent instances.
    *
    * Decision tree:
    * 1. Pool worktree already assigned to this PR -> claim atomically, refresh and return
@@ -65,46 +87,46 @@ class WorktreePoolManager {
     const { poolSize } = options;
 
     // 1. Already assigned to this PR? Atomically claim via DB transaction.
-    const existingPool = await this.poolRepo.claimByPR(prInfo.prNumber, repository);
+    const existingPool = await this._poolRepo.claimByPR(prInfo.prNumber, repository);
     if (existingPool) {
-      const worktreeRecord = await this.worktreeRepo.findById(existingPool.id);
+      const worktreeRecord = await this._worktreeRepo.findById(existingPool.id);
       if (worktreeRecord) {
         if (!this._fs.existsSync(worktreeRecord.path)) {
-          logger.warn(`Pool worktree ${existingPool.id} directory missing from disk (${worktreeRecord.path}) — removing stale records`);
-          await this.poolRepo.delete(existingPool.id);
-          await this.worktreeRepo.delete(existingPool.id);
+          logger.warn(`Pool worktree ${existingPool.id} directory missing from disk (${worktreeRecord.path}) -- removing stale records`);
+          await this._poolRepo.delete(existingPool.id);
+          await this._worktreeRepo.delete(existingPool.id);
         } else {
           logger.info(`Pool worktree ${existingPool.id} already assigned to PR #${prInfo.prNumber}, refreshing`);
           return this._refreshPoolWorktree(existingPool, worktreeRecord, prInfo, prData);
         }
       } else {
-        logger.warn(`Orphaned pool entry ${existingPool.id} — removing`);
-        await this.poolRepo.delete(existingPool.id);
+        logger.warn(`Orphaned pool entry ${existingPool.id} -- removing`);
+        await this._poolRepo.delete(existingPool.id);
       }
     }
 
     // 2. Available slot (LRU eviction)? Atomically claim via DB transaction.
-    const available = await this.poolRepo.claimAvailable(repository);
+    const available = await this._poolRepo.claimAvailable(repository);
     if (available) {
-      const worktreeRecord = await this.worktreeRepo.findById(available.id);
+      const worktreeRecord = await this._worktreeRepo.findById(available.id);
       if (worktreeRecord) {
         if (!this._fs.existsSync(worktreeRecord.path)) {
-          logger.warn(`Pool worktree ${available.id} directory missing from disk (${worktreeRecord.path}) — removing stale records`);
-          await this.poolRepo.delete(available.id);
-          await this.worktreeRepo.delete(available.id);
+          logger.warn(`Pool worktree ${available.id} directory missing from disk (${worktreeRecord.path}) -- removing stale records`);
+          await this._poolRepo.delete(available.id);
+          await this._worktreeRepo.delete(available.id);
         } else {
           logger.info(`Switching pool worktree ${available.id} to PR #${prInfo.prNumber}`);
           return this._switchPoolWorktree(available, worktreeRecord, prInfo, prData, options);
         }
       } else {
-        logger.warn(`Orphaned pool entry ${available.id} — removing`);
-        await this.poolRepo.delete(available.id);
+        logger.warn(`Orphaned pool entry ${available.id} -- removing`);
+        await this._poolRepo.delete(available.id);
       }
     }
 
-    // 3. Pool not full — atomically reserve a slot, then create
+    // 3. Pool not full -- atomically reserve a slot, then create
     const poolId = generatePoolWorktreeId();
-    const reserved = await this.poolRepo.reserveSlot(poolId, repository, poolSize);
+    const reserved = await this._poolRepo.reserveSlot(poolId, repository, poolSize);
     if (reserved) {
       logger.info(`Reserved pool slot ${poolId} for PR #${prInfo.prNumber}, creating worktree`);
       return this._createPoolWorktree(prInfo, prData, repositoryPath, options, poolId);
@@ -161,18 +183,19 @@ class WorktreePoolManager {
         normalizedPrInfo,
         normalizedPrData,
         repositoryPath,
-        { worktreeSourcePath, checkoutScript, checkoutTimeout }
+        { worktreeSourcePath, checkoutScript, checkoutTimeout, explicitId: poolId }
       );
 
-      // Finalize the reservation: set path and mark in_use
-      await this.poolRepo.finalizeReservation(worktreeId, worktreePath, prInfo.prNumber);
+      // Finalize the reservation: set path and mark in_use.
+      // Use poolId (the reserved pool slot ID), NOT worktreeId (the worktrees-table ID).
+      await this._poolRepo.finalizeReservation(poolId, worktreePath, prInfo.prNumber);
 
-      logger.info(`Created pool worktree ${worktreeId} at ${worktreePath}`);
-      return { worktreePath, worktreeId };
+      logger.info(`Created pool worktree ${poolId} at ${worktreePath}`);
+      return { worktreePath, worktreeId: poolId };
     } catch (err) {
-      // Creation failed — remove the placeholder to free the slot
+      // Creation failed -- remove the placeholder to free the slot
       try {
-        await this.poolRepo.deleteReservation(poolId);
+        await this._poolRepo.deleteReservation(poolId);
       } catch (cleanupErr) {
         logger.error(`Failed to delete reservation ${poolId} after creation failure: ${cleanupErr.message}`);
       }
@@ -200,7 +223,7 @@ class WorktreePoolManager {
       const remote = remotes.find(r => r.name === 'origin') || remotes[0];
       const remoteName = remote ? remote.name : 'origin';
 
-      // Fetch new PR refs (incremental — cheap on a warm worktree)
+      // Fetch new PR refs (incremental -- cheap on a warm worktree)
       logger.info(`Fetching PR #${prInfo.prNumber} refs into pool worktree ${poolEntry.id}`);
       await git.fetch([remoteName, `+refs/pull/${prInfo.prNumber}/head:refs/remotes/${remoteName}/pr-${prInfo.prNumber}`]);
 
@@ -238,7 +261,7 @@ class WorktreePoolManager {
 
       // Update worktrees table (returns paths of deleted non-pool worktree records)
       const branch = prData.head?.ref || prData.head_branch || '';
-      const deletedPaths = await this.worktreeRepo.switchPR(poolEntry.id, prInfo.prNumber, branch);
+      const deletedPaths = await this._worktreeRepo.switchPR(poolEntry.id, prInfo.prNumber, branch);
 
       // Best-effort disk cleanup for deleted non-pool worktree directories
       if (deletedPaths && deletedPaths.length > 0) {
@@ -257,17 +280,17 @@ class WorktreePoolManager {
       // timers, review mappings) before assigning to the new PR. Without this,
       // zombie holds from the previous PR could trigger a false onIdle event
       // that marks the worktree available while the new PR is using it.
-      worktreePoolUsage.clearWorktree(poolEntry.id);
+      this._usageTracker.clearWorktree(poolEntry.id);
 
       // Mark in_use in pool table
-      await this.poolRepo.markInUse(poolEntry.id, prInfo.prNumber);
+      await this._poolRepo.markInUse(poolEntry.id, prInfo.prNumber);
 
       logger.info(`Switched pool worktree ${poolEntry.id} to PR #${prInfo.prNumber}`);
       return { worktreePath: poolEntry.path, worktreeId: poolEntry.id };
     } catch (err) {
       // Roll back to available on failure
       try {
-        await this.poolRepo.markAvailable(poolEntry.id);
+        await this._poolRepo.markAvailable(poolEntry.id);
       } catch (rollbackErr) {
         logger.error(`Failed to roll back pool worktree ${poolEntry.id} status: ${rollbackErr.message}`);
       }
@@ -305,7 +328,7 @@ class WorktreePoolManager {
     await worktreeManager.refreshWorktree(worktreeRecord, normalizedPrInfo.number, normalizedPrData, normalizedPrInfo);
 
     // Ensure pool entry is marked in_use
-    await this.poolRepo.markInUse(poolEntry.id, prInfo.prNumber);
+    await this._poolRepo.markInUse(poolEntry.id, prInfo.prNumber);
 
     logger.info(`Refreshed pool worktree ${poolEntry.id} for PR #${prInfo.prNumber}`);
     return { worktreePath: poolEntry.path, worktreeId: poolEntry.id };
@@ -313,15 +336,171 @@ class WorktreePoolManager {
 
   /**
    * Release a pool worktree, marking it as available for reuse.
-   * Called by the usage tracker when all sessions and analyses for a
-   * worktree have ended.
+   * Kept for backward compatibility -- callers that only need to mark
+   * a worktree available without touching usage tracking can use this.
    *
    * @param {string} worktreeId - Pool worktree ID
    */
   async release(worktreeId) {
-    await this.poolRepo.markAvailable(worktreeId);
+    await this._poolRepo.markAvailable(worktreeId);
     logger.info(`Pool worktree ${worktreeId} released`);
+  }
+
+  // ── New lifecycle methods ────────────────────────────────────────────────
+
+  /**
+   * Register a WebSocket session for a pool worktree.
+   * Looks up the worktree by review ID, then adds the session to the
+   * in-memory usage tracker.
+   *
+   * @param {number} reviewId - The review ID to look up
+   * @param {string} sessionKey - Unique key for this WS connection
+   * @returns {Promise<{ worktreeId: string }|null>} worktreeId if found, null otherwise
+   */
+  async startSession(reviewId, sessionKey) {
+    const entry = await this._poolRepo.findByReviewId(reviewId);
+    if (!entry) return null;
+
+    this._usageTracker.addSession(entry.id, sessionKey);
+    return { worktreeId: entry.id };
+  }
+
+  /**
+   * Remove a WebSocket session from the usage tracker.
+   * Synchronous -- does not touch the database.
+   *
+   * @param {string} worktreeId - Pool worktree ID
+   * @param {string} sessionKey - Unique key for the WS connection
+   */
+  endSession(worktreeId, sessionKey) {
+    this._usageTracker.removeSession(worktreeId, sessionKey);
+  }
+
+  /**
+   * Register an AI analysis for a pool worktree.
+   * Looks up the worktree by review ID, then adds the analysis to the
+   * in-memory usage tracker.
+   *
+   * @param {number} reviewId - The review ID to look up
+   * @param {string} analysisId - Unique analysis identifier
+   * @returns {Promise<string|null>} worktreeId if found, null otherwise
+   */
+  async startAnalysis(reviewId, analysisId) {
+    const entry = await this._poolRepo.findByReviewId(reviewId);
+    if (!entry) return null;
+
+    this._usageTracker.addAnalysis(entry.id, analysisId);
+    return entry.id;
+  }
+
+  /**
+   * Remove an analysis hold from the usage tracker by analysis ID.
+   * Synchronous -- does not touch the database.
+   *
+   * @param {string} analysisId - Unique analysis identifier
+   */
+  endAnalysis(analysisId) {
+    this._usageTracker.removeAnalysisById(analysisId);
+  }
+
+  /**
+   * Release a worktree for deletion: clear usage state first, then
+   * mark available in the database.
+   *
+   * @param {string} worktreeId - Pool worktree ID
+   */
+  async releaseForDeletion(worktreeId) {
+    this._usageTracker.clearWorktree(worktreeId);
+    await this._poolRepo.markAvailable(worktreeId);
+  }
+
+  /**
+   * Release a worktree after a headless analysis completes: clear in-memory
+   * usage state first, then mark available in the database. Clearing state
+   * before the DB write prevents a race where another request claims the slot
+   * (after the DB write) and then has its tracking state wiped by clearWorktree.
+   *
+   * @param {string} worktreeId - Pool worktree ID
+   */
+  async releaseAfterHeadless(worktreeId) {
+    this._usageTracker.clearWorktree(worktreeId);
+    await this._poolRepo.markAvailable(worktreeId);
+  }
+
+  /**
+   * Set the review ID that owns a pool worktree (persistent ownership).
+   *
+   * @param {string} worktreeId - Pool worktree ID
+   * @param {number|null} reviewId - Review ID that owns the worktree
+   */
+  async setReviewOwner(worktreeId, reviewId) {
+    await this._poolRepo.setCurrentReviewId(worktreeId, reviewId);
+  }
+
+  /**
+   * Return the set of active analysis IDs for a worktree.
+   *
+   * @param {string} worktreeId - Pool worktree ID
+   * @returns {Set<string>} Active analysis IDs (may be empty)
+   */
+  getActiveAnalyses(worktreeId) {
+    return this._usageTracker.getActiveAnalyses(worktreeId);
+  }
+
+  /**
+   * Reset stale pool entries and rehydrate preserved ones on startup.
+   *
+   * This method:
+   * 1. Calls resetStaleAndPreserve() to clean up stale DB entries and
+   *    identify entries with valid review ownership
+   * 2. Wires the onIdle callback with retry logic (2 attempts, 1s delay)
+   *    so that idle worktrees are automatically marked available
+   * 3. Rehydrates preserved entries by triggering a synthetic
+   *    session add/remove cycle, which starts the grace-period timer.
+   *    If a real user reconnects before the timer fires, their WS
+   *    session will cancel it automatically.
+   *
+   * @returns {Promise<Array<{id: string, current_review_id: number}>>} Preserved entries
+   */
+  async resetAndRehydrate() {
+    // 1. Reset stale entries and get preserved ones
+    const preserved = await this._poolRepo.resetStaleAndPreserve();
+    if (preserved.length > 0) {
+      logger.info(`Pool startup: preserved ${preserved.length} active worktree(s)`);
+    }
+
+    // 2. Wire up idle callback with retry logic (2 attempts, 1s delay)
+    this._usageTracker.onIdle = async (worktreeId) => {
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          await this._poolRepo.markAvailable(worktreeId);
+          logger.info(`Pool worktree ${worktreeId} is now available`);
+          return;
+        } catch (err) {
+          if (attempt < 2) {
+            logger.warn(`Failed to release pool worktree ${worktreeId} (attempt ${attempt}), retrying: ${err.message}`);
+            await new Promise(r => setTimeout(r, 1000));
+          } else {
+            logger.error(`Failed to release pool worktree ${worktreeId} after ${attempt} attempts: ${err.message}`);
+          }
+        }
+      }
+    };
+
+    // 3. Rehydrate preserved entries by triggering grace-period timers
+    if (preserved.length > 0) {
+      logger.info(`Pool startup: preserved ${preserved.length} active worktree(s), starting grace periods`);
+      for (const entry of preserved) {
+        // Add then immediately remove a synthetic session to trigger the
+        // idle grace period timer. If a real user reconnects before the
+        // timer fires, their WS session will cancel it automatically.
+        this._usageTracker.addSession(entry.id, 'startup-rehydration');
+        this._usageTracker.removeSession(entry.id, 'startup-rehydration');
+      }
+    }
+
+    return preserved;
   }
 }
 
-module.exports = { WorktreePoolManager, PoolExhaustedError };
+module.exports = { WorktreePoolLifecycle, PoolExhaustedError };

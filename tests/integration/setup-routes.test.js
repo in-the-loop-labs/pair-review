@@ -14,12 +14,16 @@ vi.spyOn(prSetupModule, 'setupPRReview');
 const express = require('express');
 const request = require('supertest');
 const setupRoutes = require('../../src/routes/setup');
+const { WorktreePoolRepository } = require('../../src/database');
 
-function createApp(db, config = { github_token: 'test-token' }) {
+function createApp(db, config = { github_token: 'test-token' }, { withPool = false } = {}) {
   const app = express();
   app.use(express.json());
   app.set('db', db);
   app.set('config', config);
+  if (withPool) {
+    app.set('poolLifecycle', { poolRepo: new WorktreePoolRepository(db) });
+  }
   app.use(setupRoutes);
   return app;
 }
@@ -81,7 +85,7 @@ describe('POST /api/setup/pr/:owner/:repo/:number', () => {
     seedWorktree(db, { id: 'pool-abc' });
     seedPoolEntry(db, { id: 'pool-abc', status: 'in_use' });
 
-    const app = createApp(db);
+    const app = createApp(db, undefined, { withPool: true });
     const res = await request(app).post('/api/setup/pr/owner/repo/42');
 
     expect(res.status).toBe(200);
@@ -94,7 +98,7 @@ describe('POST /api/setup/pr/:owner/:repo/:number', () => {
     seedWorktree(db, { id: 'pool-abc' });
     seedPoolEntry(db, { id: 'pool-abc', status: 'available' });
 
-    const app = createApp(db);
+    const app = createApp(db, undefined, { withPool: true });
     const res = await request(app).post('/api/setup/pr/owner/repo/42');
 
     expect(res.status).toBe(200);
@@ -108,7 +112,7 @@ describe('POST /api/setup/pr/:owner/:repo/:number', () => {
     seedWorktree(db, { id: 'pool-abc' });
     seedPoolEntry(db, { id: 'pool-abc', status: 'switching' });
 
-    const app = createApp(db);
+    const app = createApp(db, undefined, { withPool: true });
     const res = await request(app).post('/api/setup/pr/owner/repo/42');
 
     expect(res.status).toBe(200);

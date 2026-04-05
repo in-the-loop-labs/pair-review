@@ -241,10 +241,12 @@ class GitWorktreeManager {
    *   When set, worktree is created with --no-checkout from the main git root (no sparse-checkout inheritance),
    *   and the script is executed before checkout with PR context as environment variables.
    * @param {number} [options.checkoutTimeout] - Timeout in ms for checkout script (default: 300000 = 5 minutes)
+   * @param {string} [options.explicitId] - When provided, use this ID for the worktrees-table record
+   *   instead of generating one. Used by the worktree pool to align the worktrees-table ID with the pool ID.
    * @returns {Promise<{ path: string, id: string }>} Path and database ID of created worktree
    */
   async createWorktreeForPR(prInfo, prData, repositoryPath, options = {}) {
-    const { worktreeSourcePath, checkoutScript, checkoutTimeout } = options;
+    const { worktreeSourcePath, checkoutScript, checkoutTimeout, explicitId } = options;
     // Check if worktree already exists in DB
     const repository = normalizeRepository(prInfo.owner, prInfo.repo);
     let worktreePath;
@@ -266,7 +268,24 @@ class GitWorktreeManager {
         console.log(`Found existing worktree for PR #${prInfo.number} at ${worktreePath}`);
         try {
           const refreshedPath = await this.refreshWorktree(worktreeRecord, prInfo.number, prData, prInfo);
-          return { path: refreshedPath, id: worktreeRecord.id };
+          let returnId = worktreeRecord.id;
+
+          // If explicitId is provided and differs from the existing record's ID,
+          // migrate the worktrees-table row to use the pool ID. This happens when
+          // pool mode is enabled for a repo that already has legacy worktree records.
+          if (explicitId && worktreeRecord.id !== explicitId && this.worktreeRepo) {
+            const migrated = await this.worktreeRepo.getOrCreate({
+              prNumber: prInfo.number,
+              repository,
+              branch: prData.head_branch || prData.base_branch,
+              path: refreshedPath,
+              explicitId,
+            });
+            returnId = migrated.id;
+            console.log(`Migrated worktree record from ${worktreeRecord.id} to ${explicitId}`);
+          }
+
+          return { path: refreshedPath, id: returnId };
         } catch (refreshError) {
           // If refresh fails due to uncommitted changes, propagate that error
           if (refreshError.message.includes('uncommitted changes')) {
@@ -290,13 +309,15 @@ class GitWorktreeManager {
       if (legacyExists && await this.isValidGitWorktree(legacyPath)) {
         console.log(`Found legacy worktree for PR #${prInfo.number} at ${legacyPath}, adopting it`);
 
-        // Create DB record for the legacy worktree
+        // Create DB record for the legacy worktree — pass explicitId so the record
+        // is created with the pool ID when pool mode is active
         if (this.worktreeRepo) {
           worktreeRecord = await this.worktreeRepo.getOrCreate({
             prNumber: prInfo.number,
             repository,
             branch: prData.head_branch || prData.base_branch,
-            path: legacyPath
+            path: legacyPath,
+            explicitId,
           });
           console.log(`Created database record for legacy worktree`);
         }
@@ -456,7 +477,8 @@ class GitWorktreeManager {
           prNumber: prInfo.number,
           repository,
           branch: prData.head_branch || prData.base_branch,
-          path: worktreePath
+          path: worktreePath,
+          explicitId,
         });
         worktreeDbId = record.id;
         console.log(`Worktree record stored in database`);

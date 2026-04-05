@@ -213,7 +213,4 @@ class WorktreePoolUsageTracker {
   }
 }
 
-// Singleton instance
-const worktreePoolUsage = new WorktreePoolUsageTracker();
-
-module.exports = { worktreePoolUsage, WorktreePoolUsageTracker, GRACE_PERIOD_MS };
+module.exports = { WorktreePoolUsageTracker, GRACE_PERIOD_MS };

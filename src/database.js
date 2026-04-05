@@ -2029,29 +2029,34 @@ class WorktreeRepository {
 
   /**
    * Create a new worktree record
-   * @param {Object} prInfo - PR information { prNumber, repository, branch, path }
+   * @param {Object} prInfo - PR information { prNumber, repository, branch, path, explicitId }
    * @returns {Promise<Object>} Created worktree record
    */
   async create(prInfo) {
-    const { prNumber, repository, branch, path: worktreePath } = prInfo;
+    const { prNumber, repository, branch, path: worktreePath, explicitId } = prInfo;
 
-    // Generate unique ID (retry if collision)
     let id;
-    let attempts = 0;
-    const maxAttempts = 10;
+    if (explicitId) {
+      // Use the caller-supplied ID (e.g. pool worktree ID)
+      id = explicitId;
+    } else {
+      // Generate unique ID (retry if collision)
+      let attempts = 0;
+      const maxAttempts = 10;
 
-    while (attempts < maxAttempts) {
-      id = generateWorktreeId();
-      const existing = await queryOne(this.db,
-        'SELECT id FROM worktrees WHERE id = ?',
-        [id]
-      );
-      if (!existing) break;
-      attempts++;
-    }
+      while (attempts < maxAttempts) {
+        id = generateWorktreeId();
+        const existing = await queryOne(this.db,
+          'SELECT id FROM worktrees WHERE id = ?',
+          [id]
+        );
+        if (!existing) break;
+        attempts++;
+      }
 
-    if (attempts >= maxAttempts) {
-      throw new Error('Failed to generate unique worktree ID after maximum attempts');
+      if (attempts >= maxAttempts) {
+        throw new Error('Failed to generate unique worktree ID after maximum attempts');
+      }
     }
 
     const now = new Date().toISOString();
@@ -2188,16 +2193,47 @@ class WorktreeRepository {
    * Get or create a worktree record (upsert-like behavior)
    * If a worktree exists for the PR, update its last_accessed_at and return it
    * Otherwise, create a new record
-   * @param {Object} prInfo - PR information { prNumber, repository, branch, path }
+   * @param {Object} prInfo - PR information { prNumber, repository, branch, path, explicitId }
    * @returns {Promise<Object>} Worktree record (existing or newly created)
    */
   async getOrCreate(prInfo) {
-    const { prNumber, repository } = prInfo;
+    const { prNumber, repository, explicitId } = prInfo;
 
     // Check if worktree already exists
     const existing = await this.findByPR(prNumber, repository);
 
     if (existing) {
+      // If explicitId is provided and differs from the existing record's ID,
+      // migrate the record to use the new ID. This happens when pool mode is
+      // enabled for a repo that already has legacy (non-pool) worktree records:
+      // the pool slot has its own ID that the worktrees row must match.
+      if (explicitId && existing.id !== explicitId) {
+        const now = new Date().toISOString();
+        await run(this.db, 'BEGIN IMMEDIATE');
+        try {
+          // Delete the old record and create a new one with the pool ID.
+          // We can't UPDATE the primary key directly in SQLite.
+          await run(this.db, `DELETE FROM worktrees WHERE id = ?`, [existing.id]);
+          await run(this.db, `
+            INSERT INTO worktrees (id, pr_number, repository, branch, path, created_at, last_accessed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+          `, [explicitId, prNumber, repository, prInfo.branch, prInfo.path, existing.created_at, now]);
+          await run(this.db, 'COMMIT');
+        } catch (err) {
+          await run(this.db, 'ROLLBACK');
+          throw err;
+        }
+        return {
+          id: explicitId,
+          pr_number: prNumber,
+          repository,
+          branch: prInfo.branch,
+          path: prInfo.path,
+          created_at: existing.created_at,
+          last_accessed_at: now
+        };
+      }
+
       // Update last_accessed_at and potentially the path
       const now = new Date().toISOString();
       await run(this.db, `
