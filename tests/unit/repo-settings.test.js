@@ -214,14 +214,16 @@ const TEST_PROVIDERS = {
     id: 'copilot',
     name: 'Copilot',
     models: [
-      { id: 'claude-haiku-4.5', name: 'Claude Haiku 4.5', tier: 'fast' },
-      { id: 'claude-sonnet-4.5', name: 'Claude Sonnet 4.5', tier: 'balanced', default: true },
-      { id: 'gpt-5.2-codex', name: 'GPT-5.2 Codex', tier: 'balanced' },
+      { id: 'claude-haiku-4.6', name: 'Claude Haiku 4.6', tier: 'fast' },
+      { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini', tier: 'fast' },
+      { id: 'claude-sonnet-4.6', name: 'Claude Sonnet 4.6', tier: 'balanced', default: true },
+      { id: 'claude-sonnet-4.5', name: 'Claude Sonnet 4.5', tier: 'balanced' },
+      { id: 'gpt-5.4', name: 'GPT-5.4', tier: 'thorough' },
       { id: 'gpt-5.3-codex', name: 'GPT-5.3 Codex', tier: 'thorough' },
       { id: 'claude-opus-4.5', name: 'Claude Opus 4.5', tier: 'thorough' },
       { id: 'claude-opus-4.6', name: 'Claude Opus 4.6', tier: 'thorough' }
     ],
-    defaultModel: 'claude-sonnet-4.5'
+    defaultModel: 'claude-sonnet-4.6'
   }
 };
 

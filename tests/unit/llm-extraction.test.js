@@ -38,19 +38,19 @@ describe('LLM-based JSON extraction fallback', () => {
       expect(provider.getFastTierModel()).toBe('haiku');
     });
 
-    it('should return fast-tier model for Gemini (gemini-3-flash-preview)', () => {
+    it('should return fast-tier model for Gemini (gemini-3.1-flash-lite-preview)', () => {
       const provider = new GeminiProvider('gemini-2.5-pro');
-      expect(provider.getFastTierModel()).toBe('gemini-3-flash-preview');
+      expect(provider.getFastTierModel()).toBe('gemini-3.1-flash-lite-preview');
     });
 
-    it('should return fast-tier model for Codex (gpt-5.1-codex-mini)', () => {
-      const provider = new CodexProvider('gpt-5.2-codex');
-      expect(provider.getFastTierModel()).toBe('gpt-5.1-codex-mini');
+    it('should return fast-tier model for Codex (gpt-5.4-nano)', () => {
+      const provider = new CodexProvider('gpt-5.4-mini');
+      expect(provider.getFastTierModel()).toBe('gpt-5.4-nano');
     });
 
-    it('should return fast-tier model for Copilot (claude-haiku-4.5)', () => {
+    it('should return fast-tier model for Copilot (claude-haiku-4.6)', () => {
       const provider = new CopilotProvider('claude-sonnet-4.5');
-      expect(provider.getFastTierModel()).toBe('claude-haiku-4.5');
+      expect(provider.getFastTierModel()).toBe('claude-haiku-4.6');
     });
 
     it('should fall back to analysis model when no fast tier exists', () => {
@@ -129,7 +129,7 @@ describe('LLM-based JSON extraction fallback', () => {
     describe('CodexProvider', () => {
       it('should return valid config', () => {
         const provider = new CodexProvider();
-        const config = provider.getExtractionConfig('gpt-5.1-codex-mini');
+        const config = provider.getExtractionConfig('gpt-5.4-nano');
 
         expect(config).toHaveProperty('command');
         expect(config).toHaveProperty('args');
@@ -138,7 +138,7 @@ describe('LLM-based JSON extraction fallback', () => {
 
       it('should use read-only sandbox for extraction', () => {
         const provider = new CodexProvider();
-        const config = provider.getExtractionConfig('gpt-5.1-codex-mini');
+        const config = provider.getExtractionConfig('gpt-5.4-nano');
 
         // For extraction, we don't need shell commands
         expect(config.args).toContain('read-only');
@@ -146,16 +146,16 @@ describe('LLM-based JSON extraction fallback', () => {
 
       it('should include model in args', () => {
         const provider = new CodexProvider();
-        const config = provider.getExtractionConfig('gpt-5.1-codex-mini');
+        const config = provider.getExtractionConfig('gpt-5.4-nano');
 
-        expect(config.args).toContain('gpt-5.1-codex-mini');
+        expect(config.args).toContain('gpt-5.4-nano');
       });
     });
 
     describe('CopilotProvider', () => {
       it('should return valid config', () => {
         const provider = new CopilotProvider();
-        const config = provider.getExtractionConfig('claude-haiku-4.5');
+        const config = provider.getExtractionConfig('claude-haiku-4.6');
 
         expect(config).toHaveProperty('command');
         expect(config).toHaveProperty('args');
@@ -164,7 +164,7 @@ describe('LLM-based JSON extraction fallback', () => {
 
       it('should use stdin for prompt', () => {
         const provider = new CopilotProvider();
-        const config = provider.getExtractionConfig('claude-haiku-4.5');
+        const config = provider.getExtractionConfig('claude-haiku-4.6');
 
         // Copilot reads from stdin when no -p arg provided
         expect(config.promptViaStdin).toBe(true);
@@ -172,14 +172,14 @@ describe('LLM-based JSON extraction fallback', () => {
 
       it('should include model in args', () => {
         const provider = new CopilotProvider();
-        const config = provider.getExtractionConfig('claude-haiku-4.5');
+        const config = provider.getExtractionConfig('claude-haiku-4.6');
 
-        expect(config.args).toContain('claude-haiku-4.5');
+        expect(config.args).toContain('claude-haiku-4.6');
       });
 
       it('should use silent mode', () => {
         const provider = new CopilotProvider();
-        const config = provider.getExtractionConfig('claude-haiku-4.5');
+        const config = provider.getExtractionConfig('claude-haiku-4.6');
 
         expect(config.args).toContain('-s');
       });
@@ -190,9 +190,9 @@ describe('LLM-based JSON extraction fallback', () => {
     it('all providers should have fast-tier models defined', () => {
       const providers = [
         { Class: ClaudeProvider, expectedFast: 'haiku' },
-        { Class: GeminiProvider, expectedFast: 'gemini-3-flash-preview' },
-        { Class: CodexProvider, expectedFast: 'gpt-5.1-codex-mini' },
-        { Class: CopilotProvider, expectedFast: 'claude-haiku-4.5' },
+        { Class: GeminiProvider, expectedFast: 'gemini-3.1-flash-lite-preview' },
+        { Class: CodexProvider, expectedFast: 'gpt-5.4-nano' },
+        { Class: CopilotProvider, expectedFast: 'claude-haiku-4.6' },
       ];
 
       for (const { Class, expectedFast } of providers) {

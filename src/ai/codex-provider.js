@@ -21,27 +21,29 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
  * Codex model definitions with tier mappings
  *
  * Based on OpenAI Codex Models guide (developers.openai.com/codex/models)
- * - gpt-5.1-codex-mini: Smaller, cost-effective variant for quick scans
- * - gpt-5.2-codex: Advanced coding model for everyday reviews, good reasoning/cost balance
- * - gpt-5.3-codex: Capable agentic coding model with frontier performance and reasoning
- * - gpt-5.4: Latest generation with enhanced reasoning depth
+ * - gpt-5.4-nano: Cheapest model ($0.20/$1.25 per MTok), good for surface scans
+ * - gpt-5.4-mini: Fast with 400k context ($0.75/$4.50 per MTok)
+ * - gpt-5.4: Flagship model combining coding, reasoning, and agentic workflows
+ * - gpt-5.3-codex: Industry-leading coding model for complex engineering tasks
+ *
+ * Deprecated (April 2026): gpt-5.1-codex-mini, gpt-5.1-codex-max, gpt-5.1-codex
  */
 const CODEX_MODELS = [
   {
-    id: 'gpt-5.1-codex-mini',
-    name: 'GPT-5.1 Mini',
+    id: 'gpt-5.4-nano',
+    name: 'GPT-5.4 Nano',
     tier: 'fast',
-    tagline: 'Blazing Fast',
-    description: 'Quick, low-cost reviews for style issues, obvious bugs, and lint-level feedback.',
-    badge: 'Fastest',
+    tagline: 'Cheapest',
+    description: 'Ultra-low-cost surface scans for style issues, obvious bugs, and lint-level feedback.',
+    badge: 'Cheapest',
     badgeClass: 'badge-speed'
   },
   {
-    id: 'gpt-5.2-codex',
-    name: 'GPT-5.2 Codex',
+    id: 'gpt-5.4-mini',
+    name: 'GPT-5.4 Mini',
     tier: 'balanced',
     tagline: 'Best Balance',
-    description: 'Strong everyday reviewer—good reasoning and code understanding for PR-sized changes without top-tier cost.',
+    description: 'Fast reviews with 400k context—good balance of speed and capability for everyday PR review.',
     badge: 'Recommended',
     badgeClass: 'badge-recommended',
     default: true
@@ -51,7 +53,7 @@ const CODEX_MODELS = [
     name: 'GPT-5.3 Codex',
     tier: 'thorough',
     tagline: 'Deep Review',
-    description: 'Capable agentic coding model—combines frontier coding performance with strong reasoning for cross-file analysis.',
+    description: 'Industry-leading coding model—frontier performance with strong reasoning for cross-file analysis.',
     badge: 'Thorough',
     badgeClass: 'badge-power'
   },
@@ -60,7 +62,7 @@ const CODEX_MODELS = [
     name: 'GPT-5.4',
     tier: 'thorough',
     tagline: 'Latest Gen',
-    description: 'Latest generation model with enhanced reasoning depth for complex architectural reviews.',
+    description: 'Flagship model combining coding, reasoning, and agentic workflows for complex architectural reviews.',
     badge: 'Most Thorough',
     badgeClass: 'badge-power'
   }
@@ -76,7 +78,7 @@ class CodexProvider extends AIProvider {
    * @param {Object} configOverrides.env - Additional environment variables
    * @param {Object[]} configOverrides.models - Custom model definitions
    */
-  constructor(model = 'gpt-5.2-codex', configOverrides = {}) {
+  constructor(model = 'gpt-5.4-mini', configOverrides = {}) {
     super(model);
 
     // Command precedence: ENV > config > default
@@ -698,7 +700,7 @@ class CodexProvider extends AIProvider {
   }
 
   static getDefaultModel() {
-    return 'gpt-5.2-codex';
+    return 'gpt-5.4-mini';
   }
 
   static getInstallInstructions() {

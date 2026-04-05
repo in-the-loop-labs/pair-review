@@ -21,6 +21,16 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
  */
 const GEMINI_MODELS = [
   {
+    id: 'gemini-3.1-flash-lite-preview',
+    aliases: ['gemini-3.1-flash-lite'],
+    name: '3.1 Flash Lite',
+    tier: 'fast',
+    tagline: 'Cheapest',
+    description: 'Ultra-efficient model for high-volume cost-conscious scans',
+    badge: 'Cheapest',
+    badgeClass: 'badge-speed'
+  },
+  {
     id: 'gemini-3-flash-preview',
     aliases: ['gemini-3-flash'],
     name: '3.0 Flash',

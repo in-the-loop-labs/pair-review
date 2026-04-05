@@ -53,8 +53,8 @@ describe('CodexProvider', () => {
       expect(CodexProvider.getProviderId()).toBe('codex');
     });
 
-    it('should return gpt-5.2-codex as default model', () => {
-      expect(CodexProvider.getDefaultModel()).toBe('gpt-5.2-codex');
+    it('should return gpt-5.4-mini as default model', () => {
+      expect(CodexProvider.getDefaultModel()).toBe('gpt-5.4-mini');
     });
 
     it('should return array of models with expected structure', () => {
@@ -64,16 +64,16 @@ describe('CodexProvider', () => {
 
       // Check that we have the expected model IDs
       const modelIds = models.map(m => m.id);
-      expect(modelIds).toContain('gpt-5.1-codex-mini');
-      expect(modelIds).toContain('gpt-5.2-codex');
+      expect(modelIds).toContain('gpt-5.4-nano');
+      expect(modelIds).toContain('gpt-5.4-mini');
       expect(modelIds).toContain('gpt-5.3-codex');
       expect(modelIds).toContain('gpt-5.4');
 
       // Check model structure
-      const defaultModel = models.find(m => m.id === 'gpt-5.2-codex');
+      const defaultModel = models.find(m => m.id === 'gpt-5.4-mini');
       expect(defaultModel).toMatchObject({
-        id: 'gpt-5.2-codex',
-        name: 'GPT-5.2 Codex',
+        id: 'gpt-5.4-mini',
+        name: 'GPT-5.4 Mini',
         tier: 'balanced',
         default: true
       });
@@ -89,36 +89,36 @@ describe('CodexProvider', () => {
   describe('constructor', () => {
     it('should create instance with default model', () => {
       const provider = new CodexProvider();
-      expect(provider.model).toBe('gpt-5.2-codex');
+      expect(provider.model).toBe('gpt-5.4-mini');
     });
 
     it('should create instance with specified model', () => {
-      const provider = new CodexProvider('gpt-5.2-codex');
-      expect(provider.model).toBe('gpt-5.2-codex');
+      const provider = new CodexProvider('gpt-5.4-mini');
+      expect(provider.model).toBe('gpt-5.4-mini');
     });
 
     it('should use default codex command', () => {
-      const provider = new CodexProvider('gpt-5.2-codex');
+      const provider = new CodexProvider('gpt-5.4-mini');
       expect(provider.command).toBe('codex');
       expect(provider.useShell).toBe(false);
     });
 
     it('should respect PAIR_REVIEW_CODEX_CMD environment variable', () => {
       process.env.PAIR_REVIEW_CODEX_CMD = '/custom/codex';
-      const provider = new CodexProvider('gpt-5.2-codex');
+      const provider = new CodexProvider('gpt-5.4-mini');
       expect(provider.command).toBe('/custom/codex');
     });
 
     it('should use shell mode for multi-word commands', () => {
       process.env.PAIR_REVIEW_CODEX_CMD = 'devx codex';
-      const provider = new CodexProvider('gpt-5.2-codex');
+      const provider = new CodexProvider('gpt-5.4-mini');
       expect(provider.useShell).toBe(true);
       expect(provider.command).toContain('devx codex');
     });
 
     it('should quote shell-sensitive extra_args in shell mode command', () => {
       process.env.PAIR_REVIEW_CODEX_CMD = 'devx codex --';
-      const provider = new CodexProvider('gpt-5.2-codex', {
+      const provider = new CodexProvider('gpt-5.4-mini', {
         extra_args: ['--flag', 'value(test)']
       });
       // In shell mode, the command string should have parentheses-containing args quoted
@@ -127,10 +127,10 @@ describe('CodexProvider', () => {
     });
 
     it('should configure base args correctly', () => {
-      const provider = new CodexProvider('gpt-5.1-codex-mini');
+      const provider = new CodexProvider('gpt-5.4-nano');
       expect(provider.args).toContain('exec');
       expect(provider.args).toContain('-m');
-      expect(provider.args).toContain('gpt-5.1-codex-mini');
+      expect(provider.args).toContain('gpt-5.4-nano');
       expect(provider.args).toContain('--json');
       expect(provider.args).toContain('--sandbox');
       expect(provider.args).toContain('workspace-write');
@@ -139,7 +139,7 @@ describe('CodexProvider', () => {
     });
 
     it('should merge provider extra_args from config', () => {
-      const provider = new CodexProvider('gpt-5.2-codex', {
+      const provider = new CodexProvider('gpt-5.4-mini', {
         extra_args: ['--custom-flag', '--timeout', '60']
       });
       expect(provider.args).toContain('--custom-flag');
@@ -148,16 +148,16 @@ describe('CodexProvider', () => {
     });
 
     it('should merge model-specific extra_args from config', () => {
-      const provider = new CodexProvider('gpt-5.2-codex', {
+      const provider = new CodexProvider('gpt-5.4-mini', {
         models: [
-          { id: 'gpt-5.2-codex', extra_args: ['--special-flag'] }
+          { id: 'gpt-5.4-mini', extra_args: ['--special-flag'] }
         ]
       });
       expect(provider.args).toContain('--special-flag');
     });
 
     it('should use config command over default', () => {
-      const provider = new CodexProvider('gpt-5.2-codex', {
+      const provider = new CodexProvider('gpt-5.4-mini', {
         command: '/path/to/codex'
       });
       expect(provider.command).toBe('/path/to/codex');
@@ -165,24 +165,24 @@ describe('CodexProvider', () => {
 
     it('should prefer ENV command over config command', () => {
       process.env.PAIR_REVIEW_CODEX_CMD = '/env/codex';
-      const provider = new CodexProvider('gpt-5.2-codex', {
+      const provider = new CodexProvider('gpt-5.4-mini', {
         command: '/config/codex'
       });
       expect(provider.command).toBe('/env/codex');
     });
 
     it('should merge env from provider config', () => {
-      const provider = new CodexProvider('gpt-5.2-codex', {
+      const provider = new CodexProvider('gpt-5.4-mini', {
         env: { CUSTOM_VAR: 'value' }
       });
       expect(provider.extraEnv).toEqual({ CUSTOM_VAR: 'value' });
     });
 
     it('should merge model-specific env over provider env', () => {
-      const provider = new CodexProvider('gpt-5.2-codex', {
+      const provider = new CodexProvider('gpt-5.4-mini', {
         env: { VAR1: 'provider' },
         models: [
-          { id: 'gpt-5.2-codex', env: { VAR1: 'model', VAR2: 'extra' } }
+          { id: 'gpt-5.4-mini', env: { VAR1: 'model', VAR2: 'extra' } }
         ]
       });
       expect(provider.extraEnv.VAR1).toBe('model');
@@ -191,7 +191,7 @@ describe('CodexProvider', () => {
 
     describe('yolo mode', () => {
       it('should include sandbox restrictions by default and no dangerously-bypass flag', () => {
-        const provider = new CodexProvider('gpt-5.1-codex-mini');
+        const provider = new CodexProvider('gpt-5.4-nano');
         expect(provider.args).toContain('--sandbox');
         expect(provider.args).toContain('workspace-write');
         expect(provider.args).toContain('--full-auto');
@@ -199,7 +199,7 @@ describe('CodexProvider', () => {
       });
 
       it('should use --dangerously-bypass-approvals-and-sandbox when yolo is true', () => {
-        const provider = new CodexProvider('gpt-5.1-codex-mini', { yolo: true });
+        const provider = new CodexProvider('gpt-5.4-nano', { yolo: true });
         expect(provider.args).toContain('--dangerously-bypass-approvals-and-sandbox');
         expect(provider.args).not.toContain('--sandbox');
         expect(provider.args).not.toContain('workspace-write');
@@ -207,7 +207,7 @@ describe('CodexProvider', () => {
       });
 
       it('should include sandbox restrictions when yolo is explicitly false', () => {
-        const provider = new CodexProvider('gpt-5.1-codex-mini', { yolo: false });
+        const provider = new CodexProvider('gpt-5.4-nano', { yolo: false });
         expect(provider.args).toContain('--sandbox');
         expect(provider.args).toContain('workspace-write');
         expect(provider.args).toContain('--full-auto');
@@ -220,7 +220,7 @@ describe('CodexProvider', () => {
     let provider;
 
     beforeEach(() => {
-      provider = new CodexProvider('gpt-5.2-codex');
+      provider = new CodexProvider('gpt-5.4-mini');
     });
 
     describe('single agent_message extraction', () => {
@@ -439,12 +439,12 @@ describe('CodexProvider', () => {
   describe('getExtractionConfig', () => {
     it('should return correct config for default command', () => {
       const provider = new CodexProvider();
-      const config = provider.getExtractionConfig('gpt-5.1-codex-mini');
+      const config = provider.getExtractionConfig('gpt-5.4-nano');
 
       expect(config.command).toBe('codex');
       expect(config.args).toContain('exec');
       expect(config.args).toContain('-m');
-      expect(config.args).toContain('gpt-5.1-codex-mini');
+      expect(config.args).toContain('gpt-5.4-nano');
       expect(config.args).toContain('--sandbox');
       expect(config.args).toContain('read-only');
       expect(config.useShell).toBe(false);
@@ -454,7 +454,7 @@ describe('CodexProvider', () => {
     it('should use shell mode for multi-word command', () => {
       process.env.PAIR_REVIEW_CODEX_CMD = 'docker run codex';
       const provider = new CodexProvider();
-      const config = provider.getExtractionConfig('gpt-5.1-codex-mini');
+      const config = provider.getExtractionConfig('gpt-5.4-nano');
 
       expect(config.useShell).toBe(true);
       expect(config.command).toContain('docker run codex');
@@ -467,7 +467,7 @@ describe('CodexProvider', () => {
     const logger = require('../../src/utils/logger');
 
     beforeEach(() => {
-      provider = new CodexProvider('gpt-5.2-codex');
+      provider = new CodexProvider('gpt-5.4-mini');
       vi.clearAllMocks();
     });
 
