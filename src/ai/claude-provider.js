@@ -22,22 +22,12 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
 const CLAUDE_MODELS = [
   {
     id: 'haiku',
-    name: 'Haiku 4.5',
+    name: 'Haiku 4.6',
     tier: 'fast',
     tagline: 'Lightning Fast',
     description: 'Quick analysis for simple changes',
     badge: 'Fastest',
     badgeClass: 'badge-speed'
-  },
-  {
-    id: 'sonnet-4.5',
-    cli_model: 'claude-sonnet-4.5',
-    name: 'Sonnet 4.5',
-    tier: 'balanced',
-    tagline: 'Previous Gen',
-    description: 'Sonnet 4.5 — previous generation balanced model',
-    badge: 'Previous Gen',
-    badgeClass: 'badge-balanced'
   },
   {
     id: 'sonnet-4.6',

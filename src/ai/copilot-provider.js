@@ -21,19 +21,28 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
  *
  * GitHub Copilot CLI supports multiple AI models including OpenAI,
  * Anthropic, and Google models via the --model flag.
- * Available models (as of Feb 2026): claude-haiku-4.5, claude-sonnet-4.6,
- * claude-sonnet-4.5, gpt-5.2-codex, gpt-5.3-codex,
+ * Available models (as of April 2026): claude-haiku-4.6, claude-sonnet-4.6,
+ * claude-sonnet-4.5, gpt-5.4, gpt-5.4-mini, gpt-5.3-codex,
  * claude-opus-4.5, claude-opus-4.6, claude-opus-4.6-fast.
  * Default is claude-sonnet-4.6.
  */
 const COPILOT_MODELS = [
   {
-    id: 'claude-haiku-4.5',
-    name: 'Claude Haiku 4.5',
+    id: 'claude-haiku-4.6',
+    name: 'Claude Haiku 4.6',
     tier: 'fast',
     tagline: 'Quick Scan',
     description: 'Rapid feedback for obvious issues, style checks, and simple logic errors',
     badge: 'Speedy',
+    badgeClass: 'badge-speed'
+  },
+  {
+    id: 'gpt-5.4-mini',
+    name: 'GPT-5.4 Mini',
+    tier: 'fast',
+    tagline: 'Fast & Cheap',
+    description: 'Low-cost fast reviews with solid reasoning—included at no premium cost',
+    badge: 'Fast',
     badgeClass: 'badge-speed'
   },
   {
@@ -47,29 +56,20 @@ const COPILOT_MODELS = [
     default: true
   },
   {
-    id: 'claude-sonnet-4.5',
-    name: 'Claude Sonnet 4.5',
-    tier: 'balanced',
-    tagline: 'Previous Gen',
-    description: 'Previous generation Sonnet—strong code understanding with excellent quality-to-cost ratio',
-    badge: 'Previous Gen',
-    badgeClass: 'badge-balanced'
-  },
-  {
-    id: 'gpt-5.2-codex',
-    name: 'GPT-5.2 Codex',
-    tier: 'balanced',
-    tagline: 'Alternative View',
-    description: 'OpenAI code-specialized model—different perspective for cross-file analysis',
-    badge: 'Balanced',
-    badgeClass: 'badge-balanced'
+    id: 'gpt-5.4',
+    name: 'GPT-5.4',
+    tier: 'thorough',
+    tagline: 'Latest OpenAI',
+    description: 'Flagship OpenAI model combining coding, reasoning, and agentic workflows',
+    badge: 'Latest',
+    badgeClass: 'badge-power'
   },
   {
     id: 'gpt-5.3-codex',
     name: 'GPT-5.3 Codex',
     tier: 'thorough',
     tagline: 'Deep Code Analysis',
-    description: 'Most capable OpenAI coding model—frontier performance for complex multi-file reviews',
+    description: 'Industry-leading coding model—frontier performance for complex multi-file reviews',
     badge: 'Thorough',
     badgeClass: 'badge-power'
   },
