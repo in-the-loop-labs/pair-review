@@ -580,6 +580,7 @@ class ChatSessionManager {
       provider: def?.provider || null,
       model: options.model || def?.model,
       piCommand: def?.command,
+      extraArgs: def?.args,
       env: def?.env,
       useShell: def?.useShell,
       tools: CHAT_TOOLS,

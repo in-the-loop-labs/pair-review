@@ -117,6 +117,16 @@ describe('PiBridge', () => {
       expect(bridge.sessionPath).toBeNull();
     });
 
+    it('should accept extraArgs option', () => {
+      const bridge = new PiBridge({ extraArgs: ['--no-extensions', '-e', '/tmp/ext'] });
+      expect(bridge.extraArgs).toEqual(['--no-extensions', '-e', '/tmp/ext']);
+    });
+
+    it('should default extraArgs to empty array', () => {
+      const bridge = new PiBridge();
+      expect(bridge.extraArgs).toEqual([]);
+    });
+
     it('should use PAIR_REVIEW_PI_CMD env var when set', () => {
       const orig = process.env.PAIR_REVIEW_PI_CMD;
       process.env.PAIR_REVIEW_PI_CMD = '/custom/pi';
@@ -204,6 +214,27 @@ describe('PiBridge', () => {
       const args = bridge._buildArgs();
       expect(args).not.toContain('--session');
     });
+
+    it('should append extraArgs at the end of the args list', () => {
+      const bridge = new PiBridge({
+        model: 'claude-sonnet-4',
+        extraArgs: ['--no-extensions', '-e', '/tmp/custom-ext'],
+      });
+      const args = bridge._buildArgs();
+      // extraArgs should be at the end
+      const noExtIdx = args.indexOf('--no-extensions');
+      const modeIdx = args.indexOf('--mode');
+      expect(noExtIdx).toBeGreaterThan(modeIdx);
+      expect(args.slice(-3)).toEqual(['--no-extensions', '-e', '/tmp/custom-ext']);
+    });
+
+    it('should not append anything when extraArgs is empty', () => {
+      const bridge = new PiBridge({ extraArgs: [] });
+      const args = bridge._buildArgs();
+      // Should be the same as default args
+      const defaultBridge = new PiBridge();
+      expect(args).toEqual(defaultBridge._buildArgs());
+    });
   });
 
   describe('start (spawn options)', () => {
@@ -237,6 +268,32 @@ describe('PiBridge', () => {
       expect(spawnCmd).toBe('pi');
       expect(spawnArgs.length).toBeGreaterThan(0);
       expect(spawnOpts.shell).toBe(false);
+    });
+
+    it('should include extraArgs in spawned process args', async () => {
+      const bridge = new PiBridge({
+        extraArgs: ['--no-extensions', '-e', '/tmp/my-ext'],
+      });
+      await bridge.start();
+      const spawnArgs = mockSpawn.mock.calls[0][1];
+      expect(spawnArgs).toContain('--no-extensions');
+      expect(spawnArgs).toContain('-e');
+      expect(spawnArgs).toContain('/tmp/my-ext');
+      // extraArgs should appear after the core args
+      const modeIdx = spawnArgs.indexOf('--mode');
+      const noExtIdx = spawnArgs.indexOf('--no-extensions');
+      expect(noExtIdx).toBeGreaterThan(modeIdx);
+    });
+
+    it('should include extraArgs in shell mode spawn command', async () => {
+      const bridge = new PiBridge({
+        piCommand: 'devx pi',
+        useShell: true,
+        extraArgs: ['--no-extensions'],
+      });
+      await bridge.start();
+      const spawnCmd = mockSpawn.mock.calls[0][0];
+      expect(spawnCmd).toContain('--no-extensions');
     });
   });
 
