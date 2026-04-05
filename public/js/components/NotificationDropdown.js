@@ -157,6 +157,7 @@ class NotificationDropdown {
     label.style.fontSize = '0.8125rem';
     label.style.whiteSpace = 'nowrap';
     label.style.padding = '8px 12px';
+    label.style.color = 'var(--color-text-primary, #24292f)';
     label.style.userSelect = 'none';
 
     const checkbox = document.createElement('input');
