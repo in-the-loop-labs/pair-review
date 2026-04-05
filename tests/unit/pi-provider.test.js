@@ -768,7 +768,7 @@ describe('PiProvider', () => {
       expect(config).toHaveProperty('command', 'pi');
       expect(config).toHaveProperty('args');
       expect(config).toHaveProperty('useShell', false);
-      expect(config).toHaveProperty('promptViaStdin', true);
+      expect(config).toHaveProperty('promptViaFile', true);
     });
 
     it('should include base args for the extraction model', () => {
@@ -1128,6 +1128,235 @@ describe('PiProvider', () => {
 
       expect(result).toBe(true);
       expect(fakeChild.kill).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('execute @file prompt delivery', () => {
+    const { EventEmitter } = require('events');
+    const fs = require('fs');
+
+    let writeFileSpy;
+    let unlinkSpy;
+
+    beforeEach(() => {
+      writeFileSpy = vi.spyOn(fs, 'writeFileSync').mockImplementation(() => {});
+      unlinkSpy = vi.spyOn(fs, 'unlinkSync').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      writeFileSpy.mockRestore();
+      unlinkSpy.mockRestore();
+    });
+
+    it('should write prompt to temp file and pass @tmpFile to spawn', async () => {
+      const fakeChild = new EventEmitter();
+      fakeChild.stdin = { end: vi.fn() };
+      fakeChild.stdout = new EventEmitter();
+      fakeChild.stderr = new EventEmitter();
+      fakeChild.pid = 12345;
+      fakeChild.kill = vi.fn();
+
+      mockSpawn.mockReturnValueOnce(fakeChild);
+
+      const provider = new PiProvider('test-model');
+      const prompt = 'Analyze this code for bugs';
+      const executePromise = provider.execute(prompt, { level: 1 });
+
+      // Verify fs.writeFileSync was called with the prompt content
+      expect(writeFileSpy).toHaveBeenCalledTimes(1);
+      const [tmpFilePath, writtenContent] = writeFileSpy.mock.calls[0];
+      expect(tmpFilePath).toMatch(/pair-review-prompt-\d+-\d+-[0-9a-f-]+\.txt$/);
+      expect(writtenContent).toBe(prompt);
+
+      // Verify spawn was called with @tmpFile as the last positional arg
+      const spawnCalls = mockSpawn.mock.calls;
+      const lastCall = spawnCalls[spawnCalls.length - 1];
+      const spawnArgs = lastCall[1]; // args array
+      const atFileArg = spawnArgs[spawnArgs.length - 1];
+      expect(atFileArg).toBe(`@${tmpFilePath}`);
+
+      // Complete the process
+      fakeChild.stdout.emit('data', Buffer.from('{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\\"findings\\":[]}"}]}}\n'));
+      fakeChild.emit('close', 0);
+
+      const result = await executePromise;
+      expect(result).toEqual({ findings: [] });
+    });
+
+    it('should clean up temp file on process close', async () => {
+      const fakeChild = new EventEmitter();
+      fakeChild.stdin = { end: vi.fn() };
+      fakeChild.stdout = new EventEmitter();
+      fakeChild.stderr = new EventEmitter();
+      fakeChild.pid = 12345;
+      fakeChild.kill = vi.fn();
+
+      mockSpawn.mockReturnValueOnce(fakeChild);
+
+      const provider = new PiProvider('test-model');
+      const executePromise = provider.execute('test prompt', { level: 1 });
+
+      const [tmpFilePath] = writeFileSpy.mock.calls[0];
+
+      // Emit a successful close
+      fakeChild.stdout.emit('data', Buffer.from('{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\\"ok\\":true}"}]}}\n'));
+      fakeChild.emit('close', 0);
+
+      await executePromise;
+
+      // Verify fs.unlinkSync was called with the temp file path
+      expect(unlinkSpy).toHaveBeenCalledWith(tmpFilePath);
+    });
+
+    it('should clean up temp file on process error', async () => {
+      const fakeChild = new EventEmitter();
+      fakeChild.stdin = { end: vi.fn() };
+      fakeChild.stdout = new EventEmitter();
+      fakeChild.stderr = new EventEmitter();
+      fakeChild.pid = 12345;
+      fakeChild.kill = vi.fn();
+
+      mockSpawn.mockReturnValueOnce(fakeChild);
+
+      const provider = new PiProvider('test-model');
+      const executePromise = provider.execute('test prompt', { level: 1 });
+
+      const [tmpFilePath] = writeFileSpy.mock.calls[0];
+
+      // Emit an ENOENT error (command not found)
+      fakeChild.emit('error', Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' }));
+
+      await expect(executePromise).rejects.toThrow('Pi CLI not found');
+
+      // Verify fs.unlinkSync was called with the temp file path
+      expect(unlinkSpy).toHaveBeenCalledWith(tmpFilePath);
+    });
+
+    it('should close stdin immediately after spawn', async () => {
+      const fakeChild = new EventEmitter();
+      fakeChild.stdin = { end: vi.fn() };
+      fakeChild.stdout = new EventEmitter();
+      fakeChild.stderr = new EventEmitter();
+      fakeChild.pid = 12345;
+      fakeChild.kill = vi.fn();
+
+      mockSpawn.mockReturnValueOnce(fakeChild);
+
+      const provider = new PiProvider('test-model');
+      const executePromise = provider.execute('test prompt', { level: 1 });
+
+      // stdin.end() should be called immediately (prompt delivered via @file)
+      expect(fakeChild.stdin.end).toHaveBeenCalled();
+
+      // Complete the process
+      fakeChild.stdout.emit('data', Buffer.from('{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\\"ok\\":true}"}]}}\n'));
+      fakeChild.emit('close', 0);
+      await executePromise;
+    });
+  });
+
+  describe('extractJSONWithLLM @file prompt delivery', () => {
+    const { EventEmitter } = require('events');
+    const fs = require('fs');
+
+    let writeFileSpy;
+    let unlinkSpy;
+
+    beforeEach(() => {
+      writeFileSpy = vi.spyOn(fs, 'writeFileSync').mockImplementation(() => {});
+      unlinkSpy = vi.spyOn(fs, 'unlinkSync').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      writeFileSpy.mockRestore();
+      unlinkSpy.mockRestore();
+    });
+
+    it('should write extraction prompt to temp file and pass @tmpFile to spawn', async () => {
+      const fakeChild = new EventEmitter();
+      fakeChild.stdin = { end: vi.fn() };
+      fakeChild.stdout = new EventEmitter();
+      fakeChild.stderr = new EventEmitter();
+      fakeChild.pid = 99999;
+      fakeChild.kill = vi.fn();
+
+      mockSpawn.mockReturnValueOnce(fakeChild);
+
+      const provider = new PiProvider('test-model');
+      const rawResponse = 'Some text with {"findings": []} embedded';
+      const extractPromise = provider.extractJSONWithLLM(rawResponse);
+
+      // Verify fs.writeFileSync was called with the extraction prompt content
+      expect(writeFileSpy).toHaveBeenCalledTimes(1);
+      const [tmpFilePath, writtenContent] = writeFileSpy.mock.calls[0];
+      expect(tmpFilePath).toMatch(/pair-review-extract-\d+-\d+-[0-9a-f-]+\.txt$/);
+      expect(writtenContent).toContain('Extract the JSON object from the following text');
+      expect(writtenContent).toContain(rawResponse);
+
+      // Verify spawn was called with @tmpFile as the last positional arg
+      const spawnCalls = mockSpawn.mock.calls;
+      const lastCall = spawnCalls[spawnCalls.length - 1];
+      const spawnArgs = lastCall[1]; // args array
+      const atFileArg = spawnArgs[spawnArgs.length - 1];
+      expect(atFileArg).toBe(`@${tmpFilePath}`);
+
+      // Emit valid JSON on stdout then close with code 0
+      fakeChild.stdout.emit('data', Buffer.from('{"findings": []}'));
+      fakeChild.emit('close', 0);
+
+      const result = await extractPromise;
+      expect(result.success).toBe(true);
+      expect(result.data).toEqual({ findings: [] });
+    });
+
+    it('should clean up temp file on process close', async () => {
+      const fakeChild = new EventEmitter();
+      fakeChild.stdin = { end: vi.fn() };
+      fakeChild.stdout = new EventEmitter();
+      fakeChild.stderr = new EventEmitter();
+      fakeChild.pid = 99999;
+      fakeChild.kill = vi.fn();
+
+      mockSpawn.mockReturnValueOnce(fakeChild);
+
+      const provider = new PiProvider('test-model');
+      const extractPromise = provider.extractJSONWithLLM('some raw text with {"ok":true}');
+
+      const [tmpFilePath] = writeFileSpy.mock.calls[0];
+
+      // Emit valid JSON on stdout then close with code 0
+      fakeChild.stdout.emit('data', Buffer.from('{"ok": true}'));
+      fakeChild.emit('close', 0);
+
+      await extractPromise;
+
+      // Verify fs.unlinkSync was called with the temp file path
+      expect(unlinkSpy).toHaveBeenCalledWith(tmpFilePath);
+    });
+
+    it('should clean up temp file on process error', async () => {
+      const fakeChild = new EventEmitter();
+      fakeChild.stdin = { end: vi.fn() };
+      fakeChild.stdout = new EventEmitter();
+      fakeChild.stderr = new EventEmitter();
+      fakeChild.pid = 99999;
+      fakeChild.kill = vi.fn();
+
+      mockSpawn.mockReturnValueOnce(fakeChild);
+
+      const provider = new PiProvider('test-model');
+      const extractPromise = provider.extractJSONWithLLM('some raw text');
+
+      const [tmpFilePath] = writeFileSpy.mock.calls[0];
+
+      // Emit a process error
+      fakeChild.emit('error', new Error('spawn ENOENT'));
+
+      const result = await extractPromise;
+      expect(result.success).toBe(false);
+
+      // Verify fs.unlinkSync was called with the temp file path
+      expect(unlinkSpy).toHaveBeenCalledWith(tmpFilePath);
     });
   });
 

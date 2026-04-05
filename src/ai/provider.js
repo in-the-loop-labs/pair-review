@@ -6,7 +6,10 @@
  * and provides a factory function to create provider instances.
  */
 
+const crypto = require('crypto');
 const path = require('path');
+const os = require('os');
+const fs = require('fs');
 const { spawn } = require('child_process');
 const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
@@ -181,6 +184,7 @@ class AIProvider {
    * @property {string[]} args - Arguments (prompt will be appended if promptViaStdin is false)
    * @property {boolean} useShell - Whether to use shell mode
    * @property {boolean} promptViaStdin - If true, send prompt to stdin; if false, append to args
+   * @property {boolean} promptViaFile - If true, write prompt to a temp file and pass @filepath as a positional arg (Pi-specific @file syntax; currently only used by PiProvider)
    */
   getExtractionConfig(model) {
     // Default: extraction not supported
@@ -213,7 +217,7 @@ class AIProvider {
       };
     }
 
-    const { command, args, useShell, promptViaStdin, env: configEnv } = config;
+    const { command, args, useShell, promptViaStdin, promptViaFile, env: configEnv } = config;
     const prompt = `Extract the JSON object from the following text. Return ONLY the valid JSON, nothing else. Do not include any explanation, markdown formatting, or code blocks - just the raw JSON.
 
 === BEGIN INPUT TEXT ===
@@ -222,7 +226,21 @@ ${rawResponse}
 
     return new Promise((resolve) => {
       // Build final command and args based on prompt delivery method
-      const finalArgs = promptViaStdin ? args : [...args, prompt];
+      // promptViaFile: write to temp file, pass @filepath as positional arg (Pi @file syntax)
+      // promptViaStdin: write to process stdin after spawn
+      // default: pass prompt as positional CLI arg
+      let tmpFile = null;
+      let cleanupTmpFile = () => {};
+      let finalArgs;
+
+      if (promptViaFile) {
+        tmpFile = path.join(os.tmpdir(), `pair-review-extract-${Date.now()}-${process.pid}-${crypto.randomUUID()}.txt`);
+        fs.writeFileSync(tmpFile, prompt);
+        cleanupTmpFile = () => { try { fs.unlinkSync(tmpFile); } catch { /* ignore */ } };
+        finalArgs = [...args, `@${tmpFile}`];
+      } else {
+        finalArgs = promptViaStdin ? args : [...args, prompt];
+      }
 
       logger.info(`${levelPrefix} Attempting LLM-based JSON extraction with ${extractionModel}...`);
 
@@ -269,6 +287,7 @@ ${rawResponse}
       });
 
       proc.on('close', (code) => {
+        cleanupTmpFile();
         if (settled) return;
 
         if (code !== 0) {
@@ -295,11 +314,12 @@ ${rawResponse}
       });
 
       proc.on('error', (error) => {
+        cleanupTmpFile();
         logger.warn(`${levelPrefix} LLM extraction process error: ${error.message}`);
         settle({ success: false, error: error.message });
       });
 
-      // Send prompt via stdin if configured
+      // Deliver prompt based on config method
       if (promptViaStdin) {
         // Handle stdin errors (e.g., EPIPE if process exits before write completes)
         proc.stdin.on('error', (err) => {
@@ -313,6 +333,9 @@ ${rawResponse}
             settle({ success: false, error: `Failed to write prompt: ${err}` });
           }
         });
+        proc.stdin.end();
+      } else if (promptViaFile) {
+        // Prompt delivered via @file arg — close stdin so wrappers (e.g., devx) don't hang
         proc.stdin.end();
       }
     });
