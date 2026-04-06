@@ -77,7 +77,7 @@ function createMockDeps(overrides = {}) {
   };
   const mockWorktreeManagerInstance = {
     resolveOwningRepo: vi.fn().mockResolvedValue(mockOwningRepoGit),
-    createWorktreeForPR: vi.fn().mockImplementation(async (prInfo) => `/tmp/worktrees/pr-${prInfo.number}`),
+    createWorktreeForPR: vi.fn().mockImplementation(async (prInfo) => ({ path: `/tmp/worktrees/pr-${prInfo.number}`, id: `wt-${prInfo.number}` })),
   };
 
   return {
@@ -247,7 +247,7 @@ describe('executeStackAnalysis', () => {
           const state = activeStackAnalyses.get('stack-analysis-001');
           state.cancelled = true;
         }
-        return `/tmp/worktrees/pr-${prInfo.number}`;
+        return { path: `/tmp/worktrees/pr-${prInfo.number}`, id: `wt-${prInfo.number}` };
       }),
     };
     const deps = createMockDeps({
@@ -372,9 +372,9 @@ describe('executeStackAnalysis', () => {
     const mockWtManager = {
       resolveOwningRepo: vi.fn().mockResolvedValue(mockOwningRepoGit),
       createWorktreeForPR: vi.fn()
-        .mockResolvedValueOnce('/tmp/worktrees/pr-10')
+        .mockResolvedValueOnce({ path: '/tmp/worktrees/pr-10', id: 'wt-10' })
         .mockRejectedValueOnce(new Error('disk full'))
-        .mockResolvedValueOnce('/tmp/worktrees/pr-12'),
+        .mockResolvedValueOnce({ path: '/tmp/worktrees/pr-12', id: 'wt-12' }),
     };
     const deps = createMockDeps({
       GitWorktreeManager: vi.fn().mockImplementation(function () { Object.assign(this, mockWtManager); }),
@@ -401,7 +401,7 @@ describe('executeStackAnalysis', () => {
       resolveOwningRepo: vi.fn().mockResolvedValue(mockOwningRepoGit),
       createWorktreeForPR: vi.fn().mockImplementation(async (prInfo) => {
         createOrder.push(prInfo.number);
-        return `/tmp/worktrees/pr-${prInfo.number}`;
+        return { path: `/tmp/worktrees/pr-${prInfo.number}`, id: `wt-${prInfo.number}` };
       }),
     };
     const deps = createMockDeps({

@@ -278,6 +278,7 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
         additions: extendedData.additions || 0,
         deletions: extendedData.deletions || 0,
         diff_content: extendedData.diff || '',
+        worktree_path: extendedData.worktree_path || null,
         html_url: extendedData.html_url || `https://github.com/${repoOwner}/${repoName}/pull/${prMetadata.pr_number}`,
         pendingDraft: pendingDraft ? {
           id: pendingDraft.id,
@@ -392,7 +393,8 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
       html_url: prData.html_url,
       base_sha: prData.base_sha,
       head_sha: prData.head_sha,
-      node_id: prData.node_id  // GraphQL node ID for PR (required for GraphQL review submission)
+      node_id: prData.node_id,  // GraphQL node ID for PR (required for GraphQL review submission)
+      worktree_path: worktreePath
     };
 
     // Update database with new data
@@ -485,7 +487,8 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
         html_url: parsedData.html_url || `https://github.com/${repoOwner}/${repoName}/pull/${prMetadata.pr_number}`,
         head_sha: parsedData.head_sha,
         base_sha: parsedData.base_sha,
-        node_id: parsedData.node_id
+        node_id: parsedData.node_id,
+        worktree_path: parsedData.worktree_path || null
       }
     };
 
@@ -1513,7 +1516,7 @@ router.post('/api/parse-pr-url', (req, res) => {
 async function handleExecutablePRAnalysis(req, res, {
   reviewId, review, prNumber, owner, repo, repository, worktreePath, prMetadata,
   selectedProvider, selectedModel, repoInstructions, requestInstructions,
-  combinedInstructions, runId, analysisId, reviewRepo
+  combinedInstructions, runId, analysisId, reviewRepo, poolLifecycle
 }) {
   const prContext = {
     number: prNumber, owner, repo,
@@ -1533,7 +1536,8 @@ async function handleExecutablePRAnalysis(req, res, {
     repository,
     reviewType: 'pr',
     headSha: prMetadata.head_sha,
-    extraInitialStatus: { prNumber }
+    extraInitialStatus: { prNumber },
+    poolLifecycle
   }, {
     activeAnalyses,
     reviewToAnalysisId,
@@ -1706,7 +1710,8 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
         combinedInstructions,
         runId,
         analysisId,
-        reviewRepo
+        reviewRepo,
+        poolLifecycle: req.app.get('poolLifecycle')
       });
     }
 
@@ -1753,37 +1758,56 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
 
     broadcastProgress(analysisId, initialStatus);
     broadcastReviewEvent(review.id, { type: 'review:analysis_started', analysisId });
+
+    // Register analysis hold for pool worktree usage tracking.
+    // startAnalysis is inside the try so a synchronous exception in setup still
+    // cleans up the hold (the .finally() on the promise chain only covers async errors).
+    const poolLifecycle = req.app.get('poolLifecycle');
+    let poolWorktreeId;
     const analysisConfig = appConfig;
     const analysisPrContext = {
       number: prNumber, owner, repo,
       author: prMetadata.author, baseBranch: prMetadata.base_branch, headBranch: prMetadata.head_branch,
       baseSha: prMetadata.base_sha || null, headSha: prMetadata.head_sha || null,
     };
-    if (hasHooks('analysis.started', analysisConfig)) {
-      getCachedUser(analysisConfig).then(user => {
-        fireHooks('analysis.started', buildAnalysisStartedPayload({
-          reviewId: review.id, analysisId, provider, model, mode: 'pr', prContext: analysisPrContext, user,
-        }), analysisConfig);
-      }).catch(() => {});
+    let analysisPromise;
+    try {
+      poolWorktreeId = await poolLifecycle?.startAnalysis(review.id, analysisId);
+      if (hasHooks('analysis.started', analysisConfig)) {
+        getCachedUser(analysisConfig).then(user => {
+          fireHooks('analysis.started', buildAnalysisStartedPayload({
+            reviewId: review.id, analysisId, provider, model, mode: 'pr', prContext: analysisPrContext, user,
+          }), analysisConfig);
+        }).catch(() => {});
+      }
+
+      const analyzer = new Analyzer(req.app.get('db'), model, provider);
+
+      logger.section(`AI Analysis Request - PR #${prNumber}`);
+      logger.log('API', `Repository: ${repository}`, 'magenta');
+      logger.log('API', `Worktree: ${worktreePath}`, 'magenta');
+      logger.log('API', `Analysis ID: ${analysisId}`, 'magenta');
+      logger.log('API', `Review ID: ${review.id}`, 'magenta');
+      logger.log('API', `Provider: ${provider}`, 'cyan');
+      logger.log('API', `Model: ${model}`, 'cyan');
+      logger.log('API', `Tier: ${tier}`, 'cyan');
+      if (combinedInstructions) {
+        logger.log('API', `Custom instructions: ${combinedInstructions.length} chars`, 'cyan');
+      }
+
+      const progressCallback = createProgressCallback(analysisId);
+
+      analysisPromise = analyzer.analyzeLevel1(review.id, worktreePath, prMetadata, progressCallback, { globalInstructions, repoInstructions, requestInstructions }, null, { analysisId, runId, skipRunCreation: true, tier, skipLevel3: requestSkipLevel3, enabledLevels: levelsConfig, excludePrevious, serverPort: req.socket.localPort });
+    } catch (setupError) {
+      // Synchronous setup failure — clean up the analysis hold immediately
+      reviewToAnalysisId.delete(review.id);
+      if (poolWorktreeId) {
+        poolLifecycle?.endAnalysis(analysisId);
+      }
+      throw setupError;
     }
 
-    const analyzer = new Analyzer(req.app.get('db'), model, provider);
-
-    logger.section(`AI Analysis Request - PR #${prNumber}`);
-    logger.log('API', `Repository: ${repository}`, 'magenta');
-    logger.log('API', `Worktree: ${worktreePath}`, 'magenta');
-    logger.log('API', `Analysis ID: ${analysisId}`, 'magenta');
-    logger.log('API', `Review ID: ${review.id}`, 'magenta');
-    logger.log('API', `Provider: ${provider}`, 'cyan');
-    logger.log('API', `Model: ${model}`, 'cyan');
-    logger.log('API', `Tier: ${tier}`, 'cyan');
-    if (combinedInstructions) {
-      logger.log('API', `Custom instructions: ${combinedInstructions.length} chars`, 'cyan');
-    }
-
-    const progressCallback = createProgressCallback(analysisId);
-
-    analyzer.analyzeLevel1(review.id, worktreePath, prMetadata, progressCallback, { globalInstructions, repoInstructions, requestInstructions }, null, { analysisId, runId, skipRunCreation: true, tier, skipLevel3: requestSkipLevel3, enabledLevels: levelsConfig, excludePrevious, serverPort: req.socket.localPort })
+    analysisPromise
       .then(async result => {
         logger.section('Analysis Results');
         logger.success(`Analysis complete for PR #${prNumber}`);
@@ -1929,6 +1953,8 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
       .finally(() => {
         // Clean up review to analysis ID mapping (unified map)
         reviewToAnalysisId.delete(review.id);
+        // Remove pool worktree analysis hold
+        poolLifecycle?.endAnalysis(analysisId);
       });
 
     res.json({
@@ -2027,6 +2053,7 @@ router.post('/api/pr/:owner/:repo/:number/analyses/council', async (req, res) =>
         config: prCouncilConfig,
         excludePrevious,
         serverPort: req.socket.localPort,
+        poolLifecycle: req.app.get('poolLifecycle'),
         hookContext: {
           mode: 'pr',
           prContext: {

@@ -1272,6 +1272,98 @@ describe('WorktreeRepository', () => {
       expect(retrieved.branch).toBe('new-branch');
       expect(retrieved.path).toBe('/tmp/new-path');
     });
+
+    it('should create with explicitId when no existing record', async () => {
+      const worktree = await worktreeRepo.getOrCreate({
+        prNumber: 42,
+        repository: 'owner/repo',
+        branch: 'feature',
+        path: '/tmp/pool-path',
+        explicitId: 'pool-slot-1'
+      });
+
+      expect(worktree.id).toBe('pool-slot-1');
+      expect(worktree.pr_number).toBe(42);
+
+      // Verify the record is persisted with the explicit ID
+      const found = await worktreeRepo.findById('pool-slot-1');
+      expect(found).not.toBeNull();
+      expect(found.pr_number).toBe(42);
+    });
+
+    it('should return existing record when explicitId matches', async () => {
+      const created = await worktreeRepo.create({
+        prNumber: 42,
+        repository: 'owner/repo',
+        branch: 'feature',
+        path: '/tmp/path',
+        explicitId: 'pool-slot-1'
+      });
+
+      const retrieved = await worktreeRepo.getOrCreate({
+        prNumber: 42,
+        repository: 'owner/repo',
+        branch: 'updated-branch',
+        path: '/tmp/updated-path',
+        explicitId: 'pool-slot-1'
+      });
+
+      expect(retrieved.id).toBe('pool-slot-1');
+      expect(retrieved.branch).toBe('updated-branch');
+      expect(retrieved.path).toBe('/tmp/updated-path');
+    });
+
+    it('should migrate record ID when explicitId differs from existing', async () => {
+      // Simulate a legacy non-pool worktree record
+      const legacy = await worktreeRepo.create({
+        prNumber: 42,
+        repository: 'owner/repo',
+        branch: 'feature',
+        path: '/tmp/legacy-path'
+      });
+      const legacyId = legacy.id;
+
+      // Now getOrCreate with a pool explicitId
+      const migrated = await worktreeRepo.getOrCreate({
+        prNumber: 42,
+        repository: 'owner/repo',
+        branch: 'feature',
+        path: '/tmp/legacy-path',
+        explicitId: 'pool-slot-1'
+      });
+
+      expect(migrated.id).toBe('pool-slot-1');
+      expect(migrated.pr_number).toBe(42);
+      expect(migrated.path).toBe('/tmp/legacy-path');
+
+      // Old record should be gone
+      const oldRecord = await worktreeRepo.findById(legacyId);
+      expect(oldRecord).toBeNull();
+
+      // New record should exist
+      const newRecord = await worktreeRepo.findById('pool-slot-1');
+      expect(newRecord).not.toBeNull();
+      expect(newRecord.pr_number).toBe(42);
+    });
+
+    it('should not migrate when explicitId is not provided', async () => {
+      const created = await worktreeRepo.create({
+        prNumber: 42,
+        repository: 'owner/repo',
+        branch: 'feature',
+        path: '/tmp/path'
+      });
+
+      const retrieved = await worktreeRepo.getOrCreate({
+        prNumber: 42,
+        repository: 'owner/repo',
+        branch: 'updated',
+        path: '/tmp/updated'
+      });
+
+      // Should keep the original auto-generated ID
+      expect(retrieved.id).toBe(created.id);
+    });
   });
 
   describe('count()', () => {

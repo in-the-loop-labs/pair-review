@@ -16,7 +16,7 @@ const { activeSetups, broadcastSetupProgress } = require('./shared');
 const { setupPRReview } = require('../setup/pr-setup');
 const { setupLocalReview } = require('../setup/local-setup');
 const { getGitHubToken, expandPath } = require('../config');
-const { queryOne } = require('../database');
+const { queryOne, ReviewRepository } = require('../database');
 const { normalizeRepository } = require('../utils/paths');
 const logger = require('../utils/logger');
 
@@ -81,7 +81,7 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
     const repository = normalizeRepository(owner, repo);
     const existingPR = await queryOne(
       db,
-      'SELECT id FROM pr_metadata WHERE pr_number = ? AND repository = ? COLLATE NOCASE',
+      'SELECT id, pr_data FROM pr_metadata WHERE pr_number = ? AND repository = ? COLLATE NOCASE',
       [prNumber, repository]
     );
     if (existingPR) {
@@ -91,9 +91,44 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
         [prNumber, repository]
       );
       if (worktree) {
-        return res.json({ existing: true, reviewUrl: `/pr/${owner}/${repo}/${prNumber}` });
+        // If the worktree belongs to the pool, verify it is still actively
+        // owned (in_use). Pool slots retain their worktrees row after being
+        // released — markAvailable() clears ownership without deleting the
+        // record. A released slot may have been reassigned to a different PR,
+        // so we must fall through to re-run setup and reacquire a pool slot.
+        const poolLifecycle = req.app.get('poolLifecycle');
+        const poolEntry = poolLifecycle ? await poolLifecycle.poolRepo.getPoolEntry(worktree.id) : null;
+        if (poolEntry && poolEntry.status !== 'in_use') {
+          if (poolEntry.status === 'available' && poolEntry.current_pr_number === prNumber) {
+            // Still associated with this PR — reclaim without re-setup
+            logger.info(`Reclaiming pool worktree ${worktree.id} for ${repository} #${prNumber} (was ${poolEntry.status})`);
+            await poolLifecycle.poolRepo.markInUse(poolEntry.id, prNumber);
+            const reviewRepo = new ReviewRepository(db);
+            const { review } = await reviewRepo.getOrCreate({ prNumber, repository });
+            await poolLifecycle.poolRepo.setCurrentReviewId(poolEntry.id, review.id);
+            return res.json({ existing: true, reviewUrl: `/pr/${owner}/${repo}/${prNumber}` });
+          }
+          logger.info(`Pool worktree ${worktree.id} for ${repository} #${prNumber} is ${poolEntry.status}, re-running setup to reacquire`);
+        } else {
+          return res.json({ existing: true, reviewUrl: `/pr/${owner}/${repo}/${prNumber}` });
+        }
+      } else {
+        logger.info(`PR metadata exists but worktree missing for ${repository} #${prNumber}, re-running setup`);
       }
-      logger.info(`PR metadata exists but worktree missing for ${repository} #${prNumber}, re-running setup`);
+    }
+
+    // If we have stored PR data with a head_sha, pass it to setupPRReview
+    // so it can attempt restore mode (skip GitHub fetch + diff regeneration).
+    let restoreMetadata = null;
+    if (existingPR && existingPR.pr_data) {
+      try {
+        const parsed = JSON.parse(existingPR.pr_data);
+        if (parsed.head_sha) {
+          restoreMetadata = parsed;
+        }
+      } catch (e) {
+        logger.warn(`Could not parse stored pr_data for ${repository} #${prNumber}`);
+      }
     }
 
     // Start the async setup
@@ -108,6 +143,8 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
           prNumber,
           githubToken,
           config,
+          poolLifecycle: req.app.get('poolLifecycle'),
+          restoreMetadata,
           onProgress: (progress) => {
             sendSetupEvent(setupId, 'step', progress);
           }

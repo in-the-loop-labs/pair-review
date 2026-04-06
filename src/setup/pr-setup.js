@@ -11,12 +11,13 @@
  *   - setupPRReview: full orchestrator that wires the above together
  */
 
-const { run, queryOne, WorktreeRepository, RepoSettingsRepository } = require('../database');
+const { run, queryOne, WorktreeRepository, RepoSettingsRepository, ReviewRepository } = require('../database');
 const { GitWorktreeManager } = require('../git/worktree');
+const { WorktreePoolLifecycle } = require('../git/worktree-pool-lifecycle');
 const { GitHubClient } = require('../github/client');
 const { normalizeRepository } = require('../utils/paths');
 const { findMainGitRoot } = require('../local-review');
-const { getConfigDir, getMonorepoPath, resolveMonorepoOptions, DEFAULT_CHECKOUT_TIMEOUT_MS } = require('../config');
+const { getConfigDir, getRepoPath, resolveRepoOptions, getRepoPoolSize, getRepoResetScript, DEFAULT_CHECKOUT_TIMEOUT_MS } = require('../config');
 const logger = require('../utils/logger');
 const { fireReviewStartedHook } = require('../hooks/payloads');
 const simpleGit = require('simple-git');
@@ -235,7 +236,7 @@ async function findRepositoryPath({ db, owner, repo, repository, prNumber, confi
   // ------------------------------------------------------------------
   // Tier -1: Explicit monorepo configuration (highest priority)
   // ------------------------------------------------------------------
-  const monorepoPath = config ? getMonorepoPath(config, repository) : null;
+  const monorepoPath = config ? getRepoPath(config, repository) : null;
 
   if (monorepoPath) {
     // The configured path might be a worktree or a regular/bare repo.
@@ -287,7 +288,7 @@ async function findRepositoryPath({ db, owner, repo, repository, prNumber, confi
   // ------------------------------------------------------------------
   // Resolve monorepo worktree options (checkout_script, worktree_directory, worktree_name_template)
   // ------------------------------------------------------------------
-  const resolved = config ? resolveMonorepoOptions(config, repository) : { checkoutScript: null, checkoutTimeout: DEFAULT_CHECKOUT_TIMEOUT_MS, worktreeConfig: null };
+  const resolved = config ? resolveRepoOptions(config, repository) : { checkoutScript: null, checkoutTimeout: DEFAULT_CHECKOUT_TIMEOUT_MS, worktreeConfig: null };
   const { checkoutScript, checkoutTimeout, worktreeConfig } = resolved;
 
   // When a checkout script is configured, null out worktreeSourcePath —
@@ -369,6 +370,18 @@ async function findRepositoryPath({ db, owner, repo, repository, prNumber, confi
 }
 
 /**
+ * Detect git errors indicating a SHA doesn't exist in the local repository.
+ * Used to trigger fallback from restore mode to fresh setup.
+ */
+function isShaNotFoundError(err) {
+  const msg = (err.message || '').toLowerCase();
+  return msg.includes('did not match any') ||
+         msg.includes('not a valid object') ||
+         msg.includes('reference is not a tree') ||
+         msg.includes('bad object');
+}
+
+/**
  * Full PR review setup orchestrator.
  *
  * Verifies repository access, fetches PR data, discovers (or clones) the
@@ -382,30 +395,42 @@ async function findRepositoryPath({ db, owner, repo, repository, prNumber, confi
  * @param {number} params.prNumber - Pull request number
  * @param {string} params.githubToken - GitHub PAT
  * @param {Object} [params.config] - Application config (for monorepo path lookup)
+ * @param {import('../git/worktree-pool-lifecycle').WorktreePoolLifecycle} [params.poolLifecycle] - Shared pool lifecycle instance (avoids creating a fresh singleton)
+ * @param {Object} [params.restoreMetadata] - Stored PR data for restore mode (skips GitHub fetch + diff)
  * @param {Function} [params.onProgress] - Optional progress callback
  * @returns {Promise<{ reviewUrl: string, title: string }>}
  */
-async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, onProgress }) {
+async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, onProgress, poolLifecycle: externalPoolLifecycle, restoreMetadata }) {
   const repository = normalizeRepository(owner, repo);
   const progress = onProgress || (() => {});
 
-  // ------------------------------------------------------------------
-  // Step: verify - Verify repository access
-  // ------------------------------------------------------------------
-  progress({ step: 'verify', status: 'running', message: 'Verifying repository access...' });
-  const githubClient = new GitHubClient(githubToken);
-  const repoExists = await githubClient.repositoryExists(owner, repo);
-  if (!repoExists) {
-    throw new Error(`Repository ${owner}/${repo} not found`);
-  }
-  progress({ step: 'verify', status: 'completed', message: 'Repository access verified.' });
+  const isRestore = !!(restoreMetadata && restoreMetadata.head_sha);
+  let prData;
+  let githubClient = null;
 
-  // ------------------------------------------------------------------
-  // Step: fetch - Fetch PR data from GitHub
-  // ------------------------------------------------------------------
-  progress({ step: 'fetch', status: 'running', message: 'Fetching pull request data from GitHub...' });
-  const prData = await githubClient.fetchPullRequest(owner, repo, prNumber);
-  progress({ step: 'fetch', status: 'completed', message: 'Pull request data fetched.' });
+  if (isRestore) {
+    prData = restoreMetadata;
+    progress({ step: 'verify', status: 'completed', message: 'Restoring previous review state.' });
+    progress({ step: 'fetch', status: 'completed', message: 'Using stored PR data.' });
+  } else {
+    // ------------------------------------------------------------------
+    // Step: verify - Verify repository access
+    // ------------------------------------------------------------------
+    progress({ step: 'verify', status: 'running', message: 'Verifying repository access...' });
+    githubClient = new GitHubClient(githubToken);
+    const repoExists = await githubClient.repositoryExists(owner, repo);
+    if (!repoExists) {
+      throw new Error(`Repository ${owner}/${repo} not found`);
+    }
+    progress({ step: 'verify', status: 'completed', message: 'Repository access verified.' });
+
+    // ------------------------------------------------------------------
+    // Step: fetch - Fetch PR data from GitHub
+    // ------------------------------------------------------------------
+    progress({ step: 'fetch', status: 'running', message: 'Fetching pull request data from GitHub...' });
+    prData = await githubClient.fetchPullRequest(owner, repo, prNumber);
+    progress({ step: 'fetch', status: 'completed', message: 'Pull request data fetched.' });
+  }
 
   // ------------------------------------------------------------------
   // Step: repo - Find (or clone) a local repository
@@ -425,12 +450,90 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, o
   // ------------------------------------------------------------------
   // Step: worktree - Create git worktree for the PR
   // ------------------------------------------------------------------
-  progress({ step: 'worktree', status: 'running', message: 'Setting up git worktree...' });
-  const worktreeManager = new GitWorktreeManager(db, worktreeConfig || {});
   const prInfo = { owner, repo, number: prNumber };
-  // Use worktreeSourcePath as cwd for git worktree add (if available) to inherit sparse-checkout
-  const worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, repositoryPath, { worktreeSourcePath, checkoutScript, checkoutTimeout });
-  progress({ step: 'worktree', status: 'completed', message: `Worktree created at ${worktreePath}` });
+  const poolSize = config ? getRepoPoolSize(config, repository) : 0;
+  const resetScript = config ? getRepoResetScript(config, repository) : null;
+
+  let worktreePath;
+  let worktreeManager;
+  let poolWorktreeId = null;
+  let poolLifecycle = null;
+
+  // Wrap worktree acquisition and all subsequent steps in a try/catch so that:
+  // 1. If any step between acquireForPR and setCurrentReviewId throws, the pool
+  //    worktree is released back to the available state.
+  // 2. In restore mode, SHA-not-found errors trigger a fallback to fresh setup.
+  try {
+
+  if (poolSize > 0) {
+    // Pool mode: use WorktreePoolLifecycle
+    progress({ step: 'worktree', status: 'running', message: 'Acquiring pool worktree...' });
+    poolLifecycle = externalPoolLifecycle || new WorktreePoolLifecycle(db, config);
+    const result = await poolLifecycle.acquireForPR(
+      { owner, repo, prNumber, repository },
+      prData,
+      repositoryPath,
+      { worktreeSourcePath, checkoutScript, checkoutTimeout, resetScript, worktreeConfig, poolSize }
+    );
+    worktreePath = result.worktreePath;
+    poolWorktreeId = result.worktreeId;
+    worktreeManager = new GitWorktreeManager(db, worktreeConfig || {});
+    progress({ step: 'worktree', status: 'completed', message: 'Pool worktree acquired' });
+  } else {
+    // Non-pool mode: existing behavior
+    progress({ step: 'worktree', status: 'running', message: 'Setting up git worktree...' });
+    worktreeManager = new GitWorktreeManager(db, worktreeConfig || {});
+    // Use worktreeSourcePath as cwd for git worktree add (if available) to inherit sparse-checkout
+    ({ path: worktreePath } = await worktreeManager.createWorktreeForPR(prInfo, prData, repositoryPath, { worktreeSourcePath, checkoutScript, checkoutTimeout }));
+    progress({ step: 'worktree', status: 'completed', message: `Worktree created at ${worktreePath}` });
+  }
+
+    if (isRestore) {
+      // ── Restore mode: skip sparse, diff, storePRData ─────────────────
+      // Metadata and diff are already stored from the previous session.
+      // Just ensure the review record exists and wire up pool ownership.
+      progress({ step: 'sparse', status: 'completed', message: 'Using stored checkout (restore mode).' });
+      progress({ step: 'diff', status: 'completed', message: 'Using stored diff (restore mode).' });
+      progress({ step: 'store', status: 'running', message: 'Restoring review state...' });
+
+      // Ensure worktree record exists (pool path manages this via switchPR,
+      // but non-pool path needs it)
+      if (!poolWorktreeId) {
+        const worktreeRepo = new WorktreeRepository(db);
+        await worktreeRepo.getOrCreate({
+          prNumber,
+          repository,
+          branch: prData.head_branch || prData.head?.ref || '',
+          path: worktreePath
+        });
+      }
+
+      // Ensure review record exists
+      const reviewRepo = new ReviewRepository(db);
+      const { review } = await reviewRepo.getOrCreate({ prNumber, repository });
+      const reviewId = review.id;
+
+      // Wire up pool ownership
+      if (poolWorktreeId && poolLifecycle) {
+        await poolLifecycle.setReviewOwner(poolWorktreeId, reviewId);
+      }
+
+      // Register repo path if not already known
+      if (knownPath === null && repositoryPath) {
+        const repoSettingsRepo = new RepoSettingsRepository(db);
+        const currentPath = await repoSettingsRepo.getLocalPath(repository);
+        if (path.resolve(currentPath || '') !== path.resolve(repositoryPath)) {
+          await repoSettingsRepo.setLocalPath(repository, repositoryPath);
+          logger.info(`Registered repository location: ${repositoryPath}`);
+        }
+      }
+
+      progress({ step: 'store', status: 'completed', message: 'Restored to previous review state.' });
+      const reviewUrl = `/pr/${owner}/${repo}/${prNumber}`;
+      return { reviewUrl, title: prData.title };
+    }
+
+    // ── Fresh mode: existing sparse, diff, storePRData flow (unchanged) ──
 
   // ------------------------------------------------------------------
   // Step: sparse - Expand sparse-checkout before generating diff
@@ -481,6 +584,11 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, o
   progress({ step: 'store', status: 'running', message: 'Storing pull request data...' });
   const { isNewReview, reviewId } = await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath);
 
+  // Persist review→worktree mapping in DB for pool usage tracking
+  if (poolWorktreeId) {
+    await poolLifecycle.setReviewOwner(poolWorktreeId, reviewId);
+  }
+
   // Register the repository path for future sessions if it wasn't already known
   if (knownPath === null && repositoryPath) {
     const repoSettingsRepo = new RepoSettingsRepository(db);
@@ -506,6 +614,32 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, o
   // ------------------------------------------------------------------
   const reviewUrl = `/pr/${owner}/${repo}/${prNumber}`;
   return { reviewUrl, title: prData.title };
+
+  } catch (err) {
+    // If restore mode failed because the stored SHA no longer exists,
+    // fall back to a full fresh setup.
+    if (isRestore && isShaNotFoundError(err)) {
+      logger.warn(`Restore to stored SHA failed, falling back to fresh setup: ${err.message}`);
+      // Retry without restoreMetadata.
+      return setupPRReview({ db, owner, repo, prNumber, githubToken, config, onProgress, poolLifecycle: externalPoolLifecycle });
+    }
+
+    // Release the pool worktree so it doesn't stay permanently in_use.
+    // After acquireForPR marks the worktree in_use, if any subsequent step
+    // (sparse-checkout, diff generation, storePRData) throws before
+    // setCurrentReviewId maps the review to the worktree, the worktree would
+    // be permanently leaked — no review owner means the idle grace period
+    // mechanism can never fire to reclaim it.
+    if (poolWorktreeId && poolLifecycle) {
+      try {
+        await poolLifecycle.releaseAfterHeadless(poolWorktreeId);
+        logger.info(`Released pool worktree ${poolWorktreeId} after setup failure`);
+      } catch (releaseErr) {
+        logger.error(`Failed to release pool worktree ${poolWorktreeId} after setup failure: ${releaseErr.message}`);
+      }
+    }
+    throw err;
+  }
 }
 
-module.exports = { setupPRReview, storePRData, registerRepositoryLocation, findRepositoryPath };
+module.exports = { setupPRReview, storePRData, registerRepositoryLocation, findRepositoryPath, isShaNotFoundError };

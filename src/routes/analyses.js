@@ -37,6 +37,7 @@ const { generateLocalDiff, computeLocalDiffDigest, getCurrentBranch } = require(
 const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
 const { TIERS, TIER_ALIASES, VALID_TIERS, resolveTier } = require('../ai/prompts/config');
 
+
 const router = express.Router();
 
 /**
@@ -563,38 +564,55 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
 
   broadcastProgress(analysisId, initialStatus);
   broadcastReviewEvent(reviewId, { type: 'review:analysis_started', analysisId });
+
+  // Register analysis hold for pool worktree usage tracking.
+  // startAnalysis is inside the try so a synchronous exception in setup still
+  // cleans up the hold (the .finally() on the promise chain only covers async errors).
+  const poolLifecycle = modeContext?.poolLifecycle;
+  let poolWorktreeId;
   const effectiveConfig = modeConfig || {};
-  if (hasHooks('analysis.started', effectiveConfig)) {
-    getCachedUser(effectiveConfig).then(user => {
-      fireHooks('analysis.started', buildAnalysisStartedPayload({
-        reviewId, analysisId, provider: 'council', model: councilId || 'inline-config',
-        mode: initialStatusExtra?.reviewType || 'pr',
-        prContext: hookContext.prContext, localContext: hookContext.localContext,
-        user,
-      }), effectiveConfig);
-    }).catch(err => { logger.warn(`Analysis hook failed: ${err.message}`); });
+  let analysisPromise;
+  try {
+    poolWorktreeId = await poolLifecycle?.startAnalysis(reviewId, analysisId);
+    if (hasHooks('analysis.started', effectiveConfig)) {
+      getCachedUser(effectiveConfig).then(user => {
+        fireHooks('analysis.started', buildAnalysisStartedPayload({
+          reviewId, analysisId, provider: 'council', model: councilId || 'inline-config',
+          mode: initialStatusExtra?.reviewType || 'pr',
+          prContext: hookContext.prContext, localContext: hookContext.localContext,
+          user,
+        }), effectiveConfig);
+      }).catch(err => { logger.warn(`Analysis hook failed: ${err.message}`); });
+    }
+
+    const analyzer = new Analyzer(db, 'council', 'council');
+
+    logger.section(`Council Analysis Request (${configType}) - ${logLabel}`);
+    logger.log('API', `Repository: ${repository}`, 'magenta');
+    logger.log('API', `Analysis ID: ${analysisId}`, 'magenta');
+    logger.log('API', `Config type: ${configType}`, 'magenta');
+
+    const progressCallback = createProgressCallback(analysisId);
+
+    const reviewContext = {
+      reviewId,
+      worktreePath,
+      prMetadata,
+      changedFiles,
+      instructions: { globalInstructions, repoInstructions, requestInstructions }
+    };
+
+    analysisPromise = isVoiceCentric
+      ? analyzer.runReviewerCentricCouncil(reviewContext, councilConfig, { analysisId, runId, progressCallback, excludePrevious, serverPort })
+      : analyzer.runCouncilAnalysis(reviewContext, councilConfig, { analysisId, runId, progressCallback, excludePrevious, serverPort });
+  } catch (setupError) {
+    // Synchronous setup failure — clean up the analysis hold immediately
+    reviewToAnalysisId.delete(reviewId);
+    if (poolWorktreeId) {
+      poolLifecycle?.endAnalysis(analysisId);
+    }
+    throw setupError;
   }
-
-  const analyzer = new Analyzer(db, 'council', 'council');
-
-  logger.section(`Council Analysis Request (${configType}) - ${logLabel}`);
-  logger.log('API', `Repository: ${repository}`, 'magenta');
-  logger.log('API', `Analysis ID: ${analysisId}`, 'magenta');
-  logger.log('API', `Config type: ${configType}`, 'magenta');
-
-  const progressCallback = createProgressCallback(analysisId);
-
-  const reviewContext = {
-    reviewId,
-    worktreePath,
-    prMetadata,
-    changedFiles,
-    instructions: { globalInstructions, repoInstructions, requestInstructions }
-  };
-
-  const analysisPromise = isVoiceCentric
-    ? analyzer.runReviewerCentricCouncil(reviewContext, councilConfig, { analysisId, runId, progressCallback, excludePrevious, serverPort })
-    : analyzer.runCouncilAnalysis(reviewContext, councilConfig, { analysisId, runId, progressCallback, excludePrevious, serverPort });
 
   analysisPromise
     .then(async result => {
@@ -700,6 +718,8 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
     .finally(() => {
       // Clean up unified tracking map entry
       reviewToAnalysisId.delete(reviewId);
+      // Remove pool worktree analysis hold
+      poolLifecycle?.endAnalysis(analysisId);
     });
 
   return { analysisId, runId };

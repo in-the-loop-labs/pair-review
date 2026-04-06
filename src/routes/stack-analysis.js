@@ -265,7 +265,7 @@ async function executeStackAnalysis(params) {
         broadcastStackProgress(stackAnalysisId, state);
 
         const prInfo = { owner, repo, number: prNum };
-        const perPRWorktreePath = await worktreeManager.createWorktreeForPR(
+        const { path: perPRWorktreePath } = await worktreeManager.createWorktreeForPR(
           prInfo, prData, repositoryPath
         );
         worktreePathMap.set(prNum, perPRWorktreePath);

@@ -291,26 +291,42 @@ async function runExecutableAnalysis(req, res, params, shared, callbacks) {
   broadcastProgress(analysisId, initialStatus);
   broadcastReviewEvent(reviewId, { type: 'review:analysis_started', analysisId });
 
-  // 3. Fire analysis.started hook
+  // Register analysis hold for pool worktree usage tracking.
+  // startAnalysis is inside the try so a synchronous exception in setup still
+  // cleans up the hold (the .finally() inside the async IIFE only covers errors after it starts).
+  const poolLifecycle = params.poolLifecycle;
+  let poolWorktreeId;
   const analysisHookConfig = req.app.get('config') || {};
   const hookPayloadFields = buildHookPayload(review, {});
-  if (hasHooks('analysis.started', analysisHookConfig)) {
-    getCachedUser(analysisHookConfig).then(user => {
-      fireHooks('analysis.started', buildAnalysisStartedPayload({
-        reviewId, analysisId, provider: selectedProvider, model: selectedModel,
-        ...hookPayloadFields,
-        user,
-      }), analysisHookConfig);
-    }).catch(() => {});
-  }
+  try {
+    poolWorktreeId = await poolLifecycle?.startAnalysis(reviewId, analysisId);
 
-  // 4. Respond immediately — analysis runs async
-  res.json({
-    analysisId,
-    runId,
-    status: 'running',
-    message: 'Executable provider analysis started'
-  });
+    // 3. Fire analysis.started hook
+    if (hasHooks('analysis.started', analysisHookConfig)) {
+      getCachedUser(analysisHookConfig).then(user => {
+        fireHooks('analysis.started', buildAnalysisStartedPayload({
+          reviewId, analysisId, provider: selectedProvider, model: selectedModel,
+          ...hookPayloadFields,
+          user,
+        }), analysisHookConfig);
+      }).catch(() => {});
+    }
+
+    // 4. Respond immediately — analysis runs async
+    res.json({
+      analysisId,
+      runId,
+      status: 'running',
+      message: 'Executable provider analysis started'
+    });
+  } catch (setupError) {
+    // Synchronous setup failure — clean up the analysis hold immediately
+    reviewToAnalysisId.delete(reviewId);
+    if (poolWorktreeId) {
+      poolLifecycle?.endAnalysis(analysisId);
+    }
+    throw setupError;
+  }
 
   // 5. Run the executable provider asynchronously
   (async () => {
@@ -476,6 +492,8 @@ async function runExecutableAnalysis(req, res, params, shared, callbacks) {
       // Do NOT delete activeAnalyses entry — leave it with terminal status so
       // clients can poll for final results via HTTP (matches local.js/pr.js).
       reviewToAnalysisId.delete(reviewId);
+      // Remove pool worktree analysis hold
+      poolLifecycle?.endAnalysis(analysisId);
 
       // Clean up temp directory (keep in debug mode for inspection)
       if (tmpDir) {

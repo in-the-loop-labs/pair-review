@@ -894,6 +894,331 @@ html, body {
 }
 
 /* ============================================
+   Worktrees Section
+   ============================================ */
+
+@keyframes worktree-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.worktree-icon-spin {
+  animation: worktree-spin 1s linear infinite;
+}
+
+.worktree-pool-config {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 16px;
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border-primary);
+  border-radius: 8px;
+}
+
+.worktree-pool-config-items {
+  display: flex;
+  align-items: flex-end;
+  gap: 24px;
+}
+
+.worktree-pool-config-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.worktree-pool-config-label {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.worktree-pool-input-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.worktree-pool-input {
+  width: 72px;
+  padding: 4px 8px;
+  font-size: 14px;
+  color: var(--color-text-primary);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-primary);
+  border-radius: 6px;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.worktree-pool-input:focus {
+  border-color: var(--color-accent-primary);
+  box-shadow: 0 0 0 2px rgba(var(--color-accent-primary-rgb, 31, 111, 235), 0.15);
+}
+
+.worktree-pool-input::placeholder {
+  color: var(--color-text-muted);
+}
+
+.worktree-pool-input-note {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.worktree-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.worktree-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 14px;
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border-primary);
+  border-radius: 8px;
+  transition: background 0.15s ease;
+}
+
+.worktree-item:hover {
+  background: var(--color-bg-tertiary);
+}
+
+.worktree-item-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.worktree-item-bottom {
+  padding-left: 2px;
+}
+
+.worktree-item-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.worktree-item-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.worktree-pool-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  border-radius: 10px;
+  white-space: nowrap;
+  background: rgba(14, 165, 233, 0.12);
+  color: #0284c7;
+}
+
+[data-theme="dark"] .worktree-pool-badge {
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+}
+
+.worktree-adhoc-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  border-radius: 10px;
+  white-space: nowrap;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-tertiary);
+}
+
+.worktree-pr-info {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.worktree-path {
+  font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+  word-break: break-all;
+}
+
+.worktree-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.worktree-status--available {
+  color: #16a34a;
+}
+
+[data-theme="dark"] .worktree-status--available {
+  color: #4ade80;
+}
+
+.worktree-status--in-use {
+  color: #d97706;
+}
+
+[data-theme="dark"] .worktree-status--in-use {
+  color: #fbbf24;
+}
+
+.worktree-status--switching {
+  color: #2563eb;
+}
+
+[data-theme="dark"] .worktree-status--switching {
+  color: #60a5fa;
+}
+
+.worktree-status--creating {
+  color: #2563eb;
+}
+
+[data-theme="dark"] .worktree-status--creating {
+  color: #60a5fa;
+}
+
+.worktree-timestamp {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.worktree-delete-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.worktree-delete-btn:hover {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.3);
+  color: var(--color-danger);
+}
+
+.worktree-disk-warning {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  border-radius: 10px;
+  white-space: nowrap;
+  background: var(--color-warning-bg);
+  border: 1px solid var(--color-warning-border);
+  color: var(--color-warning-text);
+}
+
+.worktree-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+.worktree-delete-all-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px solid var(--color-danger);
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-danger);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.worktree-delete-all-btn:hover {
+  background: var(--color-danger);
+  color: white;
+}
+
+.worktree-empty {
+  padding: 24px 16px;
+  text-align: center;
+  font-size: 14px;
+  font-style: italic;
+  color: var(--color-text-muted);
+}
+
+.worktree-pool-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.worktree-pool-hint svg {
+  flex-shrink: 0;
+}
+
+[data-theme="dark"] .worktree-pool-config {
+  background: var(--color-bg-secondary);
+  border-color: var(--color-border-secondary);
+}
+
+[data-theme="dark"] .worktree-pool-input {
+  background: var(--color-bg-tertiary);
+  border-color: var(--color-border-secondary);
+  color: var(--color-text-primary);
+}
+
+[data-theme="dark"] .worktree-item {
+  background: var(--color-bg-secondary);
+  border-color: var(--color-border-secondary);
+}
+
+[data-theme="dark"] .worktree-item:hover {
+  background: var(--color-bg-tertiary);
+}
+
+[data-theme="dark"] .worktree-adhoc-badge {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--color-text-secondary);
+}
+
+[data-theme="dark"] .worktree-delete-btn:hover {
+  background: rgba(248, 81, 73, 0.15);
+  border-color: rgba(248, 81, 73, 0.3);
+}
+
+/* ============================================
    Danger Zone
    ============================================ */
 
@@ -1179,5 +1504,27 @@ html, body {
 
   .action-buttons .btn {
     flex: 1;
+  }
+
+  /* Worktrees responsive */
+  .worktree-pool-config-items {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .worktree-item-top {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .worktree-item-left {
+    flex-wrap: wrap;
+  }
+
+  .worktree-item-right {
+    width: 100%;
+    justify-content: flex-start;
+    flex-wrap: wrap;
   }
 }

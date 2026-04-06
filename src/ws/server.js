@@ -11,8 +11,10 @@ let heartbeatTimer = null;
  * Attach a WebSocket server to an existing HTTP server.
  * Operates in noServer mode, handling upgrade requests on the /ws path only.
  * @param {import('http').Server} httpServer
+ * @param {Object} [db] - Database instance (unused, kept for signature compatibility)
+ * @param {Object} [poolLifecycle] - WorktreePoolLifecycle instance for pool session management
  */
-function attachWebSocket(httpServer) {
+function attachWebSocket(httpServer, db, poolLifecycle) {
   wss = new WebSocketServer({ noServer: true });
 
   httpServer.on('upgrade', (request, socket, head) => {
@@ -27,8 +29,12 @@ function attachWebSocket(httpServer) {
     });
   });
 
+  let nextWsId = 1;
+
   wss.on('connection', (ws) => {
     ws._topics = new Set();
+    ws._wsId = nextWsId++;
+    ws._poolSessions = [];
     ws.isAlive = true;
 
     ws.on('pong', () => {
@@ -49,17 +55,61 @@ function attachWebSocket(httpServer) {
 
       if (action === 'subscribe') {
         ws._topics.add(topic);
+
+        // Track pool worktree usage for review topics
+        if (topic.startsWith('review:') && poolLifecycle) {
+          const reviewId = parseInt(topic.substring(7), 10);
+          if (!isNaN(reviewId)) {
+            const sessionKey = `ws-${ws._wsId}-${topic}`;
+            poolLifecycle.startSession(reviewId, sessionKey).then(result => {
+              if (result) {
+                // Race guard: socket may have closed or unsubscribed
+                // while the async lookup was in flight. Since startSession
+                // already registered the session internally, we must undo it.
+                if (ws.readyState !== ws.OPEN || !ws._topics.has(topic)) {
+                  poolLifecycle.endSession(result.worktreeId, sessionKey);
+                  return;
+                }
+                ws._poolSessions.push({ worktreeId: result.worktreeId, sessionKey });
+              }
+            }).catch(err => {
+              logger.debug(`WS: pool session start failed: ${err.message}`);
+            });
+          }
+        }
       } else if (action === 'unsubscribe') {
         ws._topics.delete(topic);
+
+        // Untrack pool worktree usage for review topics
+        if (topic.startsWith('review:') && ws._poolSessions.length > 0) {
+          const expectedKey = `ws-${ws._wsId}-${topic}`;
+          ws._poolSessions = ws._poolSessions.filter(s => {
+            if (s.sessionKey === expectedKey) {
+              poolLifecycle?.endSession(s.worktreeId, s.sessionKey);
+              return false;
+            }
+            return true;
+          });
+        }
       }
     });
 
     ws.on('close', () => {
+      // Clean up all pool worktree sessions
+      for (const { worktreeId, sessionKey } of ws._poolSessions) {
+        poolLifecycle?.endSession(worktreeId, sessionKey);
+      }
+      ws._poolSessions = [];
       ws._topics.clear();
     });
 
     ws.on('error', (err) => {
       logger.warn(`WS: client error: ${err.message}`);
+      // Clean up all pool worktree sessions
+      for (const { worktreeId, sessionKey } of ws._poolSessions) {
+        poolLifecycle?.endSession(worktreeId, sessionKey);
+      }
+      ws._poolSessions = [];
       ws._topics.clear();
     });
   });
