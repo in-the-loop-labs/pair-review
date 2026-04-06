@@ -9,15 +9,14 @@
  */
 
 const express = require('express');
-const { query, queryOne, run, ReviewRepository, WorktreeRepository, WorktreePoolRepository } = require('../database');
+const { query, queryOne, run, ReviewRepository, WorktreeRepository, WorktreePoolRepository, AnalysisRunRepository, RepoSettingsRepository } = require('../database');
 const { setupPRReview } = require('../setup/pr-setup');
 const { GitHubApiError } = require('../github/client');
 const { GitWorktreeManager } = require('../git/worktree');
 const { activeAnalyses, reviewToAnalysisId, killProcesses, broadcastProgress } = require('./shared');
-const { AnalysisRunRepository } = require('../database');
 const fs = require('fs').promises;
 const logger = require('../utils/logger');
-const { getRepoPoolSize, getRepoPoolFetchInterval } = require('../config');
+const { resolvePoolConfig } = require('../config');
 
 const router = express.Router();
 
@@ -480,9 +479,10 @@ router.get('/api/repos/:owner/:repo/worktrees', async (req, res) => {
 
     const worktreeRepo = new WorktreeRepository(db);
     const poolRepo = new WorktreePoolRepository(db);
+    const repoSettingsRepo = new RepoSettingsRepository(db);
 
-    const poolSize = getRepoPoolSize(config, repository);
-    const fetchInterval = getRepoPoolFetchInterval(config, repository);
+    const repoSettings = await repoSettingsRepo.getRepoSettings(repository);
+    const { poolSize, poolFetchIntervalMinutes: fetchInterval } = resolvePoolConfig(config, repository, repoSettings);
 
     const [allWorktrees, poolEntries] = await Promise.all([
       worktreeRepo.findAllByRepository(repository),

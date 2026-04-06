@@ -98,7 +98,9 @@ router.get('/api/repos/:owner/:repo/settings', async (req, res) => {
         local_path: null,
         default_council_id: null,
         default_tab: null,
-        default_chat_instructions: null
+        default_chat_instructions: null,
+        pool_size: null,
+        pool_fetch_interval_minutes: null
       });
     }
 
@@ -111,6 +113,8 @@ router.get('/api/repos/:owner/:repo/settings', async (req, res) => {
       default_council_id: settings.default_council_id,
       default_tab: settings.default_tab,
       default_chat_instructions: settings.default_chat_instructions,
+      pool_size: settings.pool_size ?? null,
+      pool_fetch_interval_minutes: settings.pool_fetch_interval_minutes ?? null,
       created_at: settings.created_at,
       updated_at: settings.updated_at
     });
@@ -130,14 +134,14 @@ router.get('/api/repos/:owner/:repo/settings', async (req, res) => {
 router.post('/api/repos/:owner/:repo/settings', async (req, res) => {
   try {
     const { owner, repo } = req.params;
-    const { default_instructions, default_provider, default_model, local_path, default_council_id, default_tab, default_chat_instructions } = req.body;
+    const { default_instructions, default_provider, default_model, local_path, default_council_id, default_tab, default_chat_instructions, pool_size, pool_fetch_interval_minutes } = req.body;
     const repository = normalizeRepository(owner, repo);
     const db = req.app.get('db');
 
     // Validate that at least one setting is provided
-    if (default_instructions === undefined && default_provider === undefined && default_model === undefined && local_path === undefined && default_council_id === undefined && default_tab === undefined && default_chat_instructions === undefined) {
+    if (default_instructions === undefined && default_provider === undefined && default_model === undefined && local_path === undefined && default_council_id === undefined && default_tab === undefined && default_chat_instructions === undefined && pool_size === undefined && pool_fetch_interval_minutes === undefined) {
       return res.status(400).json({
-        error: 'At least one setting (default_instructions, default_provider, default_model, local_path, default_council_id, default_tab, or default_chat_instructions) must be provided'
+        error: 'At least one setting must be provided'
       });
     }
 
@@ -149,7 +153,9 @@ router.post('/api/repos/:owner/:repo/settings', async (req, res) => {
       local_path,
       default_council_id,
       default_tab,
-      default_chat_instructions
+      default_chat_instructions,
+      pool_size,
+      pool_fetch_interval_minutes
     });
 
     logger.info(`Saved repo settings for ${repository}`);
@@ -165,6 +171,8 @@ router.post('/api/repos/:owner/:repo/settings', async (req, res) => {
         default_council_id: settings.default_council_id,
         default_tab: settings.default_tab,
         default_chat_instructions: settings.default_chat_instructions,
+        pool_size: settings.pool_size ?? null,
+        pool_fetch_interval_minutes: settings.pool_fetch_interval_minutes ?? null,
         updated_at: settings.updated_at
       }
     });

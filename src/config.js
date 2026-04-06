@@ -488,7 +488,8 @@ function getRepoResetScript(config, repository) {
 }
 
 /**
- * Gets the configured pool size for a repository
+ * Gets the configured pool size for a repository from file config only.
+ * Prefer resolvePoolConfig() when DB repo_settings are available.
  * @param {Object} config - Configuration object from loadConfig()
  * @param {string} repository - Repository in "owner/repo" format
  * @returns {number} - Pool size (0 if not configured or invalid)
@@ -500,7 +501,8 @@ function getRepoPoolSize(config, repository) {
 }
 
 /**
- * Gets the configured pool fetch interval for a repository
+ * Gets the configured pool fetch interval for a repository from file config only.
+ * Prefer resolvePoolConfig() when DB repo_settings are available.
  * @param {Object} config - Configuration object from loadConfig()
  * @param {string} repository - Repository in "owner/repo" format
  * @returns {number|null} - Interval in minutes or null if not configured
@@ -512,15 +514,39 @@ function getRepoPoolFetchInterval(config, repository) {
 }
 
 /**
+ * Resolves pool configuration for a repository, checking DB repo_settings first,
+ * then falling back to file config. DB values take precedence when set (non-null).
+ * @param {Object} config - Configuration object from loadConfig()
+ * @param {string} repository - Repository in "owner/repo" format
+ * @param {Object|null} repoSettings - DB repo_settings row (from RepoSettingsRepository.getRepoSettings)
+ * @returns {{ poolSize: number, poolFetchIntervalMinutes: number|null }}
+ */
+function resolvePoolConfig(config, repository, repoSettings) {
+  const dbPoolSize = repoSettings?.pool_size;
+  const dbFetchInterval = repoSettings?.pool_fetch_interval_minutes;
+
+  const poolSize = (typeof dbPoolSize === 'number' && dbPoolSize >= 0)
+    ? dbPoolSize
+    : getRepoPoolSize(config, repository);
+
+  const poolFetchIntervalMinutes = (typeof dbFetchInterval === 'number' && dbFetchInterval >= 0)
+    ? (dbFetchInterval > 0 ? dbFetchInterval : null)
+    : getRepoPoolFetchInterval(config, repository);
+
+  return { poolSize, poolFetchIntervalMinutes };
+}
+
+/**
  * Resolves all repository worktree options into a single object.
  * Composite helper that combines the individual getters into the shape expected
  * by GitWorktreeManager and createWorktreeForPR.
  *
  * @param {Object} config - Configuration object from loadConfig()
  * @param {string} repository - Repository in "owner/repo" format
+ * @param {Object|null} [repoSettings=null] - DB repo_settings row (from RepoSettingsRepository.getRepoSettings)
  * @returns {{ checkoutScript: string|null, checkoutTimeout: number, worktreeConfig: Object|null, resetScript: string|null, poolSize: number, poolFetchIntervalMinutes: number|null }}
  */
-function resolveRepoOptions(config, repository) {
+function resolveRepoOptions(config, repository, repoSettings = null) {
   const checkoutScript = getRepoCheckoutScript(config, repository);
   const checkoutTimeout = getRepoCheckoutTimeout(config, repository);
   const worktreeDirectory = getRepoWorktreeDirectory(config, repository);
@@ -534,8 +560,7 @@ function resolveRepoOptions(config, repository) {
   }
 
   const resetScript = getRepoResetScript(config, repository);
-  const poolSize = getRepoPoolSize(config, repository);
-  const poolFetchIntervalMinutes = getRepoPoolFetchInterval(config, repository);
+  const { poolSize, poolFetchIntervalMinutes } = resolvePoolConfig(config, repository, repoSettings);
 
   return { checkoutScript, checkoutTimeout, worktreeConfig, resetScript, poolSize, poolFetchIntervalMinutes };
 }
@@ -628,6 +653,7 @@ module.exports = {
   getRepoResetScript,
   getRepoPoolSize,
   getRepoPoolFetchInterval,
+  resolvePoolConfig,
   resolveDbName,
   warnIfDevModeWithoutDbName,
   shouldSkipUpdateNotifier,

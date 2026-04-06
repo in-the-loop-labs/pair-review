@@ -20,7 +20,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 39;
+const CURRENT_SCHEMA_VERSION = 40;
 
 /**
  * Database schema SQL statements
@@ -151,6 +151,8 @@ const SCHEMA_SQL = {
       default_chat_instructions TEXT,
       local_path TEXT,
       auto_branch_review INTEGER DEFAULT 0,
+      pool_size INTEGER,
+      pool_fetch_interval_minutes INTEGER,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
@@ -1731,6 +1733,20 @@ const MIGRATIONS = {
 
     console.log('  Rebuilt worktree_pool with creating status in CHECK constraint');
     console.log('Migration to schema version 39 complete');
+  },
+  40: (db) => {
+    console.log('Running migration to schema version 40: Add pool settings to repo_settings...');
+    const addColumnIfNotExists = (table, column, definition) => {
+      const tableInfo = db.prepare(`PRAGMA table_info(${table})`).all();
+      const columnExists = tableInfo.some(col => col.name === column);
+      if (!columnExists) {
+        db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`).run();
+        console.log(`  Added column ${column} to ${table}`);
+      }
+    };
+    addColumnIfNotExists('repo_settings', 'pool_size', 'INTEGER');
+    addColumnIfNotExists('repo_settings', 'pool_fetch_interval_minutes', 'INTEGER');
+    console.log('Migration to schema version 40 complete');
   }
 };
 
@@ -2666,7 +2682,7 @@ class RepoSettingsRepository {
    */
   async getRepoSettings(repository) {
     const row = await queryOne(this.db, `
-      SELECT id, repository, default_instructions, default_provider, default_model, default_council_id, default_tab, default_chat_instructions, local_path, auto_branch_review, created_at, updated_at
+      SELECT id, repository, default_instructions, default_provider, default_model, default_council_id, default_tab, default_chat_instructions, local_path, auto_branch_review, pool_size, pool_fetch_interval_minutes, created_at, updated_at
       FROM repo_settings
       WHERE repository = ? COLLATE NOCASE
     `, [repository]);
@@ -2723,7 +2739,7 @@ class RepoSettingsRepository {
    * @returns {Promise<Object>} Saved settings object
    */
   async saveRepoSettings(repository, settings) {
-    const { default_instructions, default_provider, default_model, default_council_id, default_tab, default_chat_instructions, local_path } = settings;
+    const { default_instructions, default_provider, default_model, default_council_id, default_tab, default_chat_instructions, local_path, pool_size, pool_fetch_interval_minutes } = settings;
     const now = new Date().toISOString();
 
     // Check if settings already exist
@@ -2740,6 +2756,8 @@ class RepoSettingsRepository {
             default_tab = ?,
             default_chat_instructions = ?,
             local_path = ?,
+            pool_size = ?,
+            pool_fetch_interval_minutes = ?,
             updated_at = ?
         WHERE repository = ? COLLATE NOCASE
       `, [
@@ -2750,6 +2768,8 @@ class RepoSettingsRepository {
         default_tab !== undefined ? default_tab : existing.default_tab,
         default_chat_instructions !== undefined ? default_chat_instructions : existing.default_chat_instructions,
         local_path !== undefined ? local_path : existing.local_path,
+        pool_size !== undefined ? pool_size : existing.pool_size,
+        pool_fetch_interval_minutes !== undefined ? pool_fetch_interval_minutes : existing.pool_fetch_interval_minutes,
         now,
         repository
       ]);
@@ -2763,14 +2783,16 @@ class RepoSettingsRepository {
         default_tab: default_tab !== undefined ? default_tab : existing.default_tab,
         default_chat_instructions: default_chat_instructions !== undefined ? default_chat_instructions : existing.default_chat_instructions,
         local_path: local_path !== undefined ? local_path : existing.local_path,
+        pool_size: pool_size !== undefined ? pool_size : existing.pool_size,
+        pool_fetch_interval_minutes: pool_fetch_interval_minutes !== undefined ? pool_fetch_interval_minutes : existing.pool_fetch_interval_minutes,
         updated_at: now
       };
     } else {
       // Insert new settings
       const result = await run(this.db, `
-        INSERT INTO repo_settings (repository, default_instructions, default_provider, default_model, default_council_id, default_tab, default_chat_instructions, local_path, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `, [repository, default_instructions || null, default_provider || null, default_model || null, default_council_id || null, default_tab || null, default_chat_instructions || null, local_path || null, now, now]);
+        INSERT INTO repo_settings (repository, default_instructions, default_provider, default_model, default_council_id, default_tab, default_chat_instructions, local_path, pool_size, pool_fetch_interval_minutes, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [repository, default_instructions || null, default_provider || null, default_model || null, default_council_id || null, default_tab || null, default_chat_instructions || null, local_path || null, pool_size ?? null, pool_fetch_interval_minutes ?? null, now, now]);
 
       return {
         id: result.lastID,
@@ -2782,6 +2804,8 @@ class RepoSettingsRepository {
         default_tab: default_tab || null,
         default_chat_instructions: default_chat_instructions || null,
         local_path: local_path || null,
+        pool_size: pool_size ?? null,
+        pool_fetch_interval_minutes: pool_fetch_interval_minutes ?? null,
         created_at: now,
         updated_at: now
       };

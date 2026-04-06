@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const childProcess = require('child_process');
-const { deepMerge, getGitHubToken, expandPath, resolveDbName, warnIfDevModeWithoutDbName, loadConfig, shouldSkipUpdateNotifier, _resetTokenCache, getRepoConfig, getRepoPath, getRepoCheckoutScript, getRepoWorktreeDirectory, getRepoWorktreeNameTemplate, getRepoCheckoutTimeout, resolveRepoOptions, getRepoResetScript, getRepoPoolSize, getRepoPoolFetchInterval } = require('../../src/config');
+const { deepMerge, getGitHubToken, expandPath, resolveDbName, warnIfDevModeWithoutDbName, loadConfig, shouldSkipUpdateNotifier, _resetTokenCache, getRepoConfig, getRepoPath, getRepoCheckoutScript, getRepoWorktreeDirectory, getRepoWorktreeNameTemplate, getRepoCheckoutTimeout, resolveRepoOptions, getRepoResetScript, getRepoPoolSize, getRepoPoolFetchInterval, resolvePoolConfig } = require('../../src/config');
 
 describe('config.js', () => {
   describe('getGitHubToken', () => {
@@ -1509,5 +1509,117 @@ describe('config.js', () => {
       expect(result.poolFetchIntervalMinutes).toBe(10);
     });
 
+    it('should pass repoSettings through to resolvePoolConfig for DB-aware pool config', () => {
+      const config = {
+        repos: {
+          'owner/repo': {
+            checkout_script: './scripts/checkout.sh',
+            pool_size: 3,
+            pool_fetch_interval_minutes: 15
+          }
+        }
+      };
+      const repoSettings = { pool_size: 8, pool_fetch_interval_minutes: 5 };
+      const result = resolveRepoOptions(config, 'owner/repo', repoSettings);
+
+      expect(result.checkoutScript).toBe('./scripts/checkout.sh');
+      expect(result.poolSize).toBe(8);
+      expect(result.poolFetchIntervalMinutes).toBe(5);
+    });
+
+    it('should fall back to file config when repoSettings is null', () => {
+      const config = {
+        repos: {
+          'owner/repo': {
+            pool_size: 3,
+            pool_fetch_interval_minutes: 15
+          }
+        }
+      };
+      const result = resolveRepoOptions(config, 'owner/repo', null);
+
+      expect(result.poolSize).toBe(3);
+      expect(result.poolFetchIntervalMinutes).toBe(15);
+    });
+
+    it('should allow repoSettings to disable fetch interval with 0', () => {
+      const config = {
+        repos: {
+          'owner/repo': {
+            pool_size: 3,
+            pool_fetch_interval_minutes: 15
+          }
+        }
+      };
+      const repoSettings = { pool_size: null, pool_fetch_interval_minutes: 0 };
+      const result = resolveRepoOptions(config, 'owner/repo', repoSettings);
+
+      expect(result.poolSize).toBe(3);
+      expect(result.poolFetchIntervalMinutes).toBe(null);
+    });
+
+  });
+
+  describe('resolvePoolConfig', () => {
+    it('should return file config values when no DB settings', () => {
+      const config = { repos: { 'owner/repo': { pool_size: 3, pool_fetch_interval_minutes: 15 } } };
+      const result = resolvePoolConfig(config, 'owner/repo', null);
+      expect(result.poolSize).toBe(3);
+      expect(result.poolFetchIntervalMinutes).toBe(15);
+    });
+
+    it('should return defaults when neither DB nor file config has values', () => {
+      const result = resolvePoolConfig({}, 'owner/repo', null);
+      expect(result.poolSize).toBe(0);
+      expect(result.poolFetchIntervalMinutes).toBe(null);
+    });
+
+    it('should prefer DB settings over file config', () => {
+      const config = { repos: { 'owner/repo': { pool_size: 3, pool_fetch_interval_minutes: 15 } } };
+      const repoSettings = { pool_size: 5, pool_fetch_interval_minutes: 10 };
+      const result = resolvePoolConfig(config, 'owner/repo', repoSettings);
+      expect(result.poolSize).toBe(5);
+      expect(result.poolFetchIntervalMinutes).toBe(10);
+    });
+
+    it('should fall back to file config when DB values are null', () => {
+      const config = { repos: { 'owner/repo': { pool_size: 3, pool_fetch_interval_minutes: 15 } } };
+      const repoSettings = { pool_size: null, pool_fetch_interval_minutes: null };
+      const result = resolvePoolConfig(config, 'owner/repo', repoSettings);
+      expect(result.poolSize).toBe(3);
+      expect(result.poolFetchIntervalMinutes).toBe(15);
+    });
+
+    it('should allow DB to set pool size to 0 (disable)', () => {
+      const config = { repos: { 'owner/repo': { pool_size: 3, pool_fetch_interval_minutes: 15 } } };
+      const repoSettings = { pool_size: 0, pool_fetch_interval_minutes: null };
+      const result = resolvePoolConfig(config, 'owner/repo', repoSettings);
+      expect(result.poolSize).toBe(0);
+      expect(result.poolFetchIntervalMinutes).toBe(15);
+    });
+
+    it('should allow partial DB override (only pool_size)', () => {
+      const config = { repos: { 'owner/repo': { pool_size: 3, pool_fetch_interval_minutes: 15 } } };
+      const repoSettings = { pool_size: 7, pool_fetch_interval_minutes: null };
+      const result = resolvePoolConfig(config, 'owner/repo', repoSettings);
+      expect(result.poolSize).toBe(7);
+      expect(result.poolFetchIntervalMinutes).toBe(15);
+    });
+
+    it('should allow partial DB override (only fetch interval)', () => {
+      const config = { repos: { 'owner/repo': { pool_size: 3, pool_fetch_interval_minutes: 15 } } };
+      const repoSettings = { pool_size: null, pool_fetch_interval_minutes: 5 };
+      const result = resolvePoolConfig(config, 'owner/repo', repoSettings);
+      expect(result.poolSize).toBe(3);
+      expect(result.poolFetchIntervalMinutes).toBe(5);
+    });
+
+    it('should allow DB to set fetch interval to 0 (disable), returning null instead of falling back', () => {
+      const config = { repos: { 'owner/repo': { pool_size: 3, pool_fetch_interval_minutes: 15 } } };
+      const repoSettings = { pool_size: null, pool_fetch_interval_minutes: 0 };
+      const result = resolvePoolConfig(config, 'owner/repo', repoSettings);
+      expect(result.poolSize).toBe(3);
+      expect(result.poolFetchIntervalMinutes).toBe(null);
+    });
   });
 });

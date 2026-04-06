@@ -845,7 +845,9 @@ class RepoSettingsPage {
         default_council_id: settings.default_council_id || null,
         default_instructions: settings.default_instructions || '',
         local_path: settings.local_path || null,
-        default_chat_instructions: settings.default_chat_instructions || ''
+        default_chat_instructions: settings.default_chat_instructions || '',
+        pool_size: settings.pool_size ?? null,
+        pool_fetch_interval_minutes: settings.pool_fetch_interval_minutes ?? null
       };
 
       // Set current settings
@@ -864,7 +866,9 @@ class RepoSettingsPage {
         default_council_id: null,
         default_instructions: '',
         local_path: null,
-        default_chat_instructions: ''
+        default_chat_instructions: '',
+        pool_size: null,
+        pool_fetch_interval_minutes: null
       };
       this.currentSettings = { ...this.originalSettings };
       this.updateUI();
@@ -883,6 +887,18 @@ class RepoSettingsPage {
         throw new Error('Failed to load worktrees');
       }
       this.worktreeData = await response.json();
+
+      // Seed pool settings from resolved config values when DB has no override
+      const pool = this.worktreeData.pool || {};
+      if (this.originalSettings.pool_size == null && pool.size) {
+        this.originalSettings.pool_size = pool.size;
+        this.currentSettings.pool_size = pool.size;
+      }
+      if (this.originalSettings.pool_fetch_interval_minutes == null && pool.fetch_interval_minutes) {
+        this.originalSettings.pool_fetch_interval_minutes = pool.fetch_interval_minutes;
+        this.currentSettings.pool_fetch_interval_minutes = pool.fetch_interval_minutes;
+      }
+
       this.renderWorktrees();
     } catch (error) {
       console.error('Error loading worktrees:', error);
@@ -905,31 +921,38 @@ class RepoSettingsPage {
     const worktrees = this.worktreeData.worktrees || [];
     let html = '';
 
-    // Pool config banner
-    if (pool.configured) {
-      const countLabel = `${pool.current_count} / ${pool.size}`;
-      const intervalLabel = pool.fetch_interval_minutes ? pool.fetch_interval_minutes + ' min' : 'Disabled';
-      let hintHtml = '';
-      if (pool.current_count < pool.size) {
-        hintHtml = `<p class="worktree-pool-hint">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zM0 8a8 8 0 1116 0A8 8 0 010 8zm6.5-.25A.75.75 0 017.25 7h1a.75.75 0 01.75.75v2.75h.25a.75.75 0 010 1.5h-2a.75.75 0 010-1.5h.25v-2h-.25a.75.75 0 01-.75-.75zM8 6a1 1 0 100-2 1 1 0 000 2z"/></svg>
-          Pool will create new worktrees as needed.
-        </p>`;
-      }
-      html += `<div class="worktree-pool-config">
-        <div class="worktree-pool-config-items">
-          <div class="worktree-pool-config-item">
-            <span class="worktree-pool-config-label">Pool Size</span>
-            <span class="worktree-pool-config-value">${this.escapeHtml(countLabel)}</span>
-          </div>
-          <div class="worktree-pool-config-item">
-            <span class="worktree-pool-config-label">Fetch Interval</span>
-            <span class="worktree-pool-config-value">${this.escapeHtml(intervalLabel)}</span>
+    // Pool settings (editable)
+    const poolSizeValue = this.currentSettings.pool_size ?? '';
+    const fetchIntervalValue = this.currentSettings.pool_fetch_interval_minutes ?? '';
+    const currentCount = pool.current_count || 0;
+    const countNote = poolSizeValue ? ` (${currentCount} active)` : '';
+
+    html += `<div class="worktree-pool-config">
+      <div class="worktree-pool-config-items">
+        <div class="worktree-pool-config-item">
+          <label class="worktree-pool-config-label" for="pool-size-input">Pool Size</label>
+          <div class="worktree-pool-input-group">
+            <input type="number" id="pool-size-input" class="worktree-pool-input"
+              min="0" max="20" step="1" placeholder="0"
+              value="${this.escapeHtml(String(poolSizeValue))}">
+            <span class="worktree-pool-input-note">${this.escapeHtml(countNote)}</span>
           </div>
         </div>
-        ${hintHtml}
-      </div>`;
-    }
+        <div class="worktree-pool-config-item">
+          <label class="worktree-pool-config-label" for="pool-fetch-interval-input">Fetch Interval</label>
+          <div class="worktree-pool-input-group">
+            <input type="number" id="pool-fetch-interval-input" class="worktree-pool-input"
+              min="0" max="1440" step="1" placeholder="Off"
+              value="${this.escapeHtml(String(fetchIntervalValue))}">
+            <span class="worktree-pool-input-note">minutes</span>
+          </div>
+        </div>
+      </div>
+      <p class="worktree-pool-hint">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zM0 8a8 8 0 1116 0A8 8 0 010 8zm6.5-.25A.75.75 0 017.25 7h1a.75.75 0 01.75.75v2.75h.25a.75.75 0 010 1.5h-2a.75.75 0 010-1.5h.25v-2h-.25a.75.75 0 01-.75-.75zM8 6a1 1 0 100-2 1 1 0 000 2z"/></svg>
+        Pre-warms worktrees so PR reviews start instantly. Set size to 0 to disable.
+      </p>
+    </div>`;
 
     // Worktree list
     if (worktrees.length > 0) {
@@ -990,6 +1013,24 @@ class RepoSettingsPage {
     }
 
     content.innerHTML = html;
+
+    // Wire up pool setting inputs
+    const poolSizeInput = document.getElementById('pool-size-input');
+    if (poolSizeInput) {
+      poolSizeInput.addEventListener('input', () => {
+        const val = poolSizeInput.value.trim();
+        this.currentSettings.pool_size = val === '' ? null : parseInt(val, 10);
+        this.checkForChanges();
+      });
+    }
+    const poolFetchInput = document.getElementById('pool-fetch-interval-input');
+    if (poolFetchInput) {
+      poolFetchInput.addEventListener('input', () => {
+        const val = poolFetchInput.value.trim();
+        this.currentSettings.pool_fetch_interval_minutes = val === '' ? null : parseInt(val, 10);
+        this.checkForChanges();
+      });
+    }
   }
 
   /**
@@ -1154,6 +1195,16 @@ class RepoSettingsPage {
 
     // Update local path display
     this.updateLocalPathDisplay();
+
+    // Update pool setting inputs
+    const poolSizeInput = document.getElementById('pool-size-input');
+    if (poolSizeInput) {
+      poolSizeInput.value = this.currentSettings.pool_size ?? '';
+    }
+    const poolFetchInput = document.getElementById('pool-fetch-interval-input');
+    if (poolFetchInput) {
+      poolFetchInput.value = this.currentSettings.pool_fetch_interval_minutes ?? '';
+    }
   }
 
   /**
@@ -1203,8 +1254,10 @@ class RepoSettingsPage {
     const councilChanged = (this.currentSettings.default_council_id ?? null) !== (this.originalSettings.default_council_id ?? null);
     const instructionsChanged = (this.currentSettings.default_instructions ?? '') !== (this.originalSettings.default_instructions ?? '');
     const chatInstructionsChanged = (this.currentSettings.default_chat_instructions ?? '') !== (this.originalSettings.default_chat_instructions ?? '');
+    const poolSizeChanged = (this.currentSettings.pool_size ?? null) !== (this.originalSettings.pool_size ?? null);
+    const poolFetchChanged = (this.currentSettings.pool_fetch_interval_minutes ?? null) !== (this.originalSettings.pool_fetch_interval_minutes ?? null);
 
-    this.hasUnsavedChanges = providerChanged || modelChanged || tabChanged || councilChanged || instructionsChanged || chatInstructionsChanged;
+    this.hasUnsavedChanges = providerChanged || modelChanged || tabChanged || councilChanged || instructionsChanged || chatInstructionsChanged || poolSizeChanged || poolFetchChanged;
 
     // Show/hide action bar
     const actionBar = document.getElementById('action-bar');
@@ -1239,7 +1292,9 @@ class RepoSettingsPage {
           default_tab: this.currentSettings.default_tab,
           default_council_id: this.currentSettings.default_council_id,
           default_instructions: this.currentSettings.default_instructions,
-          default_chat_instructions: this.currentSettings.default_chat_instructions
+          default_chat_instructions: this.currentSettings.default_chat_instructions,
+          pool_size: this.currentSettings.pool_size,
+          pool_fetch_interval_minutes: this.currentSettings.pool_fetch_interval_minutes
         })
       });
 
@@ -1314,7 +1369,9 @@ class RepoSettingsPage {
           default_council_id: null,
           default_instructions: '',
           local_path: null,
-          default_chat_instructions: ''
+          default_chat_instructions: '',
+          pool_size: null,
+          pool_fetch_interval_minutes: null
         })
       });
 
@@ -1330,7 +1387,9 @@ class RepoSettingsPage {
         default_council_id: null,
         default_instructions: '',
         local_path: null,
-        default_chat_instructions: ''
+        default_chat_instructions: '',
+        pool_size: null,
+        pool_fetch_interval_minutes: null
       };
       this.currentSettings = { ...this.originalSettings };
       this.hasUnsavedChanges = false;

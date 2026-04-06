@@ -120,6 +120,8 @@ const SCHEMA_SQL = {
       default_chat_instructions TEXT,
       local_path TEXT,
       auto_branch_review INTEGER DEFAULT 0,
+      pool_size INTEGER,
+      pool_fetch_interval_minutes INTEGER,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     )

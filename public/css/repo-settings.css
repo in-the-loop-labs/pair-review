@@ -908,7 +908,7 @@ html, body {
 
 .worktree-pool-config {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 12px;
   padding: 12px 16px;
   background: var(--color-bg-primary);
@@ -918,14 +918,14 @@ html, body {
 
 .worktree-pool-config-items {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 24px;
 }
 
 .worktree-pool-config-item {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
 }
 
 .worktree-pool-config-label {
@@ -935,10 +935,36 @@ html, body {
   letter-spacing: 0.04em;
 }
 
-.worktree-pool-config-value {
+.worktree-pool-input-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.worktree-pool-input {
+  width: 72px;
+  padding: 4px 8px;
   font-size: 14px;
-  font-weight: 600;
   color: var(--color-text-primary);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-primary);
+  border-radius: 6px;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.worktree-pool-input:focus {
+  border-color: var(--color-accent-primary);
+  box-shadow: 0 0 0 2px rgba(var(--color-accent-primary-rgb, 31, 111, 235), 0.15);
+}
+
+.worktree-pool-input::placeholder {
+  color: var(--color-text-muted);
+}
+
+.worktree-pool-input-note {
+  font-size: 12px;
+  color: var(--color-text-muted);
 }
 
 .worktree-list {
@@ -1165,6 +1191,12 @@ html, body {
 [data-theme="dark"] .worktree-pool-config {
   background: var(--color-bg-secondary);
   border-color: var(--color-border-secondary);
+}
+
+[data-theme="dark"] .worktree-pool-input {
+  background: var(--color-bg-tertiary);
+  border-color: var(--color-border-secondary);
+  color: var(--color-text-primary);
 }
 
 [data-theme="dark"] .worktree-item {

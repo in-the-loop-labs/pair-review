@@ -1,6 +1,6 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 const fs = require('fs');
-const { loadConfig, getConfigDir, getGitHubToken, showWelcomeMessage, resolveDbName, resolveRepoOptions, getRepoPoolSize, getRepoPoolFetchInterval, getRepoResetScript } = require('./config');
+const { loadConfig, getConfigDir, getGitHubToken, showWelcomeMessage, resolveDbName, resolveRepoOptions, resolvePoolConfig, getRepoResetScript } = require('./config');
 const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository, ReviewRepository, RepoSettingsRepository, GitHubReviewRepository, WorktreePoolRepository } = require('./database');
 const { PRArgumentParser } = require('./github/parser');
 const { GitHubClient } = require('./github/client');
@@ -482,8 +482,9 @@ AI PROVIDERS:
       // Async cleanup of stale worktrees and reviews (don't block startup)
       cleanupStaleWorktreesAsync(config);
       cleanupStaleReviewsAsync(config);
+      startPoolBackgroundFetches(db, config);
 
-      return; // Exit after local review
+      return;
     }
 
     // Auto-detect GitHub Actions environment
@@ -767,7 +768,9 @@ async function performHeadlessReview(args, config, db, flags, options, externalP
 
         // Resolve monorepo config options (checkout_script, worktree_directory, worktree_name_template)
         // even when running from inside the target repo, so they are not silently ignored.
-        const resolved = resolveRepoOptions(config, repository);
+        const repoSettingsRepo = new RepoSettingsRepository(db);
+        const repoSettings = await repoSettingsRepo.getRepoSettings(repository);
+        const resolved = resolveRepoOptions(config, repository, repoSettings);
         checkoutScript = resolved.checkoutScript;
         checkoutTimeout = resolved.checkoutTimeout;
         worktreeConfig = resolved.worktreeConfig;
@@ -794,8 +797,11 @@ async function performHeadlessReview(args, config, db, flags, options, externalP
         checkoutScript = result.checkoutScript;
         checkoutTimeout = result.checkoutTimeout;
         worktreeConfig = result.worktreeConfig;
-        // findRepositoryPath doesn't return pool config; resolve from config directly
-        poolSize = config ? getRepoPoolSize(config, repository) : 0;
+        // findRepositoryPath doesn't return pool config; resolve from DB + file config
+        const repoSettingsRepo = new RepoSettingsRepository(db);
+        const repoSettings = await repoSettingsRepo.getRepoSettings(repository);
+        const { poolSize: resolvedPoolSize, poolFetchIntervalMinutes: _resolvedFetchInterval } = resolvePoolConfig(config, repository, repoSettings);
+        poolSize = resolvedPoolSize || 0;
         resetScript = config ? getRepoResetScript(config, repository) : null;
       }
 
@@ -1139,50 +1145,65 @@ async function handleActionReview(args, config, db, flags = {}, poolLifecycle = 
  * @param {Object} db - Database instance
  * @param {Object} config - Configuration object
  */
+const POOL_FETCH_TICK_MS = 60 * 1000; // Check every minute
+
 function startPoolBackgroundFetches(db, config) {
-  const repos = config.repos || {};
-  for (const repoName of Object.keys(repos)) {
-    const intervalMinutes = getRepoPoolFetchInterval(config, repoName);
-    if (!intervalMinutes) continue;
-    const poolSize = getRepoPoolSize(config, repoName);
-    if (!poolSize) continue;
+  let fetchInProgress = false;
 
-    const intervalMs = intervalMinutes * 60 * 1000;
-    logger.info(`Scheduling background fetch for ${repoName} pool every ${intervalMinutes}m`);
+  const timer = setInterval(async () => {
+    if (fetchInProgress) return;
+    fetchInProgress = true;
+    try {
+      const poolRepo = new WorktreePoolRepository(db);
 
-    let fetchInProgress = false;
-    const timer = setInterval(async () => {
-      if (fetchInProgress) {
-        logger.debug(`Skipping background fetch for ${repoName} — previous tick still running`);
-        return;
+      // Collect repos that might have pool config from either source
+      const repoNames = new Set(Object.keys(config.repos || {}));
+      const allRepoSettings = await query(db, 'SELECT repository, pool_size, pool_fetch_interval_minutes FROM repo_settings WHERE pool_size IS NOT NULL OR pool_fetch_interval_minutes IS NOT NULL');
+      for (const row of allRepoSettings) {
+        repoNames.add(row.repository);
       }
-      fetchInProgress = true;
-      try {
-        const poolRepo = new WorktreePoolRepository(db);
+
+      if (repoNames.size === 0) return;
+
+      for (const repoName of repoNames) {
+        const repoSettings = allRepoSettings.find(r => r.repository.toLowerCase() === repoName.toLowerCase()) || null;
+        const { poolSize, poolFetchIntervalMinutes } = resolvePoolConfig(config, repoName, repoSettings);
+        if (!poolSize || !poolFetchIntervalMinutes) continue;
+
+        const intervalMs = poolFetchIntervalMinutes * 60 * 1000;
         const worktrees = await poolRepo.findAllForFetch(repoName);
 
         for (const entry of worktrees) {
-          logger.debug(`Background fetch for ${repoName} pool worktree ${entry.id} at ${entry.path}`);
+          // Skip if fetched recently (within the configured interval)
+          if (entry.last_fetched_at) {
+            const elapsed = Date.now() - new Date(entry.last_fetched_at).getTime();
+            if (elapsed < intervalMs) continue;
+          }
+
+          logger.info(`Background fetch starting for ${repoName} pool worktree ${entry.id}`);
           try {
-            const git = simpleGit(entry.path);
+            const git = simpleGit(entry.path, { timeout: { block: 300000 } });
             const remotes = await git.getRemotes();
             const remote = remotes.find(r => r.name === 'origin') || remotes[0];
             if (remote) await git.fetch([remote.name]);
             await poolRepo.updateLastFetched(entry.id);
+            logger.info(`Background fetch complete for ${repoName} pool worktree ${entry.id}`);
           } catch (fetchErr) {
             logger.warn(`Background fetch failed for ${entry.id}: ${fetchErr.message}`);
           }
         }
-      } catch (err) {
-        logger.warn(`Background pool fetch error for ${repoName}: ${err.message}`);
-      } finally {
-        fetchInProgress = false;
       }
-    }, intervalMs);
+    } catch (err) {
+      logger.error(`Background pool fetch error: ${err.message}`, err);
+    } finally {
+      fetchInProgress = false;
+    }
+  }, POOL_FETCH_TICK_MS);
 
-    // Don't keep the process alive just for background fetches
-    if (timer.unref) timer.unref();
-  }
+  // Don't keep the process alive just for background fetches
+  if (timer.unref) timer.unref();
+
+  logger.info(`Background pool fetch ticker started (checking every ${POOL_FETCH_TICK_MS / 1000}s)`);
 }
 
 /**
