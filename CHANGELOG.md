@@ -1,5 +1,35 @@
 # Changelog
 
+## 3.2.0
+
+### Minor Changes
+
+- 6339012: Add notification sounds for analysis and setup completion
+
+  Play a system sound when AI analysis completes or PR setup finishes, so users working in other windows get an audible alert. Sounds are played server-side using platform-native commands (macOS `afplay`, Linux `paplay`, Windows PowerShell) via a new `POST /api/play-sound` endpoint, bypassing browser autoplay restrictions.
+
+  A bell icon in the header toolbar opens a dropdown to toggle sounds per event type. Preferences are stored in localStorage and default to off. The bell icon swaps between bell/bell-slash (Octicons) to indicate state. Setup sounds are PR-mode only (local setup is instant).
+
+- 1a7a911: Add stack review support for analyzing full PR stacks
+
+  - Detect PR stacks via GitHub GraphQL branch-chain walking (works for any reviewer, not just the PR author)
+  - Stack navigation dropdown in the PR header to browse between stacked PRs
+  - "Analyze Stack" option to run AI analysis across all PRs in a stack sequentially
+  - Stack progress modal with per-PR status tracking and background mode
+  - Stack analysis dialog for selecting which PRs to include in the analysis
+  - Stack-info endpoint returns enriched stack data with analysis status and worktree ownership
+
+### Patch Changes
+
+- ff6f779: Improve Analyze Stack dialog layout and analyzed badge accuracy
+
+  - Two-line PR items: title on first line, branch name (with icon) on second line
+  - Wider dialog (680px) with larger scroll area (50vh) for long stacks
+  - "analyzed" badge now only shows when analysis matches current head SHA
+  - Neutral blue color for analyzed badge instead of green
+
+- fc8878f: Play notification sound when analysis completes in the progress dialog
+
 ## 3.1.4
 
 ### Patch Changes
