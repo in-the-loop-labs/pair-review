@@ -12085,6 +12085,25 @@ body.resizing * {
   padding: 0;
 }
 
+.chat-panel__message--assistant .chat-panel__bubble table {
+  border-collapse: collapse;
+  font-size: 12px;
+  margin: 8px 0;
+  overflow-x: auto;
+  display: block;
+}
+
+.chat-panel__message--assistant .chat-panel__bubble th,
+.chat-panel__message--assistant .chat-panel__bubble td {
+  border: 1px solid var(--color-border-primary);
+  padding: 4px 8px;
+}
+
+.chat-panel__message--assistant .chat-panel__bubble th {
+  background: var(--color-bg-tertiary);
+  font-weight: 600;
+}
+
 .chat-panel__message--assistant .chat-panel__bubble ul,
 .chat-panel__message--assistant .chat-panel__bubble ol {
   margin: 4px 0;
