@@ -93,16 +93,32 @@ describe('POST /api/setup/pr/:owner/:repo/:number', () => {
     expect(res.body.reviewUrl).toBe('/pr/owner/repo/42');
   });
 
-  it('falls through to setup when pool worktree has available status', async () => {
+  it('reclaims pool worktree when available but still associated with the same PR', async () => {
     seedPRMetadata(db);
     seedWorktree(db, { id: 'pool-abc' });
-    seedPoolEntry(db, { id: 'pool-abc', status: 'available' });
+    seedPoolEntry(db, { id: 'pool-abc', status: 'available', prNumber: 42 });
 
     const app = createApp(db, undefined, { withPool: true });
     const res = await request(app).post('/api/setup/pr/owner/repo/42');
 
     expect(res.status).toBe(200);
-    // Should NOT return existing: true — should start setup
+    expect(res.body.existing).toBe(true);
+    expect(res.body.reviewUrl).toBe('/pr/owner/repo/42');
+    // Pool entry should be reclaimed as in_use
+    const poolEntry = db.prepare('SELECT status, current_review_id FROM worktree_pool WHERE id = ?').get('pool-abc');
+    expect(poolEntry.status).toBe('in_use');
+    expect(poolEntry.current_review_id).toBeTruthy();
+  });
+
+  it('falls through to setup when pool worktree was reassigned to a different PR', async () => {
+    seedPRMetadata(db);
+    seedWorktree(db, { id: 'pool-abc' });
+    seedPoolEntry(db, { id: 'pool-abc', status: 'available', prNumber: 99 });
+
+    const app = createApp(db, undefined, { withPool: true });
+    const res = await request(app).post('/api/setup/pr/owner/repo/42');
+
+    expect(res.status).toBe(200);
     expect(res.body.existing).toBeUndefined();
     expect(res.body.setupId).toBeTruthy();
   });

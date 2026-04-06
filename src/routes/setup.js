@@ -16,7 +16,7 @@ const { activeSetups, broadcastSetupProgress } = require('./shared');
 const { setupPRReview } = require('../setup/pr-setup');
 const { setupLocalReview } = require('../setup/local-setup');
 const { getGitHubToken, expandPath } = require('../config');
-const { queryOne } = require('../database');
+const { queryOne, ReviewRepository } = require('../database');
 const { normalizeRepository } = require('../utils/paths');
 const logger = require('../utils/logger');
 
@@ -99,6 +99,15 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
         const poolLifecycle = req.app.get('poolLifecycle');
         const poolEntry = poolLifecycle ? await poolLifecycle.poolRepo.getPoolEntry(worktree.id) : null;
         if (poolEntry && poolEntry.status !== 'in_use') {
+          if (poolEntry.status === 'available' && poolEntry.current_pr_number === prNumber) {
+            // Still associated with this PR — reclaim without re-setup
+            logger.info(`Reclaiming pool worktree ${worktree.id} for ${repository} #${prNumber} (was ${poolEntry.status})`);
+            await poolLifecycle.poolRepo.markInUse(poolEntry.id, prNumber);
+            const reviewRepo = new ReviewRepository(db);
+            const { review } = await reviewRepo.getOrCreate({ prNumber, repository });
+            await poolLifecycle.poolRepo.setCurrentReviewId(poolEntry.id, review.id);
+            return res.json({ existing: true, reviewUrl: `/pr/${owner}/${repo}/${prNumber}` });
+          }
           logger.info(`Pool worktree ${worktree.id} for ${repository} #${prNumber} is ${poolEntry.status}, re-running setup to reacquire`);
         } else {
           return res.json({ existing: true, reviewUrl: `/pr/${owner}/${repo}/${prNumber}` });
