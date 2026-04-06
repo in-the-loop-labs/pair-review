@@ -14,6 +14,7 @@ class RepoSettingsPage {
     this.providers = {};
     this.selectedProvider = null;
     this.councils = [];
+    this.worktreeData = null;
 
     this.init();
   }
@@ -39,6 +40,9 @@ class RepoSettingsPage {
 
     // Load settings
     await this.loadSettings();
+
+    // Load worktrees (non-blocking, section stays hidden on error)
+    await this.loadWorktrees();
   }
 
   /**
@@ -247,6 +251,22 @@ class RepoSettingsPage {
     const clearLocalPathBtn = document.getElementById('clear-local-path');
     if (clearLocalPathBtn) {
       clearLocalPathBtn.addEventListener('click', () => this.handleClearLocalPath());
+    }
+
+    // Worktree actions (delegated)
+    const worktreesContent = document.getElementById('worktrees-content');
+    if (worktreesContent) {
+      worktreesContent.addEventListener('click', (e) => {
+        const deleteBtn = e.target.closest('.worktree-delete-btn');
+        if (deleteBtn) {
+          this.deleteWorktree(deleteBtn.dataset.worktreeId);
+          return;
+        }
+        const deleteAllBtn = e.target.closest('.worktree-delete-all-btn');
+        if (deleteAllBtn) {
+          this.deleteAllWorktrees();
+        }
+      });
     }
 
     // Warn before leaving with unsaved changes
@@ -848,6 +868,232 @@ class RepoSettingsPage {
       };
       this.currentSettings = { ...this.originalSettings };
       this.updateUI();
+    }
+  }
+
+  /**
+   * Load worktree data for the current repository
+   */
+  async loadWorktrees() {
+    if (!this.owner || !this.repo) return;
+
+    try {
+      const response = await fetch(`/api/repos/${this.owner}/${this.repo}/worktrees`);
+      if (!response.ok) {
+        throw new Error('Failed to load worktrees');
+      }
+      this.worktreeData = await response.json();
+      this.renderWorktrees();
+    } catch (error) {
+      console.error('Error loading worktrees:', error);
+    }
+  }
+
+  /**
+   * Render the worktrees section content
+   */
+  renderWorktrees() {
+    const section = document.getElementById('worktrees-section');
+    const content = document.getElementById('worktrees-content');
+    if (!section || !content) return;
+
+    if (!this.worktreeData) return;
+
+    section.style.display = '';
+
+    const pool = this.worktreeData.pool || {};
+    const worktrees = this.worktreeData.worktrees || [];
+    let html = '';
+
+    // Pool config banner
+    if (pool.configured) {
+      const countLabel = `${pool.current_count} / ${pool.size}`;
+      const intervalLabel = pool.fetch_interval_minutes ? pool.fetch_interval_minutes + ' min' : 'Disabled';
+      let hintHtml = '';
+      if (pool.current_count < pool.size) {
+        hintHtml = `<p class="worktree-pool-hint">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zM0 8a8 8 0 1116 0A8 8 0 010 8zm6.5-.25A.75.75 0 017.25 7h1a.75.75 0 01.75.75v2.75h.25a.75.75 0 010 1.5h-2a.75.75 0 010-1.5h.25v-2h-.25a.75.75 0 01-.75-.75zM8 6a1 1 0 100-2 1 1 0 000 2z"/></svg>
+          Pool will create new worktrees as needed.
+        </p>`;
+      }
+      html += `<div class="worktree-pool-config">
+        <div class="worktree-pool-config-items">
+          <div class="worktree-pool-config-item">
+            <span class="worktree-pool-config-label">Pool Size</span>
+            <span class="worktree-pool-config-value">${this.escapeHtml(countLabel)}</span>
+          </div>
+          <div class="worktree-pool-config-item">
+            <span class="worktree-pool-config-label">Fetch Interval</span>
+            <span class="worktree-pool-config-value">${this.escapeHtml(intervalLabel)}</span>
+          </div>
+        </div>
+        ${hintHtml}
+      </div>`;
+    }
+
+    // Worktree list
+    if (worktrees.length > 0) {
+      html += '<div class="worktree-list">';
+      for (const wt of worktrees) {
+        const badgeHtml = wt.is_pool
+          ? '<span class="worktree-pool-badge">Pool</span>'
+          : '<span class="worktree-adhoc-badge">Ad-hoc</span>';
+        const prInfo = wt.pr_number ? '#' + wt.pr_number : 'Unassigned';
+        const branchInfo = wt.branch ? ' &middot; ' + this.escapeHtml(wt.branch) : '';
+        const fullPath = wt.path || '';
+        const diskWarning = !wt.disk_exists
+          ? '<span class="worktree-disk-warning">Missing from disk</span>'
+          : '';
+        const statusIcon = this.getWorktreeStatusIcon(wt.status);
+        const statusLabel = this.getWorktreeStatusLabel(wt.status);
+        const fetchedHtml = wt.last_fetched_at
+          ? `<span class="worktree-timestamp">Fetched ${this.formatRelativeTime(wt.last_fetched_at)}</span>`
+          : '';
+
+        html += `<div class="worktree-item">
+          <div class="worktree-item-top">
+            <div class="worktree-item-left">
+              ${badgeHtml}
+              <span class="worktree-pr-info">${prInfo}${branchInfo}</span>
+              ${diskWarning}
+            </div>
+            <div class="worktree-item-right">
+              <span class="worktree-status worktree-status--${this.escapeHtml(wt.status || 'unknown')}">
+                ${statusIcon} ${statusLabel}
+              </span>
+              ${fetchedHtml}
+              <button class="worktree-delete-btn" data-worktree-id="${this.escapeHtml(wt.id)}" title="Delete worktree">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                  <path fill-rule="evenodd" d="M6.5 1.75a.25.25 0 01.25-.25h2.5a.25.25 0 01.25.25V3h-3V1.75zm4.5 0V3h2.25a.75.75 0 010 1.5H2.75a.75.75 0 010-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75zM4.496 6.675a.75.75 0 10-1.492.15l.66 6.6A1.75 1.75 0 005.405 15h5.19a1.75 1.75 0 001.741-1.575l.66-6.6a.75.75 0 00-1.492-.15l-.66 6.6a.25.25 0 01-.249.225h-5.19a.25.25 0 01-.249-.225l-.66-6.6z"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="worktree-item-bottom">
+            <span class="worktree-path">${this.escapeHtml(fullPath)}</span>
+          </div>
+        </div>`;
+      }
+      html += '</div>';
+
+      // Delete all button
+      html += `<div class="worktree-actions">
+        <button class="worktree-delete-all-btn">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path fill-rule="evenodd" d="M6.5 1.75a.25.25 0 01.25-.25h2.5a.25.25 0 01.25.25V3h-3V1.75zm4.5 0V3h2.25a.75.75 0 010 1.5H2.75a.75.75 0 010-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75zM4.496 6.675a.75.75 0 10-1.492.15l.66 6.6A1.75 1.75 0 005.405 15h5.19a1.75 1.75 0 001.741-1.575l.66-6.6a.75.75 0 00-1.492-.15l-.66 6.6a.25.25 0 01-.249.225h-5.19a.25.25 0 01-.249-.225l-.66-6.6z"/>
+          </svg>
+          Delete All Worktrees
+        </button>
+      </div>`;
+    } else {
+      html += '<div class="worktree-empty">No worktrees found for this repository.</div>';
+    }
+
+    content.innerHTML = html;
+  }
+
+  /**
+   * Get the SVG icon for a worktree status
+   * @param {string} status
+   * @returns {string} Inline SVG string
+   */
+  getWorktreeStatusIcon(status) {
+    switch (status) {
+      case 'available':
+        return '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="4" fill="#2da44e"/></svg>';
+      case 'in_use':
+        return '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M4 4a4 4 0 0 1 8 0v2h.25c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 12.25 15h-8.5A1.75 1.75 0 0 1 2 13.25v-5.5C2 6.784 2.784 6 3.75 6H4Zm8.25 3.5h-8.5a.25.25 0 0 0-.25.25v5.5c0 .138.112.25.25.25h8.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25ZM10.5 6V4a2.5 2.5 0 1 0-5 0v2Z"/></svg>';
+      case 'switching':
+        return '<svg class="worktree-icon-spin" width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 2.5a5.5 5.5 0 00-5.23 3.79.75.75 0 01-1.42-.48A7.001 7.001 0 0115 8a7 7 0 01-13.65 2.19.75.75 0 011.42-.48A5.5 5.5 0 108 2.5z"/></svg>';
+      case 'creating':
+        return '<svg class="worktree-icon-spin" width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 2.5a5.5 5.5 0 00-5.23 3.79.75.75 0 01-1.42-.48A7.001 7.001 0 0115 8a7 7 0 01-13.65 2.19.75.75 0 011.42-.48A5.5 5.5 0 108 2.5z"/></svg>';
+      case 'active':
+        return '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="4" fill="#0969da"/></svg>';
+      default:
+        return '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="4" fill="#8b949e"/></svg>';
+    }
+  }
+
+  /**
+   * Get the display label for a worktree status
+   * @param {string} status
+   * @returns {string}
+   */
+  getWorktreeStatusLabel(status) {
+    switch (status) {
+      case 'available': return 'Available';
+      case 'in_use': return 'In use';
+      case 'switching': return 'Switching';
+      case 'creating': return 'Creating';
+      case 'active': return 'Active';
+      default: return status || 'Unknown';
+    }
+  }
+
+
+
+  /**
+   * Format an ISO timestamp as a human-readable relative time string
+   * @param {string} isoString
+   * @returns {string}
+   */
+  formatRelativeTime(isoString) {
+    if (!isoString) return '';
+    const seconds = Math.floor((Date.now() - new Date(isoString).getTime()) / 1000);
+    if (seconds < 60) return 'just now';
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return minutes + 'm ago';
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return hours + 'h ago';
+    const days = Math.floor(hours / 24);
+    if (days === 1) return 'yesterday';
+    return days + 'd ago';
+  }
+
+  /**
+   * Delete a single worktree by ID
+   * @param {string} worktreeId
+   */
+  async deleteWorktree(worktreeId) {
+    if (!confirm('Delete this worktree? This removes it from disk and cannot be undone.')) return;
+
+    try {
+      const response = await fetch(`/api/repos/${this.owner}/${this.repo}/worktrees/${worktreeId}`, {
+        method: 'DELETE'
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to delete worktree');
+      }
+      this.showToast('success', 'Worktree deleted');
+      await this.loadWorktrees();
+    } catch (error) {
+      this.showToast('error', 'Failed to delete worktree: ' + error.message);
+    }
+  }
+
+  /**
+   * Delete all worktrees for the current repository
+   */
+  async deleteAllWorktrees() {
+    const count = this.worktreeData && this.worktreeData.worktrees
+      ? this.worktreeData.worktrees.length
+      : 0;
+    if (!confirm(`Delete all ${count} worktree(s)? This removes them from disk and cannot be undone.`)) return;
+
+    try {
+      const response = await fetch(`/api/repos/${this.owner}/${this.repo}/worktrees`, {
+        method: 'DELETE'
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to delete worktrees');
+      }
+      const data = await response.json();
+      this.showToast('success', `Deleted ${data.deleted} worktree(s)`);
+      await this.loadWorktrees();
+    } catch (error) {
+      this.showToast('error', 'Failed to delete worktrees: ' + error.message);
     }
   }
 

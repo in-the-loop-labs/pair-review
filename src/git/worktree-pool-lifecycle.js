@@ -254,6 +254,7 @@ class WorktreePoolLifecycle {
 
       // Run reset_script if configured
       if (options.resetScript) {
+        logger.info(`Executing reset script: ${options.resetScript}`);
         const headRef = prData.head?.ref || prData.head_branch || '';
         const baseRef = prData.base?.ref || prData.base_branch || '';
         const headSha = prData.head?.sha || prData.head_sha || '';
@@ -439,6 +440,46 @@ class WorktreePoolLifecycle {
   async releaseAfterHeadless(worktreeId) {
     this._usageTracker.clearWorktree(worktreeId);
     await this._poolRepo.markAvailable(worktreeId);
+  }
+
+  /**
+   * Permanently destroy a pool worktree: cancel active analyses, clear
+   * in-memory tracking, remove from disk, and delete from both DB tables.
+   *
+   * Unlike releaseForDeletion (which merely marks the slot available),
+   * this removes the worktree entirely. The pool will create a replacement
+   * when the next acquireForPR call triggers reserveSlot.
+   *
+   * @param {string} worktreeId - Pool worktree ID
+   * @param {Object} [options={}]
+   * @param {Function} [options.cancelAnalyses] - Async callback(worktreeId, analysisIdSet) to cancel running analyses
+   */
+  async destroyPoolWorktree(worktreeId, { cancelAnalyses } = {}) {
+    const poolEntry = await this._poolRepo.getPoolEntry(worktreeId);
+    if (poolEntry && (poolEntry.status === 'creating' || poolEntry.status === 'switching')) {
+      throw new Error(`Cannot delete worktree ${worktreeId}: currently ${poolEntry.status}`);
+    }
+
+    const activeIds = this._usageTracker.getActiveAnalyses(worktreeId);
+    if (activeIds.size > 0 && cancelAnalyses) {
+      await cancelAnalyses(worktreeId, activeIds);
+    }
+
+    this._usageTracker.clearWorktree(worktreeId);
+
+    const record = await this._worktreeRepo.findById(worktreeId);
+    if (record && record.path) {
+      try {
+        const mgr = new this._GitWorktreeManager(this.db);
+        await mgr.cleanupWorktree(record.path);
+      } catch (err) {
+        logger.warn(`Could not clean up pool worktree ${worktreeId} from disk: ${err.message}`);
+      }
+    }
+
+    await this._poolRepo.delete(worktreeId);
+    await this._worktreeRepo.delete(worktreeId);
+    logger.info(`Destroyed pool worktree ${worktreeId}`);
   }
 
   /**

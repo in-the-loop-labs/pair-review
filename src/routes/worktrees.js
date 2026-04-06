@@ -9,7 +9,7 @@
  */
 
 const express = require('express');
-const { query, queryOne, run, ReviewRepository, WorktreePoolRepository } = require('../database');
+const { query, queryOne, run, ReviewRepository, WorktreeRepository, WorktreePoolRepository } = require('../database');
 const { setupPRReview } = require('../setup/pr-setup');
 const { GitHubApiError } = require('../github/client');
 const { GitWorktreeManager } = require('../git/worktree');
@@ -17,6 +17,7 @@ const { activeAnalyses, reviewToAnalysisId, killProcesses, broadcastProgress } =
 const { AnalysisRunRepository } = require('../database');
 const fs = require('fs').promises;
 const logger = require('../utils/logger');
+const { getRepoPoolSize, getRepoPoolFetchInterval } = require('../config');
 
 const router = express.Router();
 
@@ -436,6 +437,242 @@ router.post('/api/worktrees/bulk-delete', async (req, res) => {
       success: false,
       error: 'Failed to process bulk delete: ' + error.message
     });
+  }
+});
+
+/**
+ * Build a cancel-analyses callback for destroyPoolWorktree.
+ * Reuses the same pattern as deleteReviewById (lines 290-311).
+ */
+function buildCancelAnalysesFn(db) {
+  const analysisRunRepo = new AnalysisRunRepository(db);
+  return async (_worktreeId, analysisIdSet) => {
+    for (const analysisId of analysisIdSet) {
+      killProcesses(analysisId);
+      const analysis = activeAnalyses.get(analysisId);
+      if (analysis) {
+        const cancelledStatus = {
+          ...analysis,
+          status: 'cancelled',
+          cancelledAt: new Date().toISOString(),
+          progress: 'Cancelled — worktree deleted',
+        };
+        activeAnalyses.set(analysisId, cancelledStatus);
+        broadcastProgress(analysisId, cancelledStatus);
+        if (analysis.reviewId) reviewToAnalysisId.delete(analysis.reviewId);
+      }
+      if (analysis && analysis.runId) {
+        try { await analysisRunRepo.update(analysis.runId, { status: 'cancelled' }); } catch { /* best effort */ }
+      }
+    }
+  };
+}
+
+/**
+ * List all worktrees for a repository with pool configuration info.
+ */
+router.get('/api/repos/:owner/:repo/worktrees', async (req, res) => {
+  try {
+    const { owner, repo } = req.params;
+    const repository = `${owner}/${repo}`;
+    const db = req.app.get('db');
+    const config = req.app.get('config');
+
+    const worktreeRepo = new WorktreeRepository(db);
+    const poolRepo = new WorktreePoolRepository(db);
+
+    const poolSize = getRepoPoolSize(config, repository);
+    const fetchInterval = getRepoPoolFetchInterval(config, repository);
+
+    const [allWorktrees, poolEntries] = await Promise.all([
+      worktreeRepo.findAllByRepository(repository),
+      poolRepo.findAllForRepo(repository),
+    ]);
+
+    const poolMap = new Map(poolEntries.map(p => [p.id, p]));
+
+    const worktrees = await Promise.all(allWorktrees.map(async (wt) => {
+      const poolEntry = poolMap.get(wt.id);
+      let diskExists = false;
+      if (wt.path) {
+        try {
+          await fs.access(wt.path);
+          diskExists = true;
+        } catch { /* missing */ }
+      }
+
+      return {
+        id: wt.id,
+        is_pool: !!poolEntry,
+        status: poolEntry ? poolEntry.status : 'active',
+        pr_number: poolEntry ? poolEntry.current_pr_number : wt.pr_number,
+        branch: wt.branch,
+        path: wt.path,
+        last_fetched_at: poolEntry ? poolEntry.last_fetched_at : null,
+        last_accessed_at: wt.last_accessed_at,
+        created_at: poolEntry ? poolEntry.created_at : wt.created_at,
+        disk_exists: diskExists,
+      };
+    }));
+
+    // Include pool entries that have no corresponding worktrees record
+    // (e.g. 'creating' placeholders)
+    for (const poolEntry of poolEntries) {
+      if (!allWorktrees.some(wt => wt.id === poolEntry.id)) {
+        worktrees.push({
+          id: poolEntry.id,
+          is_pool: true,
+          status: poolEntry.status,
+          pr_number: poolEntry.current_pr_number,
+          branch: null,
+          path: poolEntry.path,
+          last_fetched_at: poolEntry.last_fetched_at,
+          last_accessed_at: null,
+          created_at: poolEntry.created_at,
+          disk_exists: false,
+        });
+      }
+    }
+
+    res.json({
+      pool: {
+        configured: poolSize > 0,
+        size: poolSize,
+        fetch_interval_minutes: fetchInterval,
+        current_count: poolEntries.length,
+      },
+      worktrees,
+    });
+  } catch (error) {
+    logger.error('Error listing worktrees:', error);
+    res.status(500).json({ error: 'Failed to list worktrees: ' + error.message });
+  }
+});
+
+/**
+ * Delete a single worktree by ID (pool or non-pool).
+ * Removes from disk and database entirely.
+ */
+router.delete('/api/repos/:owner/:repo/worktrees/:worktreeId', async (req, res) => {
+  try {
+    const { worktreeId } = req.params;
+    const db = req.app.get('db');
+    const poolLifecycle = req.app.get('poolLifecycle');
+
+    const worktreeRepo = new WorktreeRepository(db);
+    const poolRepo = new WorktreePoolRepository(db);
+
+    const isPool = await poolRepo.isPoolWorktree(worktreeId);
+
+    if (isPool) {
+      if (!poolLifecycle) {
+        return res.status(500).json({ error: 'Pool lifecycle not available' });
+      }
+      await poolLifecycle.destroyPoolWorktree(worktreeId, {
+        cancelAnalyses: buildCancelAnalysesFn(db),
+      });
+    } else {
+      const record = await worktreeRepo.findById(worktreeId);
+      if (!record) {
+        return res.status(404).json({ error: 'Worktree not found' });
+      }
+      if (record.path) {
+        try {
+          const mgr = new GitWorktreeManager(db);
+          await mgr.cleanupWorktree(record.path);
+        } catch (err) {
+          logger.warn(`Could not clean up worktree ${worktreeId} from disk: ${err.message}`);
+        }
+      }
+      await worktreeRepo.delete(worktreeId);
+    }
+
+    logger.success(`Deleted worktree ${worktreeId} (pool: ${isPool})`);
+    res.json({ success: true, message: `Worktree ${worktreeId} deleted` });
+  } catch (error) {
+    if (error.message && error.message.startsWith('Cannot delete worktree')) {
+      return res.status(409).json({ error: error.message });
+    }
+    logger.error('Error deleting worktree:', error);
+    res.status(500).json({ error: 'Failed to delete worktree: ' + error.message });
+  }
+});
+
+/**
+ * Delete all worktrees for a repository.
+ * Removes each from disk and database. Partial failures reported per-ID.
+ */
+router.delete('/api/repos/:owner/:repo/worktrees', async (req, res) => {
+  try {
+    const { owner, repo } = req.params;
+    const repository = `${owner}/${repo}`;
+    const db = req.app.get('db');
+    const poolLifecycle = req.app.get('poolLifecycle');
+
+    const worktreeRepo = new WorktreeRepository(db);
+    const poolRepo = new WorktreePoolRepository(db);
+
+    const [allWorktrees, poolEntries] = await Promise.all([
+      worktreeRepo.findAllByRepository(repository),
+      poolRepo.findAllForRepo(repository),
+    ]);
+
+    const poolIds = new Set(poolEntries.map(p => p.id));
+    const cancelFn = buildCancelAnalysesFn(db);
+
+    let deleted = 0;
+    const errors = [];
+
+    for (const wt of allWorktrees) {
+      try {
+        if (poolIds.has(wt.id)) {
+          if (poolLifecycle) {
+            await poolLifecycle.destroyPoolWorktree(wt.id, { cancelAnalyses: cancelFn });
+          } else {
+            throw new Error('Pool lifecycle not available');
+          }
+        } else {
+          if (wt.path) {
+            try {
+              const mgr = new GitWorktreeManager(db);
+              await mgr.cleanupWorktree(wt.path);
+            } catch { /* best effort */ }
+          }
+          await worktreeRepo.delete(wt.id);
+        }
+        deleted++;
+      } catch (err) {
+        errors.push({ id: wt.id, error: err.message });
+      }
+    }
+
+    // Handle pool-only entries (no worktrees record)
+    for (const pe of poolEntries) {
+      if (!allWorktrees.some(wt => wt.id === pe.id)) {
+        try {
+          if (poolLifecycle) {
+            await poolLifecycle.destroyPoolWorktree(pe.id, { cancelAnalyses: cancelFn });
+          } else {
+            throw new Error('Pool lifecycle not available');
+          }
+          deleted++;
+        } catch (err) {
+          errors.push({ id: pe.id, error: err.message });
+        }
+      }
+    }
+
+    if (deleted > 0) logger.success(`Deleted ${deleted} worktree(s) for ${repository}`);
+
+    res.json({
+      success: deleted > 0 || errors.length === 0,
+      deleted,
+      failed: errors.length,
+      errors,
+    });
+  } catch (error) {
+    logger.error('Error deleting all worktrees:', error);
+    res.status(500).json({ error: 'Failed to delete worktrees: ' + error.message });
   }
 });
 

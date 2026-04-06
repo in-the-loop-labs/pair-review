@@ -2158,6 +2158,20 @@ class WorktreeRepository {
   }
 
   /**
+   * Find all worktrees for a given repository.
+   * @param {string} repository - Repository in "owner/repo" format
+   * @returns {Promise<Array<Object>>} Array of worktree records ordered by last_accessed_at DESC
+   */
+  async findAllByRepository(repository) {
+    return await query(this.db, `
+      SELECT id, pr_number, repository, branch, path, created_at, last_accessed_at
+      FROM worktrees
+      WHERE repository = ? COLLATE NOCASE
+      ORDER BY last_accessed_at DESC
+    `, [repository]);
+  }
+
+  /**
    * Update the path of an existing worktree record
    * @param {string} id - Worktree ID
    * @param {string} newPath - New filesystem path

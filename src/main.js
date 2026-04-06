@@ -1162,7 +1162,7 @@ function startPoolBackgroundFetches(db, config) {
         const worktrees = await poolRepo.findAllForFetch(repoName);
 
         for (const entry of worktrees) {
-          logger.debug(`Background fetch for pool worktree ${entry.id} at ${entry.path}`);
+          logger.debug(`Background fetch for ${repoName} pool worktree ${entry.id} at ${entry.path}`);
           try {
             const git = simpleGit(entry.path);
             const remotes = await git.getRemotes();
