@@ -352,6 +352,50 @@ describe('WorktreePoolLifecycle', () => {
 
       expect(deps.poolRepo.markAvailable).toHaveBeenCalledWith('pair-review--xyz');
     });
+
+    it('checks out prData.head.sha instead of ref when available', async () => {
+      const prDataWithSha = {
+        head: { sha: 'deadbeef1234', ref: 'feature-branch' },
+        base: { sha: 'def456', ref: 'main' },
+      };
+
+      await lifecycle._switchPoolWorktree(poolEntry, worktreeRecord, prInfo, prDataWithSha, options);
+
+      expect(deps._mockGit.checkout).toHaveBeenCalledWith(['deadbeef1234']);
+    });
+
+    it('checks out prData.head_sha (flat format) instead of ref when available', async () => {
+      const prDataFlat = {
+        head_sha: 'flat1234abcd',
+        head_branch: 'feature-branch',
+        base_sha: 'def456',
+        base_branch: 'main',
+      };
+
+      await lifecycle._switchPoolWorktree(poolEntry, worktreeRecord, prInfo, prDataFlat, options);
+
+      expect(deps._mockGit.checkout).toHaveBeenCalledWith(['flat1234abcd']);
+    });
+
+    it('falls back to ref checkout when no head_sha in prData', async () => {
+      const prDataNoSha = {
+        head: { ref: 'feature-branch' },
+        base: { ref: 'main' },
+      };
+
+      await lifecycle._switchPoolWorktree(poolEntry, worktreeRecord, prInfo, prDataNoSha, options);
+
+      expect(deps._mockGit.checkout).toHaveBeenCalledWith(['refs/remotes/origin/pr-123']);
+    });
+
+    it('propagates error when SHA checkout fails (rollback happens)', async () => {
+      deps._mockGit.checkout.mockRejectedValue(new Error('checkout failed: unknown revision'));
+
+      await expect(lifecycle._switchPoolWorktree(poolEntry, worktreeRecord, prInfo, prData, options))
+        .rejects.toThrow('checkout failed: unknown revision');
+
+      expect(deps.poolRepo.markAvailable).toHaveBeenCalledWith('pair-review--xyz');
+    });
   });
 
   // ── _createPoolWorktree (ported from WorktreePoolManager) ───────────────
@@ -399,10 +443,10 @@ describe('WorktreePoolLifecycle', () => {
 
   // ── _refreshPoolWorktree (ported from WorktreePoolManager) ──────────────
   describe('_refreshPoolWorktree', () => {
-    it('calls refreshWorktree and marks in use', async () => {
-      const poolEntry = { id: 'pair-review--abc', path: '/tmp/worktree/pair-review--abc' };
-      const worktreeRecord = { id: 'pair-review--abc', pr_number: 123, path: '/tmp/worktree/pair-review--abc' };
+    const poolEntry = { id: 'pair-review--abc', path: '/tmp/worktree/pair-review--abc' };
+    const worktreeRecord = { id: 'pair-review--abc', pr_number: 123, path: '/tmp/worktree/pair-review--abc' };
 
+    it('calls refreshWorktree and marks in use', async () => {
       const result = await lifecycle._refreshPoolWorktree(poolEntry, worktreeRecord, prInfo, prData);
 
       expect(deps._mockWorktreeManagerInstance.refreshWorktree).toHaveBeenCalledWith(
@@ -418,6 +462,89 @@ describe('WorktreePoolLifecycle', () => {
       );
       expect(deps.poolRepo.markInUse).toHaveBeenCalledWith('pair-review--abc', 123);
       expect(result).toEqual({ worktreePath: '/tmp/worktree/pair-review--abc', worktreeId: 'pair-review--abc' });
+    });
+
+    it('skips refresh when worktree HEAD matches target SHA', async () => {
+      deps._mockGit.revparse = vi.fn().mockResolvedValue('abc123');
+
+      const result = await lifecycle._refreshPoolWorktree(poolEntry, worktreeRecord, prInfo, prData);
+
+      expect(deps._mockGit.revparse).toHaveBeenCalledWith(['HEAD']);
+      // Should NOT call refreshWorktree -- early return
+      expect(deps._mockWorktreeManagerInstance.refreshWorktree).not.toHaveBeenCalled();
+      // Should still mark in_use
+      expect(deps.poolRepo.markInUse).toHaveBeenCalledWith('pair-review--abc', 123);
+      expect(result).toEqual({ worktreePath: '/tmp/worktree/pair-review--abc', worktreeId: 'pair-review--abc' });
+    });
+
+    it('skips refresh when HEAD matches target SHA with trailing whitespace', async () => {
+      deps._mockGit.revparse = vi.fn().mockResolvedValue('abc123\n');
+
+      const result = await lifecycle._refreshPoolWorktree(poolEntry, worktreeRecord, prInfo, prData);
+
+      expect(deps._mockWorktreeManagerInstance.refreshWorktree).not.toHaveBeenCalled();
+      expect(result).toEqual({ worktreePath: '/tmp/worktree/pair-review--abc', worktreeId: 'pair-review--abc' });
+    });
+
+    it('proceeds with refresh when HEAD differs from target SHA', async () => {
+      deps._mockGit.revparse = vi.fn().mockResolvedValue('different_sha_999');
+
+      const result = await lifecycle._refreshPoolWorktree(poolEntry, worktreeRecord, prInfo, prData);
+
+      expect(deps._mockGit.revparse).toHaveBeenCalledWith(['HEAD']);
+      // HEAD differs -- should proceed with full refresh
+      expect(deps._mockWorktreeManagerInstance.refreshWorktree).toHaveBeenCalled();
+      expect(deps.poolRepo.markInUse).toHaveBeenCalledWith('pair-review--abc', 123);
+      expect(result).toEqual({ worktreePath: '/tmp/worktree/pair-review--abc', worktreeId: 'pair-review--abc' });
+    });
+
+    it('proceeds with refresh when revparse throws (graceful fallback)', async () => {
+      deps._mockGit.revparse = vi.fn().mockRejectedValue(new Error('not a git repo'));
+
+      const result = await lifecycle._refreshPoolWorktree(poolEntry, worktreeRecord, prInfo, prData);
+
+      // Error checking HEAD should not block refresh -- falls through to refreshWorktree
+      expect(deps._mockWorktreeManagerInstance.refreshWorktree).toHaveBeenCalled();
+      expect(result).toEqual({ worktreePath: '/tmp/worktree/pair-review--abc', worktreeId: 'pair-review--abc' });
+    });
+
+    it('proceeds with refresh when no target SHA is available', async () => {
+      const prDataNoSha = {
+        head: { ref: 'feature-branch' },
+        base: { ref: 'main' },
+      };
+
+      const result = await lifecycle._refreshPoolWorktree(poolEntry, worktreeRecord, prInfo, prDataNoSha);
+
+      // No SHA to compare -- should skip the early-return check entirely
+      expect(deps._mockWorktreeManagerInstance.refreshWorktree).toHaveBeenCalled();
+      expect(result).toEqual({ worktreePath: '/tmp/worktree/pair-review--abc', worktreeId: 'pair-review--abc' });
+    });
+
+    it('checks out targetSha after refreshWorktree when HEAD differs', async () => {
+      deps._mockGit.revparse = vi.fn().mockResolvedValue('different_sha_999');
+
+      await lifecycle._refreshPoolWorktree(poolEntry, worktreeRecord, prInfo, prData);
+
+      // refreshWorktree should have been called first
+      expect(deps._mockWorktreeManagerInstance.refreshWorktree).toHaveBeenCalled();
+      // Then an explicit checkout of the target SHA
+      expect(deps._mockGit.checkout).toHaveBeenCalledWith(['abc123']);
+    });
+
+    it('falls back gracefully when targetSha checkout fails after refreshWorktree', async () => {
+      deps._mockGit.revparse = vi.fn().mockResolvedValue('different_sha_999');
+      deps._mockGit.checkout.mockRejectedValue(new Error('fatal: reference is not a tree: abc123'));
+
+      // Should NOT throw -- falls back to FETCH_HEAD with a warning
+      const result = await lifecycle._refreshPoolWorktree(poolEntry, worktreeRecord, prInfo, prData);
+
+      expect(deps._mockWorktreeManagerInstance.refreshWorktree).toHaveBeenCalled();
+      expect(deps._mockGit.checkout).toHaveBeenCalledWith(['abc123']);
+      // Should still succeed and return the worktree path
+      expect(result).toEqual({ worktreePath: '/tmp/worktree/pair-review--abc', worktreeId: 'pair-review--abc' });
+      // Should still mark in_use
+      expect(deps.poolRepo.markInUse).toHaveBeenCalledWith('pair-review--abc', 123);
     });
   });
 

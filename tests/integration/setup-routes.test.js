@@ -147,4 +147,59 @@ describe('POST /api/setup/pr/:owner/:repo/:number', () => {
     expect(res.body.existing).toBeUndefined();
     expect(res.body.setupId).toBeTruthy();
   });
+
+  it('passes restoreMetadata to setupPRReview when pr_data has head_sha', async () => {
+    // Seed PR metadata WITH pr_data containing head_sha
+    const now = new Date().toISOString();
+    const prDataJson = JSON.stringify({ title: 'Test PR', head_sha: 'abc123', head_branch: 'feature' });
+    db.prepare(
+      'INSERT INTO pr_metadata (pr_number, repository, title, pr_data, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(42, 'owner/repo', 'Test PR', prDataJson, now, now);
+    // No worktree row — forces setup to run
+
+    const app = createApp(db);
+    const res = await request(app).post('/api/setup/pr/owner/repo/42');
+
+    expect(res.status).toBe(200);
+    expect(res.body.setupId).toBeTruthy();
+
+    // Verify setupPRReview was called with restoreMetadata
+    expect(prSetupModule.setupPRReview).toHaveBeenCalledOnce();
+    const callArgs = prSetupModule.setupPRReview.mock.calls[0][0];
+    expect(callArgs.restoreMetadata).toBeTruthy();
+    expect(callArgs.restoreMetadata.head_sha).toBe('abc123');
+  });
+
+  it('passes null restoreMetadata when pr_data lacks head_sha', async () => {
+    // Seed PR metadata with pr_data that has no head_sha
+    const now = new Date().toISOString();
+    const prDataJson = JSON.stringify({ title: 'Test PR', body: 'no sha here' });
+    db.prepare(
+      'INSERT INTO pr_metadata (pr_number, repository, title, pr_data, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(42, 'owner/repo', 'Test PR', prDataJson, now, now);
+
+    const app = createApp(db);
+    const res = await request(app).post('/api/setup/pr/owner/repo/42');
+
+    expect(res.status).toBe(200);
+    expect(res.body.setupId).toBeTruthy();
+
+    expect(prSetupModule.setupPRReview).toHaveBeenCalledOnce();
+    const callArgs = prSetupModule.setupPRReview.mock.calls[0][0];
+    expect(callArgs.restoreMetadata).toBeNull();
+  });
+
+  it('passes null restoreMetadata when no existing PR metadata', async () => {
+    // No PR metadata seeded at all
+
+    const app = createApp(db);
+    const res = await request(app).post('/api/setup/pr/owner/repo/42');
+
+    expect(res.status).toBe(200);
+    expect(res.body.setupId).toBeTruthy();
+
+    expect(prSetupModule.setupPRReview).toHaveBeenCalledOnce();
+    const callArgs = prSetupModule.setupPRReview.mock.calls[0][0];
+    expect(callArgs.restoreMetadata).toBeNull();
+  });
 });

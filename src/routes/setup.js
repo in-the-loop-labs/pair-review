@@ -81,7 +81,7 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
     const repository = normalizeRepository(owner, repo);
     const existingPR = await queryOne(
       db,
-      'SELECT id FROM pr_metadata WHERE pr_number = ? AND repository = ? COLLATE NOCASE',
+      'SELECT id, pr_data FROM pr_metadata WHERE pr_number = ? AND repository = ? COLLATE NOCASE',
       [prNumber, repository]
     );
     if (existingPR) {
@@ -117,6 +117,20 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
       }
     }
 
+    // If we have stored PR data with a head_sha, pass it to setupPRReview
+    // so it can attempt restore mode (skip GitHub fetch + diff regeneration).
+    let restoreMetadata = null;
+    if (existingPR && existingPR.pr_data) {
+      try {
+        const parsed = JSON.parse(existingPR.pr_data);
+        if (parsed.head_sha) {
+          restoreMetadata = parsed;
+        }
+      } catch (e) {
+        logger.warn(`Could not parse stored pr_data for ${repository} #${prNumber}`);
+      }
+    }
+
     // Start the async setup
     const setupId = crypto.randomUUID();
 
@@ -130,6 +144,7 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
           githubToken,
           config,
           poolLifecycle: req.app.get('poolLifecycle'),
+          restoreMetadata,
           onProgress: (progress) => {
             sendSetupEvent(setupId, 'step', progress);
           }

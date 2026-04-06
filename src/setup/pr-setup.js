@@ -11,7 +11,7 @@
  *   - setupPRReview: full orchestrator that wires the above together
  */
 
-const { run, queryOne, WorktreeRepository, RepoSettingsRepository } = require('../database');
+const { run, queryOne, WorktreeRepository, RepoSettingsRepository, ReviewRepository } = require('../database');
 const { GitWorktreeManager } = require('../git/worktree');
 const { WorktreePoolLifecycle } = require('../git/worktree-pool-lifecycle');
 const { GitHubClient } = require('../github/client');
@@ -370,6 +370,18 @@ async function findRepositoryPath({ db, owner, repo, repository, prNumber, confi
 }
 
 /**
+ * Detect git errors indicating a SHA doesn't exist in the local repository.
+ * Used to trigger fallback from restore mode to fresh setup.
+ */
+function isShaNotFoundError(err) {
+  const msg = (err.message || '').toLowerCase();
+  return msg.includes('did not match any') ||
+         msg.includes('not a valid object') ||
+         msg.includes('reference is not a tree') ||
+         msg.includes('bad object');
+}
+
+/**
  * Full PR review setup orchestrator.
  *
  * Verifies repository access, fetches PR data, discovers (or clones) the
@@ -384,30 +396,41 @@ async function findRepositoryPath({ db, owner, repo, repository, prNumber, confi
  * @param {string} params.githubToken - GitHub PAT
  * @param {Object} [params.config] - Application config (for monorepo path lookup)
  * @param {import('../git/worktree-pool-lifecycle').WorktreePoolLifecycle} [params.poolLifecycle] - Shared pool lifecycle instance (avoids creating a fresh singleton)
+ * @param {Object} [params.restoreMetadata] - Stored PR data for restore mode (skips GitHub fetch + diff)
  * @param {Function} [params.onProgress] - Optional progress callback
  * @returns {Promise<{ reviewUrl: string, title: string }>}
  */
-async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, onProgress, poolLifecycle: externalPoolLifecycle }) {
+async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, onProgress, poolLifecycle: externalPoolLifecycle, restoreMetadata }) {
   const repository = normalizeRepository(owner, repo);
   const progress = onProgress || (() => {});
 
-  // ------------------------------------------------------------------
-  // Step: verify - Verify repository access
-  // ------------------------------------------------------------------
-  progress({ step: 'verify', status: 'running', message: 'Verifying repository access...' });
-  const githubClient = new GitHubClient(githubToken);
-  const repoExists = await githubClient.repositoryExists(owner, repo);
-  if (!repoExists) {
-    throw new Error(`Repository ${owner}/${repo} not found`);
-  }
-  progress({ step: 'verify', status: 'completed', message: 'Repository access verified.' });
+  const isRestore = !!(restoreMetadata && restoreMetadata.head_sha);
+  let prData;
+  let githubClient = null;
 
-  // ------------------------------------------------------------------
-  // Step: fetch - Fetch PR data from GitHub
-  // ------------------------------------------------------------------
-  progress({ step: 'fetch', status: 'running', message: 'Fetching pull request data from GitHub...' });
-  const prData = await githubClient.fetchPullRequest(owner, repo, prNumber);
-  progress({ step: 'fetch', status: 'completed', message: 'Pull request data fetched.' });
+  if (isRestore) {
+    prData = restoreMetadata;
+    progress({ step: 'verify', status: 'completed', message: 'Restoring previous review state.' });
+    progress({ step: 'fetch', status: 'completed', message: 'Using stored PR data.' });
+  } else {
+    // ------------------------------------------------------------------
+    // Step: verify - Verify repository access
+    // ------------------------------------------------------------------
+    progress({ step: 'verify', status: 'running', message: 'Verifying repository access...' });
+    githubClient = new GitHubClient(githubToken);
+    const repoExists = await githubClient.repositoryExists(owner, repo);
+    if (!repoExists) {
+      throw new Error(`Repository ${owner}/${repo} not found`);
+    }
+    progress({ step: 'verify', status: 'completed', message: 'Repository access verified.' });
+
+    // ------------------------------------------------------------------
+    // Step: fetch - Fetch PR data from GitHub
+    // ------------------------------------------------------------------
+    progress({ step: 'fetch', status: 'running', message: 'Fetching pull request data from GitHub...' });
+    prData = await githubClient.fetchPullRequest(owner, repo, prNumber);
+    progress({ step: 'fetch', status: 'completed', message: 'Pull request data fetched.' });
+  }
 
   // ------------------------------------------------------------------
   // Step: repo - Find (or clone) a local repository
@@ -435,6 +458,13 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, o
   let worktreeManager;
   let poolWorktreeId = null;
   let poolLifecycle = null;
+
+  // Wrap worktree acquisition and all subsequent steps in a try/catch so that:
+  // 1. If any step between acquireForPR and setCurrentReviewId throws, the pool
+  //    worktree is released back to the available state.
+  // 2. In restore mode, SHA-not-found errors trigger a fallback to fresh setup.
+  try {
+
   if (poolSize > 0) {
     // Pool mode: use WorktreePoolLifecycle
     progress({ step: 'worktree', status: 'running', message: 'Acquiring pool worktree...' });
@@ -458,12 +488,52 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, o
     progress({ step: 'worktree', status: 'completed', message: `Worktree created at ${worktreePath}` });
   }
 
-  // Wrap the remaining steps in a try/catch so that if any step between
-  // acquireForPR and setCurrentReviewId throws, the pool worktree is released
-  // back to the available state. Without this, the worktree stays permanently
-  // in_use with no review owner, and the idle grace period mechanism can
-  // never reclaim it.
-  try {
+    if (isRestore) {
+      // ── Restore mode: skip sparse, diff, storePRData ─────────────────
+      // Metadata and diff are already stored from the previous session.
+      // Just ensure the review record exists and wire up pool ownership.
+      progress({ step: 'sparse', status: 'completed', message: 'Using stored checkout (restore mode).' });
+      progress({ step: 'diff', status: 'completed', message: 'Using stored diff (restore mode).' });
+      progress({ step: 'store', status: 'running', message: 'Restoring review state...' });
+
+      // Ensure worktree record exists (pool path manages this via switchPR,
+      // but non-pool path needs it)
+      if (!poolWorktreeId) {
+        const worktreeRepo = new WorktreeRepository(db);
+        await worktreeRepo.getOrCreate({
+          prNumber,
+          repository,
+          branch: prData.head_branch || prData.head?.ref || '',
+          path: worktreePath
+        });
+      }
+
+      // Ensure review record exists
+      const reviewRepo = new ReviewRepository(db);
+      const { review } = await reviewRepo.getOrCreate({ prNumber, repository });
+      const reviewId = review.id;
+
+      // Wire up pool ownership
+      if (poolWorktreeId && poolLifecycle) {
+        await poolLifecycle.setReviewOwner(poolWorktreeId, reviewId);
+      }
+
+      // Register repo path if not already known
+      if (knownPath === null && repositoryPath) {
+        const repoSettingsRepo = new RepoSettingsRepository(db);
+        const currentPath = await repoSettingsRepo.getLocalPath(repository);
+        if (path.resolve(currentPath || '') !== path.resolve(repositoryPath)) {
+          await repoSettingsRepo.setLocalPath(repository, repositoryPath);
+          logger.info(`Registered repository location: ${repositoryPath}`);
+        }
+      }
+
+      progress({ step: 'store', status: 'completed', message: 'Restored to previous review state.' });
+      const reviewUrl = `/pr/${owner}/${repo}/${prNumber}`;
+      return { reviewUrl, title: prData.title };
+    }
+
+    // ── Fresh mode: existing sparse, diff, storePRData flow (unchanged) ──
 
   // ------------------------------------------------------------------
   // Step: sparse - Expand sparse-checkout before generating diff
@@ -546,6 +616,14 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, o
   return { reviewUrl, title: prData.title };
 
   } catch (err) {
+    // If restore mode failed because the stored SHA no longer exists,
+    // fall back to a full fresh setup.
+    if (isRestore && isShaNotFoundError(err)) {
+      logger.warn(`Restore to stored SHA failed, falling back to fresh setup: ${err.message}`);
+      // Retry without restoreMetadata.
+      return setupPRReview({ db, owner, repo, prNumber, githubToken, config, onProgress, poolLifecycle: externalPoolLifecycle });
+    }
+
     // Release the pool worktree so it doesn't stay permanently in_use.
     // After acquireForPR marks the worktree in_use, if any subsequent step
     // (sparse-checkout, diff generation, storePRData) throws before
@@ -564,4 +642,4 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, o
   }
 }
 
-module.exports = { setupPRReview, storePRData, registerRepositoryLocation, findRepositoryPath };
+module.exports = { setupPRReview, storePRData, registerRepositoryLocation, findRepositoryPath, isShaNotFoundError };

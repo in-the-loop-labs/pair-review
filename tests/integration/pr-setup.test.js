@@ -30,7 +30,7 @@ import path from 'path';
 const configModule = require('../../src/config');
 const localReview = require('../../src/local-review');
 const { GitWorktreeManager } = require('../../src/git/worktree');
-const { RepoSettingsRepository, WorktreePoolRepository, run, queryOne } = require('../../src/database');
+const { RepoSettingsRepository, WorktreePoolRepository, ReviewRepository, run, queryOne } = require('../../src/database');
 const { GitHubClient } = require('../../src/github/client');
 const worktreePoolLifecycleModule = require('../../src/git/worktree-pool-lifecycle');
 const hooksPayloads = require('../../src/hooks/payloads');
@@ -66,7 +66,7 @@ vi.spyOn(GitWorktreeManager.prototype, 'getChangedFiles');
 vi.spyOn(hooksPayloads, 'fireReviewStartedHook');
 
 // NOW load pr-setup.js - its destructured variables will capture our spies
-const { findRepositoryPath, storePRData, setupPRReview } = require('../../src/setup/pr-setup');
+const { findRepositoryPath, storePRData, setupPRReview, isShaNotFoundError } = require('../../src/setup/pr-setup');
 
 // The test repo root is a real git directory we can use for success cases
 const TEST_REPO_ROOT = path.resolve(__dirname, '../..');
@@ -837,5 +837,254 @@ describe('pool-enabled PR setup', () => {
     // Neither acquire nor release should have been called
     expect(worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.acquireForPR).not.toHaveBeenCalled();
     expect(worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.releaseAfterHeadless).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================================
+// isShaNotFoundError helper
+// ============================================================================
+
+describe('isShaNotFoundError', () => {
+  it('should detect "did not match any" errors', () => {
+    expect(isShaNotFoundError(new Error('pathspec \'abc123\' did not match any file(s) known to git'))).toBe(true);
+  });
+
+  it('should detect "not a valid object" errors', () => {
+    expect(isShaNotFoundError(new Error('fatal: not a valid object name abc123'))).toBe(true);
+  });
+
+  it('should detect "reference is not a tree" errors', () => {
+    expect(isShaNotFoundError(new Error('fatal: reference is not a tree: abc123'))).toBe(true);
+  });
+
+  it('should detect "bad object" errors', () => {
+    expect(isShaNotFoundError(new Error('fatal: bad object abc123'))).toBe(true);
+  });
+
+  it('should return false for unrelated errors', () => {
+    expect(isShaNotFoundError(new Error('network timeout'))).toBe(false);
+    expect(isShaNotFoundError(new Error('permission denied'))).toBe(false);
+  });
+
+  it('should handle errors without a message', () => {
+    expect(isShaNotFoundError({})).toBe(false);
+    expect(isShaNotFoundError({ message: null })).toBe(false);
+  });
+});
+
+// ============================================================================
+// Restore mode (setupPRReview with restoreMetadata)
+// ============================================================================
+// When restoreMetadata is provided (with a valid head_sha), setupPRReview
+// should skip the GitHub verify/fetch steps, skip sparse-checkout and diff
+// generation, and just ensure the review record + pool ownership are wired up.
+
+describe('restore mode (setupPRReview with restoreMetadata)', () => {
+  let db;
+  let testConfig;
+
+  const owner = 'owner';
+  const repo = 'repo';
+  const prNumber = 42;
+  const repository = 'owner/repo';
+  const githubToken = 'test-token';
+
+  const mockRestoreMetadata = {
+    title: 'Restored PR',
+    body: 'Description from stored data',
+    author: 'octocat',
+    base_branch: 'main',
+    head_branch: 'feature',
+    base_sha: 'base000',
+    head_sha: 'head111',
+    changed_files: 2,
+  };
+
+  const poolWorktreePath = '/tmp/pool/wt-pool-abc';
+  const poolWorktreeId = 'pool-abc';
+
+  beforeEach(async () => {
+    db = await createTestDatabase();
+    vi.clearAllMocks();
+
+    testConfig = {
+      github_token: githubToken,
+      monorepos: {},
+    };
+
+    // Config spies: pool enabled (poolSize > 0)
+    configModule.getConfigDir.mockReturnValue('/tmp/.pair-review-test');
+    configModule.getRepoPath.mockReturnValue(TEST_REPO_ROOT);
+    configModule.resolveRepoOptions.mockReturnValue({
+      checkoutScript: null,
+      checkoutTimeout: 300000,
+      worktreeConfig: null,
+      resetScript: null,
+      poolSize: 3,
+      poolFetchIntervalMinutes: null,
+    });
+    configModule.getRepoPoolSize.mockReturnValue(3);
+    configModule.getRepoResetScript.mockReturnValue(null);
+
+    // findRepositoryPath dependencies
+    localReview.findMainGitRoot.mockResolvedValue(TEST_REPO_ROOT);
+    GitWorktreeManager.prototype.pathExists.mockImplementation(async (p) => {
+      return p === `${TEST_REPO_ROOT}/.git`;
+    });
+
+    // Pool lifecycle spies
+    worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.acquireForPR.mockResolvedValue({
+      worktreePath: poolWorktreePath,
+      worktreeId: poolWorktreeId,
+    });
+    worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.releaseAfterHeadless.mockResolvedValue(undefined);
+    worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.setReviewOwner.mockResolvedValue(undefined);
+
+    // GitWorktreeManager prototype spies (should NOT be called in restore mode)
+    GitWorktreeManager.prototype.isSparseCheckoutEnabled.mockResolvedValue(false);
+    GitWorktreeManager.prototype.generateUnifiedDiff.mockResolvedValue('fake-diff');
+    GitWorktreeManager.prototype.getChangedFiles.mockResolvedValue([]);
+
+    // GitHub client spies (should NOT be called in restore mode)
+    GitHubClient.prototype.repositoryExists.mockResolvedValue(true);
+    GitHubClient.prototype.fetchPullRequest.mockResolvedValue(mockRestoreMetadata);
+    GitHubClient.prototype.fetchPullRequestFiles.mockResolvedValue([]);
+
+    // Suppress hook firing
+    hookRunnerModule.fireHooks.mockImplementation(() => {});
+    hooksPayloads.fireReviewStartedHook.mockResolvedValue(undefined);
+  });
+
+  afterEach(async () => {
+    if (db) {
+      await closeTestDatabase(db);
+    }
+  });
+
+  it('should skip GitHub verify and fetch when restoreMetadata is provided', async () => {
+    const result = await setupPRReview({
+      db, owner, repo, prNumber, githubToken, config: testConfig,
+      restoreMetadata: mockRestoreMetadata,
+    });
+
+    // GitHub client methods should NOT have been called
+    expect(GitHubClient.prototype.repositoryExists).not.toHaveBeenCalled();
+    expect(GitHubClient.prototype.fetchPullRequest).not.toHaveBeenCalled();
+
+    expect(result.reviewUrl).toBe('/pr/owner/repo/42');
+    expect(result.title).toBe('Restored PR');
+  });
+
+  it('should skip diff generation and sparse-checkout in restore mode', async () => {
+    await setupPRReview({
+      db, owner, repo, prNumber, githubToken, config: testConfig,
+      restoreMetadata: mockRestoreMetadata,
+    });
+
+    // Diff and sparse-checkout steps should NOT have been called
+    expect(GitWorktreeManager.prototype.generateUnifiedDiff).not.toHaveBeenCalled();
+    expect(GitWorktreeManager.prototype.getChangedFiles).not.toHaveBeenCalled();
+    expect(GitWorktreeManager.prototype.isSparseCheckoutEnabled).not.toHaveBeenCalled();
+  });
+
+  it('should create a review record in restore mode', async () => {
+    await setupPRReview({
+      db, owner, repo, prNumber, githubToken, config: testConfig,
+      restoreMetadata: mockRestoreMetadata,
+    });
+
+    // Verify review record was created
+    const review = await queryOne(
+      db,
+      'SELECT id, pr_number, repository FROM reviews WHERE pr_number = ? AND repository = ? COLLATE NOCASE',
+      [prNumber, repository]
+    );
+    expect(review).toBeTruthy();
+    expect(review.pr_number).toBe(prNumber);
+    expect(review.repository).toBe(repository);
+  });
+
+  it('should wire up pool ownership in restore mode', async () => {
+    await setupPRReview({
+      db, owner, repo, prNumber, githubToken, config: testConfig,
+      restoreMetadata: mockRestoreMetadata,
+    });
+
+    // setReviewOwner should have been called with the pool worktree ID
+    expect(worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.setReviewOwner)
+      .toHaveBeenCalledOnce();
+    expect(worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.setReviewOwner)
+      .toHaveBeenCalledWith(poolWorktreeId, expect.any(Number));
+  });
+
+  it('should fall back to fresh setup when restore fails with SHA-not-found error', async () => {
+    // Make acquireForPR throw a SHA-not-found error on the first call,
+    // then succeed on the second call (fresh mode retry)
+    worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.acquireForPR
+      .mockRejectedValueOnce(new Error('pathspec \'head111\' did not match any file(s) known to git'))
+      .mockResolvedValueOnce({
+        worktreePath: poolWorktreePath,
+        worktreeId: poolWorktreeId,
+      });
+
+    const result = await setupPRReview({
+      db, owner, repo, prNumber, githubToken, config: testConfig,
+      restoreMetadata: mockRestoreMetadata,
+    });
+
+    // Should have retried without restoreMetadata (fresh mode)
+    // The second call should use GitHub client
+    expect(GitHubClient.prototype.repositoryExists).toHaveBeenCalledOnce();
+    expect(GitHubClient.prototype.fetchPullRequest).toHaveBeenCalledOnce();
+
+    expect(result.reviewUrl).toBe('/pr/owner/repo/42');
+  });
+
+  it('should NOT fall back for non-SHA errors in restore mode', async () => {
+    // Make acquireForPR throw a generic error (not SHA-related)
+    worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.acquireForPR
+      .mockRejectedValue(new Error('disk full'));
+
+    await expect(
+      setupPRReview({
+        db, owner, repo, prNumber, githubToken, config: testConfig,
+        restoreMetadata: mockRestoreMetadata,
+      })
+    ).rejects.toThrow('disk full');
+
+    // Should NOT have retried (no fresh mode fallback for non-SHA errors)
+    expect(GitHubClient.prototype.repositoryExists).not.toHaveBeenCalled();
+  });
+
+  it('should work as before without restoreMetadata (regression)', async () => {
+    const result = await setupPRReview({
+      db, owner, repo, prNumber, githubToken, config: testConfig,
+      // No restoreMetadata — fresh mode
+    });
+
+    // GitHub client should have been called (fresh mode)
+    expect(GitHubClient.prototype.repositoryExists).toHaveBeenCalledOnce();
+    expect(GitHubClient.prototype.fetchPullRequest).toHaveBeenCalledOnce();
+
+    // Diff should have been generated
+    expect(GitWorktreeManager.prototype.generateUnifiedDiff).toHaveBeenCalledOnce();
+    expect(GitWorktreeManager.prototype.getChangedFiles).toHaveBeenCalledOnce();
+
+    expect(result.reviewUrl).toBe('/pr/owner/repo/42');
+    expect(result.title).toBe('Restored PR'); // from the mock fetchPullRequest
+  });
+
+  it('should not use restore mode when restoreMetadata lacks head_sha', async () => {
+    const metadataWithoutSha = { title: 'No SHA', body: 'test' };
+
+    const result = await setupPRReview({
+      db, owner, repo, prNumber, githubToken, config: testConfig,
+      restoreMetadata: metadataWithoutSha,
+    });
+
+    // Should have fallen through to fresh mode
+    expect(GitHubClient.prototype.repositoryExists).toHaveBeenCalledOnce();
+    expect(GitHubClient.prototype.fetchPullRequest).toHaveBeenCalledOnce();
+    expect(GitWorktreeManager.prototype.generateUnifiedDiff).toHaveBeenCalledOnce();
   });
 });

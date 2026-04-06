@@ -249,8 +249,13 @@ class WorktreePoolLifecycle {
       await git.reset(['--hard', 'HEAD']);
       await git.clean('f', ['-d']);
 
-      // Checkout new PR head
-      await git.checkout([`refs/remotes/${remoteName}/pr-${prInfo.prNumber}`]);
+      // Checkout specific head SHA (stored SHA in restore mode, latest in fresh mode)
+      const targetSha = prData.head?.sha || prData.head_sha;
+      if (targetSha) {
+        await git.checkout([targetSha]);
+      } else {
+        await git.checkout([`refs/remotes/${remoteName}/pr-${prInfo.prNumber}`]);
+      }
 
       // Run reset_script if configured
       if (options.resetScript) {
@@ -325,6 +330,21 @@ class WorktreePoolLifecycle {
    * @returns {Promise<{ worktreePath: string, worktreeId: string }>}
    */
   async _refreshPoolWorktree(poolEntry, worktreeRecord, prInfo, prData) {
+    const targetSha = prData.head?.sha || prData.head_sha;
+    if (targetSha) {
+      try {
+        const git = this._simpleGit(poolEntry.path);
+        const currentHead = (await git.revparse(['HEAD'])).trim();
+        if (currentHead === targetSha) {
+          logger.info(`Pool worktree ${poolEntry.id} already at target SHA ${targetSha.slice(0, 8)}, skipping refresh`);
+          await this._poolRepo.markInUse(poolEntry.id, prInfo.prNumber);
+          return { worktreePath: poolEntry.path, worktreeId: poolEntry.id };
+        }
+      } catch (err) {
+        logger.warn(`Could not check HEAD of pool worktree ${poolEntry.id}: ${err.message}`);
+      }
+    }
+
     const normalizedPrData = {
       head_sha: prData.head?.sha || prData.head_sha,
       head_branch: prData.head?.ref || prData.head_branch,
@@ -341,6 +361,19 @@ class WorktreePoolLifecycle {
 
     const worktreeManager = new this._GitWorktreeManager(this.db);
     await worktreeManager.refreshWorktree(worktreeRecord, normalizedPrInfo.number, normalizedPrData, normalizedPrInfo);
+
+    // refreshWorktree fetches from GitHub and resets to FETCH_HEAD, which is
+    // the latest PR head.  In restore mode targetSha may be an older commit
+    // from the cached review.  Explicitly check out the target SHA so the
+    // worktree lands on the expected commit rather than FETCH_HEAD.
+    if (targetSha) {
+      try {
+        const git = this._simpleGit(poolEntry.path);
+        await git.checkout([targetSha]);
+      } catch (err) {
+        logger.warn(`Could not checkout target SHA ${targetSha.slice(0, 8)} in pool worktree ${poolEntry.id}, continuing at FETCH_HEAD: ${err.message}`);
+      }
+    }
 
     // Ensure pool entry is marked in_use
     await this._poolRepo.markInUse(poolEntry.id, prInfo.prNumber);

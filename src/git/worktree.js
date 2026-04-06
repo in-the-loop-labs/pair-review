@@ -461,8 +461,14 @@ class GitWorktreeManager {
       }
 
       // Checkout to PR head commit
-      console.log(`Checking out to PR head commit ${prData.head_sha}...`);
-      await worktreeGit.checkout([`${remote}/pr-${prInfo.number}`]);
+      const targetSha = prData.head_sha;
+      if (targetSha) {
+        console.log(`Checking out to PR head commit ${targetSha}...`);
+        await worktreeGit.checkout([targetSha]);
+      } else {
+        console.log(`Checking out to PR head ref ${remote}/pr-${prInfo.number}...`);
+        await worktreeGit.checkout([`${remote}/pr-${prInfo.number}`]);
+      }
       
       // Verify we're at the correct commit
       const currentCommit = await worktreeGit.revparse(['HEAD']);
