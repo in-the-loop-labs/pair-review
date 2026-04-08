@@ -1155,6 +1155,7 @@ function startPoolBackgroundFetches(db, config) {
     fetchInProgress = true;
     try {
       const poolRepo = new WorktreePoolRepository(db);
+      const repoSettingsRepo = new RepoSettingsRepository(db);
 
       // Collect repos that might have pool config from either source
       const repoNames = new Set(Object.keys(config.repos || {}));
@@ -1170,27 +1171,47 @@ function startPoolBackgroundFetches(db, config) {
         const { poolSize, poolFetchIntervalMinutes } = resolvePoolConfig(config, repoName, repoSettings);
         if (!poolSize || !poolFetchIntervalMinutes) continue;
 
+        // Skip if another server instance is already fetching this repo.
+        // Pool worktrees share a git object store so concurrent fetches conflict.
+        if (await repoSettingsRepo.isFetchInProgress(repoName)) {
+          logger.info(`Background fetch skipped for ${repoName}: another instance is fetching`);
+          continue;
+        }
+
         const intervalMs = poolFetchIntervalMinutes * 60 * 1000;
         const worktrees = await poolRepo.findAllForFetch(repoName);
 
-        for (const entry of worktrees) {
-          // Skip if fetched recently (within the configured interval)
-          if (entry.last_fetched_at) {
-            const elapsed = Date.now() - new Date(entry.last_fetched_at).getTime();
-            if (elapsed < intervalMs) continue;
-          }
+        // Check if any worktree actually needs fetching before claiming the lock
+        const needsFetch = worktrees.some(entry => {
+          if (!entry.last_fetched_at) return true;
+          const elapsed = Date.now() - new Date(entry.last_fetched_at).getTime();
+          return elapsed >= intervalMs;
+        });
+        if (!needsFetch) continue;
 
-          logger.info(`Background fetch starting for ${repoName} pool worktree ${entry.id}`);
-          try {
-            const git = simpleGit(entry.path, { timeout: { block: 300000 } });
-            const remotes = await git.getRemotes();
-            const remote = remotes.find(r => r.name === 'origin') || remotes[0];
-            if (remote) await git.fetch([remote.name, '--prune']);
-            await poolRepo.updateLastFetched(entry.id);
-            logger.info(`Background fetch complete for ${repoName} pool worktree ${entry.id}`);
-          } catch (fetchErr) {
-            logger.warn(`Background fetch failed for ${entry.id}: ${fetchErr.message}`);
+        await repoSettingsRepo.markFetchStarted(repoName);
+        try {
+          for (const entry of worktrees) {
+            // Skip if fetched recently (within the configured interval)
+            if (entry.last_fetched_at) {
+              const elapsed = Date.now() - new Date(entry.last_fetched_at).getTime();
+              if (elapsed < intervalMs) continue;
+            }
+
+            logger.info(`Background fetch starting for ${repoName} pool worktree ${entry.id}`);
+            try {
+              const git = simpleGit(entry.path, { timeout: { block: 300000 } });
+              const remotes = await git.getRemotes();
+              const remote = remotes.find(r => r.name === 'origin') || remotes[0];
+              if (remote) await git.fetch([remote.name, '--prune']);
+              await poolRepo.updateLastFetched(entry.id);
+              logger.info(`Background fetch complete for ${repoName} pool worktree ${entry.id}`);
+            } catch (fetchErr) {
+              logger.warn(`Background fetch failed for ${entry.id}: ${fetchErr.message}`);
+            }
           }
+        } finally {
+          await repoSettingsRepo.markFetchFinished(repoName);
         }
       }
     } catch (err) {
