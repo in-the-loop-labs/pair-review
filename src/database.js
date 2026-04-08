@@ -20,7 +20,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 40;
+const CURRENT_SCHEMA_VERSION = 41;
 
 /**
  * Database schema SQL statements
@@ -153,6 +153,8 @@ const SCHEMA_SQL = {
       auto_branch_review INTEGER DEFAULT 0,
       pool_size INTEGER,
       pool_fetch_interval_minutes INTEGER,
+      pool_fetch_started_at TEXT,
+      pool_fetch_finished_at TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
@@ -1747,6 +1749,21 @@ const MIGRATIONS = {
     addColumnIfNotExists('repo_settings', 'pool_size', 'INTEGER');
     addColumnIfNotExists('repo_settings', 'pool_fetch_interval_minutes', 'INTEGER');
     console.log('Migration to schema version 40 complete');
+  },
+
+  41: (db) => {
+    console.log('Running migration to schema version 41: Add pool fetch coordination columns to repo_settings...');
+    const addColumnIfNotExists = (table, column, definition) => {
+      const tableInfo = db.prepare(`PRAGMA table_info(${table})`).all();
+      const columnExists = tableInfo.some(col => col.name === column);
+      if (!columnExists) {
+        db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`).run();
+        console.log(`  Added column ${column} to ${table}`);
+      }
+    };
+    addColumnIfNotExists('repo_settings', 'pool_fetch_started_at', 'TEXT');
+    addColumnIfNotExists('repo_settings', 'pool_fetch_finished_at', 'TEXT');
+    console.log('Migration to schema version 41 complete');
   }
 };
 
@@ -2810,6 +2827,51 @@ class RepoSettingsRepository {
         updated_at: now
       };
     }
+  }
+
+  /**
+   * Mark a repo-level background fetch as started.
+   * Creates a repo_settings row if one doesn't exist yet (config-only repos).
+   * @param {string} repository - Repository in owner/repo format
+   */
+  async markFetchStarted(repository) {
+    const now = new Date().toISOString();
+    const existing = await queryOne(this.db, `SELECT id FROM repo_settings WHERE repository = ? COLLATE NOCASE`, [repository]);
+    if (existing) {
+      await run(this.db, `UPDATE repo_settings SET pool_fetch_started_at = ? WHERE repository = ? COLLATE NOCASE`, [now, repository]);
+    } else {
+      await run(this.db, `INSERT INTO repo_settings (repository, pool_fetch_started_at, created_at, updated_at) VALUES (?, ?, ?, ?)`, [repository, now, now, now]);
+    }
+  }
+
+  /**
+   * Mark a repo-level background fetch as finished.
+   * @param {string} repository - Repository in owner/repo format
+   */
+  async markFetchFinished(repository) {
+    const now = new Date().toISOString();
+    await run(this.db, `UPDATE repo_settings SET pool_fetch_finished_at = ? WHERE repository = ? COLLATE NOCASE`, [now, repository]);
+  }
+
+  /**
+   * Check whether a background fetch is currently in progress for this repo.
+   * Returns true if started_at > finished_at (or finished_at is null) and
+   * started_at is within the stale guard window.
+   * @param {string} repository - Repository in owner/repo format
+   * @param {number} [staleGuardMs=600000] - Consider a fetch stale after this many ms (default 10 min)
+   * @returns {Promise<boolean>}
+   */
+  async isFetchInProgress(repository, staleGuardMs = 600000) {
+    const row = await queryOne(this.db, `SELECT pool_fetch_started_at, pool_fetch_finished_at FROM repo_settings WHERE repository = ? COLLATE NOCASE`, [repository]);
+    if (!row || !row.pool_fetch_started_at) return false;
+    const startedAt = new Date(row.pool_fetch_started_at).getTime();
+    if (row.pool_fetch_finished_at) {
+      const finishedAt = new Date(row.pool_fetch_finished_at).getTime();
+      if (finishedAt >= startedAt) return false;
+    }
+    // Started but not finished — check stale guard
+    const elapsed = Date.now() - startedAt;
+    return elapsed < staleGuardMs;
   }
 
   /**

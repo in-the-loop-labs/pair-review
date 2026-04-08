@@ -122,6 +122,8 @@ const SCHEMA_SQL = {
       auto_branch_review INTEGER DEFAULT 0,
       pool_size INTEGER,
       pool_fetch_interval_minutes INTEGER,
+      pool_fetch_started_at TEXT,
+      pool_fetch_finished_at TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     )

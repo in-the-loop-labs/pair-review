@@ -1537,6 +1537,81 @@ describe('RepoSettingsRepository', () => {
       expect(settings).toBeNull();
     });
   });
+
+  describe('pool fetch coordination', () => {
+    it('markFetchStarted sets pool_fetch_started_at on an existing row', async () => {
+      await repoSettingsRepo.saveRepoSettings('owner/repo', { default_instructions: 'test' });
+
+      await repoSettingsRepo.markFetchStarted('owner/repo');
+
+      const row = await queryOne(db, 'SELECT pool_fetch_started_at FROM repo_settings WHERE repository = ?', ['owner/repo']);
+      expect(row.pool_fetch_started_at).not.toBeNull();
+      expect(new Date(row.pool_fetch_started_at).getTime()).toBeGreaterThan(0);
+    });
+
+    it('markFetchStarted creates a repo_settings row when none exists', async () => {
+      // No prior saveRepoSettings call — row does not exist yet
+      await repoSettingsRepo.markFetchStarted('config-only/repo');
+
+      const row = await queryOne(db, 'SELECT * FROM repo_settings WHERE repository = ?', ['config-only/repo']);
+      expect(row).not.toBeNull();
+      expect(row.pool_fetch_started_at).not.toBeNull();
+      expect(row.repository).toBe('config-only/repo');
+    });
+
+    it('markFetchFinished sets pool_fetch_finished_at', async () => {
+      await repoSettingsRepo.saveRepoSettings('owner/repo', {});
+      await repoSettingsRepo.markFetchStarted('owner/repo');
+
+      await repoSettingsRepo.markFetchFinished('owner/repo');
+
+      const row = await queryOne(db, 'SELECT pool_fetch_finished_at FROM repo_settings WHERE repository = ?', ['owner/repo']);
+      expect(row.pool_fetch_finished_at).not.toBeNull();
+      expect(new Date(row.pool_fetch_finished_at).getTime()).toBeGreaterThan(0);
+    });
+
+    it('isFetchInProgress returns false when no row exists', async () => {
+      const result = await repoSettingsRepo.isFetchInProgress('nonexistent/repo');
+      expect(result).toBe(false);
+    });
+
+    it('isFetchInProgress returns false when never started', async () => {
+      await repoSettingsRepo.saveRepoSettings('owner/repo', {});
+
+      const result = await repoSettingsRepo.isFetchInProgress('owner/repo');
+      expect(result).toBe(false);
+    });
+
+    it('isFetchInProgress returns true when started but not finished', async () => {
+      await repoSettingsRepo.saveRepoSettings('owner/repo', {});
+      await repoSettingsRepo.markFetchStarted('owner/repo');
+
+      const result = await repoSettingsRepo.isFetchInProgress('owner/repo');
+      expect(result).toBe(true);
+    });
+
+    it('isFetchInProgress returns false when finished after started', async () => {
+      await repoSettingsRepo.saveRepoSettings('owner/repo', {});
+      await repoSettingsRepo.markFetchStarted('owner/repo');
+      await repoSettingsRepo.markFetchFinished('owner/repo');
+
+      const result = await repoSettingsRepo.isFetchInProgress('owner/repo');
+      expect(result).toBe(false);
+    });
+
+    it('isFetchInProgress returns false when started_at is stale', async () => {
+      await repoSettingsRepo.saveRepoSettings('owner/repo', {});
+
+      // Manually set pool_fetch_started_at to a timestamp far in the past
+      const staleTimestamp = new Date(Date.now() - 60000).toISOString();
+      await run(db, `UPDATE repo_settings SET pool_fetch_started_at = ? WHERE repository = ?`, [staleTimestamp, 'owner/repo']);
+
+      // With the default 10-minute guard the fetch would still be in progress,
+      // but with a 1ms guard it is clearly stale.
+      const result = await repoSettingsRepo.isFetchInProgress('owner/repo', 1);
+      expect(result).toBe(false);
+    });
+  });
 });
 
 // ============================================================================
