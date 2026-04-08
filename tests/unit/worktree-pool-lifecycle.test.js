@@ -143,7 +143,11 @@ describe('WorktreePoolLifecycle', () => {
       expect(result.worktreeId).toBe('pair-review--xyz');
       // claimAvailable already marked as switching -- no separate markSwitching call
       expect(deps.poolRepo.markSwitching).not.toHaveBeenCalled();
-      expect(deps._mockGit.fetch).toHaveBeenCalled();
+      // PR-specific refspec fetch — no --prune (only broad fetches get --prune)
+      expect(deps._mockGit.fetch).toHaveBeenCalledWith([
+        'origin',
+        '+refs/pull/123/head:refs/remotes/origin/pr-123',
+      ]);
       expect(deps._mockGit.checkout).toHaveBeenCalled();
     });
 
@@ -449,6 +453,8 @@ describe('WorktreePoolLifecycle', () => {
     it('calls refreshWorktree and marks in use', async () => {
       const result = await lifecycle._refreshPoolWorktree(poolEntry, worktreeRecord, prInfo, prData);
 
+      expect(deps._mockGit.reset).toHaveBeenCalledWith(['--hard', 'HEAD']);
+      expect(deps._mockGit.clean).toHaveBeenCalledWith('f', ['-d']);
       expect(deps._mockWorktreeManagerInstance.refreshWorktree).toHaveBeenCalledWith(
         worktreeRecord,
         123,
@@ -462,6 +468,18 @@ describe('WorktreePoolLifecycle', () => {
       );
       expect(deps.poolRepo.markInUse).toHaveBeenCalledWith('pair-review--abc', 123);
       expect(result).toEqual({ worktreePath: '/tmp/worktree/pair-review--abc', worktreeId: 'pair-review--abc' });
+    });
+
+    it('executes reset+clean before refreshWorktree (call ordering)', async () => {
+      const callOrder = [];
+      deps._mockGit.reset.mockImplementation(() => { callOrder.push('reset'); return Promise.resolve(); });
+      deps._mockGit.clean.mockImplementation(() => { callOrder.push('clean'); return Promise.resolve(); });
+      deps._mockWorktreeManagerInstance.refreshWorktree.mockImplementation(() => { callOrder.push('refreshWorktree'); return Promise.resolve('/tmp/worktree/pair-review--abc'); });
+      deps.poolRepo.markInUse.mockImplementation(() => { callOrder.push('markInUse'); return Promise.resolve(); });
+
+      await lifecycle._refreshPoolWorktree(poolEntry, worktreeRecord, prInfo, prData);
+
+      expect(callOrder).toEqual(['reset', 'clean', 'refreshWorktree', 'markInUse']);
     });
 
     it('skips refresh when worktree HEAD matches target SHA', async () => {

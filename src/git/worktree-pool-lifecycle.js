@@ -359,6 +359,13 @@ class WorktreePoolLifecycle {
       number: prInfo.prNumber,
     };
 
+    // Pool worktrees are unattended — dirty state is leftover noise, not
+    // intentional edits.  Clean before refresh so refreshWorktree's
+    // hasLocalChanges guard never trips.  Mirrors _switchPoolWorktree cleanup.
+    const refreshGit = this._simpleGit(poolEntry.path);
+    await refreshGit.reset(['--hard', 'HEAD']);
+    await refreshGit.clean('f', ['-d']);
+
     const worktreeManager = new this._GitWorktreeManager(this.db);
     await worktreeManager.refreshWorktree(worktreeRecord, normalizedPrInfo.number, normalizedPrData, normalizedPrInfo);
 
