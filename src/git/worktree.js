@@ -535,9 +535,10 @@ class GitWorktreeManager {
       // Resolve which remote points to the PR's base repository (handles forks)
       const remote = await this.resolveRemoteForPR(worktreeGit, prData, prInfo);
 
-      // Fetch the latest from the resolved remote
+      // Fetch the latest from the resolved remote (--prune removes stale
+      // tracking refs that would otherwise block fetch on ref hierarchy conflicts)
       console.log(`Fetching latest changes from ${remote}...`);
-      await worktreeGit.fetch([remote]);
+      await worktreeGit.fetch([remote, '--prune']);
 
       // Fetch the PR head using GitHub's pull request refs
       console.log(`Fetching PR #${number} head...`);

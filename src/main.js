@@ -1185,7 +1185,7 @@ function startPoolBackgroundFetches(db, config) {
             const git = simpleGit(entry.path, { timeout: { block: 300000 } });
             const remotes = await git.getRemotes();
             const remote = remotes.find(r => r.name === 'origin') || remotes[0];
-            if (remote) await git.fetch([remote.name]);
+            if (remote) await git.fetch([remote.name, '--prune']);
             await poolRepo.updateLastFetched(entry.id);
             logger.info(`Background fetch complete for ${repoName} pool worktree ${entry.id}`);
           } catch (fetchErr) {
