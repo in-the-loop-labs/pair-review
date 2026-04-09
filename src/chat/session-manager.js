@@ -575,6 +575,9 @@ class ChatSessionManager {
     // which would forward it as `--provider pi` to the Pi CLI.  The CLI's --provider flag
     // expects a model provider ("google", "anthropic", etc.) and should only come from
     // explicit user configuration (providerDef.provider).
+    // app_extensions (default true): when false, omit pair-review's task extension.
+    // load_skills (default true): when false, suppress Pi's skill auto-discovery.
+    const appExtensions = def?.app_extensions !== false;
     return new PiBridge({
       ...options,
       provider: def?.provider || null,
@@ -584,7 +587,8 @@ class ChatSessionManager {
       env: def?.env,
       useShell: def?.useShell,
       tools: CHAT_TOOLS,
-      extensions: [taskExtensionDir],
+      extensions: appExtensions ? [taskExtensionDir] : [],
+      loadSkills: def?.load_skills,
     });
   }
 

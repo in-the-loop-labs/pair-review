@@ -255,6 +255,53 @@ describe('Provider Configuration', () => {
       const overrides = getProviderConfigOverrides('claude');
       expect(overrides).toBeUndefined();
     });
+
+    it('should store load_skills and app_extensions in overrides for standard providers', () => {
+      applyConfigOverrides({
+        providers: {
+          pi: {
+            load_skills: false,
+            app_extensions: false
+          }
+        }
+      });
+      const overrides = getProviderConfigOverrides('pi');
+      expect(overrides).toBeDefined();
+      expect(overrides.load_skills).toBe(false);
+      expect(overrides.app_extensions).toBe(false);
+    });
+
+    it('should store load_skills and app_extensions for alias providers', () => {
+      applyConfigOverrides({
+        providers: {
+          'pi-custom': {
+            type: 'pi',
+            name: 'Custom Pi',
+            load_skills: false,
+            app_extensions: false,
+            models: [{ id: 'default', tier: 'balanced', default: true }]
+          }
+        }
+      });
+      const overrides = getProviderConfigOverrides('pi-custom');
+      expect(overrides).toBeDefined();
+      expect(overrides.load_skills).toBe(false);
+      expect(overrides.app_extensions).toBe(false);
+    });
+
+    it('should leave load_skills and app_extensions undefined when not set in config', () => {
+      applyConfigOverrides({
+        providers: {
+          pi: {
+            command: '/custom/pi'
+          }
+        }
+      });
+      const overrides = getProviderConfigOverrides('pi');
+      expect(overrides).toBeDefined();
+      expect(overrides.load_skills).toBeUndefined();
+      expect(overrides.app_extensions).toBeUndefined();
+    });
   });
 
   describe('getAllProvidersInfo with overrides', () => {

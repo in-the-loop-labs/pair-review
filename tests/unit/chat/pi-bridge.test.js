@@ -127,6 +127,21 @@ describe('PiBridge', () => {
       expect(bridge.extraArgs).toEqual([]);
     });
 
+    it('should store loadSkills option as true by default', () => {
+      const bridge = new PiBridge();
+      expect(bridge.loadSkills).toBe(true);
+    });
+
+    it('should store loadSkills: false when explicitly set', () => {
+      const bridge = new PiBridge({ loadSkills: false });
+      expect(bridge.loadSkills).toBe(false);
+    });
+
+    it('should store loadSkills: true when explicitly set', () => {
+      const bridge = new PiBridge({ loadSkills: true });
+      expect(bridge.loadSkills).toBe(true);
+    });
+
     it('should use PAIR_REVIEW_PI_CMD env var when set', () => {
       const orig = process.env.PAIR_REVIEW_PI_CMD;
       process.env.PAIR_REVIEW_PI_CMD = '/custom/pi';
@@ -234,6 +249,37 @@ describe('PiBridge', () => {
       // Should be the same as default args
       const defaultBridge = new PiBridge();
       expect(args).toEqual(defaultBridge._buildArgs());
+    });
+
+    it('should include --no-skills when loadSkills is false', () => {
+      const bridge = new PiBridge({ loadSkills: false });
+      const args = bridge._buildArgs();
+      expect(args).toContain('--no-skills');
+    });
+
+    it('should not include --no-skills when loadSkills is true', () => {
+      const bridge = new PiBridge({ loadSkills: true });
+      const args = bridge._buildArgs();
+      expect(args).not.toContain('--no-skills');
+    });
+
+    it('should not include --no-skills when loadSkills is not passed (default true)', () => {
+      const bridge = new PiBridge();
+      const args = bridge._buildArgs();
+      expect(args).not.toContain('--no-skills');
+    });
+
+    it('should place --no-skills before extraArgs', () => {
+      const bridge = new PiBridge({
+        loadSkills: false,
+        extraArgs: ['--verbose'],
+      });
+      const args = bridge._buildArgs();
+      const noSkillsIdx = args.indexOf('--no-skills');
+      const verboseIdx = args.indexOf('--verbose');
+      expect(noSkillsIdx).toBeGreaterThan(-1);
+      expect(verboseIdx).toBeGreaterThan(-1);
+      expect(noSkillsIdx).toBeLessThan(verboseIdx);
     });
   });
 

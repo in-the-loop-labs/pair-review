@@ -130,6 +130,8 @@ class PiProvider extends AIProvider {
    * @param {string[]} configOverrides.extra_args - Additional CLI arguments
    * @param {Object} configOverrides.env - Additional environment variables
    * @param {Object[]} configOverrides.models - Custom model definitions
+   * @param {boolean} [configOverrides.load_skills=true] - When false, adds --no-skills to suppress skill auto-discovery
+   * @param {boolean} [configOverrides.app_extensions=true] - When false, omits the -e task extension flag
    */
   constructor(model, configOverrides = {}) {
     super(model || 'default');
@@ -197,19 +199,25 @@ class PiProvider extends AIProvider {
     // The task extension is loaded to give the model a subagent tool for delegating
     // work to isolated subprocesses, preserving the main context window.
     // --no-prompt-templates: prompt templates can't be triggered in -p mode, so suppress
-    // them to avoid wasting context. Skills and extensions are left enabled so the
-    // subprocess has access to the user's configured environment. To disable them,
-    // add --no-skills or --no-extensions to extra_args in provider/model config.
+    // them to avoid wasting context.
+    // load_skills (default true): when false, adds --no-skills to suppress auto-discovery.
+    //   Explicit --skill args from built-in models (e.g. multi-model) still load.
+    // app_extensions (default true): when false, omits the -e task extension flag.
+    //   Useful when auto-discovery already loads the extension (e.g. developing pair-review).
+    const loadSkills = configOverrides.load_skills !== false;
+    const appExtensions = configOverrides.app_extensions !== false;
     const sessionArgs = process.env.PAIR_REVIEW_PI_SESSION ? [] : ['--no-session'];
+    const extensionArgs = appExtensions ? ['-e', TASK_EXTENSION_DIR] : [];
+    const skillArgs = loadSkills ? [] : ['--no-skills'];
     let baseArgs;
     if (configOverrides.yolo) {
       baseArgs = ['-p', '--mode', 'json', ...cliModelArgs, ...sessionArgs,
         '--no-prompt-templates',
-        '-e', TASK_EXTENSION_DIR];
+        ...extensionArgs, ...skillArgs];
     } else {
       baseArgs = ['-p', '--mode', 'json', ...cliModelArgs, '--tools', 'read,bash,grep,find,ls', ...sessionArgs,
         '--no-prompt-templates',
-        '-e', TASK_EXTENSION_DIR];
+        ...extensionArgs, ...skillArgs];
     }
     const builtInArgs = builtIn?.extra_args || [];
     const providerArgs = configOverrides.extra_args || [];
