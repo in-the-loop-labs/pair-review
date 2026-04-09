@@ -226,6 +226,15 @@ async function loadConfig() {
     mergedConfig.repos = deepMerge(mergedConfig.monorepos, mergedConfig.repos);
   }
 
+  // Normalize repo keys to lowercase to match the database's COLLATE NOCASE identity
+  if (mergedConfig.repos) {
+    const normalized = {};
+    for (const [key, value] of Object.entries(mergedConfig.repos)) {
+      normalized[key.toLowerCase()] = value;
+    }
+    mergedConfig.repos = normalized;
+  }
+
   // Validate port
   if (!validatePort(mergedConfig.port)) {
     console.error(`Invalid port number ${mergedConfig.port}`);

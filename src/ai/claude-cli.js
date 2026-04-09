@@ -53,6 +53,8 @@ class ClaudeCLI {
       });
 
       const pid = claude.pid;
+      const fullCommand = this.useShell ? this.command : `${this.command} ${this.args.join(' ')}`;
+      logger.debug(`${levelPrefix} Claude CLI command: ${fullCommand}`);
       logger.info(`${levelPrefix} Spawned Claude CLI process: PID ${pid}`);
 
       let stdout = '';

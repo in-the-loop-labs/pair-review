@@ -20,7 +20,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 41;
+const CURRENT_SCHEMA_VERSION = 42;
 
 /**
  * Database schema SQL statements
@@ -142,7 +142,7 @@ const SCHEMA_SQL = {
   repo_settings: `
     CREATE TABLE IF NOT EXISTS repo_settings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      repository TEXT NOT NULL UNIQUE,
+      repository TEXT NOT NULL UNIQUE COLLATE NOCASE,
       default_instructions TEXT,
       default_provider TEXT,
       default_model TEXT,
@@ -312,7 +312,7 @@ const INDEX_SQL = [
   'CREATE INDEX IF NOT EXISTS idx_pr_metadata_last_accessed ON pr_metadata(last_accessed_at)',
   'CREATE INDEX IF NOT EXISTS idx_worktrees_last_accessed ON worktrees(last_accessed_at)',
   'CREATE INDEX IF NOT EXISTS idx_worktrees_repo ON worktrees(repository)',
-  'CREATE UNIQUE INDEX IF NOT EXISTS idx_repo_settings_repository ON repo_settings(repository)',
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_repo_settings_repository ON repo_settings(repository COLLATE NOCASE)',
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_local ON reviews(local_path, local_head_sha, local_head_branch) WHERE review_type = \'local\'',
   // Partial unique index for PR reviews only (NULL pr_number values for local reviews should not conflict)
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_pr_unique ON reviews(pr_number, repository) WHERE review_type = \'pr\'',
@@ -1764,6 +1764,72 @@ const MIGRATIONS = {
     addColumnIfNotExists('repo_settings', 'pool_fetch_started_at', 'TEXT');
     addColumnIfNotExists('repo_settings', 'pool_fetch_finished_at', 'TEXT');
     console.log('Migration to schema version 41 complete');
+  },
+
+  42: (db) => {
+    console.log('Running migration to schema version 42: Add COLLATE NOCASE to repo_settings.repository...');
+
+    if (!tableExists(db, 'repo_settings')) {
+      console.log('  repo_settings table does not exist, skipping');
+      console.log('Migration to schema version 42 complete');
+      return;
+    }
+
+    // SQLite does not support ALTER TABLE to modify column collation.
+    // Rebuild the table with the updated column definition.
+    db.pragma('foreign_keys = OFF');
+    try {
+      db.prepare('DROP TABLE IF EXISTS repo_settings_rebuild').run();
+
+      db.prepare(`CREATE TABLE IF NOT EXISTS repo_settings_rebuild (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        repository TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        default_instructions TEXT,
+        default_provider TEXT,
+        default_model TEXT,
+        default_council_id TEXT,
+        default_tab TEXT,
+        default_chat_instructions TEXT,
+        local_path TEXT,
+        auto_branch_review INTEGER DEFAULT 0,
+        pool_size INTEGER,
+        pool_fetch_interval_minutes INTEGER,
+        pool_fetch_started_at TEXT,
+        pool_fetch_finished_at TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )`).run();
+
+      const dupes = db.prepare(`SELECT LOWER(repository) as repo, COUNT(*) as cnt FROM repo_settings GROUP BY LOWER(repository) HAVING cnt > 1`).all();
+      if (dupes.length > 0) {
+        const names = dupes.map(d => d.repo).join(', ');
+        throw new Error(`Migration 42: case-duplicate repositories found: ${names}. Please resolve manually before upgrading.`);
+      }
+
+      const cols = [
+        'id', 'repository', 'default_instructions', 'default_provider',
+        'default_model', 'default_council_id', 'default_tab',
+        'default_chat_instructions', 'local_path', 'auto_branch_review',
+        'pool_size', 'pool_fetch_interval_minutes',
+        'pool_fetch_started_at', 'pool_fetch_finished_at',
+        'created_at', 'updated_at'
+      ].join(', ');
+
+      const rebuild = db.transaction(() => {
+        db.prepare(`INSERT INTO repo_settings_rebuild (${cols}) SELECT ${cols} FROM repo_settings`).run();
+        db.prepare('DROP TABLE repo_settings').run();
+        db.prepare('ALTER TABLE repo_settings_rebuild RENAME TO repo_settings').run();
+      });
+      rebuild();
+
+      // Recreate the index with COLLATE NOCASE (must match INDEX_SQL definition)
+      db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_repo_settings_repository ON repo_settings(repository COLLATE NOCASE)').run();
+
+      console.log('  Rebuilt repo_settings with COLLATE NOCASE on repository column');
+      console.log('Migration to schema version 42 complete');
+    } finally {
+      db.pragma('foreign_keys = ON');
+    }
   }
 };
 
@@ -2701,7 +2767,7 @@ class RepoSettingsRepository {
     const row = await queryOne(this.db, `
       SELECT id, repository, default_instructions, default_provider, default_model, default_council_id, default_tab, default_chat_instructions, local_path, auto_branch_review, pool_size, pool_fetch_interval_minutes, created_at, updated_at
       FROM repo_settings
-      WHERE repository = ? COLLATE NOCASE
+      WHERE repository = ?
     `, [repository]);
 
     return row || null;
@@ -2714,7 +2780,7 @@ class RepoSettingsRepository {
    */
   async getLocalPath(repository) {
     const row = await queryOne(this.db, `
-      SELECT local_path FROM repo_settings WHERE repository = ? COLLATE NOCASE
+      SELECT local_path FROM repo_settings WHERE repository = ?
     `, [repository]);
 
     return row ? row.local_path : null;
@@ -2738,7 +2804,7 @@ class RepoSettingsRepository {
       await run(this.db, `
         UPDATE repo_settings
         SET local_path = ?, updated_at = ?
-        WHERE repository = ? COLLATE NOCASE
+        WHERE repository = ?
       `, [localPath, now, repository]);
     } else {
       // Insert new settings with just local_path
@@ -2776,7 +2842,7 @@ class RepoSettingsRepository {
             pool_size = ?,
             pool_fetch_interval_minutes = ?,
             updated_at = ?
-        WHERE repository = ? COLLATE NOCASE
+        WHERE repository = ?
       `, [
         default_instructions !== undefined ? default_instructions : existing.default_instructions,
         default_provider !== undefined ? default_provider : existing.default_provider,
@@ -2830,18 +2896,40 @@ class RepoSettingsRepository {
   }
 
   /**
-   * Mark a repo-level background fetch as started.
-   * Creates a repo_settings row if one doesn't exist yet (config-only repos).
+   * Atomically attempt to claim the background fetch lease for a repository.
+   * Uses SQLite UPSERT with a conditional WHERE clause to avoid TOCTOU races
+   * between instances sharing the same database. Creates a repo_settings row
+   * if one doesn't exist yet (config-only repos).
+   * @param {string} repository - Repository in owner/repo format
+   * @param {number} [staleGuardMs=600000] - Consider a fetch stale after this many ms (default 10 min)
+   * @returns {Promise<boolean>} true if the lease was successfully claimed
+   */
+  async tryClaimFetch(repository, staleGuardMs = 600000) {
+    const now = new Date().toISOString();
+    const staleThreshold = new Date(Date.now() - staleGuardMs).toISOString();
+    const result = await run(this.db,
+      `INSERT INTO repo_settings (repository, pool_fetch_started_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(repository) DO UPDATE SET pool_fetch_started_at = excluded.pool_fetch_started_at,
+         pool_fetch_finished_at = NULL
+       WHERE pool_fetch_started_at IS NULL
+         OR pool_fetch_finished_at >= pool_fetch_started_at
+         OR pool_fetch_started_at < ?`,
+      [repository, now, now, now, staleThreshold]
+    );
+    return result.changes > 0;
+  }
+
+  /**
+   * Refresh the fetch lease timestamp for a repository.
+   * Called after each successful worktree fetch to extend the stale guard window
+   * so the 10-minute default only needs to outlive a single stalled fetch rather
+   * than the entire serial loop across all worktrees.
    * @param {string} repository - Repository in owner/repo format
    */
-  async markFetchStarted(repository) {
+  async refreshFetchLease(repository) {
     const now = new Date().toISOString();
-    const existing = await queryOne(this.db, `SELECT id FROM repo_settings WHERE repository = ? COLLATE NOCASE`, [repository]);
-    if (existing) {
-      await run(this.db, `UPDATE repo_settings SET pool_fetch_started_at = ? WHERE repository = ? COLLATE NOCASE`, [now, repository]);
-    } else {
-      await run(this.db, `INSERT INTO repo_settings (repository, pool_fetch_started_at, created_at, updated_at) VALUES (?, ?, ?, ?)`, [repository, now, now, now]);
-    }
+    await run(this.db, `UPDATE repo_settings SET pool_fetch_started_at = ? WHERE repository = ?`, [now, repository]);
   }
 
   /**
@@ -2850,28 +2938,7 @@ class RepoSettingsRepository {
    */
   async markFetchFinished(repository) {
     const now = new Date().toISOString();
-    await run(this.db, `UPDATE repo_settings SET pool_fetch_finished_at = ? WHERE repository = ? COLLATE NOCASE`, [now, repository]);
-  }
-
-  /**
-   * Check whether a background fetch is currently in progress for this repo.
-   * Returns true if started_at > finished_at (or finished_at is null) and
-   * started_at is within the stale guard window.
-   * @param {string} repository - Repository in owner/repo format
-   * @param {number} [staleGuardMs=600000] - Consider a fetch stale after this many ms (default 10 min)
-   * @returns {Promise<boolean>}
-   */
-  async isFetchInProgress(repository, staleGuardMs = 600000) {
-    const row = await queryOne(this.db, `SELECT pool_fetch_started_at, pool_fetch_finished_at FROM repo_settings WHERE repository = ? COLLATE NOCASE`, [repository]);
-    if (!row || !row.pool_fetch_started_at) return false;
-    const startedAt = new Date(row.pool_fetch_started_at).getTime();
-    if (row.pool_fetch_finished_at) {
-      const finishedAt = new Date(row.pool_fetch_finished_at).getTime();
-      if (finishedAt >= startedAt) return false;
-    }
-    // Started but not finished — check stale guard
-    const elapsed = Date.now() - startedAt;
-    return elapsed < staleGuardMs;
+    await run(this.db, `UPDATE repo_settings SET pool_fetch_finished_at = ? WHERE repository = ?`, [now, repository]);
   }
 
   /**
@@ -2881,7 +2948,7 @@ class RepoSettingsRepository {
    */
   async deleteRepoSettings(repository) {
     const result = await run(this.db, `
-      DELETE FROM repo_settings WHERE repository = ? COLLATE NOCASE
+      DELETE FROM repo_settings WHERE repository = ?
     `, [repository]);
 
     return result.changes > 0;

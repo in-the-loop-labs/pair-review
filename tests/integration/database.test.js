@@ -1539,78 +1539,145 @@ describe('RepoSettingsRepository', () => {
   });
 
   describe('pool fetch coordination', () => {
-    it('markFetchStarted sets pool_fetch_started_at on an existing row', async () => {
-      await repoSettingsRepo.saveRepoSettings('owner/repo', { default_instructions: 'test' });
+    describe('tryClaimFetch', () => {
+      it('claims the lease when no row exists (creates repo_settings row)', async () => {
+        const claimed = await repoSettingsRepo.tryClaimFetch('config-only/repo');
 
-      await repoSettingsRepo.markFetchStarted('owner/repo');
+        expect(claimed).toBe(true);
+        const row = await queryOne(db, 'SELECT * FROM repo_settings WHERE repository = ?', ['config-only/repo']);
+        expect(row).not.toBeNull();
+        expect(row.pool_fetch_started_at).not.toBeNull();
+        expect(row.repository).toBe('config-only/repo');
+      });
 
-      const row = await queryOne(db, 'SELECT pool_fetch_started_at FROM repo_settings WHERE repository = ?', ['owner/repo']);
-      expect(row.pool_fetch_started_at).not.toBeNull();
-      expect(new Date(row.pool_fetch_started_at).getTime()).toBeGreaterThan(0);
+      it('claims the lease when row exists but fetch never started', async () => {
+        await repoSettingsRepo.saveRepoSettings('owner/repo', {});
+
+        const claimed = await repoSettingsRepo.tryClaimFetch('owner/repo');
+
+        expect(claimed).toBe(true);
+        const row = await queryOne(db, 'SELECT pool_fetch_started_at FROM repo_settings WHERE repository = ?', ['owner/repo']);
+        expect(row.pool_fetch_started_at).not.toBeNull();
+      });
+
+      it('claims the lease when previous fetch finished normally', async () => {
+        await repoSettingsRepo.saveRepoSettings('owner/repo', {});
+        await repoSettingsRepo.tryClaimFetch('owner/repo');
+        await repoSettingsRepo.markFetchFinished('owner/repo');
+
+        const claimed = await repoSettingsRepo.tryClaimFetch('owner/repo');
+
+        expect(claimed).toBe(true);
+      });
+
+      it('clears pool_fetch_finished_at when reclaiming the lease', async () => {
+        await repoSettingsRepo.saveRepoSettings('owner/repo', {});
+        await repoSettingsRepo.tryClaimFetch('owner/repo');
+        await repoSettingsRepo.markFetchFinished('owner/repo');
+
+        // Verify finished_at is set before reclaim
+        const before = await queryOne(db, 'SELECT pool_fetch_finished_at FROM repo_settings WHERE repository = ?', ['owner/repo']);
+        expect(before.pool_fetch_finished_at).not.toBeNull();
+
+        await repoSettingsRepo.tryClaimFetch('owner/repo');
+
+        const after = await queryOne(db, 'SELECT pool_fetch_finished_at FROM repo_settings WHERE repository = ?', ['owner/repo']);
+        expect(after.pool_fetch_finished_at).toBeNull();
+      });
+
+      it('claims the lease when previous fetch is stale', async () => {
+        await repoSettingsRepo.saveRepoSettings('owner/repo', {});
+
+        // Manually set pool_fetch_started_at to a timestamp far in the past
+        const staleTimestamp = new Date(Date.now() - 60000).toISOString();
+        await run(db, `UPDATE repo_settings SET pool_fetch_started_at = ? WHERE repository = ?`, [staleTimestamp, 'owner/repo']);
+
+        // With a 1ms guard the timestamp is clearly stale
+        const claimed = await repoSettingsRepo.tryClaimFetch('owner/repo', 1);
+        expect(claimed).toBe(true);
+      });
+
+      it('rejects when a fetch is already in progress (not stale)', async () => {
+        await repoSettingsRepo.saveRepoSettings('owner/repo', {});
+        await repoSettingsRepo.tryClaimFetch('owner/repo');
+
+        // Second claim should fail — the first is still in progress and fresh
+        const claimed = await repoSettingsRepo.tryClaimFetch('owner/repo');
+        expect(claimed).toBe(false);
+      });
+
+      it('updates pool_fetch_started_at when claiming the lease', async () => {
+        await repoSettingsRepo.saveRepoSettings('owner/repo', {});
+
+        const before = Date.now();
+        await repoSettingsRepo.tryClaimFetch('owner/repo');
+        const after = Date.now();
+
+        const row = await queryOne(db, 'SELECT pool_fetch_started_at FROM repo_settings WHERE repository = ?', ['owner/repo']);
+        const startedAt = new Date(row.pool_fetch_started_at).getTime();
+        expect(startedAt).toBeGreaterThanOrEqual(before);
+        expect(startedAt).toBeLessThanOrEqual(after);
+      });
     });
 
-    it('markFetchStarted creates a repo_settings row when none exists', async () => {
-      // No prior saveRepoSettings call — row does not exist yet
-      await repoSettingsRepo.markFetchStarted('config-only/repo');
+    describe('refreshFetchLease', () => {
+      it('updates pool_fetch_started_at to the current time', async () => {
+        await repoSettingsRepo.saveRepoSettings('owner/repo', {});
+        await repoSettingsRepo.tryClaimFetch('owner/repo');
 
-      const row = await queryOne(db, 'SELECT * FROM repo_settings WHERE repository = ?', ['config-only/repo']);
-      expect(row).not.toBeNull();
-      expect(row.pool_fetch_started_at).not.toBeNull();
-      expect(row.repository).toBe('config-only/repo');
+        const rowBefore = await queryOne(db, 'SELECT pool_fetch_started_at FROM repo_settings WHERE repository = ?', ['owner/repo']);
+
+        // Small delay to ensure timestamps differ
+        await new Promise(resolve => setTimeout(resolve, 10));
+        await repoSettingsRepo.refreshFetchLease('owner/repo');
+
+        const rowAfter = await queryOne(db, 'SELECT pool_fetch_started_at FROM repo_settings WHERE repository = ?', ['owner/repo']);
+        expect(new Date(rowAfter.pool_fetch_started_at).getTime()).toBeGreaterThan(
+          new Date(rowBefore.pool_fetch_started_at).getTime()
+        );
+      });
+
+      it('keeps the lease active so a subsequent tryClaimFetch is rejected', async () => {
+        await repoSettingsRepo.saveRepoSettings('owner/repo', {});
+        await repoSettingsRepo.tryClaimFetch('owner/repo');
+        await repoSettingsRepo.refreshFetchLease('owner/repo');
+
+        const claimed = await repoSettingsRepo.tryClaimFetch('owner/repo');
+        expect(claimed).toBe(false);
+      });
     });
 
-    it('markFetchFinished sets pool_fetch_finished_at', async () => {
-      await repoSettingsRepo.saveRepoSettings('owner/repo', {});
-      await repoSettingsRepo.markFetchStarted('owner/repo');
+    describe('markFetchFinished', () => {
+      it('sets pool_fetch_finished_at', async () => {
+        await repoSettingsRepo.saveRepoSettings('owner/repo', {});
+        await repoSettingsRepo.tryClaimFetch('owner/repo');
 
-      await repoSettingsRepo.markFetchFinished('owner/repo');
+        await repoSettingsRepo.markFetchFinished('owner/repo');
 
-      const row = await queryOne(db, 'SELECT pool_fetch_finished_at FROM repo_settings WHERE repository = ?', ['owner/repo']);
-      expect(row.pool_fetch_finished_at).not.toBeNull();
-      expect(new Date(row.pool_fetch_finished_at).getTime()).toBeGreaterThan(0);
+        const row = await queryOne(db, 'SELECT pool_fetch_finished_at FROM repo_settings WHERE repository = ?', ['owner/repo']);
+        expect(row.pool_fetch_finished_at).not.toBeNull();
+        expect(new Date(row.pool_fetch_finished_at).getTime()).toBeGreaterThan(0);
+      });
+
+      it('allows the lease to be reclaimed after finishing', async () => {
+        await repoSettingsRepo.saveRepoSettings('owner/repo', {});
+        await repoSettingsRepo.tryClaimFetch('owner/repo');
+        await repoSettingsRepo.markFetchFinished('owner/repo');
+
+        const claimed = await repoSettingsRepo.tryClaimFetch('owner/repo');
+        expect(claimed).toBe(true);
+      });
     });
+  });
 
-    it('isFetchInProgress returns false when no row exists', async () => {
-      const result = await repoSettingsRepo.isFetchInProgress('nonexistent/repo');
-      expect(result).toBe(false);
-    });
-
-    it('isFetchInProgress returns false when never started', async () => {
-      await repoSettingsRepo.saveRepoSettings('owner/repo', {});
-
-      const result = await repoSettingsRepo.isFetchInProgress('owner/repo');
-      expect(result).toBe(false);
-    });
-
-    it('isFetchInProgress returns true when started but not finished', async () => {
-      await repoSettingsRepo.saveRepoSettings('owner/repo', {});
-      await repoSettingsRepo.markFetchStarted('owner/repo');
-
-      const result = await repoSettingsRepo.isFetchInProgress('owner/repo');
-      expect(result).toBe(true);
-    });
-
-    it('isFetchInProgress returns false when finished after started', async () => {
-      await repoSettingsRepo.saveRepoSettings('owner/repo', {});
-      await repoSettingsRepo.markFetchStarted('owner/repo');
-      await repoSettingsRepo.markFetchFinished('owner/repo');
-
-      const result = await repoSettingsRepo.isFetchInProgress('owner/repo');
-      expect(result).toBe(false);
-    });
-
-    it('isFetchInProgress returns false when started_at is stale', async () => {
-      await repoSettingsRepo.saveRepoSettings('owner/repo', {});
-
-      // Manually set pool_fetch_started_at to a timestamp far in the past
-      const staleTimestamp = new Date(Date.now() - 60000).toISOString();
-      await run(db, `UPDATE repo_settings SET pool_fetch_started_at = ? WHERE repository = ?`, [staleTimestamp, 'owner/repo']);
-
-      // With the default 10-minute guard the fetch would still be in progress,
-      // but with a 1ms guard it is clearly stale.
-      const result = await repoSettingsRepo.isFetchInProgress('owner/repo', 1);
-      expect(result).toBe(false);
-    });
+  it('treats repository names case-insensitively', async () => {
+    await repoSettingsRepo.saveRepoSettings('Owner/Repo', { default_instructions: 'test' });
+    await repoSettingsRepo.saveRepoSettings('owner/repo', { default_instructions: 'updated' });
+    const settings = await repoSettingsRepo.getRepoSettings('owner/repo');
+    expect(settings).not.toBeNull();
+    expect(settings.default_instructions).toBe('updated');
+    const count = await queryOne(db, 'SELECT COUNT(*) as cnt FROM repo_settings', []);
+    expect(count.cnt).toBe(1);
   });
 });
 
