@@ -25,7 +25,7 @@ const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs').promises;
 const path = require('path');
-const { getGitHubToken } = require('../config');
+const { getGitHubToken, getWorktreeDisplayName } = require('../config');
 const logger = require('../utils/logger');
 const { buildDiffLineSet } = require('../utils/diff-annotator');
 const { broadcastReviewEvent } = require('../events/review-events');
@@ -279,6 +279,7 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
         deletions: extendedData.deletions || 0,
         diff_content: extendedData.diff || '',
         worktree_path: extendedData.worktree_path || null,
+        worktree_name: getWorktreeDisplayName(extendedData.worktree_path, req.app.get('config') || {}, repository),
         html_url: extendedData.html_url || `https://github.com/${repoOwner}/${repoName}/pull/${prMetadata.pr_number}`,
         pendingDraft: pendingDraft ? {
           id: pendingDraft.id,
@@ -488,7 +489,8 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
         head_sha: parsedData.head_sha,
         base_sha: parsedData.base_sha,
         node_id: parsedData.node_id,
-        worktree_path: parsedData.worktree_path || null
+        worktree_path: parsedData.worktree_path || null,
+        worktree_name: getWorktreeDisplayName(parsedData.worktree_path, config, repository)
       }
     };
 

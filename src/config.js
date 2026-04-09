@@ -463,6 +463,27 @@ function getRepoWorktreeNameTemplate(config, repository) {
 }
 
 /**
+ * Computes the display name for a worktree path by deriving the relative
+ * path from the configured (or default) worktree base directory.
+ * Falls back to the basename when the path lies outside the base directory.
+ *
+ * @param {string} worktreePath - Absolute path to the worktree
+ * @param {Object} config - Configuration object from loadConfig()
+ * @param {string} repository - Repository in "owner/repo" format
+ * @returns {string|null} - Relative display name (e.g. "abc123/src") or basename fallback
+ */
+function getWorktreeDisplayName(worktreePath, config, repository) {
+  if (!worktreePath) return null;
+  const worktreeBaseDir = getRepoWorktreeDirectory(config, repository)
+    || path.join(getConfigDir(), 'worktrees');
+  const relativePath = path.relative(worktreeBaseDir, worktreePath);
+  if (relativePath.startsWith('..')) {
+    return path.basename(worktreePath);
+  }
+  return relativePath;
+}
+
+/**
  * Gets the configured checkout script timeout for a repository
  * @param {Object} config - Configuration object from loadConfig()
  * @param {string} repository - Repository in "owner/repo" format
@@ -648,6 +669,7 @@ module.exports = {
   getRepoCheckoutScript,
   getRepoWorktreeDirectory,
   getRepoWorktreeNameTemplate,
+  getWorktreeDisplayName,
   getRepoCheckoutTimeout,
   resolveRepoOptions,
   getRepoResetScript,

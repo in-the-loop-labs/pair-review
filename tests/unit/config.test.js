@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const childProcess = require('child_process');
-const { deepMerge, getGitHubToken, expandPath, resolveDbName, warnIfDevModeWithoutDbName, loadConfig, shouldSkipUpdateNotifier, _resetTokenCache, getRepoConfig, getRepoPath, getRepoCheckoutScript, getRepoWorktreeDirectory, getRepoWorktreeNameTemplate, getRepoCheckoutTimeout, resolveRepoOptions, getRepoResetScript, getRepoPoolSize, getRepoPoolFetchInterval, resolvePoolConfig } = require('../../src/config');
+const { deepMerge, getGitHubToken, expandPath, resolveDbName, warnIfDevModeWithoutDbName, loadConfig, shouldSkipUpdateNotifier, _resetTokenCache, getRepoConfig, getRepoPath, getRepoCheckoutScript, getRepoWorktreeDirectory, getRepoWorktreeNameTemplate, getRepoCheckoutTimeout, resolveRepoOptions, getRepoResetScript, getRepoPoolSize, getRepoPoolFetchInterval, resolvePoolConfig, getWorktreeDisplayName, getConfigDir } = require('../../src/config');
 
 describe('config.js', () => {
   describe('getGitHubToken', () => {
@@ -1620,6 +1620,44 @@ describe('config.js', () => {
       const result = resolvePoolConfig(config, 'owner/repo', repoSettings);
       expect(result.poolSize).toBe(3);
       expect(result.poolFetchIntervalMinutes).toBe(null);
+    });
+  });
+
+  describe('getWorktreeDisplayName', () => {
+    it('should return relative path from default worktree base dir', () => {
+      const defaultBaseDir = path.join(getConfigDir(), 'worktrees');
+      const worktreePath = path.join(defaultBaseDir, 'abc123');
+      const result = getWorktreeDisplayName(worktreePath, {}, 'owner/repo');
+      expect(result).toBe('abc123');
+    });
+
+    it('should return multi-segment relative path for nested worktree names', () => {
+      const defaultBaseDir = path.join(getConfigDir(), 'worktrees');
+      const worktreePath = path.join(defaultBaseDir, 'abc123', 'src');
+      const result = getWorktreeDisplayName(worktreePath, {}, 'owner/repo');
+      expect(result).toBe(path.join('abc123', 'src'));
+    });
+
+    it('should use configured worktree_directory as base', () => {
+      const config = { repos: { 'owner/repo': { worktree_directory: '/custom/worktrees' } } };
+      const worktreePath = '/custom/worktrees/pool-1/packages/app';
+      const result = getWorktreeDisplayName(worktreePath, config, 'owner/repo');
+      expect(result).toBe(path.join('pool-1', 'packages', 'app'));
+    });
+
+    it('should fall back to basename when path is outside the base dir', () => {
+      const config = {};
+      const worktreePath = '/some/completely/different/path/my-checkout';
+      const result = getWorktreeDisplayName(worktreePath, config, 'owner/repo');
+      expect(result).toBe('my-checkout');
+    });
+
+    it('should return null for null input', () => {
+      expect(getWorktreeDisplayName(null, {}, 'owner/repo')).toBeNull();
+    });
+
+    it('should return null for undefined input', () => {
+      expect(getWorktreeDisplayName(undefined, {}, 'owner/repo')).toBeNull();
     });
   });
 });
