@@ -204,6 +204,56 @@ describe('chat-providers', () => {
       expect(provider.type).toBe('pi');
       expect(provider.command).toBe('my-pi');
     });
+
+    it('should pass through load_skills from config overrides for built-in providers', () => {
+      applyConfigOverrides({
+        'pi': { load_skills: false },
+      });
+      const provider = getChatProvider('pi');
+      expect(provider.load_skills).toBe(false);
+    });
+
+    it('should pass through app_extensions from config overrides for built-in providers', () => {
+      applyConfigOverrides({
+        'pi': { app_extensions: false },
+      });
+      const provider = getChatProvider('pi');
+      expect(provider.app_extensions).toBe(false);
+    });
+
+    it('should not set load_skills when not provided in overrides', () => {
+      applyConfigOverrides({
+        'pi': { command: '/custom/pi' },
+      });
+      const provider = getChatProvider('pi');
+      expect(provider.load_skills).toBeUndefined();
+    });
+
+    it('should not set app_extensions when not provided in overrides', () => {
+      applyConfigOverrides({
+        'pi': { command: '/custom/pi' },
+      });
+      const provider = getChatProvider('pi');
+      expect(provider.app_extensions).toBeUndefined();
+    });
+
+    it('should pass through load_skills and app_extensions for dynamic providers', () => {
+      applyConfigOverrides({
+        'river': { type: 'pi', command: 'my-pi', load_skills: false, app_extensions: false },
+      });
+      const provider = getChatProvider('river');
+      expect(provider.load_skills).toBe(false);
+      expect(provider.app_extensions).toBe(false);
+    });
+
+    it('should not set load_skills or app_extensions on dynamic providers when not configured', () => {
+      applyConfigOverrides({
+        'river': { type: 'pi', command: 'my-pi' },
+      });
+      const provider = getChatProvider('river');
+      expect(provider.load_skills).toBeUndefined();
+      expect(provider.app_extensions).toBeUndefined();
+    });
   });
 
   describe('getAllChatProviders', () => {

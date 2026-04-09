@@ -1,5 +1,8 @@
 {
   "providers": {
-    "pi": { "extra_args": ["--no-skills"] }
+    "pi": { "load_skills": false, "app_extensions": false }
+  },
+  "chat_providers": {
+    "pi": { "load_skills": false, "app_extensions": false }
   }
 }

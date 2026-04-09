@@ -532,6 +532,8 @@ function applyConfigOverrides(config) {
         installInstructions: providerConfig.installInstructions,
         extra_args: providerConfig.extra_args,
         env: providerConfig.env,
+        load_skills: providerConfig.load_skills,
+        app_extensions: providerConfig.app_extensions,
         models: AliasClass.getModels() !== BaseClass.getModels() ? AliasClass.getModels() : null
       });
       logger.debug(`Registered aliased provider: ${providerId} (base: ${providerConfig.type})`);
@@ -557,6 +559,8 @@ function applyConfigOverrides(config) {
       installInstructions: providerConfig.installInstructions,
       extra_args: providerConfig.extra_args,
       env: providerConfig.env,
+      load_skills: providerConfig.load_skills,
+      app_extensions: providerConfig.app_extensions,
       models: processedModels
     });
   }

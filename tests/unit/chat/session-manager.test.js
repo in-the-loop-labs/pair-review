@@ -989,6 +989,43 @@ describe('ChatSessionManager', () => {
       expect(bridge._constructorOptions.extraArgs).toEqual(['--no-extensions', '-e', '/tmp/ext']);
     });
 
+    it('should pass empty extensions array when app_extensions is false', async () => {
+      mockChatProviders.getChatProvider.mockImplementationOnce(
+        () => ({ id: 'pi', type: 'pi', app_extensions: false })
+      );
+      await manager.createSession({ provider: 'pi', reviewId: 1 });
+      const bridge = _createdBridges[0];
+      expect(bridge._constructorOptions.extensions).toEqual([]);
+    });
+
+    it('should pass task extension dir when app_extensions is not set (default true)', async () => {
+      mockChatProviders.getChatProvider.mockImplementationOnce(
+        () => ({ id: 'pi', type: 'pi' })
+      );
+      await manager.createSession({ provider: 'pi', reviewId: 1 });
+      const bridge = _createdBridges[0];
+      expect(bridge._constructorOptions.extensions).toHaveLength(1);
+      expect(bridge._constructorOptions.extensions[0]).toContain('.pi/extensions/task');
+    });
+
+    it('should pass loadSkills: false when load_skills is false', async () => {
+      mockChatProviders.getChatProvider.mockImplementationOnce(
+        () => ({ id: 'pi', type: 'pi', load_skills: false })
+      );
+      await manager.createSession({ provider: 'pi', reviewId: 1 });
+      const bridge = _createdBridges[0];
+      expect(bridge._constructorOptions.loadSkills).toBe(false);
+    });
+
+    it('should not explicitly set loadSkills when load_skills is not set on provider def', async () => {
+      mockChatProviders.getChatProvider.mockImplementationOnce(
+        () => ({ id: 'pi', type: 'pi' })
+      );
+      await manager.createSession({ provider: 'pi', reviewId: 1 });
+      const bridge = _createdBridges[0];
+      expect(bridge._constructorOptions.loadSkills).toBeUndefined();
+    });
+
     it('should pass model from provider def to ClaudeCodeBridge when no session model', async () => {
       mockChatProviders.getChatProvider.mockImplementationOnce(
         () => ({ id: 'claude', type: 'claude', command: 'claude', model: 'claude-sonnet-4-6' })
