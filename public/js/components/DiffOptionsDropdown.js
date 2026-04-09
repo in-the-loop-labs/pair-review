@@ -50,6 +50,7 @@ class DiffOptionsDropdown {
     this._onToggleMinimize = onToggleMinimize || (() => {});
     this._onScopeChange = onScopeChange || null;
     this._worktreePath = worktreePath || null;
+    this._worktreeName = null;
 
     this._popoverEl = null;
     this._checkbox = null;
@@ -168,6 +169,12 @@ class DiffOptionsDropdown {
     this._scopeStart = val.start;
     this._scopeEnd = val.end;
     this._updateScopeUI();
+  }
+
+  /** Set the worktree display name (relative path from base dir). */
+  set worktreeName(value) {
+    this._worktreeName = value || null;
+    this._updateWorktreeRow();
   }
 
   /** Set the worktree path (updates UI if popover already exists). */
@@ -307,7 +314,7 @@ class DiffOptionsDropdown {
     }
     if (!this._worktreePath) return;
 
-    const basename = this._worktreePath.split('/').pop();
+    const displayName = this._worktreeName || this._worktreePath.split('/').pop();
 
     // Divider
     const divider = document.createElement('div');
@@ -325,7 +332,7 @@ class DiffOptionsDropdown {
     row.style.color = 'var(--color-fg-muted, #656d76)';
 
     const text = document.createElement('span');
-    text.textContent = `Worktree: ${basename}`;
+    text.textContent = `Worktree: ${displayName}`;
     text.style.overflow = 'hidden';
     text.style.textOverflow = 'ellipsis';
     text.style.whiteSpace = 'nowrap';

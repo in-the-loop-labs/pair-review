@@ -507,6 +507,22 @@ class PRManager {
   }
 
   /**
+   * Sync worktree name/path to the diff options dropdown.
+   * Clears both fields when worktree_path is absent.
+   * @param {Object} prData - PR data object from the API
+   */
+  _syncWorktreeDropdown(prData) {
+    if (!this.diffOptionsDropdown) return;
+    if (prData.worktree_path) {
+      this.diffOptionsDropdown.worktreeName = prData.worktree_name || null;
+      this.diffOptionsDropdown.worktreePath = prData.worktree_path;
+    } else {
+      this.diffOptionsDropdown.worktreeName = null;
+      this.diffOptionsDropdown.worktreePath = null;
+    }
+  }
+
+  /**
    * Load PR data from the API
    * @param {string} owner - Repository owner
    * @param {string} repo - Repository name
@@ -529,10 +545,8 @@ class PRManager {
       const prData = responseData.data || responseData;
       this.currentPR = prData;
 
-      // Update diff options dropdown with worktree path
-      if (this.diffOptionsDropdown && prData.worktree_path) {
-        this.diffOptionsDropdown.worktreePath = prData.worktree_path;
-      }
+      // Update diff options dropdown with worktree path and display name
+      this._syncWorktreeDropdown(prData);
 
       // Render PR header with metadata
       this.renderPRHeader(prData);
@@ -5133,6 +5147,9 @@ class PRManager {
             `PR refreshed. HEAD changed: ${oldHeadSha.substring(0, abbrevLen)} → ${newHeadSha.substring(0, abbrevLen)}.`
           );
         }
+
+        // Sync worktree label to dropdown (may have changed after refresh)
+        this._syncWorktreeDropdown(data.data);
 
         // Save scroll position and expanded state
         const scrollPosition = window.scrollY;

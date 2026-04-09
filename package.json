@@ -71,7 +71,8 @@
     "simple-git": "^3.19.1",
     "update-notifier": "^5.1.0",
     "uuid": "^11.1.0",
-    "ws": "^8.19.0"
+    "ws": "^8.19.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.8",
