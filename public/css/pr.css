@@ -13306,7 +13306,7 @@ body.resizing * {
   box-shadow: 0 4px 16px var(--color-shadow, rgba(0, 0, 0, 0.12));
   z-index: 100;
   padding: 6px 0;
-  max-height: 420px;
+  max-height: min(calc(100vh - 120px), 80vh);
   overflow-y: auto;
 }
 
