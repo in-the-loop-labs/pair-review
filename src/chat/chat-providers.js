@@ -121,6 +121,8 @@ function getChatProvider(id) {
     if (overrides.extra_args && Array.isArray(overrides.extra_args)) {
       provider.args = [...provider.args, ...overrides.extra_args];
     }
+    if (overrides.load_skills !== undefined) provider.load_skills = overrides.load_skills;
+    if (overrides.app_extensions !== undefined) provider.app_extensions = overrides.app_extensions;
     if (provider.command.includes(' ')) {
       provider.useShell = true;
     }
@@ -142,6 +144,8 @@ function getChatProvider(id) {
   if (overrides.extra_args && Array.isArray(overrides.extra_args)) {
     merged.args = [...(merged.args || []), ...overrides.extra_args];
   }
+  if (overrides.load_skills !== undefined) merged.load_skills = overrides.load_skills;
+  if (overrides.app_extensions !== undefined) merged.app_extensions = overrides.app_extensions;
   // For multi-word commands (e.g. "devx claude"), use shell mode
   if (merged.command && merged.command.includes(' ')) {
     merged.useShell = true;

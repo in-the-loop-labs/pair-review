@@ -320,6 +320,54 @@ describe('PiProvider', () => {
       expect(provider.baseArgs).toContain('--model');
       expect(provider.baseArgs).toContain('meta-llama/llama-4-scout-17b-16e-instruct');
     });
+
+    it('should add --no-skills when load_skills is false', () => {
+      const provider = new PiProvider('test-model', { load_skills: false });
+      expect(provider.baseArgs).toContain('--no-skills');
+    });
+
+    it('should not add --no-skills when load_skills is true', () => {
+      const provider = new PiProvider('test-model', { load_skills: true });
+      expect(provider.baseArgs).not.toContain('--no-skills');
+    });
+
+    it('should not add --no-skills when load_skills is not set (default true)', () => {
+      const provider = new PiProvider('test-model', {});
+      expect(provider.baseArgs).not.toContain('--no-skills');
+    });
+
+    it('should omit -e and TASK_EXTENSION_DIR when app_extensions is false', () => {
+      const provider = new PiProvider('test-model', { app_extensions: false });
+      expect(provider.baseArgs).not.toContain('-e');
+      // Verify the task extension dir path is not present
+      const hasExtDir = provider.baseArgs.some(arg => arg.includes('.pi/extensions/task'));
+      expect(hasExtDir).toBe(false);
+    });
+
+    it('should include -e and task extension dir when app_extensions is true', () => {
+      const provider = new PiProvider('test-model', { app_extensions: true });
+      expect(provider.baseArgs).toContain('-e');
+      const hasExtDir = provider.baseArgs.some(arg => arg.includes('.pi/extensions/task'));
+      expect(hasExtDir).toBe(true);
+    });
+
+    it('should include -e and task extension dir when app_extensions is not set (default true)', () => {
+      const provider = new PiProvider('test-model', {});
+      expect(provider.baseArgs).toContain('-e');
+      const hasExtDir = provider.baseArgs.some(arg => arg.includes('.pi/extensions/task'));
+      expect(hasExtDir).toBe(true);
+    });
+
+    it('should support both load_skills: false and app_extensions: false combined', () => {
+      const provider = new PiProvider('test-model', {
+        load_skills: false,
+        app_extensions: false
+      });
+      expect(provider.baseArgs).toContain('--no-skills');
+      expect(provider.baseArgs).not.toContain('-e');
+      const hasExtDir = provider.baseArgs.some(arg => arg.includes('.pi/extensions/task'));
+      expect(hasExtDir).toBe(false);
+    });
   });
 
   describe('parsePiResponse', () => {

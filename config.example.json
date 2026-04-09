@@ -159,6 +159,8 @@
     "pi": {
       "_comment": "Pi has NO built-in models - you MUST configure models here to use it. Below is just an example of that configuration format.",
       "command": "pi",
+      "load_skills": true,
+      "app_extensions": true,
       "extra_args": [],
       "env": {},
       "installInstructions": "Install Pi: npm install -g @mariozechner/pi-coding-agent",
@@ -232,7 +234,7 @@
   },
 
   "chat_providers": {
-    "_comment": "Chat provider command overrides. Separate from 'providers' (AI analysis). Chat providers are: pi, claude, codex, copilot-acp, gemini-acp, opencode-acp, cursor-acp. Supports 'command', 'args' (replaces defaults), 'extra_args' (appends), and 'env' overrides.",
+    "_comment": "Chat provider command overrides. Separate from 'providers' (AI analysis). Chat providers are: pi, claude, codex, copilot-acp, gemini-acp, opencode-acp, cursor-acp. Supports 'command', 'args' (replaces defaults), 'extra_args' (appends), 'env', 'load_skills' (Pi: false suppresses skill auto-discovery), and 'app_extensions' (Pi: false omits pair-review task extension) overrides.",
     "claude": {
       "_comment": "Example: use a wrapper script for Claude chat",
       "command": "claude"

@@ -37,6 +37,7 @@ class PiBridge extends EventEmitter {
    * @param {string[]} [options.extensions] - Array of extension directory paths to load via -e
    * @param {string[]} [options.extraArgs] - Extra CLI args to append (e.g., from config extra_args)
    * @param {string} [options.sessionPath] - Path to a session file for resumption
+   * @param {boolean} [options.loadSkills] - When false, adds --no-skills to suppress auto-discovery (default: true)
    */
   constructor(options = {}) {
     super();
@@ -52,6 +53,7 @@ class PiBridge extends EventEmitter {
     this.extensions = options.extensions || [];
     this.extraArgs = options.extraArgs || [];
     this.sessionPath = options.sessionPath || null;
+    this.loadSkills = options.loadSkills !== false;
 
     this._process = null;
     this._readline = null;
@@ -288,6 +290,12 @@ class PiBridge extends EventEmitter {
     // These are additive — the user's auto-discovered extensions remain available.
     for (const ext of this.extensions) {
       args.push('-e', ext);
+    }
+
+    // Suppress skill auto-discovery when loadSkills is false.
+    // Explicit --skill entries above still load.
+    if (!this.loadSkills) {
+      args.push('--no-skills');
     }
 
     // Append extra args from provider config (e.g., extra_args in chat_providers).
