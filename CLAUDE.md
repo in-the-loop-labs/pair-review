@@ -175,6 +175,12 @@ Test structure:
 - **Test coverage is mandatory for new functionality**: When adding new methods, parameters, or behavioral changes to existing code, add corresponding unit tests in the same task. Do not defer test writing to a separate task or leave it for later. Tests should cover: (1) the happy path, (2) edge cases like missing/null inputs, (3) error conditions. For bug fixes, add a regression test that would have caught the bug.
 - **Tests must NEVER open browser tabs or windows.** All calls to the `open` npm package in production code are gated behind `PAIR_REVIEW_NO_OPEN` env var. Vitest config sets this globally. Any test that spawns the CLI via `spawnSync`/`spawn` MUST include `PAIR_REVIEW_NO_OPEN: '1'` in its env. Playwright E2E tests must always run headless (`headless: true` in `playwright.config.js`). If you add a new code path that opens a browser, it must respect this env var.
 
+### SQLite Migration Safety
+- **Table rebuilds must be idempotent:** Always `DROP TABLE IF EXISTS` the temporary/rebuild table before creating it. If a migration crashes mid-rebuild, the next startup re-runs it — a leftover table with data causes UNIQUE constraint violations.
+- **Pragma toggles must be exception-safe:** Wrap `foreign_keys = OFF` (and similar pragma changes) in `try/finally` to guarantee restoration even if the migration throws.
+- **Pre-flight check when tightening constraints:** When adding stricter uniqueness (e.g., `COLLATE NOCASE` on a previously case-sensitive UNIQUE column), query for existing data that would violate the new constraint *before* attempting the rebuild. Fail with a clear error message rather than an opaque constraint violation.
+- **Use transactions for multi-step DDL:** Wrap `INSERT...SELECT`, `DROP TABLE`, and `ALTER TABLE RENAME` in a single transaction so partial failures don't leave the schema in a broken state.
+
 ### Skill Prompt Regeneration
 - When modifying prompt templates or line number guidance in `src/ai/prompts/`, run `node scripts/generate-skill-prompts.js` to regenerate the static reference files in `plugin-code-critic/skills/analyze/references/`
 - These reference files are used by the `code-critic:analyze` skill when no MCP connection is available, so they must stay in sync with the source prompts

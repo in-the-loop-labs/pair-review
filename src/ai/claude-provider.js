@@ -257,7 +257,8 @@ class ClaudeProvider extends AIProvider {
       logger.info(`${levelPrefix} Executing Claude CLI...`);
       logger.info(`${levelPrefix} Writing prompt: ${prompt.length} bytes`);
 
-      const claude = spawn(this.command, this.args, {
+      const spawnArgs = [...this.args];
+      const claude = spawn(this.command, spawnArgs, {
         cwd,
         env: {
           ...process.env,
@@ -268,6 +269,8 @@ class ClaudeProvider extends AIProvider {
       });
 
       const pid = claude.pid;
+      const fullCommand = this.useShell ? this.command : `${this.command} ${spawnArgs.join(' ')}`;
+      logger.debug(`${levelPrefix} Claude CLI command: ${fullCommand}`);
       logger.info(`${levelPrefix} Spawned Claude CLI process: PID ${pid}`);
 
       // Register process for cancellation tracking if analysisId provided

@@ -1157,11 +1157,12 @@ function startPoolBackgroundFetches(db, config) {
       const poolRepo = new WorktreePoolRepository(db);
       const repoSettingsRepo = new RepoSettingsRepository(db);
 
-      // Collect repos that might have pool config from either source
-      const repoNames = new Set(Object.keys(config.repos || {}));
+      // Collect repos that might have pool config from either source.
+      // Normalize to lowercase to match the database's COLLATE NOCASE identity.
+      const repoNames = new Set(Object.keys(config.repos || {}).map(r => r.toLowerCase()));
       const allRepoSettings = await query(db, 'SELECT repository, pool_size, pool_fetch_interval_minutes FROM repo_settings WHERE pool_size IS NOT NULL OR pool_fetch_interval_minutes IS NOT NULL');
       for (const row of allRepoSettings) {
-        repoNames.add(row.repository);
+        repoNames.add(row.repository.toLowerCase());
       }
 
       if (repoNames.size === 0) return;
@@ -1171,17 +1172,10 @@ function startPoolBackgroundFetches(db, config) {
         const { poolSize, poolFetchIntervalMinutes } = resolvePoolConfig(config, repoName, repoSettings);
         if (!poolSize || !poolFetchIntervalMinutes) continue;
 
-        // Skip if another server instance is already fetching this repo.
-        // Pool worktrees share a git object store so concurrent fetches conflict.
-        if (await repoSettingsRepo.isFetchInProgress(repoName)) {
-          logger.info(`Background fetch skipped for ${repoName}: another instance is fetching`);
-          continue;
-        }
-
         const intervalMs = poolFetchIntervalMinutes * 60 * 1000;
         const worktrees = await poolRepo.findAllForFetch(repoName);
 
-        // Check if any worktree actually needs fetching before claiming the lock
+        // Check if any worktree actually needs fetching before claiming the lease
         const needsFetch = worktrees.some(entry => {
           if (!entry.last_fetched_at) return true;
           const elapsed = Date.now() - new Date(entry.last_fetched_at).getTime();
@@ -1189,7 +1183,12 @@ function startPoolBackgroundFetches(db, config) {
         });
         if (!needsFetch) continue;
 
-        await repoSettingsRepo.markFetchStarted(repoName);
+        // Atomically claim the fetch lease — skips if another instance holds it.
+        // Pool worktrees share a git object store so concurrent fetches conflict.
+        if (!(await repoSettingsRepo.tryClaimFetch(repoName))) {
+          logger.info(`Background fetch skipped for ${repoName}: another instance is fetching`);
+          continue;
+        }
         try {
           for (const entry of worktrees) {
             // Skip if fetched recently (within the configured interval)
@@ -1205,13 +1204,20 @@ function startPoolBackgroundFetches(db, config) {
               const remote = remotes.find(r => r.name === 'origin') || remotes[0];
               if (remote) await git.fetch([remote.name, '--prune']);
               await poolRepo.updateLastFetched(entry.id);
+              // Refresh the lease so the stale guard only needs to outlive
+              // a single stalled fetch, not the entire serial loop.
+              await repoSettingsRepo.refreshFetchLease(repoName);
               logger.info(`Background fetch complete for ${repoName} pool worktree ${entry.id}`);
             } catch (fetchErr) {
               logger.warn(`Background fetch failed for ${entry.id}: ${fetchErr.message}`);
             }
           }
         } finally {
-          await repoSettingsRepo.markFetchFinished(repoName);
+          try {
+            await repoSettingsRepo.markFetchFinished(repoName);
+          } catch (finishErr) {
+            logger.warn(`Failed to release fetch lease for ${repoName}: ${finishErr.message}`);
+          }
         }
       }
     } catch (err) {

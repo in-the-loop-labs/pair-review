@@ -111,7 +111,7 @@ const SCHEMA_SQL = {
   repo_settings: `
     CREATE TABLE IF NOT EXISTS repo_settings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      repository TEXT NOT NULL UNIQUE,
+      repository TEXT NOT NULL UNIQUE COLLATE NOCASE,
       default_instructions TEXT,
       default_provider TEXT,
       default_model TEXT,
@@ -282,7 +282,7 @@ const INDEX_SQL = [
   'CREATE INDEX IF NOT EXISTS idx_pr_metadata_last_accessed ON pr_metadata(last_accessed_at)',
   'CREATE INDEX IF NOT EXISTS idx_worktrees_last_accessed ON worktrees(last_accessed_at)',
   'CREATE INDEX IF NOT EXISTS idx_worktrees_repo ON worktrees(repository)',
-  'CREATE UNIQUE INDEX IF NOT EXISTS idx_repo_settings_repository ON repo_settings(repository)',
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_repo_settings_repository ON repo_settings(repository COLLATE NOCASE)',
   "CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_local ON reviews(local_path, local_head_sha, local_head_branch) WHERE review_type = 'local'",
   "CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_pr_unique ON reviews(pr_number, repository) WHERE review_type = 'pr'",
   'CREATE INDEX IF NOT EXISTS idx_analysis_runs_review_id ON analysis_runs(review_id, started_at DESC)',
