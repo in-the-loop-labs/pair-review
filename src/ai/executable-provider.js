@@ -522,6 +522,11 @@ function createExecutableProviderClass(id, config) {
   ExecProvider.getDefaultModel = () => resolveDefaultModel(models) || models[0]?.id;
   ExecProvider.getInstallInstructions = () => config.installInstructions || `Install ${id}`;
 
+  // Surface configured timeout so the UI can pre-populate TimeoutSelect
+  if (config.timeout != null) {
+    ExecProvider.defaultTimeout = config.timeout;
+  }
+
   // Flags for the system
   ExecProvider.isExecutable = true;
   const caps = config.capabilities || {};
