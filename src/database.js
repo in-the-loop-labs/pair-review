@@ -20,7 +20,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 42;
+const CURRENT_SCHEMA_VERSION = 43;
 
 /**
  * Database schema SQL statements
@@ -155,6 +155,7 @@ const SCHEMA_SQL = {
       pool_fetch_interval_minutes INTEGER,
       pool_fetch_started_at TEXT,
       pool_fetch_finished_at TEXT,
+      load_skills INTEGER,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
@@ -1830,6 +1831,20 @@ const MIGRATIONS = {
     } finally {
       db.pragma('foreign_keys = ON');
     }
+  },
+
+  43: (db) => {
+    console.log('Running migration to schema version 43: Add load_skills to repo_settings...');
+    const addColumnIfNotExists = (table, column, definition) => {
+      const tableInfo = db.prepare(`PRAGMA table_info(${table})`).all();
+      const columnExists = tableInfo.some(col => col.name === column);
+      if (!columnExists) {
+        db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`).run();
+        console.log(`  Added column ${column} to ${table}`);
+      }
+    };
+    addColumnIfNotExists('repo_settings', 'load_skills', 'INTEGER');
+    console.log('Migration to schema version 43 complete');
   }
 };
 
@@ -2765,7 +2780,7 @@ class RepoSettingsRepository {
    */
   async getRepoSettings(repository) {
     const row = await queryOne(this.db, `
-      SELECT id, repository, default_instructions, default_provider, default_model, default_council_id, default_tab, default_chat_instructions, local_path, auto_branch_review, pool_size, pool_fetch_interval_minutes, created_at, updated_at
+      SELECT id, repository, default_instructions, default_provider, default_model, default_council_id, default_tab, default_chat_instructions, local_path, auto_branch_review, pool_size, pool_fetch_interval_minutes, load_skills, created_at, updated_at
       FROM repo_settings
       WHERE repository = ?
     `, [repository]);
@@ -2822,7 +2837,7 @@ class RepoSettingsRepository {
    * @returns {Promise<Object>} Saved settings object
    */
   async saveRepoSettings(repository, settings) {
-    const { default_instructions, default_provider, default_model, default_council_id, default_tab, default_chat_instructions, local_path, pool_size, pool_fetch_interval_minutes } = settings;
+    const { default_instructions, default_provider, default_model, default_council_id, default_tab, default_chat_instructions, local_path, pool_size, pool_fetch_interval_minutes, load_skills } = settings;
     const now = new Date().toISOString();
 
     // Check if settings already exist
@@ -2841,6 +2856,7 @@ class RepoSettingsRepository {
             local_path = ?,
             pool_size = ?,
             pool_fetch_interval_minutes = ?,
+            load_skills = ?,
             updated_at = ?
         WHERE repository = ?
       `, [
@@ -2853,6 +2869,7 @@ class RepoSettingsRepository {
         local_path !== undefined ? local_path : existing.local_path,
         pool_size !== undefined ? pool_size : existing.pool_size,
         pool_fetch_interval_minutes !== undefined ? pool_fetch_interval_minutes : existing.pool_fetch_interval_minutes,
+        load_skills !== undefined ? load_skills : existing.load_skills,
         now,
         repository
       ]);
@@ -2868,14 +2885,15 @@ class RepoSettingsRepository {
         local_path: local_path !== undefined ? local_path : existing.local_path,
         pool_size: pool_size !== undefined ? pool_size : existing.pool_size,
         pool_fetch_interval_minutes: pool_fetch_interval_minutes !== undefined ? pool_fetch_interval_minutes : existing.pool_fetch_interval_minutes,
+        load_skills: load_skills !== undefined ? load_skills : existing.load_skills,
         updated_at: now
       };
     } else {
       // Insert new settings
       const result = await run(this.db, `
-        INSERT INTO repo_settings (repository, default_instructions, default_provider, default_model, default_council_id, default_tab, default_chat_instructions, local_path, pool_size, pool_fetch_interval_minutes, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `, [repository, default_instructions || null, default_provider || null, default_model || null, default_council_id || null, default_tab || null, default_chat_instructions || null, local_path || null, pool_size ?? null, pool_fetch_interval_minutes ?? null, now, now]);
+        INSERT INTO repo_settings (repository, default_instructions, default_provider, default_model, default_council_id, default_tab, default_chat_instructions, local_path, pool_size, pool_fetch_interval_minutes, load_skills, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [repository, default_instructions || null, default_provider || null, default_model || null, default_council_id || null, default_tab || null, default_chat_instructions || null, local_path || null, pool_size ?? null, pool_fetch_interval_minutes ?? null, load_skills ?? null, now, now]);
 
       return {
         id: result.lastID,
@@ -2889,6 +2907,7 @@ class RepoSettingsRepository {
         local_path: local_path || null,
         pool_size: pool_size ?? null,
         pool_fetch_interval_minutes: pool_fetch_interval_minutes ?? null,
+        load_skills: load_skills ?? null,
         created_at: now,
         updated_at: now
       };

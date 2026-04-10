@@ -494,6 +494,8 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
     config: modeConfig,
     excludePrevious,
     serverPort,
+    providerOverrides = {},
+    providerOverridesMap = null,
     hookContext = {},
   } = modeContext;
 
@@ -585,7 +587,7 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
       }).catch(err => { logger.warn(`Analysis hook failed: ${err.message}`); });
     }
 
-    const analyzer = new Analyzer(db, 'council', 'council');
+    const analyzer = new Analyzer(db, 'council', 'council', providerOverrides, providerOverridesMap);
 
     logger.section(`Council Analysis Request (${configType}) - ${logLabel}`);
     logger.log('API', `Repository: ${repository}`, 'magenta');

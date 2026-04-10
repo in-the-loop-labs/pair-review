@@ -198,6 +198,22 @@ Examples:
                         </div>
                     </section>
 
+                    <!-- Provider Skill Discovery Section -->
+                    <section class="settings-section">
+                        <div class="section-header">
+                            <h2>Provider Skill Discovery</h2>
+                            <p class="section-description">Controls whether AI providers load environment-level skills automatically. Currently applies to Pi's skill auto-discovery. When disabled, Pi runs with <code>--no-skills</code>.</p>
+                        </div>
+                        <div class="form-group" style="max-width: 300px;">
+                            <label for="load-skills-select" class="settings-label">Load Skills</label>
+                            <select class="settings-select" id="load-skills-select">
+                                <option value="">Default (inherit from config)</option>
+                                <option value="1">Enabled</option>
+                                <option value="0">Disabled</option>
+                            </select>
+                        </div>
+                    </section>
+
                     <!-- Repository Location Section -->
                     <section class="settings-section" id="local-path-section">
                         <div class="section-header">

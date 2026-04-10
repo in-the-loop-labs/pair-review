@@ -544,6 +544,74 @@ function getRepoPoolFetchInterval(config, repository) {
 }
 
 /**
+ * Gets the configured load_skills setting for a repository from file config.
+ * @param {Object} config - Configuration object from loadConfig()
+ * @param {string} repository - Repository in "owner/repo" format
+ * @returns {boolean|null} - true/false if set, null if not configured
+ */
+function getRepoLoadSkills(config, repository) {
+  const repoConfig = getRepoConfig(config, repository);
+  const val = repoConfig?.load_skills;
+  return typeof val === 'boolean' ? val : null;
+}
+
+/**
+ * Resolves the load_skills setting for a repository, checking DB repo_settings first,
+ * then repo JSON config, then provider config. Returns a boolean suitable for passing
+ * directly to provider constructors (which check `!== false`).
+ *
+ * @param {Object} config - Configuration object from loadConfig()
+ * @param {string} repository - Repository in "owner/repo" format
+ * @param {Object|null} repoSettings - DB repo_settings row (from RepoSettingsRepository.getRepoSettings)
+ * @param {boolean} [providerLoadSkills] - Provider-level load_skills from config.providers
+ * @returns {boolean} - Resolved load_skills value
+ */
+function resolveLoadSkills(config, repository, repoSettings, providerLoadSkills) {
+  // Tier 1: DB repo settings (1 = true, 0 = false, null = not set)
+  const dbVal = repoSettings?.load_skills;
+  if (typeof dbVal === 'number' && (dbVal === 0 || dbVal === 1)) {
+    return dbVal === 1;
+  }
+
+  // Tier 2: Repo JSON config (config.repos["owner/repo"].load_skills)
+  const repoVal = getRepoLoadSkills(config, repository);
+  if (repoVal !== null) {
+    return repoVal;
+  }
+
+  // Tier 3: Provider-level config
+  if (typeof providerLoadSkills === 'boolean') {
+    return providerLoadSkills;
+  }
+
+  // Tier 4: Default
+  return true;
+}
+
+/**
+ * Builds council-mode provider overrides: a shared (tier 1+2) base and a per-provider
+ * map that includes tier 3 resolution for each configured provider.
+ *
+ * @param {Object} config - Configuration object from loadConfig()
+ * @param {string} repository - Repository in "owner/repo" format
+ * @param {Object|null} repoSettings - DB repo_settings row
+ * @returns {{ providerOverrides: Object, providerOverridesMap: Object }}
+ */
+function buildCouncilProviderOverrides(config, repository, repoSettings) {
+  const baseLoadSkills = resolveLoadSkills(config, repository, repoSettings);
+  const providerOverrides = { load_skills: baseLoadSkills };
+  const providerOverridesMap = {};
+  if (config.providers) {
+    for (const [pid, pconf] of Object.entries(config.providers)) {
+      providerOverridesMap[pid] = {
+        load_skills: resolveLoadSkills(config, repository, repoSettings, pconf?.load_skills)
+      };
+    }
+  }
+  return { providerOverrides, providerOverridesMap };
+}
+
+/**
  * Resolves pool configuration for a repository, checking DB repo_settings first,
  * then falling back to file config. DB values take precedence when set (non-null).
  * @param {Object} config - Configuration object from loadConfig()
@@ -684,7 +752,10 @@ module.exports = {
   getRepoResetScript,
   getRepoPoolSize,
   getRepoPoolFetchInterval,
+  getRepoLoadSkills,
   resolvePoolConfig,
+  resolveLoadSkills,
+  buildCouncilProviderOverrides,
   resolveDbName,
   warnIfDevModeWithoutDbName,
   shouldSkipUpdateNotifier,

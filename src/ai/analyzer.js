@@ -73,9 +73,10 @@ async function captureDiffSnapshot(analyzer, worktreePath, prMetadata, logPrefix
  * @param {Object|null} instructions - Instructions object { repoInstructions, requestInstructions }
  * @param {Function|null} progressCallback - Parent progress callback to wrap
  * @param {Object} db - Database instance
+ * @param {Object} providerOverrides - Per-call config overrides passed to createProvider (optional)
  * @returns {Object} { voiceAnalyzer, voiceKey, reviewerLabel, voiceRequestInstructions, voiceProgressCallback, voiceTier, voiceTimeout }
  */
-function buildVoiceContext(voice, idx, instructions, progressCallback, db) {
+function buildVoiceContext(voice, idx, instructions, progressCallback, db, providerOverrides = {}, providerOverridesMap = null) {
   const voiceKey = `${voice.provider}-${voice.model}${idx > 0 ? `-${idx}` : ''}`;
   const reviewerLabel = buildReviewerLabel(idx, voice);
 
@@ -87,13 +88,16 @@ function buildVoiceContext(voice, idx, instructions, progressCallback, db) {
       : voice.customInstructions;
   }
 
+  // Resolve per-voice overrides: prefer provider-specific from map, fall back to shared overrides
+  const effectiveOverrides = providerOverridesMap?.[voice.provider] || providerOverrides;
+
   const ProviderClass = getProviderClass(voice.provider);
   const isExecutable = ProviderClass?.isExecutable || false;
 
   // Only create Analyzer for native voices
-  const voiceAnalyzer = isExecutable ? null : new Analyzer(db, voice.model, voice.provider);
+  const voiceAnalyzer = isExecutable ? null : new Analyzer(db, voice.model, voice.provider, effectiveOverrides);
   // Create provider instance for executable voices (used directly)
-  const voiceProvider = isExecutable ? createProvider(voice.provider, voice.model) : null;
+  const voiceProvider = isExecutable ? createProvider(voice.provider, voice.model, effectiveOverrides) : null;
 
   const voiceTier = voice.tier || 'balanced';
   const voiceTimeout = voice.timeout || ProviderClass?.defaultTimeout || 600000;
@@ -272,12 +276,16 @@ class Analyzer {
    * @param {Object} database - Database instance
    * @param {string} model - Model to use (e.g., 'opus', 'gemini-2.5-pro')
    * @param {string} provider - Provider ID (e.g., 'claude', 'gemini'). Defaults to 'claude'.
+   * @param {Object} providerOverrides - Per-call config overrides passed to createProvider (optional)
+   * @param {Object|null} providerOverridesMap - Per-provider overrides map for council mode (provider ID → overrides)
    */
-  constructor(database, model = 'opus', provider = 'claude') {
+  constructor(database, model = 'opus', provider = 'claude', providerOverrides = {}, providerOverridesMap = null) {
     // Store model and provider for creating provider instances per level
     this.model = model;
     this.provider = provider;
     this.db = database;
+    this.providerOverrides = providerOverrides;
+    this.providerOverridesMap = providerOverridesMap;
     this.testContextCache = new Map(); // Cache test detection results per worktree
     this._worktreeManager = null; // Lazy-initialized for sparse-checkout queries
   }
@@ -1015,7 +1023,7 @@ Or simply ignore any changes to files matching these patterns in your analysis.
       }
 
       // Create provider instance for this level
-      const aiProvider = createProvider(this.provider, this.model);
+      const aiProvider = createProvider(this.provider, this.model, this.providerOverrides);
 
       const updateProgress = (step) => {
         const progress = `${lp}[Level 1] ${step}...`;
@@ -1975,7 +1983,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
       }
 
       // Create provider instance for this level
-      const aiProvider = createProvider(this.provider, this.model);
+      const aiProvider = createProvider(this.provider, this.model, this.providerOverrides);
 
       const updateProgress = (step) => {
         const progress = `${lp}[Level 2] ${step}...`;
@@ -2085,7 +2093,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
       }
 
       // Create provider instance for this level
-      const aiProvider = createProvider(this.provider, this.model);
+      const aiProvider = createProvider(this.provider, this.model, this.providerOverrides);
 
       const updateProgress = (step) => {
         const progress = `${lp}[Level 3] ${step}...`;
@@ -2655,7 +2663,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       }
 
       // Create provider instance for consolidation (use overrides if provided)
-      const aiProvider = createProvider(providerOverride || this.provider, modelOverride || this.model);
+      const aiProvider = createProvider(providerOverride || this.provider, modelOverride || this.model, this.providerOverrides);
 
       // Build the consolidation prompt
       const prompt = this.buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions, worktreePath, tier, lp, { excludePrevious, dedupContext });
@@ -2932,7 +2940,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
     if (voices.length === 1) {
       const voice = voices[0];
       const { voiceAnalyzer, voiceProvider, isExecutable, voiceKey, reviewerLabel, voiceRequestInstructions, voiceProgressCallback, voiceTier, voiceTimeout } =
-        buildVoiceContext(voice, 0, instructions, progressCallback, this.db);
+        buildVoiceContext(voice, 0, instructions, progressCallback, this.db, this.providerOverrides, this.providerOverridesMap);
       logger.info(`[ReviewerCouncil] Single reviewer (${reviewerLabel}) — running directly on parent run, no child run`);
 
       // Report voice-centric progress structure
@@ -3034,7 +3042,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
     const commentRepo = new CommentRepository(this.db);
     const voicePromises = voices.map(async (voice, idx) => {
       const { voiceAnalyzer, voiceProvider, isExecutable, voiceKey, reviewerLabel, voiceRequestInstructions, voiceProgressCallback, voiceTier, voiceTimeout } =
-        buildVoiceContext(voice, idx, instructions, progressCallback, this.db);
+        buildVoiceContext(voice, idx, instructions, progressCallback, this.db, this.providerOverrides, this.providerOverridesMap);
       const childRunId = uuidv4();
 
       // Create child analysis run record
@@ -3271,7 +3279,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 
       const consolidated = await this._crossVoiceConsolidate(
         voiceReviews, prMetadata, consolInstructions, worktreePath,
-        { provider: consolProvider, model: consolModel, tier: consolTier, timeout: consolConfig.timeout, analysisId, progressCallback, excludePrevious, dedupContext }
+        { provider: consolProvider, model: consolModel, tier: consolTier, timeout: consolConfig.timeout, analysisId, progressCallback, excludePrevious, dedupContext, providerOverrides: this.providerOverrides }
       );
 
       const finalSuggestions = this.validateAndFinalizeSuggestions(
@@ -3410,7 +3418,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           tier,
           timeout: voice.timeout || VoiceProviderClass?.defaultTimeout || 600000,
           customInstructions: voiceInstructions,
-          voiceCustomInstructions: voice.customInstructions || null
+          voiceCustomInstructions: voice.customInstructions || null,
+          providerOverrides: this.providerOverridesMap?.[voice.provider] || this.providerOverrides
         });
       }
     }
@@ -3575,7 +3584,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           }));
           const consolidated = await this._intraLevelConsolidate(
             level, voiceGroups, prMetadata, orchInstructions, worktreePath,
-            { provider: orchProvider, model: orchModel, tier: orchTier, timeout: orchConfig.timeout, analysisId, progressCallback, reviewerCount: successfulVoicesForLevel.length }
+            { provider: orchProvider, model: orchModel, tier: orchTier, timeout: orchConfig.timeout, analysisId, progressCallback, reviewerCount: successfulVoicesForLevel.length, providerOverrides: this.providerOverrides }
           );
           consolidatedPerLevel[level] = consolidated;
           // Report intra-level consolidation step as completed
@@ -3661,7 +3670,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @private
    */
   async _executeCouncilVoice(task, context) {
-    const { voiceId, reviewerLabel, reviewerLogPrefix, level, provider, model, tier, timeout = 600000, customInstructions } = task;
+    const { voiceId, reviewerLabel, reviewerLogPrefix, level, provider, model, tier, timeout = 600000, customInstructions, providerOverrides } = task;
     const { reviewId, runId, worktreePath, prMetadata, generatedPatterns, validFiles, analysisId, progressCallback } = context;
     const displayLabel = reviewerLabel || voiceId;
 
@@ -3672,7 +3681,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
     }
 
     // Create provider instance for this voice
-    const aiProvider = createProvider(provider, model);
+    const aiProvider = createProvider(provider, model, providerOverrides || {});
 
     // Build prompt based on level
     let prompt;
@@ -3748,9 +3757,9 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @private
    */
   async _intraLevelConsolidate(level, voiceGroups, prMetadata, customInstructions, worktreePath, orchConfig) {
-    const { provider, model, tier, timeout, analysisId, progressCallback, reviewerCount } = orchConfig;
+    const { provider, model, tier, timeout, analysisId, progressCallback, reviewerCount, providerOverrides } = orchConfig;
 
-    const aiProvider = createProvider(provider, model);
+    const aiProvider = createProvider(provider, model, providerOverrides || {});
 
     const isLocal = prMetadata.reviewType === 'local';
     const reviewDescription = isLocal
@@ -3916,9 +3925,9 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @private
    */
   async _crossVoiceConsolidate(voiceReviews, prMetadata, customInstructions, worktreePath, config) {
-    const { provider, model, tier, timeout, analysisId, progressCallback, excludePrevious, dedupContext } = config;
+    const { provider, model, tier, timeout, analysisId, progressCallback, excludePrevious, dedupContext, providerOverrides } = config;
 
-    const aiProvider = createProvider(provider, model);
+    const aiProvider = createProvider(provider, model, providerOverrides || {});
 
     const voiceDescriptions = voiceReviews.map(v => {
       let desc = `### Reviewer: ${v.voiceKey}`;

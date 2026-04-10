@@ -43,7 +43,7 @@ class ChatSessionManager {
    * @param {string} [options.initialContext] - Initial context to prepend to the first user message
    * @returns {Promise<{id: number, status: string}>}
    */
-  async createSession({ provider, model, reviewId, contextCommentId, systemPrompt, cwd, initialContext }) {
+  async createSession({ provider, model, reviewId, contextCommentId, systemPrompt, cwd, initialContext, loadSkills }) {
     // Resolve provider definition once — used for model fallback and bridge construction
     const providerDef = getChatProvider(provider);
 
@@ -72,6 +72,7 @@ class ChatSessionManager {
       model: resolvedModel,
       cwd,
       systemPrompt,
+      loadSkills,
     }, providerDef);
 
     const listeners = {
@@ -413,9 +414,10 @@ class ChatSessionManager {
    * @param {Object} options
    * @param {string} [options.systemPrompt] - System prompt text
    * @param {string} [options.cwd] - Working directory for agent
+   * @param {boolean} [options.loadSkills] - Resolved load_skills override for the session
    * @returns {Promise<{id: number, status: string}>}
    */
-  async resumeSession(sessionId, { systemPrompt, cwd } = {}) {
+  async resumeSession(sessionId, { systemPrompt, cwd, loadSkills } = {}) {
     // Already active — return immediately
     if (this._sessions.has(sessionId)) {
       return { id: sessionId, status: 'active' };
@@ -459,6 +461,7 @@ class ChatSessionManager {
       model: row.model,
       cwd,
       systemPrompt,
+      loadSkills,
       ...resumeOptions,
     });
 
@@ -588,7 +591,7 @@ class ChatSessionManager {
       useShell: def?.useShell,
       tools: CHAT_TOOLS,
       extensions: appExtensions ? [taskExtensionDir] : [],
-      loadSkills: def?.load_skills,
+      loadSkills: options.loadSkills ?? def?.load_skills,
     });
   }
 

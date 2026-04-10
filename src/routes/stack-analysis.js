@@ -19,7 +19,7 @@ const { normalizeRepository } = require('../utils/paths');
 const { mergeInstructions } = require('../utils/instructions');
 const { GitWorktreeManager } = require('../git/worktree');
 const { GitHubClient } = require('../github/client');
-const { getGitHubToken } = require('../config');
+const { getGitHubToken, resolveLoadSkills, buildCouncilProviderOverrides } = require('../config');
 const { setupStackPR } = require('../setup/stack-setup');
 const Analyzer = require('../ai/analyzer');
 const { getProviderClass, createProvider } = require('../ai/provider');
@@ -374,14 +374,24 @@ async function analyzeStackPR(deps, db, config, {
   let analysisResult;
 
   if (configType === 'council' || configType === 'advanced' || isCouncil) {
+    const { providerOverrides: councilProviderOverrides, providerOverridesMap: councilProviderOverridesMap } =
+      buildCouncilProviderOverrides(config, repository, repoSettings);
+
     analysisResult = await launchStackCouncilAnalysis(deps, db, config, {
       reviewId, worktreePath, prMetadata, prNum, owner, repo, repository,
       globalInstructions, repoInstructions, requestInstructions,
-      councilId, rawCouncilConfig, configType, onAnalysisIdReady
+      councilId, rawCouncilConfig, configType, onAnalysisIdReady,
+      providerOverrides: councilProviderOverrides,
+      providerOverridesMap: councilProviderOverridesMap
     });
   } else {
     let selectedProvider = reqProvider || repoSettings?.default_provider || config.default_provider || config.provider || 'claude';
     let selectedModel = reqModel || repoSettings?.default_model || config.default_model || config.model || 'opus';
+
+    // Resolve load_skills across all config tiers
+    const providerLoadSkills = config.providers?.[selectedProvider]?.load_skills;
+    const loadSkills = resolveLoadSkills(config, repository, repoSettings, providerLoadSkills);
+    const providerOverrides = { load_skills: loadSkills };
 
     const ProviderClass = deps.getProviderClass(selectedProvider);
 
@@ -389,14 +399,16 @@ async function analyzeStackPR(deps, db, config, {
       analysisResult = await launchStackExecutableAnalysis(deps, db, config, {
         reviewId, worktreePath, prMetadata, prNum, owner, repo, repository,
         selectedProvider, selectedModel,
-        repoInstructions, requestInstructions, onAnalysisIdReady
+        repoInstructions, requestInstructions, onAnalysisIdReady,
+        providerOverrides
       });
     } else {
       analysisResult = await launchStackSingleAnalysis(deps, db, config, {
         reviewId, worktreePath, prMetadata, prNum, owner, repo, repository,
         selectedProvider, selectedModel,
         globalInstructions, repoInstructions, requestInstructions,
-        reqTier, reqEnabledLevels, onAnalysisIdReady
+        reqTier, reqEnabledLevels, onAnalysisIdReady,
+        providerOverrides
       });
     }
   }
@@ -415,7 +427,8 @@ async function launchStackSingleAnalysis(deps, db, config, {
   reviewId, worktreePath, prMetadata, prNum, owner, repo, repository,
   selectedProvider, selectedModel,
   globalInstructions, repoInstructions, requestInstructions,
-  reqTier, reqEnabledLevels, onAnalysisIdReady
+  reqTier, reqEnabledLevels, onAnalysisIdReady,
+  providerOverrides = {}
 }) {
   const runId = uuidv4();
   const analysisId = runId;
@@ -462,7 +475,7 @@ async function launchStackSingleAnalysis(deps, db, config, {
   broadcastProgress(analysisId, initialStatus);
   broadcastReviewEvent(reviewId, { type: 'review:analysis_started', analysisId });
 
-  const analyzer = new deps.Analyzer(db, selectedModel, selectedProvider);
+  const analyzer = new deps.Analyzer(db, selectedModel, selectedProvider, providerOverrides);
   const progressCallback = createProgressCallback(analysisId);
 
   logger.info(`Stack analysis: starting single-model analysis for PR #${prNum} (${selectedProvider}/${selectedModel})`);
@@ -538,7 +551,9 @@ async function launchStackSingleAnalysis(deps, db, config, {
 async function launchStackCouncilAnalysis(deps, db, config, {
   reviewId, worktreePath, prMetadata, prNum, owner, repo, repository,
   globalInstructions, repoInstructions, requestInstructions,
-  councilId, rawCouncilConfig, configType, onAnalysisIdReady
+  councilId, rawCouncilConfig, configType, onAnalysisIdReady,
+  providerOverrides = {},
+  providerOverridesMap = null
 }) {
   let councilConfig;
   let resolvedConfigType = configType;
@@ -580,6 +595,8 @@ async function launchStackCouncilAnalysis(deps, db, config, {
       logLabel: `Stack PR #${prNum}`,
       initialStatusExtra: { prNumber: prNum, reviewType: 'pr' },
       config,
+      providerOverrides,
+      providerOverridesMap,
       hookContext: {
         mode: 'pr',
         prContext: {
@@ -623,7 +640,8 @@ async function launchStackCouncilAnalysis(deps, db, config, {
 async function launchStackExecutableAnalysis(deps, db, config, {
   reviewId, worktreePath, prMetadata, prNum, owner, repo, repository,
   selectedProvider, selectedModel,
-  repoInstructions, requestInstructions, onAnalysisIdReady
+  repoInstructions, requestInstructions, onAnalysisIdReady,
+  providerOverrides = {}
 }) {
   const runId = uuidv4();
   const analysisId = runId;
@@ -671,7 +689,8 @@ async function launchStackExecutableAnalysis(deps, db, config, {
     repository,
     reviewType: 'pr',
     headSha: prMetadata.head_sha,
-    extraInitialStatus: { prNumber: prNum }
+    extraInitialStatus: { prNumber: prNum },
+    providerOverrides
   }, {
     activeAnalyses,
     reviewToAnalysisId,

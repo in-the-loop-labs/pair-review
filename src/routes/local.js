@@ -24,7 +24,7 @@ const { broadcastReviewEvent } = require('../events/review-events');
 const { fireHooks, hasHooks } = require('../hooks/hook-runner');
 const { buildReviewStartedPayload, buildReviewLoadedPayload, buildAnalysisStartedPayload, buildAnalysisCompletedPayload, getCachedUser } = require('../hooks/payloads');
 const { mergeInstructions } = require('../utils/instructions');
-const { getGitHubToken } = require('../config');
+const { getGitHubToken, resolveLoadSkills, buildCouncilProviderOverrides } = require('../config');
 const { generateScopedDiff, computeScopedDigest, getBranchCommitCount, getFirstCommitSubject, detectAndBuildBranchInfo, findMergeBase, getCurrentBranch, getRepositoryName } = require('../local-review');
 const { STOPS, isValidScope, normalizeScope, reviewScope, includesBranch, DEFAULT_SCOPE } = require('../local-scope');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
@@ -1023,7 +1023,8 @@ router.get('/api/local/:reviewId/check-stale', async (req, res) => {
  */
 async function handleExecutableAnalysis(req, res, {
   reviewId, review, localPath, repository, selectedProvider, selectedModel,
-  repoInstructions, requestInstructions, combinedInstructions, runId, analysisId, reviewRepo
+  repoInstructions, requestInstructions, combinedInstructions, runId, analysisId, reviewRepo,
+  providerOverrides
 }) {
   return runExecutableAnalysis(req, res, {
     reviewId,
@@ -1036,7 +1037,8 @@ async function handleExecutableAnalysis(req, res, {
     analysisId,
     repository,
     reviewType: review.review_type || 'local',
-    headSha: review.local_head_sha
+    headSha: review.local_head_sha,
+    providerOverrides
   }, {
     activeAnalyses,
     reviewToAnalysisId,
@@ -1171,6 +1173,11 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
     const runId = uuidv4();
     const analysisId = runId;
 
+    // Resolve load_skills across all config tiers
+    const providerLoadSkills = appConfig.providers?.[selectedProvider]?.load_skills;
+    const loadSkills = resolveLoadSkills(appConfig, repository, repoSettings, providerLoadSkills);
+    const providerOverrides = { load_skills: loadSkills };
+
     // Check if selected provider is an executable provider (external tool)
     const ProviderClass = getProviderClass(selectedProvider);
     if (ProviderClass?.isExecutable) {
@@ -1186,7 +1193,8 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
         combinedInstructions,
         runId,
         analysisId,
-        reviewRepo
+        reviewRepo,
+        providerOverrides
       });
     }
 
@@ -1258,7 +1266,7 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
     }
 
     // Create analyzer instance with provider and model
-    const analyzer = new Analyzer(db, selectedModel, selectedProvider);
+    const analyzer = new Analyzer(db, selectedModel, selectedProvider, providerOverrides);
 
     // Build local review metadata for the analyzer
     // The analyzer uses base_sha and head_sha for git diff commands
@@ -2051,7 +2059,6 @@ router.post('/api/local/:reviewId/analyses/council', async (req, res) => {
       scopeEnd: councilScopeEnd,
     };
 
-    const analyzer = new Analyzer(db, 'council', 'council');
     // Use the scope-aware helper so the file list matches the generated diff
     // (covers branch, staged, unstaged, and untracked stops as appropriate).
     const changedFiles = await getChangedFiles(localPath, {
@@ -2085,6 +2092,10 @@ router.post('/api/local/:reviewId/analyses/council', async (req, res) => {
     // Import launchCouncilAnalysis from analyses.js
     const analysesRouter = require('./analyses');
     const localCouncilConfig = req.app.get('config') || {};
+
+    const { providerOverrides: councilProviderOverrides, providerOverridesMap: councilProviderOverridesMap } =
+      buildCouncilProviderOverrides(localCouncilConfig, review.repository, repoSettings);
+
     const { analysisId, runId } = await analysesRouter.launchCouncilAnalysis(
       db,
       {
@@ -2099,6 +2110,8 @@ router.post('/api/local/:reviewId/analyses/council', async (req, res) => {
         config: localCouncilConfig,
         excludePrevious,
         serverPort: req.socket.localPort,
+        providerOverrides: councilProviderOverrides,
+        providerOverridesMap: councilProviderOverridesMap,
         hookContext: {
           mode: 'local',
           localContext: { path: localPath, branch: review.local_head_branch, headSha: review.local_head_sha },

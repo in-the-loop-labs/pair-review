@@ -23,6 +23,7 @@ const {
   createProgressCallback
 } = require('./shared');
 const { safeParseJson } = require('../utils/safe-parse-json');
+const { resolveLoadSkills } = require('../config');
 
 // All valid tier values: canonical tiers + aliases (for Zod enum validation)
 const ALL_TIER_VALUES = /** @type {[string, ...string[]]} */ ([...TIERS, ...Object.keys(TIER_ALIASES)]);
@@ -595,8 +596,13 @@ function createMCPServer(db, options = {}) {
           broadcastProgress(analysisId, initialStatus);
           broadcastReviewEvent(reviewId, { type: 'review:analysis_started', analysisId });
 
+          // Resolve load_skills across all config tiers
+          const providerLoadSkills = config.providers?.[provider]?.load_skills;
+          const loadSkills = resolveLoadSkills(config, repository, repoSettings, providerLoadSkills);
+          const providerOverrides = { load_skills: loadSkills };
+
           // Create analyzer and launch asynchronously
-          const analyzer = new Analyzer(db, model, provider);
+          const analyzer = new Analyzer(db, model, provider, providerOverrides);
           const localMetadata = {
             id: reviewId,
             repository: review.repository,
@@ -747,7 +753,12 @@ function createMCPServer(db, options = {}) {
           broadcastProgress(analysisId, initialStatus);
           broadcastReviewEvent(review.id, { type: 'review:analysis_started', analysisId });
 
-          const analyzer = new Analyzer(db, model, provider);
+          // Resolve load_skills across all config tiers
+          const prProviderLoadSkills = config.providers?.[provider]?.load_skills;
+          const prLoadSkills = resolveLoadSkills(config, repository, repoSettings, prProviderLoadSkills);
+          const prProviderOverrides = { load_skills: prLoadSkills };
+
+          const analyzer = new Analyzer(db, model, provider, prProviderOverrides);
           const progressCallback = createProgressCallback(analysisId);
           const tier = resolveTier(args.tier);
 

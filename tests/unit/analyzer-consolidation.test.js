@@ -472,3 +472,83 @@ describe('Consolidation helper methods (direct tests)', () => {
     });
   });
 });
+
+describe('Per-voice provider overrides (providerOverridesMap)', () => {
+  describe('Analyzer constructor stores providerOverridesMap', () => {
+    it('should store providerOverridesMap when provided', () => {
+      const map = { pi: { load_skills: false }, gemini: { timeout: 300000 } };
+      const a = new Analyzer({}, 'council', 'council', { load_skills: true }, map);
+      expect(a.providerOverridesMap).toBe(map);
+    });
+
+    it('should default providerOverridesMap to null when not provided', () => {
+      const a = new Analyzer({}, 'council', 'council', { load_skills: true });
+      expect(a.providerOverridesMap).toBeNull();
+    });
+
+    it('should store providerOverrides alongside providerOverridesMap', () => {
+      const shared = { load_skills: true };
+      const map = { pi: { load_skills: false } };
+      const a = new Analyzer({}, 'council', 'council', shared, map);
+      expect(a.providerOverrides).toBe(shared);
+      expect(a.providerOverridesMap).toBe(map);
+    });
+  });
+
+  describe('buildVoiceContext per-voice override logic (source verification)', () => {
+    /**
+     * Extract the body of buildVoiceContext for focused assertions.
+     */
+    const methodMatch = analyzerSource.match(
+      /function buildVoiceContext\(voice, idx, instructions, progressCallback, db, providerOverrides = \{\}, providerOverridesMap = null\)\s*\{([\s\S]*?)\nfunction /
+    );
+    // Fallback: match up to the next top-level function or class
+    const methodBody = methodMatch ? methodMatch[1] : '';
+
+    it('should extract the buildVoiceContext function body', () => {
+      expect(methodBody.length).toBeGreaterThan(50);
+    });
+
+    it('should accept providerOverridesMap as the 7th parameter', () => {
+      expect(analyzerSource).toContain(
+        'function buildVoiceContext(voice, idx, instructions, progressCallback, db, providerOverrides = {}, providerOverridesMap = null)'
+      );
+    });
+
+    it('should resolve effectiveOverrides from providerOverridesMap by voice.provider, falling back to shared providerOverrides', () => {
+      expect(methodBody).toContain("providerOverridesMap?.[voice.provider] || providerOverrides");
+    });
+
+    it('should pass effectiveOverrides (not providerOverrides) to new Analyzer for native voices', () => {
+      // The Analyzer constructor call for native voices should use effectiveOverrides
+      expect(methodBody).toMatch(/new Analyzer\(db, voice\.model, voice\.provider, effectiveOverrides\)/);
+    });
+
+    it('should pass effectiveOverrides (not providerOverrides) to createProvider for executable voices', () => {
+      expect(methodBody).toMatch(/createProvider\(voice\.provider, voice\.model, effectiveOverrides\)/);
+    });
+  });
+
+  describe('Council methods pass providerOverridesMap to buildVoiceContext (source verification)', () => {
+    it('runReviewerCentricCouncil single-voice path should pass this.providerOverridesMap', () => {
+      // Line ~2940: buildVoiceContext(voice, 0, instructions, progressCallback, this.db, this.providerOverrides, this.providerOverridesMap)
+      expect(analyzerSource).toContain(
+        'buildVoiceContext(voice, 0, instructions, progressCallback, this.db, this.providerOverrides, this.providerOverridesMap)'
+      );
+    });
+
+    it('runReviewerCentricCouncil multi-voice path should pass this.providerOverridesMap', () => {
+      // Line ~3042: buildVoiceContext(voice, idx, instructions, progressCallback, this.db, this.providerOverrides, this.providerOverridesMap)
+      expect(analyzerSource).toContain(
+        'buildVoiceContext(voice, idx, instructions, progressCallback, this.db, this.providerOverrides, this.providerOverridesMap)'
+      );
+    });
+
+    it('runCouncilAnalysis should use providerOverridesMap for per-voice overrides', () => {
+      // Line ~3418: providerOverrides: this.providerOverridesMap?.[voice.provider] || this.providerOverrides
+      expect(analyzerSource).toContain(
+        'providerOverrides: this.providerOverridesMap?.[voice.provider] || this.providerOverrides'
+      );
+    });
+  });
+});

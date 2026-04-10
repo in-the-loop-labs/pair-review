@@ -124,6 +124,7 @@ const SCHEMA_SQL = {
       pool_fetch_interval_minutes INTEGER,
       pool_fetch_started_at TEXT,
       pool_fetch_finished_at TEXT,
+      load_skills INTEGER,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     )

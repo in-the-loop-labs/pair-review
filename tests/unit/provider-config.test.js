@@ -957,6 +957,49 @@ describe('Provider Configuration', () => {
     });
   });
 
+  describe('createProvider per-call overrides', () => {
+    beforeEach(() => {
+      applyConfigOverrides({ providers: {} });
+    });
+
+    it('passes per-call load_skills: false to PiProvider', () => {
+      const provider = createProvider('pi', 'default', { load_skills: false });
+      // PiProvider adds --no-skills when load_skills is false
+      expect(provider.baseArgs).toContain('--no-skills');
+    });
+
+    it('does not add --no-skills when load_skills is true', () => {
+      const provider = createProvider('pi', 'default', { load_skills: true });
+      expect(provider.baseArgs).not.toContain('--no-skills');
+    });
+
+    it('per-call override supersedes global config override', () => {
+      // Global config says load_skills: true
+      applyConfigOverrides({
+        providers: {
+          pi: {
+            load_skills: true
+          }
+        }
+      });
+      // Per-call override says load_skills: false
+      const provider = createProvider('pi', 'default', { load_skills: false });
+      expect(provider.baseArgs).toContain('--no-skills');
+    });
+
+    it('global config override applies when no per-call override', () => {
+      applyConfigOverrides({
+        providers: {
+          pi: {
+            load_skills: false
+          }
+        }
+      });
+      const provider = createProvider('pi', 'default');
+      expect(provider.baseArgs).toContain('--no-skills');
+    });
+  });
+
   describe('createAliasedProviderClass defaultTimeout forwarding', () => {
     it('should set defaultTimeout as static property on alias class', () => {
       const BaseClass = getProviderClass('claude');

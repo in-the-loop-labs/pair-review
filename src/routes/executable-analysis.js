@@ -234,7 +234,8 @@ async function runExecutableAnalysis(req, res, params, shared, callbacks) {
     reviewId, review, selectedProvider, selectedModel,
     repoInstructions, requestInstructions,
     runId, analysisId, repository, reviewType, headSha,
-    extraInitialStatus
+    extraInitialStatus,
+    providerOverrides = {}
   } = params;
 
   const {
@@ -332,7 +333,7 @@ async function runExecutableAnalysis(req, res, params, shared, callbacks) {
   (async () => {
     const tmpDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'pair-review-exec-'));
     try {
-      const provider = createProvider(selectedProvider, selectedModel);
+      const provider = createProvider(selectedProvider, selectedModel, providerOverrides);
 
       const executableContext = {
         ...buildContext(review, { selectedModel, requestInstructions }),
