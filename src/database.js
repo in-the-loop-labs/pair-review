@@ -2,6 +2,7 @@
 const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs').promises;
+const fsSync = require('fs');
 const { getConfigDir } = require('./config');
 
 let dbPath = null;
@@ -1800,10 +1801,30 @@ const MIGRATIONS = {
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP
       )`).run();
 
+      // Auto-merge case-duplicate repositories, keeping the most recently updated row.
       const dupes = db.prepare(`SELECT LOWER(repository) as repo, COUNT(*) as cnt FROM repo_settings GROUP BY LOWER(repository) HAVING cnt > 1`).all();
       if (dupes.length > 0) {
-        const names = dupes.map(d => d.repo).join(', ');
-        throw new Error(`Migration 42: case-duplicate repositories found: ${names}. Please resolve manually before upgrading.`);
+        const removedRows = [];
+        for (const { repo } of dupes) {
+          const rows = db.prepare(`SELECT * FROM repo_settings WHERE LOWER(repository) = ? ORDER BY julianday(updated_at) DESC, id DESC`).all(repo);
+          const kept = rows[0];
+          const discarded = rows.slice(1);
+          for (const row of discarded) {
+            removedRows.push(row);
+            db.prepare('DELETE FROM repo_settings WHERE id = ?').run(row.id);
+          }
+          console.warn(`  [migration 42] Case-duplicate repo "${repo}": kept id=${kept.id} (updated ${kept.updated_at}), removed ${discarded.length} older row(s)`);
+        }
+
+        // Write backup of removed rows to ~/.pair-review/ so no data is truly lost
+        try {
+          const backupPath = path.join(getConfigDir(), `migration-42-backup-${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
+          fsSync.writeFileSync(backupPath, JSON.stringify(removedRows, null, 2));
+          console.warn(`  [migration 42] Backup of ${removedRows.length} removed row(s) written to ${backupPath}`);
+        } catch (backupErr) {
+          console.warn(`  [migration 42] Warning: could not write backup file: ${backupErr.message}`);
+          console.warn(`  [migration 42] Removed row data: ${JSON.stringify(removedRows)}`);
+        }
       }
 
       const cols = [
@@ -4929,5 +4950,7 @@ module.exports = {
   CouncilRepository,
   ContextFileRepository,
   generateWorktreeId,
-  migrateExistingWorktrees
+  migrateExistingWorktrees,
+  // Exported for testing only
+  _MIGRATIONS: MIGRATIONS
 };
