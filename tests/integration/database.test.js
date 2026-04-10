@@ -1,5 +1,5 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createTestDatabase, closeTestDatabase, seedTestReview } from '../utils/schema';
 
 // Import database module functions and classes
@@ -19,6 +19,7 @@ const {
   ReviewRepository,
   AnalysisRunRepository,
   generateWorktreeId,
+  _MIGRATIONS: MIGRATIONS,
 } = database;
 
 // ============================================================================
@@ -2744,5 +2745,177 @@ describe('AnalysisRunRepository', () => {
       expect(children[0].levels_config).toBe('{"1":true,"2":true,"3":false}');
       expect(children[0].parent_run_id).toBe('parent-run');
     });
+  });
+});
+
+// ============================================================================
+// Migration 42 Tests: COLLATE NOCASE with auto-merge of case-duplicates
+// ============================================================================
+
+describe('Migration 42 - COLLATE NOCASE auto-merge', () => {
+  const fsSync = require('fs');
+  const path = require('path');
+  let db;
+
+  // Create a DB with the pre-migration-42 schema (repository column without COLLATE NOCASE)
+  function createPreMigration42Database() {
+    const Database = require('better-sqlite3');
+    const testDb = new Database(':memory:');
+    testDb.pragma('journal_mode = WAL');
+    testDb.pragma('foreign_keys = ON');
+
+    testDb.exec(`
+      CREATE TABLE IF NOT EXISTS repo_settings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        repository TEXT NOT NULL UNIQUE,
+        default_instructions TEXT,
+        default_provider TEXT,
+        default_model TEXT,
+        default_council_id TEXT,
+        default_tab TEXT,
+        default_chat_instructions TEXT,
+        local_path TEXT,
+        auto_branch_review INTEGER DEFAULT 0,
+        pool_size INTEGER,
+        pool_fetch_interval_minutes INTEGER,
+        pool_fetch_started_at TEXT,
+        pool_fetch_finished_at TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    return testDb;
+  }
+
+  afterEach(() => {
+    if (db) {
+      db.close();
+      db = null;
+    }
+    vi.restoreAllMocks();
+  });
+
+  it('should rebuild table without errors when there are no duplicates', () => {
+    db = createPreMigration42Database();
+    db.prepare(`INSERT INTO repo_settings (repository, updated_at) VALUES (?, ?)`).run('owner/repo', '2026-01-01T00:00:00Z');
+    db.prepare(`INSERT INTO repo_settings (repository, updated_at) VALUES (?, ?)`).run('other/repo', '2026-01-02T00:00:00Z');
+
+    MIGRATIONS[42](db);
+
+    const rows = db.prepare('SELECT * FROM repo_settings ORDER BY repository').all();
+    expect(rows).toHaveLength(2);
+
+    // Verify COLLATE NOCASE is in effect — inserting a case-variant should fail
+    expect(() => {
+      db.prepare(`INSERT INTO repo_settings (repository) VALUES (?)`).run('Owner/Repo');
+    }).toThrow();
+  });
+
+  it('should auto-merge case-duplicates keeping the most recently updated row', () => {
+    db = createPreMigration42Database();
+
+    // Insert case-duplicate rows with different updated_at timestamps
+    db.prepare(`INSERT INTO repo_settings (repository, default_provider, updated_at) VALUES (?, ?, ?)`).run('Owner/Repo', 'old-provider', '2026-01-01T00:00:00Z');
+    db.prepare(`INSERT INTO repo_settings (repository, default_provider, updated_at) VALUES (?, ?, ?)`).run('owner/repo', 'new-provider', '2026-03-15T00:00:00Z');
+    db.prepare(`INSERT INTO repo_settings (repository, default_provider, updated_at) VALUES (?, ?, ?)`).run('OWNER/REPO', 'oldest-provider', '2025-06-01T00:00:00Z');
+
+    // Mock fsSync.writeFileSync to capture the backup
+    const writeSpy = vi.spyOn(fsSync, 'writeFileSync').mockImplementation(() => {});
+
+    MIGRATIONS[42](db);
+
+    const rows = db.prepare('SELECT * FROM repo_settings').all();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].default_provider).toBe('new-provider');
+    // The kept row should be the one with the latest updated_at
+    expect(rows[0].repository).toBe('owner/repo');
+
+    // Verify backup was written
+    expect(writeSpy).toHaveBeenCalledOnce();
+    const [backupPath, backupContent] = writeSpy.mock.calls[0];
+    expect(backupPath).toMatch(/migration-42-backup-.*\.json$/);
+    const backup = JSON.parse(backupContent);
+    expect(backup).toHaveLength(2);
+    // The backup should contain the two removed rows
+    const backupProviders = backup.map(r => r.default_provider).sort();
+    expect(backupProviders).toEqual(['old-provider', 'oldest-provider']);
+  });
+
+  it('should write backup file with all removed row data', () => {
+    db = createPreMigration42Database();
+
+    db.prepare(`INSERT INTO repo_settings (repository, default_instructions, default_provider, updated_at) VALUES (?, ?, ?, ?)`).run(
+      'org/project', 'keep-these-instructions', 'claude', '2026-04-01T00:00:00Z'
+    );
+    db.prepare(`INSERT INTO repo_settings (repository, default_instructions, default_provider, updated_at) VALUES (?, ?, ?, ?)`).run(
+      'ORG/PROJECT', 'stale-instructions', 'gemini', '2026-01-01T00:00:00Z'
+    );
+
+    let capturedBackup;
+    vi.spyOn(fsSync, 'writeFileSync').mockImplementation((_path, content) => {
+      capturedBackup = JSON.parse(content);
+    });
+
+    MIGRATIONS[42](db);
+
+    expect(capturedBackup).toHaveLength(1);
+    expect(capturedBackup[0].default_instructions).toBe('stale-instructions');
+    expect(capturedBackup[0].default_provider).toBe('gemini');
+    expect(capturedBackup[0].repository).toBe('ORG/PROJECT');
+  });
+
+  it('should still succeed if backup file write fails', () => {
+    db = createPreMigration42Database();
+
+    db.prepare(`INSERT INTO repo_settings (repository, updated_at) VALUES (?, ?)`).run('a/b', '2026-01-01T00:00:00Z');
+    db.prepare(`INSERT INTO repo_settings (repository, updated_at) VALUES (?, ?)`).run('A/B', '2026-02-01T00:00:00Z');
+
+    vi.spyOn(fsSync, 'writeFileSync').mockImplementation(() => {
+      throw new Error('Permission denied');
+    });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // Should not throw even when backup write fails
+    MIGRATIONS[42](db);
+
+    const rows = db.prepare('SELECT * FROM repo_settings').all();
+    expect(rows).toHaveLength(1);
+
+    // Should log the removed row data as fallback
+    const fallbackCall = warnSpy.mock.calls.find(call => call[0].includes('Removed row data:'));
+    expect(fallbackCall).toBeDefined();
+  });
+
+  it('should handle idempotent rebuild if repo_settings_rebuild already exists', () => {
+    db = createPreMigration42Database();
+
+    db.prepare(`INSERT INTO repo_settings (repository, updated_at) VALUES (?, ?)`).run('some/repo', '2026-01-01T00:00:00Z');
+
+    // Simulate a leftover table from a previous crashed migration
+    db.exec(`CREATE TABLE repo_settings_rebuild (id INTEGER PRIMARY KEY, repository TEXT)`);
+
+    MIGRATIONS[42](db);
+
+    // Should succeed — the DROP TABLE IF EXISTS handles the leftover
+    const rows = db.prepare('SELECT * FROM repo_settings').all();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].repository).toBe('some/repo');
+  });
+
+  it('should break ties by id DESC when updated_at is identical', () => {
+    db = createPreMigration42Database();
+
+    const sameTime = '2026-01-01T00:00:00Z';
+    db.prepare(`INSERT INTO repo_settings (repository, default_provider, updated_at) VALUES (?, ?, ?)`).run('tie/repo', 'first-inserted', sameTime);
+    db.prepare(`INSERT INTO repo_settings (repository, default_provider, updated_at) VALUES (?, ?, ?)`).run('TIE/REPO', 'second-inserted', sameTime);
+
+    vi.spyOn(fsSync, 'writeFileSync').mockImplementation(() => {});
+
+    MIGRATIONS[42](db);
+
+    const rows = db.prepare('SELECT * FROM repo_settings').all();
+    expect(rows).toHaveLength(1);
+    // Higher ID (second inserted) should be kept since ORDER BY updated_at DESC, id DESC
+    expect(rows[0].default_provider).toBe('second-inserted');
   });
 });
