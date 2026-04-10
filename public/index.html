@@ -473,22 +473,53 @@
             font-size: 14px;
             font-weight: 500;
             line-height: 20px;
-            color: #ffffff;
-            background-color: var(--ai-primary);
-            border: none;
+            color: var(--ai-primary);
+            background-color: var(--ai-subtle);
+            border: 1px solid var(--ai-border);
             border-radius: var(--radius-md);
             cursor: pointer;
-            transition: background-color var(--transition-fast);
+            transition: background-color var(--transition-fast), border-color var(--transition-fast);
             white-space: nowrap;
         }
 
         .start-review-btn:hover:not(:disabled) {
-            background-color: #b45309;
+            background-color: var(--ai-glow);
+            border-color: var(--ai-primary);
         }
 
         .start-review-btn:disabled {
             opacity: 0.6;
             cursor: not-allowed;
+        }
+
+        .start-review-btn-primary {
+            color: #ffffff;
+            background-color: var(--ai-primary);
+            border-color: var(--ai-primary);
+        }
+
+        .start-review-btn-primary:hover:not(:disabled) {
+            background-color: #b45309;
+            border-color: #b45309;
+        }
+
+        [data-theme="dark"] .start-review-btn-primary:hover:not(:disabled) {
+            background-color: #d97706;
+            border-color: #d97706;
+        }
+
+        .start-review-btn-analyze {
+            transition: background-color var(--transition-fast), border-color var(--transition-fast), box-shadow 0.3s ease;
+        }
+
+        .start-review-btn-analyze:hover:not(:disabled) {
+            box-shadow: 0 0 8px rgba(217, 119, 6, 0.35), 0 0 20px rgba(251, 191, 36, 0.15);
+            animation: glow-pulse 2s ease-in-out infinite;
+        }
+
+        @keyframes glow-pulse {
+            0%, 100% { box-shadow: 0 0 8px rgba(217, 119, 6, 0.35), 0 0 20px rgba(251, 191, 36, 0.15); }
+            50% { box-shadow: 0 0 12px rgba(217, 119, 6, 0.5), 0 0 28px rgba(251, 191, 36, 0.25); }
         }
 
         .btn-browse {
@@ -1330,8 +1361,11 @@
                                     autocomplete="off"
                                     spellcheck="false"
                                 >
-                                <button type="submit" class="start-review-btn" id="start-review-btn">
-                                    Start Review
+                                <button type="submit" class="start-review-btn start-review-btn-primary" id="start-review-btn" title="Open review without running analysis">
+                                    Open
+                                </button>
+                                <button type="button" class="start-review-btn start-review-btn-analyze" id="analyze-review-btn" title="Open and analyze with default settings">
+                                    Analyze
                                 </button>
                             </form>
                             <div class="start-review-error" id="start-review-error-pr"></div>
@@ -1386,8 +1420,11 @@
                                 <button type="button" class="start-review-btn btn-browse" id="browse-local-btn" title="Browse for directory">
                                     Browse
                                 </button>
-                                <button type="submit" class="start-review-btn" id="start-local-btn">
-                                    Review Local
+                                <button type="submit" class="start-review-btn start-review-btn-primary" id="start-local-btn" title="Open review without running analysis">
+                                    Open
+                                </button>
+                                <button type="button" class="start-review-btn start-review-btn-analyze" id="analyze-local-btn" title="Open and analyze with default settings">
+                                    Analyze
                                 </button>
                             </form>
                             <div class="start-review-error" id="start-review-error-local"></div>

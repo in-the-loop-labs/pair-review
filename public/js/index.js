@@ -141,11 +141,12 @@
    */
   function setFormLoading(tab, loading, text) {
     const ids = tab === 'pr'
-      ? { input: 'pr-url-input', btn: 'start-review-btn', loadingEl: 'start-review-loading-pr', loadingText: 'start-review-loading-text-pr', errorEl: 'start-review-error-pr', btnLabel: 'Start Review' }
-      : { input: 'local-path-input', btn: 'start-local-btn', loadingEl: 'start-review-loading-local', loadingText: 'start-review-loading-text-local', errorEl: 'start-review-error-local', btnLabel: 'Review Local' };
+      ? { input: 'pr-url-input', btn: 'start-review-btn', analyzeBtn: 'analyze-review-btn', loadingEl: 'start-review-loading-pr', loadingText: 'start-review-loading-text-pr', errorEl: 'start-review-error-pr', btnLabel: 'Open' }
+      : { input: 'local-path-input', btn: 'start-local-btn', analyzeBtn: 'analyze-local-btn', loadingEl: 'start-review-loading-local', loadingText: 'start-review-loading-text-local', errorEl: 'start-review-error-local', btnLabel: 'Open' };
 
     const inputEl = document.getElementById(ids.input);
     const btnEl = document.getElementById(ids.btn);
+    const analyzeBtnEl = document.getElementById(ids.analyzeBtn);
     const loadingEl = document.getElementById(ids.loadingEl);
     const loadingTextEl = document.getElementById(ids.loadingText);
     const errorEl = document.getElementById(ids.errorEl);
@@ -153,12 +154,14 @@
     if (loading) {
       if (inputEl) inputEl.disabled = true;
       if (btnEl) { btnEl.disabled = true; btnEl.textContent = 'Starting...'; }
+      if (analyzeBtnEl) analyzeBtnEl.disabled = true;
       if (loadingEl) loadingEl.classList.add('visible');
       if (loadingTextEl && text) loadingTextEl.textContent = text;
       if (errorEl) errorEl.classList.remove('visible', 'info');
     } else {
       if (inputEl) inputEl.disabled = false;
       if (btnEl) { btnEl.disabled = false; btnEl.textContent = ids.btnLabel; }
+      if (analyzeBtnEl) analyzeBtnEl.disabled = false;
       if (loadingEl) loadingEl.classList.remove('visible');
     }
   }
@@ -688,8 +691,10 @@
    * Navigates to the setup page which shows step-by-step progress,
    * matching the flow used when reviews are started from the MCP/CLI.
    * @param {Event} event - Form submit event
+   * @param {Object} [options] - Optional settings
+   * @param {boolean} [options.analyze=false] - When true, append analyze=true to the navigation URL
    */
-  async function handleStartLocal(event) {
+  async function handleStartLocal(event, { analyze = false } = {}) {
     event.preventDefault();
 
     const input = document.getElementById('local-path-input');
@@ -707,7 +712,9 @@
 
     // Navigate to the setup page which shows step-by-step progress
     // The /local?path= route serves setup.html which handles the full setup flow
-    window.location.href = '/local?path=' + encodeURIComponent(pathValue);
+    let href = '/local?path=' + encodeURIComponent(pathValue);
+    if (analyze) href += '&analyze=true';
+    window.location.href = href;
   }
 
   // ─── Browse Directory ──────────────────────────────────────────────────────
@@ -1080,7 +1087,7 @@
    * directly for PRs that already exist in the database.
    * @param {Event} event - Form submit event
    */
-  async function handleStartReview(event) {
+  async function handleStartReview(event, { analyze = false } = {}) {
     event.preventDefault();
 
     const input = document.getElementById('pr-url-input');
@@ -1111,7 +1118,9 @@
 
     // Navigate to the PR route which serves setup.html (with step-by-step progress)
     // for new PRs, or pr.html directly for PRs already in the database
-    window.location.href = '/pr/' + encodeURIComponent(parsed.owner) + '/' + encodeURIComponent(parsed.repo) + '/' + encodeURIComponent(parsed.prNumber);
+    let href = '/pr/' + encodeURIComponent(parsed.owner) + '/' + encodeURIComponent(parsed.repo) + '/' + encodeURIComponent(parsed.prNumber);
+    if (analyze) href += '?analyze=true';
+    window.location.href = href;
   }
 
   // ─── Config & Command Examples ──────────────────────────────────────────────
@@ -1868,6 +1877,22 @@
     const browseBtn = document.getElementById('browse-local-btn');
     if (browseBtn) {
       browseBtn.addEventListener('click', handleBrowseLocal);
+    }
+
+    // Set up PR Analyze button handler
+    const analyzeReviewBtn = document.getElementById('analyze-review-btn');
+    if (analyzeReviewBtn) {
+      analyzeReviewBtn.addEventListener('click', function (event) {
+        handleStartReview(event, { analyze: true });
+      });
+    }
+
+    // Set up Local Analyze button handler
+    const analyzeLocalBtn = document.getElementById('analyze-local-btn');
+    if (analyzeLocalBtn) {
+      analyzeLocalBtn.addEventListener('click', function (event) {
+        handleStartLocal(event, { analyze: true });
+      });
     }
 
     // Note: No explicit Enter keypress handlers are needed here.

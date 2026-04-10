@@ -133,6 +133,8 @@ function setupGlobals() {
   registerElement(createMockElement({ id: 'start-review-error-local' }));
   registerElement(createMockElement({ id: 'start-local-form' }));
   registerElement(createMockElement({ id: 'browse-local-btn' }));
+  registerElement(createMockElement({ id: 'analyze-review-btn' }));
+  registerElement(createMockElement({ id: 'analyze-local-btn' }));
 
   // Collection containers accessed by loadCollectionPrs on lazy-load
   registerElement(createMockElement({ id: 'review-requests-container' }));
