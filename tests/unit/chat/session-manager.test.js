@@ -701,6 +701,57 @@ describe('ChatSessionManager', () => {
         try { fs.unlinkSync(sessionFilePath); } catch { /* ignore */ }
       }
     });
+
+    it('should pass loadSkills: false through to the bridge on resume', async () => {
+      const session = await manager.createSession({ provider: 'pi', reviewId: 1 });
+      const sessionFilePath = '/tmp/test-resume-load-skills.json';
+
+      const fs = require('fs');
+      fs.writeFileSync(sessionFilePath, '{}');
+
+      try {
+        db.prepare('UPDATE chat_sessions SET agent_session_id = ? WHERE id = ?')
+          .run(sessionFilePath, session.id);
+        await manager.closeSession(session.id);
+
+        await manager.resumeSession(session.id, {
+          systemPrompt: 'test',
+          cwd: '/tmp',
+          loadSkills: false
+        });
+
+        // The resumed bridge should have loadSkills: false, not undefined
+        const resumedBridge = _createdBridges[_createdBridges.length - 1];
+        expect(resumedBridge._constructorOptions.loadSkills).toBe(false);
+      } finally {
+        try { fs.unlinkSync(sessionFilePath); } catch { /* ignore */ }
+      }
+    });
+
+    it('should not set loadSkills when not provided on resume', async () => {
+      const session = await manager.createSession({ provider: 'pi', reviewId: 1 });
+      const sessionFilePath = '/tmp/test-resume-no-load-skills.json';
+
+      const fs = require('fs');
+      fs.writeFileSync(sessionFilePath, '{}');
+
+      try {
+        db.prepare('UPDATE chat_sessions SET agent_session_id = ? WHERE id = ?')
+          .run(sessionFilePath, session.id);
+        await manager.closeSession(session.id);
+
+        await manager.resumeSession(session.id, {
+          systemPrompt: 'test',
+          cwd: '/tmp'
+        });
+
+        // loadSkills should fall through to the provider def default (undefined here)
+        const resumedBridge = _createdBridges[_createdBridges.length - 1];
+        expect(resumedBridge._constructorOptions.loadSkills).toBeUndefined();
+      } finally {
+        try { fs.unlinkSync(sessionFilePath); } catch { /* ignore */ }
+      }
+    });
   });
 
   describe('getMRUSession', () => {

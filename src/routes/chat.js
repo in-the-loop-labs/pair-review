@@ -21,6 +21,7 @@ const ws = require('../ws');
 const { fireHooks, hasHooks } = require('../hooks/hook-runner');
 const { buildChatStartedPayload, buildChatResumedPayload, buildChatHookContext, getCachedUser } = require('../hooks/payloads');
 const { resolveFormat } = require('../utils/comment-formatter');
+const { resolveLoadSkills } = require('../config');
 
 /**
  * Fire a chat hook event (non-blocking). Skips async work when no hooks are configured.
@@ -227,6 +228,22 @@ async function getChatInstructions(db, review) {
 }
 
 /**
+ * Resolve load_skills for a chat session based on repo settings and config.
+ * @param {Object} db - Database instance
+ * @param {Object} review - Review record
+ * @param {Object} config - App config
+ * @param {string} provider - Chat provider ID (e.g. 'pi')
+ * @returns {Promise<boolean|undefined>} Resolved load_skills, or undefined if no repo override
+ */
+async function getRepoLoadSkillsForChat(db, review, config, provider) {
+  if (!review || !review.repository) return undefined;
+  const repoSettingsRepo = new RepoSettingsRepository(db);
+  const repoSettings = await repoSettingsRepo.getRepoSettings(review.repository);
+  const providerLoadSkills = config.chat_providers?.[provider]?.load_skills;
+  return resolveLoadSkills(config, review.repository, repoSettings, providerLoadSkills);
+}
+
+/**
  * Create a new chat session
  */
 router.post('/api/chat/session', async (req, res) => {
@@ -316,6 +333,10 @@ router.post('/api/chat/session', async (req, res) => {
       ? sessionPreamble + '\n\n' + initialContext
       : sessionPreamble;
 
+    // Resolve load_skills from repo settings, falling back to provider config
+    const loadSkillsConfig = req.app.get('config') || {};
+    const loadSkills = await getRepoLoadSkillsForChat(db, review, loadSkillsConfig, provider);
+
     const session = await chatSessionManager.createSession({
       provider,
       model,
@@ -323,7 +344,8 @@ router.post('/api/chat/session', async (req, res) => {
       contextCommentId: contextCommentId || null,
       systemPrompt: finalSystemPrompt,
       cwd: resolvedCwd,
-      initialContext: initialContextWithPort
+      initialContext: initialContextWithPort,
+      loadSkills
     });
 
     logger.info(`Chat session created: ${session.id} (provider=${provider})`);
@@ -398,9 +420,10 @@ router.post('/api/chat/session/:id/message', async (req, res) => {
 
       const systemPrompt = buildChatPrompt({ review, prData, chatInstructions, commentFormatTemplate: fmtConfig.template });
       const cwd = await resolveReviewCwd(db, review);
+      const loadSkills = await getRepoLoadSkillsForChat(db, review, config, session.provider);
 
       try {
-        await chatSessionManager.resumeSession(sessionId, { systemPrompt, cwd });
+        await chatSessionManager.resumeSession(sessionId, { systemPrompt, cwd, loadSkills });
         unregisterChatBroadcast(sessionId);
         registerChatBroadcast(chatSessionManager, sessionId, req.socket.localPort);
         logger.info(`[ChatRoute] Auto-resumed session ${sessionId} for message delivery`);
@@ -540,8 +563,9 @@ router.post('/api/chat/session/:id/resume', async (req, res) => {
 
     const systemPrompt = buildChatPrompt({ review, prData, chatInstructions, commentFormatTemplate: fmtConfig.template });
     const cwd = await resolveReviewCwd(db, review);
+    const loadSkills = await getRepoLoadSkillsForChat(db, review, config, session.provider);
 
-    await chatSessionManager.resumeSession(sessionId, { systemPrompt, cwd });
+    await chatSessionManager.resumeSession(sessionId, { systemPrompt, cwd, loadSkills });
     unregisterChatBroadcast(sessionId);
     const serverPort = req.socket.localPort;
     registerChatBroadcast(chatSessionManager, sessionId, serverPort);

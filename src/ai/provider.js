@@ -671,10 +671,11 @@ function getAllProvidersInfo() {
  * Create a provider instance
  * @param {string} providerId - Provider ID (e.g., 'claude', 'gemini')
  * @param {string} model - Model to use (optional, uses default if not specified)
+ * @param {Object} overrides - Per-call config overrides that supersede global providerConfigOverrides (optional)
  * @returns {AIProvider}
  * @throws {Error} If provider is not registered
  */
-function createProvider(providerId, model = null) {
+function createProvider(providerId, model = null, overrides = {}) {
   const ProviderClass = providerRegistry.get(providerId);
 
   if (!ProviderClass) {
@@ -683,7 +684,7 @@ function createProvider(providerId, model = null) {
   }
 
   // Get config overrides for this provider
-  const overrides = providerConfigOverrides.get(providerId);
+  const configOverrides = providerConfigOverrides.get(providerId);
 
   // Determine the actual model to use
   let actualModel = model;
@@ -691,8 +692,8 @@ function createProvider(providerId, model = null) {
     // Resolve default from merged models (config + built-in).
     // Checks both sources because some providers (e.g., Pi) define built-in
     // modes with default:true that aren't in config overrides.
-    if (overrides?.models || ProviderClass.getModels().length > 0) {
-      actualModel = resolveDefaultModel(mergeModels(ProviderClass.getModels(), overrides?.models));
+    if (configOverrides?.models || ProviderClass.getModels().length > 0) {
+      actualModel = resolveDefaultModel(mergeModels(ProviderClass.getModels(), configOverrides?.models));
     }
     // Fall back to provider's built-in default
     if (!actualModel) {
@@ -700,8 +701,8 @@ function createProvider(providerId, model = null) {
     }
   }
 
-  // Create provider instance with config overrides
-  return new ProviderClass(actualModel, { ...(overrides || {}), yolo: yoloMode });
+  // Create provider instance with config overrides, per-call overrides, and yolo mode
+  return new ProviderClass(actualModel, { ...(configOverrides || {}), ...overrides, yolo: yoloMode });
 }
 
 /**

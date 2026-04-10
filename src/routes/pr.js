@@ -25,7 +25,7 @@ const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs').promises;
 const path = require('path');
-const { getGitHubToken, getWorktreeDisplayName } = require('../config');
+const { getGitHubToken, getWorktreeDisplayName, resolveLoadSkills, buildCouncilProviderOverrides } = require('../config');
 const logger = require('../utils/logger');
 const { buildDiffLineSet } = require('../utils/diff-annotator');
 const { broadcastReviewEvent } = require('../events/review-events');
@@ -1518,7 +1518,7 @@ router.post('/api/parse-pr-url', (req, res) => {
 async function handleExecutablePRAnalysis(req, res, {
   reviewId, review, prNumber, owner, repo, repository, worktreePath, prMetadata,
   selectedProvider, selectedModel, repoInstructions, requestInstructions,
-  combinedInstructions, runId, analysisId, reviewRepo, poolLifecycle
+  combinedInstructions, runId, analysisId, reviewRepo, poolLifecycle, providerOverrides
 }) {
   const prContext = {
     number: prNumber, owner, repo,
@@ -1539,7 +1539,8 @@ async function handleExecutablePRAnalysis(req, res, {
     reviewType: 'pr',
     headSha: prMetadata.head_sha,
     extraInitialStatus: { prNumber },
-    poolLifecycle
+    poolLifecycle,
+    providerOverrides
   }, {
     activeAnalyses,
     reviewToAnalysisId,
@@ -1651,7 +1652,7 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
     const appConfig = req.app.get('config') || {};
     const globalInstructions = appConfig.globalInstructions || null;
 
-    const { provider, model, repoInstructions, combinedInstructions } = await withTransaction(db, async () => {
+    const { provider, model, repoInstructions, combinedInstructions, repoSettings: fetchedRepoSettings } = await withTransaction(db, async () => {
       const repoSettingsRepo = new RepoSettingsRepository(db);
       const fetchedRepoSettings = await repoSettingsRepo.getRepoSettings(repository);
 
@@ -1684,7 +1685,8 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
         provider: selectedProvider,
         model: selectedModel,
         repoInstructions: fetchedRepoInstructions,
-        combinedInstructions: mergedInstructions
+        combinedInstructions: mergedInstructions,
+        repoSettings: fetchedRepoSettings
       };
     });
 
@@ -1692,6 +1694,11 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
     const analysisId = runId;
 
     const { review } = await reviewRepo.getOrCreate({ prNumber, repository });
+
+    // Resolve load_skills across all config tiers
+    const providerLoadSkills = appConfig.providers?.[provider]?.load_skills;
+    const loadSkills = resolveLoadSkills(appConfig, repository, fetchedRepoSettings, providerLoadSkills);
+    const providerOverrides = { load_skills: loadSkills };
 
     // Check if selected provider is an executable provider (external tool)
     const ProviderClass = getProviderClass(provider);
@@ -1713,7 +1720,8 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
         runId,
         analysisId,
         reviewRepo,
-        poolLifecycle: req.app.get('poolLifecycle')
+        poolLifecycle: req.app.get('poolLifecycle'),
+        providerOverrides
       });
     }
 
@@ -1783,7 +1791,7 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
         }).catch(() => {});
       }
 
-      const analyzer = new Analyzer(req.app.get('db'), model, provider);
+      const analyzer = new Analyzer(req.app.get('db'), model, provider, providerOverrides);
 
       logger.section(`AI Analysis Request - PR #${prNumber}`);
       logger.log('API', `Repository: ${repository}`, 'magenta');
@@ -2041,6 +2049,10 @@ router.post('/api/pr/:owner/:repo/:number/analyses/council', async (req, res) =>
     }
 
     const prCouncilConfig = req.app.get('config') || {};
+
+    const { providerOverrides: councilProviderOverrides, providerOverridesMap: councilProviderOverridesMap } =
+      buildCouncilProviderOverrides(prCouncilConfig, repository, repoSettings);
+
     const { analysisId, runId } = await analysesRouter.launchCouncilAnalysis(
       db,
       {
@@ -2056,6 +2068,8 @@ router.post('/api/pr/:owner/:repo/:number/analyses/council', async (req, res) =>
         excludePrevious,
         serverPort: req.socket.localPort,
         poolLifecycle: req.app.get('poolLifecycle'),
+        providerOverrides: councilProviderOverrides,
+        providerOverridesMap: councilProviderOverridesMap,
         hookContext: {
           mode: 'pr',
           prContext: {

@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const childProcess = require('child_process');
-const { deepMerge, getGitHubToken, expandPath, resolveDbName, warnIfDevModeWithoutDbName, loadConfig, shouldSkipUpdateNotifier, _resetTokenCache, getRepoConfig, getRepoPath, getRepoCheckoutScript, getRepoWorktreeDirectory, getRepoWorktreeNameTemplate, getRepoCheckoutTimeout, resolveRepoOptions, getRepoResetScript, getRepoPoolSize, getRepoPoolFetchInterval, resolvePoolConfig, getWorktreeDisplayName, getConfigDir } = require('../../src/config');
+const { deepMerge, getGitHubToken, expandPath, resolveDbName, warnIfDevModeWithoutDbName, loadConfig, shouldSkipUpdateNotifier, _resetTokenCache, getRepoConfig, getRepoPath, getRepoCheckoutScript, getRepoWorktreeDirectory, getRepoWorktreeNameTemplate, getRepoCheckoutTimeout, resolveRepoOptions, getRepoResetScript, getRepoPoolSize, getRepoPoolFetchInterval, resolvePoolConfig, getWorktreeDisplayName, getConfigDir, getRepoLoadSkills, resolveLoadSkills, buildCouncilProviderOverrides } = require('../../src/config');
 
 describe('config.js', () => {
   describe('getGitHubToken', () => {
@@ -1658,6 +1658,102 @@ describe('config.js', () => {
 
     it('should return null for undefined input', () => {
       expect(getWorktreeDisplayName(undefined, {}, 'owner/repo')).toBeNull();
+    });
+  });
+
+  describe('getRepoLoadSkills', () => {
+    it('returns null when no repos config', () => {
+      expect(getRepoLoadSkills({}, 'owner/repo')).toBe(null);
+    });
+
+    it('returns null when repo not in config', () => {
+      expect(getRepoLoadSkills({ repos: {} }, 'owner/repo')).toBe(null);
+    });
+
+    it('returns true when set to true', () => {
+      expect(getRepoLoadSkills({ repos: { 'owner/repo': { load_skills: true } } }, 'owner/repo')).toBe(true);
+    });
+
+    it('returns false when set to false', () => {
+      expect(getRepoLoadSkills({ repos: { 'owner/repo': { load_skills: false } } }, 'owner/repo')).toBe(false);
+    });
+
+    it('returns null for non-boolean values', () => {
+      expect(getRepoLoadSkills({ repos: { 'owner/repo': { load_skills: 1 } } }, 'owner/repo')).toBe(null);
+    });
+  });
+
+  describe('resolveLoadSkills', () => {
+    it('returns true by default when nothing is set', () => {
+      expect(resolveLoadSkills({}, 'owner/repo', null)).toBe(true);
+    });
+
+    it('uses DB value (1) over everything', () => {
+      const config = { repos: { 'owner/repo': { load_skills: false } } };
+      expect(resolveLoadSkills(config, 'owner/repo', { load_skills: 1 }, false)).toBe(true);
+    });
+
+    it('uses DB value (0) over everything', () => {
+      const config = { repos: { 'owner/repo': { load_skills: true } } };
+      expect(resolveLoadSkills(config, 'owner/repo', { load_skills: 0 }, true)).toBe(false);
+    });
+
+    it('falls through DB null to repo JSON config', () => {
+      const config = { repos: { 'owner/repo': { load_skills: false } } };
+      expect(resolveLoadSkills(config, 'owner/repo', { load_skills: null }, true)).toBe(false);
+    });
+
+    it('falls through DB null + no repo config to provider config', () => {
+      expect(resolveLoadSkills({}, 'owner/repo', null, false)).toBe(false);
+    });
+
+    it('converts DB integer 0 to boolean false', () => {
+      // Critical: PiProvider checks !== false with strict equality
+      const result = resolveLoadSkills({}, 'owner/repo', { load_skills: 0 });
+      expect(result).toBe(false);
+      expect(result).not.toBe(0); // Must be boolean, not integer
+    });
+
+    it('converts DB integer 1 to boolean true', () => {
+      const result = resolveLoadSkills({}, 'owner/repo', { load_skills: 1 });
+      expect(result).toBe(true);
+      expect(result).not.toBe(1); // Must be boolean, not integer
+    });
+  });
+
+  describe('buildCouncilProviderOverrides', () => {
+    it('returns base overrides using tier 1+2 resolution', () => {
+      const { providerOverrides } = buildCouncilProviderOverrides({}, 'owner/repo', null);
+      expect(providerOverrides).toEqual({ load_skills: true }); // default
+    });
+
+    it('returns empty map when no providers configured', () => {
+      const { providerOverridesMap } = buildCouncilProviderOverrides({}, 'owner/repo', null);
+      expect(providerOverridesMap).toEqual({});
+    });
+
+    it('builds per-provider map with tier 3 resolution', () => {
+      const config = {
+        providers: {
+          pi: { load_skills: false },
+          claude: { load_skills: true },
+        }
+      };
+      const { providerOverrides, providerOverridesMap } = buildCouncilProviderOverrides(config, 'owner/repo', null);
+      // Base (no tier 3) defaults to true
+      expect(providerOverrides).toEqual({ load_skills: true });
+      // Per-provider includes tier 3
+      expect(providerOverridesMap.pi).toEqual({ load_skills: false });
+      expect(providerOverridesMap.claude).toEqual({ load_skills: true });
+    });
+
+    it('DB repo settings (tier 1) override per-provider tier 3', () => {
+      const config = { providers: { pi: { load_skills: false } } };
+      const repoSettings = { load_skills: 1 }; // DB says enabled
+      const { providerOverrides, providerOverridesMap } = buildCouncilProviderOverrides(config, 'owner/repo', repoSettings);
+      expect(providerOverrides).toEqual({ load_skills: true });
+      // Tier 1 (DB) takes precedence over tier 3 (provider)
+      expect(providerOverridesMap.pi).toEqual({ load_skills: true });
     });
   });
 });

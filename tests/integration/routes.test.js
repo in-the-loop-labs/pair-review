@@ -3302,6 +3302,12 @@ describe('Repository Settings Endpoints', () => {
       expect(response.body.default_model).toBeNull();
     });
 
+    it('should return load_skills: null by default', async () => {
+      const res = await request(app).get('/api/repos/owner/repo/settings');
+      expect(res.status).toBe(200);
+      expect(res.body.load_skills).toBe(null);
+    });
+
     it('should return existing settings', async () => {
       const repoSettingsRepo = new RepoSettingsRepository(db);
       await repoSettingsRepo.saveRepoSettings('owner/repo', {
@@ -3360,6 +3366,36 @@ describe('Repository Settings Endpoints', () => {
 
       expect(response.status).toBe(200);
       expect(response.body.settings.default_instructions).toBe('Updated');
+    });
+
+    it('should save load_skills: 0 and GET retrieves it', async () => {
+      await request(app)
+        .post('/api/repos/owner/repo/settings')
+        .send({ load_skills: 0 });
+      const res = await request(app).get('/api/repos/owner/repo/settings');
+      expect(res.status).toBe(200);
+      expect(res.body.load_skills).toBe(0);
+    });
+
+    it('should save load_skills: 1', async () => {
+      await request(app)
+        .post('/api/repos/owner/repo/settings')
+        .send({ load_skills: 1 });
+      const res = await request(app).get('/api/repos/owner/repo/settings');
+      expect(res.status).toBe(200);
+      expect(res.body.load_skills).toBe(1);
+    });
+
+    it('should reset load_skills to null', async () => {
+      await request(app)
+        .post('/api/repos/owner/repo/settings')
+        .send({ load_skills: 1 });
+      await request(app)
+        .post('/api/repos/owner/repo/settings')
+        .send({ load_skills: null });
+      const res = await request(app).get('/api/repos/owner/repo/settings');
+      expect(res.status).toBe(200);
+      expect(res.body.load_skills).toBe(null);
     });
   });
 });
@@ -6172,6 +6208,55 @@ describe('Worktree Tiered Discovery', () => {
 
       const settings = await repoSettingsRepo.getRepoSettings('owner/repo');
       expect(settings.local_path).toBeNull();
+    });
+  });
+
+  describe('RepoSettingsRepository load_skills round-trip', () => {
+    it('saveRepoSettings preserves load_skills: 0', async () => {
+      const repoSettingsRepo = new RepoSettingsRepository(db);
+
+      await repoSettingsRepo.saveRepoSettings('owner/repo', { load_skills: 0 });
+
+      const settings = await repoSettingsRepo.getRepoSettings('owner/repo');
+      expect(settings.load_skills).toBe(0);
+    });
+
+    it('saveRepoSettings preserves load_skills: 1', async () => {
+      const repoSettingsRepo = new RepoSettingsRepository(db);
+
+      await repoSettingsRepo.saveRepoSettings('owner/repo', { load_skills: 1 });
+
+      const settings = await repoSettingsRepo.getRepoSettings('owner/repo');
+      expect(settings.load_skills).toBe(1);
+    });
+
+    it('saveRepoSettings defaults load_skills to null', async () => {
+      const repoSettingsRepo = new RepoSettingsRepository(db);
+
+      await repoSettingsRepo.saveRepoSettings('owner/repo', { default_instructions: 'test' });
+
+      const settings = await repoSettingsRepo.getRepoSettings('owner/repo');
+      expect(settings.load_skills).toBeNull();
+    });
+
+    it('saveRepoSettings can update load_skills on existing row', async () => {
+      const repoSettingsRepo = new RepoSettingsRepository(db);
+
+      await repoSettingsRepo.saveRepoSettings('owner/repo', { load_skills: 1 });
+      await repoSettingsRepo.saveRepoSettings('owner/repo', { load_skills: 0 });
+
+      const settings = await repoSettingsRepo.getRepoSettings('owner/repo');
+      expect(settings.load_skills).toBe(0);
+    });
+
+    it('saveRepoSettings can reset load_skills to null', async () => {
+      const repoSettingsRepo = new RepoSettingsRepository(db);
+
+      await repoSettingsRepo.saveRepoSettings('owner/repo', { load_skills: 1 });
+      await repoSettingsRepo.saveRepoSettings('owner/repo', { load_skills: null });
+
+      const settings = await repoSettingsRepo.getRepoSettings('owner/repo');
+      expect(settings.load_skills).toBeNull();
     });
   });
 

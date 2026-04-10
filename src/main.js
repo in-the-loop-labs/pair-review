@@ -1,6 +1,6 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 const fs = require('fs');
-const { loadConfig, getConfigDir, getGitHubToken, showWelcomeMessage, resolveDbName, resolveRepoOptions, resolvePoolConfig, getRepoResetScript } = require('./config');
+const { loadConfig, getConfigDir, getGitHubToken, showWelcomeMessage, resolveDbName, resolveRepoOptions, resolvePoolConfig, getRepoResetScript, resolveLoadSkills } = require('./config');
 const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository, ReviewRepository, RepoSettingsRepository, GitHubReviewRepository, WorktreePoolRepository } = require('./database');
 const { PRArgumentParser } = require('./github/parser');
 const { GitHubClient } = require('./github/client');
@@ -879,8 +879,12 @@ async function performHeadlessReview(args, config, db, flags, options, externalP
 
     // Run AI analysis
     console.log('Running AI analysis (all 3 levels)...');
-    const model = flags.model || process.env.PAIR_REVIEW_MODEL || 'opus';
-    const analyzer = new Analyzer(db, model);
+    const cliProvider = repoSettings?.default_provider || config.default_provider || config.provider || 'claude';
+    const model = flags.model || process.env.PAIR_REVIEW_MODEL || repoSettings?.default_model || config.default_model || config.model || 'opus';
+    const providerLoadSkills = config.providers?.[cliProvider]?.load_skills;
+    const loadSkills = resolveLoadSkills(config, repository, repoSettings, providerLoadSkills);
+    const providerOverrides = { load_skills: loadSkills };
+    const analyzer = new Analyzer(db, model, cliProvider, providerOverrides);
 
     let analysisSummary = null;
     try {

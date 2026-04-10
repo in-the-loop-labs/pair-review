@@ -591,6 +591,81 @@ describe('executeStackAnalysis', () => {
   });
 });
 
+describe('providerOverrides forwarding in analyzeStackPR dispatch branches', () => {
+  it('single-model branch passes providerOverrides to Analyzer constructor', async () => {
+    const deps = createMockDeps();
+    const params = createDefaultParams(deps, {
+      prNumbers: [10],
+      config: { providers: { claude: { load_skills: false } } },
+    });
+    initActiveState(params.stackAnalysisId, params.prNumbers);
+
+    await executeStackAnalysis(params);
+
+    // Analyzer is called as constructor: new Analyzer(db, model, provider, providerOverrides)
+    expect(deps.Analyzer).toHaveBeenCalled();
+    const ctorArgs = deps.Analyzer.mock.calls[0];
+    // 4th arg is providerOverrides
+    expect(ctorArgs[3]).toEqual({ load_skills: false });
+  });
+
+  it('executable branch passes providerOverrides to runExecutableAnalysis', async () => {
+    const deps = createMockDeps({
+      getProviderClass: vi.fn().mockReturnValue({ isExecutable: true }),
+      runExecutableAnalysis: vi.fn().mockResolvedValue({ analysisId: 'a1', runId: 'r1' }),
+      waitForAnalysisCompletion: vi.fn().mockResolvedValue({ status: 'completed', suggestionsCount: 0 }),
+    });
+    const params = createDefaultParams(deps, {
+      prNumbers: [10],
+      config: { providers: { claude: { load_skills: false } } },
+    });
+    initActiveState(params.stackAnalysisId, params.prNumbers);
+
+    await executeStackAnalysis(params);
+
+    expect(deps.runExecutableAnalysis).toHaveBeenCalled();
+    const callArgs = deps.runExecutableAnalysis.mock.calls[0];
+    // 3rd arg is params object which should contain providerOverrides
+    expect(callArgs[2].providerOverrides).toEqual({ load_skills: false });
+  });
+
+  it('council branch passes both providerOverrides and providerOverridesMap to launchCouncilAnalysis', async () => {
+    const councilConfig = {
+      voices: [
+        { provider: 'claude', model: 'opus' },
+        { provider: 'pi', model: 'default' },
+      ],
+      levels: { 1: true, 2: true, 3: false },
+    };
+
+    vi.spyOn(databaseModule.CouncilRepository.prototype, 'getById').mockResolvedValue({
+      id: 'council-1',
+      config: councilConfig,
+      type: 'council',
+    });
+
+    const deps = createMockDeps({
+      launchCouncilAnalysis: vi.fn().mockResolvedValue({ analysisId: 'a1', runId: 'r1' }),
+    });
+    const params = createDefaultParams(deps, {
+      prNumbers: [10],
+      config: { providers: { pi: { load_skills: false } } },
+      analysisConfig: { configType: 'council', councilId: 'council-1' },
+    });
+    initActiveState(params.stackAnalysisId, params.prNumbers);
+
+    await executeStackAnalysis(params);
+
+    expect(deps.launchCouncilAnalysis).toHaveBeenCalled();
+    const callArgs = deps.launchCouncilAnalysis.mock.calls[0];
+    // 2nd arg is modeContext
+    const modeContext = callArgs[1];
+    expect(modeContext.providerOverrides).toEqual({ load_skills: true }); // base (no tier 3)
+    expect(modeContext.providerOverridesMap).toBeDefined();
+    expect(modeContext.providerOverridesMap.pi).toEqual({ load_skills: false }); // tier 3 for Pi
+  });
+});
+
 describe('estimateCouncilTimeout', () => {
   it('returns voice + consolidation + margin for voice-centric councils', () => {
     const config = {

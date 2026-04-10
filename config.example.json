@@ -247,7 +247,7 @@
   },
 
   "repos": {
-    "_comment": "Repository configurations (renamed from 'monorepos'; the old key still works). 'path' points to an existing local clone. 'checkout_script' runs after worktree creation. 'reset_script' runs when switching a pool worktree to a new PR.",
+    "_comment": "Repository configurations (renamed from 'monorepos'; the old key still works). 'path' points to an existing local clone. 'checkout_script' runs after worktree creation. 'reset_script' runs when switching a pool worktree to a new PR. 'load_skills' controls whether AI providers load environment-level skills (default: true).",
     "owner/repo": {
       "path": "~/path/to/monorepo",
       "checkout_script": "my-repo-checkout $BASE_SHA $HEAD_BRANCH",
@@ -256,7 +256,8 @@
       "worktree_directory": "~/custom/worktrees",
       "worktree_name_template": "{id}/src",
       "pool_size": 0,
-      "pool_fetch_interval_minutes": null
+      "pool_fetch_interval_minutes": null,
+      "load_skills": true
     }
   }
 }

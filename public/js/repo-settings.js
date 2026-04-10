@@ -214,6 +214,16 @@ class RepoSettingsPage {
       });
     }
 
+    // Load skills select
+    const loadSkillsSelect = document.getElementById('load-skills-select');
+    if (loadSkillsSelect) {
+      loadSkillsSelect.addEventListener('change', () => {
+        const val = loadSkillsSelect.value;
+        this.currentSettings.load_skills = val === '' ? null : parseInt(val, 10);
+        this.checkForChanges();
+      });
+    }
+
     // Analysis mode segmented control
     const modeToggle = document.getElementById('analysis-mode-toggle');
     if (modeToggle) {
@@ -847,7 +857,8 @@ class RepoSettingsPage {
         local_path: settings.local_path || null,
         default_chat_instructions: settings.default_chat_instructions || '',
         pool_size: settings.pool_size ?? null,
-        pool_fetch_interval_minutes: settings.pool_fetch_interval_minutes ?? null
+        pool_fetch_interval_minutes: settings.pool_fetch_interval_minutes ?? null,
+        load_skills: settings.load_skills ?? null
       };
 
       // Set current settings
@@ -868,7 +879,8 @@ class RepoSettingsPage {
         local_path: null,
         default_chat_instructions: '',
         pool_size: null,
-        pool_fetch_interval_minutes: null
+        pool_fetch_interval_minutes: null,
+        load_skills: null
       };
       this.currentSettings = { ...this.originalSettings };
       this.updateUI();
@@ -1205,6 +1217,13 @@ class RepoSettingsPage {
     if (poolFetchInput) {
       poolFetchInput.value = this.currentSettings.pool_fetch_interval_minutes ?? '';
     }
+
+    // Update load skills select
+    const loadSkillsSelect = document.getElementById('load-skills-select');
+    if (loadSkillsSelect) {
+      const val = this.currentSettings.load_skills;
+      loadSkillsSelect.value = val === null || val === undefined ? '' : String(val);
+    }
   }
 
   /**
@@ -1256,8 +1275,9 @@ class RepoSettingsPage {
     const chatInstructionsChanged = (this.currentSettings.default_chat_instructions ?? '') !== (this.originalSettings.default_chat_instructions ?? '');
     const poolSizeChanged = (this.currentSettings.pool_size ?? null) !== (this.originalSettings.pool_size ?? null);
     const poolFetchChanged = (this.currentSettings.pool_fetch_interval_minutes ?? null) !== (this.originalSettings.pool_fetch_interval_minutes ?? null);
+    const loadSkillsChanged = (this.currentSettings.load_skills ?? null) !== (this.originalSettings.load_skills ?? null);
 
-    this.hasUnsavedChanges = providerChanged || modelChanged || tabChanged || councilChanged || instructionsChanged || chatInstructionsChanged || poolSizeChanged || poolFetchChanged;
+    this.hasUnsavedChanges = providerChanged || modelChanged || tabChanged || councilChanged || instructionsChanged || chatInstructionsChanged || poolSizeChanged || poolFetchChanged || loadSkillsChanged;
 
     // Show/hide action bar
     const actionBar = document.getElementById('action-bar');
@@ -1294,7 +1314,8 @@ class RepoSettingsPage {
           default_instructions: this.currentSettings.default_instructions,
           default_chat_instructions: this.currentSettings.default_chat_instructions,
           pool_size: this.currentSettings.pool_size,
-          pool_fetch_interval_minutes: this.currentSettings.pool_fetch_interval_minutes
+          pool_fetch_interval_minutes: this.currentSettings.pool_fetch_interval_minutes,
+          load_skills: this.currentSettings.load_skills
         })
       });
 
@@ -1371,7 +1392,8 @@ class RepoSettingsPage {
           local_path: null,
           default_chat_instructions: '',
           pool_size: null,
-          pool_fetch_interval_minutes: null
+          pool_fetch_interval_minutes: null,
+          load_skills: null
         })
       });
 
@@ -1389,7 +1411,8 @@ class RepoSettingsPage {
         local_path: null,
         default_chat_instructions: '',
         pool_size: null,
-        pool_fetch_interval_minutes: null
+        pool_fetch_interval_minutes: null,
+        load_skills: null
       };
       this.currentSettings = { ...this.originalSettings };
       this.hasUnsavedChanges = false;

@@ -23,8 +23,8 @@ vi.mock('../../src/ai/provider', () => ({
   createProvider: vi.fn()
 }));
 vi.mock('../../src/database', () => ({
-  AnalysisRunRepository: vi.fn(),
-  CommentRepository: vi.fn()
+  AnalysisRunRepository: vi.fn(() => ({ create: vi.fn().mockResolvedValue({}) })),
+  CommentRepository: vi.fn(() => ({ batchInsert: vi.fn() }))
 }));
 vi.mock('../../src/hooks/hook-runner', () => ({
   fireHooks: vi.fn(),
@@ -59,8 +59,21 @@ const localReviewModule = require('../../src/local-review');
 const mockGenerateScopedDiff = vi.spyOn(localReviewModule, 'generateScopedDiff');
 const mockFindMergeBase = vi.spyOn(localReviewModule, 'findMergeBase');
 
+// Spy on provider and database modules (CJS requires need vi.spyOn, not vi.mock)
+const providerModule = require('../../src/ai/provider');
+const mockCreateProvider = vi.spyOn(providerModule, 'createProvider');
+
+const databaseModule = require('../../src/database');
+const mockAnalysisRunRepoCreate = vi.fn().mockResolvedValue({});
+vi.spyOn(databaseModule, 'AnalysisRunRepository').mockImplementation(function () {
+  this.create = mockAnalysisRunRepoCreate;
+});
+vi.spyOn(databaseModule, 'CommentRepository').mockImplementation(function () {
+  this.batchInsert = vi.fn();
+});
+
 // Import source module after all spies are set up
-const { generateDiffForExecutable, getChangedFiles } = require('../../src/routes/executable-analysis');
+const { generateDiffForExecutable, getChangedFiles, runExecutableAnalysis } = require('../../src/routes/executable-analysis');
 
 describe('generateDiffForExecutable', () => {
   beforeEach(() => {
@@ -547,5 +560,70 @@ describe('getChangedFiles', () => {
       // findMergeBase should NOT be called since baseBranch is null
       expect(mockFindMergeBase).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('runExecutableAnalysis', () => {
+  it('should pass providerOverrides to createProvider', async () => {
+    // Set up createProvider to return a minimal provider that will reject
+    // (we only care about the createProvider call args, not the full execution)
+    const mockProvider = {
+      resolvedModel: 'test-model',
+      model: 'test-model',
+      contextArgs: {},
+      execute: vi.fn().mockRejectedValue(new Error('test abort'))
+    };
+    mockCreateProvider.mockReturnValue(mockProvider);
+
+    const testOverrides = { load_skills: false };
+
+    const mockReq = {
+      app: {
+        get: vi.fn((key) => {
+          if (key === 'db') return {};
+          if (key === 'config') return {};
+          return null;
+        })
+      }
+    };
+    const mockRes = { json: vi.fn() };
+
+    const params = {
+      reviewId: 1,
+      review: { id: 1 },
+      selectedProvider: 'test-exec',
+      selectedModel: 'test-model',
+      repoInstructions: null,
+      requestInstructions: null,
+      runId: 'run-1',
+      analysisId: 'analysis-1',
+      repository: 'owner/repo',
+      reviewType: 'pr',
+      headSha: 'abc123',
+      extraInitialStatus: {},
+      providerOverrides: testOverrides
+    };
+
+    const shared = {
+      activeAnalyses: new Map(),
+      reviewToAnalysisId: new Map(),
+      broadcastProgress: vi.fn(),
+      broadcastReviewEvent: vi.fn(),
+      registerProcessForCancellation: vi.fn()
+    };
+
+    const callbacks = {
+      buildContext: vi.fn(() => ({ cwd: '/tmp/test' })),
+      buildHookPayload: vi.fn(() => ({})),
+      onSuccess: vi.fn(),
+      logLabel: 'Test'
+    };
+
+    await runExecutableAnalysis(mockReq, mockRes, params, shared, callbacks);
+
+    // The async IIFE runs after res.json(), so wait a tick for createProvider to be called
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    expect(mockCreateProvider).toHaveBeenCalledWith('test-exec', 'test-model', testOverrides);
   });
 });

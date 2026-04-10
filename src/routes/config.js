@@ -100,7 +100,8 @@ router.get('/api/repos/:owner/:repo/settings', async (req, res) => {
         default_tab: null,
         default_chat_instructions: null,
         pool_size: null,
-        pool_fetch_interval_minutes: null
+        pool_fetch_interval_minutes: null,
+        load_skills: null
       });
     }
 
@@ -115,6 +116,7 @@ router.get('/api/repos/:owner/:repo/settings', async (req, res) => {
       default_chat_instructions: settings.default_chat_instructions,
       pool_size: settings.pool_size ?? null,
       pool_fetch_interval_minutes: settings.pool_fetch_interval_minutes ?? null,
+      load_skills: settings.load_skills ?? null,
       created_at: settings.created_at,
       updated_at: settings.updated_at
     });
@@ -134,12 +136,12 @@ router.get('/api/repos/:owner/:repo/settings', async (req, res) => {
 router.post('/api/repos/:owner/:repo/settings', async (req, res) => {
   try {
     const { owner, repo } = req.params;
-    const { default_instructions, default_provider, default_model, local_path, default_council_id, default_tab, default_chat_instructions, pool_size, pool_fetch_interval_minutes } = req.body;
+    const { default_instructions, default_provider, default_model, local_path, default_council_id, default_tab, default_chat_instructions, pool_size, pool_fetch_interval_minutes, load_skills } = req.body;
     const repository = normalizeRepository(owner, repo);
     const db = req.app.get('db');
 
     // Validate that at least one setting is provided
-    if (default_instructions === undefined && default_provider === undefined && default_model === undefined && local_path === undefined && default_council_id === undefined && default_tab === undefined && default_chat_instructions === undefined && pool_size === undefined && pool_fetch_interval_minutes === undefined) {
+    if (default_instructions === undefined && default_provider === undefined && default_model === undefined && local_path === undefined && default_council_id === undefined && default_tab === undefined && default_chat_instructions === undefined && pool_size === undefined && pool_fetch_interval_minutes === undefined && load_skills === undefined) {
       return res.status(400).json({
         error: 'At least one setting must be provided'
       });
@@ -155,7 +157,8 @@ router.post('/api/repos/:owner/:repo/settings', async (req, res) => {
       default_tab,
       default_chat_instructions,
       pool_size,
-      pool_fetch_interval_minutes
+      pool_fetch_interval_minutes,
+      load_skills
     });
 
     logger.info(`Saved repo settings for ${repository}`);
@@ -173,6 +176,7 @@ router.post('/api/repos/:owner/:repo/settings', async (req, res) => {
         default_chat_instructions: settings.default_chat_instructions,
         pool_size: settings.pool_size ?? null,
         pool_fetch_interval_minutes: settings.pool_fetch_interval_minutes ?? null,
+        load_skills: settings.load_skills ?? null,
         updated_at: settings.updated_at
       }
     });
