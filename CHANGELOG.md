@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.2.2
+
+### Patch Changes
+
+- 4248a72: Respect provider-configured timeouts for single-model and council reviews instead of always defaulting to 10 minutes
+
 ## 3.2.1
 
 ### Patch Changes
