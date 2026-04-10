@@ -81,5 +81,10 @@
     "jsdom": "^29.0.1",
     "supertest": "^7.1.4",
     "vitest": "^4.0.16"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3"
+    ]
   }
 }
