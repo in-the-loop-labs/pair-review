@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.2.1
+
+### Patch Changes
+
+- 79dda36: Fix chat panel table overflow by adding scrollable table styling to assistant message bubbles
+- d570c55: Add `load_skills` and `app_extensions` config fields for Pi providers (analysis and chat). When `load_skills` is false, adds `--no-skills` to suppress Pi's skill auto-discovery. When `app_extensions` is false, omits pair-review's task extension (`-e` flag). Replaces the need to manually configure `extra_args: ["--no-skills"]`.
+- 07b12eb: Allow stack navigation popover to grow up to 80% of the viewport height instead of a fixed 420px max
+
 ## 3.2.0
 
 ### Minor Changes
