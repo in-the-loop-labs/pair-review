@@ -186,6 +186,16 @@ describe('createExecutableProviderClass', () => {
       expect(withExcludePrevious.capabilities).toEqual({ review_levels: false, custom_instructions: false, exclude_previous: true, consolidation: false });
     });
 
+    it('sets defaultTimeout from config.timeout when provided', () => {
+      const withTimeout = createExecutableProviderClass('t', { timeout: 1200000 });
+      expect(withTimeout.defaultTimeout).toBe(1200000);
+    });
+
+    it('does not set defaultTimeout when config.timeout is absent', () => {
+      const noTimeout = createExecutableProviderClass('t', {});
+      expect(noTimeout.defaultTimeout).toBeUndefined();
+    });
+
     it('sets getInstallInstructions from config', () => {
       expect(createExecutableProviderClass('t', { installInstructions: 'pip install t' }).getInstallInstructions()).toBe('pip install t');
       expect(createExecutableProviderClass('test-tool', {}).getInstallInstructions()).toBe('Install test-tool');

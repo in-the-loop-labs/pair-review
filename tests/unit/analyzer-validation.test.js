@@ -2031,11 +2031,14 @@ describe('Analyzer timeout threading (source verification)', () => {
   });
 
   it('analyzeAllLevels should extract timeout from options and pass it to level analyzers', () => {
-    // Check that analyzeAllLevels reads options.timeout
+    // Check that analyzeAllLevels reads options.timeout with provider fallback
     const allLevelsMatch = analyzerSource.match(
-      /async analyzeAllLevels[^{]*\{[\s\S]*?const executionTimeout = options\.timeout \|\| 600000/
+      /async analyzeAllLevels[^{]*\{[\s\S]*?const executionTimeout = options\.timeout \|\| providerTimeout \|\| 600000/
     );
     expect(allLevelsMatch).not.toBeNull();
+
+    // Check that provider's defaultTimeout is looked up
+    expect(analyzerSource).toContain('const providerTimeout = ProviderClass?.defaultTimeout');
 
     // Check that executionTimeout is passed to level analyzers
     expect(analyzerSource).toContain('timeout: executionTimeout');
@@ -2043,7 +2046,7 @@ describe('Analyzer timeout threading (source verification)', () => {
 
   it('voice-centric council should pass voice.timeout to analyzeAllLevels', () => {
     // Check that runReviewerCentricCouncil reads voice.timeout
-    expect(analyzerSource).toMatch(/voiceTimeout\s*=\s*voice\.timeout\s*\|\|\s*600000/);
+    expect(analyzerSource).toMatch(/voiceTimeout\s*=\s*voice\.timeout\s*\|\|\s*ProviderClass\?\.defaultTimeout\s*\|\|\s*600000/);
     // Check it passes voiceTimeout in options
     expect(analyzerSource).toContain('timeout: voiceTimeout');
   });
@@ -2051,7 +2054,7 @@ describe('Analyzer timeout threading (source verification)', () => {
   it('level-centric council should include timeout in voiceTasks from voice config', () => {
     // Check that voiceTasks.push includes timeout from voice config
     const voiceTaskPush = analyzerSource.match(
-      /voiceTasks\.push\(\{[\s\S]*?timeout:\s*voice\.timeout\s*\|\|\s*600000[\s\S]*?\}\)/
+      /voiceTasks\.push\(\{[\s\S]*?timeout:\s*voice\.timeout\s*\|\|\s*VoiceProviderClass\?\.defaultTimeout\s*\|\|\s*600000[\s\S]*?\}\)/
     );
     expect(voiceTaskPush).not.toBeNull();
   });

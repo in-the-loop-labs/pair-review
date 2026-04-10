@@ -96,7 +96,7 @@ function buildVoiceContext(voice, idx, instructions, progressCallback, db) {
   const voiceProvider = isExecutable ? createProvider(voice.provider, voice.model) : null;
 
   const voiceTier = voice.tier || 'balanced';
-  const voiceTimeout = voice.timeout || 600000;
+  const voiceTimeout = voice.timeout || ProviderClass?.defaultTimeout || 600000;
 
   // Wrap progress callback with voice-centric metadata
   const voiceProgressCallback = progressCallback ? (update) => {
@@ -319,7 +319,10 @@ class Analyzer {
     const runId = options.runId || uuidv4();
     const { analysisId, skipRunCreation, skipLevel3, reviewerNum, excludePrevious, serverPort } = options;
     const logPrefix = options.logPrefix || '';
-    const executionTimeout = options.timeout || 600000; // Default 10 minutes
+    // Respect provider-configured timeout (e.g. Pi's 15 min, executable providers)
+    const ProviderClass = getProviderClass(this.provider);
+    const providerTimeout = ProviderClass?.defaultTimeout;
+    const executionTimeout = options.timeout || providerTimeout || 600000; // Default 10 minutes
 
     // Resolve enabledLevels: prefer explicit option, fall back to skipLevel3 compat
     const enabledLevels = options.enabledLevels
@@ -3396,6 +3399,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
             : voice.customInstructions;
         }
 
+        const VoiceProviderClass = getProviderClass(voice.provider);
         voiceTasks.push({
           voiceId,
           reviewerLabel,
@@ -3404,7 +3408,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           provider: voice.provider,
           model: voice.model,
           tier,
-          timeout: voice.timeout || 600000,
+          timeout: voice.timeout || VoiceProviderClass?.defaultTimeout || 600000,
           customInstructions: voiceInstructions,
           voiceCustomInstructions: voice.customInstructions || null
         });
