@@ -248,20 +248,21 @@ Note: Confidence is about certainty of value, not severity. A minor improvement 
 
 <section name="summary-synthesis" required="true" tier="thorough">
 ## Summary Synthesis Guidance
-The summary field is not a list of findings - it's a synthesis that helps the reviewer see the forest, not just the trees.
+The summary field should help the reviewer see the forest, not just the trees, but it should not be one big paragraph.
 
 **Effective Summary Approach:**
-- **Synthesize, don't summarize**: Identify the overarching narrative of this PR's quality and concerns
-- **Lead with the most important insight**: What single thing should the reviewer understand first?
-- **Connect the dots**: How do individual findings relate to each other or to a common theme?
-- **Calibrate severity**: Is this PR fundamentally sound with minor issues, or does it have structural problems?
+- **Start with 1-2 sentences of overall assessment**: Identify the overarching narrative of this PR's quality and concerns
+- **Then use a markdown bullet list with "- " bullets**: Capture the key specific points the reviewer should track
+- **Connect the dots**: Make the overview and bullets feel like one coherent review
+- **Calibrate severity**: Make clear whether this PR is fundamentally sound with minor issues or has structural problems
+- **After the bullets, add extra sentences or short paragraphs only when needed**: Use them for requested context, caveats, or follow-up detail
 - **Respect reviewer time**: A good summary lets the reviewer decide where to focus attention
 
 **Summary Anti-patterns to Avoid:**
 - Listing findings ("Found 3 bugs, 2 improvements, 1 praise...")
 - Implementation details ("Merged Level 1 and Level 2 suggestions...")
 - Vague platitudes ("This PR has some issues to consider...")
-- Excessive length (2-3 sentences is ideal)
+- A single unbroken paragraph with no bullets
 </section>
 
 <section name="output-schema" locked="true">
@@ -294,7 +295,7 @@ Output JSON with this structure:
     "confidence": 0.0-1.0,
     "reasoning": ["Step-by-step reasoning explaining why this issue was flagged"]
   }],
-  "summary": "Brief summary of the key findings and their significance to the reviewer. Focus on WHAT was found, not HOW it was found. Do NOT mention 'orchestration', 'levels', 'merged from Level 1/2/3' etc. Write as if a single reviewer produced this analysis."
+  "summary": "Formatted markdown summary following the Summary Synthesis Guidance above."
 }
 
 ### GitHub Suggestion Syntax

@@ -1705,6 +1705,18 @@ describe('Baseline Orchestration Balanced', () => {
     expect(baseline.taggedPrompt).toContain('Do NOT mention which level');
   });
 
+  it('should require structured markdown summaries', async () => {
+    const baseline = await import('../../src/ai/prompts/baseline/orchestration/balanced.js');
+
+    expect(baseline.defaultOrder).toContain('summary-synthesis');
+    expect(baseline.taggedPrompt).toContain('Summary Structure');
+    expect(baseline.taggedPrompt).toContain('not be one big paragraph');
+    expect(baseline.taggedPrompt).toContain('1-2 sentences describing the overall assessment');
+    expect(baseline.taggedPrompt).toContain('markdown bullet list');
+    expect(baseline.taggedPrompt).toContain('After the bullets');
+    expect(baseline.taggedPrompt).toContain('Formatted markdown summary following the Summary Structure guidance above.');
+  });
+
   it('should have quality over quantity emphasis', async () => {
     const baseline = await import('../../src/ai/prompts/baseline/orchestration/balanced.js');
 
@@ -1913,6 +1925,18 @@ describe('Baseline Orchestration Fast', () => {
 
     expect(baseline.taggedPrompt).toContain('guidance not mandates');
     expect(baseline.taggedPrompt).toContain('Consider...');
+  });
+
+  it('should require structured markdown summaries', async () => {
+    const baseline = await import('../../src/ai/prompts/baseline/orchestration/fast.js');
+
+    expect(baseline.defaultOrder).toContain('summary-synthesis');
+    expect(baseline.taggedPrompt).toContain('### Summary');
+    expect(baseline.taggedPrompt).toContain('not one big paragraph');
+    expect(baseline.taggedPrompt).toContain('1-2 sentences describing the overall assessment');
+    expect(baseline.taggedPrompt).toContain('markdown bullet list');
+    expect(baseline.taggedPrompt).toContain('After the bullets');
+    expect(baseline.taggedPrompt).toContain('Formatted markdown summary following the Summary guidance above.');
   });
 
   it('should build correctly with context', () => {
@@ -2155,14 +2179,15 @@ describe('Baseline Orchestration Thorough', () => {
   it('should have summary synthesis guidance', async () => {
     const baseline = await import('../../src/ai/prompts/baseline/orchestration/thorough.js');
 
-    // Opus-optimized summary guidance - synthesize, not summarize
     expect(baseline.taggedPrompt).toContain('Summary Synthesis Guidance');
-    expect(baseline.taggedPrompt).toContain('Effective Summary Approach');
-    expect(baseline.taggedPrompt).toContain('Synthesize, don\'t summarize');
-    expect(baseline.taggedPrompt).toContain('forest, not just the trees');
     expect(baseline.taggedPrompt).toContain('Summary Anti-patterns to Avoid');
-    // Should be in sections array and defaultOrder
+    expect(baseline.taggedPrompt).toContain('not be one big paragraph');
+    expect(baseline.taggedPrompt).toContain('1-2 sentences of overall assessment');
+    expect(baseline.taggedPrompt).toContain('markdown bullet list');
+    expect(baseline.taggedPrompt).toContain('forest, not just the trees');
+    expect(baseline.taggedPrompt).toContain('single unbroken paragraph with no bullets');
     expect(baseline.defaultOrder).toContain('summary-synthesis');
+    expect(baseline.taggedPrompt).toContain('Formatted markdown summary following the Summary Synthesis Guidance above.');
   });
 
   it('should have synthesis strategy in guidelines', async () => {
