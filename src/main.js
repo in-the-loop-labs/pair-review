@@ -20,6 +20,7 @@ const { GIT_DIFF_FLAGS_ARRAY, GIT_DIFF_SUMMARY_FLAGS_ARRAY } = require('./git/di
 const { getEmoji: getCategoryEmoji } = require('./utils/category-emoji');
 const open = (...args) => process.env.PAIR_REVIEW_NO_OPEN ? Promise.resolve() : import('open').then(({default: open}) => open(...args));
 const { registerProtocolHandler, unregisterProtocolHandler } = require('./protocol-handler');
+const { attemptDelegation } = require('./single-port');
 
 let db = null;
 
@@ -431,26 +432,8 @@ AI PROVIDERS:
       showWelcomeMessage();
     }
 
-    // Initialize database
-    console.log('Initializing database...');
-    db = await initializeDatabase(resolveDbName(config));
-
-    // Migrate existing worktrees to database (if any)
-    const path = require('path');
-    const worktreeBaseDir = path.join(getConfigDir(), 'worktrees');
-    const migrationResult = await migrateExistingWorktrees(db, worktreeBaseDir);
-    if (migrationResult.migrated > 0) {
-      console.log(`Migrated ${migrationResult.migrated} existing worktrees to database`);
-    }
-    if (migrationResult.errors.length > 0) {
-      console.warn('Some worktrees could not be migrated:', migrationResult.errors);
-    }
-
-    // Reset stale pool entries, wire idle callbacks, and rehydrate preserved entries
-    const poolLifecycle = new WorktreePoolLifecycle(db, config);
-    await poolLifecycle.resetAndRehydrate();
-
-    // Parse command line arguments including flags
+    // Parse command line arguments including flags (before DB init so
+    // single-port delegation can skip DB entirely)
     const { prArgs, flags } = parseArgs(args);
 
     // Apply debug_stream from config if not already enabled by CLI flag
@@ -472,6 +455,36 @@ AI PROVIDERS:
     // startup, but headless paths (--ai-draft, --ai-review) never start the
     // server, so we must also apply here.
     applyConfigOverrides(config);
+
+    // Single-port delegation: if a pair-review server is already running on the
+    // configured port, delegate to it (open browser URL) and exit immediately.
+    // Skipped for: headless modes (no browser), single_port: false (dev mode).
+    if (config.single_port !== false && !flags.aiReview && !flags.aiDraft) {
+      const delegated = await attemptDelegation(config, flags, prArgs);
+      if (delegated) {
+        process.exit(0);
+      }
+      // Not delegated — no server running, proceed to start one
+    }
+
+    // Initialize database
+    console.log('Initializing database...');
+    db = await initializeDatabase(resolveDbName(config));
+
+    // Migrate existing worktrees to database (if any)
+    const path = require('path');
+    const worktreeBaseDir = path.join(getConfigDir(), 'worktrees');
+    const migrationResult = await migrateExistingWorktrees(db, worktreeBaseDir);
+    if (migrationResult.migrated > 0) {
+      console.log(`Migrated ${migrationResult.migrated} existing worktrees to database`);
+    }
+    if (migrationResult.errors.length > 0) {
+      console.warn('Some worktrees could not be migrated:', migrationResult.errors);
+    }
+
+    // Reset stale pool entries, wire idle callbacks, and rehydrate preserved entries
+    const poolLifecycle = new WorktreePoolLifecycle(db, config);
+    await poolLifecycle.resetAndRehydrate();
 
     // Check for local mode (review uncommitted local changes)
     if (flags.local) {

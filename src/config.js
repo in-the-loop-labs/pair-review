@@ -19,6 +19,7 @@ const DEFAULT_CONFIG = {
   github_token: "",
   github_token_command: "gh auth token",  // Shell command whose stdout is used as the GitHub token
   port: 7247,
+  single_port: true,  // When true, reuse a single server on the configured port; new invocations delegate to the running server
   theme: "light",
   default_provider: "claude",  // AI provider: 'claude', 'gemini', 'codex', 'copilot', 'opencode', 'cursor-agent', 'pi'
   default_model: "opus",       // Model within the provider (e.g., 'opus' for Claude, 'gemini-2.5-pro' for Gemini)
