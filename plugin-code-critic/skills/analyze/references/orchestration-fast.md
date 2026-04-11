@@ -76,6 +76,13 @@ Max 2-3 praise items. Prefer line-level over file-level. Include actionable sugg
 ### Framing
 Use "Consider...", "Worth noting..." - guidance not mandates.
 
+### Summary
+The summary field should be markdown, not one big paragraph.
+- Start with 1-2 sentences describing the overall assessment
+- Then include a markdown bullet list using "- " bullets for the key specific points
+- After the bullets, add extra sentences or short paragraphs only when needed for requested context or follow-up detail
+- Write as a single reviewer; do not mention levels or orchestration
+
 ## JSON Schema
 {
   "level": "orchestrated",
@@ -99,7 +106,7 @@ Use "Consider...", "Worth noting..." - guidance not mandates.
     "suggestion": "How to fix (omit for praise)",
     "confidence": 0.0-1.0
   }],
-  "summary": "Key findings as if from single reviewer (no mention of levels/orchestration)"
+  "summary": "Formatted markdown summary following the Summary guidance above."
 }
 
 ### GitHub Suggestion Syntax

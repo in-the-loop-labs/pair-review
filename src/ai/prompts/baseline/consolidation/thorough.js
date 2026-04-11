@@ -167,13 +167,14 @@ Note: Confidence is about certainty of value, not severity.
 
 <section name="summary-synthesis" required="true" tier="thorough">
 ## Summary Synthesis Guidance
-The summary field should synthesize the findings, not list them.
+The summary field should synthesize the findings, but it should not be one big paragraph.
 
 **Effective Summary Approach:**
-- **Lead with the most important insight**: What should the reviewer focus on first?
-- **Connect the dots**: How do individual findings relate to each other?
-- **Calibrate severity**: Is this code fundamentally sound with minor issues, or are there structural problems?
-- **Draw on reviewer summaries**: Use these as evidence for your own synthesis — integrate their insights into a cohesive conclusion rather than listing them individually.
+- **Start with 1-2 sentences of overall assessment**: Lead with the most important insight and calibrate the overall severity
+- **Then use a markdown bullet list with "- " bullets**: Capture the key specific points the reviewer should keep in view
+- **Connect the dots**: Make the overview and bullets feel like one coherent review, not disconnected fragments
+- **Draw on reviewer summaries**: Use these as evidence for your own synthesis — integrate their insights into the overview and bullets rather than listing reviewer-by-reviewer conclusions.
+- **After the bullets, add extra sentences or short paragraphs only when needed**: Use them for requested context, caveats, or follow-up detail
 - **Write as a single reviewer**: Do not mention consolidation, merging, or multiple reviewers -- unless specifically requested
 </section>
 
@@ -208,7 +209,7 @@ Output JSON with this structure:
     "confidence": 0.0-1.0,
     "reasoning": ["Step-by-step reasoning explaining why this issue was flagged"]
   }],
-  "summary": "Single cohesive paragraph synthesizing key findings and their significance. Write as a single reviewer — do not mention consolidation, merging, or multiple reviewers."
+  "summary": "Formatted markdown summary following the Summary Synthesis Guidance above."
 }
 
 ### GitHub Suggestion Syntax

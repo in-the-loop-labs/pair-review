@@ -83,7 +83,11 @@ Deduplicate, don't concatenate: merge duplicate findings, preserve distinct ones
 </section>
 
 <section name="summary-synthesis" required="true" tier="fast">
-Draw on reviewer summaries as evidence for your own synthesis. Write one cohesive paragraph — no mention of consolidation/merging.
+Draw on reviewer summaries as evidence for your own synthesis. The summary field should be markdown, not one big paragraph.
+- Start with 1-2 sentences describing the overall assessment
+- Then include a markdown bullet list using "- " bullets for the key specific points
+- After the bullets, add extra sentences or short paragraphs only when needed for requested context or follow-up detail
+- Write as a single reviewer with no mention of consolidation or merging
 </section>
 
 <section name="output-schema" locked="true">
@@ -109,7 +113,7 @@ Draw on reviewer summaries as evidence for your own synthesis. Write one cohesiv
     "suggestion": "How to address the file-level concern (omit for praise items)",
     "confidence": 0.0-1.0
   }],
-  "summary": "Single cohesive paragraph of key findings. Write as single reviewer."
+  "summary": "Formatted markdown summary following the summary guidance above."
 }
 
 ### GitHub Suggestion Syntax

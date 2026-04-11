@@ -357,20 +357,30 @@ describe('Consolidation prompt templates (direct tests)', () => {
     }
   });
 
-  it('summary field in output-schema should use synthesis language', () => {
+  it('summary guidance should require structured markdown summaries', () => {
     const thorough = require('../../src/ai/prompts/baseline/consolidation/thorough');
     const balanced = require('../../src/ai/prompts/baseline/consolidation/balanced');
     const fast = require('../../src/ai/prompts/baseline/consolidation/fast');
 
     for (const template of [thorough, balanced, fast]) {
-      // Check within the output-schema section specifically to avoid
-      // false positives from the summary-synthesis section
       const parsed = template.parseSections();
       const outputSchema = parsed.find(s => s.name === 'output-schema');
+      const synthSection = parsed.find(s => s.name === 'summary-synthesis');
+
       expect(outputSchema).toBeDefined();
-      expect(outputSchema.content).toContain('single');
-      expect(outputSchema.content).toContain('reviewer');
-      expect(outputSchema.content).not.toContain('Draw on reviewer summaries for high-level conclusions');
+      expect(synthSection).toBeDefined();
+
+      expect(outputSchema.content).toContain('Formatted markdown summary');
+      expect(outputSchema.content).toMatch(/guidance above\./i);
+      expect(outputSchema.content).not.toContain('1-2 sentences of overall assessment');
+      expect(outputSchema.content).not.toContain('bullet list of specific points');
+      expect(outputSchema.content).not.toContain('single reviewer');
+      expect(outputSchema.content).not.toContain('Single cohesive paragraph');
+
+      expect(synthSection.content).toMatch(/not(?: be)? one big paragraph/);
+      expect(synthSection.content).toContain('1-2 sentences');
+      expect(synthSection.content).toContain('bullet list');
+      expect(synthSection.content).toContain('After the bullets');
     }
   });
 
