@@ -121,6 +121,16 @@ Prioritize suggestions in this order:
 - **Provide context** for why each suggestion matters to the reviewer
 </section>
 
+<section name="summary-synthesis" required="true">
+## Summary Structure
+The summary field should synthesize the findings, but it should not be one big paragraph.
+- Start with 1-2 sentences describing the overall assessment
+- Then include a markdown bullet list using "- " bullets for the key specific points
+- After the bullets, add extra sentences or short paragraphs only when needed for requested context or follow-up detail
+- Focus on WHAT was found, not HOW it was found
+- Write as if a single reviewer produced this analysis
+</section>
+
 <section name="output-schema" locked="true">
 ## Output Format
 
@@ -151,7 +161,7 @@ Output JSON with this structure:
     "confidence": 0.0-1.0,
     "reasoning": ["Step-by-step reasoning explaining why this issue was flagged (optional)"]
   }],
-  "summary": "Brief summary of the key findings and their significance to the reviewer. Focus on WHAT was found, not HOW it was found. Do NOT mention 'orchestration', 'levels', 'merged from Level 1/2/3' etc. Write as if a single reviewer produced this analysis."
+  "summary": "Formatted markdown summary following the Summary Structure guidance above."
 }
 
 ### GitHub Suggestion Syntax
@@ -218,6 +228,7 @@ const sections = [
   { name: 'priority-curation', required: true },
   { name: 'balanced-output', required: true },
   { name: 'human-centric-framing', required: true },
+  { name: 'summary-synthesis', required: true },
   { name: 'output-schema', locked: true },
   { name: 'diff-instructions', required: true },
   { name: 'file-level-guidance', optional: true, tier: ['balanced', 'thorough'] },
@@ -240,6 +251,7 @@ const defaultOrder = [
   'priority-curation',
   'balanced-output',
   'human-centric-framing',
+  'summary-synthesis',
   'output-schema',
   'diff-instructions',
   'file-level-guidance',

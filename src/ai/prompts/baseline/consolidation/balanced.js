@@ -123,9 +123,11 @@ Assess severity based on the evidence and reasoning across all reviewers. When r
 
 <section name="summary-synthesis" required="true">
 ## Summary Synthesis
-The summary field should synthesize the findings, not list them.
-- Synthesize the key findings into a single cohesive paragraph
-- **Draw on reviewer summaries**: Use these as evidence for your own synthesis — integrate their insights into a cohesive conclusion rather than listing them individually
+The summary field should synthesize the findings, but it should not be one big paragraph.
+- Start with 1-2 sentences describing the overall assessment
+- Then include a markdown bullet list using "- " bullets for the key specific points
+- **Draw on reviewer summaries**: Use these as evidence for your own synthesis — integrate their insights into the overview and bullets rather than listing reviewer-by-reviewer conclusions
+- After the bullets, add extra sentences or short paragraphs only when needed for requested context or follow-up detail
 - Write as if a single reviewer produced this analysis — do not mention consolidation, merging, or multiple reviewers
 </section>
 
@@ -160,7 +162,7 @@ Output JSON with this structure:
     "confidence": 0.0-1.0,
     "reasoning": ["Step-by-step reasoning explaining why this issue was flagged (optional)"]
   }],
-  "summary": "Single cohesive paragraph summarizing key findings. Write as a single reviewer."
+  "summary": "Formatted markdown summary following the Summary Synthesis guidance above."
 }
 
 ### GitHub Suggestion Syntax

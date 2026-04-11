@@ -103,6 +103,15 @@ Max 2-3 praise items. Prefer line-level over file-level. Include actionable sugg
 Use "Consider...", "Worth noting..." - guidance not mandates.
 </section>
 
+<section name="summary-synthesis" required="true" tier="fast">
+### Summary
+The summary field should be markdown, not one big paragraph.
+- Start with 1-2 sentences describing the overall assessment
+- Then include a markdown bullet list using "- " bullets for the key specific points
+- After the bullets, add extra sentences or short paragraphs only when needed for requested context or follow-up detail
+- Write as a single reviewer; do not mention levels or orchestration
+</section>
+
 <section name="output-schema" locked="true">
 ## JSON Schema
 {
@@ -127,7 +136,7 @@ Use "Consider...", "Worth noting..." - guidance not mandates.
     "suggestion": "How to fix (omit for praise)",
     "confidence": 0.0-1.0
   }],
-  "summary": "Key findings as if from single reviewer (no mention of levels/orchestration)"
+  "summary": "Formatted markdown summary following the Summary guidance above."
 }
 
 ### GitHub Suggestion Syntax
@@ -167,6 +176,7 @@ const sections = [
   { name: 'priority-curation', required: true, tier: ['fast'] },
   { name: 'balanced-output', required: true, tier: ['fast'] },
   { name: 'human-centric-framing', required: true, tier: ['fast'] },
+  { name: 'summary-synthesis', required: true, tier: ['fast'] },
   { name: 'output-schema', locked: true },
   { name: 'diff-instructions', required: true, tier: ['fast'] },
   { name: 'guidelines', required: true, tier: ['fast'] }
@@ -189,6 +199,7 @@ const defaultOrder = [
   'priority-curation',
   'balanced-output',
   'human-centric-framing',
+  'summary-synthesis',
   'output-schema',
   'diff-instructions',
   'guidelines'
