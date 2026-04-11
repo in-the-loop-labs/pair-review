@@ -1,8 +1,10 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 const http = require('http');
+const path = require('path');
 const semver = require('semver');
 const { PRArgumentParser } = require('./github/parser');
 const logger = require('./utils/logger');
+const { version: packageVersion } = require('../package.json');
 
 const HEALTH_TIMEOUT_MS = 2000;
 
@@ -156,7 +158,7 @@ async function attemptDelegation(config, flags, prArgs, _deps) {
   // Determine mode and build URL
   let url;
   if (flags.local) {
-    const targetPath = require('path').resolve(flags.localPath || process.cwd());
+    const targetPath = path.resolve(flags.localPath || process.cwd());
     url = buildDelegationUrl(port, 'local', { localPath: targetPath, analyze: flags.ai });
   } else if (prArgs.length > 0) {
     const prInfo = await parsePRArgsForDelegation(prArgs, _deps);
@@ -166,11 +168,10 @@ async function attemptDelegation(config, flags, prArgs, _deps) {
   }
 
   // Notify running server of newer version if applicable
-  const currentVersion = require('../package.json').version;
-  if (result.version && semver.valid(currentVersion) && semver.valid(result.version)) {
-    if (semver.gt(currentVersion, result.version)) {
-      deps.logger.info(`Notifying server of newer version: ${currentVersion} > ${result.version}`);
-      notifyVersion(port, currentVersion, _deps);
+  if (result.version && semver.valid(packageVersion) && semver.valid(result.version)) {
+    if (semver.gt(packageVersion, result.version)) {
+      deps.logger.info(`Notifying server of newer version: ${packageVersion} > ${result.version}`);
+      notifyVersion(port, packageVersion, _deps);
     }
   }
 

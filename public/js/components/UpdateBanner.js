@@ -11,6 +11,7 @@ const DISMISS_KEY = 'update-banner-dismissed';
 class UpdateBanner {
   constructor() {
     this._banner = null;
+    this._dismissBtn = null;
     this._version = null;
 
     // Single path: fetch current config at construction; show banner if a
@@ -44,6 +45,10 @@ class UpdateBanner {
 
     this._version = version;
 
+    // Theme-aware colors come from CSS custom properties (set in styles.css
+    // under :root and [data-theme="dark"]). The inline `var(..., fallback)`
+    // form keeps the banner readable even if the stylesheet hasn't loaded
+    // yet. No MutationObserver needed — CSS handles the theme switch.
     const banner = document.createElement('div');
     banner.setAttribute('data-update-banner', '');
     Object.assign(banner.style, {
@@ -52,22 +57,33 @@ class UpdateBanner {
       left: '16px',
       zIndex: '1000',
       maxWidth: '360px',
-      background: 'var(--color-attention-subtle)',
-      border: '1px solid var(--color-attention-muted)',
+      background: 'var(--color-info-bg, #eff6ff)',
+      border: '1px solid var(--color-info-border, #bfdbfe)',
+      borderLeft: '4px solid var(--color-info-accent, #3b82f6)',
       borderRadius: '8px',
       boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
-      color: 'var(--color-attention-fg)',
       padding: '12px 14px',
       fontSize: '13px',
       lineHeight: '1.4',
+      color: 'var(--color-info-text, #1e3a8a)',
       display: 'flex',
       alignItems: 'flex-start',
       gap: '10px'
     });
 
-    const text = document.createElement('span');
-    text.textContent = `pair-review v${version} is available. Restart the server to update.`;
+    // Two-line layout: headline + restart instruction on its own line.
+    const text = document.createElement('div');
     text.style.flex = '1';
+
+    const headline = document.createElement('div');
+    headline.textContent = `pair-review v${version} is available.`;
+
+    const instruction = document.createElement('div');
+    instruction.textContent = 'Restart the server to update.';
+    instruction.style.marginTop = '2px';
+
+    text.appendChild(headline);
+    text.appendChild(instruction);
 
     const dismissBtn = document.createElement('button');
     dismissBtn.textContent = '\u00d7';
@@ -75,13 +91,13 @@ class UpdateBanner {
     Object.assign(dismissBtn.style, {
       background: 'none',
       border: 'none',
+      color: 'var(--color-info-text-muted, #3b5998)',
       cursor: 'pointer',
-      color: 'var(--color-attention-fg)',
       fontSize: '18px',
       padding: '0',
       lineHeight: '1',
       flexShrink: '0',
-      opacity: '0.7'
+      opacity: '0.8'
     });
     dismissBtn.addEventListener('click', () => this.dismiss());
 
@@ -89,6 +105,7 @@ class UpdateBanner {
     banner.appendChild(dismissBtn);
     document.body.appendChild(banner);
     this._banner = banner;
+    this._dismissBtn = dismissBtn;
   }
 
   /** Dismiss the banner and remember the choice for this session. */
@@ -105,6 +122,7 @@ class UpdateBanner {
       this._banner.parentNode.removeChild(this._banner);
     }
     this._banner = null;
+    this._dismissBtn = null;
   }
 }
 

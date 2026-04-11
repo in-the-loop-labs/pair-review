@@ -15,6 +15,19 @@ let server = null;
 let chatSessionManager = null;
 
 /**
+ * Apply env var overrides to config after loadConfig().
+ * Currently handles PAIR_REVIEW_SINGLE_PORT — a bridge for callers that
+ * need to force multi-port mode (e.g. mcp-stdio.js). Matches the
+ * PAIR_REVIEW_YOLO bridge pattern.
+ */
+function applyEnvOverrides(config) {
+  if (process.env.PAIR_REVIEW_SINGLE_PORT === 'false') {
+    config.single_port = false;
+  }
+  return config;
+}
+
+/**
  * Request logging middleware (disabled for cleaner output)
  */
 function requestLogger(req, res, next) {
@@ -93,6 +106,7 @@ async function startServer(sharedDb = null, sharedPoolLifecycle = null) {
   try {
     // Load configuration
     const { config } = await loadConfig();
+    applyEnvOverrides(config);
 
     // Apply provider configuration overrides (custom models, commands, etc.)
     applyConfigOverrides(config);
@@ -395,7 +409,10 @@ async function startServer(sharedDb = null, sharedPoolLifecycle = null) {
         resolve();
       });
 
-      server.on('error', (error) => {
+      // .once instead of .on: this handler detaches after firing exactly once,
+      // so the post-startup handler below doesn't double-handle EADDRINUSE/EACCES
+      // during the initial bind.
+      server.once('error', (error) => {
         if (error.code === 'EADDRINUSE' && config.single_port !== false) {
           reject(new Error(
             `Port ${port} is already in use. A pair-review server may already be running, ` +
@@ -406,6 +423,14 @@ async function startServer(sharedDb = null, sharedPoolLifecycle = null) {
           reject(error);
         }
       });
+    });
+
+    // Post-startup error handler. Express middleware handles request-level errors,
+    // so this only fires for lower-level issues like accept-loop failures (EMFILE,
+    // ENFILE from file descriptor exhaustion). Log but do NOT process.exit — the
+    // old code did that and it was too aggressive for transient errors.
+    server.on('error', (error) => {
+      console.error('Server error after startup:', error);
     });
 
     // Return the actual port the server started on
@@ -485,4 +510,4 @@ if (require.main === module) {
   startServer();
 }
 
-module.exports = { startServer };
+module.exports = { startServer, applyEnvOverrides };

@@ -198,6 +198,10 @@ npm install semver
 
 **`startServer()` called from 4 places**: `handlePullRequest`, `startServerOnly`, `handleLocalReview` (in local-review.js), and `performHeadlessReview`. The `findAvailablePort` bypass affects all four. MCP mode starts server via `startMCPStdio` (line 329) — handled before single-port check, so unaffected. Headless modes bypass single-port detection but still call `startServer`; when `single_port: true`, they'll bind to the exact port. This is intentional — headless modes typically run in CI where no other server is running. If they DO conflict, the improved EADDRINUSE message guides the user.
 
+**MCP mode cannot delegate**: `mcp-stdio.js` bypasses the delegation check (early exit in `main.js`) and calls `startServer` directly, because the stdio transport owns the process and cannot hand off to another server. With `single_port: true` as the default, MCP would crash with EADDRINUSE whenever a regular pair-review server is already running on `config.port`. Fix: an env var bridge — `mcp-stdio.js` sets `PAIR_REVIEW_SINGLE_PORT=false` before calling `startServer`, and `startServer` honors it by flipping `config.single_port` after `loadConfig()`. This matches the existing `PAIR_REVIEW_YOLO` bridge pattern (`src/ai/provider.js`) and avoids threading a new parameter through every `startServer` caller. Longer-term, MCP should probably become a pure HTTP client to a running pair-review server (or be replaced by a skill), but that is a separate change.
+
+**Post-startup server errors**: The old `server.on('error')` handler inside the `new Promise` constructor only called `reject()`. Once `listening` fires and the promise settles, subsequent `error` events on the server — specifically accept-loop errors like `EMFILE`/`ENFILE` from file descriptor exhaustion — become silent no-ops (rejecting an already-settled promise does nothing). Per-request errors go through Express middleware and are unaffected; per-socket errors fire on the socket, not the server. Fix: make the startup handler `.once('error', ...)` so it detaches after firing, then attach a second `.on('error', ...)` post-resolve that logs but does not `process.exit` (the pre-this-PR code did exit, which was too aggressive for transient errors).
+
 **`handleLocalReview` has its own config + DB init**: `local-review.js:714-723` calls `loadConfig()` and `initializeDatabase()` independently. When delegating, `handleLocalReview` is never called. When NOT delegating (port is free), the normal flow calls it and its internal DB init is fine (same DB, same config).
 
 **Local mode env vars and in-memory diffs**: `handleLocalReview` sets `PAIR_REVIEW_LOCAL_*` env vars and stores diff data in `localReviewDiffs` Map. When delegating, none of this happens — the existing server's web UI setup flow (via `POST /api/local/start` in `src/routes/local.js`) handles diff generation server-side.
@@ -217,6 +221,12 @@ npm install semver
    - `buildDelegationUrl`: all mode/flag combinations
    - `notifyVersion`: verify POST body and fire-and-forget behavior
    - Version comparison edge cases (same version, older, newer, pre-release)
+   - `attemptDelegation`: assert `prArgs` are forwarded verbatim to `PRArgumentParser` (catches argument-drop regressions)
+
+   **Unit tests** (`tests/unit/update-banner.test.js`, `@vitest-environment jsdom`):
+   - Constructor fetch chain: pending_update present → banner appended; missing → no banner; fetch rejects → no banner, no throw; non-ok response → no banner
+   - `show()` guards: empty/null version, already-dismissed-in-session, idempotent same-version, replace-for-different-version
+   - `dismiss()` lifecycle: banner removed from DOM, sessionStorage written, MutationObserver disconnected, newer version re-shows after prior dismissal
 
 2. **Integration tests** (`tests/integration/routes.test.js`):
    - `GET /health` returns `service: 'pair-review'` and `version`
