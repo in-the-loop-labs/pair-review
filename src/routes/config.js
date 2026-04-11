@@ -22,10 +22,18 @@ const {
 const { normalizeRepository } = require('../utils/paths');
 const { isRunningViaNpx, getGitHubToken } = require('../config');
 const { version } = require('../../package.json');
+const semver = require('semver');
 const { getAllChatProviders, getAllCachedChatAvailability } = require('../chat/chat-providers');
 const logger = require('../utils/logger');
 
 const router = express.Router();
+
+// Module-level state: the most recent version we've been told about that's
+// newer than the running server. Plain string, not an object. `null` means
+// nothing is pending. Reset on process restart — which is fine because a
+// restart either IS the update (running version is now newer) or loses no
+// information (the next notifier will re-populate it).
+let pendingUpdateVersion = null;
 
 /**
  * Get user configuration (for frontend use)
@@ -71,8 +79,44 @@ router.get('/api/config', (req, res) => {
       icon: config.share.icon || null,
       label: config.share.label || null,
       description: config.share.description || null
-    } : null
+    } : null,
+    pending_update: pendingUpdateVersion
   });
+});
+
+/**
+ * Notify the running server that a newer version is available.
+ * Called by a newer CLI invocation delegating to this server.
+ * Stores state so browser tabs can pick it up via GET /api/config.
+ *
+ * Suppression is version-based, not time-based: a POST is accepted only
+ * when the incoming version is strictly newer than both the running version
+ * and any currently-pending version. This means `pendingUpdateVersion`
+ * monotonically increases for the life of the process.
+ */
+router.post('/api/notify-update', (req, res) => {
+  const incomingVersion = req.body?.version;
+  if (!incomingVersion || !semver.valid(incomingVersion)) {
+    return res.status(400).json({ error: 'Invalid version' });
+  }
+
+  if (!semver.gt(incomingVersion, version)) {
+    return res.json({ ok: true, notified: false, reason: 'not_newer' });
+  }
+
+  // Suppress unless the incoming version is STRICTLY newer than what's
+  // already pending. Handles three cases at once:
+  //   - incoming == pending  → suppressed (nothing new)
+  //   - incoming  > pending  → accepted (genuinely newer, falls through)
+  //   - incoming  < pending  → suppressed (downgrade — user already knows)
+  if (pendingUpdateVersion && !semver.gt(incomingVersion, pendingUpdateVersion)) {
+    return res.json({ ok: true, notified: false, reason: 'not_newer_than_pending' });
+  }
+
+  pendingUpdateVersion = incomingVersion;
+  logger.info(`New version available: ${incomingVersion} (running ${version})`);
+
+  res.json({ ok: true, notified: true });
 });
 
 /**
@@ -328,4 +372,14 @@ router.post('/api/providers/refresh-availability', async (req, res) => {
   }
 });
 
+/**
+ * Test-only helper: reset the in-memory pending-update state.
+ * Not exported from index — intended for use by integration tests that
+ * share the same module instance and need isolation between cases.
+ */
+function _resetPendingUpdate() {
+  pendingUpdateVersion = null;
+}
+
 module.exports = router;
+module.exports._resetPendingUpdate = _resetPendingUpdate;

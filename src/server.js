@@ -294,9 +294,14 @@ async function startServer(sharedDb = null, sharedPoolLifecycle = null) {
       res.sendFile(path.join(__dirname, '..', 'public', 'local.html'));
     });
 
-    // Health check endpoint
+    // Health check endpoint (also used by single-port detection)
     app.get('/health', (req, res) => {
-      res.json({ status: 'ok', timestamp: new Date().toISOString() });
+      res.json({
+        status: 'ok',
+        service: 'pair-review',
+        version: require('../package.json').version,
+        timestamp: new Date().toISOString()
+      });
     });
     
     // Store database instance, GitHub token, and config for routes
@@ -365,7 +370,9 @@ async function startServer(sharedDb = null, sharedPoolLifecycle = null) {
     });
     
     // Find available port and start server
-    const port = await findAvailablePort(app, config.port);
+    const port = config.single_port !== false
+      ? config.port  // single-port mode: use exact port, fail if unavailable
+      : await findAvailablePort(app, config.port);
 
     // Check provider availability before accepting requests so /api/config
     // returns accurate pi_available on the very first request (avoids race
@@ -381,14 +388,24 @@ async function startServer(sharedDb = null, sharedPoolLifecycle = null) {
       console.warn('Provider availability check failed:', err.message);
     }
 
-    server = app.listen(port, () => {
-      console.log(`Server running on http://localhost:${port}`);
-      attachWebSocket(server, db, poolLifecycle);
-    });
+    await new Promise((resolve, reject) => {
+      server = app.listen(port, () => {
+        console.log(`Server running on http://localhost:${port}`);
+        attachWebSocket(server, db, poolLifecycle);
+        resolve();
+      });
 
-    server.on('error', (error) => {
-      console.error('Server error:', error);
-      process.exit(1);
+      server.on('error', (error) => {
+        if (error.code === 'EADDRINUSE' && config.single_port !== false) {
+          reject(new Error(
+            `Port ${port} is already in use. A pair-review server may already be running, ` +
+            `or another service is using this port. ` +
+            `Set "single_port": false in ~/.pair-review/config.json to use automatic port selection.`
+          ));
+        } else {
+          reject(error);
+        }
+      });
     });
 
     // Return the actual port the server started on

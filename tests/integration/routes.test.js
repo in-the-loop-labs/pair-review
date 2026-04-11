@@ -3223,6 +3223,129 @@ describe('Config Endpoints', () => {
       expect(response.body.chat_enter_to_send).toBe(false);
     });
   });
+
+  describe('POST /api/notify-update', () => {
+    // The running server version is the package's own version.
+    const runningVersion = require('../../package.json').version;
+
+    beforeEach(() => {
+      // Reset the module-level pendingUpdateVersion so tests don't pollute
+      // each other. Safe: require() returns the same cached module instance
+      // that the route handler already holds a closure over.
+      require('../../src/routes/config')._resetPendingUpdate();
+    });
+
+    it('returns 400 for invalid semver', async () => {
+      const res = await request(app)
+        .post('/api/notify-update')
+        .send({ version: 'not-semver' });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('Invalid version');
+    });
+
+    it('returns 400 for missing version', async () => {
+      const res = await request(app)
+        .post('/api/notify-update')
+        .send({});
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('Invalid version');
+    });
+
+    it('returns 400 for empty-string version', async () => {
+      const res = await request(app)
+        .post('/api/notify-update')
+        .send({ version: '' });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('Invalid version');
+    });
+
+    it('returns notified:false when version is not newer', async () => {
+      // 0.0.1 is clearly older than any plausible running version
+      const res = await request(app)
+        .post('/api/notify-update')
+        .send({ version: '0.0.1' });
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ ok: true, notified: false, reason: 'not_newer' });
+    });
+
+    it('returns notified:false when version equals running', async () => {
+      const res = await request(app)
+        .post('/api/notify-update')
+        .send({ version: runningVersion });
+      expect(res.status).toBe(200);
+      expect(res.body.notified).toBe(false);
+      expect(res.body.reason).toBe('not_newer');
+    });
+
+    it('accepts a newer version and exposes it via GET /api/config', async () => {
+      const postRes = await request(app)
+        .post('/api/notify-update')
+        .send({ version: '999.0.0' });
+      expect(postRes.status).toBe(200);
+      expect(postRes.body).toEqual({ ok: true, notified: true });
+
+      const configRes = await request(app).get('/api/config');
+      expect(configRes.body.pending_update).toBe('999.0.0');
+    });
+
+    it('suppresses repeat POST of the same pending version', async () => {
+      // First POST succeeds
+      const first = await request(app)
+        .post('/api/notify-update')
+        .send({ version: '999.0.0' });
+      expect(first.body).toEqual({ ok: true, notified: true });
+
+      // Second POST of the same version is suppressed
+      const second = await request(app)
+        .post('/api/notify-update')
+        .send({ version: '999.0.0' });
+      expect(second.status).toBe(200);
+      expect(second.body.notified).toBe(false);
+      expect(second.body.reason).toBe('not_newer_than_pending');
+
+      // pending_update is still the same
+      const configRes = await request(app).get('/api/config');
+      expect(configRes.body.pending_update).toBe('999.0.0');
+    });
+
+    it('accepts a strictly newer version even when one is already pending', async () => {
+      // First: v999.0.0 becomes pending
+      await request(app).post('/api/notify-update').send({ version: '999.0.0' });
+
+      // Then: v999.1.0 should escape suppression and replace pending
+      const res = await request(app)
+        .post('/api/notify-update')
+        .send({ version: '999.1.0' });
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ ok: true, notified: true });
+
+      const configRes = await request(app).get('/api/config');
+      expect(configRes.body.pending_update).toBe('999.1.0');
+    });
+
+    it('suppresses a downgrade when a newer version is already pending', async () => {
+      // First: v999.1.0 becomes pending
+      await request(app).post('/api/notify-update').send({ version: '999.1.0' });
+
+      // Then: v999.0.0 is older than pending but still newer than running.
+      // Should be suppressed — user already knows about the newer version.
+      const res = await request(app)
+        .post('/api/notify-update')
+        .send({ version: '999.0.0' });
+      expect(res.status).toBe(200);
+      expect(res.body.notified).toBe(false);
+      expect(res.body.reason).toBe('not_newer_than_pending');
+
+      // pending_update is unchanged — monotonic behavior
+      const configRes = await request(app).get('/api/config');
+      expect(configRes.body.pending_update).toBe('999.1.0');
+    });
+
+    it('GET /api/config returns null pending_update before any notification', async () => {
+      const res = await request(app).get('/api/config');
+      expect(res.body.pending_update).toBeNull();
+    });
+  });
 });
 
 // ============================================================================
