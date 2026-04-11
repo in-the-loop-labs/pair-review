@@ -45,6 +45,13 @@ async function startMCPStdio() {
     console.error(`[MCP] Warning: failed to load config, using defaults: ${err.message}`);
   }
 
+  // MCP mode needs its own Express server for stdio↔HTTP bridging and cannot
+  // delegate to a running pair-review instance (the stdio transport owns this
+  // process). Force auto-port selection to avoid EADDRINUSE when a regular
+  // pair-review server is already running on config.port.
+  // startServer (src/server.js) reads this env var and flips config.single_port.
+  process.env.PAIR_REVIEW_SINGLE_PORT = 'false';
+
   const db = await initializeDatabase(resolveDbName(config));
   const port = await startServer(db);
 

@@ -1,5 +1,5 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 
 const {
   detectRunningServer,
@@ -80,16 +80,22 @@ function mockHttpRequest(capture = {}) {
 }
 
 function createMockDeps(overrides = {}) {
+  // Static field captures args across fresh instances, since production code
+  // calls `new deps.PRArgumentParser()` each time.
+  class MockPRArgumentParser {
+    async parsePRArguments(args) {
+      MockPRArgumentParser.lastArgs = args;
+      return { owner: 'test-owner', repo: 'test-repo', number: parseInt(args[0]) || 42 };
+    }
+  }
+  MockPRArgumentParser.lastArgs = null;
+
   return {
     httpGet: mockHttpGetSuccess({ status: 'ok', service: 'pair-review', version: '3.2.0' }),
     httpRequest: mockHttpRequest(),
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     open: vi.fn().mockResolvedValue(undefined),
-    PRArgumentParser: class {
-      async parsePRArguments(args) {
-        return { owner: 'test-owner', repo: 'test-repo', number: parseInt(args[0]) || 42 };
-      }
-    },
+    PRArgumentParser: MockPRArgumentParser,
     ...overrides
   };
 }
@@ -253,13 +259,17 @@ describe('attemptDelegation', () => {
 
   it('delegates PR mode and opens browser', async () => {
     const deps = createMockDeps();
+    const prArgs = ['https://github.com/acme/widgets/pull/99'];
     const result = await attemptDelegation(
       baseConfig,
       { ai: false },
-      ['https://github.com/acme/widgets/pull/99'],
+      prArgs,
       deps
     );
     expect(result).toBe(true);
+    // Verify prArgs were forwarded verbatim to PRArgumentParser (guards against
+    // production code accidentally passing an empty array or dropping the args).
+    expect(deps.PRArgumentParser.lastArgs).toEqual(prArgs);
     expect(deps.open).toHaveBeenCalledWith(
       expect.stringContaining('/pr/test-owner/test-repo/')
     );
