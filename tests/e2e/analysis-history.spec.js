@@ -500,4 +500,63 @@ test.describe('Analysis History - Dropdown', () => {
     const firstItem = page.locator('#analysis-context-list .analysis-history-item:first-child');
     await expect(firstItem).toHaveClass(/selected/);
   });
+
+  test('should preserve the selected older run after adopting a suggestion', async ({ page }) => {
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+
+    await page.evaluate(() => window.aiPanel?.expand());
+
+    await seedAnalysis(page);
+    await seedAnalysis(page);
+    await reloadAnalysisHistory(page);
+
+    await page.locator('#analysis-context-selector').waitFor({ state: 'visible', timeout: 5000 });
+    await page.locator('#analysis-context-btn').click();
+
+    const secondItem = page.locator('#analysis-context-list .analysis-history-item').nth(1);
+    await expect(secondItem).toBeVisible({ timeout: 3000 });
+    const olderRunId = await secondItem.getAttribute('data-run-id');
+    expect(olderRunId).toBeTruthy();
+
+    await secondItem.click();
+
+    await page.waitForFunction(
+      (runId) => window.prManager?.selectedRunId === runId
+        && window.prManager?.analysisHistoryManager?.selectedRunId === runId,
+      olderRunId
+    );
+
+    const suggestion = page.locator('.ai-suggestion:not(.collapsed)').first();
+    await expect(suggestion).toBeVisible({ timeout: 5000 });
+    const suggestionId = await suggestion.getAttribute('data-suggestion-id');
+    expect(suggestionId).toBeTruthy();
+
+    await page.evaluate((id) => window.prManager?.adoptSuggestion(parseInt(id, 10)), suggestionId);
+
+    await page.waitForFunction(
+      (runId) => window.prManager?.selectedRunId === runId
+        && window.prManager?.analysisHistoryManager?.selectedRunId === runId,
+      olderRunId
+    );
+
+    await page.evaluate(async () => {
+      if (window.prManager?.analysisHistoryManager) {
+        await window.prManager.analysisHistoryManager.loadAnalysisRuns();
+      }
+    });
+
+    await page.waitForFunction(
+      (runId) => {
+        const manager = window.prManager;
+        return manager?.selectedRunId === runId
+          && manager?.analysisHistoryManager?.selectedRunId === runId;
+      },
+      olderRunId
+    );
+
+    await page.locator('#analysis-context-btn').click();
+    const selectedItem = page.locator('#analysis-context-list .analysis-history-item.selected');
+    await expect(selectedItem).toHaveAttribute('data-run-id', olderRunId);
+  });
 });
