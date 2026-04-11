@@ -205,9 +205,11 @@ class AnalysisHistoryManager {
   /**
    * Load analysis runs from the API (initial load only)
    *
-   * This method is intended for initial page load and always selects the latest run.
-   * For refreshing after a new analysis completes, use refresh() instead, which has
-   * logic to optionally preserve the user's current selection.
+   * This method is intended for initial page load. On first load it selects the
+   * latest run; on subsequent calls it preserves the current selection when that
+   * run still exists. For refreshing after a new analysis completes, use
+   * refresh(), which has logic to optionally preserve the user's current
+   * selection while surfacing a new run indicator.
    *
    * @returns {Promise<Array>} The loaded runs
    */
@@ -227,11 +229,13 @@ class AnalysisHistoryManager {
       return [];
     }
 
-    // Always select the latest run (first in the list since they're ordered by date DESC)
-    // This ensures that after a new analysis completes, its results are displayed
     const latestRun = this.runs[0];
-    const shouldTriggerCallback = !this.selectedRunId || String(this.selectedRunId) !== String(latestRun.id);
-    await this.selectRun(latestRun.id, shouldTriggerCallback);
+    const currentRun = this.selectedRunId
+      ? this.runs.find(run => String(run.id) === String(this.selectedRunId))
+      : null;
+    const runToSelect = currentRun || latestRun;
+    const shouldTriggerCallback = String(this.selectedRunId) !== String(runToSelect.id);
+    await this.selectRun(runToSelect.id, shouldTriggerCallback);
 
     // Render the dropdown (after selecting so the selected state is correct)
     this.renderDropdown(this.runs);

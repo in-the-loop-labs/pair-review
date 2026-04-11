@@ -1257,6 +1257,101 @@ describe('AnalysisHistoryManager', () => {
     });
   });
 
+  describe('loadAnalysisRuns()', () => {
+    it('should select the latest run on first load', async () => {
+      const onSelectionChange = vi.fn();
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange
+      });
+      manager.init();
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          runs: [
+            { id: 'latest-run', model: 'opus', provider: 'claude' },
+            { id: 'older-run', model: 'sonnet', provider: 'claude' }
+          ]
+        })
+      });
+
+      await manager.loadAnalysisRuns();
+
+      expect(manager.selectedRunId).toBe('latest-run');
+      expect(onSelectionChange).toHaveBeenCalledWith(
+        'latest-run',
+        expect.objectContaining({ id: 'latest-run' })
+      );
+    });
+
+    it('should preserve an existing older selection when reloading runs', async () => {
+      const onSelectionChange = vi.fn();
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange
+      });
+      manager.init();
+
+      manager.runs = [
+        { id: 'latest-run', model: 'opus', provider: 'claude' },
+        { id: 'older-run', model: 'sonnet', provider: 'claude' }
+      ];
+      manager.selectedRunId = 'older-run';
+      manager.selectedRun = manager.runs[1];
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          runs: [
+            { id: 'latest-run', model: 'opus', provider: 'claude' },
+            { id: 'older-run', model: 'sonnet', provider: 'claude' }
+          ]
+        })
+      });
+
+      await manager.loadAnalysisRuns();
+
+      expect(manager.selectedRunId).toBe('older-run');
+      expect(manager.selectedRun).toEqual(expect.objectContaining({ id: 'older-run' }));
+      expect(onSelectionChange).not.toHaveBeenCalled();
+    });
+
+    it('should fall back to latest when the previous selection no longer exists', async () => {
+      const onSelectionChange = vi.fn();
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange
+      });
+      manager.init();
+
+      manager.runs = [{ id: 'removed-run', model: 'sonnet', provider: 'claude' }];
+      manager.selectedRunId = 'removed-run';
+      manager.selectedRun = manager.runs[0];
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          runs: [
+            { id: 'latest-run', model: 'opus', provider: 'claude' },
+            { id: 'older-run', model: 'haiku', provider: 'claude' }
+          ]
+        })
+      });
+
+      await manager.loadAnalysisRuns();
+
+      expect(manager.selectedRunId).toBe('latest-run');
+      expect(onSelectionChange).toHaveBeenCalledWith(
+        'latest-run',
+        expect.objectContaining({ id: 'latest-run' })
+      );
+    });
+  });
+
   describe('clearNewRunIndicator()', () => {
     it('should be called when user selects the new run', async () => {
       const manager = new AnalysisHistoryManager({
