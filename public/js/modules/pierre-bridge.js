@@ -35,6 +35,11 @@ class PierreBridge {
     // Monotonic counter for unique annotation IDs
     this._annotationCounter = 0;
 
+    // Cache for gutter button containers — keyed by fileName.
+    // Stored here instead of on fileState because renderGutterUtility fires
+    // during instance.render(), before fileState is set on this.files.
+    this._gutterContainers = new Map();
+
     // Shared options for all FileDiff instances
     this._sharedOptions = null;
   }
@@ -47,8 +52,8 @@ class PierreBridge {
 
   getThemeConfig() {
     return {
-      dark: 'pierre-dark',
-      light: 'pierre-light',
+      dark: 'github-dark',
+      light: 'github-light',
     };
   }
 
@@ -192,7 +197,7 @@ class PierreBridge {
       themeType: this.theme,
       disableFileHeader: true,
       diffStyle: 'unified',
-      diffIndicators: 'classic',
+      diffIndicators: 'bars',
       overflow: 'scroll',
       lineHoverHighlight: 'line',
       lineDiffType: 'word',
@@ -202,14 +207,10 @@ class PierreBridge {
       hunkSeparators: 'line-info',
       collapsed: renderOptions.collapsed || false,
 
-      // Use onGutterUtilityClick for the built-in "+" button behavior.
-      // Cannot combine renderGutterUtility with onGutterUtilityClick —
-      // @pierre/diffs enforces one gutter utility API at a time.
-      onGutterUtilityClick: (range) => {
-        const side = range.side === 'deletions' ? 'LEFT' : 'RIGHT';
-        if (this.options.onCommentClick) {
-          this.options.onCommentClick(fileName, range.start, side, range);
-        }
+      // Custom gutter render — dual buttons (chat + comment) matching legacy UI.
+      // Cannot combine with onGutterUtilityClick; use one gutter API at a time.
+      renderGutterUtility: (getHoveredRow) => {
+        return this._createGutterButtons(fileName, getHoveredRow);
       },
 
       onLineClick: (props) => {
@@ -306,6 +307,7 @@ class PierreBridge {
       fileState.instance.cleanUp();
     }
     fileState.formElements.clear();
+    this._gutterContainers.delete(fileName);
     this.files.delete(fileName);
   }
 
@@ -316,6 +318,263 @@ class PierreBridge {
     for (const [fileName] of this.files) {
       this.destroyFile(fileName);
     }
+  }
+
+  // ─── Gutter Buttons ───────────────────────────────────────────────
+
+  /**
+   * Chat button SVG icon (GitHub-style speech bubble, matches legacy DiffRenderer).
+   * @private
+   */
+  static CHAT_SVG = `<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14"><path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/></svg>`;
+
+  /**
+   * Create dual gutter buttons (chat + comment) for renderGutterUtility.
+   *
+   * @pierre/diffs calls this once per render. The returned element is placed
+   * in the light DOM and slotted into Shadow DOM. The library moves it to
+   * follow the hovered line's number cell automatically.
+   *
+   * @param {string} fileName
+   * @param {Function} getHoveredRow - () => { lineNumber, side } | undefined
+   * @returns {HTMLElement}
+   * @private
+   */
+  /**
+   * Get the active line selection for a file, if any.
+   * Reads directly from @pierre/diffs' InteractionManager.
+   * @param {string} fileName
+   * @returns {{ start: number, end: number, side: string }|null}
+   */
+  getLineSelection(fileName) {
+    const fileState = this.files.get(fileName);
+    if (!fileState || !fileState.instance) return null;
+    const range = fileState.instance.interactionManager.getSelection();
+    if (!range) return null;
+    return {
+      start: range.start,
+      end: range.end,
+      side: range.side === 'deletions' ? 'LEFT' : 'RIGHT',
+    };
+  }
+
+  /**
+   * Clear the active line selection for a file.
+   * @param {string} fileName
+   */
+  clearLineSelection(fileName) {
+    const fileState = this.files.get(fileName);
+    if (!fileState || !fileState.instance) return;
+    fileState.instance.setSelectedLines(null);
+  }
+
+  /**
+   * Scroll to a specific line in a Pierre-rendered file.
+   *
+   * Line number cells live inside the @pierre/diffs shadow root, so light-DOM
+   * queries for `.line-num2`/`tr` return nothing. This reaches into the shadow
+   * DOM, resolves the line by index (via the instance's `getLineIndex`), scrolls
+   * it into view, and applies a brief highlight flash.
+   *
+   * @param {string} fileName
+   * @param {number} lineNumber
+   * @param {string} [side] - 'LEFT' or 'RIGHT' (defaults to 'RIGHT')
+   * @returns {boolean} true if the line was found and scrolled to
+   */
+  scrollToLine(fileName, lineNumber, side = 'RIGHT', shouldScroll = true) {
+    const fileState = this.files.get(fileName);
+    if (!fileState || !fileState.instance) return false;
+    const instance = fileState.instance;
+
+    const pierreSide = PierreBridge.toPierreSide(side);
+    const indices = typeof instance.getLineIndex === 'function'
+      ? instance.getLineIndex(lineNumber, pierreSide)
+      : undefined;
+    if (!indices) return false;
+    // getLineIndex returns [unifiedIndex, splitIndex]
+    const [unifiedIndex] = indices;
+    if (unifiedIndex == null) return false;
+
+    const pre = instance.pre;
+    if (!pre) return false;
+
+    // In unified view, the unified code element holds all lines.
+    // Scope the selector to this instance's code element so we don't find
+    // ghost lines from other files rendered in the same document.
+    const codeEl = instance.codeUnified || pre.querySelector('code[data-unified]') || pre;
+    const lineEl = codeEl.querySelector(`[data-line][data-line-index="${unifiedIndex}"]`);
+    if (!lineEl) return false;
+
+    // Use scrollIntoView on the shadow DOM element — it still scrolls the
+    // host document relative to the viewport.
+    if (shouldScroll) {
+      const rect = lineEl.getBoundingClientRect();
+      const isVisible = rect.top >= 0 && rect.bottom <= window.innerHeight;
+      if (!isVisible) {
+        lineEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }
+
+    // Brief highlight flash so the user can locate the target line.
+    // The class is styled by ANNOTATION_CSS (injected into shadow DOM).
+    lineEl.classList.remove('pierre-line-highlight');
+    void lineEl.offsetWidth; // force reflow to restart animation
+    lineEl.classList.add('pierre-line-highlight');
+    lineEl.addEventListener('animationend', () => {
+      lineEl.classList.remove('pierre-line-highlight');
+    }, { once: true });
+
+    return true;
+  }
+
+  _createGutterButtons(fileName, getHoveredRow) {
+    // Reuse existing container if already created for this file
+    if (this._gutterContainers.has(fileName)) return this._gutterContainers.get(fileName);
+
+    const container = document.createElement('div');
+    container.className = 'pierre-gutter-buttons';
+    // Mark as utility so @pierre/diffs recognizes it in pointer path checks
+    container.setAttribute('data-utility-button', '');
+
+    /**
+     * Resolve the target for a gutter button click.
+     *
+     * Rules:
+     *  - If a multi-line range is active AND the button is currently over a
+     *    line inside that range (same side), apply the action to the range
+     *    and clear the selection.
+     *  - If a multi-line range is active but the button has moved to a line
+     *    OUTSIDE the range, cancel the range and apply the action to the
+     *    single hovered line.
+     *  - Otherwise, apply the action to the single hovered line.
+     */
+    const resolveClickTarget = () => {
+      const hovered = getHoveredRow();
+      const hoveredSide = hovered
+        ? (hovered.side === 'deletions' ? 'LEFT' : 'RIGHT')
+        : null;
+      const sel = this.getLineSelection(fileName);
+
+      if (sel && sel.start !== sel.end) {
+        const inRange = hovered
+          && hoveredSide === sel.side
+          && hovered.lineNumber >= sel.start
+          && hovered.lineNumber <= sel.end;
+        // Either we consume the range or we cancel it — in both cases clear.
+        this.clearLineSelection(fileName);
+        if (inRange) {
+          return { start: sel.start, end: sel.end, side: sel.side, isRange: true };
+        }
+        // Fall through to single-line resolution on the hovered line.
+      }
+
+      if (!hovered) return null;
+      return {
+        start: hovered.lineNumber,
+        end: hovered.lineNumber,
+        side: hoveredSide,
+        isRange: false,
+      };
+    };
+
+    // Wire a gutter button so that:
+    //  - A plain click triggers the action for the hovered line (or active
+    //    multi-line selection).
+    //  - Press-and-drag creates a multi-line selection (same UX as dragging
+    //    from a line number) WITHOUT triggering the action on release.
+    //
+    // Why this is needed:
+    //  @pierre/diffs cannot start line selection from button clicks — its
+    //  resolvePointerTarget fails because `data-code` is missing from the
+    //  composed path through the shadow DOM slot.  So we implement the drag
+    //  ourselves, calling setSelectedLines to set the selection in the
+    //  library.  We also stopPropagation on pointerdown to prevent the
+    //  library from interfering, and track whether a drag occurred to
+    //  suppress the spurious click that fires when the button DOM element
+    //  follows the hover and ends up under the cursor at the release point.
+    const wrapButton = (btn, handler) => {
+      let dragInfo = null;
+
+      btn.addEventListener('pointerdown', (e) => {
+        e.stopPropagation(); // library can't handle buttons; avoid interference
+        const hovered = getHoveredRow();
+        if (!hovered) return;
+        dragInfo = {
+          startLine: hovered.lineNumber,
+          side: hovered.side,          // 'additions' | 'deletions'
+          pointerId: e.pointerId,
+          dragged: false,
+        };
+
+        const onMove = (me) => {
+          if (!dragInfo || me.pointerId !== dragInfo.pointerId) return;
+          const cur = getHoveredRow();
+          if (!cur || cur.lineNumber === dragInfo.startLine) return;
+          dragInfo.dragged = true;
+          const fileState = this.files.get(fileName);
+          if (fileState?.instance) {
+            const start = Math.min(dragInfo.startLine, cur.lineNumber);
+            const end = Math.max(dragInfo.startLine, cur.lineNumber);
+            fileState.instance.setSelectedLines({
+              start, end, side: dragInfo.side,
+            });
+          }
+        };
+
+        const onUp = (ue) => {
+          if (!dragInfo || ue.pointerId !== dragInfo.pointerId) return;
+          document.removeEventListener('pointermove', onMove);
+          document.removeEventListener('pointerup', onUp);
+          // dragInfo.dragged is consumed by onclick below
+        };
+
+        document.addEventListener('pointermove', onMove);
+        document.addEventListener('pointerup', onUp);
+      });
+
+      btn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!dragInfo) return;        // no pointerdown on this button (e.g. line-number drag landed here)
+        if (dragInfo.dragged) {       // suppress click that ends a button-initiated drag
+          dragInfo = null;
+          return;
+        }
+        dragInfo = null;
+        const target = resolveClickTarget();
+        if (!target) return;
+        handler(target);
+      };
+    };
+
+    // Chat button (left)
+    if (this.options.onChatClick) {
+      const chatBtn = document.createElement('button');
+      chatBtn.className = 'pierre-gutter-btn pierre-chat-btn';
+      chatBtn.title = 'Chat about this line';
+      chatBtn.innerHTML = PierreBridge.CHAT_SVG;
+      wrapButton(chatBtn, (target) => {
+        this.options.onChatClick(fileName, target.start, target.side, target);
+      });
+      container.appendChild(chatBtn);
+    }
+
+    // Comment button (right)
+    const commentBtn = document.createElement('button');
+    commentBtn.className = 'pierre-gutter-btn pierre-comment-btn';
+    commentBtn.title = 'Add comment';
+    commentBtn.textContent = '+';
+    wrapButton(commentBtn, (target) => {
+      if (this.options.onCommentClick) {
+        this.options.onCommentClick(fileName, target.start, target.side, target);
+      }
+    });
+    container.appendChild(commentBtn);
+
+    // Cache so we return the same element on rerender
+    this._gutterContainers.set(fileName, container);
+
+    return container;
   }
 
   // ─── Annotations (Comments, Suggestions, Forms) ───────────────────
@@ -411,7 +670,8 @@ class PierreBridge {
     // inserted first, then the adopted comment row appears below it.
     const typeOrder = { 'suggestion': 0, 'comment-form': 1, 'comment': 2 };
     const sorted = [...fileState.annotations].sort((a, b) => {
-      if (a.lineNumber !== b.lineNumber || a.side !== b.side) return 0;
+      if (a.lineNumber !== b.lineNumber) return a.lineNumber - b.lineNumber;
+      if (a.side !== b.side) return a.side < b.side ? -1 : 1;
       return (typeOrder[a.metadata.type] ?? 1) - (typeOrder[b.metadata.type] ?? 1);
     });
     fileState.instance.setLineAnnotations(sorted);
@@ -446,9 +706,61 @@ class PierreBridge {
   isLineVisible(fileName, lineNumber, side) {
     const fileState = this.files.get(fileName);
     if (!fileState || !fileState.instance) return false;
+    const instance = fileState.instance;
     const pierreSide = PierreBridge.toPierreSide(side);
-    const index = fileState.instance.getLineIndex(lineNumber, pierreSide);
-    return index !== undefined;
+    const indices = instance.getLineIndex(lineNumber, pierreSide);
+    if (!indices) return false;
+    // getLineIndex returns indices even for lines in collapsed gaps.
+    // Verify that the DOM element actually exists at the computed index.
+    const [unifiedIndex] = indices;
+    if (unifiedIndex == null) return false;
+    const pre = instance.pre;
+    if (!pre) return false;
+    const codeEl = instance.codeUnified || pre.querySelector('code[data-unified]') || pre;
+    return !!codeEl.querySelector(`[data-line][data-line-index="${unifiedIndex}"]`);
+  }
+
+  /**
+   * Expand collapsed gaps so that the given line becomes visible.
+   * Iterates over hunks to find which gap the line falls in, then
+   * expands that hunk upward/downward by enough lines to reveal it.
+   * @param {string} fileName
+   * @param {number} lineNumber
+   * @param {string} side - 'LEFT'/'RIGHT'
+   */
+  expandToLine(fileName, lineNumber, side = 'RIGHT') {
+    const fileState = this.files.get(fileName);
+    if (!fileState || !fileState.instance) return;
+    const instance = fileState.instance;
+    if (!instance.fileDiff || !instance.fileDiff.hunks) return;
+
+    const hunks = instance.fileDiff.hunks;
+    const sideKey = PierreBridge.toPierreSide(side) === 'deletions' ? 'deletion' : 'addition';
+
+    for (let i = 0; i < hunks.length; i++) {
+      const hunk = hunks[i];
+      const hunkStart = hunk[`${sideKey}Start`];
+      const hunkEnd = hunkStart + hunk[`${sideKey}Count`] - 1;
+
+      // Target line is before this hunk — it's in the collapsed gap above
+      if (lineNumber < hunkStart) {
+        instance.expandHunk(i, 'up', hunk.collapsedBefore);
+        instance.rerender();
+        return;
+      }
+
+      // Target line is within this hunk — already visible (or should be)
+      if (lineNumber <= hunkEnd) {
+        return;
+      }
+
+      // If this is the last hunk and the line is after it — expand down
+      if (i === hunks.length - 1 && lineNumber > hunkEnd) {
+        instance.expandHunk(i, 'down', lineNumber - hunkEnd);
+        instance.rerender();
+        return;
+      }
+    }
   }
 
   // ─── Shadow DOM Access ────────────────────────────────────────────
@@ -652,8 +964,23 @@ class PierreBridge {
   }
 
   /**
+   * Suggestion toolbar icon SVG (GitHub Primer file-diff-16 octicon).
+   * Matches CommentManager.SUGGESTION_ICON_SVG.
+   * @private
+   */
+  static SUGGESTION_ICON_SVG = `<svg class="octicon" viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M1 1.75C1 .784 1.784 0 2.75 0h7.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16H2.75A1.75 1.75 0 0 1 1 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h10.5a.25.25 0 0 0 .25-.25V4.664a.25.25 0 0 0-.073-.177l-2.914-2.914a.25.25 0 0 0-.177-.073ZM8 3.25a.75.75 0 0 1 .75.75v1.5h1.5a.75.75 0 0 1 0 1.5h-1.5v1.5a.75.75 0 0 1-1.5 0V7h-1.5a.75.75 0 0 1 0-1.5h1.5V4A.75.75 0 0 1 8 3.25Zm-3 8a.75.75 0 0 1 .75-.75h4.5a.75.75 0 0 1 0 1.5h-4.5a.75.75 0 0 1-.75-.75Z"></path></svg>`;
+
+  /**
+   * Chat icon SVG for comment form (matches legacy CommentManager).
+   * @private
+   */
+  static CHAT_FORM_SVG = `<svg viewBox="0 0 16 16" fill="currentColor" width="16" height="16"><path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/></svg>`;
+
+  /**
    * Render a comment form annotation.
    * Reuses existing form DOM if available to preserve user input.
+   * Elements live in the light DOM (slotted) and use legacy comment form
+   * classes so page CSS applies.
    * @private
    */
   _renderFormAnnotation(data, id, formElements, fileName) {
@@ -663,23 +990,104 @@ class PierreBridge {
     }
 
     const container = document.createElement('div');
-    container.className = 'pierre-annotation pierre-comment-form';
+    container.className = 'pierre-annotation user-comment-form';
     container.dataset.annotationId = id;
 
+    // Header — matches legacy comment form
+    const header = document.createElement('div');
+    header.className = 'comment-form-header';
+    const icon = document.createElement('span');
+    icon.className = 'comment-icon';
+    icon.textContent = '\uD83D\uDCAC'; // 💬
+    header.appendChild(icon);
+    const title = document.createElement('span');
+    title.className = 'comment-title';
+    title.textContent = data.headerTitle || 'Add comment';
+    header.appendChild(title);
+    if (data.lineStart && data.lineEnd && data.lineEnd !== data.lineStart) {
+      const rangeLabel = document.createElement('span');
+      rangeLabel.className = 'line-range-indicator';
+      rangeLabel.textContent = `Lines ${data.lineStart}-${data.lineEnd}`;
+      header.appendChild(rangeLabel);
+    }
+    container.appendChild(header);
+
+    // Suggestion toolbar — suggestionBtn is declared in the outer scope so
+    // the textarea input listener below can re-evaluate its disabled state.
+    let suggestionBtn = null;
+    if (data.showSuggestionBtn) {
+      const toolbar = document.createElement('div');
+      toolbar.className = 'comment-form-toolbar';
+      suggestionBtn = document.createElement('button');
+      suggestionBtn.type = 'button';
+      suggestionBtn.className = 'btn btn-sm suggestion-btn';
+      suggestionBtn.title = 'Insert a suggestion';
+      suggestionBtn.innerHTML = PierreBridge.SUGGESTION_ICON_SVG;
+      suggestionBtn.addEventListener('click', () => {
+        if (!suggestionBtn.disabled && this.options.onSuggestionInsert) {
+          this.options.onSuggestionInsert(textarea, suggestionBtn);
+        }
+      });
+      toolbar.appendChild(suggestionBtn);
+      container.appendChild(toolbar);
+    }
+
+    // Textarea
     const textarea = document.createElement('textarea');
-    textarea.className = 'pierre-comment-textarea';
-    textarea.placeholder = 'Leave a comment...';
-    textarea.rows = 3;
+    textarea.className = 'comment-textarea';
+    textarea.placeholder = 'Leave a comment... (Cmd/Ctrl+Enter to save)';
+    textarea.dataset.line = data.lineStart || '';
+    textarea.dataset.lineEnd = data.lineEnd || data.lineStart || '';
+    textarea.dataset.file = fileName;
+    textarea.dataset.diffPosition = data.diffPosition || '';
+    textarea.dataset.side = data.side || 'RIGHT';
     if (data.initialValue) {
       textarea.value = data.initialValue;
     }
     container.appendChild(textarea);
 
+    // Actions — order matches legacy: Save, Chat, Cancel
     const actions = document.createElement('div');
-    actions.className = 'pierre-form-actions';
+    actions.className = 'comment-form-actions';
+
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'btn btn-sm btn-primary save-comment-btn';
+    saveBtn.textContent = 'Save';
+    // Sync disabled state with initial textarea content — when `initialValue`
+    // is set programmatically above, the `input` event does not fire, so we
+    // must compute this here rather than relying on the listener.
+    saveBtn.disabled = !textarea.value.trim();
+    saveBtn.addEventListener('click', () => {
+      if (this.options.onCommentFormSubmit) {
+        this.options.onCommentFormSubmit(fileName, id, data, textarea.value);
+      }
+    });
+    actions.appendChild(saveBtn);
+
+    const chatBtn = document.createElement('button');
+    chatBtn.className = 'ai-action ai-action-chat btn-chat-from-comment';
+    chatBtn.title = 'Chat about these lines';
+    chatBtn.innerHTML = PierreBridge.CHAT_FORM_SVG + ' Chat';
+    chatBtn.addEventListener('click', () => {
+      if (!window.chatPanel) return;
+      if (this.options.onCommentFormCancel) {
+        this.options.onCommentFormCancel(fileName, id, data);
+      }
+      window.chatPanel.open({
+        commentContext: {
+          type: 'line',
+          body: textarea.value.trim() || null,
+          file: fileName || '',
+          line_start: parseInt(textarea.dataset.line) || null,
+          line_end: parseInt(textarea.dataset.lineEnd) || parseInt(textarea.dataset.line) || null,
+          source: 'user'
+        }
+      });
+    });
+    actions.appendChild(chatBtn);
 
     const cancelBtn = document.createElement('button');
-    cancelBtn.className = 'pierre-btn pierre-btn-sm';
+    cancelBtn.className = 'btn btn-sm btn-secondary cancel-comment-btn';
     cancelBtn.textContent = 'Cancel';
     cancelBtn.addEventListener('click', () => {
       if (this.options.onCommentFormCancel) {
@@ -688,33 +1096,101 @@ class PierreBridge {
     });
     actions.appendChild(cancelBtn);
 
-    const submitBtn = document.createElement('button');
-    submitBtn.className = 'pierre-btn pierre-btn-sm pierre-btn-primary';
-    submitBtn.textContent = 'Save';
-    submitBtn.addEventListener('click', () => {
-      if (this.options.onCommentFormSubmit) {
-        this.options.onCommentFormSubmit(fileName, id, data, textarea.value);
-      }
-    });
-    actions.appendChild(submitBtn);
-
-    if (data.showSuggestionBtn) {
-      const suggestBtn = document.createElement('button');
-      suggestBtn.className = 'pierre-btn pierre-btn-sm';
-      suggestBtn.textContent = 'Suggest';
-      suggestBtn.addEventListener('click', () => {
-        if (this.options.onCommentFormSuggest) {
-          this.options.onCommentFormSuggest(fileName, id, data, textarea.value);
-        }
-      });
-      actions.appendChild(suggestBtn);
-    }
-
     container.appendChild(actions);
+
+    // Enable/disable save button and re-evaluate suggestion button on input.
+    // Mirrors CommentManager.updateSuggestionButtonState so that manually
+    // deleting a ```suggestion block re-enables the toolbar button.
+    const hasSuggestionBlock = (text) => /^\s*(`{3,})suggestion\s*$/m.test(text);
+    textarea.addEventListener('input', () => {
+      saveBtn.disabled = !textarea.value.trim();
+      if (suggestionBtn) {
+        const hasSuggestion = hasSuggestionBlock(textarea.value);
+        suggestionBtn.disabled = hasSuggestion;
+        suggestionBtn.title = hasSuggestion
+          ? 'Only one suggestion per comment'
+          : 'Insert a suggestion';
+      }
+      // Auto-resize
+      textarea.style.height = 'auto';
+      textarea.style.height = textarea.scrollHeight + 'px';
+    });
+
+    // Keyboard shortcuts (Cmd/Ctrl+Enter, Escape) are handled by the
+    // delegated listener in PRManager.setupCommentFormDelegation() which
+    // matches .comment-textarea — no inline handler needed here.
 
     // Cache form element for reuse
     formElements.set(id, container);
+
+    // Focus textarea and attach emoji picker after it's in the DOM.
+    // Matches parity with legacy CommentManager.showCommentForm — emoji
+    // autocomplete (typing `:`) should work in Pierre-rendered forms too.
+    requestAnimationFrame(() => {
+      textarea.focus();
+      if (window.emojiPicker) window.emojiPicker.attach(textarea);
+      // Initial auto-resize for pre-filled content (input event doesn't
+      // fire for programmatic .value assignment).
+      if (data.initialValue) {
+        textarea.style.height = 'auto';
+        textarea.style.height = textarea.scrollHeight + 'px';
+        // Sync suggestion button disabled state with pre-filled content —
+        // the input event listener doesn't fire for programmatic .value.
+        if (suggestionBtn) {
+          const has = hasSuggestionBlock(textarea.value);
+          suggestionBtn.disabled = has;
+          if (has) suggestionBtn.title = 'Only one suggestion per comment';
+        }
+      }
+    });
+
     return container;
+  }
+
+  // ─── Code Extraction ──────────────────────────────────────────────
+
+  /**
+   * Get code content from stored metadata for a line range.
+   * Used by the suggestion button to pre-fill suggestion blocks.
+   * @param {string} fileName
+   * @param {number} startLine - 1-based start line
+   * @param {number} endLine - 1-based end line
+   * @param {string} side - 'LEFT' or 'RIGHT'
+   * @returns {string|null} Code text, or null if file not found
+   */
+  getCodeFromLines(fileName, startLine, endLine, side) {
+    const fileState = this.files.get(fileName);
+    if (!fileState || !fileState.metadata) return null;
+
+    const metadata = fileState.metadata;
+    const useAdditions = (side || 'RIGHT') === 'RIGHT';
+    const lines = useAdditions ? metadata.additionLines : metadata.deletionLines;
+    const hunks = metadata.hunks;
+    if (!lines || !hunks) return null;
+
+    const codeLines = [];
+    for (const hunk of hunks) {
+      const hunkStart = useAdditions ? hunk.additionStart : hunk.deletionStart;
+      const hunkCount = useAdditions ? hunk.additionCount : hunk.deletionCount;
+      const hunkLineIndex = useAdditions ? hunk.additionLineIndex : hunk.deletionLineIndex;
+      const hunkEnd = hunkStart + hunkCount - 1;
+
+      // Skip hunks entirely outside the requested range
+      if (hunkEnd < startLine || hunkStart > endLine) continue;
+
+      // Walk lines in this hunk
+      for (let i = 0; i < hunkCount; i++) {
+        const lineNum = hunkStart + i;
+        if (lineNum >= startLine && lineNum <= endLine) {
+          const idx = hunkLineIndex + i;
+          if (idx < lines.length) {
+            codeLines.push(lines[idx]);
+          }
+        }
+      }
+    }
+
+    return codeLines.length > 0 ? codeLines.join('\n') : null;
   }
 
   // ─── Utility ──────────────────────────────────────────────────────
@@ -784,6 +1260,24 @@ class PierreBridge {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
       font-size: 13px;
       line-height: 1.5;
+    }
+    /* Brief flash applied by PierreBridge.scrollToLine */
+    [data-line].pierre-line-highlight {
+      animation: pierre-line-highlight-flash 3.5s ease-out forwards;
+    }
+    @keyframes pierre-line-highlight-flash {
+      0% {
+        background-color: rgba(227, 179, 65, var(--pierre-highlight-start, 0.20));
+        box-shadow: inset 3px 0 0 #e3b341;
+      }
+      57% {
+        background-color: rgba(227, 179, 65, var(--pierre-highlight-mid, 0.08));
+        box-shadow: inset 3px 0 0 #e3b341;
+      }
+      100% {
+        background-color: transparent;
+        box-shadow: inset 3px 0 0 transparent;
+      }
     }
   `;
 }
