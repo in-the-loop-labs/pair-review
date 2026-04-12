@@ -746,28 +746,29 @@ These commands update your MCP configuration in `~/.claude/settings.json` (user-
 ### Prerequisites
 
 - Node.js 20.0.0 or higher
+- [pnpm](https://pnpm.io/) 10.x
 - Git
 
 ### Running Locally
 
 ```bash
 # Install dependencies
-npm install
+pnpm install
 
 # Run tests
-npm test
+pnpm test
 
 # Run tests in watch mode
-npm run test:watch
+pnpm run test:watch
 
 # Run E2E tests
-npm run test:e2e
+pnpm run test:e2e
 
 # Run E2E tests with visible browser
-npm run test:e2e:headed
+pnpm run test:e2e:headed
 
 # Start development server
-npm run dev
+pnpm run dev
 ```
 
 ### Architecture
