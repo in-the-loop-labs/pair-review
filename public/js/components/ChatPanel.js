@@ -581,6 +581,7 @@ class ChatPanel {
           file: options.commentContext.file,
           line_start: options.commentContext.line_start,
           line_end: options.commentContext.line_end,
+          side: options.commentContext.side || 'RIGHT',
         };
       } else {
         this._contextSource = 'user';
@@ -1491,6 +1492,7 @@ class ChatPanel {
       file: ctx.file || null,
       line_start: ctx.line_start || null,
       line_end: ctx.line_end || null,
+      side: ctx.side || 'RIGHT',
       body: ctx.body || null,
       source: 'user'
     };
@@ -2998,6 +3000,32 @@ class ChatPanel {
     }
     if (!fileWrapper) return;
 
+    // Pierre-rendered files live inside shadow DOM; light-DOM row queries
+    // return nothing. Delegate to PierreBridge, which reaches into the shadow
+    // root, scrolls to the target line, and applies its own highlight flash.
+    const bridge = window.prManager?.pierreBridge;
+    if (bridge && bridge.files.has(file)) {
+      const end = lineEnd || lineStart;
+      // Ensure the line is visible — expand collapsed gaps if needed.
+      if (!bridge.isLineVisible(file, lineStart, 'RIGHT')
+          && window.prManager?.ensureLinesVisible) {
+        await window.prManager.ensureLinesVisible([
+          { file, line_start: lineStart, line_end: end, side: 'RIGHT' }
+        ]);
+      }
+      // Flash each line in the requested range.
+      let scrolled = false;
+      for (let ln = lineStart; ln <= end; ln++) {
+        // Only scroll into view for the first line; highlight the rest.
+        const ok = bridge.scrollToLine(file, ln, 'RIGHT', ln === lineStart);
+        scrolled = scrolled || ok;
+      }
+      if (!scrolled && window.prManager?.scrollToFile) {
+        window.prManager.scrollToFile(file);
+      }
+      return;
+    }
+
     // Collect all target rows (single line or range)
     const end = lineEnd || lineStart;
     let targetRows = this._findLineRows(fileWrapper, lineStart, end);
@@ -3232,6 +3260,7 @@ class ChatPanel {
       file: this._contextLineMeta?.file,
       line_start: this._contextLineMeta?.line_start,
       line_end: this._contextLineMeta?.line_end,
+      side: this._contextLineMeta?.side || 'RIGHT',
     };
     this.inputEl.value = 'Based on our conversation, please create a review comment for this code.';
     this.sendMessage();

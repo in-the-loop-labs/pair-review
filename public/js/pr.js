@@ -155,22 +155,28 @@ class PRManager {
     // Initialize PierreBridge for @pierre/diffs rendering
     this.pierreBridge = window.PierreBridge ? new window.PierreBridge({
       theme: this.currentTheme,
-      onCommentClick: (fileName, lineNumber, side, range) => {
-        const diffPosition = this.pierreBridge.getDiffPosition(fileName, lineNumber, side);
-        if (range && range.end !== range.start) {
-          this.showCommentForm(null, range.start, fileName, diffPosition, range.end, side);
+      onCommentClick: (fileName, lineNumber, side, target) => {
+        // target.isRange is true when the user selected multiple lines
+        const diffPosition = this.pierreBridge.getDiffPosition(fileName, target.start, target.side);
+        if (target.isRange) {
+          this.showCommentForm(null, target.start, fileName, diffPosition, target.end, target.side);
         } else {
           this.showCommentForm(null, lineNumber, fileName, diffPosition, null, side);
         }
       },
-      onLineClick: (fileName, props) => {
-        // Line click handler - available for future use
-      },
-      onLineSelect: (fileName, range) => {
-        // Line selection handler - available for future use
-      },
-      onLineSelectionEnd: (fileName, range) => {
-        // Line selection completed
+      onChatClick: (fileName, lineNumber, side, target) => {
+        if (!window.chatPanel) return;
+        window.chatPanel.open({
+          commentContext: {
+            type: 'line',
+            body: null,
+            file: fileName || '',
+            line_start: target.start,
+            line_end: target.end,
+            side: target.side || side || 'RIGHT',
+            source: 'user'
+          }
+        });
       },
       onHunkExpand: (fileName, hunkIndex, direction, lineCount) => {
         // @pierre/diffs handles expansion natively
@@ -200,6 +206,11 @@ class PRManager {
       },
       onCommentFormCancel: (fileName, annotationId, data) => {
         this.pierreBridge.removeAnnotation(fileName, annotationId);
+      },
+      onSuggestionInsert: (textarea, button) => {
+        if (this.commentManager) {
+          this.commentManager.insertSuggestionBlock(textarea, button);
+        }
       },
     }) : null;
 
@@ -2773,8 +2784,11 @@ class PRManager {
       const { file, line_start, line_end, side } = item;
       const resolvedSide = (side || 'right').toUpperCase();
 
-      // @pierre/diffs files handle visibility internally via annotations
+      // @pierre/diffs files: delegate gap expansion to PierreBridge
       if (this.pierreBridge && this.pierreBridge.files.has(file)) {
+        if (!this.pierreBridge.isLineVisible(file, line_start, resolvedSide)) {
+          this.pierreBridge.expandToLine(file, line_start, resolvedSide);
+        }
         continue;
       }
 
@@ -2871,6 +2885,19 @@ class PRManager {
    */
   async _handleCommentFormSubmit(fileName, annotationId, data, body) {
     if (!body || !body.trim()) return;
+
+    // Custom submit flow (e.g. edit-and-adopt suggestion): let the caller
+    // decide how to save and how to re-render the result. The handler owns
+    // removing the form annotation.
+    if (typeof data.customSubmit === 'function') {
+      try {
+        await data.customSubmit(body.trim(), fileName, annotationId);
+      } catch (error) {
+        console.error('Error running custom comment form submit:', error);
+        alert(`Failed to save: ${error.message}`);
+      }
+      return;
+    }
 
     try {
       const commentData = {
@@ -3543,12 +3570,18 @@ class PRManager {
    * Collapse a suggestion div in the UI after adoption.
    * Handles adding collapsed class, updating text to 'Suggestion adopted',
    * updating the restore button, and setting hiddenForAdoption flag.
-   * @param {HTMLElement} suggestionRow - The suggestion row element
+   *
+   * With legacy rendering, `suggestionRow` is the `<tr>` containing the
+   * suggestion. With @pierre/diffs there is no `<tr>`, so callers pass null
+   * and this method falls back to a document-wide lookup by id.
+   *
+   * @param {HTMLElement|null} suggestionRow - The suggestion row element (legacy only)
    * @param {number|string} suggestionId - Suggestion ID
    */
   collapseSuggestionForAdoption(suggestionRow, suggestionId) {
-    if (!suggestionRow) return;
-    const targetDiv = suggestionRow.querySelector(`[data-suggestion-id="${suggestionId}"]`);
+    const targetDiv = suggestionRow
+      ? suggestionRow.querySelector(`[data-suggestion-id="${suggestionId}"]`)
+      : document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
     if (!targetDiv) return;
     targetDiv.classList.add('collapsed');
     const collapsedContent = targetDiv.querySelector('.collapsed-text');
@@ -3563,15 +3596,45 @@ class PRManager {
   }
 
   /**
+   * Render an adopted user comment in the appropriate rendering engine.
+   *
+   * For files rendered by @pierre/diffs, `suggestionRow` is null (suggestions
+   * are annotations, not table rows). Add the comment as a Pierre annotation
+   * so it slots into the shadow DOM alongside the collapsed suggestion.
+   *
+   * For legacy (table-based) rendering, delegate to the existing
+   * `displayUserComment(comment, suggestionRow)` which inserts a `<tr>`.
+   *
+   * @param {Object} comment - The newly-adopted comment
+   * @param {HTMLElement|null} suggestionRow - Legacy table row, or null for Pierre
+   * @private
+   */
+  _renderAdoptedUserComment(comment, suggestionRow) {
+    if (this.pierreBridge && comment.file && this.pierreBridge.files.has(comment.file)) {
+      this.pierreBridge.addAnnotation(comment.file, {
+        lineNumber: comment.line_start,
+        side: comment.side || 'RIGHT',
+        type: 'comment',
+        id: `comment-${comment.id}`,
+        data: comment,
+      });
+      return;
+    }
+    // Legacy path: displayUserComment inserts a <tr> after suggestionRow
+    this.displayUserComment(comment, suggestionRow);
+  }
+
+  /**
    * Build a user comment object from adoption/edit response data.
    * Single source of truth for comment shape — used by both adopt-as-is
    * and edit-then-adopt flows.
    */
-  _buildCommentObject({ userCommentId, formattedBody, fileName, lineNumber, suggestionType, suggestionTitle, suggestionId, diffPosition, side }) {
+  _buildCommentObject({ userCommentId, formattedBody, fileName, lineNumber, lineEnd, suggestionType, suggestionTitle, suggestionId, diffPosition, side }) {
     return {
       id: userCommentId,
       file: fileName,
       line_start: parseInt(lineNumber),
+      line_end: lineEnd ? parseInt(lineEnd) : null,
       body: formattedBody,
       type: suggestionType,
       title: suggestionTitle,
@@ -3590,7 +3653,7 @@ class PRManager {
    */
   async _adoptAndBuildComment(suggestionId, suggestionDiv) {
     const { suggestionText, suggestionType, suggestionTitle } = this.extractSuggestionData(suggestionDiv);
-    const { suggestionRow, lineNumber, fileName, diffPosition, side, isFileLevel } = this.getFileAndLineInfo(suggestionDiv);
+    const { suggestionRow, lineNumber, lineEnd, fileName, diffPosition, side, isFileLevel } = this.getFileAndLineInfo(suggestionDiv);
 
     // File-level suggestions are handled by FileCommentManager; signal the caller
     if (isFileLevel) {
@@ -3615,7 +3678,7 @@ class PRManager {
     const newComment = this._buildCommentObject({
       userCommentId: adoptResult.userCommentId,
       formattedBody: adoptResult.formattedBody,
-      fileName, lineNumber, suggestionType, suggestionTitle,
+      fileName, lineNumber, lineEnd, suggestionType, suggestionTitle,
       suggestionId, diffPosition, side
     });
 
@@ -3692,6 +3755,58 @@ class PRManager {
         side
       };
 
+      // Pierre-rendered files: suggestions live as annotations (no <tr>),
+      // so `displaySuggestionEditForm` — which inserts a table row after
+      // `suggestionRow` — cannot run. Open the edit form as a comment-form
+      // annotation on the same line, pre-filled with the suggestion body,
+      // and wire a custom submit that runs the adopt-edited flow.
+      if (this.pierreBridge && this.pierreBridge.files.has(fileName)) {
+        const formId = `edit-suggestion-${suggestionId}`;
+        const onAdoptEdited = async (editedText, _fileName, annotationId) => {
+          const reviewId = this.currentPR?.id;
+          const editResponse = await fetch(`/api/reviews/${reviewId}/suggestions/${suggestionId}/edit`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'adopt_edited', editedText })
+          });
+          if (!editResponse.ok) throw new Error('Failed to adopt suggestion with edits');
+          const editResult = await editResponse.json();
+
+          // Collapse the suggestion annotation and render the new comment.
+          this.collapseSuggestionForAdoption(null, suggestionId);
+          const newComment = this._buildCommentObject({
+            userCommentId: editResult.userCommentId,
+            formattedBody: editResult.formattedBody,
+            fileName, lineNumber, lineEnd, suggestionType, suggestionTitle,
+            suggestionId, diffPosition, side
+          });
+
+          // Remove the edit form annotation and add the comment annotation.
+          this.pierreBridge.removeAnnotation(fileName, annotationId);
+          this._renderAdoptedUserComment(newComment, null);
+          this._notifyAdoption(suggestionId, newComment);
+        };
+
+        this.pierreBridge.addAnnotation(fileName, {
+          lineNumber: lineEnd || lineNumber,
+          side: side || 'RIGHT',
+          type: 'comment-form',
+          id: formId,
+          data: {
+            headerTitle: 'Edit suggestion',
+            lineStart: lineNumber,
+            lineEnd: lineEnd || lineNumber,
+            fileName: fileName,
+            diffPosition: diffPosition,
+            side: side || 'RIGHT',
+            showSuggestionBtn: true,
+            initialValue: formattedBody || suggestionText,
+            customSubmit: onAdoptEdited,
+          },
+        });
+        return;
+      }
+
       this.commentManager.displaySuggestionEditForm(
         suggestion,
         suggestionRow,
@@ -3714,10 +3829,10 @@ class PRManager {
             const newComment = this._buildCommentObject({
               userCommentId: editResult.userCommentId,
               formattedBody: editResult.formattedBody,
-              fileName, lineNumber, suggestionType, suggestionTitle,
+              fileName, lineNumber, lineEnd, suggestionType, suggestionTitle,
               suggestionId, diffPosition, side
             });
-            this.displayUserComment(newComment, suggestionRow);
+            this._renderAdoptedUserComment(newComment, suggestionRow);
             this._notifyAdoption(suggestionId, newComment);
             window.chatPanel?.queueUserActionHint(`[User Action: adopted suggestion ${suggestionId}]`);
           } catch (error) {
@@ -3763,7 +3878,7 @@ class PRManager {
         return;
       }
 
-      this.displayUserComment(result.newComment, result.suggestionRow);
+      this._renderAdoptedUserComment(result.newComment, result.suggestionRow);
       this._notifyAdoption(suggestionId, result.newComment);
       window.chatPanel?.queueUserActionHint(`[User Action: adopted suggestion ${suggestionId}]`);
     } catch (error) {

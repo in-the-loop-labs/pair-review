@@ -316,7 +316,14 @@ class CommentManager {
    * @returns {string} The code content from the lines
    */
   getCodeFromLines(fileName, startLine, endLine, side) {
-    // Find the file wrapper
+    // Try PierreBridge first (for @pierre/diffs rendered files)
+    const bridge = this.prManager?.pierreBridge;
+    if (bridge && bridge.files.has(fileName)) {
+      const code = bridge.getCodeFromLines(fileName, startLine, endLine, side);
+      if (code !== null) return code;
+    }
+
+    // Legacy path: DOM query for diff2html table rows
     const fileWrappers = document.querySelectorAll('.d2h-file-wrapper');
     let targetWrapper = null;
 

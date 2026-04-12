@@ -13038,7 +13038,8 @@ body.resizing * {
 [data-chat="disabled"] .btn-chat-comment,
 [data-chat="disabled"] .analysis-history-chat-btn,
 [data-chat="disabled"] .chat-line-btn,
-[data-chat="disabled"] .btn-chat-from-comment {
+[data-chat="disabled"] .btn-chat-from-comment,
+[data-chat="disabled"] .pierre-chat-btn {
   display: none !important;
 }
 
@@ -13052,7 +13053,8 @@ body.resizing * {
 [data-chat="unavailable"] .btn-chat-comment,
 [data-chat="unavailable"] .analysis-history-chat-btn,
 [data-chat="unavailable"] .chat-line-btn,
-[data-chat="unavailable"] .btn-chat-from-comment {
+[data-chat="unavailable"] .btn-chat-from-comment,
+[data-chat="unavailable"] .pierre-chat-btn {
   display: none !important;
 }
 
@@ -14003,6 +14005,14 @@ body.resizing * {
 /* Custom elements default to display:inline — force block layout */
 diffs-container {
   display: block;
+  --diffs-font-size: 12px;
+  --diffs-line-height: 1.45;
+}
+
+/* Dark-theme highlight: reduced opacity to match legacy chat-line-highlight-dark */
+[data-theme="dark"] diffs-container {
+  --pierre-highlight-start: 0.15;
+  --pierre-highlight-mid: 0.06;
 }
 
 /* Binary file placeholder inside @pierre/diffs */
@@ -14014,60 +14024,58 @@ diffs-container {
 }
 
 /* @pierre/diffs annotation styles (light DOM — slotted into shadow DOM)
-   Suggestions and comments reuse the legacy .ai-suggestion / .user-comment
-   classes so all existing CSS applies. Only the comment form needs custom
-   styles here. */
+   Suggestions, comments, and comment forms all reuse the legacy classes
+   (.ai-suggestion, .user-comment, .user-comment-form, .comment-textarea, etc.)
+   so all existing CSS applies. No custom form styles needed. */
 
-/* Comment form */
-.pierre-comment-form {
-  background: var(--color-canvas-default, #fff);
-  border: 1px solid var(--color-accent, #0969da);
-  padding: 8px;
-}
-.pierre-comment-textarea {
-  width: 100%;
-  min-height: 60px;
-  padding: 8px;
-  border: 1px solid var(--color-border-default, #d0d7de);
-  border-radius: 6px;
-  font-family: inherit;
-  font-size: 13px;
-  resize: vertical;
-  background: var(--color-canvas-default, #fff);
-  color: var(--color-fg-default, #1f2328);
-  box-sizing: border-box;
-}
-.pierre-comment-textarea:focus {
-  outline: none;
-  border-color: var(--color-accent, #0969da);
-  box-shadow: 0 0 0 3px rgba(9,105,218,0.3);
-}
-
-/* Comment form actions */
-.pierre-form-actions {
+/* Dual gutter buttons (chat + comment) inside @pierre/diffs */
+.pierre-gutter-buttons {
   display: flex;
-  gap: 6px;
-  margin-top: 8px;
-  justify-content: flex-end;
+  align-items: center;
+  gap: 2px;
+  position: absolute;
+  right: -12px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 20;
+  pointer-events: auto;
 }
-.pierre-btn {
-  padding: 3px 12px;
-  border: 1px solid var(--color-border-default, #d0d7de);
+
+.pierre-gutter-btn {
+  width: 22px;
+  height: 22px;
+  background: linear-gradient(180deg, #0969da 0%, #0860ca 100%);
+  color: #fff;
+  border: none;
   border-radius: 6px;
-  background: var(--color-canvas-default, #fff);
-  color: var(--color-fg-default, #1f2328);
-  font-size: 12px;
-  font-weight: 500;
   cursor: pointer;
+  transition: opacity 0.1s ease, transform 0.1s ease, box-shadow 0.1s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  pointer-events: auto;
 }
-.pierre-btn:hover {
-  background: var(--color-canvas-subtle, #f6f8fa);
+
+.pierre-gutter-btn:hover {
+  background: linear-gradient(180deg, #0860ca 0%, #0757b8 100%);
+  transform: scale(1.08);
+  box-shadow: 0 2px 6px rgba(9, 105, 218, 0.35), 0 1px 3px rgba(0, 0, 0, 0.1);
 }
-.pierre-btn-primary {
-  background: var(--color-accent, #0969da);
-  color: white;
-  border-color: var(--color-accent, #0969da);
+
+.pierre-gutter-btn:active {
+  transform: scale(0.96);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
 }
-.pierre-btn-primary:hover {
-  background: var(--color-accent-hover, #0550ae);
+
+.pierre-comment-btn {
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 1;
+}
+
+.pierre-chat-btn svg {
+  width: 12px;
+  height: 12px;
 }
