@@ -100,11 +100,11 @@ Pair-Review is a local web application that assists human reviewers with GitHub 
 - Serve static files and API endpoints
 
 ## Testing
-- `npm test` - Run all tests once
-- `npm run test:watch` - Run tests in watch mode (re-runs on file changes)
-- `npm run test:coverage` - Run tests with coverage report
-- `npm run test:e2e` - Run E2E tests
-- `npm run test:e2e:headed` - Run E2E tests with browser
+- `pnpm test` - Run all tests once
+- `pnpm run test:watch` - Run tests in watch mode (re-runs on file changes)
+- `pnpm run test:coverage` - Run tests with coverage report
+- `pnpm run test:e2e` - Run E2E tests
+- `pnpm run test:e2e:headed` - Run E2E tests with browser
 
 Test structure:
 - `tests/unit/` - Unit tests
