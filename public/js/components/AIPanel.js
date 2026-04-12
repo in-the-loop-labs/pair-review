@@ -793,38 +793,7 @@ class AIPanel {
         this.findingsList.querySelectorAll('.quick-action-chat').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 e.stopPropagation(); // Prevent triggering item click
-                if (!window.chatPanel) return;
-
-                const findingId = btn.dataset.findingId ? parseInt(btn.dataset.findingId, 10) : null;
-                const commentId = btn.dataset.commentId ? parseInt(btn.dataset.commentId, 10) : null;
-                const file = btn.dataset.findingFile || '';
-                const title = btn.dataset.findingTitle || '';
-
-                // Build context from the finding data
-                let suggestionContext = { title, file };
-
-                if (findingId && this.findings) {
-                    const finding = this.findings.find(f => f.id === findingId);
-                    if (finding) {
-                        suggestionContext = {
-                            suggestionId: findingId ? String(findingId) : null,
-                            title: finding.title || title,
-                            body: finding.formattedBody || finding.body || '',
-                            type: finding.type || '',
-                            file: finding.file || file,
-                            line_start: finding.line_start || null,
-                            line_end: finding.line_end || null,
-                            side: 'RIGHT',
-                            reasoning: null
-                        };
-                    }
-                }
-
-                window.chatPanel.open({
-                    reviewId: window.prManager?.currentPR?.id,
-                    suggestionId: findingId ? String(findingId) : (commentId ? String(commentId) : undefined),
-                    suggestionContext
-                });
+                this.openQuickActionChat(btn);
             });
         });
 
@@ -885,6 +854,79 @@ class AIPanel {
         if (window.prManager?.restoreSuggestion) {
             window.prManager.restoreSuggestion(findingId);
         }
+    }
+
+    /**
+     * Handle chat button clicks from review panel quick actions.
+     * Suggestions use suggestionContext; comments use commentContext.
+     * @param {HTMLButtonElement} btn - The clicked chat button
+     */
+    openQuickActionChat(btn) {
+        if (!window.chatPanel) return;
+
+        const findingId = btn.dataset.findingId ? parseInt(btn.dataset.findingId, 10) : null;
+        const commentId = btn.dataset.commentId ? parseInt(btn.dataset.commentId, 10) : null;
+        const reviewId = window.prManager?.currentPR?.id;
+
+        const buildCommentContext = (comment, fallbackDataset = {}) => ({
+            commentId: comment?.id ? String(comment.id) : String(commentId),
+            body: comment?.body || '',
+            file: comment?.file || fallbackDataset.commentFile || '',
+            line_start: comment?.line_start ?? (fallbackDataset.commentLineStart ? parseInt(fallbackDataset.commentLineStart, 10) : null),
+            line_end: comment?.line_end ?? (fallbackDataset.commentLineEnd ? parseInt(fallbackDataset.commentLineEnd, 10) : null),
+            parentId: comment?.parent_id ?? (fallbackDataset.commentParentId ? parseInt(fallbackDataset.commentParentId, 10) : null),
+            source: 'user',
+            isFileLevel: comment?.is_file_level === 1 || comment?.is_file_level === true
+        });
+
+        if (commentId) {
+            const comment = this.comments?.find(c => c.id === commentId);
+
+            window.chatPanel.open({
+                reviewId,
+                commentContext: buildCommentContext(comment, btn.dataset)
+            });
+            return;
+        }
+
+        const file = btn.dataset.findingFile || '';
+        const title = btn.dataset.findingTitle || '';
+        let suggestionContext = { title, file };
+
+        if (findingId && this.findings) {
+            const finding = this.findings.find(f => f.id === findingId);
+            if (finding) {
+                if (finding.status === 'adopted') {
+                    const adoptedComment = this.comments?.find(c => c.parent_id === findingId && c.status !== 'inactive')
+                        || this.comments?.find(c => c.parent_id === findingId);
+                    if (adoptedComment) {
+                        window.chatPanel.open({
+                            reviewId,
+                            commentContext: buildCommentContext(adoptedComment)
+                        });
+                        return;
+                    }
+                }
+
+                suggestionContext = {
+                    suggestionId: String(findingId),
+                    title: finding.title || title,
+                    body: finding.formattedBody || finding.body || '',
+                    type: finding.type || '',
+                    file: finding.file || file,
+                    line_start: finding.line_start ?? null,
+                    line_end: finding.line_end ?? null,
+                    side: 'RIGHT',
+                    reasoning: null
+                };
+            }
+        }
+
+        window.chatPanel.open({
+            reviewId,
+            suggestionId: findingId ? String(findingId) : undefined,
+            suggestionContext
+        });
     }
 
     onFindingClick(item) {
@@ -1204,9 +1246,9 @@ class AIPanel {
         `;
         }
 
-        // Chat button for active and dismissed findings (upper-right corner)
+        // Chat button for all findings when chat is available
         let chatAction = '';
-        if (finding.status !== 'adopted' && document.documentElement.getAttribute('data-chat') === 'available') {
+        if (document.documentElement.getAttribute('data-chat') === 'available') {
             chatAction = `
             <div class="finding-chat-action">
                 <button class="quick-action-btn quick-action-chat" data-finding-id="${finding.id}" data-finding-file="${finding.file || ''}" data-finding-title="${this.escapeHtml(title)}" title="Chat" aria-label="Chat about suggestion">
@@ -1279,12 +1321,12 @@ class AIPanel {
             `;
         }
 
-        // Chat button for active AI-originated comments
+        // Chat button for active comments
         let chatAction = '';
-        if (!isDismissed && comment.parent_id && document.documentElement.getAttribute('data-chat') === 'available') {
+        if (!isDismissed && document.documentElement.getAttribute('data-chat') === 'available') {
             chatAction = `
             <div class="finding-chat-action">
-                <button class="quick-action-btn quick-action-chat" data-comment-id="${comment.id}" data-finding-file="${comment.file || ''}" data-finding-title="${this.escapeHtml(title)}" title="Chat" aria-label="Chat about comment">
+                <button class="quick-action-btn quick-action-chat" data-comment-id="${comment.id}" data-comment-file="${this.escapeHtml(comment.file || '')}" data-comment-line-start="${comment.line_start ?? ''}" data-comment-line-end="${comment.line_end ?? ''}" data-comment-parent-id="${comment.parent_id || ''}" title="Chat" aria-label="Chat about comment">
                     <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12"><path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/></svg>
                 </button>
             </div>

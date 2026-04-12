@@ -83,6 +83,7 @@ beforeEach(() => {
   global.document = {
     ...global.document,
     documentElement: {
+      getAttribute: vi.fn((name) => (name === 'data-chat' ? 'available' : null)),
       style: {
         setProperty: vi.fn(),
       },
@@ -90,6 +91,8 @@ beforeEach(() => {
   };
 
   global.window = {
+    chatPanel: { open: vi.fn() },
+    prManager: { currentPR: { id: 123 } },
     panelGroup: {
       _onReviewVisibilityChanged: vi.fn(),
     },
@@ -319,6 +322,327 @@ describe('AIPanel collapsed state persistence', () => {
       panel.clearAllFindings();
 
       expect(panel.currentIndex).toBe(-1);
+    });
+  });
+
+  describe('comment chat actions', () => {
+    it('renders a chat button for active user-originated comments', () => {
+      const panel = createTestPanel();
+
+      const html = panel.renderCommentItem({
+        id: 7,
+        body: 'Please tighten this check',
+        file: 'src/app.js',
+        line_start: 12,
+        status: 'active',
+      }, 0);
+
+      expect(html).toContain('quick-action-chat');
+      expect(html).toContain('data-comment-id="7"');
+    });
+
+    it('does not render a chat button for dismissed user comments', () => {
+      const panel = createTestPanel();
+
+      const html = panel.renderCommentItem({
+        id: 7,
+        body: 'Please tighten this check',
+        file: 'src/app.js',
+        line_start: 12,
+        status: 'inactive',
+      }, 0);
+
+      expect(html).not.toContain('quick-action-chat');
+    });
+
+    it('opens chat with commentContext for line-level user comments', () => {
+      const panel = createTestPanel({
+        comments: [{
+          id: 7,
+          body: 'Please tighten this check',
+          file: 'src/app.js',
+          line_start: 12,
+          line_end: 14,
+          status: 'active',
+          parent_id: null,
+        }],
+      });
+
+      panel.openQuickActionChat({
+        dataset: {
+          commentId: '7',
+        },
+      });
+
+      expect(window.chatPanel.open).toHaveBeenCalledWith({
+        reviewId: 123,
+        commentContext: {
+          commentId: '7',
+          body: 'Please tighten this check',
+          file: 'src/app.js',
+          line_start: 12,
+          line_end: 14,
+          parentId: null,
+          source: 'user',
+          isFileLevel: false,
+        },
+      });
+    });
+
+    it('opens chat with commentContext for file-level user comments', () => {
+      const panel = createTestPanel({
+        comments: [{
+          id: 9,
+          body: 'This file needs a follow-up pass',
+          file: 'src/app.js',
+          line_start: null,
+          line_end: null,
+          status: 'active',
+          is_file_level: 1,
+          parent_id: null,
+        }],
+      });
+
+      panel.openQuickActionChat({
+        dataset: {
+          commentId: '9',
+        },
+      });
+
+      expect(window.chatPanel.open).toHaveBeenCalledWith({
+        reviewId: 123,
+        commentContext: {
+          commentId: '9',
+          body: 'This file needs a follow-up pass',
+          file: 'src/app.js',
+          line_start: null,
+          line_end: null,
+          parentId: null,
+          source: 'user',
+          isFileLevel: true,
+        },
+      });
+    });
+
+    it('preserves parentId for adopted comments', () => {
+      const panel = createTestPanel({
+        comments: [{
+          id: 10,
+          body: 'Adjusted adopted comment text',
+          file: 'src/app.js',
+          line_start: 18,
+          line_end: 18,
+          status: 'active',
+          parent_id: 42,
+        }],
+      });
+
+      panel.openQuickActionChat({
+        dataset: {
+          commentId: '10',
+        },
+      });
+
+      expect(window.chatPanel.open).toHaveBeenCalledWith({
+        reviewId: 123,
+        commentContext: {
+          commentId: '10',
+          body: 'Adjusted adopted comment text',
+          file: 'src/app.js',
+          line_start: 18,
+          line_end: 18,
+          parentId: 42,
+          source: 'user',
+          isFileLevel: false,
+        },
+      });
+    });
+
+    it('normalizes empty dataset parentId to null for user comments', () => {
+      const panel = createTestPanel({
+        comments: [],
+      });
+
+      panel.openQuickActionChat({
+        dataset: {
+          commentId: '12',
+          commentFile: 'src/app.js',
+          commentLineStart: '5',
+          commentLineEnd: '5',
+          commentParentId: '',
+        },
+      });
+
+      expect(window.chatPanel.open).toHaveBeenCalledWith({
+        reviewId: 123,
+        commentContext: {
+          commentId: '12',
+          body: '',
+          file: 'src/app.js',
+          line_start: 5,
+          line_end: 5,
+          parentId: null,
+          source: 'user',
+          isFileLevel: false,
+        },
+      });
+    });
+
+    it('keeps suggestion chat behavior for AI findings', () => {
+      const panel = createTestPanel({
+        findings: [{
+          id: 5,
+          title: 'Null guard missing',
+          formattedBody: 'Check for null before accessing name',
+          type: 'bug',
+          file: 'src/app.js',
+          line_start: 21,
+          line_end: 21,
+        }],
+      });
+
+      panel.openQuickActionChat({
+        dataset: {
+          findingId: '5',
+          findingFile: 'src/app.js',
+          findingTitle: 'Null guard missing',
+        },
+      });
+
+      expect(window.chatPanel.open).toHaveBeenCalledWith({
+        reviewId: 123,
+        suggestionId: '5',
+        suggestionContext: {
+          suggestionId: '5',
+          title: 'Null guard missing',
+          body: 'Check for null before accessing name',
+          type: 'bug',
+          file: 'src/app.js',
+          line_start: 21,
+          line_end: 21,
+          side: 'RIGHT',
+          reasoning: null,
+        },
+      });
+    });
+
+    it('opens adopted findings as commentContext when linked comment exists', () => {
+      const panel = createTestPanel({
+        findings: [{
+          id: 42,
+          title: 'Original AI suggestion title',
+          formattedBody: 'Original AI suggestion body',
+          type: 'bug',
+          file: 'src/app.js',
+          line_start: 18,
+          line_end: 18,
+          status: 'adopted',
+        }],
+        comments: [{
+          id: 10,
+          body: 'Adjusted adopted comment text',
+          file: 'src/app.js',
+          line_start: 18,
+          line_end: 18,
+          status: 'active',
+          parent_id: 42,
+        }],
+      });
+
+      panel.openQuickActionChat({
+        dataset: {
+          findingId: '42',
+          findingFile: 'src/app.js',
+          findingTitle: 'Original AI suggestion title',
+        },
+      });
+
+      expect(window.chatPanel.open).toHaveBeenCalledWith({
+        reviewId: 123,
+        commentContext: {
+          commentId: '10',
+          body: 'Adjusted adopted comment text',
+          file: 'src/app.js',
+          line_start: 18,
+          line_end: 18,
+          parentId: 42,
+          source: 'user',
+          isFileLevel: false,
+        },
+      });
+    });
+
+    it('prefers the active adopted comment over inactive history for adopted findings', () => {
+      const panel = createTestPanel({
+        findings: [{
+          id: 42,
+          title: 'Original AI suggestion title',
+          formattedBody: 'Original AI suggestion body',
+          type: 'bug',
+          file: 'src/app.js',
+          line_start: 18,
+          line_end: 18,
+          status: 'adopted',
+        }],
+        comments: [{
+          id: 10,
+          body: 'Old dismissed adopted comment',
+          file: 'src/app.js',
+          line_start: 18,
+          line_end: 18,
+          status: 'inactive',
+          parent_id: 42,
+        }, {
+          id: 11,
+          body: 'Current active adopted comment',
+          file: 'src/app.js',
+          line_start: 18,
+          line_end: 18,
+          status: 'active',
+          parent_id: 42,
+        }],
+      });
+
+      panel.openQuickActionChat({
+        dataset: {
+          findingId: '42',
+          findingFile: 'src/app.js',
+          findingTitle: 'Original AI suggestion title',
+        },
+      });
+
+      expect(window.chatPanel.open).toHaveBeenCalledWith({
+        reviewId: 123,
+        commentContext: {
+          commentId: '11',
+          body: 'Current active adopted comment',
+          file: 'src/app.js',
+          line_start: 18,
+          line_end: 18,
+          parentId: 42,
+          source: 'user',
+          isFileLevel: false,
+        },
+      });
+    });
+  });
+
+  describe('finding chat actions', () => {
+    it('renders a chat button for adopted suggestions', () => {
+      const panel = createTestPanel();
+
+      const html = panel.renderFindingItem({
+        id: 11,
+        title: 'Use stricter validation',
+        body: 'Tighten the schema before persisting',
+        type: 'bug',
+        file: 'src/app.js',
+        line_start: 9,
+        status: 'adopted',
+      }, 0);
+
+      expect(html).toContain('quick-action-chat');
+      expect(html).toContain('data-finding-id="11"');
     });
   });
 });
