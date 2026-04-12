@@ -181,3 +181,78 @@ test.describe('Comment form Chat button', () => {
     await expect(chatFromCommentBtn).toBeHidden();
   });
 });
+
+test.describe('Review panel comment chat button', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+  });
+
+  test.afterEach(async ({ page }) => {
+    await cleanupAllComments(page);
+  });
+
+  test('opens chat from a user-created review panel entry', async ({ page }) => {
+    await enableChat(page);
+
+    const lineNumberCell = page.locator('.d2h-code-linenumber').nth(0);
+    await lineNumberCell.hover();
+    const addCommentBtn = page.locator('.add-comment-btn').first();
+    await addCommentBtn.waitFor({ state: 'visible', timeout: 5000 });
+    await addCommentBtn.click();
+    await page.waitForSelector('.user-comment-form', { timeout: 5000 });
+
+    const commentText = 'Panel chat should use this user comment';
+    const commentTextarea = page.locator('.user-comment-form textarea');
+    await commentTextarea.fill(commentText);
+    await page.locator('.save-comment-btn').click();
+
+    await expect(page.locator('.user-comment-row')).toContainText(commentText);
+
+    await page.locator('#ai-panel-toggle').click();
+    await expect(page.locator('#ai-panel')).not.toHaveClass(/collapsed/);
+
+    await page.locator('.segment-btn[data-segment="comments"]').click();
+
+    const commentPanelItem = page.locator('.finding-item-wrapper', { hasText: commentText });
+    await expect(commentPanelItem).toBeAttached({ timeout: 5000 });
+
+    const panelChatBtn = commentPanelItem.locator('.quick-action-chat[data-comment-id]');
+    await expect(panelChatBtn).toBeAttached({ timeout: 5000 });
+    await panelChatBtn.click({ force: true });
+
+    await expect(page.locator('.chat-panel')).toBeVisible({ timeout: 5000 });
+    const contextCard = page.locator('.chat-panel__context-card[data-tooltip-body]');
+    await expect(contextCard).toBeVisible({ timeout: 3000 });
+    await expect(contextCard.locator('.chat-panel__context-title')).toContainText(commentText);
+  });
+
+  test('review-panel chat button is hidden when chat is disabled', async ({ page }) => {
+    await disableChat(page);
+
+    const lineNumberCell = page.locator('.d2h-code-linenumber').nth(0);
+    await lineNumberCell.hover();
+    const addCommentBtn = page.locator('.add-comment-btn').first();
+    await addCommentBtn.waitFor({ state: 'visible', timeout: 5000 });
+    await addCommentBtn.click();
+    await page.waitForSelector('.user-comment-form', { timeout: 5000 });
+
+    const commentText = 'Review panel chat should stay hidden';
+    const commentTextarea = page.locator('.user-comment-form textarea');
+    await commentTextarea.fill(commentText);
+    await page.locator('.save-comment-btn').click();
+
+    await expect(page.locator('.user-comment-row')).toContainText(commentText);
+
+    await page.locator('#ai-panel-toggle').click();
+    await expect(page.locator('#ai-panel')).not.toHaveClass(/collapsed/);
+
+    await page.locator('.segment-btn[data-segment="comments"]').click();
+
+    const commentPanelItem = page.locator('.finding-item-wrapper', { hasText: commentText });
+    await expect(commentPanelItem).toBeAttached({ timeout: 5000 });
+
+    const panelChatBtn = commentPanelItem.locator('.quick-action-chat[data-comment-id]');
+    await expect(panelChatBtn).toBeHidden();
+  });
+});
