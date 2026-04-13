@@ -66,8 +66,9 @@ class GitWorktreeManager {
   /**
    * Resolve which git remote points to the given repository URLs.
    * Compares normalized URLs against all configured remotes. If no match is
-   * found, adds (or updates) a managed `pair-review-base` remote so that
-   * subsequent fetches target the correct repository (e.g. the base repo of a fork PR).
+   * found, falls back to an existing non-managed remote instead of mutating the
+   * repository's git config. This preserves proxy/mirror setups where the
+   * canonical fetch URL may differ from GitHub's clone URL.
    *
    * @param {Object} git - simple-git instance
    * @param {string} cloneUrl - HTTPS clone URL of the target repository
@@ -81,9 +82,7 @@ class GitWorktreeManager {
     const remoteOutput = await git.raw(['remote', '-v']);
 
     if (!remoteOutput || !remoteOutput.trim()) {
-      console.log(`No remotes found, adding ${MANAGED_REMOTE} remote for ${cloneUrl}`);
-      await git.addRemote(MANAGED_REMOTE, cloneUrl);
-      return MANAGED_REMOTE;
+      throw new Error(`No remotes configured — cannot resolve base repository for ${cloneUrl}`);
     }
 
     // Parse remote output into { name: url } map (fetch URLs only)
@@ -115,9 +114,16 @@ class GitWorktreeManager {
 
     const normalizedCloneUrl = normalizeUrl(cloneUrl);
     const normalizedSshUrl = sshUrl ? normalizeUrl(sshUrl) : '';
+    const remoteNames = Object.keys(remotes);
+    const fallbackRemote = remotes.origin
+      ? 'origin'
+      : remoteNames.find((name) => name !== MANAGED_REMOTE) || 'origin';
 
-    // Check each remote for a match
+    // Check each non-managed remote for a direct URL match
     for (const [name, url] of Object.entries(remotes)) {
+      if (name === MANAGED_REMOTE) {
+        continue;
+      }
       const normalizedRemoteUrl = normalizeUrl(url);
       if (normalizedRemoteUrl === normalizedCloneUrl ||
           (normalizedSshUrl && normalizedRemoteUrl === normalizedSshUrl)) {
@@ -126,16 +132,13 @@ class GitWorktreeManager {
       }
     }
 
-    // No match found — add or update the managed remote
-    if (remotes[MANAGED_REMOTE]) {
-      console.log(`Updating ${MANAGED_REMOTE} remote URL to ${cloneUrl}`);
-      await git.raw(['remote', 'set-url', MANAGED_REMOTE, cloneUrl]);
-    } else {
-      console.log(`Adding ${MANAGED_REMOTE} remote for ${cloneUrl}`);
-      await git.addRemote(MANAGED_REMOTE, cloneUrl);
-    }
-
-    return MANAGED_REMOTE;
+    console.warn(
+      `No configured remote matched ${cloneUrl}; using existing remote '${fallbackRemote}' without modifying git config`
+    );
+    // NOTE: For fork PRs this may return a remote that does not point to the
+    // base repository. Callers rely on fetchPRHead's SHA-fallback path and
+    // tolerant base-branch fetching to handle this without mutating git config.
+    return fallbackRemote;
   }
 
   /**
