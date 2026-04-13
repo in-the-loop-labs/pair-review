@@ -1201,6 +1201,11 @@ function startPoolBackgroundFetches(db, config) {
               if (elapsed < intervalMs) continue;
             }
 
+            if (!fs.existsSync(entry.path)) {
+              logger.warn(`Background fetch skipped for ${entry.id}: directory no longer exists (${entry.path})`);
+              continue;
+            }
+
             logger.info(`Background fetch starting for ${repoName} pool worktree ${entry.id}`);
             try {
               const git = simpleGit(entry.path, { timeout: { block: 300000 } });
