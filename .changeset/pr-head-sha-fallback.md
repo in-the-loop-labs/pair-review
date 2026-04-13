@@ -1,3 +1,4 @@
+---
 "@in-the-loop-labs/pair-review": patch
 ---
 
