@@ -231,15 +231,22 @@ class WorktreePoolLifecycle {
     // Note: poolEntry was already atomically marked 'switching' by claimAvailable()
     try {
       const git = this._simpleGit(poolEntry.path);
+      const worktreeManager = new this._GitWorktreeManager(this.db);
 
       // Resolve the remote
-      const remotes = await git.getRemotes();
-      const remote = remotes.find(r => r.name === 'origin') || remotes[0];
-      const remoteName = remote ? remote.name : 'origin';
+      const remoteName = await worktreeManager.resolveRemoteForPR(git, prData, {
+        owner: prInfo.owner,
+        repo: prInfo.repo,
+        number: prInfo.prNumber,
+      });
 
-      // Fetch new PR refs (incremental -- cheap on a warm worktree)
+      // Fetch new PR refs (incremental -- cheap on a warm worktree) with fallback
       logger.info(`Fetching PR #${prInfo.prNumber} refs into pool worktree ${poolEntry.id}`);
-      await git.fetch([remoteName, `+refs/pull/${prInfo.prNumber}/head:refs/remotes/${remoteName}/pr-${prInfo.prNumber}`]);
+      const fetchedHead = await worktreeManager.fetchPRHead(git, {
+        owner: prInfo.owner,
+        repo: prInfo.repo,
+        number: prInfo.prNumber,
+      }, prData, { remote: remoteName });
 
       // Clean the working tree before switching PRs. Without this, untracked
       // files (build artifacts, generated code) from the previous PR leak into
@@ -254,7 +261,7 @@ class WorktreePoolLifecycle {
       if (targetSha) {
         await git.checkout([targetSha]);
       } else {
-        await git.checkout([`refs/remotes/${remoteName}/pr-${prInfo.prNumber}`]);
+        await git.checkout([fetchedHead.checkoutTarget]);
       }
 
       // Run reset_script if configured
@@ -273,7 +280,6 @@ class WorktreePoolLifecycle {
           PR_NUMBER: String(prInfo.prNumber),
           WORKTREE_PATH: poolEntry.path,
         };
-        const worktreeManager = new this._GitWorktreeManager();
         await worktreeManager.executeCheckoutScript(
           options.resetScript, poolEntry.path, scriptEnv, options.checkoutTimeout
         );
@@ -285,7 +291,6 @@ class WorktreePoolLifecycle {
 
       // Best-effort disk cleanup for deleted non-pool worktree directories
       if (deletedPaths && deletedPaths.length > 0) {
-        const worktreeManager = new this._GitWorktreeManager();
         for (const deletedPath of deletedPaths) {
           try {
             await worktreeManager.cleanupWorktree(deletedPath);
