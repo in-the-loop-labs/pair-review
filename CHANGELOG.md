@@ -1,5 +1,32 @@
 # Changelog
 
+## 3.3.0
+
+### Minor Changes
+
+- 9a5c8c2: Replace "Start Review" and "Review Local" buttons on the index page with separate "Open" and "Analyze" buttons. "Open" opens the review page as before. "Analyze" opens the review page and automatically starts AI analysis using the repository's default settings.
+- c996717: Add per-repository and per-provider `load_skills` configuration to control whether AI providers load skill extensions during analysis. Resolution follows a 4-tier cascade: DB repo settings > repo JSON config > provider-level config > default (enabled). Council mode resolves overrides per-voice so mixed-provider councils respect provider-specific settings. Includes a toggle in the repo settings UI.
+- 8d3bb91: Add configurable worktree pool for reusable git worktrees per repository
+
+  Instead of creating and destroying worktrees per PR review, pool worktrees persist and are switched between PRs via incremental fetch + checkout + reset_script. This amortizes the cost of git fetch and sparse-checkout setup for monorepos and large repositories.
+
+  New config keys under `repos.<owner/repo>`:
+
+  - `pool_size` — max pool worktrees for this repo (0 = disabled, current behavior)
+  - `reset_script` — command to run when switching a pool worktree to a new PR
+  - `pool_fetch_interval_minutes` — background fetch interval for idle pool worktrees
+
+  Also renames the `monorepos` config key to `repos` (old key still works as a silent fallback).
+
+### Patch Changes
+
+- eba3c94: Harden cross-instance pool fetch coordination: replace TOCTOU-prone check-then-claim with atomic SQLite UPSERT lease, add heartbeat refresh after each worktree fetch, normalize repo name casing to match database collation, and make migration 42 idempotent with exception-safe pragma handling.
+- 0503afc: Auto-merge case-duplicate repo_settings rows during migration instead of blocking startup. Keeps the most recently updated row and writes a backup of removed rows to ~/.pair-review/.
+- cd216da: Prune stale remote-tracking refs during pool worktree fetches to prevent ref hierarchy conflicts from blocking git fetch. Also reset dirty pool worktrees before refresh so unattended leftover state doesn't cause failures.
+- 6e50610: Add "Chat" actions for user-created comments in the review panel so they open chat with the comment context, matching adopted comments and inline comment chat behavior.
+- fe8c321: Switch dev tooling from npm to pnpm. Internal-only change: the published package and `npx pair-review` usage are unaffected. Contributors should install pnpm and use `pnpm install` / `pnpm test` / `pnpm run dev` going forward.
+- 4349cf4: Show the full relative worktree path in the Diff options dropdown instead of only the last path segment. Worktrees with multi-segment name templates (e.g. `{id}/src`) now display correctly.
+
 ## 3.2.3
 
 ### Patch Changes
