@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.2.3
+
+### Patch Changes
+
+- 2a73da1: Keep the selected analysis run stable when reloading analysis history after adopting a suggestion from an older run.
+- 497bc87: Structure orchestration and consolidation summaries as markdown with a short overall assessment, bullet points for specific findings, and optional follow-up paragraphs.
+
 ## 3.2.2
 
 ### Patch Changes
