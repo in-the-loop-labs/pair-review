@@ -98,12 +98,11 @@ describe('GitWorktreeManager remote resolution', () => {
       expect(mockGit.addRemote).not.toHaveBeenCalled();
     });
 
-    it('should add pair-review-base remote when no remote matches', async () => {
+    it('should fall back to origin when no remote matches', async () => {
       mockGit.raw.mockResolvedValue(
         'origin\thttps://github.com/fork-owner/repo.git (fetch)\n' +
         'origin\thttps://github.com/fork-owner/repo.git (push)\n'
       );
-      mockGit.addRemote.mockResolvedValue(undefined);
 
       const result = await manager.resolveRemoteForRepo(
         mockGit,
@@ -111,26 +110,17 @@ describe('GitWorktreeManager remote resolution', () => {
         'git@github.com:upstream-owner/repo.git'
       );
 
-      expect(result).toBe('pair-review-base');
-      expect(mockGit.addRemote).toHaveBeenCalledWith(
-        'pair-review-base',
-        'https://github.com/upstream-owner/repo.git'
-      );
+      expect(result).toBe('origin');
+      expect(mockGit.addRemote).not.toHaveBeenCalled();
     });
 
-    it('should use set-url when pair-review-base remote already exists', async () => {
-      mockGit.raw.mockImplementation(async (args) => {
-        if (args[0] === 'remote' && args[1] === '-v') {
-          return (
-            'origin\thttps://github.com/fork-owner/repo.git (fetch)\n' +
-            'origin\thttps://github.com/fork-owner/repo.git (push)\n' +
-            'pair-review-base\thttps://github.com/old-upstream/repo.git (fetch)\n' +
-            'pair-review-base\thttps://github.com/old-upstream/repo.git (push)\n'
-          );
-        }
-        // set-url call
-        return '';
-      });
+    it('should prefer origin over a stale pair-review-base remote', async () => {
+      mockGit.raw.mockResolvedValue(
+        'origin\thttps://proxy.example.com/owner/repo.git (fetch)\n' +
+        'origin\thttps://proxy.example.com/owner/repo.git (push)\n' +
+        'pair-review-base\thttps://github.com/old-upstream/repo.git (fetch)\n' +
+        'pair-review-base\thttps://github.com/old-upstream/repo.git (push)\n'
+      );
 
       const result = await manager.resolveRemoteForRepo(
         mockGit,
@@ -138,11 +128,9 @@ describe('GitWorktreeManager remote resolution', () => {
         ''
       );
 
-      expect(result).toBe('pair-review-base');
+      expect(result).toBe('origin');
       expect(mockGit.addRemote).not.toHaveBeenCalled();
-      expect(mockGit.raw).toHaveBeenCalledWith([
-        'remote', 'set-url', 'pair-review-base', 'https://github.com/new-upstream/repo.git'
-      ]);
+      expect(mockGit.raw).toHaveBeenCalledTimes(1);
     });
 
     it('should not produce false matches when sshUrl is null or empty', async () => {
@@ -166,24 +154,54 @@ describe('GitWorktreeManager remote resolution', () => {
         'https://github.com/different-owner/repo.git',
         ''
       );
-      expect(result2).toBe('pair-review-base');
+      expect(result2).toBe('origin');
     });
 
-    it('should add managed remote when remote output is empty', async () => {
-      mockGit.raw.mockResolvedValue('');
-      mockGit.addRemote.mockResolvedValue(undefined);
+    it('should fall back to first non-managed remote when origin is unavailable', async () => {
+      mockGit.raw.mockResolvedValue(
+        'upstream\tssh://git@proxy.example.com/owner/repo (fetch)\n' +
+        'upstream\tssh://git@proxy.example.com/owner/repo (push)\n' +
+        'pair-review-base\thttps://github.com/owner/repo.git (fetch)\n' +
+        'pair-review-base\thttps://github.com/owner/repo.git (push)\n'
+      );
+
+      const result = await manager.resolveRemoteForRepo(
+        mockGit,
+        'https://github.com/different-owner/repo.git',
+        ''
+      );
+
+      expect(result).toBe('upstream');
+      expect(mockGit.addRemote).not.toHaveBeenCalled();
+    });
+
+    it('should ignore pair-review-base even when its URL matches', async () => {
+      mockGit.raw.mockResolvedValue(
+        'origin\thttps://proxy.example.com/owner/repo.git (fetch)\n' +
+        'origin\thttps://proxy.example.com/owner/repo.git (push)\n' +
+        'pair-review-base\thttps://github.com/owner/repo.git (fetch)\n' +
+        'pair-review-base\thttps://github.com/owner/repo.git (push)\n'
+      );
 
       const result = await manager.resolveRemoteForRepo(
         mockGit,
         'https://github.com/owner/repo.git',
-        'git@github.com:owner/repo.git'
+        ''
       );
 
-      expect(result).toBe('pair-review-base');
-      expect(mockGit.addRemote).toHaveBeenCalledWith(
-        'pair-review-base',
-        'https://github.com/owner/repo.git'
-      );
+      expect(result).toBe('origin');
+      expect(mockGit.addRemote).not.toHaveBeenCalled();
+    });
+
+    it('should throw when remote output is empty', async () => {
+      mockGit.raw.mockResolvedValue('');
+
+      await expect(manager.resolveRemoteForRepo(
+        mockGit,
+        'https://github.com/owner/repo.git',
+        'git@github.com:owner/repo.git'
+      )).rejects.toThrow('No remotes configured');
+      expect(mockGit.addRemote).not.toHaveBeenCalled();
     });
   });
 
