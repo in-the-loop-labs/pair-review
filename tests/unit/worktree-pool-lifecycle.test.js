@@ -18,6 +18,12 @@ function createMockDeps() {
     refreshWorktree: vi.fn().mockResolvedValue('/tmp/worktree/pair-review--abc'),
     executeCheckoutScript: vi.fn().mockResolvedValue(undefined),
     cleanupWorktree: vi.fn().mockResolvedValue(undefined),
+    resolveRemoteForPR: vi.fn().mockResolvedValue('origin'),
+    fetchPRHead: vi.fn().mockResolvedValue({
+      remote: 'origin',
+      trackingRef: 'refs/remotes/origin/pr-123',
+      checkoutTarget: 'abc123',
+    }),
   };
 
   // Must use function (not arrow) so it can be called with `new`
@@ -143,11 +149,13 @@ describe('WorktreePoolLifecycle', () => {
       expect(result.worktreeId).toBe('pair-review--xyz');
       // claimAvailable already marked as switching -- no separate markSwitching call
       expect(deps.poolRepo.markSwitching).not.toHaveBeenCalled();
-      // PR-specific refspec fetch — no --prune (only broad fetches get --prune)
-      expect(deps._mockGit.fetch).toHaveBeenCalledWith([
-        'origin',
-        '+refs/pull/123/head:refs/remotes/origin/pr-123',
-      ]);
+      expect(deps._mockWorktreeManagerInstance.resolveRemoteForPR).toHaveBeenCalled();
+      expect(deps._mockWorktreeManagerInstance.fetchPRHead).toHaveBeenCalledWith(
+        deps._mockGit,
+        { owner: 'test', repo: 'repo', number: 123 },
+        prData,
+        { remote: 'origin' }
+      );
       expect(deps._mockGit.checkout).toHaveBeenCalled();
     });
 
@@ -273,7 +281,15 @@ describe('WorktreePoolLifecycle', () => {
 
     it('executes operations in the correct order (markSwitching already done by claimAvailable)', async () => {
       const callOrder = [];
-      deps._mockGit.fetch.mockImplementation(() => { callOrder.push('fetch'); return Promise.resolve(); });
+      deps._mockWorktreeManagerInstance.resolveRemoteForPR.mockImplementation(() => { callOrder.push('resolveRemoteForPR'); return Promise.resolve('origin'); });
+      deps._mockWorktreeManagerInstance.fetchPRHead.mockImplementation(() => {
+        callOrder.push('fetchPRHead');
+        return Promise.resolve({
+          remote: 'origin',
+          trackingRef: 'refs/remotes/origin/pr-123',
+          checkoutTarget: 'abc123',
+        });
+      });
       deps._mockGit.reset.mockImplementation(() => { callOrder.push('reset'); return Promise.resolve(); });
       deps._mockGit.clean.mockImplementation(() => { callOrder.push('clean'); return Promise.resolve(); });
       deps._mockGit.checkout.mockImplementation(() => { callOrder.push('checkout'); return Promise.resolve(); });
@@ -283,7 +299,7 @@ describe('WorktreePoolLifecycle', () => {
 
       await lifecycle._switchPoolWorktree(poolEntry, worktreeRecord, prInfo, prData, options);
 
-      expect(callOrder).toEqual(['fetch', 'reset', 'clean', 'checkout', 'switchPR', 'clearWorktree', 'markInUse']);
+      expect(callOrder).toEqual(['resolveRemoteForPR', 'fetchPRHead', 'reset', 'clean', 'checkout', 'switchPR', 'clearWorktree', 'markInUse']);
     });
 
     it('runs executeCheckoutScript when resetScript is provided', async () => {
@@ -349,7 +365,7 @@ describe('WorktreePoolLifecycle', () => {
     });
 
     it('rolls back to available on failure', async () => {
-      deps._mockGit.fetch.mockRejectedValue(new Error('fetch failed'));
+      deps._mockWorktreeManagerInstance.fetchPRHead.mockRejectedValue(new Error('fetch failed'));
 
       await expect(lifecycle._switchPoolWorktree(poolEntry, worktreeRecord, prInfo, prData, options))
         .rejects.toThrow('fetch failed');
@@ -386,6 +402,11 @@ describe('WorktreePoolLifecycle', () => {
         head: { ref: 'feature-branch' },
         base: { ref: 'main' },
       };
+      deps._mockWorktreeManagerInstance.fetchPRHead.mockResolvedValue({
+        remote: 'origin',
+        trackingRef: 'refs/remotes/origin/pr-123',
+        checkoutTarget: 'refs/remotes/origin/pr-123',
+      });
 
       await lifecycle._switchPoolWorktree(poolEntry, worktreeRecord, prInfo, prDataNoSha, options);
 
@@ -991,4 +1012,3 @@ describe('WorktreePoolLifecycle', () => {
     });
   });
 });
-

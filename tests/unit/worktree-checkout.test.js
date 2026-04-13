@@ -89,4 +89,34 @@ describe('GitWorktreeManager.checkoutBranch', () => {
     const fetchCall = mockGit.fetch.mock.calls[0][0];
     expect(fetchCall[1]).toBe('+refs/pull/77/head:refs/remotes/upstream/pr-77');
   });
+
+  it('should fall back to fetching the head SHA when PR refs are unavailable', async () => {
+    mockGit.fetch.mockRejectedValueOnce(new Error("fatal: couldn't find remote ref refs/pull/42/head"));
+
+    const sha = await manager.checkoutBranch('/tmp/worktree', 42, {
+      prData: {
+        head_sha: 'abc123def456',
+      }
+    });
+
+    expect(mockGit.fetch).toHaveBeenNthCalledWith(1, [
+      'upstream',
+      '+refs/pull/42/head:refs/remotes/upstream/pr-42',
+    ]);
+    expect(mockGit.raw).toHaveBeenNthCalledWith(1, [
+      'fetch', 'upstream', 'abc123def456',
+    ]);
+    expect(mockGit.raw).toHaveBeenNthCalledWith(2, [
+      'reset', '--hard', 'abc123def456',
+    ]);
+    expect(sha).toBe('abc123def456');
+  });
+
+  it('should propagate the error when PR refs are unavailable and no head_sha is provided', async () => {
+    mockGit.fetch.mockRejectedValueOnce(new Error("fatal: couldn't find remote ref refs/pull/42/head"));
+
+    await expect(
+      manager.checkoutBranch('/tmp/worktree', 42, { prData: {} })
+    ).rejects.toThrow("couldn't find remote ref");
+  });
 });
