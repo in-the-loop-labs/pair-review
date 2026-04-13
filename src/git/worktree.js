@@ -171,6 +171,97 @@ class GitWorktreeManager {
   }
 
   /**
+   * Extract a PR number from either { number } or { prNumber } shapes.
+   * @param {Object|null} prInfo
+   * @returns {number|null}
+   */
+  getPRNumber(prInfo) {
+    if (!prInfo) return null;
+    return prInfo.number || prInfo.prNumber || null;
+  }
+
+  /**
+   * Extract the PR head branch name from either REST or stored PR metadata.
+   * @param {Object|null} prData
+   * @returns {string}
+   */
+  getPRHeadBranch(prData) {
+    return prData?.head?.ref || prData?.head_branch || '';
+  }
+
+  /**
+   * Extract the PR head SHA from either REST or stored PR metadata.
+   * @param {Object|null} prData
+   * @returns {string}
+   */
+  getPRHeadSha(prData) {
+    return prData?.head?.sha || prData?.head_sha || '';
+  }
+
+  /**
+   * Detect whether a fetch failed because the remote does not expose a PR ref.
+   * @param {Error} error
+   * @returns {boolean}
+   */
+  isMissingRemoteRefError(error) {
+    const message = String(error?.message || '').toLowerCase();
+    return message.includes('couldn\'t find remote ref') ||
+      message.includes('could not find remote ref') ||
+      message.includes('remote ref does not exist') ||
+      message.includes('fatal: invalid refspec');
+  }
+
+  /**
+   * Fetch a PR head into a stable tracking ref, falling back from GitHub PR
+   * refs to a direct SHA fetch when the git transport does not expose
+   * refs/pull/* (for example, alternate internal fetch backends).
+   *
+   * @param {Object} git - simple-git instance
+   * @param {Object} prInfo - PR info { owner, repo, number } or { prNumber }
+   * @param {Object} prData - PR data from GitHub API or stored metadata
+   * @param {Object} [options={}]
+   * @param {string|null} [options.remote] - Base repository remote to use for PR-ref fetch
+   * @returns {Promise<{remote: string, trackingRef: string|null, checkoutTarget: string}>}
+   */
+  async fetchPRHead(git, prInfo, prData, options = {}) {
+    const prNumber = this.getPRNumber(prInfo);
+    const headSha = this.getPRHeadSha(prData);
+    const baseRemote = options.remote || await this.resolveRemoteForPR(git, prData, prInfo);
+
+    if (!prNumber) {
+      throw new Error('Cannot fetch PR head without a PR number');
+    }
+
+    const prTrackingRef = `refs/remotes/${baseRemote}/pr-${prNumber}`;
+
+    try {
+      await git.fetch([baseRemote, `+refs/pull/${prNumber}/head:${prTrackingRef}`]);
+      return {
+        remote: baseRemote,
+        trackingRef: prTrackingRef,
+        checkoutTarget: prTrackingRef
+      };
+    } catch (prRefError) {
+      if (!this.isMissingRemoteRefError(prRefError)) {
+        throw prRefError;
+      }
+
+      console.warn(`PR ref fetch unavailable for PR #${prNumber} on remote ${baseRemote}, falling back to SHA fetch: ${prRefError.message}`);
+
+      if (!headSha) {
+        throw prRefError;
+      }
+
+      await git.raw(['fetch', baseRemote, headSha]);
+      return {
+        remote: baseRemote,
+        trackingRef: null,
+        checkoutTarget: headSha
+      };
+    }
+  }
+
+  /**
    * Execute a user-provided checkout script in the worktree.
    * The script receives PR context as environment variables and is responsible
    * for configuring sparse-checkout (or any other worktree setup).
@@ -427,20 +518,21 @@ class GitWorktreeManager {
         console.log(`Base SHA fetch not needed or already available: ${fetchError.message}`);
       }
 
-      // Fetch the PR head using GitHub's pull request refs (more reliable than branch names)
+      // Fetch the PR head using PR refs when available, with a branch/SHA fallback
       console.log(`Fetching PR #${prInfo.number} head...`);
-      await worktreeGit.fetch([remote, `+refs/pull/${prInfo.number}/head:refs/remotes/${remote}/pr-${prInfo.number}`]);
+      const fetchedHead = await this.fetchPRHead(worktreeGit, prInfo, prData, { remote });
 
       // Execute checkout script if configured (before checkout so sparse-checkout is set up)
       if (checkoutScript) {
         // Fetch the actual head branch by name (for checkout scripts that expect branch refs)
         // This may fail for fork PRs where the branch is in a different repo - that's okay
-        if (prData.head_branch) {
+        const headBranch = this.getPRHeadBranch(prData);
+        if (headBranch) {
           try {
-            console.log(`Fetching head branch ${prData.head_branch}...`);
-            await worktreeGit.fetch([remote, `+refs/heads/${prData.head_branch}:refs/remotes/${remote}/${prData.head_branch}`]);
+            console.log(`Fetching head branch ${headBranch}...`);
+            await worktreeGit.fetch([remote, `+refs/heads/${headBranch}:refs/remotes/${remote}/${headBranch}`]);
             // Create/update a local branch pointing to the fetched ref so tooling can reference it by name
-            await worktreeGit.branch(['-f', prData.head_branch, `${remote}/${prData.head_branch}`]);
+            await worktreeGit.branch(['-f', headBranch, `${remote}/${headBranch}`]);
           } catch (branchFetchError) {
             // Expected for fork PRs - the branch exists in the fork, not the base repo
             console.log(`Could not fetch head branch (may be from a fork): ${branchFetchError.message}`);
@@ -450,9 +542,9 @@ class GitWorktreeManager {
         console.log(`Executing checkout script: ${checkoutScript}`);
         const scriptEnv = {
           BASE_BRANCH: prData.base_branch,
-          HEAD_BRANCH: prData.head_branch,
+          HEAD_BRANCH: headBranch,
           BASE_SHA: prData.base_sha,
-          HEAD_SHA: prData.head_sha,
+          HEAD_SHA: this.getPRHeadSha(prData),
           PR_NUMBER: String(prInfo.number),
           WORKTREE_PATH: worktreePath
         };
@@ -461,13 +553,13 @@ class GitWorktreeManager {
       }
 
       // Checkout to PR head commit
-      const targetSha = prData.head_sha;
+      const targetSha = this.getPRHeadSha(prData);
       if (targetSha) {
         console.log(`Checking out to PR head commit ${targetSha}...`);
         await worktreeGit.checkout([targetSha]);
       } else {
-        console.log(`Checking out to PR head ref ${remote}/pr-${prInfo.number}...`);
-        await worktreeGit.checkout([`${remote}/pr-${prInfo.number}`]);
+        console.log(`Checking out to PR head ref ${fetchedHead.checkoutTarget}...`);
+        await worktreeGit.checkout([fetchedHead.checkoutTarget]);
       }
       
       // Verify we're at the correct commit
@@ -540,13 +632,13 @@ class GitWorktreeManager {
       console.log(`Fetching latest changes from ${remote}...`);
       await worktreeGit.fetch([remote, '--prune']);
 
-      // Fetch the PR head using GitHub's pull request refs
+      // Fetch the PR head using PR refs when available, with a branch/SHA fallback
       console.log(`Fetching PR #${number} head...`);
-      await worktreeGit.fetch([remote, `+refs/pull/${number}/head:refs/remotes/${remote}/pr-${number}`]);
+      const fetchedHead = await this.fetchPRHead(worktreeGit, prInfo, prData, { remote });
 
       // Checkout to PR head commit
       console.log(`Checking out to PR head commit ${headSha}...`);
-      await worktreeGit.checkout([`${remote}/pr-${number}`]);
+      await worktreeGit.checkout([fetchedHead.checkoutTarget]);
 
       // Verify we're at the correct commit
       const currentCommit = await worktreeGit.revparse(['HEAD']);
@@ -919,11 +1011,11 @@ class GitWorktreeManager {
 
       // Fetch the latest PR head from remote
       console.log(`Fetching PR #${prNumber} head from ${remote}...`);
-      await git.fetch([remote, `pull/${prNumber}/head`]);
+      const fetchedHead = await this.fetchPRHead(git, prInfo || { number: prNumber }, prData, { remote });
 
       // Reset to the fetched PR head
       console.log(`Resetting worktree to PR head...`);
-      await git.raw(['reset', '--hard', 'FETCH_HEAD']);
+      await git.raw(['reset', '--hard', fetchedHead.checkoutTarget]);
 
       // Update last_accessed_at in database
       if (this.worktreeRepo) {
@@ -977,13 +1069,13 @@ class GitWorktreeManager {
         ? await this.resolveRemoteForPR(git, prData, prInfo)
         : defaultRemote;
 
-      // 3. Fetch PR head into a persistent ref
-      console.log(`Fetching PR #${prNumber} head from ${remote} into refs/remotes/${remote}/pr-${prNumber}...`);
-      await git.fetch([remote, `+refs/pull/${prNumber}/head:refs/remotes/${remote}/pr-${prNumber}`]);
+      // 3. Fetch PR head into a persistent ref (or by SHA when refs are unavailable)
+      console.log(`Fetching PR #${prNumber} head from ${remote}...`);
+      const fetchedHead = await this.fetchPRHead(git, prInfo || { number: prNumber }, prData, { remote });
 
       // 4. Reset worktree to the fetched ref
-      console.log(`Resetting worktree to refs/remotes/${remote}/pr-${prNumber}...`);
-      await git.raw(['reset', '--hard', `refs/remotes/${remote}/pr-${prNumber}`]);
+      console.log(`Resetting worktree to ${fetchedHead.checkoutTarget}...`);
+      await git.raw(['reset', '--hard', fetchedHead.checkoutTarget]);
 
       // 5. Return the new HEAD SHA
       const headSha = (await git.revparse(['HEAD'])).trim();
