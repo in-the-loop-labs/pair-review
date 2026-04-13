@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.3.1
+
+### Patch Changes
+
+- aa05818: Generate package-lock.json during release for nix source tarball packaging
+- 5484b80: Fall back to fetching a pull request head by commit SHA when the configured git remote does not expose GitHub `refs/pull/*` refs.
+
 ## 3.3.0
 
 ### Minor Changes
