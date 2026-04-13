@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.3.2
+
+### Patch Changes
+
+- 3ad9226: Stop persisting the `pair-review-base` git remote and prefer existing remotes for PR fetches
+
 ## 3.3.1
 
 ### Patch Changes
