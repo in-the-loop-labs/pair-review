@@ -871,6 +871,9 @@ class PRManager {
         // Render diff using the existing renderDiff method
         this.renderDiff({ changed_files: sortedFiles });
 
+        // Progressively fetch full file contents for hunk expansion
+        this._upgradeFilesWithContents(sortedFiles);
+
       } else {
         const diffContainer = document.getElementById('diff-container');
         if (diffContainer) {
@@ -1634,6 +1637,10 @@ class PRManager {
    * @param {Object} pr - PR data with files
    */
   renderDiff(pr) {
+    // Abort any in-flight file content fetches from progressive loading
+    this._fileContentsAbort?.abort();
+    this._fileContentsAbort = null;
+
     const diffContainer = document.getElementById('diff-container');
     if (!diffContainer) return;
 
@@ -1678,6 +1685,79 @@ class PRManager {
     // Load context files after diff is rendered
     this.contextFiles = [];
     this.loadContextFiles();
+  }
+
+  /**
+   * Progressively fetch full file contents and upgrade Pierre-rendered files
+   * to enable hunk expansion. Visible files (first batch) are fetched first,
+   * then remaining files.
+   * @param {Array} files - The sorted changed_files array
+   */
+  _upgradeFilesWithContents(files) {
+    if (!this.pierreBridge || this.pierreBridge._disabled) return;
+
+    const reviewId = this.currentPR?.id;
+    if (!reviewId) return;
+
+    const controller = new AbortController();
+    this._fileContentsAbort = controller;
+    const signal = controller.signal;
+
+    // Filter to files that have a PierreBridge instance and aren't binary
+    const eligible = files.filter(f => f.patch && !f.binary && this.pierreBridge.files.has(f.file));
+    if (!eligible.length) return;
+
+    const VISIBLE_BATCH = 8;
+    const visibleFiles = eligible.slice(0, VISIBLE_BATCH);
+    const remainingFiles = eligible.slice(VISIBLE_BATCH);
+
+    const fetchAndUpgrade = async (file) => {
+      if (signal.aborted) return;
+
+      // Use diff header metadata (not insertion/deletion counts) to determine
+      // true file status. Only check before the first @@ hunk marker to avoid
+      // matching code content that happens to contain these strings.
+      const diffHeader = file.patch.substring(0, file.patch.indexOf('@@'));
+      const status = diffHeader.includes('new file mode') ? 'added'
+        : diffHeader.includes('deleted file mode') ? 'deleted'
+        : 'modified';
+      let url = `/api/reviews/${reviewId}/file-contents/${encodeURIComponent(file.file)}?status=${encodeURIComponent(status)}`;
+      if (file.renamedFrom) {
+        url += `&oldPath=${encodeURIComponent(file.renamedFrom)}`;
+      }
+
+      try {
+        const resp = await fetch(url, { signal });
+        if (!resp.ok || signal.aborted) return;
+        const data = await resp.json();
+        if (data.tooLarge || data.binary || signal.aborted) return;
+
+        const oldFile = data.oldContents != null
+          ? { name: data.oldPath || file.renamedFrom || file.file, contents: data.oldContents }
+          : null;
+        const newFile = data.newContents != null
+          ? { name: file.file, contents: data.newContents }
+          : null;
+
+        if (oldFile || newFile) {
+          this.pierreBridge.upgradeFileContents(file.file, oldFile, newFile);
+        }
+      } catch (err) {
+        if (err.name === 'AbortError') return;
+        console.error(`Failed to fetch file contents for ${file.file}:`, err);
+      }
+    };
+
+    // Use requestIdleCallback (or setTimeout fallback) to avoid blocking initial paint
+    const scheduleUpgrade = window.requestIdleCallback || ((cb) => setTimeout(cb, 50));
+    scheduleUpgrade(async () => {
+      // Visible batch — all in parallel
+      await Promise.all(visibleFiles.map(fetchAndUpgrade));
+      // Remaining batch — all in parallel after visible batch completes
+      if (remainingFiles.length && !signal.aborted) {
+        await Promise.all(remainingFiles.map(fetchAndUpgrade));
+      }
+    });
   }
 
   /**

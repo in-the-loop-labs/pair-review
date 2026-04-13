@@ -205,6 +205,8 @@ class PierreBridge {
       enableLineSelection: true,
       unsafeCSS: this.getUnsafeCSS(),
       hunkSeparators: 'line-info',
+      expansionLineCount: 20,
+      collapsedContextThreshold: 5,
       collapsed: renderOptions.collapsed || false,
 
       // Custom gutter render — dual buttons (chat + comment) matching legacy UI.
@@ -274,6 +276,26 @@ class PierreBridge {
 
     this.files.set(fileName, fileState);
     return fileState;
+  }
+
+  /**
+   * Upgrade a patch-only render with full file contents to enable hunk expansion.
+   * Calls render() again on the existing FileDiff instance — the library detects
+   * new content via areFilesEqual() and re-renders with isPartial: false.
+   * @param {string} fileName
+   * @param {{ name: string, contents: string }|null} oldFile
+   * @param {{ name: string, contents: string }|null} newFile
+   * @returns {boolean} true if re-render occurred
+   */
+  upgradeFileContents(fileName, oldFile, newFile) {
+    const fileState = this.files.get(fileName);
+    if (!fileState || !fileState.instance) return false;
+    return fileState.instance.render({
+      oldFile,
+      newFile,
+      lineAnnotations: fileState.annotations,
+      containerWrapper: fileState.container,
+    });
   }
 
   /**
