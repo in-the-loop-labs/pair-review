@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.3.3
+
+### Patch Changes
+
+- eabc4b6: Skip background fetch for pool worktrees still being created or switched
+
 ## 3.3.2
 
 ### Patch Changes
