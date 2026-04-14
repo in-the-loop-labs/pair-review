@@ -2586,14 +2586,14 @@ class WorktreePoolRepository {
   }
 
   /**
-   * Find all pool worktrees for background fetch (excludes 'switching' status).
+   * Find all pool worktrees for background fetch (excludes transient statuses).
    * Ordered by last_fetched_at ASC NULLS FIRST (coldest first).
    */
   async findAllForFetch(repository) {
     return await query(this.db, `
       SELECT id, path, last_fetched_at, status
       FROM worktree_pool
-      WHERE repository = ? COLLATE NOCASE AND status != 'switching'
+      WHERE repository = ? COLLATE NOCASE AND status NOT IN ('switching', 'creating')
       ORDER BY last_fetched_at ASC NULLS FIRST
     `, [repository]);
   }
