@@ -1,0 +1,15 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "pair-review-local-debug",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["bin/pair-review.js", "--local", "--debug"],
+      "port": 7247,
+      "autoPort": true,
+      "env": {
+        "PAIR_REVIEW_NO_OPEN": "1"
+      }
+    }
+  ]
+}
