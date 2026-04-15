@@ -1154,6 +1154,117 @@ describe('config.js', () => {
       warnSpy.mockRestore();
     });
 
+    describe('PORT env var', () => {
+      let originalPort;
+
+      beforeEach(() => {
+        originalPort = process.env.PORT;
+        delete process.env.PORT;
+      });
+
+      afterEach(() => {
+        if (originalPort !== undefined) {
+          process.env.PORT = originalPort;
+        } else {
+          delete process.env.PORT;
+        }
+      });
+
+      it('should override config.port when PORT env var is set', async () => {
+        process.env.PORT = '9999';
+        mockReadFile({
+          global: { port: 7247 },
+        });
+
+        const { config } = await loadConfig();
+
+        expect(config.port).toBe(9999);
+      });
+
+      it('should override all config layers including project local', async () => {
+        process.env.PORT = '4242';
+        mockReadFile({
+          global: { port: 1111 },
+          globalLocal: { port: 2222 },
+          project: { port: 3333 },
+          projectLocal: { port: 5555 },
+        });
+
+        const { config } = await loadConfig();
+
+        expect(config.port).toBe(4242);
+      });
+
+      it('should use config.port when PORT env var is not set', async () => {
+        mockReadFile({
+          global: { port: 7247 },
+        });
+
+        const { config } = await loadConfig();
+
+        expect(config.port).toBe(7247);
+      });
+
+      it('should coerce numeric string env value to integer', async () => {
+        process.env.PORT = '8080';
+        mockReadFile({
+          global: { port: 7247 },
+        });
+
+        const { config } = await loadConfig();
+
+        expect(config.port).toBe(8080);
+        expect(typeof config.port).toBe('number');
+      });
+
+      it('should exit with error for non-numeric PORT env var', async () => {
+        process.env.PORT = 'abc';
+        mockReadFile({
+          global: { port: 7247 },
+        });
+        const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+          throw new Error('process.exit called');
+        });
+        const logger = require('../../src/utils/logger');
+        const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+
+        await expect(loadConfig()).rejects.toThrow('process.exit called');
+        expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Invalid PORT env var'));
+
+        exitSpy.mockRestore();
+        errorSpy.mockRestore();
+      });
+
+      it('should exit with error for out-of-range PORT env var', async () => {
+        process.env.PORT = '80';
+        mockReadFile({
+          global: { port: 7247 },
+        });
+        const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+          throw new Error('process.exit called');
+        });
+        const logger = require('../../src/utils/logger');
+        const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+
+        await expect(loadConfig()).rejects.toThrow('process.exit called');
+        expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Invalid PORT env var'));
+
+        exitSpy.mockRestore();
+        errorSpy.mockRestore();
+      });
+
+      it('should ignore empty string PORT env var', async () => {
+        process.env.PORT = '';
+        mockReadFile({
+          global: { port: 7247 },
+        });
+
+        const { config } = await loadConfig();
+
+        expect(config.port).toBe(7247);
+      });
+    });
+
     it('should normalize monorepos key into repos when only monorepos is present', async () => {
       mockReadFile({
         global: {

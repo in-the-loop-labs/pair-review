@@ -129,7 +129,7 @@ async function copyExampleConfig() {
   try {
     await fs.access(sourceExample);
     await fs.copyFile(sourceExample, CONFIG_EXAMPLE_FILE);
-    console.log(`Copied config.example.json to: ${CONFIG_EXAMPLE_FILE}`);
+    logger.info(`Copied config.example.json to: ${CONFIG_EXAMPLE_FILE}`);
     return true;
   } catch (error) {
     if (error.code === 'ENOENT') {
@@ -155,13 +155,13 @@ async function ensureConfigDir() {
     if (error.code === 'ENOENT') {
       try {
         await fs.mkdir(CONFIG_DIR, { recursive: true });
-        console.log(`Created config directory: ${CONFIG_DIR}`);
+        logger.info(`Created config directory: ${CONFIG_DIR}`);
         // Copy example config to new directory
         await copyExampleConfig();
         return true; // Directory was newly created
       } catch (mkdirError) {
         if (mkdirError.code === 'EACCES' || mkdirError.code === 'EPERM') {
-          console.error(`Cannot create configuration directory at ~/.pair-review/`);
+          logger.error(`Cannot create configuration directory at ~/.pair-review/`);
           process.exit(1);
         }
         throw mkdirError;
@@ -212,7 +212,7 @@ async function loadConfig() {
         // Optional files or managed-config-present: skip silently
       } else if (error instanceof SyntaxError) {
         if (source.required) {
-          console.error(`Invalid configuration file at ~/.pair-review/config.json`);
+          logger.error(`Invalid configuration file at ~/.pair-review/config.json`);
           process.exit(1);
         }
         logger.warn(`Malformed config at ${source.label}, skipping`);
@@ -236,9 +236,19 @@ async function loadConfig() {
     mergedConfig.repos = normalized;
   }
 
+  // PORT env var overrides all config layers (used by Preview and similar harnesses)
+  if (process.env.PORT) {
+    const envPort = Number(process.env.PORT);
+    if (!validatePort(envPort)) {
+      logger.error(`Invalid PORT env var "${process.env.PORT}" (must be an integer between 1024 and 65535)`);
+      process.exit(1);
+    }
+    mergedConfig.port = envPort;
+  }
+
   // Validate port
   if (!validatePort(mergedConfig.port)) {
-    console.error(`Invalid port number ${mergedConfig.port}`);
+    logger.error(`Invalid port number ${mergedConfig.port}`);
     process.exit(1);
   }
 
@@ -270,7 +280,7 @@ async function saveConfig(config) {
     await fs.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2));
   } catch (error) {
     if (error.code === 'EACCES' || error.code === 'EPERM') {
-      console.error(`Cannot create configuration directory at ~/.pair-review/`);
+      logger.error(`Cannot create configuration directory at ~/.pair-review/`);
       process.exit(1);
     }
     throw error;
