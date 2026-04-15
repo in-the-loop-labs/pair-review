@@ -42,13 +42,14 @@ const router = express.Router();
 
 /**
  * Enrich a raw analysis run record for API responses.
- * Applies backward-compatible tier fallback and parses levels_config JSON.
+ * Applies backward-compatible tier fallback and parses JSON columns.
  */
 function enrichRun(run) {
   if (!run) return null;
   return {
     ...run,
     levels_config: run.levels_config ? JSON.parse(run.levels_config) : null,
+    level_outcomes: run.level_outcomes ? JSON.parse(run.level_outcomes) : null,
     tier: run.tier ?? (run.provider && run.model ? getTierForModel(run.provider, run.model) : null)
   };
 }
@@ -625,6 +626,7 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
           status: 'completed',
           summary: result.summary,
           totalSuggestions: result.suggestions.length,
+          ...(result.levelOutcomes ? { levelOutcomes: result.levelOutcomes } : {}),
           ...runUpdateExtra
         });
       } catch (updateError) {
