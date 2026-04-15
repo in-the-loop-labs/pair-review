@@ -21,7 +21,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 43;
+const CURRENT_SCHEMA_VERSION = 44;
 
 /**
  * Database schema SQL statements
@@ -184,6 +184,7 @@ const SCHEMA_SQL = {
       parent_run_id TEXT,
       config_type TEXT DEFAULT 'single',
       levels_config TEXT,
+      level_outcomes TEXT,
       scope_start TEXT,
       scope_end TEXT,
       FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE
@@ -1866,6 +1867,25 @@ const MIGRATIONS = {
     };
     addColumnIfNotExists('repo_settings', 'load_skills', 'INTEGER');
     console.log('Migration to schema version 43 complete');
+  },
+
+  44: (db) => {
+    console.log('Running migration to schema version 44: Add level_outcomes to analysis_runs...');
+    const hasLevelOutcomes = columnExists(db, 'analysis_runs', 'level_outcomes');
+    if (!hasLevelOutcomes) {
+      try {
+        db.prepare(`ALTER TABLE analysis_runs ADD COLUMN level_outcomes TEXT`).run();
+        console.log('  Added level_outcomes column to analysis_runs');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column level_outcomes already exists (race condition)');
+      }
+    } else {
+      console.log('  Column level_outcomes already exists');
+    }
+    console.log('Migration to schema version 44 complete');
   }
 };
 
@@ -4348,6 +4368,11 @@ class AnalysisRunRepository {
       params.push(updates.diff);
     }
 
+    if (updates.levelOutcomes !== undefined) {
+      setClauses.push('level_outcomes = ?');
+      params.push(updates.levelOutcomes === null ? null : JSON.stringify(updates.levelOutcomes));
+    }
+
     if (setClauses.length === 0) {
       return false;
     }
@@ -4380,7 +4405,7 @@ class AnalysisRunRepository {
     const columns = [
       'id', 'review_id', 'provider', 'model', 'tier', 'custom_instructions', 'global_instructions', 'repo_instructions', 'request_instructions',
       'head_sha', 'summary', 'status', 'total_suggestions', 'files_analyzed', 'started_at', 'completed_at',
-      'parent_run_id', 'config_type', 'levels_config'
+      'parent_run_id', 'config_type', 'levels_config', 'level_outcomes'
     ];
     if (includeDiff) {
       columns.splice(columns.indexOf('head_sha') + 1, 0, 'diff'); // Insert diff after head_sha
@@ -4408,7 +4433,7 @@ class AnalysisRunRepository {
     const columns = [
       'id', 'review_id', 'provider', 'model', 'tier', 'custom_instructions', 'global_instructions', 'repo_instructions', 'request_instructions',
       'head_sha', 'summary', 'status', 'total_suggestions', 'files_analyzed', 'started_at', 'completed_at',
-      'parent_run_id', 'config_type', 'levels_config'
+      'parent_run_id', 'config_type', 'levels_config', 'level_outcomes'
     ];
     if (includeDiff) {
       columns.splice(columns.indexOf('head_sha') + 1, 0, 'diff'); // Insert diff after head_sha
@@ -4446,7 +4471,7 @@ class AnalysisRunRepository {
     const columns = [
       'id', 'review_id', 'provider', 'model', 'tier', 'custom_instructions', 'global_instructions', 'repo_instructions', 'request_instructions',
       'head_sha', 'summary', 'status', 'total_suggestions', 'files_analyzed', 'started_at', 'completed_at',
-      'parent_run_id', 'config_type', 'levels_config'
+      'parent_run_id', 'config_type', 'levels_config', 'level_outcomes'
     ];
     if (includeDiff) {
       columns.splice(columns.indexOf('head_sha') + 1, 0, 'diff'); // Insert diff after head_sha
@@ -4473,7 +4498,7 @@ class AnalysisRunRepository {
     return query(this.db, `
       SELECT id, review_id, provider, model, tier, custom_instructions, global_instructions, repo_instructions, request_instructions,
              head_sha, summary, status, total_suggestions, files_analyzed, started_at, completed_at,
-             parent_run_id, config_type, levels_config
+             parent_run_id, config_type, levels_config, level_outcomes
       FROM analysis_runs
       WHERE parent_run_id = ?
       ORDER BY started_at ASC
@@ -4971,5 +4996,6 @@ module.exports = {
   generateWorktreeId,
   migrateExistingWorktrees,
   // Exported for testing only
-  _MIGRATIONS: MIGRATIONS
+  _MIGRATIONS: MIGRATIONS,
+  MIGRATIONS
 };

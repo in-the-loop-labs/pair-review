@@ -152,6 +152,7 @@ const SCHEMA_SQL = {
       parent_run_id TEXT,
       config_type TEXT DEFAULT 'single',
       levels_config TEXT,
+      level_outcomes TEXT,
       scope_start TEXT,
       scope_end TEXT,
       FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE

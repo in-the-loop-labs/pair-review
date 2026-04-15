@@ -1602,45 +1602,132 @@ describe('AnalysisHistoryManager', () => {
       });
     });
 
-    it('should return empty string when no levels_config', () => {
+    it('should return empty string when no outcomes and no config', () => {
       expect(manager.renderLevelIndicators({})).toBe('');
       expect(manager.renderLevelIndicators({ levels_config: null })).toBe('');
+      expect(manager.renderLevelIndicators({ level_outcomes: null, levels_config: null })).toBe('');
     });
 
-    it('should render all levels enabled from array format', () => {
+    // --- Legacy fallback (levels_config only, no level_outcomes) ---
+
+    it('renders enabled levels as success and disabled as skipped (array format)', () => {
       const html = manager.renderLevelIndicators({ levels_config: [1, 2, 3] });
       expect(html).toContain('L1\u2713');
       expect(html).toContain('L2\u2713');
       expect(html).toContain('L3\u2713');
-      // All should have level-on class
-      expect(html).not.toContain('level-off');
+      expect(html).toContain('level-success');
+      expect(html).not.toContain('level-skipped');
+      expect(html).not.toContain('level-failed');
     });
 
-    it('should render partial levels from array format', () => {
+    it('renders partial enabled levels with middot for skipped (array format)', () => {
       const html = manager.renderLevelIndicators({ levels_config: [1, 2] });
-      expect(html).toContain('level-on');
-      expect(html).toContain('level-off');
-      // L3 should be off
-      expect(html).toContain('L3\u2717');
+      expect(html).toContain('L1\u2713');
+      expect(html).toContain('L2\u2713');
+      expect(html).toContain('L3\u00B7');
+      expect(html).toContain('level-success');
+      expect(html).toContain('level-skipped');
+      expect(html).not.toContain('level-failed');
     });
 
-    it('should render levels from object format', () => {
+    it('renders levels from object format with middot for disabled', () => {
       const html = manager.renderLevelIndicators({
         levels_config: { level1: true, level2: true, level3: false }
       });
       expect(html).toContain('L1\u2713');
       expect(html).toContain('L2\u2713');
-      expect(html).toContain('L3\u2717');
+      expect(html).toContain('L3\u00B7');
+      expect(html).toContain('level-skipped');
     });
 
-    it('should treat missing keys in object format as enabled', () => {
+    it('treats missing keys in object format as enabled', () => {
       const html = manager.renderLevelIndicators({
         levels_config: { level1: true }
       });
-      // level2 and level3 keys are missing, so treated as enabled (not false)
       expect(html).toContain('L1\u2713');
       expect(html).toContain('L2\u2713');
       expect(html).toContain('L3\u2713');
+    });
+
+    it('legacy fallback does not emit a C slot', () => {
+      const html = manager.renderLevelIndicators({ levels_config: [1, 2, 3] });
+      expect(html).not.toContain('>C');
+    });
+
+    // --- New path (level_outcomes present) ---
+
+    it('renders all-success with green checks and a C slot', () => {
+      const html = manager.renderLevelIndicators({
+        level_outcomes: {
+          level1: 'success', level2: 'success', level3: 'success',
+          consolidation: 'success'
+        }
+      });
+      expect(html).toContain('L1\u2713');
+      expect(html).toContain('L2\u2713');
+      expect(html).toContain('L3\u2713');
+      expect(html).toContain('C\u2713');
+      expect(html).not.toContain('level-failed');
+      expect(html).not.toContain('level-skipped');
+    });
+
+    it('renders a failed level with red X', () => {
+      const html = manager.renderLevelIndicators({
+        level_outcomes: {
+          level1: 'success', level2: 'failed', level3: 'success',
+          consolidation: 'success'
+        }
+      });
+      expect(html).toContain('L2\u2717');
+      expect(html).toContain('level-failed');
+      // L2 failed should carry the failed class
+      expect(html).toMatch(/level-failed[^<]*L2\u2717/);
+    });
+
+    it('renders a skipped level with a middot, not an X', () => {
+      const html = manager.renderLevelIndicators({
+        level_outcomes: {
+          level1: 'success', level2: 'success', level3: 'skipped',
+          consolidation: 'success'
+        }
+      });
+      expect(html).toContain('L3\u00B7');
+      expect(html).toContain('level-skipped');
+      expect(html).not.toContain('L3\u2717');
+    });
+
+    it('renders a failed consolidation with red X on the C slot', () => {
+      const html = manager.renderLevelIndicators({
+        level_outcomes: {
+          level1: 'success', level2: 'success', level3: 'success',
+          consolidation: 'failed'
+        }
+      });
+      expect(html).toContain('C\u2717');
+      expect(html).toMatch(/level-failed[^<]*C\u2717/);
+    });
+
+    it('council parent with only consolidation renders just a C slot', () => {
+      const html = manager.renderLevelIndicators({
+        level_outcomes: { consolidation: 'success' }
+      });
+      expect(html).toContain('C\u2713');
+      expect(html).not.toContain('L1');
+      expect(html).not.toContain('L2');
+      expect(html).not.toContain('L3');
+    });
+
+    it('prefers level_outcomes over legacy levels_config when both are present', () => {
+      const html = manager.renderLevelIndicators({
+        levels_config: [1, 2, 3],
+        level_outcomes: {
+          level1: 'success', level2: 'failed', level3: 'skipped',
+          consolidation: 'success'
+        }
+      });
+      expect(html).toContain('L2\u2717');
+      expect(html).toContain('L3\u00B7');
+      expect(html).toContain('C\u2713');
     });
   });
 });

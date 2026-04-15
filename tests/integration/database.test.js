@@ -39,6 +39,12 @@ describe('Database Initialization', () => {
     }
   });
 
+  it('CURRENT_SCHEMA_VERSION matches the highest migration key', () => {
+    const { CURRENT_SCHEMA_VERSION, MIGRATIONS } = require('../../src/database');
+    const maxMigration = Math.max(...Object.keys(MIGRATIONS).map(Number));
+    expect(CURRENT_SCHEMA_VERSION).toBe(maxMigration);
+  });
+
   it('should create all required tables', async () => {
     const tables = await query(db, `
       SELECT name FROM sqlite_master
@@ -2254,6 +2260,54 @@ describe('AnalysisRunRepository', () => {
 
       const updated = await analysisRunRepo.update(runId, {});
       expect(updated).toBe(false);
+    });
+
+    it('should persist levelOutcomes as JSON and round-trip via getById', async () => {
+      const runId = 'test-run-level-outcomes';
+      await analysisRunRepo.create({ id: runId, reviewId: testReview.id });
+
+      const outcomes = {
+        level1: 'success',
+        level2: 'failed',
+        level3: 'skipped',
+        consolidation: 'success'
+      };
+
+      const updated = await analysisRunRepo.update(runId, {
+        status: 'completed',
+        levelOutcomes: outcomes
+      });
+      expect(updated).toBe(true);
+
+      const retrieved = await analysisRunRepo.getById(runId);
+      expect(retrieved.level_outcomes).toBe(JSON.stringify(outcomes));
+      expect(JSON.parse(retrieved.level_outcomes)).toEqual(outcomes);
+    });
+
+    it('should persist a council-parent levelOutcomes with only consolidation', async () => {
+      const runId = 'test-run-council-parent';
+      await analysisRunRepo.create({ id: runId, reviewId: testReview.id });
+
+      await analysisRunRepo.update(runId, {
+        status: 'completed',
+        levelOutcomes: { consolidation: 'failed' }
+      });
+
+      const retrieved = await analysisRunRepo.getById(runId);
+      expect(JSON.parse(retrieved.level_outcomes)).toEqual({ consolidation: 'failed' });
+    });
+
+    it('should clear levelOutcomes when null is provided', async () => {
+      const runId = 'test-run-clear-outcomes';
+      await analysisRunRepo.create({ id: runId, reviewId: testReview.id });
+
+      await analysisRunRepo.update(runId, {
+        levelOutcomes: { level1: 'success' }
+      });
+      await analysisRunRepo.update(runId, { levelOutcomes: null });
+
+      const retrieved = await analysisRunRepo.getById(runId);
+      expect(retrieved.level_outcomes).toBeNull();
     });
   });
 
