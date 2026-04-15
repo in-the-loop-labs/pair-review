@@ -8003,11 +8003,15 @@ body.resizing * {
   padding: 0 2px;
 }
 
-.analysis-history-level.level-on {
+.analysis-history-level.level-success {
   color: var(--color-success, #22c55e);
 }
 
-.analysis-history-level.level-off {
+.analysis-history-level.level-failed {
+  color: var(--color-danger, #d1242f);
+}
+
+.analysis-history-level.level-skipped {
   color: var(--color-text-muted);
   opacity: 0.5;
 }

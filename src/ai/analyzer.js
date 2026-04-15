@@ -550,13 +550,22 @@ class Analyzer {
           throw new CancellationError('Analysis was cancelled');
         }
 
+        // Build per-level outcome record for persistence and UI
+        const levelOutcomes = {
+          level1: levelResults.level1.status,
+          level2: levelResults.level2.status,
+          level3: levelResults.level3.status,
+          consolidation: 'success'
+        };
+
         // Update analysis_run record with completion data
         try {
           await analysisRunRepo.update(runId, {
             status: 'completed',
             summary: orchestrationResult.summary,
             totalSuggestions: finalSuggestions.length,
-            filesAnalyzed: validFiles.length
+            filesAnalyzed: validFiles.length,
+            levelOutcomes
           });
           logger.info(`${logPrefix}Updated analysis_run record to completed: ${finalSuggestions.length} suggestions, ${validFiles.length} files`);
         } catch (updateError) {
@@ -569,6 +578,7 @@ class Analyzer {
           runId,
           suggestions: finalSuggestions,
           levelResults,
+          levelOutcomes,
           summary: orchestrationResult.summary
         };
 
@@ -603,6 +613,14 @@ class Analyzer {
           throw new CancellationError('Analysis was cancelled');
         }
 
+        // Build per-level outcome record (consolidation failed, fallback path used)
+        const levelOutcomes = {
+          level1: levelResults.level1.status,
+          level2: levelResults.level2.status,
+          level3: levelResults.level3.status,
+          consolidation: 'failed'
+        };
+
         // Update analysis_run record with completion data (even though orchestration failed)
         const fallbackSummary = `Analysis complete (consolidation failed): ${finalFallbackSuggestions.length} suggestions`;
         try {
@@ -610,7 +628,8 @@ class Analyzer {
             status: 'completed',
             summary: fallbackSummary,
             totalSuggestions: finalFallbackSuggestions.length,
-            filesAnalyzed: validFiles.length
+            filesAnalyzed: validFiles.length,
+            levelOutcomes
           });
           logger.info(`${logPrefix}Updated analysis_run record to completed (fallback): ${finalFallbackSuggestions.length} suggestions`);
         } catch (updateError) {
@@ -621,6 +640,7 @@ class Analyzer {
           runId,
           suggestions: finalFallbackSuggestions,
           levelResults,
+          levelOutcomes,
           summary: fallbackSummary,
           orchestrationFailed: true
         };
@@ -2973,7 +2993,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
             status: 'completed',
             summary: result.summary,
             totalSuggestions: finalSuggestions.length,
-            filesAnalyzed: validFiles.length
+            filesAnalyzed: validFiles.length,
+            levelOutcomes: { consolidation: 'skipped' }
           });
         } catch (err) {
           logger.warn(`[ReviewerCouncil] Failed to update parent run: ${err.message}`);
@@ -2982,7 +3003,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         return {
           runId: parentRunId,
           suggestions: finalSuggestions,
-          summary: result.summary || `Review council complete: ${finalSuggestions.length} suggestions`
+          summary: result.summary || `Review council complete: ${finalSuggestions.length} suggestions`,
+          levelOutcomes: { consolidation: 'skipped' }
         };
       }
 
@@ -3012,7 +3034,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       return {
         runId: parentRunId,
         suggestions: result.suggestions,
-        summary: result.summary || `Review council complete: ${result.suggestions?.length || 0} suggestions`
+        summary: result.summary || `Review council complete: ${result.suggestions?.length || 0} suggestions`,
+        levelOutcomes: result.levelOutcomes
       };
     }
 
@@ -3085,7 +3108,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
             await analysisRunRepo.update(childRunId, {
               status: 'completed',
               summary: result.summary,
-              totalSuggestions: validatedSuggestions.length
+              totalSuggestions: validatedSuggestions.length,
+              levelOutcomes: { consolidation: 'skipped' }
             });
           } catch (err) {
             logger.warn(`[ReviewerCouncil] Failed to update child run ${childRunId}: ${err.message}`);
@@ -3217,7 +3241,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           status: 'completed',
           summary: singleResult.summary,
           totalSuggestions: finalSuggestions.length,
-          filesAnalyzed: validFiles.length
+          filesAnalyzed: validFiles.length,
+          levelOutcomes: { consolidation: 'skipped' }
         });
       } catch (err) {
         logger.warn(`[ReviewerCouncil] Failed to update parent run: ${err.message}`);
@@ -3226,7 +3251,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       return {
         runId: parentRunId,
         suggestions: finalSuggestions,
-        summary: singleResult.summary || `Review council complete: ${finalSuggestions.length} suggestions`
+        summary: singleResult.summary || `Review council complete: ${finalSuggestions.length} suggestions`,
+        levelOutcomes: { consolidation: 'skipped' }
       };
     }
 
@@ -3295,7 +3321,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           status: 'completed',
           summary,
           totalSuggestions: finalSuggestions.length,
-          filesAnalyzed: validFiles.length
+          filesAnalyzed: validFiles.length,
+          levelOutcomes: { consolidation: 'success' }
         });
       } catch (err) {
         logger.warn(`[ReviewerCouncil] Failed to update parent run: ${err.message}`);
@@ -3306,7 +3333,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       return {
         runId: parentRunId,
         suggestions: finalSuggestions,
-        summary
+        summary,
+        levelOutcomes: { consolidation: 'success' }
       };
     } catch (error) {
       logger.error(`[ReviewerCouncil] Cross-reviewer consolidation failed: ${error.message}`);
@@ -3324,7 +3352,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           status: 'completed',
           summary: fallbackSummary,
           totalSuggestions: fallbackSuggestions.length,
-          filesAnalyzed: validFiles.length
+          filesAnalyzed: validFiles.length,
+          levelOutcomes: { consolidation: 'failed' }
         });
       } catch (err) {
         logger.warn(`[ReviewerCouncil] Failed to update parent run: ${err.message}`);
@@ -3334,7 +3363,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         runId: parentRunId,
         suggestions: fallbackSuggestions,
         summary: fallbackSummary,
-        orchestrationFailed: true
+        orchestrationFailed: true,
+        levelOutcomes: { consolidation: 'failed' }
       };
     }
   }
@@ -3523,7 +3553,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       return {
         runId,
         suggestions: finalSuggestions,
-        summary: bestVoiceSummary || `Council analysis complete: ${finalSuggestions.length} suggestions from single reviewer`
+        summary: bestVoiceSummary || `Council analysis complete: ${finalSuggestions.length} suggestions from single reviewer`,
+        levelOutcomes: { consolidation: 'skipped' }
       };
     }
 
@@ -3636,7 +3667,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       return {
         runId,
         suggestions: finalSuggestions,
-        summary: orchestrationResult.summary
+        summary: orchestrationResult.summary,
+        levelOutcomes: { consolidation: 'success' }
       };
     } catch (error) {
       logger.error(`[Council] Cross-level consolidation failed: ${error.message}`);
@@ -3657,7 +3689,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         runId,
         suggestions: finalFallback,
         summary: `Council analysis complete (consolidation failed): ${finalFallback.length} suggestions`,
-        orchestrationFailed: true
+        orchestrationFailed: true,
+        levelOutcomes: { consolidation: 'failed' }
       };
     }
   }

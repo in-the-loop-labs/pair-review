@@ -502,7 +502,7 @@ class AnalysisHistoryManager {
     `;
 
     // Level indicators in preview
-    if (run.levels_config) {
+    if (run.levels_config || run.level_outcomes) {
       html += `
       <div class="analysis-preview-row">
         <span class="analysis-preview-label">Levels</span>
@@ -883,31 +883,56 @@ class AnalysisHistoryManager {
   }
 
   /**
-   * Render level indicators (L1/L2/L3) based on levels_config.
-   * @param {Object} run - Analysis run object with optional levels_config
+   * Render level indicators (L1/L2/L3/C) with tri-state outcomes
+   * (success / failed / skipped).
+   *
+   * Prefers persisted `level_outcomes` when available. Falls back to
+   * `levels_config` for legacy runs — in which case enabled levels render
+   * as success, disabled as skipped, and the consolidation slot is omitted
+   * (we have no historical data for it).
+   *
+   * @param {Object} run - Analysis run object
    * @returns {string} HTML string for level indicators
    */
   renderLevelIndicators(run) {
-    const levelsConfig = run.levels_config;
-    if (!levelsConfig) return '';
+    const outcomes = run.level_outcomes;
+    const config = run.levels_config;
 
-    // levels_config can be:
-    // - An array like [1, 2] (voice-centric: enabled levels)
-    // - An object like { level1: true, level2: true, level3: false } (advanced)
-    const levels = [1, 2, 3];
-    const indicators = levels.map(level => {
-      let enabled;
-      if (Array.isArray(levelsConfig)) {
-        enabled = levelsConfig.includes(level);
-      } else {
-        const key = `level${level}`;
-        enabled = levelsConfig[key] !== false;
+    const slots = [];
+    const addSlot = (label, outcome) => {
+      if (outcome) slots.push({ label, outcome });
+    };
+
+    if (outcomes) {
+      addSlot('L1', outcomes.level1);
+      addSlot('L2', outcomes.level2);
+      addSlot('L3', outcomes.level3);
+      addSlot('C', outcomes.consolidation);
+    } else if (config) {
+      // Legacy fallback: derive from config only. No failure state, no C slot.
+      // levels_config can be an array (voice-centric: enabled levels) or an
+      // object (advanced: per-level boolean).
+      for (const level of [1, 2, 3]) {
+        const enabled = Array.isArray(config)
+          ? config.includes(level)
+          : config[`level${level}`] !== false;
+        addSlot(`L${level}`, enabled ? 'success' : 'skipped');
       }
-      const cls = enabled ? 'level-on' : 'level-off';
-      const icon = enabled ? '\u2713' : '\u2717';
-      return `<span class="analysis-history-level ${cls}">L${level}${icon}</span>`;
-    });
-    return `<span class="analysis-history-levels">${indicators.join('')}</span>`;
+    } else {
+      return '';
+    }
+
+    const icon = { success: '\u2713', failed: '\u2717', skipped: '\u00B7' };
+    const cls = {
+      success: 'level-success',
+      failed: 'level-failed',
+      skipped: 'level-skipped'
+    };
+
+    const html = slots
+      .map(s => `<span class="analysis-history-level ${cls[s.outcome] || ''}">${s.label}${icon[s.outcome] || ''}</span>`)
+      .join('');
+    return `<span class="analysis-history-levels">${html}</span>`;
   }
 
   /**
