@@ -39,6 +39,10 @@ class TimeoutSelect {
     { value: '1800000', label: '30m' },
     { value: '2700000', label: '45m' },
     { value: '3600000', label: '60m' },
+    { value: '4500000', label: '75m' },
+    { value: '5400000', label: '90m' },
+    { value: '6300000', label: '105m' },
+    { value: '7200000', label: '120m' },
   ];
 
   /**
