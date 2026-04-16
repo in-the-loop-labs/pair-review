@@ -21,6 +21,7 @@ const { GitWorktreeManager } = require('../git/worktree');
 const { normalizeRepository } = require('../utils/paths');
 const { resolveFormat, formatAdoptedComment: formatComment } = require('../utils/comment-formatter');
 const { safeParseJson } = require('../utils/safe-parse-json');
+const { resolveOriginalFileContentSpecs } = require('../utils/diff-file-content');
 
 const router = express.Router();
 
@@ -1012,32 +1013,31 @@ router.get('/api/reviews/:reviewId/file-content/:fileName(*)', validateReviewId,
       return res.status(404).json({ error: 'Worktree not found for this PR. The PR may need to be reloaded.' });
     }
 
-    // Get base_sha from stored PR data
+    // Prefer the exact blob from the cached diff snapshot. If that is unavailable,
+    // fall back to repo-wide base_sha and finally the worktree filesystem.
     const normalizedRepo = normalizeRepository(owner, repo);
     const prRecord = await queryOne(db, `
       SELECT pr_data FROM pr_metadata
       WHERE pr_number = ? AND repository = ? COLLATE NOCASE
     `, [prNumber, normalizedRepo]);
 
-    let baseSha = null;
-    if (prRecord?.pr_data) {
-      try {
-        const prData = JSON.parse(prRecord.pr_data);
-        baseSha = prData.base_sha;
-      } catch (parseError) {
-        logger.warn('Could not parse pr_data for base_sha:', parseError.message);
-      }
+    const prData = safeParseJson(prRecord?.pr_data, null);
+    if (prRecord?.pr_data && !prData) {
+      logger.warn('Could not parse pr_data for file-content route');
     }
 
-    // Try git show for BASE version (correct line numbers for diff)
-    if (baseSha) {
-      try {
-        const git = simpleGit(worktreePath);
-        const content = await git.show([`${baseSha}:${fileName}`]);
-        const lines = content.split('\n');
-        return res.json({ fileName, lines, totalLines: lines.length });
-      } catch (gitError) {
-        logger.debug(`Could not read file ${fileName} from base commit: ${gitError.message}, falling back to HEAD`);
+    const contentSpecs = resolveOriginalFileContentSpecs(prData, fileName);
+
+    if (contentSpecs.length > 0) {
+      const git = simpleGit(worktreePath);
+      for (const contentSpec of contentSpecs) {
+        try {
+          const content = await git.show([contentSpec.gitSpec]);
+          const lines = content.split('\n');
+          return res.json({ fileName, lines, totalLines: lines.length });
+        } catch (gitError) {
+          logger.debug(`Could not read file ${fileName} from ${contentSpec.source}: ${gitError.message}`);
+        }
       }
     }
 

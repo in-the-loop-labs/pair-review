@@ -2357,7 +2357,9 @@ class PRManager {
           type: 'context',
           oldNumber: lineNumber,
           newNumber: lineNumber + lineOffset,  // Apply offset for correct right-side line number
-          content: content || ''
+          // Expanded rows should follow the same contract as parsed diff context
+          // lines so DiffRenderer strips the synthetic diff marker, not real indent.
+          content: ' ' + (content || '')
         };
 
         const lineRow = this.renderDiffLine(fragment, lineData, fileName, null);
@@ -2469,7 +2471,9 @@ class PRManager {
           type: 'context',
           oldNumber: lineNumber,
           newNumber: lineNumber + lineOffset,  // Apply offset for correct right-side line number
-          content: content || ''
+          // Expanded rows should follow the same contract as parsed diff context
+          // lines so DiffRenderer strips the synthetic diff marker, not real indent.
+          content: ' ' + (content || '')
         };
 
         const lineRow = this.renderDiffLine(fragment, lineData, fileName, null);
