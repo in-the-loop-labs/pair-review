@@ -982,14 +982,14 @@ router.get('/api/file-content-original/:fileName(*)', async (req, res) => {
         const git = simpleGit(worktreePath);
         for (const contentSpec of contentSpecs) {
           try {
-          const content = await git.show([contentSpec.gitSpec]);
-          const lines = content.split('\n');
+            const content = await git.show([contentSpec.gitSpec]);
+            const lines = content.split('\n');
 
-          return res.json({
-            fileName,
-            lines,
-            totalLines: lines.length
-          });
+            return res.json({
+              fileName,
+              lines,
+              totalLines: lines.length
+            });
           } catch (gitError) {
             // Fall through to the next git-based source before reading HEAD.
             logger.debug(`Could not read file ${fileName} from ${contentSpec.source}: ${gitError.message}`);
