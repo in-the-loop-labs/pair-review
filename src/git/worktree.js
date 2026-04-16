@@ -10,6 +10,8 @@ const { normalizeRepository, resolveRenamedFile, resolveRenamedFileOld } = requi
 const { GIT_DIFF_FLAGS_ARRAY, GIT_DIFF_SUMMARY_FLAGS_ARRAY } = require('./diff-flags');
 const { spawn, execSync } = require('child_process');
 
+const MISSING_COMMIT_ERROR_CODE = 'PAIR_REVIEW_MISSING_COMMIT';
+
 /**
  * Git worktree manager for handling PR branch checkouts and diffs
  */
@@ -199,6 +201,136 @@ class GitWorktreeManager {
    */
   getPRHeadSha(prData) {
     return prData?.head?.sha || prData?.head_sha || '';
+  }
+
+  /**
+   * Extract the PR base SHA from either REST or stored PR metadata.
+   * @param {Object|null} prData
+   * @returns {string}
+   */
+  getPRBaseSha(prData) {
+    return prData?.base?.sha || prData?.base_sha || '';
+  }
+
+  /**
+   * Check whether the given commit object is already available locally.
+   * @param {Object} git - simple-git instance
+   * @param {string} sha
+   * @returns {Promise<boolean>}
+   */
+  async hasCommitLocally(git, sha) {
+    if (!sha) {
+      return false;
+    }
+
+    try {
+      const objectType = (await git.raw(['cat-file', '-t', sha])).trim();
+      return objectType === 'commit';
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Ensure a specific commit object exists locally, fetching it directly when needed.
+   * @param {Object} git - simple-git instance
+   * @param {string} sha
+   * @param {string} remote
+   * @param {string} label
+   * @returns {Promise<void>}
+   */
+  async ensureCommitAvailable(git, sha, remote, label = 'Commit') {
+    if (!sha) {
+      return;
+    }
+
+    if (await this.hasCommitLocally(git, sha)) {
+      return;
+    }
+
+    let fetchError = null;
+    try {
+      await git.raw(['fetch', remote, sha]);
+    } catch (error) {
+      fetchError = error;
+    }
+
+    if (await this.hasCommitLocally(git, sha)) {
+      return;
+    }
+
+    if (fetchError) {
+      const error = new Error(`${label} ${sha} is not available locally and fetch from ${remote} failed: ${fetchError.message}`);
+      error.code = MISSING_COMMIT_ERROR_CODE;
+      error.commitSha = sha;
+      error.commitLabel = label;
+      error.remote = remote;
+      error.cause = fetchError;
+      throw error;
+    }
+
+    const error = new Error(`${label} ${sha} is not available locally after fetch from ${remote}`);
+    error.code = MISSING_COMMIT_ERROR_CODE;
+    error.commitSha = sha;
+    error.commitLabel = label;
+    error.remote = remote;
+    throw error;
+  }
+
+  /**
+   * Ensure the PR base commit is available in the local repository before diffing.
+   * @param {Object} git - simple-git instance
+   * @param {Object|null} prData
+   * @param {string} remote
+   * @returns {Promise<void>}
+   */
+  async ensureBaseShaAvailable(git, prData, remote) {
+    const baseSha = this.getPRBaseSha(prData);
+    if (!baseSha) {
+      return;
+    }
+
+    console.log(`Ensuring base commit ${baseSha} is available...`);
+    await this.ensureCommitAvailable(git, baseSha, remote, 'Base SHA');
+  }
+
+  /**
+   * Fail with a targeted message when a required diff commit is missing locally.
+   * @param {Object} git - simple-git instance
+   * @param {string} sha
+   * @param {string} label
+   * @returns {Promise<void>}
+   */
+  async assertCommitAvailableLocally(git, sha, label = 'Commit') {
+    if (!sha) {
+      throw new Error(`${label} is required but missing from PR data`);
+    }
+
+    if (await this.hasCommitLocally(git, sha)) {
+      return;
+    }
+
+    const error = new Error(`${label} ${sha} is not available locally. Refresh the worktree to fetch the missing commit before generating the diff.`);
+    error.code = MISSING_COMMIT_ERROR_CODE;
+    error.commitSha = sha;
+    error.commitLabel = label;
+    throw error;
+  }
+
+  /**
+   * Preserve machine-checkable error metadata when wrapping lower-level git failures.
+   * @param {string} prefix
+   * @param {Error} error
+   * @returns {Error}
+   */
+  wrapError(prefix, error) {
+    const wrapped = new Error(`${prefix}: ${error.message}`);
+    if (error?.code) wrapped.code = error.code;
+    if (error?.commitSha) wrapped.commitSha = error.commitSha;
+    if (error?.commitLabel) wrapped.commitLabel = error.commitLabel;
+    if (error?.remote) wrapped.remote = error.remote;
+    if (error) wrapped.cause = error;
+    return wrapped;
   }
 
   /**
@@ -451,7 +583,7 @@ class GitWorktreeManager {
       await this.cleanupWorktree(worktreePath);
       
       // Create git instance for the source repository
-      const git = simpleGit(repositoryPath);
+      const git = this._gitFor(repositoryPath);
 
       // Resolve which remote points to the PR's base repository (handles forks)
       const remote = await this.resolveRemoteForPR(git, prData, prInfo);
@@ -490,7 +622,7 @@ class GitWorktreeManager {
       } else {
         // Without checkout_script: use worktreeSourcePath as cwd if provided
         // (to inherit sparse-checkout from existing worktree)
-        const worktreeAddGit = worktreeSourcePath ? simpleGit(worktreeSourcePath) : git;
+        const worktreeAddGit = worktreeSourcePath ? this._gitFor(worktreeSourcePath) : git;
         if (worktreeSourcePath) {
           console.log(`Creating worktree at ${worktreePath} from ${prData.base_branch} (inheriting sparse-checkout from ${worktreeSourcePath})...`);
         } else {
@@ -509,17 +641,10 @@ class GitWorktreeManager {
       }
       
       // Create git instance for the worktree
-      const worktreeGit = simpleGit(worktreePath);
-      
+      const worktreeGit = this._gitFor(worktreePath);
+
       // Ensure base SHA is available (in case base branch was force-pushed or rebased)
-      console.log(`Ensuring base commit ${prData.base_sha} is available...`);
-      try {
-        // Try to fetch the specific base SHA if it's not already available
-        await worktreeGit.raw(['fetch', remote, prData.base_sha]);
-      } catch (fetchError) {
-        // If fetch fails, the SHA might already be available locally
-        console.log(`Base SHA fetch not needed or already available: ${fetchError.message}`);
-      }
+      await this.ensureBaseShaAvailable(worktreeGit, prData, remote);
 
       // Fetch the PR head using PR refs when available, with a branch/SHA fallback
       console.log(`Fetching PR #${prInfo.number} head...`);
@@ -546,7 +671,7 @@ class GitWorktreeManager {
         const scriptEnv = {
           BASE_BRANCH: prData.base_branch,
           HEAD_BRANCH: headBranch,
-          BASE_SHA: prData.base_sha,
+          BASE_SHA: this.getPRBaseSha(prData),
           HEAD_SHA: this.getPRHeadSha(prData),
           PR_NUMBER: String(prInfo.number),
           WORKTREE_PATH: worktreePath
@@ -567,8 +692,8 @@ class GitWorktreeManager {
       
       // Verify we're at the correct commit
       const currentCommit = await worktreeGit.revparse(['HEAD']);
-      if (currentCommit.trim() !== prData.head_sha) {
-        console.warn(`Warning: Expected commit ${prData.head_sha}, but got ${currentCommit.trim()}`);
+      if (targetSha && currentCommit.trim() !== targetSha) {
+        console.warn(`Warning: Expected commit ${targetSha}, but got ${currentCommit.trim()}`);
       }
 
       // Store/update worktree record in database
@@ -598,7 +723,7 @@ class GitWorktreeManager {
         console.error('Error during cleanup:', cleanupError);
       }
       
-      throw new Error(`Failed to create git worktree: ${error.message}`);
+      throw this.wrapError('Failed to create git worktree', error);
     }
   }
 
@@ -612,7 +737,7 @@ class GitWorktreeManager {
    */
   async updateWorktree(owner, repo, number, prData) {
     const prInfo = { owner, repo, number };
-    const headSha = prData.head_sha;
+    const headSha = this.getPRHeadSha(prData);
     const worktreePath = await this.getWorktreePath(prInfo);
 
     try {
@@ -625,7 +750,7 @@ class GitWorktreeManager {
       console.log(`Updating worktree for PR #${number} at ${worktreePath}`);
 
       // Create git instance for the worktree
-      const worktreeGit = simpleGit(worktreePath);
+      const worktreeGit = this._gitFor(worktreePath);
 
       // Resolve which remote points to the PR's base repository (handles forks)
       const remote = await this.resolveRemoteForPR(worktreeGit, prData, prInfo);
@@ -635,17 +760,19 @@ class GitWorktreeManager {
       console.log(`Fetching latest changes from ${remote}...`);
       await worktreeGit.fetch([remote, '--prune']);
 
+      await this.ensureBaseShaAvailable(worktreeGit, prData, remote);
+
       // Fetch the PR head using PR refs when available, with a branch/SHA fallback
       console.log(`Fetching PR #${number} head...`);
       const fetchedHead = await this.fetchPRHead(worktreeGit, prInfo, prData, { remote });
 
       // Checkout to PR head commit
-      console.log(`Checking out to PR head commit ${headSha}...`);
+      console.log(`Checking out to PR head ${headSha || fetchedHead.checkoutTarget}...`);
       await worktreeGit.checkout([fetchedHead.checkoutTarget]);
 
       // Verify we're at the correct commit
       const currentCommit = await worktreeGit.revparse(['HEAD']);
-      if (currentCommit.trim() !== headSha) {
+      if (headSha && currentCommit.trim() !== headSha) {
         console.warn(`Warning: Expected commit ${headSha}, but got ${currentCommit.trim()}`);
       }
 
@@ -654,7 +781,7 @@ class GitWorktreeManager {
 
     } catch (error) {
       console.error('Error updating worktree:', error);
-      throw new Error(`Failed to update git worktree: ${error.message}`);
+      throw this.wrapError('Failed to update git worktree', error);
     }
   }
 
@@ -666,16 +793,21 @@ class GitWorktreeManager {
    */
   async generateUnifiedDiff(worktreePath, prData) {
     try {
-      console.log(`Generating diff between ${prData.base_sha} and ${prData.head_sha}...`);
+      const git = this._gitFor(worktreePath);
+      const baseSha = this.getPRBaseSha(prData);
+      const headSha = this.getPRHeadSha(prData);
 
-      const git = simpleGit(worktreePath);
+      console.log(`Generating diff between ${baseSha} and ${headSha}...`);
+
+      await this.assertCommitAvailableLocally(git, baseSha, 'Base SHA');
+      await this.assertCommitAvailableLocally(git, headSha, 'Head SHA');
 
       // Generate diff between base SHA and head SHA (not branch names)
       // This ensures we compare the exact commits from the PR, even if the base branch has moved
       // Defensive flags to normalize output regardless of user's git config
       // (see src/git/diff-flags.js for rationale)
       const diff = await git.diff([
-        `${prData.base_sha}...${prData.head_sha}`,
+        `${baseSha}...${headSha}`,
         '--unified=3',
         ...GIT_DIFF_FLAGS_ARRAY
       ]);
@@ -684,7 +816,7 @@ class GitWorktreeManager {
 
     } catch (error) {
       console.error('Error generating diff:', error);
-      throw new Error(`Failed to generate diff: ${error.message}`);
+      throw this.wrapError('Failed to generate diff', error);
     }
   }
 
@@ -696,12 +828,17 @@ class GitWorktreeManager {
    */
   async getChangedFiles(worktreePath, prData) {
     try {
-      const git = simpleGit(worktreePath);
+      const git = this._gitFor(worktreePath);
+      const baseSha = this.getPRBaseSha(prData);
+      const headSha = this.getPRHeadSha(prData);
+
+      await this.assertCommitAvailableLocally(git, baseSha, 'Base SHA');
+      await this.assertCommitAvailableLocally(git, headSha, 'Head SHA');
 
       // Get file changes with stats using base SHA and head SHA
       // This ensures we get the exact files changed in the PR, even if the base branch has moved
       const diffSummary = await git.diffSummary([
-        `${prData.base_sha}...${prData.head_sha}`,
+        `${baseSha}...${headSha}`,
         ...GIT_DIFF_SUMMARY_FLAGS_ARRAY
       ]);
 
@@ -728,7 +865,7 @@ class GitWorktreeManager {
 
     } catch (error) {
       console.error('Error getting changed files:', error);
-      throw new Error(`Failed to get changed files: ${error.message}`);
+      throw this.wrapError('Failed to get changed files', error);
     }
   }
 
@@ -779,7 +916,7 @@ class GitWorktreeManager {
    */
   async resolveOwningRepo(worktreePath) {
     try {
-      const git = simpleGit(worktreePath);
+      const git = this._gitFor(worktreePath);
       const commonDir = (await git.raw(['rev-parse', '--git-common-dir'])).trim();
       // commonDir is either a .git subdirectory (regular repos) or the bare repo root itself.
       // Only strip the last component when it's actually a .git directory.
@@ -977,7 +1114,7 @@ class GitWorktreeManager {
    */
   async hasLocalChanges(worktreePath) {
     try {
-      const git = simpleGit(worktreePath);
+      const git = this._gitFor(worktreePath);
       const status = await git.raw(['status', '--porcelain']);
       return status.trim().length > 0;
     } catch (error) {
@@ -1007,10 +1144,12 @@ class GitWorktreeManager {
         throw new Error(`Worktree has uncommitted changes. Please resolve manually at: ${worktreePath}`);
       }
 
-      const git = simpleGit(worktreePath);
+      const git = this._gitFor(worktreePath);
 
       // Resolve which remote points to the PR's base repository (handles forks)
       const remote = await this.resolveRemoteForPR(git, prData, prInfo);
+
+      await this.ensureBaseShaAvailable(git, prData, remote);
 
       // Fetch the latest PR head from remote
       console.log(`Fetching PR #${prNumber} head from ${remote}...`);
@@ -1035,7 +1174,7 @@ class GitWorktreeManager {
         throw error;
       }
       console.error('Error refreshing worktree:', error);
-      throw new Error(`Failed to refresh worktree: ${error.message}`);
+      throw this.wrapError('Failed to refresh worktree', error);
     }
   }
 
@@ -1314,4 +1453,4 @@ class GitWorktreeManager {
   }
 }
 
-module.exports = { GitWorktreeManager };
+module.exports = { GitWorktreeManager, MISSING_COMMIT_ERROR_CODE };
