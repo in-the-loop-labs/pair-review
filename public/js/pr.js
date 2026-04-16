@@ -799,11 +799,12 @@ class PRManager {
           window.aiPanel.setFileOrder(this.canonicalFileOrder);
         }
 
+        // Load viewed state before rendering so files can start collapsed
+        // and so the sidebar viewed indicator renders on first paint
+        await this.loadViewedState();
+
         // Update sidebar with file list
         this.updateFileList(sortedFiles);
-
-        // Load viewed state before rendering so files can start collapsed
-        await this.loadViewedState();
 
         // Render diff using the existing renderDiff method
         this.renderDiff({ changed_files: sortedFiles });
@@ -2083,8 +2084,58 @@ class PRManager {
       }
     }
 
+    // Update sidebar file row to reflect viewed state
+    this.updateFileItemViewedState(filePath, isViewed);
+
     // Persist viewed state
     this.saveViewedState();
+  }
+
+  /**
+   * Build the eye-slash icon wrapper element used to mark a sidebar
+   * file row as viewed. Shared by the initial render and in-place updates
+   * so the markup and attributes stay in sync.
+   * @returns {HTMLSpanElement}
+   */
+  _createViewedIcon() {
+    const viewedIcon = document.createElement('span');
+    viewedIcon.className = 'file-viewed-icon-wrapper';
+    viewedIcon.title = 'Marked as viewed';
+    viewedIcon.setAttribute('aria-label', 'Marked as viewed');
+    viewedIcon.innerHTML = '<svg class="file-viewed-icon" viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M1.22 1.22a.75.75 0 0 1 1.06 0l12.5 12.5a.75.75 0 1 1-1.06 1.06l-1.82-1.82A7.44 7.44 0 0 1 8 14c-2.12 0-3.88-.81-5.26-1.94A13.13 13.13 0 0 1 .75 9.44a7.34 7.34 0 0 1-.51-.66.77.77 0 0 1 0-.84 12.52 12.52 0 0 1 .55-.72c.28-.34.66-.79 1.13-1.26L1.22 2.28a.75.75 0 0 1 0-1.06ZM4.5 5.56 6 7.06a2.5 2.5 0 0 0 2.94 2.94l1.22 1.22a4 4 0 0 1-5.66-5.66ZM8 3.5a4 4 0 0 1 3.98 4.46l3.04 3.04.1-.12c.36-.44.65-.87.87-1.22a.77.77 0 0 0 0-.84 13.13 13.13 0 0 0-2-2.62A7.44 7.44 0 0 0 8 2a7.4 7.4 0 0 0-2.3.36L7.1 3.78c.3-.18.62-.28.9-.28Z"/></svg>';
+    return viewedIcon;
+  }
+
+  /**
+   * Update the sidebar file row to reflect the viewed state.
+   * Adds/removes the .viewed class and injects/removes the eye-slash icon
+   * without re-rendering the whole file list.
+   * @param {string} filePath - Path of the file
+   * @param {boolean} isViewed - Whether the file is now viewed
+   */
+  updateFileItemViewedState(filePath, isViewed) {
+    const items = document.querySelectorAll('.file-item');
+    let item = null;
+    for (const candidate of items) {
+      if (candidate.dataset.path === filePath) {
+        item = candidate;
+        break;
+      }
+    }
+    if (!item) return;
+
+    const existingIcon = item.querySelector('.file-viewed-icon-wrapper');
+
+    if (isViewed) {
+      item.classList.add('viewed');
+      if (!existingIcon) {
+        const viewedIcon = this._createViewedIcon();
+        item.insertBefore(viewedIcon, item.firstChild);
+      }
+    } else {
+      item.classList.remove('viewed');
+      if (existingIcon) existingIcon.remove();
+    }
   }
 
   /**
@@ -4191,6 +4242,11 @@ class PRManager {
 
     if (file.generated) item.classList.add('generated');
     if (file.contextFile) item.classList.add('context-file-item');
+    if (this.viewedFiles && this.viewedFiles.has(file.fullPath)) {
+      item.classList.add('viewed');
+      const viewedIcon = this._createViewedIcon();
+      item.insertBefore(viewedIcon, item.firstChild);
+    }
     if (file.renamed && file.renamedFrom) {
       item.title = `Renamed from: ${file.renamedFrom}`;
       const renameIcon = document.createElement('span');
