@@ -1508,11 +1508,12 @@ class LocalManager {
         fileCount: sortedFiles.length
       });
 
+      // Load viewed state before rendering so files can start collapsed
+      // and so the sidebar viewed indicator renders on first paint
+      await manager.loadViewedState();
+
       // Update file list sidebar
       manager.updateFileList(sortedFiles);
-
-      // Load viewed state before rendering so files can start collapsed
-      await manager.loadViewedState();
 
       // Render diff
       manager.renderDiff({ changed_files: sortedFiles });

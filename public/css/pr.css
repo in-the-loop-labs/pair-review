@@ -1075,6 +1075,25 @@
   font-style: italic;
 }
 
+.file-viewed-icon-wrapper {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  margin-right: 4px;
+}
+
+.file-viewed-icon {
+  color: var(--color-fg-muted, #8b949e);
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+
+.file-item.viewed .file-name,
+.file-item.viewed.context-file-item .file-name {
+  color: var(--color-fg-muted, #8b949e);
+  font-style: italic;
+}
+
 /* Tree view styles */
 .tree-item {
   user-select: none;
