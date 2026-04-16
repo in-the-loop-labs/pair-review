@@ -18,7 +18,10 @@ function createMockDeps() {
     refreshWorktree: vi.fn().mockResolvedValue('/tmp/worktree/pair-review--abc'),
     executeCheckoutScript: vi.fn().mockResolvedValue(undefined),
     cleanupWorktree: vi.fn().mockResolvedValue(undefined),
+    ensureBaseShaAvailable: vi.fn().mockResolvedValue(undefined),
     resolveRemoteForPR: vi.fn().mockResolvedValue('origin'),
+    getPRHeadSha: vi.fn((data) => data?.head?.sha || data?.head_sha || ''),
+    getPRBaseSha: vi.fn((data) => data?.base?.sha || data?.base_sha || ''),
     fetchPRHead: vi.fn().mockResolvedValue({
       remote: 'origin',
       trackingRef: 'refs/remotes/origin/pr-123',
@@ -290,6 +293,10 @@ describe('WorktreePoolLifecycle', () => {
           checkoutTarget: 'abc123',
         });
       });
+      deps._mockWorktreeManagerInstance.ensureBaseShaAvailable.mockImplementation(() => {
+        callOrder.push('ensureBaseShaAvailable');
+        return Promise.resolve();
+      });
       deps._mockGit.reset.mockImplementation(() => { callOrder.push('reset'); return Promise.resolve(); });
       deps._mockGit.clean.mockImplementation(() => { callOrder.push('clean'); return Promise.resolve(); });
       deps._mockGit.checkout.mockImplementation(() => { callOrder.push('checkout'); return Promise.resolve(); });
@@ -299,7 +306,17 @@ describe('WorktreePoolLifecycle', () => {
 
       await lifecycle._switchPoolWorktree(poolEntry, worktreeRecord, prInfo, prData, options);
 
-      expect(callOrder).toEqual(['resolveRemoteForPR', 'fetchPRHead', 'reset', 'clean', 'checkout', 'switchPR', 'clearWorktree', 'markInUse']);
+      expect(callOrder).toEqual(['resolveRemoteForPR', 'fetchPRHead', 'ensureBaseShaAvailable', 'reset', 'clean', 'checkout', 'switchPR', 'clearWorktree', 'markInUse']);
+    });
+
+    it('ensures the base SHA is available before switching the pool worktree', async () => {
+      await lifecycle._switchPoolWorktree(poolEntry, worktreeRecord, prInfo, prData, options);
+
+      expect(deps._mockWorktreeManagerInstance.ensureBaseShaAvailable).toHaveBeenCalledWith(
+        deps._mockGit,
+        prData,
+        'origin'
+      );
     });
 
     it('runs executeCheckoutScript when resetScript is provided', async () => {
@@ -509,6 +526,16 @@ describe('WorktreePoolLifecycle', () => {
       const result = await lifecycle._refreshPoolWorktree(poolEntry, worktreeRecord, prInfo, prData);
 
       expect(deps._mockGit.revparse).toHaveBeenCalledWith(['HEAD']);
+      expect(deps._mockWorktreeManagerInstance.resolveRemoteForPR).toHaveBeenCalledWith(
+        deps._mockGit,
+        prData,
+        { owner: 'test', repo: 'repo', number: 123 }
+      );
+      expect(deps._mockWorktreeManagerInstance.ensureBaseShaAvailable).toHaveBeenCalledWith(
+        deps._mockGit,
+        prData,
+        'origin'
+      );
       // Should NOT call refreshWorktree -- early return
       expect(deps._mockWorktreeManagerInstance.refreshWorktree).not.toHaveBeenCalled();
       // Should still mark in_use

@@ -248,6 +248,8 @@ class WorktreePoolLifecycle {
         number: prInfo.prNumber,
       }, prData, { remote: remoteName });
 
+      await worktreeManager.ensureBaseShaAvailable(git, prData, remoteName);
+
       // Clean the working tree before switching PRs. Without this, untracked
       // files (build artifacts, generated code) from the previous PR leak into
       // the new checkout, and modified tracked files can cause checkout to fail.
@@ -257,7 +259,7 @@ class WorktreePoolLifecycle {
       await git.clean('f', ['-d']);
 
       // Checkout specific head SHA (stored SHA in restore mode, latest in fresh mode)
-      const targetSha = prData.head?.sha || prData.head_sha;
+      const targetSha = worktreeManager.getPRHeadSha(prData);
       if (targetSha) {
         await git.checkout([targetSha]);
       } else {
@@ -269,8 +271,8 @@ class WorktreePoolLifecycle {
         logger.info(`Executing reset script: ${options.resetScript}`);
         const headRef = prData.head?.ref || prData.head_branch || '';
         const baseRef = prData.base?.ref || prData.base_branch || '';
-        const headSha = prData.head?.sha || prData.head_sha || '';
-        const baseSha = prData.base?.sha || prData.base_sha || '';
+        const headSha = worktreeManager.getPRHeadSha(prData);
+        const baseSha = worktreeManager.getPRBaseSha(prData);
 
         const scriptEnv = {
           BASE_BRANCH: baseRef,
@@ -341,6 +343,13 @@ class WorktreePoolLifecycle {
         const git = this._simpleGit(poolEntry.path);
         const currentHead = (await git.revparse(['HEAD'])).trim();
         if (currentHead === targetSha) {
+          const worktreeManager = new this._GitWorktreeManager(this.db);
+          const remote = await worktreeManager.resolveRemoteForPR(git, prData, {
+            owner: prInfo.owner,
+            repo: prInfo.repo,
+            number: prInfo.prNumber,
+          });
+          await worktreeManager.ensureBaseShaAvailable(git, prData, remote);
           logger.info(`Pool worktree ${poolEntry.id} already at target SHA ${targetSha.slice(0, 8)}, skipping refresh`);
           await this._poolRepo.markInUse(poolEntry.id, prInfo.prNumber);
           return { worktreePath: poolEntry.path, worktreeId: poolEntry.id };

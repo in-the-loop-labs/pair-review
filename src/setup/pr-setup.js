@@ -12,7 +12,7 @@
  */
 
 const { run, queryOne, WorktreeRepository, RepoSettingsRepository, ReviewRepository } = require('../database');
-const { GitWorktreeManager } = require('../git/worktree');
+const { GitWorktreeManager, MISSING_COMMIT_ERROR_CODE } = require('../git/worktree');
 const { WorktreePoolLifecycle } = require('../git/worktree-pool-lifecycle');
 const { GitHubClient } = require('../github/client');
 const { normalizeRepository } = require('../utils/paths');
@@ -374,11 +374,24 @@ async function findRepositoryPath({ db, owner, repo, repository, prNumber, confi
  * Used to trigger fallback from restore mode to fresh setup.
  */
 function isShaNotFoundError(err) {
-  const msg = (err.message || '').toLowerCase();
-  return msg.includes('did not match any') ||
-         msg.includes('not a valid object') ||
-         msg.includes('reference is not a tree') ||
-         msg.includes('bad object');
+  let current = err;
+  while (current) {
+    if (current.code === MISSING_COMMIT_ERROR_CODE) {
+      return true;
+    }
+
+    const msg = (current.message || '').toLowerCase();
+    if (msg.includes('did not match any') ||
+        msg.includes('not a valid object') ||
+        msg.includes('reference is not a tree') ||
+        msg.includes('bad object')) {
+      return true;
+    }
+
+    current = current.cause;
+  }
+
+  return false;
 }
 
 /**
