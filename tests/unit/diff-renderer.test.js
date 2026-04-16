@@ -346,6 +346,25 @@ describe('DiffRenderer', () => {
         expect(header.remove).not.toHaveBeenCalled();
         expect(gap.insertAdjacentElement).toHaveBeenCalledWith('afterend', header);
       });
+
+      it('should relocate stranded header to the start-of-file gap boundary', () => {
+        // [gap(position=above)] [expanded code] [header with functionContext]
+        // After partial file-start expansion, the header should move up to the
+        // remaining gap boundary.
+        const gap = createMockRow('gap');
+        gap.expandControls = {
+          dataset: { position: 'above' }
+        };
+        const code = createMockRow('content');
+        const header = createMockRow('header', {
+          dataset: { functionContext: 'module Clients' }
+        });
+        const tbody = createMockTbody([gap, code, header]);
+
+        DiffRenderer.removeStrandedHunkHeaders(tbody);
+        expect(header.remove).not.toHaveBeenCalled();
+        expect(gap.insertAdjacentElement).toHaveBeenCalledWith('afterend', header);
+      });
     });
   });
 

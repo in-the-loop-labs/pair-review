@@ -8,12 +8,13 @@
  * - --no-ext-diff: Disable external diff drivers (overrides diff.external)
  * - --src-prefix=a/ --dst-prefix=b/: Ensure consistent a/ b/ prefixes (overrides diff.noprefix / diff.mnemonicPrefix)
  * - --no-relative: Ensure paths are repo-root-relative (overrides diff.relative)
+ * - --full-index: Persist full blob IDs so diff snapshots remain durable over time
  */
 
 /**
  * String form for execSync / exec shell calls (e.g. `git diff ${GIT_DIFF_FLAGS} ...`).
  */
-const GIT_DIFF_FLAGS = '--no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ --no-relative';
+const GIT_DIFF_FLAGS = '--no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ --no-relative --full-index';
 
 /**
  * Array form for simple-git .diff() calls (full diff output including file content).
@@ -23,7 +24,8 @@ const GIT_DIFF_FLAGS_ARRAY = [
   '--no-ext-diff',
   '--src-prefix=a/',
   '--dst-prefix=b/',
-  '--no-relative'
+  '--no-relative',
+  '--full-index'
 ];
 
 /**
