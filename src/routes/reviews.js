@@ -1029,15 +1029,19 @@ router.get('/api/reviews/:reviewId/file-content/:fileName(*)', validateReviewId,
     const contentSpecs = resolveOriginalFileContentSpecs(prData, fileName);
 
     if (contentSpecs.length > 0) {
-      const git = simpleGit(worktreePath);
-      for (const contentSpec of contentSpecs) {
-        try {
-          const content = await git.show([contentSpec.gitSpec]);
-          const lines = content.split('\n');
-          return res.json({ fileName, lines, totalLines: lines.length });
-        } catch (gitError) {
-          logger.debug(`Could not read file ${fileName} from ${contentSpec.source}: ${gitError.message}`);
+      try {
+        const git = simpleGit(worktreePath);
+        for (const contentSpec of contentSpecs) {
+          try {
+            const content = await git.show([contentSpec.gitSpec]);
+            const lines = content.split('\n');
+            return res.json({ fileName, lines, totalLines: lines.length });
+          } catch (gitError) {
+            logger.debug(`Could not read file ${fileName} from ${contentSpec.source}: ${gitError.message}`);
+          }
         }
+      } catch (gitError) {
+        logger.debug(`Could not initialize git for ${worktreePath}: ${gitError.message}`);
       }
     }
 

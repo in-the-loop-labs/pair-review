@@ -978,9 +978,10 @@ router.get('/api/file-content-original/:fileName(*)', async (req, res) => {
     const contentSpecs = resolveOriginalFileContentSpecs(prData, fileName);
 
     if (contentSpecs.length > 0) {
-      const git = simpleGit(worktreePath);
-      for (const contentSpec of contentSpecs) {
-        try {
+      try {
+        const git = simpleGit(worktreePath);
+        for (const contentSpec of contentSpecs) {
+          try {
           const content = await git.show([contentSpec.gitSpec]);
           const lines = content.split('\n');
 
@@ -989,10 +990,13 @@ router.get('/api/file-content-original/:fileName(*)', async (req, res) => {
             lines,
             totalLines: lines.length
           });
-        } catch (gitError) {
-          // Fall through to the next git-based source before reading HEAD.
-          logger.debug(`Could not read file ${fileName} from ${contentSpec.source}: ${gitError.message}`);
+          } catch (gitError) {
+            // Fall through to the next git-based source before reading HEAD.
+            logger.debug(`Could not read file ${fileName} from ${contentSpec.source}: ${gitError.message}`);
+          }
         }
+      } catch (gitError) {
+        logger.debug(`Could not initialize git for ${worktreePath}: ${gitError.message}`);
       }
     }
 
