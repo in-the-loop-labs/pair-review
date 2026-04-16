@@ -115,7 +115,8 @@ OPTIONS:
                             The web UI also starts for the human reviewer.
     --model <name>          Override the AI model. Claude Code is the default provider.
                             Available models: opus, sonnet, haiku (Claude Code);
-                            also: opus-4.5, opus-4.6-low, opus-4.6-medium, opus-4.6-1m
+                            also: opus-4.5, opus-4.6-low, opus-4.6-medium, opus-4.6-1m,
+                                  opus-4.7-xhigh
                             or use provider-specific models with Gemini/Codex
     --use-checkout          Use current directory instead of creating worktree
                             (automatic in GitHub Actions)

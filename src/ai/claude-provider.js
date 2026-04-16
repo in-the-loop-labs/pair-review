@@ -21,6 +21,30 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
  */
 const CLAUDE_MODELS = [
   {
+    id: 'opus-4.7-xhigh',
+    cli_model: 'claude-opus-4-7',
+    env: { CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' },
+    name: 'Opus 4.7 xhigh',
+    tier: 'thorough',
+    tagline: 'Latest Gen',
+    description: 'Opus 4.7 (latest) with extra-high effort',
+    badge: 'Latest',
+    badgeClass: 'badge-power'
+  },
+  {
+    id: 'opus',
+    aliases: ['opus-4.6-high'],
+    cli_model: 'opus-4-6',
+    env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' },
+    name: 'Opus 4.6 High',
+    tier: 'thorough',
+    tagline: 'Maximum Depth',
+    description: 'Opus 4.6 with high effort — deepest analysis',
+    badge: 'Most Thorough',
+    badgeClass: 'badge-power',
+    default: true
+  },
+  {
     id: 'haiku',
     name: 'Haiku 4.6',
     tier: 'fast',
@@ -41,7 +65,7 @@ const CLAUDE_MODELS = [
   },
   {
     id: 'opus-4.6-low',
-    cli_model: 'opus',
+    cli_model: 'opus-4-6',
     env: { CLAUDE_CODE_EFFORT_LEVEL: 'low' },
     name: 'Opus 4.6 Low',
     tier: 'balanced',
@@ -52,7 +76,7 @@ const CLAUDE_MODELS = [
   },
   {
     id: 'opus-4.6-medium',
-    cli_model: 'opus',
+    cli_model: 'opus-4-6',
     env: { CLAUDE_CODE_EFFORT_LEVEL: 'medium' },
     name: 'Opus 4.6 Medium',
     tier: 'balanced',
@@ -62,20 +86,8 @@ const CLAUDE_MODELS = [
     badgeClass: 'badge-power'
   },
   {
-    id: 'opus',
-    aliases: ['opus-4.6-high'],
-    env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' },
-    name: 'Opus 4.6 High',
-    tier: 'thorough',
-    tagline: 'Maximum Depth',
-    description: 'Opus 4.6 with high effort — deepest analysis',
-    badge: 'Most Thorough',
-    badgeClass: 'badge-power',
-    default: true
-  },
-  {
     id: 'opus-4.6-1m',
-    cli_model: 'opus[1m]',
+    cli_model: 'opus-4-6[1m]',
     name: 'Opus 4.6 1M',
     tier: 'balanced',
     tagline: 'Extended Context',
