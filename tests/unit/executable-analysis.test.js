@@ -108,7 +108,7 @@ describe('generateDiffForExecutable', () => {
 
       const cmd = mockExec.mock.calls[0][0];
       expect(cmd).toContain('git diff');
-      expect(cmd).toContain('--no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ --no-relative');
+      expect(cmd).toContain('--no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ --no-relative --full-index');
       expect(cmd).toContain('abc123...def456');
     });
 
@@ -225,7 +225,7 @@ describe('generateDiffForExecutable', () => {
       );
 
       const cmd = mockExec.mock.calls[0][0];
-      expect(cmd).toBe('git diff --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ --no-relative');
+      expect(cmd).toBe('git diff --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ --no-relative --full-index');
     });
 
     it('appends diffArgs to fallback git diff', async () => {
