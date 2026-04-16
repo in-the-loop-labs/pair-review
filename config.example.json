@@ -77,7 +77,7 @@
     },
 
     "claude": {
-      "_comment": "Override Claude's built-in configuration. Useful for custom paths, wrapper scripts, or additional arguments. Built-in models include haiku, sonnet, opus-4.5, opus-4.6-low, opus-4.6-medium, opus, and opus-4.6-1m. Use 'cli_model' to decouple the app-level model ID from the CLI --model argument. Use 'env' for model-specific environment variables.",
+      "_comment": "Override Claude's built-in configuration. Useful for custom paths, wrapper scripts, or additional arguments. Built-in models include haiku, sonnet, opus-4.5, opus-4.6-low, opus-4.6-medium, opus, opus-4.6-1m, and opus-4.7-xhigh. Use 'cli_model' to decouple the app-level model ID from the CLI --model argument. Use 'env' for model-specific environment variables.",
       "command": "claude",
       "extra_args": [],
       "env": {},
