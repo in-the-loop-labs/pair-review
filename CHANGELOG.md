@@ -1,5 +1,37 @@
 # Changelog
 
+## 3.3.4
+
+### Patch Changes
+
+- 4fd0672: Add Claude Opus 4.7 (`opus-4.7-xhigh`) as a new built-in model
+
+  Adds `opus-4.7-xhigh`, pinned to the `claude-opus-4-7` CLI model with `CLAUDE_CODE_EFFORT_LEVEL=xhigh` for the deepest analysis. Also pins the existing `opus`, `opus-4.6-low`, `opus-4.6-medium`, and `opus-4.6-1m` entries to explicit `opus-4-6` / `opus-4-6[1m]` CLI model IDs so they no longer drift when the CLI's `opus` alias updates. `opus` (Opus 4.6 High) remains the default.
+
+- 4f9fc46: Add 75m, 90m, 105m, and 120m options to analysis timeout selectors
+
+  The analysis config dialog's timeout dropdowns (used in both Council and Advanced tabs) previously capped at 60m. Four longer options are now available for reviewers running deep analyses that exceed the old ceiling.
+
+- 6af9786: Fix incorrect context expansion above the first PR diff hunk so revealed lines
+  and hunk headers stay aligned with the rendered patch.
+- 9225625: Persist per-level analysis outcomes and surface them in history
+
+  The analysis-run history now shows which levels actually **succeeded** or **failed**, not just which were configured to run. A new `C` slot reflects the consolidation (orchestration) step, which previously had no indicator at all.
+
+  - Success → green ✓
+  - Failure → red ✗
+  - Skipped → neutral grey middot (`·`), replacing the old grey ✗
+
+  Outcomes are stored in a new `analysis_runs.level_outcomes` column (migration v44) so the information survives navigation and reloads. Legacy runs fall back to the existing `levels_config`-based rendering (enabled → success, disabled → skipped; no `C` slot, because historical consolidation outcome is unknown).
+
+  Council parent runs display only the `C` slot, since per-level outcomes live on the per-reviewer child runs.
+
+- 9c4cda6: Show "viewed" state for files in the sidebar
+
+  Files marked as viewed (and therefore collapsed in the diff panel) now display a gray filename and an eye-slash icon in the sidebar file list. The indicator updates in-place when viewed state is toggled, so the sidebar stays in sync with the diff panel without a full re-render.
+
+- 08c83b7: Fetch a PR worktree's missing base commit during refresh and update so diff generation keeps working after the worktree is reused.
+
 ## 3.3.3
 
 ### Patch Changes
