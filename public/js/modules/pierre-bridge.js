@@ -198,7 +198,7 @@ class PierreBridge {
       disableFileHeader: true,
       diffStyle: 'unified',
       diffIndicators: 'bars',
-      overflow: 'scroll',
+      overflow: 'wrap',
       lineHoverHighlight: 'line',
       lineDiffType: 'word',
       enableGutterUtility: true,
@@ -272,6 +272,11 @@ class PierreBridge {
       diffPositions,
       formElements,
       shadowHost: container.querySelector('diffs-container') || container.firstElementChild,
+      // Context range support
+      oldFile: null,
+      newFile: null,
+      baseMetadata: null,   // metadata before context range merging
+      contextRanges: [],     // [{startLine, endLine}] in NEW file coords
     };
 
     this.files.set(fileName, fileState);
@@ -290,12 +295,22 @@ class PierreBridge {
   upgradeFileContents(fileName, oldFile, newFile) {
     const fileState = this.files.get(fileName);
     if (!fileState || !fileState.instance) return false;
-    return fileState.instance.render({
+    const rendered = fileState.instance.render({
       oldFile,
       newFile,
       lineAnnotations: fileState.annotations,
       containerWrapper: fileState.container,
     });
+    // Cache full-file contents for re-render calls (context ranges, etc.)
+    fileState.oldFile = oldFile;
+    fileState.newFile = newFile;
+    // Snapshot metadata whenever the instance has a fileDiff,
+    // even if render() returned false (e.g. files-equal early exit)
+    if (fileState.instance.fileDiff) {
+      fileState.baseMetadata = fileState.instance.fileDiff;
+      if (fileState.contextRanges?.length) this._applyContextRanges(fileName);
+    }
+    return rendered;
   }
 
   /**
@@ -340,6 +355,119 @@ class PierreBridge {
     for (const [fileName] of this.files) {
       this.destroyFile(fileName);
     }
+  }
+
+  // ─── Context Ranges ──────────────────────────────────────────────
+
+  /**
+   * Add context ranges to reveal non-contiguous lines in a file's diff.
+   * Ranges are in NEW file coordinates (1-indexed).
+   * If file contents aren't loaded yet, ranges are queued for later application.
+   * @param {string} fileName
+   * @param {Array<{startLine: number, endLine: number}>} ranges
+   * @returns {boolean} true if ranges were applied immediately
+   */
+  addContextRanges(fileName, ranges) {
+    const fileState = this.files.get(fileName);
+    if (!fileState || !fileState.instance) return false;
+
+    const { mergeOverlapping } = window.PierreContext || {};
+    if (!mergeOverlapping) {
+      console.warn('[PierreBridge] window.PierreContext not loaded — cannot add context ranges');
+      return false;
+    }
+
+    // Merge with existing context ranges (deduplicate)
+    const existing = fileState.contextRanges || [];
+    fileState.contextRanges = mergeOverlapping([...existing, ...ranges]);
+
+    // If file contents aren't loaded yet, ranges will be applied in upgradeFileContents
+    if (!fileState.baseMetadata) return false;
+
+    return this._applyContextRanges(fileName);
+  }
+
+  /**
+   * Re-render a file with new fileDiff metadata, preserving cached file contents.
+   * Clears expandedHunks to avoid stale hunk-index references.
+   * @param {Object} fileState
+   * @param {Object} fileDiff - merged or base metadata
+   * @returns {boolean}
+   * @private
+   */
+  _renderWithFileDiff(fileState, fileDiff) {
+    fileState.instance.hunksRenderer?.expandedHunks?.clear();
+    return fileState.instance.render({
+      oldFile: fileState.oldFile,
+      newFile: fileState.newFile,
+      fileDiff,
+      lineAnnotations: fileState.annotations,
+      containerWrapper: fileState.container,
+    });
+  }
+
+  _applyContextRanges(fileName) {
+    const fileState = this.files.get(fileName);
+    if (!fileState?.baseMetadata || !fileState.contextRanges?.length) return false;
+
+    const { mergeContextRanges } = window.PierreContext || {};
+    if (!mergeContextRanges) return false;
+
+    const merged = mergeContextRanges(fileState.baseMetadata, fileState.contextRanges);
+    return this._renderWithFileDiff(fileState, merged);
+  }
+
+  /**
+   * Remove specific context ranges from a file.
+   * @param {string} fileName
+   * @param {Array<{startLine: number, endLine: number}>} ranges
+   * @returns {boolean} true if re-render occurred
+   */
+  removeContextRanges(fileName, ranges) {
+    const fileState = this.files.get(fileName);
+    if (!fileState) return false;
+
+    const { subtractRanges } = window.PierreContext || {};
+    if (!subtractRanges) return false;
+
+    fileState.contextRanges = subtractRanges(fileState.contextRanges || [], ranges);
+
+    if (!fileState.baseMetadata) return false;
+    if (fileState.contextRanges.length === 0) {
+      return this._renderWithFileDiff(fileState, fileState.baseMetadata);
+    }
+    return this._applyContextRanges(fileName);
+  }
+
+  /**
+   * Remove all context ranges for a file, restoring original diff view.
+   * @param {string} fileName
+   * @returns {boolean} true if re-render occurred
+   */
+  clearContextRanges(fileName) {
+    const fileState = this.files.get(fileName);
+    if (!fileState) return false;
+
+    fileState.contextRanges = [];
+
+    if (!fileState.baseMetadata) return false;
+    return this._renderWithFileDiff(fileState, fileState.baseMetadata);
+  }
+
+  /**
+   * Convert OLD-file (deletion-side) line numbers to NEW-file coordinates.
+   * Delegates to PierreContext using the file's baseMetadata for offset computation.
+   * @param {string} fileName
+   * @param {number} oldStart - OLD-file line (1-indexed)
+   * @param {number} oldEnd - OLD-file line (1-indexed)
+   * @returns {{startLine: number, endLine: number}|null}
+   */
+  convertOldToNew(fileName, oldStart, oldEnd) {
+    const fileState = this.files.get(fileName);
+    if (!fileState?.baseMetadata) return null;
+    const { convertOldToNew } = window.PierreContext || {};
+    if (!convertOldToNew) return null;
+    return convertOldToNew(fileState.baseMetadata, oldStart, oldEnd);
   }
 
   // ─── Gutter Buttons ───────────────────────────────────────────────
@@ -1184,7 +1312,7 @@ class PierreBridge {
     const fileState = this.files.get(fileName);
     if (!fileState || !fileState.metadata) return null;
 
-    const metadata = fileState.metadata;
+    const metadata = fileState.baseMetadata || fileState.metadata;
     const useAdditions = (side || 'RIGHT') === 'RIGHT';
     const lines = useAdditions ? metadata.additionLines : metadata.deletionLines;
     const hunks = metadata.hunks;
