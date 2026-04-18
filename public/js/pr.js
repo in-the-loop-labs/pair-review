@@ -2780,9 +2780,26 @@ class PRManager {
       await new Promise(resolve => setTimeout(resolve, 50));
     }
 
-    // For @pierre/diffs rendered files, expansion is handled by the library.
-    // Annotations will be placed and @pierre/diffs will show them even in collapsed regions.
+    // For @pierre/diffs rendered files, use context ranges to reveal collapsed lines
     if (this.pierreBridge && this.pierreBridge.files.has(file)) {
+      let rangeStart = lineStart;
+      let rangeEnd = lineEnd;
+
+      // addContextRanges expects NEW-file coordinates.
+      // LEFT-side suggestions use OLD-file numbers — convert first.
+      if (side === 'LEFT') {
+        const converted = this.pierreBridge.convertOldToNew(file, lineStart, lineEnd);
+        if (!converted) return false;
+        rangeStart = converted.startLine;
+        rangeEnd = converted.endLine;
+      }
+
+      const padding = 3;
+      const range = {
+        startLine: Math.max(1, rangeStart - padding),
+        endLine: rangeEnd + padding,
+      };
+      this.pierreBridge.addContextRanges(file, [range]);
       return true;
     }
 
@@ -2864,10 +2881,26 @@ class PRManager {
       const { file, line_start, line_end, side } = item;
       const resolvedSide = (side || 'right').toUpperCase();
 
-      // @pierre/diffs files: delegate gap expansion to PierreBridge
+      // @pierre/diffs files: use context ranges to reveal collapsed lines
       if (this.pierreBridge && this.pierreBridge.files.has(file)) {
         if (!this.pierreBridge.isLineVisible(file, line_start, resolvedSide)) {
-          this.pierreBridge.expandToLine(file, line_start, resolvedSide);
+          let rangeStart = line_start;
+          let rangeEnd = line_end || line_start;
+
+          // addContextRanges expects NEW-file coordinates.
+          // LEFT-side items use OLD-file numbers — convert first.
+          if (resolvedSide === 'LEFT') {
+            const converted = this.pierreBridge.convertOldToNew(file, rangeStart, rangeEnd);
+            if (converted) {
+              rangeStart = converted.startLine;
+              rangeEnd = converted.endLine;
+            }
+          }
+
+          this.pierreBridge.addContextRanges(file, [{
+            startLine: rangeStart,
+            endLine: rangeEnd,
+          }]);
         }
         continue;
       }
@@ -5745,31 +5778,6 @@ class PRManager {
       effectiveStart = Math.max(1, effectiveStart - (intendedSize - actualSize));
     }
     tbody.dataset.lineStart = effectiveStart;
-
-    // Chunk header row with range label and per-chunk dismiss button
-    const headerRow = document.createElement('tr');
-    headerRow.className = 'context-chunk-header';
-    const lineNumTd = document.createElement('td');
-    lineNumTd.className = 'd2h-code-linenumber';
-    headerRow.appendChild(lineNumTd);
-    const contentTd = document.createElement('td');
-    contentTd.className = 'd2h-code-side-line';
-    contentTd.colSpan = 3;
-    const rangeLabel = document.createElement('span');
-    rangeLabel.className = 'context-range-label';
-    rangeLabel.textContent = `Lines ${effectiveStart}\u2013${clampedEnd}`;
-    contentTd.appendChild(rangeLabel);
-    const chunkDismiss = document.createElement('button');
-    chunkDismiss.className = 'context-chunk-dismiss';
-    chunkDismiss.title = 'Remove this range';
-    chunkDismiss.innerHTML = '\u00d7';
-    chunkDismiss.addEventListener('click', (e) => {
-      e.stopPropagation();
-      this.removeContextFile(contextFile.id);
-    });
-    contentTd.appendChild(chunkDismiss);
-    headerRow.appendChild(contentTd);
-    tbody.appendChild(headerRow);
 
     // Add expand-up gap row if there are lines above the context range
     if (effectiveStart > 1) {

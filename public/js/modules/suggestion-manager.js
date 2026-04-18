@@ -175,9 +175,12 @@ class SuggestionManager {
       // Get side from suggestion, default to 'RIGHT' for backwards compatibility
       const side = suggestion.side || 'RIGHT';
 
-      // For PierreBridge files, suggestions are always "visible" via annotations
+      // For PierreBridge files, check if the line is actually visible in the rendered DOM
       if (this.prManager.pierreBridge?.files.has(file)) {
-        continue; // Skip - pierre/diffs handles visibility
+        if (!this.prManager.pierreBridge.isLineVisible(file, line, side)) {
+          hiddenItems.push({ file, line, lineEnd, side });
+        }
+        continue;
       }
 
       // Find the file wrapper
@@ -247,9 +250,10 @@ class SuggestionManager {
 
       // For files rendered by @pierre/diffs, use annotation-based display
       if (this.prManager.pierreBridge) {
-        // Clear existing suggestion annotations for all files
+        // Clear existing suggestion annotations and context ranges for all files
         for (const [fileName] of this.prManager.pierreBridge.files) {
           this.prManager.pierreBridge.removeAnnotationsByType(fileName, 'suggestion');
+          this.prManager.pierreBridge.clearContextRanges(fileName);
         }
 
         // Group suggestions by file
@@ -296,7 +300,40 @@ class SuggestionManager {
       const hiddenSuggestions = this.findHiddenSuggestions(suggestions);
       if (hiddenSuggestions.length > 0) {
         console.log(`[UI] Found ${hiddenSuggestions.length} suggestions targeting hidden lines, expanding...`);
+
+        // Batch Pierre-bridge files: collect all ranges per file, one addContextRanges call each
+        const pierreRanges = new Map();
+        const legacyItems = [];
+
         for (const hidden of hiddenSuggestions) {
+          if (this.prManager?.pierreBridge?.files.has(hidden.file)) {
+            if (!pierreRanges.has(hidden.file)) pierreRanges.set(hidden.file, []);
+            const padding = 3;
+            let rangeStart = hidden.line;
+            let rangeEnd = hidden.lineEnd || hidden.line;
+            // addContextRanges expects NEW-file coordinates; LEFT-side items carry OLD numbers.
+            if (hidden.side === 'LEFT') {
+              const converted = this.prManager.pierreBridge.convertOldToNew(hidden.file, rangeStart, rangeEnd);
+              if (!converted) continue;
+              rangeStart = converted.startLine;
+              rangeEnd = converted.endLine;
+            }
+            pierreRanges.get(hidden.file).push({
+              startLine: Math.max(1, rangeStart - padding),
+              endLine: rangeEnd + padding,
+            });
+          } else {
+            legacyItems.push(hidden);
+          }
+        }
+
+        // One render per Pierre file instead of N
+        for (const [file, ranges] of pierreRanges) {
+          this.prManager.pierreBridge.addContextRanges(file, ranges);
+        }
+
+        // Legacy files: expand individually
+        for (const hidden of legacyItems) {
           if (this.prManager?.expandForSuggestion) {
             await this.prManager.expandForSuggestion(hidden.file, hidden.line, hidden.lineEnd, hidden.side);
           }
