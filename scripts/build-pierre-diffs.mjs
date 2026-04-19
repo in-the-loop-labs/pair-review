@@ -21,7 +21,7 @@ try {
     platform: 'browser',
     target: ['es2020'],
     minify: true,
-    sourcemap: true,
+    sourcemap: false,
     define: {
       'process.env.NODE_ENV': '"production"',
     },

@@ -31,7 +31,7 @@
     "test:e2e:headed": "playwright test --headed",
     "test:e2e:debug": "playwright test --debug",
     "build:diffs": "node scripts/build-pierre-diffs.mjs",
-    "postinstall": "node scripts/build-pierre-diffs.mjs",
+    "prepare": "node scripts/build-pierre-diffs.mjs",
     "generate:skill-prompts": "node scripts/generate-skill-prompts.js",
     "changeset": "changeset",
     "version": "changeset version && pnpm install --lockfile-only && bash scripts/generate-package-lock.sh && node scripts/sync-plugin-versions.js && git add package.json pnpm-lock.yaml package-lock.json CHANGELOG.md .changeset .claude-plugin/marketplace.json plugin/.claude-plugin/plugin.json plugin-code-critic/.claude-plugin/plugin.json && git commit -m \"RELEASING: v$(node -p \"require('./package.json').version\")\"",
