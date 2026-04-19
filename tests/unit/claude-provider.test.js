@@ -231,11 +231,11 @@ describe('ClaudeProvider', () => {
 
     describe('cli_model resolution', () => {
       it('should resolve cli_model from built-in model definition', () => {
-        // opus-4.6-low has cli_model: 'opus-4-6' in built-in definition
+        // opus-4.6-low has cli_model: 'claude-opus-4-6' in built-in definition
         const provider = new ClaudeProvider('opus-4.6-low');
         const modelIdx = provider.args.indexOf('--model');
         expect(modelIdx).not.toBe(-1);
-        expect(provider.args[modelIdx + 1]).toBe('opus-4-6');
+        expect(provider.args[modelIdx + 1]).toBe('claude-opus-4-6');
       });
 
       it('should fall back to id when no cli_model is defined', () => {
@@ -284,11 +284,11 @@ describe('ClaudeProvider', () => {
         expect(provider.args[modelIdx + 1]).toBe('claude-opus-4-5-20251101');
       });
 
-      it('should resolve opus-4.6-1m to opus-4-6[1m] cli_model', () => {
+      it('should resolve opus-4.6-1m to claude-opus-4-6[1m] cli_model', () => {
         const provider = new ClaudeProvider('opus-4.6-1m');
         const modelIdx = provider.args.indexOf('--model');
         expect(modelIdx).not.toBe(-1);
-        expect(provider.args[modelIdx + 1]).toBe('opus-4-6[1m]');
+        expect(provider.args[modelIdx + 1]).toBe('claude-opus-4-6[1m]');
       });
     });
 
@@ -1164,7 +1164,7 @@ describe('ClaudeProvider', () => {
       const args = provider.buildArgsForModel('opus-4.6-low');
       const modelIdx = args.indexOf('--model');
       expect(modelIdx).not.toBe(-1);
-      expect(args[modelIdx + 1]).toBe('opus-4-6');
+      expect(args[modelIdx + 1]).toBe('claude-opus-4-6');
     });
 
     it('should fall back to id when no cli_model defined', () => {
