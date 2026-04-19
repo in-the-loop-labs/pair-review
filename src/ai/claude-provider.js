@@ -34,7 +34,7 @@ const CLAUDE_MODELS = [
   {
     id: 'opus',
     aliases: ['opus-4.6-high'],
-    cli_model: 'opus-4-6',
+    cli_model: 'claude-opus-4-6',
     env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' },
     name: 'Opus 4.6 High',
     tier: 'thorough',
@@ -65,7 +65,7 @@ const CLAUDE_MODELS = [
   },
   {
     id: 'opus-4.6-low',
-    cli_model: 'opus-4-6',
+    cli_model: 'claude-opus-4-6',
     env: { CLAUDE_CODE_EFFORT_LEVEL: 'low' },
     name: 'Opus 4.6 Low',
     tier: 'balanced',
@@ -76,7 +76,7 @@ const CLAUDE_MODELS = [
   },
   {
     id: 'opus-4.6-medium',
-    cli_model: 'opus-4-6',
+    cli_model: 'claude-opus-4-6',
     env: { CLAUDE_CODE_EFFORT_LEVEL: 'medium' },
     name: 'Opus 4.6 Medium',
     tier: 'balanced',
@@ -87,7 +87,7 @@ const CLAUDE_MODELS = [
   },
   {
     id: 'opus-4.6-1m',
-    cli_model: 'opus-4-6[1m]',
+    cli_model: 'claude-opus-4-6[1m]',
     name: 'Opus 4.6 1M',
     tier: 'balanced',
     tagline: 'Extended Context',
