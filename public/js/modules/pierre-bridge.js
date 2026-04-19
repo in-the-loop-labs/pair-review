@@ -675,11 +675,16 @@ class PierreBridge {
           if (!dragInfo || ue.pointerId !== dragInfo.pointerId) return;
           document.removeEventListener('pointermove', onMove);
           document.removeEventListener('pointerup', onUp);
+          document.removeEventListener('pointercancel', onUp);
           // dragInfo.dragged is consumed by onclick below
         };
 
         document.addEventListener('pointermove', onMove);
         document.addEventListener('pointerup', onUp);
+        // Touch/pen pointers can be canceled by the OS (edge gestures, palm
+        // rejection) in which case no pointerup fires. Clean up on cancel
+        // too so the document-level listeners don't leak.
+        document.addEventListener('pointercancel', onUp);
       });
 
       btn.onclick = (e) => {
@@ -1207,9 +1212,23 @@ class PierreBridge {
     // is set programmatically above, the `input` event does not fire, so we
     // must compute this here rather than relying on the listener.
     saveBtn.disabled = !textarea.value.trim();
-    saveBtn.addEventListener('click', () => {
-      if (this.options.onCommentFormSubmit) {
-        this.options.onCommentFormSubmit(fileName, id, data, textarea.value);
+    // Guard against duplicate submits from rapid clicks or repeated
+    // Cmd+Enter. Parity with CommentManager.saveComment which notes:
+    // "Prevent duplicate saves from rapid clicks or Cmd+Enter".
+    saveBtn.addEventListener('click', async () => {
+      if (saveBtn.dataset.saving === 'true') return;
+      if (!this.options.onCommentFormSubmit) return;
+      saveBtn.dataset.saving = 'true';
+      saveBtn.disabled = true;
+      try {
+        await this.options.onCommentFormSubmit(fileName, id, data, textarea.value);
+      } finally {
+        // On success the form annotation has been removed and the button
+        // is detached; only touch the button if it's still connected.
+        if (saveBtn.isConnected) {
+          saveBtn.dataset.saving = 'false';
+          saveBtn.disabled = !textarea.value.trim();
+        }
       }
     });
     actions.appendChild(saveBtn);

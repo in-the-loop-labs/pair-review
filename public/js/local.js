@@ -1469,7 +1469,8 @@ class LocalManager {
           deletions: deletions,
           generated: isGenerated,
           status: (() => {
-            const hdr = patch.substring(0, patch.indexOf('@@'));
+            const atIdx = patch.indexOf('@@');
+            const hdr = atIdx === -1 ? patch : patch.substring(0, atIdx);
             return hdr.includes('new file mode') ? 'added' :
                    hdr.includes('deleted file mode') ? 'removed' : 'modified';
           })()

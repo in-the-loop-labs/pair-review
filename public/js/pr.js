@@ -1716,8 +1716,11 @@ class PRManager {
 
       // Use diff header metadata (not insertion/deletion counts) to determine
       // true file status. Only check before the first @@ hunk marker to avoid
-      // matching code content that happens to contain these strings.
-      const diffHeader = file.patch.substring(0, file.patch.indexOf('@@'));
+      // matching code content that happens to contain these strings. If the
+      // patch has no @@ marker (empty added/deleted files, mode-only changes)
+      // the whole patch is header.
+      const atIdx = file.patch.indexOf('@@');
+      const diffHeader = atIdx === -1 ? file.patch : file.patch.substring(0, atIdx);
       const status = diffHeader.includes('new file mode') ? 'added'
         : diffHeader.includes('deleted file mode') ? 'deleted'
         : 'modified';
@@ -3020,6 +3023,9 @@ class PRManager {
         body: body.trim(),
         side: data.side || 'RIGHT',
         diff_position: data.diffPosition,
+        // Anchor to the PR head commit so repositioning works if the PR is
+        // updated later. Parity with CommentManager.saveComment.
+        commit_sha: this.currentPR?.head_sha,
       };
 
       const response = await fetch(`/api/reviews/${this.currentPR.id}/comments`, {
@@ -3032,11 +3038,26 @@ class PRManager {
       });
 
       if (response.ok) {
+        const result = await response.json().catch(() => ({}));
         // Remove form annotation
         this.pierreBridge.removeAnnotation(fileName, annotationId);
         // Reload comments to show the new one
         const includeDismissed = window.aiPanel?.showDismissedComments || false;
         await this.loadUserComments(includeDismissed);
+
+        // Legacy-path side-effects: clear the dragged range, auto-expand in
+        // minimize mode, and notify the AI chat context. Parity with
+        // CommentManager.saveComment.
+        this.lineTracker?.clearRangeSelection();
+        if (result.commentId != null && this.commentMinimizer) {
+          const newRow = document.querySelector(
+            `[data-comment-id="${result.commentId}"]`
+          );
+          if (newRow) this.commentMinimizer.expandForElement(newRow);
+        }
+        window.chatPanel?.queueUserActionHint(
+          `[User Action: created comment on ${data.fileName} lines ${data.lineStart}-${data.lineEnd}]`
+        );
       }
     } catch (error) {
       console.error('Error saving comment:', error);
@@ -3507,6 +3528,21 @@ class PRManager {
         }
       }
 
+      // Ensure every comment's target line is reachable in the DOM before
+      // rendering. `ensureLinesVisible` handles both engines — for Pierre
+      // files it expands collapsed gaps via `addContextRanges` so the
+      // annotation row exists; for legacy files it expands hidden hunks.
+      // Without this, comments on lines outside the default hunks render
+      // nowhere on reload and "jump to comment" silently fails.
+      if (lineLevelComments.length > 0) {
+        await this.ensureLinesVisible(lineLevelComments.map(c => ({
+          file: c.file,
+          line_start: c.line_start,
+          line_end: c.line_end || c.line_start,
+          side: c.side || 'RIGHT',
+        })));
+      }
+
       // Partition line-level comments by rendering engine
       const pierreComments = [];
       const legacyComments = [];
@@ -3530,16 +3566,7 @@ class PRManager {
         });
       });
 
-      // Legacy path: ensure target lines visible and render via DOM insertion
       if (legacyComments.length > 0) {
-        const lineItems = legacyComments.map(c => ({
-          file: c.file,
-          line_start: c.line_start,
-          line_end: c.line_start,
-          side: c.side || 'RIGHT'
-        }));
-        await this.ensureLinesVisible(lineItems);
-
         legacyComments.forEach(comment => {
           const fileElement = this.findFileElement(comment.file);
           if (!fileElement) return;
@@ -3722,8 +3749,16 @@ class PRManager {
    * @param {HTMLElement|null} suggestionRow - Legacy table row, or null for Pierre
    * @private
    */
-  _renderAdoptedUserComment(comment, suggestionRow) {
+  async _renderAdoptedUserComment(comment, suggestionRow) {
     if (this.pierreBridge && comment.file && this.pierreBridge.files.has(comment.file)) {
+      // Reveal the target line if it sits inside a collapsed gap — otherwise
+      // the annotation has no DOM row to attach to and never renders.
+      await this.ensureLinesVisible([{
+        file: comment.file,
+        line_start: comment.line_start,
+        line_end: comment.line_end || comment.line_start,
+        side: comment.side || 'RIGHT',
+      }]);
       this.pierreBridge.addAnnotation(comment.file, {
         lineNumber: comment.line_start,
         side: comment.side || 'RIGHT',
@@ -3896,7 +3931,7 @@ class PRManager {
 
           // Remove the edit form annotation and add the comment annotation.
           this.pierreBridge.removeAnnotation(fileName, annotationId);
-          this._renderAdoptedUserComment(newComment, null);
+          await this._renderAdoptedUserComment(newComment, null);
           this._notifyAdoption(suggestionId, newComment);
         };
 
@@ -3945,7 +3980,7 @@ class PRManager {
               fileName, lineNumber, lineEnd, suggestionType, suggestionTitle,
               suggestionId, diffPosition, side
             });
-            this._renderAdoptedUserComment(newComment, suggestionRow);
+            await this._renderAdoptedUserComment(newComment, suggestionRow);
             this._notifyAdoption(suggestionId, newComment);
             window.chatPanel?.queueUserActionHint(`[User Action: adopted suggestion ${suggestionId}]`);
           } catch (error) {
@@ -3991,7 +4026,7 @@ class PRManager {
         return;
       }
 
-      this._renderAdoptedUserComment(result.newComment, result.suggestionRow);
+      await this._renderAdoptedUserComment(result.newComment, result.suggestionRow);
       this._notifyAdoption(suggestionId, result.newComment);
       window.chatPanel?.queueUserActionHint(`[User Action: adopted suggestion ${suggestionId}]`);
     } catch (error) {
