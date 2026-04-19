@@ -282,22 +282,23 @@ test.describe('Suggestion Actions', () => {
     // Wait for suggestions
     await page.waitForSelector('.ai-suggestion', { timeout: 5000 });
 
-    // Find an ai-suggestion-row that contains multiple NON-collapsed suggestions
-    // (suggestions on the same line share the same <tr class="ai-suggestion-row">)
+    // Find suggestions on the same line (multiple NON-collapsed suggestions).
+    // Group by file+line data attributes instead of DOM parent, since pierre-diffs
+    // renders each suggestion as a separate annotation div rather than grouping
+    // them in a shared <tr class="ai-suggestion-row">.
     // We filter out collapsed suggestions because earlier tests in this suite may have
     // dismissed/adopted suggestions that share the page's database state.
     const rowsWithMultipleSuggestions = await page.evaluate(() => {
-      const rows = document.querySelectorAll('.ai-suggestion-row');
-      const result = [];
-      for (const row of rows) {
-        const suggestions = row.querySelectorAll('.ai-suggestion:not(.collapsed)');
-        if (suggestions.length >= 2) {
-          result.push({
-            suggestionIds: Array.from(suggestions).map(s => s.dataset.suggestionId)
-          });
-        }
+      const suggestions = Array.from(document.querySelectorAll('.ai-suggestion:not(.collapsed)'));
+      const grouped = {};
+      for (const sug of suggestions) {
+        const key = `${sug.dataset.fileName || ''}:${sug.dataset.lineNumber || ''}`;
+        if (!grouped[key]) grouped[key] = [];
+        grouped[key].push(sug.dataset.suggestionId);
       }
-      return result;
+      return Object.values(grouped)
+        .filter(ids => ids.length >= 2)
+        .map(suggestionIds => ({ suggestionIds }));
     });
 
     // Verify we found at least one row with multiple active suggestions

@@ -14,7 +14,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender } from './helpers.js';
+import { waitForDiffToRender, openCommentFormOnLine, hoverDiffLine } from './helpers.js';
 
 // Helper to clean up all user comments (call via API to ensure clean state)
 async function cleanupAllComments(page) {
@@ -30,21 +30,6 @@ async function cleanupAllComments(page) {
       await fetch(`/api/reviews/1/comments/${comment.id}`, { method: 'DELETE' });
     }
   });
-}
-
-// Helper to open comment form on a specific line
-async function openCommentFormOnLine(page, lineIndex = 0) {
-  // Hover over a line number to show the add comment button
-  const lineNumberCell = page.locator('.d2h-code-linenumber').nth(lineIndex);
-  await lineNumberCell.hover();
-
-  // Click the add comment button
-  const addCommentBtn = page.locator('.add-comment-btn').first();
-  await addCommentBtn.waitFor({ state: 'visible', timeout: 5000 });
-  await addCommentBtn.click();
-
-  // Wait for the comment form to appear
-  await page.waitForSelector('.user-comment-form', { timeout: 5000 });
 }
 
 test.describe('Comment Creation and Submission', () => {
@@ -93,7 +78,7 @@ test.describe('Comment Creation and Submission', () => {
     await waitForDiffToRender(page);
 
     // Find a specific line to comment on
-    const lineNumberCells = page.locator('.d2h-code-linenumber');
+    const lineNumberCells = page.locator('[data-column-number]');
     const count = await lineNumberCells.count();
     expect(count).toBeGreaterThan(0);
 
@@ -115,7 +100,7 @@ test.describe('Comment Creation and Submission', () => {
     await expect(commentRow.first()).toBeVisible({ timeout: 5000 });
 
     // Verify the comment is within a diff file wrapper
-    const diffWrapper = page.locator('.d2h-file-wrapper');
+    const diffWrapper = page.locator('[data-file-name]');
     const commentInDiff = diffWrapper.locator('.user-comment-row');
     await expect(commentInDiff.first()).toBeVisible();
   });
@@ -414,106 +399,96 @@ test.describe('Comment Deletion', () => {
   });
 });
 
-test.describe('Multi-line Drag Selection', () => {
-  test('should support drag selection from add-comment button', async ({ page }) => {
+test.describe('Multi-line Selection', () => {
+  test('should reveal the gutter comment button on line hover', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
-    // Get rows with line numbers - skip first few rows as they may be context lines
-    const lineRows = page.locator('tr[data-line-number]');
-    const rowCount = await lineRows.count();
+    const lineNumbers = page.locator('[data-column-number]');
+    const count = await lineNumbers.count();
+    expect(count).toBeGreaterThan(2);
 
-    // Need at least 3 rows for a drag test
-    if (rowCount >= 3) {
-      // The drag mechanism works via mousedown on add-comment button,
-      // mouseover on rows, then mouseup. Since button is hidden by default,
-      // we verify the mechanism exists by checking that the selection can be created
-      // programmatically via clicking the add button after a multi-row selection.
+    await hoverDiffLine(page, 1);
 
-      // This test validates that:
-      // 1. Multiple rows exist for potential selection
-      // 2. Add comment buttons are present (appear on hover)
-      // 3. Line tracking infrastructure exists
-
-      // Hover over a line to reveal button
-      const targetRow = lineRows.nth(1);
-      const lineNumCell = targetRow.locator('.d2h-code-linenumber');
-      await lineNumCell.hover();
-
-      // Button should exist (may be visible or hidden based on CSS)
-      const addBtns = page.locator('.add-comment-btn');
-      const btnCount = await addBtns.count();
-      expect(btnCount).toBeGreaterThan(0);
-
-      // Verify rows have proper data attributes for selection
-      const hasLineNumber = await targetRow.getAttribute('data-line-number');
-      expect(hasLineNumber).toBeTruthy();
-    }
+    const commentBtn = page.locator('.pierre-comment-btn').first();
+    await expect(commentBtn).toBeVisible({ timeout: 3000 });
   });
 
-  test('should show add comment button after multi-line selection', async ({ page }) => {
+  test('should keep the gutter comment button available after a multi-line selection', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
-    // Get line number cells
-    const lineNumberCells = page.locator('.d2h-code-linenumber');
-    const count = await lineNumberCells.count();
+    // Drive the @pierre/diffs line selection directly, the same way the
+    // PierreBridge does when the user drags from the gutter button. The
+    // pointer-drag plumbing is covered by pierre-bridge unit tests.
+    const applied = await page.evaluate(() => {
+      const bridge = window.prManager?.pierreBridge;
+      if (!bridge) return false;
+      const [fileState] = bridge.files.values();
+      if (!fileState?.instance) return false;
+      fileState.instance.setSelectedLines({ start: 2, end: 4, side: 'additions' });
+      return true;
+    });
+    expect(applied).toBe(true);
 
-    if (count >= 3) {
-      const startCell = lineNumberCells.nth(0);
-      const endCell = lineNumberCells.nth(2);
-
-      const startBox = await startCell.boundingBox();
-      const endBox = await endCell.boundingBox();
-
-      if (startBox && endBox) {
-        // Perform drag action
-        await page.mouse.move(startBox.x + startBox.width / 2, startBox.y + startBox.height / 2);
-        await page.mouse.down();
-        await page.mouse.move(endBox.x + endBox.width / 2, endBox.y + endBox.height / 2);
-        await page.mouse.up();
-
-        // Wait for selection state to be reflected in DOM (button becomes visible)
-        await page.waitForSelector('.add-comment-btn:visible', { timeout: 3000 }).catch(() => {});
-
-        // Add comment button should be visible after selection
-        const addCommentBtn = page.locator('.add-comment-btn');
-        const btnCount = await addCommentBtn.count();
-        expect(btnCount).toBeGreaterThan(0);
-      }
-    }
+    await hoverDiffLine(page, 2);
+    const commentBtn = page.locator('.pierre-comment-btn').first();
+    await expect(commentBtn).toBeVisible({ timeout: 3000 });
   });
 
-  test('should create comment for multi-line range', async ({ page }) => {
+  test('should create a comment for a multi-line range', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
-    // Get line number cells - find rows with actual line numbers
-    const lineRows = page.locator('tr[data-line-number]');
-    const rowCount = await lineRows.count();
+    // Target utils.js where the first hunk has additions on lines 2-7.
+    // Set a multi-line selection (lines 3-5 on additions side) the same way
+    // PierreBridge does when the user drags from the gutter button.
+    const utilsWrapper = page.locator('.d2h-file-wrapper[data-file-name="src/utils.js"]');
+    await expect(utilsWrapper).toBeVisible({ timeout: 5000 });
 
-    if (rowCount >= 3) {
-      // Click on first row's line number cell to start selection
-      const firstRow = lineRows.nth(0);
-      const firstLineNumCell = firstRow.locator('.d2h-code-linenumber');
-      await firstLineNumCell.hover();
+    const applied = await page.evaluate(() => {
+      const bridge = window.prManager?.pierreBridge;
+      if (!bridge) return false;
+      const fileState = bridge.files.get('src/utils.js');
+      if (!fileState?.instance) return false;
+      fileState.instance.setSelectedLines({ start: 3, end: 5, side: 'additions' });
+      return true;
+    });
+    expect(applied).toBe(true);
 
-      // Look for add comment button and click it
-      const addCommentBtn = page.locator('.add-comment-btn').first();
-      await addCommentBtn.waitFor({ state: 'visible', timeout: 3000 });
-      await addCommentBtn.click();
+    // Hover an additions-side line number inside the selected range so
+    // resolveClickTarget sees it. Line 4 is an addition in the first hunk.
+    // In unified diff, addition/context line numbers appear in the right
+    // (additions) column, so hovering data-column-number="4" within the
+    // additions column gives getHoveredRow side='additions'.
+    const additionLine = utilsWrapper.locator('[data-column-number="4"]').last();
+    await additionLine.hover();
 
-      // Wait for comment form
-      await page.waitForSelector('.user-comment-form', { timeout: 5000 });
+    // Click the gutter comment button — resolveClickTarget should consume the
+    // multi-line selection and produce a range target.
+    const commentBtn = utilsWrapper.locator('.pierre-comment-btn').first();
+    await expect(commentBtn).toBeVisible({ timeout: 3000 });
+    await commentBtn.click();
+    await page.waitForSelector('.user-comment-form', { timeout: 5000 });
 
-      // Add a multi-line comment
-      const textarea = page.locator('.user-comment-form textarea');
-      await textarea.fill('Comment on line range');
-      await page.locator('.save-comment-btn').click();
+    // The form header should show the range label
+    const rangeLabel = page.locator('.line-range-indicator');
+    await expect(rangeLabel).toHaveText('Lines 3-5');
 
-      // Comment should be created
-      await expect(page.locator('.user-comment-row').first()).toBeVisible({ timeout: 5000 });
-    }
+    const textarea = page.locator('.user-comment-form textarea');
+    await textarea.fill('Comment on line range');
+    await page.locator('.save-comment-btn').click();
+
+    await expect(page.locator('.user-comment-row').first()).toBeVisible({ timeout: 5000 });
+
+    // Verify the saved comment has distinct line_start and line_end via API
+    const { comments } = await page.evaluate(async () => {
+      const resp = await fetch('/api/reviews/1/comments');
+      return resp.json();
+    });
+    const rangeComment = comments.find(c => c.body === 'Comment on line range');
+    expect(rangeComment).toBeTruthy();
+    expect(rangeComment.line_start).not.toEqual(rangeComment.line_end);
   });
 });
 
@@ -531,7 +506,7 @@ test.describe('Comment Persistence', () => {
 
     // Wait for comment to appear
     await expect(page.locator('.user-comment-row').first()).toBeVisible({ timeout: 5000 });
-    await expect(page.locator('.user-comment-body').first()).toContainText(uniqueComment);
+    await expect(page.locator('.user-comment-body', { hasText: uniqueComment })).toBeVisible();
 
     // Refresh the page
     await page.reload();
@@ -541,8 +516,7 @@ test.describe('Comment Persistence', () => {
     await page.waitForSelector('.user-comment-row', { timeout: 10000 });
 
     // Comment should still be visible after refresh
-    const commentBody = page.locator('.user-comment-body');
-    await expect(commentBody.first()).toContainText(uniqueComment, { timeout: 10000 });
+    await expect(page.locator('.user-comment-body', { hasText: uniqueComment })).toBeVisible({ timeout: 10000 });
   });
 
   test('should load existing comments on page load', async ({ page }) => {
@@ -571,8 +545,7 @@ test.describe('Comment Persistence', () => {
     await page.waitForSelector('.user-comment-row', { timeout: 10000 });
 
     // The comment should be loaded from the database
-    const commentBody = page.locator('.user-comment-body');
-    await expect(commentBody.first()).toContainText(persistentComment, { timeout: 10000 });
+    await expect(page.locator('.user-comment-body', { hasText: persistentComment })).toBeVisible({ timeout: 10000 });
   });
 });
 
