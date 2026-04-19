@@ -1468,8 +1468,12 @@ class LocalManager {
           insertions: additions,
           deletions: deletions,
           generated: isGenerated,
-          status: patch.includes('new file mode') ? 'added' :
-                  patch.includes('deleted file mode') ? 'removed' : 'modified'
+          status: (() => {
+            const atIdx = patch.indexOf('@@');
+            const hdr = atIdx === -1 ? patch : patch.substring(0, atIdx);
+            return hdr.includes('new file mode') ? 'added' :
+                   hdr.includes('deleted file mode') ? 'removed' : 'modified';
+          })()
         });
 
         totalAdditions += additions;
@@ -1517,6 +1521,9 @@ class LocalManager {
 
       // Render diff
       manager.renderDiff({ changed_files: sortedFiles });
+
+      // Progressively fetch full file contents for hunk expansion
+      manager._upgradeFilesWithContents(sortedFiles);
 
     } catch (error) {
       console.error('Error loading local diff:', error);

@@ -152,6 +152,68 @@ class PRManager {
     this.suggestionManager = new window.SuggestionManager(this);
     this.fileCommentManager = window.FileCommentManager ? new window.FileCommentManager(this) : null;
 
+    // Initialize PierreBridge for @pierre/diffs rendering
+    this.pierreBridge = window.PierreBridge ? new window.PierreBridge({
+      theme: this.currentTheme,
+      onCommentClick: (fileName, lineNumber, side, target) => {
+        // target.isRange is true when the user selected multiple lines
+        const diffPosition = this.pierreBridge.getDiffPosition(fileName, target.start, target.side);
+        if (target.isRange) {
+          this.showCommentForm(null, target.start, fileName, diffPosition, target.end, target.side);
+        } else {
+          this.showCommentForm(null, lineNumber, fileName, diffPosition, null, side);
+        }
+      },
+      onChatClick: (fileName, lineNumber, side, target) => {
+        if (!window.chatPanel) return;
+        window.chatPanel.open({
+          commentContext: {
+            type: 'line',
+            body: null,
+            file: fileName || '',
+            line_start: target.start,
+            line_end: target.end,
+            side: target.side || side || 'RIGHT',
+            source: 'user'
+          }
+        });
+      },
+      onHunkExpand: (fileName, hunkIndex, direction, lineCount) => {
+        // @pierre/diffs handles expansion natively
+      },
+      onCommentEdit: (comment) => {
+        if (this.commentManager) {
+          this.commentManager.editComment(comment.id);
+        }
+      },
+      onCommentDelete: (comment) => {
+        if (this.commentManager) {
+          this.commentManager.deleteComment(comment.id);
+        }
+      },
+      onSuggestionAdopt: (suggestion) => {
+        if (this.suggestionManager) {
+          this.suggestionManager.adoptSuggestion(suggestion.id);
+        }
+      },
+      onSuggestionDismiss: (suggestion) => {
+        if (this.suggestionManager) {
+          this.suggestionManager.dismissSuggestion(suggestion.id);
+        }
+      },
+      onCommentFormSubmit: (fileName, annotationId, data, body) => {
+        this._handleCommentFormSubmit(fileName, annotationId, data, body);
+      },
+      onCommentFormCancel: (fileName, annotationId, data) => {
+        this.pierreBridge.removeAnnotation(fileName, annotationId);
+      },
+      onSuggestionInsert: (textarea, button) => {
+        if (this.commentManager) {
+          this.commentManager.insertSuggestionBlock(textarea, button);
+        }
+      },
+    }) : null;
+
     // Line range selection state - delegate to lineTracker
     Object.defineProperty(this, 'rangeSelectionStart', {
       get: () => this.lineTracker.rangeSelectionStart,
@@ -808,6 +870,9 @@ class PRManager {
 
         // Render diff using the existing renderDiff method
         this.renderDiff({ changed_files: sortedFiles });
+
+        // Progressively fetch full file contents for hunk expansion
+        this._upgradeFilesWithContents(sortedFiles);
 
       } else {
         const diffContainer = document.getElementById('diff-container');
@@ -1572,8 +1637,17 @@ class PRManager {
    * @param {Object} pr - PR data with files
    */
   renderDiff(pr) {
+    // Abort any in-flight file content fetches from progressive loading
+    this._fileContentsAbort?.abort();
+    this._fileContentsAbort = null;
+
     const diffContainer = document.getElementById('diff-container');
     if (!diffContainer) return;
+
+    // Clean up existing @pierre/diffs instances before clearing the container
+    if (this.pierreBridge) {
+      this.pierreBridge.destroyAll();
+    }
 
     diffContainer.innerHTML = '';
 
@@ -1611,6 +1685,82 @@ class PRManager {
     // Load context files after diff is rendered
     this.contextFiles = [];
     this.loadContextFiles();
+  }
+
+  /**
+   * Progressively fetch full file contents and upgrade Pierre-rendered files
+   * to enable hunk expansion. Visible files (first batch) are fetched first,
+   * then remaining files.
+   * @param {Array} files - The sorted changed_files array
+   */
+  _upgradeFilesWithContents(files) {
+    if (!this.pierreBridge || this.pierreBridge._disabled) return;
+
+    const reviewId = this.currentPR?.id;
+    if (!reviewId) return;
+
+    const controller = new AbortController();
+    this._fileContentsAbort = controller;
+    const signal = controller.signal;
+
+    // Filter to files that have a PierreBridge instance and aren't binary
+    const eligible = files.filter(f => f.patch && !f.binary && this.pierreBridge.files.has(f.file));
+    if (!eligible.length) return;
+
+    const VISIBLE_BATCH = 8;
+    const visibleFiles = eligible.slice(0, VISIBLE_BATCH);
+    const remainingFiles = eligible.slice(VISIBLE_BATCH);
+
+    const fetchAndUpgrade = async (file) => {
+      if (signal.aborted) return;
+
+      // Use diff header metadata (not insertion/deletion counts) to determine
+      // true file status. Only check before the first @@ hunk marker to avoid
+      // matching code content that happens to contain these strings. If the
+      // patch has no @@ marker (empty added/deleted files, mode-only changes)
+      // the whole patch is header.
+      const atIdx = file.patch.indexOf('@@');
+      const diffHeader = atIdx === -1 ? file.patch : file.patch.substring(0, atIdx);
+      const status = diffHeader.includes('new file mode') ? 'added'
+        : diffHeader.includes('deleted file mode') ? 'deleted'
+        : 'modified';
+      let url = `/api/reviews/${reviewId}/file-contents/${encodeURIComponent(file.file)}?status=${encodeURIComponent(status)}`;
+      if (file.renamedFrom) {
+        url += `&oldPath=${encodeURIComponent(file.renamedFrom)}`;
+      }
+
+      try {
+        const resp = await fetch(url, { signal });
+        if (!resp.ok || signal.aborted) return;
+        const data = await resp.json();
+        if (data.tooLarge || data.binary || signal.aborted) return;
+
+        const oldFile = data.oldContents != null
+          ? { name: data.oldPath || file.renamedFrom || file.file, contents: data.oldContents }
+          : null;
+        const newFile = data.newContents != null
+          ? { name: file.file, contents: data.newContents }
+          : null;
+
+        if (oldFile || newFile) {
+          this.pierreBridge.upgradeFileContents(file.file, oldFile, newFile);
+        }
+      } catch (err) {
+        if (err.name === 'AbortError') return;
+        console.error(`Failed to fetch file contents for ${file.file}:`, err);
+      }
+    };
+
+    // Use requestIdleCallback (or setTimeout fallback) to avoid blocking initial paint
+    const scheduleUpgrade = window.requestIdleCallback || ((cb) => setTimeout(cb, 50));
+    scheduleUpgrade(async () => {
+      // Visible batch — all in parallel
+      await Promise.all(visibleFiles.map(fetchAndUpgrade));
+      // Remaining batch — all in parallel after visible batch completes
+      if (remainingFiles.length && !signal.aborted) {
+        await Promise.all(remainingFiles.map(fetchAndUpgrade));
+      }
+    });
   }
 
   /**
@@ -1709,7 +1859,24 @@ class PRManager {
       header.appendChild(fileChatBtn);
     }
 
-    // Create diff table
+    // Create container for @pierre/diffs rendering
+    if (this.pierreBridge && !this.pierreBridge._disabled) {
+      const diffBody = document.createElement('div');
+      diffBody.className = 'pierre-diff-body';
+
+      if (file.patch) {
+        this.pierreBridge.renderFile(file.file, diffBody, file.patch, {
+          collapsed: isCollapsed,
+        });
+      } else if (file.binary) {
+        this.pierreBridge.renderBinaryFile(diffBody);
+      }
+
+      wrapper.appendChild(diffBody);
+      return wrapper;
+    }
+
+    // Fallback: old table-based rendering (used when PierreBridge is not available)
     const table = document.createElement('table');
     table.className = 'd2h-diff-table';
 
@@ -2050,6 +2217,11 @@ class PRManager {
     if (header) {
       window.DiffRenderer.updateFileHeaderState(header, !wrapper.classList.contains('collapsed'));
     }
+
+    // Sync collapsed state with @pierre/diffs instance
+    if (this.pierreBridge && this.pierreBridge.files.has(filePath)) {
+      this.pierreBridge.setCollapsed(filePath, wrapper.classList.contains('collapsed'));
+    }
   }
 
   /**
@@ -2070,6 +2242,10 @@ class PRManager {
         if (header) {
           window.DiffRenderer.updateFileHeaderState(header, false);
         }
+        // Sync with @pierre/diffs
+        if (this.pierreBridge && this.pierreBridge.files.has(filePath)) {
+          this.pierreBridge.setCollapsed(filePath, true);
+        }
       }
     } else {
       this.viewedFiles.delete(filePath);
@@ -2080,6 +2256,10 @@ class PRManager {
         const header = wrapper.querySelector('.d2h-file-header');
         if (header) {
           window.DiffRenderer.updateFileHeaderState(header, true);
+        }
+        // Sync with @pierre/diffs
+        if (this.pierreBridge && this.pierreBridge.files.has(filePath)) {
+          this.pierreBridge.setCollapsed(filePath, false);
         }
       }
     }
@@ -2603,6 +2783,29 @@ class PRManager {
       await new Promise(resolve => setTimeout(resolve, 50));
     }
 
+    // For @pierre/diffs rendered files, use context ranges to reveal collapsed lines
+    if (this.pierreBridge && this.pierreBridge.files.has(file)) {
+      let rangeStart = lineStart;
+      let rangeEnd = lineEnd;
+
+      // addContextRanges expects NEW-file coordinates.
+      // LEFT-side suggestions use OLD-file numbers — convert first.
+      if (side === 'LEFT') {
+        const converted = this.pierreBridge.convertOldToNew(file, lineStart, lineEnd);
+        if (!converted) return false;
+        rangeStart = converted.startLine;
+        rangeEnd = converted.endLine;
+      }
+
+      const padding = 3;
+      const range = {
+        startLine: Math.max(1, rangeStart - padding),
+        endLine: rangeEnd + padding,
+      };
+      this.pierreBridge.addContextRanges(file, [range]);
+      return true;
+    }
+
     // Find the gap section containing the target lines using the shared module
     // Pass the side parameter so findMatchingGap uses the correct coordinate system:
     // - 'RIGHT' = NEW coordinates (modified file, most common for AI suggestions)
@@ -2681,6 +2884,30 @@ class PRManager {
       const { file, line_start, line_end, side } = item;
       const resolvedSide = (side || 'right').toUpperCase();
 
+      // @pierre/diffs files: use context ranges to reveal collapsed lines
+      if (this.pierreBridge && this.pierreBridge.files.has(file)) {
+        if (!this.pierreBridge.isLineVisible(file, line_start, resolvedSide)) {
+          let rangeStart = line_start;
+          let rangeEnd = line_end || line_start;
+
+          // addContextRanges expects NEW-file coordinates.
+          // LEFT-side items use OLD-file numbers — convert first.
+          if (resolvedSide === 'LEFT') {
+            const converted = this.pierreBridge.convertOldToNew(file, rangeStart, rangeEnd);
+            if (converted) {
+              rangeStart = converted.startLine;
+              rangeEnd = converted.endLine;
+            }
+          }
+
+          this.pierreBridge.addContextRanges(file, [{
+            startLine: rangeStart,
+            endLine: rangeEnd,
+          }]);
+        }
+        continue;
+      }
+
       const fileElement = this.findFileElement(file);
       if (!fileElement) continue;
 
@@ -2741,7 +2968,100 @@ class PRManager {
    * Comment form methods - delegate to CommentManager
    */
   showCommentForm(targetRow, lineNumber, fileName, diffPosition, endLineNumber, side = 'RIGHT') {
+    // Use PierreBridge annotation for files rendered by @pierre/diffs
+    if (this.pierreBridge && this.pierreBridge.files.has(fileName)) {
+      const formId = `form-${fileName}-${lineNumber}-${side}`;
+      this.pierreBridge.addAnnotation(fileName, {
+        lineNumber: endLineNumber || lineNumber,
+        side: side,
+        type: 'comment-form',
+        id: formId,
+        data: {
+          lineStart: lineNumber,
+          lineEnd: endLineNumber || lineNumber,
+          fileName: fileName,
+          diffPosition: diffPosition,
+          side: side,
+          showSuggestionBtn: true,
+        },
+      });
+      return;
+    }
+    // Fallback: old table-based comment form (context files)
     this.commentManager.showCommentForm(targetRow, lineNumber, fileName, diffPosition, endLineNumber, side);
+  }
+
+  /**
+   * Handle comment form submission from PierreBridge annotation.
+   * Saves the comment via API, removes the form annotation, and reloads comments.
+   * @param {string} fileName - File the comment belongs to
+   * @param {string} annotationId - PierreBridge annotation ID for the form
+   * @param {Object} data - Form data (lineStart, lineEnd, fileName, diffPosition, side)
+   * @param {string} body - Comment body text
+   */
+  async _handleCommentFormSubmit(fileName, annotationId, data, body) {
+    if (!body || !body.trim()) return;
+
+    // Custom submit flow (e.g. edit-and-adopt suggestion): let the caller
+    // decide how to save and how to re-render the result. The handler owns
+    // removing the form annotation.
+    if (typeof data.customSubmit === 'function') {
+      try {
+        await data.customSubmit(body.trim(), fileName, annotationId);
+      } catch (error) {
+        console.error('Error running custom comment form submit:', error);
+        alert(`Failed to save: ${error.message}`);
+      }
+      return;
+    }
+
+    try {
+      const commentData = {
+        file: data.fileName,
+        line_start: data.lineStart,
+        line_end: data.lineEnd,
+        body: body.trim(),
+        side: data.side || 'RIGHT',
+        diff_position: data.diffPosition,
+        // Anchor to the PR head commit so repositioning works if the PR is
+        // updated later. Parity with CommentManager.saveComment.
+        commit_sha: this.currentPR?.head_sha,
+      };
+
+      const response = await fetch(`/api/reviews/${this.currentPR.id}/comments`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Client-Id': this._clientId,
+        },
+        body: JSON.stringify(commentData),
+      });
+
+      if (response.ok) {
+        const result = await response.json().catch(() => ({}));
+        // Remove form annotation
+        this.pierreBridge.removeAnnotation(fileName, annotationId);
+        // Reload comments to show the new one
+        const includeDismissed = window.aiPanel?.showDismissedComments || false;
+        await this.loadUserComments(includeDismissed);
+
+        // Legacy-path side-effects: clear the dragged range, auto-expand in
+        // minimize mode, and notify the AI chat context. Parity with
+        // CommentManager.saveComment.
+        this.lineTracker?.clearRangeSelection();
+        if (result.commentId != null && this.commentMinimizer) {
+          const newRow = document.querySelector(
+            `[data-comment-id="${result.commentId}"]`
+          );
+          if (newRow) this.commentMinimizer.expandForElement(newRow);
+        }
+        window.chatPanel?.queueUserActionHint(
+          `[User Action: created comment on ${data.fileName} lines ${data.lineStart}-${data.lineEnd}]`
+        );
+      }
+    } catch (error) {
+      console.error('Error saving comment:', error);
+    }
   }
 
   hideCommentForm() {
@@ -3201,38 +3521,67 @@ class PRManager {
       // Clear existing comment rows before re-rendering
       document.querySelectorAll('.user-comment-row:not(.suggestion-edit-pending)').forEach(row => row.remove());
 
-      // Before rendering, ensure all comment target lines are visible
-      // (expand hidden hunks so the line rows exist in the DOM)
-      const lineItems = lineLevelComments.map(c => ({
-        file: c.file,
-        line_start: c.line_start,
-        line_end: c.line_start,
-        side: c.side || 'RIGHT'
-      }));
-      await this.ensureLinesVisible(lineItems);
+      // Clear existing PierreBridge comment annotations
+      if (this.pierreBridge) {
+        for (const [file] of this.pierreBridge.files) {
+          this.pierreBridge.removeAnnotationsByType(file, 'comment');
+        }
+      }
 
-      // Display line-level comments inline with diff (only active comments reach here)
+      // Ensure every comment's target line is reachable in the DOM before
+      // rendering. `ensureLinesVisible` handles both engines — for Pierre
+      // files it expands collapsed gaps via `addContextRanges` so the
+      // annotation row exists; for legacy files it expands hidden hunks.
+      // Without this, comments on lines outside the default hunks render
+      // nowhere on reload and "jump to comment" silently fails.
+      if (lineLevelComments.length > 0) {
+        await this.ensureLinesVisible(lineLevelComments.map(c => ({
+          file: c.file,
+          line_start: c.line_start,
+          line_end: c.line_end || c.line_start,
+          side: c.side || 'RIGHT',
+        })));
+      }
+
+      // Partition line-level comments by rendering engine
+      const pierreComments = [];
+      const legacyComments = [];
       lineLevelComments.forEach(comment => {
-        const fileElement = this.findFileElement(comment.file);
-        if (!fileElement) return;
-
-        // Use the comment's side to determine which coordinate system to search in
-        // LEFT side = OLD coordinates (deleted lines or context lines in OLD coords)
-        // RIGHT side = NEW coordinates (added lines or context lines in NEW coords)
-        const side = comment.side || 'RIGHT';
-
-        const lineRows = fileElement.querySelectorAll('tr');
-        for (const row of lineRows) {
-          // Pass side to getLineNumber() to get the correct coordinate system
-          // This allows context lines (which have BOTH old and new line numbers) to be found
-          // when the comment was placed on a LEFT-side line (old coordinate)
-          const lineNum = this.getLineNumber(row, side);
-          if (lineNum === comment.line_start) {
-            this.displayUserComment(comment, row);
-            break;
-          }
+        if (this.pierreBridge && this.pierreBridge.files.has(comment.file)) {
+          pierreComments.push(comment);
+        } else {
+          legacyComments.push(comment);
         }
       });
+
+      // Display comments via PierreBridge annotations
+      pierreComments.forEach(comment => {
+        const side = comment.side || 'RIGHT';
+        this.pierreBridge.addAnnotation(comment.file, {
+          lineNumber: comment.line_start,
+          side: side,
+          type: 'comment',
+          id: `comment-${comment.id}`,
+          data: comment,
+        });
+      });
+
+      if (legacyComments.length > 0) {
+        legacyComments.forEach(comment => {
+          const fileElement = this.findFileElement(comment.file);
+          if (!fileElement) return;
+
+          const side = comment.side || 'RIGHT';
+          const lineRows = fileElement.querySelectorAll('tr');
+          for (const row of lineRows) {
+            const lineNum = this.getLineNumber(row, side);
+            if (lineNum === comment.line_start) {
+              this.displayUserComment(comment, row);
+              break;
+            }
+          }
+        });
+      }
 
       // Load file-level comments into their zones (only active comments reach here)
       if (this.fileCommentManager && fileLevelComments.length > 0) {
@@ -3361,12 +3710,18 @@ class PRManager {
    * Collapse a suggestion div in the UI after adoption.
    * Handles adding collapsed class, updating text to 'Suggestion adopted',
    * updating the restore button, and setting hiddenForAdoption flag.
-   * @param {HTMLElement} suggestionRow - The suggestion row element
+   *
+   * With legacy rendering, `suggestionRow` is the `<tr>` containing the
+   * suggestion. With @pierre/diffs there is no `<tr>`, so callers pass null
+   * and this method falls back to a document-wide lookup by id.
+   *
+   * @param {HTMLElement|null} suggestionRow - The suggestion row element (legacy only)
    * @param {number|string} suggestionId - Suggestion ID
    */
   collapseSuggestionForAdoption(suggestionRow, suggestionId) {
-    if (!suggestionRow) return;
-    const targetDiv = suggestionRow.querySelector(`[data-suggestion-id="${suggestionId}"]`);
+    const targetDiv = suggestionRow
+      ? suggestionRow.querySelector(`[data-suggestion-id="${suggestionId}"]`)
+      : document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
     if (!targetDiv) return;
     targetDiv.classList.add('collapsed');
     const collapsedContent = targetDiv.querySelector('.collapsed-text');
@@ -3381,15 +3736,53 @@ class PRManager {
   }
 
   /**
+   * Render an adopted user comment in the appropriate rendering engine.
+   *
+   * For files rendered by @pierre/diffs, `suggestionRow` is null (suggestions
+   * are annotations, not table rows). Add the comment as a Pierre annotation
+   * so it slots into the shadow DOM alongside the collapsed suggestion.
+   *
+   * For legacy (table-based) rendering, delegate to the existing
+   * `displayUserComment(comment, suggestionRow)` which inserts a `<tr>`.
+   *
+   * @param {Object} comment - The newly-adopted comment
+   * @param {HTMLElement|null} suggestionRow - Legacy table row, or null for Pierre
+   * @private
+   */
+  async _renderAdoptedUserComment(comment, suggestionRow) {
+    if (this.pierreBridge && comment.file && this.pierreBridge.files.has(comment.file)) {
+      // Reveal the target line if it sits inside a collapsed gap — otherwise
+      // the annotation has no DOM row to attach to and never renders.
+      await this.ensureLinesVisible([{
+        file: comment.file,
+        line_start: comment.line_start,
+        line_end: comment.line_end || comment.line_start,
+        side: comment.side || 'RIGHT',
+      }]);
+      this.pierreBridge.addAnnotation(comment.file, {
+        lineNumber: comment.line_start,
+        side: comment.side || 'RIGHT',
+        type: 'comment',
+        id: `comment-${comment.id}`,
+        data: comment,
+      });
+      return;
+    }
+    // Legacy path: displayUserComment inserts a <tr> after suggestionRow
+    this.displayUserComment(comment, suggestionRow);
+  }
+
+  /**
    * Build a user comment object from adoption/edit response data.
    * Single source of truth for comment shape — used by both adopt-as-is
    * and edit-then-adopt flows.
    */
-  _buildCommentObject({ userCommentId, formattedBody, fileName, lineNumber, suggestionType, suggestionTitle, suggestionId, diffPosition, side }) {
+  _buildCommentObject({ userCommentId, formattedBody, fileName, lineNumber, lineEnd, suggestionType, suggestionTitle, suggestionId, diffPosition, side }) {
     return {
       id: userCommentId,
       file: fileName,
       line_start: parseInt(lineNumber),
+      line_end: lineEnd ? parseInt(lineEnd) : null,
       body: formattedBody,
       type: suggestionType,
       title: suggestionTitle,
@@ -3408,7 +3801,7 @@ class PRManager {
    */
   async _adoptAndBuildComment(suggestionId, suggestionDiv) {
     const { suggestionText, suggestionType, suggestionTitle } = this.extractSuggestionData(suggestionDiv);
-    const { suggestionRow, lineNumber, fileName, diffPosition, side, isFileLevel } = this.getFileAndLineInfo(suggestionDiv);
+    const { suggestionRow, lineNumber, lineEnd, fileName, diffPosition, side, isFileLevel } = this.getFileAndLineInfo(suggestionDiv);
 
     // File-level suggestions are handled by FileCommentManager; signal the caller
     if (isFileLevel) {
@@ -3433,7 +3826,7 @@ class PRManager {
     const newComment = this._buildCommentObject({
       userCommentId: adoptResult.userCommentId,
       formattedBody: adoptResult.formattedBody,
-      fileName, lineNumber, suggestionType, suggestionTitle,
+      fileName, lineNumber, lineEnd, suggestionType, suggestionTitle,
       suggestionId, diffPosition, side
     });
 
@@ -3510,6 +3903,58 @@ class PRManager {
         side
       };
 
+      // Pierre-rendered files: suggestions live as annotations (no <tr>),
+      // so `displaySuggestionEditForm` — which inserts a table row after
+      // `suggestionRow` — cannot run. Open the edit form as a comment-form
+      // annotation on the same line, pre-filled with the suggestion body,
+      // and wire a custom submit that runs the adopt-edited flow.
+      if (this.pierreBridge && this.pierreBridge.files.has(fileName)) {
+        const formId = `edit-suggestion-${suggestionId}`;
+        const onAdoptEdited = async (editedText, _fileName, annotationId) => {
+          const reviewId = this.currentPR?.id;
+          const editResponse = await fetch(`/api/reviews/${reviewId}/suggestions/${suggestionId}/edit`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'adopt_edited', editedText })
+          });
+          if (!editResponse.ok) throw new Error('Failed to adopt suggestion with edits');
+          const editResult = await editResponse.json();
+
+          // Collapse the suggestion annotation and render the new comment.
+          this.collapseSuggestionForAdoption(null, suggestionId);
+          const newComment = this._buildCommentObject({
+            userCommentId: editResult.userCommentId,
+            formattedBody: editResult.formattedBody,
+            fileName, lineNumber, lineEnd, suggestionType, suggestionTitle,
+            suggestionId, diffPosition, side
+          });
+
+          // Remove the edit form annotation and add the comment annotation.
+          this.pierreBridge.removeAnnotation(fileName, annotationId);
+          await this._renderAdoptedUserComment(newComment, null);
+          this._notifyAdoption(suggestionId, newComment);
+        };
+
+        this.pierreBridge.addAnnotation(fileName, {
+          lineNumber: lineEnd || lineNumber,
+          side: side || 'RIGHT',
+          type: 'comment-form',
+          id: formId,
+          data: {
+            headerTitle: 'Edit suggestion',
+            lineStart: lineNumber,
+            lineEnd: lineEnd || lineNumber,
+            fileName: fileName,
+            diffPosition: diffPosition,
+            side: side || 'RIGHT',
+            showSuggestionBtn: true,
+            initialValue: formattedBody || suggestionText,
+            customSubmit: onAdoptEdited,
+          },
+        });
+        return;
+      }
+
       this.commentManager.displaySuggestionEditForm(
         suggestion,
         suggestionRow,
@@ -3532,10 +3977,10 @@ class PRManager {
             const newComment = this._buildCommentObject({
               userCommentId: editResult.userCommentId,
               formattedBody: editResult.formattedBody,
-              fileName, lineNumber, suggestionType, suggestionTitle,
+              fileName, lineNumber, lineEnd, suggestionType, suggestionTitle,
               suggestionId, diffPosition, side
             });
-            this.displayUserComment(newComment, suggestionRow);
+            await this._renderAdoptedUserComment(newComment, suggestionRow);
             this._notifyAdoption(suggestionId, newComment);
             window.chatPanel?.queueUserActionHint(`[User Action: adopted suggestion ${suggestionId}]`);
           } catch (error) {
@@ -3581,7 +4026,7 @@ class PRManager {
         return;
       }
 
-      this.displayUserComment(result.newComment, result.suggestionRow);
+      await this._renderAdoptedUserComment(result.newComment, result.suggestionRow);
       this._notifyAdoption(suggestionId, result.newComment);
       window.chatPanel?.queueUserActionHint(`[User Action: adopted suggestion ${suggestionId}]`);
     } catch (error) {
@@ -4385,6 +4830,10 @@ class PRManager {
     localStorage.setItem('theme', this.currentTheme);
     document.documentElement.setAttribute('data-theme', this.currentTheme);
     this.updateThemeIcon();
+    // Sync theme with @pierre/diffs instances
+    if (this.pierreBridge) {
+      this.pierreBridge.setTheme(this.currentTheme);
+    }
   }
 
   updateThemeIcon() {
@@ -5364,31 +5813,6 @@ class PRManager {
       effectiveStart = Math.max(1, effectiveStart - (intendedSize - actualSize));
     }
     tbody.dataset.lineStart = effectiveStart;
-
-    // Chunk header row with range label and per-chunk dismiss button
-    const headerRow = document.createElement('tr');
-    headerRow.className = 'context-chunk-header';
-    const lineNumTd = document.createElement('td');
-    lineNumTd.className = 'd2h-code-linenumber';
-    headerRow.appendChild(lineNumTd);
-    const contentTd = document.createElement('td');
-    contentTd.className = 'd2h-code-side-line';
-    contentTd.colSpan = 3;
-    const rangeLabel = document.createElement('span');
-    rangeLabel.className = 'context-range-label';
-    rangeLabel.textContent = `Lines ${effectiveStart}\u2013${clampedEnd}`;
-    contentTd.appendChild(rangeLabel);
-    const chunkDismiss = document.createElement('button');
-    chunkDismiss.className = 'context-chunk-dismiss';
-    chunkDismiss.title = 'Remove this range';
-    chunkDismiss.innerHTML = '\u00d7';
-    chunkDismiss.addEventListener('click', (e) => {
-      e.stopPropagation();
-      this.removeContextFile(contextFile.id);
-    });
-    contentTd.appendChild(chunkDismiss);
-    headerRow.appendChild(contentTd);
-    tbody.appendChild(headerRow);
 
     // Add expand-up gap row if there are lines above the context range
     if (effectiveStart > 1) {

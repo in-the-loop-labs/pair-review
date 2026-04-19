@@ -22,6 +22,8 @@ const { normalizeRepository } = require('../utils/paths');
 const { resolveFormat, formatAdoptedComment: formatComment } = require('../utils/comment-formatter');
 const { safeParseJson } = require('../utils/safe-parse-json');
 const { resolveOriginalFileContentSpecs } = require('../utils/diff-file-content');
+const { reviewScope, scopeIncludes, includesBranch } = require('../local-scope');
+const { findMergeBase } = require('../local-review');
 
 const router = express.Router();
 
@@ -51,6 +53,46 @@ async function validateReviewId(req, res, next) {
   } catch (error) {
     next(error);
   }
+}
+
+/**
+ * Resolve the worktree path and base_sha for a PR-mode review.
+ * Returns { worktreePath, baseSha } or throws with { status, error } on failure.
+ */
+async function resolveWorktreeForReview(review, db) {
+  const prNumber = review.pr_number;
+  const repository = review.repository;
+
+  if (!prNumber || !repository) {
+    const err = new Error('Review missing PR metadata');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const [owner, repo] = repository.split('/');
+  const worktreeManager = new GitWorktreeManager(db);
+
+  if (!await worktreeManager.worktreeExists({ owner, repo, number: prNumber })) {
+    const err = new Error('Worktree not found for this PR. The PR may need to be reloaded.');
+    err.statusCode = 404;
+    throw err;
+  }
+
+  const worktreePath = await worktreeManager.getWorktreePath({ owner, repo, number: prNumber });
+
+  // Load cached PR metadata so callers can resolve exact diff blobs.
+  const normalizedRepo = normalizeRepository(owner, repo);
+  const prRecord = await queryOne(db, `
+    SELECT pr_data FROM pr_metadata
+    WHERE pr_number = ? AND repository = ? COLLATE NOCASE
+  `, [prNumber, normalizedRepo]);
+
+  const prData = safeParseJson(prRecord?.pr_data, null);
+  if (prRecord?.pr_data && !prData) {
+    logger.warn('Could not parse pr_data for review');
+  }
+
+  return { worktreePath, prData };
 }
 
 /**
@@ -1067,6 +1109,156 @@ router.get('/api/reviews/:reviewId/file-content/:fileName(*)', validateReviewId,
   } catch (error) {
     logger.error('Error retrieving file content:', error);
     res.status(500).json({ error: 'Internal server error while retrieving file content' });
+  }
+});
+
+/**
+ * GET /api/reviews/:reviewId/file-contents/:fileName(*)
+ * Fetch old and new file contents for hunk expansion in @pierre/diffs.
+ * Returns { fileName, oldContents, newContents } with string values (or null).
+ */
+const MAX_FILE_CONTENTS_SIZE = 2 * 1024 * 1024; // 2MB
+
+router.get('/api/reviews/:reviewId/file-contents/:fileName(*)', validateReviewId, async (req, res) => {
+  try {
+    const fileName = decodeURIComponent(req.params.fileName);
+    const { status, oldPath } = req.query;
+    const review = req.review;
+    const db = req.app.get('db');
+
+    // Validate fileName
+    if (fileName.includes('\0')) {
+      return res.status(400).json({ error: 'Invalid file name' });
+    }
+
+    const oldFilePath = oldPath || fileName;
+
+    /**
+     * Helper: read content via git show, return string or null on failure.
+     */
+    async function gitShow(repoPath, ref) {
+      try {
+        const git = simpleGit(repoPath);
+        return await git.show([ref]);
+      } catch {
+        return null;
+      }
+    }
+
+    /**
+     * Helper: read file from filesystem with traversal guard.
+     * Returns string or null on failure.
+     */
+    async function readFromFs(basePath, relPath) {
+      const filePath = path.join(basePath, relPath);
+      try {
+        const realFilePath = await fs.realpath(filePath);
+        const realBasePath = await fs.realpath(basePath);
+        if (!realFilePath.startsWith(realBasePath + path.sep) && realFilePath !== realBasePath) {
+          return null;
+        }
+        return await fs.readFile(realFilePath, 'utf8');
+      } catch {
+        return null;
+      }
+    }
+
+    /**
+     * Helper: check for binary content (null bytes) and size limits.
+     * Returns a response object if content should be rejected, or null if OK.
+     */
+    function checkContent(oldContents, newContents) {
+      const hasBinary = (s) => s != null && s.includes('\0');
+      if (hasBinary(oldContents) || hasBinary(newContents)) {
+        return { binary: true, oldContents: null, newContents: null };
+      }
+      const tooLarge = (s) => s != null && Buffer.byteLength(s, 'utf8') > MAX_FILE_CONTENTS_SIZE;
+      if (tooLarge(oldContents) || tooLarge(newContents)) {
+        return { tooLarge: true, oldContents: null, newContents: null };
+      }
+      return null;
+    }
+
+    let oldContents = null;
+    let newContents = null;
+
+    // --- Local mode ---
+    if (review.review_type === 'local' || review.local_path) {
+      const localPath = review.local_path;
+      if (!localPath) {
+        return res.status(404).json({ error: 'Local review missing path' });
+      }
+
+      // Determine old-side git ref based on scope
+      const { start, end } = reviewScope(review);
+
+      if (status !== 'added') {
+        if (includesBranch(start)) {
+          if (!review.local_base_branch) {
+            // No base branch configured — old side unavailable
+            oldContents = null;
+          } else {
+            try {
+              const mergeBaseSha = await findMergeBase(localPath, review.local_base_branch);
+              oldContents = await gitShow(localPath, `${mergeBaseSha}:${oldFilePath}`);
+            } catch (mbError) {
+              logger.warn(`Could not find merge-base for old file: ${mbError.message}`);
+              oldContents = null;
+            }
+          }
+        } else if (scopeIncludes(start, end, 'staged')) {
+          // Staged is in scope but not branch — old is HEAD
+          oldContents = await gitShow(localPath, `HEAD:${oldFilePath}`);
+        } else {
+          // Unstaged only — old is the index (staged version)
+          oldContents = await gitShow(localPath, `:${oldFilePath}`);
+        }
+      }
+
+      if (status !== 'deleted') {
+        // New file: always from filesystem
+        newContents = await readFromFs(localPath, fileName);
+      }
+
+      const rejection = checkContent(oldContents, newContents);
+      if (rejection) return res.json({ fileName, ...rejection });
+
+      return res.json({ fileName, oldContents, newContents });
+    }
+
+    // --- PR mode ---
+    let worktreePath, prData;
+    try {
+      ({ worktreePath, prData } = await resolveWorktreeForReview(review, db));
+    } catch (resolveErr) {
+      return res.status(resolveErr.statusCode || 500).json({ error: resolveErr.message });
+    }
+
+    if (status !== 'added') {
+      // Prefer the exact blob from the cached diff snapshot; fall back to base_sha.
+      // Matches the /file-content endpoint so both stay consistent with stale PR metadata.
+      const contentSpecs = resolveOriginalFileContentSpecs(prData, oldFilePath);
+      for (const contentSpec of contentSpecs) {
+        const content = await gitShow(worktreePath, contentSpec.gitSpec);
+        if (content != null) {
+          oldContents = content;
+          break;
+        }
+        logger.debug(`Could not read old file ${oldFilePath} from ${contentSpec.source}`);
+      }
+    }
+
+    if (status !== 'deleted') {
+      newContents = await gitShow(worktreePath, `HEAD:${fileName}`);
+    }
+
+    const rejection = checkContent(oldContents, newContents);
+    if (rejection) return res.json({ fileName, ...rejection });
+
+    return res.json({ fileName, oldContents, newContents });
+  } catch (error) {
+    logger.error('Error retrieving file contents:', error);
+    res.status(500).json({ error: 'Internal server error while retrieving file contents' });
   }
 });
 

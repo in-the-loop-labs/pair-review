@@ -3622,7 +3622,8 @@ class ReviewRepository {
     const row = await queryOne(this.db, `
       SELECT id, pr_number, repository, status, review_id,
              created_at, updated_at, submitted_at, review_data, custom_instructions, summary,
-             review_type, local_path, local_head_sha
+             review_type, local_path, local_head_sha,
+             local_scope_start, local_scope_end, local_base_branch
       FROM reviews
       WHERE id = ?
     `, [id]);

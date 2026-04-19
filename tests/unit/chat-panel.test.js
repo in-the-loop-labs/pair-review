@@ -597,6 +597,7 @@ describe('ChatPanel', () => {
         file: 'src/foo.js',
         line_start: 10,
         line_end: 20,
+        side: 'RIGHT',
       });
       expect(chatPanel.inputEl.value).toBe('Based on our conversation, please create a review comment for this code.');
       expect(sendSpy).toHaveBeenCalled();
@@ -1422,6 +1423,7 @@ describe('ChatPanel', () => {
         file: 'src/bar.js',
         line_start: 5,
         line_end: 15,
+        side: 'RIGHT',
       });
     });
 
