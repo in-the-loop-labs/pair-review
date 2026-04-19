@@ -1547,7 +1547,8 @@ class LocalManager {
           // Inspect only the header (before the first @@) so file contents
           // containing "new file mode" / "deleted file mode" can't spoof status.
           status: (() => {
-            const hdr = patch.substring(0, patch.indexOf('@@'));
+            const atIdx = patch.indexOf('@@');
+            const hdr = atIdx === -1 ? patch : patch.substring(0, atIdx);
             return hdr.includes('new file mode') ? 'added' :
                    hdr.includes('deleted file mode') ? 'removed' : 'modified';
           })()
