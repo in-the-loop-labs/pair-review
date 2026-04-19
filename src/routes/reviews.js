@@ -80,24 +80,19 @@ async function resolveWorktreeForReview(review, db) {
 
   const worktreePath = await worktreeManager.getWorktreePath({ owner, repo, number: prNumber });
 
-  // Get base_sha from stored PR data
+  // Load cached PR metadata so callers can resolve exact diff blobs.
   const normalizedRepo = normalizeRepository(owner, repo);
   const prRecord = await queryOne(db, `
     SELECT pr_data FROM pr_metadata
     WHERE pr_number = ? AND repository = ? COLLATE NOCASE
   `, [prNumber, normalizedRepo]);
 
-  let baseSha = null;
-  if (prRecord?.pr_data) {
-    try {
-      const prData = JSON.parse(prRecord.pr_data);
-      baseSha = prData.base_sha;
-    } catch (parseError) {
-      logger.warn('Could not parse pr_data for base_sha:', parseError.message);
-    }
+  const prData = safeParseJson(prRecord?.pr_data, null);
+  if (prRecord?.pr_data && !prData) {
+    logger.warn('Could not parse pr_data for review');
   }
 
-  return { worktreePath, baseSha };
+  return { worktreePath, prData };
 }
 
 /**
@@ -1232,15 +1227,25 @@ router.get('/api/reviews/:reviewId/file-contents/:fileName(*)', validateReviewId
     }
 
     // --- PR mode ---
-    let worktreePath, baseSha;
+    let worktreePath, prData;
     try {
-      ({ worktreePath, baseSha } = await resolveWorktreeForReview(review, db));
+      ({ worktreePath, prData } = await resolveWorktreeForReview(review, db));
     } catch (resolveErr) {
       return res.status(resolveErr.statusCode || 500).json({ error: resolveErr.message });
     }
 
-    if (status !== 'added' && baseSha) {
-      oldContents = await gitShow(worktreePath, `${baseSha}:${oldFilePath}`);
+    if (status !== 'added') {
+      // Prefer the exact blob from the cached diff snapshot; fall back to base_sha.
+      // Matches the /file-content endpoint so both stay consistent with stale PR metadata.
+      const contentSpecs = resolveOriginalFileContentSpecs(prData, oldFilePath);
+      for (const contentSpec of contentSpecs) {
+        const content = await gitShow(worktreePath, contentSpec.gitSpec);
+        if (content != null) {
+          oldContents = content;
+          break;
+        }
+        logger.debug(`Could not read old file ${oldFilePath} from ${contentSpec.source}`);
+      }
     }
 
     if (status !== 'deleted') {

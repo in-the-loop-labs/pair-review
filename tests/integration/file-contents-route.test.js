@@ -583,6 +583,90 @@ describe('GET /api/reviews/:reviewId/file-contents/:fileName — PR Mode', () =>
     expect(res.body.binary).toBe(true);
   });
 
+  it('should prefer the diff blob over a stale base_sha for old-side', async () => {
+    const reviewId = await insertPRReview(db);
+    const diff = [
+      'diff --git a/src/app.js b/src/app.js',
+      'index deadbee..feedbee 100644',
+      '--- a/src/app.js',
+      '+++ b/src/app.js',
+      '@@ -1,1 +1,1 @@'
+    ].join('\n');
+    await insertPRMetadata(db, 1, 'owner/repo', { diff, base_sha: 'stale-base' });
+    await insertWorktree(db);
+
+    mockGitShow.mockImplementation(async ([ref]) => {
+      if (ref === 'deadbee') return 'correct old via blob';
+      if (ref === 'stale-base:src/app.js') return 'wrong old via stale base';
+      if (ref === 'HEAD:src/app.js') return 'head content';
+      throw new Error(`unexpected ref ${ref}`);
+    });
+
+    const res = await request(app)
+      .get(`/api/reviews/${reviewId}/file-contents/src/app.js`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.oldContents).toBe('correct old via blob');
+    expect(res.body.newContents).toBe('head content');
+    // base_sha spec must not have been consulted once the blob succeeded
+    expect(mockGitShow).not.toHaveBeenCalledWith(['stale-base:src/app.js']);
+  });
+
+  it('should fall back from an unusable diff blob to base_sha content', async () => {
+    const reviewId = await insertPRReview(db);
+    const diff = [
+      'diff --git a/src/app.js b/src/app.js',
+      'index deadbee..feedbee 100644',
+      '--- a/src/app.js',
+      '+++ b/src/app.js',
+      '@@ -1,1 +1,1 @@'
+    ].join('\n');
+    await insertPRMetadata(db, 1, 'owner/repo', { diff, base_sha: 'real-base' });
+    await insertWorktree(db);
+
+    mockGitShow.mockImplementation(async ([ref]) => {
+      if (ref === 'deadbee') throw new Error('blob not in local object db');
+      if (ref === 'real-base:src/app.js') return 'old via base_sha';
+      if (ref === 'HEAD:src/app.js') return 'head content';
+      throw new Error(`unexpected ref ${ref}`);
+    });
+
+    const res = await request(app)
+      .get(`/api/reviews/${reviewId}/file-contents/src/app.js`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.oldContents).toBe('old via base_sha');
+    expect(res.body.newContents).toBe('head content');
+    expect(mockGitShow).toHaveBeenCalledWith(['deadbee']);
+    expect(mockGitShow).toHaveBeenCalledWith(['real-base:src/app.js']);
+  });
+
+  it('should skip zero-object blob ids and go straight to base_sha', async () => {
+    const reviewId = await insertPRReview(db);
+    const diff = [
+      'diff --git a/src/new.js b/src/new.js',
+      'index 0000000..feedbee 100644',
+      '--- /dev/null',
+      '+++ b/src/new.js'
+    ].join('\n');
+    await insertPRMetadata(db, 1, 'owner/repo', { diff, base_sha: 'abc123' });
+    await insertWorktree(db);
+
+    mockGitShow.mockImplementation(async ([ref]) => {
+      if (ref === 'abc123:src/new.js') return 'old from base';
+      if (ref === 'HEAD:src/new.js') return 'new content';
+      throw new Error(`unexpected ref ${ref}`);
+    });
+
+    const res = await request(app)
+      .get(`/api/reviews/${reviewId}/file-contents/src/new.js`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.oldContents).toBe('old from base');
+    // Zero blob id must not be queried
+    expect(mockGitShow).not.toHaveBeenCalledWith(['0000000']);
+  });
+
   it('should detect oversized files in PR mode', async () => {
     const reviewId = await insertPRReview(db);
     await insertPRMetadata(db);
