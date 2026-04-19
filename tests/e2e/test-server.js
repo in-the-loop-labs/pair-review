@@ -617,6 +617,89 @@ async function startTestServer(port) {
     res.json({ fileName, lines, totalLines: lines.length });
   });
 
+  // File-contents endpoint used by @pierre/diffs to enable hunk expansion.
+  // Returns { fileName, oldContents, newContents } as plain strings. The real
+  // route (src/routes/reviews.js) reads git blobs from a worktree, but E2E
+  // tests have no worktree so we synthesize content here.
+  //
+  // Pierre recomputes the diff from these contents when given full files, so
+  // the content must be constructed so the resulting diff matches the mock
+  // patch (two hunks with a large unchanged gap between them).
+  //
+  // For utils.js:
+  //   - oldContents: 60 lines. Lines 1-5 are the "before" of hunk 1, lines
+  //     6-49 are a large unchanged gap (so pierre produces expandable context
+  //     between the hunks), lines 50-53 are the "before" of hunk 2, lines
+  //     54-60 are an unchanged tail.
+  //   - newContents: 63 lines (patch adds +3 net in hunk 1). Lines 1-8 are
+  //     the "after" of hunk 1, lines 9-52 match old lines 6-49 verbatim,
+  //     lines 53-56 are the "after" of hunk 2, lines 57-63 match old 54-60.
+  //     Line 49 (old) / 52 (new) is "function exportSection() {" so the
+  //     second hunk's function context can be resolved by pierre.
+  app.get('/api/reviews/:reviewId/file-contents/:fileName(*)', (req, res) => {
+    const fileName = decodeURIComponent(req.params.fileName);
+
+    if (fileName === 'src/utils.js') {
+      const gap = [];
+      for (let i = 6; i <= 49; i++) {
+        // Put the function-context marker on the line just before hunk 2 so
+        // pierre can surface it on the second hunk header.
+        gap.push(i === 49 ? 'function exportSection()' : `// gap line ${i}`);
+      }
+      const trailer = [];
+      for (let i = 54; i <= 60; i++) trailer.push(`// trailer line ${i}`);
+
+      // Hunk-1 "before" — 5 old lines. Matches the patch content exactly.
+      const hunk1Old = [
+        '// Utility functions',
+        'function helper() {',
+        '  return null;',
+        '}',
+        '',
+      ];
+      // Hunk-1 "after" — 8 new lines. Same two unchanged anchors (first and
+      // last) as the patch, with additions in between.
+      const hunk1New = [
+        '// Utility functions',
+        '',
+        'function helper() {',
+        '  // Improved implementation',
+        '  const result = computeValue();',
+        '  return result;',
+        '}',
+        '',
+      ];
+      // Hunk-2 "before" — 4 old lines.
+      const hunk2Old = [
+        '// Another section of code',
+        'function exportData() {',
+        '  return data;',
+        '}',
+      ];
+      // Hunk-2 "after" — 4 new lines (same shape, different body line).
+      const hunk2New = [
+        '// Another section of code',
+        'function exportData() {',
+        '  return JSON.stringify(data);',
+        '}',
+      ];
+
+      const oldContents = [...hunk1Old, ...gap, ...hunk2Old, ...trailer].join('\n') + '\n';
+      const newContents = [...hunk1New, ...gap, ...hunk2New, ...trailer].join('\n') + '\n';
+
+      return res.json({ fileName, oldContents, newContents });
+    }
+
+    // Generic fallback: nearly identical files with a single small change so
+    // pierre still renders at least one hunk with expandable context.
+    const base = Array.from({ length: 40 }, (_, i) => `// ${fileName} line ${i + 1}`);
+    const oldContents = base.join('\n') + '\n';
+    const newBase = base.slice();
+    newBase[20] = `// ${fileName} line 21 (modified)`;
+    const newContents = newBase.join('\n') + '\n';
+    res.json({ fileName, oldContents, newContents });
+  });
+
   // Load API routes
   const analysisRoutes = require('../../src/routes/analyses');
   const worktreesRoutes = require('../../src/routes/worktrees');

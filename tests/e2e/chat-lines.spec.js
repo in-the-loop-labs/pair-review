@@ -11,7 +11,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender } from './helpers.js';
+import { waitForDiffToRender, hoverDiffLine } from './helpers.js';
 
 /**
  * Enable chat in the test environment (Pi is not available in E2E).
@@ -55,11 +55,10 @@ test.describe('Gutter chat button', () => {
     await enableChat(page);
 
     // Hover over a line number cell to reveal gutter buttons
-    const lineNumberCell = page.locator('.d2h-code-linenumber').nth(0);
-    await lineNumberCell.hover();
+    await hoverDiffLine(page, 0);
 
     // The chat button should be visible (opacity controlled by CSS tr:hover)
-    const chatBtn = page.locator('.chat-line-btn').first();
+    const chatBtn = page.locator('.pierre-chat-btn').first();
     await expect(chatBtn).toBeAttached();
   });
 
@@ -67,11 +66,10 @@ test.describe('Gutter chat button', () => {
     await disableChat(page);
 
     // Hover over a line number cell
-    const lineNumberCell = page.locator('.d2h-code-linenumber').nth(0);
-    await lineNumberCell.hover();
+    await hoverDiffLine(page, 0);
 
     // The chat button should exist in DOM but be hidden via CSS
-    const chatBtn = page.locator('.chat-line-btn').first();
+    const chatBtn = page.locator('.pierre-chat-btn').first();
     await expect(chatBtn).toBeHidden();
   });
 
@@ -89,11 +87,10 @@ test.describe('Gutter chat button', () => {
     await expect(page.locator('.chat-panel')).not.toBeVisible();
 
     // Hover over a line to reveal the chat button
-    const lineNumberCell = page.locator('.d2h-code-linenumber').nth(0);
-    await lineNumberCell.hover();
+    await hoverDiffLine(page, 0);
 
     // Click the gutter chat button
-    const chatBtn = page.locator('.chat-line-btn').first();
+    const chatBtn = page.locator('.pierre-chat-btn').first();
     await chatBtn.click({ force: true });
 
     // Chat panel should open
@@ -131,9 +128,8 @@ test.describe('Comment form Chat button', () => {
     await chatCloseBtn.click();
 
     // Open a comment form by hovering and clicking the + button
-    const lineNumberCell = page.locator('.d2h-code-linenumber').nth(0);
-    await lineNumberCell.hover();
-    const addCommentBtn = page.locator('.add-comment-btn').first();
+    await hoverDiffLine(page, 0);
+    const addCommentBtn = page.locator('.pierre-comment-btn').first();
     await addCommentBtn.waitFor({ state: 'visible', timeout: 5000 });
     await addCommentBtn.click();
     await page.waitForSelector('.user-comment-form', { timeout: 5000 });
@@ -169,9 +165,8 @@ test.describe('Comment form Chat button', () => {
     await disableChat(page);
 
     // Open a comment form
-    const lineNumberCell = page.locator('.d2h-code-linenumber').nth(0);
-    await lineNumberCell.hover();
-    const addCommentBtn = page.locator('.add-comment-btn').first();
+    await hoverDiffLine(page, 0);
+    const addCommentBtn = page.locator('.pierre-comment-btn').first();
     await addCommentBtn.waitFor({ state: 'visible', timeout: 5000 });
     await addCommentBtn.click();
     await page.waitForSelector('.user-comment-form', { timeout: 5000 });
@@ -195,9 +190,8 @@ test.describe('Review panel comment chat button', () => {
   test('opens chat from a user-created review panel entry', async ({ page }) => {
     await enableChat(page);
 
-    const lineNumberCell = page.locator('.d2h-code-linenumber').nth(0);
-    await lineNumberCell.hover();
-    const addCommentBtn = page.locator('.add-comment-btn').first();
+    await hoverDiffLine(page, 0);
+    const addCommentBtn = page.locator('.pierre-comment-btn').first();
     await addCommentBtn.waitFor({ state: 'visible', timeout: 5000 });
     await addCommentBtn.click();
     await page.waitForSelector('.user-comment-form', { timeout: 5000 });
@@ -230,9 +224,8 @@ test.describe('Review panel comment chat button', () => {
   test('review-panel chat button is hidden when chat is disabled', async ({ page }) => {
     await disableChat(page);
 
-    const lineNumberCell = page.locator('.d2h-code-linenumber').nth(0);
-    await lineNumberCell.hover();
-    const addCommentBtn = page.locator('.add-comment-btn').first();
+    await hoverDiffLine(page, 0);
+    const addCommentBtn = page.locator('.pierre-comment-btn').first();
     await addCommentBtn.waitFor({ state: 'visible', timeout: 5000 });
     await addCommentBtn.click();
     await page.waitForSelector('.user-comment-form', { timeout: 5000 });

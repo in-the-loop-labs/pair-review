@@ -1011,7 +1011,7 @@ class PierreBridge {
     }
 
     const container = document.createElement('div');
-    container.className = 'user-comment-cell';
+    container.className = 'user-comment-row';
     container.dataset.commentId = comment.id;
     container.dataset.file = comment.file;
     container.dataset.lineStart = comment.line_start;

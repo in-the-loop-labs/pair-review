@@ -13,7 +13,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender } from './helpers.js';
+import { waitForDiffToRender, openCommentFormOnLine } from './helpers.js';
 
 // Helper to clean up all user comments (call via API to ensure clean state)
 async function cleanupAllComments(page) {
@@ -29,21 +29,6 @@ async function cleanupAllComments(page) {
       await fetch(`/api/reviews/1/comments/${comment.id}`, { method: 'DELETE' });
     }
   });
-}
-
-// Helper to open comment form on a specific line
-async function openCommentFormOnLine(page, lineIndex = 0) {
-  // Hover over a line number to show the add comment button
-  const lineNumberCell = page.locator('.d2h-code-linenumber').nth(lineIndex);
-  await lineNumberCell.hover();
-
-  // Click the add comment button
-  const addCommentBtn = page.locator('.add-comment-btn').first();
-  await addCommentBtn.waitFor({ state: 'visible', timeout: 5000 });
-  await addCommentBtn.click();
-
-  // Wait for the comment form to appear
-  await page.waitForSelector('.user-comment-form', { timeout: 5000 });
 }
 
 
