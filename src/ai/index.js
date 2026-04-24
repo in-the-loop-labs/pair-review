@@ -21,7 +21,8 @@ const {
   inferModelDefaults,
   resolveDefaultModel,
   prettifyModelId,
-  createAliasedProviderClass
+  createAliasedProviderClass,
+  getTierForModel
 } = require('./provider');
 
 // Load the availability checking module
@@ -73,6 +74,7 @@ module.exports = {
   inferModelDefaults,
   resolveDefaultModel,
   prettifyModelId,
+  getTierForModel,
 
   // Provider factories
   createExecutableProviderClass,
