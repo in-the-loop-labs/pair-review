@@ -157,7 +157,9 @@ class RepoSettingsPage {
           const newProvider = this.providers[newProviderId];
 
           if (oldProvider && newProvider) {
-            const currentModel = oldProvider.models.find(m => m.id === this.currentSettings.default_model);
+            // Match by id or alias so legacy model IDs still resolve their tier
+            // when the user switches providers.
+            const currentModel = this.findModelWithAliases(oldProvider, this.currentSettings.default_model);
             if (currentModel) {
               const matchingModel = newProvider.models.find(m => m.tier === currentModel.tier);
               const defaultModel = newProvider.models.find(m => m.default);
@@ -620,6 +622,22 @@ class RepoSettingsPage {
   }
 
   /**
+   * Look up a model by ID within a provider, matching both canonical `id` and
+   * `aliases`. Historical repo settings may still reference legacy model IDs
+   * (e.g. `gpt-5.4` before reasoning-effort variants were introduced); those
+   * must still resolve to the canonical model so the UI shows the correct
+   * selection instead of silently falling back to the provider default.
+   *
+   * @param {Object} provider - Provider object with a `models` array
+   * @param {string} modelId - Model ID to look up (may be an alias)
+   * @returns {Object|undefined} Matching model definition, or undefined if not found
+   */
+  findModelWithAliases(provider, modelId) {
+    if (!provider || !provider.models || !modelId) return undefined;
+    return provider.models.find(m => m.id === modelId || m.aliases?.includes(modelId));
+  }
+
+  /**
    * Render model select dropdown for the currently selected provider
    */
   renderModelSelect() {
@@ -654,9 +672,10 @@ class RepoSettingsPage {
       return;
     }
 
-    // Find the selected model, fall back to default or first
+    // Find the selected model, fall back to default or first. Match aliases
+    // so legacy model IDs still render the canonical card.
     const modelId = this.currentSettings.default_model;
-    const model = provider.models.find(m => m.id === modelId)
+    const model = this.findModelWithAliases(provider, modelId)
       || provider.models.find(m => m.default)
       || provider.models[0];
 
@@ -691,7 +710,9 @@ class RepoSettingsPage {
     if (!provider) {
       return { providerName: providerId || 'Unknown', modelName: modelId || 'Unknown' };
     }
-    const model = provider.models?.find(m => m.id === modelId);
+    // Match aliases so historical council/voice configs that stored a legacy
+    // model ID still show the canonical model's display name.
+    const model = this.findModelWithAliases(provider, modelId);
     return {
       providerName: provider.name,
       modelName: model ? model.name : (modelId || 'Unknown')
@@ -1166,11 +1187,20 @@ class RepoSettingsPage {
     this.selectProvider(providerId);
     this.renderProviderSelect();
 
-    // Validate saved model exists in current provider
+    // Validate saved model exists in current provider. Match aliases so legacy
+    // model IDs (e.g. `gpt-5.4` recorded before reasoning-effort variants) keep
+    // resolving to the canonical model; if matched via alias, canonicalize the
+    // stored ID so the dropdown selects the right option and the next save
+    // writes the canonical ID back.
     const provider = this.providers[this.selectedProvider];
     if (provider) {
-      const modelExists = provider.models.some(m => m.id === this.currentSettings.default_model);
-      if (!modelExists) {
+      const matchedModel = this.findModelWithAliases(provider, this.currentSettings.default_model);
+      if (matchedModel) {
+        if (matchedModel.id !== this.currentSettings.default_model) {
+          this.currentSettings.default_model = matchedModel.id;
+          this.originalSettings.default_model = matchedModel.id;
+        }
+      } else {
         const fallbackModel = provider.models.find(m => m.default) || provider.models[0];
         if (fallbackModel) {
           this.currentSettings.default_model = fallbackModel.id;

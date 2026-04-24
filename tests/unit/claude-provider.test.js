@@ -63,7 +63,7 @@ describe('ClaudeProvider', () => {
     it('should return array of models with expected structure', () => {
       const models = ClaudeProvider.getModels();
       expect(Array.isArray(models)).toBe(true);
-      expect(models.length).toBe(8);
+      expect(models.length).toBe(9);
 
       // Check that we have haiku, sonnet, and opus variants
       const modelIds = models.map(m => m.id);
@@ -74,6 +74,7 @@ describe('ClaudeProvider', () => {
       expect(modelIds).toContain('opus-4.6-medium');
       expect(modelIds).toContain('opus');
       expect(modelIds).toContain('opus-4.6-1m');
+      expect(modelIds).toContain('opus-4.7-high');
       expect(modelIds).toContain('opus-4.7-xhigh');
 
       // Check model structure - opus is now the default
@@ -94,8 +95,16 @@ describe('ClaudeProvider', () => {
       expect(models.find(m => m.id === 'opus-4.5').tier).toBe('thorough');
       // opus itself is thorough
       expect(opus.tier).toBe('thorough');
-      // opus-4.7 xhigh is thorough
-      expect(models.find(m => m.id === 'opus-4.7-xhigh').tier).toBe('thorough');
+      // opus-4.7 high/xhigh are thorough and pinned to claude-opus-4-7
+      for (const id of ['opus-4.7-high', 'opus-4.7-xhigh']) {
+        const model = models.find(m => m.id === id);
+        expect(model.tier).toBe('thorough');
+        expect(model.cli_model).toBe('claude-opus-4-7');
+      }
+      // Display name is consistent with other effort variants (High/Low/Medium/XHigh)
+      expect(models.find(m => m.id === 'opus-4.7-xhigh').name).toBe('Opus 4.7 XHigh');
+      expect(models.find(m => m.id === 'opus-4.7-high').name).toBe('Opus 4.7 High');
+      expect(models.find(m => m.id === 'opus-4.7-high').env).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'high' });
     });
 
     it('should return install instructions', () => {
@@ -347,6 +356,18 @@ describe('ClaudeProvider', () => {
 
       it('should resolve opus-4.7-xhigh to claude-opus-4-7 cli_model', () => {
         const provider = new ClaudeProvider('opus-4.7-xhigh');
+        const modelIdx = provider.args.indexOf('--model');
+        expect(modelIdx).not.toBe(-1);
+        expect(provider.args[modelIdx + 1]).toBe('claude-opus-4-7');
+      });
+
+      it('should include built-in env (high) for opus-4.7-high', () => {
+        const provider = new ClaudeProvider('opus-4.7-high');
+        expect(provider.extraEnv).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'high' });
+      });
+
+      it('should resolve opus-4.7-high to claude-opus-4-7 cli_model', () => {
+        const provider = new ClaudeProvider('opus-4.7-high');
         const modelIdx = provider.args.indexOf('--model');
         expect(modelIdx).not.toBe(-1);
         expect(provider.args[modelIdx + 1]).toBe('claude-opus-4-7');

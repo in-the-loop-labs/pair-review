@@ -23,30 +23,64 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
  * Based on OpenAI Codex Models guide (developers.openai.com/codex/models)
  * - gpt-5.4-nano: Cheapest model ($0.20/$1.25 per MTok), good for surface scans
  * - gpt-5.4-mini: Fast with 400k context ($0.75/$4.50 per MTok)
- * - gpt-5.4: Flagship model combining coding, reasoning, and agentic workflows
  * - gpt-5.3-codex: Industry-leading coding model for complex engineering tasks
+ * - gpt-5.4 / gpt-5.5: Exposed only via -high / -xhigh reasoning variants so the
+ *   selected effort level is always explicit.
+ *
+ * Reasoning-effort variants (-high / -xhigh) use `cli_model` to pass the base
+ * model ID to `codex exec -m` and add `-c model_reasoning_effort="..."` via
+ * extra_args so Codex picks up the effort level through its config override.
  *
  * Deprecated (April 2026): gpt-5.1-codex-mini, gpt-5.1-codex-max, gpt-5.1-codex
  */
 const CODEX_MODELS = [
   {
-    id: 'gpt-5.4-nano',
-    name: 'GPT-5.4 Nano',
-    tier: 'fast',
-    tagline: 'Cheapest',
-    description: 'Ultra-low-cost surface scans for style issues, obvious bugs, and lint-level feedback.',
-    badge: 'Cheapest',
-    badgeClass: 'badge-speed'
-  },
-  {
-    id: 'gpt-5.4-mini',
-    name: 'GPT-5.4 Mini',
-    tier: 'balanced',
-    tagline: 'Best Balance',
-    description: 'Fast reviews with 400k context—good balance of speed and capability for everyday PR review.',
+    id: 'gpt-5.4-high',
+    // Alias keeps results/councils saved under the previous bare `gpt-5.4`
+    // model ID resolving to the now-explicit high-effort variant.
+    aliases: ['gpt-5.4'],
+    cli_model: 'gpt-5.4',
+    extra_args: ['-c', 'model_reasoning_effort="high"'],
+    name: 'GPT-5.4 High',
+    tier: 'thorough',
+    tagline: 'Deep Review',
+    description: 'GPT-5.4 with high reasoning effort for complex multi-file reviews, architectural consistency, and subtle behavioral regressions.',
     badge: 'Recommended',
     badgeClass: 'badge-recommended',
     default: true
+  },
+  {
+    id: 'gpt-5.4-xhigh',
+    cli_model: 'gpt-5.4',
+    extra_args: ['-c', 'model_reasoning_effort="xhigh"'],
+    name: 'GPT-5.4 XHigh',
+    tier: 'thorough',
+    tagline: 'Max Depth',
+    description: 'GPT-5.4 with extra-high reasoning effort for difficult reviews that need broad context, careful tradeoff analysis, and deeper issue validation.',
+    badge: 'Extra High',
+    badgeClass: 'badge-power'
+  },
+  {
+    id: 'gpt-5.5-high',
+    cli_model: 'gpt-5.5',
+    extra_args: ['-c', 'model_reasoning_effort="high"'],
+    name: 'GPT-5.5 High',
+    tier: 'thorough',
+    tagline: 'Latest Deep',
+    description: 'Latest-generation GPT model with high reasoning effort for demanding PR reviews, strong code understanding, and careful cross-file analysis.',
+    badge: 'High Effort',
+    badgeClass: 'badge-power'
+  },
+  {
+    id: 'gpt-5.5-xhigh',
+    cli_model: 'gpt-5.5',
+    extra_args: ['-c', 'model_reasoning_effort="xhigh"'],
+    name: 'GPT-5.5 XHigh',
+    tier: 'thorough',
+    tagline: 'Frontier Depth',
+    description: 'GPT-5.5 with extra-high reasoning effort for the hardest reviews: architecture, concurrency, security-sensitive changes, and large codebase context.',
+    badge: 'Max Reasoning',
+    badgeClass: 'badge-power'
   },
   {
     id: 'gpt-5.3-codex',
@@ -58,13 +92,22 @@ const CODEX_MODELS = [
     badgeClass: 'badge-power'
   },
   {
-    id: 'gpt-5.4',
-    name: 'GPT-5.4',
-    tier: 'thorough',
-    tagline: 'Latest Gen',
-    description: 'Flagship model combining coding, reasoning, and agentic workflows for complex architectural reviews.',
-    badge: 'Most Thorough',
-    badgeClass: 'badge-power'
+    id: 'gpt-5.4-mini',
+    name: 'GPT-5.4 Mini',
+    tier: 'balanced',
+    tagline: 'Best Balance',
+    description: 'Fast reviews with 400k context—good balance of speed and capability for everyday PR review.',
+    badge: 'Fast',
+    badgeClass: 'badge-speed'
+  },
+  {
+    id: 'gpt-5.4-nano',
+    name: 'GPT-5.4 Nano',
+    tier: 'fast',
+    tagline: 'Cheapest',
+    description: 'Ultra-low-cost surface scans for style issues, obvious bugs, and lint-level feedback.',
+    badge: 'Cheapest',
+    badgeClass: 'badge-speed'
   }
 ];
 
@@ -78,7 +121,7 @@ class CodexProvider extends AIProvider {
    * @param {Object} configOverrides.env - Additional environment variables
    * @param {Object[]} configOverrides.models - Custom model definitions
    */
-  constructor(model = 'gpt-5.4-mini', configOverrides = {}) {
+  constructor(model = 'gpt-5.4-high', configOverrides = {}) {
     super(model);
 
     // Command precedence: ENV > config > default
@@ -127,25 +170,68 @@ class CodexProvider extends AIProvider {
     // same two-tier pattern as chat-providers.js: args replaces, extra_args appends.
     const defaultShellEnvArgs = ['-c', 'allow_login_shell=false', '-c', 'shell_environment_policy.include_only=["PATH","HOME","USER","GH_TOKEN","GITHUB_TOKEN"]'];
     const configArgs = configOverrides.args || defaultShellEnvArgs;
-    const baseArgs = ['exec', '-m', model, '--json', ...sandboxArgs, ...configArgs, '-'];
-    const providerArgs = configOverrides.extra_args || [];
-    const modelConfig = configOverrides.models?.find(m => m.id === model);
-    const modelArgs = modelConfig?.extra_args || [];
 
-    // Merge env: provider env + model env
-    this.extraEnv = {
-      ...(configOverrides.env || {}),
-      ...(modelConfig?.env || {})
-    };
+    // Resolve cli_model + extra_args + env from built-in model, provider config,
+    // and per-model config. This is what lets reasoning variants like
+    // gpt-5.4-high pass `-m gpt-5.4` plus `-c model_reasoning_effort="high"`.
+    const { cliModel, extraArgs, env } = this._resolveModelConfig(model);
+
+    // IMPORTANT: `-` (stdin marker) must come LAST, after any extra_args.
+    // Reasoning variants contribute `-c model_reasoning_effort="..."` via
+    // extraArgs; if '-' were placed inside baseArgs those flags would land
+    // after the positional stdin marker and be ignored. `buildArgsForModel`
+    // enforces the same invariant for the extraction path.
+    const baseArgs = ['exec', '-m', cliModel, '--json', ...sandboxArgs, ...configArgs];
+
+    this.extraEnv = env;
 
     if (this.useShell) {
       // In shell mode, build full command string with args
-      this.command = `${codexCmd} ${quoteShellArgs([...baseArgs, ...providerArgs, ...modelArgs]).join(' ')}`;
+      this.command = `${codexCmd} ${quoteShellArgs([...baseArgs, ...extraArgs, '-']).join(' ')}`;
       this.args = [];
     } else {
       this.command = codexCmd;
-      this.args = [...baseArgs, ...providerArgs, ...modelArgs];
+      this.args = [...baseArgs, ...extraArgs, '-'];
     }
+  }
+
+  /**
+   * Resolve model configuration by looking up built-in and config override definitions.
+   * Produces the CLI model ID (for `-m`), merged extra_args, and merged env.
+   *
+   * Precedence for cli_model: config model > built-in model > modelId.
+   * `cli_model` lets reasoning-effort variants (e.g. `gpt-5.4-high`) pass the
+   * base model (`gpt-5.4`) to `codex exec -m` while adding reasoning overrides
+   * via extra_args.
+   *
+   * @param {string} modelId
+   * @returns {{ builtIn: Object|undefined, configModel: Object|undefined, cliModel: string, extraArgs: string[], env: Object }}
+   * @private
+   */
+  _resolveModelConfig(modelId) {
+    const configOverrides = this.configOverrides || {};
+
+    const builtIn = CODEX_MODELS.find(m => m.id === modelId || (m.aliases && m.aliases.includes(modelId)));
+    const configModel = configOverrides.models?.find(m => m.id === modelId);
+
+    const cliModel = configModel?.cli_model !== undefined
+      ? configModel.cli_model
+      : (builtIn?.cli_model !== undefined ? builtIn.cli_model : modelId);
+
+    // Three-way merge for extra_args: built-in model → provider config → per-model config
+    const builtInArgs = builtIn?.extra_args || [];
+    const providerArgs = configOverrides.extra_args || [];
+    const configModelArgs = configModel?.extra_args || [];
+    const extraArgs = [...builtInArgs, ...providerArgs, ...configModelArgs];
+
+    // Three-way merge for env: built-in model → provider config → per-model config
+    const env = {
+      ...(builtIn?.env || {}),
+      ...(configOverrides.env || {}),
+      ...(configModel?.env || {})
+    };
+
+    return { builtIn, configModel, cliModel, extraArgs, env };
   }
 
   /**
@@ -572,17 +658,16 @@ class CodexProvider extends AIProvider {
    * @returns {string[]} Complete args array for the CLI
    */
   buildArgsForModel(model) {
+    // Resolve cli_model + merged extra_args so reasoning-effort variants behave
+    // the same for extraction as they do for the main analysis call.
+    const { cliModel, extraArgs } = this._resolveModelConfig(model);
+
     // Base args for extraction (read-only sandbox, no shell access needed)
     // Note: '-' (stdin marker) must come LAST, after any extra_args
-    const baseArgs = ['exec', '-m', model, '--json', '--sandbox', 'read-only', '--full-auto'];
-    // Provider-level extra_args (from configOverrides)
-    const providerArgs = this.configOverrides?.extra_args || [];
-    // Model-specific extra_args (from the model config for the given model)
-    const modelConfig = this.configOverrides?.models?.find(m => m.id === model);
-    const modelArgs = modelConfig?.extra_args || [];
+    const baseArgs = ['exec', '-m', cliModel, '--json', '--sandbox', 'read-only', '--full-auto'];
 
     // Append stdin marker '-' at the end after all other args
-    return [...baseArgs, ...providerArgs, ...modelArgs, '-'];
+    return [...baseArgs, ...extraArgs, '-'];
   }
 
   /**
@@ -598,20 +683,25 @@ class CodexProvider extends AIProvider {
 
     // Build args consistently using the shared method, applying provider and model extra_args
     const args = this.buildArgsForModel(model);
+    // Surface merged env (built-in + provider + per-model) so the extraction
+    // spawn matches the contract used by other providers.
+    const { env } = this._resolveModelConfig(model);
 
     if (useShell) {
       return {
         command: `${codexCmd} ${quoteShellArgs(args).join(' ')}`,
         args: [],
         useShell: true,
-        promptViaStdin: true
+        promptViaStdin: true,
+        env
       };
     }
     return {
       command: codexCmd,
       args,
       useShell: false,
-      promptViaStdin: true
+      promptViaStdin: true,
+      env
     };
   }
 
@@ -700,7 +790,7 @@ class CodexProvider extends AIProvider {
   }
 
   static getDefaultModel() {
-    return 'gpt-5.4-mini';
+    return 'gpt-5.4-high';
   }
 
   static getInstallInstructions() {
