@@ -25,7 +25,7 @@ const { AIProvider, registerProvider, quoteShellArgs } = require('./provider');
 const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { CancellationError, isAnalysisCancelled } = require('../routes/shared');
-const { StreamParser, parsePiLine, createPiLineParser } = require('./stream-parser');
+const { createPiLineParser } = require('./stream-parser');
 
 // Directory containing bin scripts (git-diff-lines, etc.)
 const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
@@ -41,6 +41,16 @@ const REVIEW_SKILL_PATH = path.join(__dirname, '..', '..', '.pi', 'skills', 'rev
 // Path to the review roulette skill, which runs three random premium models
 // in parallel for diverse multi-perspective code review
 const ROULETTE_SKILL_PATH = path.join(__dirname, '..', '..', '.pi', 'skills', 'review-roulette', 'SKILL.md');
+
+// Keep raw stream capture bounded so large JSONL sessions cannot exhaust V8's
+// maximum string size. Assistant text is still extracted incrementally from all
+// complete JSONL lines and used as the primary parse/fallback input.
+const MAX_PI_CAPTURED_STDOUT_CHARS = 5 * 1024 * 1024;
+const MAX_PI_CAPTURED_STDERR_CHARS = 1 * 1024 * 1024;
+const MAX_PI_LINE_CHARS = 2 * 1024 * 1024;
+const PI_STDERR_HEAD_CHARS = 128 * 1024;
+const PI_STDERR_TAIL_CHARS = MAX_PI_CAPTURED_STDERR_CHARS - PI_STDERR_HEAD_CHARS;
+const PI_TRUNCATED_LINE_MARKER = '...[line truncated]...';
 
 /**
  * Pi model definitions
@@ -120,6 +130,324 @@ function extractAssistantText(content, seenTexts) {
     }
   }
   return text;
+}
+
+/**
+ * Determine whether a parsed JSON object looks like a Pi JSONL event envelope
+ * rather than a final review result payload.
+ *
+ * @param {Object} value - Parsed JSON object
+ * @returns {boolean} True when the object appears to be a Pi event
+ */
+function isPiEventEnvelope(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+
+  if (typeof value.type !== 'string') {
+    return false;
+  }
+
+  if (
+    value.message ||
+    Array.isArray(value.messages) ||
+    value.assistantMessageEvent ||
+    value.toolName ||
+    value.toolCallId ||
+    Object.hasOwn(value, 'partialResult') ||
+    Object.hasOwn(value, 'result') ||
+    Object.hasOwn(value, 'version')
+  ) {
+    return true;
+  }
+
+  return /_(start|update|end)$/.test(value.type) || value.type === 'session';
+}
+
+/**
+ * Append a chunk to a captured stream buffer without exceeding the configured
+ * maximum. Returns the updated buffer and whether truncation occurred.
+ *
+ * @param {string} existing - Existing captured output
+ * @param {string} chunk - New output chunk
+ * @param {number} maxChars - Maximum number of chars to retain
+ * @returns {{value: string, truncated: boolean}}
+ */
+function appendWithLimit(existing, chunk, maxChars) {
+  if (!chunk || maxChars <= 0) {
+    return { value: existing, truncated: false };
+  }
+
+  const remaining = maxChars - existing.length;
+  if (remaining <= 0) {
+    return { value: existing, truncated: true };
+  }
+
+  if (chunk.length <= remaining) {
+    return { value: existing + chunk, truncated: false };
+  }
+
+  return {
+    value: existing + chunk.slice(0, remaining),
+    truncated: true
+  };
+}
+
+/**
+ * Append a chunk to a bounded head+tail buffer so error logs preserve both the
+ * start and end of noisy stderr output.
+ *
+ * @param {{head: string, tail: string, headFull: boolean, omittedChars: number}} buffer - Buffer state
+ * @param {string} chunk - New stderr chunk
+ * @param {number} maxHeadChars - Max chars to retain from the start
+ * @param {number} maxTailChars - Max chars to retain from the end
+ */
+function appendHeadTailBuffer(buffer, chunk, maxHeadChars, maxTailChars) {
+  if (!chunk) return;
+
+  if (!buffer.headFull) {
+    const remainingHead = maxHeadChars - buffer.head.length;
+    if (chunk.length <= remainingHead) {
+      buffer.head += chunk;
+      if (buffer.head.length >= maxHeadChars) {
+        buffer.headFull = true;
+      }
+      return;
+    }
+
+    const safeHead = Math.max(remainingHead, 0);
+    buffer.head += chunk.slice(0, safeHead);
+    buffer.headFull = true;
+
+    const overflow = chunk.slice(safeHead);
+    if (overflow.length > maxTailChars) {
+      buffer.omittedChars += overflow.length - maxTailChars;
+      buffer.tail = overflow.slice(-maxTailChars);
+    } else {
+      buffer.tail = overflow;
+    }
+    return;
+  }
+
+  const combinedTail = buffer.tail + chunk;
+  if (combinedTail.length > maxTailChars) {
+    buffer.omittedChars += combinedTail.length - maxTailChars;
+    buffer.tail = combinedTail.slice(-maxTailChars);
+  } else {
+    buffer.tail = combinedTail;
+  }
+}
+
+/**
+ * Render a bounded head+tail buffer as a string for logs and error messages.
+ *
+ * @param {{head: string, tail: string, headFull: boolean, omittedChars: number}} buffer - Buffer state
+ * @returns {string} Formatted stderr capture
+ */
+function formatHeadTailBuffer(buffer) {
+  if (buffer.omittedChars === 0) {
+    return `${buffer.head}${buffer.tail}`;
+  }
+
+  return `${buffer.head}\n...[${buffer.omittedChars} chars omitted]...\n${buffer.tail}`;
+}
+
+/**
+ * Extract final assistant text from a Pi JSONL event.
+ *
+ * @param {Object} event - Parsed Pi event object
+ * @param {Set<string>} seenTexts - Set tracking already-seen text blocks
+ * @returns {string} Extracted text from the event
+ */
+function extractPiEventText(event, seenTexts) {
+  let text = '';
+
+  if (event.type === 'message_end' && event.message?.role === 'assistant') {
+    text += extractAssistantText(event.message.content, seenTexts);
+  }
+
+  if (event.type === 'turn_end' && event.message?.role === 'assistant') {
+    text += extractAssistantText(event.message.content, seenTexts);
+  }
+
+  if (event.type === 'agent_end' && Array.isArray(event.messages)) {
+    for (const msg of event.messages) {
+      if (msg.role === 'assistant') {
+        text += extractAssistantText(msg.content, seenTexts);
+      }
+    }
+  }
+
+  return text;
+}
+
+/**
+ * Accumulate only raw lines that could plausibly help the direct JSON fallback.
+ * Pi JSONL event envelopes are intentionally excluded because they are noisy
+ * transport records, not the final review result.
+ *
+ * @param {string} line - One stdout line
+ * @param {{rawOutput: string, rawOutputTruncated: boolean}} state - Parse state
+ * @param {string} levelPrefix - Prefix used in logs
+ * @param {{status: 'parsed', value: Object} | {status: 'failed'}} [parseResult] - Optional parse result reuse
+ */
+function accumulatePiRawFallbackLine(line, state, levelPrefix, parseResult) {
+  if (!line?.trim()) return;
+
+  let parsed;
+  let parseFailed = false;
+
+  if (parseResult?.status === 'parsed') {
+    parsed = parseResult.value;
+  } else if (parseResult?.status === 'failed') {
+    parseFailed = true;
+  } else {
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      parseFailed = true;
+    }
+  }
+
+  if (!parseFailed && isPiEventEnvelope(parsed)) {
+    return;
+  }
+
+  const capture = appendWithLimit(state.rawOutput, `${line}\n`, MAX_PI_CAPTURED_STDOUT_CHARS);
+  state.rawOutput = capture.value;
+
+  if (capture.truncated && !state.rawOutputTruncated) {
+    state.rawOutputTruncated = true;
+    logger.warn(
+      `${levelPrefix} Pi CLI raw-output fallback exceeded ${MAX_PI_CAPTURED_STDOUT_CHARS} chars; retaining only the first ${MAX_PI_CAPTURED_STDOUT_CHARS} chars`
+    );
+  }
+}
+
+/**
+ * Parse a single Pi JSONL line into accumulated assistant text.
+ *
+ * @param {string} line - One JSONL line
+ * @param {{textContent: string, seenTexts: Set<string>, rawOutput: string, rawOutputTruncated: boolean}} state - Parse state
+ * @param {string} levelPrefix - Prefix used in logs
+ */
+function accumulatePiResponseLine(line, state, levelPrefix) {
+  if (!line?.trim()) return;
+
+  let parseResult;
+  try {
+    const event = JSON.parse(line);
+    state.textContent += extractPiEventText(event, state.seenTexts);
+    parseResult = { status: 'parsed', value: event };
+  } catch {
+    logger.debug(`${levelPrefix} Skipping malformed JSONL line: ${line.substring(0, 100)}`);
+    parseResult = { status: 'failed' };
+  }
+
+  accumulatePiRawFallbackLine(line, state, levelPrefix, parseResult);
+}
+
+/**
+ * Append stdout data to the pending JSONL line buffer while capping any single
+ * unterminated line to avoid retaining multi-megabyte tool payloads in memory.
+ *
+ * @param {{buffer: string, lineTruncated: boolean, warningLogged: boolean}} state - Pending line state
+ * @param {string} chunk - New stdout chunk
+ * @param {string} levelPrefix - Prefix used in logs
+ * @returns {string[]} Complete lines extracted from the chunk
+ */
+function appendPiChunkToLineBuffer(state, chunk, levelPrefix) {
+  if (!chunk) return [];
+
+  const lines = [];
+  let cursor = 0;
+
+  while (cursor < chunk.length) {
+    if (state.lineTruncated) {
+      const nextNewline = chunk.indexOf('\n', cursor);
+      if (nextNewline === -1) {
+        return lines;
+      }
+
+      lines.push(state.buffer);
+      state.buffer = '';
+      state.lineTruncated = false;
+      cursor = nextNewline + 1;
+      continue;
+    }
+
+    const nextNewline = chunk.indexOf('\n', cursor);
+    const segmentEnd = nextNewline === -1 ? chunk.length : nextNewline;
+    const segment = chunk.slice(cursor, segmentEnd);
+    const remainingCapacity = MAX_PI_LINE_CHARS - state.buffer.length;
+
+    if (segment.length <= remainingCapacity) {
+      state.buffer += segment;
+      if (nextNewline !== -1) {
+        lines.push(state.buffer);
+        state.buffer = '';
+      }
+      cursor = segmentEnd + (nextNewline === -1 ? 0 : 1);
+      continue;
+    }
+
+    const safeCapacity = Math.max(remainingCapacity, 0);
+    state.buffer += segment.slice(0, safeCapacity) + PI_TRUNCATED_LINE_MARKER;
+    state.lineTruncated = true;
+
+    if (!state.warningLogged) {
+      state.warningLogged = true;
+      logger.warn(
+        `${levelPrefix} Pi CLI emitted a JSONL event longer than ${MAX_PI_LINE_CHARS} chars; truncating the pending line buffer until the next newline`
+      );
+    }
+
+    if (nextNewline !== -1) {
+      lines.push(state.buffer);
+      state.buffer = '';
+      state.lineTruncated = false;
+      cursor = nextNewline + 1;
+      continue;
+    }
+
+    return lines;
+  }
+
+  return lines;
+}
+
+/**
+ * Finalize Pi response parsing from incrementally extracted assistant text and
+ * a bounded raw-output fallback buffer.
+ *
+ * @param {Object} input - Parse inputs
+ * @param {string} input.textContent - Assistant text extracted from JSONL events
+ * @param {string} input.rawOutput - Bounded raw stdout capture
+ * @param {boolean} [input.rawOutputTruncated=false] - Whether raw stdout was truncated
+ * @param {string|number} level - Analysis level for logging
+ * @param {string} levelPrefix - Prefix used in logs
+ * @returns {{success: boolean, data?: Object, error?: string, textContent?: string}}
+ */
+function finalizePiResponseParsing({ textContent, rawOutput, rawOutputTruncated = false }, level, levelPrefix) {
+  if (textContent) {
+    const extracted = extractJSON(textContent, level);
+    if (extracted.success) {
+      return extracted;
+    }
+
+    logger.warn(`${levelPrefix} Text content is not JSON, treating as raw text`);
+    return { success: false, error: 'Text content is not valid JSON', textContent };
+  }
+
+  if (rawOutputTruncated) {
+    logger.warn(`${levelPrefix} Pi CLI raw-output fallback was truncated before assistant text could be recovered`);
+    return {
+      success: false,
+      error: 'Pi CLI raw-output fallback was truncated before assistant text could be recovered'
+    };
+  }
+
+  return extractJSON(rawOutput, level);
 }
 
 class PiProvider extends AIProvider {
@@ -298,12 +626,27 @@ class PiProvider extends AIProvider {
         logger.info(`${levelPrefix} Registered process ${pid} for analysis ${analysisId}`);
       }
 
-      let stdout = '';
-      let stderr = '';
+      const stderrCapture = {
+        head: '',
+        tail: '',
+        headFull: false,
+        omittedChars: 0
+      };
+      let stderrTruncated = false;
       let timeoutId = null;
       let settled = false;  // Guard against multiple resolve/reject calls
-      let lineBuffer = '';  // Buffer for incomplete JSONL lines
       let lineCount = 0;    // Count of JSONL lines received
+      const lineBufferState = {
+        buffer: '',
+        lineTruncated: false,
+        warningLogged: false
+      };
+      const responseState = {
+        textContent: '',
+        seenTexts: new Set(),
+        rawOutput: '',
+        rawOutputTruncated: false
+      };
 
       const settle = (fn, value) => {
         if (settled) return;
@@ -312,12 +655,21 @@ class PiProvider extends AIProvider {
         fn(value);
       };
 
-      // Set up side-channel stream parser for live progress events.
       // Use the buffered Pi line parser to accumulate text_delta fragments
       // before emitting, preventing the UI from being flooded with tiny updates.
-      const streamParser = onStreamEvent
-        ? new StreamParser(createPiLineParser(), onStreamEvent, { cwd })
-        : null;
+      const streamLineParser = onStreamEvent ? createPiLineParser() : null;
+      const emitStreamLine = (line) => {
+        if (!streamLineParser || !line?.trim()) return;
+
+        const event = streamLineParser(line, { cwd });
+        if (!event) return;
+
+        try {
+          onStreamEvent(event);
+        } catch (error) {
+          logger.warn(`${levelPrefix} Pi stream event callback error: ${error.message}`);
+        }
+      };
 
       // Set timeout
       if (timeout) {
@@ -331,41 +683,33 @@ class PiProvider extends AIProvider {
       // Stream and log JSONL lines as they arrive for debugging visibility
       pi.stdout.on('data', (data) => {
         const chunk = data.toString();
-        stdout += chunk;
-
-        // Feed side-channel stream parser for live progress events
-        if (streamParser) {
-          streamParser.feed(chunk);
-        }
-
-        lineBuffer += chunk;
-
-        // Process complete lines (JSONL - each line is a complete JSON object)
-        const lines = lineBuffer.split('\n');
-        // Keep the last incomplete line in the buffer
-        lineBuffer = lines.pop() || '';
+        const lines = appendPiChunkToLineBuffer(lineBufferState, chunk, levelPrefix);
 
         for (const line of lines) {
           if (!line.trim()) continue;
           lineCount++;
+          emitStreamLine(line);
           this.logStreamLine(line, lineCount, levelPrefix);
+          accumulatePiResponseLine(line, responseState, levelPrefix);
         }
       });
 
       // Collect stderr
       pi.stderr.on('data', (data) => {
-        stderr += data.toString();
+        const chunk = data.toString();
+        appendHeadTailBuffer(stderrCapture, chunk, PI_STDERR_HEAD_CHARS, PI_STDERR_TAIL_CHARS);
+        if (stderrCapture.omittedChars > 0 && !stderrTruncated) {
+          stderrTruncated = true;
+          logger.warn(
+            `${levelPrefix} Pi CLI stderr exceeded ${MAX_PI_CAPTURED_STDERR_CHARS} chars; retaining a head+tail excerpt (${stderrCapture.omittedChars} chars omitted so far)`
+          );
+        }
       });
 
       // Handle completion
       pi.on('close', (code) => {
         cleanupTmpFile();
         if (settled) return;  // Already settled by timeout or error
-
-        // Flush any remaining stream parser buffer
-        if (streamParser) {
-          streamParser.flush();
-        }
 
         // Check for cancellation signals (SIGTERM=143, SIGKILL=137)
         const isCancellationCode = code === 143 || code === 137;
@@ -383,6 +727,8 @@ class PiProvider extends AIProvider {
           return;
         }
 
+        const stderr = formatHeadTailBuffer(stderrCapture);
+
         // Always log stderr if present
         if (stderr.trim()) {
           if (code !== 0) {
@@ -399,15 +745,21 @@ class PiProvider extends AIProvider {
         }
 
         // Process any remaining buffered line
-        if (lineBuffer.trim()) {
+        if (lineBufferState.buffer.trim()) {
           lineCount++;
-          this.logStreamLine(lineBuffer, lineCount, levelPrefix);
+          emitStreamLine(lineBufferState.buffer);
+          this.logStreamLine(lineBufferState.buffer, lineCount, levelPrefix);
+          accumulatePiResponseLine(lineBufferState.buffer, responseState, levelPrefix);
         }
 
         logger.info(`${levelPrefix} Pi CLI completed - received ${lineCount} JSONL events`);
 
         // Parse the Pi JSONL response
-        const parsed = this.parsePiResponse(stdout, level, levelPrefix);
+        const parsed = finalizePiResponseParsing({
+          textContent: responseState.textContent,
+          rawOutput: responseState.rawOutput,
+          rawOutputTruncated: responseState.rawOutputTruncated
+        }, level, levelPrefix);
         if (parsed.success) {
           logger.success(`${levelPrefix} Successfully parsed JSON response`);
 
@@ -427,8 +779,8 @@ class PiProvider extends AIProvider {
           // Pass extracted text content to LLM fallback (not raw JSONL stdout).
           // The text content is the actual LLM response text extracted from JSONL
           // events and is much smaller and more relevant than the full JSONL stream.
-          const llmFallbackInput = parsed.textContent || stdout;
-          logger.info(`${levelPrefix} LLM fallback input length: ${llmFallbackInput.length} characters (${parsed.textContent ? 'text content' : 'raw stdout'})`);
+          const llmFallbackInput = parsed.textContent || responseState.rawOutput;
+          logger.info(`${levelPrefix} LLM fallback input length: ${llmFallbackInput.length} characters (${parsed.textContent ? 'text content' : 'raw fallback output'})`);
           logger.info(`${levelPrefix} Attempting LLM-based JSON extraction fallback...`);
 
           // Use async IIFE to handle the async LLM extraction
@@ -623,55 +975,22 @@ class PiProvider extends AIProvider {
     try {
       // Split by newlines and parse each JSON line
       const lines = stdout.trim().split('\n').filter(line => line.trim());
-      let textContent = '';
-      const seenTexts = new Set();
+      const responseState = {
+        textContent: '',
+        seenTexts: new Set(),
+        rawOutput: '',
+        rawOutputTruncated: false
+      };
 
       for (const line of lines) {
-        try {
-          const event = JSON.parse(line);
-
-          // Extract text from message_end events (complete assistant messages)
-          // These contain the full message with content blocks
-          if (event.type === 'message_end' && event.message?.role === 'assistant') {
-            textContent += extractAssistantText(event.message.content, seenTexts);
-          }
-
-          // Also collect text from turn_end events which include the message
-          // (dedup handled by the shared seenTexts Set)
-          if (event.type === 'turn_end' && event.message?.role === 'assistant') {
-            textContent += extractAssistantText(event.message.content, seenTexts);
-          }
-
-          // Fallback: agent_end events contain the full messages array
-          if (event.type === 'agent_end' && Array.isArray(event.messages)) {
-            for (const msg of event.messages) {
-              if (msg.role === 'assistant') {
-                textContent += extractAssistantText(msg.content, seenTexts);
-              }
-            }
-          }
-        } catch (lineError) {
-          // Skip malformed lines
-          logger.debug(`${levelPrefix} Skipping malformed JSONL line: ${line.substring(0, 100)}`);
-        }
+        accumulatePiResponseLine(line, responseState, levelPrefix);
       }
 
-      if (textContent) {
-        // Try to extract JSON from the accumulated text content
-        const extracted = extractJSON(textContent, level);
-        if (extracted.success) {
-          return extracted;
-        }
-
-        // If no JSON found, return with textContent so the caller can
-        // pass it (not raw JSONL stdout) to the LLM extraction fallback
-        logger.warn(`${levelPrefix} Text content is not JSON, treating as raw text`);
-        return { success: false, error: 'Text content is not valid JSON', textContent };
-      }
-
-      // No text content found, try extracting JSON directly from stdout
-      const extracted = extractJSON(stdout, level);
-      return extracted;
+      return finalizePiResponseParsing({
+        textContent: responseState.textContent,
+        rawOutput: responseState.rawOutput,
+        rawOutputTruncated: responseState.rawOutputTruncated
+      }, level, levelPrefix);
 
     } catch (parseError) {
       // stdout might not be valid JSONL at all, try extracting JSON from it
@@ -862,4 +1181,11 @@ class PiProvider extends AIProvider {
 registerProvider('pi', PiProvider);
 
 module.exports = PiProvider;
+// Test-only exports. Underscore prefix signals internal helpers that should
+// not be consumed from production code paths.
 module.exports._extractAssistantText = extractAssistantText;
+module.exports._isPiEventEnvelope = isPiEventEnvelope;
+module.exports._appendWithLimit = appendWithLimit;
+module.exports._appendHeadTailBuffer = appendHeadTailBuffer;
+module.exports._formatHeadTailBuffer = formatHeadTailBuffer;
+module.exports._finalizePiResponseParsing = finalizePiResponseParsing;
