@@ -1,5 +1,37 @@
 # Changelog
 
+## 3.3.6
+
+### Patch Changes
+
+- 29a454c: Add Claude Opus 4.7 High variant and normalize XHigh display name
+
+  - New `opus-4.7-high` model — Opus 4.7 pinned to `claude-opus-4-7` with
+    `CLAUDE_CODE_EFFORT_LEVEL=high`, parallel to the existing `opus-4.7-xhigh`.
+  - Renamed the `opus-4.7-xhigh` display name from `Opus 4.7 xhigh` to
+    `Opus 4.7 XHigh` for consistency with the Codex provider's `XHigh` casing
+    and the existing `High`/`Low`/`Medium` capitalization on 4.6 variants.
+
+- 29a454c: Add GPT-5.4 and GPT-5.5 high/xhigh reasoning variants to the Codex provider
+
+  New Codex model options:
+
+  - `gpt-5.4-high` / `gpt-5.4-xhigh` — GPT-5.4 with elevated reasoning effort
+  - `gpt-5.5-high` / `gpt-5.5-xhigh` — GPT-5.5 with elevated reasoning effort
+
+  Each variant passes its base model to `codex exec -m` and configures reasoning
+  effort via `-c 'model_reasoning_effort="<level>"'`, so a variant ID like
+  `gpt-5.5-xhigh` is never sent to Codex as a literal model name. Built-in
+  `cli_model` and `extra_args` are honored by both the main analysis path and
+  the extraction fallback.
+
+  The bare `gpt-5.4` option (unspecified reasoning effort) has been removed
+  from the picker in favor of these explicit variants. `gpt-5.4` still resolves
+  as an alias of `gpt-5.4-high`, so previously saved results and councils that
+  reference it continue to work.
+
+- b8f6ea0: Prevent Pi reviews from crashing when the CLI emits very large JSONL streams.
+
 ## 3.3.5
 
 ### Patch Changes
