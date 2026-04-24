@@ -738,8 +738,11 @@ async function testProviderAvailability(providerId, timeout = 10000) {
 }
 
 /**
- * Get tier for a specific model from a provider
- * Queries the provider's model definitions (or config overrides) to find the tier
+ * Get tier for a specific model from a provider.
+ * Queries the provider's model definitions (or config overrides) to find the tier.
+ * Matches against both the canonical model `id` and any `aliases` so legacy
+ * model IDs (e.g. `gpt-5.4` before reasoning-effort variants were introduced)
+ * still resolve their tier for historical analysis runs.
  * @param {string} providerId - Provider ID (e.g., 'claude', 'gemini')
  * @param {string} modelId - Model ID (e.g., 'sonnet', 'gemini-2.5-pro')
  * @returns {string|null} Tier name or null if provider or model not found
@@ -754,7 +757,7 @@ function getTierForModel(providerId, modelId) {
   const overrides = providerConfigOverrides.get(providerId);
   const models = mergeModels(ProviderClass.getModels(), overrides?.models);
 
-  const model = models.find(m => m.id === modelId);
+  const model = models.find(m => m.id === modelId || m.aliases?.includes(modelId));
   return model?.tier || null;
 }
 

@@ -19,7 +19,8 @@ import {
   getRegisteredProviderIds,
   getProviderClass,
   createProvider,
-  createAliasedProviderClass
+  createAliasedProviderClass,
+  getTierForModel
 } from '../../src/ai/index.js';
 
 describe('Provider Configuration', () => {
@@ -188,6 +189,33 @@ describe('Provider Configuration', () => {
       ];
 
       expect(resolveDefaultModel(models)).toBe('model-a');
+    });
+  });
+
+  describe('getTierForModel', () => {
+    beforeEach(() => {
+      // Clear any existing overrides so built-in model definitions are used
+      applyConfigOverrides({ providers: {} });
+    });
+
+    it('should resolve tier by canonical model id', () => {
+      expect(getTierForModel('codex', 'gpt-5.4-high')).toBe('thorough');
+    });
+
+    it('should resolve tier via aliases for legacy model ids', () => {
+      // Regression: `gpt-5.4` was the pre-migration model ID stored in the
+      // analysis_runs table before reasoning-effort variants existed.
+      // It must keep resolving to 'thorough' via the alias on `gpt-5.4-high`
+      // so historical runs get their tier backfilled correctly.
+      expect(getTierForModel('codex', 'gpt-5.4')).toBe('thorough');
+    });
+
+    it('should return null for unknown models', () => {
+      expect(getTierForModel('codex', 'completely-unknown-model')).toBeNull();
+    });
+
+    it('should return null for unknown providers', () => {
+      expect(getTierForModel('nonexistent-provider', 'any-model')).toBeNull();
     });
   });
 
