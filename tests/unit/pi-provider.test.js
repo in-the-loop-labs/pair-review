@@ -42,7 +42,14 @@ vi.mock('../../src/utils/logger', () => {
 
 // Import after mocks are set up
 const PiProvider = require('../../src/ai/pi-provider');
-const { _extractAssistantText: extractAssistantText } = require('../../src/ai/pi-provider');
+const {
+  _extractAssistantText: extractAssistantText,
+  _isPiEventEnvelope: isPiEventEnvelope,
+  _appendWithLimit: appendWithLimit,
+  _appendHeadTailBuffer: appendHeadTailBuffer,
+  _formatHeadTailBuffer: formatHeadTailBuffer,
+  _finalizePiResponseParsing: finalizePiResponseParsing
+} = require('../../src/ai/pi-provider');
 
 describe('PiProvider', () => {
   const originalEnv = { ...process.env };
@@ -62,6 +69,111 @@ describe('PiProvider', () => {
   afterEach(() => {
     // Restore original environment
     process.env = { ...originalEnv };
+  });
+
+  describe('internal helpers', () => {
+    describe('isPiEventEnvelope', () => {
+      it('should return false for a review-like object without a type field', () => {
+        expect(isPiEventEnvelope({ result: { comments: [] } })).toBe(false);
+      });
+
+      it('should return true for event types ending in _start/_update/_end', () => {
+        expect(isPiEventEnvelope({ type: 'tool_execution_end' })).toBe(true);
+        expect(isPiEventEnvelope({ type: 'message_update' })).toBe(true);
+      });
+
+      it('should return true for session events', () => {
+        expect(isPiEventEnvelope({ type: 'session' })).toBe(true);
+      });
+
+      it('should return false for non-objects and arrays', () => {
+        expect(isPiEventEnvelope(null)).toBe(false);
+        expect(isPiEventEnvelope('string')).toBe(false);
+        expect(isPiEventEnvelope([{ type: 'message_end' }])).toBe(false);
+      });
+    });
+
+    describe('appendWithLimit', () => {
+      it('should return the existing string unchanged for empty chunks', () => {
+        expect(appendWithLimit('abc', '', 5)).toEqual({ value: 'abc', truncated: false });
+      });
+
+      it('should append when the chunk fits within the limit', () => {
+        expect(appendWithLimit('ab', 'cd', 4)).toEqual({ value: 'abcd', truncated: false });
+      });
+
+      it('should report truncation on an exact full buffer followed by more data', () => {
+        expect(appendWithLimit('abcd', 'z', 4)).toEqual({ value: 'abcd', truncated: true });
+      });
+
+      it('should truncate overflowing chunks to the remaining capacity', () => {
+        expect(appendWithLimit('ab', 'cdef', 4)).toEqual({ value: 'abcd', truncated: true });
+      });
+    });
+
+    describe('appendHeadTailBuffer / formatHeadTailBuffer', () => {
+      const fresh = () => ({ head: '', tail: '', headFull: false, omittedChars: 0 });
+
+      it('should keep the full content when it fits within head+tail capacity', () => {
+        const buffer = fresh();
+        appendHeadTailBuffer(buffer, 'a'.repeat(140), 100, 50);
+
+        expect(buffer.headFull).toBe(true);
+        expect(buffer.omittedChars).toBe(0);
+        expect(formatHeadTailBuffer(buffer)).toBe('a'.repeat(140));
+      });
+
+      it('should treat an exact head fill as no data loss', () => {
+        const buffer = fresh();
+        appendHeadTailBuffer(buffer, 'a'.repeat(100), 100, 50);
+
+        expect(buffer.headFull).toBe(true);
+        expect(buffer.omittedChars).toBe(0);
+        expect(formatHeadTailBuffer(buffer)).toBe('a'.repeat(100));
+      });
+
+      it('should record omitted chars once the tail overflows', () => {
+        const buffer = fresh();
+        appendHeadTailBuffer(buffer, 'H'.repeat(100), 100, 50);
+        appendHeadTailBuffer(buffer, 'T'.repeat(200), 100, 50);
+
+        expect(buffer.omittedChars).toBe(150);
+        expect(formatHeadTailBuffer(buffer)).toContain('...[150 chars omitted]...');
+      });
+    });
+
+    describe('finalizePiResponseParsing', () => {
+      it('should prefer valid textContent over rawOutput', () => {
+        const result = finalizePiResponseParsing({
+          textContent: '{"findings":[]}',
+          rawOutput: '{"ignored":true}'
+        }, 1, '[Level 1]');
+
+        expect(result.success).toBe(true);
+        expect(result.data).toEqual({ findings: [] });
+      });
+
+      it('should parse raw output when no assistant text exists', () => {
+        const result = finalizePiResponseParsing({
+          textContent: '',
+          rawOutput: '{"findings":[{"title":"x"}]}'
+        }, 1, '[Level 1]');
+
+        expect(result.success).toBe(true);
+        expect(result.data).toEqual({ findings: [{ title: 'x' }] });
+      });
+
+      it('should fail closed when raw output was truncated before assistant text was recovered', () => {
+        const result = finalizePiResponseParsing({
+          textContent: '',
+          rawOutput: '{"type":"session"}',
+          rawOutputTruncated: true
+        }, 1, '[Level 1]');
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('truncated before assistant text could be recovered');
+      });
+    });
   });
 
   describe('static methods', () => {
@@ -486,6 +598,27 @@ describe('PiProvider', () => {
       const result = provider.parsePiResponse(stdout, 1);
       expect(result.success).toBe(true);
       expect(result.data).toEqual({ found: true });
+    });
+
+    it('should not treat Pi event envelopes as direct JSON results when no assistant text exists', () => {
+      const provider = new PiProvider('test-model');
+      const stdout = [
+        '{"type":"session","version":3,"id":"test-session"}',
+        '{"type":"turn_start"}',
+        '{"type":"tool_execution_end","result":"lots of tool output","isError":false}'
+      ].join('\n');
+
+      const result = provider.parsePiResponse(stdout, 1);
+      expect(result.success).toBe(false);
+    });
+
+    it('should still parse direct non-event JSON output when no assistant text exists', () => {
+      const provider = new PiProvider('test-model');
+      const stdout = '{"findings":[{"title":"Direct JSON"}]}';
+
+      const result = provider.parsePiResponse(stdout, 1);
+      expect(result.success).toBe(true);
+      expect(result.data).toEqual({ findings: [{ title: 'Direct JSON' }] });
     });
   });
 
@@ -1300,6 +1433,147 @@ describe('PiProvider', () => {
       fakeChild.stdout.emit('data', Buffer.from('{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\\"ok\\":true}"}]}}\n'));
       fakeChild.emit('close', 0);
       await executePromise;
+    });
+
+    it('should ignore noisy Pi event lines when building the raw stdout fallback buffer', async () => {
+      const logger = require('../../src/utils/logger');
+      const warnSpy = vi.spyOn(logger, 'warn');
+
+      try {
+        const fakeChild = new EventEmitter();
+        fakeChild.stdin = { end: vi.fn() };
+        fakeChild.stdout = new EventEmitter();
+        fakeChild.stderr = new EventEmitter();
+        fakeChild.pid = 12345;
+        fakeChild.kill = vi.fn();
+
+        mockSpawn.mockReturnValueOnce(fakeChild);
+
+        const provider = new PiProvider('test-model');
+        const executePromise = provider.execute('test prompt', { level: 1 });
+
+        const noisyLine = `${JSON.stringify({ type: 'session', id: 'x'.repeat(16384) })}\n`;
+        const repeatCount = Math.ceil((5 * 1024 * 1024) / noisyLine.length) + 1;
+
+        for (let i = 0; i < repeatCount; i++) {
+          fakeChild.stdout.emit('data', Buffer.from(noisyLine));
+        }
+
+        fakeChild.stdout.emit(
+          'data',
+          Buffer.from('{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\\"findings\\":[]}"}]}}\n')
+        );
+        fakeChild.emit('close', 0);
+
+        const result = await executePromise;
+
+        expect(result).toEqual({ findings: [] });
+        expect(warnSpy).not.toHaveBeenCalledWith(
+          expect.stringContaining('raw-output fallback exceeded')
+        );
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('should fall back to LLM extraction when raw fallback output is truncated', async () => {
+      const fakeChild = new EventEmitter();
+      fakeChild.stdin = { end: vi.fn() };
+      fakeChild.stdout = new EventEmitter();
+      fakeChild.stderr = new EventEmitter();
+      fakeChild.pid = 12345;
+      fakeChild.kill = vi.fn();
+
+      mockSpawn.mockReturnValueOnce(fakeChild);
+
+      const provider = new PiProvider('test-model');
+      provider.extractJSONWithLLM = vi.fn().mockResolvedValue({
+        success: true,
+        data: { findings: [] }
+      });
+
+      const executePromise = provider.execute('test prompt', { level: 1 });
+
+      const noisyLine = `${'x'.repeat(16384)}\n`;
+      const repeatCount = Math.ceil((5 * 1024 * 1024) / noisyLine.length) + 1;
+
+      for (let i = 0; i < repeatCount; i++) {
+        fakeChild.stdout.emit('data', Buffer.from(noisyLine));
+      }
+
+      fakeChild.emit('close', 0);
+
+      const result = await executePromise;
+
+      expect(result).toEqual({ findings: [] });
+      expect(provider.extractJSONWithLLM).toHaveBeenCalledTimes(1);
+    });
+
+    it('should preserve the tail of large stderr output on failure', async () => {
+      const fakeChild = new EventEmitter();
+      fakeChild.stdin = { end: vi.fn() };
+      fakeChild.stdout = new EventEmitter();
+      fakeChild.stderr = new EventEmitter();
+      fakeChild.pid = 12345;
+      fakeChild.kill = vi.fn();
+
+      mockSpawn.mockReturnValueOnce(fakeChild);
+
+      const provider = new PiProvider('test-model');
+      const executePromise = provider.execute('test prompt', { level: 1 });
+
+      const head = 'HEAD-DETAIL\n';
+      const middle = 'x'.repeat((1024 * 1024) + 1024);
+      const tail = '\nTAIL-STACK-TRACE';
+
+      fakeChild.stderr.emit('data', Buffer.from(head));
+      fakeChild.stderr.emit('data', Buffer.from(middle));
+      fakeChild.stderr.emit('data', Buffer.from(tail));
+      fakeChild.emit('close', 1);
+
+      const error = await executePromise.catch((err) => err);
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).toMatch(/HEAD-DETAIL/);
+      expect(error.message).toMatch(/TAIL-STACK-TRACE/);
+      expect(error.message).toMatch(/omitted|truncated/);
+    });
+
+    it('should cap a single oversized JSONL event line and continue to later results', async () => {
+      const logger = require('../../src/utils/logger');
+      const warnSpy = vi.spyOn(logger, 'warn');
+
+      try {
+        const fakeChild = new EventEmitter();
+        fakeChild.stdin = { end: vi.fn() };
+        fakeChild.stdout = new EventEmitter();
+        fakeChild.stderr = new EventEmitter();
+        fakeChild.pid = 12345;
+        fakeChild.kill = vi.fn();
+
+        mockSpawn.mockReturnValueOnce(fakeChild);
+
+        const provider = new PiProvider('test-model');
+        const executePromise = provider.execute('test prompt', { level: 1 });
+
+        const hugeLine = `{"type":"session","id":"${'x'.repeat((2 * 1024 * 1024) + 1024)}"}\n`;
+        fakeChild.stdout.emit('data', Buffer.from(hugeLine.slice(0, 700000)));
+        fakeChild.stdout.emit('data', Buffer.from(hugeLine.slice(700000, 1500000)));
+        fakeChild.stdout.emit('data', Buffer.from(hugeLine.slice(1500000)));
+        fakeChild.stdout.emit(
+          'data',
+          Buffer.from('{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\\"findings\\":[]}"}]}}\n')
+        );
+        fakeChild.emit('close', 0);
+
+        const result = await executePromise;
+
+        expect(result).toEqual({ findings: [] });
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining('emitted a JSONL event longer than')
+        );
+      } finally {
+        warnSpy.mockRestore();
+      }
     });
   });
 
