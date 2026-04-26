@@ -2032,7 +2032,7 @@ class PRManager {
    * @param {string} filePath - Path of the file
    */
   toggleFileCollapse(filePath) {
-    const wrapper = document.querySelector(`[data-file-name="${filePath}"]`);
+    const wrapper = this.findFileElement(filePath);
     if (!wrapper) return;
 
     const isCollapsed = wrapper.classList.contains('collapsed');
@@ -2058,7 +2058,7 @@ class PRManager {
    * @param {boolean} isViewed - Whether the file is now viewed
    */
   toggleFileViewed(filePath, isViewed) {
-    const wrapper = document.querySelector(`[data-file-name="${filePath}"]`);
+    const wrapper = this.findFileElement(filePath);
 
     if (isViewed) {
       this.viewedFiles.add(filePath);
@@ -4359,7 +4359,7 @@ class PRManager {
   }
 
   scrollToFile(filePath) {
-    const fileWrapper = document.querySelector(`[data-file-name="${filePath}"]`);
+    const fileWrapper = this.findFileElement(filePath);
     if (fileWrapper) {
       fileWrapper.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }

@@ -668,6 +668,48 @@ describe('generateScopedDiff', () => {
       expect(result.diff).toContain('file.txt');
       expect(result.diff).toContain('brand-new.txt');
     });
+
+    it('should preserve literal dollar-sign segments in untracked file paths', async () => {
+      const originalOwner = process.env.owner;
+      const originalRepo = process.env.repo;
+      const originalNumber = process.env.number;
+
+      process.env.owner = 'expanded-owner';
+      process.env.repo = 'expanded-repo';
+      process.env.number = 'expanded-number';
+
+      try {
+        const relativePath = 'src/routes/repos/$owner/$repo/pulls/$number/route.tsx';
+        await fs.mkdir(path.join(testDir, 'src/routes/repos/$owner/$repo/pulls/$number'), { recursive: true });
+        await fs.writeFile(path.join(testDir, relativePath), 'export const Route = {};\n');
+
+        const result = await generateScopedDiff(testDir, 'unstaged', 'untracked');
+
+        expect(result.diff).toContain(`diff --git a/${relativePath} b/${relativePath}`);
+        expect(result.diff).toContain(`+++ b/${relativePath}`);
+        expect(result.diff).not.toContain('expanded-owner');
+        expect(result.diff).not.toContain('expanded-repo');
+        expect(result.diff).not.toContain('expanded-number');
+      } finally {
+        if (originalOwner === undefined) {
+          delete process.env.owner;
+        } else {
+          process.env.owner = originalOwner;
+        }
+
+        if (originalRepo === undefined) {
+          delete process.env.repo;
+        } else {
+          process.env.repo = originalRepo;
+        }
+
+        if (originalNumber === undefined) {
+          delete process.env.number;
+        } else {
+          process.env.number = originalNumber;
+        }
+      }
+    });
   });
 
   describe('invalid scope rejection', () => {

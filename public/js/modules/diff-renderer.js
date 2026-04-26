@@ -195,6 +195,88 @@ class DiffRenderer {
   }
 
   /**
+   * Normalize a file path for DOM matching.
+   *
+   * Frontend mirror of `normalizePath()` + `resolveRenamedFile()` from
+   * `src/utils/paths.js`. Browser code cannot `require()` the backend module,
+   * so the logic is duplicated here. Keep this function in sync with those two
+   * when modifying normalization rules, otherwise the frontend and backend
+   * will disagree on which paths are equivalent.
+   *
+   * @param {string} filePath - File path to normalize
+   * @returns {string} Normalized file path
+   */
+  static normalizeFilePath(filePath) {
+    if (typeof filePath !== 'string') return '';
+
+    let normalized = filePath.trim();
+    if (!normalized) return '';
+
+    // Resolve git rename syntax to the new path.
+    normalized = normalized.replace(/\{[^}]*\s*=>\s*([^}]*)\}/, '$1');
+    normalized = normalized.replace(/\/+/g, '/');
+
+    // Strip leading './' and '/' segments until the string stops changing.
+    // This mirrors normalizePath in src/utils/paths.js for interleaved cases
+    // like '/./src/foo.js'.
+    let prevLength;
+    do {
+      prevLength = normalized.length;
+
+      while (normalized.startsWith('./')) {
+        normalized = normalized.slice(2);
+      }
+
+      while (normalized.startsWith('/')) {
+        normalized = normalized.slice(1);
+      }
+    } while (normalized.length !== prevLength);
+
+    return normalized;
+  }
+
+  /**
+   * Check whether two file paths should be treated as the same DOM target.
+   * @param {string} left - First file path
+   * @param {string} right - Second file path
+   * @returns {boolean} True when the paths refer to the same file
+   */
+  static pathsMatch(left, right) {
+    const normalizedLeft = DiffRenderer.normalizeFilePath(left);
+    const normalizedRight = DiffRenderer.normalizeFilePath(right);
+
+    if (!normalizedLeft || !normalizedRight) return false;
+
+    return normalizedLeft === normalizedRight ||
+      normalizedLeft.endsWith(`/${normalizedRight}`) ||
+      normalizedRight.endsWith(`/${normalizedLeft}`);
+  }
+
+  /**
+   * Try a direct selector lookup for a file path.
+   * Falls back silently when CSS.escape is unavailable or the selector is invalid.
+   * @param {string} attribute - data attribute to match (without brackets)
+   * @param {string} filePath - File path to search for
+   * @returns {Element|null} Matching element if found
+   */
+  static queryFileElement(attribute, filePath) {
+    if (!filePath) {
+      return null;
+    }
+
+    const css = globalThis.CSS;
+    const escapedValue = css && typeof css.escape === 'function'
+      ? css.escape(filePath)
+      : filePath;
+
+    try {
+      return document.querySelector(`[${attribute}="${escapedValue}"]`);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Render a single diff line
    * @param {HTMLElement|DocumentFragment} container - Container to append to
    * @param {Object} line - Diff line data
@@ -696,18 +778,29 @@ class DiffRenderer {
    * @returns {Element|null} The file wrapper element or null if not found
    */
   static findFileElement(filePath) {
-    // Try exact match first
-    let fileElement = document.querySelector(`[data-file-name="${filePath}"]`);
-    if (fileElement) return fileElement;
+    const normalizedPath = DiffRenderer.normalizeFilePath(filePath);
 
-    fileElement = document.querySelector(`[data-file-path="${filePath}"]`);
-    if (fileElement) return fileElement;
+    // Try direct selector lookups first when we can safely escape the value.
+    const selectorCandidates = [filePath];
+    if (normalizedPath && normalizedPath !== filePath) {
+      selectorCandidates.push(normalizedPath);
+    }
 
-    // Try partial match for path segments
+    for (const candidate of selectorCandidates) {
+      let fileElement = DiffRenderer.queryFileElement('data-file-name', candidate);
+      if (fileElement) return fileElement;
+
+      fileElement = DiffRenderer.queryFileElement('data-file-path', candidate);
+      if (fileElement) return fileElement;
+    }
+
+    // Fall back to normalized iteration so special characters, rename syntax,
+    // and formatted variants still resolve to the rendered wrapper.
     const allFileWrappers = document.querySelectorAll('.d2h-file-wrapper');
     for (const wrapper of allFileWrappers) {
       const fileName = wrapper.dataset.fileName;
-      if (fileName && (fileName === filePath || fileName.endsWith('/' + filePath) || filePath.endsWith('/' + fileName))) {
+      const filePathAttr = wrapper.dataset.filePath;
+      if (DiffRenderer.pathsMatch(fileName, filePath) || DiffRenderer.pathsMatch(filePathAttr, filePath)) {
         return wrapper;
       }
     }

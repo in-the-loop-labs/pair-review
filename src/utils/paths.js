@@ -13,6 +13,8 @@
  * - Handles interleaved patterns like '/./src' by iterating
  * - Normalizes multiple consecutive slashes to single slash
  * - Does NOT modify case (paths are case-sensitive on most systems)
+ * - Frontend mirror lives in `DiffRenderer.normalizeFilePath`
+ *   (`public/js/modules/diff-renderer.js`); keep behavior in sync
  *
  * @param {string} filePath - The file path to normalize
  * @returns {string} Normalized path
@@ -159,6 +161,8 @@ function normalizeRepository(owner, repo) {
  *   "tests/{old.js => new.js}"      → "tests/new.js"
  *   "{old-dir => new-dir}/file.js"  → "new-dir/file.js"
  *   "a/{b => c}/d.js"              → "a/c/d.js"
+ * Frontend mirror lives in `DiffRenderer.normalizeFilePath`
+ * (`public/js/modules/diff-renderer.js`); keep behavior in sync.
  *
  * @param {string} fileName - File name possibly containing rename syntax
  * @returns {string} Resolved file name with the new path, or original if no rename syntax

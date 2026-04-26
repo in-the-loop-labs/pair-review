@@ -531,6 +531,15 @@ describe('DiffRenderer', () => {
         expect(result).toBe(wrapper);
       });
 
+      it('should normalize TanStack-style route paths before matching wrappers', () => {
+        const tanstackPath = 'areas/internal-services/meteorite/ui/app/frontend/src/routes/repos/$owner/$repo/pulls/$number/route.tsx';
+        const wrapper = createMockWrapper(tanstackPath);
+        setupDocumentMock([wrapper]);
+
+        const result = DiffRenderer.findFileElement(`  ./${tanstackPath}  `);
+        expect(result).toBe(wrapper);
+      });
+
       it('should return null when no match found', () => {
         const wrapper = createMockWrapper('src/foo.js');
         setupDocumentMock([wrapper]);
@@ -570,6 +579,27 @@ describe('DiffRenderer', () => {
         const result = DiffRenderer.findFileElement('src/utils/helper.js');
         expect(result).toBe(wrapper);
       });
+
+      it('should fall back to wrapper iteration when selector lookup fails', () => {
+        const weirdPath = 'src/routes/repos/"quoted"/route.tsx';
+        const wrapper = createMockWrapper(weirdPath);
+        global.document = {
+          querySelector: vi.fn().mockImplementation(() => {
+            throw new Error('Invalid selector');
+          }),
+          querySelectorAll: vi.fn().mockReturnValue([wrapper])
+        };
+
+        const result = DiffRenderer.findFileElement(weirdPath);
+        expect(result).toBe(wrapper);
+      });
+    });
+  });
+
+  describe('normalizeFilePath', () => {
+    it('iteratively strips interleaved leading slashes and ./ segments', () => {
+      expect(DiffRenderer.normalizeFilePath('/./src/foo.js')).toBe('src/foo.js');
+      expect(DiffRenderer.normalizeFilePath('./../src/foo.js')).toBe('../src/foo.js');
     });
   });
 

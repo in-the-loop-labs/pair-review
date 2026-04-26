@@ -604,6 +604,36 @@ describe('SuggestionManager.getFileAndLineInfo()', () => {
   });
 });
 
+describe('SuggestionManager.findFileElement()', () => {
+  afterEach(() => {
+    delete global.document;
+    delete global.CSS;
+    delete global.window.DiffRenderer;
+  });
+
+  it('escapes CSS special characters in the fallback selector lookup', () => {
+    const suggestionManager = createTestSuggestionManager();
+    const wrapper = { dataset: { fileName: 'src/routes/repos/"quoted"/route.tsx' } };
+    const file = 'src/routes/repos/"quoted"/route.tsx';
+
+    global.window.DiffRenderer = undefined;
+    global.CSS = {
+      escape: vi.fn(value => value.replace(/"/g, '\\"'))
+    };
+    global.document = {
+      querySelector: vi.fn().mockReturnValue(wrapper)
+    };
+
+    const result = suggestionManager.findFileElement(file);
+
+    expect(global.CSS.escape).toHaveBeenCalledWith(file);
+    expect(global.document.querySelector).toHaveBeenCalledWith(
+      '[data-file-name="src/routes/repos/\\"quoted\\"/route.tsx"]'
+    );
+    expect(result).toBe(wrapper);
+  });
+});
+
 describe('SuggestionManager chat button event delegation', () => {
   let suggestionManager;
   let clickHandlers;
