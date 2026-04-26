@@ -1168,17 +1168,22 @@ class FileCommentManager {
    * @param {Array} suggestions - Array of file-level AI suggestions
    */
   loadFileComments(comments, suggestions) {
-    // Group by file
-    const commentsByFile = new Map();
-    const suggestionsByFile = new Map();
+    // Group by rendered file comments zone so path variants still attach to the
+    // correct file on initial load.
+    const commentsByZone = new Map();
+    const suggestionsByZone = new Map();
 
     if (comments) {
       for (const comment of comments) {
         if (comment.is_file_level === 1) {
-          if (!commentsByFile.has(comment.file)) {
-            commentsByFile.set(comment.file, []);
+          const zone = this.findZoneForFile(comment.file);
+          if (!zone) {
+            continue;
           }
-          commentsByFile.get(comment.file).push(comment);
+          if (!commentsByZone.has(zone)) {
+            commentsByZone.set(zone, []);
+          }
+          commentsByZone.get(zone).push(comment);
         }
       }
     }
@@ -1186,10 +1191,14 @@ class FileCommentManager {
     if (suggestions) {
       for (const suggestion of suggestions) {
         if (suggestion.is_file_level === 1) {
-          if (!suggestionsByFile.has(suggestion.file)) {
-            suggestionsByFile.set(suggestion.file, []);
+          const zone = this.findZoneForFile(suggestion.file);
+          if (!zone) {
+            continue;
           }
-          suggestionsByFile.get(suggestion.file).push(suggestion);
+          if (!suggestionsByZone.has(zone)) {
+            suggestionsByZone.set(zone, []);
+          }
+          suggestionsByZone.get(zone).push(suggestion);
         }
       }
     }
@@ -1197,7 +1206,6 @@ class FileCommentManager {
     // Find all file comment zones and populate them
     const zones = document.querySelectorAll('.file-comments-zone');
     for (const zone of zones) {
-      const fileName = zone.dataset.fileName;
       const container = zone.querySelector('.file-comments-container');
 
       // Selectively clear existing cards based on what we're about to reload
@@ -1221,8 +1229,8 @@ class FileCommentManager {
         }
       }
 
-      const fileComments = commentsByFile.get(fileName) || [];
-      const fileSuggestions = suggestionsByFile.get(fileName) || [];
+      const fileComments = commentsByZone.get(zone) || [];
+      const fileSuggestions = suggestionsByZone.get(zone) || [];
 
       // Display AI suggestions first
       for (const suggestion of fileSuggestions) {
@@ -1245,7 +1253,20 @@ class FileCommentManager {
    * @returns {HTMLElement|null} The zone element or null
    */
   findZoneForFile(fileName) {
-    return document.querySelector(`.file-comments-zone[data-file-name="${fileName}"]`);
+    const fileWrapper = window.DiffRenderer?.findFileElement
+      ? window.DiffRenderer.findFileElement(fileName)
+      : null;
+
+    if (fileWrapper) {
+      return fileWrapper.querySelector('.file-comments-zone');
+    }
+
+    try {
+      const escaped = globalThis.CSS?.escape ? CSS.escape(fileName) : fileName;
+      return document.querySelector(`.file-comments-zone[data-file-name="${escaped}"]`);
+    } catch {
+      return null;
+    }
   }
 
   /**

@@ -45,6 +45,7 @@ const {
   registerProcess: registerProcessForCancellation
 } = require('./shared');
 const { safeParseJson } = require('../utils/safe-parse-json');
+const { mergeChangedFilesWithDiff } = require('../utils/diff-file-list');
 const { resolveOriginalFileContentSpecs } = require('../utils/diff-file-content');
 const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
 const { TIERS, TIER_ALIASES, VALID_TIERS, resolveTier } = require('../ai/prompts/config');
@@ -254,6 +255,8 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
     }
 
     // Prepare response
+    const changedFiles = mergeChangedFilesWithDiff(extendedData.changed_files || [], extendedData.diff || '');
+
     // Use review.id instead of prMetadata.id to avoid ID collision with local mode
     const response = {
       success: true,
@@ -274,8 +277,8 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
         shaAbbrevLength,
         created_at: prMetadata.created_at,
         updated_at: prMetadata.updated_at,
-        file_changes: extendedData.changed_files ? extendedData.changed_files.length : 0,
-        changed_files: extendedData.changed_files || [],
+        file_changes: changedFiles.length,
+        changed_files: changedFiles,
         additions: extendedData.additions || 0,
         deletions: extendedData.deletions || 0,
         diff_content: extendedData.diff || '',
@@ -759,6 +762,8 @@ router.get('/api/pr/:owner/:repo/:number/diff', async (req, res) => {
     let diffContent = prData.diff || '';
     let changedFiles = prData.changed_files || [];
 
+    let gitattributes = null;
+
     if (hideWhitespace && worktreeRecord && worktreeRecord.path) {
       try {
         const worktreePath = worktreeRecord.path;
@@ -774,7 +779,7 @@ router.get('/api/pr/:owner/:repo/:number/diff', async (req, res) => {
 
           const summaryArgs = [`${baseSha}...${headSha}`, ...GIT_DIFF_SUMMARY_FLAGS_ARRAY, '-w'];
           const diffSummary = await git.diffSummary(summaryArgs);
-          const gitattributes = await getGeneratedFilePatterns(worktreePath);
+          gitattributes = await getGeneratedFilePatterns(worktreePath);
           changedFiles = diffSummary.files.map(file => {
             const resolvedFile = resolveRenamedFile(file.file);
             const isRenamed = resolvedFile !== file.file;
@@ -799,15 +804,20 @@ router.get('/api/pr/:owner/:repo/:number/diff', async (req, res) => {
     } else if (worktreeRecord && worktreeRecord.path) {
       // Add generated flag to changed files based on .gitattributes
       try {
-        const gitattributes = await getGeneratedFilePatterns(worktreeRecord.path);
-        changedFiles = changedFiles.map(file => ({
-          ...file,
-          generated: gitattributes.isGenerated(file.file)
-        }));
+        gitattributes = await getGeneratedFilePatterns(worktreeRecord.path);
       } catch (error) {
         logger.warn(`Could not load .gitattributes: ${error.message}`);
         // Continue without generated flags
       }
+    }
+
+    changedFiles = mergeChangedFilesWithDiff(changedFiles, diffContent);
+
+    if (gitattributes) {
+      changedFiles = changedFiles.map(file => ({
+        ...file,
+        generated: gitattributes.isGenerated(file.file)
+      }));
     }
 
     // When diff was regenerated (whitespace), compute aggregate stats from

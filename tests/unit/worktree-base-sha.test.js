@@ -214,4 +214,30 @@ describe('GitWorktreeManager base SHA availability', () => {
       undefined
     );
   });
+
+  it('uses --numstat when collecting changed files so long paths are not abbreviated', async () => {
+    const longPath = 'areas/internal-services/meteorite/ui/app/frontend/src/routes/repos/$owner/$repo/pulls/$number/route.tsx';
+    const worktreeGit = createMockGit({
+      diffSummary: vi.fn().mockResolvedValue({
+        files: [{ file: longPath, insertions: 12, deletions: 3, changes: 15, binary: false }]
+      })
+    });
+
+    manager._gitFor = vi.fn().mockReturnValue(worktreeGit);
+    manager.assertCommitAvailableLocally = vi.fn().mockResolvedValue(undefined);
+
+    const result = await manager.getChangedFiles('/tmp/worktrees/existing', {
+      base_sha: 'base-sha',
+      head_sha: 'head-sha'
+    });
+
+    expect(worktreeGit.diffSummary).toHaveBeenCalledWith([
+      'base-sha...head-sha',
+      '--no-color',
+      '--no-ext-diff',
+      '--no-relative',
+      '--numstat'
+    ]);
+    expect(result[0].file).toBe(longPath);
+  });
 });
