@@ -30,12 +30,16 @@ const GIT_DIFF_FLAGS_ARRAY = [
 
 /**
  * Array form for simple-git .diffSummary() calls.
+ * Use --numstat so simple-git parses machine-readable output with exact file paths.
+ * The default --stat output is display-oriented and may abbreviate long paths,
+ * which breaks downstream matching for generated route files and similar cases.
  * Omits --src-prefix/--dst-prefix since diffSummary doesn't output file content with prefixes.
  */
 const GIT_DIFF_SUMMARY_FLAGS_ARRAY = [
   '--no-color',
   '--no-ext-diff',
-  '--no-relative'
+  '--no-relative',
+  '--numstat'
 ];
 
 module.exports = {

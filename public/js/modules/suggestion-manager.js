@@ -161,6 +161,26 @@ class SuggestionManager {
   }
 
   /**
+   * Resolve a diff file wrapper for the provided path.
+   * @param {string} file - File path
+   * @returns {Element|null} Matching file wrapper
+   */
+  findFileElement(file) {
+    if (this.prManager?.findFileElement) {
+      return this.prManager.findFileElement(file);
+    }
+    if (window.DiffRenderer?.findFileElement) {
+      return window.DiffRenderer.findFileElement(file);
+    }
+    try {
+      const escaped = globalThis.CSS?.escape ? CSS.escape(file) : file;
+      return document.querySelector(`[data-file-name="${escaped}"]`);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Find suggestions that target lines currently hidden in gaps
    * @param {Array} suggestions - Array of suggestions
    * @returns {Array} Suggestions targeting hidden lines
@@ -176,9 +196,7 @@ class SuggestionManager {
       const side = suggestion.side || 'RIGHT';
 
       // Find the file wrapper
-      const fileElement = window.DiffRenderer ?
-        window.DiffRenderer.findFileElement(file) :
-        document.querySelector(`[data-file-name="${file}"]`);
+      const fileElement = this.findFileElement(file);
 
       if (!fileElement) {
         // File not in diff at all, not a hidden line issue
@@ -329,9 +347,7 @@ class SuggestionManager {
         const line = parseInt(lineStr);
 
         // Use helper method for file lookup
-        const fileElement = window.DiffRenderer ?
-          window.DiffRenderer.findFileElement(file) :
-          document.querySelector(`[data-file-name="${file}"]`);
+        const fileElement = this.findFileElement(file);
 
         if (!fileElement) {
           // This can happen when AI suggests a file path that doesn't exist in the diff

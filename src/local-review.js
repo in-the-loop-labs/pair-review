@@ -1,5 +1,5 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
-const { execSync, exec } = require('child_process');
+const { execSync, exec, execFileSync } = require('child_process');
 const { promisify } = require('util');
 const crypto = require('crypto');
 const path = require('path');
@@ -15,7 +15,7 @@ const { initializeDatabase, ReviewRepository, RepoSettingsRepository } = require
 const { startServer } = require('./server');
 const { localReviewDiffs } = require('./routes/shared');
 const { getShaAbbrevLength } = require('./git/sha-abbrev');
-const { GIT_DIFF_FLAGS } = require('./git/diff-flags');
+const { GIT_DIFF_FLAGS, GIT_DIFF_FLAGS_ARRAY } = require('./git/diff-flags');
 const open = (...args) => process.env.PAIR_REVIEW_NO_OPEN ? Promise.resolve() : import('open').then(({ default: open }) => open(...args));
 
 // Design note: This module uses execSync for git commands despite async function signatures.
@@ -393,12 +393,23 @@ async function findMergeBase(repoPath, baseBranch) {
  * Generate diff output for untracked files using git diff --no-index.
  * @param {string} repoPath - Path to the git repository
  * @param {Array} untrackedFiles - Array from getUntrackedFiles()
- * @param {string} wFlag - Whitespace flag (e.g. ' -w' or '')
- * @param {string} [contextFlag=''] - Unified context flag (e.g. ' --unified=3')
- * @param {string} [extraArgsStr=''] - Additional git diff flags (e.g. ' --patience')
+ * @param {Object} [options]
+ * @param {boolean} [options.hideWhitespace=false] - Whether to pass -w
+ * @param {number} [options.contextLines=25] - Number of unified context lines
+ * @param {string[]} [options.extraArgs=[]] - Additional git diff flags
  * @returns {string} Combined diff text for untracked files
  */
-function generateUntrackedDiffs(repoPath, untrackedFiles, wFlag, contextFlag = '', extraArgsStr = '') {
+function generateUntrackedDiffs(repoPath, untrackedFiles, options = {}) {
+  const diffArgs = [
+    'diff',
+    '--no-index',
+    ...GIT_DIFF_FLAGS_ARRAY,
+    `--unified=${options.contextLines ?? 25}`,
+    ...(options.extraArgs || []),
+    ...(options.hideWhitespace ? ['-w'] : []),
+    '--',
+    '/dev/null'
+  ];
   let diff = '';
   for (const untracked of untrackedFiles) {
     if (!untracked.skipped) {
@@ -406,16 +417,21 @@ function generateUntrackedDiffs(repoPath, untrackedFiles, wFlag, contextFlag = '
         const filePath = path.join(repoPath, untracked.file);
         let fileDiff;
         try {
-          fileDiff = execSync(`git diff --no-index ${GIT_DIFF_FLAGS}${contextFlag}${extraArgsStr}${wFlag} -- /dev/null "${filePath}"`, {
+          fileDiff = execFileSync('git', [...diffArgs, filePath], {
             cwd: repoPath,
             encoding: 'utf8',
             stdio: ['pipe', 'pipe', 'pipe'],
             maxBuffer: 10 * 1024 * 1024
           });
         } catch (diffError) {
+          const diffStdout = typeof diffError?.stdout === 'string'
+            ? diffError.stdout
+            : Buffer.isBuffer(diffError?.stdout)
+              ? diffError.stdout.toString('utf8')
+              : null;
           if (diffError && typeof diffError === 'object' &&
-              diffError.status === GIT_DIFF_HAS_DIFFERENCES && typeof diffError.stdout === 'string') {
-            fileDiff = diffError.stdout;
+              diffError.status === GIT_DIFF_HAS_DIFFERENCES && diffStdout !== null) {
+            fileDiff = diffStdout;
           } else {
             throw diffError;
           }
@@ -552,7 +568,7 @@ async function generateScopedDiff(repoPath, scopeStart, scopeEnd, baseBranch, op
     const untrackedFiles = await getUntrackedFiles(repoPath);
     stats.untrackedFiles = untrackedFiles.length;
 
-    const untrackedDiff = generateUntrackedDiffs(repoPath, untrackedFiles, wFlag, contextFlag, extraArgsStr);
+    const untrackedDiff = generateUntrackedDiffs(repoPath, untrackedFiles, options);
     if (untrackedDiff) {
       if (diff) diff += '\n';
       diff += untrackedDiff;

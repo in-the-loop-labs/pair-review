@@ -395,6 +395,48 @@ describe('PR Management Endpoints', () => {
       expect(response.body.stats.deletions).toBe(5);
     });
 
+    it('should recover full long file paths from diff headers when cached changed_files are abbreviated', async () => {
+      const longPath = 'areas/internal-services/meteorite/ui/app/frontend/src/routes/repos/$owner/$repo/pulls/$number/route.tsx';
+      const prData = JSON.stringify({
+        state: 'open',
+        diff: [
+          `diff --git a/${longPath} b/${longPath}`,
+          'index 1111111..2222222 100644',
+          `--- a/${longPath}`,
+          `+++ b/${longPath}`,
+          '@@ -1 +1,2 @@',
+          ' export const Route = {};',
+          '+Route.component = View;',
+          '+Route.loader = loader;'
+        ].join('\n'),
+        changed_files: [
+          { file: 'areas/internal-services/.../$number/route.tsx', insertions: 2, deletions: 0, changes: 2 }
+        ],
+        additions: 2,
+        deletions: 0,
+        html_url: 'https://github.com/owner/repo/pull/1',
+        base_sha: 'abc123',
+        head_sha: 'def456',
+        node_id: 'PR_node123'
+      });
+
+      await run(db, `
+        INSERT INTO pr_metadata (pr_number, repository, title, description, author, base_branch, head_branch, pr_data)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `, [1, 'owner/repo', 'Test PR', 'Desc', 'testuser', 'main', 'feature', prData]);
+      await insertTestWorktree(db, 1, 'owner/repo');
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/diff');
+
+      expect(response.status).toBe(200);
+      expect(response.body.changed_files).toEqual([
+        expect.objectContaining({ file: longPath, insertions: 2, deletions: 0, changes: 2 })
+      ]);
+      expect(response.body.changed_files).toHaveLength(1);
+      expect(response.body.stats.changed_files).toBe(1);
+    });
+
   });
 
   describe('GET /api/prs', () => {

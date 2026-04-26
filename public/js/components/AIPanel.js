@@ -965,20 +965,9 @@ class AIPanel {
     expandFileIfCollapsed(file) {
         if (!file) return false;
 
-        // Find the file wrapper - try exact match first, then partial match
-        let fileWrapper = document.querySelector(`[data-file-name="${file}"]`);
-
-        // Fallback: partial path match
-        if (!fileWrapper) {
-            const allWrappers = document.querySelectorAll('.d2h-file-wrapper');
-            for (const wrapper of allWrappers) {
-                const wrapperFile = wrapper.dataset.fileName;
-                if (wrapperFile && (wrapperFile.includes(file) || file.includes(wrapperFile))) {
-                    fileWrapper = wrapper;
-                    break;
-                }
-            }
-        }
+        const fileWrapper = window.prManager?.findFileElement
+            ? window.prManager.findFileElement(file)
+            : window.DiffRenderer?.findFileElement?.(file);
 
         if (!fileWrapper) return false;
 
