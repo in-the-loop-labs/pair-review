@@ -3362,3 +3362,99 @@ describe('Migration 42 - COLLATE NOCASE auto-merge', () => {
     expect(rows[0].default_provider).toBe('second-inserted');
   });
 });
+
+// ============================================================================
+// Migration 47 Tests: hunk_summaries table creation
+// ============================================================================
+
+describe('Migration 47 - hunk_summaries table', () => {
+  let db;
+
+  // Create a DB at version 46 with the parent reviews table needed for FK
+  function createPreMigration47Database() {
+    const Database = require('better-sqlite3');
+    const testDb = new Database(':memory:');
+    testDb.pragma('journal_mode = WAL');
+    testDb.pragma('foreign_keys = ON');
+
+    // Parent table for the FOREIGN KEY (review_id) REFERENCES reviews(id)
+    testDb.exec(`
+      CREATE TABLE IF NOT EXISTS reviews (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pr_number INTEGER,
+        repository TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'draft'
+      )
+    `);
+
+    testDb.pragma('user_version = 46');
+    return testDb;
+  }
+
+  function tableExistsHelper(testDb, name) {
+    const row = testDb.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`).get(name);
+    return !!row;
+  }
+
+  function indexExists(testDb, name) {
+    const row = testDb.prepare(`SELECT name FROM sqlite_master WHERE type='index' AND name=?`).get(name);
+    return !!row;
+  }
+
+  afterEach(() => {
+    if (db) {
+      db.close();
+      db = null;
+    }
+  });
+
+  it('creates the hunk_summaries table and lookup index', () => {
+    db = createPreMigration47Database();
+    expect(tableExistsHelper(db, 'hunk_summaries')).toBe(false);
+
+    MIGRATIONS[47](db);
+
+    expect(tableExistsHelper(db, 'hunk_summaries')).toBe(true);
+    expect(indexExists(db, 'idx_hunk_summaries_review')).toBe(true);
+
+    // Verify the table accepts the expected columns
+    const columns = db.prepare('PRAGMA table_info(hunk_summaries)').all().map(c => c.name);
+    expect(columns).toEqual(expect.arrayContaining([
+      'id', 'review_id', 'file_path', 'content_hash',
+      'summary_text', 'trivial_reason', 'provider', 'model', 'created_at',
+    ]));
+  });
+
+  it('enforces UNIQUE (review_id, content_hash)', () => {
+    db = createPreMigration47Database();
+    MIGRATIONS[47](db);
+
+    db.prepare(`INSERT INTO reviews (id, pr_number, repository) VALUES (1, 1, 'owner/repo')`).run();
+    db.prepare(`INSERT INTO hunk_summaries (review_id, file_path, content_hash) VALUES (1, 'a.js', 'h1')`).run();
+
+    expect(() => {
+      db.prepare(`INSERT INTO hunk_summaries (review_id, file_path, content_hash) VALUES (1, 'a.js', 'h1')`).run();
+    }).toThrow(/UNIQUE/i);
+  });
+
+  it('is idempotent — running twice does not throw or duplicate the index', () => {
+    db = createPreMigration47Database();
+
+    MIGRATIONS[47](db);
+    expect(tableExistsHelper(db, 'hunk_summaries')).toBe(true);
+
+    // Second run must not throw
+    expect(() => MIGRATIONS[47](db)).not.toThrow();
+
+    expect(tableExistsHelper(db, 'hunk_summaries')).toBe(true);
+    const indexRows = db.prepare(
+      `SELECT name FROM sqlite_master WHERE type='index' AND name='idx_hunk_summaries_review'`
+    ).all();
+    expect(indexRows).toHaveLength(1);
+  });
+
+  it('CURRENT_SCHEMA_VERSION reaches 47 via runVersionedMigrations', () => {
+    const { CURRENT_SCHEMA_VERSION } = require('../../src/database');
+    expect(CURRENT_SCHEMA_VERSION).toBeGreaterThanOrEqual(47);
+  });
+});

@@ -238,6 +238,22 @@ const SCHEMA_SQL = {
     )
   `,
 
+  hunk_summaries: `
+    CREATE TABLE IF NOT EXISTS hunk_summaries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      review_id INTEGER NOT NULL,
+      file_path TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      summary_text TEXT,
+      trivial_reason TEXT,
+      provider TEXT,
+      model TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE,
+      UNIQUE (review_id, content_hash)
+    )
+  `,
+
   github_pr_cache: `
     CREATE TABLE IF NOT EXISTS github_pr_cache (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -335,6 +351,8 @@ const INDEX_SQL = [
   'CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id)',
   // Context files indexes
   'CREATE INDEX IF NOT EXISTS idx_context_files_review ON context_files(review_id)',
+  // Hunk summaries indexes
+  'CREATE INDEX IF NOT EXISTS idx_hunk_summaries_review ON hunk_summaries(review_id)',
   // GitHub PR cache indexes
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_github_pr_cache_unique ON github_pr_cache(collection, owner, repo, number)',
   // Worktree pool indexes
