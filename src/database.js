@@ -282,6 +282,7 @@ const SCHEMA_SQL = {
       model TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE,
+      CHECK (summary_text IS NOT NULL OR trivial_reason IS NOT NULL),
       UNIQUE (review_id, content_hash)
     )
   `,
@@ -2113,6 +2114,7 @@ const MIGRATIONS = {
           model TEXT,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
           FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE,
+          CHECK (summary_text IS NOT NULL OR trivial_reason IS NOT NULL),
           UNIQUE (review_id, content_hash)
         )
       `);
@@ -5664,11 +5666,16 @@ class HunkSummaryRepository {
           summary_text = excluded.summary_text,
           trivial_reason = excluded.trivial_reason,
           provider = excluded.provider,
-          model = excluded.model,
-          created_at = CURRENT_TIMESTAMP
+          model = excluded.model
       `);
       let count = 0;
       for (const row of rows) {
+        if (row.summary_text == null && row.trivial_reason == null) {
+          throw new Error(
+            `HunkSummaryRepository.upsertMany: row must set summary_text or trivial_reason ` +
+            `(review_id=${row.review_id}, content_hash=${row.content_hash})`
+          );
+        }
         stmt.run(
           row.review_id,
           row.file_path,

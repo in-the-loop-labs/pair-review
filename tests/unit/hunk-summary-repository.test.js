@@ -131,6 +131,82 @@ describe('HunkSummaryRepository', () => {
       expect(persisted[0].model).toBeNull();
     });
 
+    it('transitions a non-trivial row to trivial via upsert', async () => {
+      await repo.upsertMany([
+        {
+          review_id: reviewId,
+          file_path: 'src/a.js',
+          content_hash: 'abc',
+          summary_text: 'Adds X',
+          trivial_reason: null,
+          provider: 'claude',
+          model: 'opus',
+        },
+      ]);
+
+      await repo.upsertMany([
+        {
+          review_id: reviewId,
+          file_path: 'src/a.js',
+          content_hash: 'abc',
+          summary_text: null,
+          trivial_reason: 'whitespace',
+          provider: null,
+          model: null,
+        },
+      ]);
+
+      const results = await repo.getByHashes(reviewId, ['abc']);
+      expect(results).toHaveLength(1);
+      expect(results[0].summary_text).toBeNull();
+      expect(results[0].trivial_reason).toBe('whitespace');
+    });
+
+    it('transitions a trivial row to non-trivial via upsert', async () => {
+      await repo.upsertMany([
+        {
+          review_id: reviewId,
+          file_path: 'src/a.js',
+          content_hash: 'def',
+          summary_text: null,
+          trivial_reason: 'tiny',
+          provider: null,
+          model: null,
+        },
+      ]);
+
+      await repo.upsertMany([
+        {
+          review_id: reviewId,
+          file_path: 'src/a.js',
+          content_hash: 'def',
+          summary_text: 'Adds Y',
+          trivial_reason: null,
+          provider: 'claude',
+          model: 'haiku',
+        },
+      ]);
+
+      const results = await repo.getByHashes(reviewId, ['def']);
+      expect(results).toHaveLength(1);
+      expect(results[0].summary_text).toBe('Adds Y');
+      expect(results[0].trivial_reason).toBeNull();
+    });
+
+    it('rejects rows missing both summary_text and trivial_reason', async () => {
+      await expect(
+        repo.upsertMany([
+          {
+            review_id: reviewId,
+            file_path: 'src/a.js',
+            content_hash: 'bad',
+            summary_text: null,
+            trivial_reason: null,
+          },
+        ])
+      ).rejects.toThrow(/summary_text or trivial_reason/);
+    });
+
     it('allows the same content_hash across different reviews', async () => {
       await repo.upsertMany([
         {
