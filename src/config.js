@@ -23,6 +23,10 @@ const DEFAULT_CONFIG = {
   theme: "light",
   default_provider: "claude",  // AI provider: 'claude', 'gemini', 'codex', 'copilot', 'opencode', 'cursor-agent', 'pi'
   default_model: "opus",       // Model within the provider (e.g., 'opus' for Claude, 'gemini-2.5-pro' for Gemini)
+  summaries_enabled: false,    // When true, generates inline natural-language summaries of changed hunks via background_provider
+  tours_enabled: false,        // When true, generates a narrative tour of the review (requires summaries_enabled)
+  background_provider: "",     // Provider for background AI tasks (summaries, tours). Empty = falls back to default_provider
+  background_model: "",        // Model for background tasks. Empty = uses provider's fast-tier model, then default_model
   worktree_retention_days: 7,
   review_retention_days: 21,
   dev_mode: false,  // When true, disables static file caching for development
@@ -119,6 +123,33 @@ function getDefaultProvider(config) {
  */
 function getDefaultModel(config) {
   return getConfigValue(config, 'default_model', 'model') || DEFAULT_CONFIG.default_model;
+}
+
+/**
+ * Gets the background provider for summary/tour generation
+ * Falls back to default_provider when background_provider is not set
+ * @param {Object} config - Configuration object
+ * @returns {string} - Provider name
+ */
+function getBackgroundProvider(config) {
+  return getConfigValue(config, 'background_provider') || getDefaultProvider(config);
+}
+
+/**
+ * Gets the background model for summary/tour generation
+ * Resolution order: background_model → providerClass fast-tier → default_model
+ * @param {Object} config - Configuration object
+ * @param {Function} [providerClass] - Optional provider class with static getModels()
+ * @returns {string} - Model name
+ */
+function getBackgroundModel(config, providerClass = null) {
+  const explicit = getConfigValue(config, 'background_model');
+  if (explicit) return explicit;
+  if (providerClass && typeof providerClass.getModels === 'function') {
+    const fast = providerClass.getModels().find(m => m.tier === 'fast');
+    if (fast) return fast.id;
+  }
+  return getDefaultModel(config);
 }
 
 /**
@@ -763,6 +794,8 @@ module.exports = {
   getGitHubToken,
   getDefaultProvider,
   getDefaultModel,
+  getBackgroundProvider,
+  getBackgroundModel,
   isRunningViaNpx,
   showWelcomeMessage,
   expandPath,

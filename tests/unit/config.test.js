@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const childProcess = require('child_process');
-const { deepMerge, getGitHubToken, expandPath, resolveDbName, warnIfDevModeWithoutDbName, loadConfig, shouldSkipUpdateNotifier, _resetTokenCache, getRepoConfig, getRepoPath, getRepoCheckoutScript, getRepoWorktreeDirectory, getRepoWorktreeNameTemplate, getRepoCheckoutTimeout, resolveRepoOptions, getRepoResetScript, getRepoSkipBulkFetch, getRepoPoolSize, getRepoPoolFetchInterval, resolvePoolConfig, getWorktreeDisplayName, getConfigDir, getRepoLoadSkills, resolveLoadSkills, buildCouncilProviderOverrides } = require('../../src/config');
+const { deepMerge, getGitHubToken, expandPath, resolveDbName, warnIfDevModeWithoutDbName, loadConfig, shouldSkipUpdateNotifier, _resetTokenCache, getRepoConfig, getRepoPath, getRepoCheckoutScript, getRepoWorktreeDirectory, getRepoWorktreeNameTemplate, getRepoCheckoutTimeout, resolveRepoOptions, getRepoResetScript, getRepoSkipBulkFetch, getRepoPoolSize, getRepoPoolFetchInterval, resolvePoolConfig, getWorktreeDisplayName, getConfigDir, getRepoLoadSkills, resolveLoadSkills, buildCouncilProviderOverrides, getBackgroundProvider, getBackgroundModel } = require('../../src/config');
 
 describe('config.js', () => {
   describe('getGitHubToken', () => {
@@ -1954,6 +1954,69 @@ describe('config.js', () => {
       expect(providerOverrides).toEqual({ load_skills: true });
       // Tier 1 (DB) takes precedence over tier 3 (provider)
       expect(providerOverridesMap.pi).toEqual({ load_skills: true });
+    });
+  });
+
+  describe('getBackgroundProvider', () => {
+    it('returns background_provider when set', () => {
+      const config = { background_provider: 'gemini', default_provider: 'claude' };
+      expect(getBackgroundProvider(config)).toBe('gemini');
+    });
+
+    it('falls back to default_provider when background_provider is empty string', () => {
+      const config = { background_provider: '', default_provider: 'claude' };
+      expect(getBackgroundProvider(config)).toBe('claude');
+    });
+
+    it('falls back to default_provider when background_provider is missing', () => {
+      const config = { default_provider: 'codex' };
+      expect(getBackgroundProvider(config)).toBe('codex');
+    });
+
+    it('falls back to DEFAULT_CONFIG.default_provider when neither is set', () => {
+      const config = {};
+      expect(getBackgroundProvider(config)).toBe('claude');
+    });
+  });
+
+  describe('getBackgroundModel', () => {
+    it('returns background_model when set', () => {
+      const config = { background_model: 'haiku', default_model: 'opus' };
+      expect(getBackgroundModel(config)).toBe('haiku');
+    });
+
+    it('uses fast-tier model from providerClass when background_model is empty', () => {
+      const config = { background_model: '', default_model: 'opus' };
+      const FakeProvider = { getModels: () => [
+        { id: 'big', tier: 'thorough' },
+        { id: 'small', tier: 'fast' }
+      ]};
+      expect(getBackgroundModel(config, FakeProvider)).toBe('small');
+    });
+
+    it('falls back to default_model when no providerClass given', () => {
+      const config = { background_model: '', default_model: 'opus' };
+      expect(getBackgroundModel(config)).toBe('opus');
+    });
+
+    it('falls back to default_model when providerClass has no fast tier', () => {
+      const config = { default_model: 'opus' };
+      const FakeProvider = { getModels: () => [
+        { id: 'big', tier: 'thorough' },
+        { id: 'medium', tier: 'balanced' }
+      ]};
+      expect(getBackgroundModel(config, FakeProvider)).toBe('opus');
+    });
+
+    it('ignores providerClass when background_model is explicitly set', () => {
+      const config = { background_model: 'explicit', default_model: 'opus' };
+      const FakeProvider = { getModels: () => [{ id: 'small', tier: 'fast' }] };
+      expect(getBackgroundModel(config, FakeProvider)).toBe('explicit');
+    });
+
+    it('falls back to DEFAULT_CONFIG.default_model when neither is set', () => {
+      const config = {};
+      expect(getBackgroundModel(config)).toBe('opus');
     });
   });
 });
