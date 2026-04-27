@@ -250,6 +250,7 @@ const SCHEMA_SQL = {
       model TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE,
+      CHECK (summary_text IS NOT NULL OR trivial_reason IS NOT NULL),
       UNIQUE (review_id, content_hash)
     )
   `,

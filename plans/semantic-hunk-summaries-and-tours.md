@@ -18,7 +18,7 @@ Note: PR-mode route surface for review/comment work is `src/routes/pr.js` plus t
 Each phase is independently testable, ships independently, and leaves the app in a working state.
 
 ### Phase 1 — Config + background-provider plumbing
-- Extend `DEFAULT_CONFIG` in `src/config.js` with `background_provider`, `background_model`, `background_concurrency` (resolution rules below).
+- Extend `DEFAULT_CONFIG` in `src/config.js` with `background_provider` and `background_model` (resolution rules below).
 - Add `getBackgroundProvider(config)` / `getBackgroundModel(config)` helpers next to `getDefaultProvider`/`getDefaultModel`.
 - Update `config.example.json` to advertise the new keys.
 - Unit tests for resolution + fallback behavior in `tests/unit/config.test.js`.
@@ -51,7 +51,7 @@ Each phase is independently testable, ships independently, and leaves the app in
   - Persists results via `HunkSummaryRepository.upsertMany`.
   - As each file completes, calls `broadcastReviewEvent(reviewId, { type: 'review:hunk_summaries_ready', filePath, summaries: [...] })`.
 - New in-process queue in `src/ai/background-queue.js`:
-  - Singleton with bounded concurrency (default 2, configurable via `config.background_concurrency`).
+  - Singleton with bounded concurrency — hardcoded constant `BACKGROUND_QUEUE_CONCURRENCY = 2` (see "Resolved Decisions"; not configurable in v1).
   - `enqueue(reviewId, jobType, fn)` keyed so the same `(reviewId, jobType)` is deduped.
   - On job complete, fires `broadcastReviewEvent(reviewId, { type: 'review:background_job_finished', jobType })`.
 - Trigger sites (parity required across all four):

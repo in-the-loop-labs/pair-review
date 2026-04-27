@@ -3059,10 +3059,10 @@ describe('Migration 45 - hunk_summaries table', () => {
     MIGRATIONS[45](db);
 
     db.prepare(`INSERT INTO reviews (id, pr_number, repository) VALUES (1, 1, 'owner/repo')`).run();
-    db.prepare(`INSERT INTO hunk_summaries (review_id, file_path, content_hash) VALUES (1, 'a.js', 'h1')`).run();
+    db.prepare(`INSERT INTO hunk_summaries (review_id, file_path, content_hash, summary_text) VALUES (1, 'a.js', 'h1', 's1')`).run();
 
     expect(() => {
-      db.prepare(`INSERT INTO hunk_summaries (review_id, file_path, content_hash) VALUES (1, 'a.js', 'h1')`).run();
+      db.prepare(`INSERT INTO hunk_summaries (review_id, file_path, content_hash, summary_text) VALUES (1, 'a.js', 'h1', 's2')`).run();
     }).toThrow(/UNIQUE/i);
   });
 
