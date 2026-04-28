@@ -36,6 +36,7 @@ const { getDefaultBranch, tryGraphiteState } = require('../git/base-branch');
 const { CommentRepository } = require('../database');
 const { runExecutableAnalysis, getChangedFiles } = require('./executable-analysis');
 const { rejectUrlLikeLocalReviewPath } = require('../utils/local-path-input');
+const summaryGenerator = require('../ai/summary-generator');
 const {
   activeAnalyses,
   localReviewDiffs,
@@ -519,6 +520,16 @@ router.post('/api/local/start', async (req, res) => {
       }
     });
 
+    (async () => {
+      await summaryGenerator.kickOffSummaryJob({
+        db,
+        config,
+        reviewId: sessionId,
+        diffText: diff,
+        worktreePath: repoPath
+      });
+    })().catch((err) => logger.warn(`Hunk summary job failed for review ${sessionId}: ${err.message}`));
+
   } catch (error) {
     logger.error(`Error starting local review: ${error.message}`);
     res.status(500).json({
@@ -718,6 +729,28 @@ router.get('/api/local/:reviewId', async (req, res) => {
         fireHooks('review.loaded', payload, hookConfig);
       }).catch(err => { logger.warn(`Review hook failed: ${err.message}`); });
     }
+
+    // Background: re-trigger hunk summary generation on review load.
+    // Self-invoked so any rejection here cannot reach the outer try/catch
+    // and call res.status(500) on an already-flushed response.
+    (async () => {
+      let summaryDiffText = getLocalReviewDiff(reviewId)?.diff;
+      if (!summaryDiffText) {
+        const persistedDiff = await reviewRepo.getLocalDiff(reviewId);
+        summaryDiffText = persistedDiff?.diff;
+      }
+      if (!summaryDiffText) {
+        logger.debug(`Skipping hunk summary kickoff for review ${reviewId}: no diff available`);
+        return;
+      }
+      await summaryGenerator.kickOffSummaryJob({
+        db,
+        config: localConfig,
+        reviewId,
+        diffText: summaryDiffText,
+        worktreePath: review.local_path
+      });
+    })().catch((err) => logger.warn(`Hunk summary kickoff failed for review ${reviewId}: ${err.message}`));
 
   } catch (error) {
     logger.error('Error fetching local review:', error.stack || error.message);

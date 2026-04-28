@@ -5625,6 +5625,21 @@ class HunkSummaryRepository {
   }
 
   /**
+   * Get all hunk summary rows for a review scoped to a single file path,
+   * ordered by id.
+   * @param {number} reviewId - Review ID
+   * @param {string} filePath - File path to scope to
+   * @returns {Promise<Array<Object>>} Array of hunk summary rows
+   */
+  async getByReviewAndFile(reviewId, filePath) {
+    return query(
+      this.db,
+      'SELECT * FROM hunk_summaries WHERE review_id = ? AND file_path = ? ORDER BY id',
+      [reviewId, filePath]
+    );
+  }
+
+  /**
    * Get hunk summary rows for a specific set of content hashes within a review.
    * Used to identify which hashes already have persisted summaries and which
    * still need to be enqueued.

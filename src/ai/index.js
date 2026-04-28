@@ -13,6 +13,7 @@ const {
   registerProvider,
   getProviderClass,
   getRegisteredProviderIds,
+  resolveNonExecutableProviderId,
   getAllProvidersInfo,
   createProvider,
   testProviderAvailability,
@@ -60,6 +61,7 @@ module.exports = {
   registerProvider,
   getProviderClass,
   getRegisteredProviderIds,
+  resolveNonExecutableProviderId,
   getAllProvidersInfo,
 
   // Factory

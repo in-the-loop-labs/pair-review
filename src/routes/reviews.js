@@ -8,7 +8,7 @@
  */
 
 const express = require('express');
-const { query, queryOne, run, withTransaction, CommentRepository, ReviewRepository, AnalysisRunRepository } = require('../database');
+const { query, queryOne, run, withTransaction, CommentRepository, ReviewRepository, AnalysisRunRepository, HunkSummaryRepository } = require('../database');
 const { calculateStats, getStatsQuery } = require('../utils/stats-calculator');
 const { activeAnalyses, reviewToAnalysisId } = require('./shared');
 const logger = require('../utils/logger');
@@ -22,36 +22,9 @@ const { normalizeRepository } = require('../utils/paths');
 const { resolveFormat, formatAdoptedComment: formatComment } = require('../utils/comment-formatter');
 const { safeParseJson } = require('../utils/safe-parse-json');
 const { resolveOriginalFileContentSpecs } = require('../utils/diff-file-content');
+const validateReviewId = require('./middleware/validate-review-id');
 
 const router = express.Router();
-
-/**
- * Middleware: validate that :reviewId exists in the reviews table.
- * Attaches the review record to req.review for downstream handlers.
- */
-async function validateReviewId(req, res, next) {
-  try {
-    const reviewId = parseInt(req.params.reviewId, 10);
-
-    if (isNaN(reviewId) || reviewId <= 0) {
-      return res.status(400).json({ error: 'Invalid review ID' });
-    }
-
-    const db = req.app.get('db');
-    const reviewRepo = new ReviewRepository(db);
-    const review = await reviewRepo.getReview(reviewId);
-
-    if (!review) {
-      return res.status(404).json({ error: `Review #${reviewId} not found` });
-    }
-
-    req.review = review;
-    req.reviewId = reviewId;
-    next();
-  } catch (error) {
-    next(error);
-  }
-}
 
 /**
  * GET /api/reviews/:reviewId/comments
@@ -1067,6 +1040,34 @@ router.get('/api/reviews/:reviewId/file-content/:fileName(*)', validateReviewId,
   } catch (error) {
     logger.error('Error retrieving file content:', error);
     res.status(500).json({ error: 'Internal server error while retrieving file content' });
+  }
+});
+
+// ==========================================================================
+// Hunk Summaries Route
+// ==========================================================================
+
+/**
+ * GET /api/reviews/:reviewId/hunk-summaries
+ * Get all hunk summaries for a review (PR or Local).
+ * Returns trivial-marker rows alongside generated summaries; the frontend filters.
+ */
+router.get('/api/reviews/:reviewId/hunk-summaries', validateReviewId, async (req, res) => {
+  try {
+    const db = req.app.get('db');
+    const repo = new HunkSummaryRepository(db);
+    const rows = await repo.getByReview(req.reviewId);
+    res.json({
+      summaries: rows.map((row) => ({
+        file_path: row.file_path,
+        content_hash: row.content_hash,
+        summary_text: row.summary_text,
+        trivial_reason: row.trivial_reason
+      }))
+    });
+  } catch (error) {
+    logger.error('Error fetching hunk summaries:', error);
+    res.status(500).json({ error: 'Failed to fetch hunk summaries' });
   }
 });
 

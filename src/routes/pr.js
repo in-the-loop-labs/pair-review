@@ -34,6 +34,7 @@ const { buildReviewStartedPayload, buildReviewLoadedPayload, buildAnalysisStarte
 const simpleGit = require('simple-git');
 const { GIT_DIFF_FLAGS_ARRAY, GIT_DIFF_SUMMARY_FLAGS_ARRAY } = require('../git/diff-flags');
 const { walkPRStack, DEFAULT_TRUNK_BRANCHES } = require('../github/stack-walker');
+const summaryGenerator = require('../ai/summary-generator');
 const {
   activeAnalyses,
   reviewToAnalysisId,
@@ -313,6 +314,21 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
         fireHooks(hookEvent, payload, config);
       }).catch(err => { logger.warn(`Review hook failed: ${err.message}`); });
     }
+
+    (async () => {
+      await summaryGenerator.kickOffSummaryJob({
+        db,
+        config,
+        reviewId: review.id,
+        diffText: extendedData.diff,
+        worktreePath: extendedData.worktree_path,
+        reviewContext: {
+          prTitle: prMetadata.title,
+          prDescription: prMetadata.description,
+          changedFiles: changedFiles.map((f) => (typeof f === 'string' ? f : (f.filename || f.file || f.path))).filter(Boolean)
+        }
+      });
+    })().catch((err) => logger.warn(`Hunk summary job failed for review ${review.id}: ${err.message}`));
 
   } catch (error) {
     console.error('Error fetching PR data:', error);

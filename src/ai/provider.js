@@ -605,6 +605,25 @@ function getRegisteredProviderIds() {
 }
 
 /**
+ * Resolve a non-executable provider id, preferring `preferredId` if it is
+ * non-executable. Falls back to the first registered non-executable provider.
+ * Returns null if none are available.
+ * @param {string} [preferredId] - Preferred provider id
+ * @returns {string|null}
+ */
+function resolveNonExecutableProviderId(preferredId) {
+  if (preferredId) {
+    const cls = getProviderClass(preferredId);
+    if (cls && !cls.isExecutable) return preferredId;
+  }
+  for (const pid of getRegisteredProviderIds()) {
+    const cls = getProviderClass(pid);
+    if (cls && !cls.isExecutable) return pid;
+  }
+  return null;
+}
+
+/**
  * Merge config-override models with a provider's built-in models.
  * Config models with matching IDs replace built-ins; config models with new IDs
  * are appended. If no config models exist, returns built-ins unchanged.
@@ -768,6 +787,7 @@ module.exports = {
   registerProvider,
   getProviderClass,
   getRegisteredProviderIds,
+  resolveNonExecutableProviderId,
   getAllProvidersInfo,
   createProvider,
   testProviderAvailability,

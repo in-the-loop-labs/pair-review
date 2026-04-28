@@ -15,6 +15,7 @@ const { STOPS, scopeIncludes, includesBranch, DEFAULT_SCOPE, scopeLabel, reviewS
 const { initializeDatabase, ReviewRepository, RepoSettingsRepository } = require('./database');
 const { startServer } = require('./server');
 const { localReviewDiffs } = require('./routes/shared');
+const summaryGenerator = require('./ai/summary-generator');
 const { getShaAbbrevLength } = require('./git/sha-abbrev');
 const { GIT_DIFF_FLAGS, GIT_DIFF_FLAGS_ARRAY } = require('./git/diff-flags');
 const open = (...args) => process.env.PAIR_REVIEW_NO_OPEN ? Promise.resolve() : import('open').then(({ default: open }) => open(...args));
@@ -898,6 +899,14 @@ async function handleLocalReview(targetPath, flags = {}) {
     }
     console.log(`\nOpening browser to: ${url}`);
     await open(url);
+
+    summaryGenerator.kickOffSummaryJob({
+      db,
+      config,
+      reviewId: sessionId,
+      diffText: diff,
+      worktreePath: repoPath
+    })?.catch((err) => logger.warn(`Hunk summary job failed for review ${sessionId}: ${err.message}`));
 
     console.log(`\nLocal review session started.`);
     console.log(`Repository: ${repoPath}`);
