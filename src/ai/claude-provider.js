@@ -410,13 +410,23 @@ class ClaudeProvider extends AIProvider {
         const parsed = this.parseClaudeResponse(stdout, level, levelPrefix);
         if (parsed.success) {
           logger.success(`${levelPrefix} Successfully parsed JSON response`);
-          // Dump the parsed data for debugging
-          const dataPreview = JSON.stringify(parsed.data, null, 2);
-          logger.debug(`${levelPrefix} [parsed_data] ${dataPreview.substring(0, 3000)}${dataPreview.length > 3000 ? '...' : ''}`);
+          // Dump the parsed data for debugging.
+          // Skip for summary calls — they run per-file and the dump is per-call
+          // noise. The `[response]` line below already gives a useful one-liner.
+          const isSummaryCall = typeof levelPrefix === 'string' && levelPrefix.startsWith('[Summary');
+          if (!isSummaryCall) {
+            const dataPreview = JSON.stringify(parsed.data, null, 2);
+            logger.debug(`${levelPrefix} [parsed_data] ${dataPreview.substring(0, 3000)}${dataPreview.length > 3000 ? '...' : ''}`);
+          }
           // Log suggestion count if present
           if (parsed.data?.suggestions) {
             const count = Array.isArray(parsed.data.suggestions) ? parsed.data.suggestions.length : 0;
             logger.info(`${levelPrefix} [response] ${count} suggestions in parsed response`);
+          } else if (isSummaryCall && Array.isArray(parsed.data?.summaries)) {
+            const total = parsed.data.summaries.length;
+            const withText = parsed.data.summaries.filter((s) => s && typeof s.summary === 'string' && s.summary.length > 0).length;
+            const skipped = parsed.data.summaries.filter((s) => s && s.summary === null).length;
+            logger.info(`${levelPrefix} [response] ${total} summaries (${withText} with text, ${skipped} null)`);
           }
           settle(resolve, parsed.data);
         } else {
@@ -756,7 +766,7 @@ class ClaudeProvider extends AIProvider {
       if (textContent) {
         logger.debug(`${levelPrefix} Extracted ${textContent.length} chars of text content from JSONL`);
         // Try to extract JSON from the accumulated text content
-        const extracted = extractJSON(textContent, level);
+        const extracted = extractJSON(textContent, level, levelPrefix);
         if (extracted.success) {
           return extracted;
         }
@@ -774,7 +784,7 @@ class ClaudeProvider extends AIProvider {
 
     } catch (parseError) {
       // stdout might not be valid JSONL at all, try extracting JSON from it
-      const extracted = extractJSON(stdout, level);
+      const extracted = extractJSON(stdout, level, levelPrefix);
       if (extracted.success) {
         return extracted;
       }

@@ -430,7 +430,7 @@ function appendPiChunkToLineBuffer(state, chunk, levelPrefix) {
  */
 function finalizePiResponseParsing({ textContent, rawOutput, rawOutputTruncated = false }, level, levelPrefix) {
   if (textContent) {
-    const extracted = extractJSON(textContent, level);
+    const extracted = extractJSON(textContent, level, levelPrefix);
     if (extracted.success) {
       return extracted;
     }
@@ -447,7 +447,7 @@ function finalizePiResponseParsing({ textContent, rawOutput, rawOutputTruncated 
     };
   }
 
-  return extractJSON(rawOutput, level);
+  return extractJSON(rawOutput, level, levelPrefix);
 }
 
 class PiProvider extends AIProvider {
@@ -994,7 +994,7 @@ class PiProvider extends AIProvider {
 
     } catch (parseError) {
       // stdout might not be valid JSONL at all, try extracting JSON from it
-      const extracted = extractJSON(stdout, level);
+      const extracted = extractJSON(stdout, level, levelPrefix);
       if (extracted.success) {
         return extracted;
       }

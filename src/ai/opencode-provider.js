@@ -491,7 +491,7 @@ class OpenCodeProvider extends AIProvider {
 
       if (textContent) {
         // Try to extract JSON from the accumulated text content
-        const extracted = extractJSON(textContent, level);
+        const extracted = extractJSON(textContent, level, levelPrefix);
         if (extracted.success) {
           return extracted;
         }
@@ -503,12 +503,12 @@ class OpenCodeProvider extends AIProvider {
       }
 
       // No text content found, try extracting JSON directly from stdout
-      const extracted = extractJSON(stdout, level);
+      const extracted = extractJSON(stdout, level, levelPrefix);
       return extracted;
 
     } catch (parseError) {
       // stdout might not be valid JSONL at all, try extracting JSON from it
-      const extracted = extractJSON(stdout, level);
+      const extracted = extractJSON(stdout, level, levelPrefix);
       if (extracted.success) {
         return extracted;
       }

@@ -429,7 +429,7 @@ class GeminiProvider extends AIProvider {
         // The accumulated assistant text contains the AI's response
         // Try to extract JSON from it (the AI was asked to output JSON)
         logger.debug(`${levelPrefix} Extracted ${assistantText.length} chars of assistant message text from JSONL`);
-        const extracted = extractJSON(assistantText, level);
+        const extracted = extractJSON(assistantText, level, levelPrefix);
         if (extracted.success) {
           return extracted;
         }
@@ -441,12 +441,12 @@ class GeminiProvider extends AIProvider {
       }
 
       // No assistant message found, try extracting JSON directly from stdout
-      const extracted = extractJSON(stdout, level);
+      const extracted = extractJSON(stdout, level, levelPrefix);
       return extracted;
 
     } catch (parseError) {
       // stdout might not be valid JSONL at all, try extracting JSON from it
-      const extracted = extractJSON(stdout, level);
+      const extracted = extractJSON(stdout, level, levelPrefix);
       if (extracted.success) {
         return extracted;
       }

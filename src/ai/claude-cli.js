@@ -100,7 +100,7 @@ class ClaudeCLI {
         }
 
         // Extract JSON from the text response using robust extraction strategies
-        const extracted = extractJSON(stdout, level);
+        const extracted = extractJSON(stdout, level, levelPrefix);
         if (extracted.success) {
           logger.success(`${levelPrefix} Successfully parsed JSON response`);
           resolve(extracted.data);

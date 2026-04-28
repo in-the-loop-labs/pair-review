@@ -529,7 +529,7 @@ class CursorAgentProvider extends AIProvider {
       // Primary: try to extract JSON from accumulated assistant text
       if (assistantText) {
         logger.debug(`${levelPrefix} Extracted ${assistantText.length} chars of assistant text from JSONL`);
-        const extracted = extractJSON(assistantText, level);
+        const extracted = extractJSON(assistantText, level, levelPrefix);
         if (extracted.success) {
           return extracted;
         }
@@ -540,7 +540,7 @@ class CursorAgentProvider extends AIProvider {
       // Fallback: try extracting JSON from the result event's text
       if (resultText) {
         logger.debug(`${levelPrefix} Trying result text: ${resultText.length} chars`);
-        const extracted = extractJSON(resultText, level);
+        const extracted = extractJSON(resultText, level, levelPrefix);
         if (extracted.success) {
           return extracted;
         }
@@ -550,7 +550,7 @@ class CursorAgentProvider extends AIProvider {
 
       // Last resort: try extracting JSON directly from raw stdout
       if (!assistantText && !resultText) {
-        const extracted = extractJSON(stdout, level);
+        const extracted = extractJSON(stdout, level, levelPrefix);
         return extracted;
       }
 
@@ -560,7 +560,7 @@ class CursorAgentProvider extends AIProvider {
 
     } catch (parseError) {
       // stdout might not be valid JSONL at all, try extracting JSON from it
-      const extracted = extractJSON(stdout, level);
+      const extracted = extractJSON(stdout, level, levelPrefix);
       if (extracted.success) {
         return extracted;
       }
