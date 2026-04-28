@@ -23,6 +23,10 @@ const MAX_CHANGED_FILES_LISTED = 100;
  * @property {string} [prTitle] - Optional PR title or local-review name
  * @property {string} [prDescription] - Optional PR description
  * @property {string[]} [changedFiles] - Optional list of all changed-file paths in this review (light context)
+ * @property {string} [cwd] - Optional working directory the agent is running in.
+ *   When provided, the prompt invites bounded read-only file access; the path
+ *   itself is NOT embedded in the prompt. Used purely as a signal flag — when
+ *   omitted, the prompt does not promise read-only access at all.
  */
 
 /**
@@ -40,7 +44,7 @@ function hasText(value) {
  * @param {SummaryContext} context
  * @returns {string}
  */
-function buildHunkSummaryPrompt({ filePath, hunks, prTitle, prDescription, changedFiles } = {}) {
+function buildHunkSummaryPrompt({ filePath, hunks, prTitle, prDescription, changedFiles, cwd } = {}) {
   if (!hasText(filePath)) {
     throw new TypeError('filePath is required');
   }
@@ -54,21 +58,62 @@ function buildHunkSummaryPrompt({ filePath, hunks, prTitle, prDescription, chang
   const sections = [];
 
   sections.push(
-    'You are summarizing changed hunks from a code review. Use only the diff text provided. Do NOT modify files. Do NOT run write commands (rm, mv, git commit, etc.). Produce concise natural-language summaries.'
+    'You are summarizing changed hunks from a code review. Treat the diff text provided below as the primary source. Do NOT modify files. Do NOT run write commands (rm, mv, git commit, etc.). Produce concise natural-language summaries.'
+  );
+
+  if (hasText(cwd)) {
+    sections.push(
+      [
+        'You have read-only access to the current working directory. The diff is',
+        'your primary source. You MAY consult adjacent code ONLY when it materially',
+        'improves the description of WHAT changed:',
+        '- A symbol introduced/modified in the diff has callers or a definition',
+        '  elsewhere whose existence changes the summary (e.g. "extracts a helper',
+        '  now used by 4 sites" vs "adds a helper").',
+        '- The diff is locally ambiguous about what changed (e.g. a one-line',
+        '  signature change whose meaning depends on the function body not in',
+        '  the hunk).',
+        '',
+        'Budget per file: at most ~5 file reads, ~3 grep calls. Do not browse',
+        'broadly. Do not read tests, fixtures, or generated files unless directly',
+        'relevant. Do not modify any file.',
+        '',
+        'The summary still describes what the DIFF changes, not what the',
+        'surrounding code does. Context informs phrasing; it does not become',
+        'the subject.'
+      ].join('\n')
+    );
+  }
+
+  sections.push(
+    [
+      'Style:',
+      '- 1–3 sentences. Aim for one; use two only when a second sentence adds',
+      '  information the first cannot. Three is rare.',
+      '- Target ~200 characters; hard ceiling 400.',
+      '- State WHAT changed in the diff. Context informs phrasing; it does not',
+      '  become the subject. Do not speculate beyond what code you can see makes',
+      '  unambiguous.',
+      '- For mechanical changes (formatting, trivial rename), say so in one short',
+      '  sentence and stop.',
+      '- Lead with a verb (Adds, Removes, Renames, Refactors, Fixes, Moves,',
+      '  Inlines, Extracts).'
+    ].join('\n')
   );
 
   sections.push(
     [
-      'Style rules:',
-      '- Each summary <= 140 characters.',
-      '- Single sentence, present-tense imperative ("Adds...", "Removes...", "Renames...", "Refactors...", "Fixes...").',
-      '- Focus on WHAT changed (and WHY only if it is plainly visible). Do NOT speculate.',
-      '- If the change is mechanical (formatting-adjacent, trivial rename), say so plainly.'
+      'You MAY return summary: null for a hunk only when ALL of these hold:',
+      '- The change is purely mechanical (whitespace, import reorder, lint fix,',
+      '  trivial rename) AND',
+      '- A reader scanning the diff would learn nothing from a summary.',
+      '',
+      'Default is to summarize. When in doubt, write the summary.'
     ].join('\n')
   );
 
   if (hasText(prTitle) || hasText(prDescription)) {
-    const contextLines = ['Review context:'];
+    const contextLines = ["Author's stated intent (hint only — verify against the diff):"];
     if (hasText(prTitle)) {
       contextLines.push(`  Title: ${prTitle.trim()}`);
     }
@@ -76,6 +121,20 @@ function buildHunkSummaryPrompt({ filePath, hunks, prTitle, prDescription, chang
       contextLines.push(`  Description: ${prDescription.trim()}`);
     }
     sections.push(contextLines.join('\n'));
+
+    sections.push(
+      [
+        "The author's stated intent above is a HINT — useful for orientation and",
+        'vocabulary. It is NOT verified ground truth. The diff is ground truth.',
+        '- Use the description to orient your reading and to choose vocabulary that',
+        '  matches the project (e.g. domain terms).',
+        '- Do NOT repeat or paraphrase the description as the summary.',
+        '- If the diff and the description disagree, describe the diff. Do not',
+        '  paper over the disagreement, and do not editorialize about it — just',
+        '  state what the diff does.',
+        '- If the description is vague, templated, or empty, ignore it entirely.'
+      ].join('\n')
+    );
   }
 
   if (Array.isArray(changedFiles) && changedFiles.length > 0) {
@@ -123,12 +182,12 @@ function buildHunkSummaryPrompt({ filePath, hunks, prTitle, prDescription, chang
         'Return ONLY a JSON object with this shape:',
         '{ "summaries": [',
         '    { "index": 1, "summary": "Adds X to do Y." },',
-        '    { "index": 2, "summary": "Removes Z." }',
+        '    { "index": 2, "summary": null }',
         '] }',
         '',
         'Rules:',
         '- One entry per hunk above; index matches the [N] label.',
-        '- Each summary is <= 140 characters and a single sentence.',
+        '- `summary` is `string | null` (null only per the opt-out clause above).',
         '- Do not include any extra fields, explanation, or prose outside the JSON.'
       ].join('\n')
     );

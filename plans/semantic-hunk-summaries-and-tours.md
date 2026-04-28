@@ -7,7 +7,7 @@ Two new background-AI features hang off review load:
 1. **Semantic Hunk Summaries** — per-file batched LLM call producing one short natural-language description per non-trivial hunk, displayed inline as info-blue annotations.
 2. **Tours** — an ordered, narrative walkthrough of stops (file + hunk) generated *after* summaries are available, displayed as pale-yellow inline annotations + a sticky bottom tour bar.
 
-Both reuse the existing one-shot Provider machinery, both share a new `background_provider` / `background_model` config concept, both must work in PR mode (`/pr/:owner/:repo/:number`) and Local mode (`/local/:reviewId`), and both must trigger from BOTH the CLI startup path and the web UI route handler.
+Both reuse the existing one-shot Provider machinery, both share a new `summary_provider` / `summary_model` config concept, both must work in PR mode (`/pr/:owner/:repo/:number`) and Local mode (`/local/:reviewId`), and both must trigger from BOTH the CLI startup path and the web UI route handler.
 
 Note: PR-mode route surface for review/comment work is `src/routes/pr.js` plus the shared `src/routes/analyses.js` (there is no `src/routes/comments.js`). PR/Local parity in this plan therefore means: `src/routes/local.js` + `src/local-review.js` (Local CLI/web) and `src/routes/pr.js` + the GET review-load handler (PR web).
 
@@ -18,8 +18,8 @@ Note: PR-mode route surface for review/comment work is `src/routes/pr.js` plus t
 Each phase is independently testable, ships independently, and leaves the app in a working state.
 
 ### Phase 1 — Config + background-provider plumbing
-- Extend `DEFAULT_CONFIG` in `src/config.js` with `background_provider` and `background_model` (resolution rules below).
-- Add `getBackgroundProvider(config)` / `getBackgroundModel(config)` helpers next to `getDefaultProvider`/`getDefaultModel`.
+- Extend `DEFAULT_CONFIG` in `src/config.js` with `summary_provider` and `summary_model` (resolution rules below).
+- Add `getSummaryProvider(config)` / `getSummaryModel(config)` helpers next to `getDefaultProvider`/`getDefaultModel`.
 - Update `config.example.json` to advertise the new keys.
 - Unit tests for resolution + fallback behavior in `tests/unit/config.test.js`.
 - No behavior change yet beyond making the values available.
@@ -123,7 +123,7 @@ Each phase is independently testable, ships independently, and leaves the app in
 - `src/utils/diff-hunks.js` (only if existing helpers don't expose hunk-level slicing) — `parseHunks(diffText)`.
 
 ### Backend (modified)
-- `src/config.js` — add `background_provider`/`background_model`/`background_concurrency` to `DEFAULT_CONFIG`; export `getBackgroundProvider`, `getBackgroundModel`.
+- `src/config.js` — add `summary_provider`/`summary_model`/`background_concurrency` to `DEFAULT_CONFIG`; export `getSummaryProvider`, `getSummaryModel`.
 - `src/database.js` — bump `CURRENT_SCHEMA_VERSION` to 46; add `hunk_summaries` + `tours` to `SCHEMA_SQL`; add migrations 45 and 46; add indexes; add `HunkSummaryRepository` and `TourRepository`; export both.
 - `src/local-review.js` — after diff persistence in CLI start path, enqueue `summaries` job. Resolve background config via deps from caller; do NOT re-read config.
 - `src/routes/local.js` — same enqueue at end of `POST /api/local/start` and in `GET /api/local/:reviewId`.
@@ -174,16 +174,22 @@ Each phase is independently testable, ships independently, and leaves the app in
   [2] @@ ... @@
   <hunk content>
   ```
-  Plus PR title/description if available, plus the changed-files list as light context.
+  Plus the worktree path (`cwd`) as the FS-access invitation, the author's stated intent (PR title/description or local-review name) as a *hint only*, and the changed-files list as light context.
 - **Output JSON schema** (extracted via `extractJSON`):
   ```json
   { "summaries": [
-      { "index": 1, "summary": "<<= 140 chars>>" },
-      { "index": 2, "summary": "..." }
+      { "index": 1, "summary": "Adds X to do Y." },
+      { "index": 2, "summary": null }
   ] }
   ```
-- **Length constraint**: each `summary` ≤ 140 chars, single sentence, present-tense imperative ("Adds…", "Removes…", "Renames…", "Refactors…"). Truncate with ellipsis as a safety net.
-- **Guidance**: focus on the *what* and *why* visible in the change; do NOT speculate; if mechanical, say so plainly.
+  `summary` is `string | null`. Indexes match the `[N]` labels in the hunk block. No extra fields, no prose outside the JSON.
+- **Length**: 1–3 sentences, target ~200 characters, hard ceiling 400. Aim for one sentence; use a second only when it adds information the first cannot. No truncation in code — the prompt sets the budget and we trust the model.
+- **Style**: lead with a verb (Adds, Removes, Renames, Refactors, Fixes, Moves, Inlines, Extracts). For mechanical changes, say so in one short sentence and stop. Examples shown in the prompt are 3rd-person indicative ("Adds…"); the model follows the examples.
+- **Null summaries (model opt-out)**: the model MAY return `summary: null` when ALL of (a) the change is purely mechanical (whitespace, import reorder, lint fix, trivial rename) AND (b) a reader scanning the diff would learn nothing from a summary. The prompt explicitly says *"Default is to summarize. When in doubt, write the summary."* — load-bearing. Persistence: explicit nulls land as `trivial_reason: 'model_skipped'`; missing/invalid entries or top-level malformed responses land as `trivial_reason: 'model_malformed'`. Both prevent re-enqueue on reload; the distinct reasons are for observability (grep for provider quality issues).
+- **FS access invitation (when `cwd` is set)**: the prompt tells the agent it has read-only access to the working directory and MAY consult adjacent code ONLY when it materially improves the description of WHAT changed (e.g., a symbol's caller graph that turns "adds a helper" into "extracts a helper now used by 4 sites"). Tool-budget guidance is prompt-level: at most ~5 file reads, ~3 grep calls per file; no broad browsing, no tests/fixtures/generated files unless directly relevant, no modifications. The runtime contract is the existing `provider.execute()` path (which already takes `cwd`); we do **not** add a parallel agent-task abstraction. Read-only-ness for v1 is enforced by prompt + provider conventions, not a new sandbox layer.
+- **Author-claims framing**: the data block is labeled `"Author's stated intent (hint only — verify against the diff):"`. A follow-up paragraph instructs the model to use the description for orientation/vocabulary only, not to repeat or paraphrase it; if the diff and description disagree, describe the diff (no editorializing); if the description is vague/templated/empty, ignore it entirely. The diff is ground truth; the description is a hint.
+- **Speculation guardrail**: the prompt closes the FS-access block with *"The summary still describes what the DIFF changes, not what the surrounding code does. Context informs phrasing; it does not become the subject."* Without this, "context-aware" drifts into "summary of the file."
+- **Cache hashing**: `content_hash` keys per-review (`UNIQUE(review_id, content_hash)`). Within a review, surrounding-code drift can produce stale-but-served summaries — acceptable for v1 ("summaries lag mid-flight"). Cross-review collision is prevented by the per-review key. Hash is over hunk content + path; we do not widen it to surrounding code.
 
 ### Tour prompt contract (`src/ai/prompts/tour.js`)
 - **Input shape**:
@@ -233,8 +239,8 @@ New keys in `~/.pair-review/config.json`:
 {
   "summaries_enabled": false,
   "tours_enabled": false,
-  "background_provider": "claude",
-  "background_model": "haiku"
+  "summary_provider": "claude",
+  "summary_model": "haiku"
 }
 ```
 
@@ -244,12 +250,12 @@ New keys in `~/.pair-review/config.json`:
 - `tours_enabled` — when `false`, no tour jobs enqueued, no Start Tour button, no tour endpoint calls. Feature is completely hidden.
 - Tours depend on summaries. If `tours_enabled=true` but `summaries_enabled=false`, log a warning at startup and treat tours as disabled.
 
-**Provider resolution** (`getBackgroundProvider` / `getBackgroundModel` in `src/config.js`):
+**Provider resolution** (`getSummaryProvider` / `getSummaryModel` in `src/config.js`):
 
-1. If `background_provider` is set → use it.
+1. If `summary_provider` is set → use it.
 2. Else fall back to `default_provider` (existing users get *some* working behavior).
-3. For `background_model`:
-   1. If `background_model` set → use it.
+3. For `summary_model`:
+   1. If `summary_model` set → use it.
    2. Else, if the resolved provider has a `fast`-tier model (via `provider.getFastTierModel()`), use that.
    3. Else fall back to `default_model`.
 

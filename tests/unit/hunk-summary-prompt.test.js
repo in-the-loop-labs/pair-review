@@ -72,24 +72,57 @@ describe('buildHunkSummaryPrompt', () => {
       expect(result).toContain('"summary"');
     });
 
-    it('mentions the 140-character rule', () => {
-      expect(result).toContain('140');
+    it('includes the new Style block', () => {
+      expect(result).toContain('1–3 sentences');
+      expect(result).toContain('~200 characters');
+      expect(result).toContain('hard ceiling 400');
+      expect(result).toContain('Lead with a verb');
+    });
+
+    it('does not include the retired 140-char or single-sentence rules', () => {
+      expect(result).not.toContain('140');
+      expect(result).not.toContain('Single sentence');
+      expect(result).not.toContain('present-tense imperative');
+    });
+
+    it('includes the null-summary opt-out clause', () => {
+      expect(result).toContain('summary: null');
+      expect(result).toContain('Default is to summarize');
+    });
+
+    it('JSON example shows null as a valid summary value', () => {
+      expect(result).toContain('"summary": null');
     });
 
     it('includes the safety language about not modifying files', () => {
       expect(result).toContain('Do NOT modify files');
     });
 
+    it('uses the softer "primary source" framing in the preamble', () => {
+      expect(result).toContain('Treat the diff text provided below as the primary source.');
+      expect(result).not.toContain('Use only the diff text provided');
+    });
+
     it('includes the safety language about not running write commands', () => {
       expect(result).toContain('Do NOT run write commands');
     });
 
-    it('omits Review context block when no PR fields supplied', () => {
-      expect(result).not.toContain('Review context:');
+    it('omits Author\'s stated intent block when no PR fields supplied', () => {
+      expect(result).not.toContain("Author's stated intent");
+    });
+
+    it('omits the author-claims skepticism block when no PR fields supplied', () => {
+      expect(result).not.toContain('is a HINT');
+      expect(result).not.toContain('diff is ground truth');
     });
 
     it('omits Changed files block when no list supplied', () => {
       expect(result).not.toContain('Changed files in this review');
+    });
+
+    it('omits the FS-access invitation block when cwd is not provided', () => {
+      expect(result).not.toContain('read-only access to the current working directory');
+      expect(result).not.toContain('Budget per file');
     });
   });
 
@@ -115,7 +148,7 @@ describe('buildHunkSummaryPrompt', () => {
         prTitle: 'Fix the bar',
         prDescription: 'This patch addresses the bar regression.'
       });
-      expect(result).toContain('Review context:');
+      expect(result).toContain("Author's stated intent (hint only — verify against the diff):");
       expect(result).toContain('Title: Fix the bar');
       expect(result).toContain('Description: This patch addresses the bar regression.');
     });
@@ -126,7 +159,7 @@ describe('buildHunkSummaryPrompt', () => {
         hunks: [sampleHunk],
         prTitle: 'Solo title'
       });
-      expect(result).toContain('Review context:');
+      expect(result).toContain("Author's stated intent (hint only — verify against the diff):");
       expect(result).toContain('Title: Solo title');
       expect(result).not.toContain('Description:');
     });
@@ -137,17 +170,17 @@ describe('buildHunkSummaryPrompt', () => {
         hunks: [sampleHunk],
         prDescription: 'Solo desc'
       });
-      expect(result).toContain('Review context:');
+      expect(result).toContain("Author's stated intent (hint only — verify against the diff):");
       expect(result).toContain('Description: Solo desc');
       expect(result).not.toContain('Title:');
     });
 
-    it('omits Review context block when title and description are missing', () => {
+    it('omits Author\'s stated intent block when title and description are missing', () => {
       const result = buildHunkSummaryPrompt({
         filePath: 'src/foo.ts',
         hunks: [sampleHunk]
       });
-      expect(result).not.toContain('Review context:');
+      expect(result).not.toContain("Author's stated intent");
     });
 
     it('treats whitespace-only PR title as empty', () => {
@@ -156,7 +189,7 @@ describe('buildHunkSummaryPrompt', () => {
         hunks: [sampleHunk],
         prTitle: '   \n\t  '
       });
-      expect(result).not.toContain('Review context:');
+      expect(result).not.toContain("Author's stated intent");
     });
 
     it('treats whitespace-only description as empty', () => {
@@ -165,7 +198,179 @@ describe('buildHunkSummaryPrompt', () => {
         hunks: [sampleHunk],
         prDescription: '   '
       });
+      expect(result).not.toContain("Author's stated intent");
+    });
+
+    it('does not use the legacy "Review context:" label', () => {
+      const result = buildHunkSummaryPrompt({
+        filePath: 'src/foo.ts',
+        hunks: [sampleHunk],
+        prTitle: 'Fix the bar',
+        prDescription: 'desc'
+      });
       expect(result).not.toContain('Review context:');
+    });
+  });
+
+  describe('author-claims skepticism block', () => {
+    it('includes the skepticism block when title is provided', () => {
+      const result = buildHunkSummaryPrompt({
+        filePath: 'src/foo.ts',
+        hunks: [sampleHunk],
+        prTitle: 'Fix bar'
+      });
+      expect(result).toContain('is a HINT');
+      expect(result).toContain('diff is ground truth');
+      expect(result).toContain('Do NOT repeat or paraphrase the description');
+      expect(result).toContain('If the diff and the description disagree');
+    });
+
+    it('includes the skepticism block when description is provided', () => {
+      const result = buildHunkSummaryPrompt({
+        filePath: 'src/foo.ts',
+        hunks: [sampleHunk],
+        prDescription: 'A description.'
+      });
+      expect(result).toContain('is a HINT');
+      expect(result).toContain('diff is ground truth');
+      expect(result).toContain('Do NOT repeat or paraphrase the description');
+      expect(result).toContain('If the diff and the description disagree');
+    });
+
+    it('includes the skepticism block when both title and description are provided', () => {
+      const result = buildHunkSummaryPrompt({
+        filePath: 'src/foo.ts',
+        hunks: [sampleHunk],
+        prTitle: 'Fix bar',
+        prDescription: 'A description.'
+      });
+      expect(result).toContain('is a HINT');
+      expect(result).toContain('diff is ground truth');
+      expect(result).toContain('Do NOT repeat or paraphrase the description');
+      expect(result).toContain('If the diff and the description disagree');
+    });
+
+    it('omits the skepticism block when neither title nor description is provided', () => {
+      const result = buildHunkSummaryPrompt({
+        filePath: 'src/foo.ts',
+        hunks: [sampleHunk]
+      });
+      expect(result).not.toContain('is a HINT');
+      expect(result).not.toContain('diff is ground truth');
+    });
+
+    it('omits the skepticism block when both title and description are whitespace-only', () => {
+      const result = buildHunkSummaryPrompt({
+        filePath: 'src/foo.ts',
+        hunks: [sampleHunk],
+        prTitle: '  ',
+        prDescription: '   '
+      });
+      expect(result).not.toContain('is a HINT');
+      expect(result).not.toContain('diff is ground truth');
+    });
+  });
+
+  describe('FS-access invitation block', () => {
+    it('includes the FS-access block when cwd is provided', () => {
+      const cwd = '/tmp/foo';
+      const result = buildHunkSummaryPrompt({
+        filePath: 'src/foo.ts',
+        hunks: [sampleHunk],
+        cwd
+      });
+      expect(result).toContain('read-only access to the current working directory');
+      expect(result).toContain('Budget per file: at most ~5 file reads');
+      expect(result).toContain('describes what the DIFF changes, not what the');
+      expect(result).toContain('surrounding code does');
+      // The cwd path itself must NEVER be embedded — leaks usernames/customer
+      // names/project names into the prompt.
+      expect(result).not.toContain(cwd);
+    });
+
+    it('does not embed the literal cwd path in the prompt (privacy)', () => {
+      const cwd = '/Users/me/projects/widget';
+      const result = buildHunkSummaryPrompt({
+        filePath: 'src/foo.ts',
+        hunks: [sampleHunk],
+        cwd
+      });
+      expect(result).toContain('read-only access to the current working directory');
+      expect(result).not.toContain(cwd);
+      expect(result).not.toContain('/Users/me');
+      expect(result).not.toContain('<CWD>');
+    });
+
+    it('renders the FS-access block identically regardless of cwd value', () => {
+      const a = buildHunkSummaryPrompt({
+        filePath: 'src/foo.ts',
+        hunks: [sampleHunk],
+        cwd: '/tmp/foo'
+      });
+      const b = buildHunkSummaryPrompt({
+        filePath: 'src/foo.ts',
+        hunks: [sampleHunk],
+        cwd: '/Users/someone-else/secret-customer/project'
+      });
+      expect(a).toBe(b);
+    });
+
+    it('includes the speculation guardrail final paragraph', () => {
+      const result = buildHunkSummaryPrompt({
+        filePath: 'src/foo.ts',
+        hunks: [sampleHunk],
+        cwd: '/tmp/foo'
+      });
+      expect(result).toContain('Context informs phrasing; it does not become');
+      expect(result).toContain('the subject');
+    });
+
+    it('includes the redundant "Do not modify any file" instruction', () => {
+      const result = buildHunkSummaryPrompt({
+        filePath: 'src/foo.ts',
+        hunks: [sampleHunk],
+        cwd: '/tmp/foo'
+      });
+      expect(result).toContain('Do not modify any file.');
+    });
+
+    it('omits the FS-access block when cwd is undefined', () => {
+      const result = buildHunkSummaryPrompt({
+        filePath: 'src/foo.ts',
+        hunks: [sampleHunk]
+      });
+      expect(result).not.toContain('read-only access to the current working directory');
+      expect(result).not.toContain('Budget per file');
+    });
+
+    it('omits the FS-access block when cwd is an empty string', () => {
+      const result = buildHunkSummaryPrompt({
+        filePath: 'src/foo.ts',
+        hunks: [sampleHunk],
+        cwd: ''
+      });
+      expect(result).not.toContain('read-only access to the current working directory');
+      expect(result).not.toContain('Budget per file');
+    });
+
+    it('omits the FS-access block when cwd is whitespace-only', () => {
+      const result = buildHunkSummaryPrompt({
+        filePath: 'src/foo.ts',
+        hunks: [sampleHunk],
+        cwd: '   \t  '
+      });
+      expect(result).not.toContain('read-only access to the current working directory');
+      expect(result).not.toContain('Budget per file');
+    });
+
+    it('omits the FS-access block when cwd is not a string', () => {
+      const result = buildHunkSummaryPrompt({
+        filePath: 'src/foo.ts',
+        hunks: [sampleHunk],
+        cwd: 12345
+      });
+      expect(result).not.toContain('read-only access to the current working directory');
+      expect(result).not.toContain('Budget per file');
     });
   });
 

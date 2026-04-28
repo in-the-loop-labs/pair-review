@@ -1,6 +1,7 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 
 const crypto = require('crypto');
+const path = require('path');
 const logger = require('../utils/logger');
 
 const defaults = {
@@ -10,8 +11,8 @@ const defaults = {
   HunkSummaryRepository: require('../database').HunkSummaryRepository,
   createProvider: require('./provider').createProvider,
   resolveNonExecutableProviderId: require('./provider').resolveNonExecutableProviderId,
-  getBackgroundProvider: require('../config').getBackgroundProvider,
-  getBackgroundModel: require('../config').getBackgroundModel,
+  getSummaryProvider: require('../config').getSummaryProvider,
+  getSummaryModel: require('../config').getSummaryModel,
   buildHunkSummaryPrompt: require('./prompts/hunk-summary').buildHunkSummaryPrompt,
   extractJSON: require('../utils/json-extractor').extractJSON,
   getGeneratedFilePatterns: require('../git/gitattributes').getGeneratedFilePatterns,
@@ -19,8 +20,6 @@ const defaults = {
   hashDiff: (diffText) => crypto.createHash('sha256').update(diffText).digest('hex').slice(0, 16),
   backgroundQueue: null
 };
-
-const MAX_SUMMARY_LENGTH = 140;
 
 /**
  * Generate hunk summaries for a review's diff and persist + broadcast them.
@@ -72,7 +71,7 @@ async function generateSummariesForReview({
     logger.warn(`Failed to load .gitattributes for review ${reviewId}: ${err.message}`);
   }
 
-  const preferredProviderId = deps.getBackgroundProvider(config);
+  const preferredProviderId = deps.getSummaryProvider(config);
   const providerId = deps.resolveNonExecutableProviderId(preferredProviderId);
   if (!providerId) {
     logger.info(
@@ -86,11 +85,11 @@ async function generateSummariesForReview({
   try {
     const initialProvider = deps.createProvider(providerId);
     const ProviderClass = initialProvider.constructor;
-    resolvedModel = deps.getBackgroundModel(config, ProviderClass);
+    resolvedModel = deps.getSummaryModel(config, ProviderClass);
     provider = deps.createProvider(providerId, resolvedModel);
   } catch (err) {
     logger.info(
-      `Hunk summaries skipped for review ${reviewId}: background provider unavailable (${err.message})`
+      `Hunk summaries skipped for review ${reviewId}: summary provider unavailable (${err.message})`
     );
     return { filesProcessed: 0, hunksPersisted: 0 };
   }
@@ -106,6 +105,10 @@ async function generateSummariesForReview({
   let hunksPersisted = 0;
 
   for (const [filePath, hunks] of hunksByFile.entries()) {
+    // Use the basename for log readability — full repo-relative paths can be
+    // long enough to clutter each log line, and within a single review the
+    // basename is almost always unique enough to identify the file.
+    const summaryPrefix = `[Summary ${path.basename(filePath)}]`;
     try {
       const classified = hunks.map((hunk) => {
         const content = [hunk.header, ...hunk.lines].join('\n');
@@ -148,82 +151,132 @@ async function generateSummariesForReview({
           hunks: missing.map((m) => m.hunk),
           prTitle: effectiveContext.prTitle,
           prDescription: effectiveContext.prDescription,
-          changedFiles: effectiveContext.changedFiles
+          changedFiles: effectiveContext.changedFiles,
+          cwd: worktreePath
         });
 
         let result;
         try {
-          result = await provider.execute(prompt, { cwd: worktreePath });
+          result = await provider.execute(prompt, {
+            cwd: worktreePath,
+            logPrefix: summaryPrefix
+          });
         } catch (execErr) {
           // (Intentional: see retry-on-reload note below — no sentinel row.)
-          logger.error(`Hunk summary provider error for ${filePath}: ${execErr.message}`);
+          logger.error(`${summaryPrefix} Hunk summary provider error for ${filePath}: ${execErr.message}`);
           await broadcastFile(deps, repo, reviewId, filePath);
           filesProcessed++;
           continue;
         }
 
         let data;
+        let topLevelMalformed = false;
         if (result && Array.isArray(result.summaries)) {
           data = { summaries: result.summaries };
         } else if (result && result.data && (result.parsed || result.success)) {
           data = result.data;
         } else {
           const raw = (result && result.raw) || '';
-          const extracted = deps.extractJSON(raw, 'hunk-summary');
+          const extracted = deps.extractJSON(raw, 'hunk-summary', summaryPrefix);
           if (!extracted || !extracted.success) {
-            // (Intentional: see retry-on-reload note below — no sentinel row.)
             const errMsg = extracted && extracted.error ? extracted.error : 'unknown error';
-            logger.warn(`Hunk summary JSON parse failed for ${filePath}: ${errMsg}`);
-            await broadcastFile(deps, repo, reviewId, filePath);
-            filesProcessed++;
-            continue;
+            logger.warn(`${summaryPrefix} Hunk summary JSON parse failed: ${errMsg}`);
+            topLevelMalformed = true;
+          } else {
+            data = extracted.data;
           }
-          data = extracted.data;
         }
 
-        if (!data || !Array.isArray(data.summaries)) {
-          // (Intentional: see retry-on-reload note below — no sentinel row.)
-          logger.warn(`Hunk summary response missing summaries[] for ${filePath}`);
+        if (!topLevelMalformed && (!data || !Array.isArray(data.summaries))) {
+          logger.warn(`${summaryPrefix} Hunk summary response missing summaries[]`);
+          topLevelMalformed = true;
+        }
+
+        if (topLevelMalformed) {
+          // Asymmetry vs per-slot malformed handling, intentional:
+          //   - Envelope malformed (this branch): no sentinel persisted; the
+          //     hunks are eligible for re-enqueue on the next reload, the same
+          //     as a provider exception (see `execErr` catch above). Truncated
+          //     streams, stray markdown fences, and "model rambled past the
+          //     JSON" are transient failures and should not lock out hunks.
+          //   - Per-slot malformed (below): the model returned a valid envelope
+          //     but a specific entry was missing/wrong-type. That IS persisted
+          //     as a `model_malformed` sentinel because the model spoke
+          //     coherently for the file but not for that slot — re-enqueueing
+          //     would just produce the same bad output.
           await broadcastFile(deps, repo, reviewId, filePath);
           filesProcessed++;
           continue;
         }
 
-        // Failed/malformed hunks are intentionally NOT persisted. getByHashes sees them
-        // as missing on the next reload and the provider is retried. This favors recovery
-        // from transient LLM failures over locking persistent failures into a sentinel row.
-        // If reload-bombing of persistently-flaky hunks becomes a real cost, add an
-        // `attempts` counter or a time-gated retry rather than an always-sentinel row.
-        const llmRows = [];
+        // Per-hunk classification. For each slot in `missing`, choose the best
+        // outcome from the model's entries:
+        //   - valid (non-empty string)  > model_skipped (null) > model_malformed
+        // Slots the model never returned for fall through to model_malformed.
+        // No truncation: the prompt sets the length budget; we trust the model.
+        const VALID = 0;
+        const SKIPPED = 1;
+        const MALFORMED = 2;
+        const slotState = new Array(missing.length).fill(null);
+
+        const setSlot = (idx, kind, summary) => {
+          const current = slotState[idx];
+          if (!current || kind < current.kind) {
+            slotState[idx] = { kind, summary };
+          }
+        };
+
         for (const item of data.summaries) {
           if (!item || typeof item.index !== 'number') continue;
           const idx = item.index - 1;
           if (idx < 0 || idx >= missing.length) continue;
-          if (typeof item.summary !== 'string' || item.summary.length === 0) continue;
-          const summaryText = item.summary.length > MAX_SUMMARY_LENGTH
-            ? item.summary.slice(0, MAX_SUMMARY_LENGTH)
-            : item.summary;
-          llmRows.push({
-            review_id: reviewId,
-            file_path: filePath,
-            content_hash: missing[idx].contentHash,
-            summary_text: summaryText,
-            trivial_reason: null,
-            provider: providerId,
-            model: resolvedModel
-          });
+
+          if (typeof item.summary === 'string' && item.summary.length > 0) {
+            setSlot(idx, VALID, item.summary);
+          } else if (item.summary === null) {
+            setSlot(idx, SKIPPED, null);
+          } else {
+            // undefined, empty string, wrong type
+            setSlot(idx, MALFORMED, null);
+          }
         }
 
-        if (llmRows.length > 0) {
-          await repo.upsertMany(llmRows);
-          hunksPersisted += llmRows.length;
+        const rowsToPersist = [];
+        for (let i = 0; i < missing.length; i++) {
+          const state = slotState[i] || { kind: MALFORMED, summary: null };
+          if (state.kind === VALID) {
+            rowsToPersist.push({
+              review_id: reviewId,
+              file_path: filePath,
+              content_hash: missing[i].contentHash,
+              summary_text: state.summary,
+              trivial_reason: null,
+              provider: providerId,
+              model: resolvedModel
+            });
+          } else {
+            rowsToPersist.push({
+              review_id: reviewId,
+              file_path: filePath,
+              content_hash: missing[i].contentHash,
+              summary_text: null,
+              trivial_reason: state.kind === SKIPPED ? 'model_skipped' : 'model_malformed',
+              provider: providerId,
+              model: resolvedModel
+            });
+          }
+        }
+
+        if (rowsToPersist.length > 0) {
+          await repo.upsertMany(rowsToPersist);
+          hunksPersisted += rowsToPersist.length;
         }
       }
 
       await broadcastFile(deps, repo, reviewId, filePath);
       filesProcessed++;
     } catch (fileErr) {
-      logger.error(`Hunk summary processing failed for ${filePath}: ${fileErr.message}`);
+      logger.error(`${summaryPrefix} Hunk summary processing failed: ${fileErr.message}`);
       await broadcastFile(deps, repo, reviewId, filePath);
       filesProcessed++;
     }
@@ -255,7 +308,7 @@ async function broadcastFile(deps, repo, reviewId, filePath) {
       summaries: fileRows
     });
   } catch (err) {
-    logger.warn(`Hunk summary broadcast failed for ${filePath}: ${err.message}`);
+    logger.warn(`[Summary ${path.basename(filePath)}] broadcast failed: ${err.message}`);
   }
 }
 

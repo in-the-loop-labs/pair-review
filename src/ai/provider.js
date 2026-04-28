@@ -300,7 +300,7 @@ ${rawResponse}
         }
 
         // Use the generic extractJSON for all providers - the LLM should return raw JSON
-        const extracted = extractJSON(stdout, level);
+        const extracted = extractJSON(stdout, level, levelPrefix);
         if (extracted.success) {
           logger.success(`${levelPrefix} LLM extraction successful`);
           settle(extracted);

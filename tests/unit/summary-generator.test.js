@@ -84,8 +84,8 @@ function makeDeps({ repo, provider, isGenerated, depsOverride } = {}) {
       return { success: false, error: err.message };
     }
   });
-  const getBackgroundProvider = vi.fn(() => 'fake');
-  const getBackgroundModel = vi.fn(() => 'fast-model');
+  const getSummaryProvider = vi.fn(() => 'fake');
+  const getSummaryModel = vi.fn(() => 'fast-model');
   const resolveNonExecutableProviderId = vi.fn(() => 'fake');
 
   return {
@@ -99,8 +99,8 @@ function makeDeps({ repo, provider, isGenerated, depsOverride } = {}) {
       getGeneratedFilePatterns,
       buildHunkSummaryPrompt,
       extractJSON,
-      getBackgroundProvider,
-      getBackgroundModel,
+      getSummaryProvider,
+      getSummaryModel,
       resolveNonExecutableProviderId,
       ...(depsOverride || {})
     }
@@ -217,6 +217,46 @@ describe('generateSummariesForReview', () => {
     expect(payload.summaries[0].summary_text).toBe('pre-existing');
   });
 
+  it('skips hunks with existing sentinel rows on reload (does not re-enqueue)', async () => {
+    // First pass: provider returns null for the only hunk, persisting a model_skipped sentinel
+    const provider = makeProvider(async () => ({
+      summaries: [{ index: 1, summary: null }]
+    }));
+    const { deps } = makeDeps({ repo, provider });
+    const diffText = makeDiff([{ path: 'a.js', body: SIMPLE_HUNK_BODY }]);
+
+    const first = await generateSummariesForReview({
+      ...baseParams,
+      diffText,
+      _deps: deps
+    });
+    expect(first.hunksPersisted).toBe(1);
+    const afterFirst = await repo.real.getByReview(REVIEW_ID);
+    expect(afterFirst).toHaveLength(1);
+    expect(afterFirst[0].trivial_reason).toBe('model_skipped');
+
+    // Second pass: SAME diff, fresh provider that records calls. Must not be invoked.
+    const provider2Calls = [];
+    const provider2 = makeProvider(async (...args) => {
+      provider2Calls.push(args);
+      return { summaries: [{ index: 1, summary: 'should not run' }] };
+    });
+    const { deps: deps2 } = makeDeps({ repo, provider: provider2 });
+
+    const second = await generateSummariesForReview({
+      ...baseParams,
+      diffText,
+      _deps: deps2
+    });
+    expect(provider2Calls).toHaveLength(0);
+    expect(second.hunksPersisted).toBe(0);
+
+    // Sentinel row remains; nothing got overwritten
+    const afterSecond = await repo.real.getByReview(REVIEW_ID);
+    expect(afterSecond).toHaveLength(1);
+    expect(afterSecond[0].trivial_reason).toBe('model_skipped');
+  });
+
   it('mixes trivial + non-trivial hunks with batched LLM call per file', async () => {
     const TRIVIAL_PKG_BODY = `@@ -1,3 +1,3 @@
  {
@@ -278,6 +318,8 @@ describe('generateSummariesForReview', () => {
     expect(result.hunksPersisted).toBe(1);
     const allRows = await repo.real.getByReview(REVIEW_ID);
     expect(allRows.find((r) => r.summary_text === 'parsed-direct')).toBeDefined();
+    // Lock in the wiring: worktreePath flows through to the prompt builder as cwd.
+    expect(deps.buildHunkSummaryPrompt.mock.calls[0][0].cwd).toBe(baseParams.worktreePath);
   });
 
   it('falls back to extractJSON when provider returns {raw, parsed:false}', async () => {
@@ -295,7 +337,7 @@ describe('generateSummariesForReview', () => {
     expect(allRows.find((r) => r.summary_text === 'from-extracted')).toBeDefined();
   });
 
-  it('skips a file when extractJSON fails but processes other files', async () => {
+  it('skips persistence for envelope-malformed file but processes other files (no sentinel; retries on reload)', async () => {
     let call = 0;
     const provider = makeProvider(async () => {
       call++;
@@ -317,11 +359,14 @@ describe('generateSummariesForReview', () => {
     });
 
     expect(result.filesProcessed).toBe(2);
+    // No sentinel for a.js (envelope malformed -> retries on reload), 1 real summary for b.js
     expect(result.hunksPersisted).toBe(1);
     const allRows = await repo.real.getByReview(REVIEW_ID);
     const summaries = allRows.filter((r) => r.summary_text);
     expect(summaries).toHaveLength(1);
     expect(summaries[0].file_path).toBe('b.js');
+    // No rows at all for the envelope-malformed file
+    expect(allRows.filter((r) => r.file_path === 'a.js')).toEqual([]);
     expect(deps.broadcastReviewEvent).toHaveBeenCalledTimes(2);
   });
 
@@ -353,24 +398,24 @@ describe('generateSummariesForReview', () => {
     expect(summaries[0].file_path).toBe('b.js');
   });
 
-  it('skips LLM upserts when summaries field is not an array, still broadcasts', async () => {
+  it('broadcasts even when summaries field is not an array (no sentinel; retries on reload)', async () => {
     const provider = makeProvider(async () => ({ summaries: 'oops' }));
     const { deps } = makeDeps({ repo, provider });
     const diffText = makeDiff([{ path: 'a.js', body: SIMPLE_HUNK_BODY }]);
 
-    const result = await generateSummariesForReview({
+    await generateSummariesForReview({
       ...baseParams,
       diffText,
       _deps: deps
     });
 
-    expect(result.hunksPersisted).toBe(0);
-    const allRows = await repo.real.getByReview(REVIEW_ID);
-    expect(allRows.filter((r) => r.summary_text)).toHaveLength(0);
     expect(deps.broadcastReviewEvent).toHaveBeenCalledTimes(1);
+    // Envelope malformed -> no rows persisted, hunk eligible for retry
+    const allRows = await repo.real.getByReview(REVIEW_ID);
+    expect(allRows).toEqual([]);
   });
 
-  it('drops out-of-range indexes silently and persists valid ones', async () => {
+  it('drops out-of-range indexes and persists valid ones (others become malformed sentinels)', async () => {
     const NON_TRIVIAL_BODY = SIMPLE_HUNK_BODY + SECOND_HUNK_BODY;
     const provider = makeProvider(async () => ({
       summaries: [
@@ -390,14 +435,16 @@ describe('generateSummariesForReview', () => {
       _deps: deps
     });
 
+    // Both slots resolve to valid summaries (the duplicate index 2 with a real
+    // string wins over the empty entry).
     expect(result.hunksPersisted).toBe(2);
     const allRows = await repo.real.getByReview(REVIEW_ID);
     const llmRows = allRows.filter((r) => r.summary_text);
     expect(llmRows.map((r) => r.summary_text).sort()).toEqual(['one', 'two']);
   });
 
-  it('truncates summaries longer than 140 chars', async () => {
-    const longText = 'A'.repeat(200);
+  it('stores long summaries verbatim without truncation', async () => {
+    const longText = 'A'.repeat(500);
     const provider = makeProvider(async () => ({
       summaries: [{ index: 1, summary: longText }]
     }));
@@ -408,8 +455,123 @@ describe('generateSummariesForReview', () => {
 
     const allRows = await repo.real.getByReview(REVIEW_ID);
     const row = allRows.find((r) => r.summary_text);
-    expect(row.summary_text).toHaveLength(140);
-    expect(row.summary_text).toBe('A'.repeat(140));
+    expect(row.summary_text).toHaveLength(500);
+    expect(row.summary_text).toBe(longText);
+  });
+
+  it('persists model_skipped sentinel when model returns explicit null summary', async () => {
+    const provider = makeProvider(async () => ({
+      summaries: [{ index: 1, summary: null }]
+    }));
+    const { deps } = makeDeps({ repo, provider });
+    const diffText = makeDiff([{ path: 'a.js', body: SIMPLE_HUNK_BODY }]);
+
+    const result = await generateSummariesForReview({
+      ...baseParams,
+      diffText,
+      _deps: deps
+    });
+
+    expect(result.hunksPersisted).toBe(1);
+    const allRows = await repo.real.getByReview(REVIEW_ID);
+    expect(allRows).toHaveLength(1);
+    expect(allRows[0].file_path).toBe('a.js');
+    expect(allRows[0].summary_text).toBeNull();
+    expect(allRows[0].trivial_reason).toBe('model_skipped');
+    expect(allRows[0].provider).toBe('fake');
+    expect(allRows[0].model).toBe('fast-model');
+  });
+
+  it('persists model_malformed sentinels for every hunk when summaries[] is empty', async () => {
+    const NON_TRIVIAL_BODY = SIMPLE_HUNK_BODY + SECOND_HUNK_BODY;
+    const provider = makeProvider(async () => ({ summaries: [] }));
+    const { deps } = makeDeps({ repo, provider });
+    const diffText = makeDiff([{ path: 'a.js', body: NON_TRIVIAL_BODY }]);
+
+    const result = await generateSummariesForReview({
+      ...baseParams,
+      diffText,
+      _deps: deps
+    });
+
+    expect(result.filesProcessed).toBe(1);
+    expect(result.hunksPersisted).toBe(2);
+    const allRows = await repo.real.getByReview(REVIEW_ID);
+    expect(allRows).toHaveLength(2);
+    for (const row of allRows) {
+      expect(row.summary_text).toBeNull();
+      expect(row.trivial_reason).toBe('model_malformed');
+      expect(row.provider).toBe('fake');
+      expect(row.model).toBe('fast-model');
+    }
+  });
+
+  it('persists nothing when extractJSON fails on raw response (no sentinel; retries on reload)', async () => {
+    const NON_TRIVIAL_BODY = SIMPLE_HUNK_BODY + SECOND_HUNK_BODY;
+    const provider = makeProvider(async () => ({ raw: 'not json at all', parsed: false }));
+    const { deps } = makeDeps({ repo, provider });
+    const diffText = makeDiff([{ path: 'a.js', body: NON_TRIVIAL_BODY }]);
+
+    const result = await generateSummariesForReview({
+      ...baseParams,
+      diffText,
+      _deps: deps
+    });
+
+    expect(result.filesProcessed).toBe(1);
+    expect(result.hunksPersisted).toBe(0);
+    expect(deps.extractJSON).toHaveBeenCalledTimes(1);
+    const allRows = await repo.real.getByReview(REVIEW_ID);
+    expect(allRows).toEqual([]);
+    // Frontend still gets a broadcast so it doesn't hang waiting for this file.
+    expect(deps.broadcastReviewEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists nothing when summaries field is not an array (no sentinel; retries on reload)', async () => {
+    const provider = makeProvider(async () => ({ summaries: 'oops' }));
+    const { deps } = makeDeps({ repo, provider });
+    const diffText = makeDiff([{ path: 'a.js', body: SIMPLE_HUNK_BODY }]);
+
+    const result = await generateSummariesForReview({
+      ...baseParams,
+      diffText,
+      _deps: deps
+    });
+
+    expect(result.filesProcessed).toBe(1);
+    expect(result.hunksPersisted).toBe(0);
+    const allRows = await repo.real.getByReview(REVIEW_ID);
+    expect(allRows).toEqual([]);
+    // Frontend still gets a broadcast so it doesn't hang waiting for this file.
+    expect(deps.broadcastReviewEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('mixes real summaries with model_malformed sentinels for missing/wrong-shape entries', async () => {
+    const NON_TRIVIAL_BODY = SIMPLE_HUNK_BODY + SECOND_HUNK_BODY;
+    const provider = makeProvider(async () => ({
+      summaries: [
+        { index: 1, summary: 'real summary' }
+        // index 2 deliberately missing
+      ]
+    }));
+    const { deps } = makeDeps({ repo, provider });
+    const diffText = makeDiff([{ path: 'a.js', body: NON_TRIVIAL_BODY }]);
+
+    const result = await generateSummariesForReview({
+      ...baseParams,
+      diffText,
+      _deps: deps
+    });
+
+    expect(result.hunksPersisted).toBe(2);
+    const allRows = await repo.real.getByReview(REVIEW_ID);
+    expect(allRows).toHaveLength(2);
+    const real = allRows.find((r) => r.summary_text === 'real summary');
+    expect(real).toBeDefined();
+    expect(real.trivial_reason).toBeNull();
+    const sentinel = allRows.find((r) => r.summary_text === null);
+    expect(sentinel).toBeDefined();
+    expect(sentinel.trivial_reason).toBe('model_malformed');
   });
 
   it('returns zeros and logs when provider creation throws', async () => {
@@ -724,8 +886,8 @@ describe('kickOffSummaryJob', () => {
         broadcastReviewEvent,
         getGeneratedFilePatterns,
         createProvider,
-        getBackgroundProvider: () => 'fake',
-        getBackgroundModel: () => 'fast-model',
+        getSummaryProvider: () => 'fake',
+        getSummaryModel: () => 'fast-model',
         resolveNonExecutableProviderId: () => 'fake',
         buildHunkSummaryPrompt: () => 'PROMPT',
         extractJSON: () => ({ success: false })
