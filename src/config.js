@@ -27,6 +27,7 @@ const DEFAULT_CONFIG = {
   tours_enabled: false,        // When true, generates a narrative tour of the review (requires summaries_enabled)
   background_provider: "",     // Provider for background AI tasks (summaries, tours). Empty = falls back to default_provider
   background_model: "",        // Model for background tasks. Empty = uses provider's fast-tier model, then default_model
+  summaries_max_files: 50,     // Skip summary generation for reviews touching more than this many files (perf cap)
   worktree_retention_days: 7,
   review_retention_days: 21,
   dev_mode: false,  // When true, disables static file caching for development

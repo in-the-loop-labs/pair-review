@@ -396,30 +396,15 @@ function createExecutableProviderClass(id, config) {
 
       // Find a mapping provider: prefer the user's configured default, fall back to
       // any registered non-executable provider. Never hardcode a specific provider.
-      let mappingProviderId = null;
-
-      // Try the user's configured default provider first
+      let preferredId = null;
       try {
         const config = await configModule.loadConfig();
-        const defaultId = configModule.getDefaultProvider(config);
-        const defaultClass = providerModule.getProviderClass(defaultId);
-        if (defaultClass && !defaultClass.isExecutable) {
-          mappingProviderId = defaultId;
-        }
+        preferredId = configModule.getDefaultProvider(config);
       } catch {
-        // Config or provider not available — fall through to fallback
+        // Config not available — fall through to fallback
       }
 
-      if (!mappingProviderId) {
-        // Fall back to any registered non-executable provider
-        for (const pid of providerModule.getRegisteredProviderIds()) {
-          const pClass = providerModule.getProviderClass(pid);
-          if (pClass && !pClass.isExecutable) {
-            mappingProviderId = pid;
-            break;
-          }
-        }
-      }
+      const mappingProviderId = providerModule.resolveNonExecutableProviderId(preferredId);
 
       if (!mappingProviderId) {
         throw new Error(`[${id}] No mapping provider available. Need at least one non-executable provider (e.g., claude) registered.`);

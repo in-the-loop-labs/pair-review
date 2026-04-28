@@ -38,6 +38,14 @@ vi.mock('../../src/ai/provider', () => ({
   getProviderClass: mockGetProviderClass,
   createProvider: mockCreateProvider,
   getRegisteredProviderIds: mockGetRegisteredProviderIds,
+  // Mirror the production helper, routed through the mocked lookup fns so the
+  // existing tests that configure mockGetProviderClass /
+  // mockGetRegisteredProviderIds continue to control resolution.
+  // Note: this entry only exists because vi.mock requires us to declare every
+  // export. The actual implementation used by the source is spied on below
+  // (actualMockResolveNonExecutableProviderId) to match how getProviderClass
+  // and similar are handled.
+  resolveNonExecutableProviderId: vi.fn(() => null),
   resolveDefaultModel: vi.fn((models) => models.find(m => m.default)?.id || models[0]?.id),
   inferModelDefaults: vi.fn((m) => m)
 }));
@@ -67,6 +75,27 @@ const providerModule = require('../../src/ai/provider');
 const actualMockGetProviderClass = vi.spyOn(providerModule, 'getProviderClass');
 const actualMockCreateProvider = vi.spyOn(providerModule, 'createProvider');
 const actualMockGetRegisteredProviderIds = vi.spyOn(providerModule, 'getRegisteredProviderIds');
+// Spy on the helper too, with a default implementation that walks the spied
+// lookups so individual tests only need to configure getProviderClass /
+// getRegisteredProviderIds (matching the pre-helper test ergonomics).
+const actualMockResolveNonExecutableProviderId = vi.spyOn(
+  providerModule,
+  'resolveNonExecutableProviderId'
+).mockImplementation((preferredId) => {
+  if (preferredId) {
+    try {
+      const cls = providerModule.getProviderClass(preferredId);
+      if (cls && !cls.isExecutable) return preferredId;
+    } catch { /* fall through */ }
+  }
+  for (const pid of providerModule.getRegisteredProviderIds()) {
+    try {
+      const cls = providerModule.getProviderClass(pid);
+      if (cls && !cls.isExecutable) return pid;
+    } catch { /* skip */ }
+  }
+  return null;
+});
 
 const jsonExtractorModule = require('../../src/utils/json-extractor');
 const actualMockExtractJSON = vi.spyOn(jsonExtractorModule, 'extractJSON');
@@ -105,6 +134,24 @@ describe('createExecutableProviderClass', () => {
     actualMockExtractJSON.mockReset();
     actualMockLoadConfig.mockReset();
     actualMockGetDefaultProvider.mockReset();
+    // Re-apply the helper's default impl after mockReset above clears any
+    // implementation still attached to spied functions in the same module.
+    actualMockResolveNonExecutableProviderId.mockReset();
+    actualMockResolveNonExecutableProviderId.mockImplementation((preferredId) => {
+      if (preferredId) {
+        try {
+          const cls = providerModule.getProviderClass(preferredId);
+          if (cls && !cls.isExecutable) return preferredId;
+        } catch { /* fall through */ }
+      }
+      for (const pid of providerModule.getRegisteredProviderIds()) {
+        try {
+          const cls = providerModule.getProviderClass(pid);
+          if (cls && !cls.isExecutable) return pid;
+        } catch { /* skip */ }
+      }
+      return null;
+    });
     for (const key of Object.keys(process.env)) {
       if (key.startsWith('PAIR_REVIEW_') && !(key in originalEnv)) {
         delete process.env[key];

@@ -7455,3 +7455,120 @@ describe('POST /api/local/sessions/bulk-delete', () => {
     expect(kept).toBeDefined();
   });
 });
+
+describe('GET /api/reviews/:reviewId/hunk-summaries', () => {
+  let db;
+  let app;
+  let reviewId;
+
+  beforeEach(async () => {
+    db = await createTestDatabase();
+    app = createTestApp(db);
+
+    const result = await run(db, `
+      INSERT INTO reviews (pr_number, repository, status)
+      VALUES (?, ?, ?)
+    `, [42, 'owner/repo', 'draft']);
+    reviewId = result.lastID;
+  });
+
+  afterEach(async () => {
+    if (db) {
+      await closeTestDatabase(db);
+    }
+  });
+
+  it('returns 400 when reviewId is not a number', async () => {
+    const response = await request(app)
+      .get('/api/reviews/not-a-number/hunk-summaries');
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toBe('Invalid review ID');
+  });
+
+  it('returns 400 when reviewId is zero', async () => {
+    const response = await request(app)
+      .get('/api/reviews/0/hunk-summaries');
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toBe('Invalid review ID');
+  });
+
+  it('returns 404 for a non-existent reviewId', async () => {
+    const response = await request(app)
+      .get('/api/reviews/9999999/hunk-summaries');
+
+    expect(response.status).toBe(404);
+    expect(response.body.error).toContain('9999999');
+  });
+
+  it('returns an empty summaries array for a review with no rows', async () => {
+    const response = await request(app)
+      .get(`/api/reviews/${reviewId}/hunk-summaries`);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ summaries: [] });
+  });
+
+  it('returns the expected shape for a review with seeded rows', async () => {
+    // Seed two hunk summaries — one with summary_text, one with trivial_reason
+    await run(db, `
+      INSERT INTO hunk_summaries (review_id, file_path, content_hash, summary_text, trivial_reason)
+      VALUES (?, ?, ?, ?, ?)
+    `, [reviewId, 'src/a.js', 'hash-a', 'Adds a helper', null]);
+
+    await run(db, `
+      INSERT INTO hunk_summaries (review_id, file_path, content_hash, summary_text, trivial_reason)
+      VALUES (?, ?, ?, ?, ?)
+    `, [reviewId, 'src/b.js', 'hash-b', null, 'whitespace-only']);
+
+    const response = await request(app)
+      .get(`/api/reviews/${reviewId}/hunk-summaries`);
+
+    expect(response.status).toBe(200);
+    expect(Array.isArray(response.body.summaries)).toBe(true);
+    expect(response.body.summaries).toHaveLength(2);
+
+    const byFile = Object.fromEntries(
+      response.body.summaries.map((s) => [s.file_path, s])
+    );
+
+    expect(byFile['src/a.js']).toEqual({
+      file_path: 'src/a.js',
+      content_hash: 'hash-a',
+      summary_text: 'Adds a helper',
+      trivial_reason: null
+    });
+    expect(byFile['src/b.js']).toEqual({
+      file_path: 'src/b.js',
+      content_hash: 'hash-b',
+      summary_text: null,
+      trivial_reason: 'whitespace-only'
+    });
+
+    // Endpoint must NOT leak internal columns like provider/model/created_at
+    for (const s of response.body.summaries) {
+      expect(Object.keys(s).sort()).toEqual(['content_hash', 'file_path', 'summary_text', 'trivial_reason']);
+    }
+  });
+
+  it('does not return summaries that belong to a different review', async () => {
+    // Create a second review and seed it
+    const otherResult = await run(db, `
+      INSERT INTO reviews (pr_number, repository, status)
+      VALUES (?, ?, ?)
+    `, [99, 'owner/repo', 'draft']);
+    const otherReviewId = otherResult.lastID;
+
+    await run(db, `
+      INSERT INTO hunk_summaries (review_id, file_path, content_hash, summary_text, trivial_reason)
+      VALUES (?, ?, ?, ?, ?)
+    `, [otherReviewId, 'src/other.js', 'hash-other', 'Other review', null]);
+
+    const response = await request(app)
+      .get(`/api/reviews/${reviewId}/hunk-summaries`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.summaries).toEqual([]);
+  });
+});

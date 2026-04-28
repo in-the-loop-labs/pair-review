@@ -251,6 +251,28 @@ describe('HunkSummaryRepository', () => {
     });
   });
 
+  describe('getByReviewAndFile', () => {
+    it('returns only rows matching the requested file_path within the review', async () => {
+      await repo.upsertMany([
+        { review_id: reviewId, file_path: 'src/a.js', content_hash: 'a1', summary_text: 'a1' },
+        { review_id: reviewId, file_path: 'src/a.js', content_hash: 'a2', summary_text: 'a2' },
+        { review_id: reviewId, file_path: 'src/b.js', content_hash: 'b1', summary_text: 'b1' },
+        { review_id: otherReviewId, file_path: 'src/a.js', content_hash: 'oa', summary_text: 'other' }
+      ]);
+
+      const results = await repo.getByReviewAndFile(reviewId, 'src/a.js');
+      expect(results).toHaveLength(2);
+      expect(results.every((r) => r.file_path === 'src/a.js')).toBe(true);
+      expect(results.every((r) => r.review_id === reviewId)).toBe(true);
+      expect(results.map((r) => r.content_hash).sort()).toEqual(['a1', 'a2']);
+    });
+
+    it('returns an empty array when no rows match', async () => {
+      const results = await repo.getByReviewAndFile(reviewId, 'src/nope.js');
+      expect(results).toEqual([]);
+    });
+  });
+
   describe('getByHashes', () => {
     beforeEach(async () => {
       await repo.upsertMany([
