@@ -1,40 +1,38 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 /**
- * Summary Generator Trigger Site Tests
+ * Summary Generator Trigger Site Wiring Tests
  *
- * Verifies that three of the four kickOffSummaryJob trigger sites (Local web
- * start, Local web load, PR web load) call the orchestrator with the correct
- * arguments. These tests isolate the WIRING from the orchestrator itself by
- * mocking out src/ai/summary-generator.
+ * Wiring tests verifying that all four kickOffSummaryJob trigger sites pass
+ * through the right shape; orchestrator behavior is covered by
+ * tests/unit/summary-generator.test.js.
  *
- * TODO(local-cli): the fourth trigger site — handleLocalReview in
- * src/local-review.js — is currently UNTESTED. Per CLAUDE.md "CLI vs Web UI
- * entry points," dual-entry behavior must be exercised from both paths. The
- * recommended fix is to extract setupLocalReviewSession() so the CLI seam can
- * be invoked directly without spying out every git helper. Until then,
- * removing the kickOff call from src/local-review.js will not fail any test.
+ * The four trigger sites:
+ *   1. POST /api/local/start                         (web UI start)
+ *   2. GET  /api/local/:reviewId                     (web UI load)
+ *   3. GET  /api/pr/:owner/:repo/:number             (PR web load)
+ *   4. handleLocalReview / setupLocalReviewSession   (CLI entry point)
  *
- * The orchestrator's gating logic (summaries_enabled flag, missing args) is
- * covered by tests/unit/summary-generator.test.js. Here we verify only that
- * the trigger sites pass through the right shape.
+ * Per CLAUDE.md "CLI vs Web UI entry points," the CLI seam must be exercised
+ * directly. We invoke setupLocalReviewSession() so we don't need a server or
+ * browser — and we get the same coverage as if we'd called the CLI.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
-import { createTestDatabase, closeTestDatabase } from '../utils/schema';
+import { createTestDatabase, closeTestDatabase } from '../../utils/schema';
 
 // vi.mock doesn't work for CommonJS require() under the forks pool, so we use
 // vi.spyOn on the actual module exports. The trigger sites call
 // summaryGenerator.kickOffSummaryJob (not a destructured binding) so the spy
 // is observable at call time. Returning null mimics the "feature gated off"
 // path; the trigger sites use optional-chained .catch which must tolerate null.
-const summaryGenerator = require('../../src/ai/summary-generator');
-const stackWalkerModule = require('../../src/github/stack-walker');
-const { ReviewRepository } = require('../../src/database');
-const { localReviewDiffs } = require('../../src/routes/shared');
-const localReviewModule = require('../../src/local-review');
-const { run } = require('../../src/database');
+const summaryGenerator = require('../../../src/ai/summary-generator');
+const stackWalkerModule = require('../../../src/github/stack-walker');
+const { ReviewRepository } = require('../../../src/database');
+const { localReviewDiffs } = require('../../../src/routes/shared');
+const localReviewModule = require('../../../src/local-review');
+const { run } = require('../../../src/database');
 
 describe('kickOffSummaryJob trigger sites', () => {
   let app;
@@ -56,6 +54,7 @@ describe('kickOffSummaryJob trigger sites', () => {
     vi.spyOn(localReviewModule, 'computeScopedDigest').mockResolvedValue('digest123');
     vi.spyOn(localReviewModule, 'detectAndBuildBranchInfo').mockResolvedValue(null);
     vi.spyOn(localReviewModule, 'findMergeBase').mockResolvedValue('mergebase123');
+    vi.spyOn(localReviewModule, 'findMainGitRoot').mockResolvedValue('/mock/repo');
 
     vi.spyOn(summaryGenerator, 'kickOffSummaryJob').mockReturnValue(null);
     vi.spyOn(stackWalkerModule, 'walkPRStack').mockResolvedValue(null);
@@ -68,8 +67,8 @@ describe('kickOffSummaryJob trigger sites', () => {
       port: 7247
     });
 
-    const localRouter = require('../../src/routes/local');
-    const prRouter = require('../../src/routes/pr');
+    const localRouter = require('../../../src/routes/local');
+    const prRouter = require('../../../src/routes/pr');
     app.use(localRouter);
     app.use(prRouter);
   });
@@ -95,6 +94,7 @@ describe('kickOffSummaryJob trigger sites', () => {
       expect(call.reviewId).toBe(res.body.sessionId);
       expect(call.diffText).toContain('diff --git');
       expect(call.worktreePath).toBe('/mock/repo');
+      expect(call.reviewContext).toEqual({ prTitle: 'main' });
     });
 
     it('still calls kickOffSummaryJob even when summaries_enabled is false (gating happens inside the orchestrator, not at the trigger)', async () => {
@@ -155,6 +155,30 @@ describe('kickOffSummaryJob trigger sites', () => {
       expect(call.reviewId).toBe(sessionId);
       expect(call.worktreePath).toBe('/some/local/path');
       expect(call.diffText).toContain('diff --git');
+      expect(call.reviewContext).toBeDefined();
+      expect(call.reviewContext.prTitle).toBe('main');
+    });
+
+    it('uses review.name as prTitle when present, falling back to branch otherwise', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const sessionId = await reviewRepo.upsertLocalReview({
+        localPath: '/some/local/path',
+        localHeadSha: 'sha-abc',
+        repository: 'owner/repo',
+        localHeadBranch: 'main'
+      });
+      await reviewRepo.updateReview(sessionId, { name: 'My Local Review' });
+      await reviewRepo.saveLocalDiff(sessionId, {
+        diff: 'diff --git a/x.js b/x.js\n--- a/x.js\n+++ b/x.js\n@@ -1 +1 @@\n-a\n+b',
+        stats: { trackedChanges: 1 },
+        digest: 'd1'
+      });
+
+      const res = await request(app).get(`/api/local/${sessionId}`);
+      expect(res.status).toBe(200);
+
+      const call = summaryGenerator.kickOffSummaryJob.mock.calls[0][0];
+      expect(call.reviewContext.prTitle).toBe('My Local Review');
     });
 
     it('skips kickOffSummaryJob when no diff is available (cache miss + no DB row)', async () => {
@@ -216,6 +240,44 @@ describe('kickOffSummaryJob trigger sites', () => {
       expect(call.reviewContext.changedFiles).toEqual(
         expect.arrayContaining(['foo.js', 'bar.js'])
       );
+    });
+  });
+
+  describe('Local CLI: handleLocalReview via setupLocalReviewSession', () => {
+    it('calls kickOffSummaryJob with reviewContext.prTitle = branch when summaries_enabled is true', async () => {
+      const config = { summaries_enabled: true, port: 7247 };
+
+      const session = await localReviewModule.setupLocalReviewSession({
+        db,
+        config,
+        repoPath: '/mock/repo',
+        flags: {}
+      });
+
+      expect(summaryGenerator.kickOffSummaryJob).toHaveBeenCalledTimes(1);
+      const call = summaryGenerator.kickOffSummaryJob.mock.calls[0][0];
+      expect(call.db).toBe(db);
+      expect(call.config).toEqual(expect.objectContaining({ summaries_enabled: true }));
+      expect(call.reviewId).toBe(session.sessionId);
+      expect(call.diffText).toContain('diff --git');
+      expect(call.worktreePath).toBe('/mock/repo');
+      expect(call.reviewContext).toEqual({ prTitle: 'main' });
+    });
+
+    it('still calls kickOffSummaryJob when summaries_enabled is false (trigger is dumb; orchestrator gates)', async () => {
+      const config = { summaries_enabled: false, port: 7247 };
+
+      await localReviewModule.setupLocalReviewSession({
+        db,
+        config,
+        repoPath: '/mock/repo',
+        flags: {}
+      });
+
+      expect(summaryGenerator.kickOffSummaryJob).toHaveBeenCalledTimes(1);
+      const call = summaryGenerator.kickOffSummaryJob.mock.calls[0][0];
+      expect(call.config.summaries_enabled).toBe(false);
+      expect(call.reviewContext).toEqual({ prTitle: 'main' });
     });
   });
 });

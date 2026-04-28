@@ -526,7 +526,8 @@ router.post('/api/local/start', async (req, res) => {
         config,
         reviewId: sessionId,
         diffText: diff,
-        worktreePath: repoPath
+        worktreePath: repoPath,
+        reviewContext: { prTitle: branch }
       });
     })().catch((err) => logger.warn(`Hunk summary job failed for review ${sessionId}: ${err.message}`));
 
@@ -748,7 +749,8 @@ router.get('/api/local/:reviewId', async (req, res) => {
         config: localConfig,
         reviewId,
         diffText: summaryDiffText,
-        worktreePath: review.local_path
+        worktreePath: review.local_path,
+        reviewContext: { prTitle: review.name || branchName }
       });
     })().catch((err) => logger.warn(`Hunk summary kickoff failed for review ${reviewId}: ${err.message}`));
 
