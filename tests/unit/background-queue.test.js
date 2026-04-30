@@ -147,6 +147,7 @@ describe('BackgroundQueue', () => {
       type: 'review:background_job_finished',
       jobType: 'summaries',
       ok: true,
+      hasActiveForType: false,
     });
   });
 
@@ -159,6 +160,92 @@ describe('BackgroundQueue', () => {
       type: 'review:background_job_finished',
       jobType: 'summaries',
       ok: false,
+      hasActiveForType: false,
+    });
+  });
+
+  it('broadcast hasActiveForType reflects sibling jobs of same type-prefix still in flight', async () => {
+    // When the queue holds multiple `summaries:${digest}` jobs for the same
+    // review (refresh, scope change, whitespace toggle), one finishing
+    // should NOT clear the toolbar pulse — the listener uses
+    // `hasActiveForType` to know a sibling is still running.
+    const { queue, broadcast } = makeQueue({ concurrency: 2 });
+    const finishFirst = deferred();
+    const finishSecond = deferred();
+
+    const p1 = queue.enqueue(42, 'summaries:digest-a', () => finishFirst.promise);
+    const p2 = queue.enqueue(42, 'summaries:digest-b', () => finishSecond.promise);
+
+    // Resolve first while second is still in flight; broadcast for the
+    // first must report another summaries job still active.
+    finishFirst.resolve('a');
+    await p1;
+    expect(broadcast).toHaveBeenCalledWith(42, {
+      type: 'review:background_job_finished',
+      jobType: 'summaries:digest-a',
+      ok: true,
+      hasActiveForType: true,
+    });
+
+    // Now resolve the second; broadcast must report the type cleared.
+    finishSecond.resolve('b');
+    await p2;
+    expect(broadcast).toHaveBeenLastCalledWith(42, {
+      type: 'review:background_job_finished',
+      jobType: 'summaries:digest-b',
+      ok: true,
+      hasActiveForType: false,
+    });
+  });
+
+  describe('hasActiveForReview', () => {
+    it('returns true while a same-prefix job is in flight', async () => {
+      const { queue } = makeQueue();
+      const job = deferred();
+      const promise = queue.enqueue(7, 'summaries:abc123', () => job.promise);
+      // The job is sitting in the queue → key is in `inFlight`.
+      expect(queue.hasActiveForReview(7, 'summaries')).toBe(true);
+      job.resolve('done');
+      await promise;
+    });
+
+    it('returns false once the job completes', async () => {
+      const { queue } = makeQueue();
+      await queue.enqueue(7, 'summaries:abc123', () => Promise.resolve('ok'));
+      expect(queue.hasActiveForReview(7, 'summaries')).toBe(false);
+    });
+
+    it('matches the bare jobType (no digest suffix)', async () => {
+      const { queue } = makeQueue();
+      const job = deferred();
+      const promise = queue.enqueue(7, 'summaries', () => job.promise);
+      expect(queue.hasActiveForReview(7, 'summaries')).toBe(true);
+      job.resolve('ok');
+      await promise;
+    });
+
+    it('does not match a different review id', async () => {
+      const { queue } = makeQueue();
+      const job = deferred();
+      const promise = queue.enqueue(7, 'summaries:abc123', () => job.promise);
+      expect(queue.hasActiveForReview(8, 'summaries')).toBe(false);
+      job.resolve('ok');
+      await promise;
+    });
+
+    it('does not match a different jobType prefix', async () => {
+      const { queue } = makeQueue();
+      const job = deferred();
+      const promise = queue.enqueue(7, 'tour', () => job.promise);
+      expect(queue.hasActiveForReview(7, 'summaries')).toBe(false);
+      job.resolve('ok');
+      await promise;
+    });
+
+    it('returns false for an empty prefix (defensive)', () => {
+      const { queue } = makeQueue();
+      expect(queue.hasActiveForReview(7, '')).toBe(false);
+      expect(queue.hasActiveForReview(7, undefined)).toBe(false);
     });
   });
 

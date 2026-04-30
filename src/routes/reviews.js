@@ -13,6 +13,7 @@ const { calculateStats, getStatsQuery } = require('../utils/stats-calculator');
 const { activeAnalyses, reviewToAnalysisId } = require('./shared');
 const logger = require('../utils/logger');
 const { broadcastReviewEvent } = require('../events/review-events');
+const { backgroundQueue } = require('../ai/background-queue');
 const { ensureContextFileForComment } = require('../utils/auto-context');
 const path = require('path');
 const fs = require('fs').promises;
@@ -1057,13 +1058,19 @@ router.get('/api/reviews/:reviewId/hunk-summaries', validateReviewId, async (req
     const db = req.app.get('db');
     const repo = new HunkSummaryRepository(db);
     const rows = await repo.getByReview(req.reviewId);
+    // `generating` reflects whether the background queue is still working
+    // on this review's summaries; the frontend uses it to show a "generating"
+    // pulse on the toolbar toggle until `review:background_job_finished`
+    // fires for jobType=`summaries:*`.
+    const generating = backgroundQueue.hasActiveForReview(req.reviewId, 'summaries');
     res.json({
       summaries: rows.map((row) => ({
         file_path: row.file_path,
         content_hash: row.content_hash,
         summary_text: row.summary_text,
         trivial_reason: row.trivial_reason
-      }))
+      })),
+      generating
     });
   } catch (error) {
     logger.error('Error fetching hunk summaries:', error);

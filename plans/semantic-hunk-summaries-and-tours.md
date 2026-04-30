@@ -13,6 +13,27 @@ Note: PR-mode route surface for review/comment work is `src/routes/pr.js` plus t
 
 ---
 
+## Icon Vocabulary
+
+Distinct icons across summary/comment/chat/tour are load-bearing — the chat-bubble metaphor was already overloaded between comments and chat, so summaries and tours must NOT add another bubble. All icons come from the GitHub Primer octicon set (already used throughout the codebase).
+
+| Feature | Icon | Where it appears |
+|---|---|---|
+| Hunk summaries | `note` | Toolbar toggle (`#summary-toggle-btn`), per-file header toggle (`.file-header-summary-toggle`), inline annotation icon (`.hunk-summary-icon`) |
+| Tour (overall) | `milestone` | Toolbar toggle (`#tour-toggle-btn`), tour-bar branding chrome in `TourBar.js` |
+| Tour stops (per-stop marker) | `location` | Inline numbered annotation marker (`.tour-stop-annotation`), Prev/Next chrome inside `TourBar.js` |
+
+**Why these:**
+- `note` (sticky page with folded corner) reads instantly as "annotation/note" and is shape-distinct from chat bubbles.
+- `milestone` (round flag on a vertical pole) is GitHub's canonical "checkpoint along a path" icon — perfect for a guided walkthrough as a whole.
+- `location` (map pin) marks "you are here at stop N" inside the tour. Pairs with `milestone` (the journey) the way pins pair with a route on a map.
+
+**Color pairing** (already specified per phase): summaries are info-blue; tours are pale-yellow. Shape + color give two independent dimensions of distinction.
+
+**Implementation note:** consolidate each icon's SVG path into a single shared constant at the top of its consuming module (or in a new `public/js/modules/icons.js`) rather than copy-pasting the path data across files. Phase 5 currently has the `note` path duplicated across `pr.html`, `local.html`, `pr.js` (per-file toggle), and `hunk-summary-renderer.js`; that should be deduped when this icon swap lands. Phase 8 should follow the same pattern from the start.
+
+---
+
 ## Phased Implementation
 
 Each phase is independently testable, ships independently, and leaves the app in a working state.

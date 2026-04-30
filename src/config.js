@@ -299,6 +299,13 @@ async function loadConfig() {
     }
   }
 
+  // Tours depend on summaries: warn if the user enabled tours without summaries.
+  // The /api/config response (src/routes/config.js) treats this combination as
+  // tours_enabled=false, but we surface the misconfiguration once at startup.
+  if (mergedConfig.tours_enabled === true && mergedConfig.summaries_enabled !== true) {
+    logger.warn('tours_enabled=true but summaries_enabled is not true; tours will be disabled. Set summaries_enabled=true to enable tours.');
+  }
+
   return { config: mergedConfig, isFirstRun };
 }
 

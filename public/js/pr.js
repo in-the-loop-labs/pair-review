@@ -138,6 +138,32 @@ class PRManager {
     this.diffOptionsDropdown = null;
     // Comment minimizer — manages minimize mode indicators
     this.commentMinimizer = window.CommentMinimizer ? new window.CommentMinimizer() : null;
+    // Hunk summary renderer (Phase 5) — inline natural-language summaries
+    this.hunkSummaryRenderer = window.HunkSummaryRenderer ? new window.HunkSummaryRenderer(this) : null;
+    // Per-render anchor map: contentHash -> first code-line <tr> of the hunk
+    this._summaryAnchorsByHash = new Map();
+    // Per-render file map: filePath -> Set<contentHash>
+    this._summaryHashesByFile = new Map();
+    // Summaries that arrived (via WS or fetch) before their hunk had been hashed
+    this._pendingSummariesByHash = new Map();
+    // Per-file summary visibility (persisted in localStorage per-review)
+    this.summariesHiddenFiles = new Set();
+    // Render-generation token — incremented at the top of renderDiff() so any
+    // fire-and-forget _kickOffHunkSummaries() from a prior render can detect
+    // it's stale and bail (refresh / whitespace toggle / scope change race).
+    this._renderGen = 0;
+    // Cached /api/config response (lazy-loaded)
+    this._appConfigPromise = null;
+    // Review-level summary visibility (persisted in localStorage per-review)
+    this._summariesHidden = false;
+    // Whether the background summary job is currently running for this review.
+    // Cleared by the `review:background_job_finished` event for jobType=summaries.
+    this._summariesGenerating = false;
+    // Tri-state: true when /api/config reports summaries_enabled, false when
+    // disabled, null until /api/config resolves. Per-file toggle buttons are
+    // gated on this so users on disabled deployments don't see them flicker
+    // in.
+    this._summariesEnabled = null;
     // Cached staleness check promise — shared between on-load and triggerAIAnalysis
     this._stalenessPromise = null;
     // Unique client ID for self-echo suppression on WebSocket review events.
@@ -319,6 +345,35 @@ class PRManager {
         });
       }
     }
+
+    // Hunk summary toolbar toggle (Phase 5).
+    // Hidden by default in HTML; revealed asynchronously when /api/config
+    // reports summaries_enabled. The same config check also controls the
+    // per-file `.file-header-summary-toggle` buttons (which are created
+    // hidden by createFileHeader and revealed/removed once config resolves).
+    const summaryToggle = document.getElementById('summary-toggle-btn');
+    if (summaryToggle) {
+      summaryToggle.addEventListener('click', () => this.toggleSummariesVisibility());
+    }
+    this._getAppConfig().then((cfg) => {
+      this._summariesEnabled = cfg.summaries_enabled === true;
+      if (this._summariesEnabled) {
+        if (summaryToggle) {
+          summaryToggle.style.display = '';
+          this._syncSummaryToolbarButton();
+        }
+        document
+          .querySelectorAll('.file-header-summary-toggle.summary-toggle-pending')
+          .forEach((btn) => {
+            btn.classList.remove('summary-toggle-pending');
+            btn.style.display = '';
+          });
+      } else {
+        document
+          .querySelectorAll('.file-header-summary-toggle')
+          .forEach((btn) => btn.remove());
+      }
+    });
 
     // PR description popover
     this.setupPRDescriptionPopover();
@@ -904,6 +959,363 @@ class PRManager {
   }
 
   /**
+   * Resolve the cached `/api/config` payload, fetching it on first use.
+   * @returns {Promise<Object>}
+   */
+  _getAppConfig() {
+    if (!this._appConfigPromise) {
+      this._appConfigPromise = fetch('/api/config')
+        .then((r) => (r.ok ? r.json() : {}))
+        .catch(() => ({}));
+    }
+    return this._appConfigPromise;
+  }
+
+  /**
+   * Attach `data-hunk-start` to each anchor row using the server-supplied
+   * `content_hash`, then kick off the initial summary fetch (gated by
+   * `summaries_enabled` in `/api/config`). Drains any summaries that
+   * arrived before mounting finished.
+   *
+   * Order matters:
+   *   1. Config gate first — bail before paying any setup cost when the
+   *      feature is off.
+   *   2. Restore localStorage visibility state.
+   *   3. Walk records and wire each anchor row to its server-supplied
+   *      content hash. The server computes hashes from the canonical
+   *      (non-whitespace-filtered) diff so they stay aligned with persisted
+   *      summary keys; records lacking a `contentHash` are logged-and-skipped.
+   *   4. Drain pending summaries against the freshly-built anchor map.
+   *   5. Fetch existing summaries from the server.
+   *
+   * Race-safety: `_renderGen` is captured at entry and rechecked after
+   * every `await`. If `renderDiff()` ran again mid-flight, we stop touching
+   * the (now stale) maps and DOM.
+   * @returns {Promise<void>}
+   */
+  async _kickOffHunkSummaries() {
+    const gen = this._renderGen;
+    const records = this._pendingHunkRecords || [];
+    this._pendingHunkRecords = null; // single-use; renderDiff resets
+
+    // 1. Config gate — bail before doing any work when the feature is off.
+    const cfg = await this._getAppConfig();
+    if (gen !== this._renderGen) return;
+    if (!cfg.summaries_enabled) return;
+
+    // 2. Restore localStorage visibility state.
+    if (this.currentPR?.id) {
+      const hidden = window.localStorage.getItem(`pair-review:summaries-hidden:${this.currentPR.id}`) === '1';
+      this._summariesHidden = hidden;
+      document.body.classList.toggle('summaries-hidden', hidden);
+      this._syncSummaryToolbarButton();
+      this._restoreSummariesHiddenFiles();
+      // Apply per-file hidden state to wrappers already in the DOM, syncing
+      // both the wrapper class AND the toggle button so its visible state and
+      // aria-pressed match the persisted hidden flag.
+      for (const filePath of this.summariesHiddenFiles) {
+        const wrapper = document.querySelector(
+          `.d2h-file-wrapper[data-file-name="${CSS.escape(filePath)}"]`
+        );
+        if (!wrapper) continue;
+        wrapper.classList.add('summaries-hidden-file');
+        const btn = wrapper.querySelector('.file-header-summary-toggle');
+        if (btn) this._syncFileSummaryToggleButton(btn, filePath);
+      }
+    }
+
+    // 3. Wire each anchor row to its server-supplied content hash. The
+    // backend computes these from the canonical (unfiltered) diff so they
+    // stay aligned with persisted summary keys regardless of `?w=1`.
+    // Records missing `contentHash` indicate a server bug (or a hash array
+    // length mismatch the renderPatch guard already dropped) — log + skip.
+    for (const rec of records) {
+      if (!rec.anchorRow || !rec.anchorRow.isConnected) continue;
+      const hex = rec.contentHash;
+      if (!hex) {
+        console.warn(
+          `[HunkSummary] no server contentHash for ${rec.file} ` +
+          `hunk ${rec.header}; skipping (summaries will not anchor here).`
+        );
+        continue;
+      }
+      rec.anchorRow.dataset.hunkStart = hex;
+      this._summaryAnchorsByHash.set(hex, rec.anchorRow);
+      let bucket = this._summaryHashesByFile.get(rec.file);
+      if (!bucket) {
+        bucket = new Set();
+        this._summaryHashesByFile.set(rec.file, bucket);
+      }
+      bucket.add(hex);
+    }
+
+    // 4. Drain summaries that arrived (via WS) before hashing finished.
+    if (this._pendingSummariesByHash.size > 0) {
+      const filesWithMounts = new Set();
+      for (const [hash, summary] of this._pendingSummariesByHash.entries()) {
+        if (this._summaryAnchorsByHash.has(hash)) {
+          const row = this._renderOneSummary(summary);
+          if (row) {
+            // Find the file this hash belongs to, so we can re-enable its
+            // toggle button.
+            for (const [filePath, bucket] of this._summaryHashesByFile.entries()) {
+              if (bucket.has(hash)) {
+                filesWithMounts.add(filePath);
+                break;
+              }
+            }
+          }
+          this._pendingSummariesByHash.delete(hash);
+        }
+      }
+      for (const filePath of filesWithMounts) this._refreshFileSummaryToggle(filePath);
+    }
+
+    // 5. Load existing summaries from the server.
+    if (!this.currentPR?.id) return;
+
+    try {
+      const resp = await fetch(`/api/reviews/${this.currentPR.id}/hunk-summaries`);
+      if (gen !== this._renderGen) return;
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (gen !== this._renderGen) return;
+      const summaries = Array.isArray(data.summaries) ? data.summaries : [];
+      // Group by file path so we can refresh each file's toggle button once.
+      const byFile = new Map();
+      for (const summary of summaries) {
+        const fp = summary.file_path;
+        if (!fp) continue;
+        if (!byFile.has(fp)) byFile.set(fp, []);
+        byFile.get(fp).push(summary);
+      }
+      // If summaries lack file_path, fall back to ungrouped rendering.
+      if (byFile.size === 0 && summaries.length > 0) {
+        for (const summary of summaries) this._renderOneSummary(summary);
+      } else {
+        for (const [filePath, fileSummaries] of byFile.entries()) {
+          this._applyHunkSummaries(filePath, fileSummaries);
+        }
+      }
+      // Mirror the queue's view of whether summaries are still being generated.
+      // The `review:background_job_finished` WS event clears this when the job
+      // completes mid-session.
+      this._summariesGenerating = data.generating === true;
+      this._syncSummaryToolbarButton();
+    } catch (err) {
+      console.warn('[HunkSummary] failed to load summaries:', err);
+    }
+  }
+
+  /**
+   * Apply a batch of summaries delivered via the WS
+   * `review:hunk_summaries_ready` event for a single file. Validates each
+   * summary's hash against the per-file hash bucket so a hash collision
+   * across files can't pull a summary into the wrong file's view, and
+   * re-enables the per-file toggle button once a file has at least one
+   * summary mounted.
+   * @param {string} filePath - File path the summaries belong to
+   * @param {Array<Object>} summaries - Summary rows for that file
+   */
+  _applyHunkSummaries(filePath, summaries) {
+    if (!Array.isArray(summaries)) return;
+    const allowedHashes = this._summaryHashesByFile.get(filePath) || new Set();
+    let mountedAny = false;
+    for (const summary of summaries) {
+      if (!summary?.content_hash) continue;
+      if (allowedHashes.size > 0 && !allowedHashes.has(summary.content_hash)) {
+        if (!this._warnedCrossFileHashMismatch) {
+          this._warnedCrossFileHashMismatch = true;
+          console.warn(
+            `[HunkSummary] dropping summary for ${filePath}: hash ${summary.content_hash} ` +
+            'not present in file hash bucket. Likely cross-file collision or stale render.'
+          );
+        }
+        continue;
+      }
+      const row = this._renderOneSummary(summary);
+      if (row) mountedAny = true;
+    }
+    if (mountedAny && filePath) this._refreshFileSummaryToggle(filePath);
+  }
+
+  /**
+   * Refresh the per-file summary toggle button for `filePath` so it reflects
+   * the current state: enabled iff there is at least one mounted summary in
+   * that file's hash bucket.
+   * @param {string} filePath
+   */
+  _refreshFileSummaryToggle(filePath) {
+    if (!filePath) return;
+    const wrapper = document.querySelector(
+      `.d2h-file-wrapper[data-file-name="${CSS.escape(filePath)}"]`
+    );
+    if (!wrapper) return;
+    const btn = wrapper.querySelector('.file-header-summary-toggle');
+    if (!btn) return;
+    this._syncFileSummaryToggleButton(btn, filePath);
+  }
+
+  /**
+   * Apply the canonical per-file summary toggle button state derived from
+   * `_summaryHashesByFile` and `summariesHiddenFiles`. Sets `disabled`,
+   * `summaries-off`, `aria-pressed`, and `title` on the button.
+   *
+   * Used by three call sites that must agree on the button's visible state:
+   *   - createFileHeader (initial render)
+   *   - _kickOffHunkSummaries (rehydrate after localStorage restore)
+   *   - _refreshFileSummaryToggle (when summaries arrive late)
+   *   - toggleFileSummaries (user click)
+   *
+   * @param {HTMLButtonElement} btn
+   * @param {string} filePath
+   */
+  _syncFileSummaryToggleButton(btn, filePath) {
+    if (!btn || !filePath) return;
+    const hasSummaries = (this._summaryHashesByFile.get(filePath)?.size || 0) > 0;
+    const isHidden = this.summariesHiddenFiles.has(filePath);
+    btn.classList.toggle('summaries-off', isHidden);
+    btn.setAttribute('aria-pressed', isHidden ? 'false' : 'true');
+    if (!hasSummaries) {
+      btn.disabled = true;
+      btn.title = 'No summaries available';
+    } else {
+      btn.disabled = false;
+      btn.title = isHidden ? 'Show file summaries' : 'Hide file summaries';
+    }
+  }
+
+  /**
+   * Render a single summary row, or queue it if the matching hunk hasn't
+   * been hashed yet (race between WS broadcast and post-render hashing).
+   * Trivial / model-skipped / model-malformed rows are ignored.
+   * @param {Object} summary - { content_hash, summary_text, trivial_reason }
+   * @returns {HTMLTableRowElement|null} The mounted row, or null if queued/skipped.
+   */
+  _renderOneSummary(summary) {
+    if (!summary || !summary.content_hash) return null;
+    if (!summary.summary_text) return null; // trivial / opt-out — nothing to show
+    const hash = summary.content_hash;
+    const anchor = this._summaryAnchorsByHash.get(hash);
+    if (!anchor || !anchor.isConnected) {
+      // Anchor missing or detached (stale render) → defer; the next render
+      // pass that re-establishes the hash will drain this map.
+      this._pendingSummariesByHash.set(hash, summary);
+      return null;
+    }
+    if (!this.hunkSummaryRenderer) return null;
+    return this.hunkSummaryRenderer.renderInline(anchor, summary);
+  }
+
+  /**
+   * Storage key for per-file summary visibility. Mirrors the
+   * `pair-review:summaries-hidden:${reviewId}` review-level key.
+   * @param {number|string} reviewId
+   * @returns {string}
+   */
+  static summariesHiddenFilesStorageKey(reviewId) {
+    return `pair-review:summaries-hidden-files:${reviewId}`;
+  }
+
+  /**
+   * Toggle the visibility of summaries for a single file. Updates the
+   * `summariesHiddenFiles` set, the wrapper's CSS class, the per-file toggle
+   * button's `summaries-off` class, and persists the set per-review.
+   * @param {string} filePath
+   * @param {HTMLElement} fileWrapper - The `.d2h-file-wrapper` element
+   */
+  toggleFileSummaries(filePath, fileWrapper) {
+    if (!filePath || !fileWrapper) return;
+    const isHidden = this.summariesHiddenFiles.has(filePath);
+    if (isHidden) {
+      this.summariesHiddenFiles.delete(filePath);
+    } else {
+      this.summariesHiddenFiles.add(filePath);
+    }
+    fileWrapper.classList.toggle('summaries-hidden-file', !isHidden);
+    const btn = fileWrapper.querySelector('.file-header-summary-toggle');
+    if (btn) this._syncFileSummaryToggleButton(btn, filePath);
+    if (this.currentPR?.id != null) {
+      try {
+        window.localStorage.setItem(
+          PRManager.summariesHiddenFilesStorageKey(this.currentPR.id),
+          JSON.stringify([...this.summariesHiddenFiles])
+        );
+      } catch {
+        // localStorage unavailable; in-session state still applies.
+      }
+    }
+  }
+
+  /**
+   * Hydrate `summariesHiddenFiles` from localStorage for the current review.
+   * Safe to call multiple times — the state always reflects what's in storage.
+   */
+  _restoreSummariesHiddenFiles() {
+    if (!this.currentPR?.id) return;
+    try {
+      const raw = window.localStorage.getItem(
+        PRManager.summariesHiddenFilesStorageKey(this.currentPR.id)
+      );
+      if (!raw) {
+        this.summariesHiddenFiles = new Set();
+        return;
+      }
+      const arr = JSON.parse(raw);
+      this.summariesHiddenFiles = new Set(Array.isArray(arr) ? arr : []);
+    } catch {
+      this.summariesHiddenFiles = new Set();
+    }
+  }
+
+  /**
+   * Toggle review-level summary visibility. Persists per-review.
+   */
+  toggleSummariesVisibility() {
+    this._summariesHidden = !this._summariesHidden;
+    document.body.classList.toggle('summaries-hidden', this._summariesHidden);
+    if (this.currentPR?.id != null) {
+      try {
+        window.localStorage.setItem(
+          `pair-review:summaries-hidden:${this.currentPR.id}`,
+          this._summariesHidden ? '1' : '0'
+        );
+      } catch {
+        // localStorage unavailable; in-session state still applies.
+      }
+    }
+    this._syncSummaryToolbarButton();
+  }
+
+  /**
+   * Reflect the current state (visible / hidden / generating) on the
+   * toolbar toggle button. The button gets:
+   *   - `.active` when summaries are visible
+   *   - `.generating` when a background summary job is in flight
+   *   - `title` + `aria-label` + `data-label` (CSS hover fallback) all kept
+   *     in sync so the user always knows what the button does.
+   */
+  _syncSummaryToolbarButton() {
+    const btn = document.getElementById('summary-toggle-btn');
+    if (!btn) return;
+    btn.classList.toggle('active', !this._summariesHidden);
+    btn.classList.toggle('generating', this._summariesGenerating === true);
+
+    let label;
+    if (this._summariesGenerating) {
+      label = this._summariesHidden
+        ? 'Generating summaries… (click to show)'
+        : 'Generating summaries…';
+    } else {
+      label = this._summariesHidden ? 'Show hunk summaries' : 'Hide hunk summaries';
+    }
+    btn.title = label;
+    btn.setAttribute('aria-label', label);
+    btn.dataset.label = label;
+    btn.setAttribute('aria-pressed', this._summariesHidden ? 'false' : 'true');
+  }
+
+  /**
    * Listen for review-scoped CustomEvents dispatched by ChatPanel's
    * WebSocket pub/sub connection.
    */
@@ -982,6 +1394,32 @@ class PRManager {
       if (e.detail?.reviewId !== reviewId()) return;
       const { file, line_start, line_end, side } = e.detail;
       await this.ensureLinesVisible([{ file, line_start, line_end, side: side || 'right' }]);
+    });
+
+    document.addEventListener('review:hunk_summaries_ready', (e) => {
+      if (e.detail?.reviewId !== reviewId()) return;
+      // Per-file completion implies the review-level job is still working,
+      // so reflect "generating" until `background_job_finished` clears it.
+      // (No-op when the toolbar button is already pulsing.)
+      if (!this._summariesGenerating) {
+        this._summariesGenerating = true;
+        this._syncSummaryToolbarButton();
+      }
+      this._applyHunkSummaries(e.detail.filePath, e.detail.summaries || []);
+    });
+
+    document.addEventListener('review:background_job_finished', (e) => {
+      if (e.detail?.reviewId !== reviewId()) return;
+      const jobType = e.detail?.jobType || '';
+      if (jobType !== 'summaries' && !jobType.startsWith('summaries:')) return;
+      // The queue can host multiple `summaries:${digest}` jobs back-to-back
+      // (refresh, scope change, whitespace toggle). The broadcast payload
+      // carries `hasActiveForType` from the queue's view AFTER this job's
+      // key was deleted, so a sibling job still in flight keeps the pulse
+      // visible.
+      if (e.detail?.hasActiveForType === true) return;
+      this._summariesGenerating = false;
+      this._syncSummaryToolbarButton();
     });
 
     document.addEventListener('visibilitychange', () => {
@@ -1846,6 +2284,19 @@ class PRManager {
 
     diffContainer.innerHTML = '';
 
+    // Reset hunk-summary tracking — `renderPatch` will populate this as it
+    // walks each block, and we hash the records once render finishes.
+    this._pendingHunkRecords = [];
+    if (this.hunkSummaryRenderer) {
+      this.hunkSummaryRenderer.reset();
+    }
+    this._summaryAnchorsByHash = new Map();
+    this._summaryHashesByFile = new Map();
+    this._pendingSummariesByHash = new Map();
+    // Bump generation so any in-flight `_kickOffHunkSummaries` from the
+    // previous render bails out instead of mutating maps we just reset.
+    this._renderGen = (this._renderGen || 0) + 1;
+
     // Use changed_files array from API
     const files = pr.changed_files || pr.files || [];
 
@@ -1880,6 +2331,14 @@ class PRManager {
     // Load context files after diff is rendered
     this.contextFiles = [];
     this.loadContextFiles();
+
+    // Kick off hunk-summary hashing + load (Phase 5). Fire-and-forget — the
+    // diff is fully usable while summaries arrive asynchronously.
+    if (this.hunkSummaryRenderer) {
+      this._kickOffHunkSummaries().catch((err) => {
+        console.warn('[HunkSummary] kickoff failed:', err);
+      });
+    }
   }
 
   /**
@@ -1976,6 +2435,44 @@ class PRManager {
         }
       });
       header.appendChild(fileChatBtn);
+
+      // Per-file hunk-summary toggle. Mirrors the toolbar toggle but scoped to
+      // one file. Disabled (greyed) when no summaries exist yet for this file;
+      // _applyHunkSummaries / _kickOffHunkSummaries re-enable it as soon as
+      // hashes for this file are recorded (so a summary that arrives later
+      // doesn't get hidden behind a permanently-disabled button).
+      // Gated on `_summariesEnabled`: skipped entirely when /api/config has
+      // already reported the feature is off; created hidden + revealed later
+      // when config has not yet resolved.
+      if (this._summariesEnabled !== false) {
+        const summaryToggleBtn = document.createElement('button');
+        summaryToggleBtn.className = 'file-header-summary-toggle';
+        summaryToggleBtn.dataset.file = file.file;
+        summaryToggleBtn.innerHTML = `
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
+            <path d="M0 1.75C0 .784.784 0 1.75 0h12.5C15.216 0 16 .784 16 1.75v9.5A1.75 1.75 0 0 1 14.25 13H8.06l-2.573 2.573A1.458 1.458 0 0 1 3 14.543V13H1.75A1.75 1.75 0 0 1 0 11.25Zm1.75-.25a.25.25 0 0 0-.25.25v9.5c0 .138.112.25.25.25h2a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h6.5a.25.25 0 0 0 .25-.25v-9.5a.25.25 0 0 0-.25-.25Z"/>
+            <path d="M3.75 4h8.5a.75.75 0 0 1 0 1.5h-8.5a.75.75 0 0 1 0-1.5Zm0 3h5.5a.75.75 0 0 1 0 1.5h-5.5a.75.75 0 0 1 0-1.5Z"/>
+          </svg>
+        `;
+
+        if (this._summariesEnabled !== true) {
+          // Config still pending; hide until the gate resolves.
+          summaryToggleBtn.classList.add('summary-toggle-pending');
+          summaryToggleBtn.style.display = 'none';
+        }
+
+        const fileIsHidden = this.summariesHiddenFiles?.has(file.file) || false;
+        if (fileIsHidden) {
+          wrapper.classList.add('summaries-hidden-file');
+        }
+        this._syncFileSummaryToggleButton(summaryToggleBtn, file.file);
+
+        summaryToggleBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.toggleFileSummaries(file.file, wrapper);
+        });
+        header.appendChild(summaryToggleBtn);
+      }
     }
 
     // Create diff table
@@ -1986,7 +2483,7 @@ class PRManager {
 
     // Parse the diff content
     if (file.patch) {
-      this.renderPatch(tbody, file.patch, file.file);
+      this.renderPatch(tbody, file.patch, file.file, file.hunk_hashes || null);
     } else if (file.binary) {
       const row = document.createElement('tr');
       row.innerHTML = '<td colspan="2" class="binary-file">Binary file</td>';
@@ -2010,13 +2507,38 @@ class PRManager {
    * @param {HTMLElement} tbody - Table body element
    * @param {string} patch - Unified diff patch string
    * @param {string} fileName - File name
+   * @param {string[]|null} [hunkHashes] - Per-hunk content hashes parallel
+   *   to the order `parseDiffIntoBlocks` returns hunks. When supplied, these
+   *   are used instead of computing client-side hashes. Computed by the
+   *   backend from the canonical (non-whitespace-filtered) diff so they
+   *   stay aligned with persisted summary keys.
    */
-  renderPatch(tbody, patch, fileName) {
+  renderPatch(tbody, patch, fileName, hunkHashes = null) {
     let diffPosition = 0;  // GitHub diff_position (1-indexed, consecutive)
     let prevBlockEnd = { old: 0, new: 0 };
     let isFirstHunk = true;
 
     const blocks = window.HunkParser.parseDiffIntoBlocks(patch);
+
+    // Defend against length drift between server-supplied (canonical) hashes
+    // and the rendered (possibly whitespace-filtered) blocks: under `?w=1`,
+    // `git diff -w` can drop or merge whitespace-only hunks so the canonical
+    // and rendered hunk counts diverge. Misaligned hashes would write the
+    // wrong canonical hash onto every block after the first dropped hunk,
+    // anchoring summaries to the wrong rendered hunk. Fail closed: drop the
+    // hashes for this file. Summaries then simply won't anchor — visibly
+    // missing rather than visibly wrong.
+    if (Array.isArray(hunkHashes) && hunkHashes.length !== blocks.length) {
+      if (!this._warnedHunkHashLengthMismatch) {
+        this._warnedHunkHashLengthMismatch = true;
+        console.warn(
+          `[HunkSummary] hunk_hashes length mismatch for ${fileName}: ` +
+          `${hunkHashes.length} canonical hashes, ${blocks.length} rendered ` +
+          'blocks. Dropping hashes for this file.'
+        );
+      }
+      hunkHashes = null;
+    }
 
     // Render blocks with gap sections
     blocks.forEach((block, blockIndex) => {
@@ -2097,6 +2619,7 @@ class PRManager {
       let oldLineNum = block.oldStart;
       let newLineNum = block.newStart;
 
+      let firstLineRow = null;
       block.lines.forEach(line => {
         if (!line && line !== '') return; // Skip undefined
 
@@ -2126,7 +2649,23 @@ class PRManager {
         };
 
         this.renderDiffLine(tbody, lineData, fileName, diffPosition);
+        if (!firstLineRow) firstLineRow = tbody.lastElementChild;
       });
+
+      // Record this hunk's first rendered code row as the anchor for any
+      // inline summary annotation. The canonical hash comes from the
+      // backend (`hunkHashes[blockIndex]`); _kickOffHunkSummaries mounts
+      // it as `data-hunk-start` after render finishes so the summary
+      // renderer can find the anchor and insert the annotation above it.
+      if (this._pendingHunkRecords && firstLineRow) {
+        const serverHash = Array.isArray(hunkHashes) ? hunkHashes[blockIndex] || null : null;
+        this._pendingHunkRecords.push({
+          file: fileName,
+          header: block.header,
+          anchorRow: firstLineRow,
+          contentHash: serverHash
+        });
+      }
 
       // Update previous block end coordinates
       const endBounds = window.HunkParser.getBlockCoordinateBounds(
