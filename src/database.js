@@ -21,7 +21,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 47;
+const CURRENT_SCHEMA_VERSION = 48;
 
 /**
  * Database schema SQL statements
@@ -284,6 +284,18 @@ const SCHEMA_SQL = {
       FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE,
       CHECK (summary_text IS NOT NULL OR trivial_reason IS NOT NULL),
       UNIQUE (review_id, content_hash)
+    )
+  `,
+
+  tours: `
+    CREATE TABLE IF NOT EXISTS tours (
+      review_id INTEGER PRIMARY KEY,
+      stops TEXT NOT NULL,
+      hash_set TEXT NOT NULL,
+      provider TEXT,
+      model TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE
     )
   `,
 
@@ -2124,6 +2136,27 @@ const MIGRATIONS = {
     }
     db.exec('CREATE INDEX IF NOT EXISTS idx_hunk_summaries_review ON hunk_summaries(review_id)');
     console.log('Migration to schema version 47 complete');
+  },
+
+  48: (db) => {
+    console.log('Running migration to schema version 48: Add tours table...');
+    if (!tableExists(db, 'tours')) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS tours (
+          review_id INTEGER PRIMARY KEY,
+          stops TEXT NOT NULL,
+          hash_set TEXT NOT NULL,
+          provider TEXT,
+          model TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE
+        )
+      `);
+      console.log('  Created tours table');
+    } else {
+      console.log('  Table tours already exists');
+    }
+    console.log('Migration to schema version 48 complete');
   }
 };
 
@@ -5716,6 +5749,78 @@ class HunkSummaryRepository {
   }
 }
 
+/**
+ * TourRepository class for managing per-review guided-tour records. A tour is
+ * a single ordered narrative walkthrough (a JSON array of stops) generated
+ * after summaries are available. `hash_set` is a sorted JSON array of the
+ * constituent hunk hashes; the tour-generator uses it to detect staleness
+ * (when the underlying summaries have shifted, the tour is re-generated).
+ *
+ * One row per review (review_id is PRIMARY KEY). On regeneration, upsert
+ * replaces the existing row.
+ */
+class TourRepository {
+  /**
+   * Create a new TourRepository instance
+   * @param {Database} db - Database instance
+   */
+  constructor(db) {
+    this.db = db;
+  }
+
+  /**
+   * Get the tour row for a review.
+   * `stops` and `hash_set` are returned as raw JSON strings; the caller parses.
+   * @param {number} reviewId - Review ID
+   * @returns {Promise<Object|undefined>} The tour row or undefined if none
+   */
+  async get(reviewId) {
+    return queryOne(
+      this.db,
+      'SELECT * FROM tours WHERE review_id = ?',
+      [reviewId]
+    );
+  }
+
+  /**
+   * Insert or replace the tour row for a review. `stops` and `hash_set` are
+   * stored verbatim; the caller is responsible for JSON.stringify.
+   * @param {Object} row - { review_id, stops, hash_set, provider?, model? }
+   * @returns {Promise<Object>} Run result with `changes` count
+   */
+  async upsert(row) {
+    return run(
+      this.db,
+      `
+        INSERT INTO tours (review_id, stops, hash_set, provider, model)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(review_id) DO UPDATE SET
+          stops = excluded.stops,
+          hash_set = excluded.hash_set,
+          provider = excluded.provider,
+          model = excluded.model,
+          created_at = CURRENT_TIMESTAMP
+      `,
+      [
+        row.review_id,
+        row.stops,
+        row.hash_set,
+        row.provider ?? null,
+        row.model ?? null,
+      ]
+    );
+  }
+
+  /**
+   * Delete the tour row for a review.
+   * @param {number} reviewId - Review ID
+   * @returns {Promise<Object>} Run result with `changes` count
+   */
+  async deleteByReview(reviewId) {
+    return run(this.db, 'DELETE FROM tours WHERE review_id = ?', [reviewId]);
+  }
+}
+
 module.exports = {
   initializeDatabase,
   closeDatabase,
@@ -5742,6 +5847,7 @@ module.exports = {
   CouncilRepository,
   ContextFileRepository,
   HunkSummaryRepository,
+  TourRepository,
   generateWorktreeId,
   migrateExistingWorktrees,
   // Exported for testing only

@@ -255,6 +255,18 @@ const SCHEMA_SQL = {
     )
   `,
 
+  tours: `
+    CREATE TABLE IF NOT EXISTS tours (
+      review_id INTEGER PRIMARY KEY,
+      stops TEXT NOT NULL,
+      hash_set TEXT NOT NULL,
+      provider TEXT,
+      model TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE
+    )
+  `,
+
   github_pr_cache: `
     CREATE TABLE IF NOT EXISTS github_pr_cache (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
