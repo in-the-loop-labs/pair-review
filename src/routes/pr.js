@@ -46,7 +46,9 @@ const {
   registerProcess: registerProcessForCancellation
 } = require('./shared');
 const { safeParseJson } = require('../utils/safe-parse-json');
-const { mergeChangedFilesWithDiff } = require('../utils/diff-file-list');
+const { mergeChangedFilesWithDiff, parseUnifiedDiffPatches } = require('../utils/diff-file-list');
+const { parseHunks } = require('../utils/diff-hunks');
+const { hashHunk } = require('../ai/hunk-hashing');
 const { resolveOriginalFileContentSpecs } = require('../utils/diff-file-content');
 const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
 const { TIERS, TIER_ALIASES, VALID_TIERS, resolveTier } = require('../ai/prompts/config');
@@ -56,6 +58,57 @@ const { runExecutableAnalysis } = require('./executable-analysis');
 const analysesRouter = require('./analyses');
 const { worktreeLock } = require('../git/worktree-lock');
 const router = express.Router();
+
+/**
+ * Compute per-file hunk hashes from a canonical (unfiltered) unified diff.
+ * Returns a Map<filePath, string[]> where the array is parallel to the order
+ * `parseHunks(filePatch)` returns hunks. The frontend's `parseDiffIntoBlocks`
+ * walks hunks in the same order, so `hunk_hashes[i]` matches `block[i]`.
+ *
+ * This is computed from the canonical (non-whitespace-filtered) diff so that
+ * the resulting hashes always match the keys persisted in `hunk_summaries`.
+ * Even when the rendered patch is `?w=1` (whitespace-filtered), the hashes
+ * stay aligned to the canonical hunks.
+ *
+ * @param {string} canonicalDiff - Full unified diff (NOT whitespace-filtered)
+ * @returns {Map<string, string[]>}
+ */
+function computeHunkHashesFromDiff(canonicalDiff) {
+  const result = new Map();
+  if (!canonicalDiff) return result;
+  const filePatchMap = parseUnifiedDiffPatches(canonicalDiff);
+  for (const [filePath, filePatch] of filePatchMap.entries()) {
+    const hunks = parseHunks(filePatch);
+    const hashes = hunks.map((h) => hashHunk(filePath, `${h.header}\n${h.lines.join('\n')}`));
+    result.set(filePath, hashes);
+  }
+  return result;
+}
+
+/**
+ * Decorate a `changed_files` array with a parallel `hunk_hashes` array per
+ * file. Hashes come from the canonical diff so they remain stable across
+ * whitespace-filtered renders.
+ *
+ * @param {Array<object>} changedFiles
+ * @param {string} canonicalDiff
+ * @returns {Array<object>} New array; inputs are not mutated.
+ */
+function attachHunkHashes(changedFiles, canonicalDiff) {
+  if (!Array.isArray(changedFiles) || changedFiles.length === 0) return changedFiles;
+  const hashes = computeHunkHashesFromDiff(canonicalDiff);
+  return changedFiles.map((file) => {
+    if (typeof file === 'string') return file;
+    const filePath = file?.file;
+    if (!filePath) return file;
+    const fileHashes = hashes.get(filePath);
+    if (!fileHashes) return file;
+    return { ...file, hunk_hashes: fileHashes };
+  });
+}
+
+module.exports._computeHunkHashesFromDiff = computeHunkHashesFromDiff;
+module.exports._attachHunkHashes = attachHunkHashes;
 
 /**
  * Sync pending draft review from GitHub with local database
@@ -255,8 +308,13 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
       }
     }
 
-    // Prepare response
-    const changedFiles = mergeChangedFilesWithDiff(extendedData.changed_files || [], extendedData.diff || '');
+    // Prepare response. Hunk hashes are computed from the canonical diff so
+    // they remain stable across whitespace-filtered renders (the rendered
+    // patch may be filtered, but the persisted hash keys are not).
+    const changedFiles = attachHunkHashes(
+      mergeChangedFilesWithDiff(extendedData.changed_files || [], extendedData.diff || ''),
+      extendedData.diff || ''
+    );
 
     // Use review.id instead of prMetadata.id to avoid ID collision with local mode
     const response = {
@@ -840,6 +898,21 @@ router.get('/api/pr/:owner/:repo/:number/diff', async (req, res) => {
         ...file,
         generated: gitattributes.isGenerated(file.file)
       }));
+    }
+
+    // Hunk hashes MUST come from the canonical (unfiltered) diff. When
+    // hideWhitespace is on the rendered `diffContent` is the filtered diff,
+    // which would produce hashes that diverge from the keys persisted in
+    // `hunk_summaries`. We deliberately do NOT fall back to `diffContent`:
+    // if `prData.diff` is missing, fail closed and emit no hashes so the
+    // frontend skips anchoring rather than anchoring to misaligned hunks.
+    if (prData.diff) {
+      changedFiles = attachHunkHashes(changedFiles, prData.diff);
+    } else {
+      logger.warn(
+        `[hunk-hash] PR #${prNumber} ${repository}: no canonical prData.diff; ` +
+        'omitting hunk_hashes (summaries will not anchor for this response).'
+      );
     }
 
     // When diff was regenerated (whitespace), compute aggregate stats from

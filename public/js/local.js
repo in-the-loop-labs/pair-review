@@ -1404,6 +1404,9 @@ class LocalManager {
       const diffContent = data.diff || '';
       const stats = data.stats || {};
       const generatedFiles = new Set(data.generated_files || []);
+      // Server-computed per-file hunk hashes (computed from the canonical
+      // diff so they remain stable across whitespace-filtered renders).
+      const hunkHashesByFile = data.hunk_hashes_by_file || {};
 
       if (!diffContent) {
         const diffContainer = document.getElementById('diff-container');
@@ -1468,6 +1471,9 @@ class LocalManager {
           insertions: additions,
           deletions: deletions,
           generated: isGenerated,
+          // Pass through the server-computed canonical hunk hashes; renderPatch
+          // requires these to anchor persisted summaries (no client-side fallback).
+          hunk_hashes: hunkHashesByFile[fileName] || null,
           status: patch.includes('new file mode') ? 'added' :
                   patch.includes('deleted file mode') ? 'removed' : 'modified'
         });

@@ -87,13 +87,44 @@ class BackgroundQueue {
     this._drain();
   }
 
+  /**
+   * Is there an in-flight or queued job for this review whose jobType
+   * starts with the given prefix? Useful for surfacing a "generating"
+   * indicator on the frontend (`hasActiveForReview(id, 'summaries')`).
+   *
+   * Job keys are stored as `${reviewId}:${jobType}`; `summaries` jobs use
+   * the form `summaries:${digest}`, so a prefix match on
+   * `${reviewId}:summaries` catches every digest variant.
+   *
+   * @param {string|number} reviewId
+   * @param {string} jobTypePrefix
+   * @returns {boolean}
+   */
+  hasActiveForReview(reviewId, jobTypePrefix) {
+    if (!jobTypePrefix) return false;
+    const prefix = `${reviewId}:${jobTypePrefix}`;
+    for (const key of this.inFlight.keys()) {
+      if (key === prefix || key.startsWith(prefix + ':')) return true;
+    }
+    return false;
+  }
+
   /** Broadcast job completion; broadcast failures are logged, not thrown. */
   _onComplete(reviewId, jobType, error) {
     try {
+      // Include whether more jobs of the same type-prefix remain queued or
+      // in-flight so listeners (e.g. the summaries toolbar pulse) don't
+      // clear their "generating" state when a sibling job is still running.
+      // For composite types like `summaries:${digest}`, we strip the suffix
+      // so the prefix match catches every digest variant.
+      const colonIdx = jobType.indexOf(':');
+      const prefix = colonIdx >= 0 ? jobType.slice(0, colonIdx) : jobType;
+      const hasActiveForType = this.hasActiveForReview(reviewId, prefix);
       this._deps.broadcast(reviewId, {
         type: 'review:background_job_finished',
         jobType,
         ok: error === null,
+        hasActiveForType,
       });
     } catch (broadcastError) {
       logger.warn(

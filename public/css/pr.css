@@ -1429,7 +1429,8 @@
 
 /* File header comment button and file header chat button */
 .file-header-comment-btn,
-.file-header-chat-btn {
+.file-header-chat-btn,
+.file-header-summary-toggle {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1443,36 +1444,64 @@
   color: var(--color-text-secondary, #656d76);
   transition: background-color 0.15s, color 0.15s, border-color 0.15s;
   flex-shrink: 0;
+  position: relative;
 }
 
 .file-header-comment-btn:hover,
-.file-header-chat-btn:hover {
+.file-header-chat-btn:hover,
+.file-header-summary-toggle:not([disabled]):hover {
   background-color: var(--color-accent-bg, rgba(9, 105, 218, 0.1));
   border-color: var(--color-accent-primary, #0969da);
   color: var(--color-accent-primary, #0969da);
 }
 
 .file-header-comment-btn:active,
-.file-header-chat-btn:active {
+.file-header-chat-btn:active,
+.file-header-summary-toggle:not([disabled]):active {
   background-color: var(--color-accent-bg, rgba(9, 105, 218, 0.15));
 }
 
 .file-header-comment-btn svg,
-.file-header-chat-btn svg {
+.file-header-chat-btn svg,
+.file-header-summary-toggle svg {
   width: 16px;
   height: 16px;
 }
 
 [data-theme="dark"] .file-header-comment-btn,
-[data-theme="dark"] .file-header-chat-btn {
+[data-theme="dark"] .file-header-chat-btn,
+[data-theme="dark"] .file-header-summary-toggle {
   color: #8b949e;
 }
 
 [data-theme="dark"] .file-header-comment-btn:hover,
-[data-theme="dark"] .file-header-chat-btn:hover {
+[data-theme="dark"] .file-header-chat-btn:hover,
+[data-theme="dark"] .file-header-summary-toggle:not([disabled]):hover {
   background-color: rgba(56, 139, 253, 0.15);
   border-color: #58a6ff;
   color: #58a6ff;
+}
+
+/* Disabled state — no summaries available for this file */
+.file-header-summary-toggle[disabled] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Off state — summaries hidden for this file. Shows the same slash overlay
+   used by the toolbar toggle so the on/off state is visually distinct. */
+.file-header-summary-toggle.summaries-off:not([disabled])::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 18%;
+  right: 18%;
+  height: 2px;
+  background-color: currentColor;
+  transform: rotate(-25deg);
+  transform-origin: center;
+  pointer-events: none;
+  border-radius: 1px;
 }
 
 /* Has comments state - filled icon with accent color */
@@ -13963,4 +13992,167 @@ body.resizing * {
 
 [data-theme="dark"] .status-failed .stack-progress-status-icon {
   color: var(--color-danger, #f85149);
+}
+
+/* ==========================================================================
+   Hunk Summary Annotations (Phase 5)
+   ========================================================================== */
+
+.hunk-summary-row {
+  background: transparent;
+}
+
+.hunk-summary-cell {
+  padding: 4px 0;
+  border: none;
+}
+
+.hunk-summary-annotation {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 12px;
+  margin: 6px auto;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #0550ae;
+  background: rgba(9, 105, 218, 0.06);
+  border: 1px solid rgba(9, 105, 218, 0.18);
+  border-left: 3px solid #0969da;
+  border-radius: var(--radius-md, 6px);
+  max-width: calc(100vw - var(--sidebar-width, 0px) - var(--right-panel-group-width, 0px) - 64px);
+  box-sizing: border-box;
+  word-break: break-word;
+}
+
+[data-theme="dark"] .hunk-summary-annotation {
+  color: #79c0ff;
+  background: rgba(56, 139, 253, 0.10);
+  border-color: rgba(56, 139, 253, 0.25);
+  border-left-color: #58a6ff;
+}
+
+.hunk-summary-icon {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  opacity: 0.85;
+}
+
+.hunk-summary-text {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Review-level toggle hides every annotation row */
+body.summaries-hidden .hunk-summary-row,
+.d2h-file-wrapper.summaries-hidden-file .hunk-summary-row {
+  display: none;
+}
+
+/* ---------- Toolbar toggle states ---------- */
+/* Default toolbar buttons inherit a transparent border; the toggle button
+   uses a fixed neutral border so the on-state color swap is visible. */
+.btn-summary-toggle {
+  position: relative;
+  border: 1px solid var(--color-border-primary, #d1d9e0);
+  color: var(--color-text-secondary, #57606a);
+  transition: color var(--transition-fast, 0.1s ease),
+              border-color var(--transition-fast, 0.1s ease),
+              background-color var(--transition-fast, 0.1s ease);
+}
+
+/* Summaries are visible (default state when feature is on). */
+.btn-summary-toggle.active {
+  color: var(--color-accent-primary, #0969da);
+  border-color: var(--color-accent-primary, #0969da);
+  background-color: rgba(9, 105, 218, 0.08);
+}
+
+[data-theme="dark"] .btn-summary-toggle.active {
+  color: var(--color-accent-primary, #58a6ff);
+  border-color: var(--color-accent-primary, #58a6ff);
+  background-color: rgba(56, 139, 253, 0.12);
+}
+
+/* Summaries hidden — gray icon + a slash overlay so the off state is
+   immediately recognizable without depending on the tooltip. */
+.btn-summary-toggle:not(.active) {
+  opacity: 0.7;
+}
+
+.btn-summary-toggle:not(.active)::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 12%;
+  right: 12%;
+  height: 2px;
+  background-color: currentColor;
+  transform: rotate(-25deg);
+  transform-origin: center;
+  pointer-events: none;
+  border-radius: 1px;
+}
+
+/* "Generating" pulse — applied while the background summary job is running. */
+.btn-summary-toggle.generating {
+  animation: summaryPulse 1.6s ease-in-out infinite;
+}
+
+@keyframes summaryPulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(9, 105, 218, 0);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(9, 105, 218, 0.18);
+  }
+}
+
+[data-theme="dark"] .btn-summary-toggle.generating {
+  animation-name: summaryPulseDark;
+}
+
+@keyframes summaryPulseDark {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(56, 139, 253, 0);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(56, 139, 253, 0.28);
+  }
+}
+
+/* Custom hover label — shown alongside the native title in case the user's
+   browser is suppressing native tooltips. Uses a `data-label` attr so the
+   label tracks the on/off state. */
+.btn-summary-toggle[data-label]:hover::before {
+  content: attr(data-label);
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 200;
+  padding: 4px 8px;
+  font-size: 12px;
+  line-height: 1.2;
+  white-space: nowrap;
+  color: var(--color-text-primary, #24292f);
+  background: var(--color-bg-primary, #ffffff);
+  border: 1px solid var(--color-border-primary, #d1d9e0);
+  border-radius: var(--radius-sm, 4px);
+  box-shadow: 0 2px 4px var(--color-shadow, rgba(27, 31, 36, 0.04));
+  pointer-events: none;
+}
+
+[data-theme="dark"] .btn-summary-toggle[data-label]:hover::before {
+  color: var(--color-text-primary, #c9d1d9);
+  background: var(--color-bg-primary, #0d1117);
+  border-color: var(--color-border-primary, #30363d);
+}
+
+.file-header-summary-toggle.summaries-off {
+  opacity: 0.45;
 }
