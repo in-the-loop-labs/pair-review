@@ -289,7 +289,8 @@ const SCHEMA_SQL = {
 
   tours: `
     CREATE TABLE IF NOT EXISTS tours (
-      review_id INTEGER PRIMARY KEY,
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      review_id INTEGER NOT NULL UNIQUE,
       stops TEXT NOT NULL,
       hash_set TEXT NOT NULL,
       provider TEXT,
@@ -1951,7 +1952,8 @@ const MIGRATIONS = {
     if (!tableExists(db, 'tours')) {
       db.exec(`
         CREATE TABLE IF NOT EXISTS tours (
-          review_id INTEGER PRIMARY KEY,
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          review_id INTEGER NOT NULL UNIQUE,
           stops TEXT NOT NULL,
           hash_set TEXT NOT NULL,
           provider TEXT,
@@ -5226,6 +5228,9 @@ class TourRepository {
    * @returns {Promise<Object>} Run result with `changes` count
    */
   async upsert(row) {
+    if (row.review_id == null) {
+      throw new Error('TourRepository.upsert: row.review_id is required');
+    }
     return run(
       this.db,
       `

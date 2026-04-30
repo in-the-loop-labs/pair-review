@@ -50,11 +50,25 @@ describe('TourRepository', () => {
 
       const persisted = await query(db, 'SELECT * FROM tours WHERE review_id = ?', [reviewId]);
       expect(persisted).toHaveLength(1);
+      expect(persisted[0].id).toEqual(expect.any(Number));
+      expect(persisted[0].id).toBeGreaterThan(0);
       expect(persisted[0].review_id).toBe(reviewId);
       expect(persisted[0].stops).toBe(stops);
       expect(persisted[0].hash_set).toBe(hashSet);
       expect(persisted[0].provider).toBe('claude');
       expect(persisted[0].model).toBe('haiku');
+    });
+
+    it('throws when review_id is null', async () => {
+      const stops = JSON.stringify([{ file: 'a.js', hash: 'h1', summary: 's' }]);
+      const hashSet = JSON.stringify(['h1']);
+
+      await expect(
+        repo.upsert({ stops, hash_set: hashSet })
+      ).rejects.toThrow(/review_id/);
+
+      const persisted = await query(db, 'SELECT * FROM tours', []);
+      expect(persisted).toHaveLength(0);
     });
 
     it('replaces the existing row on (review_id) conflict', async () => {

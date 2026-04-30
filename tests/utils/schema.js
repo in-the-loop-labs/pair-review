@@ -257,7 +257,8 @@ const SCHEMA_SQL = {
 
   tours: `
     CREATE TABLE IF NOT EXISTS tours (
-      review_id INTEGER PRIMARY KEY,
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      review_id INTEGER NOT NULL UNIQUE,
       stops TEXT NOT NULL,
       hash_set TEXT NOT NULL,
       provider TEXT,
