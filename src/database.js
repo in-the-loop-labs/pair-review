@@ -292,7 +292,7 @@ const SCHEMA_SQL = {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       review_id INTEGER NOT NULL UNIQUE,
       stops TEXT NOT NULL,
-      hash_set TEXT NOT NULL,
+      diff_hash TEXT NOT NULL,
       provider TEXT,
       model TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -1955,7 +1955,7 @@ const MIGRATIONS = {
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           review_id INTEGER NOT NULL UNIQUE,
           stops TEXT NOT NULL,
-          hash_set TEXT NOT NULL,
+          diff_hash TEXT NOT NULL,
           provider TEXT,
           model TEXT,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -5190,13 +5190,12 @@ class HunkSummaryRepository {
 
 /**
  * TourRepository class for managing per-review guided-tour records. A tour is
- * a single ordered narrative walkthrough (a JSON array of stops) generated
- * after summaries are available. `hash_set` is a sorted JSON array of the
- * constituent hunk hashes; the tour-generator uses it to detect staleness
- * (when the underlying summaries have shifted, the tour is re-generated).
+ * a single ordered narrative walkthrough (a JSON array of stops). `diff_hash`
+ * is a 16-char SHA-256 prefix of the diff text; the tour-generator uses it to
+ * detect staleness (when the diff changes, the tour is regenerated).
  *
- * One row per review (review_id is PRIMARY KEY). On regeneration, upsert
- * replaces the existing row.
+ * One row per review (review_id is UNIQUE). On regeneration, upsert replaces
+ * the existing row.
  */
 class TourRepository {
   /**
@@ -5209,7 +5208,7 @@ class TourRepository {
 
   /**
    * Get the tour row for a review.
-   * `stops` and `hash_set` are returned as raw JSON strings; the caller parses.
+   * `stops` is returned as a raw JSON string; the caller parses.
    * @param {number} reviewId - Review ID
    * @returns {Promise<Object|undefined>} The tour row or undefined if none
    */
@@ -5222,9 +5221,9 @@ class TourRepository {
   }
 
   /**
-   * Insert or replace the tour row for a review. `stops` and `hash_set` are
-   * stored verbatim; the caller is responsible for JSON.stringify.
-   * @param {Object} row - { review_id, stops, hash_set, provider?, model? }
+   * Insert or replace the tour row for a review. `stops` is stored verbatim;
+   * the caller is responsible for JSON.stringify.
+   * @param {Object} row - { review_id, stops, diff_hash, provider?, model? }
    * @returns {Promise<Object>} Run result with `changes` count
    */
   async upsert(row) {
@@ -5234,11 +5233,11 @@ class TourRepository {
     return run(
       this.db,
       `
-        INSERT INTO tours (review_id, stops, hash_set, provider, model)
+        INSERT INTO tours (review_id, stops, diff_hash, provider, model)
         VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(review_id) DO UPDATE SET
           stops = excluded.stops,
-          hash_set = excluded.hash_set,
+          diff_hash = excluded.diff_hash,
           provider = excluded.provider,
           model = excluded.model,
           created_at = CURRENT_TIMESTAMP
@@ -5246,7 +5245,7 @@ class TourRepository {
       [
         row.review_id,
         row.stops,
-        row.hash_set,
+        row.diff_hash,
         row.provider ?? null,
         row.model ?? null,
       ]

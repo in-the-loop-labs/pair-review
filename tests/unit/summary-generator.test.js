@@ -164,7 +164,20 @@ describe('generateSummariesForReview', () => {
       diffText,
       _deps: deps
     });
-    expect(result).toEqual({ filesProcessed: 0, hunksPersisted: 0 });
+    expect(result).toEqual({ filesProcessed: 0, hunksPersisted: 0, oversized: true });
+    expect(providerInstance.execute).not.toHaveBeenCalled();
+  });
+
+  it('respects summaries_max_lines_added cap', async () => {
+    const { deps, providerInstance } = makeDeps({ repo });
+    const diffText = makeDiff([{ path: 'a.js', body: SIMPLE_HUNK_BODY }]);
+    const result = await generateSummariesForReview({
+      ...baseParams,
+      config: { summaries_max_lines_added: 0 },
+      diffText,
+      _deps: deps
+    });
+    expect(result).toEqual({ filesProcessed: 0, hunksPersisted: 0, oversized: true });
     expect(providerInstance.execute).not.toHaveBeenCalled();
   });
 

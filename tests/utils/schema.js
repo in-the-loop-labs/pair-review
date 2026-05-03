@@ -260,7 +260,7 @@ const SCHEMA_SQL = {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       review_id INTEGER NOT NULL UNIQUE,
       stops TEXT NOT NULL,
-      hash_set TEXT NOT NULL,
+      diff_hash TEXT NOT NULL,
       provider TEXT,
       model TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
