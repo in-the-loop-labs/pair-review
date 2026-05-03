@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const childProcess = require('child_process');
-const { deepMerge, getGitHubToken, expandPath, resolveDbName, warnIfDevModeWithoutDbName, loadConfig, shouldSkipUpdateNotifier, _resetTokenCache, getRepoConfig, getRepoPath, getRepoCheckoutScript, getRepoWorktreeDirectory, getRepoWorktreeNameTemplate, getRepoCheckoutTimeout, resolveRepoOptions, getRepoResetScript, getRepoSkipBulkFetch, getRepoPoolSize, getRepoPoolFetchInterval, resolvePoolConfig, getWorktreeDisplayName, getConfigDir, getRepoLoadSkills, resolveLoadSkills, buildCouncilProviderOverrides, getSummaryProvider, getSummaryModel } = require('../../src/config');
+const { deepMerge, getGitHubToken, expandPath, resolveDbName, warnIfDevModeWithoutDbName, loadConfig, shouldSkipUpdateNotifier, _resetTokenCache, getRepoConfig, getRepoPath, getRepoCheckoutScript, getRepoWorktreeDirectory, getRepoWorktreeNameTemplate, getRepoCheckoutTimeout, resolveRepoOptions, getRepoResetScript, getRepoSkipBulkFetch, getRepoPoolSize, getRepoPoolFetchInterval, resolvePoolConfig, getWorktreeDisplayName, getConfigDir, getRepoLoadSkills, resolveLoadSkills, buildCouncilProviderOverrides, getSummaryProvider, getSummaryModel, getTourProvider, getTourModel } = require('../../src/config');
 
 describe('config.js', () => {
   describe('getGitHubToken', () => {
@@ -2017,6 +2017,54 @@ describe('config.js', () => {
     it('falls back to DEFAULT_CONFIG.default_model when neither is set', () => {
       const config = {};
       expect(getSummaryModel(config)).toBe('opus');
+    });
+  });
+
+  describe('getTourProvider', () => {
+    it('returns tour_provider when set', () => {
+      const config = { tour_provider: 'codex', summary_provider: 'gemini', default_provider: 'claude' };
+      expect(getTourProvider(config)).toBe('codex');
+    });
+
+    it('falls back to summary_provider when tour_provider empty', () => {
+      const config = { tour_provider: '', summary_provider: 'gemini', default_provider: 'claude' };
+      expect(getTourProvider(config)).toBe('gemini');
+    });
+
+    it('falls back through summary_provider chain to default_provider', () => {
+      const config = { default_provider: 'claude' };
+      expect(getTourProvider(config)).toBe('claude');
+    });
+
+    it('falls back to DEFAULT_CONFIG.default_provider when nothing is set', () => {
+      const config = {};
+      expect(getTourProvider(config)).toBe('claude');
+    });
+  });
+
+  describe('getTourModel', () => {
+    it('returns tour_model when set', () => {
+      const config = { tour_model: 'opus', summary_model: 'haiku', default_model: 'sonnet' };
+      expect(getTourModel(config)).toBe('opus');
+    });
+
+    it('falls back to summary_model when tour_model empty', () => {
+      const config = { tour_model: '', summary_model: 'haiku', default_model: 'sonnet' };
+      expect(getTourModel(config)).toBe('haiku');
+    });
+
+    it('falls back to providerClass fast-tier when both empty', () => {
+      const config = { tour_model: '', summary_model: '', default_model: 'opus' };
+      const FakeProvider = { getModels: () => [
+        { id: 'big', tier: 'thorough' },
+        { id: 'small', tier: 'fast' }
+      ]};
+      expect(getTourModel(config, FakeProvider)).toBe('small');
+    });
+
+    it('falls back to default_model when nothing matches', () => {
+      const config = { default_model: 'opus' };
+      expect(getTourModel(config)).toBe('opus');
     });
   });
 });

@@ -36,12 +36,12 @@ describe('TourRepository', () => {
   describe('upsert', () => {
     it('inserts a new row and returns { changes: 1 }', async () => {
       const stops = JSON.stringify([{ file: 'a.js', hash: 'h1', summary: 'first stop' }]);
-      const hashSet = JSON.stringify(['h1']);
+      const diffHash = 'abc123def456';
 
       const result = await repo.upsert({
         review_id: reviewId,
         stops,
-        hash_set: hashSet,
+        diff_hash: diffHash,
         provider: 'claude',
         model: 'haiku',
       });
@@ -54,17 +54,17 @@ describe('TourRepository', () => {
       expect(persisted[0].id).toBeGreaterThan(0);
       expect(persisted[0].review_id).toBe(reviewId);
       expect(persisted[0].stops).toBe(stops);
-      expect(persisted[0].hash_set).toBe(hashSet);
+      expect(persisted[0].diff_hash).toBe(diffHash);
       expect(persisted[0].provider).toBe('claude');
       expect(persisted[0].model).toBe('haiku');
     });
 
     it('throws when review_id is null', async () => {
       const stops = JSON.stringify([{ file: 'a.js', hash: 'h1', summary: 's' }]);
-      const hashSet = JSON.stringify(['h1']);
+      const diffHash = 'abc123';
 
       await expect(
-        repo.upsert({ stops, hash_set: hashSet })
+        repo.upsert({ stops, diff_hash: diffHash })
       ).rejects.toThrow(/review_id/);
 
       const persisted = await query(db, 'SELECT * FROM tours', []);
@@ -73,29 +73,30 @@ describe('TourRepository', () => {
 
     it('replaces the existing row on (review_id) conflict', async () => {
       const originalStops = JSON.stringify([{ file: 'a.js', hash: 'h1', summary: 'original' }]);
-      const originalHashSet = JSON.stringify(['h1']);
+      const originalDiffHash = 'orig-hash';
 
       await repo.upsert({
         review_id: reviewId,
         stops: originalStops,
-        hash_set: originalHashSet,
+        diff_hash: originalDiffHash,
         provider: 'claude',
         model: 'haiku',
       });
 
       const beforeRows = await query(db, 'SELECT * FROM tours WHERE review_id = ?', [reviewId]);
       const originalCreatedAt = beforeRows[0].created_at;
+      const originalId = beforeRows[0].id;
 
       const newStops = JSON.stringify([
         { file: 'a.js', hash: 'h1', summary: 'updated' },
         { file: 'b.js', hash: 'h2', summary: 'second' },
       ]);
-      const newHashSet = JSON.stringify(['h1', 'h2']);
+      const newDiffHash = 'new-hash';
 
       const result = await repo.upsert({
         review_id: reviewId,
         stops: newStops,
-        hash_set: newHashSet,
+        diff_hash: newDiffHash,
         provider: 'gemini',
         model: 'flash',
       });
@@ -105,39 +106,40 @@ describe('TourRepository', () => {
       const persisted = await query(db, 'SELECT * FROM tours WHERE review_id = ?', [reviewId]);
       expect(persisted).toHaveLength(1);
       expect(persisted[0].stops).toBe(newStops);
-      expect(persisted[0].hash_set).toBe(newHashSet);
+      expect(persisted[0].diff_hash).toBe(newDiffHash);
       expect(persisted[0].provider).toBe('gemini');
       expect(persisted[0].model).toBe('flash');
+      expect(persisted[0].id).toBe(originalId);
       // SQLite CURRENT_TIMESTAMP has 1-second resolution; assert >= rather than strictly >.
       expect(persisted[0].created_at >= originalCreatedAt).toBe(true);
     });
 
-    it('stores stops and hash_set verbatim (no JSON re-stringification)', async () => {
+    it('stores stops and diff_hash verbatim (no JSON re-stringification)', async () => {
       // A specific JSON string with whitespace and field order that round-tripping would change.
       const stops = '[{"file":"a.js","hash":"h1","summary":"verbatim test"}]';
-      const hashSet = '["h1","h2","h3"]';
+      const diffHash = 'verbatim-hash-value';
 
       await repo.upsert({
         review_id: reviewId,
         stops,
-        hash_set: hashSet,
+        diff_hash: diffHash,
         provider: null,
         model: null,
       });
 
-      const persisted = await query(db, 'SELECT stops, hash_set FROM tours WHERE review_id = ?', [reviewId]);
+      const persisted = await query(db, 'SELECT stops, diff_hash FROM tours WHERE review_id = ?', [reviewId]);
       expect(persisted[0].stops).toBe(stops);
-      expect(persisted[0].hash_set).toBe(hashSet);
+      expect(persisted[0].diff_hash).toBe(diffHash);
     });
 
     it('accepts null provider and model (optional fields default to null when omitted)', async () => {
       const stops = JSON.stringify([{ file: 'a.js', hash: 'h1', summary: 's' }]);
-      const hashSet = JSON.stringify(['h1']);
+      const diffHash = 'h1';
 
       const result = await repo.upsert({
         review_id: reviewId,
         stops,
-        hash_set: hashSet,
+        diff_hash: diffHash,
       });
       expect(result.changes).toBe(1);
 
@@ -154,7 +156,7 @@ describe('TourRepository', () => {
       await repo.upsert({
         review_id: reviewId,
         stops: stops1,
-        hash_set: JSON.stringify(['h1']),
+        diff_hash: 'hash1',
         provider: 'claude',
         model: 'haiku',
       });
@@ -162,7 +164,7 @@ describe('TourRepository', () => {
       await repo.upsert({
         review_id: otherReviewId,
         stops: stops2,
-        hash_set: JSON.stringify(['h2']),
+        diff_hash: 'hash2',
         provider: 'gemini',
         model: 'flash',
       });
@@ -177,14 +179,14 @@ describe('TourRepository', () => {
   });
 
   describe('get', () => {
-    it('returns the row for a matching review_id, with stops/hash_set as raw strings', async () => {
+    it('returns the row for a matching review_id, with stops/diff_hash as raw strings', async () => {
       const stops = JSON.stringify([{ file: 'a.js', hash: 'h1', summary: 's' }]);
-      const hashSet = JSON.stringify(['h1', 'h2']);
+      const diffHash = 'fetched-hash';
 
       await repo.upsert({
         review_id: reviewId,
         stops,
-        hash_set: hashSet,
+        diff_hash: diffHash,
         provider: 'claude',
         model: 'opus',
       });
@@ -194,9 +196,9 @@ describe('TourRepository', () => {
       expect(result.review_id).toBe(reviewId);
       // Raw strings — repo does not parse.
       expect(typeof result.stops).toBe('string');
-      expect(typeof result.hash_set).toBe('string');
+      expect(typeof result.diff_hash).toBe('string');
       expect(result.stops).toBe(stops);
-      expect(result.hash_set).toBe(hashSet);
+      expect(result.diff_hash).toBe(diffHash);
       expect(result.provider).toBe('claude');
       expect(result.model).toBe('opus');
       expect(result.created_at).toBeDefined();
@@ -212,7 +214,7 @@ describe('TourRepository', () => {
       await repo.upsert({
         review_id: otherReviewId,
         stops,
-        hash_set: JSON.stringify(['h1']),
+        diff_hash: 'hashX',
       });
 
       const result = await repo.get(reviewId);
@@ -225,7 +227,7 @@ describe('TourRepository', () => {
       await repo.upsert({
         review_id: reviewId,
         stops: JSON.stringify([{ file: 'a.js', hash: 'h1', summary: 's' }]),
-        hash_set: JSON.stringify(['h1']),
+        diff_hash: 'h',
       });
 
       const result = await repo.deleteByReview(reviewId);
@@ -244,12 +246,12 @@ describe('TourRepository', () => {
       await repo.upsert({
         review_id: reviewId,
         stops: JSON.stringify([{ file: 'a.js', hash: 'h1', summary: 'first' }]),
-        hash_set: JSON.stringify(['h1']),
+        diff_hash: 'h1',
       });
       await repo.upsert({
         review_id: otherReviewId,
         stops: JSON.stringify([{ file: 'b.js', hash: 'h2', summary: 'second' }]),
-        hash_set: JSON.stringify(['h2']),
+        diff_hash: 'h2',
       });
 
       const result = await repo.deleteByReview(reviewId);
@@ -266,7 +268,7 @@ describe('TourRepository', () => {
       await repo.upsert({
         review_id: reviewId,
         stops: JSON.stringify([{ file: 'a.js', hash: 'h1', summary: 's' }]),
-        hash_set: JSON.stringify(['h1']),
+        diff_hash: 'h',
       });
 
       await run(db, 'DELETE FROM reviews WHERE id = ?', [reviewId]);

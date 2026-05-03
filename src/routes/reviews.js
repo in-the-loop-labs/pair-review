@@ -8,7 +8,7 @@
  */
 
 const express = require('express');
-const { query, queryOne, run, withTransaction, CommentRepository, ReviewRepository, AnalysisRunRepository, HunkSummaryRepository } = require('../database');
+const { query, queryOne, run, withTransaction, CommentRepository, ReviewRepository, AnalysisRunRepository, HunkSummaryRepository, TourRepository } = require('../database');
 const { calculateStats, getStatsQuery } = require('../utils/stats-calculator');
 const { activeAnalyses, reviewToAnalysisId } = require('./shared');
 const logger = require('../utils/logger');
@@ -1075,6 +1075,56 @@ router.get('/api/reviews/:reviewId/hunk-summaries', validateReviewId, async (req
   } catch (error) {
     logger.error('Error fetching hunk summaries:', error);
     res.status(500).json({ error: 'Failed to fetch hunk summaries' });
+  }
+});
+
+// ==========================================================================
+// Tour Route
+// ==========================================================================
+
+/**
+ * GET /api/reviews/:reviewId/tour
+ * Get the persisted guided tour for a review (PR or Local).
+ * Returns `{tour: null}` when no tour has been generated yet, otherwise
+ * returns `{tour: {stops, diff_hash, stale, generating, provider, model, created_at}}`.
+ *
+ * `stale` is true when a `tour` job is currently in flight for this review,
+ * meaning the persisted tour may be about to be replaced. `generating` is
+ * true when there is no persisted tour yet but a job is in flight.
+ */
+router.get('/api/reviews/:reviewId/tour', validateReviewId, async (req, res) => {
+  try {
+    const db = req.app.get('db');
+    const repo = new TourRepository(db);
+    const row = await repo.get(req.reviewId);
+    const generating = backgroundQueue.hasActiveForReview(req.reviewId, 'tour');
+
+    if (!row) {
+      return res.json({ tour: null, generating });
+    }
+
+    let stops;
+    try {
+      stops = JSON.parse(row.stops);
+    } catch (err) {
+      logger.warn(`Failed to parse tour.stops for review ${req.reviewId}: ${err.message}`);
+      return res.status(500).json({ error: 'Tour data corrupt' });
+    }
+
+    res.json({
+      tour: {
+        stops,
+        diff_hash: row.diff_hash,
+        stale: generating,
+        provider: row.provider,
+        model: row.model,
+        created_at: row.created_at
+      },
+      generating
+    });
+  } catch (error) {
+    logger.error('Error fetching tour:', error);
+    res.status(500).json({ error: 'Failed to fetch tour' });
   }
 });
 
