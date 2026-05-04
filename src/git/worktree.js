@@ -762,7 +762,23 @@ class GitWorktreeManager {
       // Opt out via skip_bulk_fetch on very large monorepos where this is too slow;
       // the targeted base-SHA and PR-head ref fetches below still run.
       if (options.skipBulkFetch) {
+      if (options.skipBulkFetch) {
         console.log(`Skipping bulk fetch from ${remote} (skip_bulk_fetch enabled)`);
+        // Still fetch only the PR's base branch so ensureBaseShaAvailable does not
+        // have to fall back to `git fetch <remote> <sha>`, which some Git servers
+        // and mirrors reject (they require uploadpack.allowReachableSHA1InWant).
+        // This mirrors the targeted fetch used in createWorktreeForPR.
+        if (prData?.base_branch) {
+          try {
+            await worktreeGit.fetch([remote, `+refs/heads/${prData.base_branch}:refs/remotes/${remote}/${prData.base_branch}`]);
+          } catch (fetchError) {
+            console.warn(`Targeted base-branch fetch failed, will rely on existing refs: ${fetchError.message}`);
+          }
+        }
+      } else {
+        console.log(`Fetching latest changes from ${remote}...`);
+        await worktreeGit.fetch([remote, '--prune']);
+      }
       } else {
         console.log(`Fetching latest changes from ${remote}...`);
         await worktreeGit.fetch([remote, '--prune']);
