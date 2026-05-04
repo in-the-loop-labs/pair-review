@@ -733,9 +733,11 @@ class GitWorktreeManager {
    * @param {string} repo - Repository name
    * @param {number} number - PR number
    * @param {Object} prData - PR data from GitHub API (for remote resolution)
+   * @param {Object} [options]
+   * @param {boolean} [options.skipBulkFetch=false] - Skip the bulk `git fetch <remote> --prune`; targeted base-SHA and PR-head fetches still run
    * @returns {Promise<string>} Path to updated worktree
    */
-  async updateWorktree(owner, repo, number, prData) {
+  async updateWorktree(owner, repo, number, prData, options = {}) {
     const prInfo = { owner, repo, number };
     const headSha = this.getPRHeadSha(prData);
     const worktreePath = await this.getWorktreePath(prInfo);
@@ -756,9 +758,15 @@ class GitWorktreeManager {
       const remote = await this.resolveRemoteForPR(worktreeGit, prData, prInfo);
 
       // Fetch the latest from the resolved remote (--prune removes stale
-      // tracking refs that would otherwise block fetch on ref hierarchy conflicts)
-      console.log(`Fetching latest changes from ${remote}...`);
-      await worktreeGit.fetch([remote, '--prune']);
+      // tracking refs that would otherwise block fetch on ref hierarchy conflicts).
+      // Opt out via skip_bulk_fetch on very large monorepos where this is too slow;
+      // the targeted base-SHA and PR-head ref fetches below still run.
+      if (options.skipBulkFetch) {
+        console.log(`Skipping bulk fetch from ${remote} (skip_bulk_fetch enabled)`);
+      } else {
+        console.log(`Fetching latest changes from ${remote}...`);
+        await worktreeGit.fetch([remote, '--prune']);
+      }
 
       await this.ensureBaseShaAvailable(worktreeGit, prData, remote);
 

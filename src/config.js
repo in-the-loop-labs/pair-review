@@ -529,6 +529,17 @@ function getRepoResetScript(config, repository) {
 }
 
 /**
+ * Gets whether updateWorktree should skip the bulk `git fetch <remote> --prune`
+ * @param {Object} config - Configuration object from loadConfig()
+ * @param {string} repository - Repository in "owner/repo" format
+ * @returns {boolean} - true if the bulk fetch should be skipped (default: false)
+ */
+function getRepoSkipBulkFetch(config, repository) {
+  const repoConfig = getRepoConfig(config, repository);
+  return repoConfig?.skip_bulk_fetch === true;
+}
+
+/**
  * Gets the configured pool size for a repository from file config only.
  * Prefer resolvePoolConfig() when DB repo_settings are available.
  * @param {Object} config - Configuration object from loadConfig()
@@ -761,6 +772,7 @@ module.exports = {
   getRepoCheckoutTimeout,
   resolveRepoOptions,
   getRepoResetScript,
+  getRepoSkipBulkFetch,
   getRepoPoolSize,
   getRepoPoolFetchInterval,
   getRepoLoadSkills,
