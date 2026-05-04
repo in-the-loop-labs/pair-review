@@ -25,7 +25,7 @@ const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs').promises;
 const path = require('path');
-const { getGitHubToken, getWorktreeDisplayName, resolveLoadSkills, buildCouncilProviderOverrides } = require('../config');
+const { getGitHubToken, getWorktreeDisplayName, resolveLoadSkills, buildCouncilProviderOverrides, getRepoSkipBulkFetch } = require('../config');
 const logger = require('../utils/logger');
 const { buildDiffLineSet } = require('../utils/diff-annotator');
 const { broadcastReviewEvent } = require('../events/review-events');
@@ -378,7 +378,13 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
 
     // Update worktree with latest changes
     const worktreeManager = new GitWorktreeManager(db);
-    const worktreePath = await worktreeManager.updateWorktree(owner, repo, prNumber, prData);
+    const worktreePath = await worktreeManager.updateWorktree(
+      owner,
+      repo,
+      prNumber,
+      prData,
+      { skipBulkFetch: getRepoSkipBulkFetch(config, repository) }
+    );
 
     // Generate fresh diff and get changed files
     const diffPrData = {

@@ -247,7 +247,7 @@
   },
 
   "repos": {
-    "_comment": "Repository configurations (renamed from 'monorepos'; the old key still works). 'path' points to an existing local clone. 'checkout_script' runs after worktree creation. 'reset_script' runs when switching a pool worktree to a new PR. 'load_skills' controls whether AI providers load environment-level skills (default: true).",
+    "_comment": "Repository configurations (renamed from 'monorepos'; the old key still works). 'path' points to an existing local clone. 'checkout_script' runs after worktree creation. 'reset_script' runs when switching a pool worktree to a new PR. 'load_skills' controls whether AI providers load environment-level skills (default: true). 'skip_bulk_fetch' opts out of the unconditional `git fetch <remote> --prune` during refresh (default: false); the targeted base-SHA and PR-head ref fetches still run. Useful for very large monorepos where bulk fetching all refs/tags is prohibitively slow.",
     "owner/repo": {
       "path": "~/path/to/monorepo",
       "checkout_script": "my-repo-checkout $BASE_SHA $HEAD_BRANCH",
@@ -257,7 +257,8 @@
       "worktree_name_template": "{id}/src",
       "pool_size": 0,
       "pool_fetch_interval_minutes": null,
-      "load_skills": true
+      "load_skills": true,
+      "skip_bulk_fetch": false
     }
   }
 }

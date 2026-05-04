@@ -98,6 +98,27 @@ describe('GitWorktreeManager base SHA availability', () => {
     expect(worktreeGit.checkout).toHaveBeenCalledWith(['refs/remotes/fork-remote/pr-42']);
   });
 
+  it('skips the bulk fetch when skipBulkFetch option is set', async () => {
+    const worktreeGit = createMockGit({
+      raw: vi.fn(async (args) => {
+        if (args[0] === 'cat-file') return 'commit\n';
+        return '';
+      }),
+      revparse: vi.fn().mockResolvedValue('head-sha\n'),
+    });
+
+    manager._gitFor = vi.fn().mockReturnValue(worktreeGit);
+
+    await manager.updateWorktree(
+      'owner', 'repo', 42,
+      { base_sha: 'base-sha', head_sha: 'head-sha' },
+      { skipBulkFetch: true }
+    );
+
+    expect(worktreeGit.fetch).not.toHaveBeenCalledWith(['fork-remote', '--prune']);
+    expect(worktreeGit.checkout).toHaveBeenCalledWith(['refs/remotes/fork-remote/pr-42']);
+  });
+
   it('uses nested REST-format SHAs during update verification', async () => {
     const worktreeGit = createMockGit({
       raw: vi.fn(async (args) => {
