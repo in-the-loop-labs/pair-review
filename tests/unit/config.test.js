@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const childProcess = require('child_process');
-const { deepMerge, getGitHubToken, expandPath, resolveDbName, warnIfDevModeWithoutDbName, loadConfig, shouldSkipUpdateNotifier, _resetTokenCache, getRepoConfig, getRepoPath, getRepoCheckoutScript, getRepoWorktreeDirectory, getRepoWorktreeNameTemplate, getRepoCheckoutTimeout, resolveRepoOptions, getRepoResetScript, getRepoPoolSize, getRepoPoolFetchInterval, resolvePoolConfig, getWorktreeDisplayName, getConfigDir, getRepoLoadSkills, resolveLoadSkills, buildCouncilProviderOverrides } = require('../../src/config');
+const { deepMerge, getGitHubToken, expandPath, resolveDbName, warnIfDevModeWithoutDbName, loadConfig, shouldSkipUpdateNotifier, _resetTokenCache, getRepoConfig, getRepoPath, getRepoCheckoutScript, getRepoWorktreeDirectory, getRepoWorktreeNameTemplate, getRepoCheckoutTimeout, resolveRepoOptions, getRepoResetScript, getRepoSkipBulkFetch, getRepoPoolSize, getRepoPoolFetchInterval, resolvePoolConfig, getWorktreeDisplayName, getConfigDir, getRepoLoadSkills, resolveLoadSkills, buildCouncilProviderOverrides } = require('../../src/config');
 
 describe('config.js', () => {
   describe('getGitHubToken', () => {
@@ -1487,6 +1487,38 @@ describe('config.js', () => {
         monorepos: { 'owner/repo': { reset_script: './legacy-reset.sh' } }
       };
       expect(getRepoResetScript(config, 'owner/repo')).toBe('./legacy-reset.sh');
+    });
+  });
+
+  describe('getRepoSkipBulkFetch', () => {
+    it('returns true when explicitly enabled', () => {
+      const config = {
+        repos: { 'owner/repo': { skip_bulk_fetch: true } }
+      };
+      expect(getRepoSkipBulkFetch(config, 'owner/repo')).toBe(true);
+    });
+
+    it('returns false when explicitly disabled', () => {
+      const config = {
+        repos: { 'owner/repo': { skip_bulk_fetch: false } }
+      };
+      expect(getRepoSkipBulkFetch(config, 'owner/repo')).toBe(false);
+    });
+
+    it('returns false when not configured', () => {
+      const config = { repos: { 'owner/repo': { path: '~/repo' } } };
+      expect(getRepoSkipBulkFetch(config, 'owner/repo')).toBe(false);
+    });
+
+    it('returns false for unconfigured repository', () => {
+      expect(getRepoSkipBulkFetch({}, 'owner/repo')).toBe(false);
+    });
+
+    it('only treats strict true as enabled (not truthy strings)', () => {
+      const config = {
+        repos: { 'owner/repo': { skip_bulk_fetch: 'yes' } }
+      };
+      expect(getRepoSkipBulkFetch(config, 'owner/repo')).toBe(false);
     });
   });
 
