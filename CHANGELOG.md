@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.3.7
+
+### Patch Changes
+
+- 7cf8340: Add per-repo `skip_bulk_fetch` option that opts out of the unconditional `git fetch <remote> --prune` step during PR refresh. The targeted base-SHA and PR-head ref fetches still run, so diff inputs remain correct. Useful on very large monorepos where bulk fetching all refs/tags can take tens of minutes.
+- d4b86e7: Normalize frontend diff file lookups so AI suggestions and file comment zones can resolve TanStack-style route paths and other equivalent path variants.
+
 ## 3.3.6
 
 ### Patch Changes
