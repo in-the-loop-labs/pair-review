@@ -596,6 +596,13 @@ describe('DiffRenderer', () => {
     });
   });
 
+  describe('detectLanguage', () => {
+    it('detects Elixir source and script files', () => {
+      expect(DiffRenderer.detectLanguage('lib/pair_review.ex')).toBe('elixir');
+      expect(DiffRenderer.detectLanguage('mix.exs')).toBe('elixir');
+    });
+  });
+
   describe('normalizeFilePath', () => {
     it('iteratively strips interleaved leading slashes and ./ segments', () => {
       expect(DiffRenderer.normalizeFilePath('/./src/foo.js')).toBe('src/foo.js');

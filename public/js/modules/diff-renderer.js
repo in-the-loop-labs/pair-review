@@ -64,6 +64,9 @@ class DiffRenderer {
     // Ruby
     'rb': 'ruby',
     'erb': 'erb',
+    // Elixir
+    'ex': 'elixir',
+    'exs': 'elixir',
     // PHP
     'php': 'php',
     // Java/Kotlin/Scala
