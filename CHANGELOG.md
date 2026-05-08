@@ -1,5 +1,30 @@
 # Changelog
 
+## 3.4.0
+
+### Minor Changes
+
+- bfa7839: Add syntax highlighting for Elixir `.ex` and `.exs` files in PR and local diff views.
+- 3741832: Support `PORT` env var to override the configured port
+
+  Setting `PORT` in the environment now overrides `config.port` from every config layer (managed, global, project, local). Invalid values (non-numeric or outside 1024–65535) fail fast with a clear error.
+
+  This makes pair-review compatible with launchers that dynamically assign a port — notably Claude Code's Preview feature, whose `"autoPort": true` in `.claude/launch.json` picks a free port and injects it via `PORT`.
+
+  Also migrated `console.error`/`console.log` calls in `src/config.js` to the project's `logger`, matching the existing logging convention.
+
+- bf76c2d: Add single-port mode: reuse one pair-review server across invocations
+
+  By default, pair-review now uses a single server on its configured port (7247). A second invocation detects the running server via `/health`, opens the appropriate URL in the browser (PR, local, or landing page), and exits without touching the database or starting a second server. This keeps bookmarks, MCP configs, and user expectations stable instead of picking a new fallback port each time.
+
+  When a newer CLI invocation hits an older running server, the older server surfaces a dismissible corner-card update banner in the web UI — "pair-review vX.Y.Z is available. Restart the server to update." — so users know to restart.
+
+  New config key:
+
+  - `single_port` — defaults to `true`. Set to `false` in `~/.pair-review/config.json` to restore the previous automatic-port-selection behavior (useful for running multiple dev instances simultaneously).
+
+  Headless modes (`--ai-review`, `--ai-draft`) bypass delegation and continue to bind the configured port directly.
+
 ## 3.3.7
 
 ### Patch Changes
