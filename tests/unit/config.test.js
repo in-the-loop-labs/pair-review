@@ -1279,6 +1279,7 @@ describe('config.js', () => {
 
       expect(config.repos).toBeDefined();
       expect(config.repos['owner/repo']).toEqual({ path: '~/mono', pool_size: 3 });
+      expect(config.monorepos).toBeUndefined();
     });
 
     it('should let repos values take precedence over monorepos when both exist', async () => {
@@ -1300,6 +1301,31 @@ describe('config.js', () => {
       expect(config.repos['owner/repo'].path).toBe('~/repos-path');
       // monorepos pool_size should be merged in (deep merge: monorepos is base, repos overrides)
       expect(config.repos['owner/repo'].pool_size).toBe(2);
+      expect(config.monorepos).toBeUndefined();
+    });
+
+    it('should collapse case-differing monorepos and repos keys with repos taking precedence', async () => {
+      mockReadFile({
+        global: {
+          port: 7247,
+          monorepos: {
+            'MyOrg/Repo': { path: '~/mono-path', pool_size: 5, reset_script: './reset.sh' }
+          },
+          repos: {
+            'MyOrg/Repo': { path: '~/repos-path', pool_size: 0 }
+          }
+        },
+      });
+
+      const { config } = await loadConfig();
+
+      expect(config.monorepos).toBeUndefined();
+      expect(Object.keys(config.repos)).toEqual(['myorg/repo']);
+      expect(config.repos['myorg/repo']).toEqual({
+        path: '~/repos-path',
+        pool_size: 0,
+        reset_script: './reset.sh'
+      });
     });
   });
 
@@ -1422,6 +1448,14 @@ describe('config.js', () => {
         monorepos: { 'owner/repo': { path: '~/old-path' } }
       };
       expect(getRepoConfig(config, 'owner/repo')).toEqual({ path: '~/new-path' });
+    });
+
+    it('should prefer repos over monorepos with case-differing raw config keys', () => {
+      const config = {
+        repos: { 'owner/repo': { pool_size: 0 } },
+        monorepos: { 'Owner/Repo': { pool_size: 5 } }
+      };
+      expect(getRepoConfig(config, 'Owner/Repo')).toEqual({ pool_size: 0 });
     });
 
     it('should return null for unconfigured repository', () => {

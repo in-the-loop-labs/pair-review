@@ -40,6 +40,7 @@ const hooksPayloads = require('../../src/hooks/payloads');
 vi.spyOn(configModule, 'getConfigDir');
 vi.spyOn(configModule, 'getRepoPath');
 vi.spyOn(configModule, 'resolveRepoOptions');
+vi.spyOn(configModule, 'resolvePoolConfig');
 vi.spyOn(configModule, 'getRepoPoolSize');
 vi.spyOn(configModule, 'getRepoResetScript');
 vi.spyOn(localReview, 'findMainGitRoot');
@@ -91,6 +92,7 @@ describe('findRepositoryPath with monorepo configuration', () => {
     configModule.getConfigDir.mockReturnValue('/tmp/.pair-review-test');
     configModule.getRepoPath.mockReturnValue(null);
     configModule.resolveRepoOptions.mockReturnValue({ checkoutScript: null, checkoutTimeout: 300000, worktreeConfig: null, resetScript: null, poolSize: 0, poolFetchIntervalMinutes: null });
+    configModule.resolvePoolConfig.mockReturnValue({ poolSize: 0, poolFetchIntervalMinutes: null });
     configModule.getRepoPoolSize.mockReturnValue(0);
     configModule.getRepoResetScript.mockReturnValue(null);
 
@@ -621,6 +623,7 @@ describe('pool-enabled PR setup', () => {
       poolSize: 3,
       poolFetchIntervalMinutes: null,
     });
+    configModule.resolvePoolConfig.mockReturnValue({ poolSize: 3, poolFetchIntervalMinutes: null });
     configModule.getRepoPoolSize.mockReturnValue(3);
     configModule.getRepoResetScript.mockReturnValue(null);
 
@@ -686,6 +689,24 @@ describe('pool-enabled PR setup', () => {
     // Correct review URL returned
     expect(result.reviewUrl).toBe('/pr/owner/repo/42');
     expect(result.title).toBe('Test PR');
+  });
+
+  it('should resolve pool size from repo settings before file config', async () => {
+    const repoSettingsRepo = new RepoSettingsRepository(db);
+    await repoSettingsRepo.saveRepoSettings(repository, { pool_size: 10 });
+    configModule.resolvePoolConfig.mockReturnValue({ poolSize: 10, poolFetchIntervalMinutes: null });
+
+    await setupPRReview({
+      db, owner, repo, prNumber, githubToken, config: testConfig,
+    });
+
+    expect(configModule.resolvePoolConfig).toHaveBeenCalledWith(
+      testConfig,
+      repository,
+      expect.objectContaining({ pool_size: 10 })
+    );
+    const optionsArg = worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.acquireForPR.mock.calls[0][3];
+    expect(optionsArg.poolSize).toBe(10);
   });
 
   it('should persist review ID to pool entry via setReviewOwner', async () => {
@@ -805,7 +826,7 @@ describe('pool-enabled PR setup', () => {
 
   it('should not use pool when poolSize is 0', async () => {
     // Override pool size to 0
-    configModule.getRepoPoolSize.mockReturnValue(0);
+    configModule.resolvePoolConfig.mockReturnValue({ poolSize: 0, poolFetchIntervalMinutes: null });
 
     // createWorktreeForPR must return the expected shape
     GitWorktreeManager.prototype.createWorktreeForPR.mockResolvedValue({
@@ -923,6 +944,7 @@ describe('restore mode (setupPRReview with restoreMetadata)', () => {
       poolSize: 3,
       poolFetchIntervalMinutes: null,
     });
+    configModule.resolvePoolConfig.mockReturnValue({ poolSize: 3, poolFetchIntervalMinutes: null });
     configModule.getRepoPoolSize.mockReturnValue(3);
     configModule.getRepoResetScript.mockReturnValue(null);
 

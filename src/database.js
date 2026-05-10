@@ -3002,6 +3002,20 @@ class RepoSettingsRepository {
   }
 
   /**
+   * List repositories with pool settings stored in the database.
+   * Includes rows with a fetch interval only so callers can resolve complete
+   * pool configuration with file fallback through resolvePoolConfig().
+   * @returns {Promise<Array<{repository: string, pool_size: number|null, pool_fetch_interval_minutes: number|null}>>}
+   */
+  async findPoolConfiguredRepoSettings() {
+    return await query(this.db, `
+      SELECT repository, pool_size, pool_fetch_interval_minutes
+      FROM repo_settings
+      WHERE pool_size IS NOT NULL OR pool_fetch_interval_minutes IS NOT NULL
+    `);
+  }
+
+  /**
    * Delete settings for a repository
    * @param {string} repository - Repository in owner/repo format
    * @returns {Promise<boolean>} True if settings were deleted

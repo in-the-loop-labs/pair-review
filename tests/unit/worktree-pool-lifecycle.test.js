@@ -79,6 +79,9 @@ function createMockDeps() {
       updateLastAccessed: vi.fn().mockResolvedValue(true),
       delete: vi.fn().mockResolvedValue(true),
     },
+    repoSettingsRepo: {
+      findPoolConfiguredRepoSettings: vi.fn().mockResolvedValue([]),
+    },
     usageTracker: mockUsageTracker,
     simpleGit: vi.fn(() => mockGit),
     GitWorktreeManager: MockGitWorktreeManager,
@@ -869,6 +872,62 @@ describe('WorktreePoolLifecycle', () => {
 
       // Result should include the adopted in_use entry
       expect(result).toContainEqual({ id: 'wt-1', current_review_id: 100 });
+    });
+
+    it('uses DB pool size when adopting worktrees and DB size is higher than file config', async () => {
+      const config = {
+        repos: {
+          'test/repo': { pool_size: 2 },
+        },
+      };
+      deps.repoSettingsRepo.findPoolConfiguredRepoSettings.mockResolvedValue([
+        { repository: 'test/repo', pool_size: 10, pool_fetch_interval_minutes: null },
+      ]);
+      deps.poolRepo.countForRepo.mockResolvedValue(2);
+      deps.poolRepo.findOrphanWorktrees.mockResolvedValue(
+        Array.from({ length: 9 }, (_, index) => ({
+          id: `wt-${index + 1}`,
+          pr_number: index + 1,
+          path: `/tmp/wt-${index + 1}`,
+          repository: 'test/repo',
+          reviewId: null,
+        }))
+      );
+      const poolLifecycle = new WorktreePoolLifecycle({}, config, deps);
+
+      await poolLifecycle.resetAndRehydrate();
+
+      expect(deps.poolRepo.findOrphanWorktrees).toHaveBeenCalledWith('test/repo');
+      expect(deps.poolRepo.create).toHaveBeenCalledTimes(8);
+      expect(deps.poolRepo.create).toHaveBeenCalledWith({
+        id: 'wt-8', repository: 'test/repo', path: '/tmp/wt-8',
+      });
+      expect(deps.poolRepo.create).not.toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'wt-9' })
+      );
+    });
+
+    it('adopts worktrees for repositories configured only via DB repo_settings', async () => {
+      const config = { repos: {} };
+      deps.repoSettingsRepo.findPoolConfiguredRepoSettings.mockResolvedValue([
+        { repository: 'db-only/repo', pool_size: 2, pool_fetch_interval_minutes: null },
+      ]);
+      deps.poolRepo.countForRepo.mockResolvedValue(0);
+      deps.poolRepo.findOrphanWorktrees.mockResolvedValue([
+        { id: 'wt-a', pr_number: 1, path: '/tmp/wt-a', repository: 'db-only/repo', reviewId: null },
+        { id: 'wt-b', pr_number: 2, path: '/tmp/wt-b', repository: 'db-only/repo', reviewId: null },
+      ]);
+      const poolLifecycle = new WorktreePoolLifecycle({}, config, deps);
+
+      await poolLifecycle.resetAndRehydrate();
+
+      expect(deps.poolRepo.findOrphanWorktrees).toHaveBeenCalledWith('db-only/repo');
+      expect(deps.poolRepo.create).toHaveBeenCalledWith({
+        id: 'wt-a', repository: 'db-only/repo', path: '/tmp/wt-a',
+      });
+      expect(deps.poolRepo.create).toHaveBeenCalledWith({
+        id: 'wt-b', repository: 'db-only/repo', path: '/tmp/wt-b',
+      });
     });
 
     it('skips adoption when already at pool capacity', async () => {
