@@ -222,19 +222,19 @@ async function loadConfig() {
     }
   }
 
-  // Normalize legacy monorepos key into repos (monorepos values are overridden by repos)
-  if (mergedConfig.monorepos) {
-    mergedConfig.repos = deepMerge(mergedConfig.monorepos, mergedConfig.repos);
-  }
-
-  // Normalize repo keys to lowercase to match the database's COLLATE NOCASE identity
-  if (mergedConfig.repos) {
-    const normalized = {};
-    for (const [key, value] of Object.entries(mergedConfig.repos)) {
-      normalized[key.toLowerCase()] = value;
+  // Normalize legacy monorepos into one canonical repos map. Lowercase both
+  // sides before merging so JS object identity matches DB COLLATE NOCASE.
+  const lowercaseKeys = (obj) => {
+    const out = {};
+    for (const [key, value] of Object.entries(obj || {})) {
+      out[key.toLowerCase()] = value;
     }
-    mergedConfig.repos = normalized;
-  }
+    return out;
+  };
+  const lowerMonorepos = lowercaseKeys(mergedConfig.monorepos);
+  const lowerRepos = lowercaseKeys(mergedConfig.repos);
+  mergedConfig.repos = deepMerge(lowerMonorepos, lowerRepos);
+  delete mergedConfig.monorepos;
 
   // PORT env var overrides all config layers (used by Preview and similar harnesses)
   if (process.env.PORT) {
@@ -424,12 +424,15 @@ function expandPath(p) {
  * @returns {object|null}
  */
 function getRepoConfig(config, repository) {
+  const key = String(repository).toLowerCase();
   const reposSection = config.repos || {};
-  const entry = reposSection[repository];
-  if (entry) return entry;
+  const repoEntry = reposSection[key] || reposSection[repository] || Object.entries(reposSection)
+    .find(([repoName]) => repoName.toLowerCase() === key)?.[1];
+  if (repoEntry) return repoEntry;
 
   const legacySection = config.monorepos || {};
-  return legacySection[repository] || null;
+  return legacySection[key] || legacySection[repository] || Object.entries(legacySection)
+    .find(([repoName]) => repoName.toLowerCase() === key)?.[1] || null;
 }
 
 /**

@@ -17,7 +17,7 @@ const { WorktreePoolLifecycle } = require('../git/worktree-pool-lifecycle');
 const { GitHubClient } = require('../github/client');
 const { normalizeRepository } = require('../utils/paths');
 const { findMainGitRoot } = require('../local-review');
-const { getConfigDir, getRepoPath, resolveRepoOptions, getRepoPoolSize, getRepoResetScript, DEFAULT_CHECKOUT_TIMEOUT_MS } = require('../config');
+const { getConfigDir, getRepoPath, resolveRepoOptions, resolvePoolConfig, getRepoResetScript, DEFAULT_CHECKOUT_TIMEOUT_MS } = require('../config');
 const logger = require('../utils/logger');
 const { fireReviewStartedHook } = require('../hooks/payloads');
 const simpleGit = require('simple-git');
@@ -229,6 +229,7 @@ async function findRepositoryPath({ db, owner, repo, repository, prNumber, confi
   const worktreeManager = new GitWorktreeManager(db);
   const repoSettingsRepo = new RepoSettingsRepository(db);
   const worktreeRepo = new WorktreeRepository(db);
+  const repoSettings = await repoSettingsRepo.getRepoSettings(repository);
 
   let repositoryPath = null;
   let worktreeSourcePath = null;  // Path to use as cwd for `git worktree add` (may differ from repositoryPath)
@@ -288,7 +289,7 @@ async function findRepositoryPath({ db, owner, repo, repository, prNumber, confi
   // ------------------------------------------------------------------
   // Resolve monorepo worktree options (checkout_script, worktree_directory, worktree_name_template)
   // ------------------------------------------------------------------
-  const resolved = config ? resolveRepoOptions(config, repository) : { checkoutScript: null, checkoutTimeout: DEFAULT_CHECKOUT_TIMEOUT_MS, worktreeConfig: null };
+  const resolved = config ? resolveRepoOptions(config, repository, repoSettings) : { checkoutScript: null, checkoutTimeout: DEFAULT_CHECKOUT_TIMEOUT_MS, worktreeConfig: null };
   const { checkoutScript, checkoutTimeout, worktreeConfig } = resolved;
 
   // When a checkout script is configured, null out worktreeSourcePath —
@@ -301,7 +302,7 @@ async function findRepositoryPath({ db, owner, repo, repository, prNumber, confi
   // ------------------------------------------------------------------
   // Tier 0: Check known local path from repo_settings
   // ------------------------------------------------------------------
-  const knownPath = await repoSettingsRepo.getLocalPath(repository);
+  const knownPath = repoSettings?.local_path || null;
 
   if (!repositoryPath && knownPath && await worktreeManager.pathExists(knownPath)) {
     try {
@@ -464,7 +465,9 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, o
   // Step: worktree - Create git worktree for the PR
   // ------------------------------------------------------------------
   const prInfo = { owner, repo, number: prNumber };
-  const poolSize = config ? getRepoPoolSize(config, repository) : 0;
+  const repoSettingsRepo = new RepoSettingsRepository(db);
+  const repoSettings = await repoSettingsRepo.getRepoSettings(repository);
+  const { poolSize } = resolvePoolConfig(config || {}, repository, repoSettings);
   const resetScript = config ? getRepoResetScript(config, repository) : null;
 
   let worktreePath;
