@@ -1526,6 +1526,24 @@ describe('RepoSettingsRepository', () => {
     });
   });
 
+  describe('findPoolConfiguredRepoSettings()', () => {
+    it('returns repo settings rows with pool config and excludes unrelated settings', async () => {
+      await repoSettingsRepo.saveRepoSettings('pool-size/repo', { pool_size: 10 });
+      await repoSettingsRepo.saveRepoSettings('fetch/repo', { pool_fetch_interval_minutes: 15 });
+      await repoSettingsRepo.saveRepoSettings('plain/repo', { default_instructions: 'No pool settings' });
+
+      const rows = await repoSettingsRepo.findPoolConfiguredRepoSettings();
+
+      expect(rows).toEqual(expect.arrayContaining([
+        expect.objectContaining({ repository: 'pool-size/repo', pool_size: 10 }),
+        expect.objectContaining({ repository: 'fetch/repo', pool_fetch_interval_minutes: 15 }),
+      ]));
+      expect(rows).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ repository: 'plain/repo' }),
+      ]));
+    });
+  });
+
   describe('deleteRepoSettings()', () => {
     it('should return false for non-existent repository', async () => {
       const result = await repoSettingsRepo.deleteRepoSettings('owner/repo');

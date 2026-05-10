@@ -3,11 +3,11 @@
 
 const fs = require('fs');
 const logger = require('../utils/logger');
-const { WorktreePoolRepository, WorktreeRepository, generateWorktreeId } = require('../database');
+const { WorktreePoolRepository, WorktreeRepository, RepoSettingsRepository, generateWorktreeId } = require('../database');
 const { GitWorktreeManager } = require('./worktree');
 const { WorktreePoolUsageTracker } = require('./worktree-pool-usage');
 const { normalizeRepository } = require('../utils/paths');
-const { getRepoPoolSize } = require('../config');
+const { resolvePoolConfig } = require('../config');
 
 /**
  * Consolidates the worktree pool state machine: absorbs WorktreePoolManager
@@ -25,6 +25,7 @@ class WorktreePoolLifecycle {
     const defaults = {
       poolRepo: new WorktreePoolRepository(db),
       worktreeRepo: new WorktreeRepository(db),
+      repoSettingsRepo: new RepoSettingsRepository(db),
       usageTracker: new WorktreePoolUsageTracker(),
       fs: fs,
       simpleGit: require('simple-git'),
@@ -36,6 +37,7 @@ class WorktreePoolLifecycle {
     this.config = config;
     this._poolRepo = deps.poolRepo;
     this._worktreeRepo = deps.worktreeRepo;
+    this._repoSettingsRepo = deps.repoSettingsRepo;
     this._usageTracker = deps.usageTracker;
     this._fs = deps.fs;
     this._simpleGit = deps.simpleGit;
@@ -628,11 +630,20 @@ class WorktreePoolLifecycle {
    * @private
    */
   async _adoptExistingWorktrees() {
-    const repos = this.config.repos || {};
+    const config = this.config || {};
+    const repoSettingsRows = await this._repoSettingsRepo.findPoolConfiguredRepoSettings();
+    const settingsByRepo = new Map(
+      repoSettingsRows.map(row => [String(row.repository).toLowerCase(), row])
+    );
+    const repoNames = new Set(Object.keys(config.repos || {}));
+    for (const row of repoSettingsRows) {
+      repoNames.add(String(row.repository).toLowerCase());
+    }
     const adoptedInUse = [];
 
-    for (const repoName of Object.keys(repos)) {
-      const poolSize = getRepoPoolSize(this.config, repoName);
+    for (const repoName of repoNames) {
+      const repoSettings = settingsByRepo.get(String(repoName).toLowerCase()) || null;
+      const { poolSize } = resolvePoolConfig(config, repoName, repoSettings);
       if (!poolSize) continue;
 
       // Count existing pool entries for this repo
