@@ -13,6 +13,7 @@ const { handleLocalReview, findMainGitRoot } = require('./local-review');
 const { storePRData, registerRepositoryLocation, findRepositoryPath } = require('./setup/pr-setup');
 const { fireReviewStartedHook } = require('./hooks/payloads');
 const { normalizeRepository, resolveRenamedFile, resolveRenamedFileOld } = require('./utils/paths');
+const { rejectUrlLikeLocalReviewPath } = require('./utils/local-path-input');
 const logger = require('./utils/logger');
 const simpleGit = require('simple-git');
 const { getGeneratedFilePatterns } = require('./git/gitattributes');
@@ -288,6 +289,7 @@ function parseArgs(args) {
       flags.local = true;
       // Next argument is optional path (if not starting with -)
       if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+        rejectUrlLikeLocalReviewPath(args[i + 1]);
         flags.localPath = args[i + 1];
         i++; // Skip next argument since we consumed it
       }

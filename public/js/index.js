@@ -133,6 +133,20 @@
     return div.innerHTML;
   }
 
+  const LOCAL_REVIEW_PATH_URL_ERROR = 'Local reviews require a filesystem path, not a URL. Pass GitHub or Graphite URLs as PR review inputs instead.';
+
+  function isUrlLikeLocalReviewPath(value) {
+    if (!value || typeof value !== 'string') return false;
+    const trimmed = value.trim();
+    if (!trimmed) return false;
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) return true;
+    if (/^(?:github\.com|app\.graphite\.(?:dev|com))\//i.test(trimmed)) return true;
+    // Keep this aligned with src/utils/local-path-input.js: only a leading
+    // user@host:path token is treated as an SSH-style remote.
+    if (/^[^@/\\\s]+@[^:/\\\s]+:[^\s]+$/.test(trimmed)) return true;
+    return false;
+  }
+
   /**
    * Set loading state for a tab's form
    * @param {string} tab - 'pr' or 'local'
@@ -710,11 +724,32 @@
       return;
     }
 
+    if (isUrlLikeLocalReviewPath(pathValue)) {
+      showError('local', LOCAL_REVIEW_PATH_URL_ERROR);
+      input.focus();
+      return;
+    }
+
     // Navigate to the setup page which shows step-by-step progress
     // The /local?path= route serves setup.html which handles the full setup flow
     let href = '/local?path=' + encodeURIComponent(pathValue);
     if (analyze) href += '&analyze=true';
     window.location.href = href;
+  }
+
+  function handleLocalPathInput(event) {
+    const input = event && event.target ? event.target : document.getElementById('local-path-input');
+    const errorEl = document.getElementById('start-review-error-local');
+    if (!input || !errorEl) return;
+
+    if (isUrlLikeLocalReviewPath(input.value)) {
+      showError('local', LOCAL_REVIEW_PATH_URL_ERROR);
+      return;
+    }
+
+    if (errorEl.textContent === LOCAL_REVIEW_PATH_URL_ERROR) {
+      errorEl.classList.remove('visible', 'info');
+    }
   }
 
   // ─── Browse Directory ──────────────────────────────────────────────────────
@@ -746,6 +781,9 @@
 
       if (!data.cancelled && data.path) {
         input.value = data.path;
+        // Setting .value in JavaScript does not fire an input event, so run the
+        // same handler used for typing to clear any stale URL-specific error.
+        handleLocalPathInput({ target: input });
         input.focus();
       }
 
@@ -1871,6 +1909,11 @@
     const localForm = document.getElementById('start-local-form');
     if (localForm) {
       localForm.addEventListener('submit', handleStartLocal);
+    }
+
+    const localPathInput = document.getElementById('local-path-input');
+    if (localPathInput) {
+      localPathInput.addEventListener('input', handleLocalPathInput);
     }
 
     // Set up browse button handler

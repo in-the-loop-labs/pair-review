@@ -325,6 +325,66 @@ describe('Index page Open/Analyze buttons', () => {
     expect(global.window.location.href).toBe('/local?path=%2Ftmp%2Fmyproject');
   });
 
+  it('Local Open button rejects URL input without navigating', async () => {
+    const form = elementsById['start-local-form'];
+    const input = elementsById['local-path-input'];
+    const errorEl = elementsById['start-review-error-local'];
+    input.value = 'https://github.com/testowner/testrepo/pull/42';
+
+    const submitHandler = form._listeners.submit[0];
+    await submitHandler({ preventDefault: vi.fn() });
+
+    expect(global.window.location.href).toBe('');
+    expect(errorEl.textContent).toContain('filesystem path');
+    expect(input.focus).toHaveBeenCalled();
+  });
+
+  it('Local Open button allows paths with SSH-like substrings', async () => {
+    const form = elementsById['start-local-form'];
+    const input = elementsById['local-path-input'];
+    input.value = '/tmp/git@github.com:owner/repo';
+
+    const submitHandler = form._listeners.submit[0];
+    await submitHandler({ preventDefault: vi.fn() });
+
+    expect(global.window.location.href).toBe('/local?path=%2Ftmp%2Fgit%40github.com%3Aowner%2Frepo');
+  });
+
+  it('Local path input shows URL error immediately on input', async () => {
+    const input = elementsById['local-path-input'];
+    const errorEl = elementsById['start-review-error-local'];
+    input.value = 'https://github.com/testowner/testrepo/pull/42';
+
+    const inputHandler = input._listeners.input[0];
+    inputHandler({ target: input });
+
+    expect(errorEl.textContent).toContain('filesystem path');
+  });
+
+  it('Browse clears stale URL validation after assigning selected path', async () => {
+    const browseBtn = elementsById['browse-local-btn'];
+    const input = elementsById['local-path-input'];
+    const errorEl = elementsById['start-review-error-local'];
+    errorEl.textContent = 'Local reviews require a filesystem path, not a URL. Pass GitHub or Graphite URLs as PR review inputs instead.';
+    errorEl.classList.remove.mockClear();
+
+    global.fetch = vi.fn((url) => {
+      if (url === '/api/local/browse') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ cancelled: false, path: '/tmp/myproject' }),
+        });
+      }
+      return Promise.resolve({ ok: false });
+    });
+
+    const clickHandler = browseBtn._listeners.click[0];
+    await clickHandler({ preventDefault: vi.fn() });
+
+    expect(input.value).toBe('/tmp/myproject');
+    expect(errorEl.classList.remove).toHaveBeenCalledWith('visible', 'info');
+  });
+
   // ─── Test 4: Local Analyze button navigates with analyze param ───────────
 
   it('Local Analyze button navigates with analyze param', async () => {

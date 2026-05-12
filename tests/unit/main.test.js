@@ -46,6 +46,11 @@ describe('main.js parseArgs', () => {
       expect(result.flags.localPath).toBe('/path/to/repo');
     });
 
+    it('should reject --local flag with URL path', () => {
+      expect(() => parseArgs(['--local', 'https://github.com/owner/repo/pull/123']))
+        .toThrow('filesystem path');
+    });
+
     it('should parse -l short flag without path', () => {
       const result = parseArgs(['-l']);
       expect(result.flags.local).toBe(true);

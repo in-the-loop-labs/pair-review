@@ -18,6 +18,7 @@ const { setupLocalReview } = require('../setup/local-setup');
 const { getGitHubToken, expandPath } = require('../config');
 const { queryOne, ReviewRepository } = require('../database');
 const { normalizeRepository } = require('../utils/paths');
+const { rejectUrlLikeLocalReviewPath } = require('../utils/local-path-input');
 const logger = require('../utils/logger');
 
 const router = express.Router();
@@ -184,6 +185,12 @@ router.post('/api/setup/local', async (req, res) => {
 
     if (!rawPath) {
       return res.status(400).json({ error: 'Missing required field: path' });
+    }
+
+    try {
+      rejectUrlLikeLocalReviewPath(rawPath);
+    } catch (err) {
+      return res.status(400).json({ error: err.message });
     }
 
     const targetPath = expandPath(rawPath);
