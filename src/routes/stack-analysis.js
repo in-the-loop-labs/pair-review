@@ -220,7 +220,7 @@ async function executeStackAnalysis(params) {
     // 2. Bulk fetch all PR refs (runs against trigger worktree)
     const refspecs = prNumbers.map(n => `+refs/pull/${n}/head:refs/remotes/origin/pr-${n}`);
     try {
-      deps.execSync(`git fetch origin ${refspecs.join(' ')}`, {
+      deps.execSync(`git fetch --no-tags origin ${refspecs.join(' ')}`, {
         cwd: triggerWorktreePath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
         timeout: 60000
       });

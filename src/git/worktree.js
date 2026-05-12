@@ -8,6 +8,7 @@ const { WorktreeRepository, generateWorktreeId } = require('../database');
 const { getGeneratedFilePatterns } = require('./gitattributes');
 const { normalizeRepository, resolveRenamedFile, resolveRenamedFileOld } = require('../utils/paths');
 const { GIT_DIFF_FLAGS_ARRAY, GIT_DIFF_SUMMARY_FLAGS_ARRAY } = require('./diff-flags');
+const { fetchNoTags, rawFetchNoTags } = require('./fetch-helpers');
 const { spawn, execSync } = require('child_process');
 
 const MISSING_COMMIT_ERROR_CODE = 'PAIR_REVIEW_MISSING_COMMIT';
@@ -250,7 +251,7 @@ class GitWorktreeManager {
 
     let fetchError = null;
     try {
-      await git.raw(['fetch', remote, sha]);
+      await rawFetchNoTags(git, [remote, sha]);
     } catch (error) {
       fetchError = error;
     }
@@ -370,7 +371,7 @@ class GitWorktreeManager {
     const prTrackingRef = `refs/remotes/${baseRemote}/pr-${prNumber}`;
 
     try {
-      await git.fetch([baseRemote, `+refs/pull/${prNumber}/head:${prTrackingRef}`]);
+      await fetchNoTags(git, [baseRemote, `+refs/pull/${prNumber}/head:${prTrackingRef}`]);
       return {
         remote: baseRemote,
         trackingRef: prTrackingRef,
@@ -387,7 +388,7 @@ class GitWorktreeManager {
         throw prRefError;
       }
 
-      await git.raw(['fetch', baseRemote, headSha]);
+      await rawFetchNoTags(git, [baseRemote, headSha]);
       return {
         remote: baseRemote,
         trackingRef: null,
@@ -591,13 +592,13 @@ class GitWorktreeManager {
       // Fetch only the specific base branch we need, with error handling for ref conflicts
       console.log(`Fetching base branch ${prData.base_branch} from ${remote}...`);
       try {
-        await git.fetch([remote, `+refs/heads/${prData.base_branch}:refs/remotes/${remote}/${prData.base_branch}`]);
+        await fetchNoTags(git, [remote, `+refs/heads/${prData.base_branch}:refs/remotes/${remote}/${prData.base_branch}`]);
       } catch (fetchError) {
         // If fetch fails due to ref conflicts, try alternative approaches
         console.log(`Standard fetch failed, trying alternative: ${fetchError.message}`);
         try {
           // Try fetching with force flag to overwrite conflicting refs
-          await git.raw(['fetch', remote, `+refs/heads/${prData.base_branch}:refs/remotes/${remote}/${prData.base_branch}`, '--force']);
+          await rawFetchNoTags(git, ['--force', remote, `+refs/heads/${prData.base_branch}:refs/remotes/${remote}/${prData.base_branch}`]);
         } catch (altFetchError) {
           console.warn(`Could not fetch base branch ${prData.base_branch}, will try to use existing ref`);
           // Continue anyway - the branch might already be available locally
@@ -658,7 +659,7 @@ class GitWorktreeManager {
         if (headBranch) {
           try {
             console.log(`Fetching head branch ${headBranch}...`);
-            await worktreeGit.fetch([remote, `+refs/heads/${headBranch}:refs/remotes/${remote}/${headBranch}`]);
+            await fetchNoTags(worktreeGit, [remote, `+refs/heads/${headBranch}:refs/remotes/${remote}/${headBranch}`]);
             // Create/update a local branch pointing to the fetched ref so tooling can reference it by name
             await worktreeGit.branch(['-f', headBranch, `${remote}/${headBranch}`]);
           } catch (branchFetchError) {
@@ -769,14 +770,14 @@ class GitWorktreeManager {
         // This mirrors the targeted fetch used in createWorktreeForPR.
         if (prData?.base_branch) {
           try {
-            await worktreeGit.fetch([remote, `+refs/heads/${prData.base_branch}:refs/remotes/${remote}/${prData.base_branch}`]);
+            await fetchNoTags(worktreeGit, [remote, `+refs/heads/${prData.base_branch}:refs/remotes/${remote}/${prData.base_branch}`]);
           } catch (fetchError) {
             console.warn(`Targeted base-branch fetch failed, will rely on existing refs: ${fetchError.message}`);
           }
         }
       } else {
         console.log(`Fetching latest changes from ${remote}...`);
-        await worktreeGit.fetch([remote, '--prune']);
+        await fetchNoTags(worktreeGit, ['--prune', remote]);
       }
 
       await this.ensureBaseShaAvailable(worktreeGit, prData, remote);

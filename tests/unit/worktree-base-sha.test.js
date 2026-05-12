@@ -46,7 +46,7 @@ describe('GitWorktreeManager base SHA availability', () => {
           }
           return 'commit\n';
         }
-        if (args[0] === 'fetch' && args[1] === 'fork-remote' && args[2] === 'base-sha') {
+        if (args[0] === 'fetch' && args[1] === '--no-tags' && args[2] === 'fork-remote' && args[3] === 'base-sha') {
           worktreeGit._seenBaseFetch = true;
           return '';
         }
@@ -64,7 +64,42 @@ describe('GitWorktreeManager base SHA availability', () => {
       repoPath
     );
 
-    expect(worktreeGit.raw).toHaveBeenCalledWith(['fetch', 'fork-remote', 'base-sha']);
+    expect(repoGit.fetch).toHaveBeenCalledWith([
+      '--no-tags',
+      'fork-remote',
+      '+refs/heads/main:refs/remotes/fork-remote/main',
+    ]);
+    expect(worktreeGit.raw).toHaveBeenCalledWith(['fetch', '--no-tags', 'fork-remote', 'base-sha']);
+  });
+
+  it('retries base branch fetch without tags when the standard fetch fails', async () => {
+    const repoPath = '/tmp/repo';
+    const repoGit = createMockGit({
+      fetch: vi.fn().mockRejectedValueOnce(new Error('ref hierarchy conflict')),
+    });
+    const worktreeGit = createMockGit({
+      raw: vi.fn(async (args) => {
+        if (args[0] === 'cat-file') return 'commit\n';
+        return '';
+      }),
+      revparse: vi.fn().mockResolvedValue('head-sha\n'),
+    });
+
+    manager._gitFor = vi.fn((dirPath) => (dirPath === repoPath ? repoGit : worktreeGit));
+
+    await manager.createWorktreeForPR(
+      { owner: 'owner', repo: 'repo', number: 42 },
+      { base_branch: 'main', base_sha: 'base-sha', head_sha: 'head-sha', head_branch: 'feature' },
+      repoPath
+    );
+
+    expect(repoGit.raw).toHaveBeenCalledWith([
+      'fetch',
+      '--no-tags',
+      '--force',
+      'fork-remote',
+      '+refs/heads/main:refs/remotes/fork-remote/main',
+    ]);
   });
 
   it('fetches the exact base SHA when updating an existing worktree', async () => {
@@ -76,7 +111,7 @@ describe('GitWorktreeManager base SHA availability', () => {
           }
           return 'commit\n';
         }
-        if (args[0] === 'fetch' && args[1] === 'fork-remote' && args[2] === 'base-sha') {
+        if (args[0] === 'fetch' && args[1] === '--no-tags' && args[2] === 'fork-remote' && args[3] === 'base-sha') {
           worktreeGit._seenBaseFetch = true;
           return '';
         }
@@ -93,8 +128,8 @@ describe('GitWorktreeManager base SHA availability', () => {
       head_sha: 'head-sha',
     });
 
-    expect(worktreeGit.fetch).toHaveBeenCalledWith(['fork-remote', '--prune']);
-    expect(worktreeGit.raw).toHaveBeenCalledWith(['fetch', 'fork-remote', 'base-sha']);
+    expect(worktreeGit.fetch).toHaveBeenCalledWith(['--no-tags', '--prune', 'fork-remote']);
+    expect(worktreeGit.raw).toHaveBeenCalledWith(['fetch', '--no-tags', 'fork-remote', 'base-sha']);
     expect(worktreeGit.checkout).toHaveBeenCalledWith(['refs/remotes/fork-remote/pr-42']);
   });
 
@@ -115,7 +150,7 @@ describe('GitWorktreeManager base SHA availability', () => {
       { skipBulkFetch: true }
     );
 
-    expect(worktreeGit.fetch).not.toHaveBeenCalledWith(['fork-remote', '--prune']);
+    expect(worktreeGit.fetch).not.toHaveBeenCalledWith(['--no-tags', '--prune', 'fork-remote']);
     expect(worktreeGit.fetch).not.toHaveBeenCalledWith(
       expect.arrayContaining([expect.stringContaining('+refs/heads/')])
     );
@@ -140,10 +175,11 @@ describe('GitWorktreeManager base SHA availability', () => {
     );
 
     expect(worktreeGit.fetch).toHaveBeenCalledWith([
+      '--no-tags',
       'fork-remote',
       '+refs/heads/main:refs/remotes/fork-remote/main',
     ]);
-    expect(worktreeGit.fetch).not.toHaveBeenCalledWith(['fork-remote', '--prune']);
+    expect(worktreeGit.fetch).not.toHaveBeenCalledWith(['--no-tags', '--prune', 'fork-remote']);
   });
 
   it('continues when targeted base-branch fetch fails under skipBulkFetch', async () => {
@@ -201,7 +237,7 @@ describe('GitWorktreeManager base SHA availability', () => {
           }
           return 'commit\n';
         }
-        if (args[0] === 'fetch' && args[1] === 'fork-remote' && args[2] === 'base-sha') {
+        if (args[0] === 'fetch' && args[1] === '--no-tags' && args[2] === 'fork-remote' && args[3] === 'base-sha') {
           worktreeGit._seenBaseFetch = true;
           return '';
         }
@@ -219,7 +255,7 @@ describe('GitWorktreeManager base SHA availability', () => {
       { owner: 'owner', repo: 'repo', number: 42 }
     );
 
-    expect(worktreeGit.raw).toHaveBeenCalledWith(['fetch', 'fork-remote', 'base-sha']);
+    expect(worktreeGit.raw).toHaveBeenCalledWith(['fetch', '--no-tags', 'fork-remote', 'base-sha']);
     expect(worktreeGit.raw).toHaveBeenCalledWith(['reset', '--hard', 'refs/remotes/fork-remote/pr-42']);
   });
 

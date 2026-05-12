@@ -208,9 +208,10 @@ describe('executeStackAnalysis', () => {
     await executeStackAnalysis(params);
 
     const fetchCall = deps.execSync.mock.calls.find(
-      c => typeof c[0] === 'string' && c[0].includes('git fetch origin')
+      c => typeof c[0] === 'string' && c[0].includes('git fetch --no-tags origin')
     );
     expect(fetchCall).toBeTruthy();
+    expect(fetchCall[0]).toContain('git fetch --no-tags origin');
     expect(fetchCall[0]).toContain('+refs/pull/10/head:refs/remotes/origin/pr-10');
     expect(fetchCall[0]).toContain('+refs/pull/11/head:refs/remotes/origin/pr-11');
     expect(fetchCall[0]).toContain('+refs/pull/12/head:refs/remotes/origin/pr-12');
