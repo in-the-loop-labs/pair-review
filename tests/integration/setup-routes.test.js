@@ -9,12 +9,15 @@ vi.spyOn(configModule, 'getGitHubToken');
 // Mock setupPRReview to prevent real git operations
 const prSetupModule = require('../../src/setup/pr-setup');
 vi.spyOn(prSetupModule, 'setupPRReview');
+const localSetupModule = require('../../src/setup/local-setup');
+vi.spyOn(localSetupModule, 'setupLocalReview');
 
 // Now load the route (after spies are in place)
 const express = require('express');
 const request = require('supertest');
 const setupRoutes = require('../../src/routes/setup');
 const { WorktreePoolRepository } = require('../../src/database');
+const { activeSetups } = require('../../src/routes/shared');
 
 function createApp(db, config = { github_token: 'test-token' }, { withPool = false } = {}) {
   const app = express();
@@ -57,13 +60,22 @@ describe('POST /api/setup/pr/:owner/:repo/:number', () => {
 
   beforeEach(() => {
     db = createTestDatabase();
+    activeSetups.clear();
     vi.clearAllMocks();
     configModule.getGitHubToken.mockReturnValue('test-token');
     // Default: setupPRReview resolves (should only be called when fast path is skipped)
     prSetupModule.setupPRReview.mockResolvedValue({ reviewUrl: '/pr/owner/repo/42', title: 'Test PR' });
+    localSetupModule.setupLocalReview.mockResolvedValue({
+      reviewUrl: '/local/1',
+      reviewId: 1,
+      existing: false,
+      branch: 'main',
+      repository: 'owner/repo'
+    });
   });
 
   afterEach(() => {
+    activeSetups.clear();
     closeTestDatabase(db);
   });
 
@@ -201,5 +213,40 @@ describe('POST /api/setup/pr/:owner/:repo/:number', () => {
     expect(prSetupModule.setupPRReview).toHaveBeenCalledOnce();
     const callArgs = prSetupModule.setupPRReview.mock.calls[0][0];
     expect(callArgs.restoreMetadata).toBeNull();
+  });
+});
+
+describe('POST /api/setup/local', () => {
+  let db;
+
+  beforeEach(() => {
+    db = createTestDatabase();
+    activeSetups.clear();
+    vi.clearAllMocks();
+    localSetupModule.setupLocalReview.mockResolvedValue({
+      reviewUrl: '/local/1',
+      reviewId: 1,
+      existing: false,
+      branch: 'main',
+      repository: 'owner/repo'
+    });
+  });
+
+  afterEach(() => {
+    activeSetups.clear();
+    closeTestDatabase(db);
+  });
+
+  it('returns 400 immediately when local path is a URL', async () => {
+    const app = createApp(db);
+    const res = await request(app)
+      .post('/api/setup/local')
+      .send({ path: 'https://github.com/owner/repo/pull/123' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain('filesystem path');
+    expect(res.body.setupId).toBeUndefined();
+    expect(activeSetups.size).toBe(0);
+    expect(localSetupModule.setupLocalReview).not.toHaveBeenCalled();
   });
 });

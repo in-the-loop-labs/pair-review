@@ -6,6 +6,7 @@ const { fireHooks, hasHooks } = require('../hooks/hook-runner');
 const { buildReviewStartedPayload, buildReviewLoadedPayload, getCachedUser } = require('../hooks/payloads');
 const { STOPS, DEFAULT_SCOPE, reviewScope } = require('../local-scope');
 const logger = require('../utils/logger');
+const { LOCAL_REVIEW_PATH_URL_ERROR, rejectUrlLikeLocalReviewPath } = require('../utils/local-path-input');
 const path = require('path');
 const fs = require('fs').promises;
 
@@ -31,11 +32,14 @@ async function setupLocalReview({ db, targetPath, onProgress, config }) {
   let resolvedPath;
   try {
     progress({ step: 'validate', status: 'running', message: 'Validating target path...' });
+    rejectUrlLikeLocalReviewPath(targetPath);
     resolvedPath = path.resolve(targetPath);
     await fs.access(resolvedPath);
     progress({ step: 'validate', status: 'completed', message: `Path resolved to ${resolvedPath}` });
   } catch (err) {
-    const message = `Path does not exist: ${path.resolve(targetPath)}`;
+    const message = err.message === LOCAL_REVIEW_PATH_URL_ERROR
+      ? err.message
+      : `Path does not exist: ${path.resolve(targetPath)}`;
     progress({ step: 'validate', status: 'error', message });
     throw new Error(message);
   }

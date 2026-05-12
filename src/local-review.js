@@ -6,6 +6,7 @@ const path = require('path');
 const fs = require('fs').promises;
 const { loadConfig, showWelcomeMessage, resolveDbName, getGitHubToken } = require('./config');
 const logger = require('./utils/logger');
+const { rejectUrlLikeLocalReviewPath } = require('./utils/local-path-input');
 const { fireHooks, hasHooks } = require('./hooks/hook-runner');
 const { buildReviewStartedPayload, buildReviewLoadedPayload, getCachedUser } = require('./hooks/payloads');
 
@@ -699,6 +700,8 @@ async function handleLocalReview(targetPath, flags = {}) {
   let db = null;
 
   try {
+    rejectUrlLikeLocalReviewPath(targetPath);
+
     // Resolve target path
     const resolvedPath = path.resolve(targetPath || process.cwd());
 

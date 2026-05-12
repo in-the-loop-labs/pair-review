@@ -289,6 +289,17 @@ describe('attemptDelegation', () => {
     );
   });
 
+  it('rejects URL input for local mode before opening browser', async () => {
+    const deps = createMockDeps();
+    await expect(attemptDelegation(
+      baseConfig,
+      { local: true, localPath: 'https://github.com/owner/repo/pull/123' },
+      [],
+      deps
+    )).rejects.toThrow('filesystem path');
+    expect(deps.open).not.toHaveBeenCalled();
+  });
+
   it('delegates server-only mode and opens browser', async () => {
     const deps = createMockDeps();
     const result = await attemptDelegation(baseConfig, {}, [], deps);

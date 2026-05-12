@@ -4,6 +4,7 @@ const path = require('path');
 const semver = require('semver');
 const { PRArgumentParser } = require('./github/parser');
 const logger = require('./utils/logger');
+const { rejectUrlLikeLocalReviewPath } = require('./utils/local-path-input');
 const { version: packageVersion } = require('../package.json');
 
 const HEALTH_TIMEOUT_MS = 2000;
@@ -158,6 +159,7 @@ async function attemptDelegation(config, flags, prArgs, _deps) {
   // Determine mode and build URL
   let url;
   if (flags.local) {
+    rejectUrlLikeLocalReviewPath(flags.localPath);
     const targetPath = path.resolve(flags.localPath || process.cwd());
     url = buildDelegationUrl(port, 'local', { localPath: targetPath, analyze: flags.ai });
   } else if (prArgs.length > 0) {
