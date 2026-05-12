@@ -5,6 +5,7 @@ const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, Work
 const { PRArgumentParser } = require('./github/parser');
 const { GitHubClient } = require('./github/client');
 const { GitWorktreeManager } = require('./git/worktree');
+const { fetchNoTags } = require('./git/fetch-helpers');
 const { WorktreePoolLifecycle } = require('./git/worktree-pool-lifecycle');
 const { startServer } = require('./server');
 const Analyzer = require('./ai/analyzer');
@@ -725,7 +726,7 @@ async function performHeadlessReview(args, config, db, flags, options, externalP
 
       // Ensure we have the base SHA available (fetch if needed)
       try {
-        await git.fetch(['origin', prData.base_sha]);
+        await fetchNoTags(git, ['origin', prData.base_sha]);
       } catch (fetchError) {
         // Fetch by SHA may fail (not all servers support it); verify SHA is available locally
         try {
@@ -1227,7 +1228,7 @@ function startPoolBackgroundFetches(db, config) {
               const git = simpleGit(entry.path, { timeout: { block: 300000 } });
               const remotes = await git.getRemotes();
               const remote = remotes.find(r => r.name === 'origin') || remotes[0];
-              if (remote) await git.fetch([remote.name, '--prune']);
+              if (remote) await fetchNoTags(git, ['--prune', remote.name]);
               await poolRepo.updateLastFetched(entry.id);
               // Refresh the lease so the stale guard only needs to outlive
               // a single stalled fetch, not the entire serial loop.
