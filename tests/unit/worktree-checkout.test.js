@@ -28,6 +28,7 @@ describe('GitWorktreeManager.checkoutBranch', () => {
 
     expect(manager.hasLocalChanges).toHaveBeenCalledWith('/tmp/worktree');
     expect(mockGit.fetch).toHaveBeenCalledWith([
+      '--no-tags',
       'origin',
       '+refs/pull/42/head:refs/remotes/origin/pr-42',
     ]);
@@ -56,6 +57,7 @@ describe('GitWorktreeManager.checkoutBranch', () => {
 
     expect(manager.resolveRemoteForPR).toHaveBeenCalledWith(mockGit, prData, null);
     expect(mockGit.fetch).toHaveBeenCalledWith([
+      '--no-tags',
       'fork-remote',
       '+refs/pull/99/head:refs/remotes/fork-remote/pr-99',
     ]);
@@ -70,6 +72,7 @@ describe('GitWorktreeManager.checkoutBranch', () => {
 
     expect(manager.resolveRemoteForPR).not.toHaveBeenCalled();
     expect(mockGit.fetch).toHaveBeenCalledWith([
+      '--no-tags',
       'origin',
       '+refs/pull/10/head:refs/remotes/origin/pr-10',
     ]);
@@ -87,7 +90,8 @@ describe('GitWorktreeManager.checkoutBranch', () => {
     await manager.checkoutBranch('/tmp/worktree', 77, { remote: 'upstream' });
 
     const fetchCall = mockGit.fetch.mock.calls[0][0];
-    expect(fetchCall[1]).toBe('+refs/pull/77/head:refs/remotes/upstream/pr-77');
+    expect(fetchCall[0]).toBe('--no-tags');
+    expect(fetchCall[2]).toBe('+refs/pull/77/head:refs/remotes/upstream/pr-77');
   });
 
   it('should fall back to fetching the head SHA when PR refs are unavailable', async () => {
@@ -100,11 +104,12 @@ describe('GitWorktreeManager.checkoutBranch', () => {
     });
 
     expect(mockGit.fetch).toHaveBeenNthCalledWith(1, [
+      '--no-tags',
       'upstream',
       '+refs/pull/42/head:refs/remotes/upstream/pr-42',
     ]);
     expect(mockGit.raw).toHaveBeenNthCalledWith(1, [
-      'fetch', 'upstream', 'abc123def456',
+      'fetch', '--no-tags', 'upstream', 'abc123def456',
     ]);
     expect(mockGit.raw).toHaveBeenNthCalledWith(2, [
       'reset', '--hard', 'abc123def456',
