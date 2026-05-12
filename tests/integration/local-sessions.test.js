@@ -259,6 +259,16 @@ describe('Local Sessions API', () => {
       expect(res.body.error).toMatch(/path/i);
     });
 
+    it('should return 400 immediately when path is a URL', async () => {
+      const res = await request(app)
+        .post('/api/local/start')
+        .send({ path: 'https://github.com/owner/repo/pull/123' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('filesystem path');
+      expect(localReviewModule.findGitRoot).not.toHaveBeenCalled();
+    });
+
     it('should start a local review for a valid directory', async () => {
       const res = await request(app)
         .post('/api/local/start')

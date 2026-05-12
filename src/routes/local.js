@@ -35,6 +35,7 @@ const { getProviderClass, createProvider } = require('../ai/provider');
 const { getDefaultBranch, tryGraphiteState } = require('../git/base-branch');
 const { CommentRepository } = require('../database');
 const { runExecutableAnalysis, getChangedFiles } = require('./executable-analysis');
+const { rejectUrlLikeLocalReviewPath } = require('../utils/local-path-input');
 const {
   activeAnalyses,
   localReviewDiffs,
@@ -378,6 +379,12 @@ router.post('/api/local/start', async (req, res) => {
       return res.status(400).json({
         error: 'Missing required field: path'
       });
+    }
+
+    try {
+      rejectUrlLikeLocalReviewPath(inputPath);
+    } catch (err) {
+      return res.status(400).json({ error: err.message });
     }
 
     // Required inline (not reusing top-level import) so that vi.spyOn()
