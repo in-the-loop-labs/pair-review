@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.4.1
+
+### Patch Changes
+
+- 2978e16: Avoid auto-following remote tags during pair-review git fetches for worktree setup and refresh.
+- b754e2d: Fix worktree pool setup to honor UI repository pool settings before config-file values and adopt existing non-pool worktrees using the effective pool capacity.
+- 88df803: Reject URL inputs immediately when starting a local review.
+
 ## 3.4.0
 
 ### Minor Changes
