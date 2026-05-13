@@ -1,5 +1,8 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import fs from 'fs/promises';
+import os from 'os';
+import path from 'path';
 
 const { GitWorktreeManager } = require('../../src/git/worktree');
 
@@ -99,6 +102,51 @@ describe('GitWorktreeManager worktree cleanup', () => {
       manager.pruneWorktrees = vi.fn().mockRejectedValue(new Error('prune failed'));
 
       await expect(manager.cleanupWorktree('/tmp/worktrees/pr-42')).resolves.not.toThrow();
+    });
+
+    it('should remove an empty wrapper directory for nested src worktrees', async () => {
+      const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pair-review-worktrees-'));
+      const wrapperDir = path.join(baseDir, 'pair-review--abc');
+      const worktreePath = path.join(wrapperDir, 'src');
+      await fs.mkdir(worktreePath, { recursive: true });
+
+      manager = new GitWorktreeManager(null, { worktreeBaseDir: baseDir });
+      const mockOwningRepo = {
+        raw: vi.fn().mockImplementation(async () => {
+          await fs.rmdir(worktreePath);
+          return '';
+        }),
+      };
+      manager.resolveOwningRepo = vi.fn().mockResolvedValue(mockOwningRepo);
+      manager.pruneWorktrees = vi.fn().mockResolvedValue(undefined);
+
+      await manager.cleanupWorktree(worktreePath);
+
+      await expect(fs.access(wrapperDir)).rejects.toMatchObject({ code: 'ENOENT' });
+      await fs.rm(baseDir, { recursive: true, force: true });
+    });
+
+    it('should leave a non-empty wrapper directory in place', async () => {
+      const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pair-review-worktrees-'));
+      const wrapperDir = path.join(baseDir, 'pair-review--abc');
+      const worktreePath = path.join(wrapperDir, 'src');
+      await fs.mkdir(worktreePath, { recursive: true });
+      await fs.writeFile(path.join(wrapperDir, 'notes.txt'), 'keep me');
+
+      manager = new GitWorktreeManager(null, { worktreeBaseDir: baseDir });
+      const mockOwningRepo = {
+        raw: vi.fn().mockImplementation(async () => {
+          await fs.rmdir(worktreePath);
+          return '';
+        }),
+      };
+      manager.resolveOwningRepo = vi.fn().mockResolvedValue(mockOwningRepo);
+      manager.pruneWorktrees = vi.fn().mockResolvedValue(undefined);
+
+      await manager.cleanupWorktree(worktreePath);
+
+      await expect(fs.access(wrapperDir)).resolves.toBeUndefined();
+      await fs.rm(baseDir, { recursive: true, force: true });
     });
   });
 
@@ -242,6 +290,36 @@ describe('GitWorktreeManager worktree cleanup', () => {
       });
       expect(mockWorktreeRepo.delete).toHaveBeenCalledWith('wt-1');
       expect(mockWorktreeRepo.delete).not.toHaveBeenCalledWith('wt-2');
+    });
+
+    it('should remove empty wrappers for stale nested src worktrees', async () => {
+      const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pair-review-worktrees-'));
+      const wrapperDir = path.join(baseDir, 'pair-review--stale');
+      const worktreePath = path.join(wrapperDir, 'src');
+      await fs.mkdir(worktreePath, { recursive: true });
+
+      const mockOwningRepo = {
+        raw: vi.fn().mockImplementation(async (args) => {
+          if (args[0] === 'rev-parse' && args[1] === '--git-dir') {
+            return path.join(baseDir, 'repo.git');
+          }
+          await fs.rmdir(worktreePath);
+          return '';
+        }),
+      };
+      manager = new GitWorktreeManager(null, { worktreeBaseDir: baseDir });
+      manager.resolveOwningRepo = vi.fn().mockResolvedValue(mockOwningRepo);
+      manager.pruneWorktrees = vi.fn().mockResolvedValue(undefined);
+      manager.worktreeRepo = {
+        findStale: vi.fn().mockResolvedValue([{ id: 'wt-1', path: worktreePath }]),
+        delete: vi.fn().mockResolvedValue(undefined),
+      };
+
+      const result = await manager.cleanupStaleWorktrees(7);
+
+      expect(result.cleaned).toBe(1);
+      await expect(fs.access(wrapperDir)).rejects.toMatchObject({ code: 'ENOENT' });
+      await fs.rm(baseDir, { recursive: true, force: true });
     });
 
     it('should skip cleanup when no database connection', async () => {

@@ -971,6 +971,7 @@ class GitWorktreeManager {
           }
           await owningRepo.raw(['worktree', 'remove', '--force', worktreePath]);
           console.log(`Removed worktree via git: ${worktreePath}`);
+          await this.cleanupEmptyWorktreeWrapper(worktreePath);
           return;
         } catch (gitError) {
           console.log('Git worktree remove failed, trying manual cleanup...');
@@ -979,11 +980,40 @@ class GitWorktreeManager {
         // git remove failed — remove directory manually
         await this.removeDirectory(worktreePath);
         console.log(`Removed worktree directory: ${worktreePath}`);
+        await this.cleanupEmptyWorktreeWrapper(worktreePath);
       }
 
     } catch (error) {
       console.warn(`Warning: Could not cleanup worktree at ${worktreePath}: ${error.message}`);
       // Don't throw - this is cleanup, continue with creation
+    }
+  }
+
+  /**
+   * Remove the empty wrapper directory left by nested checkout layouts.
+   * Pair Review can create worktrees at <base>/<id>/src so removing the git
+   * worktree leaves <base>/<id> behind as an ordinary empty directory.
+   * @param {string} worktreePath - Path to worktree that was just removed
+   * @returns {Promise<void>}
+   */
+  async cleanupEmptyWorktreeWrapper(worktreePath) {
+    if (path.basename(worktreePath) !== 'src') {
+      return;
+    }
+
+    const wrapperDir = path.dirname(worktreePath);
+    const relativeWrapper = path.relative(this.worktreeBaseDir, wrapperDir);
+    if (!relativeWrapper || relativeWrapper.startsWith('..') || path.isAbsolute(relativeWrapper)) {
+      return;
+    }
+
+    try {
+      await fs.rmdir(wrapperDir);
+      console.log(`Removed empty worktree wrapper: ${wrapperDir}`);
+    } catch (error) {
+      if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(error.code)) {
+        console.warn(`Warning: Could not remove worktree wrapper ${wrapperDir}: ${error.message}`);
+      }
     }
   }
 
@@ -1309,12 +1339,14 @@ class GitWorktreeManager {
             }
             await owningRepo.raw(['worktree', 'remove', '--force', worktree.path]);
             console.log(`[pair-review] Removed worktree via git: ${worktree.path}`);
+            await this.cleanupEmptyWorktreeWrapper(worktree.path);
           } catch (gitError) {
             // If git worktree remove fails, try manual directory removal
             const exists = await this.pathExists(worktree.path);
             if (exists) {
               await this.removeDirectory(worktree.path);
               console.log(`[pair-review] Removed worktree directory manually: ${worktree.path}`);
+              await this.cleanupEmptyWorktreeWrapper(worktree.path);
             }
           }
 
