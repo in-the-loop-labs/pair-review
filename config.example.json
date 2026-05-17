@@ -11,7 +11,7 @@
   "summaries_enabled": false,
   "_summaries_enabled_comment": "When true, generates inline natural-language summaries of changed hunks via the summary provider.",
   "tours_enabled": false,
-  "_tours_enabled_comment": "When true, generates a narrative tour through the review. Requires summaries_enabled.",
+  "_tours_enabled_comment": "When true, generates a narrative tour through the review.",
   "summary_provider": "",
   "_summary_provider_comment": "Provider for summary AI tasks (summaries, tours). Empty falls back to default_provider.",
   "summary_model": "",

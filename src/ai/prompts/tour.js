@@ -5,8 +5,7 @@
  * Pure function that produces the prompt body sent to the background provider
  * for generating a guided "tour" of a code review. The agent is expected to
  * actively explore the worktree (read files, run the annotated diff tool,
- * grep) and choose stops grounded in real code — summaries are hints, not
- * gospel.
+ * grep) and choose stops grounded in real code it has read directly.
  */
 
 const { buildAnalysisLineNumberGuidance } = require('./line-number-guidance');
@@ -22,17 +21,6 @@ const TITLE_MAX = 60;
 const DESCRIPTION_MAX = 280;
 
 /**
- * @typedef {Object} TourSummaryItem
- * @property {string} summary
- */
-
-/**
- * @typedef {Object} TourSummariesByFile
- * @property {string} filePath
- * @property {TourSummaryItem[]} summaries
- */
-
-/**
  * Returns true if the value is a non-empty, non-whitespace-only string.
  * @param {unknown} value
  * @returns {boolean}
@@ -45,13 +33,11 @@ function hasText(value) {
  * Build the prompt body sent to the background provider for generating a tour.
  *
  * The agent is expected to explore the worktree directly (Read, grep, the
- * annotated diff tool) and ground every stop in real file content. The
- * `summariesByFile` data is provided as orientation only.
+ * annotated diff tool) and ground every stop in real file content.
  *
  * @param {Object}   context
  * @param {string}   [context.prTitle]            Optional PR title or local-review name.
  * @param {string}   [context.prDescription]      Optional PR description.
- * @param {TourSummariesByFile[]} [context.summariesByFile=[]]  Optional non-trivial per-hunk summaries.
  * @param {string}   context.scriptCommand        Annotated-diff command (e.g. `git-diff-lines --cwd "/abs"`).
  * @param {string[]} context.changedFiles         Repo-relative paths of files in the diff.
  * @param {string}   [context.worktreePath]       Informational; the agent's cwd.
@@ -60,7 +46,6 @@ function hasText(value) {
 function buildTourPrompt({
   prTitle,
   prDescription,
-  summariesByFile = [],
   scriptCommand,
   changedFiles,
   worktreePath
@@ -70,9 +55,6 @@ function buildTourPrompt({
   }
   if (!Array.isArray(changedFiles)) {
     throw new TypeError('changedFiles is required');
-  }
-  if (summariesByFile !== undefined && summariesByFile !== null && !Array.isArray(summariesByFile)) {
-    throw new TypeError('summariesByFile must be an array when provided');
   }
 
   const sections = [];
@@ -189,37 +171,11 @@ function buildTourPrompt({
       '- Use the annotated diff tool to ground every line number. Treat it as the',
       '  authoritative source for which lines changed and on which side.',
       '- Read the relevant files to verify ranges sit on meaningful boundaries',
-      '  (full function, full block) before committing to a stop.',
-      '- The hints below are a planning aid — verify against the actual code.'
+      '  (full function, full block) before committing to a stop.'
     ].join('\n')
   );
 
   sections.push(buildAnalysisLineNumberGuidance({ scriptCommand }).trim());
-
-  if (Array.isArray(summariesByFile) && summariesByFile.length > 0) {
-    const hintLines = [];
-    for (const entry of summariesByFile) {
-      const filePath = entry && entry.filePath;
-      const summaries = entry && Array.isArray(entry.summaries) ? entry.summaries : [];
-      if (!hasText(filePath) || summaries.length === 0) continue;
-      const fileBlock = [`  File: ${filePath}`];
-      for (const s of summaries) {
-        if (!s || !hasText(s.summary)) continue;
-        fileBlock.push(`    - ${s.summary.trim()}`);
-      }
-      if (fileBlock.length > 1) {
-        hintLines.push(fileBlock.join('\n'));
-      }
-    }
-    if (hintLines.length > 0) {
-      sections.push(
-        [
-          'Per-hunk hints (use to plan exploration; not gospel — verify against the code):',
-          ...hintLines
-        ].join('\n')
-      );
-    }
-  }
 
   if (hasText(prTitle) || hasText(prDescription)) {
     const intentLines = ["Author's stated intent (HINT only — verify against the code):"];

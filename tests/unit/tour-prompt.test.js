@@ -31,14 +31,6 @@ describe('buildTourPrompt input validation', () => {
       changedFiles: 'not-an-array'
     })).toThrow(TypeError);
   });
-
-  it('throws TypeError when summariesByFile is non-array (when explicitly provided)', () => {
-    expect(() => buildTourPrompt({
-      scriptCommand: 'git-diff-lines',
-      changedFiles: ['a.js'],
-      summariesByFile: 'no'
-    })).toThrow(TypeError);
-  });
 });
 
 describe('buildTourPrompt output', () => {
@@ -72,54 +64,26 @@ describe('buildTourPrompt output', () => {
     expect(out).toContain(SCRIPT);
   });
 
-  it('omits per-hunk hints section when summariesByFile is empty', () => {
-    const out = buildTourPrompt({
-      scriptCommand: 'git-diff-lines',
-      changedFiles: ['a.js'],
-      summariesByFile: []
-    });
-    expect(out).not.toContain('Per-hunk hints');
-  });
-
-  it('omits per-hunk hints section when summariesByFile is undefined', () => {
+  it('does not reference per-hunk summary hints (tour is decoupled from summaries)', () => {
     const out = buildTourPrompt({
       scriptCommand: 'git-diff-lines',
       changedFiles: ['a.js']
     });
     expect(out).not.toContain('Per-hunk hints');
+    expect(out).not.toMatch(/summaries are hints/i);
+    expect(out).not.toMatch(/use to plan exploration/i);
   });
 
-  it('includes file paths and summary text from summariesByFile entries', () => {
+  it('ignores any extra summariesByFile field passed in (decoupled — no error, no inclusion)', () => {
     const out = buildTourPrompt({
       scriptCommand: 'git-diff-lines',
-      changedFiles: ['src/a.js', 'src/b.js'],
+      changedFiles: ['src/a.js'],
       summariesByFile: [
-        { filePath: 'src/a.js', summaries: [{ summary: 'Adds helper.' }, { summary: 'Renames foo.' }] },
-        { filePath: 'src/b.js', summaries: [{ summary: 'Fixes off-by-one.' }] }
+        { filePath: 'src/a.js', summaries: [{ summary: 'Adds helper.' }] }
       ]
     });
-    expect(out).toContain('Per-hunk hints');
-    expect(out).toContain('File: src/a.js');
-    expect(out).toContain('Adds helper.');
-    expect(out).toContain('Renames foo.');
-    expect(out).toContain('File: src/b.js');
-    expect(out).toContain('Fixes off-by-one.');
-  });
-
-  it('skips summariesByFile entries with no summaries or empty summary text', () => {
-    const out = buildTourPrompt({
-      scriptCommand: 'git-diff-lines',
-      changedFiles: ['a.js', 'b.js', 'c.js'],
-      summariesByFile: [
-        { filePath: 'a.js', summaries: [] },
-        { filePath: 'b.js', summaries: [{ summary: '' }, { summary: '   ' }] },
-        { filePath: 'c.js', summaries: [{ summary: 'Real summary.' }] }
-      ]
-    });
-    expect(out).not.toContain('File: a.js');
-    expect(out).not.toContain('File: b.js');
-    expect(out).toContain('File: c.js');
-    expect(out).toContain('Real summary.');
+    expect(out).not.toContain('Adds helper.');
+    expect(out).not.toContain('Per-hunk hints');
   });
 
   it('omits author-intent section when both prTitle and prDescription are empty/whitespace', () => {

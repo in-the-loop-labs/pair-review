@@ -18,12 +18,11 @@ const defaults = {
   getGeneratedFilePatterns: require('../git/gitattributes').getGeneratedFilePatterns,
   broadcastReviewEvent: require('../events/review-events').broadcastReviewEvent,
   hashDiff: (diffText) => crypto.createHash('sha256').update(diffText).digest('hex').slice(0, 16),
-  backgroundQueue: null,
-  kickOffTourJob: require('./tour-generator').kickOffTourJob
+  backgroundQueue: null
 };
 
 /**
- * Count '+' lines in parsed hunks to gate summary/tour generation by added-line volume.
+ * Count '+' lines in parsed hunks to gate summary generation by added-line volume.
  * Hunk-header lines are not '+'-prefixed by `parseUnifiedDiffHunks`, so this is safe.
  * @param {Map<string, Array<{header: string, lines: string[]}>>} hunksByFile
  * @returns {number}
@@ -379,8 +378,8 @@ function kickOffSummaryJob({
   const deps = { ...defaults, ...(_deps || {}) };
   const queue = deps.backgroundQueue || require('./background-queue').backgroundQueue;
   const digest = deps.hashDiff(diffText);
-  return queue.enqueue(reviewId, `summaries:${digest}`, async () => {
-    const result = await generateSummariesForReview({
+  return queue.enqueue(reviewId, `summaries:${digest}`, () =>
+    generateSummariesForReview({
       db,
       config,
       reviewId,
@@ -388,38 +387,8 @@ function kickOffSummaryJob({
       worktreePath,
       reviewContext,
       _deps
-    });
-    // Cap-hit (`oversized`) gates BOTH summaries and tour — same threshold
-    // protects both from runaway cost on huge diffs.
-    if (result.oversized) {
-      return result;
-    }
-    // Chain the tour job after summaries land. The tour kickoff itself
-    // checks `tours_enabled`, dedups via `(reviewId, 'tour')`, and short-
-    // circuits inside the generator when the persisted tour's diff_hash is
-    // already current. Failures here must NOT poison the summary result.
-    try {
-      const tourPromise = deps.kickOffTourJob({
-        db,
-        config,
-        reviewId,
-        diffText,
-        worktreePath,
-        reviewContext,
-        _deps
-      });
-      // Detach: the chained tour job runs to completion in the queue; we do
-      // not await it here so summary callers don't block on tour generation.
-      if (tourPromise && typeof tourPromise.catch === 'function') {
-        tourPromise.catch((err) =>
-          logger.warn(`Chained tour job failed for review ${reviewId}: ${err.message}`)
-        );
-      }
-    } catch (err) {
-      logger.warn(`Chained tour kickoff threw for review ${reviewId}: ${err.message}`);
-    }
-    return result;
-  });
+    })
+  );
 }
 
 module.exports = { generateSummariesForReview, kickOffSummaryJob, countAddedLines };

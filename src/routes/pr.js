@@ -35,6 +35,7 @@ const simpleGit = require('simple-git');
 const { GIT_DIFF_FLAGS_ARRAY, GIT_DIFF_SUMMARY_FLAGS_ARRAY } = require('../git/diff-flags');
 const { walkPRStack, DEFAULT_TRUNK_BRANCHES } = require('../github/stack-walker');
 const summaryGenerator = require('../ai/summary-generator');
+const tourGenerator = require('../ai/tour-generator');
 const {
   activeAnalyses,
   reviewToAnalysisId,
@@ -374,19 +375,36 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
     }
 
     (async () => {
-      await summaryGenerator.kickOffSummaryJob({
-        db,
-        config,
-        reviewId: review.id,
-        diffText: extendedData.diff,
-        worktreePath: extendedData.worktree_path,
-        reviewContext: {
-          prTitle: prMetadata.title,
-          prDescription: prMetadata.description,
-          changedFiles: changedFiles.map((f) => (typeof f === 'string' ? f : (f.filename || f.file || f.path))).filter(Boolean)
+      const reviewContext = {
+        prTitle: prMetadata.title,
+        prDescription: prMetadata.description,
+        changedFiles: changedFiles.map((f) => (typeof f === 'string' ? f : (f.filename || f.file || f.path))).filter(Boolean)
+      };
+      const results = await Promise.allSettled([
+        summaryGenerator.kickOffSummaryJob({
+          db,
+          config,
+          reviewId: review.id,
+          diffText: extendedData.diff,
+          worktreePath: extendedData.worktree_path,
+          reviewContext
+        }),
+        tourGenerator.kickOffTourJob({
+          db,
+          config,
+          reviewId: review.id,
+          diffText: extendedData.diff,
+          worktreePath: extendedData.worktree_path,
+          reviewContext
+        })
+      ]);
+      const labels = ['Hunk summary', 'Tour'];
+      results.forEach((r, i) => {
+        if (r.status === 'rejected') {
+          logger.warn(`${labels[i]} kickoff failed for review ${review.id}: ${r.reason?.message || r.reason}`);
         }
       });
-    })().catch((err) => logger.warn(`Hunk summary job failed for review ${review.id}: ${err.message}`));
+    })().catch((err) => logger.warn(`Background AI kickoff failed for review ${review.id}: ${err.message}`));
 
   } catch (error) {
     console.error('Error fetching PR data:', error);

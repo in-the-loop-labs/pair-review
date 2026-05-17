@@ -94,9 +94,7 @@ router.get('/api/config', (req, res) => {
     external_comments: config.external_comments !== false,
     chat_spinner: config.chat_spinner || 'dots',
     summaries_enabled: config.summaries_enabled === true,
-    // Tours depend on summaries — enforced here so tours_enabled is truthy
-    // ONLY when summaries are also on. loadConfig() warns on the same mismatch.
-    tours_enabled: config.tours_enabled === true && config.summaries_enabled === true,
+    tours_enabled: config.tours_enabled === true,
     // Share configuration for external review viewers.
     // - url: The base URL of the external share site
     // - method: Plumbed through for future use (e.g., POST-based share flows).
