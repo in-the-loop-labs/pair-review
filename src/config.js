@@ -24,13 +24,13 @@ const DEFAULT_CONFIG = {
   default_provider: "claude",  // AI provider: 'claude', 'gemini', 'codex', 'copilot', 'opencode', 'cursor-agent', 'pi'
   default_model: "opus",       // Model within the provider (e.g., 'opus' for Claude, 'gemini-2.5-pro' for Gemini)
   summaries_enabled: false,    // When true, generates inline natural-language summaries of changed hunks via summary_provider
-  tours_enabled: false,        // When true, generates a narrative tour of the review (requires summaries_enabled)
+  tours_enabled: false,        // When true, generates a narrative tour of the review
   summary_provider: "",        // Provider for one-shot hunk summary AI tasks. Empty = falls back to default_provider
   summary_model: "",           // Model for hunk summary tasks. Empty = uses provider's fast-tier model, then default_model
   tour_provider: "",           // Provider for agentic tour generation. Empty = falls back to summary_provider, then default_provider
   tour_model: "",              // Model for tour generation. Empty = falls back to summary_model resolution
-  summaries_max_files: 50,     // Skip summary and tour generation for reviews touching more than this many files (perf cap)
-  summaries_max_lines_added: 3000, // Skip summary and tour generation when the diff adds more than this many lines (perf cap)
+  summaries_max_files: 50,     // Skip summary generation for reviews touching more than this many files (perf cap)
+  summaries_max_lines_added: 3000, // Skip summary generation when the diff adds more than this many lines (perf cap)
   worktree_retention_days: 7,
   review_retention_days: 21,
   dev_mode: false,  // When true, disables static file caching for development
@@ -322,13 +322,6 @@ async function loadConfig() {
     if (error.code !== 'ENOENT') {
       logger.warn(`Could not read global instructions from ${globalInstructionsPath}: ${error.message}`);
     }
-  }
-
-  // Tours depend on summaries: warn if the user enabled tours without summaries.
-  // The /api/config response (src/routes/config.js) treats this combination as
-  // tours_enabled=false, but we surface the misconfiguration once at startup.
-  if (mergedConfig.tours_enabled === true && mergedConfig.summaries_enabled !== true) {
-    logger.warn('tours_enabled=true but summaries_enabled is not true; tours will be disabled. Set summaries_enabled=true to enable tours.');
   }
 
   return { config: mergedConfig, isFirstRun };

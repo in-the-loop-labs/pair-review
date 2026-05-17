@@ -16,6 +16,7 @@ const { initializeDatabase, ReviewRepository, RepoSettingsRepository } = require
 const { startServer } = require('./server');
 const { localReviewDiffs } = require('./routes/shared');
 const summaryGenerator = require('./ai/summary-generator');
+const tourGenerator = require('./ai/tour-generator');
 const { getShaAbbrevLength } = require('./git/sha-abbrev');
 const { GIT_DIFF_FLAGS, GIT_DIFF_FLAGS_ARRAY } = require('./git/diff-flags');
 const open = (...args) => process.env.PAIR_REVIEW_NO_OPEN ? Promise.resolve() : import('open').then(({ default: open }) => open(...args));
@@ -840,6 +841,15 @@ async function setupLocalReviewSession({ db, config, repoPath, flags = {} }) {
     worktreePath: repoPath,
     reviewContext: { prTitle: branch }
   })?.catch((err) => logger.warn(`Hunk summary job failed for review ${sessionId}: ${err.message}`));
+
+  tourGenerator.kickOffTourJob({
+    db,
+    config,
+    reviewId: sessionId,
+    diffText: diff,
+    worktreePath: repoPath,
+    reviewContext: { prTitle: branch }
+  })?.catch((err) => logger.warn(`Tour job failed for review ${sessionId}: ${err.message}`));
 
   return {
     sessionId,

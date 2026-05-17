@@ -24,7 +24,6 @@ const SCRIPT_NAME = 'git-diff-lines';
 const latestRequestedDiffHash = new Map();
 
 const defaults = {
-  HunkSummaryRepository: require('../database').HunkSummaryRepository,
   TourRepository: require('../database').TourRepository,
   createProvider: require('./provider').createProvider,
   resolveNonExecutableProviderId: require('./provider').resolveNonExecutableProviderId,
@@ -210,26 +209,6 @@ async function validateStop(stop, ctx) {
 }
 
 /**
- * Group non-trivial summary rows by file path for the tour prompt hints.
- * Order is the first-seen file order in the input rows.
- * @param {Array<Object>} rows
- * @returns {Array<{filePath: string, summaries: Array<{summary: string}>}>}
- */
-function groupSummariesByFile(rows) {
-  const order = [];
-  const byFile = new Map();
-  for (const row of rows || []) {
-    if (!row || !row.file_path || !row.summary_text) continue;
-    if (!byFile.has(row.file_path)) {
-      byFile.set(row.file_path, []);
-      order.push(row.file_path);
-    }
-    byFile.get(row.file_path).push({ summary: row.summary_text });
-  }
-  return order.map((filePath) => ({ filePath, summaries: byFile.get(filePath) }));
-}
-
-/**
  * Generate a guided tour for a review and persist + broadcast it.
  * @param {Object} params
  * @param {Object} params.db
@@ -302,22 +281,10 @@ async function generateTourForReview({
     return { generated: false, stops: 0, reason: 'provider_error' };
   }
 
-  let summariesByFile = [];
-  try {
-    const summaryRepo = new deps.HunkSummaryRepository(db);
-    const rows = await summaryRepo.getByReview(reviewId);
-    summariesByFile = groupSummariesByFile(rows);
-  } catch (err) {
-    logger.debug(
-      `${TOUR_LOG_PREFIX} review ${reviewId}: summaries unavailable (${err.message}); proceeding without hints`
-    );
-  }
-
   const ctx = reviewContext || {};
   const prompt = deps.buildTourPrompt({
     prTitle: ctx.prTitle,
     prDescription: ctx.prDescription,
-    summariesByFile,
     scriptCommand: buildScriptCommand(worktreePath),
     changedFiles: Array.from(hunksByFile.keys()),
     worktreePath
@@ -451,8 +418,7 @@ function kickOffTourJob({
   reviewContext,
   _deps
 }) {
-  if (!config || !config.summaries_enabled) return null;
-  if (!config.tours_enabled) return null;
+  if (!config || !config.tours_enabled) return null;
 
   const missing = [];
   if (!reviewId) missing.push('reviewId');
@@ -493,7 +459,6 @@ module.exports = {
   parseHunkHeader,
   buildChangedLineIndex,
   buildScriptCommand,
-  groupSummariesByFile,
   validateStop,
   getFileLineCount,
   latestRequestedDiffHash,

@@ -9,12 +9,11 @@ const {
   parseHunkHeader,
   buildChangedLineIndex,
   buildScriptCommand,
-  groupSummariesByFile,
   validateStop,
   latestRequestedDiffHash,
   resetLatestRequestedDiffHash
 } = require('../../src/ai/tour-generator.js');
-const { HunkSummaryRepository, TourRepository } = require('../../src/database.js');
+const { TourRepository } = require('../../src/database.js');
 const { BackgroundQueue } = require('../../src/ai/background-queue.js');
 
 const REVIEW_ID = 4242;
@@ -111,39 +110,6 @@ describe('buildScriptCommand', () => {
 
   it('appends --cwd "<path>" when a path is provided', () => {
     expect(buildScriptCommand('/abs')).toBe('git-diff-lines --cwd "/abs"');
-  });
-});
-
-describe('groupSummariesByFile', () => {
-  it('groups rows by file_path preserving first-seen order', () => {
-    const rows = [
-      { file_path: 'a.js', summary_text: 's1' },
-      { file_path: 'b.js', summary_text: 's2' },
-      { file_path: 'a.js', summary_text: 's3' }
-    ];
-    expect(groupSummariesByFile(rows)).toEqual([
-      { filePath: 'a.js', summaries: [{ summary: 's1' }, { summary: 's3' }] },
-      { filePath: 'b.js', summaries: [{ summary: 's2' }] }
-    ]);
-  });
-
-  it('drops rows with falsy summary_text or missing file_path', () => {
-    const rows = [
-      { file_path: 'a.js', summary_text: 'real' },
-      { file_path: 'a.js', summary_text: null, trivial_reason: 'whitespace' },
-      { file_path: 'a.js', summary_text: '' },
-      { file_path: '', summary_text: 'orphan' },
-      { file_path: null, summary_text: 'orphan2' }
-    ];
-    expect(groupSummariesByFile(rows)).toEqual([
-      { filePath: 'a.js', summaries: [{ summary: 'real' }] }
-    ]);
-  });
-
-  it('handles empty/undefined input', () => {
-    expect(groupSummariesByFile([])).toEqual([]);
-    expect(groupSummariesByFile(null)).toEqual([]);
-    expect(groupSummariesByFile(undefined)).toEqual([]);
   });
 });
 
@@ -649,11 +615,11 @@ describe('generateTourForReview', () => {
 // ---------- kickOffTourJob ------------------------------------------------
 
 describe('kickOffTourJob', () => {
-  it('returns null when summaries_enabled !== true', () => {
+  it('returns null when tours_enabled !== true', () => {
     const enqueue = vi.fn();
     const result = kickOffTourJob({
       db: {},
-      config: { summaries_enabled: false, tours_enabled: true },
+      config: { tours_enabled: false },
       reviewId: 1,
       diffText: 'diff',
       worktreePath: '/wt',
@@ -663,25 +629,25 @@ describe('kickOffTourJob', () => {
     expect(enqueue).not.toHaveBeenCalled();
   });
 
-  it('returns null when tours_enabled !== true', () => {
-    const enqueue = vi.fn();
+  it('fires regardless of summaries_enabled (tour is decoupled from summaries)', () => {
+    const enqueue = vi.fn((_id, _type, fn) => Promise.resolve({ ran: typeof fn === 'function' }));
     const result = kickOffTourJob({
       db: {},
-      config: { summaries_enabled: true, tours_enabled: false },
-      reviewId: 1,
+      config: { summaries_enabled: false, tours_enabled: true },
+      reviewId: 7,
       diffText: 'diff',
       worktreePath: '/wt',
       _deps: { backgroundQueue: { enqueue, hasActiveForReview: vi.fn() } }
     });
-    expect(result).toBeNull();
-    expect(enqueue).not.toHaveBeenCalled();
+    expect(result).toBeInstanceOf(Promise);
+    expect(enqueue).toHaveBeenCalledTimes(1);
   });
 
   it('returns null when reviewId is missing', () => {
     const enqueue = vi.fn();
     const result = kickOffTourJob({
       db: {},
-      config: { summaries_enabled: true, tours_enabled: true },
+      config: { tours_enabled: true },
       reviewId: null,
       diffText: 'diff',
       worktreePath: '/wt',
@@ -695,7 +661,7 @@ describe('kickOffTourJob', () => {
     const enqueue = vi.fn();
     const result = kickOffTourJob({
       db: {},
-      config: { summaries_enabled: true, tours_enabled: true },
+      config: { tours_enabled: true },
       reviewId: 1,
       diffText: '',
       worktreePath: '/wt',
@@ -709,7 +675,7 @@ describe('kickOffTourJob', () => {
     const enqueue = vi.fn();
     const result = kickOffTourJob({
       db: {},
-      config: { summaries_enabled: true, tours_enabled: true },
+      config: { tours_enabled: true },
       reviewId: 1,
       diffText: 'diff',
       worktreePath: '',
@@ -723,7 +689,7 @@ describe('kickOffTourJob', () => {
     const enqueue = vi.fn((_id, _type, fn) => Promise.resolve({ ran: typeof fn === 'function' }));
     const result = kickOffTourJob({
       db: {},
-      config: { summaries_enabled: true, tours_enabled: true },
+      config: { tours_enabled: true },
       reviewId: 7,
       diffText: 'diff',
       worktreePath: '/wt',
@@ -793,7 +759,7 @@ describe('kickOffTourJob staleness handling', () => {
     };
 
     const reviewId = 9001;
-    const config = { summaries_enabled: true, tours_enabled: true };
+    const config = { tours_enabled: true };
 
     // Kickoff #1 — older diff. Enqueues the worker (the queue starts it
     // immediately since concurrency >= 1, but the worker awaits releaseFirst).

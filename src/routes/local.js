@@ -38,6 +38,7 @@ const { CommentRepository } = require('../database');
 const { runExecutableAnalysis, getChangedFiles } = require('./executable-analysis');
 const { rejectUrlLikeLocalReviewPath } = require('../utils/local-path-input');
 const summaryGenerator = require('../ai/summary-generator');
+const tourGenerator = require('../ai/tour-generator');
 const { parseUnifiedDiffPatches } = require('../utils/diff-file-list');
 const { parseHunks } = require('../utils/diff-hunks');
 const { hashHunk } = require('../ai/hunk-hashing');
@@ -535,6 +536,17 @@ router.post('/api/local/start', async (req, res) => {
       });
     })().catch((err) => logger.warn(`Hunk summary job failed for review ${sessionId}: ${err.message}`));
 
+    (async () => {
+      await tourGenerator.kickOffTourJob({
+        db,
+        config,
+        reviewId: sessionId,
+        diffText: diff,
+        worktreePath: repoPath,
+        reviewContext: { prTitle: branch }
+      });
+    })().catch((err) => logger.warn(`Tour job failed for review ${sessionId}: ${err.message}`));
+
   } catch (error) {
     logger.error(`Error starting local review: ${error.message}`);
     res.status(500).json({
@@ -735,28 +747,45 @@ router.get('/api/local/:reviewId', async (req, res) => {
       }).catch(err => { logger.warn(`Review hook failed: ${err.message}`); });
     }
 
-    // Background: re-trigger hunk summary generation on review load.
+    // Background: re-trigger hunk summary + tour generation on review load.
     // Self-invoked so any rejection here cannot reach the outer try/catch
     // and call res.status(500) on an already-flushed response.
     (async () => {
-      let summaryDiffText = getLocalReviewDiff(reviewId)?.diff;
-      if (!summaryDiffText) {
+      let bgDiffText = getLocalReviewDiff(reviewId)?.diff;
+      if (!bgDiffText) {
         const persistedDiff = await reviewRepo.getLocalDiff(reviewId);
-        summaryDiffText = persistedDiff?.diff;
+        bgDiffText = persistedDiff?.diff;
       }
-      if (!summaryDiffText) {
-        logger.debug(`Skipping hunk summary kickoff for review ${reviewId}: no diff available`);
+      if (!bgDiffText) {
+        logger.debug(`Skipping background AI kickoff for review ${reviewId}: no diff available`);
         return;
       }
-      await summaryGenerator.kickOffSummaryJob({
-        db,
-        config: localConfig,
-        reviewId,
-        diffText: summaryDiffText,
-        worktreePath: review.local_path,
-        reviewContext: { prTitle: review.name || branchName }
+      const reviewContext = { prTitle: review.name || branchName };
+      const results = await Promise.allSettled([
+        summaryGenerator.kickOffSummaryJob({
+          db,
+          config: localConfig,
+          reviewId,
+          diffText: bgDiffText,
+          worktreePath: review.local_path,
+          reviewContext
+        }),
+        tourGenerator.kickOffTourJob({
+          db,
+          config: localConfig,
+          reviewId,
+          diffText: bgDiffText,
+          worktreePath: review.local_path,
+          reviewContext
+        })
+      ]);
+      const labels = ['Hunk summary', 'Tour'];
+      results.forEach((r, i) => {
+        if (r.status === 'rejected') {
+          logger.warn(`${labels[i]} kickoff failed for review ${reviewId}: ${r.reason?.message || r.reason}`);
+        }
       });
-    })().catch((err) => logger.warn(`Hunk summary kickoff failed for review ${reviewId}: ${err.message}`));
+    })().catch((err) => logger.warn(`Background AI kickoff failed for review ${reviewId}: ${err.message}`));
 
   } catch (error) {
     logger.error('Error fetching local review:', error.stack || error.message);
