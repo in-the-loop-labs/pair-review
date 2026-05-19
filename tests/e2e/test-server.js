@@ -628,11 +628,49 @@ async function startTestServer(port) {
   const localRoutes = require('../../src/routes/local');
   const contextFilesRoutes = require('../../src/routes/context-files');
 
-  // Mock chat session manager for E2E (reads from DB, no real bridge)
+  // Mock chat session manager for E2E (reads from DB, no real bridge).
+  // createSession/sendMessage write to the DB so multi-tab tests that open
+  // additional sessions can observe distinct ids via /api/review/.../chat/sessions.
   app.chatSessionManager = {
-    createSession: async () => ({ id: Date.now(), status: 'active' }),
-    sendMessage: async () => ({ id: Date.now() }),
-    closeSession: async () => {},
+    createSession: async ({ reviewId, provider = 'pi', model = 'claude-sonnet-4' }) => {
+      const now = new Date().toISOString();
+      // Stamp a fake agent_session_id so the chat route treats this as a
+      // resumable session (without it, the /message route bails with 410
+      // and tests can never exercise sendMessage).
+      const info = db.prepare(`
+        INSERT INTO chat_sessions (review_id, provider, model, status, agent_session_id, created_at, updated_at)
+        VALUES (?, ?, ?, 'active', ?, ?, ?)
+      `).run(reviewId, provider, model, `mock-agent-session-${Date.now()}`, now, now);
+      return { id: info.lastInsertRowid, status: 'active' };
+    },
+    // Match production sendMessage signature: (sessionId, content, options).
+    // Persist contextData rows FIRST (mirrors production) so message history
+    // round-trips show context cards in the right order, then the user
+    // message row. Real WS bridge isn't running in E2E so no broadcast.
+    sendMessage: async (sessionId, content, options = {}) => {
+      const { contextData } = options;
+      const insertAll = db.transaction(() => {
+        if (contextData) {
+          const ctxStmt = db.prepare(`
+            INSERT INTO chat_messages (session_id, role, type, content)
+            VALUES (?, 'user', 'context', ?)
+          `);
+          const items = Array.isArray(contextData) ? contextData : [contextData];
+          for (const item of items) {
+            ctxStmt.run(sessionId, typeof item === 'string' ? item : JSON.stringify(item));
+          }
+        }
+        return db.prepare(`
+          INSERT INTO chat_messages (session_id, role, type, content)
+          VALUES (?, 'user', 'message', ?)
+        `).run(sessionId, content);
+      });
+      const info = insertAll();
+      return { id: Number(info.lastInsertRowid) };
+    },
+    closeSession: async (sessionId) => {
+      db.prepare("UPDATE chat_sessions SET status='closed', updated_at=CURRENT_TIMESTAMP WHERE id = ?").run(sessionId);
+    },
     getSession: (id) => db.prepare('SELECT * FROM chat_sessions WHERE id = ?').get(id) || null,
     getSessionsWithMessageCount: (reviewId) =>
       db.prepare(`
@@ -649,14 +687,20 @@ async function startTestServer(port) {
       `).all(reviewId),
     getSessionsForReview: (reviewId) =>
       db.prepare('SELECT * FROM chat_sessions WHERE review_id = ? ORDER BY created_at DESC').all(reviewId),
+    // Mirror production: order by id ASC. Using created_at ASC would let two
+    // rows inserted in the same millisecond return out of order.
     getMessages: (sessionId) =>
-      db.prepare('SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC').all(sessionId),
+      db.prepare('SELECT * FROM chat_messages WHERE session_id = ? ORDER BY id ASC').all(sessionId),
+    resumeSession: async () => {},
+    saveContextMessage: () => ({ id: 0 }),
     onDelta: () => () => {},
     onComplete: () => () => {},
     onToolUse: () => () => {},
     onStatus: () => () => {},
     onError: () => () => {},
-    isSessionActive: () => false,
+    // Mark the seeded session as active so the chat route forwards messages
+    // straight to sendMessage instead of trying the resume branch.
+    isSessionActive: () => true,
     abortSession: () => {}
   };
 
