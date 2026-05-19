@@ -149,6 +149,377 @@ describe('Database Initialization', () => {
     // Local sessions listing index
     expect(indexNames).toContain('idx_reviews_type_updated');
   });
+
+  it('should create external_comments table with correct schema', async () => {
+    const tables = await query(db, `
+      SELECT name FROM sqlite_master WHERE type='table' AND name='external_comments'
+    `);
+    expect(tables).toHaveLength(1);
+
+    const columns = await query(db, 'PRAGMA table_info(external_comments)');
+    const columnNames = columns.map(c => c.name);
+
+    // Identity / FK columns
+    expect(columnNames).toContain('id');
+    expect(columnNames).toContain('review_id');
+    expect(columnNames).toContain('source');
+    expect(columnNames).toContain('external_id');
+    expect(columnNames).toContain('in_reply_to_id');
+    expect(columnNames).toContain('parent_id');
+    // Permalink / author
+    expect(columnNames).toContain('external_url');
+    expect(columnNames).toContain('author');
+    expect(columnNames).toContain('author_url');
+    // Anchor (current)
+    expect(columnNames).toContain('file');
+    expect(columnNames).toContain('side');
+    expect(columnNames).toContain('line_start');
+    expect(columnNames).toContain('line_end');
+    expect(columnNames).toContain('diff_position');
+    expect(columnNames).toContain('commit_sha');
+    expect(columnNames).toContain('is_outdated');
+    // Anchor (original — at creation time)
+    expect(columnNames).toContain('original_line_start');
+    expect(columnNames).toContain('original_line_end');
+    expect(columnNames).toContain('original_commit_sha');
+    // Body + timestamps
+    expect(columnNames).toContain('body');
+    expect(columnNames).toContain('external_created_at');
+    expect(columnNames).toContain('synced_at');
+
+    // NOT NULL constraints (per the spec) on the columns that must always be set
+    const notNullCols = columns.filter(c => c.notnull === 1).map(c => c.name);
+    expect(notNullCols).toContain('review_id');
+    expect(notNullCols).toContain('source');
+    expect(notNullCols).toContain('external_id');
+    expect(notNullCols).toContain('file');
+    expect(notNullCols).toContain('is_outdated');
+
+    // is_outdated should default to 0
+    const isOutdatedCol = columns.find(c => c.name === 'is_outdated');
+    expect(isOutdatedCol.dflt_value).toBe('0');
+  });
+
+  it('should create external_comments indexes with the expected names', async () => {
+    const indexes = await query(db, `
+      SELECT name FROM sqlite_master
+      WHERE type='index' AND tbl_name='external_comments' AND name NOT LIKE 'sqlite_%'
+    `);
+    const indexNames = indexes.map(i => i.name);
+
+    expect(indexNames).toContain('idx_external_comments_unique');
+    expect(indexNames).toContain('idx_external_comments_anchor');
+    expect(indexNames).toContain('idx_external_comments_parent_lookup');
+  });
+
+  it('should enforce UNIQUE(review_id, source, external_id) on external_comments', async () => {
+    const reviewId = seedTestReview(db);
+
+    await run(db, `
+      INSERT INTO external_comments (review_id, source, external_id, file)
+      VALUES (?, 'github', '12345', 'src/foo.js')
+    `, [reviewId]);
+
+    await expect(
+      run(db, `
+        INSERT INTO external_comments (review_id, source, external_id, file)
+        VALUES (?, 'github', '12345', 'src/foo.js')
+      `, [reviewId])
+    ).rejects.toThrow(/UNIQUE/i);
+  });
+
+  it('should cascade-delete external_comments when their review is deleted', async () => {
+    const reviewId = seedTestReview(db);
+
+    await run(db, `
+      INSERT INTO external_comments (review_id, source, external_id, file)
+      VALUES (?, 'github', 'ext-1', 'src/a.js')
+    `, [reviewId]);
+
+    await run(db, 'DELETE FROM reviews WHERE id = ?', [reviewId]);
+
+    const remaining = await query(db, 'SELECT * FROM external_comments WHERE review_id = ?', [reviewId]);
+    expect(remaining).toHaveLength(0);
+  });
+
+  it('should null out parent_id (not cascade) when an external_comments parent row is deleted', async () => {
+    // Regression for data-loss bug: parent_id used to CASCADE, which meant the
+    // sync route's prune step destroyed kept replies whenever their parent
+    // disappeared from the upstream snapshot. SET NULL preserves the reply
+    // and lets listThreadsByReview promote it via orphan handling.
+    const reviewId = seedTestReview(db);
+
+    const parent = await run(db, `
+      INSERT INTO external_comments (review_id, source, external_id, file)
+      VALUES (?, 'github', 'parent-1', 'src/a.js')
+    `, [reviewId]);
+
+    await run(db, `
+      INSERT INTO external_comments (review_id, source, external_id, file, parent_id, in_reply_to_id)
+      VALUES (?, 'github', 'reply-1', 'src/a.js', ?, 'parent-1')
+    `, [reviewId, parent.lastID]);
+
+    await run(db, 'DELETE FROM external_comments WHERE id = ?', [parent.lastID]);
+
+    const remaining = await query(db, 'SELECT * FROM external_comments WHERE review_id = ?', [reviewId]);
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].external_id).toBe('reply-1');
+    expect(remaining[0].parent_id).toBeNull();
+  });
+});
+
+// ============================================================================
+// Migration-path tests — exercise individual migrations against a
+// representative pre-state instead of validating only the final schema.
+// Production upgrades run pending migrations from PRAGMA user_version
+// and DDL can fail even when the final-schema tests pass.
+// ============================================================================
+
+describe('Migration 45: create external_comments table', () => {
+  let db;
+  const Database = require('better-sqlite3');
+
+  beforeEach(() => {
+    // Pre-45 baseline: a database with the `reviews` table (so the FK can
+    // resolve) but no `external_comments` table.
+    db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    db.exec(`
+      CREATE TABLE reviews (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pr_number INTEGER,
+        repository TEXT NOT NULL,
+        review_id TEXT,
+        status TEXT DEFAULT 'draft',
+        review_data TEXT,
+        custom_instructions TEXT,
+        summary TEXT,
+        review_type TEXT DEFAULT 'pr',
+        local_path TEXT,
+        local_head_sha TEXT,
+        local_head_branch TEXT,
+        local_uncommitted INTEGER DEFAULT 0,
+        name TEXT,
+        submitted_at TEXT,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now'))
+      )
+    `);
+  });
+
+  afterEach(() => {
+    if (db) db.close();
+  });
+
+  it('creates external_comments with the expected columns', () => {
+    MIGRATIONS[45](db);
+
+    const table = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='external_comments'"
+    ).get();
+    expect(table).toBeTruthy();
+
+    const cols = db.prepare('PRAGMA table_info(external_comments)').all();
+    const colNames = cols.map(c => c.name);
+    expect(colNames).toEqual(expect.arrayContaining([
+      'id', 'review_id', 'source', 'external_id', 'in_reply_to_id', 'parent_id',
+      'external_url', 'author', 'author_url', 'file', 'side',
+      'line_start', 'line_end', 'diff_position', 'commit_sha',
+      'is_outdated', 'original_line_start', 'original_line_end', 'original_commit_sha',
+      'body', 'external_created_at', 'synced_at'
+    ]));
+  });
+
+  it('creates the canonical indexes by name', () => {
+    MIGRATIONS[45](db);
+
+    const idx = db.prepare(`
+      SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='external_comments' AND name NOT LIKE 'sqlite_%'
+    `).all().map(r => r.name);
+    expect(idx).toEqual(expect.arrayContaining([
+      'idx_external_comments_unique',
+      'idx_external_comments_anchor',
+      'idx_external_comments_parent_lookup',
+    ]));
+  });
+
+  it('FOREIGN KEY review_id → reviews(id) cascades on review delete', () => {
+    MIGRATIONS[45](db);
+
+    const reviewId = db.prepare(
+      "INSERT INTO reviews (pr_number, repository) VALUES (1, 'a/b') RETURNING id"
+    ).get().id;
+    db.prepare(
+      "INSERT INTO external_comments (review_id, source, external_id, file) VALUES (?, 'github', 'e1', 'a.js')"
+    ).run(reviewId);
+
+    db.prepare('DELETE FROM reviews WHERE id = ?').run(reviewId);
+    const rows = db.prepare('SELECT * FROM external_comments').all();
+    expect(rows).toHaveLength(0);
+  });
+});
+
+describe('Migration 46: rebuild external_comments with parent_id SET NULL', () => {
+  let db;
+  const Database = require('better-sqlite3');
+
+  /**
+   * Build a representative pre-46 database: external_comments table created
+   * with the OLD `parent_id ON DELETE CASCADE` constraint plus a couple of
+   * rows (parent + reply with resolved parent_id linkage).
+   */
+  function buildPre46Database() {
+    const d = new Database(':memory:');
+    d.pragma('foreign_keys = ON');
+    d.exec(`
+      CREATE TABLE reviews (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pr_number INTEGER,
+        repository TEXT NOT NULL,
+        review_type TEXT DEFAULT 'pr'
+      );
+      CREATE TABLE external_comments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        review_id INTEGER NOT NULL,
+        source TEXT NOT NULL,
+        external_id TEXT NOT NULL,
+        in_reply_to_id TEXT,
+        parent_id INTEGER,
+        external_url TEXT,
+        author TEXT,
+        author_url TEXT,
+        file TEXT NOT NULL,
+        side TEXT,
+        line_start INTEGER,
+        line_end INTEGER,
+        diff_position INTEGER,
+        commit_sha TEXT,
+        is_outdated INTEGER NOT NULL DEFAULT 0,
+        original_line_start INTEGER,
+        original_line_end INTEGER,
+        original_commit_sha TEXT,
+        body TEXT,
+        external_created_at TEXT,
+        synced_at TEXT,
+        FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE,
+        FOREIGN KEY (parent_id) REFERENCES external_comments(id) ON DELETE CASCADE
+      );
+      CREATE UNIQUE INDEX idx_external_comments_unique ON external_comments(review_id, source, external_id);
+      CREATE INDEX idx_external_comments_anchor ON external_comments(review_id, file, line_end);
+      CREATE INDEX idx_external_comments_parent_lookup ON external_comments(review_id, source, in_reply_to_id);
+    `);
+    return d;
+  }
+
+  beforeEach(() => {
+    db = buildPre46Database();
+  });
+
+  afterEach(() => {
+    if (db) db.close();
+  });
+
+  it('preserves all rows verbatim across the rebuild', () => {
+    const reviewId = db.prepare("INSERT INTO reviews (pr_number, repository) VALUES (1, 'a/b') RETURNING id").get().id;
+    const parentId = db.prepare(`
+      INSERT INTO external_comments (review_id, source, external_id, file, body)
+      VALUES (?, 'github', 'parent', 'a.js', 'p body') RETURNING id
+    `).get(reviewId).id;
+    db.prepare(`
+      INSERT INTO external_comments (review_id, source, external_id, in_reply_to_id, parent_id, file, body)
+      VALUES (?, 'github', 'reply', 'parent', ?, 'a.js', 'r body')
+    `).run(reviewId, parentId);
+
+    MIGRATIONS[46](db);
+
+    const rows = db.prepare('SELECT external_id, body, parent_id FROM external_comments ORDER BY external_id').all();
+    expect(rows).toEqual([
+      { external_id: 'parent', body: 'p body', parent_id: null },
+      { external_id: 'reply', body: 'r body', parent_id: parentId },
+    ]);
+  });
+
+  it('keeps the canonical indexes by name (and only those)', () => {
+    MIGRATIONS[46](db);
+    const idx = db.prepare(`
+      SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='external_comments' AND name NOT LIKE 'sqlite_%'
+    `).all().map(r => r.name).sort();
+    expect(idx).toEqual([
+      'idx_external_comments_anchor',
+      'idx_external_comments_parent_lookup',
+      'idx_external_comments_unique',
+    ]);
+  });
+
+  it('removes the temp/rebuild table', () => {
+    MIGRATIONS[46](db);
+    const temp = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='external_comments_new'"
+    ).get();
+    expect(temp).toBeFalsy();
+  });
+
+  it('flips parent_id from ON DELETE CASCADE to ON DELETE SET NULL', () => {
+    const reviewId = db.prepare("INSERT INTO reviews (pr_number, repository) VALUES (1, 'a/b') RETURNING id").get().id;
+    const parentId = db.prepare(`
+      INSERT INTO external_comments (review_id, source, external_id, file)
+      VALUES (?, 'github', 'p', 'a.js') RETURNING id
+    `).get(reviewId).id;
+    db.prepare(`
+      INSERT INTO external_comments (review_id, source, external_id, in_reply_to_id, parent_id, file)
+      VALUES (?, 'github', 'r', 'p', ?, 'a.js')
+    `).run(reviewId, parentId);
+
+    MIGRATIONS[46](db);
+
+    db.prepare('DELETE FROM external_comments WHERE id = ?').run(parentId);
+
+    // Reply must survive AND its parent_id must be nulled out (SET NULL).
+    const rows = db.prepare('SELECT external_id, parent_id FROM external_comments').all();
+    expect(rows).toEqual([{ external_id: 'r', parent_id: null }]);
+  });
+
+  it('restores foreign_keys pragma after the rebuild', () => {
+    expect(db.prepare('PRAGMA foreign_keys').get().foreign_keys).toBe(1);
+    MIGRATIONS[46](db);
+    // Migration toggles foreign_keys OFF/ON in a try/finally. After it
+    // runs, the pragma must be restored to whatever the caller had set.
+    expect(db.prepare('PRAGMA foreign_keys').get().foreign_keys).toBe(1);
+  });
+
+  it('is a no-op when external_comments table does not exist yet', () => {
+    // Fresh DB where migration 45 hasn't run yet — migration 46 must not throw.
+    const fresh = new Database(':memory:');
+    fresh.pragma('foreign_keys = ON');
+    try {
+      expect(() => MIGRATIONS[46](fresh)).not.toThrow();
+      const tables = fresh.prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='external_comments'"
+      ).all();
+      expect(tables).toHaveLength(0);
+    } finally {
+      fresh.close();
+    }
+  });
+
+  it('is idempotent across a crashed-then-restarted rebuild (DROP TABLE IF EXISTS for temp)', () => {
+    // Simulate a previous mid-rebuild crash leaving the temp table behind.
+    // The migration must DROP IF EXISTS and finish cleanly.
+    db.exec(`
+      CREATE TABLE external_comments_new (
+        id INTEGER PRIMARY KEY,
+        review_id INTEGER,
+        source TEXT,
+        external_id TEXT,
+        file TEXT
+      );
+    `);
+    expect(() => MIGRATIONS[46](db)).not.toThrow();
+    const temp = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='external_comments_new'"
+    ).get();
+    expect(temp).toBeFalsy();
+  });
 });
 
 // ============================================================================

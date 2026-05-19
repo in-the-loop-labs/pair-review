@@ -349,6 +349,7 @@ async function startServer(sharedDb = null, sharedPoolLifecycle = null) {
     const contextFilesRoutes = require('./routes/context-files');
     const githubCollectionsRoutes = require('./routes/github-collections');
     const stackAnalysisRoutes = require('./routes/stack-analysis');
+    const externalCommentsRoutes = require('./routes/external-comments');
     const { createSoundRouter } = require('./routes/sound');
 
     // Initialize chat session manager
@@ -369,6 +370,7 @@ async function startServer(sharedDb = null, sharedPoolLifecycle = null) {
     app.use('/', mcpRoutes);
     app.use('/', githubCollectionsRoutes);
     app.use('/', stackAnalysisRoutes);
+    app.use('/', externalCommentsRoutes);
     app.use('/', createSoundRouter());
     app.use('/', prRoutes);
     
