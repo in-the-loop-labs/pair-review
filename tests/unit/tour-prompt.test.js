@@ -119,10 +119,13 @@ describe('buildTourPrompt output', () => {
     expect(out).toContain('Description: Cleans up X module');
   });
 
-  it('mentions is_context and explains context-stop semantics', () => {
+  it('does NOT instruct the model to emit context stops (gap-expansion not yet supported)', () => {
     const out = buildTourPrompt({ scriptCommand: 'git-diff-lines', changedFiles: ['a.js'] });
-    expect(out).toContain('is_context');
-    expect(out).toMatch(/is_context semantics/);
+    // The is_context field has been removed from the schema until the
+    // frontend renderer can expand collapsed/unrendered gaps.
+    expect(out).not.toContain('is_context');
+    // Replacement guidance — stops must intersect changed lines.
+    expect(out).toMatch(/MUST point at lines that actually changed/);
   });
 
   it('mentions both LEFT and RIGHT for side semantics', () => {
@@ -164,16 +167,15 @@ describe('buildTourPrompt prompt copy', () => {
     expect(out).toMatch(/Stops must not overlap/);
   });
 
-  it('defines is_context as a property of the line range, not the file', () => {
+  it('does not mention is_context anywhere (field removed from schema)', () => {
     const out = buildTourPrompt({ scriptCommand: 'git-diff-lines', changedFiles: ['a.js'] });
-    expect(out).toMatch(/property of the LINE RANGE/);
-    // The old per-file default phrasing must be gone.
-    expect(out).not.toMatch(/default to `is_context: false`/);
+    expect(out).not.toMatch(/is_context/);
   });
 
-  it('keeps the rule that stops outside the changed-files list MUST be is_context: true', () => {
+  it('requires stops to live in the changed-files list', () => {
     const out = buildTourPrompt({ scriptCommand: 'git-diff-lines', changedFiles: ['a.js'] });
-    expect(out).toMatch(/OUTSIDE this list MUST use `is_context: true`/);
+    expect(out).toMatch(/MUST be in one of the files above/);
+    expect(out).toMatch(/will be rejected/);
   });
 
   it('keeps the final-output rules trimmed to JSON-only and validation', () => {

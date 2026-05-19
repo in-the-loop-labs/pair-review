@@ -119,23 +119,13 @@ describe('validateStop', () => {
   let ctx;
 
   beforeEach(() => {
-    const fakeFs = {
-      realpath: vi.fn(async (p) => {
-        // For ext.js (or any file inside the worktree) return the path itself.
-        // Tests that need an "escape" override realpath explicitly.
-        return p;
-      }),
-      readFile: vi.fn(async () => Array.from({ length: 100 }, (_, i) => `line${i + 1}`).join('\n'))
-    };
     ctx = {
       hunksByFile: new Map([['a.js', [{ header: '@@ -10,3 +42,3 @@', lines: [] }]]]),
       changedLines: {
         right: new Map([['a.js', new Set([42, 43, 44])]]),
         left: new Map([['a.js', new Set([20])]])
       },
-      worktreePath: '/wt',
-      fs: fakeFs,
-      lineCounts: new Map([['ext.js', 100]])
+      worktreePath: '/wt'
     };
   });
 
@@ -219,8 +209,20 @@ describe('validateStop', () => {
     expect(out.side).toBe('LEFT');
   });
 
-  it('accepts a context stop within file bounds and forces side to RIGHT', async () => {
-    const out = await validateStop({
+  it('drops every context stop (gap expansion not yet supported in renderer)', async () => {
+    // Even when the stop's range falls inside the file and points at the
+    // changed file from the diff, is_context:true must be filtered.
+    expect(await validateStop({
+      file_path: 'a.js',
+      is_context: true,
+      title: 'T',
+      description: 'D',
+      line_start: 42,
+      line_end: 43
+    }, ctx)).toBeNull();
+
+    // External file with is_context: true is also dropped.
+    expect(await validateStop({
       file_path: 'ext.js',
       side: 'LEFT',
       is_context: true,
@@ -228,38 +230,6 @@ describe('validateStop', () => {
       description: 'D',
       line_start: 50,
       line_end: 60
-    }, ctx);
-    expect(out).not.toBeNull();
-    expect(out.side).toBe('RIGHT');
-    expect(out.is_context).toBe(true);
-  });
-
-  it('rejects a context stop where line_end exceeds the file length', async () => {
-    expect(await validateStop({
-      file_path: 'ext.js',
-      is_context: true,
-      title: 'T',
-      description: 'D',
-      line_start: 50,
-      line_end: 200
-    }, ctx)).toBeNull();
-  });
-
-  it('rejects a context stop on a path that escapes the worktree', async () => {
-    // realpath returns a location outside worktreePath -> validator must drop.
-    ctx.fs.realpath = vi.fn(async (p) => {
-      if (p === '/wt') return '/wt';
-      return '/elsewhere/etc/passwd';
-    });
-    // Force a fresh lookup (no pre-cached lineCount).
-    ctx.lineCounts = new Map();
-    expect(await validateStop({
-      file_path: 'ext.js',
-      is_context: true,
-      title: 'T',
-      description: 'D',
-      line_start: 1,
-      line_end: 5
     }, ctx)).toBeNull();
   });
 
@@ -324,10 +294,6 @@ function makeDeps({ provider, depsOverride } = {}) {
     ['a.js', [{ header: '@@ -1,3 +1,4 @@', lines: [' line1', ' line2', '+line3', '+line4'] }]]
   ]));
   const hashDiff = vi.fn(() => 'abc123def456');
-  const fakeFs = {
-    realpath: vi.fn(async (p) => p),
-    readFile: vi.fn(async () => 'contents')
-  };
 
   return {
     providerInstance: instance,
@@ -342,7 +308,6 @@ function makeDeps({ provider, depsOverride } = {}) {
       resolveNonExecutableProviderId,
       parseUnifiedDiffHunks,
       hashDiff,
-      fs: fakeFs,
       ...(depsOverride || {})
     }
   };

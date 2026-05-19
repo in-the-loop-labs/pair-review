@@ -249,6 +249,11 @@
                                 <path d="M0 3.75C0 2.784.784 2 1.75 2h12.5c.966 0 1.75.784 1.75 1.75v8.5A1.75 1.75 0 0 1 14.25 14H1.75A1.75 1.75 0 0 1 0 12.25Zm1.75-.25a.25.25 0 0 0-.25.25v8.5c0 .138.112.25.25.25h12.5a.25.25 0 0 0 .25-.25v-8.5a.25.25 0 0 0-.25-.25ZM3.5 6.25a.75.75 0 0 1 .75-.75h7a.75.75 0 0 1 0 1.5h-7a.75.75 0 0 1-.75-.75Zm.75 2.25h4a.75.75 0 0 1 0 1.5h-4a.75.75 0 0 1 0-1.5Z"/>
                             </svg>
                         </button>
+                        <button class="btn btn-sm btn-icon btn-tour-toggle" id="tour-toggle-btn" title="Start guided tour" aria-label="Start guided tour" aria-pressed="false" style="display: none;">
+                            <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
+                                <path d="M7.75 0a.75.75 0 0 1 .75.75V3h3.634c.414 0 .814.144 1.13.406l2.501 2.071a1.75 1.75 0 0 1 0 2.696l-2.5 2.07a1.75 1.75 0 0 1-1.131.407H8.5v5.6a.75.75 0 0 1-1.5 0V10.65H3.75A1.75 1.75 0 0 1 2 8.9V4.75C2 3.784 2.784 3 3.75 3H7V.75A.75.75 0 0 1 7.75 0Zm-4 4.5a.25.25 0 0 0-.25.25V8.9c0 .138.112.25.25.25h8.384a.25.25 0 0 0 .16-.058l2.5-2.07a.25.25 0 0 0 0-.386l-2.5-2.07a.25.25 0 0 0-.16-.058H3.75Z"/>
+                            </svg>
+                        </button>
                         <button class="btn btn-sm btn-icon" id="chat-toggle-btn" title="Toggle Chat panel">
                             <svg class="chat-icon" viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
                                 <path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/>
@@ -387,6 +392,9 @@
     <!-- Timestamp parsing utility -->
     <script src="/js/utils/time.js"></script>
 
+    <!-- Modal detection (shared by KeyboardShortcuts and PRManager) -->
+    <script src="/js/utils/modal-detection.js"></script>
+
     <!-- WebSocket client -->
     <script src="/js/ws-client.js"></script>
 
@@ -431,6 +439,8 @@
     <script src="/js/modules/diff-context.js"></script>
     <script src="/js/modules/file-list-merger.js"></script>
     <script src="/js/modules/hunk-summary-renderer.js"></script>
+    <script src="/js/modules/tour-renderer.js"></script>
+    <script src="/js/components/TourBar.js"></script>
 
     <!-- Chat Panel Component -->
     <script src="/js/components/ChatPanel.js"></script>

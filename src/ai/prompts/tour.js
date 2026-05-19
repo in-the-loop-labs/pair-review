@@ -94,13 +94,12 @@ function buildTourPrompt({
       '      "line_start": 42,',
       '      "line_end": 58,',
       `      "title": "<= ${TITLE_MAX} chars",`,
-      `      "description": "<= ${DESCRIPTION_MAX} chars",`,
-      '      "is_context": false',
+      `      "description": "<= ${DESCRIPTION_MAX} chars"`,
       '    }',
       '  ]',
       '}',
       '',
-      '`side` is "LEFT" or "RIGHT". `is_context` is described below.'
+      '`side` is "LEFT" or "RIGHT".'
     ].join('\n')
   );
 
@@ -136,27 +135,19 @@ function buildTourPrompt({
 
   sections.push(
     [
-      'is_context semantics (a property of the LINE RANGE, not the file):',
-      '- `is_context: false` — the chosen range intersects changed lines on the',
-      '  chosen side. Use for stops that point at the change itself.',
-      '- `is_context: true` — the chosen range is entirely unchanged code (in',
-      '  any file, whether the file is in the diff or not).',
-      '',
-      'A stop pointing at unchanged code is high-value when it shows the change',
-      'is inconsistent with existing code, or will break something elsewhere.',
-      'Use sparingly.',
-      '- For context stops, `side` MUST be "RIGHT" (current code on disk).',
-      '- The file must exist in the worktree; the line range must be within',
-      '  file bounds. Verify with Read before returning.',
-      '- Good examples: "this changed handler is inconsistent with the existing',
-      '  pattern in src/x.js:120-140"; "this function\'s new contract will break',
-      '  callers in src/y.js:45".'
+      'Every stop MUST point at lines that actually changed in the diff:',
+      '- The chosen `[line_start, line_end]` range MUST intersect changed',
+      '  lines for the chosen `side` in the chosen file.',
+      '- Stops on unchanged code or on files outside the diff will be rejected.',
+      '- If you want to call out unchanged code that the change interacts with,',
+      '  pick a stop on a changed line nearby and reference the unchanged code',
+      '  in the description text.'
     ].join('\n')
   );
 
   sections.push(
     [
-      'Side semantics for changed-file stops:',
+      'Side semantics:',
       '- `RIGHT` = post-change content (added or context lines, by NEW line numbers).',
       '- `LEFT` = pre-change content (deleted lines, by OLD line numbers). Use only',
       '  when calling out something that was removed.',
@@ -207,7 +198,7 @@ function buildTourPrompt({
   }
   changedFilesBlock.push('');
   changedFilesBlock.push(
-    'Stops on files OUTSIDE this list MUST use `is_context: true`.'
+    'Stops MUST be in one of the files above. Stops on other files will be rejected.'
   );
   sections.push(changedFilesBlock.join('\n'));
 

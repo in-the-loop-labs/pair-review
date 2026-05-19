@@ -1,8 +1,6 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 
 const crypto = require('crypto');
-const path = require('path');
-const fs = require('fs').promises;
 const logger = require('../utils/logger');
 const {
   TOUR_PERSIST_MIN_STOPS,
@@ -34,7 +32,6 @@ const defaults = {
   broadcastReviewEvent: require('../events/review-events').broadcastReviewEvent,
   parseUnifiedDiffHunks: require('../utils/diff-hunks').parseUnifiedDiffHunks,
   hashDiff: (diffText) => crypto.createHash('sha256').update(diffText).digest('hex').slice(0, 16),
-  fs,
   backgroundQueue: null,
   // Indirection so tests can swap the worker thunk and observe scheduling.
   generateTourForReview: null
@@ -114,35 +111,9 @@ function rangeIntersectsSet(start, end, set) {
 }
 
 /**
- * Read a file inside the worktree and return its line count.
- * Uses realpath() to block path traversal. Returns null if the file is
- * outside the worktree or cannot be read.
- * @param {string} worktreePath
- * @param {string} filePath - repo-relative
- * @param {Object} fsModule - fs.promises-compatible module
- * @returns {Promise<number|null>}
- */
-async function getFileLineCount(worktreePath, filePath, fsModule) {
-  if (!worktreePath || !filePath) return null;
-  try {
-    const abs = path.resolve(worktreePath, filePath);
-    const realFile = await fsModule.realpath(abs);
-    const realRoot = await fsModule.realpath(worktreePath);
-    if (realFile !== realRoot && !realFile.startsWith(realRoot + path.sep)) {
-      return null;
-    }
-    const content = await fsModule.readFile(realFile, 'utf8');
-    if (content.length === 0) return 0;
-    return content.split('\n').length;
-  } catch {
-    return null;
-  }
-}
-
-/**
  * Validate and normalize a single tour stop. Returns the cleaned stop or null.
  * @param {unknown} stop
- * @param {Object} ctx - { hunksByFile, changedLines, worktreePath, fs, lineCounts }
+ * @param {Object} ctx - { hunksByFile, changedLines, worktreePath }
  * @returns {Promise<Object|null>}
  */
 async function validateStop(stop, ctx) {
@@ -161,42 +132,30 @@ async function validateStop(stop, ctx) {
   let normSide = typeof stop.side === 'string' ? stop.side.trim().toUpperCase() : 'RIGHT';
   if (normSide !== 'LEFT' && normSide !== 'RIGHT') normSide = 'RIGHT';
 
-  const isContext = stop.is_context === true;
-
-  if (!isContext) {
-    if (!ctx.hunksByFile.has(filePath)) {
-      logger.warn(`${TOUR_LOG_PREFIX} dropping changed-file stop for file outside diff: ${filePath}`);
-      return null;
-    }
-    const lineSet = (normSide === 'LEFT' ? ctx.changedLines.left : ctx.changedLines.right).get(filePath);
-    if (!rangeIntersectsSet(ls, le, lineSet)) {
-      logger.warn(
-        `${TOUR_LOG_PREFIX} dropping changed-file stop ${filePath}:${ls}-${le} (${normSide}) — does not intersect changed lines`
-      );
-      return null;
-    }
-  } else {
-    normSide = 'RIGHT';
-    let lineCount;
-    if (ctx.lineCounts.has(filePath)) {
-      lineCount = ctx.lineCounts.get(filePath);
-    } else {
-      lineCount = await getFileLineCount(ctx.worktreePath, filePath, ctx.fs);
-      ctx.lineCounts.set(filePath, lineCount);
-    }
-    if (lineCount === null) {
-      logger.warn(`${TOUR_LOG_PREFIX} dropping context stop for inaccessible file: ${filePath}`);
-      return null;
-    }
-    if (le > lineCount) {
-      logger.warn(
-        `${TOUR_LOG_PREFIX} dropping context stop ${filePath}:${ls}-${le} — exceeds file length ${lineCount}`
-      );
-      return null;
-    }
+  // Context stops reference lines outside the rendered diff. The frontend
+  // renderer cannot anchor to rows that aren't in the DOM, so dropping them
+  // here keeps tours pointed only at lines a user can actually navigate to.
+  // Gap-expansion is a separate feature; see plans/semantic-hunk-summaries-and-tours.md.
+  if (stop.is_context === true) {
+    logger.info(
+      `${TOUR_LOG_PREFIX} dropping context stop ${filePath}:${ls}-${le} — gap expansion not yet supported in renderer`
+    );
+    return null;
   }
 
-  const out = {
+  if (!ctx.hunksByFile.has(filePath)) {
+    logger.warn(`${TOUR_LOG_PREFIX} dropping changed-file stop for file outside diff: ${filePath}`);
+    return null;
+  }
+  const lineSet = (normSide === 'LEFT' ? ctx.changedLines.left : ctx.changedLines.right).get(filePath);
+  if (!rangeIntersectsSet(ls, le, lineSet)) {
+    logger.warn(
+      `${TOUR_LOG_PREFIX} dropping changed-file stop ${filePath}:${ls}-${le} (${normSide}) — does not intersect changed lines`
+    );
+    return null;
+  }
+
+  return {
     file_path: filePath,
     side: normSide,
     line_start: ls,
@@ -204,8 +163,6 @@ async function validateStop(stop, ctx) {
     title: title.slice(0, TOUR_TITLE_MAX),
     description: description.slice(0, TOUR_DESCRIPTION_MAX)
   };
-  if (isContext) out.is_context = true;
-  return out;
 }
 
 /**
@@ -217,6 +174,12 @@ async function validateStop(stop, ctx) {
  * @param {string} params.diffText - Full unified diff for the review snapshot.
  * @param {string} params.worktreePath
  * @param {Object} [params.reviewContext]
+ * @param {string} [params.diffHash] - Precomputed hash of `diffText`. When
+ *   provided (e.g. from `kickOffTourJob`), used directly instead of being
+ *   recomputed via `deps.hashDiff`. This makes the producer/consumer
+ *   relationship between the kickoff and worker explicit rather than
+ *   relying on the implicit invariant that `hashDiff` is deterministic
+ *   across calls.
  * @param {Object} [params._deps]
  * @returns {Promise<{generated: boolean, stops: number, reason?: string}>}
  */
@@ -227,6 +190,7 @@ async function generateTourForReview({
   diffText,
   worktreePath,
   reviewContext,
+  diffHash: providedDiffHash,
   _deps
 }) {
   const deps = { ...defaults, ..._deps };
@@ -242,7 +206,14 @@ async function generateTourForReview({
     return { generated: false, stops: 0, reason: 'empty_diff' };
   }
 
-  const diffHash = deps.hashDiff(diffText);
+  // Use the precomputed hash from the caller (kickOffTourJob) when
+  // available — that's the value stamped on `latestRequestedDiffHash`, so
+  // sharing it removes any "hashDiff must be deterministic" hidden
+  // contract between the two functions. Fall back to recomputing for
+  // direct callers (tests, ad-hoc invocations).
+  const diffHash = (typeof providedDiffHash === 'string' && providedDiffHash)
+    ? providedDiffHash
+    : deps.hashDiff(diffText);
 
   const tourRepo = new deps.TourRepository(db);
   const existing = await tourRepo.get(reviewId);
@@ -323,9 +294,7 @@ async function generateTourForReview({
   const validationCtx = {
     hunksByFile,
     changedLines,
-    worktreePath,
-    fs: deps.fs,
-    lineCounts: new Map()
+    worktreePath
   };
 
   const validated = [];
@@ -447,6 +416,10 @@ function kickOffTourJob({
       diffText,
       worktreePath,
       reviewContext,
+      // Thread the hash we already computed through to the worker rather
+      // than relying on the (implicit) invariant that hashDiff produces
+      // the same output for the same diffText in both call sites.
+      diffHash,
       _deps
     })
   );
@@ -460,7 +433,6 @@ module.exports = {
   buildChangedLineIndex,
   buildScriptCommand,
   validateStop,
-  getFileLineCount,
   latestRequestedDiffHash,
   resetLatestRequestedDiffHash: () => latestRequestedDiffHash.clear()
 };

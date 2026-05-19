@@ -14156,3 +14156,304 @@ body.summaries-hidden .hunk-summary-row,
 .file-header-summary-toggle.summaries-off {
   opacity: 0.45;
 }
+
+/* ==========================================================================
+   Tour Annotations & Tour Bar (Phase 8)
+   ========================================================================== */
+
+/* The inline annotation row that is mounted above the anchor line for each
+   stop. Pale-yellow palette to differentiate from info-blue summaries. */
+.tour-annotation-row {
+  background: transparent;
+}
+
+.tour-annotation-cell {
+  padding: 4px 0;
+  border: none;
+}
+
+.tour-annotation {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 14px;
+  margin: 6px auto;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #7d5700;
+  background: rgba(212, 167, 44, 0.10);
+  border: 1px solid rgba(212, 167, 44, 0.35);
+  border-left: 3px solid #d4a72c;
+  border-radius: var(--radius-md, 6px);
+  max-width: calc(100vw - var(--sidebar-width, 0px) - var(--right-panel-group-width, 0px) - 64px);
+  box-sizing: border-box;
+  word-break: break-word;
+  transition: box-shadow var(--transition-fast, 0.1s ease),
+              border-color var(--transition-fast, 0.1s ease);
+}
+
+[data-theme="dark"] .tour-annotation {
+  color: #e3b341;
+  background: rgba(187, 128, 9, 0.18);
+  border-color: rgba(187, 128, 9, 0.40);
+  border-left-color: #bb8009;
+}
+
+.tour-annotation-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.tour-stop-marker {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.9;
+}
+
+.tour-stop-marker svg {
+  width: 14px;
+  height: 14px;
+}
+
+.tour-annotation-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.tour-annotation-description {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.45;
+  opacity: 0.95;
+}
+
+/* Hide hunk summaries while a tour is active so the two annotation styles
+   don't compete for attention. The summary CSS still owns the row class. */
+body.tour-active .hunk-summary-row {
+  display: none;
+}
+
+/* Emphasize the currently-active stop annotation. */
+body.tour-active .tour-annotation-row.active-stop .tour-annotation {
+  box-shadow: 0 0 0 2px rgba(212, 167, 44, 0.55),
+              0 2px 6px rgba(0, 0, 0, 0.08);
+  border-color: #d4a72c;
+}
+
+[data-theme="dark"] body.tour-active .tour-annotation-row.active-stop .tour-annotation {
+  box-shadow: 0 0 0 2px rgba(187, 128, 9, 0.65),
+              0 2px 6px rgba(0, 0, 0, 0.30);
+  border-color: #e3b341;
+}
+
+/* ---------- Sticky bottom tour bar ---------- */
+:root {
+  /* Height assumed by the body padding rule below. Keep this in sync with the
+     bar's computed height (icon + button row + vertical padding). */
+  --tour-bar-height: 56px;
+}
+
+/* Reserve scroll-room at the bottom of the actual scroll container so the
+   tour bar never overlaps the last diff line. Only applied while a tour is
+   active. The scroll container is .main-layout .diff-view (overflow-y: auto),
+   NOT <body> — the body is a fixed 100vh flex shell and adding padding-bottom
+   to it extends its total height beyond the viewport, pushing children upward
+   and clipping the header off the top. Note: if .review-panel is
+   reintroduced into the DOM it will need its own body-class hook and a
+   matching bump to this padding. */
+body.tour-active .main-layout .diff-view {
+  padding-bottom: var(--tour-bar-height);
+}
+
+/* Defensive coordination with the (currently unused) .review-panel fixed
+ * submit UI. If .review-panel is re-introduced into the DOM, push it above
+ * the tour bar so its submit/approve controls stay hit-testable while a
+ * tour is active. .review-panel's z-index (1000) already sits below the
+ * tour bar (1500); pushing its bottom up by --tour-bar-height stacks the
+ * two surfaces vertically instead of overlapping. */
+body.tour-active .review-panel {
+  bottom: var(--tour-bar-height);
+}
+
+.tour-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  /* Leave room for the right-side panel group (chat + AI panel). The
+     PanelGroup sums or maxes its panels' widths into this var; it falls back
+     to 0 when no panel is open. (Reuses the same var as comment max-width
+     calculations in this file.) */
+  right: var(--right-panel-group-width, 0px);
+  z-index: 1500;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  background: var(--color-bg-primary, #ffffff);
+  border-top: 1px solid var(--color-border-primary, #d1d9e0);
+  box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.06);
+  font-size: 13px;
+  color: var(--color-text-primary, #24292f);
+}
+
+[data-theme="dark"] .tour-bar {
+  background: var(--color-bg-primary, #0d1117);
+  border-top-color: var(--color-border-primary, #30363d);
+  color: var(--color-text-primary, #c9d1d9);
+  box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.40);
+}
+
+.tour-bar__brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: #7d5700;
+}
+
+[data-theme="dark"] .tour-bar__brand {
+  color: #e3b341;
+}
+
+.tour-bar__brand svg {
+  width: 16px;
+  height: 16px;
+}
+
+.tour-bar__progress {
+  flex: 1;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary, #57606a);
+}
+
+[data-theme="dark"] .tour-bar__progress {
+  color: var(--color-text-secondary, #8b949e);
+}
+
+.tour-bar__nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tour-bar__nav button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-primary, #24292f);
+  background: var(--color-bg-secondary, #f6f8fa);
+  border: 1px solid var(--color-border-primary, #d1d9e0);
+  border-radius: var(--radius-sm, 4px);
+  cursor: pointer;
+  transition: background-color var(--transition-fast, 0.1s ease),
+              border-color var(--transition-fast, 0.1s ease);
+}
+
+.tour-bar__nav button:hover:not(:disabled) {
+  background: var(--color-bg-tertiary, #eaeef2);
+  border-color: var(--color-border-secondary, #afb8c1);
+}
+
+.tour-bar__nav button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.tour-bar__nav button svg {
+  width: 12px;
+  height: 12px;
+}
+
+[data-theme="dark"] .tour-bar__nav button {
+  color: var(--color-text-primary, #c9d1d9);
+  background: var(--color-bg-secondary, #161b22);
+  border-color: var(--color-border-primary, #30363d);
+}
+
+[data-theme="dark"] .tour-bar__nav button:hover:not(:disabled) {
+  background: var(--color-bg-tertiary, #21262d);
+  border-color: var(--color-border-secondary, #6e7681);
+}
+
+/* ---------- Toolbar tour-toggle button states ---------- */
+.btn-tour-toggle {
+  position: relative;
+  border: 1px solid var(--color-border-primary, #d1d9e0);
+  color: var(--color-text-secondary, #57606a);
+  transition: color var(--transition-fast, 0.1s ease),
+              border-color var(--transition-fast, 0.1s ease),
+              background-color var(--transition-fast, 0.1s ease);
+}
+
+/* Tour active — pale-yellow highlight. */
+.btn-tour-toggle.active {
+  color: #7d5700;
+  border-color: #d4a72c;
+  background-color: rgba(212, 167, 44, 0.12);
+}
+
+[data-theme="dark"] .btn-tour-toggle.active {
+  color: #e3b341;
+  border-color: #bb8009;
+  background-color: rgba(187, 128, 9, 0.20);
+}
+
+/* Generating pulse while the background tour job is running. */
+.btn-tour-toggle.generating {
+  animation: tourPulse 1.6s ease-in-out infinite;
+}
+
+/* Subtle indicator that a newer tour is stashed and waiting for restart.
+   Renders as a small dot in the corner of the toolbar button. */
+.btn-tour-toggle.tour-updated-pending::after {
+  content: '';
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #d4a72c;
+  box-shadow: 0 0 0 2px var(--color-bg-primary, #ffffff);
+}
+
+[data-theme="dark"] .btn-tour-toggle.tour-updated-pending::after {
+  background: #e3b341;
+  box-shadow: 0 0 0 2px var(--color-bg-primary, #0d1117);
+}
+
+@keyframes tourPulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(212, 167, 44, 0);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(212, 167, 44, 0.28);
+  }
+}
+
+[data-theme="dark"] .btn-tour-toggle.generating {
+  animation-name: tourPulseDark;
+}
+
+@keyframes tourPulseDark {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(187, 128, 9, 0);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(187, 128, 9, 0.40);
+  }
+}
