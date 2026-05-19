@@ -164,6 +164,31 @@ class PRManager {
     // gated on this so users on disabled deployments don't see them flicker
     // in.
     this._summariesEnabled = null;
+    // ---- Tour state (Phase 8) -----------------------------------------
+    // Lazy-instantiated TourBar / TourRenderer; populated on first open.
+    this._tourBar = null;
+    this._tourRenderer = null;
+    // Tri-state mirror of `tours_enabled` in /api/config. Tours are
+    // intentionally decoupled from summaries here (the server still gates
+    // tour generation on the summaries dependency); see the explanatory
+    // comment in setupEventHandlers().
+    this._toursEnabled = null;
+    // Cached stops from the most recent /api/reviews/:id/tour fetch, or null
+    // when nothing has been loaded for this review yet.
+    this._tourStops = null;
+    // 0-based index of the current stop while a tour is open; -1 when no
+    // tour is mounted.
+    this._tourActiveIndex = -1;
+    // Whether the background tour-generation job is currently running; drives
+    // the pulse on the toolbar button.
+    this._tourGenerating = false;
+    // When a `review:tour_ready` event fires while a tour is already mounted,
+    // we stash the new stops here rather than yank the current tour out from
+    // under the user. The pending stops are applied on the next exit or
+    // restart. Cleared once consumed.
+    this._tourStopsPendingRestart = null;
+    // Bound keydown handler; tracked so it can be removed on tour exit.
+    this._tourKeydownHandler = null;
     // Cached staleness check promise — shared between on-load and triggerAIAnalysis
     this._stalenessPromise = null;
     // Unique client ID for self-echo suppression on WebSocket review events.
@@ -372,6 +397,34 @@ class PRManager {
         document
           .querySelectorAll('.file-header-summary-toggle')
           .forEach((btn) => btn.remove());
+      }
+    });
+
+    // Tour toolbar toggle (Phase 8). Hidden by default in HTML; revealed
+    // asynchronously once /api/config confirms `tours_enabled` is on.
+    // The server gates tour generation on the `summaries_enabled` dependency
+    // already, so we do NOT couple visibility to summaries here.
+    const tourToggle = document.getElementById('tour-toggle-btn');
+    if (tourToggle) {
+      tourToggle.addEventListener('click', () => this.startOrToggleTour());
+    }
+    this._getAppConfig().then((cfg) => {
+      this._toursEnabled = cfg.tours_enabled === true;
+      if (this._toursEnabled && tourToggle) {
+        tourToggle.style.display = '';
+        this._syncTourToolbarButton();
+      }
+      // NOTE: do NOT probe /api/reviews/:id/tour here when no diff has
+      // rendered yet — `currentPR.id` is not populated until
+      // init()/LocalManager loads the review. The probe is normally
+      // deferred to renderDiff() (which fires after currentPR is set).
+      //
+      // RACE: if renderDiff() has ALREADY run by the time /api/config
+      // resolves, its `_toursEnabled === true` check failed (was still
+      // null) and the probe was skipped. Catch that case here so the
+      // tour toolbar still surfaces a generated tour.
+      if (this._toursEnabled && this._renderGen > 0) {
+        this._loadAndStashTour({ cancelOnRender: false }).catch(() => {});
       }
     });
 
@@ -1315,6 +1368,333 @@ class PRManager {
     btn.setAttribute('aria-pressed', this._summariesHidden ? 'false' : 'true');
   }
 
+  // ===== Tour (Phase 8) ===================================================
+
+  /**
+   * Whether a tour is currently mounted in the UI.
+   * @returns {boolean}
+   */
+  _tourIsActive() {
+    return this._tourActiveIndex >= 0 && !!this._tourRenderer;
+  }
+
+  /**
+   * Reflect tour state on the toolbar toggle button. Mirrors the structure
+   * of `_syncSummaryToolbarButton` so future tweaks stay in lockstep.
+   */
+  _syncTourToolbarButton() {
+    const btn = document.getElementById('tour-toggle-btn');
+    if (!btn) return;
+    const active = this._tourIsActive();
+    const hasPending = active && Array.isArray(this._tourStopsPendingRestart);
+    btn.classList.toggle('active', active);
+    btn.classList.toggle('generating', this._tourGenerating === true);
+    btn.classList.toggle('tour-updated-pending', hasPending);
+
+    let label;
+    if (this._tourGenerating) {
+      label = active ? 'Generating tour… (tour open)' : 'Generating guided tour…';
+    } else if (hasPending) {
+      label = 'Tour updated — restart to apply new stops';
+    } else if (active) {
+      label = 'Exit guided tour';
+    } else if (this._tourStops && this._tourStops.length > 0) {
+      label = 'Start guided tour';
+    } else {
+      label = 'Start guided tour (none available yet)';
+    }
+    btn.title = label;
+    btn.setAttribute('aria-label', label);
+    btn.dataset.label = label;
+    btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+  }
+
+  /**
+   * Fetch /api/reviews/:reviewId/tour and stash the result in `_tourStops`
+   * / `_tourGenerating`. Does NOT open the tour.
+   *
+   * If `deferIfActive` is true and a tour is currently mounted, the fetched
+   * stops are stashed on `_tourStopsPendingRestart` instead of replacing
+   * the active tour's stops. The pending stops apply on the next exit or
+   * restart. This is the v1 simple approach — replacing the running tour
+   * mid-flight is doable but adds complexity (mounted refs keyed by old
+   * indices, current-stop drift, etc.) without a clear UX win.
+   *
+   * @param {Object} [opts]
+   * @param {boolean} [opts.deferIfActive=false]
+   * @param {boolean} [opts.cancelOnRender=true] - When true (default),
+   *   the probe captures `_renderGen` and aborts before mutating state
+   *   if a later render bumps the generation. Render-triggered probes
+   *   want this so a stale fetch can't clobber a fresh reset. One-shot
+   *   recovery callers (e.g. the deferred config-probe) pass `false`
+   *   so they don't self-cancel.
+   * @returns {Promise<Array<Object>|null>} resolved stops, or null on miss.
+   */
+  async _loadAndStashTour({ deferIfActive = false, cancelOnRender = true } = {}) {
+    if (!this.currentPR?.id) return null;
+    if (this._toursEnabled === false) return null;
+    // Capture the current render generation; if a later renderDiff bumps
+    // _renderGen between our awaits, bail before mutating state. Only
+    // applied when cancelOnRender is true — the deferred config probe
+    // and other one-shot recovery callers pass `cancelOnRender: false`.
+    const gen = this._renderGen;
+    const guardStale = () => cancelOnRender && gen !== this._renderGen;
+    try {
+      const resp = await fetch(`/api/reviews/${this.currentPR.id}/tour`);
+      if (guardStale()) return null;
+      if (!resp.ok) return null;
+      const data = await resp.json();
+      if (guardStale()) return null;
+      this._tourGenerating = data.generating === true;
+      const stops = Array.isArray(data.tour?.stops) ? data.tour.stops : null;
+      if (deferIfActive && this._tourIsActive()) {
+        this._tourStopsPendingRestart = stops;
+      } else {
+        this._tourStops = stops;
+        this._tourStopsPendingRestart = null;
+      }
+      this._syncTourToolbarButton();
+      return stops;
+    } catch (err) {
+      console.warn('[Tour] failed to load tour:', err);
+      return null;
+    }
+  }
+
+  /**
+   * Toolbar click entrypoint. If a tour is active, exit. Otherwise fetch
+   * stops if needed, then open from the first stop. No-ops when no stops
+   * exist (toolbar button stays inert with the "none available yet" label).
+   * @returns {Promise<void>}
+   */
+  async startOrToggleTour() {
+    if (this._tourIsActive()) {
+      this._exitTour();
+      return;
+    }
+    if (!this._tourStops || this._tourStops.length === 0) {
+      await this._loadAndStashTour();
+    }
+    if (!this._tourStops || this._tourStops.length === 0) {
+      // Nothing to show — leave the button as-is.
+      return;
+    }
+    this._openTourAtStart();
+  }
+
+  /**
+   * Open the tour UI starting at stop 0. Lazy-creates the TourBar and
+   * TourRenderer on first call so we pay zero cost for users who never
+   * trigger a tour.
+   */
+  _openTourAtStart() {
+    if (!this._tourStops || this._tourStops.length === 0) return;
+
+    if (!this._tourRenderer && typeof window !== 'undefined' && window.TourRenderer) {
+      this._tourRenderer = new window.TourRenderer(this);
+    }
+    if (!this._tourBar && typeof window !== 'undefined' && window.TourBar) {
+      this._tourBar = new window.TourBar({
+        onPrev: () => this._advanceTour(-1),
+        onNext: () => this._advanceTour(1),
+        onExit: () => this._exitTour(),
+        onRestart: () => this._restartTour(),
+      });
+    }
+    if (!this._tourRenderer || !this._tourBar) {
+      console.warn('[Tour] TourRenderer/TourBar not available; cannot open tour');
+      return;
+    }
+
+    this._tourRenderer.setStops(this._tourStops);
+    this._tourRenderer.setActive(true);
+    this._tourBar.mount();
+    this._tourBar.setStops(this._tourStops);
+    this._tourBar.setCompleted(false);
+
+    this._tourActiveIndex = -1;
+    this._registerTourKeyboardHandlers();
+    this._advanceTour(1);
+    this._syncTourToolbarButton();
+  }
+
+  /**
+   * Advance (or rewind) the active stop by `delta`. Going past the end of
+   * the tour flips the bar into completion state; going before the start
+   * clamps at 0.
+   * @param {number} delta - Typically +1 (next) or -1 (prev).
+   */
+  _advanceTour(delta) {
+    if (!this._tourRenderer || !this._tourBar || !this._tourStops) return;
+    const total = this._tourStops.length;
+    if (total === 0) return;
+
+    const startIndex = this._tourActiveIndex + delta;
+    const dir = delta >= 0 ? 1 : -1;
+
+    // Forward past the end (initial open uses delta=1 from -1, so this only
+    // fires once we've actually reached the last stop and pressed Next again).
+    if (startIndex >= total) {
+      this._tourBar.setCompleted(true);
+      this._tourBar.setActiveIndex(total - 1);
+      this._syncTourToolbarButton();
+      return;
+    }
+
+    // Probe-then-mount: locate the next mountable index WITHOUT unmounting
+    // the current one. Only swap once we have a confirmed replacement. This
+    // avoids the wedge where the current stop is torn down and no successor
+    // mounts (file filtered out, scope change, etc.).
+    let probe = Math.max(0, startIndex);
+    let nextRow = null;
+    let nextIndex = -1;
+    while (probe >= 0 && probe < total) {
+      // Skip re-probing the index that's already mounted — `mountStop` is
+      // idempotent and returns the existing row, but we want to keep going
+      // past the current active when delta moves us off it.
+      if (probe !== this._tourActiveIndex) {
+        const row = this._tourRenderer.mountStop(probe);
+        if (row) {
+          nextRow = row;
+          nextIndex = probe;
+          break;
+        }
+      } else if (dir > 0) {
+        // Already-active probe under forward motion shouldn't count as a hit;
+        // we want to advance past it.
+      } else {
+        // Backward delta landing on the current stop: nothing earlier mounted.
+        break;
+      }
+      probe += dir;
+    }
+
+    if (!nextRow) {
+      if (dir > 0) {
+        // Forward exhaustion: flip to completion using the last successfully
+        // mounted index. If we never mounted anything (initial open found no
+        // mountable stops), bail out cleanly so the toolbar resets.
+        if (this._tourActiveIndex < 0) {
+          console.warn('[Tour] no mountable stops found; exiting');
+          this._exitTour();
+          return;
+        }
+        this._tourBar.setCompleted(true);
+        this._tourBar.setActiveIndex(this._tourActiveIndex);
+        this._syncTourToolbarButton();
+        return;
+      }
+      // Backward exhaustion: leave the current stop mounted/active untouched.
+      console.debug('[Tour] no earlier mountable stop; staying put');
+      return;
+    }
+
+    // Successful candidate — only now unmount the previous stop.
+    if (this._tourActiveIndex >= 0 && this._tourActiveIndex !== nextIndex) {
+      this._tourRenderer.unmountStop(this._tourActiveIndex);
+    }
+
+    this._tourActiveIndex = nextIndex;
+    this._tourRenderer.highlightActive(nextIndex);
+    this._tourRenderer.scrollToStop(nextIndex);
+    this._tourBar.setCompleted(false);
+    this._tourBar.setActiveIndex(nextIndex);
+    this._syncTourToolbarButton();
+    // Suppress unused-var lints; nextRow exists for symmetry with future
+    // post-mount work (focus management, telemetry).
+    void nextRow;
+  }
+
+  /**
+   * Tear down the tour: unmount every annotation, unmount the bar, drop the
+   * body class, and unregister keyboard handlers.
+   */
+  _exitTour() {
+    if (this._tourRenderer) {
+      this._tourRenderer.unmountAll();
+      this._tourRenderer.setActive(false);
+    }
+    if (this._tourBar) {
+      this._tourBar.unmount();
+    }
+    this._unregisterTourKeyboardHandlers();
+    this._tourActiveIndex = -1;
+    // Consume any pending tour stashed by `review:tour_ready` while we
+    // were running. Next open uses the fresh stops.
+    if (Array.isArray(this._tourStopsPendingRestart)) {
+      this._tourStops = this._tourStopsPendingRestart;
+      this._tourStopsPendingRestart = null;
+    }
+    this._syncTourToolbarButton();
+  }
+
+  /**
+   * Exit, then immediately re-open from stop 0. If a newer tour was
+   * stashed via `review:tour_ready`, exit applies it before reopening.
+   */
+  _restartTour() {
+    this._exitTour();
+    this._openTourAtStart();
+  }
+
+  /**
+   * Install the keyboard shortcut handler. Bound to `document` so it fires
+   * regardless of focus, with a guard that skips when the user is typing
+   * in a text field.
+   */
+  _registerTourKeyboardHandlers() {
+    if (this._tourKeydownHandler) return;
+    const handler = (e) => {
+      if (!this._tourIsActive()) return;
+
+      // Skip when the user is typing — text fields, contenteditable, etc.
+      // Arrow keys move the caret; Escape is owned by the surrounding form.
+      const target = e.target;
+      const tag = target && target.tagName;
+      const isEditable = tag === 'TEXTAREA' || tag === 'INPUT' || tag === 'SELECT' ||
+        (target && (target.isContentEditable || target.contentEditable === 'true'));
+      if (isEditable) return;
+
+      // Skip when a modal is open. Modals own their own Escape ladder
+      // (close dropdown, blur, dismiss); we don't want to compete. Defer
+      // to the shared ModalDetection utility so the selector list stays
+      // in sync with KeyboardShortcuts.
+      if (window.ModalDetection?.isModalOpen()) return;
+
+      // Skip ALL tour shortcuts when the chat panel is open. ChatPanel
+      // binds its own document-level Escape handler with a ladder of
+      // states (provider/session dropdown, streaming stop, blur input,
+      // close panel). Arrow keys may also be in use by chat surfaces.
+      // Yanking the tour out from under the user — by advancing OR
+      // exiting — when they have the chat panel open would be surprising.
+      const chatPanel = document.querySelector('.chat-panel.chat-panel--open');
+      if (chatPanel) return;
+
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        this._advanceTour(1);
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        this._advanceTour(-1);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        // Stop propagation so other Escape-bound listeners (chat panel
+        // when it's closed-but-bound, future keyboard shortcuts) don't
+        // also fire for the same key event.
+        e.stopImmediatePropagation();
+        this._exitTour();
+      }
+    };
+    document.addEventListener('keydown', handler);
+    this._tourKeydownHandler = handler;
+  }
+
+  _unregisterTourKeyboardHandlers() {
+    if (!this._tourKeydownHandler) return;
+    document.removeEventListener('keydown', this._tourKeydownHandler);
+    this._tourKeydownHandler = null;
+  }
+
   /**
    * Listen for review-scoped CustomEvents dispatched by ChatPanel's
    * WebSocket pub/sub connection.
@@ -1408,18 +1788,36 @@ class PRManager {
       this._applyHunkSummaries(e.detail.filePath, e.detail.summaries || []);
     });
 
+    // Tour-ready broadcasts arrive after the tour-generation job persists a
+    // new tour. We refresh the cached stops in the background but do NOT
+    // auto-open the tour — user must click the toolbar button. If a tour is
+    // already mounted, the new stops are stashed for restart so we don't
+    // yank the active tour out from under the user (v1 simple approach).
+    document.addEventListener('review:tour_ready', (e) => {
+      if (e.detail?.reviewId !== reviewId()) return;
+      this._loadAndStashTour({ deferIfActive: true }).catch(() => {});
+    });
+
     document.addEventListener('review:background_job_finished', (e) => {
       if (e.detail?.reviewId !== reviewId()) return;
       const jobType = e.detail?.jobType || '';
-      if (jobType !== 'summaries' && !jobType.startsWith('summaries:')) return;
-      // The queue can host multiple `summaries:${digest}` jobs back-to-back
+      const isSummaries = jobType === 'summaries' || jobType.startsWith('summaries:');
+      const isTour = jobType === 'tour' || jobType.startsWith('tour:');
+      if (!isSummaries && !isTour) return;
+      // The queue can host multiple `${type}:${digest}` jobs back-to-back
       // (refresh, scope change, whitespace toggle). The broadcast payload
       // carries `hasActiveForType` from the queue's view AFTER this job's
       // key was deleted, so a sibling job still in flight keeps the pulse
       // visible.
       if (e.detail?.hasActiveForType === true) return;
-      this._summariesGenerating = false;
-      this._syncSummaryToolbarButton();
+      if (isSummaries) {
+        this._summariesGenerating = false;
+        this._syncSummaryToolbarButton();
+      }
+      if (isTour) {
+        this._tourGenerating = false;
+        this._syncTourToolbarButton();
+      }
     });
 
     document.addEventListener('visibilitychange', () => {
@@ -2282,6 +2680,17 @@ class PRManager {
     const diffContainer = document.getElementById('diff-container');
     if (!diffContainer) return;
 
+    // Tear down any active tour BEFORE wiping the diff DOM: unmountAll()
+    // re-collapses files the tour auto-expanded by looking them up via
+    // `.d2h-file-wrapper[data-file-name=...]`. If we cleared innerHTML
+    // first those lookups would all miss, and the user's pre-tour
+    // collapse state would be silently lost. (Mirrors the rationale for
+    // hunkSummaryRenderer.reset below — anchor-based DOM state cannot
+    // survive a re-render.)
+    if (this._tourIsActive && this._tourIsActive()) {
+      this._exitTour();
+    }
+
     diffContainer.innerHTML = '';
 
     // Reset hunk-summary tracking — `renderPatch` will populate this as it
@@ -2290,6 +2699,7 @@ class PRManager {
     if (this.hunkSummaryRenderer) {
       this.hunkSummaryRenderer.reset();
     }
+    this._tourStops = null;
     this._summaryAnchorsByHash = new Map();
     this._summaryHashesByFile = new Map();
     this._pendingSummariesByHash = new Map();
@@ -2338,6 +2748,13 @@ class PRManager {
       this._kickOffHunkSummaries().catch((err) => {
         console.warn('[HunkSummary] kickoff failed:', err);
       });
+    }
+
+    // Probe tour endpoint after diff is rendered. `currentPR.id` is now
+    // set (init()/LocalManager populates it before calling renderDiff),
+    // so the toolbar button can reflect the right state.
+    if (this._toursEnabled === true) {
+      this._loadAndStashTour().catch(() => {});
     }
   }
 
