@@ -561,6 +561,20 @@ async function globalSetup() {
     });
   });
 
+  // Stub external-comments endpoints. The pr.js page wiring fires a
+  // fire-and-forget sync + fetch on every PR load (see _loadExternalComments).
+  // Without these stubs, the requests 404 against the catch-all error handler
+  // below, which surfaces as a leaking ".toast-error" and breaks unrelated
+  // tests that assert on toast visibility. Tests that exercise the real
+  // external-comment flow override these via `page.route(...)` — see
+  // tests/e2e/external-comments.spec.js.
+  app.post('/api/reviews/:reviewId/external-comments/sync', (req, res) => {
+    res.json({ count: 0, lostAnchors: 0, syncedAt: new Date().toISOString() });
+  });
+  app.get('/api/reviews/:reviewId/external-comments', (req, res) => {
+    res.json({ threads: [] });
+  });
+
   // Mock file-content-original endpoint for context expansion tests
   // Returns mock file content with predictable line contents for testing
   app.get('/api/file-content-original/:fileName(*)', (req, res) => {

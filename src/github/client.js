@@ -159,6 +159,48 @@ class GitHubClient {
   }
 
   /**
+   * Fetch all inline (line-anchored) review comments on a pull request.
+   *
+   * Uses the GitHub REST API `pulls.listReviewComments` endpoint and paginates
+   * automatically via `octokit.paginate` to handle PRs with more than 100
+   * comments. Returns the raw API objects unchanged — mapping to local rows
+   * happens in the adapter / route layer (keeps this client thin and testable).
+   *
+   * Note: this endpoint returns inline review comments only. Issue-level (PR
+   * conversation tab) comments come from a different endpoint and are not
+   * included here.
+   *
+   * @param {Object} params
+   * @param {string} params.owner - Repository owner
+   * @param {string} params.repo - Repository name
+   * @param {number} params.pull_number - Pull request number
+   * @returns {Promise<Array<Object>>} Raw review-comment objects with fields
+   *   such as `id`, `pull_request_review_id`, `in_reply_to_id`, `body`,
+   *   `user`, `path`, `commit_id`, `original_commit_id`, `position`,
+   *   `original_position`, `line`, `start_line`, `original_line`,
+   *   `original_start_line`, `side`, `start_side`, `html_url`, `created_at`,
+   *   `updated_at`.
+   * @throws {GitHubApiError} 404 when the PR is not found, 429 on rate limit,
+   *   503 on network failure, or a wrapped error for other API failures.
+   */
+  async listReviewComments({ owner, repo, pull_number }) {
+    try {
+      const comments = await this.octokit.paginate(
+        this.octokit.rest.pulls.listReviewComments,
+        {
+          owner,
+          repo,
+          pull_number,
+          per_page: 100
+        }
+      );
+      return comments;
+    } catch (error) {
+      await this.handleApiError(error, owner, repo, pull_number);
+    }
+  }
+
+  /**
    * Validate GitHub token by making a test API call
    * @returns {Promise<boolean>} Whether the token is valid
    */
@@ -209,7 +251,8 @@ class GitHubClient {
       console.error('GitHub API error:', error);
     }
 
-    // Handle rate limiting with exponential backoff
+    // Handle rate limiting with exponential backoff (primary rate limit:
+    // `x-ratelimit-remaining: 0`).
     if (error.status === 403 && error.response?.headers?.['x-ratelimit-remaining'] === '0') {
       const resetTime = parseInt(error.response.headers['x-ratelimit-reset']) * 1000;
       const waitTime = Math.max(resetTime - Date.now(), 1000);
@@ -217,6 +260,39 @@ class GitHubClient {
       console.log(`Rate limit exceeded. Retrying in ${Math.ceil(waitTime / 1000)} seconds...`);
 
       throw new GitHubApiError(`GitHub API rate limit exceeded. Retrying in ${Math.ceil(waitTime / 1000)} seconds...`, 429);
+    }
+
+    // Secondary rate limits ("abuse detection") return 403 WITHOUT the
+    // standard rate-limit headers. They're signaled either by a `retry-after`
+    // header or by message text mentioning "secondary rate limit", "abuse",
+    // or "rate limit". Without this branch they'd fall through to the
+    // permission-failure path and the user would be told their token is
+    // missing scopes — misleading.
+    if (error.status === 403) {
+      const retryAfterHeader = error.response?.headers?.['retry-after'];
+      const messageText = String(error.message || '');
+      const looksLikeRateLimit =
+        retryAfterHeader != null ||
+        /secondary rate limit/i.test(messageText) ||
+        /abuse/i.test(messageText) ||
+        /rate limit/i.test(messageText);
+
+      if (looksLikeRateLimit) {
+        const retryAfterSec = retryAfterHeader != null ? parseInt(retryAfterHeader, 10) : null;
+        const suffix = Number.isFinite(retryAfterSec) && retryAfterSec > 0
+          ? ` Retry after ${retryAfterSec} seconds.`
+          : '';
+        throw new GitHubApiError(`GitHub API rate limit exceeded (secondary rate limit).${suffix}`, 429);
+      }
+
+      // Genuine permission / scope failure. Without this branch the error
+      // would fall through to the generic plain-`Error` path and route
+      // handlers would map it to a 500 instead of a 403, hiding the real
+      // cause from the reviewer.
+      throw new GitHubApiError(
+        `Insufficient permissions for ${owner}/${repo}. Your GitHub token may be missing required scopes.`,
+        403
+      );
     }
 
     // Handle authentication errors

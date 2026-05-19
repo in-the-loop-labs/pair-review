@@ -267,6 +267,35 @@ const SCHEMA_SQL = {
       last_fetched_at TEXT,
       created_at TEXT NOT NULL
     )
+  `,
+
+  external_comments: `
+    CREATE TABLE IF NOT EXISTS external_comments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      review_id INTEGER NOT NULL,
+      source TEXT NOT NULL,
+      external_id TEXT NOT NULL,
+      in_reply_to_id TEXT,
+      parent_id INTEGER,
+      external_url TEXT,
+      author TEXT,
+      author_url TEXT,
+      file TEXT NOT NULL,
+      side TEXT,
+      line_start INTEGER,
+      line_end INTEGER,
+      diff_position INTEGER,
+      commit_sha TEXT,
+      is_outdated INTEGER NOT NULL DEFAULT 0,
+      original_line_start INTEGER,
+      original_line_end INTEGER,
+      original_commit_sha TEXT,
+      body TEXT,
+      external_created_at TEXT,
+      synced_at TEXT,
+      FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE,
+      FOREIGN KEY (parent_id) REFERENCES external_comments(id) ON DELETE SET NULL
+    )
   `
 };
 
@@ -311,7 +340,11 @@ const INDEX_SQL = [
   // Worktree pool indexes
   'CREATE INDEX IF NOT EXISTS idx_worktree_pool_repo ON worktree_pool(repository)',
   'CREATE INDEX IF NOT EXISTS idx_worktree_pool_status ON worktree_pool(repository, status)',
-  'CREATE INDEX IF NOT EXISTS idx_worktree_pool_lru ON worktree_pool(repository, status, last_switched_at)'
+  'CREATE INDEX IF NOT EXISTS idx_worktree_pool_lru ON worktree_pool(repository, status, last_switched_at)',
+  // External comments indexes (read-only mirror of GitHub/etc. PR review comments)
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_external_comments_unique ON external_comments(review_id, source, external_id)',
+  'CREATE INDEX IF NOT EXISTS idx_external_comments_anchor ON external_comments(review_id, file, line_end)',
+  'CREATE INDEX IF NOT EXISTS idx_external_comments_parent_lookup ON external_comments(review_id, source, in_reply_to_id)'
 ];
 
 /**

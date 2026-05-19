@@ -305,6 +305,16 @@ class PRManager {
       refreshBtn.addEventListener('click', () => this.refreshPR());
     }
 
+    // Refresh external (GitHub) review comments. Handler lives on the
+    // instance so unit tests can call it directly (avoids duplicating the
+    // production click logic in tests, per CLAUDE.md).
+    const refreshExternalBtn = document.getElementById('refresh-external-comments-btn');
+    if (refreshExternalBtn) {
+      refreshExternalBtn.addEventListener('click', () => {
+        void this._handleExternalCommentsRefreshClick({ button: refreshExternalBtn });
+      });
+    }
+
     // PR description popover
     this.setupPRDescriptionPopover();
 
@@ -612,6 +622,15 @@ class PRManager {
       // Fire-and-forget staleness check — shows badge or auto-refreshes
       this._stalenessPromise = this._checkStalenessOnLoad(owner, repo, number);
 
+      // Fire-and-forget external review-comment sync + render.
+      // Runs after the diff and user comments have been rendered so the
+      // external-comment manager has DOM anchors to attach blue rows to.
+      // Failures are swallowed inside _loadExternalComments and surface via
+      // console.warn; they must never block the main PR-load path.
+      void this._loadExternalComments().catch((err) => {
+        console.warn('[external-comments] _loadExternalComments threw', err);
+      });
+
     } catch (error) {
       console.error('Error loading PR:', error);
       this.showError(error.message);
@@ -623,16 +642,238 @@ class PRManager {
   }
 
   /**
-   * Reload AI suggestions and user comments after an analysis completes.
-   * Shared by the foreground `analysis_completed` handler and the deferred
-   * `_dirtyAnalysis` branch in the visibilitychange listener.
+   * Sync external review comments against the source system and render the
+   * results. Non-blocking from the user's perspective: a sync failure does
+   * not prevent rendering of any cached rows from a previous run.
+   *
+   * No-op in local mode (external sources require a real GitHub PR).
+   */
+  /**
+   * Re-render every overlay (AI suggestions, user comments, external comments)
+   * after the underlying diff DOM has been rebuilt.
+   *
+   * Used by anything that destroys and re-mounts the diff (refreshPR, the
+   * whitespace toggle, pre-analysis refresh). Centralizing keeps the three
+   * renderers from drifting: each one has its own clear()/append cycle and
+   * forgetting any of them produces hard-to-spot bugs like "comments
+   * disappeared after refresh".
+   *
+   * @param {Object} [options]
+   * @param {string} [options.analysisRunId] - Optional run id to pin AI suggestions to.
+   * @param {boolean} [options.syncExternal=false] - When true, fire the
+   *   external-comments sync POST before re-rendering. Used by `refreshPR`
+   *   where the diff was just fetched fresh from GitHub and cached anchors
+   *   may not match the new commit. GET-only callers (whitespace toggle,
+   *   analysis rebuilds, post-analysis reload) pass the default and reuse
+   *   the existing mirror.
+   */
+  async _rerenderAllOverlays({ analysisRunId, syncExternal = false } = {}) {
+    const includeDismissed = window.aiPanel?.showDismissedComments || false;
+    await this.loadUserComments(includeDismissed);
+    await this.loadAISuggestions(null, analysisRunId);
+    try {
+      if (typeof window !== 'undefined' && window.externalCommentManager) {
+        if (this.currentPR && this.currentPR.id) {
+          window.externalCommentManager.reviewId = this.currentPR.id;
+        }
+        if (syncExternal) {
+          // refreshPR path: full sync+load through the canonical entry
+          // point. `_loadExternalComments` already owns the toast + error
+          // wiring for the sync result.
+          await this._loadExternalComments();
+        } else {
+          // GET-only path: the local mirror is current; just re-anchor
+          // rows on the freshly-rebuilt diff DOM.
+          await window.externalCommentManager.loadAndRender();
+        }
+      }
+    } catch (err) {
+      console.warn('[external-comments] re-render after diff rebuild failed', err);
+    }
+  }
+
+  /**
+   * Click handler for the "refresh external comments" header button.
+   *
+   * Extracted from `setupEventListeners` so unit tests can exercise the
+   * production handler directly without re-implementing it (CLAUDE.md
+   * forbids duplicating production code in tests). The DOM button id is
+   * the canonical attach point — pass it in for tests that build their
+   * own button.
+   *
+   * @param {Object} [options]
+   * @param {HTMLElement} [options.button] - The button element to toggle. Defaults to `#refresh-external-comments-btn`.
+   * @returns {Promise<void>}
+   */
+  async _handleExternalCommentsRefreshClick({ button } = {}) {
+    const btn = button
+      || (typeof document !== 'undefined' ? document.getElementById('refresh-external-comments-btn') : null);
+    if (!btn || btn.disabled) return;
+    btn.disabled = true;
+    btn.classList.add('is-refreshing');
+    btn.setAttribute('aria-busy', 'true');
+    btn.removeAttribute('data-state');
+    try {
+      await this._loadExternalComments();
+    } finally {
+      btn.disabled = false;
+      btn.classList.remove('is-refreshing');
+      btn.removeAttribute('aria-busy');
+    }
+  }
+
+  async _loadExternalComments() {
+    if (typeof window !== 'undefined' && window.PAIR_REVIEW_LOCAL_MODE) return;
+    if (!this.currentPR || !this.currentPR.id) return;
+    if (typeof window === 'undefined' || !window.externalCommentManager) return;
+
+    window.externalCommentManager.reviewId = this.currentPR.id;
+
+    // Route through the manager's `syncAndRender`. That method owns the
+    // in-flight guard for the FULL sync+load sequence, so a GET-only
+    // caller (analysis rebuild, whitespace toggle) that hits
+    // `loadAndRender` during this window joins the same promise instead
+    // of racing the POST with a stale GET. The manager surfaces sync
+    // result and sync error separately so this method can fire the
+    // status-aware toasts without intercepting render.
+    let result;
+    try {
+      result = await window.externalCommentManager.syncAndRender({
+        syncFn: () => this._syncExternalComments(),
+      });
+    } catch (err) {
+      console.warn('[external-comments] syncAndRender failed', err);
+      return;
+    }
+
+    if (result && result.syncError) {
+      // Sync failed but render proceeded against the previously-cached
+      // mirror. Toast + button-error cue so the reviewer knows the
+      // counts may lag upstream.
+      this._showExternalSyncErrorToast(result.syncError);
+      this._markExternalRefreshErrorState();
+      console.warn('[external-comments] sync failed; rendering cached data only', result.syncError);
+    } else if (result && result.syncResult && typeof result.syncResult.lostAnchors === 'number' && result.syncResult.lostAnchors > 0) {
+      // Surface lost-anchor counts so the reviewer knows why visible
+      // external-comment counts may lag what GitHub shows — these are
+      // comments whose anchors were destroyed upstream (force-push, file
+      // delete, etc.) and have no place to render in the current diff.
+      this._showExternalLostAnchorsToast(result.syncResult.lostAnchors);
+    }
+  }
+
+  /**
+   * Pick a toast message by HTTP status for a failed external-comment sync.
+   * Falls back to a generic message when status is missing or unknown.
+   * @private
+   */
+  _showExternalSyncErrorToast(err) {
+    const status = err && typeof err.status === 'number' ? err.status : 0;
+    let message;
+    if (status === 401) {
+      message = 'GitHub token missing or invalid — external comments not refreshed.';
+    } else if (status === 403) {
+      message = 'GitHub denied the request (403) — external comments not refreshed.';
+    } else if (status === 429) {
+      message = 'GitHub rate limited — external comments not refreshed.';
+    } else {
+      message = 'Could not refresh GitHub review comments.';
+    }
+    try {
+      if (typeof window !== 'undefined') {
+        if (window.toast && typeof window.toast.showError === 'function') {
+          window.toast.showError(message);
+          return;
+        }
+        if (typeof window.showToast === 'function') {
+          window.showToast(message, 'error');
+          return;
+        }
+      }
+    } catch {
+      // toast helpers must never break the page; swallow.
+    }
+  }
+
+  /**
+   * Show a warning toast describing how many external comments couldn't be
+   * anchored to the current diff (lost-anchor count from the sync result).
+   * Mirrors `_showExternalSyncErrorToast` so failures and partial successes
+   * have symmetrical UI treatment.
+   * @param {number} count - Number of lost-anchor comments
+   * @private
+   */
+  _showExternalLostAnchorsToast(count) {
+    if (typeof window === 'undefined') return;
+    const noun = count === 1 ? 'comment' : 'comments';
+    const message = `${count} ${noun} lost their anchor due to upstream changes`;
+    try {
+      if (window.toast && typeof window.toast.showWarning === 'function') {
+        window.toast.showWarning(message);
+        return;
+      }
+      if (window.toast && typeof window.toast.showInfo === 'function') {
+        window.toast.showInfo(message);
+        return;
+      }
+      if (typeof window.showToast === 'function') {
+        window.showToast(message, 'warn');
+        return;
+      }
+    } catch {
+      // toast helpers must never break the page; swallow.
+    }
+  }
+
+  /**
+   * Briefly mark the refresh button so the user notices the failure even if
+   * they dismissed the toast. Cleared after 4s; no state machine — best
+   * effort cue. No-op when the button isn't present.
+   * @private
+   */
+  _markExternalRefreshErrorState() {
+    if (typeof document === 'undefined') return;
+    const btn = document.getElementById('refresh-external-comments-btn');
+    if (!btn) return;
+    btn.setAttribute('data-state', 'error');
+    setTimeout(() => {
+      if (btn.getAttribute('data-state') === 'error') {
+        btn.removeAttribute('data-state');
+      }
+    }, 4000);
+  }
+
+  /**
+   * POST to the sync endpoint for the GitHub source. Coalesced server-side
+   * for concurrent (review, source) calls; safe to invoke from page-load and
+   * the manual refresh button in parallel.
+   * @returns {Promise<{ count: number, lostAnchors: number, syncedAt: string }>}
+   */
+  async _syncExternalComments() {
+    const source = 'github';
+    const res = await fetch(
+      `/api/reviews/${this.currentPR.id}/external-comments/sync?source=${source}`,
+      { method: 'POST' }
+    );
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      const err = new Error(body.error || `Sync failed with status ${res.status}`);
+      err.status = res.status;
+      throw err;
+    }
+    return res.json();
+  }
+
+  /**
+   * Reload AI suggestions, user comments, and external comments after an
+   * analysis completes. Shared by the foreground `analysis_completed`
+   * handler and the deferred `_dirtyAnalysis` branch in the
+   * visibilitychange listener. Routing through `_rerenderAllOverlays`
+   * keeps external-comment rows in sync with the other two overlays
+   * whenever post-analysis refresh fires.
    */
   _reloadAfterAnalysis() {
-    const includeDismissed = window.aiPanel?.showDismissedComments ?? false;
-    return Promise.all([
-      this.loadAISuggestions(),
-      this.loadUserComments(includeDismissed)
-    ]);
+    return this._rerenderAllOverlays();
   }
 
   /**
@@ -842,10 +1083,11 @@ class PRManager {
     // Re-fetch and re-render the diff
     await this.loadAndDisplayFiles(owner, repo, number);
 
-    // Re-anchor comments and suggestions on the fresh DOM
-    const includeDismissed = window.aiPanel?.showDismissedComments || false;
-    await this.loadUserComments(includeDismissed);
-    await this.loadAISuggestions(null, this.selectedRunId);
+    // Re-anchor every overlay (user comments, AI suggestions, external
+    // comments) via the shared helper so the three renderers can't drift.
+    // The diff DOM was just rebuilt, so external-comment rows are gone
+    // until loadAndRender re-inserts them.
+    await this._rerenderAllOverlays({ analysisRunId: this.selectedRunId });
 
     // Restore scroll position after the DOM settles
     requestAnimationFrame(() => {
@@ -5221,14 +5463,22 @@ class PRManager {
         // Reload the files/diff with fresh data
         await this.loadAndDisplayFiles(owner, repo, number);
 
-        // Re-render comments and AI suggestions on the fresh DOM
-        // (renderDiff clears the diff container, so we must re-populate)
-        const includeDismissed = window.aiPanel?.showDismissedComments || false;
-        await this.loadUserComments(includeDismissed);
-        // Note: Unlike loadPR() which skips this when analysisHistoryManager exists
-        // (because the manager triggers loadAISuggestions via onSelectionChange on init),
-        // refresh must call unconditionally since the manager won't re-fire its callback.
-        await this.loadAISuggestions(null, this.selectedRunId);
+        // Re-render the three independent overlay layers on the fresh DOM
+        // (renderDiff clears the diff container). Going through the shared
+        // helper guarantees the three renderers can't drift again — adding
+        // a fourth overlay only requires updating this one place.
+        // `syncExternal: true` because refreshPR fetched a brand-new diff
+        // (commit SHA may have changed). Cached external-comment anchors
+        // need a sync POST to re-evaluate which ones are outdated against
+        // the new HEAD — otherwise we'd render stale `is_outdated` flags.
+        // Note: Unlike loadPR() which skips loadAISuggestions when
+        // analysisHistoryManager exists (because the manager triggers it via
+        // onSelectionChange on init), refresh must call unconditionally
+        // since the manager won't re-fire its callback.
+        await this._rerenderAllOverlays({
+          analysisRunId: this.selectedRunId,
+          syncExternal: true,
+        });
 
         // Restore expanded folders
         this.expandedFolders = expandedFolders;

@@ -887,6 +887,384 @@ describe('ChatPanel', () => {
       const card = chatPanel.messagesEl.appendChild.mock.calls[0][0];
       expect(card.innerHTML).toContain('Comment');
     });
+
+    it('should NOT add external-* classes when source is undefined or "user"', () => {
+      const ctx = { commentId: '1', body: 'Hi', file: 'a.js', line_start: 5, isFileLevel: false };
+      chatPanel._addCommentContextCard(ctx);
+
+      const card = chatPanel.messagesEl.appendChild.mock.calls[0][0];
+      expect(card.className).toBe('chat-panel__context-card');
+      expect(card.className).not.toContain('external-comment-context');
+      expect(card.className).not.toContain('source-');
+    });
+
+    it('should apply external-comment-context and source-github classes for source=external/externalSource=github', () => {
+      const ctx = {
+        commentId: 'g-1',
+        body: 'GitHub comment body',
+        file: 'a.js',
+        line_start: 5,
+        isFileLevel: false,
+        source: 'external',
+        externalSource: 'github',
+        externalUrl: 'https://github.com/example/repo/pull/1#discussion_r1',
+        author: 'octocat',
+        isOutdated: false,
+      };
+      chatPanel._addCommentContextCard(ctx);
+
+      const card = chatPanel.messagesEl.appendChild.mock.calls[0][0];
+      expect(card.className).toContain('chat-panel__context-card');
+      expect(card.className).toContain('external-comment-context');
+      expect(card.className).toContain('source-github');
+      // Author rendered as a link to externalUrl
+      expect(card.innerHTML).toContain('href="https://github.com/example/repo/pull/1#discussion_r1"');
+      expect(card.innerHTML).toContain('octocat');
+      expect(card.innerHTML).toContain('target="_blank"');
+      // No outdated badge when isOutdated is false
+      expect(card.innerHTML).not.toContain('outdated');
+    });
+
+    it('should render outdated badge when isOutdated=true and add is-outdated class', () => {
+      const ctx = {
+        commentId: 'g-2',
+        body: 'Old comment',
+        file: 'a.js',
+        line_start: null,
+        source: 'external',
+        externalSource: 'github',
+        externalUrl: 'https://github.com/example/repo/pull/1#discussion_r2',
+        author: 'octocat',
+        isOutdated: true,
+      };
+      chatPanel._addCommentContextCard(ctx);
+
+      const card = chatPanel.messagesEl.appendChild.mock.calls[0][0];
+      expect(card.className).toContain('is-outdated');
+      expect(card.innerHTML).toContain('outdated');
+    });
+
+    it('should render author as plain span when externalUrl is missing', () => {
+      const ctx = {
+        commentId: 'g-3',
+        body: 'No link',
+        file: 'a.js',
+        line_start: 5,
+        source: 'external',
+        externalSource: 'github',
+        externalUrl: null,
+        author: 'octocat',
+        isOutdated: false,
+      };
+      chatPanel._addCommentContextCard(ctx);
+
+      const card = chatPanel.messagesEl.appendChild.mock.calls[0][0];
+      expect(card.innerHTML).toContain('octocat');
+      expect(card.innerHTML).not.toContain('href=');
+    });
+
+    it('XSS: javascript: externalUrl renders author as plain text with no href, body escapes script tags', () => {
+      // Regression: the single-comment card previously emitted a live <a href>
+      // whenever externalUrl was truthy — including javascript: URLs. Mirror
+      // the scheme allowlist used by the thread path and external-comment-manager.
+      const origMd = global.window.renderMarkdown;
+      const escaper = (text) => String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+      global.window.renderMarkdown = (text) => `<p>${escaper(text)}</p>`;
+      try {
+        const ctx = {
+          commentId: 'g-xss',
+          body: '<script>alert(1)</script><img src=x onerror=alert(1)>',
+          file: 'a.js',
+          line_start: 5,
+          isFileLevel: false,
+          source: 'external',
+          externalSource: 'github',
+          externalUrl: 'javascript:alert(1)',
+          author: 'octocat',
+          isOutdated: false,
+        };
+        chatPanel._addCommentContextCard(ctx);
+
+        const card = chatPanel.messagesEl.appendChild.mock.calls[0][0];
+        // No live href= attribute survives — the URL failed _isSafeUrl, so
+        // the author renders as a plain span.
+        expect(card.innerHTML).not.toMatch(/href=["']javascript:/i);
+        expect(card.innerHTML).not.toMatch(/<a\s[^>]*href=/i);
+        expect(card.innerHTML).toContain('<span class="chat-panel__context-author">octocat</span>');
+        // No live <script> tag and no live onerror attribute in any element.
+        expect(card.innerHTML).not.toMatch(/<script[^>]*>/i);
+        expect(card.innerHTML).not.toMatch(/<[^>]*\sonerror\s*=/i);
+        expect(card.innerHTML).not.toMatch(/<img\b/i);
+      } finally {
+        global.window.renderMarkdown = origMd;
+      }
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // _sendCommentContextMessage with external source
+  // -----------------------------------------------------------------------
+  describe('_sendCommentContextMessage (external source)', () => {
+    it('should mark source as external and persist external fields in contextData', () => {
+      const ctx = {
+        commentId: 'g-100',
+        body: 'External feedback',
+        file: 'src/app.js',
+        line_start: 12,
+        line_end: 12,
+        source: 'external',
+        externalSource: 'github',
+        externalUrl: 'https://github.com/example/repo/pull/1#discussion_r100',
+        author: 'octocat',
+        isOutdated: false,
+        isFileLevel: false,
+      };
+
+      chatPanel._sendCommentContextMessage(ctx);
+
+      expect(chatPanel._getActiveTab().pendingContextData).toHaveLength(1);
+      const data = chatPanel._getActiveTab().pendingContextData[0];
+      expect(data.source).toBe('external');
+      expect(data.externalSource).toBe('github');
+      expect(data.externalUrl).toBe('https://github.com/example/repo/pull/1#discussion_r100');
+      expect(data.author).toBe('octocat');
+      expect(data.isOutdated).toBe(false);
+    });
+
+    it('should mention GitHub and author in the AI-facing prompt', () => {
+      const ctx = {
+        commentId: 'g-101',
+        body: 'Pls fix',
+        file: 'src/app.js',
+        line_start: 10,
+        line_end: 10,
+        source: 'external',
+        externalSource: 'github',
+        externalUrl: 'https://github.com/example/repo/pull/1#discussion_r101',
+        author: 'octocat',
+        isOutdated: false,
+        isFileLevel: false,
+      };
+
+      chatPanel._sendCommentContextMessage(ctx);
+
+      const prompt = chatPanel._getActiveTab().pendingContext[0];
+      expect(prompt).toContain('GitHub');
+      expect(prompt).toContain('octocat');
+      expect(prompt).toContain('https://github.com/example/repo/pull/1#discussion_r101');
+      expect(prompt).toContain('Pls fix');
+    });
+
+    it('should mention outdated status in the AI-facing prompt when isOutdated=true', () => {
+      const ctx = {
+        commentId: 'g-102',
+        body: 'Stale',
+        file: 'src/app.js',
+        line_start: null,
+        line_end: null,
+        source: 'external',
+        externalSource: 'github',
+        externalUrl: null,
+        author: 'octocat',
+        isOutdated: true,
+        isFileLevel: false,
+      };
+
+      chatPanel._sendCommentContextMessage(ctx);
+
+      const prompt = chatPanel._getActiveTab().pendingContext[0];
+      expect(prompt.toLowerCase()).toContain('outdated');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // _sendThreadContextMessage / _addThreadContextCard
+  // -----------------------------------------------------------------------
+  describe('_sendThreadContextMessage', () => {
+    it('should render a thread card with one entry per comment and mention count in prompt', () => {
+      const threadContext = {
+        rootId: 5,
+        source: 'external',
+        externalSource: 'github',
+        file: 'src/app.js',
+        line_start: 42,
+        line_end: 42,
+        comments: [
+          { author: 'alice', body: 'First comment', isOutdated: false, externalUrl: 'https://github.com/example/repo/pull/1#discussion_r1', externalCreatedAt: '2025-01-01T00:00:00Z' },
+          { author: 'bob', body: 'Second comment', isOutdated: false, externalUrl: 'https://github.com/example/repo/pull/1#discussion_r2', externalCreatedAt: '2025-01-02T00:00:00Z' },
+          { author: 'carol', body: 'Third comment', isOutdated: false, externalUrl: 'https://github.com/example/repo/pull/1#discussion_r3', externalCreatedAt: '2025-01-03T00:00:00Z' },
+        ],
+      };
+
+      chatPanel._sendThreadContextMessage(threadContext);
+
+      // Pending data captured
+      expect(chatPanel._getActiveTab().pendingContextData).toHaveLength(1);
+      const data = chatPanel._getActiveTab().pendingContextData[0];
+      expect(data.type).toBe('thread');
+      expect(data.source).toBe('external');
+      expect(data.externalSource).toBe('github');
+      expect(data.comments).toHaveLength(3);
+      expect(data.comments[0].author).toBe('alice');
+      expect(data.comments[0].body).toBe('First comment');
+
+      // AI-facing prompt mentions thread and count
+      const prompt = chatPanel._getActiveTab().pendingContext[0];
+      expect(prompt).toContain('thread');
+      expect(prompt).toContain('3 comment');
+      expect(prompt).toContain('GitHub');
+      expect(prompt).toContain('alice');
+      expect(prompt).toContain('First comment');
+
+      // Card rendered
+      expect(chatPanel.messagesEl.appendChild).toHaveBeenCalled();
+      const card = chatPanel.messagesEl.appendChild.mock.calls[0][0];
+      expect(card.className).toContain('chat-panel__context-card--thread');
+      expect(card.className).toContain('external-comment-context');
+      expect(card.className).toContain('source-github');
+      // All three authors present in card markup
+      expect(card.innerHTML).toContain('alice');
+      expect(card.innerHTML).toContain('bob');
+      expect(card.innerHTML).toContain('carol');
+    });
+
+    it('should not crash when comments is empty or missing (defensive)', () => {
+      const threadContext = {
+        rootId: 9,
+        source: 'external',
+        externalSource: 'github',
+        file: 'src/a.js',
+        line_start: 1,
+        line_end: 1,
+        // comments omitted
+      };
+
+      expect(() => chatPanel._sendThreadContextMessage(threadContext)).not.toThrow();
+
+      const data = chatPanel._getActiveTab().pendingContextData[0];
+      expect(data.comments).toEqual([]);
+      const prompt = chatPanel._getActiveTab().pendingContext[0];
+      expect(prompt).toContain('0 comment');
+    });
+
+    it('renders multi-line range anchor as "file:start-end", not just end', () => {
+      // Regression: the card previously appended ":line_end" when both bounds
+      // were set, silently dropping line_start from the displayed anchor.
+      const threadContext = {
+        rootId: 11,
+        source: 'external',
+        externalSource: 'github',
+        file: 'src/app.js',
+        line_start: 10,
+        line_end: 15,
+        comments: [
+          { author: 'a', body: 'b', isOutdated: false, externalUrl: null, externalCreatedAt: null },
+        ],
+      };
+
+      chatPanel._sendThreadContextMessage(threadContext);
+      const card = chatPanel.messagesEl.appendChild.mock.calls[0][0];
+      expect(card.innerHTML).toContain('src/app.js:10-15');
+      expect(card.innerHTML).not.toContain('src/app.js:15');
+    });
+
+    it('renders single-line anchor as "file:line", not "file:line-line"', () => {
+      const threadContext = {
+        rootId: 12,
+        source: 'external',
+        externalSource: 'github',
+        file: 'src/app.js',
+        line_start: 7,
+        line_end: 7,
+        comments: [
+          { author: 'a', body: 'b', isOutdated: false, externalUrl: null, externalCreatedAt: null },
+        ],
+      };
+
+      chatPanel._sendThreadContextMessage(threadContext);
+      const card = chatPanel.messagesEl.appendChild.mock.calls[0][0];
+      expect(card.innerHTML).toContain('src/app.js:7');
+      expect(card.innerHTML).not.toContain('7-7');
+    });
+
+    it('XSS: javascript: externalUrl renders as plain text with no href', () => {
+      // Swap window.renderMarkdown for an escaping stub so a regression
+      // where body escaping is removed in production would still be caught.
+      const origMd = global.window.renderMarkdown;
+      const escaper = (text) => String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+      global.window.renderMarkdown = (text) => `<p>${escaper(text)}</p>`;
+      try {
+        const threadContext = {
+          rootId: 13,
+          source: 'external',
+          externalSource: 'github',
+          file: 'src/app.js',
+          line_start: 1,
+          line_end: 1,
+          comments: [
+            {
+              author: 'alice',
+              body: '<script>alert(1)</script><img src=x onerror=alert(1)>',
+              isOutdated: false,
+              externalUrl: 'javascript:alert(1)',
+              externalCreatedAt: null,
+            },
+          ],
+        };
+
+        chatPanel._sendThreadContextMessage(threadContext);
+        const card = chatPanel.messagesEl.appendChild.mock.calls[0][0];
+
+        // No live <script> tag survives in the rendered HTML.
+        expect(card.innerHTML).not.toMatch(/<script[^>]*>/i);
+        // No live onerror=... attribute survives (the literal pattern would
+        // only ever appear escaped inside text — never as `<tag onerror=...>`).
+        expect(card.innerHTML).not.toMatch(/<[^>]*\sonerror\s*=/i);
+        // No live <img ...> tag — the production code escapes the body, so
+        // the only `<img` substring should be inside escaped text (&lt;img).
+        expect(card.innerHTML).not.toMatch(/<img\b/i);
+        // javascript: URL must NOT appear as an href. Plain-text presence
+        // in escaped text is acceptable, but href="javascript:..." is not.
+        expect(card.innerHTML).not.toMatch(/href=["']javascript:/i);
+        // Author still appears in text.
+        expect(card.innerHTML).toContain('alice');
+      } finally {
+        global.window.renderMarkdown = origMd;
+      }
+    });
+
+    it('should render outdated badge per outdated comment entry', () => {
+      const threadContext = {
+        rootId: 7,
+        source: 'external',
+        externalSource: 'github',
+        file: 'src/app.js',
+        line_start: null,
+        line_end: null,
+        comments: [
+          { author: 'alice', body: 'A', isOutdated: true, externalUrl: null, externalCreatedAt: null },
+          { author: 'bob', body: 'B', isOutdated: false, externalUrl: null, externalCreatedAt: null },
+          { author: 'carol', body: 'C', isOutdated: true, externalUrl: null, externalCreatedAt: null },
+        ],
+      };
+
+      chatPanel._sendThreadContextMessage(threadContext);
+
+      const card = chatPanel.messagesEl.appendChild.mock.calls[0][0];
+      // The "outdated" badge text should appear twice (for alice and carol)
+      const matches = card.innerHTML.match(/outdated/g) || [];
+      expect(matches.length).toBeGreaterThanOrEqual(2);
+    });
   });
 
   // -----------------------------------------------------------------------

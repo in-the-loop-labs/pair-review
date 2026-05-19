@@ -31,6 +31,7 @@
   - [Customization](#customization)
   - [Review Feedback Export](#review-feedback-export)
   - [Inline Comments](#inline-comments)
+  - [GitHub Review Comments](#github-review-comments)
   - [Comment Format](#comment-format)
   - [Local Mode](#local-mode)
 - [Claude Code Plugins](#claude-code-plugins)
@@ -514,6 +515,20 @@ The markdown includes file paths, line numbers, and your comments - everything t
 - See all comments in context with the diff
 - Edit or discard AI suggestions before finalizing
 - Comments include file and line number for precision
+
+### GitHub Review Comments
+
+When reviewing a PR, pair-review fetches existing inline review comments from GitHub and shows them in the diff alongside AI suggestions (orange) and your own draft comments (purple). External comments render as read-only blue-themed bubbles, with threads preserved (root plus replies). Each comment and each thread has a "Chat about this" button that opens the AI chat panel with the comment as context, so you can quickly ask the agent to investigate, explain, or draft a response.
+
+Sync runs automatically when the PR page loads (non-blocking) and on demand via a refresh button — there's no need to reload the page to pick up new comments.
+
+**Current scope:**
+
+- **Read-only.** No reply, resolve, or adopt actions in this iteration — pair-review surfaces the conversation but doesn't write back to GitHub from these bubbles. Use your usual GitHub workflow to reply or resolve.
+- **Inline (line-anchored) comments only.** The PR conversation tab (general issue comments) is not included.
+- **Outdated comments are kept.** If later commits removed the anchor line, the comment renders at its original location with an "outdated" badge so historical context isn't lost.
+- **No dedup of your own comments yet.** If you submitted a review from pair-review and later replied via the GitHub web UI, those replies may appear in the list under your GitHub username. Deduplication of pair-review-originated comments is on the roadmap.
+- **GitHub only, PR mode only.** The fetcher is built on an adapter pattern in `src/external/` so additional sources (GitLab, Linear, etc.) can be added later, but GitHub is the only supported source today. Local mode reviews don't fetch external comments.
 
 ### Comment Format
 
