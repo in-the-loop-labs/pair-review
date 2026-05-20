@@ -213,28 +213,26 @@ Each phase is independently testable, ships independently, and leaves the app in
 - **Cache hashing**: `content_hash` keys per-review (`UNIQUE(review_id, content_hash)`). Within a review, surrounding-code drift can produce stale-but-served summaries — acceptable for v1 ("summaries lag mid-flight"). Cross-review collision is prevented by the per-review key. Hash is over hunk content + path; we do not widen it to surrounding code.
 
 ### Tour prompt contract (`src/ai/prompts/tour.js`)
-- **Input shape**:
-  ```
-  PR title / local-review name
-  PR description (or empty)
-  Summaries by file (in repo order):
-    File: <path>
-      [hash]: <summary>
-      [hash]: <summary>
-  ```
+
+> **Diverged from plan (commit `fde90bb4`)**: tours were decoupled from summaries. The prompt no longer consumes summary text and stops are anchored on diff line ranges instead of content hashes.
+
+- **Input shape**: the agent receives the raw diff plus an FS-access invitation and worktree path; it explores via `git-diff-lines` and read-only shell tools rather than reading pre-computed summaries.
 - **Output JSON schema**:
   ```json
   { "stops": [
       {
         "file_path": "src/foo.ts",
-        "content_hash": "abc...",
+        "side": "right",
+        "line_start": 42,
+        "line_end": 58,
         "title": "<<= 60 chars>>",
         "description": "<<= 280 chars>>"
       }
   ] }
   ```
-  Stops are non-linear; the model orders them as a coherent narrative. Length: 3–10 stops; reject and retry once if outside bounds. Validate every `content_hash` is in the input set; drop and warn on mismatch.
+  Stops are non-linear; the model orders them as a coherent narrative. Length: 3–10 stops. Validator (`validateStop` in `src/ai/tour-generator.js`) drops stops whose `[line_start, line_end]` range does not intersect the diff's changed-line set for that file/side. The frontend renderer scans forward within `[line_start, line_end]` when the exact `line_start` row is absent, preserving context-adjacent stops.
 - **Length constraints**: title 60 chars, description 280 chars. Strictly linear navigation in v1.
+- **Dropped from v1**: `is_context: true` was specified to let stops point at unchanged code; this was removed when tours were decoupled from summaries.
 
 ---
 
@@ -269,7 +267,7 @@ New keys in `~/.pair-review/config.json`:
 
 - `summaries_enabled` — when `false`, no summary jobs enqueued, no summary endpoints called, no toolbar/file/hunk toggles rendered. Feature is *completely hidden*.
 - `tours_enabled` — when `false`, no tour jobs enqueued, no Start Tour button, no tour endpoint calls. Feature is completely hidden.
-- Tours depend on summaries. If `tours_enabled=true` but `summaries_enabled=false`, log a warning at startup and treat tours as disabled.
+- **Diverged (commit `fde90bb4`)**: tours are independent of summaries. The original plan made tours depend on `summaries_enabled`; the shipped implementation decoupled them on both server (`kickOffTourJob` checks only `tours_enabled`) and client (`_toursEnabled` mirrors only `tours_enabled`). Users can run tours without summaries.
 
 **Provider resolution** (`getSummaryProvider` / `getSummaryModel` in `src/config.js`):
 
@@ -277,7 +275,7 @@ New keys in `~/.pair-review/config.json`:
 2. Else fall back to `default_provider` (existing users get *some* working behavior).
 3. For `summary_model`:
    1. If `summary_model` set → use it.
-   2. Else, if the resolved provider has a `fast`-tier model (via `provider.getFastTierModel()`), use that.
+   2. Else, if the resolved provider class exposes a `fast`-tier model (`providerClass.getModels().find(m => m.tier === 'fast')`), use that.
    3. Else fall back to `default_model`.
 
 Rationale: fast-tier fallback is the right default — summaries / tours are bulk text-summarization tasks where speed dominates. Explicit override exists for users who want a specific model.
@@ -333,10 +331,21 @@ When trivial, persist a row with `summary_text = NULL` (or sentinel `__TRIVIAL__
 1. **Trivial-hunk persistence**: persist with sentinel; skipped uniformly via missing-hash query.
 2. **Tour stop annotation placement**: above existing comments/suggestions/summary on the same hunk — visual anchor on scroll.
 3. **Summaries-hidden toggle persistence**: per-review in `localStorage` keyed by `reviewId`. Good enough for most users.
-4. **Stale tour**: show the old tour with a "regenerating…" badge — stale beats nothing.
+4. **Stale tour**: show the old tour with a "regenerating…" badge — stale beats nothing. *(Deferred — see "Deferred Work" below. Shipped behavior: silently stash fresh stops into `_tourStopsPendingRestart` and apply on next exit/restart.)*
 5. **Concurrency**: hardcoded constant (2). No config key.
 6. **PR-mode file cap**: default 50, configurable via `summaries_max_files`. Skip + surface a notice for larger diffs.
 7. **Missing background provider**: log once per review at `info`, then silently no-op.
 8. **Tour keyboard shortcuts**: scoped to `body.tour-active` to avoid collisions.
 
 **Feature gating (added)**: both features default `false` in config. When disabled, completely hidden — no enqueue, no endpoints, no UI affordances.
+
+---
+
+## Deferred Work
+
+Items from the original plan that were intentionally not shipped in this branch. Recorded here so a future pass can pick them up.
+
+- **Stale-tour "regenerating…" badge** (Resolved Decision #4). The shipped path silently stashes refreshed stops into `_tourStopsPendingRestart` and applies them on next exit/restart. Users have no visible indicator that a regenerated tour is queued. Adding the badge would require: (a) a new `_tourStopsPendingRestart`-aware UI affordance in `public/js/components/TourBar.js`, and (b) a way to surface it both when the tour bar is visible (mid-tour) and when only the toolbar pulse is showing.
+- **Icon SVG dedup** (Icon Vocabulary impl note). The `note` octicon path is duplicated between `public/js/modules/hunk-summary-renderer.js` and `public/js/pr.js`; `TourBar.js` factors its own `milestone`/`location` paths locally without sharing. Create `public/js/modules/icons.js` exporting the three path constants (`NOTE_PATH`, `MILESTONE_PATH`, `LOCATION_PATH`) and import from all three consumers. Add HTML script tags in `public/pr.html` and `public/local.html` before the consumers.
+- **Integration tests for summaries** (Tests new). `tests/integration/pr-summaries.test.js` and `tests/integration/local-summaries.test.js` were never written. Unit coverage exists for `summary-generator`, `hunk-summary-repository`, and `hunk-hashing`, but there is no end-to-end test that exercises trigger → enqueue → persist → WS broadcast through real Express + SQLite. Mirror the structure of `tests/integration/tour-generation.test.js` (which does exist for tours).
+- **Per-hunk dismiss "x"** (Phase 5). Not pursued — review-level and per-file toggles cover the primary use case. Per-hunk granularity adds storage shape (`localStorage` keyed on `reviewId:hash`), a renderer button, and a `PRManager.dismissHunkSummary(hash)` method without obvious user demand. Revisit only if users ask for it.
