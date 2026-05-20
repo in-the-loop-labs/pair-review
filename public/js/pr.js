@@ -169,9 +169,8 @@ class PRManager {
     this._tourBar = null;
     this._tourRenderer = null;
     // Tri-state mirror of `tours_enabled` in /api/config. Tours are
-    // intentionally decoupled from summaries here (the server still gates
-    // tour generation on the summaries dependency); see the explanatory
-    // comment in setupEventHandlers().
+    // independent of summaries on both the server and the client (see
+    // the explanatory comment in setupEventHandlers()).
     this._toursEnabled = null;
     // Cached stops from the most recent /api/reviews/:id/tour fetch, or null
     // when nothing has been loaded for this review yet.
@@ -387,8 +386,8 @@ class PRManager {
 
     // Tour toolbar toggle (Phase 8). Hidden by default in HTML; revealed
     // asynchronously once /api/config confirms `tours_enabled` is on.
-    // The server gates tour generation on the `summaries_enabled` dependency
-    // already, so we do NOT couple visibility to summaries here.
+    // Tours are independent of `summaries_enabled` — both server- and
+    // client-side gates check only `tours_enabled`.
     const tourToggle = document.getElementById('tour-toggle-btn');
     if (tourToggle) {
       tourToggle.addEventListener('click', () => this.startOrToggleTour());
