@@ -443,13 +443,6 @@ class ExternalCommentManager {
       threadEl.appendChild(replyEl);
     }
 
-    // Thread-level action: chat about whole thread
-    const threadActions = document.createElement('div');
-    threadActions.className = 'external-comment-actions external-comment-thread-actions';
-    const chatThreadBtn = this._buildChatThreadButton(thread);
-    threadActions.appendChild(chatThreadBtn);
-    threadEl.appendChild(threadActions);
-
     td.appendChild(threadEl);
     tr.appendChild(td);
     return tr;
@@ -533,7 +526,14 @@ class ExternalCommentManager {
 
     header.appendChild(headerLeft);
 
-    // Permalink (right side of header) — drop when URL fails the safety check.
+    // Right side of header: chat-about + permalink, mirroring the
+    // header-right layout used by user comments and AI suggestions.
+    const headerRight = document.createElement('div');
+    headerRight.className = 'external-comment-header-right';
+
+    const chatBtn = this._buildChatCommentButton(comment, { isReply });
+    headerRight.appendChild(chatBtn);
+
     if (comment.external_url && this._isSafeUrl(comment.external_url)) {
       const link = document.createElement('a');
       link.className = 'external-comment-permalink';
@@ -542,9 +542,10 @@ class ExternalCommentManager {
       link.rel = 'noopener noreferrer';
       link.title = 'Open in source system';
       link.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M7.75 2.5a.75.75 0 0 0 0 1.5h2.69L5.22 9.22a.75.75 0 1 0 1.06 1.06L11.5 5.06v2.69a.75.75 0 0 0 1.5 0v-4.5a.75.75 0 0 0-.75-.75ZM3.75 3A1.75 1.75 0 0 0 2 4.75v7.5C2 13.216 2.784 14 3.75 14h7.5A1.75 1.75 0 0 0 13 12.25v-3.5a.75.75 0 0 0-1.5 0v3.5a.25.25 0 0 1-.25.25h-7.5a.25.25 0 0 1-.25-.25v-7.5a.25.25 0 0 1 .25-.25h3.5a.75.75 0 0 0 0-1.5Z"/></svg>';
-      header.appendChild(link);
+      headerRight.appendChild(link);
     }
 
+    header.appendChild(headerRight);
     el.appendChild(header);
 
     // ---- Body ----
@@ -558,51 +559,29 @@ class ExternalCommentManager {
     }
     el.appendChild(body);
 
-    // ---- Actions ----
-    const actions = document.createElement('div');
-    actions.className = 'external-comment-actions';
-    const chatBtn = this._buildChatCommentButton(comment);
-    actions.appendChild(chatBtn);
-    el.appendChild(actions);
-
     return el;
   }
 
   /**
-   * Build the per-comment "Chat about this comment" button.
+   * Build the per-comment chat button.
+   * - On the thread root (`isReply: false`), chats about the whole thread.
+   * - On a reply, chats about just that reply.
    * @private
    */
-  _buildChatCommentButton(comment) {
+  _buildChatCommentButton(comment, { isReply } = {}) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'btn-chat-comment external-comment-chat-btn';
-    btn.title = 'Chat about this comment';
+    btn.title = isReply ? 'Chat about this comment' : 'Chat about thread';
     btn.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/></svg>';
 
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      this._openCommentChat(comment);
-    });
-    return btn;
-  }
-
-  /**
-   * Build the per-thread "Chat about this thread" button.
-   * @private
-   */
-  _buildChatThreadButton(thread) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'btn-chat-thread external-comment-chat-thread-btn';
-    btn.title = 'Chat about this thread';
-    // Stacked-bubbles glyph: two overlapping chat bubbles. Visually distinct
-    // from the single-bubble chat-comment button so the reviewer can tell
-    // "chat about THIS comment" apart from "chat about WHOLE thread".
-    btn.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/></svg> Chat about thread';
-
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      this._openThreadChat(thread);
+      if (isReply) {
+        this._openCommentChat(comment);
+      } else {
+        this._openThreadChat(comment);
+      }
     });
     return btn;
   }
