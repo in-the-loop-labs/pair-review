@@ -118,6 +118,9 @@ function getChatProvider(id) {
     };
     if (overrides.model) provider.model = overrides.model;
     if (overrides.provider) provider.provider = overrides.provider;
+    if (overrides.availability_command !== undefined) {
+      provider.availability_command = overrides.availability_command;
+    }
     if (overrides.extra_args && Array.isArray(overrides.extra_args)) {
       provider.args = [...provider.args, ...overrides.extra_args];
     }
@@ -136,6 +139,9 @@ function getChatProvider(id) {
   if (overrides.command) merged.command = overrides.command;
   if (overrides.model) merged.model = overrides.model;
   if (overrides.provider) merged.provider = overrides.provider;
+  if (overrides.availability_command !== undefined) {
+    merged.availability_command = overrides.availability_command;
+  }
   if (overrides.env) merged.env = { ...merged.env, ...overrides.env };
   if (overrides.args) {
     merged.args = overrides.args;
@@ -197,8 +203,10 @@ function isCodexProvider(id) {
 
 /**
  * Check availability of a single chat provider.
- * For Pi, delegates to the existing AI provider availability cache.
- * For ACP providers, spawns `<command> --version` to verify the binary exists.
+ * Providers with `availability_command` run that command first.
+ * Without an availability command, Pi delegates to the existing AI provider
+ * availability cache and other providers spawn `<command> --version` to verify
+ * the binary exists.
  * @param {string} id - Provider ID
  * @param {Object} [_deps] - Dependency overrides for testing
  * @returns {Promise<{available: boolean, error?: string}>}
@@ -207,6 +215,19 @@ async function checkChatProviderAvailability(id, _deps) {
   const provider = getChatProvider(id);
   if (!provider) {
     return { available: false, error: `Unknown provider: ${id}` };
+  }
+
+  const deps = { ...defaults, ..._deps };
+
+  if (provider.availability_command) {
+    return runCommandAvailabilityCheck({
+      deps,
+      command: provider.availability_command,
+      args: [],
+      displayCommand: 'availability command',
+      shell: true,
+      env: provider.env,
+    });
   }
 
   // Pi delegates to existing AI provider availability
@@ -218,30 +239,61 @@ async function checkChatProviderAvailability(id, _deps) {
   // Codex uses the same binary-check pattern as ACP providers
   // (falls through to the spawn check below)
 
-  const deps = { ...defaults, ..._deps };
   const command = provider.command;
   const useShell = provider.useShell || false;
 
+  // For multi-word commands, use shell mode
+  const spawnCmd = useShell ? `${command} --version` : command;
+  const spawnArgs = useShell ? [] : ['--version'];
+  return runCommandAvailabilityCheck({
+    deps,
+    command: spawnCmd,
+    args: spawnArgs,
+    displayCommand: `${command} --version`,
+    shell: useShell,
+    env: provider.env,
+  });
+}
+
+/**
+ * Spawn a command and resolve based on its exit status. Shared by the
+ * configured `availability_command` path and the legacy `<command> --version`
+ * fallback.
+ *
+ * Notes on the option choices:
+ * - `stdio: ['ignore', 'ignore', 'ignore']` discards output so a verbose probe
+ *   cannot fill an OS pipe buffer and block while waiting for a reader.
+ * - `shell: true` allows multi-word configured commands to run through the
+ *   user's shell.
+ * - `once()` avoids leaking listeners or resolving twice if multiple child
+ *   process events fire.
+ * - `displayCommand` is used in error messages so user-configured shell strings
+ *   do not need to be printed verbatim.
+ *
+ * @param {{deps: {spawn: Function}, command: string, args: string[], displayCommand: string, shell: boolean, env?: Object}} opts
+ * @returns {Promise<{available: boolean, error?: string}>}
+ */
+function runCommandAvailabilityCheck({ deps, command, args, displayCommand, shell, env }) {
   return new Promise((resolve) => {
     try {
-      // For multi-word commands, use shell mode
-      const spawnCmd = useShell ? `${command} --version` : command;
-      const spawnArgs = useShell ? [] : ['--version'];
-      const proc = deps.spawn(spawnCmd, spawnArgs, {
-        stdio: ['ignore', 'pipe', 'pipe'],
+      const proc = deps.spawn(command, args, {
+        stdio: ['ignore', 'ignore', 'ignore'],
         timeout: 10000,
-        shell: useShell,
+        shell,
+        env: { ...process.env, ...(env || {}) },
       });
 
-      proc.on('error', (err) => {
+      proc.once('error', (err) => {
         resolve({ available: false, error: err.message });
       });
 
-      proc.on('close', (code) => {
+      proc.once('close', (code, signal) => {
         if (code === 0) {
           resolve({ available: true });
+        } else if (signal) {
+          resolve({ available: false, error: `${displayCommand} timed out or was terminated (${signal})` });
         } else {
-          resolve({ available: false, error: `${command} --version exited with code ${code}` });
+          resolve({ available: false, error: `${displayCommand} exited with code ${code}` });
         }
       });
     } catch (err) {
