@@ -21,7 +21,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 46;
+const CURRENT_SCHEMA_VERSION = 48;
 
 /**
  * Database schema SQL statements
@@ -1920,8 +1920,8 @@ const MIGRATIONS = {
     console.log('Migration to schema version 44 complete');
   },
 
-  45: (db) => {
-    console.log('Running migration to schema version 45: Add hunk_summaries table...');
+  47: (db) => {
+    console.log('Running migration to schema version 47: Add hunk_summaries table...');
     if (!tableExists(db, 'hunk_summaries')) {
       db.exec(`
         CREATE TABLE IF NOT EXISTS hunk_summaries (
@@ -1944,11 +1944,11 @@ const MIGRATIONS = {
       console.log('  Table hunk_summaries already exists');
     }
     db.exec('CREATE INDEX IF NOT EXISTS idx_hunk_summaries_review ON hunk_summaries(review_id)');
-    console.log('Migration to schema version 45 complete');
+    console.log('Migration to schema version 47 complete');
   },
 
-  46: (db) => {
-    console.log('Running migration to schema version 46: Add tours table...');
+  48: (db) => {
+    console.log('Running migration to schema version 48: Add tours table...');
     if (!tableExists(db, 'tours')) {
       db.exec(`
         CREATE TABLE IF NOT EXISTS tours (
@@ -1966,7 +1966,7 @@ const MIGRATIONS = {
     } else {
       console.log('  Table tours already exists');
     }
-    console.log('Migration to schema version 46 complete');
+    console.log('Migration to schema version 48 complete');
   }
 };
 

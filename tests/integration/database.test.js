@@ -3000,7 +3000,7 @@ describe('Migration 45 - hunk_summaries table', () => {
   let db;
 
   // Create a DB at version 44 with the parent reviews table needed for FK
-  function createPreMigration45Database() {
+  function createPreMigration47Database() {
     const Database = require('better-sqlite3');
     const testDb = new Database(':memory:');
     testDb.pragma('journal_mode = WAL');
@@ -3016,7 +3016,7 @@ describe('Migration 45 - hunk_summaries table', () => {
       )
     `);
 
-    testDb.pragma('user_version = 44');
+    testDb.pragma('user_version = 46');
     return testDb;
   }
 
@@ -3038,10 +3038,10 @@ describe('Migration 45 - hunk_summaries table', () => {
   });
 
   it('creates the hunk_summaries table and lookup index', () => {
-    db = createPreMigration45Database();
+    db = createPreMigration47Database();
     expect(tableExistsHelper(db, 'hunk_summaries')).toBe(false);
 
-    MIGRATIONS[45](db);
+    MIGRATIONS[47](db);
 
     expect(tableExistsHelper(db, 'hunk_summaries')).toBe(true);
     expect(indexExists(db, 'idx_hunk_summaries_review')).toBe(true);
@@ -3055,8 +3055,8 @@ describe('Migration 45 - hunk_summaries table', () => {
   });
 
   it('enforces UNIQUE (review_id, content_hash)', () => {
-    db = createPreMigration45Database();
-    MIGRATIONS[45](db);
+    db = createPreMigration47Database();
+    MIGRATIONS[47](db);
 
     db.prepare(`INSERT INTO reviews (id, pr_number, repository) VALUES (1, 1, 'owner/repo')`).run();
     db.prepare(`INSERT INTO hunk_summaries (review_id, file_path, content_hash, summary_text) VALUES (1, 'a.js', 'h1', 's1')`).run();
@@ -3067,13 +3067,13 @@ describe('Migration 45 - hunk_summaries table', () => {
   });
 
   it('is idempotent — running twice does not throw or duplicate the index', () => {
-    db = createPreMigration45Database();
+    db = createPreMigration47Database();
 
-    MIGRATIONS[45](db);
+    MIGRATIONS[47](db);
     expect(tableExistsHelper(db, 'hunk_summaries')).toBe(true);
 
     // Second run must not throw
-    expect(() => MIGRATIONS[45](db)).not.toThrow();
+    expect(() => MIGRATIONS[47](db)).not.toThrow();
 
     expect(tableExistsHelper(db, 'hunk_summaries')).toBe(true);
     const indexRows = db.prepare(
@@ -3082,8 +3082,8 @@ describe('Migration 45 - hunk_summaries table', () => {
     expect(indexRows).toHaveLength(1);
   });
 
-  it('CURRENT_SCHEMA_VERSION reaches 45 via runVersionedMigrations', () => {
+  it('CURRENT_SCHEMA_VERSION reaches 47 via runVersionedMigrations', () => {
     const { CURRENT_SCHEMA_VERSION } = require('../../src/database');
-    expect(CURRENT_SCHEMA_VERSION).toBeGreaterThanOrEqual(45);
+    expect(CURRENT_SCHEMA_VERSION).toBeGreaterThanOrEqual(47);
   });
 });

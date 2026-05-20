@@ -46,9 +46,9 @@ Each phase is independently testable, ships independently, and leaves the app in
 - No behavior change yet beyond making the values available.
 
 ### Phase 2 — Summary storage + migration
-- Bump `CURRENT_SCHEMA_VERSION` from 44 → 45 in `src/database.js`.
+- Bump `CURRENT_SCHEMA_VERSION` to 47 in `src/database.js` (44 → 47; 45 and 46 are reserved for a concurrent branch).
 - Add `hunk_summaries` table to `SCHEMA_SQL` and corresponding indexes to `INDEX_SQL`.
-- Add migration 45 that creates the table + indexes idempotently (mirror existing migration patterns: column/table existence checks, exception-safe try/catch).
+- Add migration 47 that creates the table + indexes idempotently (mirror existing migration patterns: column/table existence checks, exception-safe try/catch).
 - Add `HunkSummaryRepository` to `src/database.js` with `getByReview(reviewId)`, `getByHashes(reviewId, hashes)`, `upsertMany(rows)`, `deleteByReview(reviewId)`.
 - Update test schema mirrors:
   - `tests/e2e/global-setup.js`
@@ -101,7 +101,7 @@ Each phase is independently testable, ships independently, and leaves the app in
   - E2E test covering: load a review, summaries render after WS event, toggle hides them, dismiss hides one.
 
 ### Phase 6 — Tour storage
-- Migration 46: add `tours` table.
+- Migration 48: add `tours` table.
   - Columns: `review_id INTEGER PRIMARY KEY REFERENCES reviews(id) ON DELETE CASCADE`, `stops TEXT NOT NULL` (JSON array), `hash_set TEXT NOT NULL` (sorted JSON array of constituent hunk hashes), `provider TEXT`, `model TEXT`, `created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`.
 - Add `TourRepository` to `src/database.js` with `get(reviewId)`, `upsert(row)`, `deleteByReview(reviewId)`.
 - Update test schema mirrors (e2e + integration).
@@ -145,7 +145,7 @@ Each phase is independently testable, ships independently, and leaves the app in
 
 ### Backend (modified)
 - `src/config.js` — add `summary_provider`/`summary_model`/`background_concurrency` to `DEFAULT_CONFIG`; export `getSummaryProvider`, `getSummaryModel`.
-- `src/database.js` — bump `CURRENT_SCHEMA_VERSION` to 46; add `hunk_summaries` + `tours` to `SCHEMA_SQL`; add migrations 45 and 46; add indexes; add `HunkSummaryRepository` and `TourRepository`; export both.
+- `src/database.js` — bump `CURRENT_SCHEMA_VERSION` to 48; add `hunk_summaries` + `tours` to `SCHEMA_SQL`; add migrations 47 and 48; add indexes; add `HunkSummaryRepository` and `TourRepository`; export both. Migration numbers 45 and 46 are reserved for a concurrent branch.
 - `src/local-review.js` — after diff persistence in CLI start path, enqueue `summaries` job. Resolve background config via deps from caller; do NOT re-read config.
 - `src/routes/local.js` — same enqueue at end of `POST /api/local/start` and in `GET /api/local/:reviewId`.
 - `src/routes/pr.js` — same enqueue at end of `GET /api/pr/:owner/:repo/:number`.
