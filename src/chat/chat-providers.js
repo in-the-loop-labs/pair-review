@@ -270,7 +270,7 @@ async function checkChatProviderAvailability(id, _deps) {
  * - `displayCommand` is used in error messages so user-configured shell strings
  *   do not need to be printed verbatim.
  *
- * @param {{deps: {spawn: Function}, command: string, args: string[], displayCommand: string, shell: boolean, env?: Record<string, string>}} opts
+ * @param {{deps: {spawn: Function}, command: string, args: string[], displayCommand: string, shell: boolean, env?: Object}} opts
  * @returns {Promise<{available: boolean, error?: string}>}
  */
 function runCommandAvailabilityCheck({ deps, command, args, displayCommand, shell, env }) {

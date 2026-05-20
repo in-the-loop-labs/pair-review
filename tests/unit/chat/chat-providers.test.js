@@ -606,6 +606,30 @@ describe('chat-providers', () => {
         CUSTOM_VAR: 'value',
       });
     });
+
+    it('should pass merged env including parent process env and provider env override to availability_command spawn', async () => {
+      applyConfigOverrides({
+        'custom-chat': {
+          command: 'custom-chat',
+          availability_command: 'true',
+          env: { CUSTOM_API_KEY: 'secret' },
+        },
+      });
+
+      const { EventEmitter } = require('events');
+      const fakeProc = new EventEmitter();
+      const mockSpawn = vi.fn().mockReturnValue(fakeProc);
+
+      const promise = checkChatProviderAvailability('custom-chat', { spawn: mockSpawn });
+      fakeProc.emit('close', 0);
+      await promise;
+
+      const spawnOpts = mockSpawn.mock.calls[0][2];
+      expect(spawnOpts.env).toMatchObject({
+        ...process.env,
+        CUSTOM_API_KEY: 'secret',
+      });
+    });
   });
 
   describe('checkAllChatProviders', () => {
