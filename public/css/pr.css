@@ -4722,14 +4722,11 @@ tr.line-range-start .d2h-code-line-ctn {
   border-left: 4px solid var(--ec-primary);
   border-radius: 6px;
   padding: 8px 10px;
-  margin: 6px auto;
+  margin: 0;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
   position: relative;
   overflow: hidden;
   word-break: break-word;
-  /* Match the viewport-based max-width used by .user-comment so external
-     bubbles sit at the same visual width. */
-  max-width: calc(100vw - var(--sidebar-width) - var(--right-panel-group-width, 0px) - 64px);
   box-sizing: border-box;
 }
 
@@ -4844,19 +4841,68 @@ tr.line-range-start .d2h-code-line-ctn {
   padding: 0;
 }
 
-.external-comment-actions {
+.external-comment-body ul,
+.external-comment-body ol {
+  margin: 8px 0;
+  padding-left: 24px;
+}
+
+.external-comment-body li {
+  margin: 4px 0;
+}
+
+.external-comment-body strong {
+  font-weight: 600;
+}
+
+.external-comment-body em {
+  font-style: italic;
+}
+
+.external-comment-body blockquote {
+  border-left: 4px solid var(--color-border-primary);
+  padding-left: 16px;
+  margin: 8px 0;
+  color: var(--color-text-secondary);
+}
+
+.external-comment-header-right {
   display: flex;
   align-items: center;
   gap: 4px;
-  margin-left: auto;
   flex-shrink: 0;
 }
 
-/* Thread = root comment + replies, grouped in one card stack. */
+.external-comment .btn-chat-comment {
+  color: var(--ec-primary);
+}
+
+.external-comment .btn-chat-comment:hover {
+  background: var(--ec-subtle);
+  border-color: var(--ec-border);
+  color: var(--ec-primary);
+}
+
+[data-theme="dark"] .external-comment .btn-chat-comment {
+  color: var(--ec-primary);
+}
+
+[data-theme="dark"] .external-comment .btn-chat-comment:hover {
+  background: var(--ec-subtle);
+  border-color: var(--ec-border);
+  color: var(--ec-primary);
+}
+
+/* Thread = root comment + replies, grouped in one card stack.
+   The thread owns the width constraint so the root, replies, and the
+   thread-actions row all share the same right edge. */
 .external-comment-thread {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  max-width: calc(100vw - var(--sidebar-width) - var(--right-panel-group-width, 0px) - 64px);
+  margin: 6px auto;
+  box-sizing: border-box;
 }
 
 /* One level of indent for replies. GitHub treats threads as
@@ -13371,9 +13417,7 @@ body.resizing * {
 [data-chat="disabled"] .btn-collapsed-chat,
 [data-chat="disabled"] .finding-chat-action,
 [data-chat="disabled"] .btn-chat-comment,
-[data-chat="disabled"] .btn-chat-thread,
 [data-chat="disabled"] .external-comment-chat-btn,
-[data-chat="disabled"] .external-comment-chat-thread-btn,
 [data-chat="disabled"] .analysis-history-chat-btn,
 [data-chat="disabled"] .chat-line-btn,
 [data-chat="disabled"] .btn-chat-from-comment {
@@ -13388,9 +13432,7 @@ body.resizing * {
 [data-chat="unavailable"] .btn-collapsed-chat,
 [data-chat="unavailable"] .finding-chat-action,
 [data-chat="unavailable"] .btn-chat-comment,
-[data-chat="unavailable"] .btn-chat-thread,
 [data-chat="unavailable"] .external-comment-chat-btn,
-[data-chat="unavailable"] .external-comment-chat-thread-btn,
 [data-chat="unavailable"] .analysis-history-chat-btn,
 [data-chat="unavailable"] .chat-line-btn,
 [data-chat="unavailable"] .btn-chat-from-comment {

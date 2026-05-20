@@ -296,10 +296,10 @@ test.describe('External comments: chat about a single comment', () => {
     await enableChat(page);
     await waitForExternalRowsRendered(page);
 
-    // Click the per-comment chat-about button on the root.
-    // (The reply also has one; we click the first which is the root.)
+    // Click the per-comment chat-about button on a reply. (The root's
+    // button opens a thread chat; only replies open a single-comment chat.)
     const chatBtn = page.locator(
-      '.external-comment-row .external-comment .btn-chat-comment.external-comment-chat-btn'
+      '.external-comment-row .external-comment.is-reply .btn-chat-comment.external-comment-chat-btn'
     ).first();
     await expect(chatBtn).toBeVisible();
     await chatBtn.click();
@@ -316,9 +316,9 @@ test.describe('External comments: chat about a single comment', () => {
     );
     await expect(contextCard).toBeVisible();
 
-    // Author and a fragment of the body should be visible in the card
-    await expect(contextCard).toContainText('reviewer-alice');
-    await expect(contextCard).toContainText('Should this be');
+    // Author and a fragment of the reply body should be visible in the card
+    await expect(contextCard).toContainText('reviewer-bob');
+    await expect(contextCard).toContainText('Good catch');
 
     // Do NOT send a message — that would require running an AI provider.
   });
@@ -337,10 +337,11 @@ test.describe('External comments: chat about thread', () => {
     await enableChat(page);
     await waitForExternalRowsRendered(page);
 
-    // Click the thread-level chat-about button
+    // The thread root's chat button opens a chat about the whole thread.
+    // (`.first()` skips reply buttons.)
     const threadBtn = page.locator(
-      '.external-comment-row .external-comment-thread-actions .btn-chat-thread'
-    );
+      '.external-comment-row .external-comment:not(.is-reply) .btn-chat-comment.external-comment-chat-btn'
+    ).first();
     await expect(threadBtn).toBeVisible();
     await threadBtn.click();
 
