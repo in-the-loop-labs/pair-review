@@ -205,6 +205,22 @@ describe('chat-providers', () => {
       expect(provider.command).toBe('my-pi');
     });
 
+    it('should pass through availability_command for dynamic providers', () => {
+      applyConfigOverrides({
+        'river': { type: 'pi', command: 'my-pi', availability_command: 'true' },
+      });
+      const provider = getChatProvider('river');
+      expect(provider.availability_command).toBe('true');
+    });
+
+    it('should pass through availability_command from config overrides for built-in providers', () => {
+      applyConfigOverrides({
+        'pi': { availability_command: 'devx pi --version' },
+      });
+      const provider = getChatProvider('pi');
+      expect(provider.availability_command).toBe('devx pi --version');
+    });
+
     it('should pass through load_skills from config overrides for built-in providers', () => {
       applyConfigOverrides({
         'pi': { load_skills: false },
@@ -439,6 +455,180 @@ describe('chat-providers', () => {
 
       // With shell mode, command is joined with args
       expect(mockSpawn).toHaveBeenCalledWith('devx claude --version', [], expect.objectContaining({ shell: true }));
+    });
+
+    it('should use availability_command for dynamic providers', async () => {
+      applyConfigOverrides({
+        'custom-chat': { command: 'custom-chat', availability_command: 'true' },
+      });
+
+      const { EventEmitter } = require('events');
+      const fakeProc = new EventEmitter();
+      const mockSpawn = vi.fn().mockReturnValue(fakeProc);
+
+      const promise = checkChatProviderAvailability('custom-chat', { spawn: mockSpawn });
+      fakeProc.emit('close', 0);
+
+      const result = await promise;
+      expect(result).toEqual({ available: true });
+      expect(mockSpawn).toHaveBeenCalledWith('true', [], expect.objectContaining({ shell: true, timeout: 10000 }));
+    });
+
+    it('should not consult cached generic pi availability for pi-typed dynamic providers with availability_command', async () => {
+      applyConfigOverrides({
+        'river-local': { type: 'pi', command: 'tec run //system/river/agent --', availability_command: 'true' },
+      });
+      mockGetCachedAvailability.mockReturnValue({ available: false, error: 'generic pi unavailable' });
+
+      const { EventEmitter } = require('events');
+      const fakeProc = new EventEmitter();
+      const mockSpawn = vi.fn().mockReturnValue(fakeProc);
+
+      const promise = checkChatProviderAvailability('river-local', { spawn: mockSpawn });
+      fakeProc.emit('close', 0);
+
+      const result = await promise;
+      expect(result).toEqual({ available: true });
+      expect(mockGetCachedAvailability).not.toHaveBeenCalled();
+      expect(mockSpawn).toHaveBeenCalledWith('true', [], expect.objectContaining({ shell: true }));
+    });
+
+    it('should use availability_command from built-in provider overrides', async () => {
+      applyConfigOverrides({
+        'claude': { availability_command: 'devx claude doctor' },
+      });
+
+      const { EventEmitter } = require('events');
+      const fakeProc = new EventEmitter();
+      const mockSpawn = vi.fn().mockReturnValue(fakeProc);
+
+      const promise = checkChatProviderAvailability('claude', { spawn: mockSpawn });
+      fakeProc.emit('close', 0);
+
+      const result = await promise;
+      expect(result).toEqual({ available: true });
+      expect(mockSpawn).toHaveBeenCalledWith('devx claude doctor', [], expect.objectContaining({ shell: true }));
+    });
+
+    it('should return unavailable when availability_command exits non-zero', async () => {
+      applyConfigOverrides({
+        'custom-chat': { command: 'custom-chat', availability_command: 'false' },
+      });
+
+      const { EventEmitter } = require('events');
+      const fakeProc = new EventEmitter();
+      const mockSpawn = vi.fn().mockReturnValue(fakeProc);
+
+      const promise = checkChatProviderAvailability('custom-chat', { spawn: mockSpawn });
+      fakeProc.emit('close', 1);
+
+      const result = await promise;
+      expect(result.available).toBe(false);
+      expect(result.error).toContain('availability command exited with code 1');
+      expect(result.error).not.toContain('false');
+    });
+
+    it('should return unavailable when availability_command spawn errors', async () => {
+      applyConfigOverrides({
+        'custom-chat': { command: 'custom-chat', availability_command: 'custom doctor' },
+      });
+
+      const { EventEmitter } = require('events');
+      const fakeProc = new EventEmitter();
+      const mockSpawn = vi.fn().mockReturnValue(fakeProc);
+
+      const promise = checkChatProviderAvailability('custom-chat', { spawn: mockSpawn });
+      fakeProc.emit('error', new Error('spawn failed'));
+
+      const result = await promise;
+      expect(result).toEqual({ available: false, error: 'spawn failed' });
+    });
+
+    it('should return unavailable when availability_command times out', async () => {
+      applyConfigOverrides({
+        'custom-chat': { command: 'custom-chat', availability_command: 'sleep 30' },
+      });
+
+      const { EventEmitter } = require('events');
+      const fakeProc = new EventEmitter();
+      const mockSpawn = vi.fn().mockReturnValue(fakeProc);
+
+      const promise = checkChatProviderAvailability('custom-chat', { spawn: mockSpawn });
+      fakeProc.emit('close', null, 'SIGTERM');
+
+      const result = await promise;
+      expect(result.available).toBe(false);
+      expect(result.error).toContain('availability command timed out or was terminated (SIGTERM)');
+      expect(result.error).not.toContain('sleep 30');
+      expect(mockSpawn).toHaveBeenCalledWith('sleep 30', [], expect.objectContaining({ timeout: 10000 }));
+    });
+
+    it('should merge provider.env over process.env when running availability_command', async () => {
+      applyConfigOverrides({
+        'custom-chat': {
+          command: 'custom-chat',
+          availability_command: 'true',
+          env: { CUSTOM_VAR: 'value' },
+        },
+      });
+
+      const { EventEmitter } = require('events');
+      const fakeProc = new EventEmitter();
+      const mockSpawn = vi.fn().mockReturnValue(fakeProc);
+
+      const promise = checkChatProviderAvailability('custom-chat', { spawn: mockSpawn });
+      fakeProc.emit('close', 0);
+      await promise;
+
+      const spawnOpts = mockSpawn.mock.calls[0][2];
+      expect(spawnOpts.env).toMatchObject({
+        ...process.env,
+        CUSTOM_VAR: 'value',
+      });
+    });
+
+    it('should merge provider.env over process.env when running --version probe', async () => {
+      applyConfigOverrides({
+        'copilot-acp': { env: { CUSTOM_VAR: 'value' } },
+      });
+
+      const { EventEmitter } = require('events');
+      const fakeProc = new EventEmitter();
+      const mockSpawn = vi.fn().mockReturnValue(fakeProc);
+
+      const promise = checkChatProviderAvailability('copilot-acp', { spawn: mockSpawn });
+      fakeProc.emit('close', 0);
+      await promise;
+
+      const spawnOpts = mockSpawn.mock.calls[0][2];
+      expect(spawnOpts.env).toMatchObject({
+        ...process.env,
+        CUSTOM_VAR: 'value',
+      });
+    });
+
+    it('should pass merged env including parent process env and provider env override to availability_command spawn', async () => {
+      applyConfigOverrides({
+        'custom-chat': {
+          command: 'custom-chat',
+          availability_command: 'true',
+          env: { CUSTOM_API_KEY: 'secret' },
+        },
+      });
+
+      const { EventEmitter } = require('events');
+      const fakeProc = new EventEmitter();
+      const mockSpawn = vi.fn().mockReturnValue(fakeProc);
+
+      const promise = checkChatProviderAvailability('custom-chat', { spawn: mockSpawn });
+      fakeProc.emit('close', 0);
+      await promise;
+
+      const spawnOpts = mockSpawn.mock.calls[0][2];
+      expect(spawnOpts.env).toMatchObject({
+        ...process.env,
+        CUSTOM_API_KEY: 'secret',
+      });
     });
   });
 
