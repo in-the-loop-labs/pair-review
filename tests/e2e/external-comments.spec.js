@@ -348,17 +348,22 @@ test.describe('External comments: chat about thread', () => {
     const chatPanel = page.locator('.chat-panel');
     await expect(chatPanel).toBeVisible({ timeout: 5000 });
 
-    // Thread context card has the thread modifier class
+    // Compact thread context card carries the source-specific theming class.
     const threadCard = page.locator(
-      '.chat-panel__context-card.chat-panel__context-card--thread.external-comment-context'
+      '.chat-panel__context-card.external-comment-context.source-github'
     );
     await expect(threadCard).toBeVisible();
 
-    // Both authors and both body fragments should be visible inside
-    await expect(threadCard).toContainText('reviewer-alice');
-    await expect(threadCard).toContainText('reviewer-bob');
-    await expect(threadCard).toContainText('Should this be');
-    await expect(threadCard).toContainText('Good catch');
+    // The visible row shows the "GITHUB THREAD" label and the comment count.
+    await expect(threadCard).toContainText('GITHUB THREAD');
+    await expect(threadCard).toContainText(/\d+ comment/);
+
+    // Full content lives in the title tooltip (single line + hover, per UX).
+    const tooltip = await threadCard.getAttribute('title');
+    expect(tooltip).toContain('reviewer-alice');
+    expect(tooltip).toContain('reviewer-bob');
+    expect(tooltip).toContain('Should this be');
+    expect(tooltip).toContain('Good catch');
   });
 });
 
@@ -532,3 +537,280 @@ test.describe('External comments: coexistence with user + AI rows', () => {
 // init() entirely, so waitForDiffToRender timed out and the guard still
 // wasn't reached). The unit-level coverage is strictly stronger; no E2E
 // equivalent here.
+
+// ---------------------------------------------------------------------
+// 7. External segment in the Review (AI) panel
+//
+// Asserts the fourth segment exists, populates with one row per thread,
+// shows the correct count, and routes clicks back to the inline external
+// row in the diff. Mocking is the same as the rest of this spec.
+// ---------------------------------------------------------------------
+
+test.describe('External segment in Review panel', () => {
+  test('renders the External segment button with a per-thread count', async ({ page }) => {
+    await installExternalCommentMocks(page, { threads: [HAPPY_THREAD] });
+
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+    await waitForExternalRowsRendered(page);
+
+    // Expand the panel so segment buttons are interactable; the default
+    // for a new review is collapsed.
+    await page.evaluate(() => window.aiPanel?.expand());
+
+    const externalBtn = page.locator('.segment-btn[data-segment="external"]');
+    await expect(externalBtn).toBeVisible();
+
+    // Count badge should be (1) — one thread, regardless of reply count.
+    const count = externalBtn.locator('.segment-count');
+    await expect(count).toHaveText('(1)');
+  });
+
+  test('clicking the External segment activates it and shows one list item per thread', async ({ page }) => {
+    // Two threads on different lines so we can verify "one item per thread"
+    const secondThread = {
+      ...HAPPY_THREAD,
+      id: 102,
+      external_id: '900003',
+      external_url: 'https://github.com/test-owner/test-repo/pull/1#discussion_r900003',
+      file: 'src/main.js',
+      line_start: 12,
+      line_end: 12,
+      original_line_start: 12,
+      original_line_end: 12,
+      body: 'A second thread on main.js',
+      replies: [],
+    };
+    await installExternalCommentMocks(page, { threads: [HAPPY_THREAD, secondThread] });
+
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+    await waitForExternalRowsRendered(page);
+
+    await page.evaluate(() => window.aiPanel?.expand());
+
+    const externalBtn = page.locator('.segment-btn[data-segment="external"]');
+    await externalBtn.click();
+    await expect(externalBtn).toHaveClass(/active/);
+
+    const items = page.locator('.ai-panel__list-item--external');
+    await expect(items).toHaveCount(2);
+
+    // Each item has the source-github class (blue accent contract)
+    for (let i = 0; i < 2; i++) {
+      await expect(items.nth(i)).toHaveClass(/source-github/);
+    }
+
+    // Locate items by thread id rather than position — the panel sorts by
+    // file order which depends on the diff fixture and is not the spec's
+    // contract here.
+    const happyItem = items.locator('[data-thread-id="101"]').or(
+      page.locator('.ai-panel__list-item--external[data-thread-id="101"]')
+    ).first();
+    // Total comments badge: root + replies. The happy thread has 1 root +
+    // 1 reply = 2. Always present (replaces the prior author dot).
+    const totalBadge = happyItem.locator('.external-list-count');
+    await expect(totalBadge).toBeVisible();
+    await expect(totalBadge).toHaveText('2');
+
+    // The second thread (no replies) shows "1" — the root comment itself.
+    const secondItem = page.locator('.ai-panel__list-item--external[data-thread-id="102"]');
+    await expect(secondItem.locator('.external-list-count')).toHaveText('1');
+  });
+
+  test('clicking a list item scrolls the inline external-comment-row into view and flashes it', async ({ page }) => {
+    await installExternalCommentMocks(page, { threads: [HAPPY_THREAD] });
+
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+    await waitForExternalRowsRendered(page);
+
+    await page.evaluate(() => window.aiPanel?.expand());
+
+    // Activate the External segment first
+    const externalBtn = page.locator('.segment-btn[data-segment="external"]');
+    await externalBtn.click();
+
+    const listItem = page.locator('.ai-panel__list-item--external').first();
+    await expect(listItem).toBeVisible();
+    await listItem.click();
+
+    // The matching inline row picks up the .external-comment-row--focused
+    // class. The class is removed after ~2 seconds, so assert quickly.
+    const focusedRow = page.locator('.external-comment-row--focused');
+    await expect(focusedRow).toHaveCount(1, { timeout: 1500 });
+  });
+
+  test('refreshing external comments updates the External segment count', async ({ page }) => {
+    // First load: one thread. After clicking refresh we'll swap in a fixture
+    // with two threads to verify the count updates.
+    let threads = [HAPPY_THREAD];
+    await page.route('**/api/reviews/*/external-comments?**', async (route) => {
+      if (route.request().method() !== 'GET') {
+        return route.continue();
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ threads }),
+      });
+    });
+    await page.route('**/api/reviews/*/external-comments/sync**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ count: threads.length, lostAnchors: 0, syncedAt: new Date().toISOString() }),
+      });
+    });
+
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+    await waitForExternalRowsRendered(page);
+
+    await page.evaluate(() => window.aiPanel?.expand());
+
+    const externalCount = page.locator('.segment-btn[data-segment="external"] .segment-count');
+    await expect(externalCount).toHaveText('(1)');
+
+    // Swap fixture and trigger a refresh
+    threads = [
+      HAPPY_THREAD,
+      {
+        ...HAPPY_THREAD,
+        id: 999,
+        external_id: '900099',
+        file: 'src/main.js',
+        line_start: 12,
+        line_end: 12,
+        original_line_start: 12,
+        original_line_end: 12,
+        body: 'New thread after refresh',
+        replies: [],
+      },
+    ];
+    await page.locator('#refresh-external-comments-btn').click();
+
+    // Wait for the panel to reflect the new count
+    await expect(externalCount).toHaveText('(2)', { timeout: 5000 });
+  });
+});
+
+// ---------------------------------------------------------------------
+// 8. Local-mode: External segment button is hidden
+//
+// Local reviews never have an external source — the button should be
+// absent from the visible UI. Asserted at the visibility layer (not just
+// the `[hidden]` attribute) so the assertion stays accurate if a future
+// rule swaps the gate to display:none.
+// ---------------------------------------------------------------------
+
+test.describe('Local mode: External segment hidden', () => {
+  test('External segment button is not visible on /local pages', async ({ page }) => {
+    await page.goto('/local/2');
+    await waitForDiffToRender(page);
+    await page.evaluate(() => window.aiPanel?.expand());
+
+    const externalBtn = page.locator('.segment-btn[data-segment="external"]');
+    // Either absent from the DOM or hidden via [hidden]/display:none.
+    await expect(externalBtn).toBeHidden();
+
+    // The other three segments must still be visible — no collateral
+    // damage from the gating logic.
+    await expect(page.locator('.segment-btn[data-segment="ai"]')).toBeVisible();
+    await expect(page.locator('.segment-btn[data-segment="comments"]')).toBeVisible();
+    await expect(page.locator('.segment-btn[data-segment="all"]')).toBeVisible();
+  });
+});
+
+// ---------------------------------------------------------------------
+// 9. Segment overflow scroll chevrons
+//
+// When the AI panel is narrow enough that the four segment buttons
+// can't fit, chevrons appear on the left/right and scroll the row
+// horizontally. We narrow the panel via JS rather than the viewport so
+// the test is robust against future layout changes outside the panel.
+// ---------------------------------------------------------------------
+
+test.describe('Review panel segment overflow scroll', () => {
+  // Helper: shrink the AI panel container so the four segment buttons
+  // overflow their scroll container, forcing the chevrons to appear.
+  async function shrinkPanel(page) {
+    await page.evaluate(() => {
+      // Drop the CSS variable that drives panel width; also force inline
+      // width on the panel root in case the variable is consumed elsewhere.
+      document.documentElement.style.setProperty('--ai-panel-width', '120px');
+      const panel = document.getElementById('ai-panel');
+      if (panel) panel.style.width = '120px';
+      window.aiPanel?.updateSegmentScrollChevrons?.();
+    });
+  }
+
+  test('shows a right chevron when segment buttons overflow the panel width', async ({ page }) => {
+    await installExternalCommentMocks(page, { threads: [HAPPY_THREAD] });
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+    await waitForExternalRowsRendered(page);
+    await page.evaluate(() => window.aiPanel?.expand());
+
+    // Narrow the panel so the inner segment row has to overflow its
+    // scroll container. The chevrons sit outside the scroll container
+    // so they still consume some space — 120px guarantees overflow.
+    await shrinkPanel(page);
+
+    const rightChevron = page.locator('#segment-scroll-right');
+    await expect(rightChevron).toBeVisible({ timeout: 2000 });
+
+    // Left chevron starts hidden because we're at scrollLeft = 0
+    const leftChevron = page.locator('#segment-scroll-left');
+    await expect(leftChevron).toBeHidden();
+  });
+
+  test('clicking the right chevron increases scrollLeft of the segment row', async ({ page }) => {
+    await installExternalCommentMocks(page, { threads: [HAPPY_THREAD] });
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+    await waitForExternalRowsRendered(page);
+    await page.evaluate(() => window.aiPanel?.expand());
+
+    await shrinkPanel(page);
+
+    const initialScroll = await page.evaluate(() =>
+      document.getElementById('segment-control-scroll').scrollLeft
+    );
+    expect(initialScroll).toBe(0);
+
+    await page.locator('#segment-scroll-right').click();
+
+    // Smooth scroll completes asynchronously — poll briefly.
+    await page.waitForFunction(
+      () => document.getElementById('segment-control-scroll').scrollLeft > 0,
+      { timeout: 2000 }
+    );
+
+    const newScroll = await page.evaluate(() =>
+      document.getElementById('segment-control-scroll').scrollLeft
+    );
+    expect(newScroll).toBeGreaterThan(0);
+  });
+
+  test('chevrons are hidden when segment buttons fit', async ({ page }) => {
+    await installExternalCommentMocks(page, { threads: [HAPPY_THREAD] });
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+    await waitForExternalRowsRendered(page);
+    await page.evaluate(() => window.aiPanel?.expand());
+
+    // Widen the panel container generously so the four short labels are
+    // guaranteed to fit. The default panel width depends on the saved
+    // resizer preference, which is not the contract being tested here.
+    await page.evaluate(() => {
+      document.documentElement.style.setProperty('--ai-panel-width', '600px');
+      const panel = document.getElementById('ai-panel');
+      if (panel) panel.style.width = '600px';
+      window.aiPanel?.updateSegmentScrollChevrons?.();
+    });
+
+    await expect(page.locator('#segment-scroll-left')).toBeHidden();
+    await expect(page.locator('#segment-scroll-right')).toBeHidden();
+  });
+});
