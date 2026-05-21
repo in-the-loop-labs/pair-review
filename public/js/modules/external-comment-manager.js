@@ -154,7 +154,46 @@ class ExternalCommentManager {
       }
     }
     await this.render();
+    // Hand off the flattened thread list to the Review panel so its
+    // External segment stays in sync with the inline rows.
+    this._notifyPanel();
     return { errors };
+  }
+
+  /**
+   * Flatten threadsBySource into a single array. The Review panel does
+   * not care about source grouping in its list — sort + display keys are
+   * file + line — so a flat union is the right shape to hand off.
+   *
+   * @returns {Array<Object>} The flattened thread roots.
+   */
+  getAllThreads() {
+    const out = [];
+    for (const threads of this.threadsBySource.values()) {
+      if (Array.isArray(threads)) {
+        for (const thread of threads) out.push(thread);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Push the current flattened thread list onto the Review panel's
+   * External segment. No-op when the panel isn't ready (e.g. before
+   * DOMContentLoaded or in tests that don't initialize it).
+   * @private
+   */
+  _notifyPanel() {
+    if (typeof window === 'undefined') return;
+    const panel = window.aiPanel;
+    if (!panel || typeof panel.setExternalThreads !== 'function') return;
+    try {
+      panel.setExternalThreads(this.getAllThreads());
+    } catch (err) {
+      if (typeof console !== 'undefined') {
+        console.warn('[ExternalCommentManager] setExternalThreads threw', err);
+      }
+    }
   }
 
   // ------------------------------------------------------------------

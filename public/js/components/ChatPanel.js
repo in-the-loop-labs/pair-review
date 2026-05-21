@@ -3125,9 +3125,9 @@ class ChatPanel {
       : '';
 
     // Author rendering — linked to externalUrl only when the URL passes
-    // the scheme allowlist. Mirrors `_renderThreadCommentHTML` and the
-    // external-comment-manager so `javascript:` / `data:` URLs from a
-    // malicious upstream can't smuggle a live `<a href>` into the DOM.
+    // the scheme allowlist. Mirrors the external-comment-manager so
+    // `javascript:` / `data:` URLs from a malicious upstream can't smuggle
+    // a live `<a href>` into the DOM.
     let authorHTML = '';
     if (isExternal && ctx.author) {
       const escapedAuthor = this._escapeHtml(ctx.author);
@@ -3177,17 +3177,16 @@ class ChatPanel {
   _addThreadContextCard(ctx, { removable = false } = {}) {
     const card = document.createElement('div');
     const externalSource = ctx.externalSource || null;
-    const classes = ['chat-panel__context-card', 'chat-panel__context-card--thread', 'external-comment-context'];
+    // No --thread modifier: thread cards now use the same compact single-line
+    // layout as line/file cards. The full thread content is exposed via the
+    // card's title attribute (hover tooltip).
+    const classes = ['chat-panel__context-card', 'external-comment-context'];
     if (externalSource) classes.push(`source-${externalSource}`);
     card.className = classes.join(' ');
 
     const sourceLabel = this._formatExternalSourceLabel(externalSource);
     const fileLabel = ctx.file || 'unknown file';
     let anchor = fileLabel;
-    // Mirror the prompt builder: start with line_start, then append
-    // "-line_end" only when end is set and differs from start. Showing
-    // line_end alone (the previous behavior) silently dropped the start
-    // of multi-line ranges.
     if (ctx.line_start) {
       anchor += `:${ctx.line_start}`;
       if (ctx.line_end && ctx.line_end !== ctx.line_start) {
@@ -3196,23 +3195,35 @@ class ChatPanel {
     }
     const comments = Array.isArray(ctx.comments) ? ctx.comments : [];
 
-    const headerHTML = `
-      <div class="chat-panel__context-thread-header">
-        <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
-          <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25Z"/>
-        </svg>
-        <span class="chat-panel__context-label">${this._escapeHtml(sourceLabel)} thread on ${this._escapeHtml(anchor)}</span>
-        <span class="chat-panel__context-count">${comments.length} comment${comments.length === 1 ? '' : 's'}</span>
-      </div>
-    `;
+    // Snippet from the first comment for the visible title slot. Stripped of
+    // markdown syntax so the line reads cleanly when truncated by ellipsis.
+    const firstBody = comments[0]?.body || '';
+    const stripped = this._stripMarkdownForSnippet(firstBody);
+    const snippet = stripped.length > 80 ? stripped.substring(0, 80) + '…' : stripped;
 
-    const commentsHTML = comments.map((c) => this._renderThreadCommentHTML(c)).join('');
+    // Full thread content for the hover tooltip — plain text, one comment per
+    // block so the native title attribute (which respects newlines on most
+    // platforms) gives the reviewer the full conversation on hover.
+    const tooltip = comments.map((c, i) => {
+      const author = c.author || 'unknown';
+      const ts = c.externalCreatedAt ? ` · ${c.externalCreatedAt}` : '';
+      const out = c.isOutdated ? ' (outdated)' : '';
+      const body = (c.body || '(no body)').trim();
+      return `${i + 1}. ${author}${ts}${out}\n${body}`;
+    }).join('\n\n');
+
+    card.setAttribute('title', tooltip);
+
+    const countText = `${comments.length} comment${comments.length === 1 ? '' : 's'}`;
 
     card.innerHTML = `
-      ${headerHTML}
-      <div class="chat-panel__context-thread-body">
-        ${commentsHTML}
-      </div>
+      <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
+        <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25Z"/>
+      </svg>
+      <span class="chat-panel__context-label"><strong>${this._escapeHtml(sourceLabel.toUpperCase())} THREAD</strong></span>
+      <span class="chat-panel__context-title">${snippet ? this._escapeHtml(snippet) : '<em>(empty)</em>'}</span>
+      <span class="chat-panel__context-file">${this._escapeHtml(anchor)}</span>
+      <span class="chat-panel__context-count">${countText}</span>
     `;
 
     if (removable) this._makeCardRemovable(card);
@@ -3222,49 +3233,24 @@ class ChatPanel {
   }
 
   /**
-   * Render a single comment in a thread context card.
-   * @param {Object} c - Comment entry {author, body, isOutdated, externalUrl, externalCreatedAt}
-   * @returns {string} HTML string
+   * Strip a small set of common markdown syntax so a snippet reads cleanly
+   * when truncated. Not a full parser — just enough to drop heading/list
+   * markers, inline code backticks, and bold/italic emphasis.
+   * @private
    */
-  _renderThreadCommentHTML(c) {
-    const author = c.author || 'unknown';
-    const escapedAuthor = this._escapeHtml(author);
-    let authorHTML;
-    // Only emit a link when the URL is safe (http/https/mailto). Otherwise
-    // a malicious upstream could smuggle a `javascript:` URL into our DOM.
-    if (c.externalUrl && this._isSafeUrl(c.externalUrl)) {
-      const escapedUrl = window.escapeHtmlAttribute
-        ? window.escapeHtmlAttribute(c.externalUrl)
-        : this._escapeHtml(c.externalUrl);
-      authorHTML = `<a class="chat-panel__context-author" href="${escapedUrl}" target="_blank" rel="noopener noreferrer">${escapedAuthor}</a>`;
-    } else {
-      authorHTML = `<span class="chat-panel__context-author">${escapedAuthor}</span>`;
-    }
-
-    const timestampHTML = c.externalCreatedAt
-      ? `<span class="chat-panel__context-timestamp">${this._escapeHtml(c.externalCreatedAt)}</span>`
-      : '';
-    const outdatedHTML = c.isOutdated
-      ? '<span class="chat-panel__context-badge chat-panel__context-badge--outdated">outdated</span>'
-      : '';
-
-    const bodyHTML = c.body
-      ? this.renderMarkdown(c.body)
-      : '<em>(no body)</em>';
-
-    const entryClasses = ['chat-panel__context-thread-comment'];
-    if (c.isOutdated) entryClasses.push('is-outdated');
-
-    return `
-      <div class="${entryClasses.join(' ')}">
-        <div class="chat-panel__context-thread-comment-header">
-          ${authorHTML}
-          ${timestampHTML}
-          ${outdatedHTML}
-        </div>
-        <div class="chat-panel__context-thread-comment-body">${bodyHTML}</div>
-      </div>
-    `;
+  _stripMarkdownForSnippet(text) {
+    if (!text) return '';
+    return String(text)
+      .replace(/```[\s\S]*?```/g, ' ')
+      .replace(/`([^`]+)`/g, '$1')
+      .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+      .replace(/^\s*[-*+]\s+/gm, '')
+      .replace(/\*\*([^*]+)\*\*/g, '$1')
+      .replace(/\*([^*]+)\*/g, '$1')
+      .replace(/__([^_]+)__/g, '$1')
+      .replace(/_([^_]+)_/g, '$1')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
   /**

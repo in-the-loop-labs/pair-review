@@ -308,10 +308,20 @@ class PRManager {
     // Refresh external (GitHub) review comments. Handler lives on the
     // instance so unit tests can call it directly (avoids duplicating the
     // production click logic in tests, per CLAUDE.md).
+    // Two physical buttons share the handler: the always-visible toolbar
+    // button (#refresh-external-comments-btn) and the mirror inside the AI
+    // panel header (#refresh-external-comments-btn-panel). Either click
+    // triggers the same sync; the handler toggles whichever button fired it.
     const refreshExternalBtn = document.getElementById('refresh-external-comments-btn');
     if (refreshExternalBtn) {
       refreshExternalBtn.addEventListener('click', () => {
         void this._handleExternalCommentsRefreshClick({ button: refreshExternalBtn });
+      });
+    }
+    const refreshExternalBtnPanel = document.getElementById('refresh-external-comments-btn-panel');
+    if (refreshExternalBtnPanel) {
+      refreshExternalBtnPanel.addEventListener('click', () => {
+        void this._handleExternalCommentsRefreshClick({ button: refreshExternalBtnPanel });
       });
     }
 
@@ -833,12 +843,19 @@ class PRManager {
    */
   _markExternalRefreshErrorState() {
     if (typeof document === 'undefined') return;
-    const btn = document.getElementById('refresh-external-comments-btn');
-    if (!btn) return;
-    btn.setAttribute('data-state', 'error');
+    const btns = [
+      document.getElementById('refresh-external-comments-btn'),
+      document.getElementById('refresh-external-comments-btn-panel'),
+    ].filter(Boolean);
+    if (btns.length === 0) return;
+    for (const btn of btns) {
+      btn.setAttribute('data-state', 'error');
+    }
     setTimeout(() => {
-      if (btn.getAttribute('data-state') === 'error') {
-        btn.removeAttribute('data-state');
+      for (const btn of btns) {
+        if (btn.getAttribute('data-state') === 'error') {
+          btn.removeAttribute('data-state');
+        }
       }
     }, 4000);
   }

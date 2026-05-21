@@ -222,23 +222,39 @@ describe('ExternalCommentManager chat buttons', async () => {
     vi.restoreAllMocks();
   });
 
-  it('chat-about-comment button click invokes chatPanel.open with commentContext shape', async () => {
+  // After the "consolidate chat buttons" change there is no separate
+  // `.external-comment-chat-thread-btn` element. The per-comment chat
+  // icon (`.external-comment-chat-btn`) dispatches:
+  //   - on the thread root  → threadContext (whole thread + replies)
+  //   - on a reply          → commentContext (that single reply)
+  // The tests below assert each branch and pin the per-comment fields
+  // (id/body/line/side/isOutdated) so coverage from the prior contract
+  // is preserved on the threadContext root entry.
+
+  it('chat button on a reply invokes chatPanel.open with commentContext shape', async () => {
     buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
     const chatPanel = { open: vi.fn() };
     const mgr = makeManager({ chatPanel });
-    const comment = makeComment({
-      id: 42,
-      body: 'inline body',
-      author: 'octocat',
-      external_url: 'https://example.com/c/42',
-      parent_id: null,
+    const root = makeComment({
+      id: 1,
+      body: 'root body',
+      replies: [
+        makeComment({
+          id: 42,
+          body: 'inline body',
+          author: 'octocat',
+          external_url: 'https://example.com/c/42',
+          parent_id: 1,
+          in_reply_to_id: 'gh-1',
+        }),
+      ],
     });
-    mgr.threadsBySource.set('github', [comment]);
+    mgr.threadsBySource.set('github', [root]);
     await mgr.render();
 
-    const btn = document.querySelector('.external-comment-chat-btn');
-    expect(btn).not.toBeNull();
-    btn.click();
+    const replyBtn = document.querySelector('.external-comment.is-reply .external-comment-chat-btn');
+    expect(replyBtn).not.toBeNull();
+    replyBtn.click();
 
     expect(chatPanel.open).toHaveBeenCalledTimes(1);
     const arg = chatPanel.open.mock.calls[0][0];
@@ -259,31 +275,45 @@ describe('ExternalCommentManager chat buttons', async () => {
     });
   });
 
-  it('chat-about-comment for outdated uses original_line_* and isOutdated=true', async () => {
+  it('chat button on an outdated reply uses original_line_* and isOutdated=true', async () => {
     buildDiffTable({ lines: [{ line: 20, side: 'RIGHT' }] });
     const chatPanel = { open: vi.fn() };
     const mgr = makeManager({ chatPanel });
-    mgr.threadsBySource.set('github', [
-      makeComment({
-        id: 9,
-        is_outdated: 1,
-        line_start: null,
-        line_end: null,
-        original_line_start: 20,
-        original_line_end: 20,
-      }),
-    ]);
+    const root = makeComment({
+      id: 1,
+      // Root must be outdated too — the row anchors on the root's anchor
+      // and a non-outdated root with null lines would be skipped.
+      is_outdated: 1,
+      line_start: null,
+      line_end: null,
+      original_line_start: 20,
+      original_line_end: 20,
+      replies: [
+        makeComment({
+          id: 9,
+          parent_id: 1,
+          in_reply_to_id: 'gh-1',
+          is_outdated: 1,
+          line_start: null,
+          line_end: null,
+          original_line_start: 20,
+          original_line_end: 20,
+        }),
+      ],
+    });
+    mgr.threadsBySource.set('github', [root]);
     await mgr.render();
 
-    const btn = document.querySelector('.external-comment-chat-btn');
-    btn.click();
+    const replyBtn = document.querySelector('.external-comment.is-reply .external-comment-chat-btn');
+    expect(replyBtn).not.toBeNull();
+    replyBtn.click();
     const arg = chatPanel.open.mock.calls[0][0];
     expect(arg.commentContext.isOutdated).toBe(true);
     expect(arg.commentContext.line_start).toBe(20);
     expect(arg.commentContext.line_end).toBe(20);
   });
 
-  it('chat-about-thread button click invokes chatPanel.open with threadContext shape', async () => {
+  it('chat button on the thread root invokes chatPanel.open with threadContext shape', async () => {
     buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
     const chatPanel = { open: vi.fn() };
     const mgr = makeManager({ chatPanel });
@@ -299,12 +329,21 @@ describe('ExternalCommentManager chat buttons', async () => {
     mgr.threadsBySource.set('github', [root]);
     await mgr.render();
 
-    const threadBtn = document.querySelector('.external-comment-chat-thread-btn');
-    expect(threadBtn).not.toBeNull();
-    threadBtn.click();
+    // Root chat button = the first `.external-comment-chat-btn` that is
+    // NOT inside `.is-reply`. After consolidation it replaces the prior
+    // standalone `.external-comment-chat-thread-btn` element.
+    const rootBtn = document.querySelector('.external-comment:not(.is-reply) .external-comment-chat-btn');
+    expect(rootBtn).not.toBeNull();
+    rootBtn.click();
 
     expect(chatPanel.open).toHaveBeenCalledTimes(1);
     const arg = chatPanel.open.mock.calls[0][0];
+    // Per-comment id/line/side coverage on the root entry — equivalent to
+    // the prior commentContext root assertions.
+    expect(arg.threadContext.rootId).toBe(1);
+    expect(arg.threadContext.line_start).toBe(10);
+    expect(arg.threadContext.line_end).toBe(10);
+    expect(arg.threadContext.side).toBe('RIGHT');
     expect(arg).toEqual({
       threadContext: {
         rootId: 1,
@@ -746,25 +785,35 @@ describe('ExternalCommentManager passes side to chat context', async () => {
     vi.restoreAllMocks();
   });
 
-  it('LEFT side flows through to commentContext', async () => {
+  it('LEFT side flows through to commentContext (reply chat button)', async () => {
     buildDiffTable({ lines: [{ line: 5, side: 'LEFT' }] });
     const chatPanel = { open: vi.fn() };
     const mgr = makeManager({ chatPanel });
 
     mgr.threadsBySource.set('github', [makeComment({
-      id: 50,
+      id: 49,
       side: 'LEFT',
       line_start: 5,
       line_end: 5,
+      replies: [
+        makeComment({
+          id: 50,
+          side: 'LEFT',
+          line_start: 5,
+          line_end: 5,
+          parent_id: 49,
+          in_reply_to_id: 'gh-1',
+        }),
+      ],
     })]);
     await mgr.render();
 
-    document.querySelector('.external-comment-chat-btn').click();
+    document.querySelector('.external-comment.is-reply .external-comment-chat-btn').click();
     expect(chatPanel.open).toHaveBeenCalledTimes(1);
     expect(chatPanel.open.mock.calls[0][0].commentContext.side).toBe('LEFT');
   });
 
-  it('LEFT side flows through to threadContext', async () => {
+  it('LEFT side flows through to threadContext (root chat button)', async () => {
     buildDiffTable({ lines: [{ line: 5, side: 'LEFT' }] });
     const chatPanel = { open: vi.fn() };
     const mgr = makeManager({ chatPanel });
@@ -778,7 +827,7 @@ describe('ExternalCommentManager passes side to chat context', async () => {
     })]);
     await mgr.render();
 
-    document.querySelector('.external-comment-chat-thread-btn').click();
+    document.querySelector('.external-comment:not(.is-reply) .external-comment-chat-btn').click();
     expect(chatPanel.open).toHaveBeenCalledTimes(1);
     expect(chatPanel.open.mock.calls[0][0].threadContext.side).toBe('LEFT');
   });
@@ -925,5 +974,158 @@ describe('ExternalCommentManager.fetch', async () => {
     await expect(mgr.fetch('github')).rejects.toThrow(/Failed to fetch external comments/);
     expect(window.toast.showError).toHaveBeenCalled();
     delete window.toast;
+  });
+});
+
+// =======================================================================
+// Review-panel handoff (External segment in AIPanel)
+//
+// The manager flattens threadsBySource into a single array via
+// getAllThreads(), and pushes it onto the panel after each
+// _fetchAllAndRender via setExternalThreads. The panel surface is
+// described in tests/unit/ai-panel-external-segment.test.js — these tests
+// only verify the producer side of the contract.
+// =======================================================================
+describe('ExternalCommentManager.getAllThreads', () => {
+  it('returns an empty array when no sources are loaded', () => {
+    const mgr = makeManager();
+    expect(mgr.getAllThreads()).toEqual([]);
+  });
+
+  it('flattens threads from every source into a single array', () => {
+    const mgr = makeManager({ sources: ['github', 'gitlab'] });
+    const ghThreads = [makeComment({ id: 1 }), makeComment({ id: 2 })];
+    const glThreads = [makeComment({ id: 3, source: 'gitlab' })];
+    mgr.threadsBySource.set('github', ghThreads);
+    mgr.threadsBySource.set('gitlab', glThreads);
+
+    const all = mgr.getAllThreads();
+    expect(all).toHaveLength(3);
+    expect(all.map(t => t.id).sort()).toEqual([1, 2, 3]);
+  });
+
+  it('skips entries that are not arrays defensively', () => {
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [makeComment({ id: 1 })]);
+    mgr.threadsBySource.set('broken', null);
+    mgr.threadsBySource.set('also-broken', 'not an array');
+
+    const all = mgr.getAllThreads();
+    expect(all).toHaveLength(1);
+    expect(all[0].id).toBe(1);
+  });
+});
+
+describe('ExternalCommentManager._notifyPanel', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    delete window.aiPanel;
+  });
+  afterEach(() => {
+    document.body.innerHTML = '';
+    delete window.aiPanel;
+    vi.restoreAllMocks();
+  });
+
+  it('calls window.aiPanel.setExternalThreads with the flattened thread list', () => {
+    const setExternalThreads = vi.fn();
+    window.aiPanel = { setExternalThreads };
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [makeComment({ id: 1 }), makeComment({ id: 2 })]);
+
+    mgr._notifyPanel();
+
+    expect(setExternalThreads).toHaveBeenCalledTimes(1);
+    const arg = setExternalThreads.mock.calls[0][0];
+    expect(Array.isArray(arg)).toBe(true);
+    expect(arg.map(t => t.id).sort()).toEqual([1, 2]);
+  });
+
+  it('is a no-op when window.aiPanel is not present', () => {
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [makeComment({ id: 1 })]);
+    expect(() => mgr._notifyPanel()).not.toThrow();
+  });
+
+  it('is a no-op when window.aiPanel is missing setExternalThreads', () => {
+    window.aiPanel = { /* no setExternalThreads */ };
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [makeComment({ id: 1 })]);
+    expect(() => mgr._notifyPanel()).not.toThrow();
+  });
+
+  it('survives setExternalThreads throwing without rejecting render', () => {
+    const setExternalThreads = vi.fn(() => { throw new Error('boom'); });
+    window.aiPanel = { setExternalThreads };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [makeComment({ id: 1 })]);
+    expect(() => mgr._notifyPanel()).not.toThrow();
+    expect(warn).toHaveBeenCalled();
+  });
+});
+
+describe('ExternalCommentManager._fetchAllAndRender → panel handoff', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    delete window.aiPanel;
+    delete global.fetch;
+  });
+  afterEach(() => {
+    document.body.innerHTML = '';
+    delete window.aiPanel;
+    vi.restoreAllMocks();
+    delete global.fetch;
+  });
+
+  it('pushes the flattened thread list to the panel after a successful fetch+render', async () => {
+    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+
+    const threads = [makeComment({ id: 1 }), makeComment({ id: 2 })];
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ threads }),
+    });
+
+    const setExternalThreads = vi.fn();
+    window.aiPanel = { setExternalThreads };
+
+    const mgr = makeManager();
+    await mgr._fetchAllAndRender();
+
+    expect(setExternalThreads).toHaveBeenCalledTimes(1);
+    const arg = setExternalThreads.mock.calls[0][0];
+    expect(arg.map(t => t.id)).toEqual([1, 2]);
+  });
+
+  it('still pushes to the panel when one source fetch fails', async () => {
+    // Two sources, first fails, second succeeds. Errors are collected and
+    // rendering proceeds, so the panel should still see whatever did load.
+    let callIdx = 0;
+    global.fetch = vi.fn().mockImplementation(() => {
+      callIdx += 1;
+      if (callIdx === 1) {
+        return Promise.resolve({ ok: false, status: 500, json: vi.fn() });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: vi.fn().mockResolvedValue({ threads: [makeComment({ id: 99, source: 'gitlab' })] }),
+      });
+    });
+
+    const setExternalThreads = vi.fn();
+    window.aiPanel = { setExternalThreads };
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const mgr = makeManager({ sources: ['github', 'gitlab'] });
+    await mgr._fetchAllAndRender();
+
+    expect(setExternalThreads).toHaveBeenCalledTimes(1);
+    const arg = setExternalThreads.mock.calls[0][0];
+    // Only the successful source contributed threads
+    expect(arg).toHaveLength(1);
+    expect(arg[0].id).toBe(99);
   });
 });

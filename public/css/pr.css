@@ -8838,6 +8838,7 @@ body.resizing * {
 
 /* Segment Control */
 .segment-control {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -8847,6 +8848,23 @@ body.resizing * {
   flex-shrink: 0;
 }
 
+/* Scroll container: clips the segment row at the panel edge so chevrons
+   can drive horizontal scroll when the buttons don't fit. Wrapped around
+   .segment-control-inner so the inner row keeps its existing pill styling. */
+.segment-control-scroll {
+  flex: 1;
+  min-width: 0; /* allow shrink below intrinsic content width */
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-behavior: smooth;
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE/Edge */
+}
+
+.segment-control-scroll::-webkit-scrollbar {
+  display: none; /* Chrome/Safari */
+}
+
 .segment-control-inner {
   display: flex;
   gap: 2px;
@@ -8854,12 +8872,48 @@ body.resizing * {
   background: var(--color-bg-tertiary);
   border: 1px solid var(--color-border-primary);
   border-radius: var(--radius-md);
-  flex: 1;
+  /* No flex:1 here — let the inner row take its natural width so we can
+     scroll horizontally when it overflows the scroll container. */
+  width: max-content;
+  min-width: 100%;
+}
+
+/* Chevron buttons that scroll the segment row left/right. Hidden by
+   default; JS toggles [hidden] based on scrollWidth / scrollLeft. */
+.segment-scroll {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border-primary);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.segment-scroll:hover {
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  border-color: var(--color-border-secondary);
+}
+
+.segment-scroll[hidden] {
+  display: none;
 }
 
 .segment-btn {
-  flex: 1;
-  padding: 5px 4px;
+  /* flex: 1 0 auto = grow to share extra space, never shrink below natural
+     width, use intrinsic content width as the basis. When the sum of
+     natural widths exceeds the scroll container, the inner row overflows
+     and the chevrons take over. When there is extra room, the buttons
+     distribute it evenly. */
+  flex: 1 0 auto;
+  padding: 5px 8px;
   font-family: inherit;
   font-size: 0.6875rem;
   font-weight: 500;
@@ -8870,6 +8924,11 @@ body.resizing * {
   cursor: pointer;
   transition: all var(--transition-fast);
   white-space: nowrap;
+  text-align: center;
+}
+
+.segment-btn[hidden] {
+  display: none;
 }
 
 .segment-btn:hover {
@@ -8891,6 +8950,15 @@ body.resizing * {
 .segment-btn[data-segment="comments"].active {
   color: var(--comment-primary);
   background: var(--comment-subtle);
+}
+
+/* External segment uses the GitHub external-comment blue. When future
+   sources (GitLab, Linear) land, this rule can switch on a body-level
+   class or rely on JS to toggle a modifier — for now GitHub is the only
+   external source and the blue accent is shared. */
+.segment-btn[data-segment="external"].active {
+  color: var(--external-github-primary);
+  background: var(--external-github-subtle);
 }
 
 .segment-btn[data-segment="all"].active {
@@ -9022,6 +9090,16 @@ body.resizing * {
   display: flex;
   align-items: center;
   gap: 4px;
+}
+
+/* Right-aligned actions slot in the findings header (PR mode: refresh
+   external comments). Kept as a static sibling of .findings-nav so the
+   bound click handler survives header re-renders. Empty in Local mode. */
+.findings-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
 }
 
 .findings-nav-btn {
@@ -9432,6 +9510,121 @@ body.resizing * {
 /* Restore comment button - now wrapped in .finding-quick-actions for consistent hover behavior.
    The parent wrapper handles opacity transitions, so no special styles needed here.
    This selector remains for specificity in case of future customization needs. */
+
+/* ========================================
+   Review panel: External thread list items
+   Mirrors the .external-comment indirection pattern: source-agnostic
+   structural rules use --ec-*, then .source-<name> binds those to the
+   per-source palette. Today only .source-github exists; future sources
+   (GitLab, Linear) drop in a single block below.
+   ======================================== */
+.finding-item.ai-panel__list-item--external {
+  /* Default --ec-* fallback if a thread renders without source-<name>.
+     Real threads always carry .source-github (set by the renderer). */
+  --ec-primary: var(--comment-primary);
+  --ec-subtle: var(--comment-subtle);
+  --ec-border: var(--comment-border);
+  --ec-secondary: var(--comment-primary);
+
+  /* Set the generic border color first, then restore the left accent so the
+     shorthand-vs-longhand cascade doesn't wipe out the primary-source stripe. */
+  border-color: var(--ec-border);
+  border-left: 3px solid var(--ec-primary);
+  padding-left: 9px;
+  background: var(--ec-subtle);
+  position: relative;
+}
+
+.finding-item.ai-panel__list-item--external:hover {
+  background: var(--ec-subtle);
+  border-color: var(--ec-border);
+  border-left-color: var(--ec-primary);
+  /* Slight contrast bump on hover via box-shadow rather than color shift,
+     so the blue accent doesn't fight the surrounding panel. */
+  box-shadow: inset 0 0 0 1px var(--ec-border);
+}
+
+.finding-item.ai-panel__list-item--external.active {
+  background: var(--ec-subtle);
+  border-color: var(--ec-primary);
+  box-shadow: inset 0 0 0 1px var(--ec-primary);
+}
+
+.finding-item.ai-panel__list-item--external.source-github {
+  --ec-primary: var(--external-github-primary);
+  --ec-secondary: var(--external-github-secondary);
+  --ec-subtle: var(--external-github-subtle);
+  --ec-border: var(--external-github-border);
+}
+
+/* Outdated thread: faded + dashed accent, matching the inline
+   .external-comment.is-outdated treatment. */
+.finding-item.ai-panel__list-item--external.is-outdated {
+  opacity: 0.7;
+  border-left-style: dashed;
+}
+
+.finding-item.ai-panel__list-item--external .external-list-author {
+  font-weight: 600;
+  color: var(--ec-primary);
+}
+
+.finding-item.ai-panel__list-item--external .external-list-snippet {
+  color: var(--color-text-secondary);
+  font-weight: 400;
+}
+
+/* Total-comment count for an external thread (root + replies). Replaces
+   the prior left-side dot + right-side reply badge with a single always-
+   present pill that reads "1" for a lone comment and ticks up with the
+   thread size. */
+.finding-item.ai-panel__list-item--external .external-list-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  font-size: 10px;
+  font-weight: 600;
+  background: var(--ec-primary);
+  color: var(--color-bg-primary, #ffffff);
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.finding-item.ai-panel__list-item--external .external-list-outdated-badge {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 600;
+  background: var(--color-bg-secondary, #f6f8fa);
+  color: var(--color-text-secondary, #57606a);
+  border: 1px solid var(--color-border-primary, #d0d7de);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Transient focus flash for the matching inline external-comment-row after
+   the user clicks an External list item. Removed automatically by JS after
+   2 seconds, mirroring the .current-suggestion / .highlight-flash pattern. */
+.external-comment-row--focused .external-comment {
+  outline: 2px solid var(--ec-primary);
+  outline-offset: 2px;
+  transition: outline-color 200ms ease;
+}
+
+[data-theme="dark"] .finding-item.ai-panel__list-item--external .external-list-count {
+  color: var(--color-bg-primary, #0d1117);
+}
+
+[data-theme="dark"] .finding-item.ai-panel__list-item--external .external-list-outdated-badge {
+  background: var(--color-bg-tertiary, #1c2128);
+  color: var(--color-text-secondary, #8b949e);
+  border-color: var(--color-border-primary, #30363d);
+}
 
 /* Adopted findings - brighter green success state with solid left border */
 .finding-item.finding-adopted {
@@ -12993,80 +13186,15 @@ body.resizing * {
   display: flex;
 }
 
-/* Thread modifier: a thread card contains a header plus a stack of
-   comments. The single-line flex layout used by `.chat-panel__context-card`
-   (and `overflow: hidden`) would clip the body to one row — switch to a
-   column layout that lets contents grow vertically. */
-.chat-panel__context-card.chat-panel__context-card--thread {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 6px;
-  overflow: visible;
-  padding: 8px 12px;
-}
-
-.chat-panel__context-card--thread .chat-panel__context-thread-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.chat-panel__context-card--thread .chat-panel__context-thread-body {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.chat-panel__context-card--thread .chat-panel__context-thread-comment {
-  border-left: 2px solid var(--color-border-primary, #d0d7de);
-  padding-left: 8px;
-  font-size: 12px;
-}
-
-.chat-panel__context-card--thread .chat-panel__context-thread-comment.is-outdated {
-  opacity: 0.7;
-}
-
-.chat-panel__context-card--thread .chat-panel__context-thread-comment-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 4px;
-  font-weight: 500;
-}
-
-.chat-panel__context-card--thread .chat-panel__context-thread-comment-body {
-  color: var(--color-text-primary, #1f2328);
-  font-size: 12px;
-  line-height: 1.4;
-  word-break: break-word;
-}
-
-.chat-panel__context-card--thread .chat-panel__context-thread-comment-body p {
-  margin: 0 0 4px 0;
-}
-
-.chat-panel__context-card--thread .chat-panel__context-thread-comment-body p:last-child {
-  margin-bottom: 0;
-}
-
-.chat-panel__context-card--thread .chat-panel__context-count {
+/* Thread context card: compact single-line layout. The visible row mirrors
+   .chat-panel__context-card (icon + label + title + file). The card's
+   `title` attribute carries the full thread (one comment per block) for
+   the native hover tooltip — so the chat stays scannable. */
+.chat-panel__context-card .chat-panel__context-count {
   margin-left: auto;
   font-size: 10px;
   color: var(--color-text-tertiary);
-}
-
-.chat-panel__context-card--thread .chat-panel__context-badge--outdated {
-  font-size: 9px;
-  padding: 1px 4px;
-  border-radius: 3px;
-  background: var(--color-bg-secondary, #f6f8fa);
-  color: var(--color-text-secondary, #57606a);
-  border: 1px solid var(--color-border-primary, #d0d7de);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  flex-shrink: 0;
 }
 
 .chat-panel__context-remove:hover {

@@ -326,11 +326,20 @@
 
                     <!-- Segment Control -->
                     <div class="segment-control" id="segment-control">
-                        <div class="segment-control-inner">
-                            <button class="segment-btn active" data-segment="ai">AI <span class="segment-count">(0)</span></button>
-                            <button class="segment-btn" data-segment="comments">User <span class="segment-count">(0)</span></button>
-                            <button class="segment-btn" data-segment="all">All <span class="segment-count">(0)</span></button>
+                        <button type="button" class="segment-scroll segment-scroll--left" id="segment-scroll-left" hidden aria-label="Scroll segments left" tabindex="-1">
+                            <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" aria-hidden="true"><path d="M9.78 12.78a.75.75 0 0 1-1.06 0L4.47 8.53a.75.75 0 0 1 0-1.06l4.25-4.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042L6.06 8l3.72 3.72a.75.75 0 0 1 0 1.06Z"/></svg>
+                        </button>
+                        <div class="segment-control-scroll" id="segment-control-scroll">
+                            <div class="segment-control-inner">
+                                <button class="segment-btn active" data-segment="ai">AI <span class="segment-count">(0)</span></button>
+                                <button class="segment-btn" data-segment="comments">User <span class="segment-count">(0)</span></button>
+                                <button class="segment-btn" data-segment="external">External <span class="segment-count">(0)</span></button>
+                                <button class="segment-btn" data-segment="all">All <span class="segment-count">(0)</span></button>
+                            </div>
                         </div>
+                        <button type="button" class="segment-scroll segment-scroll--right" id="segment-scroll-right" hidden aria-label="Scroll segments right" tabindex="-1">
+                            <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" aria-hidden="true"><path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z"/></svg>
+                        </button>
                     </div>
 
                     <!-- Level Filter -->
@@ -344,7 +353,16 @@
                     <!-- Findings Summary -->
                     <div class="findings-summary" id="findings-summary">
                         <div class="findings-header">
-                            <span class="findings-count" id="findings-count">0 items</span>
+                            <!-- Nav controls (prev | n of N | next) are injected by AIPanel.updateFindingsHeader.
+                                 Kept as a static slot so the sibling actions container survives re-render. -->
+                            <div class="findings-nav" id="findings-nav"></div>
+                            <div class="findings-header-actions">
+                                <button class="btn btn-sm btn-icon btn-refresh-external-comments" id="refresh-external-comments-btn-panel" title="Refresh GitHub comments" aria-label="Refresh GitHub comments">
+                                    <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14" aria-hidden="true">
+                                        <path d="M1.705 8.005a.75.75 0 0 1 .834.656 5.5 5.5 0 0 0 9.592 2.97l-1.204-1.204a.25.25 0 0 1 .177-.427h3.646a.25.25 0 0 1 .25.25v3.646a.25.25 0 0 1-.427.177l-1.38-1.38A7.002 7.002 0 0 1 1.05 8.84a.75.75 0 0 1 .656-.834ZM8 2.5a5.487 5.487 0 0 0-4.131 1.869l1.204 1.204A.25.25 0 0 1 4.896 6H1.25A.25.25 0 0 1 1 5.75V2.104a.25.25 0 0 1 .427-.177l1.38 1.38A7.002 7.002 0 0 1 14.95 7.16a.75.75 0 0 1-1.49.178A5.5 5.5 0 0 0 8 2.5Z"/>
+                                    </svg>
+                                </button>
+                            </div>
                         </div>
                         <div class="findings-list" id="findings-list">
                             <div class="findings-empty">

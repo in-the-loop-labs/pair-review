@@ -117,6 +117,19 @@ function createMockElement(tag = 'div', overrides = {}) {
     focus: vi.fn(),
     blur: vi.fn(),
 
+    // Minimal attribute storage so production code that uses
+    // setAttribute/getAttribute (e.g. title tooltips on context cards)
+    // works against the mock the same way it would in a real DOM.
+    _attrs: {},
+    setAttribute: vi.fn(function (name, value) { this._attrs[name] = String(value); }),
+    getAttribute: vi.fn(function (name) {
+      return Object.prototype.hasOwnProperty.call(this._attrs, name) ? this._attrs[name] : null;
+    }),
+    hasAttribute: vi.fn(function (name) {
+      return Object.prototype.hasOwnProperty.call(this._attrs, name);
+    }),
+    removeAttribute: vi.fn(function (name) { delete this._attrs[name]; }),
+
     // Allow property spreading from overrides
     ...overrides
   };
@@ -1121,16 +1134,21 @@ describe('ChatPanel', () => {
       expect(prompt).toContain('alice');
       expect(prompt).toContain('First comment');
 
-      // Card rendered
+      // Card rendered — compact single-line layout with full thread content
+      // exposed via the native title tooltip (hover).
       expect(chatPanel.messagesEl.appendChild).toHaveBeenCalled();
       const card = chatPanel.messagesEl.appendChild.mock.calls[0][0];
-      expect(card.className).toContain('chat-panel__context-card--thread');
+      expect(card.className).toContain('chat-panel__context-card');
       expect(card.className).toContain('external-comment-context');
       expect(card.className).toContain('source-github');
-      // All three authors present in card markup
-      expect(card.innerHTML).toContain('alice');
-      expect(card.innerHTML).toContain('bob');
-      expect(card.innerHTML).toContain('carol');
+      // All three authors live in the title attribute (hover surface).
+      const tooltip = card.getAttribute('title') || '';
+      expect(tooltip).toContain('alice');
+      expect(tooltip).toContain('bob');
+      expect(tooltip).toContain('carol');
+      // The visible row carries a "GITHUB THREAD" label and a count badge.
+      expect(card.innerHTML).toContain('GITHUB THREAD');
+      expect(card.innerHTML).toContain('3 comment');
     });
 
     it('should not crash when comments is empty or missing (defensive)', () => {
@@ -1225,25 +1243,22 @@ describe('ChatPanel', () => {
         chatPanel._sendThreadContextMessage(threadContext);
         const card = chatPanel.messagesEl.appendChild.mock.calls[0][0];
 
-        // No live <script> tag survives in the rendered HTML.
+        // Compact card: body is in the title tooltip (plain text attribute,
+        // automatically escaped), not the DOM. No live tags should survive
+        // anywhere in the rendered HTML.
         expect(card.innerHTML).not.toMatch(/<script[^>]*>/i);
-        // No live onerror=... attribute survives (the literal pattern would
-        // only ever appear escaped inside text — never as `<tag onerror=...>`).
         expect(card.innerHTML).not.toMatch(/<[^>]*\sonerror\s*=/i);
-        // No live <img ...> tag — the production code escapes the body, so
-        // the only `<img` substring should be inside escaped text (&lt;img).
         expect(card.innerHTML).not.toMatch(/<img\b/i);
-        // javascript: URL must NOT appear as an href. Plain-text presence
-        // in escaped text is acceptable, but href="javascript:..." is not.
+        // javascript: URL must NOT appear as an href.
         expect(card.innerHTML).not.toMatch(/href=["']javascript:/i);
-        // Author still appears in text.
-        expect(card.innerHTML).toContain('alice');
+        // Author appears in the tooltip (full thread surface for hover).
+        expect(card.getAttribute('title') || '').toContain('alice');
       } finally {
         global.window.renderMarkdown = origMd;
       }
     });
 
-    it('should render outdated badge per outdated comment entry', () => {
+    it('flags each outdated comment in the title tooltip', () => {
       const threadContext = {
         rootId: 7,
         source: 'external',
@@ -1261,9 +1276,10 @@ describe('ChatPanel', () => {
       chatPanel._sendThreadContextMessage(threadContext);
 
       const card = chatPanel.messagesEl.appendChild.mock.calls[0][0];
-      // The "outdated" badge text should appear twice (for alice and carol)
-      const matches = card.innerHTML.match(/outdated/g) || [];
-      expect(matches.length).toBeGreaterThanOrEqual(2);
+      const tooltip = card.getAttribute('title') || '';
+      // Tooltip marks alice and carol (outdated), but not bob.
+      const matches = tooltip.match(/\(outdated\)/g) || [];
+      expect(matches.length).toBe(2);
     });
   });
 
