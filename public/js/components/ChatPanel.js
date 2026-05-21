@@ -1185,14 +1185,31 @@ class ChatPanel {
    * @param {number} options.reviewId - Review ID
    * @param {number} options.suggestionId - Suggestion ID to ask about
    * @param {Object} options.suggestionContext - AI suggestion details for context
-   * @param {Object} options.commentContext - User comment details for context
+   * @param {Object} options.commentContext - Comment details for context
    * @param {string} options.commentContext.commentId - Comment ID
    * @param {string} options.commentContext.body - Comment body text
    * @param {string} options.commentContext.file - File path
    * @param {number} options.commentContext.line_start - Start line number
    * @param {number} options.commentContext.line_end - End line number
-   * @param {string} options.commentContext.source - 'user' for user comments
+   * @param {string} options.commentContext.source - 'user' for user comments, 'external' for external systems (e.g. GitHub)
+   * @param {string} [options.commentContext.externalSource] - When source === 'external', the external system id (e.g. 'github'). Drives theming.
+   * @param {string} [options.commentContext.externalUrl] - Permalink to the comment in the external system.
+   * @param {boolean} [options.commentContext.isOutdated] - Whether the external comment is anchored to an outdated diff position.
+   * @param {string} [options.commentContext.author] - External author/username.
    * @param {boolean} options.commentContext.isFileLevel - True if file-level comment
+   * @param {Object} options.threadContext - Multi-comment thread context (external systems only)
+   * @param {number|string} options.threadContext.rootId - Local id of the thread root
+   * @param {string} options.threadContext.source - Always 'external' for now
+   * @param {string} options.threadContext.externalSource - e.g. 'github'; drives theming + label
+   * @param {string} options.threadContext.file - File path
+   * @param {number|null} options.threadContext.line_start - Start line (null if outdated)
+   * @param {number|null} options.threadContext.line_end - End line (null if outdated)
+   * @param {Array<Object>} options.threadContext.comments - Ordered comments in the thread
+   * @param {string|null} options.threadContext.comments[].author - Author name
+   * @param {string} options.threadContext.comments[].body - Comment markdown
+   * @param {boolean} options.threadContext.comments[].isOutdated - Whether this comment is outdated
+   * @param {string|null} options.threadContext.comments[].externalUrl - Permalink in the source system
+   * @param {string|null} options.threadContext.comments[].externalCreatedAt - ISO timestamp of creation
    */
   async open(options = {}) {
     // Concurrency guard: if a previous open() is still loading MRU / messages,
@@ -1248,7 +1265,12 @@ class ChatPanel {
     // attached as tabs are created/restored.
     this._ensureSubscriptions();
 
-    const hasExplicitContext = !!(options.suggestionContext || options.commentContext || options.fileContext);
+    const hasExplicitContext = !!(
+      options.suggestionContext ||
+      options.commentContext ||
+      options.threadContext ||
+      options.fileContext
+    );
 
     // First-time open behaviour:
     //   1. If localStorage has a tab list for this review, restore those tabs.
@@ -1318,10 +1340,19 @@ class ChatPanel {
           line_start: options.commentContext.line_start,
           line_end: options.commentContext.line_end,
         };
+      } else if (options.commentContext.source === 'external') {
+        // External comments are read-only — no adopt/update/dismiss actions
+        this._contextSource = 'external-comment';
+        this._contextItemId = options.commentContext.commentId || null;
       } else {
         this._contextSource = 'user';
         this._contextItemId = options.commentContext.commentId || null;
       }
+    } else if (options.threadContext) {
+      // If opening with thread context (external systems only), inject as a card
+      this._sendThreadContextMessage(options.threadContext);
+      this._contextSource = 'external-thread';
+      this._contextItemId = options.threadContext.rootId || null;
     } else if (options.fileContext) {
       // If opening with file context, inject it as a context card
       this._sendFileContextMessage(options.fileContext);
@@ -1591,6 +1622,8 @@ class ChatPanel {
               this._addLineContextCard(ctxData);
             } else if (ctxData.type === 'comment') {
               this._addCommentContextCard(ctxData);
+            } else if (ctxData.type === 'thread') {
+              this._addThreadContextCard(ctxData);
             } else {
               this._addContextCard(ctxData);
             }
@@ -2475,12 +2508,13 @@ class ChatPanel {
   }
 
   /**
-   * Store pending context and render a compact context card for a user comment or line reference.
-   * Called when the user clicks "Ask about this" on a user comment, or clicks
-   * the gutter chat button (line reference with no comment body).
+   * Store pending context and render a compact context card for a user/external comment or line reference.
+   * Called when the user clicks "Ask about this" on a user comment, an external (e.g. GitHub) comment,
+   * or clicks the gutter chat button (line reference with no comment body).
    * The context is NOT sent to the agent immediately -- it is prepended
    * to the next user message so the agent receives question + context together.
-   * @param {Object} ctx - Comment context {commentId, type, body, file, line_start, line_end, source, isFileLevel}
+   * @param {Object} ctx - Comment context. When `source === 'external'`, additional fields are honored:
+   *   `externalSource` (string, e.g. 'github'), `externalUrl` (permalink), `isOutdated` (boolean), `author` (string).
    */
   _sendCommentContextMessage(ctx) {
     const tab = this._getActiveTab();
@@ -2490,6 +2524,7 @@ class ChatPanel {
     if (emptyState) emptyState.remove();
 
     const isLine = ctx.type === 'line';
+    const isExternal = ctx.source === 'external';
 
     // Store structured context data for DB persistence
     const lineLabel = !ctx.line_start
@@ -2501,19 +2536,33 @@ class ChatPanel {
         ? lineLabel
         : (ctx.isFileLevel ? 'File comment' : `Comment on line ${ctx.line_start || '?'}`),
       file: ctx.file || null,
+      side: ctx.side || null,
       line_start: ctx.line_start || null,
       line_end: ctx.line_end || null,
       body: ctx.body || null,
-      source: 'user'
+      source: isExternal ? 'external' : 'user'
     };
+    if (isExternal) {
+      contextData.externalSource = ctx.externalSource || null;
+      contextData.externalUrl = ctx.externalUrl || null;
+      contextData.isOutdated = !!ctx.isOutdated;
+      contextData.author = ctx.author || null;
+    }
     tab.pendingContextData.push(contextData);
 
     // Build the plain text context for the agent
+    const sourceLabel = isExternal
+      ? (ctx.externalSource ? this._formatExternalSourceLabel(ctx.externalSource) : 'an external system')
+      : null;
     const lines = isLine
       ? [ctx.line_start
         ? `The user wants to discuss code at ${lineLabel} in ${contextData.file || 'unknown file'}:`
         : `The user wants to discuss the file ${contextData.file || 'unknown file'}:`]
-      : ['The user wants to discuss a review comment:'];
+      : isExternal
+        ? [ctx.author
+          ? `The user wants to discuss a review comment posted on ${sourceLabel} by ${ctx.author}:`
+          : `The user wants to discuss a review comment posted on ${sourceLabel}:`]
+        : ['The user wants to discuss a review comment:'];
     if (contextData.file) {
       let fileLine = `- File: ${contextData.file}`;
       if (contextData.line_start) {
@@ -2524,8 +2573,19 @@ class ChatPanel {
     if (ctx.isFileLevel) {
       lines.push('- Scope: File-level comment');
     }
-    if (ctx.parentId) {
+    if (ctx.parentId && !isExternal) {
       lines.push('- Origin: adopted from AI suggestion');
+    }
+    if (isExternal) {
+      if (ctx.author) {
+        lines.push(`- Author: ${ctx.author}`);
+      }
+      if (ctx.isOutdated) {
+        lines.push('- Status: outdated (the diff position no longer exists in the current PR head)');
+      }
+      if (ctx.externalUrl) {
+        lines.push(`- Link: ${ctx.externalUrl}`);
+      }
     }
     if (contextData.body) {
       lines.push(`- Comment: ${contextData.body}`);
@@ -2536,7 +2596,7 @@ class ChatPanel {
     if (patch && window.DiffContext) {
       if (contextData.line_start && !ctx.isFileLevel) {
         const hunk = window.DiffContext.extractHunkForLines(
-          patch, contextData.line_start, contextData.line_end || contextData.line_start
+          patch, contextData.line_start, contextData.line_end || contextData.line_start, contextData.side
         );
         if (hunk) {
           lines.push(`- Diff hunk:\n\`\`\`\n${hunk}\n\`\`\``);
@@ -2557,6 +2617,118 @@ class ChatPanel {
     } else {
       this._addCommentContextCard(ctx, { removable: true });
     }
+  }
+
+  /**
+   * Format an externalSource identifier into a human-readable label.
+   * @param {string} externalSource - e.g. 'github', 'gitlab'
+   * @returns {string}
+   */
+  _formatExternalSourceLabel(externalSource) {
+    if (!externalSource) return 'an external system';
+    switch (externalSource) {
+      case 'github': return 'GitHub';
+      case 'gitlab': return 'GitLab';
+      case 'linear': return 'Linear';
+      default:
+        return externalSource.charAt(0).toUpperCase() + externalSource.slice(1);
+    }
+  }
+
+  /**
+   * Store pending context and render a compact context card for a comment thread.
+   * Called when the user clicks "chat about this thread" on an external thread (e.g. GitHub).
+   * Threads are external systems only -- internal user comments don't have a thread shape.
+   * @param {Object} threadContext - See JSDoc on open() for full shape.
+   */
+  _sendThreadContextMessage(threadContext) {
+    // Remove empty state if present
+    const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
+    if (emptyState) emptyState.remove();
+
+    const comments = Array.isArray(threadContext.comments) ? threadContext.comments : [];
+    const externalSource = threadContext.externalSource || null;
+    const sourceLabel = this._formatExternalSourceLabel(externalSource);
+
+    // Store structured context data for DB persistence
+    const contextData = {
+      type: 'thread',
+      title: `${sourceLabel} thread`,
+      file: threadContext.file || null,
+      side: threadContext.side || null,
+      line_start: threadContext.line_start || null,
+      line_end: threadContext.line_end || null,
+      body: null,
+      source: 'external',
+      externalSource,
+      rootId: threadContext.rootId || null,
+      comments: comments.map((c) => ({
+        author: c.author || null,
+        body: c.body || '',
+        isOutdated: !!c.isOutdated,
+        externalUrl: c.externalUrl || null,
+        externalCreatedAt: c.externalCreatedAt || null,
+      })),
+    };
+    this._pendingContextData.push(contextData);
+
+    // Build the plain text context for the agent
+    const fileLabel = contextData.file || 'unknown file';
+    let anchor = fileLabel;
+    if (contextData.line_start) {
+      anchor += `:${contextData.line_start}`;
+      if (contextData.line_end && contextData.line_end !== contextData.line_start) {
+        anchor += `-${contextData.line_end}`;
+      }
+    }
+    const lines = [
+      `The user wants to discuss a thread of ${comments.length} comment${comments.length === 1 ? '' : 's'} from ${sourceLabel} on ${anchor}:`,
+    ];
+    if (contextData.file) {
+      let fileLine = `- File: ${contextData.file}`;
+      if (contextData.line_start) {
+        fileLine += ` (line ${contextData.line_start}${contextData.line_end && contextData.line_end !== contextData.line_start ? '-' + contextData.line_end : ''})`;
+      }
+      lines.push(fileLine);
+    }
+    lines.push(`- Source: ${sourceLabel}`);
+    lines.push(`- Comment count: ${comments.length}`);
+
+    comments.forEach((c, idx) => {
+      const author = c.author || 'unknown';
+      const parts = [`Comment ${idx + 1} by ${author}`];
+      if (c.externalCreatedAt) parts.push(`at ${c.externalCreatedAt}`);
+      if (c.isOutdated) parts.push('(outdated)');
+      if (c.externalUrl) parts.push(`(${c.externalUrl})`);
+      lines.push(`- ${parts.join(' ')}:`);
+      const body = (c.body || '').trim() || '(no body)';
+      // Indent body so it renders as a quote block
+      const indented = body.split('\n').map((ln) => `  > ${ln}`).join('\n');
+      lines.push(indented);
+    });
+
+    // Enrich with diff hunk if available
+    const patch = window.prManager?.filePatches?.get(contextData.file);
+    if (patch && window.DiffContext) {
+      if (contextData.line_start) {
+        const hunk = window.DiffContext.extractHunkForLines(
+          patch, contextData.line_start, contextData.line_end || contextData.line_start, contextData.side
+        );
+        if (hunk) {
+          lines.push(`- Diff hunk:\n\`\`\`\n${hunk}\n\`\`\``);
+        }
+      } else {
+        const ranges = window.DiffContext.extractHunkRangesForFile(patch);
+        if (ranges.length) {
+          lines.push(`- Diff hunk ranges: ${JSON.stringify(ranges)}`);
+        }
+      }
+    }
+
+    this._pendingContext.push(lines.join('\n'));
+
+    // Render the compact context card in the UI
+    this._addThreadContextCard(contextData, { removable: true });
   }
 
   /**
@@ -2912,17 +3084,54 @@ class ChatPanel {
   }
 
   /**
-   * Add a compact context card for a user comment to the messages area.
-   * @param {Object} ctx - Comment context {commentId, body, file, line_start, line_end, isFileLevel}
+   * Add a compact context card for a user or external comment to the messages area.
+   * When `ctx.source === 'external'`, adds external-comment-context classes
+   * (and `source-<externalSource>`) so per-source theming variables apply,
+   * renders the author label (linked to externalUrl when present), and shows
+   * an "outdated" badge when `ctx.isOutdated`.
+   * @param {Object} ctx - Comment context {commentId, body, file, line_start, line_end, isFileLevel, source, externalSource, externalUrl, isOutdated, author}
    */
   _addCommentContextCard(ctx, { removable = false } = {}) {
     const card = document.createElement('div');
-    card.className = 'chat-panel__context-card';
+    const isExternal = ctx.source === 'external';
+    const classes = ['chat-panel__context-card'];
+    if (isExternal) {
+      classes.push('external-comment-context');
+      if (ctx.externalSource) classes.push(`source-${ctx.externalSource}`);
+      if (ctx.isOutdated) classes.push('is-outdated');
+    }
+    card.className = classes.join(' ');
 
-    const label = ctx.isFileLevel ? 'file comment' : 'comment';
+    const sourceLabel = isExternal
+      ? this._formatExternalSourceLabel(ctx.externalSource)
+      : null;
+    const label = isExternal
+      ? (ctx.isFileLevel ? `${sourceLabel} file comment` : `${sourceLabel} comment`)
+      : (ctx.isFileLevel ? 'file comment' : 'comment');
     const bodyPreview = ctx.body ? (ctx.body.length > 60 ? ctx.body.substring(0, 60) + '...' : ctx.body) : 'Comment';
     const fileInfo = ctx.file
       ? `${ctx.file}${ctx.line_start ? ':' + ctx.line_start : ''}`
+      : '';
+
+    // Author rendering — linked to externalUrl only when the URL passes
+    // the scheme allowlist. Mirrors the external-comment-manager so
+    // `javascript:` / `data:` URLs from a malicious upstream can't smuggle
+    // a live `<a href>` into the DOM.
+    let authorHTML = '';
+    if (isExternal && ctx.author) {
+      const escapedAuthor = this._escapeHtml(ctx.author);
+      if (ctx.externalUrl && this._isSafeUrl(ctx.externalUrl)) {
+        const escapedUrl = window.escapeHtmlAttribute
+          ? window.escapeHtmlAttribute(ctx.externalUrl)
+          : this._escapeHtml(ctx.externalUrl);
+        authorHTML = `<a class="chat-panel__context-author" href="${escapedUrl}" target="_blank" rel="noopener noreferrer">${escapedAuthor}</a>`;
+      } else {
+        authorHTML = `<span class="chat-panel__context-author">${escapedAuthor}</span>`;
+      }
+    }
+
+    const outdatedHTML = isExternal && ctx.isOutdated
+      ? '<span class="chat-panel__context-badge chat-panel__context-badge--outdated">outdated</span>'
       : '';
 
     card.innerHTML = `
@@ -2930,6 +3139,8 @@ class ChatPanel {
         <path d="M10.561 8.073a6.005 6.005 0 0 1 3.432 5.142.75.75 0 1 1-1.498.07 4.5 4.5 0 0 0-8.99 0 .75.75 0 0 1-1.498-.07 6.004 6.004 0 0 1 3.431-5.142 3.999 3.999 0 1 1 5.123 0ZM10.5 5a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z"/>
       </svg>
       <span class="chat-panel__context-label">${this._escapeHtml(label)}</span>
+      ${authorHTML}
+      ${outdatedHTML}
       <span class="chat-panel__context-title">${this._renderInlineMarkdown(bodyPreview)}</span>
       ${fileInfo ? `<span class="chat-panel__context-file">${this._escapeHtml(fileInfo)}</span>` : ''}
     `;
@@ -2941,6 +3152,94 @@ class ChatPanel {
 
     this.messagesEl.appendChild(card);
     requestAnimationFrame(() => this.scrollToBottom({ force: true }));
+  }
+
+  /**
+   * Add a compact context card for an external comment thread to the messages area.
+   * Renders the thread header (source + file:line) and a list of comments,
+   * each with author (linked to externalUrl when present), timestamp, body
+   * (rendered as markdown), and an "outdated" badge when applicable.
+   * @param {Object} ctx - Thread context data persisted by _sendThreadContextMessage.
+   * @param {Object} [options] - Options
+   * @param {boolean} [options.removable=false] - Whether the card should have a remove button
+   */
+  _addThreadContextCard(ctx, { removable = false } = {}) {
+    const card = document.createElement('div');
+    const externalSource = ctx.externalSource || null;
+    // No --thread modifier: thread cards now use the same compact single-line
+    // layout as line/file cards. The full thread content is exposed via the
+    // card's title attribute (hover tooltip).
+    const classes = ['chat-panel__context-card', 'external-comment-context'];
+    if (externalSource) classes.push(`source-${externalSource}`);
+    card.className = classes.join(' ');
+
+    const sourceLabel = this._formatExternalSourceLabel(externalSource);
+    const fileLabel = ctx.file || 'unknown file';
+    let anchor = fileLabel;
+    if (ctx.line_start) {
+      anchor += `:${ctx.line_start}`;
+      if (ctx.line_end && ctx.line_end !== ctx.line_start) {
+        anchor += `-${ctx.line_end}`;
+      }
+    }
+    const comments = Array.isArray(ctx.comments) ? ctx.comments : [];
+
+    // Snippet from the first comment for the visible title slot. Stripped of
+    // markdown syntax so the line reads cleanly when truncated by ellipsis.
+    const firstBody = comments[0]?.body || '';
+    const stripped = this._stripMarkdownForSnippet(firstBody);
+    const snippet = stripped.length > 80 ? stripped.substring(0, 80) + '…' : stripped;
+
+    // Full thread content for the hover tooltip — plain text, one comment per
+    // block so the native title attribute (which respects newlines on most
+    // platforms) gives the reviewer the full conversation on hover.
+    const tooltip = comments.map((c, i) => {
+      const author = c.author || 'unknown';
+      const ts = c.externalCreatedAt ? ` · ${c.externalCreatedAt}` : '';
+      const out = c.isOutdated ? ' (outdated)' : '';
+      const body = (c.body || '(no body)').trim();
+      return `${i + 1}. ${author}${ts}${out}\n${body}`;
+    }).join('\n\n');
+
+    card.setAttribute('title', tooltip);
+
+    const countText = `${comments.length} comment${comments.length === 1 ? '' : 's'}`;
+
+    card.innerHTML = `
+      <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
+        <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25Z"/>
+      </svg>
+      <span class="chat-panel__context-label"><strong>${this._escapeHtml(sourceLabel.toUpperCase())} THREAD</strong></span>
+      <span class="chat-panel__context-title">${snippet ? this._escapeHtml(snippet) : '<em>(empty)</em>'}</span>
+      <span class="chat-panel__context-file">${this._escapeHtml(anchor)}</span>
+      <span class="chat-panel__context-count">${countText}</span>
+    `;
+
+    if (removable) this._makeCardRemovable(card);
+
+    this.messagesEl.appendChild(card);
+    requestAnimationFrame(() => this.scrollToBottom({ force: true }));
+  }
+
+  /**
+   * Strip a small set of common markdown syntax so a snippet reads cleanly
+   * when truncated. Not a full parser — just enough to drop heading/list
+   * markers, inline code backticks, and bold/italic emphasis.
+   * @private
+   */
+  _stripMarkdownForSnippet(text) {
+    if (!text) return '';
+    return String(text)
+      .replace(/```[\s\S]*?```/g, ' ')
+      .replace(/`([^`]+)`/g, '$1')
+      .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+      .replace(/^\s*[-*+]\s+/gm, '')
+      .replace(/\*\*([^*]+)\*\*/g, '$1')
+      .replace(/\*([^*]+)\*/g, '$1')
+      .replace(/__([^_]+)__/g, '$1')
+      .replace(/_([^_]+)_/g, '$1')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
   /**
@@ -4216,6 +4515,28 @@ class ChatPanel {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+  }
+
+  /**
+   * Allow only http/https/mailto URLs in href attributes. Used to gate
+   * server-supplied URLs (external comment permalinks, profile URLs) so a
+   * malicious upstream cannot smuggle `javascript:` or `data:` schemes
+   * into our DOM.
+   * @param {string} url
+   * @returns {boolean}
+   */
+  _isSafeUrl(url) {
+    if (typeof url !== 'string' || !url) return false;
+    const trimmed = url.trim();
+    if (!trimmed) return false;
+    if (trimmed.startsWith('/') || trimmed.startsWith('#') || trimmed.startsWith('?')) return true;
+    try {
+      const base = (typeof window !== 'undefined' && window.location) ? window.location.href : 'http://localhost/';
+      const u = new URL(trimmed, base);
+      return u.protocol === 'http:' || u.protocol === 'https:' || u.protocol === 'mailto:';
+    } catch {
+      return false;
+    }
   }
 
   /**

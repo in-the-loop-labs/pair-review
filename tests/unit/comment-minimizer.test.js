@@ -425,10 +425,11 @@ describe('CommentMinimizer', () => {
   // -------------------------------------------------------------------------
   describe('refreshIndicators', () => {
     /** Set up document.querySelectorAll to return the given rows by selector. */
-    function mockQuerySelectorAll(commentRows, suggestionRows) {
+    function mockQuerySelectorAll(commentRows, suggestionRows, externalRows = []) {
       global.document.querySelectorAll = vi.fn((selector) => {
         if (selector === '.user-comment-row') return commentRows;
         if (selector === '.ai-suggestion-row') return suggestionRows;
+        if (selector === '.external-comment-row') return externalRows;
         if (selector === '.comment-indicator') return [];
         if (selector === '.comment-expanded') return [];
         return [];
@@ -661,6 +662,125 @@ describe('CommentMinimizer', () => {
 
       const btn = codeCell.children[0];
       expect(btn.classList.contains('expanded')).toBe(true);
+    });
+
+    it('should re-apply .comment-expanded to rebuilt rows on refresh when the diff line is in _expandedLines', () => {
+      // Regression: external-comment refresh tears down and rebuilds
+      // `.external-comment-row` elements. The rebuilt rows have no
+      // expanded class. _injectIndicator was setting btn.expanded based
+      // on _expandedLines but never re-applying `.comment-expanded` to
+      // the new rows, leaving the indicator "open" while the rows stayed
+      // hidden by the `.comments-minimized .external-comment-row` rule.
+      const codeCell = buildCodeCell();
+      // Fresh external-comment-row after rebuild — has NO comment-expanded yet.
+      const rebuiltExternal = {
+        classList: {
+          _set: new Set(['external-comment-row']),
+          add(c) { this._set.add(c); },
+          remove(c) { this._set.delete(c); },
+          contains(c) { return this._set.has(c); },
+        },
+      };
+      // The thread bubble children so the indicator path still works.
+      const bubble = {
+        classList: { _set: new Set(['external-comment']), contains(c) { return this._set.has(c); } },
+      };
+      const rows = buildRows([
+        { classes: ['d2h-cntx'], children: { '.d2h-code-line-ctn': codeCell } },
+      ]);
+      // Wire rebuiltExternal as a sibling of rows[0] using the same shape buildRows uses.
+      rebuiltExternal.previousElementSibling = rows[0];
+      rebuiltExternal.nextElementSibling = null;
+      rows[0].nextElementSibling = rebuiltExternal;
+      rebuiltExternal.querySelectorAll = (selector) => {
+        if (selector === '.external-comment') return [bubble];
+        return [];
+      };
+
+      mockQuerySelectorAll([], [], [rebuiltExternal]);
+
+      const cm = new CommentMinimizer();
+      cm._active = true;
+      // User had previously expanded this line — the Set survives the rebuild,
+      // even though .comment-expanded has been wiped from the rebuilt rows.
+      cm._expandedLines.add(rows[0]);
+      cm.refreshIndicators();
+
+      // Indicator button reflects "expanded"
+      const btn = codeCell.children[0];
+      expect(btn.classList.contains('expanded')).toBe(true);
+      // Rebuilt row must regain .comment-expanded so it becomes visible
+      // again via the `.comments-minimized .external-comment-row.comment-expanded`
+      // display: table-row override.
+      expect(rebuiltExternal.classList.contains('comment-expanded')).toBe(true);
+    });
+
+    it('should inject an external-comment indicator and count the bubbles in the thread card', () => {
+      // Regression: external-comment-row was previously excluded from the
+      // minimizer. The row stayed visible while user/AI rows were hidden,
+      // and no indicator counted toward the per-line badge total.
+      const bubble1 = {
+        classList: { _set: new Set(['external-comment']), contains(c) { return this._set.has(c); } },
+      };
+      const bubble2 = {
+        classList: { _set: new Set(['external-comment']), contains(c) { return this._set.has(c); } },
+      };
+      const bubble3 = {
+        classList: { _set: new Set(['external-comment']), contains(c) { return this._set.has(c); } },
+      };
+      const codeCell = buildCodeCell();
+
+      const rows = buildRows([
+        { classes: ['d2h-cntx'], children: { '.d2h-code-line-ctn': codeCell } },
+        { classes: ['external-comment-row'] },
+      ]);
+      rows[1].querySelectorAll = (selector) => {
+        if (selector === '.external-comment') return [bubble1, bubble2, bubble3];
+        return [];
+      };
+
+      mockQuerySelectorAll([], [], [rows[1]]);
+
+      const cm = new CommentMinimizer();
+      cm._active = true;
+      cm.refreshIndicators();
+
+      expect(codeCell.children.length).toBe(1);
+      const btn = codeCell.children[0];
+      expect(btn.innerHTML).toContain('indicator-external');
+      // The thread card has 3 bubbles (root + 2 replies); the count reflects that.
+      expect(btn.innerHTML).toContain('<span class="indicator-count">3</span>');
+      expect(btn.title).toBe('3 external comments');
+    });
+
+    it('mixes external counts into the total alongside user/AI rows', () => {
+      const externalBubble = {
+        classList: { _set: new Set(['external-comment']), contains(c) { return this._set.has(c); } },
+      };
+      const codeCell = buildCodeCell();
+
+      const rows = buildRows([
+        { classes: ['d2h-cntx'], children: { '.d2h-code-line-ctn': codeCell } },
+        { classes: ['user-comment-row'] },
+        { classes: ['external-comment-row'] },
+      ]);
+      rows[2].querySelectorAll = (selector) => {
+        if (selector === '.external-comment') return [externalBubble];
+        return [];
+      };
+
+      mockQuerySelectorAll([rows[1]], [], [rows[2]]);
+
+      const cm = new CommentMinimizer();
+      cm._active = true;
+      cm.refreshIndicators();
+
+      const btn = codeCell.children[0];
+      expect(btn.innerHTML).toContain('indicator-user');
+      expect(btn.innerHTML).toContain('indicator-external');
+      // 1 user + 1 external = 2
+      expect(btn.innerHTML).toContain('<span class="indicator-count">2</span>');
+      expect(btn.title).toBe('1 comment, 1 external comment');
     });
   });
 

@@ -2,10 +2,11 @@
 /**
  * CommentMinimizer - Manages "minimize comments" mode for the diff view.
  *
- * When active, all inline comment rows (.user-comment-row) and AI suggestion
- * rows (.ai-suggestion-row) are hidden via CSS class.  Small indicator buttons
- * are injected on the right edge of each diff line that has comments, showing
- * a person icon (user comments) or sparkles icon (AI suggestions).
+ * When active, all inline comment rows (.user-comment-row, .ai-suggestion-row,
+ * and .external-comment-row) are hidden via CSS class. Small indicator
+ * buttons are injected on the right edge of each diff line that has
+ * comments, showing a person icon (user comments), sparkles icon (AI
+ * suggestions), or chat-bubble icon (external review comments).
  *
  * File-level comments (.file-comment-card inside .file-comments-zone) are also
  * hidden, with an indicator button injected into the file header bar.
@@ -22,6 +23,9 @@ class CommentMinimizer {
 
   /** AI comment icon SVG — speech bubble with sparkles (matches CommentManager.AI_ICON_SVG, different size) */
   static AI_COMMENT_ICON = `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M7.75 1a.75.75 0 0 1 0 1.5h-5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h2c.199 0 .39.079.53.22.141.14.22.331.22.53v2.19l2.72-2.72a.747.747 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-2a.75.75 0 0 1 1.5 0v2c0 .464-.184.909-.513 1.237A1.746 1.746 0 0 1 13.25 12H9.06l-2.573 2.573A1.457 1.457 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25v-7.5C1 1.784 1.784 1 2.75 1h5Zm4.519-.837a.248.248 0 0 1 .466 0l.238.648a3.726 3.726 0 0 0 2.218 2.219l.649.238a.249.249 0 0 1 0 .467l-.649.238a3.725 3.725 0 0 0-2.218 2.218l-.238.649a.248.248 0 0 1-.466 0l-.239-.649a3.725 3.725 0 0 0-2.218-2.218l-.649-.238a.249.249 0 0 1 0-.467l.649-.238A3.726 3.726 0 0 0 12.03.811l.239-.648Z"/></svg>`;
+
+  /** External comment icon SVG — plain chat bubble (octicon-comment). Matches the chat-comment glyph used elsewhere for external rows. */
+  static EXTERNAL_ICON = `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Z"/></svg>`;
 
   constructor() {
     this._active = false;
@@ -70,17 +74,22 @@ class CommentMinimizer {
 
     this._removeAllIndicators();
 
-    // Find all comment and suggestion rows currently in the DOM
+    // Find all comment, suggestion, and external-comment rows currently in the DOM
     const commentRows = document.querySelectorAll('.user-comment-row');
     const suggestionRows = document.querySelectorAll('.ai-suggestion-row');
+    const externalRows = document.querySelectorAll('.external-comment-row');
 
-    // Build a map: diff row element → { hasUser, hasAI, hasAdopted, userCount, aiCount, adoptedCount }
+    // Build a map: diff row element → indicator info entry
     const lineMap = new Map();
+    const newEntry = () => ({
+      hasUser: false, hasAI: false, hasAdopted: false, hasExternal: false,
+      userCount: 0, aiCount: 0, adoptedCount: 0, externalCount: 0
+    });
 
     for (const row of commentRows) {
       const diffRow = this._findDiffRowFor(row);
       if (!diffRow) continue;
-      const entry = lineMap.get(diffRow) || { hasUser: false, hasAI: false, hasAdopted: false, userCount: 0, aiCount: 0, adoptedCount: 0 };
+      const entry = lineMap.get(diffRow) || newEntry();
       if (row.querySelector('.adopted-comment')) {
         entry.hasAdopted = true;
         entry.adoptedCount++;
@@ -94,7 +103,7 @@ class CommentMinimizer {
     for (const row of suggestionRows) {
       const diffRow = this._findDiffRowFor(row);
       if (!diffRow) continue;
-      const entry = lineMap.get(diffRow) || { hasUser: false, hasAI: false, hasAdopted: false, userCount: 0, aiCount: 0, adoptedCount: 0 };
+      const entry = lineMap.get(diffRow) || newEntry();
       // Count non-adopted suggestion divs only — adopted ones are already
       // represented by the adopted comment row (avoid double-counting)
       const allSuggestions = row.querySelectorAll('.ai-suggestion');
@@ -111,6 +120,20 @@ class CommentMinimizer {
       lineMap.set(diffRow, entry);
     }
 
+    for (const row of externalRows) {
+      const diffRow = this._findDiffRowFor(row);
+      if (!diffRow) continue;
+      const entry = lineMap.get(diffRow) || newEntry();
+      // Count root + replies — each .external-comment is one bubble in the
+      // thread card and the reviewer should see the same total here that
+      // the thread itself shows.
+      const bubbles = row.querySelectorAll('.external-comment');
+      const bubbleCount = bubbles.length || 1;
+      entry.hasExternal = true;
+      entry.externalCount += bubbleCount;
+      lineMap.set(diffRow, entry);
+    }
+
     // Inject line-level indicators
     for (const [diffRow, info] of lineMap) {
       this._injectIndicator(diffRow, info);
@@ -121,8 +144,9 @@ class CommentMinimizer {
   }
 
   /**
-   * Walk backward from a comment/suggestion row to find its parent diff line.
-   * Skips other comment rows, suggestion rows, and context-expand rows.
+   * Walk backward from a comment/suggestion/external row to find its parent
+   * diff line. Skips other comment/suggestion/external rows and
+   * context-expand rows.
    * @param {HTMLElement} row
    * @returns {HTMLElement|null}
    */
@@ -132,6 +156,7 @@ class CommentMinimizer {
       if (
         !prev.classList.contains('user-comment-row') &&
         !prev.classList.contains('ai-suggestion-row') &&
+        !prev.classList.contains('external-comment-row') &&
         !prev.classList.contains('comment-form-row') &&
         !prev.classList.contains('context-expand-row')
       ) {
@@ -158,10 +183,11 @@ class CommentMinimizer {
     btn.className = 'comment-indicator';
     btn.type = 'button';
 
-    // Build icon content — three types:
-    //   person (purple)   = user-originated comments
+    // Build icon content — four types:
+    //   person (purple)     = user-originated comments
     //   ai-comment (purple) = adopted AI suggestions
-    //   sparkles (amber)  = AI suggestions
+    //   sparkles (amber)    = AI suggestions
+    //   chat bubble (blue)  = external review comments (e.g. GitHub)
     const icons = [];
     if (info.hasUser) {
       icons.push(`<span class="indicator-icon indicator-user" title="${info.userCount} comment${info.userCount !== 1 ? 's' : ''}">${CommentMinimizer.PERSON_ICON}</span>`);
@@ -172,8 +198,11 @@ class CommentMinimizer {
     if (info.hasAI) {
       icons.push(`<span class="indicator-icon indicator-ai" title="${info.aiCount} suggestion${info.aiCount !== 1 ? 's' : ''}">${CommentMinimizer.SPARKLES_ICON}</span>`);
     }
+    if (info.hasExternal) {
+      icons.push(`<span class="indicator-icon indicator-external" title="${info.externalCount} external comment${info.externalCount !== 1 ? 's' : ''}">${CommentMinimizer.EXTERNAL_ICON}</span>`);
+    }
 
-    const total = info.userCount + info.adoptedCount + info.aiCount;
+    const total = info.userCount + info.adoptedCount + info.aiCount + info.externalCount;
     const countBadge = total > 1 ? `<span class="indicator-count">${total}</span>` : '';
 
     btn.innerHTML = icons.join('') + countBadge;
@@ -182,11 +211,19 @@ class CommentMinimizer {
     if (info.userCount) totalLabel.push(`${info.userCount} comment${info.userCount !== 1 ? 's' : ''}`);
     if (info.adoptedCount) totalLabel.push(`${info.adoptedCount} adopted comment${info.adoptedCount !== 1 ? 's' : ''}`);
     if (info.aiCount) totalLabel.push(`${info.aiCount} suggestion${info.aiCount !== 1 ? 's' : ''}`);
+    if (info.externalCount) totalLabel.push(`${info.externalCount} external comment${info.externalCount !== 1 ? 's' : ''}`);
     btn.title = totalLabel.join(', ');
 
-    // Check if this line was previously expanded
+    // Check if this line was previously expanded. Re-applying
+    // `.comment-expanded` to the (possibly rebuilt) comment rows is
+    // important: when an external-comment refresh tears down and rebuilds
+    // `.external-comment-row` elements, the new rows have no expanded
+    // class even though the indicator button is still marked expanded.
+    // Without this step the indicator says "open" but the rows stay
+    // hidden via the `.comments-minimized` display: none rule.
     if (this._expandedLines.has(diffRow)) {
       btn.classList.add('expanded');
+      this._getCommentRowsFor(diffRow).forEach(row => row.classList.add('comment-expanded'));
     }
 
     // Click handler: toggle this line's comments
@@ -234,7 +271,8 @@ class CommentMinimizer {
     while (next) {
       if (
         next.classList.contains('user-comment-row') ||
-        next.classList.contains('ai-suggestion-row')
+        next.classList.contains('ai-suggestion-row') ||
+        next.classList.contains('external-comment-row')
       ) {
         rows.push(next);
       } else if (
@@ -261,8 +299,12 @@ class CommentMinimizer {
    * @returns {HTMLElement|null} The parent diff row, or null
    */
   findDiffRowFor(element) {
-    const commentRow = element.closest('.user-comment-row, .ai-suggestion-row') || element;
-    if (!commentRow.classList.contains('user-comment-row') && !commentRow.classList.contains('ai-suggestion-row')) {
+    const commentRow = element.closest('.user-comment-row, .ai-suggestion-row, .external-comment-row') || element;
+    if (
+      !commentRow.classList.contains('user-comment-row') &&
+      !commentRow.classList.contains('ai-suggestion-row') &&
+      !commentRow.classList.contains('external-comment-row')
+    ) {
       return null;
     }
     return this._findDiffRowFor(commentRow);
@@ -293,8 +335,12 @@ class CommentMinimizer {
     }
 
     // Line-level: find the containing comment/suggestion row
-    const commentRow = element.closest('.user-comment-row, .ai-suggestion-row') || element;
-    if (!commentRow.classList.contains('user-comment-row') && !commentRow.classList.contains('ai-suggestion-row')) {
+    const commentRow = element.closest('.user-comment-row, .ai-suggestion-row, .external-comment-row') || element;
+    if (
+      !commentRow.classList.contains('user-comment-row') &&
+      !commentRow.classList.contains('ai-suggestion-row') &&
+      !commentRow.classList.contains('external-comment-row')
+    ) {
       return;
     }
 
