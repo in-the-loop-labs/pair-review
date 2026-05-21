@@ -1040,8 +1040,8 @@ describe('ChatPanel', () => {
 
       chatPanel._sendCommentContextMessage(ctx);
 
-      expect(chatPanel._pendingContextData).toHaveLength(1);
-      const data = chatPanel._pendingContextData[0];
+      expect(chatPanel._getActiveTab().pendingContextData).toHaveLength(1);
+      const data = chatPanel._getActiveTab().pendingContextData[0];
       expect(data.source).toBe('external');
       expect(data.externalSource).toBe('github');
       expect(data.externalUrl).toBe('https://github.com/example/repo/pull/1#discussion_r100');
@@ -1066,7 +1066,7 @@ describe('ChatPanel', () => {
 
       chatPanel._sendCommentContextMessage(ctx);
 
-      const prompt = chatPanel._pendingContext[0];
+      const prompt = chatPanel._getActiveTab().pendingContext[0];
       expect(prompt).toContain('GitHub');
       expect(prompt).toContain('octocat');
       expect(prompt).toContain('https://github.com/example/repo/pull/1#discussion_r101');
@@ -1090,7 +1090,7 @@ describe('ChatPanel', () => {
 
       chatPanel._sendCommentContextMessage(ctx);
 
-      const prompt = chatPanel._pendingContext[0];
+      const prompt = chatPanel._getActiveTab().pendingContext[0];
       expect(prompt.toLowerCase()).toContain('outdated');
     });
   });
@@ -1117,8 +1117,8 @@ describe('ChatPanel', () => {
       chatPanel._sendThreadContextMessage(threadContext);
 
       // Pending data captured
-      expect(chatPanel._pendingContextData).toHaveLength(1);
-      const data = chatPanel._pendingContextData[0];
+      expect(chatPanel._getActiveTab().pendingContextData).toHaveLength(1);
+      const data = chatPanel._getActiveTab().pendingContextData[0];
       expect(data.type).toBe('thread');
       expect(data.source).toBe('external');
       expect(data.externalSource).toBe('github');
@@ -1127,7 +1127,7 @@ describe('ChatPanel', () => {
       expect(data.comments[0].body).toBe('First comment');
 
       // AI-facing prompt mentions thread and count
-      const prompt = chatPanel._pendingContext[0];
+      const prompt = chatPanel._getActiveTab().pendingContext[0];
       expect(prompt).toContain('thread');
       expect(prompt).toContain('3 comment');
       expect(prompt).toContain('GitHub');
@@ -1164,9 +1164,9 @@ describe('ChatPanel', () => {
 
       expect(() => chatPanel._sendThreadContextMessage(threadContext)).not.toThrow();
 
-      const data = chatPanel._pendingContextData[0];
+      const data = chatPanel._getActiveTab().pendingContextData[0];
       expect(data.comments).toEqual([]);
-      const prompt = chatPanel._pendingContext[0];
+      const prompt = chatPanel._getActiveTab().pendingContext[0];
       expect(prompt).toContain('0 comment');
     });
 

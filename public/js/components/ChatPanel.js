@@ -2642,8 +2642,10 @@ class ChatPanel {
    * @param {Object} threadContext - See JSDoc on open() for full shape.
    */
   _sendThreadContextMessage(threadContext) {
+    const tab = this._getActiveTab();
+    if (!tab) return;
     // Remove empty state if present
-    const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
+    const emptyState = tab.messagesEl?.querySelector('.chat-panel__empty');
     if (emptyState) emptyState.remove();
 
     const comments = Array.isArray(threadContext.comments) ? threadContext.comments : [];
@@ -2670,7 +2672,7 @@ class ChatPanel {
         externalCreatedAt: c.externalCreatedAt || null,
       })),
     };
-    this._pendingContextData.push(contextData);
+    tab.pendingContextData.push(contextData);
 
     // Build the plain text context for the agent
     const fileLabel = contextData.file || 'unknown file';
@@ -2725,7 +2727,7 @@ class ChatPanel {
       }
     }
 
-    this._pendingContext.push(lines.join('\n'));
+    tab.pendingContext.push(lines.join('\n'));
 
     // Render the compact context card in the UI
     this._addThreadContextCard(contextData, { removable: true });
