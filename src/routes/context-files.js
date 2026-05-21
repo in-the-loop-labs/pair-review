@@ -11,10 +11,11 @@
 const fs = require('fs');
 const path = require('path');
 const express = require('express');
-const { ReviewRepository, ContextFileRepository, WorktreeRepository } = require('../database');
+const { ContextFileRepository, WorktreeRepository } = require('../database');
 const logger = require('../utils/logger');
 const { broadcastReviewEvent } = require('../events/review-events');
 const { getDiffFileList } = require('../utils/diff-file-list');
+const validateReviewId = require('./middleware/validate-review-id');
 
 const router = express.Router();
 
@@ -43,34 +44,6 @@ async function resolveRepoRoot(db, review) {
   }
 
   return null;
-}
-
-/**
- * Middleware: validate that :reviewId exists in the reviews table.
- * Attaches the review record to req.review for downstream handlers.
- */
-async function validateReviewId(req, res, next) {
-  try {
-    const reviewId = parseInt(req.params.reviewId, 10);
-
-    if (isNaN(reviewId) || reviewId <= 0) {
-      return res.status(400).json({ error: 'Invalid review ID' });
-    }
-
-    const db = req.app.get('db');
-    const reviewRepo = new ReviewRepository(db);
-    const review = await reviewRepo.getReview(reviewId);
-
-    if (!review) {
-      return res.status(404).json({ error: `Review #${reviewId} not found` });
-    }
-
-    req.review = review;
-    req.reviewId = reviewId;
-    next();
-  } catch (error) {
-    next(error);
-  }
 }
 
 /**

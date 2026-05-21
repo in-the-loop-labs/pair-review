@@ -7455,3 +7455,554 @@ describe('POST /api/local/sessions/bulk-delete', () => {
     expect(kept).toBeDefined();
   });
 });
+
+describe('GET /api/reviews/:reviewId/hunk-summaries', () => {
+  let db;
+  let app;
+  let reviewId;
+
+  beforeEach(async () => {
+    db = await createTestDatabase();
+    app = createTestApp(db);
+
+    const result = await run(db, `
+      INSERT INTO reviews (pr_number, repository, status)
+      VALUES (?, ?, ?)
+    `, [42, 'owner/repo', 'draft']);
+    reviewId = result.lastID;
+  });
+
+  afterEach(async () => {
+    if (db) {
+      await closeTestDatabase(db);
+    }
+  });
+
+  it('returns 400 when reviewId is not a number', async () => {
+    const response = await request(app)
+      .get('/api/reviews/not-a-number/hunk-summaries');
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toBe('Invalid review ID');
+  });
+
+  it('returns 400 when reviewId is zero', async () => {
+    const response = await request(app)
+      .get('/api/reviews/0/hunk-summaries');
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toBe('Invalid review ID');
+  });
+
+  it('returns 404 for a non-existent reviewId', async () => {
+    const response = await request(app)
+      .get('/api/reviews/9999999/hunk-summaries');
+
+    expect(response.status).toBe(404);
+    expect(response.body.error).toContain('9999999');
+  });
+
+  it('returns an empty summaries array for a review with no rows', async () => {
+    const response = await request(app)
+      .get(`/api/reviews/${reviewId}/hunk-summaries`);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ summaries: [], generating: false });
+  });
+
+  it('returns the expected shape for a review with seeded rows', async () => {
+    // Seed two hunk summaries — one with summary_text, one with trivial_reason
+    await run(db, `
+      INSERT INTO hunk_summaries (review_id, file_path, content_hash, summary_text, trivial_reason)
+      VALUES (?, ?, ?, ?, ?)
+    `, [reviewId, 'src/a.js', 'hash-a', 'Adds a helper', null]);
+
+    await run(db, `
+      INSERT INTO hunk_summaries (review_id, file_path, content_hash, summary_text, trivial_reason)
+      VALUES (?, ?, ?, ?, ?)
+    `, [reviewId, 'src/b.js', 'hash-b', null, 'whitespace-only']);
+
+    const response = await request(app)
+      .get(`/api/reviews/${reviewId}/hunk-summaries`);
+
+    expect(response.status).toBe(200);
+    expect(Array.isArray(response.body.summaries)).toBe(true);
+    expect(response.body.summaries).toHaveLength(2);
+
+    const byFile = Object.fromEntries(
+      response.body.summaries.map((s) => [s.file_path, s])
+    );
+
+    expect(byFile['src/a.js']).toEqual({
+      file_path: 'src/a.js',
+      content_hash: 'hash-a',
+      summary_text: 'Adds a helper',
+      trivial_reason: null
+    });
+    expect(byFile['src/b.js']).toEqual({
+      file_path: 'src/b.js',
+      content_hash: 'hash-b',
+      summary_text: null,
+      trivial_reason: 'whitespace-only'
+    });
+
+    // Endpoint must NOT leak internal columns like provider/model/created_at
+    for (const s of response.body.summaries) {
+      expect(Object.keys(s).sort()).toEqual(['content_hash', 'file_path', 'summary_text', 'trivial_reason']);
+    }
+  });
+
+  it('does not return summaries that belong to a different review', async () => {
+    // Create a second review and seed it
+    const otherResult = await run(db, `
+      INSERT INTO reviews (pr_number, repository, status)
+      VALUES (?, ?, ?)
+    `, [99, 'owner/repo', 'draft']);
+    const otherReviewId = otherResult.lastID;
+
+    await run(db, `
+      INSERT INTO hunk_summaries (review_id, file_path, content_hash, summary_text, trivial_reason)
+      VALUES (?, ?, ?, ?, ?)
+    `, [otherReviewId, 'src/other.js', 'hash-other', 'Other review', null]);
+
+    const response = await request(app)
+      .get(`/api/reviews/${reviewId}/hunk-summaries`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.summaries).toEqual([]);
+    expect(response.body.generating).toBe(false);
+  });
+});
+
+describe('hunk_hashes on diff responses', () => {
+  let db;
+  let app;
+
+  beforeEach(async () => {
+    db = await createTestDatabase();
+    app = createTestApp(db);
+  });
+
+  afterEach(async () => {
+    if (db) {
+      await closeTestDatabase(db);
+    }
+  });
+
+  it('PR diff endpoint attaches hunk_hashes parallel to each file\'s hunks', async () => {
+    const { hashHunk } = require('../../src/ai/hunk-hashing');
+    const { parseHunks } = require('../../src/utils/diff-hunks');
+    const { parseUnifiedDiffPatches } = require('../../src/utils/diff-file-list');
+
+    // A 2-file diff with 1 and 2 hunks respectively.
+    const diff = [
+      'diff --git a/a.js b/a.js',
+      '--- a/a.js',
+      '+++ b/a.js',
+      '@@ -1,2 +1,3 @@',
+      ' line-a-1',
+      '+line-a-new',
+      ' line-a-2',
+      'diff --git a/b.js b/b.js',
+      '--- a/b.js',
+      '+++ b/b.js',
+      '@@ -1,2 +1,3 @@',
+      ' line-b-1',
+      '+line-b-added',
+      ' line-b-2',
+      '@@ -10,2 +11,3 @@',
+      ' line-b-10',
+      '+line-b-extra',
+      ' line-b-11'
+    ].join('\n');
+
+    const prData = JSON.stringify({
+      state: 'open',
+      diff,
+      changed_files: [],
+      additions: 2,
+      deletions: 0,
+      html_url: 'https://github.com/o/r/pull/77',
+      base_sha: 'b1', head_sha: 'h2',
+      node_id: 'PR_node'
+    });
+
+    await run(db, `
+      INSERT INTO pr_metadata (pr_number, repository, title, description, author, base_branch, head_branch, pr_data)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `, [77, 'owner/repo', 'T', 'D', 'u', 'main', 'feature', prData]);
+
+    const response = await request(app)
+      .get('/api/pr/owner/repo/77/diff');
+
+    expect(response.status).toBe(200);
+    const files = response.body.changed_files;
+    expect(Array.isArray(files)).toBe(true);
+
+    const byFile = Object.fromEntries(files.map((f) => [f.file, f]));
+    expect(byFile['a.js']).toBeTruthy();
+    expect(byFile['b.js']).toBeTruthy();
+    expect(Array.isArray(byFile['a.js'].hunk_hashes)).toBe(true);
+    expect(Array.isArray(byFile['b.js'].hunk_hashes)).toBe(true);
+    expect(byFile['a.js'].hunk_hashes).toHaveLength(1);
+    expect(byFile['b.js'].hunk_hashes).toHaveLength(2);
+
+    // Each hash must match the canonical formula sha256(filePath\nheader\nlines).
+    const patchMap = parseUnifiedDiffPatches(diff);
+    for (const filePath of ['a.js', 'b.js']) {
+      const hunks = parseHunks(patchMap.get(filePath));
+      const expected = hunks.map((h) =>
+        hashHunk(filePath, `${h.header}\n${h.lines.join('\n')}`)
+      );
+      expect(byFile[filePath].hunk_hashes).toEqual(expected);
+    }
+  });
+
+  it('PR diff endpoint omits hunk_hashes when canonical prData.diff is missing', async () => {
+    // Fail-closed contract: when no canonical diff is on file, the route
+    // must NOT attach hashes (we'd otherwise emit canonicaly-misaligned
+    // hashes if it fell back to a regenerated diff).
+    const prData = JSON.stringify({
+      state: 'open',
+      diff: '', // missing
+      changed_files: [{ file: 'x.js', insertions: 1, deletions: 0, changes: 1 }],
+      additions: 1,
+      deletions: 0,
+      html_url: 'https://github.com/o/r/pull/78',
+      base_sha: 'b1', head_sha: 'h2',
+      node_id: 'PR_node'
+    });
+
+    await run(db, `
+      INSERT INTO pr_metadata (pr_number, repository, title, description, author, base_branch, head_branch, pr_data)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `, [78, 'owner/repo', 'T', 'D', 'u', 'main', 'feature', prData]);
+
+    const response = await request(app).get('/api/pr/owner/repo/78/diff');
+
+    expect(response.status).toBe(200);
+    for (const file of response.body.changed_files || []) {
+      expect(file.hunk_hashes).toBeUndefined();
+    }
+  });
+
+  it('PR diff endpoint with ?w=1 returns canonical hashes (regen falls back)', async () => {
+    // ?w=1 triggers diff regeneration from a worktree; without a real worktree
+    // the regen fails and the route falls back to cached `prData.diff`. The
+    // hashes returned must still be the canonical ones — they are the keys
+    // persisted in `hunk_summaries` and must stay aligned regardless of
+    // whether the rendered patch is whitespace-filtered.
+    const { hashHunk } = require('../../src/ai/hunk-hashing');
+    const { parseHunks } = require('../../src/utils/diff-hunks');
+    const { parseUnifiedDiffPatches } = require('../../src/utils/diff-file-list');
+
+    // First hunk is whitespace-only (would be dropped by `git diff -w`),
+    // second hunk is a real change. If the route ever computed hashes from
+    // a filtered diff, the surviving hunk would be hash[0] not hash[1] and
+    // this assertion would catch the drift.
+    const canonicalDiff = [
+      'diff --git a/c.js b/c.js',
+      '--- a/c.js',
+      '+++ b/c.js',
+      '@@ -1,3 +1,3 @@',
+      ' line-c-1',
+      '-line-c-2  ',
+      '+line-c-2',
+      '@@ -10,2 +10,3 @@',
+      ' line-c-10',
+      '+line-c-real',
+      ' line-c-11'
+    ].join('\n');
+
+    const prData = JSON.stringify({
+      state: 'open',
+      diff: canonicalDiff,
+      changed_files: [],
+      additions: 1,
+      deletions: 0,
+      html_url: 'https://github.com/o/r/pull/79',
+      base_sha: 'b1', head_sha: 'h2',
+      node_id: 'PR_node'
+    });
+
+    await run(db, `
+      INSERT INTO pr_metadata (pr_number, repository, title, description, author, base_branch, head_branch, pr_data)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `, [79, 'owner/repo', 'T', 'D', 'u', 'main', 'feature', prData]);
+
+    const response = await request(app).get('/api/pr/owner/repo/79/diff?w=1');
+
+    expect(response.status).toBe(200);
+    const file = (response.body.changed_files || []).find((f) => f.file === 'c.js');
+    expect(file).toBeTruthy();
+    expect(Array.isArray(file.hunk_hashes)).toBe(true);
+    expect(file.hunk_hashes).toHaveLength(2);
+
+    const hunks = parseHunks(parseUnifiedDiffPatches(canonicalDiff).get('c.js'));
+    const expected = hunks.map((h) => hashHunk('c.js', `${h.header}\n${h.lines.join('\n')}`));
+    expect(file.hunk_hashes).toEqual(expected);
+  });
+
+  describe('local mode', () => {
+    const { localReviewDiffs } = require('../../src/routes/shared');
+    const fs = require('fs');
+    const nodePath = require('path');
+    const os = require('os');
+    let reviewId;
+    let tempDir;
+
+    beforeEach(async () => {
+      tempDir = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'pair-review-hh-'));
+      const result = await run(db, `
+        INSERT INTO reviews (repository, status, review_type, local_path, local_head_sha, local_base_branch)
+        VALUES ('owner/repo', 'draft', 'local', ?, 'abc123def', 'main')
+      `, [tempDir]);
+      reviewId = result.lastID;
+      localReviewDiffs.clear();
+    });
+
+    afterEach(() => {
+      localReviewDiffs.clear();
+      if (tempDir) {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('GET /api/local/:reviewId/diff returns hunk_hashes_by_file matching canonical hashes', async () => {
+      const { hashHunk } = require('../../src/ai/hunk-hashing');
+      const { parseHunks } = require('../../src/utils/diff-hunks');
+      const { parseUnifiedDiffPatches } = require('../../src/utils/diff-file-list');
+
+      const diff = [
+        'diff --git a/d.js b/d.js',
+        '--- a/d.js',
+        '+++ b/d.js',
+        '@@ -1,2 +1,3 @@',
+        ' line-d-1',
+        '+line-d-new',
+        ' line-d-2',
+        'diff --git a/e.js b/e.js',
+        '--- a/e.js',
+        '+++ b/e.js',
+        '@@ -1,2 +1,3 @@',
+        ' line-e-1',
+        '+line-e-added',
+        ' line-e-2',
+        '@@ -10,2 +11,3 @@',
+        ' line-e-10',
+        '+line-e-extra',
+        ' line-e-11'
+      ].join('\n');
+
+      localReviewDiffs.set(reviewId, { diff, stats: { unstagedChanges: 2 } });
+
+      const response = await request(app).get(`/api/local/${reviewId}/diff`);
+
+      expect(response.status).toBe(200);
+      const byFile = response.body.hunk_hashes_by_file;
+      expect(byFile).toBeTruthy();
+
+      const patchMap = parseUnifiedDiffPatches(diff);
+      for (const filePath of ['d.js', 'e.js']) {
+        const hunks = parseHunks(patchMap.get(filePath));
+        const expected = hunks.map((h) =>
+          hashHunk(filePath, `${h.header}\n${h.lines.join('\n')}`)
+        );
+        expect(byFile[filePath]).toEqual(expected);
+      }
+    });
+
+    it('GET /api/local/:reviewId/diff?w=1 returns canonical hashes (whitespace-only first hunk + real later hunk)', async () => {
+      // ?w=1 regen requires a real git repo; in tests it falls through to
+      // the cached canonical diff. The hashes must still come from the
+      // canonical diff so they stay aligned with persisted summary keys.
+      const { hashHunk } = require('../../src/ai/hunk-hashing');
+      const { parseHunks } = require('../../src/utils/diff-hunks');
+      const { parseUnifiedDiffPatches } = require('../../src/utils/diff-file-list');
+
+      const canonicalDiff = [
+        'diff --git a/f.js b/f.js',
+        '--- a/f.js',
+        '+++ b/f.js',
+        '@@ -1,3 +1,3 @@',
+        ' line-f-1',
+        '-line-f-2  ',
+        '+line-f-2',
+        '@@ -10,2 +10,3 @@',
+        ' line-f-10',
+        '+line-f-real',
+        ' line-f-11'
+      ].join('\n');
+
+      localReviewDiffs.set(reviewId, { diff: canonicalDiff, stats: {} });
+
+      const response = await request(app).get(`/api/local/${reviewId}/diff?w=1`);
+
+      expect(response.status).toBe(200);
+      const hashes = response.body.hunk_hashes_by_file?.['f.js'];
+      expect(Array.isArray(hashes)).toBe(true);
+      expect(hashes).toHaveLength(2);
+
+      const hunks = parseHunks(parseUnifiedDiffPatches(canonicalDiff).get('f.js'));
+      const expected = hunks.map((h) => hashHunk('f.js', `${h.header}\n${h.lines.join('\n')}`));
+      expect(hashes).toEqual(expected);
+    });
+
+    it('GET /api/local/:reviewId/diff?base=branch returns canonical hashes (regen falls back)', async () => {
+      // ?base=<branch> also triggers diff regeneration; without a real git
+      // repo the regen fails and the route falls back to the cached
+      // canonical diff. In that scenario `diffContent === canonicalDiff`,
+      // so hashing `diffContent` directly (the new contract) yields the
+      // canonical hashes anyway. This test exercises the regen-FAILURE
+      // path; the successful-regen path is covered below.
+      const { hashHunk } = require('../../src/ai/hunk-hashing');
+      const { parseHunks } = require('../../src/utils/diff-hunks');
+      const { parseUnifiedDiffPatches } = require('../../src/utils/diff-file-list');
+
+      const canonicalDiff = [
+        'diff --git a/g.js b/g.js',
+        '--- a/g.js',
+        '+++ b/g.js',
+        '@@ -1,2 +1,3 @@',
+        ' line-g-1',
+        '+line-g-new',
+        ' line-g-2'
+      ].join('\n');
+
+      localReviewDiffs.set(reviewId, { diff: canonicalDiff, stats: {} });
+
+      const response = await request(app).get(`/api/local/${reviewId}/diff?base=other-branch`);
+
+      expect(response.status).toBe(200);
+      const hashes = response.body.hunk_hashes_by_file?.['g.js'];
+      expect(Array.isArray(hashes)).toBe(true);
+
+      const hunks = parseHunks(parseUnifiedDiffPatches(canonicalDiff).get('g.js'));
+      const expected = hunks.map((h) => hashHunk('g.js', `${h.header}\n${h.lines.join('\n')}`));
+      expect(hashes).toEqual(expected);
+    });
+
+    describe('?base= override with successful regen', () => {
+      // Stub `generateScopedDiff` so the override regeneration succeeds
+      // with deterministic content. The route hashes the diff that was
+      // RETURNED to the client (not the canonical) — so summaries fail
+      // closed (visibly missing) on diverging override content rather
+      // than silently mounting the wrong text.
+      const localReview = require('../../src/local-review');
+      let scopedDiffSpy;
+
+      afterEach(() => {
+        if (scopedDiffSpy) {
+          scopedDiffSpy.mockRestore();
+          scopedDiffSpy = null;
+        }
+      });
+
+      it('hashes the OVERRIDE diff when its content diverges from canonical', async () => {
+        const { hashHunk } = require('../../src/ai/hunk-hashing');
+        const { parseHunks } = require('../../src/utils/diff-hunks');
+        const { parseUnifiedDiffPatches } = require('../../src/utils/diff-file-list');
+
+        const canonicalDiff = [
+          'diff --git a/h.js b/h.js',
+          '--- a/h.js',
+          '+++ b/h.js',
+          '@@ -1,2 +1,3 @@',
+          ' line-h-1',
+          '+line-h-canonical',
+          ' line-h-2'
+        ].join('\n');
+
+        // Same file, same hunk count, but DIFFERENT inserted content
+        // (simulates an override against a different base).
+        const overrideDiff = [
+          'diff --git a/h.js b/h.js',
+          '--- a/h.js',
+          '+++ b/h.js',
+          '@@ -1,2 +1,3 @@',
+          ' line-h-1',
+          '+line-h-OVERRIDE',
+          ' line-h-2'
+        ].join('\n');
+
+        localReviewDiffs.set(reviewId, { diff: canonicalDiff, stats: {} });
+        scopedDiffSpy = vi
+          .spyOn(localReview, 'generateScopedDiff')
+          .mockResolvedValue({ diff: overrideDiff, stats: { unstagedChanges: 1 } });
+
+        const response = await request(app).get(`/api/local/${reviewId}/diff?base=other-branch`);
+
+        expect(response.status).toBe(200);
+        expect(scopedDiffSpy).toHaveBeenCalled();
+
+        // The diff returned to the client is the override diff.
+        expect(response.body.diff).toBe(overrideDiff);
+
+        // Hashes must match the OVERRIDE diff (not the canonical one).
+        // This is the load-bearing assertion: hashes are aligned to the
+        // RENDERED diff so the frontend's by-index stamping anchors
+        // summaries to the right text — or fails closed with a hash
+        // miss when override content diverges from canonical.
+        const overrideHunks = parseHunks(parseUnifiedDiffPatches(overrideDiff).get('h.js'));
+        const expectedOverride = overrideHunks.map((h) =>
+          hashHunk('h.js', `${h.header}\n${h.lines.join('\n')}`)
+        );
+
+        const canonicalHunks = parseHunks(parseUnifiedDiffPatches(canonicalDiff).get('h.js'));
+        const expectedCanonical = canonicalHunks.map((h) =>
+          hashHunk('h.js', `${h.header}\n${h.lines.join('\n')}`)
+        );
+
+        const hashes = response.body.hunk_hashes_by_file?.['h.js'];
+        expect(hashes).toEqual(expectedOverride);
+        // And explicitly NOT the canonical hashes — the divergent
+        // content must produce a different hash so persisted summaries
+        // (keyed by canonical hash) do not mount on the override hunk.
+        expect(hashes).not.toEqual(expectedCanonical);
+      });
+
+      it('hashes the OVERRIDE diff when its content matches canonical (hashes collide naturally)', async () => {
+        const { hashHunk } = require('../../src/ai/hunk-hashing');
+        const { parseHunks } = require('../../src/utils/diff-hunks');
+        const { parseUnifiedDiffPatches } = require('../../src/utils/diff-file-list');
+
+        // Identical-content override (e.g., the override base happens to
+        // produce the same diff for this file). Since the hash function
+        // is deterministic over (filePath, header+lines), the hashes
+        // collide naturally — persisted summaries still mount.
+        const canonicalDiff = [
+          'diff --git a/i.js b/i.js',
+          '--- a/i.js',
+          '+++ b/i.js',
+          '@@ -1,2 +1,3 @@',
+          ' line-i-1',
+          '+line-i-shared',
+          ' line-i-2'
+        ].join('\n');
+        const overrideDiff = canonicalDiff; // byte-identical
+
+        localReviewDiffs.set(reviewId, { diff: canonicalDiff, stats: {} });
+        scopedDiffSpy = vi
+          .spyOn(localReview, 'generateScopedDiff')
+          .mockResolvedValue({ diff: overrideDiff, stats: { unstagedChanges: 1 } });
+
+        const response = await request(app).get(`/api/local/${reviewId}/diff?base=other-branch`);
+
+        expect(response.status).toBe(200);
+        expect(scopedDiffSpy).toHaveBeenCalled();
+
+        const hunks = parseHunks(parseUnifiedDiffPatches(canonicalDiff).get('i.js'));
+        const expected = hunks.map((h) =>
+          hashHunk('i.js', `${h.header}\n${h.lines.join('\n')}`)
+        );
+
+        const hashes = response.body.hunk_hashes_by_file?.['i.js'];
+        // Hashes match canonical AND override (both equal `expected`)
+        // because the hash is content-derived. This is the desired
+        // behavior: identical content → identical hash → persisted
+        // summary mounts.
+        expect(hashes).toEqual(expected);
+      });
+    });
+  });
+});

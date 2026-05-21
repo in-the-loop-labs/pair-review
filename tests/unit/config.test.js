@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const childProcess = require('child_process');
-const { deepMerge, getGitHubToken, expandPath, resolveDbName, warnIfDevModeWithoutDbName, loadConfig, shouldSkipUpdateNotifier, _resetTokenCache, getRepoConfig, getRepoPath, getRepoCheckoutScript, getRepoWorktreeDirectory, getRepoWorktreeNameTemplate, getRepoCheckoutTimeout, resolveRepoOptions, getRepoResetScript, getRepoSkipBulkFetch, getRepoPoolSize, getRepoPoolFetchInterval, resolvePoolConfig, getWorktreeDisplayName, getConfigDir, getRepoLoadSkills, resolveLoadSkills, buildCouncilProviderOverrides } = require('../../src/config');
+const { deepMerge, getGitHubToken, expandPath, resolveDbName, warnIfDevModeWithoutDbName, loadConfig, shouldSkipUpdateNotifier, _resetTokenCache, getRepoConfig, getRepoPath, getRepoCheckoutScript, getRepoWorktreeDirectory, getRepoWorktreeNameTemplate, getRepoCheckoutTimeout, resolveRepoOptions, getRepoResetScript, getRepoSkipBulkFetch, getRepoPoolSize, getRepoPoolFetchInterval, resolvePoolConfig, getWorktreeDisplayName, getConfigDir, getRepoLoadSkills, resolveLoadSkills, buildCouncilProviderOverrides, getSummaryProvider, getSummaryModel, getTourProvider, getTourModel } = require('../../src/config');
 
 describe('config.js', () => {
   describe('getGitHubToken', () => {
@@ -1931,6 +1931,117 @@ describe('config.js', () => {
       expect(providerOverrides).toEqual({ load_skills: true });
       // Tier 1 (DB) takes precedence over tier 3 (provider)
       expect(providerOverridesMap.pi).toEqual({ load_skills: true });
+    });
+  });
+
+  describe('getSummaryProvider', () => {
+    it('returns summary_provider when set', () => {
+      const config = { summary_provider: 'gemini', default_provider: 'claude' };
+      expect(getSummaryProvider(config)).toBe('gemini');
+    });
+
+    it('falls back to default_provider when summary_provider is empty string', () => {
+      const config = { summary_provider: '', default_provider: 'claude' };
+      expect(getSummaryProvider(config)).toBe('claude');
+    });
+
+    it('falls back to default_provider when summary_provider is missing', () => {
+      const config = { default_provider: 'codex' };
+      expect(getSummaryProvider(config)).toBe('codex');
+    });
+
+    it('falls back to DEFAULT_CONFIG.default_provider when neither is set', () => {
+      const config = {};
+      expect(getSummaryProvider(config)).toBe('claude');
+    });
+  });
+
+  describe('getSummaryModel', () => {
+    it('returns summary_model when set', () => {
+      const config = { summary_model: 'haiku', default_model: 'opus' };
+      expect(getSummaryModel(config)).toBe('haiku');
+    });
+
+    it('uses fast-tier model from providerClass when summary_model is empty', () => {
+      const config = { summary_model: '', default_model: 'opus' };
+      const FakeProvider = { getModels: () => [
+        { id: 'big', tier: 'thorough' },
+        { id: 'small', tier: 'fast' }
+      ]};
+      expect(getSummaryModel(config, FakeProvider)).toBe('small');
+    });
+
+    it('falls back to default_model when no providerClass given', () => {
+      const config = { summary_model: '', default_model: 'opus' };
+      expect(getSummaryModel(config)).toBe('opus');
+    });
+
+    it('falls back to default_model when providerClass has no fast tier', () => {
+      const config = { default_model: 'opus' };
+      const FakeProvider = { getModels: () => [
+        { id: 'big', tier: 'thorough' },
+        { id: 'medium', tier: 'balanced' }
+      ]};
+      expect(getSummaryModel(config, FakeProvider)).toBe('opus');
+    });
+
+    it('ignores providerClass when summary_model is explicitly set', () => {
+      const config = { summary_model: 'explicit', default_model: 'opus' };
+      const FakeProvider = { getModels: () => [{ id: 'small', tier: 'fast' }] };
+      expect(getSummaryModel(config, FakeProvider)).toBe('explicit');
+    });
+
+    it('falls back to DEFAULT_CONFIG.default_model when neither is set', () => {
+      const config = {};
+      expect(getSummaryModel(config)).toBe('opus');
+    });
+  });
+
+  describe('getTourProvider', () => {
+    it('returns tour_provider when set', () => {
+      const config = { tour_provider: 'codex', summary_provider: 'gemini', default_provider: 'claude' };
+      expect(getTourProvider(config)).toBe('codex');
+    });
+
+    it('falls back to summary_provider when tour_provider empty', () => {
+      const config = { tour_provider: '', summary_provider: 'gemini', default_provider: 'claude' };
+      expect(getTourProvider(config)).toBe('gemini');
+    });
+
+    it('falls back through summary_provider chain to default_provider', () => {
+      const config = { default_provider: 'claude' };
+      expect(getTourProvider(config)).toBe('claude');
+    });
+
+    it('falls back to DEFAULT_CONFIG.default_provider when nothing is set', () => {
+      const config = {};
+      expect(getTourProvider(config)).toBe('claude');
+    });
+  });
+
+  describe('getTourModel', () => {
+    it('returns tour_model when set', () => {
+      const config = { tour_model: 'opus', summary_model: 'haiku', default_model: 'sonnet' };
+      expect(getTourModel(config)).toBe('opus');
+    });
+
+    it('falls back to summary_model when tour_model empty', () => {
+      const config = { tour_model: '', summary_model: 'haiku', default_model: 'sonnet' };
+      expect(getTourModel(config)).toBe('haiku');
+    });
+
+    it('falls back to providerClass fast-tier when both empty', () => {
+      const config = { tour_model: '', summary_model: '', default_model: 'opus' };
+      const FakeProvider = { getModels: () => [
+        { id: 'big', tier: 'thorough' },
+        { id: 'small', tier: 'fast' }
+      ]};
+      expect(getTourModel(config, FakeProvider)).toBe('small');
+    });
+
+    it('falls back to default_model when nothing matches', () => {
+      const config = { default_model: 'opus' };
+      expect(getTourModel(config)).toBe('opus');
     });
   });
 });

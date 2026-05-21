@@ -320,7 +320,7 @@ class CopilotProvider extends AIProvider {
         }
 
         // Extract JSON from the response
-        const extracted = extractJSON(stdout, level);
+        const extracted = extractJSON(stdout, level, levelPrefix);
         if (extracted.success) {
           logger.success(`${levelPrefix} Successfully parsed JSON response`);
           settle(resolve, extracted.data);

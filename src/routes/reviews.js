@@ -8,11 +8,12 @@
  */
 
 const express = require('express');
-const { query, queryOne, run, withTransaction, CommentRepository, ReviewRepository, AnalysisRunRepository } = require('../database');
+const { query, queryOne, run, withTransaction, CommentRepository, ReviewRepository, AnalysisRunRepository, HunkSummaryRepository, TourRepository } = require('../database');
 const { calculateStats, getStatsQuery } = require('../utils/stats-calculator');
 const { activeAnalyses, reviewToAnalysisId } = require('./shared');
 const logger = require('../utils/logger');
 const { broadcastReviewEvent } = require('../events/review-events');
+const { backgroundQueue } = require('../ai/background-queue');
 const { ensureContextFileForComment } = require('../utils/auto-context');
 const path = require('path');
 const fs = require('fs').promises;
@@ -22,36 +23,9 @@ const { normalizeRepository } = require('../utils/paths');
 const { resolveFormat, formatAdoptedComment: formatComment } = require('../utils/comment-formatter');
 const { safeParseJson } = require('../utils/safe-parse-json');
 const { resolveOriginalFileContentSpecs } = require('../utils/diff-file-content');
+const validateReviewId = require('./middleware/validate-review-id');
 
 const router = express.Router();
-
-/**
- * Middleware: validate that :reviewId exists in the reviews table.
- * Attaches the review record to req.review for downstream handlers.
- */
-async function validateReviewId(req, res, next) {
-  try {
-    const reviewId = parseInt(req.params.reviewId, 10);
-
-    if (isNaN(reviewId) || reviewId <= 0) {
-      return res.status(400).json({ error: 'Invalid review ID' });
-    }
-
-    const db = req.app.get('db');
-    const reviewRepo = new ReviewRepository(db);
-    const review = await reviewRepo.getReview(reviewId);
-
-    if (!review) {
-      return res.status(404).json({ error: `Review #${reviewId} not found` });
-    }
-
-    req.review = review;
-    req.reviewId = reviewId;
-    next();
-  } catch (error) {
-    next(error);
-  }
-}
 
 /**
  * GET /api/reviews/:reviewId/comments
@@ -1067,6 +1041,90 @@ router.get('/api/reviews/:reviewId/file-content/:fileName(*)', validateReviewId,
   } catch (error) {
     logger.error('Error retrieving file content:', error);
     res.status(500).json({ error: 'Internal server error while retrieving file content' });
+  }
+});
+
+// ==========================================================================
+// Hunk Summaries Route
+// ==========================================================================
+
+/**
+ * GET /api/reviews/:reviewId/hunk-summaries
+ * Get all hunk summaries for a review (PR or Local).
+ * Returns trivial-marker rows alongside generated summaries; the frontend filters.
+ */
+router.get('/api/reviews/:reviewId/hunk-summaries', validateReviewId, async (req, res) => {
+  try {
+    const db = req.app.get('db');
+    const repo = new HunkSummaryRepository(db);
+    const rows = await repo.getByReview(req.reviewId);
+    // `generating` reflects whether the background queue is still working
+    // on this review's summaries; the frontend uses it to show a "generating"
+    // pulse on the toolbar toggle until `review:background_job_finished`
+    // fires for jobType=`summaries:*`.
+    const generating = backgroundQueue.hasActiveForReview(req.reviewId, 'summaries');
+    res.json({
+      summaries: rows.map((row) => ({
+        file_path: row.file_path,
+        content_hash: row.content_hash,
+        summary_text: row.summary_text,
+        trivial_reason: row.trivial_reason
+      })),
+      generating
+    });
+  } catch (error) {
+    logger.error('Error fetching hunk summaries:', error);
+    res.status(500).json({ error: 'Failed to fetch hunk summaries' });
+  }
+});
+
+// ==========================================================================
+// Tour Route
+// ==========================================================================
+
+/**
+ * GET /api/reviews/:reviewId/tour
+ * Get the persisted guided tour for a review (PR or Local).
+ * Returns `{tour: null}` when no tour has been generated yet, otherwise
+ * returns `{tour: {stops, diff_hash, stale, generating, provider, model, created_at}}`.
+ *
+ * `stale` is true when a `tour` job is currently in flight for this review,
+ * meaning the persisted tour may be about to be replaced. `generating` is
+ * true when there is no persisted tour yet but a job is in flight.
+ */
+router.get('/api/reviews/:reviewId/tour', validateReviewId, async (req, res) => {
+  try {
+    const db = req.app.get('db');
+    const repo = new TourRepository(db);
+    const row = await repo.get(req.reviewId);
+    const generating = backgroundQueue.hasActiveForReview(req.reviewId, 'tour');
+
+    if (!row) {
+      return res.json({ tour: null, generating });
+    }
+
+    let stops;
+    try {
+      stops = JSON.parse(row.stops);
+    } catch (err) {
+      logger.warn(`Failed to parse tour.stops for review ${req.reviewId}: ${err.message}`);
+      return res.status(500).json({ error: 'Tour data corrupt' });
+    }
+
+    res.json({
+      tour: {
+        stops,
+        diff_hash: row.diff_hash,
+        stale: generating,
+        provider: row.provider,
+        model: row.model,
+        created_at: row.created_at
+      },
+      generating
+    });
+  } catch (error) {
+    logger.error('Error fetching tour:', error);
+    res.status(500).json({ error: 'Failed to fetch tour' });
   }
 });
 

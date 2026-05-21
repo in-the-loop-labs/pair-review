@@ -25,7 +25,8 @@ const { fireHooks, hasHooks } = require('../hooks/hook-runner');
 const { buildReviewStartedPayload, buildReviewLoadedPayload, buildAnalysisStartedPayload, buildAnalysisCompletedPayload, getCachedUser } = require('../hooks/payloads');
 const { mergeInstructions } = require('../utils/instructions');
 const { getGitHubToken, resolveLoadSkills, buildCouncilProviderOverrides } = require('../config');
-const { generateScopedDiff, computeScopedDigest, getBranchCommitCount, getFirstCommitSubject, detectAndBuildBranchInfo, findMergeBase, getCurrentBranch, getRepositoryName } = require('../local-review');
+const localReview = require('../local-review');
+const { generateScopedDiff, computeScopedDigest, getBranchCommitCount, getFirstCommitSubject, detectAndBuildBranchInfo, findMergeBase, getCurrentBranch, getRepositoryName } = localReview;
 const { STOPS, isValidScope, normalizeScope, reviewScope, includesBranch, DEFAULT_SCOPE } = require('../local-scope');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
 const { getShaAbbrevLength } = require('../git/sha-abbrev');
@@ -36,6 +37,11 @@ const { getDefaultBranch, tryGraphiteState } = require('../git/base-branch');
 const { CommentRepository } = require('../database');
 const { runExecutableAnalysis, getChangedFiles } = require('./executable-analysis');
 const { rejectUrlLikeLocalReviewPath } = require('../utils/local-path-input');
+const summaryGenerator = require('../ai/summary-generator');
+const tourGenerator = require('../ai/tour-generator');
+const { parseUnifiedDiffPatches } = require('../utils/diff-file-list');
+const { parseHunks } = require('../utils/diff-hunks');
+const { hashHunk } = require('../ai/hunk-hashing');
 const {
   activeAnalyses,
   localReviewDiffs,
@@ -519,6 +525,28 @@ router.post('/api/local/start', async (req, res) => {
       }
     });
 
+    (async () => {
+      await summaryGenerator.kickOffSummaryJob({
+        db,
+        config,
+        reviewId: sessionId,
+        diffText: diff,
+        worktreePath: repoPath,
+        reviewContext: { prTitle: branch }
+      });
+    })().catch((err) => logger.warn(`Hunk summary job failed for review ${sessionId}: ${err.message}`));
+
+    (async () => {
+      await tourGenerator.kickOffTourJob({
+        db,
+        config,
+        reviewId: sessionId,
+        diffText: diff,
+        worktreePath: repoPath,
+        reviewContext: { prTitle: branch }
+      });
+    })().catch((err) => logger.warn(`Tour job failed for review ${sessionId}: ${err.message}`));
+
   } catch (error) {
     logger.error(`Error starting local review: ${error.message}`);
     res.status(500).json({
@@ -719,6 +747,46 @@ router.get('/api/local/:reviewId', async (req, res) => {
       }).catch(err => { logger.warn(`Review hook failed: ${err.message}`); });
     }
 
+    // Background: re-trigger hunk summary + tour generation on review load.
+    // Self-invoked so any rejection here cannot reach the outer try/catch
+    // and call res.status(500) on an already-flushed response.
+    (async () => {
+      let bgDiffText = getLocalReviewDiff(reviewId)?.diff;
+      if (!bgDiffText) {
+        const persistedDiff = await reviewRepo.getLocalDiff(reviewId);
+        bgDiffText = persistedDiff?.diff;
+      }
+      if (!bgDiffText) {
+        logger.debug(`Skipping background AI kickoff for review ${reviewId}: no diff available`);
+        return;
+      }
+      const reviewContext = { prTitle: review.name || branchName };
+      const results = await Promise.allSettled([
+        summaryGenerator.kickOffSummaryJob({
+          db,
+          config: localConfig,
+          reviewId,
+          diffText: bgDiffText,
+          worktreePath: review.local_path,
+          reviewContext
+        }),
+        tourGenerator.kickOffTourJob({
+          db,
+          config: localConfig,
+          reviewId,
+          diffText: bgDiffText,
+          worktreePath: review.local_path,
+          reviewContext
+        })
+      ]);
+      const labels = ['Hunk summary', 'Tour'];
+      results.forEach((r, i) => {
+        if (r.status === 'rejected') {
+          logger.warn(`${labels[i]} kickoff failed for review ${reviewId}: ${r.reason?.message || r.reason}`);
+        }
+      });
+    })().catch((err) => logger.warn(`Background AI kickoff failed for review ${reviewId}: ${err.message}`));
+
   } catch (error) {
     logger.error('Error fetching local review:', error.stack || error.message);
     res.status(500).json({
@@ -805,7 +873,11 @@ router.get('/api/local/:reviewId/diff', async (req, res) => {
 
     if ((hideWhitespace || baseBranchOverride) && review.local_path) {
       try {
-        const wsResult = await generateScopedDiff(review.local_path, scopeStart, scopeEnd, baseBranch, { hideWhitespace });
+        // Call via the module namespace so tests can stub `generateScopedDiff`
+        // with `vi.spyOn(localReview, 'generateScopedDiff')`. The destructured
+        // top-level binding is captured at require time and would not honor a
+        // spy.
+        const wsResult = await localReview.generateScopedDiff(review.local_path, scopeStart, scopeEnd, baseBranch, { hideWhitespace });
         diffData = { diff: wsResult.diff, stats: wsResult.stats };
       } catch (wsError) {
         logger.warn(`Could not generate diff for review #${reviewId}: ${wsError.message}`);
@@ -854,6 +926,52 @@ router.get('/api/local/:reviewId/diff', async (req, res) => {
       }
     }
 
+    // Compute per-file hunk hashes for the hunk-summary feature.
+    //
+    // The frontend stamps these hashes onto rendered hunks BY INDEX
+    // (`hunkHashes[blockIndex]`), so the array MUST be aligned to the
+    // diff that was actually returned to the client. Two cases:
+    //
+    //   1. `?w=1`: `git diff -w` only DROPS whitespace-only hunks; it
+    //      never rewrites kept hunks. The frontend renderPatch length
+    //      guard catches the drop case (mismatch between canonical hash
+    //      count and rendered block count) and bails. So for kept hunks
+    //      the canonical hash still identifies the right rendered hunk
+    //      AND matches the persisted summary key — fall back to the
+    //      canonical diff here for hash computation.
+    //
+    //   2. `?base=<branch>`: regen produces a DIFFERENT diff against a
+    //      different base. Hunk counts may match by coincidence, but the
+    //      content can differ. Hashing the canonical diff would mount a
+    //      summary onto an override hunk whose code it doesn't describe
+    //      — silent and wrong. Hash the override diff instead so:
+    //        - identical-content hunks (hash equals canonical) still
+    //          match a persisted summary and mount correctly;
+    //        - divergent-content hunks miss (hash mismatch) and stay
+    //          unmounted — visibly missing rather than silently wrong.
+    let canonicalDiff = diffContent;
+    if (hideWhitespace && !baseBranchOverride) {
+      const cached = getLocalReviewDiff(reviewId);
+      if (cached?.diff) {
+        canonicalDiff = cached.diff;
+      } else {
+        const persisted = await reviewRepo.getLocalDiff(reviewId);
+        if (persisted?.diff) canonicalDiff = persisted.diff;
+      }
+    }
+    const hunkHashesByFile = {};
+    if (canonicalDiff) {
+      const filePatchMap = parseUnifiedDiffPatches(canonicalDiff);
+      for (const [filePath, filePatch] of filePatchMap.entries()) {
+        const hunks = parseHunks(filePatch);
+        if (hunks.length > 0) {
+          hunkHashesByFile[filePath] = hunks.map((h) =>
+            hashHunk(filePath, `${h.header}\n${h.lines.join('\n')}`)
+          );
+        }
+      }
+    }
+
     const diffElapsed = Date.now() - tEndpoint;
     if (diffElapsed > 200) {
       logger.debug(`[perf] diff#${reviewId} took ${diffElapsed}ms (threshold: 200ms)`);
@@ -861,6 +979,7 @@ router.get('/api/local/:reviewId/diff', async (req, res) => {
     res.json({
       diff: diffContent || '',
       generated_files: generatedFiles,
+      hunk_hashes_by_file: hunkHashesByFile,
       stats: {
         trackedChanges: stats?.trackedChanges || 0,
         untrackedFiles: stats?.untrackedFiles || 0,

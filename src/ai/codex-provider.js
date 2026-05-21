@@ -479,7 +479,7 @@ class CodexProvider extends AIProvider {
         // The accumulated agent_message text contains the AI's response
         // Try to extract JSON from it (the AI was asked to output JSON)
         logger.debug(`${levelPrefix} Extracted ${agentMessageText.length} chars of agent message text from JSONL`);
-        const extracted = extractJSON(agentMessageText, level);
+        const extracted = extractJSON(agentMessageText, level, levelPrefix);
         if (extracted.success) {
           return extracted;
         }
@@ -491,12 +491,12 @@ class CodexProvider extends AIProvider {
       }
 
       // No agent message found, try extracting JSON directly from stdout
-      const extracted = extractJSON(stdout, level);
+      const extracted = extractJSON(stdout, level, levelPrefix);
       return extracted;
 
     } catch (parseError) {
       // stdout might not be valid JSONL at all, try extracting JSON from it
-      const extracted = extractJSON(stdout, level);
+      const extracted = extractJSON(stdout, level, levelPrefix);
       if (extracted.success) {
         return extracted;
       }

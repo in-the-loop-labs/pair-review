@@ -23,6 +23,14 @@ const DEFAULT_CONFIG = {
   theme: "light",
   default_provider: "claude",  // AI provider: 'claude', 'gemini', 'codex', 'copilot', 'opencode', 'cursor-agent', 'pi'
   default_model: "opus",       // Model within the provider (e.g., 'opus' for Claude, 'gemini-2.5-pro' for Gemini)
+  summaries_enabled: false,    // When true, generates inline natural-language summaries of changed hunks via summary_provider
+  tours_enabled: false,        // When true, generates a narrative tour of the review
+  summary_provider: "",        // Provider for one-shot hunk summary AI tasks. Empty = falls back to default_provider
+  summary_model: "",           // Model for hunk summary tasks. Empty = uses provider's fast-tier model, then default_model
+  tour_provider: "",           // Provider for agentic tour generation. Empty = falls back to summary_provider, then default_provider
+  tour_model: "",              // Model for tour generation. Empty = falls back to summary_model resolution
+  summaries_max_files: 50,     // Skip summary generation for reviews touching more than this many files (perf cap)
+  summaries_max_lines_added: 3000, // Skip summary generation when the diff adds more than this many lines (perf cap)
   worktree_retention_days: 7,
   review_retention_days: 21,
   dev_mode: false,  // When true, disables static file caching for development
@@ -118,6 +126,56 @@ function getDefaultProvider(config) {
  */
 function getDefaultModel(config) {
   return getConfigValue(config, 'default_model', 'model') || DEFAULT_CONFIG.default_model;
+}
+
+/**
+ * Gets the summary provider for summary/tour generation
+ * Falls back to default_provider when summary_provider is not set
+ * @param {Object} config - Configuration object
+ * @returns {string} - Provider name
+ */
+function getSummaryProvider(config) {
+  return getConfigValue(config, 'summary_provider') || getDefaultProvider(config);
+}
+
+/**
+ * Gets the summary model for summary/tour generation
+ * Resolution order: summary_model → providerClass fast-tier → default_model
+ * @param {Object} config - Configuration object
+ * @param {Function} [providerClass] - Optional provider class with static getModels()
+ * @returns {string} - Model name
+ */
+function getSummaryModel(config, providerClass = null) {
+  const explicit = getConfigValue(config, 'summary_model');
+  if (explicit) return explicit;
+  if (providerClass && typeof providerClass.getModels === 'function') {
+    const fast = providerClass.getModels().find(m => m.tier === 'fast');
+    if (fast) return fast.id;
+  }
+  return getDefaultModel(config);
+}
+
+/**
+ * Gets the provider for tour generation.
+ * Resolution order: tour_provider → summary_provider → default_provider
+ * @param {Object} config - Configuration object
+ * @returns {string} - Provider name
+ */
+function getTourProvider(config) {
+  return getConfigValue(config, 'tour_provider') || getSummaryProvider(config);
+}
+
+/**
+ * Gets the model for tour generation.
+ * Resolution order: tour_model → summary_model → providerClass fast-tier → default_model
+ * @param {Object} config - Configuration object
+ * @param {Function} [providerClass] - Optional provider class with static getModels()
+ * @returns {string} - Model name
+ */
+function getTourModel(config, providerClass = null) {
+  const explicit = getConfigValue(config, 'tour_model');
+  if (explicit) return explicit;
+  return getSummaryModel(config, providerClass);
 }
 
 /**
@@ -762,6 +820,10 @@ module.exports = {
   getGitHubToken,
   getDefaultProvider,
   getDefaultModel,
+  getSummaryProvider,
+  getSummaryModel,
+  getTourProvider,
+  getTourModel,
   isRunningViaNpx,
   showWelcomeMessage,
   expandPath,

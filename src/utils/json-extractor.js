@@ -15,10 +15,13 @@ const logger = require('./logger');
  *
  * @param {string} response - Raw response text (may include preamble/postamble prose)
  * @param {string|number} level - Level identifier for logging (e.g., 1, 2, 3, 'orchestration', 'unknown')
+ * @param {string} [logPrefix] - Custom log prefix to use instead of `[Level <level>]`.
+ *   Used by callers (e.g., summary generation, council mode) that have a more
+ *   meaningful identifier than a numeric analysis level.
  * @returns {Object} Extraction result with success flag and data/error
  */
-function extractJSON(response, level = 'unknown') {
-  const levelPrefix = `[Level ${level}]`;
+function extractJSON(response, level = 'unknown', logPrefix) {
+  const levelPrefix = logPrefix || `[Level ${level}]`;
 
   if (!response || !response.trim()) {
     return { success: false, error: 'Empty response' };
