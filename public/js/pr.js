@@ -1239,7 +1239,11 @@ class PRManager {
 
     this._tourRenderer.setStops(this._tourStops);
     this._tourRenderer.setActive(true);
-    this._tourBar.mount();
+    // Mount inside the diff-view scroll container so the bar (position:
+    // sticky) spans only the diff width — the file-tree sidebar and its
+    // controls stay visible.
+    const diffView = document.querySelector('.main-layout .diff-view');
+    this._tourBar.mount(diffView || undefined);
     this._tourBar.setStops(this._tourStops);
     this._tourBar.setCompleted(false);
 

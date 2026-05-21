@@ -14181,8 +14181,10 @@ body.summaries-hidden .hunk-summary-row,
   font-size: 13px;
   line-height: 1.45;
   color: #7d5700;
-  background: rgba(212, 167, 44, 0.10);
-  border: 1px solid rgba(212, 167, 44, 0.35);
+  /* Brighter amber matching the .tour-bar gradient so stops read as part
+     of the same tour surface, not a muted variant of it. */
+  background: linear-gradient(180deg, #fff8e1 0%, #fef3c7 100%);
+  border: 1px solid rgba(212, 167, 44, 0.55);
   border-left: 3px solid #d4a72c;
   border-radius: var(--radius-md, 6px);
   max-width: calc(100vw - var(--sidebar-width, 0px) - var(--right-panel-group-width, 0px) - 64px);
@@ -14194,8 +14196,11 @@ body.summaries-hidden .hunk-summary-row,
 
 [data-theme="dark"] .tour-annotation {
   color: #e3b341;
-  background: rgba(187, 128, 9, 0.18);
-  border-color: rgba(187, 128, 9, 0.40);
+  /* Mirror the bar's dark-mode amber wash so light- and dark-mode tours
+     share one visual language. */
+  background: linear-gradient(180deg, rgba(187, 128, 9, 0.18) 0%, rgba(187, 128, 9, 0.28) 100%),
+              var(--color-bg-primary, #0d1117);
+  border-color: rgba(187, 128, 9, 0.55);
   border-left-color: #bb8009;
 }
 
@@ -14255,62 +14260,67 @@ body.tour-active .tour-annotation-row.active-stop .tour-annotation {
   border-color: #e3b341;
 }
 
-/* ---------- Sticky bottom tour bar ---------- */
+/* ---------- Sticky top tour bar ---------- */
 :root {
-  /* Height assumed by the body padding rule below. Keep this in sync with the
-     bar's computed height (icon + button row + vertical padding). */
+  /* Height assumed by the diff-toolbar / file-header offset rules below.
+     Keep this in sync with the bar's computed height (icon + button row +
+     vertical padding). The bar also sets `min-height: var(--tour-bar-height)`
+     so its actual rendered height never drops below this value. */
   --tour-bar-height: 56px;
 }
 
-/* Reserve scroll-room at the bottom of the actual scroll container so the
-   tour bar never overlaps the last diff line. Only applied while a tour is
-   active. The scroll container is .main-layout .diff-view (overflow-y: auto),
-   NOT <body> — the body is a fixed 100vh flex shell and adding padding-bottom
-   to it extends its total height beyond the viewport, pushing children upward
-   and clipping the header off the top. Note: if .review-panel is
-   reintroduced into the DOM it will need its own body-class hook and a
-   matching bump to this padding. */
-body.tour-active .main-layout .diff-view {
-  padding-bottom: var(--tour-bar-height);
+/* While a tour is active, push the sticky `.diff-toolbar` and the
+   per-file `.d2h-file-header` down by the bar's height so they stack
+   below it instead of overlapping. The bar itself is `position: sticky;
+   top: 0` inside the same scroll container (.main-layout .diff-view),
+   so all three pin in order: tour bar (top: 0), diff toolbar (top:
+   --tour-bar-height), file header (top: --toolbar-height + --tour-bar-height). */
+body.tour-active .diff-toolbar {
+  top: var(--tour-bar-height);
 }
 
-/* Defensive coordination with the (currently unused) .review-panel fixed
- * submit UI. If .review-panel is re-introduced into the DOM, push it above
- * the tour bar so its submit/approve controls stay hit-testable while a
- * tour is active. .review-panel's z-index (1000) already sits below the
- * tour bar (1500); pushing its bottom up by --tour-bar-height stacks the
- * two surfaces vertically instead of overlapping. */
-body.tour-active .review-panel {
-  bottom: var(--tour-bar-height);
+body.tour-active .d2h-file-header {
+  top: calc(var(--toolbar-height, 0px) + var(--tour-bar-height));
 }
 
 .tour-bar {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  /* Leave room for the right-side panel group (chat + AI panel). The
-     PanelGroup sums or maxes its panels' widths into this var; it falls back
-     to 0 when no panel is open. (Reuses the same var as comment max-width
-     calculations in this file.) */
-  right: var(--right-panel-group-width, 0px);
-  z-index: 1500;
+  /* Sticky inside the diff-view scroll container so the bar spans the
+     diff width only — the file-tree sidebar (and its hide/show toggle in
+     the diff toolbar) stays visible and clickable. Mounted as the first
+     child of .diff-view via TourBar.mount(parent). */
+  position: sticky;
+  top: 0;
+  /* z-index must exceed .diff-toolbar (5) and .d2h-file-header (4) so the
+     bar paints above them at the top of the scrollport. */
+  z-index: 6;
+  /* Lock the rendered height to the var so the sticky-top offsets on
+     .diff-toolbar and .d2h-file-header line up exactly with the bar's
+     bottom edge (no gap, no overlap). flex-shrink:0 prevents the parent
+     flex column (.diff-view) from squashing the bar below min-height. */
+  box-sizing: border-box;
+  flex-shrink: 0;
+  min-height: var(--tour-bar-height);
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   padding: 10px 16px;
-  background: var(--color-bg-primary, #ffffff);
-  border-top: 1px solid var(--color-border-primary, #d1d9e0);
-  box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.06);
+  /* Distinctive amber theme so the bar reads as a tour-mode chrome and
+     not just another toolbar. Soft tinted background + a thicker amber
+     bottom rule echo the per-stop annotation accent (#d4a72c). */
+  background: linear-gradient(180deg, #fff8e1 0%, #fef3c7 100%);
+  border-bottom: 2px solid #d4a72c;
+  box-shadow: 0 2px 12px rgba(212, 167, 44, 0.18);
   font-size: 13px;
-  color: var(--color-text-primary, #24292f);
+  color: #7d5700;
 }
 
 [data-theme="dark"] .tour-bar {
-  background: var(--color-bg-primary, #0d1117);
-  border-top-color: var(--color-border-primary, #30363d);
-  color: var(--color-text-primary, #c9d1d9);
-  box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.40);
+  background: linear-gradient(180deg, rgba(187, 128, 9, 0.18) 0%, rgba(187, 128, 9, 0.28) 100%),
+              var(--color-bg-primary, #0d1117);
+  border-bottom-color: #bb8009;
+  color: #e3b341;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.40);
 }
 
 .tour-bar__brand {
@@ -14334,11 +14344,12 @@ body.tour-active .review-panel {
   flex: 1;
   text-align: center;
   font-variant-numeric: tabular-nums;
-  color: var(--color-text-secondary, #57606a);
+  font-weight: 500;
+  color: #6b4500;
 }
 
 [data-theme="dark"] .tour-bar__progress {
-  color: var(--color-text-secondary, #8b949e);
+  color: #e3b341;
 }
 
 .tour-bar__nav {
@@ -14354,9 +14365,9 @@ body.tour-active .review-panel {
   padding: 4px 10px;
   font-size: 12px;
   font-weight: 500;
-  color: var(--color-text-primary, #24292f);
-  background: var(--color-bg-secondary, #f6f8fa);
-  border: 1px solid var(--color-border-primary, #d1d9e0);
+  color: #7d5700;
+  background: rgba(255, 255, 255, 0.65);
+  border: 1px solid rgba(212, 167, 44, 0.55);
   border-radius: var(--radius-sm, 4px);
   cursor: pointer;
   transition: background-color var(--transition-fast, 0.1s ease),
@@ -14364,12 +14375,12 @@ body.tour-active .review-panel {
 }
 
 .tour-bar__nav button:hover:not(:disabled) {
-  background: var(--color-bg-tertiary, #eaeef2);
-  border-color: var(--color-border-secondary, #afb8c1);
+  background: rgba(255, 255, 255, 0.95);
+  border-color: #d4a72c;
 }
 
 .tour-bar__nav button:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
@@ -14379,14 +14390,14 @@ body.tour-active .review-panel {
 }
 
 [data-theme="dark"] .tour-bar__nav button {
-  color: var(--color-text-primary, #c9d1d9);
-  background: var(--color-bg-secondary, #161b22);
-  border-color: var(--color-border-primary, #30363d);
+  color: #e3b341;
+  background: rgba(13, 17, 23, 0.55);
+  border-color: rgba(187, 128, 9, 0.55);
 }
 
 [data-theme="dark"] .tour-bar__nav button:hover:not(:disabled) {
-  background: var(--color-bg-tertiary, #21262d);
-  border-color: var(--color-border-secondary, #6e7681);
+  background: rgba(13, 17, 23, 0.85);
+  border-color: #e3b341;
 }
 
 /* ---------- Toolbar tour-toggle button states ---------- */

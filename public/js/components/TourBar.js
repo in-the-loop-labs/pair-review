@@ -1,6 +1,6 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 /**
- * TourBar - Sticky bottom bar shown while a guided tour is active.
+ * TourBar - Sticky top bar shown while a guided tour is active.
  *
  * Displays "Stop N of M" plus Prev/Next/Exit controls. On completion the
  * Prev/Next/Exit chrome swaps for Restart/Close. The bar consumes callbacks
@@ -8,11 +8,15 @@
  *
  * Lifecycle:
  *   const bar = new TourBar({ onPrev, onNext, onExit, onRestart });
- *   bar.mount();             // appends to document.body
+ *   bar.mount(parent);       // prepends to parent (defaults to document.body)
  *   bar.setStops(stops);     // initial render
  *   bar.setActiveIndex(0);   // pre-tour state
  *   bar.setCompleted(true);  // toggles to Restart / Close chrome
  *   bar.unmount();
+ *
+ * The bar uses `position: sticky` so it visually pins to the top of its
+ * scrolling parent. Pass the diff-view scroll container as `parent` so the
+ * bar spans the diff width (and not the file-tree sidebar).
  *
  * Testability: instantiable in jsdom; CommonJS export at the bottom.
  */
@@ -58,11 +62,16 @@ class TourBar {
   }
 
   /**
-   * Append the bar to `document.body`. Idempotent.
+   * Prepend the bar to `parent` (defaults to `document.body`). Idempotent.
+   * The bar's CSS uses `position: sticky`, so it pins to the top of the
+   * nearest scrollable ancestor — pass that scroll container as `parent`
+   * to scope the bar to a region rather than the viewport.
+   * @param {HTMLElement} [parent=document.body]
    * @returns {TourBar}
    */
-  mount() {
+  mount(parent) {
     if (this._root && this._root.isConnected) return this;
+    const target = parent || document.body;
 
     const root = document.createElement('div');
     root.className = 'tour-bar';
@@ -124,7 +133,9 @@ class TourBar {
     root.appendChild(progress);
     root.appendChild(nav);
 
-    document.body.appendChild(root);
+    // Prepend so the bar becomes the first child — it pins above the
+    // diff-toolbar (which sits at top:0 in the same scroll container).
+    target.prepend(root);
 
     this._root = root;
     this._progressEl = progress;

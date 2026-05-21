@@ -2,7 +2,7 @@
 /**
  * E2E Tests: Guided Tour UI (Phase 8)
  *
- * Verifies the inline tour-stop annotations + sticky bottom tour bar end to end:
+ * Verifies the inline tour-stop annotations + sticky top tour bar end to end:
  *   - Toolbar tour button stays hidden when tours_enabled=false
  *   - When `tours_enabled` is true, the button becomes visible
  *     (visibility is decoupled from `summaries_enabled` on the client;
