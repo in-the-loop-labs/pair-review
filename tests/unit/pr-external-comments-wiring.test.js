@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
  *   - _loadExternalComments: sets reviewId on the singleton, syncs, and
  *     calls loadAndRender regardless of sync success.
  *   - Local-mode short-circuit: no sync, no loadAndRender.
- *   - Refresh button: clicking #refresh-external-comments-btn invokes
+ *   - Refresh button: clicking #refresh-external-comments-btn-panel invokes
  *     _loadExternalComments and toggles disabled state.
  */
 
@@ -285,7 +285,7 @@ describe('PRManager._loadExternalComments', () => {
 describe('Refresh external-comments button wiring', () => {
   /**
    * Exercise the production click handler attached in setupEventListeners()
-   * for #refresh-external-comments-btn. Per CLAUDE.md we test the real
+   * for #refresh-external-comments-btn-panel. Per CLAUDE.md we test the real
    * method (`_handleExternalCommentsRefreshClick`) rather than duplicating
    * its behavior in the test file.
    */

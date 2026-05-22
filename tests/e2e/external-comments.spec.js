@@ -383,10 +383,13 @@ test.describe('External comments: manual refresh', () => {
     await waitForDiffToRender(page);
     await waitForExternalRowsRendered(page);
 
-    // Wait for the initial page-load sync to settle
+    // Wait for the initial page-load sync to settle. The refresh button
+    // lives in the AI panel header; expand the panel so the button is in a
+    // visible region for click + interaction.
+    await page.evaluate(() => window.aiPanel?.expand());
     await page.waitForFunction(() => {
       // The pr.js code clears the is-refreshing class in the finally block
-      const btn = document.getElementById('refresh-external-comments-btn');
+      const btn = document.getElementById('refresh-external-comments-btn-panel');
       return btn && !btn.classList.contains('is-refreshing') && !btn.disabled;
     }, { timeout: 10000 });
 
@@ -404,7 +407,7 @@ test.describe('External comments: manual refresh', () => {
       { timeout: 5000 }
     );
 
-    const refreshBtn = page.locator('#refresh-external-comments-btn');
+    const refreshBtn = page.locator('#refresh-external-comments-btn-panel');
     await expect(refreshBtn).toBeVisible();
     await refreshBtn.click();
 
@@ -413,7 +416,7 @@ test.describe('External comments: manual refresh', () => {
 
     // Refresh should clear the is-refreshing state once done
     await page.waitForFunction(() => {
-      const btn = document.getElementById('refresh-external-comments-btn');
+      const btn = document.getElementById('refresh-external-comments-btn-panel');
       return btn && !btn.classList.contains('is-refreshing') && !btn.disabled;
     }, { timeout: 10000 });
 
@@ -688,7 +691,7 @@ test.describe('External segment in Review panel', () => {
         replies: [],
       },
     ];
-    await page.locator('#refresh-external-comments-btn').click();
+    await page.locator('#refresh-external-comments-btn-panel').click();
 
     // Wait for the panel to reflect the new count
     await expect(externalCount).toHaveText('(2)', { timeout: 5000 });
