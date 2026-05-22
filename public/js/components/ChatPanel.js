@@ -1253,9 +1253,9 @@ class ChatPanel {
     // First-time open behaviour:
     //   1. If localStorage has a tab list for this review, restore those tabs.
     //   2. Else, fall back to the legacy single-tab + MRU-load path.
-    //   3. Explicit context (Ask about this / Chat about this file) always
-    //      opens a fresh "New Chat" tab on top — that's the user requesting
-    //      a new conversation about a specific item.
+    // Explicit context (Ask about this / Chat about this file) lands in the
+    // currently-active tab — the user is augmenting the conversation they're
+    // already in. Only spin up a fresh tab when there isn't one yet.
     if (this.tabs.length === 0) {
       let restored = false;
       if (this.reviewId && !hasExplicitContext) {
@@ -1270,21 +1270,6 @@ class ChatPanel {
         if (!hasExplicitContext) {
           await this._loadMRUSession();
         }
-      }
-    }
-
-    // Explicit context ("Ask about this" / file context / comment context)
-    // must always land in a FRESH tab so we don't bleed it into whatever
-    // conversation the user has been chatting in. Reuse only a tab that is
-    // truly empty (no messages, no pending context).
-    if (hasExplicitContext) {
-      const active = this._getActiveTab();
-      const canReuseEmptyTab = active &&
-        active.messages.length === 0 &&
-        active.pendingContext.length === 0;
-      if (!canReuseEmptyTab) {
-        const tab = this._createTab({ provider: this._activeProvider });
-        this._appendTab(tab, { focus: true });
       }
     }
 
