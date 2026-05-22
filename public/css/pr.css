@@ -12561,6 +12561,7 @@ body.resizing * {
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.04) inset;
 }
 
+.chat-panel__tab-dot--pending { background: #8c959f; }
 .chat-panel__tab-dot--idle { background: var(--color-accent-primary); }
 .chat-panel__tab-dot--streaming {
   background: #d97706;
@@ -12568,6 +12569,7 @@ body.resizing * {
 }
 .chat-panel__tab-dot--error { background: #cf222e; }
 
+[data-theme="dark"] .chat-panel__tab-dot--pending { background: #6e7681; }
 [data-theme="dark"] .chat-panel__tab-dot--streaming { background: #d29922; }
 [data-theme="dark"] .chat-panel__tab-dot--error { background: #f85149; }
 

@@ -105,7 +105,10 @@ class ChatPanel {
       sessionId: init.sessionId ?? null,
       _localKey: this._tabKeyCounter--,
       title: init.title || _nextNewTabTitle(),
-      status: 'idle',
+      // 'pending' = fresh tab, no messages exchanged yet (gray dot).
+      // Transitions to 'idle'/'streaming'/'error' once the conversation
+      // is underway. See _updateTabStatus for the demote rule.
+      status: 'pending',
       errorMessage: null,
       messages: [],
       isStreaming: false,
@@ -450,11 +453,18 @@ class ChatPanel {
   /**
    * Update a tab's status (and its dot in the strip).
    * @param {ChatTab} tab
-   * @param {'idle'|'streaming'|'error'} status
+   * @param {'pending'|'idle'|'streaming'|'error'} status
    */
   _updateTabStatus(tab, status) {
     if (!tab) return;
     if (status === 'idle') tab.errorMessage = null;
+    // A tab with no exchanged messages stays in the 'pending' (gray) state
+    // even when callers request 'idle' — the conversation hasn't started yet,
+    // so the active-affordance blue would over-signal. 'streaming' and
+    // 'error' always win.
+    if (status === 'idle' && (tab.messages?.length ?? 0) === 0) {
+      status = 'pending';
+    }
     tab.status = status;
     if (this.tabStripItemsEl) {
       const dot = this.tabStripItemsEl.querySelector(`.chat-panel__tab[data-tab-key="${this._tabKey(tab)}"] .chat-panel__tab-dot`);
@@ -1620,6 +1630,13 @@ class ChatPanel {
         }
       }
     });
+
+    // The tab was initialized as 'pending' (gray dot) before history loaded.
+    // Now that messages exist, promote to 'idle' (blue dot) — but don't
+    // override a streaming/error state that may have started up in parallel.
+    if (tab.status === 'pending' && tab.messages.length > 0) {
+      this._updateTabStatus(tab, 'idle');
+    }
   }
 
   /**

@@ -6142,7 +6142,9 @@ describe('ChatPanel', () => {
     it('_createTab produces a tab with sensible defaults', () => {
       const tab = chatPanel._createTab();
       expect(tab.sessionId).toBeNull();
-      expect(tab.status).toBe('idle');
+      // Fresh tabs start in 'pending' (gray dot) until the first message
+      // is exchanged. See _updateTabStatus for the demote rule.
+      expect(tab.status).toBe('pending');
       expect(tab.messages).toEqual([]);
       expect(tab.isStreaming).toBe(false);
       expect(tab.streamingContent).toBe('');
@@ -6268,9 +6270,9 @@ describe('ChatPanel', () => {
   });
 
   describe('multi-tab: status dot derivation', () => {
-    it('starts a tab at status: idle', () => {
+    it('starts a fresh tab at status: pending', () => {
       const tab = chatPanel._getActiveTab();
-      expect(tab.status).toBe('idle');
+      expect(tab.status).toBe('pending');
     });
 
     it('isStreaming setter pushes the active tab to status: streaming', () => {
@@ -6278,12 +6280,22 @@ describe('ChatPanel', () => {
       expect(chatPanel._getActiveTab().status).toBe('streaming');
     });
 
-    it('isStreaming = false on an error-free tab returns to status: idle', () => {
+    it('isStreaming = false on an error-free tab with messages returns to status: idle', () => {
       const tab = chatPanel._getActiveTab();
       tab.errorMessage = null;
+      tab.messages = [{ role: 'user', content: 'hi' }];
       chatPanel.isStreaming = true;
       chatPanel.isStreaming = false;
       expect(tab.status).toBe('idle');
+    });
+
+    it('isStreaming = false on an empty tab returns to status: pending, not idle', () => {
+      const tab = chatPanel._getActiveTab();
+      tab.errorMessage = null;
+      tab.messages = [];
+      chatPanel.isStreaming = true;
+      chatPanel.isStreaming = false;
+      expect(tab.status).toBe('pending');
     });
 
     it('isStreaming = false on a tab with errorMessage keeps status: error', () => {
@@ -6543,9 +6555,11 @@ describe('ChatPanel', () => {
       // Inspect all fetch calls; the only one expected is /api/review/.../chat/sessions.
       const urls = global.fetch.mock.calls.map(c => c[0]);
       expect(urls.some(u => typeof u === 'string' && u.includes('/resume'))).toBe(false);
-      // All restored tabs default to status idle.
+      // Restored tabs start in 'pending' until their message history loads
+      // and the first message is observed. The fixture session has
+      // message_count: 0, so it remains pending throughout.
       for (const tab of chatPanel.tabs) {
-        expect(tab.status).toBe('idle');
+        expect(tab.status).toBe('pending');
       }
     });
 
@@ -6982,6 +6996,44 @@ describe('ChatPanel', () => {
       expect(spy).not.toHaveBeenCalled();
       // errorMessage preserved
       expect(tab.errorMessage).toBe('prior');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Tab status: 'pending' for fresh tabs (gray dot until first message)
+  // -----------------------------------------------------------------------
+  describe('tab status: pending → idle gating on first message', () => {
+    it('newly created tabs start in the "pending" status', () => {
+      const tab = chatPanel._createTab({});
+      expect(tab.status).toBe('pending');
+    });
+
+    it('_updateTabStatus(tab, "idle") on an empty tab demotes to "pending"', () => {
+      const tab = chatPanel._createTab({});
+      tab.messages = [];
+      chatPanel._updateTabStatus(tab, 'idle');
+      expect(tab.status).toBe('pending');
+    });
+
+    it('_updateTabStatus(tab, "idle") on a tab with messages stays "idle"', () => {
+      const tab = chatPanel._createTab({});
+      tab.messages = [{ role: 'user', content: 'hi' }];
+      chatPanel._updateTabStatus(tab, 'idle');
+      expect(tab.status).toBe('idle');
+    });
+
+    it('_updateTabStatus(tab, "streaming") always wins, even on empty tab', () => {
+      const tab = chatPanel._createTab({});
+      tab.messages = [];
+      chatPanel._updateTabStatus(tab, 'streaming');
+      expect(tab.status).toBe('streaming');
+    });
+
+    it('_updateTabStatus(tab, "error") always wins, even on empty tab', () => {
+      const tab = chatPanel._createTab({});
+      tab.messages = [];
+      chatPanel._updateTabStatus(tab, 'error');
+      expect(tab.status).toBe('error');
     });
   });
 
