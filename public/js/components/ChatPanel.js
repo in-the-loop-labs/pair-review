@@ -17,39 +17,755 @@ function getChatSpinnerHTML() {
   return window.__pairReview?.chatSpinner === 'loop' ? LOOP_SPINNER_HTML : DOTS_SPINNER_HTML;
 }
 
+/**
+ * @typedef {Object} ChatTab
+ * @property {number|null} sessionId - Backend session ID (null for an unsaved new tab)
+ * @property {string} title - Tab title shown in the strip
+ * @property {'idle'|'streaming'|'error'} status - Drives the status dot color
+ * @property {string|null} errorMessage - Last error, cleared on next successful send
+ * @property {Array<{role: string, content: string, id?: number}>} messages
+ * @property {boolean} isStreaming
+ * @property {string} streamingContent - Accumulated stream text (delta concatenation)
+ * @property {boolean} sessionWarm - True once the session has been used this page load (ACP resume flag)
+ * @property {string} provider - Provider id assigned to this tab when its session was created
+ * @property {string|null} model - Model id for header label
+ * @property {string|null} contextSource - 'suggestion' | 'user' | 'line' | 'file' | null
+ * @property {(string|number)|null} contextItemId
+ * @property {Object|null} contextLineMeta - { file, line_start, line_end }
+ * @property {Object|null} pendingActionContext - Set by action buttons, consumed in sendMessage
+ * @property {string[]} pendingContext - Unsent context text blocks for next send
+ * @property {Object[]} pendingContextData - Structured context data parallel to pendingContext
+ * @property {string|null} latestDiffState - Latest diff snapshot (idempotent, overwrites)
+ * @property {string[]} pendingUserActionHints - Ordered log of UI actions, drained on send
+ * @property {boolean} analysisContextRemoved
+ * @property {string|null} sessionAnalysisRunId
+ * @property {HTMLElement} messagesEl - Per-tab scrollable messages container
+ * @property {HTMLElement|null} streamingMsgEl - Reference to the in-progress assistant bubble
+ * @property {boolean} userScrolledAway - Auto-scroll engagement flag
+ * @property {Function|null} wsUnsub - Unsubscribe handle for the per-session WS topic
+ * @property {Promise<void>|null} historyLoadPromise - Set while history is loading
+ */
+
+let _newTabCounter = 0;
+function _nextNewTabTitle() {
+  _newTabCounter += 1;
+  return _newTabCounter === 1 ? 'New Chat' : `New Chat ${_newTabCounter}`;
+}
+
 class ChatPanel {
   constructor(containerId) {
     this.containerId = containerId;
     this.container = document.getElementById(containerId);
-    this.currentSessionId = null;
     this.reviewId = null;
     this.isOpen = false;
-    this.isStreaming = false;
-    this._chatUnsub = null;
     this._reviewUnsub = null;
-    this.messages = [];
-    this._streamingContent = '';
-    this._pendingContext = [];
-    this._pendingContextData = [];
-    this._pendingDiffStateNotifications = [];
-    this._pendingUserActionHints = [];
-    this._contextSource = null;   // 'suggestion' or 'user' — set when opened with context
-    this._contextItemId = null;   // suggestion ID or comment ID from context
-    this._contextLineMeta = null;  // { file, line_start, line_end } — set when opened with line context
-    this._pendingActionContext = null;  // { type, itemId } — set by action button handlers, consumed by sendMessage
     this._resizeConfig = ChatPanel.RESIZE_CONFIG;
-    this._analysisContextRemoved = false;
-    this._sessionAnalysisRunId = null; // tracks which AI run ID's context is loaded in the current session
-    this._openPromise = null; // concurrency guard for open()
-    this._sessionWarm = false; // true once the session has been used in this page load
+    this._openPromise = null;
     this._activeProvider = window.__pairReview?.chatProvider || 'pi';
     this._chatProviders = window.__pairReview?.chatProviders || [];
     this._enterToSend = window.__pairReview?.chatEnterToSend ?? true;
+
+    /** @type {ChatTab[]} Open tabs, in display order (left to right). */
+    this.tabs = [];
+    /** @type {number|null} Sentinel ID of the active tab; matches sessionId once saved. */
+    this.activeTabKey = null;
+    /** Counter used as a sentinel key for tabs that haven't been assigned a sessionId yet. */
+    this._tabKeyCounter = -1;
 
     this._render();
     this._bindEvents();
     this._initContextTooltip();
     this._updateTitle();
+  }
+
+  // ── Tab helpers ─────────────────────────────────────────────────────────
+
+  _getActiveTab() {
+    if (this.activeTabKey == null) return null;
+    return this.tabs.find(t => this._tabKey(t) === this.activeTabKey) || null;
+  }
+
+  _tabKey(tab) {
+    return tab.sessionId != null ? tab.sessionId : tab._localKey;
+  }
+
+  _findTabBySessionId(sessionId) {
+    if (sessionId == null) return null;
+    return this.tabs.find(t => t.sessionId === sessionId) || null;
+  }
+
+  /**
+   * Allocate a per-tab descriptor with sensible defaults. Caller is responsible
+   * for appending it to this.tabs and creating its messagesEl.
+   * @param {Object} [init]
+   * @returns {ChatTab}
+   */
+  _createTab(init = {}) {
+    const tab = {
+      sessionId: init.sessionId ?? null,
+      _localKey: this._tabKeyCounter--,
+      title: init.title || _nextNewTabTitle(),
+      // 'pending' = fresh tab, no messages exchanged yet (gray dot).
+      // Transitions to 'idle'/'streaming'/'error' once the conversation
+      // is underway. See _updateTabStatus for the demote rule.
+      status: 'pending',
+      errorMessage: null,
+      messages: [],
+      isStreaming: false,
+      streamingContent: '',
+      sessionWarm: !!init.sessionWarm,
+      provider: init.provider || this._activeProvider,
+      model: init.model || null,
+      contextSource: null,
+      contextItemId: null,
+      contextLineMeta: null,
+      pendingActionContext: null,
+      pendingContext: [],
+      pendingContextData: [],
+      latestDiffState: init.latestDiffState !== undefined ? init.latestDiffState : (this._initialDiffState || null),
+      pendingUserActionHints: [],
+      analysisContextRemoved: false,
+      sessionAnalysisRunId: null,
+      messagesEl: null,
+      streamingMsgEl: null,
+      userScrolledAway: false,
+      wsUnsub: null,
+      titleFromUser: false,
+      historyLoadPromise: null,
+    };
+    return tab;
+  }
+
+  // ── Per-tab state delegation (SYNC ONLY) ────────────────────────────────
+  //
+  // These getters/setters forward to the active tab so synchronous helpers
+  // (context-card builders, sync handler callers) don't need a tab parameter.
+  // SYNC ONLY — do NOT read across awaits. Async code paths (`sendMessage`,
+  // `_handleChatMessageForTab`, WS reconnect) capture `tab` at function entry
+  // and write through `tab.*` directly.
+  //
+  // Array-valued state (`tab.messages`, `tab.pendingContext`,
+  // `tab.pendingContextData`, `tab.pendingActionContext`,
+  // `tab.pendingUserActionHints`) and per-tab snapshot state
+  // (`tab.latestDiffState`) are deliberately NOT exposed via shims —
+  // callers must use the explicit tab reference to avoid silent cross-tab
+  // bleed across awaits.
+
+  get currentSessionId() {
+    return this._getActiveTab()?.sessionId ?? null;
+  }
+  set currentSessionId(v) {
+    const tab = this._getActiveTab();
+    if (!tab) return;
+    const prev = tab.sessionId;
+    tab.sessionId = v;
+    if (prev !== v) {
+      this.activeTabKey = this._tabKey(tab);
+      this._renderTabStrip();
+    }
+  }
+  get isStreaming() {
+    return this._getActiveTab()?.isStreaming ?? false;
+  }
+  set isStreaming(v) {
+    const tab = this._getActiveTab();
+    if (!tab) return;
+    tab.isStreaming = v;
+    this._updateTabStatus(tab, v ? 'streaming' : (tab.errorMessage ? 'error' : 'idle'));
+  }
+  get _streamingContent() {
+    return this._getActiveTab()?.streamingContent ?? '';
+  }
+  set _streamingContent(v) {
+    const tab = this._getActiveTab();
+    if (tab) tab.streamingContent = v;
+  }
+  get _sessionWarm() {
+    return this._getActiveTab()?.sessionWarm ?? false;
+  }
+  set _sessionWarm(v) {
+    const tab = this._getActiveTab();
+    if (tab) tab.sessionWarm = v;
+  }
+  get _contextSource() {
+    return this._getActiveTab()?.contextSource ?? null;
+  }
+  set _contextSource(v) {
+    const tab = this._getActiveTab();
+    if (tab) tab.contextSource = v;
+  }
+  get _contextItemId() {
+    return this._getActiveTab()?.contextItemId ?? null;
+  }
+  set _contextItemId(v) {
+    const tab = this._getActiveTab();
+    if (tab) tab.contextItemId = v;
+  }
+  get _contextLineMeta() {
+    return this._getActiveTab()?.contextLineMeta ?? null;
+  }
+  set _contextLineMeta(v) {
+    const tab = this._getActiveTab();
+    if (tab) tab.contextLineMeta = v;
+  }
+  get _analysisContextRemoved() {
+    return this._getActiveTab()?.analysisContextRemoved ?? false;
+  }
+  set _analysisContextRemoved(v) {
+    const tab = this._getActiveTab();
+    if (tab) tab.analysisContextRemoved = v;
+  }
+  get _sessionAnalysisRunId() {
+    return this._getActiveTab()?.sessionAnalysisRunId ?? null;
+  }
+  set _sessionAnalysisRunId(v) {
+    const tab = this._getActiveTab();
+    if (tab) tab.sessionAnalysisRunId = v;
+  }
+  get _userScrolledAway() {
+    return this._getActiveTab()?.userScrolledAway ?? false;
+  }
+  set _userScrolledAway(v) {
+    const tab = this._getActiveTab();
+    if (tab) tab.userScrolledAway = v;
+  }
+  get messagesEl() {
+    return this._getActiveTab()?.messagesEl || null;
+  }
+
+  /**
+   * Allocate a new <div class="chat-panel__messages"> for a tab and append it
+   * into the stack. Hidden by default; _switchToTab toggles the .--active class.
+   */
+  _createTabMessagesEl(tab) {
+    const el = document.createElement('div');
+    el.className = 'chat-panel__messages';
+    el.dataset.tabKey = String(this._tabKey(tab));
+    el.style.display = 'none';
+    el.innerHTML = `
+      <div class="chat-panel__empty">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="32" height="32">
+          <path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/>
+        </svg>
+        <p>Ask questions about this review, or the changes</p>
+      </div>
+    `;
+    let lastScrollTop = 0;
+    el.addEventListener('scroll', () => {
+      const { scrollTop, scrollHeight, clientHeight } = el;
+      const distance = scrollHeight - scrollTop - clientHeight;
+      if (scrollTop < lastScrollTop && distance >= NEAR_BOTTOM_THRESHOLD) {
+        tab.userScrolledAway = true;
+        if (this._getActiveTab() === tab) this._showNewContentPill();
+      } else if (distance < NEAR_BOTTOM_THRESHOLD) {
+        tab.userScrolledAway = false;
+        if (this._getActiveTab() === tab) this._hideNewContentPill();
+      }
+      lastScrollTop = scrollTop;
+    }, { passive: true });
+    tab.messagesEl = el;
+    return el;
+  }
+
+  /**
+   * Insert a new tab into the strip and the messages stack.
+   * @param {ChatTab} tab
+   * @param {{focus?: boolean, position?: number}} [opts]
+   */
+  _appendTab(tab, { focus = true, position } = {}) {
+    const el = this._createTabMessagesEl(tab);
+    if (typeof position === 'number' && position < this.tabs.length) {
+      this.tabs.splice(position, 0, tab);
+    } else {
+      this.tabs.push(tab);
+    }
+    this.messagesStackEl.appendChild(el);
+    if (focus) {
+      this._switchToTab(this._tabKey(tab));
+    } else {
+      this._renderTabStrip();
+    }
+    this._updateNoTabsEmptyState();
+    // Persist if the tab already has a sessionId (history-picker restore path).
+    // For new tabs that get a session async, persistence fires from the place
+    // that assigns sessionId.
+    if (tab.sessionId != null) this._persistOpenTabs();
+    return tab;
+  }
+
+  /**
+   * Activate a tab by key. Hides other tabs' message containers without
+   * tearing down their state or subscriptions.
+   * @param {number} key
+   */
+  _switchToTab(key) {
+    const tab = this.tabs.find(t => this._tabKey(t) === key);
+    if (!tab) return;
+    if (this.activeTabKey === key && tab.messagesEl?.style.display !== 'none') {
+      this._renderTabStrip();
+      return;
+    }
+    this.activeTabKey = key;
+    this._persistOpenTabs();
+    // Toggle visibility of message containers
+    for (const t of this.tabs) {
+      if (!t.messagesEl) continue;
+      t.messagesEl.style.display = (t === tab) ? '' : 'none';
+    }
+    // Header should reflect the focused tab's provider/model
+    if (tab.provider) {
+      this._activeProvider = tab.provider;
+      this._updateTitle(tab.provider, tab.model);
+    } else {
+      this._updateTitle();
+    }
+    this._renderTabStrip();
+    this._updateActionButtons();
+    // Adjust send/stop buttons to reflect the new active tab's streaming state
+    this.sendBtn.style.display = tab.isStreaming ? 'none' : '';
+    this.stopBtn.style.display = tab.isStreaming ? '' : 'none';
+    this.sendBtn.disabled = tab.isStreaming || !this.inputEl?.value?.trim();
+    // Re-anchor scroll
+    if (!tab.userScrolledAway) this.scrollToBottom({ force: true });
+  }
+
+  /**
+   * Close a tab: kills its bridge, removes its DOM, unsubscribes from its
+   * WebSocket topic. If it was active, focuses the rightmost remaining tab
+   * (or shows the empty state if none).
+   * @param {number} key
+   */
+  async _closeTab(key) {
+    const idx = this.tabs.findIndex(t => this._tabKey(t) === key);
+    if (idx === -1) return;
+    const tab = this.tabs[idx];
+    this._removeTabFromDom(tab);
+  }
+
+  /**
+   * Remove a tab from the strip and the DOM without contacting the backend.
+   * Shared by _closeTab (which additionally fires the DELETE) and the 404
+   * branch in _loadMessageHistory (which must NOT, since the session is
+   * already gone). Idempotent: a no-op for tabs that have already been
+   * removed.
+   *
+   * Always preserves the "no tabs left → reset Send/Stop" behavior so the
+   * input chrome doesn't get stranded in a streaming state.
+   *
+   * @param {ChatTab} tab
+   * @param {{ skipDelete?: boolean }} [opts]
+   */
+  _removeTabFromDom(tab, { skipDelete = false } = {}) {
+    if (!tab) return;
+    const idx = this.tabs.indexOf(tab);
+    if (idx === -1) return; // already removed
+
+    const key = this._tabKey(tab);
+
+    // Unsubscribe immediately so we stop receiving events for this session
+    if (tab.wsUnsub) { try { tab.wsUnsub(); } catch { /* noop */ } tab.wsUnsub = null; }
+
+    // Fire-and-forget DELETE — server-side closeSession is idempotent
+    if (!skipDelete && tab.sessionId != null) {
+      fetch(`/api/chat/session/${tab.sessionId}`, { method: 'DELETE' })
+        .catch(err => console.warn('[ChatPanel] Failed to close session:', err));
+    }
+
+    // Remove the DOM container
+    if (tab.messagesEl?.parentNode) {
+      tab.messagesEl.parentNode.removeChild(tab.messagesEl);
+    }
+
+    // Remove from the array
+    this.tabs.splice(idx, 1);
+    this._persistOpenTabs();
+
+    if (this.activeTabKey === key) {
+      // Focus the tab to the right (or last) if any remain
+      const next = this.tabs[idx] || this.tabs[idx - 1] || this.tabs[this.tabs.length - 1] || null;
+      if (next) {
+        this._switchToTab(this._tabKey(next));
+      } else {
+        this.activeTabKey = null;
+        this._renderTabStrip();
+        this._updateNoTabsEmptyState();
+        this._updateTitle();
+        this._updateActionButtons();
+        this.sendBtn.style.display = '';
+        this.stopBtn.style.display = 'none';
+        this.sendBtn.disabled = true;
+      }
+    } else {
+      this._renderTabStrip();
+    }
+  }
+
+  /**
+   * Render or re-render the tab strip from this.tabs.
+   */
+  _renderTabStrip() {
+    if (!this.tabStripItemsEl) return;
+    if (this.tabs.length === 0) {
+      this.tabStripItemsEl.innerHTML = '';
+      this.tabStripEl.classList.add('chat-panel__tab-strip--empty');
+      return;
+    }
+    this.tabStripEl.classList.remove('chat-panel__tab-strip--empty');
+    const items = this.tabs.map((tab) => {
+      const key = this._tabKey(tab);
+      const isActive = key === this.activeTabKey;
+      const dotClass = `chat-panel__tab-dot chat-panel__tab-dot--${tab.status || 'idle'}`;
+      const tooltip = tab.errorMessage
+        ? `${this._escapeAttr(tab.title)} (error: ${this._escapeAttr(tab.errorMessage)})`
+        : this._escapeAttr(tab.title);
+      const sessionIdAttr = tab.sessionId != null ? ` data-session-id="${tab.sessionId}"` : '';
+      return `
+        <div class="chat-panel__tab${isActive ? ' chat-panel__tab--active' : ''}"
+             role="tab"
+             data-tab-key="${key}"${sessionIdAttr}
+             title="${tooltip}">
+          <span class="${dotClass}" aria-hidden="true"></span>
+          <span class="chat-panel__tab-title">${this._escapeHtml(tab.title)}</span>
+          <button class="chat-panel__tab-close" title="Close conversation" data-tab-key="${key}" aria-label="Close conversation">
+            <svg viewBox="0 0 16 16" fill="currentColor" width="10" height="10"><path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.75.75 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.75.75 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 0 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z"/></svg>
+          </button>
+        </div>
+      `;
+    }).join('');
+    this.tabStripItemsEl.innerHTML = items;
+    // Bind click handlers
+    this.tabStripItemsEl.querySelectorAll('.chat-panel__tab').forEach((el) => {
+      const key = parseInt(el.dataset.tabKey, 10);
+      el.addEventListener('click', (e) => {
+        if (e.target.closest('.chat-panel__tab-close')) return;
+        this._switchToTab(key);
+      });
+    });
+    this.tabStripItemsEl.querySelectorAll('.chat-panel__tab-close').forEach((btn) => {
+      const key = parseInt(btn.dataset.tabKey, 10);
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this._closeTab(key);
+      });
+    });
+  }
+
+  /**
+   * Update a tab's status (and its dot in the strip).
+   * @param {ChatTab} tab
+   * @param {'pending'|'idle'|'streaming'|'error'} status
+   */
+  _updateTabStatus(tab, status) {
+    if (!tab) return;
+    if (status === 'idle') tab.errorMessage = null;
+    // A tab with no exchanged messages stays in the 'pending' (gray) state
+    // even when callers request 'idle' — the conversation hasn't started yet,
+    // so the active-affordance blue would over-signal. 'streaming' and
+    // 'error' always win.
+    if (status === 'idle' && (tab.messages?.length ?? 0) === 0) {
+      status = 'pending';
+    }
+    tab.status = status;
+    if (this.tabStripItemsEl) {
+      const dot = this.tabStripItemsEl.querySelector(`.chat-panel__tab[data-tab-key="${this._tabKey(tab)}"] .chat-panel__tab-dot`);
+      if (dot) {
+        dot.className = `chat-panel__tab-dot chat-panel__tab-dot--${status}`;
+      }
+    }
+  }
+
+  /**
+   * Update a tab's title (and re-render the strip).
+   * @param {ChatTab} tab
+   * @param {string} title
+   */
+  _setTabTitle(tab, title) {
+    if (!tab || !title) return;
+    tab.title = title;
+    if (this.tabStripItemsEl) {
+      const titleEl = this.tabStripItemsEl.querySelector(`.chat-panel__tab[data-tab-key="${this._tabKey(tab)}"] .chat-panel__tab-title`);
+      if (titleEl) titleEl.textContent = title;
+      const tabEl = this.tabStripItemsEl.querySelector(`.chat-panel__tab[data-tab-key="${this._tabKey(tab)}"]`);
+      if (tabEl) tabEl.title = this._escapeAttr(title);
+    }
+  }
+
+  /**
+   * Show or hide the "no tabs open" empty state.
+   */
+  _updateNoTabsEmptyState() {
+    const noTabsEmpty = this.messagesStackEl?.querySelector('.chat-panel__empty--no-tabs');
+    if (!noTabsEmpty) return;
+    noTabsEmpty.style.display = this.tabs.length === 0 ? '' : 'none';
+  }
+
+  // ── Persistence (open tabs in localStorage) ────────────────────────────
+  //
+  // Per-review key holds an ordered list of session IDs plus the active one.
+  // Format: { version: 1, tabs: [sessionId, ...], activeSessionId: number|null }
+  // Writes are debounced (100ms trailing) to coalesce bursts during open/restore.
+  // Reads/writes are wrapped in try/catch — localStorage failures are soft.
+
+  _chatTabsStorageKey() {
+    if (!this.reviewId) return null;
+    return `pair-review:chat-tabs:${this.reviewId}`;
+  }
+
+  /**
+   * Serialize open tabs and schedule a write. Only tabs with a saved sessionId
+   * are persisted — unsaved (just-opened, pre-session) tabs are ignored.
+   */
+  _persistOpenTabs() {
+    const key = this._chatTabsStorageKey();
+    if (!key) return;
+    if (this._persistTimer) {
+      clearTimeout(this._persistTimer);
+    }
+    this._persistTimer = setTimeout(() => {
+      this._persistTimer = null;
+      try {
+        const ids = this.tabs.map(t => t.sessionId).filter(id => id != null);
+        if (ids.length === 0) {
+          window.localStorage.removeItem(key);
+          return;
+        }
+        const active = this._getActiveTab();
+        const activeSessionId = active?.sessionId ?? null;
+        const payload = { version: 1, tabs: ids, activeSessionId };
+        window.localStorage.setItem(key, JSON.stringify(payload));
+      } catch (err) {
+        console.warn('[ChatPanel] Failed to persist open tabs:', err);
+      }
+    }, 100);
+  }
+
+  /**
+   * Read the persisted tab list for the current reviewId. Returns null when
+   * absent, malformed, or the wrong shape.
+   * @returns {{ tabs: number[], activeSessionId: number|null }|null}
+   */
+  _loadPersistedTabs() {
+    const key = this._chatTabsStorageKey();
+    if (!key) return null;
+    try {
+      const raw = window.localStorage.getItem(key);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.tabs)) return null;
+      const tabs = parsed.tabs
+        .map(n => parseInt(n, 10))
+        .filter(n => Number.isFinite(n));
+      if (tabs.length === 0) return null;
+      const active = Number.isFinite(parsed.activeSessionId)
+        ? parseInt(parsed.activeSessionId, 10)
+        : null;
+      return { tabs, activeSessionId: active };
+    } catch (err) {
+      console.warn('[ChatPanel] Failed to read persisted tabs:', err);
+      return null;
+    }
+  }
+
+  /**
+   * Restore tabs from a persisted descriptor. Fetches session metadata from
+   * the review's sessions list (for first-message titles, provider, model)
+   * and renders each tab. Stale session IDs (404 from messages endpoint) are
+   * silently dropped and the storage entry is rewritten without them.
+   *
+   * Returns true if at least one tab was restored.
+   *
+   * @param {{ tabs: number[], activeSessionId: number|null }} saved
+   * @returns {Promise<boolean>}
+   */
+  async _restoreTabs(saved) {
+    if (!saved || !this.reviewId) return false;
+
+    // Fetch all sessions for this review once for metadata lookup
+    const sessions = await this._fetchSessions();
+    const sessionById = new Map(sessions.map(s => [s.id, s]));
+
+    const surviving = [];
+    for (const sid of saved.tabs) {
+      const meta = sessionById.get(sid);
+      // If the session doesn't appear in the sessions list, it's been deleted
+      // out-of-band. Skip it — it'll be pruned from storage by the write at
+      // the end of this function.
+      if (!meta) continue;
+
+      const tab = this._createTab({
+        sessionId: sid,
+        provider: meta.provider || this._activeProvider,
+        model: meta.model || null,
+        sessionWarm: false,
+      });
+      if (meta.first_message) {
+        tab.title = this._truncate(meta.first_message, 28);
+        tab.titleFromUser = true;
+      }
+      // Append without focus — we focus the chosen tab in one go below
+      this._appendTab(tab, { focus: false });
+      this._subscribeTab(tab);
+
+      // Load history without blocking other tabs — race-guarded load knows how
+      // to discard responses that arrive after the tab has been closed/swapped.
+      // Track the in-flight promise on the tab so sendMessage can await before
+      // mutating its message list.
+      if (meta.message_count > 0) {
+        const p = this._loadMessageHistory(sid, tab)
+          .catch(err => console.warn('[ChatPanel] Restore: history load failed for', sid, err))
+          .finally(() => {
+            if (tab.historyLoadPromise === p) tab.historyLoadPromise = null;
+          });
+        tab.historyLoadPromise = p;
+      }
+
+      surviving.push({ tab, meta });
+    }
+
+    if (surviving.length === 0) return false;
+
+    // Choose which tab gets focus: prefer the saved activeSessionId, else
+    // the rightmost restored tab.
+    let focusTab = null;
+    if (saved.activeSessionId != null) {
+      const found = surviving.find(s => s.meta.id === saved.activeSessionId);
+      if (found) focusTab = found.tab;
+    }
+    if (!focusTab) focusTab = surviving[surviving.length - 1].tab;
+    this._switchToTab(this._tabKey(focusTab));
+
+    // Re-persist to prune any stale IDs that were dropped above
+    this._persistOpenTabs();
+
+    // Await the focused tab's history before returning so the panel doesn't
+    // expose an empty conversation to the user mid-load.
+    if (focusTab.historyLoadPromise) {
+      try { await focusTab.historyLoadPromise; } catch { /* swallow */ }
+    }
+    // A 404 in _loadMessageHistory silently closes the tab via the in-line
+    // removal path. If the focused tab was the casualty (or every tab was),
+    // signal failure so the caller falls through to _loadMRUSession.
+    if (this.tabs.length === 0 || !this.tabs.includes(focusTab)) {
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Escape a string for safe use in an HTML attribute value.
+   */
+  _escapeAttr(text) {
+    if (!text) return '';
+    return String(text)
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  /**
+   * Open a fresh tab and focus it. Does NOT eagerly POST to the backend —
+   * the session is lazily created on first send by sendMessage. Side effects:
+   *   - Allocates a tab descriptor with sessionId=null.
+   *   - Appends it to the strip and focuses it.
+   *   - Surfaces analysis context (when one is available locally) so the user
+   *     sees the card before they ever type a message.
+   * @returns {Promise<void>}
+   */
+  async _openNewTab() {
+    if (!this.reviewId) {
+      console.warn('[ChatPanel] _openNewTab: no reviewId yet');
+      return;
+    }
+    const tab = this._createTab({ provider: this._activeProvider });
+    this._appendTab(tab, { focus: true });
+    // No session yet, so _showAnalysisContextIfPresent gets a null sessionData.
+    // We still want the auto-detected analysis card surfaced on the fresh tab
+    // — that's what _ensureAnalysisContext handles. Route it through the
+    // captured tab so a focus change can't bleed the card elsewhere.
+    this._ensureAnalysisContext(tab);
+    if (this.isOpen) this.inputEl?.focus();
+  }
+
+  /**
+   * Create a backend chat session bound to a specific tab. Subscribes the tab
+   * to its session's WebSocket topic and updates the tab's sessionId.
+   * @param {ChatTab} tab
+   * @returns {Promise<Object|null>}
+   */
+  async _createSessionForTab(tab) {
+    if (!this.reviewId) return null;
+    if (!tab) return null;
+    // Capture the provider at entry. If the user swaps providers on this tab
+    // while the POST is in flight, the response describes a session for the
+    // wrong provider — we must abandon it and let the next send (with the new
+    // provider) start fresh.
+    const capturedProvider = tab.provider;
+    const isAcp = this._getProviderType(capturedProvider) === 'acp';
+    if (isAcp) this._showStatusFlash('Starting Agent Client Protocol');
+    try {
+      const body = { provider: capturedProvider, reviewId: this.reviewId };
+      if (tab.analysisContextRemoved) body.skipAnalysisContext = true;
+      const response = await fetch('/api/chat/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (isAcp) this._hideStatusFlash();
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error || 'Failed to create chat session');
+      }
+      const result = await response.json();
+      // The tab may have been closed while the POST was in flight. Hand the
+      // server-side session back so it can be cleaned up, and bail.
+      if (!this.tabs.includes(tab)) {
+        fetch(`/api/chat/session/${result.data.id}`, { method: 'DELETE' }).catch(() => {});
+        return null;
+      }
+      // Provider was swapped between our captured snapshot and the response.
+      // The session belongs to capturedProvider — let it be cleaned up and
+      // signal failure so the caller's lazy-create path can retry under the
+      // new provider.
+      if (tab.provider !== capturedProvider) {
+        fetch(`/api/chat/session/${result.data.id}`, { method: 'DELETE' }).catch(() => {});
+        return null;
+      }
+      tab.sessionId = result.data.id;
+      tab.sessionWarm = true;
+      if (tab.messagesEl) tab.messagesEl.dataset.tabKey = String(tab.sessionId);
+      // Re-key the active marker if this is the focused tab (so getters work)
+      if (this.activeTabKey === tab._localKey) this.activeTabKey = tab.sessionId;
+      this._subscribeTab(tab);
+      this._renderTabStrip();
+      this._persistOpenTabs();
+      return result.data;
+    } catch (error) {
+      if (isAcp) this._hideStatusFlash();
+      console.error('[ChatPanel] Error creating session:', error);
+      this._showError('Failed to start chat session. ' + error.message, tab);
+      return null;
+    }
+  }
+
+  /**
+   * Subscribe a tab to its session's WebSocket topic. Idempotent: if a
+   * subscription handle already exists, it is left in place.
+   * @param {ChatTab} tab
+   */
+  _subscribeTab(tab) {
+    if (!tab || tab.sessionId == null) return;
+    if (tab.wsUnsub) return;
+    window.wsClient.connect();
+    tab.wsUnsub = window.wsClient.subscribe('chat:' + tab.sessionId, (msg) => {
+      this._handleChatMessageForTab(tab, msg);
+    });
+  }
+
+  _getProviderType(providerId) {
+    const entry = this._chatProviders.find(p => p.id === providerId);
+    return entry?.type;
   }
 
   /**
@@ -83,11 +799,6 @@ class ChatPanel {
                 <path d="m.427 1.927 1.215 1.215a8.002 8.002 0 1 1-1.6 5.685.75.75 0 1 1 1.493-.154 6.5 6.5 0 1 0 1.18-4.458l1.358 1.358A.25.25 0 0 1 3.896 6H.25A.25.25 0 0 1 0 5.75V2.104a.25.25 0 0 1 .427-.177ZM7.75 4a.75.75 0 0 1 .75.75v2.992l2.028.812a.75.75 0 0 1-.557 1.392l-2.5-1A.751.751 0 0 1 7 8.25v-3.5A.75.75 0 0 1 7.75 4Z"/>
               </svg>
             </button>
-            <button class="chat-panel__new-btn" title="New conversation">
-              <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
-                <path d="M7.75 2a.75.75 0 0 1 .75.75V7h4.25a.75.75 0 0 1 0 1.5H8.5v4.25a.75.75 0 0 1-1.5 0V8.5H2.75a.75.75 0 0 1 0-1.5H7V2.75A.75.75 0 0 1 7.75 2Z"/>
-              </svg>
-            </button>
             <button class="chat-panel__close-btn" title="Close">
               <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
                 <path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.75.75 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.75.75 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 0 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z"/>
@@ -95,16 +806,25 @@ class ChatPanel {
             </button>
           </div>
         </div>
+        <div class="chat-panel__tab-strip" role="tablist">
+          <div class="chat-panel__tab-strip-items"></div>
+          <button class="chat-panel__tab-new-btn" title="New conversation">
+            <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
+              <path d="M7.75 2a.75.75 0 0 1 .75.75V7h4.25a.75.75 0 0 1 0 1.5H8.5v4.25a.75.75 0 0 1-1.5 0V8.5H2.75a.75.75 0 0 1 0-1.5H7V2.75A.75.75 0 0 1 7.75 2Z"/>
+            </svg>
+          </button>
+        </div>
         <div class="chat-panel__status-flash" style="display:none">
           <span class="chat-panel__status-flash-text">Starting Agent Client Protocol</span>
         </div>
         <div class="chat-panel__messages-wrapper">
-          <div class="chat-panel__messages" id="chat-messages">
-            <div class="chat-panel__empty">
+          <div class="chat-panel__messages-stack" id="chat-messages-stack">
+            <div class="chat-panel__empty chat-panel__empty--no-tabs">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="32" height="32">
                 <path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/>
               </svg>
-              <p>Ask questions about this review, or the changes</p>
+              <p>No conversation open.</p>
+              <button class="chat-panel__empty-new-btn">Start a new chat</button>
             </div>
           </div>
           <button class="chat-panel__new-content-pill" style="display:none">\u2193 New content</button>
@@ -163,12 +883,15 @@ class ChatPanel {
 
     // Cache element references
     this.panel = this.container.querySelector('#chat-panel');
-    this.messagesEl = this.container.querySelector('#chat-messages');
+    this.messagesStackEl = this.container.querySelector('#chat-messages-stack');
+    this.tabStripEl = this.container.querySelector('.chat-panel__tab-strip');
+    this.tabStripItemsEl = this.container.querySelector('.chat-panel__tab-strip-items');
+    this.tabNewBtn = this.container.querySelector('.chat-panel__tab-new-btn');
     this.inputEl = this.container.querySelector('.chat-panel__input');
     this.sendBtn = this.container.querySelector('.chat-panel__send-btn');
     this.stopBtn = this.container.querySelector('.chat-panel__stop-btn');
     this.closeBtn = this.container.querySelector('.chat-panel__close-btn');
-    this.newBtn = this.container.querySelector('.chat-panel__new-btn');
+    this.emptyNewBtn = this.container.querySelector('.chat-panel__empty-new-btn');
     this.actionBar = this.container.querySelector('.chat-panel__action-bar');
     this.adoptBtn = this.container.querySelector('.chat-panel__action-btn--adopt');
     this.updateBtn = this.container.querySelector('.chat-panel__action-btn--update');
@@ -196,8 +919,9 @@ class ChatPanel {
     // Close button
     this.closeBtn.addEventListener('click', () => this.close());
 
-    // New conversation button
-    this.newBtn.addEventListener('click', () => this._startNewConversation());
+    // New tab button (in tab strip)
+    this.tabNewBtn?.addEventListener('click', () => this._openNewTab());
+    this.emptyNewBtn?.addEventListener('click', () => this._openNewTab());
 
     // Provider picker button
     this.providerPickerBtn.addEventListener('click', () => this._toggleProviderDropdown());
@@ -222,26 +946,6 @@ class ChatPanel {
     // New-content pill: click to scroll to bottom
     if (this.newContentPill) {
       this.newContentPill.addEventListener('click', () => this.scrollToBottom({ force: true }));
-    }
-
-    // Track scroll direction to disengage/re-engage auto-scroll
-    if (this.messagesEl) {
-      let lastScrollTop = 0;
-      this.messagesEl.addEventListener('scroll', () => {
-        const { scrollTop, scrollHeight, clientHeight } = this.messagesEl;
-        const distance = scrollHeight - scrollTop - clientHeight;
-
-        if (scrollTop < lastScrollTop && distance >= NEAR_BOTTOM_THRESHOLD) {
-          // Scrolling UP and not near bottom — disengage
-          this._userScrolledAway = true;
-          this._showNewContentPill();
-        } else if (distance < NEAR_BOTTOM_THRESHOLD) {
-          // Back near bottom — re-engage
-          this._userScrolledAway = false;
-          this._hideNewContentPill();
-        }
-        lastScrollTop = scrollTop;
-      }, { passive: true });
     }
 
     // Textarea input handling
@@ -294,8 +998,8 @@ class ChatPanel {
     };
     document.addEventListener('keydown', this._onKeydown);
 
-    // Chat file link click handler (event delegation)
-    this.messagesEl?.addEventListener('click', (e) => {
+    // Chat file link click handler (event delegation on the per-tab stack)
+    this.messagesStackEl?.addEventListener('click', (e) => {
       const link = e.target.closest('.chat-file-link');
       if (link) {
         e.preventDefault();
@@ -550,15 +1254,42 @@ class ChatPanel {
     this.panel.classList.remove('chat-panel--closed');
     this.panel.classList.add('chat-panel--open');
 
-    // Ensure WebSocket subscriptions are active (but don't create a session yet — lazy creation)
+    // Ensure review-scope subscription is active. Per-tab subscriptions are
+    // attached as tabs are created/restored.
     this._ensureSubscriptions();
 
-    // Load MRU session with message history (if any previous sessions exist).
-    // Skip when opening with explicit context (suggestion/comment/file) — the
-    // user wants a *new* conversation about that item, not to resume the last one.
     const hasExplicitContext = !!(options.suggestionContext || options.commentContext || options.fileContext);
-    if (!this.currentSessionId && !hasExplicitContext) {
-      await this._loadMRUSession();
+
+    // First-time open behaviour:
+    //   1. If localStorage has a tab list for this review, restore those tabs.
+    //   2. Else, fall back to the legacy single-tab + MRU-load path.
+    // Explicit context (Ask about this / Chat about this file) lands in the
+    // currently-active tab — the user is augmenting the conversation they're
+    // already in. Only spin up a fresh tab when there isn't one yet.
+    if (this.tabs.length === 0) {
+      let restored = false;
+      if (this.reviewId && !hasExplicitContext) {
+        const saved = this._loadPersistedTabs();
+        if (saved) {
+          restored = await this._restoreTabs(saved);
+        }
+      }
+      if (!restored) {
+        const tab = this._createTab({ provider: this._activeProvider });
+        this._appendTab(tab, { focus: true });
+        if (!hasExplicitContext) {
+          await this._loadMRUSession();
+        }
+      }
+    }
+
+    // Resync the Send/Stop controls from the active tab's streaming state on
+    // every open so a reopen mid-stream shows the Stop button.
+    const activeOnOpen = this._getActiveTab();
+    if (activeOnOpen) {
+      this.sendBtn.style.display = activeOnOpen.isStreaming ? 'none' : '';
+      this.stopBtn.style.display = activeOnOpen.isStreaming ? '' : 'none';
+      this.sendBtn.disabled = activeOnOpen.isStreaming || !this.inputEl?.value?.trim();
     }
 
     // Ensure analysis context is added on every expand — not just when opening
@@ -620,11 +1351,14 @@ class ChatPanel {
     this.isOpen = false;
     this.panel.classList.remove('chat-panel--open');
     this.panel.classList.add('chat-panel--closed');
-    this._pendingContext = [];
-    this._pendingContextData = [];
-    this._contextSource = null;
-    this._contextItemId = null;
-    this._contextLineMeta = null;
+    const closeTab = this._getActiveTab();
+    if (closeTab) {
+      closeTab.pendingContext = [];
+      closeTab.pendingContextData = [];
+      closeTab.contextSource = null;
+      closeTab.contextItemId = null;
+      closeTab.contextLineMeta = null;
+    }
     // Zero out CSS variable so max-width calcs don't reserve space (mirrors AIPanel.collapse)
     document.documentElement.style.setProperty('--chat-panel-width', '0px');
     // Preserve _analysisContextRemoved and _sessionAnalysisRunId across
@@ -646,73 +1380,15 @@ class ChatPanel {
   }
 
   /**
-   * Start a new conversation (reset session)
-   * Preserves any unsent pending context cards and re-adds them to the new conversation.
+   * Start a new conversation by opening a fresh tab.
+   * Unlike the legacy single-tab implementation this no longer destroys the
+   * current conversation — it simply adds a new tab and focuses it. Any
+   * unsent pending context is left on the previous tab.
    */
   async _startNewConversation() {
     this._hideProviderDropdown();
     this._hideSessionDropdown();
-    // 1. Snapshot pending context before clearing (these are unsent context cards)
-    const savedContext = this._pendingContext.slice();
-    const savedContextData = this._pendingContextData.slice();
-    const savedContextSource = this._contextSource;
-    const savedContextItemId = this._contextItemId;
-    const savedContextLineMeta = this._contextLineMeta;
-
-    // 2. Clear everything as normal
-    this._finalizeStreaming();
-    this.currentSessionId = null;
-    this._resubscribeChat(); // Unsubscribe old chat topic
-    this.messages = [];
-    this._streamingContent = '';
-    this._pendingContext = [];
-    this._pendingContextData = [];
-    this._pendingDiffStateNotifications = [];
-    this._pendingUserActionHints = [];
-    this._contextSource = null;
-    this._contextItemId = null;
-    this._contextLineMeta = null;
-    this._analysisContextRemoved = false;
-    this._sessionAnalysisRunId = null;
-    this._clearMessages();
-    this._updateActionButtons();
-    this._updateTitle(); // Reset title for new conversation
-
-    // 3. Re-add analysis context (appears first, handled separately from pending arrays)
-    this._ensureAnalysisContext();
-
-    // 4. Re-add saved pending context cards (if any were unsent)
-    if (savedContext.length > 0) {
-      // Remove empty state since we're about to add context cards
-      const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
-      if (emptyState) emptyState.remove();
-
-      // Restore context metadata
-      this._contextSource = savedContextSource;
-      this._contextItemId = savedContextItemId;
-      this._contextLineMeta = savedContextLineMeta;
-
-      for (let i = 0; i < savedContextData.length; i++) {
-        const ctxData = savedContextData[i];
-        this._pendingContext.push(savedContext[i]);
-        this._pendingContextData.push(ctxData);
-
-        // Render the appropriate card type based on the context data
-        if (ctxData.type === 'file') {
-          this._addFileContextCard(ctxData, { removable: true });
-        } else if (ctxData.type === 'line') {
-          this._addLineContextCard(ctxData, { removable: true });
-        } else if (ctxData.type === 'comment') {
-          this._addCommentContextCard(ctxData, { removable: true });
-        } else if (ctxData.type === 'analysis-run') {
-          this._addAnalysisRunContextCard(ctxData, { removable: true });
-        } else {
-          this._addContextCard(ctxData, { removable: true });
-        }
-      }
-
-      this._updateActionButtons();
-    }
+    await this._openNewTab();
   }
 
   /**
@@ -734,29 +1410,87 @@ class ChatPanel {
   }
 
   /**
-   * Load the most recently used session for the current review.
-   * Picks the first session (MRU) and loads its message history.
+   * Load the most recently used session into the active tab.
+   * Picks the first session (MRU) and loads its message history. Assumes the
+   * caller has already created an active tab via _appendTab().
    */
   async _loadMRUSession() {
-    if (!this.reviewId) return;
+    const tab = this._getActiveTab();
+    if (!tab || !this.reviewId) return;
+    // Capture the messagesEl reference for the race-guard after the fetch.
+    const capturedEl = tab.messagesEl;
 
     try {
       const sessions = await this._fetchSessions();
       if (sessions.length === 0) return;
 
-      const mru = sessions[0];
-      this.currentSessionId = mru.id;
-      this._sessionWarm = false;
-      this._resubscribeChat();
+      // Race guard: by the time _fetchSessions resolved, the user may have
+      // closed this tab or swapped its session. If anything looks stale,
+      // abandon the load.
+      if (!this.tabs.includes(tab)) return;
+      if (tab.sessionId != null) return; // tab was assigned a session by another path
+      if (tab.messagesEl !== capturedEl) return;
+      if (!capturedEl?.isConnected) return;
+
+      // Skip MRU candidates already open in another tab — picking one would
+      // create a duplicate. Walk down the list (most-recent first) until we
+      // find one that no surviving tab is bound to.
+      let mru = null;
+      for (const candidate of sessions) {
+        if (!this._findTabBySessionId(candidate.id)) {
+          mru = candidate;
+          break;
+        }
+      }
+      if (!mru) {
+        // Every recent session is already open — focus the most recent one
+        // and drop the empty placeholder so we don't litter the strip.
+        const firstOpen = this._findTabBySessionId(sessions[0].id);
+        if (firstOpen && firstOpen !== tab) {
+          this._switchToTab(this._tabKey(firstOpen));
+          // The placeholder may be the originating `tab`. Remove it so the
+          // user doesn't see an empty extra tab alongside the focused one.
+          if (this.tabs.includes(tab) && tab.sessionId == null) {
+            this._removeTabFromDom(tab, { skipDelete: true });
+          }
+        }
+        return;
+      }
+
+      tab.sessionId = mru.id;
+      // Re-key the active marker only if this tab is still the active one
+      // (don't yank focus from a tab the user switched to during the fetch).
+      const wasActive = this.activeTabKey === tab._localKey;
+      if (wasActive) this.activeTabKey = mru.id;
+      tab.sessionWarm = false;
+      if (tab.messagesEl) tab.messagesEl.dataset.tabKey = String(tab.sessionId);
+      this._subscribeTab(tab);
+      this._persistOpenTabs();
       console.debug('[ChatPanel] Loaded MRU session:', mru.id, 'messages:', mru.message_count);
 
       if (mru.provider) {
-        this._updateTitle(mru.provider, mru.model);
-        this._activeProvider = mru.provider;
+        tab.provider = mru.provider;
+        tab.model = mru.model;
+        // Only update the global header/active provider when this tab is in the
+        // foreground; otherwise a stale MRU load would yank the header out from
+        // under the user's currently focused tab.
+        if (this._getActiveTab() === tab) {
+          this._activeProvider = mru.provider;
+          this._updateTitle(mru.provider, mru.model);
+        }
       }
 
+      // Title heuristic: prefer first user message preview if available
+      if (mru.first_message) {
+        tab.titleFromUser = true;
+        this._setTabTitle(tab, this._truncate(mru.first_message, 28));
+      } else {
+        this._setTabTitle(tab, tab.title);
+      }
+      this._renderTabStrip();
+
       if (mru.message_count > 0) {
-        await this._loadMessageHistory(mru.id);
+        await this._loadMessageHistory(mru.id, tab);
       }
     } catch (err) {
       console.warn('[ChatPanel] Failed to load MRU session:', err);
@@ -766,21 +1500,79 @@ class ChatPanel {
   /**
    * Load and render message history for a session.
    * Fetches messages from the API and renders context cards and message bubbles.
-   * @param {number} sessionId
+   *
+   * Race-safe: captures the target tab at call time. If the response arrives
+   * after the user switched tabs, closed this tab, or swapped its session via
+   * the history picker, the write is abandoned and the response is discarded.
+   *
+   * Stale-tolerant: a 404 (session deleted out-of-band) prunes the tab from
+   * the persisted list and silently closes it. Other errors are warned.
+   *
+   * @param {number} sessionId - Session ID to fetch messages for
+   * @param {ChatTab} [targetTab] - Tab to render into. Defaults to the active
+   *   tab at call time. Tests + the restore path pass this explicitly so the
+   *   tab is not derived from the active-tab getter.
    */
-  async _loadMessageHistory(sessionId) {
+  async _loadMessageHistory(sessionId, targetTab) {
+    const tab = targetTab || this._getActiveTab();
+    if (!tab) return;
+    // Capture the messagesEl reference at call time. If the tab is later
+    // closed, messagesEl is detached from the DOM — we check via isConnected
+    // before writing.
+    const capturedEl = tab.messagesEl;
+    if (!capturedEl) return;
+
+    let response;
     try {
-      const response = await fetch(`/api/chat/session/${sessionId}/messages`);
-      if (!response.ok) return;
+      response = await fetch(`/api/chat/session/${sessionId}/messages`);
+    } catch (err) {
+      console.warn('[ChatPanel] Failed to load message history:', err);
+      return;
+    }
 
-      const result = await response.json();
-      const messages = result.data?.messages || [];
-      if (messages.length === 0) return;
+    // Stale-session tolerance: the session was deleted out-of-band.
+    if (response.status === 404) {
+      // Apply the same captured-tab guards as the success branch below — the
+      // tab may have been closed, repointed to a different session, or had
+      // its messagesEl re-created while the request was in flight.
+      if (!this.tabs.includes(tab)) return;
+      if (tab.sessionId !== sessionId) return;
+      if (tab.messagesEl !== capturedEl) return;
+      if (!capturedEl.isConnected) return;
+      console.debug('[ChatPanel] Session', sessionId, 'returned 404, removing tab');
+      this._removeTabFromDom(tab, { skipDelete: true });
+      return;
+    }
+    if (!response.ok) return;
 
-      // Remove empty state
-      const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
-      if (emptyState) emptyState.remove();
+    let result;
+    try {
+      result = await response.json();
+    } catch (err) {
+      console.warn('[ChatPanel] Failed to parse message history:', err);
+      return;
+    }
+    const messages = result.data?.messages || [];
+    if (messages.length === 0) return;
 
+    // Race guard: by the time the fetch resolved, the tab may have been
+    // closed, had its session swapped via the history picker, or had its
+    // messagesEl re-created. Bail in any of those cases.
+    if (!this.tabs.includes(tab)) return;
+    if (tab.sessionId !== sessionId) return;
+    if (tab.messagesEl !== capturedEl) return;
+    if (!capturedEl.isConnected) return;
+
+    // Remove empty state
+    const emptyState = capturedEl.querySelector('.chat-panel__empty');
+    if (emptyState) emptyState.remove();
+
+    // Render into the target tab. The helper methods (_addContextCard,
+    // addMessage, etc.) read `this.messagesEl` via the active-tab getter, so
+    // we temporarily redirect the active marker for the synchronous render
+    // loop. _switchToTab toggles visibility — we use a lower-level swap
+    // (_renderInTab) so the user's actual focused tab stays focused.
+    this._renderInTab(tab, () => {
       for (const msg of messages) {
         if (msg.type === 'context') {
           // Render context card from stored context data
@@ -804,8 +1596,42 @@ class ChatPanel {
           this.addMessage(msg.role, msg.content, msg.id);
         }
       }
-    } catch (err) {
-      console.warn('[ChatPanel] Failed to load message history:', err);
+    });
+
+    // The tab was initialized as 'pending' (gray dot) before history loaded.
+    // Now that messages exist, promote to 'idle' (blue dot) — but don't
+    // override a streaming/error state that may have started up in parallel.
+    if (tab.status === 'pending' && tab.messages.length > 0) {
+      this._updateTabStatus(tab, 'idle');
+    }
+  }
+
+  /**
+   * Synchronously run a render block as if `tab` were the active tab so the
+   * shared render helpers (which read `this.messagesEl` via the active-tab
+   * getter) write into the right per-tab container. Restores the original
+   * active marker after the block.
+   *
+   * Strictly synchronous: do not pass an async function here. The visible
+   * focused tab is preserved because we touch only `activeTabKey`, not the
+   * DOM visibility toggles in `_switchToTab`.
+   *
+   * @param {ChatTab} tab - The tab to render into
+   * @param {Function} fn - Synchronous render callback
+   */
+  _renderInTab(tab, fn) {
+    if (!tab) return;
+    const prev = this.activeTabKey;
+    const key = this._tabKey(tab);
+    if (prev === key) {
+      fn();
+      return;
+    }
+    this.activeTabKey = key;
+    try {
+      fn();
+    } finally {
+      this.activeTabKey = prev;
     }
   }
 
@@ -901,14 +1727,46 @@ class ChatPanel {
   }
 
   /**
-   * Select a provider. Updates active provider and title. Only affects new sessions.
+   * Select a provider. Reuses the currently active tab when it is "fresh"
+   * (no messages, no streaming, no user-renamed title) — that's the common
+   * just-opened-a-tab case where spawning a sibling would just litter the
+   * strip. Otherwise opens a new tab so the prior conversation isn't lost.
+   *
+   * Note: with lazy session creation, a fresh tab typically has sessionId
+   * null and we simply swap `tab.provider`. If the tab already got a session
+   * (e.g. a previous lazy send just resolved), DELETE the old one so the
+   * next send creates a fresh session under the new provider.
+   *
    * @param {string} id - Provider ID to activate
    */
-  _selectProvider(id) {
+  async _selectProvider(id) {
     if (id === this._activeProvider) return;
     this._activeProvider = id;
     this._updateTitle();
-    this._startNewConversation();
+
+    const tab = this._getActiveTab();
+    const isFresh = tab
+      && tab.messages.length === 0
+      && !tab.isStreaming
+      && !tab.streamingContent
+      && !tab.titleFromUser;
+
+    if (!isFresh) {
+      await this._openNewTab();
+      return;
+    }
+
+    tab.provider = id;
+    if (tab.wsUnsub) { try { tab.wsUnsub(); } catch { /* noop */ } tab.wsUnsub = null; }
+    if (tab.sessionId != null) {
+      const staleId = tab.sessionId;
+      tab.sessionId = null;
+      tab.sessionWarm = false;
+      // Restore the active marker so getter delegation still finds this tab.
+      if (this.activeTabKey === staleId) this.activeTabKey = tab._localKey;
+      fetch(`/api/chat/session/${staleId}`, { method: 'DELETE' }).catch(() => {});
+    }
+    this._renderTabStrip();
   }
 
   // ── Session picker dropdown ────────────────────────────────────────────
@@ -977,8 +1835,17 @@ class ChatPanel {
       return;
     }
 
+    // Build a set of sessionIds currently open in any tab so the dropdown can
+    // mark them as "(open)" — clicking one focuses the existing tab rather
+    // than duplicating it into the active tab via _switchToSession.
+    const openSessionIds = new Set(
+      this.tabs.map(t => t.sessionId).filter(id => id != null)
+    );
+    const activeSessionId = this.currentSessionId;
+
     const items = sessions.map(s => {
-      const isActive = s.id === this.currentSessionId;
+      const isActive = s.id === activeSessionId;
+      const isOpenElsewhere = openSessionIds.has(s.id) && !isActive;
       const preview = s.first_message
         ? this._truncate(s.first_message, 60)
         : 'New conversation';
@@ -986,11 +1853,18 @@ class ChatPanel {
       const providerLabel = s.provider
         ? `<span class="chat-panel__session-provider">${this._escapeHtml(this._getProviderDisplayName(s.provider))}</span>`
         : '';
+      const openTag = (isActive || isOpenElsewhere)
+        ? '<span class="chat-panel__session-open-tag">open</span>'
+        : '';
+
+      const classes = ['chat-panel__session-item'];
+      if (isActive) classes.push('chat-panel__session-item--active');
+      if (isOpenElsewhere) classes.push('chat-panel__session-item--open');
 
       return `
-        <button class="chat-panel__session-item${isActive ? ' chat-panel__session-item--active' : ''}"
+        <button class="${classes.join(' ')}"
                 data-session-id="${s.id}">
-          <span class="chat-panel__session-preview">${this._escapeHtml(preview)}</span>
+          <span class="chat-panel__session-preview">${this._escapeHtml(preview)}${openTag}</span>
           <span class="chat-panel__session-meta">${providerLabel}${this._escapeHtml(timeAgo)}</span>
         </button>
       `;
@@ -1003,62 +1877,105 @@ class ChatPanel {
       btn.addEventListener('click', () => {
         const sessionId = parseInt(btn.dataset.sessionId, 10);
         const sessionData = sessions.find(s => s.id === sessionId);
-        if (sessionData) {
+        if (!sessionData) {
+          this._hideSessionDropdown();
+          return;
+        }
+        // If this session is already open in another tab, focus that tab
+        // instead of swapping the active tab's session (avoid duplicates).
+        const existingTab = this._findTabBySessionId(sessionId);
+        if (existingTab && this._tabKey(existingTab) !== this.activeTabKey) {
+          this._switchToTab(this._tabKey(existingTab));
+        } else if (!existingTab) {
+          // Not currently open — swap the active tab to it (legacy behavior)
           this._switchToSession(sessionId, sessionData);
         }
+        // If it's already the active tab, clicking is a no-op (re-focuses, but no work needed)
         this._hideSessionDropdown();
       });
     });
   }
 
   /**
-   * Switch to a different chat session.
-   * Tears down current state and loads the target session.
+   * Swap the active tab's session for a different one (e.g. via the history
+   * picker). Tears down current state on this tab and loads the target
+   * session's messages. Other tabs are untouched.
    * @param {number} sessionId - The session ID to switch to
    * @param {Object} sessionData - Session metadata (provider, model, message_count, etc.)
    */
   async _switchToSession(sessionId, sessionData) {
-    if (sessionId === this.currentSessionId) return;
+    const tab = this._getActiveTab();
+    if (!tab) return;
+    if (sessionId === tab.sessionId) return;
 
-    // 1. Finalize any active stream
+    // 1. Finalize any active stream on this tab
     this._finalizeStreaming();
 
-    // 2. Reset state
-    this.currentSessionId = sessionId;
-    this._sessionWarm = false;
-    this._resubscribeChat();
-    this.messages = [];
-    this._streamingContent = '';
-    this._pendingContext = [];
-    this._pendingContextData = [];
-    this._pendingDiffStateNotifications = [];
-    this._pendingUserActionHints = [];
-    this._contextSource = null;
-    this._contextItemId = null;
-    this._contextLineMeta = null;
-    this._pendingActionContext = null;
-    this._analysisContextRemoved = false;
-    this._sessionAnalysisRunId = null;
+    // 2. Tear down the existing subscription so events for the old session
+    //    don't keep flowing into this tab
+    if (tab.wsUnsub) { try { tab.wsUnsub(); } catch { /* noop */ } tab.wsUnsub = null; }
 
-    // 3. Clear UI
+    // 3. Reset per-tab state
+    tab.sessionId = sessionId;
+    this.activeTabKey = sessionId;
+    if (tab.messagesEl) tab.messagesEl.dataset.tabKey = String(sessionId);
+    tab.sessionWarm = false;
+    tab.messages = [];
+    tab.streamingContent = '';
+    tab.streamingMsgEl = null;
+    tab.pendingContext = [];
+    tab.pendingContextData = [];
+    tab.latestDiffState = null;
+    tab.pendingUserActionHints = [];
+    tab.contextSource = null;
+    tab.contextItemId = null;
+    tab.contextLineMeta = null;
+    tab.pendingActionContext = null;
+    tab.analysisContextRemoved = false;
+    tab.sessionAnalysisRunId = null;
+    tab.errorMessage = null;
+    tab.isStreaming = false;
+    tab.titleFromUser = !!sessionData.first_message;
+    this._updateTabStatus(tab, 'idle');
+
+    // 4. Subscribe to the new session
+    this._subscribeTab(tab);
+    this._persistOpenTabs();
+
+    // 5. Clear UI and update title
     this._clearMessages();
     this._updateActionButtons();
-
-    // 4. Update title
     if (sessionData.provider) {
-      this._updateTitle(sessionData.provider, sessionData.model);
+      tab.provider = sessionData.provider;
+      tab.model = sessionData.model;
       this._activeProvider = sessionData.provider;
+      this._updateTitle(sessionData.provider, sessionData.model);
     } else {
       this._updateTitle();
     }
 
-    // 5. Load message history
+    // 6. Update tab title from the session's first user message
+    if (sessionData.first_message) {
+      this._setTabTitle(tab, this._truncate(sessionData.first_message, 28));
+    } else {
+      this._setTabTitle(tab, _nextNewTabTitle());
+      tab.titleFromUser = false;
+    }
+    this._renderTabStrip();
+
+    // 7. Load message history (race-guarded — passes explicit tab so a
+    //    subsequent tab switch can't reroute the render)
     if (sessionData.message_count > 0) {
-      await this._loadMessageHistory(sessionId);
+      await this._loadMessageHistory(sessionId, tab);
     }
 
-    // 6. Ensure analysis context for the new session
-    this._ensureAnalysisContext();
+    // Re-check after the await: the user may have closed the tab or swapped
+    // it again. Route _ensureAnalysisContext through the captured tab so the
+    // analysis card lands on the right messages container.
+    if (!this.tabs.includes(tab) || tab.sessionId !== sessionId) return;
+
+    // 8. Ensure analysis context for the new session
+    this._ensureAnalysisContext(tab);
   }
 
   /**
@@ -1098,10 +2015,12 @@ class ChatPanel {
   }
 
   /**
-   * Clear all messages from the display and show empty state
+   * Clear all messages from the active tab's display and show empty state.
    */
   _clearMessages() {
-    this.messagesEl.innerHTML = `
+    const tab = this._getActiveTab();
+    if (!tab?.messagesEl) return;
+    tab.messagesEl.innerHTML = `
       <div class="chat-panel__empty">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="32" height="32">
           <path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/>
@@ -1109,6 +2028,7 @@ class ChatPanel {
         <p>Ask questions about this review, or click "Ask about this" on any suggestion.</p>
       </div>
     `;
+    tab.streamingMsgEl = null;
   }
 
   /**
@@ -1147,40 +2067,65 @@ class ChatPanel {
       this._enableInput();
     }
 
-    // If the panel is already open, load the MRU session now
+    // If the panel is already open, restore tabs (or fall back to MRU load).
+    // open() may have ran before reviewId was bound; tabs in that case are
+    // empty or contain a single empty tab.
     if (this.isOpen && !this.currentSessionId) {
-      await this._loadMRUSession();
+      let restored = false;
+      const saved = this._loadPersistedTabs();
+      if (saved) {
+        // If a placeholder tab was created by open() with no sessionId, drop
+        // it so restored tabs don't appear alongside an unused "New Chat".
+        if (this.tabs.length === 1 && this.tabs[0].sessionId == null) {
+          const placeholder = this.tabs[0];
+          if (placeholder.messagesEl?.parentNode) {
+            placeholder.messagesEl.parentNode.removeChild(placeholder.messagesEl);
+          }
+          this.tabs = [];
+          this.activeTabKey = null;
+        }
+        restored = await this._restoreTabs(saved);
+      }
+      if (!restored) {
+        if (this.tabs.length === 0) {
+          const tab = this._createTab({ provider: this._activeProvider });
+          this._appendTab(tab, { focus: true });
+        }
+        await this._loadMRUSession();
+      }
       this._ensureAnalysisContext();
     }
   }
 
   /**
-   * Create a new chat session via API
+   * Create a new chat session via API for the active tab.
    * @param {number} contextCommentId - Optional AI suggestion ID for context
    * @returns {Object|null} Session data ({ id, status, context? }) or null on failure
    */
   async createSession(contextCommentId) {
+    // Ensure there is an active tab to bind the new session to. This happens
+    // for lazy-creation paths (first sendMessage on an empty panel).
+    if (!this._getActiveTab()) {
+      const tab = this._createTab({ provider: this._activeProvider });
+      this._appendTab(tab, { focus: true });
+    }
     if (!this.reviewId) {
       console.warn('[ChatPanel] No reviewId available');
       return null;
     }
+    const tab = this._getActiveTab();
+    if (!tab) return null;
 
     const isAcp = this._isAcpProvider();
-    if (isAcp) {
-      this._showStatusFlash('Starting Agent Client Protocol');
-    }
+    if (isAcp) this._showStatusFlash('Starting Agent Client Protocol');
 
     try {
       const body = {
-        provider: this._activeProvider,
+        provider: tab.provider || this._activeProvider,
         reviewId: this.reviewId
       };
-      if (contextCommentId) {
-        body.contextCommentId = contextCommentId;
-      }
-      if (this._analysisContextRemoved) {
-        body.skipAnalysisContext = true;
-      }
+      if (contextCommentId) body.contextCommentId = contextCommentId;
+      if (tab.analysisContextRemoved) body.skipAnalysisContext = true;
 
       console.debug('[ChatPanel] Creating session for review', this.reviewId);
       const response = await fetch('/api/chat/session', {
@@ -1197,87 +2142,129 @@ class ChatPanel {
       }
 
       const result = await response.json();
-      this.currentSessionId = result.data.id;
-      this._sessionWarm = true;
-      this._resubscribeChat();
-      console.debug('[ChatPanel] Session created:', this.currentSessionId);
+      if (!this.tabs.includes(tab)) {
+        fetch(`/api/chat/session/${result.data.id}`, { method: 'DELETE' }).catch(() => {});
+        return null;
+      }
+      tab.sessionId = result.data.id;
+      this.activeTabKey = result.data.id;
+      tab.sessionWarm = true;
+      if (tab.messagesEl) tab.messagesEl.dataset.tabKey = String(tab.sessionId);
+      this._subscribeTab(tab);
+      this._renderTabStrip();
+      this._persistOpenTabs();
+      console.debug('[ChatPanel] Session created:', tab.sessionId);
       return result.data;
     } catch (error) {
       if (isAcp) this._hideStatusFlash();
       console.error('[ChatPanel] Error creating session:', error);
-      this._showError('Failed to start chat session. ' + error.message);
+      this._showError('Failed to start chat session. ' + error.message, tab);
       return null;
     }
   }
 
   /**
-   * Send the current input text as a message
+   * Send the current input text as a message.
+   *
+   * Captures the originating tab once at entry. All subsequent state reads
+   * and writes go through that explicit reference so awaits cannot reroute
+   * the send to whichever tab is active when the promise resolves.
    */
   async sendMessage() {
     const content = this.inputEl.value.trim();
-    if (!content || this.isStreaming) return;
+    if (!content) return;
+
+    // Capture the originating tab BEFORE any awaits. Bail if no tab.
+    let tab = this._getActiveTab();
+    if (!tab) {
+      tab = this._createTab({ provider: this._activeProvider });
+      this._appendTab(tab, { focus: true });
+    }
+    if (tab.isStreaming) return;
 
     // Save message text before clearing (for error recovery)
     const messageText = content;
 
-    // Clear input
+    // Clear input UP FRONT — BEFORE the historyLoadPromise await — so a tab
+    // switch during the wait doesn't leave the typed content sitting in the
+    // shared textarea on someone else's tab. We only restore on error if the
+    // user hasn't moved on.
     this.inputEl.value = '';
     this._autoResizeTextarea();
     this.sendBtn.disabled = true;
 
+    // If history is still loading for this tab, wait for it to finish so we
+    // don't race with the renderer.
+    if (tab.historyLoadPromise) {
+      try { await tab.historyLoadPromise; } catch { /* swallow */ }
+      if (!this.tabs.includes(tab)) return;
+    }
+
     // Remove empty state if present
-    const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
+    const emptyState = tab.messagesEl?.querySelector('.chat-panel__empty');
     if (emptyState) emptyState.remove();
 
     // Display user message (just the user's actual text)
-    const msgElRef = this.addMessage('user', content);
+    const msgElRef = this.addMessage('user', content, undefined, tab);
 
     // Lazy session creation: create on first message, not on panel open
-    if (!this.currentSessionId) {
+    if (tab.sessionId == null) {
       this._ensureSubscriptions();
-      const sessionData = await this.createSession();
+      const sessionData = await this._createSessionForTab(tab);
+      if (!this.tabs.includes(tab)) return;
       if (!sessionData) {
-        // Restore the user's message text into the input
-        this.inputEl.value = messageText;
-        this._autoResizeTextarea();
-        this.sendBtn.disabled = false;
+        // Restore the user's message text into the input — but ONLY if the
+        // user is still focused on the originating tab. Otherwise they may
+        // have moved on and typed something on a sibling; we mustn't clobber.
+        if (this._getActiveTab() === tab && !this.inputEl.value) {
+          this.inputEl.value = messageText;
+          this._autoResizeTextarea();
+          this.sendBtn.disabled = false;
+        }
         // Remove the phantom message bubble
         if (msgElRef) msgElRef.remove();
-        this.messages.pop();
+        tab.messages.pop();
         // Show error
-        this._showError('Unable to start chat session. Please try again.');
+        this._showError('Unable to start chat session. Please try again.', tab);
         return;
       }
-      this._showAnalysisContextIfPresent(sessionData);
+      // Route through the captured tab so a focus change between the POST
+      // and the response can't bleed the analysis card into a sibling tab.
+      this._showAnalysisContextIfPresent(sessionData, tab);
     }
-    // If currentSessionId is set (from MRU), just send — server auto-resumes
+    // If sessionId is set (from MRU), just send — server auto-resumes
 
-    // Prepare streaming UI
-    this.isStreaming = true;
-    this.sendBtn.disabled = true;
-    this.sendBtn.style.display = 'none';
-    this.stopBtn.style.display = '';
-    this._updateActionButtons();
-    this._streamingContent = '';
-    this._addStreamingPlaceholder();
+    // Prepare streaming UI. Clear any previous error on this tab.
+    tab.errorMessage = null;
+    tab.isStreaming = true;
+    this._updateTabStatus(tab, 'streaming');
+    if (this._getActiveTab() === tab) {
+      this.sendBtn.disabled = true;
+      this.sendBtn.style.display = 'none';
+      this.stopBtn.style.display = '';
+      this._updateActionButtons();
+    }
+    tab.streamingContent = '';
+    this._addStreamingPlaceholder(tab);
 
     // Build the API payload — may include pending context from "Ask about this"
     const payload = { content };
 
-    // Snapshot diff-state queue for error recovery (invisible to user, no UI cards)
-    const savedDiffState = this._pendingDiffStateNotifications.slice();
+    // Snapshot diff-state for error recovery (invisible to user, no UI cards).
+    // Diff state is a snapshot — one latest value per tab. Drain via copy-and-clear.
+    const savedDiffState = tab.latestDiffState;
     let diffStatePrefix = '';
-    if (this._pendingDiffStateNotifications.length > 0) {
-      diffStatePrefix = '[Diff State Update]\n' + this._pendingDiffStateNotifications.join('\n');
-      this._pendingDiffStateNotifications = [];
+    if (savedDiffState) {
+      diffStatePrefix = '[Diff State Update]\n' + savedDiffState;
+      tab.latestDiffState = null;
     }
 
-    // Snapshot user-action-hints queue for error recovery (invisible to user, no UI cards)
-    const savedUserActionHints = this._pendingUserActionHints.slice();
+    // Snapshot user-action-hints queue for error recovery (ordered, per-tab)
+    const savedUserActionHints = tab.pendingUserActionHints.slice();
     let userActionPrefix = '';
-    if (this._pendingUserActionHints.length > 0) {
-      userActionPrefix = '[User Action Hints]\n' + this._pendingUserActionHints.join('\n');
-      this._pendingUserActionHints = [];
+    if (tab.pendingUserActionHints.length > 0) {
+      userActionPrefix = '[User Action Hints]\n' + tab.pendingUserActionHints.join('\n');
+      tab.pendingUserActionHints = [];
     }
 
     // Combine invisible prefixes (diff state + user action hints)
@@ -1288,19 +2275,19 @@ class ChatPanel {
       invisiblePrefix = diffStatePrefix || userActionPrefix;
     }
 
-    const savedContext = this._pendingContext;
-    const savedContextData = this._pendingContextData;
-    if (this._pendingContext.length > 0) {
-      const userContext = this._pendingContext.join('\n\n');
+    const savedContext = tab.pendingContext.slice();
+    const savedContextData = tab.pendingContextData.slice();
+    if (tab.pendingContext.length > 0) {
+      const userContext = tab.pendingContext.join('\n\n');
       payload.context = invisiblePrefix
         ? invisiblePrefix + '\n\n' + userContext
         : userContext;
-      payload.contextData = this._pendingContextData;
-      this._pendingContext = [];
-      this._pendingContextData = [];
+      payload.contextData = tab.pendingContextData;
+      tab.pendingContext = [];
+      tab.pendingContextData = [];
 
       // Lock context cards — remove close buttons and index attributes
-      const removableCards = this.messagesEl.querySelectorAll('.chat-panel__context-card[data-context-index]');
+      const removableCards = tab.messagesEl?.querySelectorAll('.chat-panel__context-card[data-context-index]') || [];
       removableCards.forEach((card) => {
         const btn = card.querySelector('.chat-panel__context-remove');
         if (btn) btn.remove();
@@ -1311,54 +2298,60 @@ class ChatPanel {
     }
 
     // Lock analysis context card (not indexed, handled separately from pending context)
-    const analysisRemoveBtn = this.messagesEl.querySelector('.chat-panel__context-card[data-analysis] .chat-panel__context-remove');
+    const analysisRemoveBtn = tab.messagesEl?.querySelector('.chat-panel__context-card[data-analysis] .chat-panel__context-remove');
     if (analysisRemoveBtn) analysisRemoveBtn.remove();
 
     // Attach action context (set by action button handlers — adopt, update, dismiss)
-    if (this._pendingActionContext) {
-      payload.actionContext = this._pendingActionContext;
-      this._pendingActionContext = null;
+    const savedActionContext = tab.pendingActionContext;
+    if (tab.pendingActionContext) {
+      payload.actionContext = tab.pendingActionContext;
+      tab.pendingActionContext = null;
     }
 
     // Show ACP resume flash when the session may need server-side auto-resume
-    const acpResuming = this._isAcpProvider() && !this._sessionWarm;
+    const acpResuming = this._isAcpProvider() && !tab.sessionWarm;
     if (acpResuming) {
       this._showStatusFlash('Resuming Agent Client Protocol');
     }
 
     // Send to API
     try {
-      console.debug('[ChatPanel] Sending message to session', this.currentSessionId);
-      let response = await fetch(`/api/chat/session/${this.currentSessionId}/message`, {
+      console.debug('[ChatPanel] Sending message to session', tab.sessionId);
+      let response = await fetch(`/api/chat/session/${tab.sessionId}/message`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
+      if (!this.tabs.includes(tab)) return;
 
       if (acpResuming) {
         this._hideStatusFlash();
-        this._sessionWarm = true;
+        tab.sessionWarm = true;
       }
 
-      // Handle 410 Gone: session is not resumable — transparently create a new one and retry once.
-      // Note: we do NOT call _hideStatusFlash() here. createSession() will call
-      // _showStatusFlash() which overwrites the pill text directly, avoiding a
-      // visible hide/show flicker during the transparent retry.
+      // Handle 410 Gone: session is not resumable — transparently create a new
+      // one bound to the SAME tab and retry once.
       if (response.status === 410) {
         console.debug('[ChatPanel] Session not resumable (410), creating new session and retrying');
-        this.currentSessionId = null;
-        this._resubscribeChat();
-        this._ensureSubscriptions();
-        const sessionData = await this.createSession();
+        if (tab.wsUnsub) { try { tab.wsUnsub(); } catch { /* noop */ } tab.wsUnsub = null; }
+        // Re-anchor the active marker to the tab's local key BEFORE nulling
+        // sessionId so _createSessionForTab can re-bind the SAME tab via the
+        // _localKey check (rather than orphaning this tab and spawning a new).
+        const wasActive = this._getActiveTab() === tab;
+        tab.sessionId = null;
+        if (wasActive) this.activeTabKey = tab._localKey;
+        const sessionData = await this._createSessionForTab(tab);
+        if (!this.tabs.includes(tab)) return;
         if (!sessionData) {
           throw new Error('Failed to create replacement session');
         }
 
-        response = await fetch(`/api/chat/session/${this.currentSessionId}/message`, {
+        response = await fetch(`/api/chat/session/${tab.sessionId}/message`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         });
+        if (!this.tabs.includes(tab)) return;
       }
 
       if (!response.ok) {
@@ -1367,38 +2360,55 @@ class ChatPanel {
       }
       console.debug('[ChatPanel] Message accepted, waiting for WebSocket events');
     } catch (error) {
+      if (!this.tabs.includes(tab)) return;
       if (acpResuming) this._hideStatusFlash();
-      // Restore pending context so it's not lost
-      this._pendingContext = savedContext;
-      this._pendingContextData = savedContextData;
-      this._pendingDiffStateNotifications = [...savedDiffState, ...this._pendingDiffStateNotifications];
-      this._pendingUserActionHints = [...savedUserActionHints, ...this._pendingUserActionHints];
+      // Restore pending state on the originating tab so it's not lost.
+      tab.pendingContext = savedContext;
+      tab.pendingContextData = savedContextData;
+      // Only restore the snapshot if no newer one arrived during the send.
+      // Diff state is a snapshot — a freshly queued value supersedes the old.
+      if (savedDiffState && !tab.latestDiffState) tab.latestDiffState = savedDiffState;
+      tab.pendingUserActionHints = [...savedUserActionHints, ...tab.pendingUserActionHints];
+      if (savedActionContext && !tab.pendingActionContext) tab.pendingActionContext = savedActionContext;
       // Restore removability on context cards that were locked before the failed send
-      this._restoreRemovableCards();
+      this._restoreRemovableCards(tab);
       console.error('[ChatPanel] Error sending message:', error);
-      this._showError('Failed to send message. ' + error.message);
-      this._finalizeStreaming();
+      this._showError('Failed to send message. ' + error.message, tab);
+      this._finalizeStreaming(tab);
     }
   }
 
   /**
    * Queue an invisible diff-state notification for the chat agent.
-   * Unlike _pendingContext, these do NOT render UI cards and survive panel close.
-   * Drained into the context parameter on the next sendMessage() call.
+   *
+   * Diff state is a SNAPSHOT — every tab gets the same latest value, and a
+   * subsequent call overwrites the prior value rather than appending. Drained
+   * from the originating tab on its next sendMessage(). If no tabs are open
+   * yet, the value is stashed on the panel so the next tab created inherits
+   * it.
    * @param {string} message - Description of the diff state change
    */
   queueDiffStateNotification(message) {
-    this._pendingDiffStateNotifications.push(message);
+    // Always cache the latest snapshot so tabs created later inherit it.
+    // Without this, a tab opened between the first notification and the first
+    // send would never see the snapshot.
+    this._initialDiffState = message;
+    if (this.tabs.length === 0) return;
+    for (const tab of this.tabs) tab.latestDiffState = message;
   }
 
   /**
    * Queue an invisible user-action hint for the chat agent.
-   * Like diff-state notifications, these do NOT render UI cards and survive panel close.
-   * Drained into the context parameter on the next sendMessage() call.
-   * @param {string} message - Description of the user action (e.g., "[User Action: adopted suggestion 42]")
+   *
+   * Hints are ordered events and attribution matters: they belong to the tab
+   * that was active when the action happened. Background tabs never
+   * accumulate. Silent no-op when no active tab.
+   * @param {string} message - Description of the user action
    */
   queueUserActionHint(message) {
-    this._pendingUserActionHints.push(message);
+    const active = this._getActiveTab();
+    if (!active) return;
+    active.pendingUserActionHints.push(message);
   }
 
   /**
@@ -1409,8 +2419,10 @@ class ChatPanel {
    * @param {Object} ctx - Suggestion context {title, type, file, line_start, line_end, body}
    */
   _sendContextMessage(ctx) {
+    const tab = this._getActiveTab();
+    if (!tab) return;
     // Remove empty state if present
-    const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
+    const emptyState = tab.messagesEl?.querySelector('.chat-panel__empty');
     if (emptyState) emptyState.remove();
 
     // Store structured context data for DB persistence (session resumption)
@@ -1423,7 +2435,7 @@ class ChatPanel {
       side: ctx.side || null,
       body: ctx.body || null
     };
-    this._pendingContextData.push(contextData);
+    tab.pendingContextData.push(contextData);
 
     // Build the plain text context for the agent (will be prepended to next message)
     const lines = ['The user wants to discuss this specific suggestion:'];
@@ -1458,7 +2470,7 @@ class ChatPanel {
       }
     }
 
-    this._pendingContext.push(lines.join('\n'));
+    tab.pendingContext.push(lines.join('\n'));
 
     // Render the compact context card in the UI
     this._addContextCard(ctx, { removable: true });
@@ -1473,8 +2485,10 @@ class ChatPanel {
    * @param {Object} ctx - Comment context {commentId, type, body, file, line_start, line_end, source, isFileLevel}
    */
   _sendCommentContextMessage(ctx) {
+    const tab = this._getActiveTab();
+    if (!tab) return;
     // Remove empty state if present
-    const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
+    const emptyState = tab.messagesEl?.querySelector('.chat-panel__empty');
     if (emptyState) emptyState.remove();
 
     const isLine = ctx.type === 'line';
@@ -1494,7 +2508,7 @@ class ChatPanel {
       body: ctx.body || null,
       source: 'user'
     };
-    this._pendingContextData.push(contextData);
+    tab.pendingContextData.push(contextData);
 
     // Build the plain text context for the agent
     const lines = isLine
@@ -1537,7 +2551,7 @@ class ChatPanel {
       }
     }
 
-    this._pendingContext.push(lines.join('\n'));
+    tab.pendingContext.push(lines.join('\n'));
 
     // Render the compact context card in the UI
     if (isLine) {
@@ -1554,16 +2568,18 @@ class ChatPanel {
    * @param {string} fileContext.file - File path
    */
   _sendFileContextMessage(fileContext) {
+    const tab = this._getActiveTab();
+    if (!tab) return;
     let contextText = `The user wants to discuss ${fileContext.file}`;
 
     // Check for duplicate context (use startsWith because contextText may
     // get enriched with diff hunk ranges after this check)
-    const isDuplicate = this._pendingContext.some(c => c === contextText || c.startsWith(contextText)) ||
-      this.messages.some(m => m.role === 'context' && (m.content === contextText || m.content.startsWith(contextText)));
+    const isDuplicate = tab.pendingContext.some(c => c === contextText || c.startsWith(contextText)) ||
+      tab.messages.some(m => m.role === 'context' && (m.content === contextText || m.content.startsWith(contextText)));
     if (isDuplicate) return;
 
     // Remove empty state if present
-    const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
+    const emptyState = tab.messagesEl?.querySelector('.chat-panel__empty');
     if (emptyState) emptyState.remove();
 
     // Store structured context data for DB persistence
@@ -1575,7 +2591,7 @@ class ChatPanel {
       line_end: null,
       body: null
     };
-    this._pendingContextData.push(contextData);
+    tab.pendingContextData.push(contextData);
 
     // Enrich with diff hunk ranges if available
     const patch = window.prManager?.filePatches?.get(fileContext.file);
@@ -1586,7 +2602,7 @@ class ChatPanel {
       }
     }
 
-    this._pendingContext.push(contextText);
+    tab.pendingContext.push(contextText);
 
     // Render the compact context card in the UI
     this._addFileContextCard(contextData, { removable: true });
@@ -1611,8 +2627,12 @@ class ChatPanel {
     // 2. Open panel if closed
     await this.open({ suppressFocus: true });
 
+    // Capture the tab AFTER open() so any restoration/new-tab work is done.
+    const tab = this._getActiveTab();
+    if (!tab) return;
+
     // Re-check: open() may have auto-added a card for this run via _ensureAnalysisContext
-    const existingCardPostOpen = this.messagesEl?.querySelector(
+    const existingCardPostOpen = tab.messagesEl?.querySelector(
       `[data-analysis-run-id="${runId}"]`
     );
     if (existingCardPostOpen) {
@@ -1622,15 +2642,17 @@ class ChatPanel {
 
     // 3. Fetch context from backend
     const response = await fetch(`/api/chat/analysis-context/${runId}?reviewId=${this.reviewId}`);
+    if (!this.tabs.includes(tab)) return;
     if (!response.ok) {
       console.error('[ChatPanel] Failed to fetch analysis context:', response.statusText);
       return;
     }
     const result = await response.json();
+    if (!this.tabs.includes(tab)) return;
     const data = result.data;
 
     // 4. Push to pending context arrays
-    this._pendingContext.push(data.text);
+    tab.pendingContext.push(data.text);
     const contextData = {
       type: 'analysis-run',
       aiRunId: runId,
@@ -1641,14 +2663,15 @@ class ChatPanel {
       configType: data.run.configType,
       completedAt: data.run.completedAt
     };
-    this._pendingContextData.push(contextData);
+    tab.pendingContextData.push(contextData);
 
     // 5. Remove empty state if present
-    const emptyState = this.messagesEl?.querySelector('.chat-panel__empty');
+    const emptyState = tab.messagesEl?.querySelector('.chat-panel__empty');
     if (emptyState) emptyState.remove();
 
-    // 6. Create the card and append
-    this._addAnalysisRunContextCard(contextData, { removable: true });
+    // 6. Create the card and append — pass captured tab so a focus change
+    //    during the fetch doesn't write the card into a sibling.
+    this._addAnalysisRunContextCard(contextData, { removable: true }, tab);
 
     // 7. Focus input
     if (this.inputEl) this.inputEl.focus();
@@ -1660,7 +2683,8 @@ class ChatPanel {
    * @param {HTMLElement} card - The context card element
    */
   _makeCardRemovable(card) {
-    const idx = this._pendingContextData.length - 1;
+    const tab = this._getActiveTab();
+    const idx = (tab?.pendingContextData.length ?? 0) - 1;
     card.dataset.contextIndex = idx;
     const removeBtn = document.createElement('button');
     removeBtn.className = 'chat-panel__context-remove';
@@ -1705,45 +2729,48 @@ class ChatPanel {
    * Detects new analysis runs by comparing the latest completed run ID
    * against the one already loaded in the session. Only adds if suggestions exist.
    */
-  _ensureAnalysisContext() {
+  _ensureAnalysisContext(targetTab) {
+    const tab = targetTab || this._getActiveTab();
+    if (!tab || !tab.messagesEl) return;
+
     // Determine the latest completed run ID from the analysis history manager or prManager
     const currentRunId = this._getLatestCompletedRunId();
 
     // Detect whether a NEW analysis run has appeared since we last loaded context.
     // If the run ID changed, we need to replace the old card with a new one.
-    // This handles the case where _sessionAnalysisRunId was explicitly set.
-    const isNewRunVsSession = currentRunId && this._sessionAnalysisRunId &&
-      String(currentRunId) !== String(this._sessionAnalysisRunId);
+    // This handles the case where sessionAnalysisRunId was explicitly set.
+    const isNewRunVsSession = currentRunId && tab.sessionAnalysisRunId &&
+      String(currentRunId) !== String(tab.sessionAnalysisRunId);
 
     if (isNewRunVsSession) {
-      console.debug('[ChatPanel] _ensureAnalysisContext: new run detected:', currentRunId, '(was:', this._sessionAnalysisRunId + ')');
+      console.debug('[ChatPanel] _ensureAnalysisContext: new run detected:', currentRunId, '(was:', tab.sessionAnalysisRunId + ')');
       // Remove the old analysis card from the DOM (if present)
-      const oldCard = this.messagesEl.querySelector('.chat-panel__context-card[data-analysis]');
+      const oldCard = tab.messagesEl.querySelector('.chat-panel__context-card[data-analysis]');
       if (oldCard) oldCard.remove();
       // Reset flags — the user removed the OLD run's context, but this is a different run
-      this._analysisContextRemoved = false;
-      this._sessionAnalysisRunId = null;
+      tab.analysisContextRemoved = false;
+      tab.sessionAnalysisRunId = null;
     }
 
     // Check for an existing card in the DOM (e.g., loaded from MRU session history).
-    // If _sessionAnalysisRunId is not set, this card may be stale — compare its
+    // If sessionAnalysisRunId is not set, this card may be stale — compare its
     // stamped run ID against the latest completed run to detect new analyses that
     // completed while the panel was closed.
-    const existingCard = this.messagesEl.querySelector('.chat-panel__context-card[data-analysis]');
+    const existingCard = tab.messagesEl.querySelector('.chat-panel__context-card[data-analysis]');
     if (existingCard) {
-      if (!this._sessionAnalysisRunId && currentRunId) {
+      if (!tab.sessionAnalysisRunId && currentRunId) {
         const cardRunId = existingCard.dataset.analysisRunId || null;
         if (cardRunId && String(cardRunId) === String(currentRunId)) {
           // Card matches the latest run — adopt its run ID so future opens can detect changes
           console.debug('[ChatPanel] _ensureAnalysisContext: adopting existing card runId:', cardRunId);
-          this._sessionAnalysisRunId = String(currentRunId);
+          tab.sessionAnalysisRunId = String(currentRunId);
           return;
         }
         // Card has no run ID stamp or a different run ID — it's stale.
         // Remove it so a fresh card for the current run is added below.
         console.debug('[ChatPanel] _ensureAnalysisContext: replacing stale DOM card (card:', cardRunId, 'latest:', currentRunId + ')');
         existingCard.remove();
-        this._analysisContextRemoved = false;
+        tab.analysisContextRemoved = false;
       } else {
         console.debug('[ChatPanel] _ensureAnalysisContext: skipped — card already in DOM');
         return;
@@ -1752,13 +2779,13 @@ class ChatPanel {
 
     // Skip if the current session already has analysis context loaded (by run ID)
     // and no new run was detected (handled above)
-    if (this._sessionAnalysisRunId) {
-      console.debug('[ChatPanel] _ensureAnalysisContext: skipped — runId already set:', this._sessionAnalysisRunId);
+    if (tab.sessionAnalysisRunId) {
+      console.debug('[ChatPanel] _ensureAnalysisContext: skipped — runId already set:', tab.sessionAnalysisRunId);
       return;
     }
 
     // Skip if analysis context was explicitly removed in this conversation
-    if (this._analysisContextRemoved) {
+    if (tab.analysisContextRemoved) {
       console.debug('[ChatPanel] _ensureAnalysisContext: skipped — explicitly removed');
       return;
     }
@@ -1775,7 +2802,7 @@ class ChatPanel {
     console.debug('[ChatPanel] _ensureAnalysisContext: adding card with', count, 'suggestions');
 
     // Remove empty state
-    const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
+    const emptyState = tab.messagesEl.querySelector('.chat-panel__empty');
     if (emptyState) emptyState.remove();
 
     // Render the analysis context card (removable).
@@ -1786,16 +2813,22 @@ class ChatPanel {
     // Note: analysis card is NOT added to _pendingContext/_pendingContextData —
     // the backend includes full suggestion data via initialContext at session creation.
     // The card is a visual indicator that controls whether the backend includes it.
-    const hasExistingMessages = this.messagesEl.querySelectorAll('.chat-panel__message').length > 0;
+    const hasExistingMessages = tab.messagesEl.querySelectorAll('.chat-panel__message').length > 0;
     const contextData = this._buildAnalysisContextData(currentRunId, count);
-    this._addAnalysisContextCard(contextData, { removable: true, prepend: !hasExistingMessages });
+    this._renderInTab(tab, () => {
+      this._addAnalysisContextCard(contextData, { removable: true, prepend: !hasExistingMessages });
+    });
 
-    // Persist to DB so the card is restored on session reload
-    this._persistAnalysisContext(contextData);
+    // Persist to DB so the card is restored on session reload. Defer when the
+    // tab has no sessionId yet (lazy-create path) — the sendMessage flow will
+    // re-run _ensureAnalysisContext after the session is born.
+    if (tab.sessionId != null) {
+      this._persistAnalysisContext(contextData, tab.sessionId);
+    }
 
     // Mark that analysis context is loaded for this session.
     // Use the actual run ID if available, otherwise fall back to 'dom'.
-    this._sessionAnalysisRunId = currentRunId || 'dom';
+    tab.sessionAnalysisRunId = currentRunId || 'dom';
   }
 
   /**
@@ -1873,8 +2906,9 @@ class ChatPanel {
     cardEl.remove();
 
     // If no pending context, no messages, and no other context cards, restore empty state
-    if (this._pendingContext.length === 0 && this.messages.length === 0 &&
-        !this.messagesEl.querySelector('.chat-panel__context-card')) {
+    const tab = this._getActiveTab();
+    if (tab && tab.pendingContext.length === 0 && tab.messages.length === 0 &&
+        !tab.messagesEl?.querySelector('.chat-panel__context-card')) {
       this._clearMessages();
     }
   }
@@ -1988,10 +3022,14 @@ class ChatPanel {
   /**
    * Restore remove buttons and data-context-index on all pending context cards.
    * Called after a failed send to unlock cards that were locked prematurely.
+   * @param {ChatTab} [targetTab] - Defaults to active tab
    */
-  _restoreRemovableCards() {
+  _restoreRemovableCards(targetTab) {
+    const tab = targetTab || this._getActiveTab();
+    const messagesEl = tab?.messagesEl;
+    if (!messagesEl) return;
     // Restore analysis context card if it was locked
-    const analysisCard = this.messagesEl.querySelector('.chat-panel__context-card[data-analysis]');
+    const analysisCard = messagesEl.querySelector('.chat-panel__context-card[data-analysis]');
     if (analysisCard && !analysisCard.querySelector('.chat-panel__context-remove')) {
       const removeBtn = document.createElement('button');
       removeBtn.className = 'chat-panel__context-remove';
@@ -2004,7 +3042,7 @@ class ChatPanel {
       analysisCard.appendChild(removeBtn);
     }
 
-    const cards = this.messagesEl.querySelectorAll('.chat-panel__context-card:not([data-analysis])');
+    const cards = messagesEl.querySelectorAll('.chat-panel__context-card:not([data-analysis])');
     let idx = 0;
     cards.forEach((card) => {
       // Only restore cards that don't already have a remove button
@@ -2032,10 +3070,11 @@ class ChatPanel {
    * @param {HTMLElement} cardEl - The context card element to remove
    */
   _removeContextCard(cardEl) {
+    const tab = this._getActiveTab();
     const idx = parseInt(cardEl.dataset.contextIndex, 10);
-    if (!isNaN(idx) && idx >= 0 && idx < this._pendingContext.length) {
-      this._pendingContext.splice(idx, 1);
-      this._pendingContextData.splice(idx, 1);
+    if (tab && !isNaN(idx) && idx >= 0 && idx < tab.pendingContext.length) {
+      tab.pendingContext.splice(idx, 1);
+      tab.pendingContextData.splice(idx, 1);
     }
     // Hide context tooltip – mouseleave won't fire on a removed element
     clearTimeout(this._ctxTooltipTimer);
@@ -2044,14 +3083,17 @@ class ChatPanel {
     cardEl.remove();
 
     // Re-index remaining removable context cards
-    const remainingCards = this.messagesEl.querySelectorAll('.chat-panel__context-card[data-context-index]');
-    remainingCards.forEach((card, i) => {
-      card.dataset.contextIndex = i;
-    });
+    const messagesEl = tab?.messagesEl;
+    if (messagesEl) {
+      const remainingCards = messagesEl.querySelectorAll('.chat-panel__context-card[data-context-index]');
+      remainingCards.forEach((card, i) => {
+        card.dataset.contextIndex = i;
+      });
+    }
 
     // If no pending context, no messages, and no other context cards, restore empty state
-    if (this._pendingContext.length === 0 && this.messages.length === 0 &&
-        !this.messagesEl.querySelector('.chat-panel__context-card')) {
+    if (tab && tab.pendingContext.length === 0 && tab.messages.length === 0 &&
+        !tab.messagesEl?.querySelector('.chat-panel__context-card')) {
       this._clearMessages();
     }
   }
@@ -2059,11 +3101,20 @@ class ChatPanel {
   /**
    * Show analysis context card if the session response includes context metadata.
    * Removes the empty state first so the card appears as the first element.
-   * @param {Object} sessionData - Response data from createSession ({ id, status, context? })
+   * Accepts an explicit `tab` so the card lands in the originating tab even if
+   * the user switched focus while the session POST was in flight.
+   * @param {Object|null} sessionData - Response data from createSession
+   *   ({ id, status, context? }) — pass null when called before a session is
+   *   created (no-op in that case).
+   * @param {ChatTab} [targetTab] - Defaults to active tab
    */
-  _showAnalysisContextIfPresent(sessionData) {
-    if (sessionData.context && sessionData.context.suggestionCount > 0) {
-      const existingCard = this.messagesEl.querySelector('.chat-panel__context-card[data-analysis]');
+  _showAnalysisContextIfPresent(sessionData, targetTab) {
+    if (!sessionData || !sessionData.context || !(sessionData.context.suggestionCount > 0)) return;
+    const tab = targetTab || this._getActiveTab();
+    if (!tab || !tab.messagesEl) return;
+
+    const existingCard = tab.messagesEl.querySelector('.chat-panel__context-card[data-analysis]');
+    this._renderInTab(tab, () => {
       if (existingCard) {
         // Upgrade a bare-bones card (no metadata) with richer data from the backend.
         // Update IN-PLACE to preserve the card's DOM position (avoids jumping below user message).
@@ -2072,18 +3123,20 @@ class ChatPanel {
         if (!hasRicherContext) return;
         this._updateAnalysisCardContent(existingCard, sessionData.context);
       } else {
-        const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
+        const emptyState = tab.messagesEl.querySelector('.chat-panel__empty');
         if (emptyState) emptyState.remove();
         this._addAnalysisContextCard(sessionData.context);
       }
+    });
 
-      // Persist richer analysis context to DB (includes provider, model, summary, etc.)
-      const contextData = { type: 'analysis', ...sessionData.context };
-      this._persistAnalysisContext(contextData);
-
-      // Track which run's context is loaded so _ensureAnalysisContext can skip if already present
-      this._sessionAnalysisRunId = sessionData.context.aiRunId || 'session';
+    // Persist richer analysis context to DB (includes provider, model, summary, etc.)
+    const contextData = { type: 'analysis', ...sessionData.context };
+    if (tab.sessionId != null) {
+      this._persistAnalysisContext(contextData, tab.sessionId);
     }
+
+    // Track which run's context is loaded so _ensureAnalysisContext can skip if already present
+    tab.sessionAnalysisRunId = sessionData.context.aiRunId || 'session';
   }
 
   /**
@@ -2160,16 +3213,22 @@ class ChatPanel {
    * @param {Object} [opts] - Options
    * @param {boolean} [opts.removable=false] - Whether the card should have a remove button
    */
-  _addAnalysisRunContextCard(ctxData, { removable = false } = {}) {
+  _addAnalysisRunContextCard(ctxData, { removable = false } = {}, targetTab) {
+    const tab = targetTab || this._getActiveTab();
+    if (!tab?.messagesEl) return;
     const card = document.createElement('div');
     card.className = 'chat-panel__context-card';
-    card.dataset.contextIndex = this._pendingContext.length - 1;
+    card.dataset.contextIndex = tab.pendingContext.length - 1;
     card.dataset.analysisRunId = ctxData.aiRunId;
     card.innerHTML = this._buildAnalysisCardInnerHTML(ctxData);
 
-    if (removable) this._makeCardRemovable(card);
+    // _makeCardRemovable reads `tab.pendingContextData.length` via the active
+    // tab getter, so re-route the active marker temporarily.
+    if (removable) {
+      this._renderInTab(tab, () => this._makeCardRemovable(card));
+    }
 
-    this.messagesEl.appendChild(card);
+    tab.messagesEl.appendChild(card);
     requestAnimationFrame(() => this.scrollToBottom({ force: true }));
   }
 
@@ -2221,13 +3280,19 @@ class ChatPanel {
    * Persist an analysis context card to the backend as a 'context' message.
    * Called immediately when an analysis context card is added, so it appears
    * in the conversation history on reload.
+   *
+   * Tab-aware callers pass an explicit sessionId so the persist write isn't
+   * routed to the active tab's session when focus has shifted between the
+   * card being added and the network call landing.
+   *
    * @param {Object} contextData - Analysis context metadata (type, suggestionCount, etc.)
+   * @param {number} [explicitSessionId] - Defaults to this.currentSessionId.
    */
-  async _persistAnalysisContext(contextData) {
-    if (!this.currentSessionId) return;
-
+  async _persistAnalysisContext(contextData, explicitSessionId) {
+    const sessionId = explicitSessionId != null ? explicitSessionId : this.currentSessionId;
+    if (!sessionId) return;
     try {
-      const response = await fetch(`/api/chat/session/${this.currentSessionId}/context`, {
+      const response = await fetch(`/api/chat/session/${sessionId}/context`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ contextData })
@@ -2241,14 +3306,13 @@ class ChatPanel {
   }
 
   /**
-   * Ensure WebSocket subscriptions are established for review and chat topics.
-   * Subscribes to review events (stable for page lifetime) and chat events
-   * (changes when session changes). Subsequent calls are no-ops if already subscribed.
+   * Ensure the review-scoped WebSocket subscription is established. Per-tab
+   * chat subscriptions are managed independently via _subscribeTab() as tabs
+   * are created.
    */
   _ensureSubscriptions() {
     window.wsClient.connect();
 
-    // Subscribe to review events (stable for page lifetime)
     if (this.reviewId && !this._reviewUnsub) {
       this._reviewUnsub = window.wsClient.subscribe('review:' + this.reviewId, (msg) => {
         if (msg.type?.startsWith('review:')) {
@@ -2259,15 +3323,14 @@ class ChatPanel {
       });
     }
 
-    // Subscribe to chat session
-    if (this.currentSessionId && !this._chatUnsub) {
-      this._chatUnsub = window.wsClient.subscribe('chat:' + this.currentSessionId, (msg) => {
-        this._handleChatMessage(msg);
-      });
+    // Resubscribe any open tabs that may have lost their handles (e.g. after
+    // late-binding a reviewId).
+    for (const tab of this.tabs) {
+      if (tab.sessionId != null && !tab.wsUnsub) {
+        this._subscribeTab(tab);
+      }
     }
 
-    // Listen for WebSocket reconnects — any deltas broadcast during the
-    // reconnect gap are lost, so we re-fetch via HTTP to recover the stream.
     if (!this._onReconnect) {
       this._onReconnect = () => { this._recoverAfterReconnect(); };
       window.addEventListener('wsReconnected', this._onReconnect);
@@ -2275,23 +3338,24 @@ class ChatPanel {
   }
 
   /**
-   * Recover streaming state after a WebSocket reconnect.
-   * If a stream was in progress when the connection dropped, deltas broadcast
-   * during the gap are lost. Re-fetch the full message history via HTTP and
-   * replace the partial `_streamingContent` with the complete last assistant
-   * message. When not streaming, no action is needed.
+   * Recover streaming state for every open tab after a WebSocket reconnect.
+   * Each tab independently re-fetches its latest assistant message if it was
+   * mid-stream when the connection dropped.
    */
   async _recoverAfterReconnect() {
-    if (!this.isStreaming || !this.currentSessionId) return;
+    await Promise.all(this.tabs.map((tab) => this._recoverTabAfterReconnect(tab)));
+  }
 
+  async _recoverTabAfterReconnect(tab) {
+    if (!tab?.isStreaming || tab.sessionId == null) return;
+    const capturedSessionId = tab.sessionId;
     try {
-      const response = await fetch(`/api/chat/session/${this.currentSessionId}/messages`);
+      const response = await fetch(`/api/chat/session/${tab.sessionId}/messages`);
+      if (!this.tabs.includes(tab) || tab.sessionId !== capturedSessionId) return;
       if (!response.ok) return;
-
       const result = await response.json();
+      if (!this.tabs.includes(tab) || tab.sessionId !== capturedSessionId) return;
       const messages = result.data?.messages || [];
-
-      // Find the last assistant message — this is the one being streamed
       let lastAssistant = null;
       for (let i = messages.length - 1; i >= 0; i--) {
         if (messages[i].type === 'message' && messages[i].role === 'assistant') {
@@ -2299,17 +3363,15 @@ class ChatPanel {
           break;
         }
       }
-
-      if (lastAssistant && lastAssistant.content) {
-        this._streamingContent = lastAssistant.content;
-        // The message is already persisted in the DB, so the stream is
-        // definitively complete. Finalize rather than continuing the
-        // streaming UI (which would leave the Stop button visible, etc.).
-        if (this.isOpen) {
-          this.finalizeStreamingMessage(lastAssistant.id);
+      if (lastAssistant?.content) {
+        tab.streamingContent = lastAssistant.content;
+        this._finalizeTabStream(tab, lastAssistant.id);
+        tab.streamingContent = '';
+        if (this.isOpen && this._getActiveTab() === tab) {
+          this._finalizeStreaming(tab);
         } else {
-          this.messages.push({ role: 'assistant', content: lastAssistant.content, id: lastAssistant.id });
-          this._finalizeStreaming();
+          tab.isStreaming = false;
+          this._updateTabStatus(tab, 'idle');
         }
       }
     } catch (err) {
@@ -2318,80 +3380,80 @@ class ChatPanel {
   }
 
   /**
-   * Unsubscribe from the current chat topic and re-subscribe to the new one.
-   * Called whenever `this.currentSessionId` changes.
+   * Handle a WebSocket event for a specific tab. Foreground tabs render
+   * directly to the DOM; background tabs accumulate state silently so it
+   * is visible when the user clicks back.
+   * @param {ChatTab} tab
+   * @param {Object} data - Parsed WS message
    */
-  _resubscribeChat() {
-    if (this._chatUnsub) { this._chatUnsub(); this._chatUnsub = null; }
-    if (this.currentSessionId) {
-      this._chatUnsub = window.wsClient.subscribe('chat:' + this.currentSessionId, (msg) => {
-        this._handleChatMessage(msg);
-      });
-    }
-  }
-
-  /**
-   * Handles incoming WebSocket messages for the active chat session.
-   * @param {Object} data - Parsed message object
-   */
-  _handleChatMessage(data) {
+  _handleChatMessageForTab(tab, data) {
     try {
-      // Assertion: WebSocket topic scoping guarantees sessionId match.
-      // This warn is a safety net — if it fires, something is wrong upstream.
-      if (data.sessionId !== this.currentSessionId) {
-        console.warn(`[ChatPanel] Unexpected sessionId mismatch: got ${data.sessionId}, expected ${this.currentSessionId}`);
+      if (data.sessionId !== tab.sessionId) {
+        console.warn(`[ChatPanel] sessionId mismatch on tab ${tab.sessionId}: got ${data.sessionId}`);
         return;
       }
 
       if (data.type !== 'delta') {
-        console.debug('[ChatPanel] WS event:', data.type, 'session:', data.sessionId);
+        console.debug('[ChatPanel] WS event:', data.type, 'tab:', tab.sessionId);
       }
 
-      // When the panel is closed, still accumulate internal state
-      // so messages are available when the panel reopens.
-      if (!this.isOpen) {
+      const isActive = this.isOpen && this._getActiveTab() === tab;
+
+      // Background tab (or panel closed): drive the per-tab DOM via tab-aware
+      // helpers so a tab switch reveals the same content the user would have
+      // seen had it been in the foreground all along.
+      if (!isActive) {
         switch (data.type) {
           case 'delta':
-            this._streamingContent += data.text;
+            if (!tab.streamingMsgEl) this._addStreamingPlaceholder(tab);
+            tab.streamingContent += data.text;
+            this.updateStreamingMessage(tab.streamingContent, tab);
+            this._markStreaming(tab);
+            break;
+          case 'status':
+            if (data.status === 'working') this._markStreaming(tab);
             break;
           case 'complete':
-            if (this._streamingContent) {
-              this.messages.push({ role: 'assistant', content: this._streamingContent, id: data.messageId });
-            }
-            this._streamingContent = '';
-            this.isStreaming = false;
+            this._finalizeTabStream(tab, data.messageId);
+            tab.streamingContent = '';
+            tab.isStreaming = false;
+            tab.errorMessage = null;
+            this._updateTabStatus(tab, 'idle');
             break;
           case 'error':
-            this._streamingContent = '';
-            this.isStreaming = false;
+            // Render the error inline so the user sees what happened when
+            // they switch back to this tab.
+            this._showError(data.message || 'An error occurred', tab);
+            this._finalizeTabStream(tab, null);
+            tab.streamingContent = '';
+            tab.isStreaming = false;
             break;
-          // tool_use, status: purely visual, skip when closed
         }
         return;
       }
 
+      // Foreground path — drive the DOM directly
       switch (data.type) {
         case 'delta':
-          this._hideThinkingIndicator();
-          this._streamingContent += data.text;
-          this.updateStreamingMessage(this._streamingContent);
+          this._hideThinkingIndicator(tab);
+          tab.streamingContent += data.text;
+          this.updateStreamingMessage(tab.streamingContent, tab);
           break;
-
         case 'tool_use':
-          this._showToolUse(data.toolName, data.status, data.toolInput);
+          this._showToolUse(data.toolName, data.status, data.toolInput, tab);
           break;
-
         case 'status':
-          this._handleAgentStatus(data.status);
+          this._handleAgentStatus(data.status, tab);
           break;
-
         case 'complete':
-          this.finalizeStreamingMessage(data.messageId);
+          tab.errorMessage = null;
+          this.finalizeStreamingMessage(data.messageId, tab);
           break;
-
         case 'error':
-          this._showError(data.message || 'An error occurred');
-          this._finalizeStreaming();
+          tab.errorMessage = data.message || 'An error occurred';
+          this._updateTabStatus(tab, 'error');
+          this._showError(tab.errorMessage, tab);
+          this._finalizeStreaming(tab);
           break;
       }
     } catch (e) {
@@ -2400,10 +3462,12 @@ class ChatPanel {
   }
 
   /**
-   * Close all WebSocket subscriptions (chat and review).
+   * Close the review-scope subscription and every tab's chat subscription.
    */
   _closeSubscriptions() {
-    if (this._chatUnsub) { this._chatUnsub(); this._chatUnsub = null; }
+    for (const tab of this.tabs) {
+      if (tab.wsUnsub) { try { tab.wsUnsub(); } catch { /* noop */ } tab.wsUnsub = null; }
+    }
     if (this._reviewUnsub) { this._reviewUnsub(); this._reviewUnsub = null; }
     if (this._onReconnect) {
       window.removeEventListener('wsReconnected', this._onReconnect);
@@ -2412,15 +3476,19 @@ class ChatPanel {
   }
 
   /**
-   * Add a message to the display
+   * Add a message to the display.
    * @param {string} role - 'user' or 'assistant'
    * @param {string} content - Message text
-   * @param {number} id - Optional message ID
+   * @param {number} [id] - Optional message ID
+   * @param {ChatTab} [targetTab] - Explicit tab; defaults to active tab
    * @returns {HTMLElement} The message element that was appended
    */
-  addMessage(role, content, id) {
+  addMessage(role, content, id, targetTab) {
+    const tab = targetTab || this._getActiveTab();
+    if (!tab || !tab.messagesEl) return null;
+
     const msg = { role, content, id };
-    this.messages.push(msg);
+    tab.messages.push(msg);
 
     const msgEl = document.createElement('div');
     msgEl.className = `chat-panel__message chat-panel__message--${role}`;
@@ -2438,8 +3506,19 @@ class ChatPanel {
     }
 
     msgEl.appendChild(bubble);
-    this.messagesEl.appendChild(msgEl);
-    this.scrollToBottom({ force: true });
+    tab.messagesEl.appendChild(msgEl);
+
+    // Update the tab title from the first user message if the user hasn't
+    // explicitly named it. Only do this when no prior user message exists.
+    if (role === 'user' && !tab.titleFromUser) {
+      const preview = this._truncate(content, 28);
+      if (preview) {
+        tab.titleFromUser = true;
+        this._setTabTitle(tab, preview);
+      }
+    }
+
+    if (this._getActiveTab() === tab) this.scrollToBottom({ force: true });
     return msgEl;
   }
 
@@ -2482,31 +3561,35 @@ class ChatPanel {
   }
 
   /**
-   * Add a streaming placeholder for the assistant's response
+   * Add a streaming placeholder for the assistant's response on a tab.
+   * @param {ChatTab} [targetTab] - Defaults to active tab
    */
-  _addStreamingPlaceholder() {
+  _addStreamingPlaceholder(targetTab) {
+    const tab = targetTab || this._getActiveTab();
+    if (!tab || !tab.messagesEl) return;
     const msgEl = document.createElement('div');
     msgEl.className = 'chat-panel__message chat-panel__message--assistant chat-panel__message--streaming';
-    msgEl.id = 'chat-streaming-msg';
 
     const bubble = document.createElement('div');
     bubble.className = 'chat-panel__bubble';
     bubble.innerHTML = getChatSpinnerHTML();
 
     msgEl.appendChild(bubble);
-    this.messagesEl.appendChild(msgEl);
-    this.scrollToBottom({ force: true });
+    tab.messagesEl.appendChild(msgEl);
+    tab.streamingMsgEl = msgEl;
+    if (this._getActiveTab() === tab) this.scrollToBottom({ force: true });
   }
 
   /**
-   * Update the currently streaming message
+   * Update the streaming message on a tab.
    * @param {string} text - Full accumulated text so far
+   * @param {ChatTab} [targetTab] - Defaults to active tab
    */
-  updateStreamingMessage(text) {
-    const streamingMsg = document.getElementById('chat-streaming-msg');
+  updateStreamingMessage(text, targetTab) {
+    const tab = targetTab || this._getActiveTab();
+    const streamingMsg = tab?.streamingMsgEl;
     if (!streamingMsg) return;
 
-    // Remove transient tool badge when real text arrives
     const transient = streamingMsg.querySelector('.chat-panel__tool-badge--transient');
     if (transient) transient.remove();
 
@@ -2515,96 +3598,116 @@ class ChatPanel {
       bubble.innerHTML = this.renderMarkdown(text) + '<span class="chat-panel__cursor"></span>';
       this._linkifyFileReferences(bubble);
     }
-    this.scrollToBottom();
+    if (this._getActiveTab() === tab) this.scrollToBottom();
   }
 
   /**
-   * Finalize the streaming message with final ID
+   * Finalize the streaming message on a tab. Idempotent — a second call when
+   * streamingMsgEl is already null is a no-op.
    * @param {number} messageId - Database message ID
+   * @param {ChatTab} [targetTab] - Defaults to active tab
    */
-  finalizeStreamingMessage(messageId) {
-    const streamingMsg = document.getElementById('chat-streaming-msg');
+  finalizeStreamingMessage(messageId, targetTab) {
+    const tab = targetTab || this._getActiveTab();
+    if (!tab) return;
+    this._finalizeTabStream(tab, messageId);
+    this._finalizeStreaming(tab);
+  }
+
+  /**
+   * Tab-aware DOM finalization helper. Writes the final streamed content into
+   * `tab.streamingMsgEl`, strips streaming/cursor classes, pushes the message
+   * into `tab.messages`, and nulls `tab.streamingMsgEl`. Safe to call twice.
+   * @param {ChatTab} tab
+   * @param {number} [messageId]
+   */
+  _finalizeTabStream(tab, messageId) {
+    if (!tab) return;
+    const streamingMsg = tab.streamingMsgEl;
     if (streamingMsg) {
       streamingMsg.classList.remove('chat-panel__message--streaming');
-      streamingMsg.id = '';
       if (messageId) streamingMsg.dataset.messageId = messageId;
 
-      // Remove cursor and thinking indicator
       const cursor = streamingMsg.querySelector('.chat-panel__cursor');
       if (cursor) cursor.remove();
       const thinking = streamingMsg.querySelector('.chat-panel__thinking');
       if (thinking) thinking.remove();
 
-      // Remove transient tool badge
       const transientBadge = streamingMsg.querySelector('.chat-panel__tool-badge--transient');
       if (transientBadge) transientBadge.remove();
 
-      // Remove any active tool spinners (e.g. abort mid-tool-execution)
       const spinners = streamingMsg.querySelectorAll('.chat-panel__tool-spinner');
       spinners.forEach(s => s.remove());
 
-      // Final render
       const bubble = streamingMsg.querySelector('.chat-panel__bubble');
       if (bubble) {
-        if (this._streamingContent) {
-          bubble.innerHTML = this.renderMarkdown(this._streamingContent);
+        if (tab.streamingContent) {
+          bubble.innerHTML = this.renderMarkdown(tab.streamingContent);
           this._linkifyFileReferences(bubble);
-          bubble.appendChild(this._createCopyButton(this._streamingContent));
+          bubble.appendChild(this._createCopyButton(tab.streamingContent));
         } else {
-          // Empty response - show a subtle message
           bubble.innerHTML = '<em class="chat-panel__empty-response">No response generated.</em>';
         }
       }
     }
 
-    // Store in messages array
-    if (this._streamingContent) {
-      this.messages.push({ role: 'assistant', content: this._streamingContent, id: messageId });
+    if (tab.streamingContent) {
+      tab.messages.push({ role: 'assistant', content: tab.streamingContent, id: messageId });
     }
-
-    this._finalizeStreaming();
+    tab.streamingMsgEl = null;
   }
 
   /**
-   * Abort the current agent turn
+   * Abort the current agent turn on the originating tab. Captures the tab
+   * at entry so a focus change between the user clicking Stop and the abort
+   * round-trip resolving can't finalize the wrong tab's stream.
    */
   async _stopAgent() {
-    if (!this.isStreaming || !this.currentSessionId) return;
-
+    const tab = this._getActiveTab();
+    if (!tab || !tab.isStreaming || tab.sessionId == null) return;
     try {
-      await fetch(`/api/chat/session/${this.currentSessionId}/abort`, {
-        method: 'POST'
-      });
+      await fetch(`/api/chat/session/${tab.sessionId}/abort`, { method: 'POST' });
     } catch (error) {
       console.error('[ChatPanel] Error aborting:', error);
     }
-
-    // Finalize the streaming message with whatever content we have so far
-    this.finalizeStreamingMessage(null);
+    if (!this.tabs.includes(tab)) return;
+    // Finalize the streaming message with whatever content we have so far.
+    this.finalizeStreamingMessage(null, tab);
   }
 
   /**
-   * Clean up streaming state
+   * Clean up streaming state on a tab. UI controls are only touched when the
+   * tab is currently active.
+   * @param {ChatTab} [targetTab] - Defaults to active tab
    */
-  _finalizeStreaming() {
-    this.isStreaming = false;
-    this._streamingContent = '';
-    this.sendBtn.style.display = '';
-    this.stopBtn.style.display = 'none';
-    this.sendBtn.disabled = !this.inputEl?.value?.trim();
-    this._updateActionButtons();
-    this.inputEl?.focus();
+  _finalizeStreaming(targetTab) {
+    const tab = targetTab || this._getActiveTab();
+    if (tab) {
+      tab.isStreaming = false;
+      tab.streamingContent = '';
+      tab.streamingMsgEl = null;
+      this._updateTabStatus(tab, tab.errorMessage ? 'error' : 'idle');
+    }
+    if (!tab || this._getActiveTab() === tab) {
+      this.sendBtn.style.display = '';
+      this.stopBtn.style.display = 'none';
+      this.sendBtn.disabled = !this.inputEl?.value?.trim();
+      this._updateActionButtons();
+      this.inputEl?.focus();
+    }
   }
 
   /**
-   * Show a tool use indicator in the streaming message
+   * Show a tool use indicator in a tab's streaming message.
    * @param {string} toolName - Name of the tool being used
    * @param {string} status - 'start' or 'end'
    * @param {Object} [toolInput] - Tool input/arguments (optional)
+   * @param {ChatTab} [targetTab] - Defaults to active tab
    */
-  _showToolUse(toolName, status, toolInput) {
+  _showToolUse(toolName, status, toolInput, targetTab) {
     if (!toolName) return;
-    const streamingMsg = document.getElementById('chat-streaming-msg');
+    const tab = targetTab || this._getActiveTab();
+    const streamingMsg = tab?.streamingMsgEl;
     if (!streamingMsg) return;
 
     const isTask = toolName.toLowerCase() === 'task' || toolName.toLowerCase() === 'agent';
@@ -2657,7 +3760,7 @@ class ChatPanel {
           if (spinner) spinner.remove();
         }
       }
-      this._showThinkingIndicator();
+      this._showThinkingIndicator(tab);
     }
   }
 
@@ -2704,32 +3807,46 @@ class ChatPanel {
   /**
    * Handle agent status events from the backend.
    * @param {string} status - 'working' or 'turn_complete'
+   * @param {ChatTab} [targetTab] - Defaults to active tab
    */
-  _handleAgentStatus(status) {
+  _handleAgentStatus(status, targetTab) {
+    const tab = targetTab || this._getActiveTab();
     if (status === 'working') {
-      this._showThinkingIndicator();
+      this._showThinkingIndicator(tab);
+      this._markStreaming(tab);
     }
     // 'turn_complete' is informational; the agent may start another turn
   }
 
   /**
-   * Show the pulsing thinking indicator in/below the streaming message.
-   * If there's already content, append it after the content. If no content, it's the typing dots.
+   * Mark a tab as streaming if it is not already. Used by foreground and
+   * background status arms to set the per-tab flag + status dot in one place.
+   * Short-circuits if already streaming — preserves errorMessage from being
+   * cleared mid-stream.
+   * @param {ChatTab} tab
    */
-  _showThinkingIndicator() {
-    const streamingMsg = document.getElementById('chat-streaming-msg');
+  _markStreaming(tab) {
+    if (!tab || tab.isStreaming) return;
+    tab.isStreaming = true;
+    this._updateTabStatus(tab, 'streaming');
+  }
+
+  /**
+   * Show the pulsing thinking indicator on a tab's streaming message.
+   * @param {ChatTab} [targetTab] - Defaults to active tab
+   */
+  _showThinkingIndicator(targetTab) {
+    const tab = targetTab || this._getActiveTab();
+    const streamingMsg = tab?.streamingMsgEl;
     if (!streamingMsg) return;
 
     // Don't add duplicate
     if (streamingMsg.querySelector('.chat-panel__thinking')) return;
 
     // Don't add if the bubble still has its initial spinner (no content yet).
-    // The bubble's own indicator is sufficient — adding a second would show two.
     const bubble = streamingMsg.querySelector('.chat-panel__bubble');
     if (bubble && (bubble.querySelector('.chat-panel__typing-indicator') || bubble.querySelector('.chat-panel__loop-spinner'))) return;
 
-    // Remove the cursor — the thinking indicator replaces it as the "working" signal.
-    // When new text arrives, updateStreamingMessage() will re-add the cursor naturally.
     const cursor = bubble?.querySelector('.chat-panel__cursor');
     if (cursor) cursor.remove();
 
@@ -2737,24 +3854,34 @@ class ChatPanel {
     indicator.className = 'chat-panel__thinking';
     indicator.innerHTML = getChatSpinnerHTML();
     streamingMsg.appendChild(indicator);
-    this.scrollToBottom();
+    if (this._getActiveTab() === tab) this.scrollToBottom();
   }
 
   /**
-   * Hide the thinking indicator from the streaming message.
+   * Hide the thinking indicator on a tab's streaming message.
+   * @param {ChatTab} [targetTab] - Defaults to active tab
    */
-  _hideThinkingIndicator() {
-    const streamingMsg = document.getElementById('chat-streaming-msg');
+  _hideThinkingIndicator(targetTab) {
+    const tab = targetTab || this._getActiveTab();
+    const streamingMsg = tab?.streamingMsgEl;
     if (!streamingMsg) return;
     const thinking = streamingMsg.querySelector('.chat-panel__thinking');
     if (thinking) thinking.remove();
   }
 
   /**
-   * Show an error message in the chat
+   * Show an error message in a tab.
    * @param {string} message - Error text
+   * @param {ChatTab} [targetTab] - Defaults to active tab
    */
-  _showError(message) {
+  _showError(message, targetTab) {
+    const tab = targetTab || this._getActiveTab();
+    if (tab) {
+      tab.errorMessage = message;
+      this._updateTabStatus(tab, 'error');
+    }
+    const messagesEl = tab?.messagesEl;
+    if (!messagesEl) return;
     const errorEl = document.createElement('div');
     errorEl.className = 'chat-panel__message chat-panel__message--error';
     errorEl.innerHTML = `
@@ -2765,8 +3892,8 @@ class ChatPanel {
         ${this._escapeHtml(message)}
       </div>
     `;
-    this.messagesEl.appendChild(errorEl);
-    this.scrollToBottom({ force: true });
+    messagesEl.appendChild(errorEl);
+    if (this._getActiveTab() === tab) this.scrollToBottom({ force: true });
   }
 
   /**
@@ -3172,7 +4299,9 @@ class ChatPanel {
    */
   _handleAdoptClick() {
     if (this.isStreaming || !this._contextItemId) return;
-    this._pendingActionContext = { type: 'adopt', itemId: this._contextItemId };
+    const tab = this._getActiveTab();
+    if (!tab) return;
+    tab.pendingActionContext = { type: 'adopt', itemId: tab.contextItemId };
     this.inputEl.value = 'Based on our conversation, please refine and adopt this AI suggestion.';
     this.sendMessage();
   }
@@ -3183,7 +4312,9 @@ class ChatPanel {
    */
   _handleUpdateClick() {
     if (this.isStreaming || !this._contextItemId) return;
-    this._pendingActionContext = { type: 'update', itemId: this._contextItemId };
+    const tab = this._getActiveTab();
+    if (!tab) return;
+    tab.pendingActionContext = { type: 'update', itemId: tab.contextItemId };
     this.inputEl.value = 'Based on our conversation, please update my comment.';
     this.sendMessage();
   }
@@ -3194,7 +4325,9 @@ class ChatPanel {
    */
   _handleDismissSuggestionClick() {
     if (this.isStreaming || !this._contextItemId) return;
-    this._pendingActionContext = { type: 'dismiss-suggestion', itemId: this._contextItemId };
+    const tab = this._getActiveTab();
+    if (!tab) return;
+    tab.pendingActionContext = { type: 'dismiss-suggestion', itemId: tab.contextItemId };
     this.inputEl.value = 'Please dismiss this AI suggestion.';
     this.sendMessage();
   }
@@ -3205,7 +4338,9 @@ class ChatPanel {
    */
   _handleDismissCommentClick() {
     if (this.isStreaming || !this._contextItemId) return;
-    this._pendingActionContext = { type: 'dismiss-comment', itemId: this._contextItemId };
+    const tab = this._getActiveTab();
+    if (!tab) return;
+    tab.pendingActionContext = { type: 'dismiss-comment', itemId: tab.contextItemId };
     this.inputEl.value = 'Please dismiss this comment.';
     this.sendMessage();
   }
@@ -3227,11 +4362,13 @@ class ChatPanel {
    */
   _handleCreateCommentClick() {
     if (this.isStreaming) return;
-    this._pendingActionContext = {
+    const tab = this._getActiveTab();
+    if (!tab) return;
+    tab.pendingActionContext = {
       type: 'create-comment',
-      file: this._contextLineMeta?.file,
-      line_start: this._contextLineMeta?.line_start,
-      line_end: this._contextLineMeta?.line_end,
+      file: tab.contextLineMeta?.file,
+      line_start: tab.contextLineMeta?.line_start,
+      line_end: tab.contextLineMeta?.line_end,
     };
     this.inputEl.value = 'Based on our conversation, please create a review comment for this code.';
     this.sendMessage();
@@ -3248,7 +4385,13 @@ class ChatPanel {
     document.body.appendChild(this._ctxTooltipEl);
     this._ctxTooltipTimer = null;
 
-    if (!this.messagesEl) return;
+    // Delegate hover events from the persistent stack element so the tooltip
+    // works for every per-tab messagesEl (which are created lazily by
+    // _createTabMessagesEl as tabs are opened/restored). Reading
+    // `this.messagesEl` here would always be null at construction time —
+    // there's no active tab yet — so the listeners would never bind.
+    const host = this.messagesStackEl;
+    if (!host) return;
 
     this._onCtxCardEnter = (e) => {
       const card = e.target.closest('.chat-panel__context-card[data-tooltip-body]');
@@ -3264,8 +4407,8 @@ class ChatPanel {
       this._ctxTooltipEl.style.display = 'none';
     };
 
-    this.messagesEl.addEventListener('mouseenter', this._onCtxCardEnter, true);
-    this.messagesEl.addEventListener('mouseleave', this._onCtxCardLeave, true);
+    host.addEventListener('mouseenter', this._onCtxCardEnter, true);
+    host.addEventListener('mouseleave', this._onCtxCardLeave, true);
   }
 
   /**
@@ -3311,7 +4454,8 @@ class ChatPanel {
     document.removeEventListener('keydown', this._onKeydown);
     window.removeEventListener('chat-state-changed', this._onChatStateChanged);
     this._closeSubscriptions();
-    this.messages = [];
+    this.tabs = [];
+    this.activeTabKey = null;
 
     // Clean up context tooltip
     clearTimeout(this._ctxTooltipTimer);

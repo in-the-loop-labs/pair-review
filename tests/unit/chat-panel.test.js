@@ -159,6 +159,12 @@ function buildElementRegistry() {
     'chat-history-btn': createMockElement('button'),
     'chat-title-text': createMockElement('span'),
     'chat-new-content-pill': createMockElement('button'),
+    'chat-tab-strip': createMockElement('div'),
+    'chat-tab-strip-items': createMockElement('div'),
+    'chat-tab-new-btn': createMockElement('button'),
+    'chat-empty-new-btn': createMockElement('button'),
+    'chat-messages-stack': createMockElement('div'),
+    'chat-status-flash': createMockElement('div'),
   };
 
   // Give the textarea a value property
@@ -199,6 +205,8 @@ global.localStorage = {
   setItem: vi.fn((key, val) => { global.localStorage._store[key] = String(val); }),
   removeItem: vi.fn((key) => { delete global.localStorage._store[key]; }),
 };
+// Production code reads `window.localStorage` for persisted tabs.
+global.window.localStorage = global.localStorage;
 
 global.wsClient = global.window.wsClient = {
   connect: vi.fn(),
@@ -296,6 +304,12 @@ function createChatPanel() {
       '.chat-panel__history-btn': reg['chat-history-btn'],
       '.chat-panel__title-text': reg['chat-title-text'],
       '.chat-panel__new-content-pill': reg['chat-new-content-pill'],
+      '.chat-panel__tab-strip': reg['chat-tab-strip'],
+      '.chat-panel__tab-strip-items': reg['chat-tab-strip-items'],
+      '.chat-panel__tab-new-btn': reg['chat-tab-new-btn'],
+      '.chat-panel__empty-new-btn': reg['chat-empty-new-btn'],
+      '#chat-messages-stack': reg['chat-messages-stack'],
+      '.chat-panel__status-flash': reg['chat-status-flash'],
     };
     return map[selector] || null;
   });
@@ -309,9 +323,76 @@ function createChatPanel() {
     return null;
   });
 
+  // The messages stack needs a querySelector that returns the per-tab empty
+  // state element used by _updateNoTabsEmptyState.
+  const noTabsEmpty = createMockElement('div');
+  reg['chat-messages-stack'].querySelector = vi.fn((sel) => {
+    if (sel === '.chat-panel__empty--no-tabs') return noTabsEmpty;
+    return null;
+  });
+  reg['chat-messages-stack']._noTabsEmpty = noTabsEmpty;
+
   // Construct the panel — triggers _render and _bindEvents
   const panel = new ChatPanel('chat-container');
+
+  // Auto-create an active tab so the legacy single-conversation tests still
+  // exercise the getter/setter delegation path. Tests that need a no-tab
+  // panel can call `clearActiveTab(panel)` to remove it.
+  attachActiveTab(panel);
   return panel;
+}
+
+/**
+ * Create a per-tab messagesEl mock that supports the same querySelector /
+ * appendChild / addEventListener surface that the original single-cached
+ * messagesEl had in this test file.
+ */
+function createMockMessagesEl() {
+  const el = createMockElement('div');
+  el.dataset = {};
+  el.style = { display: '' };
+  // Track scroll listener registrations (used by scroll listener tests)
+  el.addEventListener = vi.fn();
+  el.appendChild = vi.fn((child) => { el.children.push(child); return child; });
+  // isConnected is consulted by the race-guard checks in _loadMessageHistory
+  Object.defineProperty(el, 'isConnected', { value: true, writable: true, configurable: true });
+  // _renderInTab toggles parent.style.display via the stack so we make sure
+  // the element claims a parent.
+  el.parentNode = null;
+  return el;
+}
+
+/**
+ * Push a freshly-built tab onto the panel and make it the active one. Returns
+ * the tab descriptor. Useful for tests that want to start from a clean
+ * single-tab state or to add additional background tabs.
+ *
+ * Uses the production _createTabMessagesEl path so the scroll event listener
+ * is registered on the per-tab messagesEl — tests can then introspect that
+ * listener via chatPanel.messagesEl.addEventListener.mock.calls.
+ */
+function attachActiveTab(panel, init = {}) {
+  const tab = panel._createTab(init);
+  // Use the production helper to allocate the messagesEl so scroll listeners
+  // are wired up. The helper expects the panel's mock messagesStackEl, which
+  // we already wired up in createChatPanel.
+  panel._createTabMessagesEl(tab);
+  // Ensure isConnected is true so the race-guard checks in _loadMessageHistory
+  // do not bail.
+  Object.defineProperty(tab.messagesEl, 'isConnected', { value: true, writable: true, configurable: true });
+  panel.tabs.push(tab);
+  panel.activeTabKey = panel._tabKey(tab);
+  return tab;
+}
+
+/**
+ * Remove every tab from the panel and reset activeTabKey. Used by tests that
+ * specifically exercise the no-active-tab branch (e.g. delegation getter
+ * fallbacks, _closeTab last-tab semantics).
+ */
+function clearActiveTab(panel) {
+  panel.tabs = [];
+  panel.activeTabKey = null;
 }
 
 // ---------------------------------------------------------------------------
@@ -323,6 +404,9 @@ describe('ChatPanel', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Reset mockResolvedValueOnce/mockImplementation queues that leak across
+    // tests (clearAllMocks only clears CALL history, not implementations).
+    global.fetch.mockReset();
     documentListeners = {};
     windowListeners = {};
     global.localStorage._store = {};
@@ -454,7 +538,7 @@ describe('ChatPanel', () => {
 
       expect(chatPanel.inputEl.value).toContain('adopt');
       expect(chatPanel.inputEl.value).not.toContain('55');
-      expect(chatPanel._pendingActionContext).toEqual({ type: 'adopt', itemId: 55 });
+      expect(chatPanel._getActiveTab().pendingActionContext).toEqual({ type: 'adopt', itemId: 55 });
       expect(sendSpy).toHaveBeenCalled();
     });
 
@@ -489,7 +573,7 @@ describe('ChatPanel', () => {
 
       expect(chatPanel.inputEl.value).toContain('update');
       expect(chatPanel.inputEl.value).not.toContain('88');
-      expect(chatPanel._pendingActionContext).toEqual({ type: 'update', itemId: 88 });
+      expect(chatPanel._getActiveTab().pendingActionContext).toEqual({ type: 'update', itemId: 88 });
       expect(sendSpy).toHaveBeenCalled();
     });
 
@@ -524,7 +608,7 @@ describe('ChatPanel', () => {
 
       expect(chatPanel.inputEl.value).toContain('dismiss');
       expect(chatPanel.inputEl.value).not.toContain('42');
-      expect(chatPanel._pendingActionContext).toEqual({ type: 'dismiss-suggestion', itemId: 42 });
+      expect(chatPanel._getActiveTab().pendingActionContext).toEqual({ type: 'dismiss-suggestion', itemId: 42 });
       expect(sendSpy).toHaveBeenCalled();
     });
 
@@ -559,7 +643,7 @@ describe('ChatPanel', () => {
 
       expect(chatPanel.inputEl.value).toContain('dismiss');
       expect(chatPanel.inputEl.value).not.toContain('77');
-      expect(chatPanel._pendingActionContext).toEqual({ type: 'dismiss-comment', itemId: 77 });
+      expect(chatPanel._getActiveTab().pendingActionContext).toEqual({ type: 'dismiss-comment', itemId: 77 });
       expect(sendSpy).toHaveBeenCalled();
     });
 
@@ -592,7 +676,7 @@ describe('ChatPanel', () => {
 
       chatPanel._handleCreateCommentClick();
 
-      expect(chatPanel._pendingActionContext).toEqual({
+      expect(chatPanel._getActiveTab().pendingActionContext).toEqual({
         type: 'create-comment',
         file: 'src/foo.js',
         line_start: 10,
@@ -609,7 +693,7 @@ describe('ChatPanel', () => {
 
       chatPanel._handleCreateCommentClick();
 
-      expect(chatPanel._pendingActionContext).toBeNull();
+      expect(chatPanel._getActiveTab().pendingActionContext).toBeNull();
       expect(sendSpy).not.toHaveBeenCalled();
     });
   });
@@ -646,12 +730,12 @@ describe('ChatPanel', () => {
 
       chatPanel._sendCommentContextMessage(ctx);
 
-      expect(chatPanel._pendingContext).toHaveLength(1);
-      expect(chatPanel._pendingContextData).toHaveLength(1);
-      expect(chatPanel._pendingContext[0]).toContain('review comment');
-      expect(chatPanel._pendingContext[0]).toContain('src/app.js');
-      expect(chatPanel._pendingContext[0]).toContain('line 42');
-      expect(chatPanel._pendingContext[0]).toContain('Fix the typo here');
+      expect(chatPanel._getActiveTab().pendingContext).toHaveLength(1);
+      expect(chatPanel._getActiveTab().pendingContextData).toHaveLength(1);
+      expect(chatPanel._getActiveTab().pendingContext[0]).toContain('review comment');
+      expect(chatPanel._getActiveTab().pendingContext[0]).toContain('src/app.js');
+      expect(chatPanel._getActiveTab().pendingContext[0]).toContain('line 42');
+      expect(chatPanel._getActiveTab().pendingContext[0]).toContain('Fix the typo here');
     });
 
     it('should store context data for a file-level comment', () => {
@@ -667,8 +751,8 @@ describe('ChatPanel', () => {
 
       chatPanel._sendCommentContextMessage(ctx);
 
-      expect(chatPanel._pendingContext).toHaveLength(1);
-      expect(chatPanel._pendingContext[0]).toContain('File-level comment');
+      expect(chatPanel._getActiveTab().pendingContext).toHaveLength(1);
+      expect(chatPanel._getActiveTab().pendingContext[0]).toContain('File-level comment');
     });
 
     it('should store structured contextData with type "comment"', () => {
@@ -684,7 +768,7 @@ describe('ChatPanel', () => {
 
       chatPanel._sendCommentContextMessage(ctx);
 
-      const data = chatPanel._pendingContextData[0];
+      const data = chatPanel._getActiveTab().pendingContextData[0];
       expect(data.type).toBe('comment');
       expect(data.file).toBe('index.js');
       expect(data.line_start).toBe(10);
@@ -743,9 +827,9 @@ describe('ChatPanel', () => {
 
       chatPanel._sendCommentContextMessage(ctx);
 
-      expect(chatPanel._pendingContextData[0].file).toBeNull();
+      expect(chatPanel._getActiveTab().pendingContextData[0].file).toBeNull();
       // Should not contain "File:" line
-      expect(chatPanel._pendingContext[0]).not.toContain('File:');
+      expect(chatPanel._getActiveTab().pendingContext[0]).not.toContain('File:');
     });
 
     it('should show line range when line_end differs from line_start', () => {
@@ -761,7 +845,7 @@ describe('ChatPanel', () => {
 
       chatPanel._sendCommentContextMessage(ctx);
 
-      expect(chatPanel._pendingContext[0]).toContain('line 10-20');
+      expect(chatPanel._getActiveTab().pendingContext[0]).toContain('line 10-20');
     });
   });
 
@@ -855,7 +939,7 @@ describe('ChatPanel', () => {
     });
 
     it('should be removable when option set', () => {
-      chatPanel._pendingContextData = [{ type: 'file' }]; // pre-push data so _makeCardRemovable has an index
+      chatPanel._getActiveTab().pendingContextData = [{ type: 'file' }]; // pre-push data so _makeCardRemovable has an index
       const ctx = { file: 'src/app.js', type: 'file' };
       chatPanel._addFileContextCard(ctx, { removable: true });
 
@@ -873,7 +957,7 @@ describe('ChatPanel', () => {
   // -----------------------------------------------------------------------
   describe('_makeCardRemovable', () => {
     it('should set data-context-index from pending array length', () => {
-      chatPanel._pendingContextData = [{ id: 0 }, { id: 1 }];
+      chatPanel._getActiveTab().pendingContextData = [{ id: 0 }, { id: 1 }];
       const card = createMockElement('div');
       chatPanel._makeCardRemovable(card);
 
@@ -882,7 +966,7 @@ describe('ChatPanel', () => {
     });
 
     it('should create remove button with correct class and title', () => {
-      chatPanel._pendingContextData = [{ id: 0 }];
+      chatPanel._getActiveTab().pendingContextData = [{ id: 0 }];
       const card = createMockElement('div');
       chatPanel._makeCardRemovable(card);
 
@@ -892,7 +976,7 @@ describe('ChatPanel', () => {
     });
 
     it('should call _removeContextCard on click', () => {
-      chatPanel._pendingContextData = [{ id: 0 }];
+      chatPanel._getActiveTab().pendingContextData = [{ id: 0 }];
       const card = createMockElement('div');
       const removeCardSpy = vi.spyOn(chatPanel, '_removeContextCard').mockImplementation(() => {});
       chatPanel._makeCardRemovable(card);
@@ -937,13 +1021,13 @@ describe('ChatPanel', () => {
     });
 
     it('should clear pending context arrays', () => {
-      chatPanel._pendingContext = ['some context'];
-      chatPanel._pendingContextData = [{ type: 'comment' }];
+      chatPanel._getActiveTab().pendingContext = ['some context'];
+      chatPanel._getActiveTab().pendingContextData = [{ type: 'comment' }];
 
       chatPanel.close();
 
-      expect(chatPanel._pendingContext).toEqual([]);
-      expect(chatPanel._pendingContextData).toEqual([]);
+      expect(chatPanel._getActiveTab().pendingContext).toEqual([]);
+      expect(chatPanel._getActiveTab().pendingContextData).toEqual([]);
     });
 
     it('should clear context source and item ID', () => {
@@ -1011,19 +1095,19 @@ describe('ChatPanel', () => {
   // -----------------------------------------------------------------------
   describe('queueUserActionHint', () => {
     it('should initialize _pendingUserActionHints as empty array', () => {
-      expect(chatPanel._pendingUserActionHints).toEqual([]);
+      expect(chatPanel._getActiveTab().pendingUserActionHints).toEqual([]);
     });
 
     it('should push a hint onto the array', () => {
       chatPanel.queueUserActionHint('[User Action: adopted suggestion 42]');
-      expect(chatPanel._pendingUserActionHints).toEqual(['[User Action: adopted suggestion 42]']);
+      expect(chatPanel._getActiveTab().pendingUserActionHints).toEqual(['[User Action: adopted suggestion 42]']);
     });
 
     it('should accumulate multiple hints in order', () => {
       chatPanel.queueUserActionHint('[User Action: adopted suggestion 1]');
       chatPanel.queueUserActionHint('[User Action: dismissed suggestion 2]');
       chatPanel.queueUserActionHint('[User Action: created comment 3]');
-      expect(chatPanel._pendingUserActionHints).toEqual([
+      expect(chatPanel._getActiveTab().pendingUserActionHints).toEqual([
         '[User Action: adopted suggestion 1]',
         '[User Action: dismissed suggestion 2]',
         '[User Action: created comment 3]',
@@ -1031,15 +1115,32 @@ describe('ChatPanel', () => {
     });
 
     it('should survive close() — not cleared when panel is closed', () => {
-      chatPanel._pendingUserActionHints = ['[User Action: adopted suggestion 5]'];
+      chatPanel._getActiveTab().pendingUserActionHints = ['[User Action: adopted suggestion 5]'];
       chatPanel.close();
-      expect(chatPanel._pendingUserActionHints).toEqual(['[User Action: adopted suggestion 5]']);
+      expect(chatPanel._getActiveTab().pendingUserActionHints).toEqual(['[User Action: adopted suggestion 5]']);
     });
 
-    it('should be cleared on _startNewConversation()', async () => {
-      chatPanel._pendingUserActionHints = ['[User Action: adopted suggestion 5]'];
+    it('stays on the original tab when _startNewConversation opens a new tab', async () => {
+      // In the multi-tab impl, _startNewConversation calls _openNewTab which
+      // creates a tab and POSTs to /api/chat/session. The previously active
+      // tab's hints belong to that tab and must not bleed onto the new one.
+      chatPanel.reviewId = 1;
+      const original = chatPanel._getActiveTab();
+      original.pendingUserActionHints = ['[User Action: adopted suggestion 5]'];
+
+      global.fetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ data: { id: 999, status: 'active' } }),
+      });
+
       await chatPanel._startNewConversation();
-      expect(chatPanel._pendingUserActionHints).toEqual([]);
+
+      expect(chatPanel.tabs.length).toBeGreaterThanOrEqual(2);
+      // The original tab still owns its hints.
+      expect(chatPanel.tabs[0].pendingUserActionHints).toEqual(['[User Action: adopted suggestion 5]']);
+      // The freshly opened tab has none.
+      const newTab = chatPanel.tabs[chatPanel.tabs.length - 1];
+      expect(newTab.pendingUserActionHints).toEqual([]);
     });
   });
 
@@ -1069,7 +1170,7 @@ describe('ChatPanel', () => {
       expect(body.context).toContain('[User Action: adopted suggestion 42]');
 
       // Queue should be drained
-      expect(chatPanel._pendingUserActionHints).toEqual([]);
+      expect(chatPanel._getActiveTab().pendingUserActionHints).toEqual([]);
     });
 
     it('should combine user action hints with diff state notifications', async () => {
@@ -1106,7 +1207,7 @@ describe('ChatPanel', () => {
       await chatPanel.sendMessage();
 
       // Hints should be restored after the error
-      expect(chatPanel._pendingUserActionHints).toEqual([
+      expect(chatPanel._getActiveTab().pendingUserActionHints).toEqual([
         '[User Action: adopted suggestion 10]',
       ]);
     });
@@ -1114,225 +1215,45 @@ describe('ChatPanel', () => {
 
   // -----------------------------------------------------------------------
   // _startNewConversation()
+  //
+  // In the multi-tab refactor, "new conversation" no longer resets the active
+  // tab. It simply opens a new tab via _openNewTab. These tests verify that
+  // contract: the helper delegates to _openNewTab and closes any open
+  // dropdowns, but leaves the previously-active tab's state intact.
   // -----------------------------------------------------------------------
   describe('_startNewConversation()', () => {
-    it('should call _finalizeStreaming', async () => {
-      const finalizeSpy = vi.spyOn(chatPanel, '_finalizeStreaming');
+    it('should delegate to _openNewTab', async () => {
+      const spy = vi.spyOn(chatPanel, '_openNewTab').mockResolvedValue(undefined);
 
       await chatPanel._startNewConversation();
 
-      expect(finalizeSpy).toHaveBeenCalled();
+      expect(spy).toHaveBeenCalled();
     });
 
-    it('should reset currentSessionId', async () => {
-      chatPanel.currentSessionId = 'session-123';
+    it('should hide provider and session dropdowns', async () => {
+      vi.spyOn(chatPanel, '_openNewTab').mockResolvedValue(undefined);
+      const providerSpy = vi.spyOn(chatPanel, '_hideProviderDropdown');
+      const sessionSpy = vi.spyOn(chatPanel, '_hideSessionDropdown');
 
       await chatPanel._startNewConversation();
 
-      expect(chatPanel.currentSessionId).toBeNull();
+      expect(providerSpy).toHaveBeenCalled();
+      expect(sessionSpy).toHaveBeenCalled();
     });
 
-    it('should clear messages array', async () => {
-      chatPanel.messages = [{ role: 'user', content: 'hi' }];
+    it('should not mutate the previously active tab', async () => {
+      // Stub the new-tab path so we don't actually create a real session.
+      vi.spyOn(chatPanel, '_openNewTab').mockResolvedValue(undefined);
+      const tab = chatPanel._getActiveTab();
+      tab.sessionId = 'sess-existing';
+      tab.messages = [{ role: 'user', content: 'hi' }];
+      tab.streamingContent = 'partial';
 
       await chatPanel._startNewConversation();
 
-      expect(chatPanel.messages).toEqual([]);
-    });
-
-    it('should reset streaming content', async () => {
-      chatPanel._streamingContent = 'partial stuff';
-
-      await chatPanel._startNewConversation();
-
-      expect(chatPanel._streamingContent).toBe('');
-    });
-
-    it('should preserve pending context across new conversation', async () => {
-      chatPanel._pendingContext = ['ctx'];
-      chatPanel._pendingContextData = [{ type: 'suggestion', title: 'Test', file: 'a.js' }];
-
-      await chatPanel._startNewConversation();
-
-      expect(chatPanel._pendingContext).toEqual(['ctx']);
-      expect(chatPanel._pendingContextData).toEqual([{ type: 'suggestion', title: 'Test', file: 'a.js' }]);
-    });
-
-    it('should clear pending context arrays when they are empty', async () => {
-      chatPanel._pendingContext = [];
-      chatPanel._pendingContextData = [];
-
-      await chatPanel._startNewConversation();
-
-      expect(chatPanel._pendingContext).toEqual([]);
-      expect(chatPanel._pendingContextData).toEqual([]);
-    });
-
-    it('should preserve context source and item ID when pending context exists', async () => {
-      chatPanel._contextSource = 'user';
-      chatPanel._contextItemId = 77;
-      chatPanel._pendingContext = ['ctx'];
-      chatPanel._pendingContextData = [{ type: 'comment', source: 'user', body: 'Test' }];
-
-      await chatPanel._startNewConversation();
-
-      expect(chatPanel._contextSource).toBe('user');
-      expect(chatPanel._contextItemId).toBe(77);
-    });
-
-    it('should reset context source and item ID when no pending context', async () => {
-      chatPanel._contextSource = 'user';
-      chatPanel._contextItemId = 77;
-      chatPanel._pendingContext = [];
-      chatPanel._pendingContextData = [];
-
-      await chatPanel._startNewConversation();
-
-      expect(chatPanel._contextSource).toBeNull();
-      expect(chatPanel._contextItemId).toBeNull();
-    });
-
-    it('should reset _sessionAnalysisRunId', async () => {
-      chatPanel._sessionAnalysisRunId = 'run-456';
-
-      await chatPanel._startNewConversation();
-
-      expect(chatPanel._sessionAnalysisRunId).toBeNull();
-    });
-
-    it('should call _updateActionButtons after reset', async () => {
-      const updateSpy = vi.spyOn(chatPanel, '_updateActionButtons');
-
-      await chatPanel._startNewConversation();
-
-      expect(updateSpy).toHaveBeenCalled();
-    });
-
-    it('should call _clearMessages to restore empty state', async () => {
-      const clearSpy = vi.spyOn(chatPanel, '_clearMessages');
-
-      await chatPanel._startNewConversation();
-
-      expect(clearSpy).toHaveBeenCalled();
-    });
-
-    it('should call _ensureAnalysisContext to re-add analysis card', async () => {
-      const ensureSpy = vi.spyOn(chatPanel, '_ensureAnalysisContext');
-
-      await chatPanel._startNewConversation();
-
-      expect(ensureSpy).toHaveBeenCalled();
-    });
-
-    it('should re-add suggestion context cards as removable', async () => {
-      chatPanel._pendingContext = ['The user wants to discuss this specific suggestion:\n- Type: bug\n- Title: Fix null'];
-      chatPanel._pendingContextData = [{ type: 'bug', title: 'Fix null', file: 'app.js', line_start: 10, line_end: 10, body: 'Check for null' }];
-      chatPanel._contextSource = 'suggestion';
-      chatPanel._contextItemId = 42;
-
-      const addCardSpy = vi.spyOn(chatPanel, '_addContextCard');
-
-      await chatPanel._startNewConversation();
-
-      expect(addCardSpy).toHaveBeenCalledWith(
-        { type: 'bug', title: 'Fix null', file: 'app.js', line_start: 10, line_end: 10, body: 'Check for null' },
-        { removable: true }
-      );
-      expect(chatPanel._pendingContext).toHaveLength(1);
-      expect(chatPanel._pendingContextData).toHaveLength(1);
-      expect(chatPanel._contextSource).toBe('suggestion');
-      expect(chatPanel._contextItemId).toBe(42);
-    });
-
-    it('should re-add comment context cards as removable', async () => {
-      chatPanel._pendingContext = ['The user wants to discuss their own review comment:\n- File: b.js (line 5)'];
-      chatPanel._pendingContextData = [{ type: 'comment', source: 'user', title: 'Comment on line 5', file: 'b.js', line_start: 5, line_end: 5, body: 'Needs refactor' }];
-      chatPanel._contextSource = 'user';
-      chatPanel._contextItemId = 99;
-
-      const addCommentCardSpy = vi.spyOn(chatPanel, '_addCommentContextCard');
-
-      await chatPanel._startNewConversation();
-
-      expect(addCommentCardSpy).toHaveBeenCalledWith(
-        { type: 'comment', source: 'user', title: 'Comment on line 5', file: 'b.js', line_start: 5, line_end: 5, body: 'Needs refactor' },
-        { removable: true }
-      );
-      expect(chatPanel._contextSource).toBe('user');
-      expect(chatPanel._contextItemId).toBe(99);
-    });
-
-    it('should re-add file context cards as removable', async () => {
-      chatPanel._pendingContext = ['The user wants to discuss src/utils.js'];
-      chatPanel._pendingContextData = [{ type: 'file', title: 'src/utils.js', file: 'src/utils.js', line_start: null, line_end: null, body: null }];
-
-      const addFileCardSpy = vi.spyOn(chatPanel, '_addFileContextCard');
-
-      await chatPanel._startNewConversation();
-
-      expect(addFileCardSpy).toHaveBeenCalledWith(
-        { type: 'file', title: 'src/utils.js', file: 'src/utils.js', line_start: null, line_end: null, body: null },
-        { removable: true }
-      );
-    });
-
-    it('should re-add multiple context cards in order', async () => {
-      chatPanel._pendingContext = ['ctx1', 'ctx2'];
-      chatPanel._pendingContextData = [
-        { type: 'bug', title: 'Bug 1', file: 'a.js' },
-        { type: 'file', title: 'b.js', file: 'b.js', line_start: null, line_end: null, body: null }
-      ];
-
-      const addCardSpy = vi.spyOn(chatPanel, '_addContextCard');
-      const addFileCardSpy = vi.spyOn(chatPanel, '_addFileContextCard');
-
-      await chatPanel._startNewConversation();
-
-      expect(addCardSpy).toHaveBeenCalledTimes(1);
-      expect(addFileCardSpy).toHaveBeenCalledTimes(1);
-      expect(chatPanel._pendingContext).toHaveLength(2);
-      expect(chatPanel._pendingContextData).toHaveLength(2);
-    });
-
-    it('should not re-add cards when pending arrays were empty', async () => {
-      chatPanel._pendingContext = [];
-      chatPanel._pendingContextData = [];
-
-      const addCardSpy = vi.spyOn(chatPanel, '_addContextCard');
-      const addCommentCardSpy = vi.spyOn(chatPanel, '_addCommentContextCard');
-      const addFileCardSpy = vi.spyOn(chatPanel, '_addFileContextCard');
-
-      await chatPanel._startNewConversation();
-
-      expect(addCardSpy).not.toHaveBeenCalled();
-      expect(addCommentCardSpy).not.toHaveBeenCalled();
-      expect(addFileCardSpy).not.toHaveBeenCalled();
-    });
-
-    it('should remove empty state when re-adding saved context cards', async () => {
-      chatPanel._pendingContext = ['ctx'];
-      chatPanel._pendingContextData = [{ type: 'bug', title: 'Test' }];
-
-      const emptyEl = createMockElement('div');
-      chatPanel.messagesEl.querySelector = vi.fn((sel) => {
-        if (sel === '.chat-panel__empty') return emptyEl;
-        if (sel === '.chat-panel__context-card[data-analysis]') return null;
-        return null;
-      });
-
-      await chatPanel._startNewConversation();
-
-      expect(emptyEl.remove).toHaveBeenCalled();
-    });
-
-    it('should reset _analysisContextRemoved so analysis card reappears', async () => {
-      chatPanel._analysisContextRemoved = true;
-      chatPanel._pendingContext = [];
-      chatPanel._pendingContextData = [];
-
-      await chatPanel._startNewConversation();
-
-      expect(chatPanel._analysisContextRemoved).toBe(false);
+      expect(tab.sessionId).toBe('sess-existing');
+      expect(tab.messages).toEqual([{ role: 'user', content: 'hi' }]);
+      expect(tab.streamingContent).toBe('partial');
     });
   });
 
@@ -1501,33 +1422,40 @@ describe('ChatPanel', () => {
 
   // -----------------------------------------------------------------------
   // Background WS accumulation (isOpen === false)
+  //
+  // The single-tab _handleChatMessage was replaced by per-tab
+  // _handleChatMessageForTab(tab, data) in the multi-tab refactor. These
+  // tests now drive that helper directly with the active tab.
   // -----------------------------------------------------------------------
   describe('Background WS accumulation', () => {
+    let tab;
+
     beforeEach(() => {
       chatPanel.currentSessionId = 'sess-1';
+      tab = chatPanel._getActiveTab();
       chatPanel.isOpen = false;
-      chatPanel.isStreaming = true;
-      chatPanel._streamingContent = '';
+      tab.isStreaming = true;
+      tab.streamingContent = '';
     });
 
     function emitEvent(data) {
-      chatPanel._handleChatMessage(data);
+      chatPanel._handleChatMessageForTab(tab, data);
     }
 
     it('should accumulate delta events into _streamingContent when panel is closed', () => {
       emitEvent({ type: 'delta', text: 'Hello ', sessionId: 'sess-1' });
       emitEvent({ type: 'delta', text: 'World', sessionId: 'sess-1' });
 
-      expect(chatPanel._streamingContent).toBe('Hello World');
+      expect(tab.streamingContent).toBe('Hello World');
     });
 
     it('should push completed message to messages array on "complete" event', () => {
-      chatPanel._streamingContent = 'Full response';
+      tab.streamingContent = 'Full response';
 
       emitEvent({ type: 'complete', messageId: 101, sessionId: 'sess-1' });
 
-      expect(chatPanel.messages).toHaveLength(1);
-      expect(chatPanel.messages[0]).toEqual({
+      expect(tab.messages).toHaveLength(1);
+      expect(tab.messages[0]).toEqual({
         role: 'assistant',
         content: 'Full response',
         id: 101,
@@ -1535,32 +1463,32 @@ describe('ChatPanel', () => {
     });
 
     it('should clear streaming state on "complete" event', () => {
-      chatPanel._streamingContent = 'Some text';
-      chatPanel.isStreaming = true;
+      tab.streamingContent = 'Some text';
+      tab.isStreaming = true;
 
       emitEvent({ type: 'complete', messageId: 102, sessionId: 'sess-1' });
 
-      expect(chatPanel._streamingContent).toBe('');
-      expect(chatPanel.isStreaming).toBe(false);
+      expect(tab.streamingContent).toBe('');
+      expect(tab.isStreaming).toBe(false);
     });
 
     it('should not push empty content to messages on "complete"', () => {
-      chatPanel._streamingContent = '';
+      tab.streamingContent = '';
 
       emitEvent({ type: 'complete', messageId: 103, sessionId: 'sess-1' });
 
-      expect(chatPanel.messages).toHaveLength(0);
-      expect(chatPanel.isStreaming).toBe(false);
+      expect(tab.messages).toHaveLength(0);
+      expect(tab.isStreaming).toBe(false);
     });
 
     it('should clear streaming state on "error" event', () => {
-      chatPanel._streamingContent = 'partial';
-      chatPanel.isStreaming = true;
+      tab.streamingContent = 'partial';
+      tab.isStreaming = true;
 
       emitEvent({ type: 'error', message: 'Something broke', sessionId: 'sess-1' });
 
-      expect(chatPanel._streamingContent).toBe('');
-      expect(chatPanel.isStreaming).toBe(false);
+      expect(tab.streamingContent).toBe('');
+      expect(tab.isStreaming).toBe(false);
     });
 
     it('should warn and ignore events for mismatched sessions', () => {
@@ -1568,9 +1496,9 @@ describe('ChatPanel', () => {
 
       emitEvent({ type: 'delta', text: 'foreign', sessionId: 'other-session' });
 
-      expect(chatPanel._streamingContent).toBe('');
+      expect(tab.streamingContent).toBe('');
       expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Unexpected sessionId mismatch')
+        expect.stringContaining('sessionId mismatch')
       );
 
       warnSpy.mockRestore();
@@ -1581,8 +1509,8 @@ describe('ChatPanel', () => {
       emitEvent({ type: 'tool_use', toolName: 'Read', status: 'start', sessionId: 'sess-1' });
       emitEvent({ type: 'status', status: 'working', sessionId: 'sess-1' });
 
-      // No error and no side effects beyond what switch/default handles (nothing)
-      expect(chatPanel._streamingContent).toBe('');
+      // tool_use was not a delta, so streamingContent should remain empty.
+      expect(tab.streamingContent).toBe('');
     });
   });
 
@@ -1608,23 +1536,24 @@ describe('ChatPanel', () => {
       expect(chatPanel._reviewUnsub).not.toBeNull();
     });
 
-    it('should subscribe to chat topic when currentSessionId is set', () => {
+    it('should subscribe to chat topic for any open tab missing a wsUnsub', () => {
       window.wsClient.subscribe.mockClear();
-      chatPanel.currentSessionId = 'sess-99';
-      chatPanel._chatUnsub = null;
+      const tab = chatPanel._getActiveTab();
+      tab.sessionId = 'sess-99';
+      tab.wsUnsub = null;
 
       chatPanel._ensureSubscriptions();
 
       expect(window.wsClient.subscribe).toHaveBeenCalledWith('chat:sess-99', expect.any(Function));
-      expect(chatPanel._chatUnsub).not.toBeNull();
+      expect(tab.wsUnsub).not.toBeNull();
     });
 
-    it('should not re-subscribe if already subscribed', () => {
+    it('should not re-subscribe a tab that already has wsUnsub', () => {
       window.wsClient.subscribe.mockClear();
-      const existingUnsub = vi.fn();
-      chatPanel._chatUnsub = existingUnsub;
+      const tab = chatPanel._getActiveTab();
+      tab.sessionId = 'sess-99';
+      tab.wsUnsub = vi.fn();
       chatPanel._reviewUnsub = vi.fn();
-      chatPanel.currentSessionId = 'sess-99';
       chatPanel.reviewId = 'review-42';
 
       chatPanel._ensureSubscriptions();
@@ -1653,17 +1582,18 @@ describe('ChatPanel', () => {
   });
 
   describe('_closeSubscriptions', () => {
-    it('should call chat and review unsubscribe functions', () => {
-      const chatUnsub = vi.fn();
+    it('should call review unsubscribe and each tab unsubscribe', () => {
+      const tabUnsub = vi.fn();
       const reviewUnsub = vi.fn();
-      chatPanel._chatUnsub = chatUnsub;
+      const tab = chatPanel._getActiveTab();
+      tab.wsUnsub = tabUnsub;
       chatPanel._reviewUnsub = reviewUnsub;
 
       chatPanel._closeSubscriptions();
 
-      expect(chatUnsub).toHaveBeenCalled();
+      expect(tabUnsub).toHaveBeenCalled();
       expect(reviewUnsub).toHaveBeenCalled();
-      expect(chatPanel._chatUnsub).toBeNull();
+      expect(tab.wsUnsub).toBeNull();
       expect(chatPanel._reviewUnsub).toBeNull();
     });
 
@@ -1678,7 +1608,8 @@ describe('ChatPanel', () => {
     });
 
     it('should be safe to call when no subscriptions exist', () => {
-      chatPanel._chatUnsub = null;
+      const tab = chatPanel._getActiveTab();
+      tab.wsUnsub = null;
       chatPanel._reviewUnsub = null;
       chatPanel._onReconnect = null;
 
@@ -1708,13 +1639,12 @@ describe('ChatPanel', () => {
       expect(global.fetch).not.toHaveBeenCalled();
     });
 
-    it('should fetch messages and finalize streaming when panel is closed', async () => {
-      chatPanel.isStreaming = true;
+    it('should fetch messages and clear streaming state per tab when panel is closed', async () => {
       chatPanel.isOpen = false;
       chatPanel.currentSessionId = 'sess-1';
-      chatPanel._streamingContent = 'partial respo';
-
-      const finalizeSpy = vi.spyOn(chatPanel, '_finalizeStreaming');
+      const tab = chatPanel._getActiveTab();
+      tab.isStreaming = true;
+      tab.streamingContent = 'partial respo';
 
       global.fetch.mockResolvedValueOnce({
         ok: true,
@@ -1730,20 +1660,19 @@ describe('ChatPanel', () => {
 
       await chatPanel._recoverAfterReconnect();
 
-      // Stream is finalized (isStreaming reset, content cleared)
-      expect(finalizeSpy).toHaveBeenCalled();
-      expect(chatPanel.isStreaming).toBe(false);
-      // Message pushed to history
-      expect(chatPanel.messages).toContainEqual({ role: 'assistant', content: 'Full response text here', id: 2 });
+      // Per-tab recovery: stream cleared on the tab directly (no _finalizeStreaming
+      // for background paths in the multi-tab impl).
+      expect(tab.isStreaming).toBe(false);
+      expect(tab.streamingContent).toBe('');
+      expect(tab.messages).toContainEqual({ role: 'assistant', content: 'Full response text here', id: 2 });
     });
 
-    it('should call finalizeStreamingMessage when panel is open', async () => {
+    it('should finalize the streamed message when panel is open', async () => {
       chatPanel.isStreaming = true;
       chatPanel.isOpen = true;
       chatPanel.currentSessionId = 'sess-1';
-      chatPanel._streamingContent = 'partial';
-
-      const finalizeMsgSpy = vi.spyOn(chatPanel, 'finalizeStreamingMessage');
+      const tab = chatPanel._getActiveTab();
+      tab.streamingContent = 'partial';
 
       global.fetch.mockResolvedValueOnce({
         ok: true,
@@ -1758,19 +1687,19 @@ describe('ChatPanel', () => {
 
       await chatPanel._recoverAfterReconnect();
 
-      // finalizeStreamingMessage clears _streamingContent via _finalizeStreaming
-      expect(finalizeMsgSpy).toHaveBeenCalledWith(5);
-      expect(chatPanel.isStreaming).toBe(false);
+      expect(tab.isStreaming).toBe(false);
+      expect(tab.messages).toContainEqual({ role: 'assistant', content: 'Recovered content', id: 5 });
+      expect(tab.streamingContent).toBe('');
     });
 
-    it('should call _finalizeStreaming (not finalizeStreamingMessage) when panel is closed', async () => {
-      chatPanel.isStreaming = true;
+    it('should not call finalizeStreamingMessage when panel is closed (background tab path)', async () => {
       chatPanel.isOpen = false;
       chatPanel.currentSessionId = 'sess-1';
-      chatPanel._streamingContent = 'partial';
+      const tab = chatPanel._getActiveTab();
+      tab.isStreaming = true;
+      tab.streamingContent = 'partial';
 
       const finalizeMsgSpy = vi.spyOn(chatPanel, 'finalizeStreamingMessage');
-      const finalizeSpy = vi.spyOn(chatPanel, '_finalizeStreaming');
 
       global.fetch.mockResolvedValueOnce({
         ok: true,
@@ -1786,9 +1715,8 @@ describe('ChatPanel', () => {
       await chatPanel._recoverAfterReconnect();
 
       expect(finalizeMsgSpy).not.toHaveBeenCalled();
-      expect(finalizeSpy).toHaveBeenCalled();
-      expect(chatPanel.isStreaming).toBe(false);
-      expect(chatPanel.messages).toContainEqual({ role: 'assistant', content: 'Recovered', id: 5 });
+      expect(tab.isStreaming).toBe(false);
+      expect(tab.messages).toContainEqual({ role: 'assistant', content: 'Recovered', id: 5 });
     });
 
     it('should handle empty message history gracefully', async () => {
@@ -1858,7 +1786,7 @@ describe('ChatPanel', () => {
 
       // Finalized — message pushed to history with correct content and id
       expect(chatPanel.isStreaming).toBe(false);
-      expect(chatPanel.messages).toContainEqual({ role: 'assistant', content: 'Latest answer', id: 4 });
+      expect(chatPanel._getActiveTab().messages).toContainEqual({ role: 'assistant', content: 'Latest answer', id: 4 });
     });
 
     it('should skip context messages when looking for last assistant message', async () => {
@@ -1883,7 +1811,7 @@ describe('ChatPanel', () => {
 
       // Finalized — message pushed to history
       expect(chatPanel.isStreaming).toBe(false);
-      expect(chatPanel.messages).toContainEqual({ role: 'assistant', content: 'Answer', id: 2 });
+      expect(chatPanel._getActiveTab().messages).toContainEqual({ role: 'assistant', content: 'Answer', id: 2 });
     });
 
     it('should not replace content when no assistant messages exist', async () => {
@@ -1947,14 +1875,14 @@ describe('ChatPanel', () => {
     it('should push to messages array', () => {
       chatPanel.addMessage('user', 'Hello');
 
-      expect(chatPanel.messages).toHaveLength(1);
-      expect(chatPanel.messages[0]).toEqual({ role: 'user', content: 'Hello', id: undefined });
+      expect(chatPanel._getActiveTab().messages).toHaveLength(1);
+      expect(chatPanel._getActiveTab().messages[0]).toEqual({ role: 'user', content: 'Hello', id: undefined });
     });
 
     it('should push assistant messages with id', () => {
       chatPanel.addMessage('assistant', 'Hi there', 42);
 
-      expect(chatPanel.messages[0]).toEqual({ role: 'assistant', content: 'Hi there', id: 42 });
+      expect(chatPanel._getActiveTab().messages[0]).toEqual({ role: 'assistant', content: 'Hi there', id: 42 });
     });
 
     it('should append a DOM element to messagesEl', () => {
@@ -2004,10 +1932,11 @@ describe('ChatPanel', () => {
       expect(spy).toHaveBeenCalled();
     });
 
-    it('should clear messages array', () => {
-      chatPanel.messages = [{ role: 'user', content: 'hi' }];
+    it('should clear all tabs on destroy', () => {
+      chatPanel._getActiveTab().messages = [{ role: 'user', content: 'hi' }];
       chatPanel.destroy();
-      expect(chatPanel.messages).toEqual([]);
+      expect(chatPanel.tabs).toEqual([]);
+      expect(chatPanel.activeTabKey).toBeNull();
     });
 
     it('should remove keydown listener from document', () => {
@@ -2350,7 +2279,7 @@ describe('ChatPanel', () => {
   // -----------------------------------------------------------------------
   describe('Removable context cards', () => {
     it('should add close button when removable is true', () => {
-      chatPanel._pendingContextData = [{ type: 'bug' }]; // simulate data already pushed
+      chatPanel._getActiveTab().pendingContextData = [{ type: 'bug' }]; // simulate data already pushed
       chatPanel._addContextCard({ title: 'Test', type: 'bug' }, { removable: true });
 
       const card = chatPanel.messagesEl.appendChild.mock.calls[0][0];
@@ -2371,7 +2300,7 @@ describe('ChatPanel', () => {
     });
 
     it('should add close button to comment context card when removable', () => {
-      chatPanel._pendingContextData = [{ type: 'comment' }];
+      chatPanel._getActiveTab().pendingContextData = [{ type: 'comment' }];
       chatPanel._addCommentContextCard(
         { commentId: '1', body: 'Test', file: 'a.js', line_start: 1, isFileLevel: false },
         { removable: true }
@@ -2409,8 +2338,8 @@ describe('ChatPanel', () => {
 
     it('should restore removability on cards after sendMessage failure', async () => {
       // Setup: add some pending context
-      chatPanel._pendingContext = ['ctx'];
-      chatPanel._pendingContextData = [{ type: 'bug' }];
+      chatPanel._getActiveTab().pendingContext = ['ctx'];
+      chatPanel._getActiveTab().pendingContextData = [{ type: 'bug' }];
       chatPanel.currentSessionId = 'sess-1';
       chatPanel.isStreaming = false;
       chatPanel.inputEl.value = 'hello';
@@ -2462,19 +2391,19 @@ describe('ChatPanel', () => {
 
       chatPanel._sendContextMessage(ctx);
 
-      expect(chatPanel._pendingContext).toHaveLength(1);
-      expect(chatPanel._pendingContext[0]).toContain('Null check');
-      expect(chatPanel._pendingContext[0]).toContain('bug');
-      expect(chatPanel._pendingContext[0]).toContain('src/app.js');
-      expect(chatPanel._pendingContext[0]).toContain('line 42');
-      expect(chatPanel._pendingContext[0]).toContain('Check for null');
+      expect(chatPanel._getActiveTab().pendingContext).toHaveLength(1);
+      expect(chatPanel._getActiveTab().pendingContext[0]).toContain('Null check');
+      expect(chatPanel._getActiveTab().pendingContext[0]).toContain('bug');
+      expect(chatPanel._getActiveTab().pendingContext[0]).toContain('src/app.js');
+      expect(chatPanel._getActiveTab().pendingContext[0]).toContain('line 42');
+      expect(chatPanel._getActiveTab().pendingContext[0]).toContain('Check for null');
 
-      expect(chatPanel._pendingContextData).toHaveLength(1);
-      expect(chatPanel._pendingContextData[0].type).toBe('bug');
-      expect(chatPanel._pendingContextData[0].title).toBe('Null check');
-      expect(chatPanel._pendingContextData[0].file).toBe('src/app.js');
-      expect(chatPanel._pendingContextData[0].line_start).toBe(42);
-      expect(chatPanel._pendingContextData[0].body).toBe('Check for null');
+      expect(chatPanel._getActiveTab().pendingContextData).toHaveLength(1);
+      expect(chatPanel._getActiveTab().pendingContextData[0].type).toBe('bug');
+      expect(chatPanel._getActiveTab().pendingContextData[0].title).toBe('Null check');
+      expect(chatPanel._getActiveTab().pendingContextData[0].file).toBe('src/app.js');
+      expect(chatPanel._getActiveTab().pendingContextData[0].line_start).toBe(42);
+      expect(chatPanel._getActiveTab().pendingContextData[0].body).toBe('Check for null');
     });
 
     it('should create a context card and append to messages', () => {
@@ -2492,9 +2421,9 @@ describe('ChatPanel', () => {
 
       chatPanel._sendContextMessage(ctx);
 
-      expect(chatPanel._pendingContext).toHaveLength(1);
-      expect(chatPanel._pendingContext[0]).not.toContain('File:');
-      expect(chatPanel._pendingContextData[0].file).toBeNull();
+      expect(chatPanel._getActiveTab().pendingContext).toHaveLength(1);
+      expect(chatPanel._getActiveTab().pendingContext[0]).not.toContain('File:');
+      expect(chatPanel._getActiveTab().pendingContextData[0].file).toBeNull();
     });
 
     it('should handle context with empty title and type', () => {
@@ -2502,8 +2431,8 @@ describe('ChatPanel', () => {
 
       chatPanel._sendContextMessage(ctx);
 
-      expect(chatPanel._pendingContextData[0].type).toBe('general');
-      expect(chatPanel._pendingContextData[0].title).toBe('Untitled');
+      expect(chatPanel._getActiveTab().pendingContextData[0].type).toBe('general');
+      expect(chatPanel._getActiveTab().pendingContextData[0].title).toBe('Untitled');
     });
 
     it('should remove empty state before adding card', () => {
@@ -2524,8 +2453,8 @@ describe('ChatPanel', () => {
   // -----------------------------------------------------------------------
   describe('_removeContextCard', () => {
     it('should splice pending arrays at the correct index', () => {
-      chatPanel._pendingContext = ['ctx0', 'ctx1', 'ctx2'];
-      chatPanel._pendingContextData = [{ id: 0 }, { id: 1 }, { id: 2 }];
+      chatPanel._getActiveTab().pendingContext = ['ctx0', 'ctx1', 'ctx2'];
+      chatPanel._getActiveTab().pendingContextData = [{ id: 0 }, { id: 1 }, { id: 2 }];
 
       const cardEl = createMockElement('div', { dataset: { contextIndex: '1' } });
       // Mock querySelectorAll to return remaining cards for re-indexing
@@ -2533,14 +2462,14 @@ describe('ChatPanel', () => {
 
       chatPanel._removeContextCard(cardEl);
 
-      expect(chatPanel._pendingContext).toEqual(['ctx0', 'ctx2']);
-      expect(chatPanel._pendingContextData).toEqual([{ id: 0 }, { id: 2 }]);
+      expect(chatPanel._getActiveTab().pendingContext).toEqual(['ctx0', 'ctx2']);
+      expect(chatPanel._getActiveTab().pendingContextData).toEqual([{ id: 0 }, { id: 2 }]);
       expect(cardEl.remove).toHaveBeenCalled();
     });
 
     it('should re-index remaining cards', () => {
-      chatPanel._pendingContext = ['ctx0', 'ctx1', 'ctx2'];
-      chatPanel._pendingContextData = [{ id: 0 }, { id: 1 }, { id: 2 }];
+      chatPanel._getActiveTab().pendingContext = ['ctx0', 'ctx1', 'ctx2'];
+      chatPanel._getActiveTab().pendingContextData = [{ id: 0 }, { id: 1 }, { id: 2 }];
 
       const card0 = createMockElement('div', { dataset: { contextIndex: '0' } });
       const card2 = createMockElement('div', { dataset: { contextIndex: '2' } });
@@ -2554,9 +2483,9 @@ describe('ChatPanel', () => {
     });
 
     it('should restore empty state when last context card is removed and no messages', () => {
-      chatPanel._pendingContext = ['ctx0'];
-      chatPanel._pendingContextData = [{ id: 0 }];
-      chatPanel.messages = [];
+      chatPanel._getActiveTab().pendingContext = ['ctx0'];
+      chatPanel._getActiveTab().pendingContextData = [{ id: 0 }];
+      chatPanel._getActiveTab().messages = [];
 
       const clearSpy = vi.spyOn(chatPanel, '_clearMessages');
       const cardEl = createMockElement('div', { dataset: { contextIndex: '0' } });
@@ -2564,14 +2493,14 @@ describe('ChatPanel', () => {
 
       chatPanel._removeContextCard(cardEl);
 
-      expect(chatPanel._pendingContext).toEqual([]);
+      expect(chatPanel._getActiveTab().pendingContext).toEqual([]);
       expect(clearSpy).toHaveBeenCalled();
     });
 
     it('should NOT restore empty state when messages exist', () => {
-      chatPanel._pendingContext = ['ctx0'];
-      chatPanel._pendingContextData = [{ id: 0 }];
-      chatPanel.messages = [{ role: 'user', content: 'hi' }];
+      chatPanel._getActiveTab().pendingContext = ['ctx0'];
+      chatPanel._getActiveTab().pendingContextData = [{ id: 0 }];
+      chatPanel._getActiveTab().messages = [{ role: 'user', content: 'hi' }];
 
       const clearSpy = vi.spyOn(chatPanel, '_clearMessages');
       const cardEl = createMockElement('div', { dataset: { contextIndex: '0' } });
@@ -2589,7 +2518,7 @@ describe('ChatPanel', () => {
   describe('_ensureAnalysisContext', () => {
     it('should skip when _sessionAnalysisRunId is already set and no new run', () => {
       chatPanel._sessionAnalysisRunId = 'run-abc';
-      chatPanel.messages = [{ role: 'user', content: 'hello' }];
+      chatPanel._getActiveTab().messages = [{ role: 'user', content: 'hello' }];
 
       // No new run: _getLatestCompletedRunId returns same ID
       vi.spyOn(chatPanel, '_getLatestCompletedRunId').mockReturnValue('run-abc');
@@ -2610,7 +2539,7 @@ describe('ChatPanel', () => {
 
     it('should append (prepend: false) when existing message bubbles are present', () => {
       chatPanel._sessionAnalysisRunId = null;
-      chatPanel.messages = [{ role: 'user', content: 'hello' }];
+      chatPanel._getActiveTab().messages = [{ role: 'user', content: 'hello' }];
 
       // Mock: no analysis card in DOM, suggestions exist, message bubbles present
       chatPanel.messagesEl.querySelector = vi.fn((sel) => {
@@ -2634,7 +2563,7 @@ describe('ChatPanel', () => {
 
     it('should prepend (prepend: true) when no message bubbles exist (fresh conversation)', () => {
       chatPanel._sessionAnalysisRunId = null;
-      chatPanel.messages = [];
+      chatPanel._getActiveTab().messages = [];
 
       // Mock: no analysis card, no messages, suggestions exist
       chatPanel.messagesEl.querySelector = vi.fn((sel) => {
@@ -2658,7 +2587,7 @@ describe('ChatPanel', () => {
 
     it('should set _sessionAnalysisRunId to current run ID after creating the card', () => {
       chatPanel._sessionAnalysisRunId = null;
-      chatPanel.messages = [];
+      chatPanel._getActiveTab().messages = [];
 
       vi.spyOn(chatPanel, '_getLatestCompletedRunId').mockReturnValue('run-42');
       chatPanel.messagesEl.querySelector = vi.fn((sel) => {
@@ -2676,7 +2605,7 @@ describe('ChatPanel', () => {
 
     it('should fall back to "dom" when _getLatestCompletedRunId returns null', () => {
       chatPanel._sessionAnalysisRunId = null;
-      chatPanel.messages = [];
+      chatPanel._getActiveTab().messages = [];
 
       vi.spyOn(chatPanel, '_getLatestCompletedRunId').mockReturnValue(null);
       chatPanel.messagesEl.querySelector = vi.fn((sel) => {
@@ -2738,7 +2667,7 @@ describe('ChatPanel', () => {
       // Previous run was 'run-1', now prManager has 'run-2'
       chatPanel._sessionAnalysisRunId = 'run-1';
       chatPanel._analysisContextRemoved = false;
-      chatPanel.messages = [];
+      chatPanel._getActiveTab().messages = [];
 
       vi.spyOn(chatPanel, '_getLatestCompletedRunId').mockReturnValue('run-2');
 
@@ -2799,7 +2728,7 @@ describe('ChatPanel', () => {
 
     it('should NOT detect new run when currentRunId matches _sessionAnalysisRunId', () => {
       chatPanel._sessionAnalysisRunId = 'run-same';
-      chatPanel.messages = [];
+      chatPanel._getActiveTab().messages = [];
 
       vi.spyOn(chatPanel, '_getLatestCompletedRunId').mockReturnValue('run-same');
 
@@ -2819,7 +2748,7 @@ describe('ChatPanel', () => {
 
     it('should not detect new run when _sessionAnalysisRunId is null (first time)', () => {
       chatPanel._sessionAnalysisRunId = null;
-      chatPanel.messages = [];
+      chatPanel._getActiveTab().messages = [];
 
       vi.spyOn(chatPanel, '_getLatestCompletedRunId').mockReturnValue('run-1');
 
@@ -2843,7 +2772,7 @@ describe('ChatPanel', () => {
 
     it('should not detect new run when _getLatestCompletedRunId returns null', () => {
       chatPanel._sessionAnalysisRunId = 'run-old';
-      chatPanel.messages = [];
+      chatPanel._getActiveTab().messages = [];
 
       vi.spyOn(chatPanel, '_getLatestCompletedRunId').mockReturnValue(null);
 
@@ -2865,7 +2794,7 @@ describe('ChatPanel', () => {
 
     it('should replace stale DOM card when _sessionAnalysisRunId is null and card has different run ID', () => {
       chatPanel._sessionAnalysisRunId = null;
-      chatPanel.messages = [];
+      chatPanel._getActiveTab().messages = [];
 
       vi.spyOn(chatPanel, '_getLatestCompletedRunId').mockReturnValue('run-new');
 
@@ -2901,7 +2830,7 @@ describe('ChatPanel', () => {
 
     it('should replace stale DOM card when _sessionAnalysisRunId is null and card has no run ID stamp', () => {
       chatPanel._sessionAnalysisRunId = null;
-      chatPanel.messages = [];
+      chatPanel._getActiveTab().messages = [];
 
       vi.spyOn(chatPanel, '_getLatestCompletedRunId').mockReturnValue('run-123');
 
@@ -2934,7 +2863,7 @@ describe('ChatPanel', () => {
 
     it('should adopt existing card run ID when it matches the latest run', () => {
       chatPanel._sessionAnalysisRunId = null;
-      chatPanel.messages = [];
+      chatPanel._getActiveTab().messages = [];
 
       vi.spyOn(chatPanel, '_getLatestCompletedRunId').mockReturnValue('run-42');
 
@@ -2958,7 +2887,7 @@ describe('ChatPanel', () => {
 
     it('should skip card replacement when currentRunId is null even if _sessionAnalysisRunId is null', () => {
       chatPanel._sessionAnalysisRunId = null;
-      chatPanel.messages = [];
+      chatPanel._getActiveTab().messages = [];
 
       vi.spyOn(chatPanel, '_getLatestCompletedRunId').mockReturnValue(null);
 
@@ -3502,13 +3431,15 @@ describe('ChatPanel', () => {
         context: { suggestionCount: 5, aiRunId: 'run-abc', provider: 'claude', model: 'sonnet' }
       });
 
+      // Tab-aware persist now passes an explicit sessionId so the write isn't
+      // routed to whichever tab is active when the network call lands.
       expect(persistSpy).toHaveBeenCalledWith({
         type: 'analysis',
         suggestionCount: 5,
         aiRunId: 'run-abc',
         provider: 'claude',
         model: 'sonnet'
-      });
+      }, 20);
     });
   });
 
@@ -3675,13 +3606,14 @@ describe('ChatPanel', () => {
   describe('open() concurrency guard', () => {
     it('should serialize concurrent open() calls', async () => {
       chatPanel.reviewId = 1;
+      // _openInner only triggers _loadMRUSession when there are no tabs yet.
+      clearActiveTab(chatPanel);
       const callOrder = [];
 
       // First open() triggers a slow MRU load
       let resolveMRU1;
       const mruPromise1 = new Promise((resolve) => { resolveMRU1 = resolve; });
 
-      const originalLoadMRU = chatPanel._loadMRUSession.bind(chatPanel);
       let loadMRUCallCount = 0;
 
       vi.spyOn(chatPanel, '_loadMRUSession').mockImplementation(async () => {
@@ -3751,6 +3683,7 @@ describe('ChatPanel', () => {
 
     it('should not call _loadMRUSession twice when second open() runs after first sets currentSessionId', async () => {
       chatPanel.reviewId = 1;
+      clearActiveTab(chatPanel);
       let loadMRUCallCount = 0;
 
       vi.spyOn(chatPanel, '_loadMRUSession').mockImplementation(async () => {
@@ -3826,7 +3759,7 @@ describe('ChatPanel', () => {
     it('should call _persistAnalysisContext with analysis context data', () => {
       chatPanel._sessionAnalysisRunId = null;
       chatPanel.currentSessionId = 10;
-      chatPanel.messages = [];
+      chatPanel._getActiveTab().messages = [];
 
       chatPanel.messagesEl.querySelector = vi.fn((sel) => {
         if (sel === '.chat-panel__context-card[data-analysis]') return null;
@@ -3843,7 +3776,8 @@ describe('ChatPanel', () => {
 
       chatPanel._ensureAnalysisContext();
 
-      expect(persistSpy).toHaveBeenCalledWith({ type: 'analysis', suggestionCount: 3 });
+      // Tab-aware persist passes an explicit sessionId arg now.
+      expect(persistSpy).toHaveBeenCalledWith({ type: 'analysis', suggestionCount: 3 }, 10);
     });
 
     it('should NOT call _persistAnalysisContext when skipping (card already in DOM)', () => {
@@ -3877,13 +3811,14 @@ describe('ChatPanel', () => {
         context: { suggestionCount: 5, aiRunId: 'run-abc', provider: 'claude', model: 'sonnet' }
       });
 
+      // Tab-aware persist passes an explicit sessionId.
       expect(persistSpy).toHaveBeenCalledWith({
         type: 'analysis',
         suggestionCount: 5,
         aiRunId: 'run-abc',
         provider: 'claude',
         model: 'sonnet'
-      });
+      }, 20);
     });
 
     it('should NOT call _persistAnalysisContext when suggestionCount is 0', () => {
@@ -4036,6 +3971,9 @@ describe('ChatPanel', () => {
       streamingMsg.querySelectorAll = vi.fn(() => []);
 
       elementRegistry['chat-streaming-msg'] = streamingMsg;
+      // _showToolUse reads streamingMsgEl off the active tab now.
+      const activeTab = chatPanel._getActiveTab();
+      if (activeTab) activeTab.streamingMsgEl = streamingMsg;
     });
 
     afterEach(() => {
@@ -4142,6 +4080,24 @@ describe('ChatPanel', () => {
 
       const card = chatPanel.messagesEl.appendChild.mock.calls[0][0];
       expect(card.dataset.tooltipBody).toBeUndefined();
+    });
+
+    it('should bind tooltip hover listeners to the messages stack (not the per-tab messagesEl)', () => {
+      // Regression: pre-refactor `_initContextTooltip` attached its
+      // mouseenter/mouseleave listeners to `this.messagesEl`, but multi-tab
+      // mode makes that a getter that's null at constructor time (no active
+      // tab yet). The listeners were silently skipped, breaking hover
+      // tooltips on context cards. The fix delegates from the persistent
+      // messages stack element.
+      const stackAdd = chatPanel.messagesStackEl.addEventListener;
+      const mouseenterCalls = stackAdd.mock.calls.filter((c) => c[0] === 'mouseenter');
+      const mouseleaveCalls = stackAdd.mock.calls.filter((c) => c[0] === 'mouseleave');
+      expect(mouseenterCalls.length).toBe(1);
+      expect(mouseleaveCalls.length).toBe(1);
+      // Capture-phase delegation is required so the listeners fire for nested
+      // elements inside the per-tab containers.
+      expect(mouseenterCalls[0][2]).toBe(true);
+      expect(mouseleaveCalls[0][2]).toBe(true);
     });
 
     it('should use _renderInlineMarkdown for context card type and title', () => {
@@ -4411,12 +4367,12 @@ describe('ChatPanel', () => {
       chatPanel.reviewId = null;
       chatPanel.isStreaming = false;
       chatPanel.inputEl.value = 'test message';
-      chatPanel.messages = [];
+      chatPanel._getActiveTab().messages = [];
 
       await chatPanel.sendMessage();
 
       // addMessage pushes, but error recovery should pop
-      expect(chatPanel.messages).toHaveLength(0);
+      expect(chatPanel._getActiveTab().messages).toHaveLength(0);
     });
 
     it('should show error message when createSession fails', async () => {
@@ -4429,7 +4385,8 @@ describe('ChatPanel', () => {
 
       await chatPanel.sendMessage();
 
-      expect(errorSpy).toHaveBeenCalledWith('Unable to start chat session. Please try again.');
+      expect(errorSpy).toHaveBeenCalled();
+      expect(errorSpy.mock.calls[0][0]).toBe('Unable to start chat session. Please try again.');
     });
 
     it('should re-enable send button when createSession fails', async () => {
@@ -4488,6 +4445,41 @@ describe('ChatPanel', () => {
       // The retry message should be sent to the new session
       const retryCall = global.fetch.mock.calls[2];
       expect(retryCall[0]).toBe('/api/chat/session/new-sess/message');
+    });
+
+    it('should re-bind the SAME tab on 410 (not orphan it and spawn a new one)', async () => {
+      // Regression: when 410 nulls the sessionId, activeTabKey must be
+      // re-anchored to the tab's _localKey before createSession() runs so the
+      // existing tab is reused. Otherwise createSession() sees no active tab
+      // and appends a brand new tab, leaving the old one orphaned.
+      const tabsBefore = chatPanel.tabs.length;
+      chatPanel.currentSessionId = 'stale-sess';
+      chatPanel.reviewId = 1;
+      chatPanel.isStreaming = false;
+      chatPanel.inputEl.value = 'hello';
+
+      global.fetch
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 410,
+          json: () => Promise.resolve({ error: 'Session is not resumable' }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ data: { id: 'new-sess', status: 'active' } }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({}),
+        });
+
+      await chatPanel.sendMessage();
+
+      // No new tab should have been spawned; the existing tab is reused.
+      expect(chatPanel.tabs.length).toBe(tabsBefore);
+      // The (single) active tab now owns the fresh session id.
+      expect(chatPanel.tabs[0].sessionId).toBe('new-sess');
+      expect(chatPanel.activeTabKey).toBe('new-sess');
     });
 
     it('should show error when createSession fails during 410 retry', async () => {
@@ -4729,8 +4721,8 @@ describe('ChatPanel', () => {
 
       it('should reset state and load new session', async () => {
         chatPanel.currentSessionId = 1;
-        chatPanel.messages = [{ role: 'user', content: 'old' }];
-        chatPanel._pendingContext = ['some context'];
+        chatPanel._getActiveTab().messages = [{ role: 'user', content: 'old' }];
+        chatPanel._getActiveTab().pendingContext = ['some context'];
 
         // Mock _loadMessageHistory and _ensureAnalysisContext
         chatPanel._loadMessageHistory = vi.fn().mockResolvedValue(undefined);
@@ -4747,11 +4739,14 @@ describe('ChatPanel', () => {
         });
 
         expect(chatPanel.currentSessionId).toBe(2);
-        expect(chatPanel.messages).toEqual([]);
-        expect(chatPanel._pendingContext).toEqual([]);
+        expect(chatPanel._getActiveTab().messages).toEqual([]);
+        expect(chatPanel._getActiveTab().pendingContext).toEqual([]);
         expect(chatPanel._finalizeStreaming).toHaveBeenCalled();
         expect(chatPanel._clearMessages).toHaveBeenCalled();
-        expect(chatPanel._loadMessageHistory).toHaveBeenCalledWith(2);
+        // Phase 2 added an optional `targetTab` 2nd arg so the race guard can
+        // anchor renders to a specific tab. _switchToSession passes the active
+        // tab explicitly.
+        expect(chatPanel._loadMessageHistory).toHaveBeenCalledWith(2, expect.anything());
         expect(chatPanel._ensureAnalysisContext).toHaveBeenCalled();
       });
 
@@ -4846,27 +4841,49 @@ describe('ChatPanel', () => {
     });
 
     describe('_selectProvider', () => {
-      it('should update _activeProvider and call _startNewConversation when provider changes', () => {
+      it('updates _activeProvider and reuses a fresh active tab without spawning a new one', async () => {
         chatPanel._activeProvider = 'pi';
-        chatPanel._startNewConversation = vi.fn();
+        chatPanel._openNewTab = vi.fn();
         chatPanel._updateTitle = vi.fn();
+        const tab = chatPanel._getActiveTab();
+        // Fresh: no messages, not streaming, no user title.
+        tab.messages = [];
+        tab.isStreaming = false;
+        tab.streamingContent = '';
+        tab.titleFromUser = false;
+        tab.sessionId = null;
 
-        chatPanel._selectProvider('copilot-acp');
+        await chatPanel._selectProvider('copilot-acp');
 
         expect(chatPanel._activeProvider).toBe('copilot-acp');
         expect(chatPanel._updateTitle).toHaveBeenCalled();
-        expect(chatPanel._startNewConversation).toHaveBeenCalled();
+        expect(chatPanel._openNewTab).not.toHaveBeenCalled();
+        // Provider on the reused tab updated.
+        expect(tab.provider).toBe('copilot-acp');
       });
 
-      it('should be a no-op when the same provider is selected', () => {
+      it('opens a new tab when the active tab is NOT fresh (has messages)', async () => {
         chatPanel._activeProvider = 'pi';
-        chatPanel._startNewConversation = vi.fn();
+        chatPanel._openNewTab = vi.fn().mockResolvedValue(undefined);
+        chatPanel._updateTitle = vi.fn();
+        const tab = chatPanel._getActiveTab();
+        tab.messages = [{ role: 'user', content: 'hi' }];
+
+        await chatPanel._selectProvider('copilot-acp');
+
+        expect(chatPanel._activeProvider).toBe('copilot-acp');
+        expect(chatPanel._openNewTab).toHaveBeenCalled();
+      });
+
+      it('should be a no-op when the same provider is selected', async () => {
+        chatPanel._activeProvider = 'pi';
+        chatPanel._openNewTab = vi.fn();
         chatPanel._updateTitle = vi.fn();
 
-        chatPanel._selectProvider('pi');
+        await chatPanel._selectProvider('pi');
 
         expect(chatPanel._updateTitle).not.toHaveBeenCalled();
-        expect(chatPanel._startNewConversation).not.toHaveBeenCalled();
+        expect(chatPanel._openNewTab).not.toHaveBeenCalled();
       });
     });
 
@@ -5548,8 +5565,10 @@ describe('ChatPanel', () => {
     });
 
     describe('scrollToBottom with no messagesEl', () => {
-      it('should not throw when messagesEl is null', () => {
-        chatPanel.messagesEl = null;
+      it('should not throw when there is no active tab', () => {
+        // The new getter returns null when no tab is active; removing all
+        // tabs mirrors the previous "messagesEl = null" state for scroll.
+        clearActiveTab(chatPanel);
         expect(() => chatPanel.scrollToBottom()).not.toThrow();
         expect(() => chatPanel.scrollToBottom({ force: true })).not.toThrow();
       });
@@ -5702,6 +5721,1066 @@ describe('ChatPanel', () => {
         expect(chatPanel._hideAnimationTimeout).toBeNull();
         vi.useRealTimers();
       });
+    });
+  });
+
+  // ===========================================================================
+  // Multi-tab support (Phase 1/2)
+  //
+  // These tests exercise the multi-tab state machine end-to-end in unit space:
+  // tab creation, switching, closing, status-dot derivation, per-tab WS
+  // accumulation, getter/setter delegation, localStorage persistence /
+  // restore, history-dropdown open-tag handling, and the
+  // _loadMessageHistory race guard.
+  // ===========================================================================
+  describe('multi-tab: state machine', () => {
+    beforeEach(() => {
+      // Start every multi-tab test from a clean no-tab state so we can assert
+      // creation/append semantics explicitly.
+      clearActiveTab(chatPanel);
+    });
+
+    it('starts with an empty tab list and a null activeTabKey', () => {
+      expect(chatPanel.tabs).toEqual([]);
+      expect(chatPanel.activeTabKey).toBeNull();
+    });
+
+    it('_createTab produces a tab with sensible defaults', () => {
+      const tab = chatPanel._createTab();
+      expect(tab.sessionId).toBeNull();
+      // Fresh tabs start in 'pending' (gray dot) until the first message
+      // is exchanged. See _updateTabStatus for the demote rule.
+      expect(tab.status).toBe('pending');
+      expect(tab.messages).toEqual([]);
+      expect(tab.isStreaming).toBe(false);
+      expect(tab.streamingContent).toBe('');
+      expect(tab.errorMessage).toBeNull();
+      expect(tab.sessionWarm).toBe(false);
+      expect(tab.pendingContext).toEqual([]);
+      expect(tab.pendingContextData).toEqual([]);
+      expect(tab.titleFromUser).toBe(false);
+      expect(tab.wsUnsub).toBeNull();
+      expect(typeof tab._localKey).toBe('number');
+      expect(tab._localKey).toBeLessThan(0);
+    });
+
+    it('_appendTab(tab, {focus: true}) adds the tab and focuses it', () => {
+      const tab = chatPanel._createTab();
+      chatPanel._appendTab(tab, { focus: true });
+      expect(chatPanel.tabs).toContain(tab);
+      expect(chatPanel.activeTabKey).toBe(chatPanel._tabKey(tab));
+    });
+
+    it('_appendTab(tab, {focus: false}) adds the tab without changing focus', () => {
+      const tab1 = chatPanel._createTab();
+      chatPanel._appendTab(tab1, { focus: true });
+      const prevActive = chatPanel.activeTabKey;
+      const tab2 = chatPanel._createTab();
+      chatPanel._appendTab(tab2, { focus: false });
+      expect(chatPanel.tabs).toHaveLength(2);
+      expect(chatPanel.activeTabKey).toBe(prevActive);
+    });
+
+    it('_switchToTab updates activeTabKey and hides other tabs’ messagesEl', () => {
+      const tab1 = chatPanel._createTab();
+      chatPanel._appendTab(tab1, { focus: true });
+      const tab2 = chatPanel._createTab();
+      chatPanel._appendTab(tab2, { focus: false });
+
+      chatPanel._switchToTab(chatPanel._tabKey(tab2));
+
+      expect(chatPanel.activeTabKey).toBe(chatPanel._tabKey(tab2));
+      expect(tab1.messagesEl.style.display).toBe('none');
+      expect(tab2.messagesEl.style.display).toBe('');
+    });
+
+    it('_closeTab removes the tab and focuses the right neighbour when active', async () => {
+      const tab1 = chatPanel._createTab();
+      chatPanel._appendTab(tab1, { focus: true });
+      tab1.sessionId = 101;
+      chatPanel.activeTabKey = tab1.sessionId;
+
+      const tab2 = chatPanel._createTab();
+      chatPanel._appendTab(tab2, { focus: false });
+      tab2.sessionId = 102;
+
+      const tab3 = chatPanel._createTab();
+      chatPanel._appendTab(tab3, { focus: false });
+      tab3.sessionId = 103;
+
+      chatPanel._switchToTab(102);
+
+      // Mock fetch for the DELETE so _closeTab’s fire-and-forget doesn’t throw.
+      global.fetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
+
+      await chatPanel._closeTab(102);
+      expect(chatPanel.tabs).not.toContain(tab2);
+      // Right neighbour (tab3) should be focused.
+      expect(chatPanel.activeTabKey).toBe(103);
+    });
+
+    it('_closeTab on the last tab sets activeTabKey to null and shows empty state', async () => {
+      const tab = chatPanel._createTab();
+      chatPanel._appendTab(tab, { focus: true });
+      tab.sessionId = 99;
+      chatPanel.activeTabKey = tab.sessionId;
+
+      const noTabsEmpty = chatPanel.messagesStackEl._noTabsEmpty;
+      noTabsEmpty.style.display = 'none';
+
+      global.fetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
+
+      await chatPanel._closeTab(99);
+
+      expect(chatPanel.tabs).toEqual([]);
+      expect(chatPanel.activeTabKey).toBeNull();
+      expect(noTabsEmpty.style.display).toBe('');
+    });
+
+    it('_closeTab calls tab.wsUnsub() before issuing the DELETE', async () => {
+      const tab = chatPanel._createTab();
+      chatPanel._appendTab(tab, { focus: true });
+      tab.sessionId = 55;
+      chatPanel.activeTabKey = 55;
+      const callOrder = [];
+      const unsubFn = vi.fn(() => callOrder.push('unsub'));
+      tab.wsUnsub = unsubFn;
+      global.fetch.mockImplementation(() => {
+        callOrder.push('fetch');
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+      });
+
+      await chatPanel._closeTab(55);
+
+      // _closeTab nulls out wsUnsub after calling it; assert on the captured fn.
+      expect(unsubFn).toHaveBeenCalled();
+      expect(tab.wsUnsub).toBeNull();
+      expect(callOrder[0]).toBe('unsub');
+      expect(callOrder).toContain('fetch');
+      // unsub fires before the DELETE network call.
+      expect(callOrder.indexOf('unsub')).toBeLessThan(callOrder.indexOf('fetch'));
+    });
+
+    it('_closeTab issues DELETE /api/chat/session/:id for tabs with sessionId', async () => {
+      const tab = chatPanel._createTab();
+      chatPanel._appendTab(tab, { focus: true });
+      tab.sessionId = 77;
+      chatPanel.activeTabKey = 77;
+
+      global.fetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
+
+      await chatPanel._closeTab(77);
+
+      expect(global.fetch).toHaveBeenCalledWith('/api/chat/session/77', expect.objectContaining({ method: 'DELETE' }));
+    });
+  });
+
+  describe('multi-tab: status dot derivation', () => {
+    it('starts a fresh tab at status: pending', () => {
+      const tab = chatPanel._getActiveTab();
+      expect(tab.status).toBe('pending');
+    });
+
+    it('isStreaming setter pushes the active tab to status: streaming', () => {
+      chatPanel.isStreaming = true;
+      expect(chatPanel._getActiveTab().status).toBe('streaming');
+    });
+
+    it('isStreaming = false on an error-free tab with messages returns to status: idle', () => {
+      const tab = chatPanel._getActiveTab();
+      tab.errorMessage = null;
+      tab.messages = [{ role: 'user', content: 'hi' }];
+      chatPanel.isStreaming = true;
+      chatPanel.isStreaming = false;
+      expect(tab.status).toBe('idle');
+    });
+
+    it('isStreaming = false on an empty tab returns to status: pending, not idle', () => {
+      const tab = chatPanel._getActiveTab();
+      tab.errorMessage = null;
+      tab.messages = [];
+      chatPanel.isStreaming = true;
+      chatPanel.isStreaming = false;
+      expect(tab.status).toBe('pending');
+    });
+
+    it('isStreaming = false on a tab with errorMessage keeps status: error', () => {
+      const tab = chatPanel._getActiveTab();
+      tab.errorMessage = 'previous bad';
+      chatPanel.isStreaming = true;
+      chatPanel.isStreaming = false;
+      expect(tab.status).toBe('error');
+    });
+
+    it('delta event on a background tab appends streamingContent and sets streaming', () => {
+      const tab = chatPanel._getActiveTab();
+      tab.sessionId = 'bg-1';
+      chatPanel.isOpen = false;
+      tab.streamingContent = '';
+
+      chatPanel._handleChatMessageForTab(tab, { type: 'delta', text: 'hi', sessionId: 'bg-1' });
+
+      expect(tab.streamingContent).toBe('hi');
+      expect(tab.status).toBe('streaming');
+    });
+
+    it('status: working on a background tab flips status to streaming', () => {
+      const tab = chatPanel._getActiveTab();
+      tab.sessionId = 'bg-1';
+      chatPanel.isOpen = false;
+      tab.isStreaming = false;
+
+      chatPanel._handleChatMessageForTab(tab, { type: 'status', status: 'working', sessionId: 'bg-1' });
+
+      expect(tab.status).toBe('streaming');
+    });
+
+    it('complete event on background tab pushes message, clears stream, status idle, clears error', () => {
+      const tab = chatPanel._getActiveTab();
+      tab.sessionId = 'bg-1';
+      chatPanel.isOpen = false;
+      tab.streamingContent = 'final text';
+      tab.errorMessage = 'prior error';
+
+      chatPanel._handleChatMessageForTab(tab, { type: 'complete', messageId: 5, sessionId: 'bg-1' });
+
+      expect(tab.messages).toContainEqual({ role: 'assistant', content: 'final text', id: 5 });
+      expect(tab.streamingContent).toBe('');
+      expect(tab.isStreaming).toBe(false);
+      expect(tab.status).toBe('idle');
+      expect(tab.errorMessage).toBeNull();
+    });
+
+    it('error event on background tab sets status: error and stores errorMessage', () => {
+      const tab = chatPanel._getActiveTab();
+      tab.sessionId = 'bg-1';
+      chatPanel.isOpen = false;
+      tab.streamingContent = 'partial';
+      tab.isStreaming = true;
+
+      chatPanel._handleChatMessageForTab(tab, { type: 'error', message: 'bad', sessionId: 'bg-1' });
+
+      expect(tab.status).toBe('error');
+      expect(tab.errorMessage).toBe('bad');
+      expect(tab.isStreaming).toBe(false);
+    });
+  });
+
+  describe('multi-tab: getter/setter delegation', () => {
+    it('with an active tab, currentSessionId reads and writes the tab’s sessionId', () => {
+      const tab = chatPanel._getActiveTab();
+      tab.sessionId = 50;
+      // Need to re-key the active marker so the getter resolves to this tab.
+      chatPanel.activeTabKey = 50;
+      expect(chatPanel.currentSessionId).toBe(50);
+
+      chatPanel.currentSessionId = 60;
+      expect(chatPanel.currentSessionId).toBe(60);
+      expect(chatPanel._getActiveTab().sessionId).toBe(60);
+    });
+
+    it('per-tab messages array is independent of the panel-level shim', () => {
+      const tab = chatPanel._getActiveTab();
+      tab.messages = [{ role: 'user', content: 'hi' }];
+      expect(chatPanel._getActiveTab().messages).toEqual([{ role: 'user', content: 'hi' }]);
+    });
+
+    it('with no active tab, scalar getters fall back to default values', () => {
+      clearActiveTab(chatPanel);
+      expect(chatPanel.currentSessionId).toBeNull();
+      expect(chatPanel.isStreaming).toBe(false);
+      expect(chatPanel._streamingContent).toBe('');
+      expect(chatPanel._sessionWarm).toBe(false);
+      // Array-valued state lives on tabs only — no panel-level shim.
+      expect(chatPanel._getActiveTab()).toBeNull();
+    });
+
+    it('with no active tab, scalar setters are silent no-ops', () => {
+      clearActiveTab(chatPanel);
+      expect(() => { chatPanel.currentSessionId = 7; }).not.toThrow();
+      expect(() => { chatPanel.isStreaming = true; }).not.toThrow();
+      expect(() => { chatPanel._contextSource = 'suggestion'; }).not.toThrow();
+      // Setters did not silently create a tab.
+      expect(chatPanel.tabs).toEqual([]);
+    });
+  });
+
+  describe('multi-tab: localStorage persistence', () => {
+    beforeEach(() => {
+      // Use fake timers so we can assert on the 100ms debounce semantics.
+      vi.useFakeTimers();
+      chatPanel.reviewId = 1;
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('_persistOpenTabs writes the expected JSON shape under the per-review key', () => {
+      const tab = chatPanel._getActiveTab();
+      tab.sessionId = 200;
+      chatPanel.activeTabKey = 200;
+
+      chatPanel._persistOpenTabs();
+      vi.runAllTimers();
+
+      const raw = global.localStorage._store['pair-review:chat-tabs:1'];
+      expect(raw).toBeTruthy();
+      const parsed = JSON.parse(raw);
+      expect(parsed).toEqual({ version: 1, tabs: [200], activeSessionId: 200 });
+    });
+
+    it('skips tabs without a sessionId when writing', () => {
+      const saved = chatPanel._getActiveTab();
+      saved.sessionId = 300;
+      chatPanel.activeTabKey = 300;
+      // Append a second tab that has no sessionId yet.
+      const pending = chatPanel._createTab();
+      chatPanel._appendTab(pending, { focus: false });
+
+      chatPanel._persistOpenTabs();
+      vi.runAllTimers();
+
+      const parsed = JSON.parse(global.localStorage._store['pair-review:chat-tabs:1']);
+      expect(parsed.tabs).toEqual([300]);
+    });
+
+    it('removes the storage entry when no tabs with a sessionId remain', () => {
+      const tab = chatPanel._getActiveTab();
+      tab.sessionId = 400;
+      chatPanel.activeTabKey = 400;
+      chatPanel._persistOpenTabs();
+      vi.runAllTimers();
+      expect(global.localStorage._store['pair-review:chat-tabs:1']).toBeTruthy();
+
+      // Now drop the sessionId — should remove the entry on next persist.
+      tab.sessionId = null;
+      chatPanel._persistOpenTabs();
+      vi.runAllTimers();
+
+      expect(global.localStorage._store['pair-review:chat-tabs:1']).toBeUndefined();
+    });
+
+    it('debounces multiple rapid calls to a single write within 100ms', () => {
+      const tab = chatPanel._getActiveTab();
+      tab.sessionId = 500;
+      chatPanel.activeTabKey = 500;
+      global.localStorage.setItem.mockClear();
+
+      chatPanel._persistOpenTabs();
+      chatPanel._persistOpenTabs();
+      chatPanel._persistOpenTabs();
+      // Before the 100ms timer fires no write has happened.
+      expect(global.localStorage.setItem).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(100);
+
+      // Exactly one write went through after the debounce window.
+      expect(global.localStorage.setItem).toHaveBeenCalledTimes(1);
+    });
+
+    it('soft-fails when localStorage.setItem throws', () => {
+      const tab = chatPanel._getActiveTab();
+      tab.sessionId = 600;
+      chatPanel.activeTabKey = 600;
+      global.localStorage.setItem.mockImplementationOnce(() => { throw new Error('quota exceeded'); });
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      chatPanel._persistOpenTabs();
+      expect(() => vi.runAllTimers()).not.toThrow();
+
+      expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+  });
+
+  describe('multi-tab: restore from localStorage', () => {
+    beforeEach(() => {
+      // Install fake timers BEFORE _restoreTabs schedules its debounced
+      // _persistOpenTabs setTimeout. Installing after-the-fact is a no-op
+      // because the global setTimeout mock fires synchronously.
+      vi.useFakeTimers();
+      chatPanel.reviewId = 7;
+      // Start from a clean state so _restoreTabs gets to do work.
+      clearActiveTab(chatPanel);
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    function mockSessionsResponse(sessions) {
+      global.fetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ data: { sessions } }),
+      });
+    }
+
+    it('restores saved tabs and focuses the saved activeSessionId', async () => {
+      mockSessionsResponse([
+        { id: 123, provider: 'pi', model: null, message_count: 0, first_message: null },
+        { id: 124, provider: 'pi', model: null, message_count: 0, first_message: 'hello' },
+      ]);
+
+      const ok = await chatPanel._restoreTabs({ version: 1, tabs: [123, 124], activeSessionId: 124 });
+
+      expect(ok).toBe(true);
+      expect(chatPanel.tabs).toHaveLength(2);
+      const sids = chatPanel.tabs.map(t => t.sessionId);
+      expect(sids).toEqual([123, 124]);
+      expect(chatPanel.activeTabKey).toBe(124);
+    });
+
+    it('drops stale sessionIds and rewrites localStorage without them', async () => {
+      // Sessions list only knows about 124 — 99999 is stale.
+      mockSessionsResponse([
+        { id: 124, provider: 'pi', model: null, message_count: 0, first_message: null },
+      ]);
+
+      const ok = await chatPanel._restoreTabs({ version: 1, tabs: [99999, 124], activeSessionId: 124 });
+      // Flush the debounced persistence write that _restoreTabs scheduled.
+      vi.advanceTimersByTime(150);
+
+      expect(ok).toBe(true);
+      const sids = chatPanel.tabs.map(t => t.sessionId);
+      expect(sids).toEqual([124]);
+      // Persisted list no longer contains the stale id.
+      const raw = global.localStorage._store['pair-review:chat-tabs:7'];
+      expect(raw).toBeTruthy();
+      const parsed = JSON.parse(raw);
+      expect(parsed.tabs).toEqual([124]);
+    });
+
+    it('does not auto-resume restored tabs (no /resume fetch on restore)', async () => {
+      mockSessionsResponse([
+        { id: 200, provider: 'pi', model: null, message_count: 0, first_message: null },
+      ]);
+
+      await chatPanel._restoreTabs({ version: 1, tabs: [200], activeSessionId: 200 });
+
+      // Inspect all fetch calls; the only one expected is /api/review/.../chat/sessions.
+      const urls = global.fetch.mock.calls.map(c => c[0]);
+      expect(urls.some(u => typeof u === 'string' && u.includes('/resume'))).toBe(false);
+      // Restored tabs start in 'pending' until their message history loads
+      // and the first message is observed. The fixture session has
+      // message_count: 0, so it remains pending throughout.
+      for (const tab of chatPanel.tabs) {
+        expect(tab.status).toBe('pending');
+      }
+    });
+
+    it('falls back to MRU when every saved sessionId is stale', async () => {
+      // The sessions list does not include any of the saved ids.
+      mockSessionsResponse([]);
+
+      const ok = await chatPanel._restoreTabs({ version: 1, tabs: [9999], activeSessionId: 9999 });
+
+      expect(ok).toBe(false);
+      // Caller is responsible for invoking MRU fall-back when this returns false.
+    });
+  });
+
+  describe('multi-tab: history dropdown open-tag and click routing', () => {
+    beforeEach(() => {
+      // Make the session dropdown a queryable mock for handler binding.
+      chatPanel.sessionDropdown = createMockElement('div');
+      // querySelectorAll returns the bound items so we can fire their click handlers.
+      chatPanel.sessionDropdown._items = [];
+      chatPanel.sessionDropdown.querySelectorAll = vi.fn((sel) => {
+        if (sel === '.chat-panel__session-item') return chatPanel.sessionDropdown._items;
+        return [];
+      });
+    });
+
+    it('marks rows for open sessions with the --open class', () => {
+      const tab = chatPanel._getActiveTab();
+      tab.sessionId = 124;
+      chatPanel.activeTabKey = 124;
+
+      // Add a second open tab for session 200 so it appears as open-elsewhere.
+      const other = chatPanel._createTab({ sessionId: 200 });
+      chatPanel._appendTab(other, { focus: false });
+
+      const sessions = [
+        { id: 124, provider: 'pi', updated_at: new Date().toISOString(), first_message: 'a' },
+        { id: 200, provider: 'pi', updated_at: new Date().toISOString(), first_message: 'b' },
+        { id: 999, provider: 'pi', updated_at: new Date().toISOString(), first_message: 'c' },
+      ];
+
+      chatPanel._renderSessionDropdown(sessions);
+
+      const html = chatPanel.sessionDropdown.innerHTML;
+      // Both 124 and 200 are open; 999 is not.
+      expect(html).toContain('chat-panel__session-item--active');
+      expect(html).toContain('chat-panel__session-item--open');
+      // The "open" tag is rendered for both currently-open sessions.
+      const openTagOccurrences = (html.match(/chat-panel__session-open-tag/g) || []).length;
+      expect(openTagOccurrences).toBe(2);
+    });
+
+    it('clicking an open session row focuses the existing tab via _switchToTab', () => {
+      const tab1 = chatPanel._getActiveTab();
+      tab1.sessionId = 100;
+      chatPanel.activeTabKey = 100;
+      const tab2 = chatPanel._createTab({ sessionId: 200 });
+      chatPanel._appendTab(tab2, { focus: false });
+
+      const sessions = [
+        { id: 100, provider: 'pi', updated_at: new Date().toISOString(), first_message: 'a' },
+        { id: 200, provider: 'pi', updated_at: new Date().toISOString(), first_message: 'b' },
+      ];
+
+      const switchToTabSpy = vi.spyOn(chatPanel, '_switchToTab');
+      const switchToSessionSpy = vi.spyOn(chatPanel, '_switchToSession');
+
+      // Capture the click handler the production code binds to each item.
+      const bound = [];
+      chatPanel.sessionDropdown.querySelectorAll = vi.fn(() => bound);
+      const origAddEventListener = chatPanel.sessionDropdown.addEventListener;
+      // Each item element will have an addEventListener stub that records its handler.
+      const makeItem = (id) => {
+        const el = createMockElement('button');
+        el.dataset.sessionId = String(id);
+        el.addEventListener = vi.fn((_e, h) => { el._click = h; });
+        return el;
+      };
+      const item100 = makeItem(100);
+      const item200 = makeItem(200);
+      bound.push(item100, item200);
+
+      chatPanel._renderSessionDropdown(sessions);
+
+      // Invoke the click handler for the open-elsewhere row (200, the inactive open tab).
+      item200._click({ target: item200 });
+
+      expect(switchToTabSpy).toHaveBeenCalledWith(chatPanel._tabKey(tab2));
+      expect(switchToSessionSpy).not.toHaveBeenCalled();
+    });
+
+    it('clicking a closed-session row swaps the active tab via _switchToSession', () => {
+      const tab = chatPanel._getActiveTab();
+      tab.sessionId = 100;
+      chatPanel.activeTabKey = 100;
+
+      const sessions = [
+        { id: 100, provider: 'pi', updated_at: new Date().toISOString(), first_message: 'a' },
+        { id: 555, provider: 'pi', updated_at: new Date().toISOString(), first_message: 'closed' },
+      ];
+
+      vi.spyOn(chatPanel, '_switchToSession').mockResolvedValue(undefined);
+      const switchToTabSpy = vi.spyOn(chatPanel, '_switchToTab');
+
+      const bound = [];
+      chatPanel.sessionDropdown.querySelectorAll = vi.fn(() => bound);
+      const makeItem = (id) => {
+        const el = createMockElement('button');
+        el.dataset.sessionId = String(id);
+        el.addEventListener = vi.fn((_e, h) => { el._click = h; });
+        return el;
+      };
+      const item100 = makeItem(100);
+      const item555 = makeItem(555);
+      bound.push(item100, item555);
+
+      chatPanel._renderSessionDropdown(sessions);
+
+      // 555 is not open in any tab — should _switchToSession on the active tab.
+      item555._click({ target: item555 });
+
+      expect(chatPanel._switchToSession).toHaveBeenCalledWith(555, expect.objectContaining({ id: 555 }));
+      // _switchToTab was NOT called for the closed-session row.
+      expect(switchToTabSpy).not.toHaveBeenCalledWith(555);
+    });
+  });
+
+  describe('multi-tab: _loadMessageHistory race guard', () => {
+    it('renders into the captured tab even after the user switches away', async () => {
+      // Set up two tabs: A is active and we ask history for A; user switches to B mid-fetch.
+      const tabA = chatPanel._getActiveTab();
+      tabA.sessionId = 700;
+      chatPanel.activeTabKey = 700;
+
+      const tabB = chatPanel._createTab({ sessionId: 800 });
+      chatPanel._appendTab(tabB, { focus: false });
+
+      // Manually controllable fetch resolution.
+      let resolveFetch;
+      const fetchPromise = new Promise((r) => { resolveFetch = r; });
+      global.fetch.mockReturnValueOnce(fetchPromise);
+
+      const addSpyA = vi.fn();
+      // Spy on addMessage so we can verify the render target was tabA.
+      chatPanel.addMessage = vi.fn((role, content, id) => {
+        const target = chatPanel._getActiveTab();
+        addSpyA(target.sessionId, role, content, id);
+      });
+
+      const p = chatPanel._loadMessageHistory(700, tabA);
+
+      // While fetch is in flight, the user switches to tab B.
+      chatPanel._switchToTab(chatPanel._tabKey(tabB));
+
+      // Resolve the fetch.
+      resolveFetch({
+        ok: true,
+        json: () => Promise.resolve({
+          data: {
+            messages: [{ type: 'message', role: 'assistant', content: 'hello A', id: 1 }],
+          },
+        }),
+      });
+
+      await p;
+
+      // _renderInTab redirected the activeTabKey for the synchronous render block,
+      // so addMessage observed sessionId 700 (tab A) at write time.
+      expect(addSpyA).toHaveBeenCalledWith(700, 'assistant', 'hello A', 1);
+      // After the synchronous render, the visible focus snaps back to tab B.
+      expect(chatPanel.activeTabKey).toBe(chatPanel._tabKey(tabB));
+    });
+
+    it('silently skips when the target tab was closed before fetch resolved', async () => {
+      const tabA = chatPanel._getActiveTab();
+      tabA.sessionId = 900;
+      chatPanel.activeTabKey = 900;
+
+      let resolveFetch;
+      const fetchPromise = new Promise((r) => { resolveFetch = r; });
+      global.fetch.mockReturnValueOnce(fetchPromise);
+
+      const renderSpy = vi.spyOn(chatPanel, '_renderInTab');
+
+      const p = chatPanel._loadMessageHistory(900, tabA);
+
+      // Simulate the tab being closed: pull it out of this.tabs.
+      chatPanel.tabs = chatPanel.tabs.filter(t => t !== tabA);
+
+      resolveFetch({
+        ok: true,
+        json: () => Promise.resolve({
+          data: { messages: [{ type: 'message', role: 'assistant', content: 'lost', id: 1 }] },
+        }),
+      });
+
+      await expect(p).resolves.toBeUndefined();
+      // No render occurred because the tab was removed.
+      expect(renderSpy).not.toHaveBeenCalled();
+    });
+
+    it('silently skips when the target tab’s sessionId changed before fetch resolved', async () => {
+      const tabA = chatPanel._getActiveTab();
+      tabA.sessionId = 1000;
+      chatPanel.activeTabKey = 1000;
+
+      let resolveFetch;
+      const fetchPromise = new Promise((r) => { resolveFetch = r; });
+      global.fetch.mockReturnValueOnce(fetchPromise);
+
+      const renderSpy = vi.spyOn(chatPanel, '_renderInTab');
+
+      const p = chatPanel._loadMessageHistory(1000, tabA);
+
+      // History picker swap: the tab’s sessionId changed underneath us.
+      tabA.sessionId = 2000;
+
+      resolveFetch({
+        ok: true,
+        json: () => Promise.resolve({
+          data: { messages: [{ type: 'message', role: 'assistant', content: 'stale', id: 1 }] },
+        }),
+      });
+
+      await expect(p).resolves.toBeUndefined();
+      expect(renderSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // _openNewTab + multi-tab context-wiring + per-tab isolation invariants
+  //
+  // Mirrors the deleted _startNewConversation tests that exercised the
+  // single-tab reset behaviour. The new contract: opening a new tab leaves
+  // the previous tab untouched; pending context still wires up via the
+  // active-tab getter on the fresh tab.
+  // -----------------------------------------------------------------------
+  describe('multi-tab: _openNewTab + new-tab context wiring', () => {
+    beforeEach(() => {
+      chatPanel.reviewId = 1;
+      // Reset any leftover suggestion-querySelectorAll mock from prior tests.
+      // _openNewTab now calls _ensureAnalysisContext, which would otherwise
+      // see leaked suggestion elements and stamp sessionAnalysisRunId='dom'.
+      global.document.querySelectorAll = vi.fn(() => []);
+    });
+
+    it('starts the new tab with an empty messages array', async () => {
+      global.fetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ data: { id: 11, status: 'active' } }),
+      });
+      await chatPanel._openNewTab();
+      const newTab = chatPanel.tabs[chatPanel.tabs.length - 1];
+      expect(newTab.messages).toEqual([]);
+    });
+
+    it('resets streaming state on a new tab', async () => {
+      global.fetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ data: { id: 12, status: 'active' } }),
+      });
+      await chatPanel._openNewTab();
+      const newTab = chatPanel.tabs[chatPanel.tabs.length - 1];
+      expect(newTab.isStreaming).toBe(false);
+      expect(newTab.streamingContent).toBe('');
+      expect(newTab.streamingMsgEl).toBeNull();
+    });
+
+    it('does not carry pending context from the previous tab to the new tab', async () => {
+      const original = chatPanel._getActiveTab();
+      original.pendingContext = ['original ctx'];
+      original.pendingContextData = [{ type: 'comment' }];
+      global.fetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ data: { id: 13, status: 'active' } }),
+      });
+
+      await chatPanel._openNewTab();
+      const newTab = chatPanel.tabs[chatPanel.tabs.length - 1];
+      expect(newTab.pendingContext).toEqual([]);
+      expect(newTab.pendingContextData).toEqual([]);
+      // Original tab still owns its context.
+      expect(chatPanel.tabs[0].pendingContext).toEqual(['original ctx']);
+    });
+
+    it('resets contextSource / contextItemId on a new tab', async () => {
+      const original = chatPanel._getActiveTab();
+      original.contextSource = 'suggestion';
+      original.contextItemId = 42;
+      global.fetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ data: { id: 14, status: 'active' } }),
+      });
+
+      await chatPanel._openNewTab();
+      const newTab = chatPanel.tabs[chatPanel.tabs.length - 1];
+      expect(newTab.contextSource).toBeNull();
+      expect(newTab.contextItemId).toBeNull();
+    });
+
+    it('resets sessionAnalysisRunId on a new tab', async () => {
+      const original = chatPanel._getActiveTab();
+      original.sessionAnalysisRunId = 'run-456';
+      global.fetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ data: { id: 15, status: 'active' } }),
+      });
+
+      await chatPanel._openNewTab();
+      const newTab = chatPanel.tabs[chatPanel.tabs.length - 1];
+      expect(newTab.sessionAnalysisRunId).toBeNull();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Multi-tab WebSocket isolation — the regression these tests guard against
+  // is the original bug: WS events on tab A were rerouted to whatever was
+  // active by the time the await resolved.
+  // -----------------------------------------------------------------------
+  describe('multi-tab: WS event isolation across tabs', () => {
+    function makeTwoTabs() {
+      const tabA = chatPanel._getActiveTab();
+      tabA.sessionId = 100;
+      chatPanel.activeTabKey = 100;
+      const tabB = chatPanel._createTab({ sessionId: 200 });
+      chatPanel._appendTab(tabB, { focus: false });
+      return { tabA, tabB };
+    }
+
+    it('delta + complete on background tab A do not bleed into foreground tab B', () => {
+      const { tabA, tabB } = makeTwoTabs();
+      chatPanel.activeTabKey = 200; // B is foreground
+      chatPanel.isOpen = true;
+      const bMessagesBefore = tabB.messages.slice();
+      const bStreamBefore = tabB.streamingContent;
+
+      chatPanel._handleChatMessageForTab(tabA, { type: 'delta', text: 'hello', sessionId: 100 });
+      chatPanel._handleChatMessageForTab(tabA, { type: 'complete', messageId: 9, sessionId: 100 });
+
+      expect(tabA.messages).toContainEqual({ role: 'assistant', content: 'hello', id: 9 });
+      expect(tabA.isStreaming).toBe(false);
+      // Tab B untouched
+      expect(tabB.messages).toEqual(bMessagesBefore);
+      expect(tabB.streamingContent).toBe(bStreamBefore);
+      expect(tabB.isStreaming).toBe(false);
+    });
+
+    it('delta + complete on foreground tab A do not bleed into background tab B', () => {
+      const { tabA, tabB } = makeTwoTabs(); // A is foreground (activeTabKey=100)
+      chatPanel.isOpen = true;
+
+      chatPanel._handleChatMessageForTab(tabA, { type: 'delta', text: 'fg', sessionId: 100 });
+      chatPanel._handleChatMessageForTab(tabA, { type: 'complete', messageId: 7, sessionId: 100 });
+
+      expect(tabA.messages).toContainEqual({ role: 'assistant', content: 'fg', id: 7 });
+      expect(tabB.messages).toEqual([]);
+      expect(tabB.streamingContent).toBe('');
+      expect(tabB.isStreaming).toBe(false);
+    });
+
+    it('finalises tab A correctly when user switches to tab B mid-stream', () => {
+      const { tabA, tabB } = makeTwoTabs();
+      chatPanel.isOpen = true;
+
+      // Simulate a real send: addStreamingPlaceholder establishes streamingMsgEl
+      chatPanel._addStreamingPlaceholder(tabA);
+      expect(tabA.streamingMsgEl).not.toBeNull();
+
+      // Delta arrives while A is foreground
+      chatPanel._handleChatMessageForTab(tabA, { type: 'delta', text: 'partial', sessionId: 100 });
+
+      // User switches to tab B mid-stream
+      chatPanel._switchToTab(chatPanel._tabKey(tabB));
+
+      // Complete arrives for A in the background — must still finalise into A
+      chatPanel._handleChatMessageForTab(tabA, { type: 'complete', messageId: 11, sessionId: 100 });
+
+      expect(tabA.streamingMsgEl).toBeNull();
+      expect(tabA.messages).toContainEqual({ role: 'assistant', content: 'partial', id: 11 });
+      expect(tabA.isStreaming).toBe(false);
+      expect(tabB.messages).toEqual([]);
+    });
+
+    it('_recoverAfterReconnect finalises both tabs when both are streaming', async () => {
+      const { tabA, tabB } = makeTwoTabs();
+      tabA.isStreaming = true;
+      tabA.streamingContent = 'A partial';
+      tabB.isStreaming = true;
+      tabB.streamingContent = 'B partial';
+      chatPanel.isOpen = true;
+      chatPanel.activeTabKey = 100; // A foreground
+
+      global.fetch.mockImplementation((url) => {
+        if (url === '/api/chat/session/100/messages') {
+          return Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve({
+              data: { messages: [{ type: 'message', role: 'assistant', content: 'A full', id: 21 }] },
+            }),
+          });
+        }
+        if (url === '/api/chat/session/200/messages') {
+          return Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve({
+              data: { messages: [{ type: 'message', role: 'assistant', content: 'B full', id: 22 }] },
+            }),
+          });
+        }
+        return Promise.resolve({ ok: false });
+      });
+
+      await chatPanel._recoverAfterReconnect();
+
+      expect(tabA.isStreaming).toBe(false);
+      expect(tabB.isStreaming).toBe(false);
+      expect(tabA.messages).toContainEqual({ role: 'assistant', content: 'A full', id: 21 });
+      expect(tabB.messages).toContainEqual({ role: 'assistant', content: 'B full', id: 22 });
+      expect(tabB.streamingMsgEl).toBeNull();
+    });
+
+    it('status:working on a tab already streaming does not call _updateTabStatus again', () => {
+      const tab = chatPanel._getActiveTab();
+      tab.sessionId = 'sid-1';
+      chatPanel.activeTabKey = 'sid-1';
+      chatPanel.isOpen = false;
+      tab.isStreaming = true;
+      tab.errorMessage = 'prior';
+      const spy = vi.spyOn(chatPanel, '_updateTabStatus');
+
+      chatPanel._handleChatMessageForTab(tab, { type: 'status', status: 'working', sessionId: 'sid-1' });
+
+      // _markStreaming short-circuits when isStreaming is already true
+      expect(spy).not.toHaveBeenCalled();
+      // errorMessage preserved
+      expect(tab.errorMessage).toBe('prior');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Tab status: 'pending' for fresh tabs (gray dot until first message)
+  // -----------------------------------------------------------------------
+  describe('tab status: pending → idle gating on first message', () => {
+    it('newly created tabs start in the "pending" status', () => {
+      const tab = chatPanel._createTab({});
+      expect(tab.status).toBe('pending');
+    });
+
+    it('_updateTabStatus(tab, "idle") on an empty tab demotes to "pending"', () => {
+      const tab = chatPanel._createTab({});
+      tab.messages = [];
+      chatPanel._updateTabStatus(tab, 'idle');
+      expect(tab.status).toBe('pending');
+    });
+
+    it('_updateTabStatus(tab, "idle") on a tab with messages stays "idle"', () => {
+      const tab = chatPanel._createTab({});
+      tab.messages = [{ role: 'user', content: 'hi' }];
+      chatPanel._updateTabStatus(tab, 'idle');
+      expect(tab.status).toBe('idle');
+    });
+
+    it('_updateTabStatus(tab, "streaming") always wins, even on empty tab', () => {
+      const tab = chatPanel._createTab({});
+      tab.messages = [];
+      chatPanel._updateTabStatus(tab, 'streaming');
+      expect(tab.status).toBe('streaming');
+    });
+
+    it('_updateTabStatus(tab, "error") always wins, even on empty tab', () => {
+      const tab = chatPanel._createTab({});
+      tab.messages = [];
+      chatPanel._updateTabStatus(tab, 'error');
+      expect(tab.status).toBe('error');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // queueDiffStateNotification + queueUserActionHint — semantic split.
+  //
+  // Diff state is a snapshot (one value per tab, overwriting writes); hints
+  // are an ordered log scoped to the active tab.
+  // -----------------------------------------------------------------------
+  describe('multi-tab: diff state + user action hint semantics', () => {
+    it('queueDiffStateNotification writes the same latest value into every tab', () => {
+      const tabA = chatPanel._getActiveTab();
+      tabA.sessionId = 1;
+      chatPanel.activeTabKey = 1;
+      const tabB = chatPanel._createTab({ sessionId: 2 });
+      chatPanel._appendTab(tabB, { focus: false });
+
+      chatPanel.queueDiffStateNotification('diff v1');
+
+      expect(tabA.latestDiffState).toBe('diff v1');
+      expect(tabB.latestDiffState).toBe('diff v1');
+    });
+
+    it('a second queueDiffStateNotification overwrites the first on every tab', () => {
+      const tabA = chatPanel._getActiveTab();
+      tabA.sessionId = 1;
+      const tabB = chatPanel._createTab({ sessionId: 2 });
+      chatPanel._appendTab(tabB, { focus: false });
+
+      chatPanel.queueDiffStateNotification('diff v1');
+      chatPanel.queueDiffStateNotification('diff v2');
+
+      expect(tabA.latestDiffState).toBe('diff v2');
+      expect(tabB.latestDiffState).toBe('diff v2');
+    });
+
+    it('queueUserActionHint appends only to the active tab', () => {
+      const tabA = chatPanel._getActiveTab();
+      tabA.sessionId = 1;
+      chatPanel.activeTabKey = 1;
+      const tabB = chatPanel._createTab({ sessionId: 2 });
+      chatPanel._appendTab(tabB, { focus: false });
+      chatPanel.activeTabKey = 1; // Force A to remain active
+
+      chatPanel.queueUserActionHint('[hint]');
+
+      expect(tabA.pendingUserActionHints).toEqual(['[hint]']);
+      expect(tabB.pendingUserActionHints).toEqual([]);
+    });
+
+    it('queueUserActionHint is a silent no-op when there is no active tab', () => {
+      clearActiveTab(chatPanel);
+      expect(() => chatPanel.queueUserActionHint('[hint]')).not.toThrow();
+      // No tabs were created.
+      expect(chatPanel.tabs).toEqual([]);
+    });
+
+    it('sendMessage drains diff state and hints from tab A only', async () => {
+      const tabA = chatPanel._getActiveTab();
+      tabA.sessionId = 1;
+      chatPanel.activeTabKey = 1;
+      const tabB = chatPanel._createTab({ sessionId: 2 });
+      chatPanel._appendTab(tabB, { focus: false });
+      chatPanel.activeTabKey = 1; // A active
+
+      chatPanel.queueDiffStateNotification('diff snapshot');
+      chatPanel.queueUserActionHint('[hint]');
+
+      chatPanel.inputEl.value = 'hello';
+      global.fetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({}) });
+
+      await chatPanel.sendMessage();
+
+      // Tab A drained
+      expect(tabA.latestDiffState).toBeNull();
+      expect(tabA.pendingUserActionHints).toEqual([]);
+      // Tab B's diff state is still the latest snapshot (not drained by A's send)
+      expect(tabB.latestDiffState).toBe('diff snapshot');
+
+      // Wire-level check: the drained values must actually appear in the POST
+      // body, otherwise the agent never sees them.
+      const sendBody = JSON.parse(global.fetch.mock.calls[0][1].body);
+      expect(sendBody.context).toContain('diff snapshot');
+      expect(sendBody.context).toContain('[hint]');
+    });
+
+    it('queueDiffStateNotification keeps _initialDiffState fresh even when tabs exist', () => {
+      // Without this invariant, a tab opened mid-stream would inherit an
+      // outdated snapshot. The update-alongside design always overwrites
+      // _initialDiffState so the next tab opened sees the latest.
+      const tabA = chatPanel._getActiveTab();
+      tabA.sessionId = 1;
+      chatPanel.queueDiffStateNotification('v1');
+      chatPanel.queueDiffStateNotification('v2');
+      expect(chatPanel._initialDiffState).toBe('v2');
+      // A tab opened now sees v2, not v1.
+      const fresh = chatPanel._createTab({});
+      expect(fresh.latestDiffState).toBe('v2');
+    });
+
+    it('integration: delta+complete on a freshly-sent tab updates the tab DOM and tab strip dot', async () => {
+      // Open a new tab, lazily POST via sendMessage, then drive WS deltas
+      // through _handleChatMessageForTab and verify the per-tab messagesEl
+      // contains the assistant content and the strip dot returned to idle.
+      chatPanel.reviewId = 1;
+      clearActiveTab(chatPanel);
+
+      // _openNewTab no longer POSTs — just creates a tab with sessionId=null
+      await chatPanel._openNewTab();
+      const tab = chatPanel.tabs[chatPanel.tabs.length - 1];
+      expect(tab.sessionId).toBeNull();
+
+      // Fire sendMessage; the lazy-create path POSTs and the second fetch is
+      // the message send. Mock both.
+      chatPanel.inputEl.value = 'hi there';
+      global.fetch
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ data: { id: 777, status: 'active' } }) })
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({}) });
+
+      await chatPanel.sendMessage();
+
+      expect(tab.sessionId).toBe(777);
+      // Drive a streaming delta and complete event into the captured tab.
+      chatPanel.isOpen = true;
+      chatPanel.activeTabKey = tab.sessionId;
+      chatPanel._handleChatMessageForTab(tab, { type: 'delta', text: 'hello world', sessionId: 777 });
+      chatPanel._handleChatMessageForTab(tab, { type: 'complete', messageId: 42, sessionId: 777 });
+
+      // Tab now has the assistant message and idled out.
+      expect(tab.messages).toContainEqual({ role: 'assistant', content: 'hello world', id: 42 });
+      expect(tab.isStreaming).toBe(false);
+      expect(tab.status).toBe('idle');
+    });
+
+    it('queueDiffStateNotification stashes _initialDiffState when no tabs are open', () => {
+      clearActiveTab(chatPanel);
+      chatPanel.queueDiffStateNotification('pre-tab diff');
+      expect(chatPanel._initialDiffState).toBe('pre-tab diff');
+      // Next tab inherits the stashed value.
+      const tab = chatPanel._createTab({ sessionId: 50 });
+      expect(tab.latestDiffState).toBe('pre-tab diff');
     });
   });
 });
