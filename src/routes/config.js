@@ -36,6 +36,32 @@ const router = express.Router();
 let pendingUpdateVersion = null;
 
 /**
+ * Runtime configuration script
+ *
+ * Returns a tiny JS file that sets `window.PAIR_REVIEW_RUNTIME_CONFIG`
+ * synchronously, plus an `external-comments-disabled` class on
+ * `documentElement` when the feature is off. Loaded via a `<script>` tag
+ * BEFORE the main app JS so components like AIPanel can check the flag
+ * at construction time (avoids FOUC of UI elements that should be hidden).
+ *
+ * No-store so each page load reflects current config without restart.
+ */
+router.get('/runtime-config.js', (req, res) => {
+  const config = req.app.get('config') || {};
+  const externalCommentsEnabled = config.external_comments !== false;
+  const runtimeConfig = { external_comments_enabled: externalCommentsEnabled };
+  const body = [
+    `window.PAIR_REVIEW_RUNTIME_CONFIG = ${JSON.stringify(runtimeConfig)};`,
+    `if (!window.PAIR_REVIEW_RUNTIME_CONFIG.external_comments_enabled) {`,
+    `  document.documentElement.classList.add('external-comments-disabled');`,
+    `}`,
+  ].join('\n');
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.send(body);
+});
+
+/**
  * Get user configuration (for frontend use)
  * Returns safe-to-expose configuration values
  */
@@ -65,6 +91,7 @@ router.get('/api/config', (req, res) => {
     pi_available: getCachedAvailability('pi')?.available || false,
     assisted_by_url: config.assisted_by_url || 'https://github.com/in-the-loop-labs/pair-review',
     enable_graphite: config.enable_graphite === true,
+    external_comments: config.external_comments !== false,
     chat_spinner: config.chat_spinner || 'dots',
     // Share configuration for external review viewers.
     // - url: The base URL of the external share site

@@ -54,9 +54,17 @@ class AIPanel {
         this.bindEvents();
         this.setupKeyboardNavigation();
         this.setupSegmentOverflow();
-        // Hide the External segment in Local mode — no external source exists there.
-        if (typeof window !== 'undefined' && window.PAIR_REVIEW_LOCAL_MODE) {
-            this.segmentExternalBtn?.setAttribute('hidden', '');
+        // Hide the External segment when:
+        //   1. Local mode — no external source exists for local reviews.
+        //   2. The `external_comments` feature toggle is off in config.
+        // Both are synchronous flags (set before this constructor runs) so
+        // the segment never flashes into view when it shouldn't.
+        if (typeof window !== 'undefined') {
+            const localMode = window.PAIR_REVIEW_LOCAL_MODE;
+            const externalDisabled = window.PAIR_REVIEW_RUNTIME_CONFIG?.external_comments_enabled === false;
+            if (localMode || externalDisabled) {
+                this.segmentExternalBtn?.setAttribute('hidden', '');
+            }
         }
         // Don't restore segment on init - wait for setPR() call
 
