@@ -652,6 +652,11 @@
         window.PAIR_REVIEW_LOCAL_MODE = true;
     </script>
 
+    <!-- Runtime configuration: sets window.PAIR_REVIEW_RUNTIME_CONFIG and
+         the `external-comments-disabled` class on documentElement before
+         pr.js / AIPanel initialise. Must load BEFORE pr.js. -->
+    <script src="/runtime-config.js"></script>
+
     <!-- PR JavaScript (shared with local mode) -->
     <script src="/js/pr.js"></script>
 

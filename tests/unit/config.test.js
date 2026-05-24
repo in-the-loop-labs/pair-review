@@ -1304,6 +1304,29 @@ describe('config.js', () => {
       expect(config.monorepos).toBeUndefined();
     });
 
+    // --- external_comments feature toggle (opt-in, defaults to false) ---
+
+    it('defaults external_comments to false when nothing sets it', async () => {
+      mockReadFile({ global: { port: 7247 } });
+      const { config } = await loadConfig();
+      expect(config.external_comments).toBe(false);
+    });
+
+    it('respects global config opting into external_comments', async () => {
+      mockReadFile({ global: { external_comments: true } });
+      const { config } = await loadConfig();
+      expect(config.external_comments).toBe(true);
+    });
+
+    it('lets project config override global external_comments either way', async () => {
+      mockReadFile({
+        global: { external_comments: true },
+        project: { external_comments: false },
+      });
+      const { config } = await loadConfig();
+      expect(config.external_comments).toBe(false);
+    });
+
     it('should collapse case-differing monorepos and repos keys with repos taking precedence', async () => {
       mockReadFile({
         global: {

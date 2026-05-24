@@ -237,6 +237,15 @@ On first run, pair-review creates `~/.pair-review/config.example.json` with comp
 
 For advanced configuration with custom providers and models, see [AI Provider Configuration](#ai-provider-configuration) below.
 
+#### Feature toggles
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `external_comments` | `false` | Opt-in: set to `true` to fetch and display GitHub PR review comments inline. Enables the **External** segment, the refresh button, and `/api/reviews/*/external-comments*` routes. |
+| `enable_chat` | `true` | Enables the chat panel feature (uses `chat_provider`). |
+| `enable_graphite` | `false` | Show Graphite links alongside GitHub links. |
+| `skip_update_notifier` | `false` | Suppress the "update available" notification on exit. |
+
 ### Configuration Files
 
 pair-review loads configuration from multiple files, merged in order of increasing precedence:

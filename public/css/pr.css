@@ -4969,6 +4969,15 @@ tr.line-range-start .d2h-code-line-ctn {
   color: var(--color-danger, #d1242f);
 }
 
+/* Feature toggle: when `external_comments` is false in config, the
+   /runtime-config.js script adds `external-comments-disabled` to
+   documentElement before AIPanel/pr.js construct. Any element marked
+   `.external-comments-only` is hidden synchronously so the user never sees
+   external-related controls flicker into view. */
+:root.external-comments-disabled .external-comments-only {
+  display: none !important;
+}
+
 /* ========================================
    Dismissed User Comment Styling
    Visual state for soft-deleted comments when "show dismissed" is enabled

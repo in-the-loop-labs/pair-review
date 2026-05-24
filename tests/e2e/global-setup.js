@@ -713,8 +713,12 @@ async function globalSetup() {
       // Success — store the chosen port so Playwright tests can find it
       process.env.E2E_PORT = port.toString();
       process.env.E2E_SERVER_PID = process.pid.toString();
-      // Update the stored config to reflect the actual port
-      app.set('config', { github_token: 'test-token-e2e', port, theme: 'light', model: 'sonnet' });
+      // Update the stored config to reflect the actual port.
+      // external_comments is opt-in (production default is false) but the
+      // e2e specs assume the feature is enabled — explicitly opt in here so
+      // /runtime-config.js emits the enabled flag and the External segment +
+      // refresh button render for the assertions in external-comments.spec.js.
+      app.set('config', { github_token: 'test-token-e2e', port, theme: 'light', model: 'sonnet', external_comments: true });
       console.log(`E2E test server running on http://localhost:${port}`);
       return;
     } catch (err) {
