@@ -441,4 +441,324 @@ describe('TourRenderer', () => {
       }
     });
   });
+
+  // ----------------------------------------------------------------------
+  // prepareStop — the async "ensure mountable" step the navigator awaits
+  // before mountStop. Two concerns: (1) unfold folded gaps so anchor rows
+  // exist (ensureLinesVisible), and (2) auto-add files that aren't in the
+  // PR diff at all (ensureContextFile). Both routed through PRManager so
+  // the tour doesn't reimplement file-fetch / DB plumbing.
+  // ----------------------------------------------------------------------
+  describe('prepareStop', () => {
+    it('returns false when prManager is missing', async () => {
+      buildDiff();
+      const r = new TourRenderer(null);
+      r.setStops([makeStop({ line_start: 11 })]);
+      expect(await r.prepareStop(0)).toBe(false);
+    });
+
+    it('returns false when the stop index is out of range', async () => {
+      const pm = { ensureLinesVisible: vi.fn().mockResolvedValue() };
+      const r = new TourRenderer(pm);
+      r.setStops([]);
+      expect(await r.prepareStop(0)).toBe(false);
+      expect(pm.ensureLinesVisible).not.toHaveBeenCalled();
+    });
+
+    it('returns false when file_path or line_start is missing', async () => {
+      const pm = { ensureLinesVisible: vi.fn().mockResolvedValue() };
+      const r = new TourRenderer(pm);
+      r.setStops([{ side: 'RIGHT', line_start: 11 }]); // no file_path
+      expect(await r.prepareStop(0)).toBe(false);
+      r.setStops([{ file_path: 'src/foo.js', side: 'RIGHT' }]); // no line_start
+      expect(await r.prepareStop(0)).toBe(false);
+      expect(pm.ensureLinesVisible).not.toHaveBeenCalled();
+    });
+
+    it('calls ensureLinesVisible to unfold a gap covering the stop range', async () => {
+      buildDiff();
+      const pm = {
+        ensureLinesVisible: vi.fn().mockResolvedValue(),
+      };
+      const r = new TourRenderer(pm);
+      r.setStops([makeStop({ file_path: 'src/foo.js', line_start: 11, line_end: 14, side: 'RIGHT' })]);
+      await r.prepareStop(0);
+      expect(pm.ensureLinesVisible).toHaveBeenCalledWith([
+        { file: 'src/foo.js', line_start: 11, line_end: 14, side: 'RIGHT' },
+      ]);
+    });
+
+    it('does NOT call ensureContextFile when the file wrapper is already present', async () => {
+      buildDiff('src/foo.js');
+      const pm = {
+        ensureContextFile: vi.fn().mockResolvedValue({ type: 'context', contextFile: { id: 99 } }),
+        ensureLinesVisible: vi.fn().mockResolvedValue(),
+        contextFiles: [],
+      };
+      const r = new TourRenderer(pm);
+      r.setStops([makeStop({ file_path: 'src/foo.js', line_start: 11 })]);
+      await r.prepareStop(0);
+      expect(pm.ensureContextFile).not.toHaveBeenCalled();
+    });
+
+    it('calls ensureContextFile when the file wrapper is missing', async () => {
+      buildDiff('src/other.js'); // wrapper present for a DIFFERENT file
+      const pm = {
+        ensureContextFile: vi.fn().mockResolvedValue({
+          type: 'context',
+          contextFile: { id: 42, file: 'src/missing.js', line_start: 11, line_end: 11 },
+        }),
+        ensureLinesVisible: vi.fn().mockResolvedValue(),
+        contextFiles: [], // file is NOT a pre-existing context file
+      };
+      const r = new TourRenderer(pm);
+      r.setStops([makeStop({ file_path: 'src/missing.js', line_start: 11, line_end: 11 })]);
+      await r.prepareStop(0);
+      expect(pm.ensureContextFile).toHaveBeenCalledWith('src/missing.js', 11, 11);
+    });
+
+    it('tracks the auto-added context-file id for tour-exit cleanup', async () => {
+      buildDiff('src/other.js');
+      const pm = {
+        ensureContextFile: vi.fn().mockResolvedValue({
+          type: 'context',
+          contextFile: { id: 42, file: 'src/missing.js' },
+        }),
+        ensureLinesVisible: vi.fn().mockResolvedValue(),
+        contextFiles: [],
+      };
+      const r = new TourRenderer(pm);
+      r.setStops([makeStop({ file_path: 'src/missing.js', line_start: 11 })]);
+      await r.prepareStop(0);
+      expect(r._autoAddedContextFileIds.has(42)).toBe(true);
+    });
+
+    it('does NOT track ids of context files that were already user-added', async () => {
+      buildDiff('src/other.js');
+      const pm = {
+        ensureContextFile: vi.fn().mockResolvedValue({
+          type: 'context',
+          contextFile: { id: 99, file: 'src/already.js' },
+          expanded: true,
+        }),
+        ensureLinesVisible: vi.fn().mockResolvedValue(),
+        // User had already added this file as a context file before the
+        // tour started; the tour's PATCH-to-expand-range should NOT cause
+        // the file to be removed on exit.
+        contextFiles: [{ id: 99, file: 'src/already.js', line_start: 1, line_end: 5 }],
+      };
+      const r = new TourRenderer(pm);
+      r.setStops([makeStop({ file_path: 'src/already.js', line_start: 11 })]);
+      await r.prepareStop(0);
+      expect(r._autoAddedContextFileIds.has(99)).toBe(false);
+    });
+
+    it('swallows ensureContextFile errors and still attempts ensureLinesVisible', async () => {
+      buildDiff('src/other.js');
+      const pm = {
+        ensureContextFile: vi.fn().mockRejectedValue(new Error('network')),
+        ensureLinesVisible: vi.fn().mockResolvedValue(),
+        contextFiles: [],
+      };
+      const r = new TourRenderer(pm);
+      r.setStops([makeStop({ file_path: 'src/missing.js', line_start: 11 })]);
+      const result = await r.prepareStop(0);
+      expect(result).toBe(true);
+      expect(pm.ensureLinesVisible).toHaveBeenCalled();
+    });
+
+    it('swallows ensureLinesVisible errors so mountStop still gets a chance', async () => {
+      buildDiff();
+      const pm = {
+        ensureLinesVisible: vi.fn().mockRejectedValue(new Error('boom')),
+      };
+      const r = new TourRenderer(pm);
+      r.setStops([makeStop({ line_start: 11 })]);
+      expect(await r.prepareStop(0)).toBe(true);
+    });
+
+    it('defaults line_end to line_start when missing', async () => {
+      buildDiff();
+      const pm = { ensureLinesVisible: vi.fn().mockResolvedValue() };
+      const r = new TourRenderer(pm);
+      r.setStops([{ file_path: 'src/foo.js', side: 'RIGHT', line_start: 11 }]);
+      await r.prepareStop(0);
+      expect(pm.ensureLinesVisible).toHaveBeenCalledWith([
+        { file: 'src/foo.js', line_start: 11, line_end: 11, side: 'RIGHT' },
+      ]);
+    });
+
+    // --------------------------------------------------------------------
+    // Regression: prepareStop must be staleness-aware against `_tourGen`.
+    // The old code unconditionally tracked the auto-added id AFTER the
+    // ensureContextFile await — but unmountAll runs synchronously on
+    // exit and snapshots `_autoAddedContextFileIds` at that moment.
+    // An add after the snapshot would orphan the context file forever.
+    // --------------------------------------------------------------------
+    it('rolls back the auto-added context file when the tour exits during the POST', async () => {
+      buildDiff('src/other.js'); // wrapper missing for src/missing.js
+      let resolvePost;
+      const ensureCalls = [];
+      const pm = {
+        _tourGen: 1,
+        contextFiles: [],
+        ensureContextFile: vi.fn((file, ls, le) => {
+          ensureCalls.push({ file, ls, le });
+          return new Promise((res) => {
+            resolvePost = () => res({
+              type: 'context',
+              contextFile: { id: 77, file, line_start: ls, line_end: le },
+            });
+          });
+        }),
+        ensureLinesVisible: vi.fn().mockResolvedValue(),
+        removeContextFile: vi.fn().mockResolvedValue(),
+      };
+      const r = new TourRenderer(pm);
+      r.setStops([makeStop({ file_path: 'src/missing.js', line_start: 11 })]);
+
+      // Start prepareStop — it parks on the ensureContextFile POST.
+      const prep = r.prepareStop(0);
+
+      // Tour exits while POST is in flight: unmountAll snapshots an empty
+      // `_autoAddedContextFileIds`, then `_tourGen` bumps.
+      r.unmountAll();
+      pm._tourGen += 1;
+
+      // POST resolves; prepareStop's continuation runs on a stale tour.
+      resolvePost();
+      const result = await prep;
+
+      expect(result).toBe(false);
+      // The just-created id MUST be rolled back directly — unmountAll
+      // already ran with an empty snapshot and won't see it.
+      expect(pm.removeContextFile).toHaveBeenCalledWith(77);
+      // And it must NOT have been added to the tracking set after the
+      // staleness check.
+      expect(r._autoAddedContextFileIds.has(77)).toBe(false);
+      // And ensureLinesVisible MUST be skipped — no UI churn for a
+      // dead tour.
+      expect(pm.ensureLinesVisible).not.toHaveBeenCalled();
+    });
+
+    it('skips ensureLinesVisible after a stale exit on the wasAlreadyContext path', async () => {
+      // wasAlreadyContext=true → ensureContextFile resolves but the
+      // tracking branch is skipped (no id-add, no rollback). The SECOND
+      // isStale gate (before ensureLinesVisible) is the only thing that
+      // can catch a mid-await exit on this path.
+      buildDiff('src/other.js'); // wrapper missing for src/already.js
+      let resolvePost;
+      const pm = {
+        _tourGen: 1,
+        contextFiles: [{ id: 99, file: 'src/already.js', line_start: 1, line_end: 5 }],
+        ensureContextFile: vi.fn(() => new Promise((res) => {
+          resolvePost = () => res({
+            type: 'context',
+            contextFile: { id: 99, file: 'src/already.js' },
+          });
+        })),
+        ensureLinesVisible: vi.fn().mockResolvedValue(),
+        removeContextFile: vi.fn().mockResolvedValue(),
+      };
+      const r = new TourRenderer(pm);
+      r.setStops([makeStop({ file_path: 'src/already.js', line_start: 11 })]);
+
+      const prep = r.prepareStop(0);
+      // Resolve the POST; bump gen BEFORE the await continuation runs.
+      resolvePost();
+      pm._tourGen += 1;
+      const result = await prep;
+
+      expect(result).toBe(false);
+      // User-owned context file — must NOT be removed.
+      expect(pm.removeContextFile).not.toHaveBeenCalled();
+      // And no gap-unfold churn on a dead tour.
+      expect(pm.ensureLinesVisible).not.toHaveBeenCalled();
+    });
+  });
+
+  // ----------------------------------------------------------------------
+  // unmountAll cleanup — the tour-exit hook must DELETE any context files
+  // it auto-added so the user's persistent context-files list isn't
+  // polluted with transient tour state.
+  // ----------------------------------------------------------------------
+  describe('unmountAll auto-added context-file cleanup', () => {
+    it('calls removeContextFile for every auto-added id', async () => {
+      buildDiff('src/other.js');
+      const pm = {
+        ensureContextFile: vi.fn()
+          .mockResolvedValueOnce({ type: 'context', contextFile: { id: 10, file: 'a.js' } })
+          .mockResolvedValueOnce({ type: 'context', contextFile: { id: 11, file: 'b.js' } }),
+        ensureLinesVisible: vi.fn().mockResolvedValue(),
+        removeContextFile: vi.fn().mockResolvedValue(),
+        contextFiles: [],
+      };
+      const r = new TourRenderer(pm);
+      r.setStops([
+        makeStop({ file_path: 'a.js', line_start: 5 }),
+        makeStop({ file_path: 'b.js', line_start: 6 }),
+      ]);
+      await r.prepareStop(0);
+      await r.prepareStop(1);
+      r.unmountAll();
+      expect(pm.removeContextFile).toHaveBeenCalledTimes(2);
+      expect(pm.removeContextFile).toHaveBeenCalledWith(10);
+      expect(pm.removeContextFile).toHaveBeenCalledWith(11);
+    });
+
+    it('clears _autoAddedContextFileIds after cleanup', async () => {
+      buildDiff('src/other.js');
+      const pm = {
+        ensureContextFile: vi.fn().mockResolvedValue({
+          type: 'context',
+          contextFile: { id: 42, file: 'a.js' },
+        }),
+        ensureLinesVisible: vi.fn().mockResolvedValue(),
+        removeContextFile: vi.fn().mockResolvedValue(),
+        contextFiles: [],
+      };
+      const r = new TourRenderer(pm);
+      r.setStops([makeStop({ file_path: 'a.js', line_start: 5 })]);
+      await r.prepareStop(0);
+      expect(r._autoAddedContextFileIds.size).toBe(1);
+      r.unmountAll();
+      expect(r._autoAddedContextFileIds.size).toBe(0);
+    });
+
+    it('survives a rejected removeContextFile promise without throwing', async () => {
+      buildDiff('src/other.js');
+      const pm = {
+        ensureContextFile: vi.fn().mockResolvedValue({
+          type: 'context',
+          contextFile: { id: 42, file: 'a.js' },
+        }),
+        ensureLinesVisible: vi.fn().mockResolvedValue(),
+        removeContextFile: vi.fn().mockRejectedValue(new Error('boom')),
+        contextFiles: [],
+      };
+      const r = new TourRenderer(pm);
+      r.setStops([makeStop({ file_path: 'a.js', line_start: 5 })]);
+      await r.prepareStop(0);
+      expect(() => r.unmountAll()).not.toThrow();
+    });
+
+    it('is a no-op when removeContextFile is unavailable', async () => {
+      buildDiff('src/other.js');
+      const pm = {
+        ensureContextFile: vi.fn().mockResolvedValue({
+          type: 'context',
+          contextFile: { id: 42, file: 'a.js' },
+        }),
+        ensureLinesVisible: vi.fn().mockResolvedValue(),
+        // intentionally no removeContextFile
+        contextFiles: [],
+      };
+      const r = new TourRenderer(pm);
+      r.setStops([makeStop({ file_path: 'a.js', line_start: 5 })]);
+      await r.prepareStop(0);
+      expect(() => r.unmountAll()).not.toThrow();
+      // The ids stay tracked since we couldn't clean them up.
+      expect(r._autoAddedContextFileIds.has(42)).toBe(true);
+    });
+  });
 });

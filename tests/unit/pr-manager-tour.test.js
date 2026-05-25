@@ -41,6 +41,15 @@ function makeBareManager() {
   m._tourStopsPendingRestart = null;
   m._summariesGenerating = false;
   m._syncSummaryToolbarButton = vi.fn();
+  // Generation-aware latch slot for _advanceTour. -1 means no in-flight
+  // call; any other value pins the call to the `_tourGen` it entered on.
+  // Must be initialized so `_advanceInFlightGen === _tourGen` is false on
+  // first call (otherwise both default-undefined and the latch blocks
+  // the very first invocation).
+  m._advanceInFlightGen = -1;
+  // Drain stash for the previous tour's async teardown (context-file
+  // DELETEs). `_openTourAtStart` awaits this before reading wrappers.
+  m._tourCleanupPending = null;
   return m;
 }
 
@@ -68,6 +77,10 @@ describe('PRManager._advanceTour skip-loop', () => {
       unmount: vi.fn(),
     };
     m._tourRenderer = {
+      // prepareStop is the async "ensure the stop is mountable" step the
+      // navigator awaits before mountStop. Stub it to a resolved no-op so
+      // the existing probe tests still drive mountStop's return value.
+      prepareStop: vi.fn().mockResolvedValue(true),
       mountStop: vi.fn(),
       unmountStop: vi.fn(),
       unmountAll: vi.fn(),
@@ -78,7 +91,7 @@ describe('PRManager._advanceTour skip-loop', () => {
     };
   });
 
-  it('probes forward past unmountable stops without unmounting current first', () => {
+  it('probes forward past unmountable stops without unmounting current first', async () => {
     // Indices 0 and 1 unmountable; 2 mounts. From -1, _advanceTour(1)
     // should walk to 2 without ever calling unmountStop (no prior active).
     m._tourActiveIndex = -1;
@@ -87,49 +100,49 @@ describe('PRManager._advanceTour skip-loop', () => {
       calls++;
       return i === 2 ? { tagName: 'TR' } : null;
     });
-    m._advanceTour(1);
+    await m._advanceTour(1);
     expect(m._tourActiveIndex).toBe(2);
     expect(calls).toBe(3);
     expect(m._tourRenderer.unmountStop).not.toHaveBeenCalled();
     expect(m._tourBar.setActiveIndex).toHaveBeenCalledWith(2);
   });
 
-  it('does NOT unmount current stop until a replacement is confirmed', () => {
+  it('does NOT unmount current stop until a replacement is confirmed', async () => {
     // Active at 0; ask for next. Only index 2 mounts (1 is unmountable).
     m._tourActiveIndex = 0;
     m._tourRenderer.mountStop = vi.fn((i) => (i === 2 ? { tagName: 'TR' } : null));
-    m._advanceTour(1);
+    await m._advanceTour(1);
     expect(m._tourActiveIndex).toBe(2);
     // Unmount of previous happens AFTER the candidate is confirmed.
     expect(m._tourRenderer.unmountStop).toHaveBeenCalledWith(0);
   });
 
-  it('flips to completion using last-mounted index when no forward stop is mountable', () => {
+  it('flips to completion using last-mounted index when no forward stop is mountable', async () => {
     // Active at 1; forward candidates (2) fail. Bar must flip to completion
     // using the last-mounted index — NOT 2 — and tour must NOT exit.
     m._tourActiveIndex = 1;
     m._tourRenderer.mountStop = vi.fn(() => null);
     const exitSpy = vi.spyOn(m, '_exitTour').mockImplementation(() => {});
-    m._advanceTour(1);
+    await m._advanceTour(1);
     expect(exitSpy).not.toHaveBeenCalled();
     expect(m._tourBar.setCompleted).toHaveBeenCalledWith(true);
     expect(m._tourBar.setActiveIndex).toHaveBeenCalledWith(1);
   });
 
-  it('exits cleanly when no stop ever mounts (initial open with all stops filtered)', () => {
+  it('exits cleanly when no stop ever mounts (initial open with all stops filtered)', async () => {
     m._tourActiveIndex = -1;
     m._tourRenderer.mountStop = vi.fn(() => null);
     const exitSpy = vi.spyOn(m, '_exitTour').mockImplementation(() => {});
-    m._advanceTour(1);
+    await m._advanceTour(1);
     expect(exitSpy).toHaveBeenCalled();
   });
 
-  it('backward exhaustion leaves the current stop mounted (no half-stuck UI)', () => {
+  it('backward exhaustion leaves the current stop mounted (no half-stuck UI)', async () => {
     m._tourActiveIndex = 2;
     // All earlier indices unmountable.
     m._tourRenderer.mountStop = vi.fn(() => null);
     const exitSpy = vi.spyOn(m, '_exitTour').mockImplementation(() => {});
-    m._advanceTour(-1);
+    await m._advanceTour(-1);
     expect(exitSpy).not.toHaveBeenCalled();
     // Active index unchanged.
     expect(m._tourActiveIndex).toBe(2);
@@ -137,12 +150,134 @@ describe('PRManager._advanceTour skip-loop', () => {
     expect(m._tourRenderer.unmountStop).not.toHaveBeenCalled();
   });
 
-  it('forward past the last stop flips completion without re-mounting', () => {
+  it('forward past the last stop flips completion without re-mounting', async () => {
     m._tourActiveIndex = 2;
     m._tourRenderer.mountStop = vi.fn(() => { throw new Error('should not mount'); });
-    m._advanceTour(1);
+    await m._advanceTour(1);
     expect(m._tourBar.setCompleted).toHaveBeenCalledWith(true);
     expect(m._tourBar.setActiveIndex).toHaveBeenCalledWith(2);
+  });
+
+  // ----------------------------------------------------------------------
+  // The new prepareStop hook + re-entrance / staleness guards added when
+  // _advanceTour became async (to support file-add + gap-expand on the
+  // path to mounting).
+  // ----------------------------------------------------------------------
+  it('awaits prepareStop before each mount attempt so files / lines can be loaded', async () => {
+    m._tourActiveIndex = 0;
+    const order = [];
+    m._tourRenderer.prepareStop = vi.fn(async (i) => { order.push(`prepare:${i}`); });
+    m._tourRenderer.mountStop = vi.fn((i) => {
+      order.push(`mount:${i}`);
+      return i === 2 ? { tagName: 'TR' } : null;
+    });
+    await m._advanceTour(1);
+    // Each probed index has prepare-before-mount ordering.
+    expect(order).toEqual(['prepare:1', 'mount:1', 'prepare:2', 'mount:2']);
+  });
+
+  it('drops re-entrant Next presses while a prepareStop await is in flight', async () => {
+    m._tourActiveIndex = 0;
+    let resolvePrepare;
+    const prepareGate = new Promise((res) => { resolvePrepare = res; });
+    m._tourRenderer.prepareStop = vi.fn(() => prepareGate);
+    m._tourRenderer.mountStop = vi.fn(() => ({ tagName: 'TR' }));
+
+    const first = m._advanceTour(1);
+    // While the first call sits on prepareGate, a second Next should be
+    // dropped — not queued — so we don't get two interleaved probe loops.
+    const second = m._advanceTour(1);
+    await second; // resolves immediately (early return)
+    expect(m._tourRenderer.mountStop).not.toHaveBeenCalled();
+    resolvePrepare();
+    await first;
+    expect(m._tourRenderer.mountStop).toHaveBeenCalledTimes(1);
+  });
+
+  it('bails out without mutating state when the tour is exited mid-prepareStop', async () => {
+    m._tourActiveIndex = 0;
+    m._tourGen = 1;
+    let resolvePrepare;
+    m._tourRenderer.prepareStop = vi.fn(() => new Promise((res) => { resolvePrepare = res; }));
+    m._tourRenderer.mountStop = vi.fn(() => { throw new Error('must not mount on stale tour'); });
+
+    const advance = m._advanceTour(1);
+    // Simulate an exit happening while prepareStop is awaited (bumps gen).
+    m._tourGen += 1;
+    resolvePrepare();
+    await advance;
+
+    // No mount, no active-index mutation, no bar update.
+    expect(m._tourRenderer.mountStop).not.toHaveBeenCalled();
+    expect(m._tourActiveIndex).toBe(0);
+    expect(m._tourBar.setActiveIndex).not.toHaveBeenCalled();
+  });
+
+  it('releases the in-flight latch after early-return on forward exhaustion (no permanent wedge)', async () => {
+    m._tourActiveIndex = 2; // last stop; Next should flip to completion
+    m._tourRenderer.mountStop = vi.fn(() => ({ tagName: 'TR' }));
+    await m._advanceTour(1);
+    // The completion path returns early; if the finally didn't run, the
+    // next Prev would silently no-op forever. The slot must be released
+    // back to the sentinel value (-1), not the generation it ran on.
+    expect(m._advanceInFlightGen).toBe(-1);
+    // And a follow-up Prev is honored.
+    await m._advanceTour(-1);
+    expect(m._tourRenderer.mountStop).toHaveBeenCalled();
+  });
+
+  // ----------------------------------------------------------------------
+  // Regression: the latch must be generation-aware. A boolean latch left
+  // set by an exit-during-prepareStop wedges the next reopen, because
+  // `_exitTour` only bumps `_tourGen` — it never clears the in-flight
+  // flag, and the resumed _advanceTour bails (via isStale) BEFORE its
+  // finally can release it. Reopen then hits the latch and no-ops.
+  // ----------------------------------------------------------------------
+  it('does not wedge the next open when exit happens during prepareStop await', async () => {
+    m._tourActiveIndex = 0;
+    m._tourGen = 1;
+    let resolveFirst;
+    // First prepareStop call stalls; subsequent calls resolve so the
+    // second _advanceTour can probe to a mountable stop.
+    let prepareCallCount = 0;
+    m._tourRenderer.prepareStop = vi.fn(() => {
+      prepareCallCount++;
+      if (prepareCallCount === 1) {
+        return new Promise((res) => { resolveFirst = res; });
+      }
+      return Promise.resolve(true);
+    });
+    m._tourRenderer.mountStop = vi.fn(() => ({ tagName: 'TR' }));
+
+    // 1) Start an advance — it parks on the first prepareStop await,
+    //    holding the latch slot for gen=1.
+    const first = m._advanceTour(1);
+
+    // 2) Exit happens (bumps _tourGen) → the parked advance is stale.
+    //    Crucially, a boolean latch would still be set here.
+    m._tourGen += 1;
+    // 3) Reopen bumps gen again, the way _openTourAtStart would.
+    m._tourGen += 1;
+
+    // 4) Reopen's first _advanceTour MUST acquire the latch — the prior
+    //    call's holder pins gen=1 and we're now on gen=3, so the latch
+    //    check (`_advanceInFlightGen === _tourGen`) is false. Proceed
+    //    to mount stop 0.
+    m._tourActiveIndex = -1;
+    await m._advanceTour(1);
+    expect(m._tourRenderer.mountStop).toHaveBeenCalledWith(0);
+    expect(m._tourActiveIndex).toBe(0);
+    // After the fresh call's finally, the latch is released (the call
+    // owned the slot for gen=3 and reset it).
+    expect(m._advanceInFlightGen).toBe(-1);
+
+    // 5) Let the stale first call finally resume — its continuation
+    //    detects staleness (gen=3 !== startGen=1) and bails. Its
+    //    finally check (`_advanceInFlightGen === startGen`) is false
+    //    (slot is -1, not 1), so it must NOT clobber the slot.
+    resolveFirst();
+    await first;
+    expect(m._advanceInFlightGen).toBe(-1);
   });
 });
 
@@ -379,6 +514,77 @@ describe('PRManager._loadAndStashTour guard branches', () => {
     expect(result).toEqual([{ title: 'ok' }]);
     expect(m._tourStops).toEqual([{ title: 'ok' }]);
     fetchSpy.mockRestore();
+  });
+});
+
+// ----------------------------------------------------------------------
+// Regression: the prior tour's context-file DELETEs are fire-and-forget,
+// so without an explicit drain the next open can race against them. A
+// DELETE's loadContextFiles reload landing mid-open would rip the new
+// tour's wrapper out from under an active stop.
+// ----------------------------------------------------------------------
+describe('PRManager._openTourAtStart drains prior teardown before mounting', () => {
+  let m;
+  beforeEach(() => {
+    buildToolbar();
+    m = makeBareManager();
+    m._tourStops = [{ title: 's0' }];
+    m._tourBar = {
+      setCompleted: vi.fn(),
+      setActiveIndex: vi.fn(),
+      setStops: vi.fn(),
+      mount: vi.fn(),
+      unmount: vi.fn(),
+    };
+    m._tourRenderer = {
+      prepareStop: vi.fn().mockResolvedValue(true),
+      mountStop: vi.fn(() => ({ tagName: 'TR' })),
+      unmountStop: vi.fn(),
+      unmountAll: vi.fn(),
+      highlightActive: vi.fn(),
+      scrollToStop: vi.fn(),
+      setActive: vi.fn(),
+      setStops: vi.fn(),
+    };
+    m._registerTourKeyboardHandlers = vi.fn();
+    m._unregisterTourKeyboardHandlers = vi.fn();
+    m._syncTourToolbarButton = vi.fn();
+  });
+
+  it('does not begin mounting until the prior teardown DELETE settles', async () => {
+    // _exitTour stashes the drain promise returned by unmountAll. Stall
+    // it to model an in-flight context-file DELETE + its loadContextFiles.
+    let resolveDrain;
+    const drain = new Promise((res) => { resolveDrain = res; });
+    m._tourRenderer.unmountAll = vi.fn(() => drain);
+    m._exitTour();
+    expect(m._tourCleanupPending).toBe(drain);
+
+    // Reopen — _openTourAtStart must park on the drain BEFORE reading
+    // any wrappers (i.e. before setStops, setActive, mount).
+    const open = m._openTourAtStart();
+    // One microtask is enough for the `await _tourCleanupPending` line
+    // to run; the body past that point would only execute once drain
+    // resolves.
+    await Promise.resolve();
+    expect(m._tourRenderer.setStops).not.toHaveBeenCalled();
+    expect(m._tourBar.mount).not.toHaveBeenCalled();
+
+    // Drain resolves — reopen proceeds.
+    resolveDrain();
+    await open;
+    expect(m._tourRenderer.setStops).toHaveBeenCalledWith(m._tourStops);
+    expect(m._tourBar.mount).toHaveBeenCalled();
+    // Pending slot is consumed exactly once.
+    expect(m._tourCleanupPending).toBeNull();
+  });
+
+  it('is a no-op drain when no prior tour was exited (fresh open)', async () => {
+    // No _exitTour was called — _tourCleanupPending should still be null
+    // and the open proceeds without parking.
+    expect(m._tourCleanupPending).toBeNull();
+    await m._openTourAtStart();
+    expect(m._tourRenderer.setStops).toHaveBeenCalledWith(m._tourStops);
   });
 });
 
