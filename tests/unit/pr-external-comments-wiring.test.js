@@ -196,6 +196,34 @@ describe('PRManager._loadExternalComments', () => {
     expect(externalCommentManagerStub.reviewId).toBeUndefined();
   });
 
+  it('external_comments feature toggle off: no fetch, no syncAndRender, no reviewId mutation', async () => {
+    // Mirror the production wiring: runtime-config.js sets this object
+    // synchronously before pr.js loads. When the flag is false, every
+    // entry point into the external-comments subsystem must no-op.
+    window.PAIR_REVIEW_RUNTIME_CONFIG = { external_comments_enabled: false };
+    const prManager = createTestPRManager();
+
+    await prManager._loadExternalComments();
+
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(externalCommentManagerStub.syncAndRender).not.toHaveBeenCalled();
+    expect(externalCommentManagerStub.loadAndRender).not.toHaveBeenCalled();
+    expect(externalCommentManagerStub.reviewId).toBeUndefined();
+  });
+
+  it('external_comments enabled (default): proceeds normally when flag is true', async () => {
+    window.PAIR_REVIEW_RUNTIME_CONFIG = { external_comments_enabled: true };
+    const prManager = createTestPRManager();
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ count: 0, lostAnchors: 0, syncedAt: 'now' }),
+    });
+
+    await prManager._loadExternalComments();
+
+    expect(externalCommentManagerStub.syncAndRender).toHaveBeenCalledTimes(1);
+  });
+
   it('short-circuits when externalCommentManager singleton is not present', async () => {
     window.externalCommentManager = null;
     const prManager = createTestPRManager();
@@ -357,6 +385,40 @@ describe('Refresh external-comments button wiring', () => {
     resolveLoad();
     await inflight;
     expect(refreshButton.getAttribute('aria-busy')).toBeNull();
+  });
+
+  it('does nothing when external_comments feature toggle is off', async () => {
+    // Defensive guard: even if a stale caller (or test) invokes the handler
+    // with the feature disabled, it must not touch the button state or call
+    // through to _loadExternalComments.
+    window.PAIR_REVIEW_RUNTIME_CONFIG = { external_comments_enabled: false };
+    const prManager = makePRManager();
+
+    await prManager._handleExternalCommentsRefreshClick({ button: refreshButton });
+
+    expect(prManager._loadExternalComments).not.toHaveBeenCalled();
+    expect(refreshButton.disabled).toBe(false);
+    expect(refreshButton.classList.contains('is-refreshing')).toBe(false);
+  });
+});
+
+describe('PRManager._externalCommentsEnabled', () => {
+  it('returns true when runtime config is absent', () => {
+    delete window.PAIR_REVIEW_RUNTIME_CONFIG;
+    const prManager = createTestPRManager();
+    expect(prManager._externalCommentsEnabled()).toBe(true);
+  });
+
+  it('returns true when runtime config flag is true', () => {
+    window.PAIR_REVIEW_RUNTIME_CONFIG = { external_comments_enabled: true };
+    const prManager = createTestPRManager();
+    expect(prManager._externalCommentsEnabled()).toBe(true);
+  });
+
+  it('returns false when runtime config flag is explicitly false', () => {
+    window.PAIR_REVIEW_RUNTIME_CONFIG = { external_comments_enabled: false };
+    const prManager = createTestPRManager();
+    expect(prManager._externalCommentsEnabled()).toBe(false);
   });
 });
 

@@ -148,7 +148,11 @@ function createTestApp(db) {
     github_token: 'test-token',
     port: 7247,
     theme: 'light',
-    model: 'sonnet'
+    model: 'sonnet',
+    // Match the production DEFAULT_CONFIG opt-in: external_comments is
+    // disabled unless a config file explicitly enables it. Tests that need
+    // the feature on must opt in via `app.set('config', { ..., external_comments: true })`.
+    external_comments: false,
   });
 
   // Mount routes in the same order as server.js
@@ -3263,6 +3267,43 @@ describe('Config Endpoints', () => {
         .get('/api/config');
 
       expect(response.body.chat_enter_to_send).toBe(false);
+    });
+
+    it('returns external_comments as false by default (opt-in feature)', async () => {
+      const response = await request(app).get('/api/config');
+      expect(response.status).toBe(200);
+      expect(response.body.external_comments).toBe(false);
+    });
+
+    it('returns external_comments as true when explicitly enabled', async () => {
+      app.set('config', { ...app.get('config'), external_comments: true });
+      const response = await request(app).get('/api/config');
+      expect(response.body.external_comments).toBe(true);
+    });
+  });
+
+  describe('GET /runtime-config.js', () => {
+    it('serves a JS file that sets PAIR_REVIEW_RUNTIME_CONFIG (disabled by default — opt-in feature)', async () => {
+      const response = await request(app).get('/runtime-config.js');
+      expect(response.status).toBe(200);
+      expect(response.headers['content-type']).toMatch(/javascript/);
+      expect(response.headers['cache-control']).toMatch(/no-store/);
+      expect(response.text).toContain('window.PAIR_REVIEW_RUNTIME_CONFIG');
+      expect(response.text).toContain('"external_comments_enabled":false');
+      // Disabled state MUST add the documentElement class so CSS hides the
+      // External UI before paint.
+      expect(response.text).toContain("classList.add('external-comments-disabled')");
+    });
+
+    it('emits external_comments_enabled:true when explicitly enabled', async () => {
+      app.set('config', { ...app.get('config'), external_comments: true });
+      const response = await request(app).get('/runtime-config.js');
+      expect(response.status).toBe(200);
+      expect(response.text).toContain('"external_comments_enabled":true');
+      // The class-add code remains in the script but is gated by the
+      // runtime check, so it should still appear in the body even when
+      // enabled — it just no-ops.
+      expect(response.text).toContain('if (!window.PAIR_REVIEW_RUNTIME_CONFIG.external_comments_enabled)');
     });
   });
 

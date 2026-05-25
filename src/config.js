@@ -47,7 +47,8 @@ const DEFAULT_CONFIG = {
   assisted_by_url: "https://github.com/in-the-loop-labs/pair-review",  // URL for "Review assisted by" footer link
   hooks: {},  // Hook commands per event: { "review.started": { "my_hook": { "command": "..." } } }
   enable_graphite: false,  // When true, shows Graphite links alongside GitHub links
-  skip_update_notifier: false  // When true, suppresses the "update available" notification on exit
+  skip_update_notifier: false,  // When true, suppresses the "update available" notification on exit
+  external_comments: false  // Opt-in: set to true to enable GitHub PR review-comment sync (External segment, refresh button, /api/reviews/*/external-comments routes)
 };
 
 /**

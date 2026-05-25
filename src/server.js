@@ -370,7 +370,14 @@ async function startServer(sharedDb = null, sharedPoolLifecycle = null) {
     app.use('/', mcpRoutes);
     app.use('/', githubCollectionsRoutes);
     app.use('/', stackAnalysisRoutes);
-    app.use('/', externalCommentsRoutes);
+    // External-comments routes (GitHub PR review-comment sync + fetch) are
+    // gated by the `external_comments` config flag. When disabled, the
+    // router is not mounted so any GET/POST against `/api/reviews/*/
+    // external-comments*` returns 404 — matching the frontend's intent that
+    // the feature simply doesn't exist for that user.
+    if (config.external_comments !== false) {
+      app.use('/', externalCommentsRoutes);
+    }
     app.use('/', createSoundRouter());
     app.use('/', prRoutes);
     

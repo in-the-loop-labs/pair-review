@@ -358,11 +358,16 @@ class PRManager {
     // Refresh external (GitHub) review comments. Handler lives on the
     // instance so unit tests can call it directly (avoids duplicating the
     // production click logic in tests, per CLAUDE.md).
-    const refreshExternalBtnPanel = document.getElementById('refresh-external-comments-btn-panel');
-    if (refreshExternalBtnPanel) {
-      refreshExternalBtnPanel.addEventListener('click', () => {
-        void this._handleExternalCommentsRefreshClick({ button: refreshExternalBtnPanel });
-      });
+    // Skip wiring entirely when the external_comments feature toggle is
+    // off — the button is also CSS-hidden via .external-comments-only, so
+    // this is belt-and-suspenders.
+    if (this._externalCommentsEnabled()) {
+      const refreshExternalBtnPanel = document.getElementById('refresh-external-comments-btn-panel');
+      if (refreshExternalBtnPanel) {
+        refreshExternalBtnPanel.addEventListener('click', () => {
+          void this._handleExternalCommentsRefreshClick({ button: refreshExternalBtnPanel });
+        });
+      }
     }
 
     // Hunk summary toolbar toggle (Phase 5).
@@ -778,6 +783,10 @@ class PRManager {
     const includeDismissed = window.aiPanel?.showDismissedComments || false;
     await this.loadUserComments(includeDismissed);
     await this.loadAISuggestions(null, analysisRunId);
+    // Skip external-comment re-rendering entirely when the feature is off.
+    // The manager is never populated with rows in that case, so there's
+    // nothing to re-anchor.
+    if (!this._externalCommentsEnabled()) return;
     try {
       if (typeof window !== 'undefined' && window.externalCommentManager) {
         if (this.currentPR && this.currentPR.id) {
@@ -813,6 +822,9 @@ class PRManager {
    * @returns {Promise<void>}
    */
   async _handleExternalCommentsRefreshClick({ button } = {}) {
+    // Defensive guard: even if a stale caller invokes this with the
+    // feature disabled, swallow it. UI wiring already skips this path.
+    if (!this._externalCommentsEnabled()) return;
     const btn = button
       || (typeof document !== 'undefined' ? document.getElementById('refresh-external-comments-btn-panel') : null);
     if (!btn || btn.disabled) return;
@@ -829,8 +841,23 @@ class PRManager {
     }
   }
 
+  /**
+   * Feature toggle for the external-comments (GitHub PR review-comment)
+   * subsystem. Reads `window.PAIR_REVIEW_RUNTIME_CONFIG` which is set
+   * synchronously by `/runtime-config.js` BEFORE this file loads, so the
+   * check is safe at any call site. Defaults to enabled when the flag is
+   * missing — preserves behavior for any environment that omits the
+   * runtime-config script (e.g., older test fixtures).
+   * @returns {boolean}
+   */
+  _externalCommentsEnabled() {
+    if (typeof window === 'undefined') return true;
+    return window.PAIR_REVIEW_RUNTIME_CONFIG?.external_comments_enabled !== false;
+  }
+
   async _loadExternalComments() {
     if (typeof window !== 'undefined' && window.PAIR_REVIEW_LOCAL_MODE) return;
+    if (!this._externalCommentsEnabled()) return;
     if (!this.currentPR || !this.currentPR.id) return;
     if (typeof window === 'undefined' || !window.externalCommentManager) return;
 
