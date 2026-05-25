@@ -19,6 +19,17 @@
  * A stop whose anchor row is missing (file filtered out, line not in the
  * rendered diff, etc.) is skipped with a console.warn — the caller treats
  * a null return as "couldn't render, advance to the next stop".
+ *
+ * Before calling `mountStop`, the caller should `await prepareStop(index)`,
+ * which makes the stop's lines mountable when possible:
+ *   - Files not present in the diff at all are auto-added via
+ *     PRManager.ensureContextFile (the same surface used by the AI
+ *     suggestion "open context" flow). Auto-added files are tracked on
+ *     `_autoAddedContextFileIds` and removed on tour exit so they don't
+ *     leak into the user's persistent context-files list.
+ *   - Folded gaps covering the stop's [line_start, line_end] range are
+ *     expanded via PRManager.ensureLinesVisible so the anchor row exists
+ *     by the time mountStop runs its DOM scan.
  */
 
 // Prefixed to avoid collision with TourBar.js when both load as plain
@@ -57,6 +68,11 @@ class TourRenderer {
     // user's pre-tour collapse state (the user-facing `collapsedFiles` set
     // on PRManager) instead of silently clobbering it.
     this._autoExpanded = new Set();
+    // Set<number> — context-file IDs we auto-added during this tour (via
+    // prepareStop -> prManager.ensureContextFile) for files outside the
+    // PR diff. Removed in unmountAll so the user's persistent context-files
+    // list isn't polluted by transient tour state.
+    this._autoAddedContextFileIds = new Set();
     // Cache the user's motion preference at construction so scrollIntoView
     // honors it on every navigation. Reading matchMedia each call would
     // still work; caching just avoids the lookup.
@@ -91,6 +107,119 @@ class TourRenderer {
   setActive(isActive) {
     if (typeof document === 'undefined') return;
     document.body.classList.toggle('tour-active', isActive === true);
+  }
+
+  /**
+   * Make the stop at `index` mountable by ensuring its file is present in
+   * the diff view and the rows covering its [line_start, line_end] range
+   * are unfolded. Safe to call repeatedly — both the file-add path
+   * (`ensureContextFile`) and the gap-expand path (`ensureLinesVisible`)
+   * are idempotent.
+   *
+   * Resolves to `true` when the prep succeeded enough that `mountStop`
+   * has a chance of finding an anchor row, `false` on a hard failure
+   * (no PRManager, no stop, file fetch/POST failed). A `true` return is
+   * NOT a promise that `mountStop` will succeed — genuinely missing data
+   * (bad line numbers, file not in repo) still falls through to mountStop
+   * returning null. The caller's probe loop handles that.
+   *
+   * Tracks auto-additions and auto-expansions on `_autoAddedContextFileIds`
+   * and `_autoExpanded` (via the existing mountStop expand path) so
+   * `unmountAll` can restore pre-tour state on exit.
+   *
+   * @param {number} index
+   * @returns {Promise<boolean>}
+   */
+  async prepareStop(index) {
+    const stop = this._stops[index];
+    if (!stop || !this.prManager) return false;
+
+    // Capture the open-generation ONCE at entry. Every await below is a
+    // suspension window — if `_tourGen` bumps while we're suspended, the
+    // tour we started preparing for is gone (Escape, exit, reopen) and
+    // `unmountAll` has already run with an empty snapshot of
+    // `_autoAddedContextFileIds`. Anything we add after that snapshot would
+    // orphan, so we roll back directly on stale.
+    const startGen = this.prManager._tourGen;
+    const isStale = () => this.prManager._tourGen !== startGen;
+
+    const filePath = stop.file_path;
+    const lineStart = stop.line_start;
+    if (!filePath || typeof lineStart !== 'number') return false;
+
+    const lineEnd = (typeof stop.line_end === 'number' && stop.line_end >= lineStart)
+      ? stop.line_end
+      : lineStart;
+    const side = stop.side || 'RIGHT';
+
+    // 1) Ensure the file's wrapper is in the DOM. If the file isn't in the
+    //    PR diff, route through ensureContextFile — which adds it as a
+    //    context file (or PATCHes an existing context file to cover the
+    //    range). Track the new id so unmountAll can DELETE it on exit and
+    //    not leave the user with surprise persistent entries.
+    const existingWrapper = document.querySelector(
+      `.d2h-file-wrapper[data-file-name="${tourRendererEscapeAttr(filePath)}"]`
+    );
+    if (!existingWrapper && typeof this.prManager.ensureContextFile === 'function') {
+      const wasAlreadyContext = Array.isArray(this.prManager.contextFiles) &&
+        this.prManager.contextFiles.some((cf) => cf.file === filePath);
+      try {
+        const result = await this.prManager.ensureContextFile(filePath, lineStart, lineEnd);
+        // Only track the id when WE added it (not when an existing context
+        // file already covered or got merged-with this range — leaving
+        // user-created entries alone is the right default).
+        if (
+          result &&
+          result.type === 'context' &&
+          !wasAlreadyContext &&
+          result.contextFile &&
+          result.contextFile.id != null
+        ) {
+          if (isStale()) {
+            // Tour exited while the POST was in flight. unmountAll already
+            // ran with an empty snapshot — tracking the id now would orphan
+            // it forever. Roll back directly, fire-and-forget so the
+            // mid-exit user isn't blocked on a DELETE.
+            if (typeof this.prManager.removeContextFile === 'function') {
+              try {
+                const undo = this.prManager.removeContextFile(result.contextFile.id);
+                if (undo && typeof undo.catch === 'function') undo.catch(() => {});
+              } catch (_) {
+                // best-effort rollback
+              }
+            }
+            return false;
+          }
+          this._autoAddedContextFileIds.add(result.contextFile.id);
+        }
+      } catch (err) {
+        console.warn('[TourRenderer] ensureContextFile failed for', filePath, err);
+        // Fall through — mountStop will return null and the probe advances.
+      }
+    }
+
+    // Skip the gap-unfold on a dead tour. Gap-unfolds aren't tracked in
+    // _autoExpanded (that's collapse-state, not unfold-state) so they
+    // don't leak persistent state, but they ARE visible UI churn the user
+    // didn't ask for after pressing Escape.
+    if (isStale()) return false;
+
+    // 2) Unfold any gap covering the stop's range. Safe no-op when the
+    //    rows are already visible. Works on both diff-file and context-file
+    //    wrappers (both produce tr[data-line-number][data-side] rows).
+    if (typeof this.prManager.ensureLinesVisible === 'function') {
+      try {
+        await this.prManager.ensureLinesVisible([
+          { file: filePath, line_start: lineStart, line_end: lineEnd, side }
+        ]);
+      } catch (err) {
+        console.warn('[TourRenderer] ensureLinesVisible failed for', filePath, err);
+        // Fall through — the anchor scan may still succeed if a row in
+        // the range happened to render via a different path.
+      }
+    }
+
+    return true;
   }
 
   /**
@@ -223,10 +352,22 @@ class TourRenderer {
   /**
    * Remove every mounted annotation. Call on tour exit.
    *
-   * Also re-collapses any files we auto-expanded during the tour by
-   * calling `toggleFileCollapse` on each path in `_autoExpanded`. This
-   * restores the user's pre-tour collapse state instead of silently
-   * leaving files expanded.
+   * Also restores pre-tour state:
+   *   - Re-collapses any files in `_autoExpanded` (via toggleFileCollapse).
+   *   - Deletes any context files in `_autoAddedContextFileIds` (via
+   *     removeContextFile) so transient tour-injected files don't
+   *     persist in the user's context-files list.
+   *
+   * Both restorations are best-effort — failures are logged and ignored
+   * so a partially-cleaned exit still tears down the tour UI.
+   *
+   * Returns a Promise that resolves once every issued `removeContextFile`
+   * call (and its `loadContextFiles` reload) has settled. Callers that
+   * need to observe a clean DOM before reading wrappers — restart, reopen
+   * — should await it. The promise never rejects (errors are caught and
+   * logged), so `await` is safe without try/catch.
+   *
+   * @returns {Promise<void>}
    */
   unmountAll() {
     for (const row of this._mounted.values()) {
@@ -256,6 +397,36 @@ class TourRenderer {
       }
     }
     this._autoExpanded.clear();
+
+    const pending = [];
+    if (
+      this._autoAddedContextFileIds.size > 0 &&
+      this.prManager &&
+      typeof this.prManager.removeContextFile === 'function'
+    ) {
+      // Snapshot + clear before iterating so a re-entrant unmountAll
+      // (e.g. if removeContextFile triggers a re-render hook that loops
+      // back) doesn't try to delete the same ids twice.
+      const ids = Array.from(this._autoAddedContextFileIds);
+      this._autoAddedContextFileIds.clear();
+      for (const id of ids) {
+        try {
+          const result = this.prManager.removeContextFile(id);
+          if (result && typeof result.then === 'function') {
+            // Attach a catch so rejections don't leak as unhandled, and
+            // collect the wrapped promise so the caller's drain await
+            // observes settlement (success OR failure).
+            pending.push(result.catch((err) => {
+              console.warn('[TourRenderer] removeContextFile rejected for', id, err);
+            }));
+          }
+        } catch (err) {
+          console.warn('[TourRenderer] removeContextFile failed for', id, err);
+        }
+      }
+    }
+    // allSettled never rejects; safe to await without try/catch.
+    return Promise.allSettled(pending);
   }
 
   /**

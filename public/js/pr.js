@@ -188,6 +188,24 @@ class PRManager {
     this._tourStopsPendingRestart = null;
     // Bound keydown handler; tracked so it can be removed on tour exit.
     this._tourKeydownHandler = null;
+    // Re-entrance latch for the async `_advanceTour` probe loop. Holds the
+    // `_tourGen` value the in-flight call belongs to (or -1 when no call
+    // is in flight). Generation-scoped — not a plain boolean — so a
+    // teardown that bumps `_tourGen` auto-invalidates the holder and the
+    // next reopen passes the latch check without any teardown path having
+    // to remember to reset the flag explicitly.
+    this._advanceInFlightGen = -1;
+    // Tour-open generation. Bumped on every open and exit so an in-flight
+    // async `_advanceTour` can detect that the tour it started navigating
+    // has since been torn down (Escape, exit button, toolbar toggle) and
+    // bail instead of mutating a dead tour's state.
+    this._tourGen = 0;
+    // Drain promise stashed by `_exitTour`. Resolves once every async
+    // teardown step from the prior tour (fire-and-forget context-file
+    // DELETEs + their loadContextFiles reloads) has settled. The next
+    // open awaits this before reading wrappers so a stale DELETE can't
+    // rip the newly-mounted tour's wrapper out from under it.
+    this._tourCleanupPending = null;
     // Cached staleness check promise — shared between on-load and triggerAIAnalysis
     this._stalenessPromise = null;
     // Unique client ID for self-echo suppression on WebSocket review events.
@@ -1478,7 +1496,7 @@ class PRManager {
       // Nothing to show — leave the button as-is.
       return;
     }
-    this._openTourAtStart();
+    await this._openTourAtStart();
   }
 
   /**
@@ -1486,8 +1504,19 @@ class PRManager {
    * TourRenderer on first call so we pay zero cost for users who never
    * trigger a tour.
    */
-  _openTourAtStart() {
+  async _openTourAtStart() {
     if (!this._tourStops || this._tourStops.length === 0) return;
+
+    // Drain any pending teardown from the previous tour BEFORE we read
+    // wrappers below. Otherwise a fire-and-forget DELETE + its
+    // loadContextFiles reload landing mid-open can rip the wrapper the
+    // first stop is about to mount against. allSettled-wrapped so it
+    // never rejects.
+    if (this._tourCleanupPending) {
+      const pending = this._tourCleanupPending;
+      this._tourCleanupPending = null;
+      await pending;
+    }
 
     if (!this._tourRenderer && typeof window !== 'undefined' && window.TourRenderer) {
       this._tourRenderer = new window.TourRenderer(this);
@@ -1516,6 +1545,10 @@ class PRManager {
     this._tourBar.setCompleted(false);
 
     this._tourActiveIndex = -1;
+    // Bump the generation BEFORE the first _advanceTour call so it sees
+    // the fresh value as its baseline. Subsequent exits bump it again,
+    // making in-flight probes from this open detect the mismatch and bail.
+    this._tourGen += 1;
     this._registerTourKeyboardHandlers();
     this._advanceTour(1);
     this._syncTourToolbarButton();
@@ -1525,87 +1558,133 @@ class PRManager {
    * Advance (or rewind) the active stop by `delta`. Going past the end of
    * the tour flips the bar into completion state; going before the start
    * clamps at 0.
+   *
+   * Async because each probe candidate is run through
+   * `TourRenderer.prepareStop` first, which may need to await a file
+   * fetch (adding a non-diff file as a context file) and/or a gap-expand
+   * to surface folded rows the stop anchors on. Re-entrant calls (rapid
+   * Next presses, keyboard mashing) are dropped via `_advanceInFlight`
+   * so we never have two probe loops mutating tour state concurrently.
+   *
    * @param {number} delta - Typically +1 (next) or -1 (prev).
+   * @returns {Promise<void>}
    */
-  _advanceTour(delta) {
+  async _advanceTour(delta) {
     if (!this._tourRenderer || !this._tourBar || !this._tourStops) return;
     const total = this._tourStops.length;
     if (total === 0) return;
 
-    const startIndex = this._tourActiveIndex + delta;
-    const dir = delta >= 0 ? 1 : -1;
+    // Drop overlapping nav requests. The keyboard / button callbacks all
+    // fire-and-forget, so a fast Next-Next-Next while a file fetch is in
+    // flight would otherwise interleave probe loops on shared mutable
+    // state (`_tourActiveIndex`, the renderer's `_mounted` map).
+    //
+    // Latch is generation-scoped: an in-flight call from a torn-down
+    // generation no longer matches `_tourGen`, so a fresh reopen passes
+    // the check without any teardown path having to remember to clear
+    // the slot. Fixes the exit-then-reopen wedge where the boolean
+    // latch survived `_exitTour` and silently dropped the next open's
+    // first `_advanceTour`.
+    if (this._advanceInFlightGen === this._tourGen) return;
+    this._advanceInFlightGen = this._tourGen;
+    // Capture the open-generation so we can detect a teardown (exit /
+    // reopen) that happened while we were sitting on an await below.
+    const startGen = this._tourGen;
+    const isStale = () => this._tourGen !== startGen;
+    try {
+      const startIndex = this._tourActiveIndex + delta;
+      const dir = delta >= 0 ? 1 : -1;
 
-    // Forward past the end (initial open uses delta=1 from -1, so this only
-    // fires once we've actually reached the last stop and pressed Next again).
-    if (startIndex >= total) {
-      this._tourBar.setCompleted(true);
-      this._tourBar.setActiveIndex(total - 1);
-      this._syncTourToolbarButton();
-      return;
-    }
-
-    // Probe-then-mount: locate the next mountable index WITHOUT unmounting
-    // the current one. Only swap once we have a confirmed replacement. This
-    // avoids the wedge where the current stop is torn down and no successor
-    // mounts (file filtered out, scope change, etc.).
-    let probe = Math.max(0, startIndex);
-    let nextRow = null;
-    let nextIndex = -1;
-    while (probe >= 0 && probe < total) {
-      // Skip re-probing the index that's already mounted — `mountStop` is
-      // idempotent and returns the existing row, but we want to keep going
-      // past the current active when delta moves us off it.
-      if (probe !== this._tourActiveIndex) {
-        const row = this._tourRenderer.mountStop(probe);
-        if (row) {
-          nextRow = row;
-          nextIndex = probe;
-          break;
-        }
-      } else if (dir > 0) {
-        // Already-active probe under forward motion shouldn't count as a hit;
-        // we want to advance past it.
-      } else {
-        // Backward delta landing on the current stop: nothing earlier mounted.
-        break;
-      }
-      probe += dir;
-    }
-
-    if (!nextRow) {
-      if (dir > 0) {
-        // Forward exhaustion: flip to completion using the last successfully
-        // mounted index. If we never mounted anything (initial open found no
-        // mountable stops), bail out cleanly so the toolbar resets.
-        if (this._tourActiveIndex < 0) {
-          console.warn('[Tour] no mountable stops found; exiting');
-          this._exitTour();
-          return;
-        }
+      // Forward past the end (initial open uses delta=1 from -1, so this only
+      // fires once we've actually reached the last stop and pressed Next again).
+      if (startIndex >= total) {
         this._tourBar.setCompleted(true);
-        this._tourBar.setActiveIndex(this._tourActiveIndex);
+        this._tourBar.setActiveIndex(total - 1);
         this._syncTourToolbarButton();
         return;
       }
-      // Backward exhaustion: leave the current stop mounted/active untouched.
-      console.debug('[Tour] no earlier mountable stop; staying put');
-      return;
-    }
 
-    // Successful candidate — only now unmount the previous stop.
-    if (this._tourActiveIndex >= 0 && this._tourActiveIndex !== nextIndex) {
-      this._tourRenderer.unmountStop(this._tourActiveIndex);
-    }
+      // Probe-then-mount: locate the next mountable index WITHOUT unmounting
+      // the current one. Only swap once we have a confirmed replacement. This
+      // avoids the wedge where the current stop is torn down and no successor
+      // mounts (file filtered out, scope change, etc.).
+      let probe = Math.max(0, startIndex);
+      let nextRow = null;
+      let nextIndex = -1;
+      while (probe >= 0 && probe < total) {
+        // Skip re-probing the index that's already mounted — `mountStop` is
+        // idempotent and returns the existing row, but we want to keep going
+        // past the current active when delta moves us off it.
+        if (probe !== this._tourActiveIndex) {
+          // Prepare the stop first: add the file as a context file if it
+          // isn't in the diff, and unfold any gap covering its line range.
+          // prepareStop returning true is no guarantee mountStop will
+          // succeed — genuinely missing data still falls through.
+          await this._tourRenderer.prepareStop(probe);
+          // Tour could have been exited (or re-opened) while prepareStop
+          // was awaiting a file fetch / loadContextFiles. Bail before
+          // mounting against a torn-down tour.
+          if (isStale()) return;
+          const row = this._tourRenderer.mountStop(probe);
+          if (row) {
+            nextRow = row;
+            nextIndex = probe;
+            break;
+          }
+        } else if (dir > 0) {
+          // Already-active probe under forward motion shouldn't count as a hit;
+          // we want to advance past it.
+        } else {
+          // Backward delta landing on the current stop: nothing earlier mounted.
+          break;
+        }
+        probe += dir;
+      }
 
-    this._tourActiveIndex = nextIndex;
-    this._tourRenderer.highlightActive(nextIndex);
-    this._tourRenderer.scrollToStop(nextIndex);
-    this._tourBar.setCompleted(false);
-    this._tourBar.setActiveIndex(nextIndex);
-    this._syncTourToolbarButton();
-    // Suppress unused-var lints; nextRow exists for symmetry with future
-    // post-mount work (focus management, telemetry).
-    void nextRow;
+      if (!nextRow) {
+        if (dir > 0) {
+          // Forward exhaustion: flip to completion using the last successfully
+          // mounted index. If we never mounted anything (initial open found no
+          // mountable stops), bail out cleanly so the toolbar resets.
+          if (this._tourActiveIndex < 0) {
+            console.warn('[Tour] no mountable stops found; exiting');
+            this._exitTour();
+            return;
+          }
+          this._tourBar.setCompleted(true);
+          this._tourBar.setActiveIndex(this._tourActiveIndex);
+          this._syncTourToolbarButton();
+          return;
+        }
+        // Backward exhaustion: leave the current stop mounted/active untouched.
+        console.debug('[Tour] no earlier mountable stop; staying put');
+        return;
+      }
+
+      // Successful candidate — only now unmount the previous stop.
+      if (this._tourActiveIndex >= 0 && this._tourActiveIndex !== nextIndex) {
+        this._tourRenderer.unmountStop(this._tourActiveIndex);
+      }
+
+      this._tourActiveIndex = nextIndex;
+      this._tourRenderer.highlightActive(nextIndex);
+      this._tourRenderer.scrollToStop(nextIndex);
+      this._tourBar.setCompleted(false);
+      this._tourBar.setActiveIndex(nextIndex);
+      this._syncTourToolbarButton();
+      // Suppress unused-var lints; nextRow exists for symmetry with future
+      // post-mount work (focus management, telemetry).
+      void nextRow;
+    } finally {
+      // Only release the latch if we still own the slot. A teardown that
+      // bumped `_tourGen` between entry and now has already invalidated
+      // our holder — and a fresh generation may have taken the slot for
+      // its own call. Clobbering it with `-1` would let two _advanceTour
+      // calls run concurrently on the new generation.
+      if (this._advanceInFlightGen === startGen) {
+        this._advanceInFlightGen = -1;
+      }
+    }
   }
 
   /**
@@ -1613,10 +1692,21 @@ class PRManager {
    * body class, and unregister keyboard handlers.
    */
   _exitTour() {
+    // Bump generation FIRST so any in-flight `_advanceTour` (sitting on an
+    // ensureContextFile / ensureLinesVisible await) sees the mismatch on
+    // resume and bails instead of mutating state for a torn-down tour.
+    this._tourGen += 1;
+    let drain = Promise.resolve();
     if (this._tourRenderer) {
-      this._tourRenderer.unmountAll();
+      // unmountAll fires-and-forgets context-file DELETEs but returns a
+      // drain promise. Stash it on `_tourCleanupPending` so the next open
+      // can await it before reading wrappers — otherwise the DELETE's
+      // loadContextFiles reload can rip the new tour's wrapper out from
+      // under an active stop.
+      drain = this._tourRenderer.unmountAll();
       this._tourRenderer.setActive(false);
     }
+    this._tourCleanupPending = drain;
     if (this._tourBar) {
       this._tourBar.unmount();
     }
@@ -1632,12 +1722,21 @@ class PRManager {
   }
 
   /**
-   * Exit, then immediately re-open from stop 0. If a newer tour was
-   * stashed via `review:tour_ready`, exit applies it before reopening.
+   * Exit, then re-open from stop 0. Async because `_openTourAtStart`
+   * drains the prior tour's pending teardown (context-file DELETEs +
+   * their loadContextFiles reloads) before reading wrappers, so the
+   * fresh tour can't mount against a wrapper the old DELETE is about to
+   * tear down. If a newer tour was stashed via `review:tour_ready`,
+   * `_exitTour` swaps it in before we reopen.
+   *
+   * Caller (`onRestart` toolbar callback) is fire-and-forget; the
+   * returned promise is for symmetry / testability.
+   *
+   * @returns {Promise<void>}
    */
-  _restartTour() {
+  async _restartTour() {
     this._exitTour();
-    this._openTourAtStart();
+    await this._openTourAtStart();
   }
 
   /**
