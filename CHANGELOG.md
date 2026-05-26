@@ -1,5 +1,22 @@
 # Changelog
 
+## 3.5.0
+
+### Minor Changes
+
+- 6fec83b: GitHub PR review-comment integration is now opt-in via a new `external_comments` flag in `~/.pair-review/config.json`. Defaults to `false`. When enabled, the **External** segment, the refresh button, the background sync, and the `/api/reviews/*/external-comments*` endpoints all light up. When disabled (the new default), they are completely absent — no UI, no requests, no routes mounted.
+- 6fec83b: Display existing GitHub PR review comments inline in the diff alongside AI suggestions and user comments, with a distinct blue theme. Threads are preserved and each comment includes a chat-about button so you can discuss it with the AI.
+- 2351cf2: Run multiple chat conversations side-by-side. The chat panel now shows a tab strip — use the `+` button to start a new conversation and the `x` on each tab to close one. A status dot on each tab signals idle, streaming, or error at a glance, so background conversations keep working while you read another. Open tabs and the focused conversation are remembered across page reloads, and the session history dropdown marks already-open conversations so picking one focuses its tab instead of duplicating it.
+- 6fec83b: Add an **External** segment to the Review panel's navigation bar (AI | User | External | All), listing one entry per external GitHub PR review thread. Clicking an entry scrolls the inline thread into view and briefly highlights it. The External segment is hidden in Local mode. The segment bar now also supports horizontal scrolling via left/right chevrons when its buttons don't all fit in the panel width.
+
+### Patch Changes
+
+- 6fec83b: Consolidate the "Refresh GitHub comments" button to a single location in the Review panel header, and resize its icon to match the adjacent navigation controls. The duplicate button next to **Analyze** has been removed; use the Review panel button or the top-level PR refresh button instead.
+- 3ffc486: Honor `availability_command` for chat providers. Built-in providers and dynamic chat providers defined in config can now run a configured probe to determine availability instead of falling back to the generic `<command> --version` check (or, for Pi, the cached AI availability). Also hardens the underlying check: stdout/stderr are discarded to avoid pipe-buffer deadlock on verbose probes, signal-terminated processes are distinguished from non-zero exits, and error messages no longer leak the raw shell command.
+- 6fec83b: Polish the inline GitHub PR review comment display: bulleted lists, italics, and blockquotes inside comment bodies now render correctly, and root/reply cards share a clean right edge. The dedicated "Chat about thread" button is gone — the chat icon on the thread's root comment now opens a thread chat, while reply icons still chat about that single reply.
+  </content>
+  </invoke>
+
 ## 3.4.1
 
 ### Patch Changes
