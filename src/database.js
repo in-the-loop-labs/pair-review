@@ -21,7 +21,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 44;
+const CURRENT_SCHEMA_VERSION = 46;
 
 /**
  * Database schema SQL statements
@@ -299,6 +299,35 @@ const SCHEMA_SQL = {
       last_fetched_at TEXT,
       created_at TEXT NOT NULL
     )
+  `,
+
+  external_comments: `
+    CREATE TABLE IF NOT EXISTS external_comments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      review_id INTEGER NOT NULL,
+      source TEXT NOT NULL,
+      external_id TEXT NOT NULL,
+      in_reply_to_id TEXT,
+      parent_id INTEGER,
+      external_url TEXT,
+      author TEXT,
+      author_url TEXT,
+      file TEXT NOT NULL,
+      side TEXT,
+      line_start INTEGER,
+      line_end INTEGER,
+      diff_position INTEGER,
+      commit_sha TEXT,
+      is_outdated INTEGER NOT NULL DEFAULT 0,
+      original_line_start INTEGER,
+      original_line_end INTEGER,
+      original_commit_sha TEXT,
+      body TEXT,
+      external_created_at TEXT,
+      synced_at TEXT,
+      FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE,
+      FOREIGN KEY (parent_id) REFERENCES external_comments(id) ON DELETE SET NULL
+    )
   `
 };
 
@@ -341,7 +370,11 @@ const INDEX_SQL = [
   // Worktree pool indexes
   'CREATE INDEX IF NOT EXISTS idx_worktree_pool_repo ON worktree_pool(repository)',
   'CREATE INDEX IF NOT EXISTS idx_worktree_pool_status ON worktree_pool(repository, status)',
-  'CREATE INDEX IF NOT EXISTS idx_worktree_pool_lru ON worktree_pool(repository, status, last_switched_at)'
+  'CREATE INDEX IF NOT EXISTS idx_worktree_pool_lru ON worktree_pool(repository, status, last_switched_at)',
+  // External comments indexes (read-only mirror of GitHub/etc. PR review comments)
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_external_comments_unique ON external_comments(review_id, source, external_id)',
+  'CREATE INDEX IF NOT EXISTS idx_external_comments_anchor ON external_comments(review_id, file, line_end)',
+  'CREATE INDEX IF NOT EXISTS idx_external_comments_parent_lookup ON external_comments(review_id, source, in_reply_to_id)'
 ];
 
 /**
@@ -1886,6 +1919,165 @@ const MIGRATIONS = {
       console.log('  Column level_outcomes already exists');
     }
     console.log('Migration to schema version 44 complete');
+  },
+
+  // Migration to version 45: Create external_comments table for read-only mirroring
+  // of GitHub (and future GitLab/Linear/etc.) PR review comments.
+  // Idempotent: CREATE TABLE / CREATE INDEX use IF NOT EXISTS. Wrapped in a
+  // transaction so a crash mid-rebuild won't leave the schema half-built.
+  // No foreign_keys pragma toggle needed — this is a brand-new table with no
+  // existing data to migrate.
+  // NOTE: Migration 46 rebuilds this table to change the parent_id FK from
+  // ON DELETE CASCADE to ON DELETE SET NULL. The constraint here matches
+  // what 46 enforces so fresh installs land at the correct state before 46
+  // runs, and so a databases re-running this migration (idempotent path)
+  // doesn't fight 46's rebuild.
+  45: (db) => {
+    console.log('Running migration to schema version 45: Create external_comments table...');
+
+    const createSchema = db.transaction(() => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS external_comments (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          review_id INTEGER NOT NULL,
+          source TEXT NOT NULL,
+          external_id TEXT NOT NULL,
+          in_reply_to_id TEXT,
+          parent_id INTEGER,
+          external_url TEXT,
+          author TEXT,
+          author_url TEXT,
+          file TEXT NOT NULL,
+          side TEXT,
+          line_start INTEGER,
+          line_end INTEGER,
+          diff_position INTEGER,
+          commit_sha TEXT,
+          is_outdated INTEGER NOT NULL DEFAULT 0,
+          original_line_start INTEGER,
+          original_line_end INTEGER,
+          original_commit_sha TEXT,
+          body TEXT,
+          external_created_at TEXT,
+          synced_at TEXT,
+          FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE,
+          FOREIGN KEY (parent_id) REFERENCES external_comments(id) ON DELETE SET NULL
+        )
+      `);
+      db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_external_comments_unique ON external_comments(review_id, source, external_id)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_external_comments_anchor ON external_comments(review_id, file, line_end)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_external_comments_parent_lookup ON external_comments(review_id, source, in_reply_to_id)');
+    });
+    createSchema();
+
+    console.log('  Created external_comments table with indexes');
+    console.log('Migration to schema version 45 complete');
+  },
+
+  // Migration to version 46: Rebuild external_comments so parent_id uses
+  // ON DELETE SET NULL instead of ON DELETE CASCADE.
+  //
+  // Why: the sync route prunes parent rows that disappear from the upstream
+  // snapshot while keeping replies whose external IDs are still present.
+  // Under CASCADE the kept replies were silently destroyed when their
+  // parent was deleted, defeating `listThreadsByReview`'s orphan-promotion
+  // logic and causing silent data loss.
+  //
+  // Follows the SQLite migration safety rules in CLAUDE.md:
+  //   - DROP TABLE IF EXISTS for the temp/rebuild table (idempotent restart)
+  //   - PRAGMA foreign_keys OFF in try/finally so the toggle is restored
+  //     even if the rebuild throws
+  //   - Transaction-wrapped DDL so partial failures don't leave a broken schema
+  //   - Indexes recreated by name to match production exactly
+  46: (db) => {
+    console.log('Running migration to schema version 46: Rebuild external_comments with ON DELETE SET NULL on parent_id...');
+
+    // Quick exit when the table doesn't exist yet — migration 45 hasn't run
+    // (older instance with version<45 will run 45 first; if someone reset
+    // user_version backwards this avoids crashing).
+    const tableInfo = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='external_comments'"
+    ).get();
+    if (!tableInfo) {
+      console.log('  external_comments table not present; nothing to rebuild');
+      console.log('Migration to schema version 46 complete');
+      return;
+    }
+
+    // Disable foreign-key enforcement for the duration of the rebuild so
+    // existing rows can be copied without spurious cascade checks. ALWAYS
+    // restore in a finally — partial restores corrupt later writes.
+    const originalForeignKeys = db.prepare('PRAGMA foreign_keys').get().foreign_keys;
+    db.exec('PRAGMA foreign_keys = OFF');
+    try {
+      const rebuild = db.transaction(() => {
+        // Drop any leftover rebuild table from a previous crashed run.
+        // Without this the next CREATE would either UNIQUE-conflict on its
+        // index name or silently keep stale rows around.
+        db.exec('DROP TABLE IF EXISTS external_comments_new');
+
+        db.exec(`
+          CREATE TABLE external_comments_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            review_id INTEGER NOT NULL,
+            source TEXT NOT NULL,
+            external_id TEXT NOT NULL,
+            in_reply_to_id TEXT,
+            parent_id INTEGER,
+            external_url TEXT,
+            author TEXT,
+            author_url TEXT,
+            file TEXT NOT NULL,
+            side TEXT,
+            line_start INTEGER,
+            line_end INTEGER,
+            diff_position INTEGER,
+            commit_sha TEXT,
+            is_outdated INTEGER NOT NULL DEFAULT 0,
+            original_line_start INTEGER,
+            original_line_end INTEGER,
+            original_commit_sha TEXT,
+            body TEXT,
+            external_created_at TEXT,
+            synced_at TEXT,
+            FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE,
+            FOREIGN KEY (parent_id) REFERENCES external_comments(id) ON DELETE SET NULL
+          )
+        `);
+
+        db.exec(`
+          INSERT INTO external_comments_new (
+            id, review_id, source, external_id, in_reply_to_id, parent_id,
+            external_url, author, author_url, file, side,
+            line_start, line_end, diff_position, commit_sha,
+            is_outdated, original_line_start, original_line_end, original_commit_sha,
+            body, external_created_at, synced_at
+          )
+          SELECT
+            id, review_id, source, external_id, in_reply_to_id, parent_id,
+            external_url, author, author_url, file, side,
+            line_start, line_end, diff_position, commit_sha,
+            is_outdated, original_line_start, original_line_end, original_commit_sha,
+            body, external_created_at, synced_at
+          FROM external_comments
+        `);
+
+        db.exec('DROP TABLE external_comments');
+        db.exec('ALTER TABLE external_comments_new RENAME TO external_comments');
+
+        // Recreate indexes by their canonical names — must match the
+        // INDEX_SQL block and the test schemas exactly.
+        db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_external_comments_unique ON external_comments(review_id, source, external_id)');
+        db.exec('CREATE INDEX IF NOT EXISTS idx_external_comments_anchor ON external_comments(review_id, file, line_end)');
+        db.exec('CREATE INDEX IF NOT EXISTS idx_external_comments_parent_lookup ON external_comments(review_id, source, in_reply_to_id)');
+      });
+      rebuild();
+    } finally {
+      db.exec(`PRAGMA foreign_keys = ${originalForeignKeys ? 'ON' : 'OFF'}`);
+    }
+
+    console.log('  Rebuilt external_comments with ON DELETE SET NULL on parent_id');
+    console.log('Migration to schema version 46 complete');
   }
 };
 
@@ -3492,6 +3684,377 @@ class CommentRepository {
 }
 
 /**
+ * ExternalCommentRepository class for managing external review comments
+ *
+ * External comments are a read-only mirror of review comments from external
+ * systems (GitHub, GitLab, etc.). The repository is the ONLY layer that talks
+ * to the external_comments table — routes and sync logic go through it.
+ *
+ * Upsert is keyed on UNIQUE(review_id, source, external_id). Parent resolution
+ * is a separate second pass because external APIs return rows in arrival order,
+ * not parent-before-child.
+ */
+class ExternalCommentRepository {
+  /**
+   * Create a new ExternalCommentRepository instance
+   * @param {Database} db - Database instance
+   */
+  constructor(db) {
+    this.db = db;
+  }
+
+  /**
+   * Insert or update a single external comment row.
+   *
+   * Keyed on (review_id, source, external_id). On conflict, updates all
+   * columns except `id` and `parent_id` (parent_id is set later by
+   * `resolveParents`). `synced_at` is set automatically to the current
+   * ISO timestamp.
+   *
+   * @param {number} reviewId - Local review id (FK → reviews.id)
+   * @param {string} source - Source system identifier (e.g. 'github')
+   * @param {Object} mappedRow - Mapped comment row (output of an adapter)
+   * @param {string} mappedRow.external_id - Source-system comment id
+   * @param {string} [mappedRow.in_reply_to_id] - Source-system parent comment id
+   * @param {string} [mappedRow.external_url] - Permalink
+   * @param {string} [mappedRow.author]
+   * @param {string} [mappedRow.author_url]
+   * @param {string} mappedRow.file
+   * @param {string} [mappedRow.side] - 'LEFT' or 'RIGHT'
+   * @param {number} [mappedRow.line_start]
+   * @param {number} [mappedRow.line_end]
+   * @param {number} [mappedRow.diff_position]
+   * @param {string} [mappedRow.commit_sha]
+   * @param {boolean|number} [mappedRow.is_outdated]
+   * @param {number} [mappedRow.original_line_start]
+   * @param {number} [mappedRow.original_line_end]
+   * @param {string} [mappedRow.original_commit_sha]
+   * @param {string} [mappedRow.body]
+   * @param {string} [mappedRow.external_created_at]
+   * @returns {Promise<number>} Local id of the inserted/updated row
+   */
+  async upsert(reviewId, source, mappedRow) {
+    if (!reviewId) {
+      throw new Error('upsert: reviewId is required');
+    }
+    if (!source) {
+      throw new Error('upsert: source is required');
+    }
+    if (!mappedRow || mappedRow.external_id === undefined || mappedRow.external_id === null) {
+      throw new Error('upsert: mappedRow.external_id is required');
+    }
+    if (!mappedRow.file) {
+      throw new Error('upsert: mappedRow.file is required');
+    }
+
+    const syncedAt = new Date().toISOString();
+    const externalId = String(mappedRow.external_id);
+    const inReplyToId = mappedRow.in_reply_to_id !== undefined && mappedRow.in_reply_to_id !== null
+      ? String(mappedRow.in_reply_to_id)
+      : null;
+    const isOutdated = mappedRow.is_outdated ? 1 : 0;
+    const side = mappedRow.side === 'LEFT' ? 'LEFT' : (mappedRow.side === 'RIGHT' ? 'RIGHT' : null);
+
+    // SQLite UPSERT. Update every column except id and parent_id; parent_id is
+    // resolved by the second pass (resolveParents). RETURNING id gives the
+    // local row id whether it was inserted or updated.
+    const row = await queryOne(this.db, `
+      INSERT INTO external_comments (
+        review_id, source, external_id, in_reply_to_id,
+        external_url, author, author_url,
+        file, side, line_start, line_end, diff_position, commit_sha,
+        is_outdated, original_line_start, original_line_end, original_commit_sha,
+        body, external_created_at, synced_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(review_id, source, external_id) DO UPDATE SET
+        in_reply_to_id = excluded.in_reply_to_id,
+        external_url = excluded.external_url,
+        author = excluded.author,
+        author_url = excluded.author_url,
+        file = excluded.file,
+        side = excluded.side,
+        line_start = excluded.line_start,
+        line_end = excluded.line_end,
+        diff_position = excluded.diff_position,
+        commit_sha = excluded.commit_sha,
+        is_outdated = excluded.is_outdated,
+        original_line_start = excluded.original_line_start,
+        original_line_end = excluded.original_line_end,
+        original_commit_sha = excluded.original_commit_sha,
+        body = excluded.body,
+        external_created_at = excluded.external_created_at,
+        synced_at = excluded.synced_at
+      RETURNING id
+    `, [
+      reviewId,
+      source,
+      externalId,
+      inReplyToId,
+      mappedRow.external_url ?? null,
+      mappedRow.author ?? null,
+      mappedRow.author_url ?? null,
+      mappedRow.file,
+      side,
+      mappedRow.line_start ?? null,
+      mappedRow.line_end ?? null,
+      mappedRow.diff_position ?? null,
+      mappedRow.commit_sha ?? null,
+      isOutdated,
+      mappedRow.original_line_start ?? null,
+      mappedRow.original_line_end ?? null,
+      mappedRow.original_commit_sha ?? null,
+      mappedRow.body ?? null,
+      mappedRow.external_created_at ?? null,
+      syncedAt
+    ]);
+
+    return row.id;
+  }
+
+  /**
+   * Resolve `parent_id` for every row that has an `in_reply_to_id`.
+   *
+   * Looks up the parent row by (review_id, source, external_id =
+   * in_reply_to_id) and sets parent_id to its local id. Rows whose
+   * in_reply_to_id doesn't match any sibling stay with parent_id = NULL
+   * (orphan / out-of-batch parent).
+   *
+   * Returns the count of rows that had a non-null parent_id after the
+   * update — i.e. rows that successfully resolved. Idempotent: re-running
+   * produces the same count without further changes.
+   *
+   * @param {number} reviewId
+   * @param {string} source
+   * @returns {Promise<number>} Number of rows whose parent_id is now non-null
+   */
+  async resolveParents(reviewId, source) {
+    if (!reviewId) {
+      throw new Error('resolveParents: reviewId is required');
+    }
+    if (!source) {
+      throw new Error('resolveParents: source is required');
+    }
+
+    // EXISTS guard: SQLite's correlated subquery returns NULL when no
+    // sibling matches, which would silently NULL-overwrite a
+    // previously-resolved parent_id. Restrict the UPDATE to rows where the
+    // parent actually exists in the current snapshot — replies whose
+    // parent has been pruned (deleteMissing) keep their previously-resolved
+    // parent_id, and orphan-promotion in listThreadsByReview takes over.
+    await run(this.db, `
+      UPDATE external_comments
+      SET parent_id = (
+        SELECT p.id
+        FROM external_comments AS p
+        WHERE p.review_id = external_comments.review_id
+          AND p.source = external_comments.source
+          AND p.external_id = external_comments.in_reply_to_id
+      )
+      WHERE review_id = ?
+        AND source = ?
+        AND in_reply_to_id IS NOT NULL
+        AND EXISTS (
+          SELECT 1
+          FROM external_comments AS p
+          WHERE p.review_id = external_comments.review_id
+            AND p.source = external_comments.source
+            AND p.external_id = external_comments.in_reply_to_id
+        )
+    `, [reviewId, source]);
+
+    // Return the count of resolved (non-null parent_id) rows for this batch.
+    const row = await queryOne(this.db, `
+      SELECT COUNT(*) AS count
+      FROM external_comments
+      WHERE review_id = ?
+        AND source = ?
+        AND in_reply_to_id IS NOT NULL
+        AND parent_id IS NOT NULL
+    `, [reviewId, source]);
+
+    return row ? row.count : 0;
+  }
+
+  /**
+   * List all external comments for a review, flat (roots + replies).
+   *
+   * Ordered by file, then line_end with NULLs last (outdated rows sink to
+   * the bottom of their file group), then external_created_at.
+   *
+   * @param {number} reviewId
+   * @param {Object} [options]
+   * @param {string} [options.source] - Filter by source if provided
+   * @returns {Promise<Array<Object>>} All matching rows
+   */
+  async listByReview(reviewId, options = {}) {
+    if (!reviewId) {
+      throw new Error('listByReview: reviewId is required');
+    }
+
+    const params = [reviewId];
+    let sql = `
+      SELECT *
+      FROM external_comments
+      WHERE review_id = ?
+    `;
+    if (options.source) {
+      sql += ' AND source = ?';
+      params.push(options.source);
+    }
+    // Sort by COALESCE(line_end, original_line_end) so outdated rows (line_end
+    // null because the comment's current anchor was lost upstream) still sort
+    // near their renderable position via original_line_end. Without COALESCE,
+    // every outdated row sinks to the bottom of its file regardless of which
+    // original line it was anchored to — confusing when the original anchor
+    // is in the middle of the file.
+    sql += `
+      ORDER BY
+        file ASC,
+        CASE WHEN COALESCE(line_end, original_line_end) IS NULL THEN 1 ELSE 0 END,
+        COALESCE(line_end, original_line_end) ASC,
+        external_created_at ASC,
+        id ASC
+    `;
+
+    return query(this.db, sql, params);
+  }
+
+  /**
+   * List external comments grouped into threads.
+   *
+   * Returns one object per thread root (rows where parent_id IS NULL).
+   * Each root has a `replies` array containing reply rows ordered by
+   * `external_created_at`. Roots themselves are ordered the same way as
+   * `listByReview`.
+   *
+   * A reply whose `parent_id` does not resolve to a root in this result
+   * set (shouldn't happen if `resolveParents` ran, but defensive) is
+   * promoted to a root with `replies: []`.
+   *
+   * @param {number} reviewId
+   * @param {Object} [options]
+   * @param {string} [options.source] - Filter by source if provided
+   * @returns {Promise<Array<Object>>}
+   */
+  async listThreadsByReview(reviewId, options = {}) {
+    const rows = await this.listByReview(reviewId, options);
+
+    // Split rows into roots and replies in a single pass.
+    const roots = [];
+    const rootById = new Map();
+    const replies = [];
+
+    for (const row of rows) {
+      if (row.parent_id === null || row.parent_id === undefined) {
+        const thread = { ...row, replies: [] };
+        roots.push(thread);
+        rootById.set(row.id, thread);
+      } else {
+        replies.push(row);
+      }
+    }
+
+    // Attach replies to their root. Orphans (parent_id refers to a row not
+    // in this result — possible if filtered by source, or a defensive guard
+    // against data inconsistency) are promoted to standalone roots.
+    for (const reply of replies) {
+      const root = rootById.get(reply.parent_id);
+      if (root) {
+        root.replies.push(reply);
+      } else {
+        const thread = { ...reply, replies: [] };
+        roots.push(thread);
+        rootById.set(reply.id, thread);
+      }
+    }
+
+    // listByReview already ordered replies by external_created_at, so reply
+    // arrays are pre-sorted. Re-sort defensively for promoted orphans that
+    // were appended after roots in their file group.
+    for (const thread of roots) {
+      if (thread.replies.length > 1) {
+        thread.replies.sort((a, b) => {
+          const ta = a.external_created_at || '';
+          const tb = b.external_created_at || '';
+          if (ta < tb) return -1;
+          if (ta > tb) return 1;
+          return a.id - b.id;
+        });
+      }
+    }
+
+    return roots;
+  }
+
+  /**
+   * Delete external comment rows whose external_id is NOT in the provided
+   * set, scoped to (review_id, source). Used by the sync route to reconcile
+   * the local mirror after upserting the latest snapshot — rows that
+   * upstream removed (or that the snapshot no longer contains because they
+   * lost anchors) get pruned.
+   *
+   * When `keepExternalIds` is empty, this deletes every row for that
+   * (review_id, source). Callers must wrap this in the same transaction as
+   * the upserts to avoid a window where rows are missing.
+   *
+   * @param {number} reviewId
+   * @param {string} source
+   * @param {Iterable<string>} keepExternalIds - Set/Array of external_ids to keep
+   * @returns {Promise<number>} Count of rows deleted
+   */
+  async deleteMissing(reviewId, source, keepExternalIds) {
+    if (!reviewId) {
+      throw new Error('deleteMissing: reviewId is required');
+    }
+    if (!source) {
+      throw new Error('deleteMissing: source is required');
+    }
+
+    const keepList = Array.from(keepExternalIds || []).map((v) => String(v));
+
+    if (keepList.length === 0) {
+      const result = await run(this.db,
+        'DELETE FROM external_comments WHERE review_id = ? AND source = ?',
+        [reviewId, source]
+      );
+      return result.changes || 0;
+    }
+
+    const placeholders = keepList.map(() => '?').join(',');
+    const result = await run(this.db, `
+      DELETE FROM external_comments
+      WHERE review_id = ?
+        AND source = ?
+        AND external_id NOT IN (${placeholders})
+    `, [reviewId, source, ...keepList]);
+    return result.changes || 0;
+  }
+
+  /**
+   * Count of external comments for a review, optionally filtered by source.
+   *
+   * @param {number} reviewId
+   * @param {string} [source]
+   * @returns {Promise<number>}
+   */
+  async countByReview(reviewId, source) {
+    if (!reviewId) {
+      throw new Error('countByReview: reviewId is required');
+    }
+
+    let sql = 'SELECT COUNT(*) AS count FROM external_comments WHERE review_id = ?';
+    const params = [reviewId];
+    if (source) {
+      sql += ' AND source = ?';
+      params.push(source);
+    }
+
+    const row = await queryOne(this.db, sql, params);
+    return row ? row.count : 0;
+  }
+}
+
+/**
  * ReviewRepository class for managing review database records
  */
 class ReviewRepository {
@@ -5002,6 +5565,7 @@ module.exports = {
   RepoSettingsRepository,
   ReviewRepository,
   CommentRepository,
+  ExternalCommentRepository,
   PRMetadataRepository,
   AnalysisRunRepository,
   GitHubReviewRepository,

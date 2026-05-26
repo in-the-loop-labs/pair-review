@@ -284,9 +284,10 @@ describe('Local mode: refreshDiff() reloads comments after diff refresh', () => 
 });
 
 describe('PR mode: refreshPR() call ordering matches loadPR()', () => {
-  it('should reload comments similarly to how loadPR does on initial load', async () => {
-    // This test ensures refreshPR() follows the same pattern as loadPR()
-    // for re-populating comments after rendering the diff.
+  it('should reload all overlays via _rerenderAllOverlays after rebuilding the diff', async () => {
+    // refreshPR now delegates to _rerenderAllOverlays, which centralizes
+    // re-rendering of AI suggestions, user comments, AND external comments
+    // so adding a fourth overlay only requires updating that helper.
     const fs = require('fs');
     const path = require('path');
     const prSource = fs.readFileSync(
@@ -294,29 +295,28 @@ describe('PR mode: refreshPR() call ordering matches loadPR()', () => {
       'utf-8'
     );
 
-    // In loadPR: loadAndDisplayFiles -> loadUserComments -> loadAISuggestions
-    // In refreshPR: loadAndDisplayFiles -> loadUserComments -> loadAISuggestions
-    // Both should follow the same pattern.
-
-    // Find refreshPR method
     const refreshPRMatch = prSource.match(
       /async refreshPR\(\)\s*\{[\s\S]*?(?=\n  (?:async\s)?\w+\s*\(|\n\})/
     );
     expect(refreshPRMatch).toBeTruthy();
     const refreshPRBody = refreshPRMatch[0];
 
-    // Verify the reload calls exist in refreshPR
     const displayIdx = refreshPRBody.indexOf('loadAndDisplayFiles');
-    const commentsIdx = refreshPRBody.indexOf('loadUserComments');
-    const suggestionsIdx = refreshPRBody.indexOf('loadAISuggestions');
+    const overlaysIdx = refreshPRBody.indexOf('_rerenderAllOverlays');
 
     expect(displayIdx).toBeGreaterThan(-1);
-    expect(commentsIdx).toBeGreaterThan(-1);
-    expect(suggestionsIdx).toBeGreaterThan(-1);
+    expect(overlaysIdx).toBeGreaterThan(-1);
+    expect(overlaysIdx).toBeGreaterThan(displayIdx);
 
-    // Verify order
-    expect(commentsIdx).toBeGreaterThan(displayIdx);
-    expect(suggestionsIdx).toBeGreaterThan(commentsIdx);
+    // The shared overlay helper must touch all three renderers.
+    const overlaysMatch = prSource.match(
+      /async _rerenderAllOverlays\([\s\S]*?\)\s*\{[\s\S]*?(?=\n  (?:async\s)?\w+\s*\(|\n\})/
+    );
+    expect(overlaysMatch).toBeTruthy();
+    const overlaysBody = overlaysMatch[0];
+    expect(overlaysBody).toMatch(/loadUserComments/);
+    expect(overlaysBody).toMatch(/loadAISuggestions/);
+    expect(overlaysBody).toMatch(/externalCommentManager/);
   });
 });
 

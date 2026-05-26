@@ -1477,6 +1477,146 @@ describe('GitHubClient', () => {
     });
   });
 
+  describe('listReviewComments', () => {
+    it('should return raw paginated comment array for a PR', async () => {
+      const client = new GitHubClient('test-token');
+      const apiComments = [
+        {
+          id: 101,
+          pull_request_review_id: 9001,
+          in_reply_to_id: undefined,
+          body: 'First comment',
+          user: { login: 'alice', html_url: 'https://github.com/alice' },
+          path: 'src/index.js',
+          commit_id: 'abc123',
+          original_commit_id: 'abc123',
+          position: 5,
+          original_position: 5,
+          line: 42,
+          start_line: null,
+          original_line: 42,
+          original_start_line: null,
+          side: 'RIGHT',
+          start_side: null,
+          html_url: 'https://github.com/owner/repo/pull/42#discussion_r101',
+          created_at: '2026-05-10T12:00:00Z',
+          updated_at: '2026-05-10T12:00:00Z'
+        },
+        {
+          id: 102,
+          pull_request_review_id: 9002,
+          in_reply_to_id: 101,
+          body: 'Reply to first',
+          user: { login: 'bob', html_url: 'https://github.com/bob' },
+          path: 'src/index.js',
+          commit_id: 'abc123',
+          original_commit_id: 'abc123',
+          position: null,
+          original_position: 5,
+          line: null,
+          start_line: null,
+          original_line: 42,
+          original_start_line: null,
+          side: 'RIGHT',
+          start_side: null,
+          html_url: 'https://github.com/owner/repo/pull/42#discussion_r102',
+          created_at: '2026-05-11T09:00:00Z',
+          updated_at: '2026-05-11T09:00:00Z'
+        }
+      ];
+      const mockPaginate = vi.fn().mockResolvedValue(apiComments);
+      client.octokit.paginate = mockPaginate;
+
+      const result = await client.listReviewComments({
+        owner: 'owner',
+        repo: 'repo',
+        pull_number: 42
+      });
+
+      // Returned raw, unchanged
+      expect(result).toBe(apiComments);
+      expect(result).toHaveLength(2);
+      expect(result[0].id).toBe(101);
+      expect(result[1].in_reply_to_id).toBe(101);
+
+      // paginate called with the rest endpoint and correct params
+      expect(mockPaginate).toHaveBeenCalledTimes(1);
+      expect(mockPaginate).toHaveBeenCalledWith(
+        expect.any(Function),
+        { owner: 'owner', repo: 'repo', pull_number: 42, per_page: 100 }
+      );
+      // The first arg should be the listReviewComments endpoint reference
+      expect(mockPaginate.mock.calls[0][0]).toBe(client.octokit.rest.pulls.listReviewComments);
+    });
+
+    it('should return empty array for a PR with no review comments', async () => {
+      const client = new GitHubClient('test-token');
+      client.octokit.paginate = vi.fn().mockResolvedValue([]);
+
+      const result = await client.listReviewComments({
+        owner: 'owner',
+        repo: 'repo',
+        pull_number: 1
+      });
+
+      expect(result).toEqual([]);
+    });
+
+    it('should throw GitHubApiError with status 404 when PR is not found', async () => {
+      const client = new GitHubClient('test-token');
+      const notFoundError = new Error('Not Found');
+      notFoundError.status = 404;
+      client.octokit.paginate = vi.fn().mockRejectedValue(notFoundError);
+
+      try {
+        await client.listReviewComments({ owner: 'owner', repo: 'repo', pull_number: 999 });
+        throw new Error('Expected listReviewComments to throw');
+      } catch (error) {
+        expect(error).toBeInstanceOf(GitHubApiError);
+        expect(error.status).toBe(404);
+        expect(error.message).toContain('Pull request #999 not found');
+      }
+    });
+
+    it('should throw GitHubApiError with status 429 on rate limit (403 + zero remaining)', async () => {
+      const client = new GitHubClient('test-token');
+      const rateLimitError = new Error('API rate limit exceeded');
+      rateLimitError.status = 403;
+      rateLimitError.response = {
+        headers: {
+          'x-ratelimit-remaining': '0',
+          'x-ratelimit-reset': String(Math.floor(Date.now() / 1000) + 60)
+        }
+      };
+      client.octokit.paginate = vi.fn().mockRejectedValue(rateLimitError);
+
+      try {
+        await client.listReviewComments({ owner: 'owner', repo: 'repo', pull_number: 7 });
+        throw new Error('Expected listReviewComments to throw');
+      } catch (error) {
+        expect(error).toBeInstanceOf(GitHubApiError);
+        expect(error.status).toBe(429);
+        expect(error.message).toContain('rate limit');
+      }
+    });
+
+    it('should propagate network errors as GitHubApiError with status 503', async () => {
+      const client = new GitHubClient('test-token');
+      const networkError = new Error('getaddrinfo ENOTFOUND api.github.com');
+      networkError.code = 'ENOTFOUND';
+      client.octokit.paginate = vi.fn().mockRejectedValue(networkError);
+
+      try {
+        await client.listReviewComments({ owner: 'owner', repo: 'repo', pull_number: 3 });
+        throw new Error('Expected listReviewComments to throw');
+      } catch (error) {
+        expect(error).toBeInstanceOf(GitHubApiError);
+        expect(error.status).toBe(503);
+        expect(error.message).toContain('Network error');
+      }
+    });
+  });
+
   describe('GitHubApiError', () => {
     it('should be an instance of Error', () => {
       const error = new GitHubApiError('test message', 401);
@@ -1533,6 +1673,120 @@ describe('GitHubClient', () => {
         expect(error.status).toBe(429);
         expect(error.message).toContain('rate limit');
       }
+    });
+
+    it('should throw GitHubApiError with status 403 for permission errors (non-rate-limit)', async () => {
+      // Regression: a 403 with empty rate-limit headers (real permission /
+      // scope failure) used to fall through to the generic `new Error()`
+      // branch and route handlers mapped it to 500, hiding the real cause.
+      // Now it surfaces as a typed GitHubApiError(status=403).
+      const client = new GitHubClient('test-token');
+      const permError = new Error('Forbidden');
+      permError.status = 403;
+      // No x-ratelimit-remaining header — this is NOT a rate-limit failure.
+      permError.response = { headers: {} };
+
+      let captured = null;
+      try {
+        await client.handleApiError(permError, 'owner', 'repo', 7);
+      } catch (error) {
+        captured = error;
+      }
+      expect(captured).toBeInstanceOf(GitHubApiError);
+      expect(captured.status).toBe(403);
+      expect(captured.message).toMatch(/permissions|scopes/i);
+      expect(captured.message).toContain('owner/repo');
+    });
+
+    it('should throw GitHubApiError with status 403 when response is missing entirely', async () => {
+      // Defensive: some Octokit error paths don't attach `.response` at all.
+      const client = new GitHubClient('test-token');
+      const permError = new Error('Forbidden');
+      permError.status = 403;
+
+      let captured = null;
+      try {
+        await client.handleApiError(permError, 'owner', 'repo', 1);
+      } catch (error) {
+        captured = error;
+      }
+      expect(captured).toBeInstanceOf(GitHubApiError);
+      expect(captured.status).toBe(403);
+    });
+
+    it('should map 403 with retry-after header to a 429 rate-limit error (secondary rate limit)', async () => {
+      // Regression: secondary rate limits / abuse detection return 403
+      // WITHOUT the standard rate-limit headers but WITH a `retry-after`
+      // header. Without this branch they were misclassified as permission
+      // failures.
+      const client = new GitHubClient('test-token');
+      const secondaryRateLimitError = new Error('You have exceeded a secondary rate limit.');
+      secondaryRateLimitError.status = 403;
+      secondaryRateLimitError.response = { headers: { 'retry-after': '30' } };
+
+      let captured = null;
+      try {
+        await client.handleApiError(secondaryRateLimitError, 'owner', 'repo', 1);
+      } catch (error) {
+        captured = error;
+      }
+      expect(captured).toBeInstanceOf(GitHubApiError);
+      expect(captured.status).toBe(429);
+      expect(captured.message).toMatch(/rate limit/i);
+      expect(captured.message).toContain('30');
+    });
+
+    it('should map 403 with "secondary rate limit" in the message to a 429 rate-limit error', async () => {
+      const client = new GitHubClient('test-token');
+      const secondary = new Error('Secondary rate limit triggered. Try again later.');
+      secondary.status = 403;
+      secondary.response = { headers: {} };
+
+      let captured = null;
+      try {
+        await client.handleApiError(secondary, 'owner', 'repo', 1);
+      } catch (error) {
+        captured = error;
+      }
+      expect(captured).toBeInstanceOf(GitHubApiError);
+      expect(captured.status).toBe(429);
+      expect(captured.message).toMatch(/rate limit/i);
+    });
+
+    it('should map 403 with "abuse" in the message to a 429 rate-limit error', async () => {
+      const client = new GitHubClient('test-token');
+      const abuse = new Error('You have triggered an abuse detection mechanism.');
+      abuse.status = 403;
+      abuse.response = { headers: {} };
+
+      let captured = null;
+      try {
+        await client.handleApiError(abuse, 'owner', 'repo', 1);
+      } catch (error) {
+        captured = error;
+      }
+      expect(captured).toBeInstanceOf(GitHubApiError);
+      expect(captured.status).toBe(429);
+      expect(captured.message).toMatch(/rate limit/i);
+    });
+
+    it('should still classify a plain "Forbidden" 403 as a permission error (regression)', async () => {
+      // Make sure ITEM 9 didn't accidentally swallow legitimate permission
+      // failures into the rate-limit branch.
+      const client = new GitHubClient('test-token');
+      const permError = new Error('Forbidden');
+      permError.status = 403;
+      permError.response = { headers: {} };
+
+      let captured = null;
+      try {
+        await client.handleApiError(permError, 'owner', 'repo', 1);
+      } catch (error) {
+        captured = error;
+      }
+      expect(captured).toBeInstanceOf(GitHubApiError);
+      expect(captured.status).toBe(403);
+      expect(captured.message).toMatch(/permissions|scopes/i);
     });
 
     it('should throw GitHubApiError with status 404 for not found errors', async () => {

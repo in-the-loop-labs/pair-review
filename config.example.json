@@ -13,6 +13,8 @@
   "debug_stream": false,
   "yolo": false,
   "skip_update_notifier": false,
+  "_external_comments_comment": "Opt-in feature toggle for fetching and displaying GitHub PR review comments inline. Default: false. Set to true to enable the External segment, refresh button, and /api/reviews/*/external-comments* routes.",
+  "external_comments": false,
   "chat": {
     "enable_shortcuts": true,
     "enter_to_send": true

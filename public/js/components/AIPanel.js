@@ -34,6 +34,7 @@ class AIPanel {
         this.isCollapsed = this.panel?.classList.contains('collapsed') ?? false;
         this.findings = [];
         this.comments = [];
+        this.externalThreads = [];
         this.selectedLevel = 'final';
         this.selectedSegment = 'ai'; // Default to AI segment until PR loads
         this.currentIndex = -1; // Current navigation index
@@ -41,7 +42,7 @@ class AIPanel {
         this.analysisState = 'unknown'; // 'unknown' | 'loading' | 'complete' | 'none'
 
         // Track selected item by stable identifier for restoration
-        this.selectedItemKey = null; // Format: "file:lineNumber:itemType"
+        this.selectedItemKey = null; // Format: "file:lineNumber:itemType:identity"
 
         // Canonical file order for consistent sorting across components
         this.fileOrder = new Map(); // Map of file path -> index
@@ -52,6 +53,19 @@ class AIPanel {
         this.initElements();
         this.bindEvents();
         this.setupKeyboardNavigation();
+        this.setupSegmentOverflow();
+        // Hide the External segment when:
+        //   1. Local mode — no external source exists for local reviews.
+        //   2. The `external_comments` feature toggle is off in config.
+        // Both are synchronous flags (set before this constructor runs) so
+        // the segment never flashes into view when it shouldn't.
+        if (typeof window !== 'undefined') {
+            const localMode = window.PAIR_REVIEW_LOCAL_MODE;
+            const externalDisabled = window.PAIR_REVIEW_RUNTIME_CONFIG?.external_comments_enabled === false;
+            if (localMode || externalDisabled) {
+                this.segmentExternalBtn?.setAttribute('hidden', '');
+            }
+        }
         // Don't restore segment on init - wait for setPR() call
 
         // Set CSS variable immediately based on collapsed state to prevent flicker
@@ -80,7 +94,11 @@ class AIPanel {
 
         // Segment control
         this.segmentControl = document.getElementById('segment-control');
+        this.segmentControlScroll = document.getElementById('segment-control-scroll');
         this.segmentBtns = this.segmentControl?.querySelectorAll('.segment-btn');
+        this.segmentScrollLeft = document.getElementById('segment-scroll-left');
+        this.segmentScrollRight = document.getElementById('segment-scroll-right');
+        this.segmentExternalBtn = this.segmentControl?.querySelector('.segment-btn[data-segment="external"]');
 
         // Create filter toggle button (will be inserted after segment control)
         this.filterToggleBtn = null; // Created dynamically in createFilterToggle()
@@ -122,13 +140,14 @@ class AIPanel {
         }
         this.filterToggleBtn.setAttribute('aria-label', this.filterToggleBtn.title);
 
-        // Insert inside segment-control container, after segment-control-inner
-        // This positions it on the same row as the segment buttons
-        const innerControl = this.segmentControl.querySelector('.segment-control-inner');
-        if (innerControl) {
-            this.segmentControl.insertBefore(this.filterToggleBtn, innerControl.nextSibling);
-        } else {
-            // Fallback: append to the segment control container
+        // Insert as the LAST child of segment-control so it sits at the
+        // right edge of the row, after the segment buttons and the right
+        // overflow chevron. Previous versions used insertBefore relative
+        // to .segment-control-inner — that breaks now that the inner row
+        // is nested inside a scroll wrapper. Append-to-end is correct for
+        // both old and new structures and avoids the cross-parent
+        // insertBefore footgun.
+        if (this.segmentControl) {
             this.segmentControl.appendChild(this.filterToggleBtn);
         }
 
@@ -167,6 +186,14 @@ class AIPanel {
         // Filter toggle button
         if (this.filterToggleBtn) {
             this.filterToggleBtn.addEventListener('click', () => this.onFilterToggle());
+        }
+
+        // Segment overflow scroll chevrons
+        if (this.segmentScrollLeft) {
+            this.segmentScrollLeft.addEventListener('click', () => this.scrollSegmentRow(-1));
+        }
+        if (this.segmentScrollRight) {
+            this.segmentScrollRight.addEventListener('click', () => this.scrollSegmentRow(1));
         }
     }
 
@@ -340,6 +367,23 @@ class AIPanel {
         this._restoreOrCollapsePanel();
         this.restoreSegmentSelection();
         this.restoreFilterState();
+
+        // If the external-comment manager finished its initial fetch BEFORE
+        // the panel was wired up (race on slow loads), pull the threads it
+        // already has so the External segment count is correct on first
+        // paint. Guarded behind a function check so tests that stub the
+        // manager don't blow up.
+        if (typeof window !== 'undefined'
+            && window.externalCommentManager
+            && typeof window.externalCommentManager.getAllThreads === 'function') {
+            try {
+                this.setExternalThreads(window.externalCommentManager.getAllThreads());
+            } catch (err) {
+                if (typeof console !== 'undefined') {
+                    console.warn('[AIPanel] initial external thread sync failed', err);
+                }
+            }
+        }
     }
 
     /**
@@ -358,7 +402,7 @@ class AIPanel {
     setFileOrder(orderMap) {
         this.fileOrder = orderMap || new Map();
         // Re-render to apply new ordering
-        if (this.findings.length > 0 || this.comments.length > 0) {
+        if (this.findings.length > 0 || this.comments.length > 0 || (this.externalThreads?.length ?? 0) > 0) {
             this.renderFindings();
         }
     }
@@ -385,13 +429,23 @@ class AIPanel {
     restoreSegmentSelection() {
         if (!this.segmentBtns) return;
 
+        // Set of segment values currently available in the DOM. In Local mode
+        // the External button is hidden — never restore to it. Any stored
+        // value not present in the bar (legacy or hidden) falls back to 'ai'.
+        const availableSegments = new Set();
+        this.segmentBtns.forEach(btn => {
+            if (!btn.hasAttribute('hidden')) {
+                availableSegments.add(btn.dataset.segment);
+            }
+        });
+
         // Only restore if we have a PR key
         if (this.currentPRKey) {
             const stored = localStorage.getItem(`reviewPanelSegment_${this.currentPRKey}`);
-            if (stored) {
+            if (stored && availableSegments.has(stored)) {
                 this.selectedSegment = stored;
             } else {
-                // Default to 'ai' for new PRs
+                // Default to 'ai' for new PRs or unknown/hidden stored values
                 this.selectedSegment = 'ai';
             }
         }
@@ -526,7 +580,14 @@ class AIPanel {
         const file = item.file || '';
         const line = item.line_start || 0;
         const type = item._itemType || 'finding';
-        return `${file}:${line}:${type}`;
+        // External threads can share a (file, line) anchor — multiple GitHub
+        // review threads on the same line collide otherwise. Disambiguate
+        // with source + external_id (falling back to id) so selection survives
+        // re-render to the thread the reviewer actually picked.
+        const identity = item._itemType === 'external'
+            ? `${item.source || ''}:${item.external_id ?? item.id ?? ''}`
+            : (item.id ?? '');
+        return `${file}:${line}:${type}:${identity}`;
     }
 
     /**
@@ -579,7 +640,15 @@ class AIPanel {
     updateSegmentCounts() {
         const aiCount = this.findings.length;
         const commentsCount = this.comments.length;
-        const allCount = aiCount + commentsCount;
+        // External threads are PR-only; hidden in Local mode. The button is
+        // [hidden], but the count is harmless to compute either way.
+        // Defensive: legacy test fixtures construct panels via Object.create
+        // without externalThreads — fall back to an empty array length.
+        const externalCount = this.externalThreads?.length ?? 0;
+        // 'All' = every visible category. In Local mode the External button
+        // is hidden and externalThreads stays at length 0 anyway, so the sum
+        // collapses naturally.
+        const allCount = aiCount + commentsCount + externalCount;
 
         if (this.segmentBtns) {
             this.segmentBtns.forEach(btn => {
@@ -596,12 +665,18 @@ class AIPanel {
                     } else if (segment === 'comments') {
                         count = commentsCount;
                         countSpan.textContent = `(${commentsCount})`;
+                    } else if (segment === 'external') {
+                        count = externalCount;
+                        countSpan.textContent = `(${externalCount})`;
                     }
                     // Dim the count when zero
                     countSpan.classList.toggle('segment-count--zero', count === 0);
                 }
             });
         }
+        // Count text changes (e.g. "(0)" → "(12)") can alter scrollWidth
+        // without triggering resize/scroll listeners, so re-check chevrons.
+        this.updateSegmentScrollChevrons?.();
     }
 
     /**
@@ -617,18 +692,51 @@ class AIPanel {
             case 'comments':
                 items = this.comments.map(c => ({ ...c, _itemType: 'comment' }));
                 break;
+            case 'external':
+                items = (this.externalThreads || []).map(t => this._normalizeExternalThread(t));
+                break;
             case 'all':
             default:
-                // Combine findings and comments
+                // Combine findings, comments, and external threads.
+                // In Local mode externalThreads is always empty so this
+                // collapses to findings + comments, matching prior behavior.
                 items = [
                     ...this.findings.map(f => ({ ...f, _itemType: 'finding' })),
-                    ...this.comments.map(c => ({ ...c, _itemType: 'comment' }))
+                    ...this.comments.map(c => ({ ...c, _itemType: 'comment' })),
+                    ...(this.externalThreads || []).map(t => this._normalizeExternalThread(t))
                 ];
                 break;
         }
 
         // Sort by canonical file order, then file-level first, then line number
         return this.sortItemsByFileOrder(items);
+    }
+
+    /**
+     * Project an external thread root onto the same shape sortItemsByFileOrder
+     * uses (file + line_start), preferring live coordinates and falling back
+     * to original_* when the thread is outdated. Returns an object that
+     * preserves the source thread fields for downstream renderers.
+     * @private
+     */
+    _normalizeExternalThread(thread) {
+        if (!thread) return { _itemType: 'external' };
+        const outdated = thread.is_outdated === 1 || thread.is_outdated === true;
+        const liveStart = Number.isFinite(thread.line_start) ? thread.line_start : null;
+        const origStart = Number.isFinite(thread.original_line_start) ? thread.original_line_start : null;
+        const liveEnd = Number.isFinite(thread.line_end) ? thread.line_end : null;
+        const origEnd = Number.isFinite(thread.original_line_end) ? thread.original_line_end : null;
+        const lineStart = outdated ? (origStart ?? liveStart) : (liveStart ?? origStart);
+        const lineEnd = outdated ? (origEnd ?? liveEnd) : (liveEnd ?? origEnd);
+        return {
+            ...thread,
+            _itemType: 'external',
+            // Surface line_start at the top level so sort + display helpers
+            // do not have to know about the outdated fallback rule.
+            line_start: lineStart,
+            line_end: lineEnd,
+            is_outdated: outdated
+        };
     }
 
     /**
@@ -701,6 +809,15 @@ class AIPanel {
                         <div class="empty-state-description">Click <strong>Analyze</strong> to get AI suggestions</div>
                     `;
                 }
+            } else if (this.selectedSegment === 'external') {
+                // External threads come from GitHub PR review activity. There
+                // is no in-app action that creates them — surface that
+                // expectation rather than the generic "no items yet" copy.
+                emptyContent = `
+                    <div class="empty-state-icon">${this.getEmptyStateIcon('comment')}</div>
+                    <div class="empty-state-title">No external review comments</div>
+                    <div class="empty-state-description">Comments from GitHub PR reviews appear here once reviewers leave them.</div>
+                `;
             } else {
                 // 'all' segment - check analysis state to determine empty message
                 if (this.analysisState === 'complete') {
@@ -732,9 +849,11 @@ class AIPanel {
         this.updateFindingsHeader(items.length);
 
         this.findingsList.innerHTML = items.map((item, index) => {
-            // Check if this is a comment or a finding
+            // Dispatch on _itemType so each renderer owns its DOM contract.
             if (item._itemType === 'comment') {
                 return this.renderCommentItem(item, index);
+            } else if (item._itemType === 'external') {
+                return this.renderExternalThreadItem(item, index);
             } else {
                 return this.renderFindingItem(item, index);
             }
@@ -889,6 +1008,51 @@ class AIPanel {
             return;
         }
 
+        // External thread chat — mirrors ExternalCommentManager._openThreadChat.
+        // The button carries data-thread-id + data-source; the full thread is
+        // looked up from this.externalThreads so replies are included.
+        if (btn.dataset.itemType === 'external') {
+            const threadId = btn.dataset.threadId;
+            const numericId = threadId != null && threadId !== '' ? Number(threadId) : null;
+            const thread = (this.externalThreads || []).find(t =>
+                String(t.id) === String(threadId) ||
+                (numericId != null && t.id === numericId)
+            );
+            if (thread) {
+                const outdated = thread.is_outdated === 1 || thread.is_outdated === true;
+                const replies = Array.isArray(thread.replies) ? thread.replies : [];
+                window.chatPanel.open({
+                    reviewId,
+                    threadContext: {
+                        rootId: thread.id,
+                        source: 'external',
+                        externalSource: thread.source,
+                        file: thread.file,
+                        side: thread.side || 'RIGHT',
+                        line_start: outdated ? thread.original_line_start : thread.line_start,
+                        line_end: outdated ? thread.original_line_end : thread.line_end,
+                        comments: [
+                            {
+                                author: thread.author,
+                                body: thread.body,
+                                isOutdated: !!outdated,
+                                externalUrl: thread.external_url,
+                                externalCreatedAt: thread.external_created_at,
+                            },
+                            ...replies.map((r) => ({
+                                author: r.author,
+                                body: r.body,
+                                isOutdated: !!(r.is_outdated === 1 || r.is_outdated === true),
+                                externalUrl: r.external_url,
+                                externalCreatedAt: r.external_created_at,
+                            })),
+                        ],
+                    },
+                });
+            }
+            return;
+        }
+
         const file = btn.dataset.findingFile || '';
         const title = btn.dataset.findingTitle || '';
         let suggestionContext = { title, file };
@@ -950,6 +1114,14 @@ class AIPanel {
         // Handle comments - scroll to user comment row
         if (itemType === 'comment') {
             this.scrollToComment(itemId, file, line);
+            return;
+        }
+
+        // Handle external threads - scroll to inline external-comment-row
+        if (itemType === 'external') {
+            const source = item.dataset.source || '';
+            const threadId = item.dataset.threadId || itemId;
+            this.scrollToExternalThread(threadId, source, file, line);
             return;
         }
 
@@ -1124,6 +1296,167 @@ class AIPanel {
             setTimeout(doScroll, 50);
         } else {
             doScroll();
+        }
+    }
+
+    /**
+     * Scroll to an external review-comment thread in the diff view.
+     *
+     * Mirrors `scrollToComment`: expand the file if collapsed, find the
+     * `.external-comment-row` for the (threadId, source) pair, scroll it into
+     * view, and add a transient focus class for the visual flash.
+     *
+     * @param {string|number} threadId - Root comment id of the thread
+     * @param {string} source - External source key (e.g. 'github')
+     * @param {string} file - File path for collapse-expand fallback
+     * @param {string|number} line - Anchor line; used for file/line fallback
+     */
+    scrollToExternalThread(threadId, source, file, line) {
+        // Expand the file first if it's collapsed
+        const wasExpanded = this.expandFileIfCollapsed(file);
+
+        const doScroll = () => {
+            let target = null;
+
+            // Most reliable: match on (threadId, source). `data-thread-id`
+            // and `data-source` are written by ExternalCommentManager._buildThreadRow.
+            if (threadId) {
+                const idAttr = (typeof globalThis !== 'undefined' && globalThis.CSS?.escape)
+                    ? globalThis.CSS.escape(String(threadId))
+                    : String(threadId);
+                if (source) {
+                    const srcAttr = (typeof globalThis !== 'undefined' && globalThis.CSS?.escape)
+                        ? globalThis.CSS.escape(String(source))
+                        : String(source);
+                    target = document.querySelector(
+                        `.external-comment-row[data-thread-id="${idAttr}"][data-source="${srcAttr}"]`
+                    );
+                }
+                if (!target) {
+                    target = document.querySelector(
+                        `.external-comment-row[data-thread-id="${idAttr}"]`
+                    );
+                }
+            }
+
+            // Fallback: scan within the matching file by anchor line. Useful
+            // when the row was rebuilt and IDs are momentarily missing.
+            if (!target && file) {
+                const rows = document.querySelectorAll('.external-comment-row');
+                for (const row of rows) {
+                    const rowFile = row.closest('[data-file-name]')?.dataset?.fileName;
+                    if (rowFile && rowFile === file) {
+                        target = row;
+                        break;
+                    }
+                }
+            }
+
+            if (target) {
+                const minimizer = window.prManager?.commentMinimizer;
+                if (minimizer?.active) {
+                    minimizer.expandForElement(target);
+                    const diffRow = minimizer.findDiffRowFor(target);
+                    (diffRow || target).scrollIntoView({ behavior: 'smooth', block: 'center' });
+                } else {
+                    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
+
+                // Transient focus flash. The class is removed after 2s — if
+                // the row is rebuilt before then, the class is lost with it,
+                // which is fine: the flash is purely cosmetic.
+                target.classList.add('external-comment-row--focused');
+                setTimeout(() => target.classList.remove('external-comment-row--focused'), 2000);
+            }
+        };
+
+        if (wasExpanded) {
+            setTimeout(doScroll, 50);
+        } else {
+            doScroll();
+        }
+    }
+
+    // ========================================
+    // Segment overflow scroll
+    // ========================================
+
+    /**
+     * Set up horizontal overflow scroll for the segment row.
+     *
+     * When the segment buttons don't all fit in the panel width, show
+     * chevron buttons on either side that scroll the row horizontally.
+     * Watches via ResizeObserver (panel width can change with the resizer
+     * handle) and the scroll container's own scroll event (to update
+     * chevron visibility at each end of travel).
+     */
+    setupSegmentOverflow() {
+        if (!this.segmentControlScroll) return;
+
+        const update = () => this.updateSegmentScrollChevrons();
+
+        // Wire the scroll container's scroll event for visibility updates.
+        this.segmentControlScroll.addEventListener('scroll', update, { passive: true });
+
+        // Observe size changes on the scroll container itself. Triggered by
+        // panel resize, segment hidden/shown (e.g. local-mode gate), and
+        // window resize.
+        if (typeof ResizeObserver !== 'undefined') {
+            this._segmentResizeObserver = new ResizeObserver(update);
+            this._segmentResizeObserver.observe(this.segmentControlScroll);
+        } else if (typeof window !== 'undefined') {
+            // Fallback for very old browsers — react to window resize at least.
+            window.addEventListener('resize', update);
+        }
+
+        // Initial measurement after layout settles.
+        update();
+    }
+
+    /**
+     * Show or hide the segment overflow chevrons based on current scroll
+     * geometry. Idempotent — safe to call from resize, scroll, or after a
+     * segment button is hidden/shown.
+     */
+    updateSegmentScrollChevrons() {
+        const container = this.segmentControlScroll;
+        if (!container) return;
+
+        const overflow = container.scrollWidth > container.clientWidth + 1;
+        const scrollLeft = container.scrollLeft;
+        const maxScroll = container.scrollWidth - container.clientWidth;
+        const atStart = scrollLeft <= 0;
+        const atEnd = scrollLeft >= maxScroll - 1;
+
+        if (this.segmentScrollLeft) {
+            // Hide left chevron when not overflowing or already at start.
+            if (!overflow || atStart) {
+                this.segmentScrollLeft.setAttribute('hidden', '');
+            } else {
+                this.segmentScrollLeft.removeAttribute('hidden');
+            }
+        }
+        if (this.segmentScrollRight) {
+            if (!overflow || atEnd) {
+                this.segmentScrollRight.setAttribute('hidden', '');
+            } else {
+                this.segmentScrollRight.removeAttribute('hidden');
+            }
+        }
+    }
+
+    /**
+     * Scroll the segment row horizontally by approximately one segment width.
+     * @param {number} direction - -1 for left, 1 for right
+     */
+    scrollSegmentRow(direction) {
+        const container = this.segmentControlScroll;
+        if (!container) return;
+        const amount = 150 * (direction < 0 ? -1 : 1);
+        if (typeof container.scrollBy === 'function') {
+            container.scrollBy({ left: amount, behavior: 'smooth' });
+        } else {
+            container.scrollLeft += amount;
         }
     }
 
@@ -1338,6 +1671,87 @@ class AIPanel {
     }
 
     /**
+     * Render a single external review-comment thread item.
+     *
+     * Modeled on `renderCommentItem` so the panel list stays visually
+     * consistent. Differs from comments in:
+     *   - no quick-action (adopt/dismiss) buttons — external threads are
+     *     read-only mirrors from GitHub.
+     *   - a reply-count badge when the thread has replies.
+     *   - `data-thread-id` + `data-source` so `scrollToExternalThread` can
+     *     find the inline `.external-comment-row` element.
+     *   - `.source-<name>` modifier so the blue --ec-* color block applies.
+     *
+     * @param {Object} thread - Normalized external thread (root + replies)
+     * @param {number} index - Item index in the rendered list
+     * @returns {string} HTML string
+     */
+    renderExternalThreadItem(thread, index) {
+        const source = thread.source || 'github';
+        const author = thread.author || 'reviewer';
+        // Plain-text snippet of the root body for the title slot. Markdown
+        // formatting is stripped so the line stays compact.
+        const rawBody = this.stripMarkdown(thread.body || '');
+        const snippet = this.truncateText(rawBody, 80);
+
+        const fileName = thread.file ? thread.file.split('/').pop() : null;
+        const lineNum = thread.line_start;
+        const fullLocation = fileName ? `${fileName}${lineNum ? ':' + lineNum : ''}` : '';
+
+        const replies = Array.isArray(thread.replies) ? thread.replies : [];
+        // Strict count of comments in the thread (root + replies). Always
+        // shown — replaces the static author dot to give a left-side anchor
+        // that conveys thread size at a glance.
+        const totalComments = 1 + replies.length;
+        const commentNoun = totalComments === 1 ? 'comment' : 'comments';
+
+        const outdatedClass = thread.is_outdated ? ' is-outdated' : '';
+
+        // Compose the tooltip: author + body snippet for quick context.
+        const tooltipBits = [];
+        if (author) tooltipBits.push(author);
+        if (fullLocation) tooltipBits.push(fullLocation);
+        if (rawBody) tooltipBits.push(rawBody.length > 200 ? rawBody.substring(0, 200) + '…' : rawBody);
+        const tooltip = tooltipBits.join(' — ');
+
+        const threadId = thread.id != null ? String(thread.id) : '';
+
+        // Chat button — mirrors the finding/comment quick-action pattern.
+        // Dispatches threadContext (not commentContext) so the chat receives
+        // the full thread + replies, matching the inline header button.
+        // External threads carry GitHub-sourced strings (author, body, file,
+        // source, id). Anything that lands inside a quoted HTML attribute must
+        // be escaped with the attribute-safe helper (escapes ", ', <, >, &) —
+        // the local escapeHtml is text-node-only and leaves quotes intact,
+        // which would let a crafted body break out of the attribute.
+        const attr = window.escapeHtmlAttribute;
+        let chatAction = '';
+        if (document.documentElement.getAttribute('data-chat') === 'available') {
+            chatAction = `
+            <div class="finding-chat-action">
+                <button class="quick-action-btn quick-action-chat" data-thread-id="${attr(threadId)}" data-source="${attr(source)}" data-item-type="external" title="Chat about thread" aria-label="Chat about thread">
+                    <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12"><path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/></svg>
+                </button>
+            </div>
+        `;
+        }
+
+        return `
+            <div class="finding-item-wrapper">
+                <button class="finding-item ai-panel__list-item ai-panel__list-item--external source-${attr(source)}${outdatedClass}" data-index="${index}" data-id="${attr(threadId)}" data-thread-id="${attr(threadId)}" data-source="${attr(source)}" data-file="${attr(thread.file || '')}" data-line="${lineNum != null ? lineNum : ''}" data-item-type="external" title="${attr(tooltip)}">
+                    <span class="external-list-count" title="${totalComments} ${commentNoun}" aria-label="${totalComments} ${commentNoun} in thread">${totalComments}</span>
+                    <div class="finding-content">
+                        <span class="finding-title"><span class="external-list-author">${this.escapeHtml(author)}</span><span class="external-list-snippet">${snippet ? ' — ' + this.escapeHtml(snippet) : ''}</span></span>
+                        ${thread.is_outdated ? '<span class="finding-meta"><span class="external-list-outdated-badge">outdated</span></span>' : ''}
+                        ${fileName ? `<span class="finding-location">${this.escapeHtml(fileName)}${lineNum ? ':' + lineNum : ''}</span>` : ''}
+                    </div>
+                </button>
+                ${chatAction}
+            </div>
+        `;
+    }
+
+    /**
      * Get the comment-ai Octicon SVG for AI-adopted comments
      * @returns {string} SVG HTML string
      */
@@ -1480,7 +1894,8 @@ class AIPanel {
      */
     clearAllFindings() {
         this.findings = [];
-        // NOTE: Do NOT clear this.comments here. User comments are independent
+        // NOTE: Do NOT clear this.comments or this.externalThreads here.
+        // User comments and external review-comment threads are independent
         // of AI analysis and must persist across analysis runs.
         this.currentIndex = -1; // Reset navigation
         this.updateSegmentCounts();
@@ -1524,6 +1939,33 @@ class AIPanel {
         this.saveCurrentSelection();
 
         this.comments = comments || [];
+        this.updateSegmentCounts();
+        this.renderFindings();
+
+        // Try to restore previous selection, or auto-select first
+        if (!this.restoreSelection()) {
+            this.autoSelectFirst();
+        }
+    }
+
+    /**
+     * Replace the set of external comment threads displayed in the External
+     * segment. Mirrors {@link setComments}: replaces state, recomputes the
+     * count badge, re-renders the visible list (if the user is on External
+     * or All), and preserves any restorable selection.
+     *
+     * The panel never owns inline external rows — they live in
+     * `.external-comment-row` elements rendered by ExternalCommentManager.
+     * Pass the flattened union of `threadsBySource.values()`.
+     *
+     * @param {Array<Object>} threads - Flattened external threads (roots).
+     */
+    setExternalThreads(threads) {
+        // Save current selection before updating so the active item survives
+        // a re-render when its identity is still in the new list.
+        this.saveCurrentSelection();
+
+        this.externalThreads = Array.isArray(threads) ? threads : [];
         this.updateSegmentCounts();
         this.renderFindings();
 
@@ -1645,40 +2087,40 @@ class AIPanel {
         const itemCount = items.length;
         const currentDisplay = this.currentIndex >= 0 ? (this.currentIndex + 1) : '\u2014';
 
-        // Always get the .findings-header element directly to avoid parent reference issues
-        const headerContainer = document.querySelector('.findings-header');
-        if (!headerContainer) return;
+        // Target the .findings-nav slot only; the sibling .findings-header-actions
+        // (refresh button in PR mode) must persist across re-renders so its
+        // statically-bound click handler stays valid.
+        const navContainer = document.getElementById('findings-nav')
+            || document.querySelector('.findings-nav');
+        if (!navContainer) return;
 
-        // Hide navigation section entirely when there are no items
+        // Empty state: blank the nav slot so it collapses, but leave the
+        // sibling actions container alone. The refresh button stays available
+        // even when there are zero items (the reviewer may want to fetch).
         if (itemCount === 0) {
-            headerContainer.innerHTML = '';
+            navContainer.innerHTML = '';
             this.findingsCount = null;
             return;
         }
 
-        // Update or create the header content (no label - segments already indicate content type)
-        headerContainer.innerHTML = `
-            <div class="findings-nav">
-                <button class="findings-nav-btn nav-prev" title="Previous item (k)">
-                    <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
-                        <path d="M3.22 9.78a.75.75 0 010-1.06l4.25-4.25a.75.75 0 011.06 0l4.25 4.25a.75.75 0 01-1.06 1.06L8 6.06 4.28 9.78a.75.75 0 01-1.06 0z"/>
-                    </svg>
-                </button>
-                <span class="findings-counter" id="findings-count">${currentDisplay} of ${itemCount}</span>
-                <button class="findings-nav-btn nav-next" title="Next item (j)">
-                    <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
-                        <path d="M12.78 6.22a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06 0L3.22 7.28a.75.75 0 011.06-1.06L8 9.94l3.72-3.72a.75.75 0 011.06 0z"/>
-                    </svg>
-                </button>
-            </div>
+        navContainer.innerHTML = `
+            <button class="findings-nav-btn nav-prev" title="Previous item (k)">
+                <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
+                    <path d="M3.22 9.78a.75.75 0 010-1.06l4.25-4.25a.75.75 0 011.06 0l4.25 4.25a.75.75 0 01-1.06 1.06L8 6.06 4.28 9.78a.75.75 0 01-1.06 0z"/>
+                </svg>
+            </button>
+            <span class="findings-counter" id="findings-count">${currentDisplay} of ${itemCount}</span>
+            <button class="findings-nav-btn nav-next" title="Next item (j)">
+                <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
+                    <path d="M12.78 6.22a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06 0L3.22 7.28a.75.75 0 011.06-1.06L8 9.94l3.72-3.72a.75.75 0 011.06 0z"/>
+                </svg>
+            </button>
         `;
 
-        // Re-bind reference to findings count
-        this.findingsCount = headerContainer.querySelector('#findings-count');
+        this.findingsCount = navContainer.querySelector('#findings-count');
 
-        // Bind nav button events
-        const prevBtn = headerContainer.querySelector('.nav-prev');
-        const nextBtn = headerContainer.querySelector('.nav-next');
+        const prevBtn = navContainer.querySelector('.nav-prev');
+        const nextBtn = navContainer.querySelector('.nav-next');
         if (prevBtn) {
             prevBtn.addEventListener('click', () => this.goToPrevious());
         }
@@ -1768,6 +2210,8 @@ class AIPanel {
 
         if (item._itemType === 'comment') {
             this.scrollToComment(itemId, file, line);
+        } else if (item._itemType === 'external') {
+            this.scrollToExternalThread(itemId, item.source, file, line);
         } else {
             this.scrollToFinding(itemId, file, line);
         }
