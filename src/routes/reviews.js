@@ -1128,4 +1128,62 @@ router.get('/api/reviews/:reviewId/tour', validateReviewId, async (req, res) => 
   }
 });
 
+// ==========================================================================
+// Background Job Cancellation
+// ==========================================================================
+
+// Only these prefixes are user-cancellable. We deliberately do NOT accept
+// arbitrary jobKeys — that would let the UI cancel internal jobs we don't
+// want to be cancellable from the toolbar (e.g. future scheduling work).
+const CANCELLABLE_JOB_PREFIXES = new Set(['tour', 'summaries']);
+
+/**
+ * POST /api/reviews/:reviewId/jobs/:jobKey/cancel
+ *
+ * Cancel an in-flight background job (tour or summaries) for this review.
+ * Aborts the per-job `AbortSignal`, which kills the upstream CLI child
+ * process so we stop burning tokens immediately.
+ *
+ * Works for BOTH Local mode (`/local/:reviewId`) and PR mode (`/pr/...`)
+ * because both modes write into the same `reviews` table and dispatch
+ * jobs through the same `backgroundQueue` keyed by reviewId. The
+ * separate `/api/local/...` cancel route below shares this handler so
+ * the contract stays in one place.
+ *
+ * Request:
+ *   - `jobKey` path param: bare prefix (`tour` | `summaries`) or full
+ *     job key suffix (`summaries:<digest>`). Bare prefix cancels ALL
+ *     matching variants — what the toolbar actually wants.
+ *
+ * Responses:
+ *   - 200 `{ cancelled: true, count: N }`  - aborted N job(s)
+ *   - 404 `{ cancelled: false }`           - nothing in flight
+ *   - 400                                  - invalid jobKey
+ */
+async function handleJobCancel(req, res) {
+  const rawKey = String(req.params.jobKey || '').trim();
+  // Strip whitespace; reject if empty, contains slashes/control chars, or
+  // does not start with an allow-listed prefix. We deliberately do NOT
+  // accept arbitrary keys — see CANCELLABLE_JOB_PREFIXES comment.
+  if (!rawKey || /[/\\\s]/.test(rawKey)) {
+    return res.status(400).json({ error: 'Invalid jobKey' });
+  }
+  const prefix = rawKey.includes(':') ? rawKey.slice(0, rawKey.indexOf(':')) : rawKey;
+  if (!CANCELLABLE_JOB_PREFIXES.has(prefix)) {
+    return res.status(400).json({ error: `jobKey "${prefix}" is not cancellable` });
+  }
+
+  const { cancelled } = backgroundQueue.cancel(req.reviewId, rawKey);
+  if (cancelled === 0) {
+    logger.info(`Cancel request for ${req.reviewId}:${rawKey} matched no in-flight job`);
+    return res.status(404).json({ cancelled: false });
+  }
+  logger.info(`Cancelled ${cancelled} background job(s) for ${req.reviewId}:${rawKey}`);
+  res.json({ cancelled: true, count: cancelled });
+}
+
+router.post('/api/reviews/:reviewId/jobs/:jobKey/cancel', validateReviewId, handleJobCancel);
+
 module.exports = router;
+module.exports.handleJobCancel = handleJobCancel;
+module.exports.CANCELLABLE_JOB_PREFIXES = CANCELLABLE_JOB_PREFIXES;

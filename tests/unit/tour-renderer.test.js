@@ -174,6 +174,72 @@ describe('TourRenderer', () => {
     });
   });
 
+  describe('"Chat about" button', () => {
+    it('renders a chat button on every mounted stop annotation', () => {
+      buildDiff();
+      renderer.setStops([makeStop({ line_start: 11 })]);
+      const row = renderer.mountStop(0);
+      const btn = row.querySelector('.tour-annotation-chat-btn');
+      expect(btn).toBeTruthy();
+      // Reuses the shared ai-action / ai-action-chat classes so it matches
+      // the comment/suggestion variants visually.
+      expect(btn.classList.contains('ai-action')).toBe(true);
+      expect(btn.classList.contains('ai-action-chat')).toBe(true);
+      expect(btn.getAttribute('title')).toMatch(/chat/i);
+      expect(btn.dataset.stopIndex).toBe('0');
+    });
+
+    it('invokes window.chatPanel.open with the stop context on click', () => {
+      buildDiff();
+      const opened = [];
+      window.chatPanel = {
+        open: (opts) => opened.push(opts),
+      };
+      const pm = { currentPR: { id: 'review-42' } };
+      renderer = new TourRenderer(pm);
+      renderer.setStops([
+        makeStop({
+          line_start: 11,
+          line_end: 13,
+          title: 'A stop',
+          description: 'Describe the change.',
+          file_path: 'src/foo.js',
+          side: 'RIGHT',
+        }),
+        makeStop({ line_start: 12 }),
+      ]);
+      const row = renderer.mountStop(0);
+      const btn = row.querySelector('.tour-annotation-chat-btn');
+      btn.click();
+
+      expect(opened).toHaveLength(1);
+      const call = opened[0];
+      expect(call.reviewId).toBe('review-42');
+      expect(call.tourContext).toEqual({
+        stopIndex: 0,
+        totalStops: 2,
+        title: 'A stop',
+        description: 'Describe the change.',
+        file: 'src/foo.js',
+        line_start: 11,
+        line_end: 13,
+        side: 'RIGHT',
+      });
+
+      delete window.chatPanel;
+    });
+
+    it('is a no-op when window.chatPanel is missing', () => {
+      buildDiff();
+      renderer.setStops([makeStop({ line_start: 11 })]);
+      const row = renderer.mountStop(0);
+      const btn = row.querySelector('.tour-annotation-chat-btn');
+      // Must not throw even without a chat panel mounted (e.g. very early
+      // in startup, or in test harnesses).
+      expect(() => btn.click()).not.toThrow();
+    });
+  });
+
   describe('unmountStop / unmountAll', () => {
     it('removes a specific stop row', () => {
       buildDiff();
@@ -759,6 +825,177 @@ describe('TourRenderer', () => {
       expect(() => r.unmountAll()).not.toThrow();
       // The ids stay tracked since we couldn't clean them up.
       expect(r._autoAddedContextFileIds.has(42)).toBe(true);
+    });
+  });
+
+  // ----------------------------------------------------------------------
+  // Tour and hunk-summary annotations are independent — both can render
+  // simultaneously when `body.tour-active` is set. The previous behavior
+  // hid `.hunk-summary-row` via CSS during a tour; that exclusion was
+  // removed so the user can toggle each independently.
+  // ----------------------------------------------------------------------
+  // ----------------------------------------------------------------------
+  // "Show more" / "Show less" toggle for long descriptions.
+  //
+  // jsdom returns 0 for both scrollHeight and clientHeight (no layout
+  // engine), so the overflow check always returns false there. To force
+  // the overflow path in tests we stub `scrollHeight` / `clientHeight`
+  // on the wrapper element via `Object.defineProperty`, then call
+  // `_evaluateDescriptionOverflow` directly (bypassing the rAF defer
+  // that mountStop normally uses to wait for browser layout).
+  // ----------------------------------------------------------------------
+  describe('show more / show less toggle', () => {
+    function mountWithOverflow({ overflow, expanded } = { overflow: true }) {
+      buildDiff();
+      renderer.setStops([makeStop({ line_start: 11, description: 'long desc' })]);
+      if (expanded) {
+        renderer._expandedDescriptions.add(0);
+      }
+      const row = renderer.mountStop(0);
+      const wrap = row.querySelector('.tour-annotation-description-wrap');
+      // Stub overflow geometry. jsdom returns 0 for both by default —
+      // defineProperty is the standard escape hatch for this exact case.
+      Object.defineProperty(wrap, 'scrollHeight', {
+        configurable: true,
+        value: overflow ? 200 : 30,
+      });
+      Object.defineProperty(wrap, 'clientHeight', {
+        configurable: true,
+        value: 60,
+      });
+      // Evaluate synchronously so we don't have to wait for the rAF
+      // scheduled inside mountStop.
+      renderer._evaluateDescriptionOverflow(0);
+      return { row, wrap };
+    }
+
+    it('wraps the description in a clamp container', () => {
+      buildDiff();
+      renderer.setStops([makeStop({ line_start: 11 })]);
+      const row = renderer.mountStop(0);
+      const wrap = row.querySelector('.tour-annotation-description-wrap');
+      expect(wrap).toBeTruthy();
+      // Description <p> still exists inside the wrap for backwards
+      // compatibility with existing selectors.
+      const p = wrap.querySelector('.tour-annotation-description');
+      expect(p).toBeTruthy();
+    });
+
+    it('does NOT render a Show more button when the description fits', () => {
+      const { row } = mountWithOverflow({ overflow: false });
+      expect(row.querySelector('.tour-annotation-show-more-btn')).toBeNull();
+    });
+
+    it('renders a Show more button when the description overflows', () => {
+      const { row } = mountWithOverflow({ overflow: true });
+      const btn = row.querySelector('.tour-annotation-show-more-btn');
+      expect(btn).toBeTruthy();
+      expect(btn.textContent).toBe('Show more');
+      expect(btn.getAttribute('aria-expanded')).toBe('false');
+    });
+
+    it('clicking Show more flips to Show less and adds .expanded', () => {
+      const { row, wrap } = mountWithOverflow({ overflow: true });
+      const btn = row.querySelector('.tour-annotation-show-more-btn');
+      btn.click();
+      expect(wrap.classList.contains('expanded')).toBe(true);
+      expect(btn.textContent).toBe('Show less');
+      expect(btn.getAttribute('aria-expanded')).toBe('true');
+    });
+
+    it('clicking Show less reverses the expansion', () => {
+      const { row, wrap } = mountWithOverflow({ overflow: true });
+      const btn = row.querySelector('.tour-annotation-show-more-btn');
+      btn.click();
+      btn.click();
+      expect(wrap.classList.contains('expanded')).toBe(false);
+      expect(btn.textContent).toBe('Show more');
+      expect(btn.getAttribute('aria-expanded')).toBe('false');
+    });
+
+    it('a remount preserves the expanded state for the same stop index', () => {
+      // First mount: expand.
+      const first = mountWithOverflow({ overflow: true });
+      first.row.querySelector('.tour-annotation-show-more-btn').click();
+      expect(renderer._expandedDescriptions.has(0)).toBe(true);
+
+      // Unmount and re-mount the same index.
+      renderer.unmountStop(0);
+      const row2 = renderer.mountStop(0);
+      const wrap2 = row2.querySelector('.tour-annotation-description-wrap');
+      // The wrap should be in expanded state immediately on re-mount
+      // (no need to wait for the overflow probe to fire).
+      expect(wrap2.classList.contains('expanded')).toBe(true);
+      // And calling the evaluator should append the toggle in its
+      // "Show less" form, not Show more.
+      renderer._evaluateDescriptionOverflow(0);
+      const btn2 = row2.querySelector('.tour-annotation-show-more-btn');
+      expect(btn2).toBeTruthy();
+      expect(btn2.textContent).toBe('Show less');
+    });
+
+    it('setStops resets _expandedDescriptions (indices remap to new stops)', () => {
+      mountWithOverflow({ overflow: true });
+      renderer._toggleDescriptionExpansion(0);
+      expect(renderer._expandedDescriptions.size).toBe(1);
+      renderer.setStops([makeStop({ line_start: 12 })]);
+      expect(renderer._expandedDescriptions.size).toBe(0);
+    });
+
+    it('overflow evaluation is idempotent (no duplicate buttons on re-call)', () => {
+      const { row } = mountWithOverflow({ overflow: true });
+      renderer._evaluateDescriptionOverflow(0);
+      renderer._evaluateDescriptionOverflow(0);
+      expect(row.querySelectorAll('.tour-annotation-show-more-btn')).toHaveLength(1);
+    });
+  });
+
+  describe('coexistence with hunk-summary rows under body.tour-active', () => {
+    const fs = require('fs');
+    const path = require('path');
+
+    it('CSS file has no rule hiding .hunk-summary-row under body.tour-active', () => {
+      const cssPath = path.resolve(__dirname, '../../public/css/pr.css');
+      const css = fs.readFileSync(cssPath, 'utf8');
+      // Strip CSS comments so a commented-out rule never trips the assertion.
+      const stripped = css.replace(/\/\*[\s\S]*?\*\//g, '');
+      // Match any selector that combines `tour-active` with `hunk-summary-row`
+      // followed by a block setting `display: none`. Whitespace-tolerant.
+      const offender = /body\.tour-active\s+\.hunk-summary-row\s*\{[^}]*display\s*:\s*none/;
+      expect(stripped).not.toMatch(offender);
+    });
+
+    it('keeps both .tour-annotation-row and .hunk-summary-row in the DOM when tour is active', () => {
+      buildDiff('src/foo.js');
+      // Mount a tour stop above line 11.
+      renderer.setStops([makeStop({ line_start: 11 })]);
+      renderer.setActive(true);
+      renderer.mountStop(0);
+
+      // Mount a hunk-summary row above line 12 by hand — the HunkSummaryRenderer
+      // module is loaded as a window-global; importing it here would add no
+      // signal beyond what the minimal hand-built row covers. The point is
+      // that both classes can be siblings in the same <tbody> with the
+      // body class set.
+      const anchor = document.querySelector('tr[data-line-number="12"][data-side="RIGHT"]');
+      const summaryRow = document.createElement('tr');
+      summaryRow.className = 'hunk-summary-row';
+      const cell = document.createElement('td');
+      cell.colSpan = 2;
+      cell.className = 'hunk-summary-cell';
+      cell.textContent = 'Summary text';
+      summaryRow.appendChild(cell);
+      anchor.parentNode.insertBefore(summaryRow, anchor);
+
+      expect(document.body.classList.contains('tour-active')).toBe(true);
+      // Both annotation rows must coexist.
+      expect(document.querySelectorAll('.tour-annotation-row')).toHaveLength(1);
+      expect(document.querySelectorAll('.hunk-summary-row')).toHaveLength(1);
+      // Neither row should be marked hidden by inline style or attribute —
+      // visibility is purely a CSS/user-toggle concern.
+      const tourRow = document.querySelector('.tour-annotation-row');
+      expect(tourRow.hasAttribute('hidden')).toBe(false);
+      expect(summaryRow.hasAttribute('hidden')).toBe(false);
     });
   });
 });

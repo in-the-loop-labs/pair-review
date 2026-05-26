@@ -188,6 +188,13 @@ class PRManager {
     this._tourStopsPendingRestart = null;
     // Bound keydown handler; tracked so it can be removed on tour exit.
     this._tourKeydownHandler = null;
+    // Re-entry guard for `_promptCancelJob`. The cancel-confirm dialog
+    // opens off the same pulsing toolbar button that triggered it, and
+    // the button stays clickable while the dialog is up — `ConfirmDialog`
+    // is a singleton, so a second click would overwrite the first
+    // invocation's callbacks and leave its Promise dangling. Held true
+    // for the lifetime of the dialog; cleared in a `finally`.
+    this._cancelPromptOpen = false;
     // Re-entrance latch for the async `_advanceTour` probe loop. Holds the
     // `_tourGen` value the in-flight call belongs to (or -1 when no call
     // is in flight). Generation-scoped — not a plain boolean — so a
@@ -395,7 +402,7 @@ class PRManager {
     // hidden by createFileHeader and revealed/removed once config resolves).
     const summaryToggle = document.getElementById('summary-toggle-btn');
     if (summaryToggle) {
-      summaryToggle.addEventListener('click', () => this.toggleSummariesVisibility());
+      summaryToggle.addEventListener('click', () => this._handleSummaryToggleClick());
     }
     this._getAppConfig().then((cfg) => {
       this._summariesEnabled = cfg.summaries_enabled === true;
@@ -423,7 +430,7 @@ class PRManager {
     // client-side gates check only `tours_enabled`.
     const tourToggle = document.getElementById('tour-toggle-btn');
     if (tourToggle) {
-      tourToggle.addEventListener('click', () => this.startOrToggleTour());
+      tourToggle.addEventListener('click', () => this._handleTourToggleClick());
     }
     this._getAppConfig().then((cfg) => {
       this._toursEnabled = cfg.tours_enabled === true;
@@ -1373,9 +1380,10 @@ class PRManager {
 
     let label;
     if (this._summariesGenerating) {
-      label = this._summariesHidden
-        ? 'Generating summaries… (click to show)'
-        : 'Generating summaries…';
+      // Hint at the cancel affordance — clicking the pulsing button now
+      // opens a confirm dialog ("Cancel Summaries" / "OK") instead of
+      // toggling visibility. See _handleSummaryToggleClick.
+      label = 'Generating summaries… (click to cancel)';
     } else {
       label = this._summariesHidden ? 'Show hunk summaries' : 'Hide hunk summaries';
     }
@@ -1410,7 +1418,10 @@ class PRManager {
 
     let label;
     if (this._tourGenerating) {
-      label = active ? 'Generating tour… (tour open)' : 'Generating guided tour…';
+      // Hint at the cancel affordance — see _handleTourToggleClick.
+      label = active
+        ? 'Generating tour… (click to cancel)'
+        : 'Generating guided tour… (click to cancel)';
     } else if (hasPending) {
       label = 'Tour updated — restart to apply new stops';
     } else if (active) {
@@ -1424,6 +1435,86 @@ class PRManager {
     btn.setAttribute('aria-label', label);
     btn.dataset.label = label;
     btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+  }
+
+  // ===== Cancel flow (shared) =============================================
+
+  /**
+   * Toolbar click handler for the summaries toggle. If a summary job is
+   * in flight (`.generating` pulse), intercept and open the cancel-confirm
+   * dialog instead of toggling visibility. Toggle visibility otherwise.
+   *
+   * Kept thin so `addEventListener` callers don't need to know about the
+   * cancel flow — that lives in `_promptCancelJob`.
+   * @returns {void}
+   */
+  async _handleSummaryToggleClick() {
+    if (this._summariesGenerating) {
+      await this._promptCancelJob({
+        kind: 'summaries',
+        onCleared: () => {
+          this._summariesGenerating = false;
+          this._syncSummaryToolbarButton();
+        },
+      });
+      return;
+    }
+    this.toggleSummariesVisibility();
+  }
+
+  /**
+   * Toolbar click handler for the tour toggle. If a tour job is in flight
+   * (`.generating` pulse), intercept and open the cancel-confirm dialog
+   * instead of opening/exiting the tour. Defer to `startOrToggleTour`
+   * otherwise.
+   * @returns {Promise<void>}
+   */
+  async _handleTourToggleClick() {
+    if (this._tourGenerating) {
+      await this._promptCancelJob({
+        kind: 'tour',
+        onCleared: () => {
+          this._tourGenerating = false;
+          this._syncTourToolbarButton();
+        },
+      });
+      return;
+    }
+    await this.startOrToggleTour();
+  }
+
+  /**
+   * Shared cancel-flow entrypoint: opens the right confirm dialog for the
+   * given job kind, POSTs the cancel on confirm, and runs `onCleared` so
+   * the caller can reset the pulse state. The corresponding broadcast
+   * (`review:background_job_finished` with `cancelled: true`) will arrive
+   * shortly after; that handler also clears the flag, so a double-clear
+   * is harmless.
+   *
+   * @param {Object} opts
+   * @param {'tour'|'summaries'} opts.kind
+   * @param {Function} opts.onCleared - Called after the user confirms.
+   * @returns {Promise<void>}
+   */
+  async _promptCancelJob({ kind, onCleared }) {
+    // Re-entry guard: the pulsing toolbar button stays clickable while the
+    // confirm dialog is up. ConfirmDialog is a singleton — a second call to
+    // .show() overwrites the first invocation's callbacks and orphans its
+    // Promise. Drop the second click instead.
+    if (this._cancelPromptOpen) return;
+    const helper = typeof window !== 'undefined' ? window.CancelBackgroundJob : null;
+    if (!helper) return;
+    const reviewId = this.currentPR && this.currentPR.id;
+    if (!reviewId) return;
+    const show = kind === 'tour'
+      ? helper.showCancelTourDialog
+      : helper.showCancelSummariesDialog;
+    this._cancelPromptOpen = true;
+    try {
+      await show({ reviewId, onCancelled: onCleared });
+    } finally {
+      this._cancelPromptOpen = false;
+    }
   }
 
   /**

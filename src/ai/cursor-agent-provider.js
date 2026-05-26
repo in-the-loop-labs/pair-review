@@ -21,6 +21,7 @@ const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { CancellationError, isAnalysisCancelled } = require('../routes/shared');
 const { StreamParser, parseCursorAgentLine } = require('./stream-parser');
+const { wireAbortToChild, makeAbortError } = require('./abort-signal-wiring');
 
 // Directory containing bin scripts (git-diff-lines, etc.)
 const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
@@ -262,7 +263,7 @@ class CursorAgentProvider extends AIProvider {
    */
   async execute(prompt, options = {}) {
     return new Promise((resolve, reject) => {
-      const { cwd = process.cwd(), timeout = 300000, level = 'unknown', analysisId, registerProcess, onStreamEvent, logPrefix } = options;
+      const { cwd = process.cwd(), timeout = 300000, level = 'unknown', analysisId, registerProcess, onStreamEvent, logPrefix, abortSignal } = options;
 
       const levelPrefix = logPrefix || `[Level ${level}]`;
       logger.info(`${levelPrefix} Executing Cursor Agent CLI...`);
@@ -275,7 +276,8 @@ class CursorAgentProvider extends AIProvider {
           ...this.extraEnv,
           PATH: `${BIN_DIR}:${process.env.PATH}`
         },
-        shell: this.useShell
+        shell: this.useShell,
+        detached: this.useShell
       });
 
       const pid = agent.pid;
@@ -286,6 +288,9 @@ class CursorAgentProvider extends AIProvider {
         registerProcess(analysisId, agent);
         logger.info(`${levelPrefix} Registered process ${pid} for analysis ${analysisId}`);
       }
+
+      // Wire AbortSignal -> SIGTERM for tour/summary cancellation.
+      const abortWiring = wireAbortToChild(agent, abortSignal, { logPrefix: levelPrefix, shell: this.useShell });
 
       let stdout = '';
       let stderr = '';
@@ -298,6 +303,7 @@ class CursorAgentProvider extends AIProvider {
         if (settled) return;
         settled = true;
         if (timeoutId) clearTimeout(timeoutId);
+        abortWiring.detach();
         fn(value);
       };
 
@@ -348,9 +354,18 @@ class CursorAgentProvider extends AIProvider {
       agent.on('close', (code) => {
         if (settled) return;  // Already settled by timeout or error
 
+        // Detach is centralized in `settle`.
+
         // Flush any remaining stream parser buffer
         if (streamParser) {
           streamParser.flush();
+        }
+
+        // BackgroundQueue-driven cancellation — mirror of claude-provider.
+        if (abortWiring.cancelled()) {
+          logger.info(`${levelPrefix} Cursor Agent CLI terminated by user cancel (exit code ${code})`);
+          settle(reject, makeAbortError(`${levelPrefix} Cancelled by user`));
+          return;
         }
 
         // Check for cancellation signals (SIGTERM=143, SIGKILL=137)
@@ -431,6 +446,7 @@ class CursorAgentProvider extends AIProvider {
 
       // Handle errors
       agent.on('error', (error) => {
+        // Detach happens inside `settle`.
         if (error.code === 'ENOENT') {
           logger.error(`${levelPrefix} Cursor Agent CLI not found. Please ensure Cursor Agent CLI is installed.`);
           settle(reject, new Error(`${levelPrefix} Cursor Agent CLI not found. ${CursorAgentProvider.getInstallInstructions()}`));

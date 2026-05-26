@@ -191,9 +191,23 @@ async function generateTourForReview({
   worktreePath,
   reviewContext,
   diffHash: providedDiffHash,
+  abortSignal,
   _deps
 }) {
   const deps = { ...defaults, ..._deps };
+
+  // Helper: convert "aborted between awaits" into a rejected promise so we
+  // never persist partial work after a user cancel. Throwing an AbortError
+  // also tells the BackgroundQueue this completed via cancellation, which
+  // it surfaces in the broadcast event.
+  const throwIfAborted = () => {
+    if (abortSignal && abortSignal.aborted) {
+      const err = new Error(`${TOUR_LOG_PREFIX} review ${reviewId}: cancelled`);
+      err.name = 'AbortError';
+      err.isCancellation = true;
+      throw err;
+    }
+  };
 
   if (!diffText || !diffText.trim()) {
     logger.info(`${TOUR_LOG_PREFIX} review ${reviewId}: no diff text; skipping`);
@@ -261,10 +275,19 @@ async function generateTourForReview({
     worktreePath
   });
 
+  throwIfAborted();
   let result;
   try {
-    result = await provider.execute(prompt, { cwd: worktreePath, logPrefix: TOUR_LOG_PREFIX });
+    result = await provider.execute(prompt, {
+      cwd: worktreePath,
+      logPrefix: TOUR_LOG_PREFIX,
+      abortSignal,
+    });
   } catch (execErr) {
+    if (execErr && (execErr.name === 'AbortError' || execErr.isCancellation)) {
+      logger.info(`${TOUR_LOG_PREFIX} review ${reviewId}: cancelled during provider call`);
+      throw execErr;
+    }
     logger.error(`${TOUR_LOG_PREFIX} review ${reviewId}: provider error: ${execErr.message}`);
     return { generated: false, stops: 0, reason: 'provider_throw' };
   }
@@ -328,6 +351,7 @@ async function generateTourForReview({
     return { generated: false, stops: 0, reason: 'not_tour_worthy' };
   }
 
+  throwIfAborted();
   // Last-chance superseded check: another kickoff with a different diff
   // arrived while we were exploring/validating. Skip the write so we don't
   // overwrite a tour that's about to be regenerated for a newer diff.
@@ -408,7 +432,7 @@ function kickOffTourJob({
   latestRequestedDiffHash.set(reviewId, diffHash);
 
   const worker = deps.generateTourForReview || generateTourForReview;
-  return queue.enqueue(reviewId, 'tour', () =>
+  return queue.enqueue(reviewId, 'tour', (signal) =>
     worker({
       db,
       config,
@@ -420,6 +444,9 @@ function kickOffTourJob({
       // than relying on the (implicit) invariant that hashDiff produces
       // the same output for the same diffText in both call sites.
       diffHash,
+      // The BackgroundQueue calls our thunk as `fn(signal)`; pass it on so
+      // a user-initiated cancel reaches the upstream provider call.
+      abortSignal: signal,
       _deps
     })
   );

@@ -125,11 +125,14 @@ Each phase is independently testable, ships independently, and leaves the app in
 - New module `public/js/modules/tour-renderer.js`:
   - `mountStop(hunkEl, stop)` injects the numbered annotation with title + description + Prev/Next.
   - `scrollToStop(stop)` centers the target hunk into view.
-  - `setActive(true|false)` toggles tour mode (auto-hides summary annotations via CSS class on `<body>`; restores on exit).
+  - `setActive(true|false)` toggles `body.tour-active`, which drives tour-specific chrome styling — sticky tour-bar offsets and the active-stop highlight. As of the `tours-and-summaries-coexist` changeset this no longer hides hunk-summary annotations; summaries and tour stops render independently and the user toggles each.
 - Patch `public/js/pr.js`:
   - "Start Tour" button in main toolbar (calls `GET /api/reviews/:reviewId/tour`, opens tour mode).
   - Subscribe to `review:tour_ready`.
   - Keyboard shortcuts (Left/Right/Esc) when tour active.
+- **Per-stop "Chat about" affordance** (`.changeset/tour-stop-chat-about.md`): each tour-stop annotation has an icon-only "Chat about" button in its header, pinned to the upper-right next to the "Stop N of M" marker. Clicking it opens the chat panel pre-focused on the stop's title, description, file, and line range — and includes a code snippet when available (the in-diff hunk, or, for context-files outside the diff, a server-fetched slice). Mirrors the existing "Chat about" affordances on comments, AI suggestions, and analysis findings.
+- **Description "Show more" toggle** (`.changeset/tour-description-show-more.md`): stop descriptions are clamped to roughly three lines; stops whose text actually overflows render a "Show more" toggle that reveals the rest. The expanded state is preserved if the user navigates away and returns within the same tour. (The storage cap was raised from 280 to 800 characters; see the Tour prompt contract.)
+- **Summaries toggle visual parity** (`.changeset/tour-chat-header-and-summary-toggle.md`): the summaries toolbar toggle no longer draws a diagonal slash through its icon in the off state — it matches the tour toggle by using the un-colored base styling, so the two buttons read consistently.
 - Tests: unit tests for TourBar / tour-renderer; E2E covering full happy-path + keyboard nav + completion state.
 
 ---
@@ -163,7 +166,7 @@ Each phase is independently testable, ships independently, and leaves the app in
 ### Frontend (modified)
 - `public/js/pr.js` — toolbar buttons (toggle summaries, start tour); WS subscriptions; render orchestration; keyboard shortcuts when tour active.
 - `public/js/local.js` — only if any overridden method needs to also handle the new event types.
-- `public/css/pr.css` — `.hunk-summary-annotation`, `.tour-annotation`, light + dark variants, `body.tour-active .hunk-summary-annotation { display: none; }`.
+- `public/css/pr.css` — `.hunk-summary-annotation`, `.tour-annotation`, light + dark variants. (An earlier draft listed `body.tour-active .hunk-summary-annotation { display: none; }`; that rule was removed in the `tours-and-summaries-coexist` changeset so summaries and tour stops can render together. `tests/unit/tour-renderer.test.js` asserts the rule is absent.)
 
 ### Tests (new)
 - `tests/unit/hunk-hashing.test.js`
@@ -225,13 +228,13 @@ Each phase is independently testable, ships independently, and leaves the app in
         "side": "right",
         "line_start": 42,
         "line_end": 58,
-        "title": "<<= 60 chars>>",
-        "description": "<<= 280 chars>>"
+        "title": "<<= 120 chars>>",
+        "description": "<<= 800 chars (soft target ~200–300)>>"
       }
   ] }
   ```
   Stops are non-linear; the model orders them as a coherent narrative. Length: 3–10 stops. Validator (`validateStop` in `src/ai/tour-generator.js`) drops stops whose `[line_start, line_end]` range does not intersect the diff's changed-line set for that file/side. The frontend renderer scans forward within `[line_start, line_end]` when the exact `line_start` row is absent, preserving context-adjacent stops.
-- **Length constraints**: title 60 chars, description 280 chars. Strictly linear navigation in v1.
+- **Length constraints**: title 120 chars, description 800 chars (soft target ~200–300; the UI line-clamps to ~3 lines with a "Show more" toggle for the rest). Strictly linear navigation in v1.
 - **Dropped from v1**: `is_context: true` was specified to let stops point at unchanged code; this was removed when tours were decoupled from summaries.
 
 ---
@@ -246,7 +249,7 @@ Each phase is independently testable, ships independently, and leaves the app in
   - `review:tour_ready` (per-review).
   - `review:background_job_finished` (jobType) — generic, for telemetry / future use.
 - **Why WebSocket, not SSE/poll**: codebase already migrated SSE → WS; review-scoped events route through `broadcastReviewEvent` using `review:{reviewId}` topics; frontend `wsClient` is a singleton with auto-reconnect + topic resubscription. Reuse this.
-- **Cancellation**: not needed in v1. Browser-tab close does not cancel; next reload either gets cached results or re-enqueues missing hashes. Background jobs MUST never call `open()` (`PAIR_REVIEW_NO_OPEN`); they don't, since they don't go through `local-review.js`'s open path.
+- **Cancellation**: supported as of the `cancel-tour-summary-jobs` changeset. Each background job is created with a per-job `AbortController`; the signal is plumbed through `summary-generator.js` / `tour-generator.js` into every non-executable provider (Claude, Gemini, Codex, Copilot, Cursor Agent, OpenCode, Pi) so the upstream CLI call is killed when cancelled. The UX is a confirm dialog on the pulsing tour and summary toolbar buttons — the two jobs cancel independently — backed by `POST /api/reviews/:reviewId/jobs/:jobKey/cancel` (plus a `/api/local/...` mirror) accepting either a bare prefix (`tour` | `summaries`) or a full composite key. See `src/ai/background-queue.js`, `src/ai/abort-signal-wiring.js`, and `public/js/modules/cancel-background-job.js`. Browser-tab close does not cancel; next reload either gets cached results or re-enqueues missing hashes. Background jobs MUST never call `open()` (`PAIR_REVIEW_NO_OPEN`); they don't, since they don't go through `local-review.js`'s open path.
 
 ---
 

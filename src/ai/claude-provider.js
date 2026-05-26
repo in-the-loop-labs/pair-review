@@ -12,6 +12,7 @@ const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { CancellationError, isAnalysisCancelled } = require('../routes/shared');
 const { StreamParser, parseClaudeLine } = require('./stream-parser');
+const { wireAbortToChild, makeAbortError } = require('./abort-signal-wiring');
 
 // Directory containing bin scripts (git-diff-lines, etc.)
 const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
@@ -286,7 +287,7 @@ class ClaudeProvider extends AIProvider {
    */
   async execute(prompt, options = {}) {
     return new Promise((resolve, reject) => {
-      const { cwd = process.cwd(), timeout = 300000, level = 'unknown', analysisId, registerProcess, onStreamEvent, logPrefix } = options;
+      const { cwd = process.cwd(), timeout = 300000, level = 'unknown', analysisId, registerProcess, onStreamEvent, logPrefix, abortSignal } = options;
 
       const levelPrefix = logPrefix || `[Level ${level}]`;
       logger.info(`${levelPrefix} Executing Claude CLI...`);
@@ -300,7 +301,12 @@ class ClaudeProvider extends AIProvider {
           ...this.extraEnv,
           PATH: `${BIN_DIR}:${process.env.PATH}`
         },
-        shell: this.useShell
+        shell: this.useShell,
+        // In shell mode the immediate child is `/bin/sh -c '...claude...'`.
+        // Detaching makes the shell its own process-group leader so
+        // wireAbortToChild can `process.kill(-pid, SIGTERM)` and reap the
+        // CLI grandchild along with the shell. No effect when shell:false.
+        detached: this.useShell
       });
 
       const pid = claude.pid;
@@ -314,6 +320,13 @@ class ClaudeProvider extends AIProvider {
         logger.info(`${levelPrefix} Registered process ${pid} for analysis ${analysisId}`);
       }
 
+      // Wire AbortSignal -> SIGTERM. Tour/summary jobs run through the
+      // BackgroundQueue which threads its per-job signal here so a user
+      // "Cancel" click stops burning tokens on the upstream CLI call.
+      // Pass shell: this.useShell so the helper signals the whole process
+      // group (group-kill) instead of just the shell wrapper.
+      const abortWiring = wireAbortToChild(claude, abortSignal, { logPrefix: levelPrefix, shell: this.useShell });
+
       let stdout = '';
       let stderr = '';
       let timeoutId = null;
@@ -321,10 +334,16 @@ class ClaudeProvider extends AIProvider {
       let lineBuffer = '';  // Buffer for incomplete JSONL lines
       let lineCount = 0;    // Count of JSONL events for progress tracking
 
+      // Centralize abort-listener cleanup in `settle` so it ALWAYS runs
+      // when this execute() returns — including when the timeout path
+      // settles before the child exits. Otherwise the abort listener
+      // outlives the call and leaks across the loop tour/summary
+      // generators run with a shared per-job signal.
       const settle = (fn, value) => {
         if (settled) return;
         settled = true;
         if (timeoutId) clearTimeout(timeoutId);
+        abortWiring.detach();
         fn(value);
       };
 
@@ -375,9 +394,22 @@ class ClaudeProvider extends AIProvider {
       claude.on('close', (code) => {
         if (settled) return;  // Already settled by timeout or error
 
+        // Note: abort listener detach is centralized in `settle` so it
+        // runs even when the timeout path settled first.
+
         // Flush any remaining stream parser buffer
         if (streamParser) {
           streamParser.flush();
+        }
+
+        // BackgroundQueue-driven cancellation: the user clicked "Cancel
+        // Tour"/"Cancel Summaries", which aborted our signal and we sent
+        // SIGTERM via wireAbortToChild. Surface it as an AbortError so
+        // upstream callers can distinguish "user cancel" from real failure.
+        if (abortWiring.cancelled()) {
+          logger.info(`${levelPrefix} Claude CLI terminated by user cancel (exit code ${code})`);
+          settle(reject, makeAbortError(`${levelPrefix} Cancelled by user`));
+          return;
         }
 
         // Check for cancellation signals (SIGTERM=143, SIGKILL=137)
@@ -461,6 +493,7 @@ class ClaudeProvider extends AIProvider {
 
       // Handle errors
       claude.on('error', (error) => {
+        // Detach happens inside `settle` below.
         if (error.code === 'ENOENT') {
           logger.error(`${levelPrefix} Claude CLI not found. Please ensure Claude CLI is installed.`);
           settle(reject, new Error(`${levelPrefix} Claude CLI not found. ${ClaudeProvider.getInstallInstructions()}`));

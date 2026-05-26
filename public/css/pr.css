@@ -14835,25 +14835,9 @@ body.summaries-hidden .hunk-summary-row,
   background-color: rgba(56, 139, 253, 0.12);
 }
 
-/* Summaries hidden — gray icon + a slash overlay so the off state is
-   immediately recognizable without depending on the tooltip. */
-.btn-summary-toggle:not(.active) {
-  opacity: 0.7;
-}
-
-.btn-summary-toggle:not(.active)::after {
-  content: '';
-  position: absolute;
-  top: 50%;
-  left: 12%;
-  right: 12%;
-  height: 2px;
-  background-color: currentColor;
-  transform: rotate(-25deg);
-  transform-origin: center;
-  pointer-events: none;
-  border-radius: 1px;
-}
+/* Summaries hidden — the off state is just the base button styling
+   (gray secondary color, no background). Matches the tour-toggle pattern
+   so the two buttons read consistently when off. */
 
 /* "Generating" pulse — applied while the background summary job is running. */
 .btn-summary-toggle.generating {
@@ -14963,6 +14947,7 @@ body.summaries-hidden .hunk-summary-row,
 .tour-annotation-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
   font-weight: 600;
 }
@@ -14997,10 +14982,118 @@ body.summaries-hidden .hunk-summary-row,
   opacity: 0.95;
 }
 
-/* Hide hunk summaries while a tour is active so the two annotation styles
-   don't compete for attention. The summary CSS still owns the row class. */
-body.tour-active .hunk-summary-row {
+/* Wrap around the description <p>. Collapsed state uses the WebKit
+   line-clamp triplet to cap visible content at ~3 lines; expanded state
+   removes the clamp so the full description shows. The wrapper (not the
+   inner <p>) carries the clamp so the JS overflow check has a stable
+   element to measure (`scrollHeight > clientHeight`). */
+.tour-annotation-description-wrap {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+}
+
+.tour-annotation-description-wrap.expanded {
+  display: block;
+  -webkit-line-clamp: unset;
+  line-clamp: unset;
+  overflow: visible;
+}
+
+/* Footer holds only the "Show more"/"Show less" toggle when the
+   description overflows the line-clamp; otherwise it's an empty stub.
+   Chat about lives in the header now. */
+.tour-annotation-footer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.tour-annotation-footer:empty {
   display: none;
+}
+
+/* "Show more" / "Show less" toggle. Styled as a borderless amber link
+   button so it reads as part of the tour annotation but doesn't compete
+   with the primary Chat about action. */
+.tour-annotation-show-more-btn {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 2px 4px;
+  margin: 0;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: #7d5700;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  border-radius: var(--radius-sm, 3px);
+}
+
+.tour-annotation-show-more-btn:hover {
+  color: #5b3f00;
+  background: rgba(255, 255, 255, 0.45);
+}
+
+.tour-annotation-show-more-btn:focus-visible {
+  outline: 2px solid #d4a72c;
+  outline-offset: 1px;
+}
+
+[data-theme="dark"] .tour-annotation-show-more-btn {
+  color: #e3b341;
+}
+
+[data-theme="dark"] .tour-annotation-show-more-btn:hover {
+  color: #f3c861;
+  background: rgba(187, 128, 9, 0.18);
+}
+
+/* The chat button on a tour-stop annotation reuses .ai-action / .ai-action-chat
+   so its idle and hover treatments stay in sync with the rest of the app. We
+   override surface colors (so it reads on the amber background) AND collapse
+   it to an icon-only square — the button sits in the header next to the
+   stop marker, where a labelled button would crowd the title row. The title
+   attribute / aria-label carry the meaning for accessibility + tooltip. */
+.tour-annotation .tour-annotation-chat-btn {
+  background: rgba(255, 255, 255, 0.6);
+  color: #7d5700;
+  border: 1px solid rgba(212, 167, 44, 0.55);
+  padding: 2px;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.tour-annotation .tour-annotation-chat-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.tour-annotation .tour-annotation-chat-btn:hover {
+  background: rgba(255, 255, 255, 0.9);
+  color: #5b3f00;
+  border-color: #d4a72c;
+}
+
+[data-theme="dark"] .tour-annotation .tour-annotation-chat-btn {
+  background: rgba(187, 128, 9, 0.12);
+  color: #e3b341;
+  border-color: rgba(187, 128, 9, 0.55);
+}
+
+[data-theme="dark"] .tour-annotation .tour-annotation-chat-btn:hover {
+  background: rgba(187, 128, 9, 0.25);
+  color: #f3c861;
+  border-color: #e3b341;
 }
 
 /* Emphasize the currently-active stop annotation. */

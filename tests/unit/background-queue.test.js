@@ -1,7 +1,7 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 
 import { describe, it, expect, vi } from 'vitest';
-const { BackgroundQueue } = require('../../src/ai/background-queue.js');
+const { BackgroundQueue, isAbortError } = require('../../src/ai/background-queue.js');
 
 function makeQueue(overrides = {}) {
   const broadcast = overrides.broadcast || vi.fn();
@@ -148,6 +148,7 @@ describe('BackgroundQueue', () => {
       jobType: 'summaries',
       ok: true,
       hasActiveForType: false,
+      cancelled: false,
     });
   });
 
@@ -161,6 +162,7 @@ describe('BackgroundQueue', () => {
       jobType: 'summaries',
       ok: false,
       hasActiveForType: false,
+      cancelled: false,
     });
   });
 
@@ -185,6 +187,7 @@ describe('BackgroundQueue', () => {
       jobType: 'summaries:digest-a',
       ok: true,
       hasActiveForType: true,
+      cancelled: false,
     });
 
     // Now resolve the second; broadcast must report the type cleared.
@@ -195,6 +198,7 @@ describe('BackgroundQueue', () => {
       jobType: 'summaries:digest-b',
       ok: true,
       hasActiveForType: false,
+      cancelled: false,
     });
   });
 
@@ -259,5 +263,272 @@ describe('BackgroundQueue', () => {
     expect(r1).toBe('first');
     expect(r2).toBe('second');
     expect(broadcast).toHaveBeenCalledTimes(2);
+  });
+
+  describe('cancellation', () => {
+    it('passes an AbortSignal to the worker thunk', async () => {
+      const { queue } = makeQueue();
+      let observed = null;
+      await queue.enqueue(1, 'tour', (signal) => {
+        observed = signal;
+        return Promise.resolve('ok');
+      });
+      expect(observed).toBeInstanceOf(AbortSignal);
+      expect(observed.aborted).toBe(false);
+    });
+
+    it('cancel(reviewId, jobKey) aborts the signal for an exact match', async () => {
+      const { queue } = makeQueue();
+      const job = deferred();
+      let workerSignal;
+      const promise = queue.enqueue(1, 'tour', (signal) => {
+        workerSignal = signal;
+        return job.promise;
+      });
+      await flushMicrotasks();
+      const { cancelled } = queue.cancel(1, 'tour');
+      expect(cancelled).toBe(1);
+      expect(workerSignal.aborted).toBe(true);
+      job.resolve('done-but-cancelled');
+      await promise; // worker resolved after abort; queue still settles cleanly
+    });
+
+    it('cancel by bare prefix aborts ALL matching composite-key jobs', async () => {
+      const { queue } = makeQueue({ concurrency: 2 });
+      const a = deferred();
+      const b = deferred();
+      const signals = [];
+      const p1 = queue.enqueue(7, 'summaries:digest-a', (s) => {
+        signals.push(s);
+        return a.promise;
+      });
+      const p2 = queue.enqueue(7, 'summaries:digest-b', (s) => {
+        signals.push(s);
+        return b.promise;
+      });
+      await flushMicrotasks();
+      const { cancelled } = queue.cancel(7, 'summaries');
+      expect(cancelled).toBe(2);
+      expect(signals.every((s) => s.aborted)).toBe(true);
+      a.resolve('a'); b.resolve('b');
+      await Promise.all([p1, p2]);
+    });
+
+    it('cancel returns 0 when no matching job is in flight', () => {
+      const { queue } = makeQueue();
+      expect(queue.cancel(42, 'tour')).toEqual({ cancelled: 0 });
+    });
+
+    it('cancel ignores empty / nullish jobKey', () => {
+      const { queue } = makeQueue();
+      expect(queue.cancel(1, '')).toEqual({ cancelled: 0 });
+      expect(queue.cancel(1, null)).toEqual({ cancelled: 0 });
+      expect(queue.cancel(1, undefined)).toEqual({ cancelled: 0 });
+    });
+
+    it('does not cancel jobs for a different reviewId', async () => {
+      const { queue } = makeQueue();
+      const j = deferred();
+      let workerSignal;
+      const promise = queue.enqueue(1, 'tour', (s) => {
+        workerSignal = s;
+        return j.promise;
+      });
+      await flushMicrotasks();
+      expect(queue.cancel(2, 'tour')).toEqual({ cancelled: 0 });
+      expect(workerSignal.aborted).toBe(false);
+      j.resolve('ok');
+      await promise;
+    });
+
+    it('broadcasts cancelled:true when the worker rejects with an AbortError', async () => {
+      const { queue, broadcast } = makeQueue();
+      const job = deferred();
+      const promise = queue.enqueue(42, 'tour', () => job.promise);
+      await flushMicrotasks();
+      queue.cancel(42, 'tour');
+      // Simulate the provider noticing the abort and rejecting with an
+      // AbortError — same shape the real claude-provider emits.
+      const err = new Error('cancelled');
+      err.name = 'AbortError';
+      job.reject(err);
+      await expect(promise).rejects.toBe(err);
+      expect(broadcast).toHaveBeenCalledWith(42, expect.objectContaining({
+        jobType: 'tour',
+        ok: false,
+        cancelled: true,
+      }));
+    });
+
+    it('frees the controller after the job settles so the same key can re-run', async () => {
+      const { queue } = makeQueue();
+      const j1 = deferred();
+      const p1 = queue.enqueue(1, 'tour', () => j1.promise);
+      await flushMicrotasks();
+      queue.cancel(1, 'tour');
+      j1.resolve('first');
+      await p1;
+      // After the first job settled, cancel() should match nothing.
+      expect(queue.cancel(1, 'tour')).toEqual({ cancelled: 0 });
+      // And a fresh enqueue should run normally.
+      let workerSignal;
+      const r2 = await queue.enqueue(1, 'tour', (s) => {
+        workerSignal = s;
+        return Promise.resolve('second');
+      });
+      expect(r2).toBe('second');
+      expect(workerSignal.aborted).toBe(false);
+    });
+
+    // Regression for the stale-dedup bug: a cancel followed by an immediate
+    // re-enqueue of the same key used to return the about-to-reject promise
+    // because cancel() didn't remove the key from `inFlight`. The user
+    // would click Cancel → Generate and silently inherit the cancellation.
+    it('cancel + immediate re-enqueue starts a fresh job (no stale dedup)', async () => {
+      const { queue } = makeQueue();
+      const j1 = deferred();
+      let firstSignal;
+      const fn1 = vi.fn((signal) => {
+        firstSignal = signal;
+        return j1.promise;
+      });
+      const p1 = queue.enqueue(1, 'tour', fn1);
+      await flushMicrotasks();
+
+      // Cancel — controller aborts, key should be evicted immediately.
+      queue.cancel(1, 'tour');
+      expect(firstSignal.aborted).toBe(true);
+
+      // Re-enqueue BEFORE the first worker has settled. The new call must
+      // start a fresh job, not reuse p1.
+      let secondSignal;
+      const fn2 = vi.fn((signal) => {
+        secondSignal = signal;
+        return Promise.resolve('fresh');
+      });
+      const p2 = queue.enqueue(1, 'tour', fn2);
+      expect(p2).not.toBe(p1);
+
+      // Now let the first worker reject (it noticed the abort).
+      j1.reject(Object.assign(new Error('cancelled'), { name: 'AbortError' }));
+      await expect(p1).rejects.toMatchObject({ name: 'AbortError' });
+
+      // Second job runs to completion with its own un-aborted signal.
+      await expect(p2).resolves.toBe('fresh');
+      expect(fn2).toHaveBeenCalledTimes(1);
+      expect(secondSignal).toBeDefined();
+      expect(secondSignal.aborted).toBe(false);
+    });
+
+    // Regression for the ownership bug in _settle: after cancel() evicts a
+    // running job and a replacement is enqueued under the same key, the
+    // original worker's eventual rejection must NOT wipe the replacement's
+    // bookkeeping. Symptoms of the old behavior: hasActiveForReview returns
+    // false, cancel() no-ops, and a follow-up enqueue spins a duplicate.
+    it('settle of a cancelled worker does not clobber a re-enqueued replacement', async () => {
+      const { queue } = makeQueue();
+      const j1 = deferred();
+      const j2 = deferred();
+      let firstSignal;
+      let secondSignal;
+
+      const p1 = queue.enqueue(1, 'tour', (signal) => {
+        firstSignal = signal;
+        return j1.promise;
+      });
+      await flushMicrotasks();
+
+      // Cancel the first job — controller aborts, key evicted from maps.
+      queue.cancel(1, 'tour');
+      expect(firstSignal.aborted).toBe(true);
+
+      // Re-enqueue BEFORE the first worker rejects. New controller/promise
+      // get installed under the same key.
+      const p2 = queue.enqueue(1, 'tour', (signal) => {
+        secondSignal = signal;
+        return j2.promise;
+      });
+      await flushMicrotasks();
+      expect(secondSignal).toBeDefined();
+      expect(secondSignal.aborted).toBe(false);
+      expect(queue.hasActiveForReview(1, 'tour')).toBe(true);
+
+      // First worker finally notices the abort and rejects. _settle for the
+      // dead descriptor must NOT touch the replacement's map entries.
+      j1.reject(Object.assign(new Error('cancelled'), { name: 'AbortError' }));
+      await expect(p1).rejects.toMatchObject({ name: 'AbortError' });
+
+      // Replacement still tracked: visible to hasActiveForReview, cancel
+      // actually aborts it, dedup still works.
+      expect(queue.hasActiveForReview(1, 'tour')).toBe(true);
+      const dedup = queue.enqueue(1, 'tour', () => Promise.resolve('should-dedup'));
+      expect(dedup).toBe(p2);
+      const { cancelled } = queue.cancel(1, 'tour');
+      expect(cancelled).toBe(1);
+      expect(secondSignal.aborted).toBe(true);
+
+      j2.reject(Object.assign(new Error('cancelled-2'), { name: 'AbortError' }));
+      await expect(p2).rejects.toMatchObject({ name: 'AbortError' });
+    });
+
+    // Regression for the queued-descriptor bug: cancelling while a job
+    // was still queued (concurrency saturated) used to leave the
+    // descriptor in `this.queue`. `_drain()` would then hand the worker
+    // an already-aborted signal and `hasActiveForReview` would keep
+    // reporting true.
+    it('cancel splices queued descriptors and rejects them with AbortError', async () => {
+      const { queue } = makeQueue({ concurrency: 1 });
+      const blockerDone = deferred();
+      const blocker = queue.enqueue(99, 'other', () => blockerDone.promise);
+      await flushMicrotasks();
+
+      // This second enqueue is queued behind the blocker (concurrency=1).
+      const queuedFn = vi.fn(() => Promise.resolve('never'));
+      const queuedPromise = queue.enqueue(7, 'tour', queuedFn);
+      // It IS reported active for the review while queued.
+      expect(queue.hasActiveForReview(7, 'tour')).toBe(true);
+
+      // Cancel before the blocker releases — the descriptor is still in
+      // this.queue, not running.
+      const { cancelled } = queue.cancel(7, 'tour');
+      expect(cancelled).toBe(1);
+
+      // Queued descriptor's promise rejects with AbortError synchronously
+      // (well, after microtask flush — the reject is scheduled).
+      await expect(queuedPromise).rejects.toMatchObject({ name: 'AbortError' });
+
+      // Key is gone from active tracking.
+      expect(queue.hasActiveForReview(7, 'tour')).toBe(false);
+
+      // The queued fn must NEVER be invoked — _drain shouldn't pick it up.
+      blockerDone.resolve('blocker-done');
+      await blocker;
+      await flushMicrotasks();
+      expect(queuedFn).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('isAbortError', () => {
+    it('matches DOMException with name AbortError', () => {
+      const err = new Error('x');
+      err.name = 'AbortError';
+      expect(isAbortError(err)).toBe(true);
+    });
+    it('matches errors with code ABORT_ERR', () => {
+      const err = new Error('x');
+      err.code = 'ABORT_ERR';
+      expect(isAbortError(err)).toBe(true);
+    });
+    it('matches errors with isCancellation flag', () => {
+      const err = new Error('x');
+      err.isCancellation = true;
+      expect(isAbortError(err)).toBe(true);
+    });
+    it('returns false for regular errors / nullish', () => {
+      expect(isAbortError(null)).toBe(false);
+      expect(isAbortError(undefined)).toBe(false);
+      expect(isAbortError(new Error('boom'))).toBe(false);
+      expect(isAbortError('cancelled')).toBe(false);
+    });
   });
 });

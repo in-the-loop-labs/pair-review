@@ -17,8 +17,12 @@ const PROMPT_MIN_STOPS = 1;
 // "not tour-worthy" rather than published.
 const PERSIST_MIN_STOPS = 2;
 const MAX_STOPS = 12;
-const TITLE_MAX = 60;
-const DESCRIPTION_MAX = 280;
+const TITLE_MAX = 120;
+// Storage cap. The UI clamps the visible description to ~3 lines and
+// reveals the rest behind a "Show more" toggle, so we can afford to give
+// the model more room than the old 280-char hard cap (which produced
+// visibly mid-sentence truncations the user hated).
+const DESCRIPTION_MAX = 800;
 
 /**
  * Returns true if the value is a non-empty, non-whitespace-only string.
@@ -94,7 +98,7 @@ function buildTourPrompt({
       '      "line_start": 42,',
       '      "line_end": 58,',
       `      "title": "<= ${TITLE_MAX} chars",`,
-      `      "description": "<= ${DESCRIPTION_MAX} chars"`,
+      `      "description": "1-3 sentences; aim for ~200-300 chars, up to ${DESCRIPTION_MAX}"`,
       '    }',
       '  ]',
       '}',
@@ -107,9 +111,9 @@ function buildTourPrompt({
     [
       'Style:',
       `- title: a short noun phrase, <= ${TITLE_MAX} characters.`,
-      `- description: 1–3 sentences, <= ${DESCRIPTION_MAX} characters. Explain WHY`,
-      '  this stop matters and what to look for. Do NOT restate what the code does;',
-      '  say why it is load-bearing.',
+      `- description: 1–3 sentences. Aim for ~200–300 characters; up to ${DESCRIPTION_MAX}`,
+      '  if more context is genuinely needed. Explain WHY this stop matters and',
+      '  what to look for. Do NOT restate what the code does; say why it is load-bearing.',
       '- Be concrete. No fluff like "this is important code".'
     ].join('\n')
   );

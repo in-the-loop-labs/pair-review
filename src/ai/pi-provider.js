@@ -26,6 +26,7 @@ const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { CancellationError, isAnalysisCancelled } = require('../routes/shared');
 const { createPiLineParser } = require('./stream-parser');
+const { wireAbortToChild, makeAbortError } = require('./abort-signal-wiring');
 
 // Directory containing bin scripts (git-diff-lines, etc.)
 const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
@@ -579,7 +580,7 @@ class PiProvider extends AIProvider {
    */
   async execute(prompt, options = {}) {
     return new Promise((resolve, reject) => {
-      const { cwd = process.cwd(), timeout = 900000, level = 'unknown', analysisId, registerProcess, onStreamEvent, logPrefix } = options;
+      const { cwd = process.cwd(), timeout = 900000, level = 'unknown', analysisId, registerProcess, onStreamEvent, logPrefix, abortSignal } = options;
 
       const levelPrefix = logPrefix || `[Level ${level}]`;
       logger.info(`${levelPrefix} Executing Pi CLI...`);
@@ -609,7 +610,8 @@ class PiProvider extends AIProvider {
           ...this.extraEnv,
           PATH: `${BIN_DIR}:${process.env.PATH}`
         },
-        shell: this.useShell
+        shell: this.useShell,
+        detached: this.useShell
       });
 
       // Close stdin immediately — prompt is delivered via @file, but some
@@ -625,6 +627,9 @@ class PiProvider extends AIProvider {
         registerProcess(analysisId, pi);
         logger.info(`${levelPrefix} Registered process ${pid} for analysis ${analysisId}`);
       }
+
+      // Wire AbortSignal -> SIGTERM for tour/summary cancellation.
+      const abortWiring = wireAbortToChild(pi, abortSignal, { logPrefix: levelPrefix, shell: this.useShell });
 
       const stderrCapture = {
         head: '',
@@ -652,6 +657,7 @@ class PiProvider extends AIProvider {
         if (settled) return;
         settled = true;
         if (timeoutId) clearTimeout(timeoutId);
+        abortWiring.detach();
         fn(value);
       };
 
@@ -710,6 +716,15 @@ class PiProvider extends AIProvider {
       pi.on('close', (code) => {
         cleanupTmpFile();
         if (settled) return;  // Already settled by timeout or error
+
+        // Detach is centralized in `settle`.
+
+        // BackgroundQueue-driven cancellation — mirror of claude-provider.
+        if (abortWiring.cancelled()) {
+          logger.info(`${levelPrefix} Pi CLI terminated by user cancel (exit code ${code})`);
+          settle(reject, makeAbortError(`${levelPrefix} Cancelled by user`));
+          return;
+        }
 
         // Check for cancellation signals (SIGTERM=143, SIGKILL=137)
         const isCancellationCode = code === 143 || code === 137;
@@ -810,6 +825,7 @@ class PiProvider extends AIProvider {
       // Handle errors
       pi.on('error', (error) => {
         cleanupTmpFile();
+        // Detach happens inside `settle`.
         if (error.code === 'ENOENT') {
           logger.error(`${levelPrefix} Pi CLI not found. Please ensure Pi CLI is installed.`);
           settle(reject, new Error(`${levelPrefix} Pi CLI not found. ${PiProvider.getInstallInstructions()}`));

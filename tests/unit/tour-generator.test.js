@@ -13,6 +13,10 @@ const {
   latestRequestedDiffHash,
   resetLatestRequestedDiffHash
 } = require('../../src/ai/tour-generator.js');
+const {
+  TOUR_DESCRIPTION_MAX,
+  TOUR_TITLE_MAX
+} = require('../../src/ai/prompts/tour.js');
 const { TourRepository } = require('../../src/database.js');
 const { BackgroundQueue } = require('../../src/ai/background-queue.js');
 
@@ -235,7 +239,8 @@ describe('validateStop', () => {
 
   it('trims and length-caps title and description', async () => {
     const longTitle = '   ' + 'T'.repeat(200) + '   ';
-    const longDesc = '   ' + 'D'.repeat(500) + '   ';
+    // Use a length safely above the new 800-char cap so the slice is observable.
+    const longDesc = '   ' + 'D'.repeat(TOUR_DESCRIPTION_MAX + 200) + '   ';
     const out = await validateStop({
       file_path: 'a.js',
       title: longTitle,
@@ -244,8 +249,8 @@ describe('validateStop', () => {
       line_end: 43
     }, ctx);
     expect(out).not.toBeNull();
-    expect(out.title.length).toBeLessThanOrEqual(60);
-    expect(out.description.length).toBeLessThanOrEqual(280);
+    expect(out.title.length).toBeLessThanOrEqual(TOUR_TITLE_MAX);
+    expect(out.description.length).toBeLessThanOrEqual(TOUR_DESCRIPTION_MAX);
     // No leading whitespace
     expect(out.title.startsWith(' ')).toBe(false);
     expect(out.description.startsWith(' ')).toBe(false);

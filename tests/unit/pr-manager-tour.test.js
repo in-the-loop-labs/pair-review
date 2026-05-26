@@ -41,6 +41,8 @@ function makeBareManager() {
   m._tourStopsPendingRestart = null;
   m._summariesGenerating = false;
   m._syncSummaryToolbarButton = vi.fn();
+  // Re-entry guard slot for _promptCancelJob.
+  m._cancelPromptOpen = false;
   // Generation-aware latch slot for _advanceTour. -1 means no in-flight
   // call; any other value pins the call to the `_tourGen` it entered on.
   // Must be initialized so `_advanceInFlightGen === _tourGen` is false on
@@ -829,5 +831,159 @@ describe('PRManager initial tour probe is deferred', () => {
     // And it must opt out of the renderGen guard so it doesn't
     // false-abort.
     expect(probeSpy).toHaveBeenCalledWith({ cancelOnRender: false });
+  });
+});
+
+// ----------------------------------------------------------------------
+// Regression: _promptCancelJob must be re-entrant-safe. The pulsing toolbar
+// button stays clickable while ConfirmDialog is open; without a guard a
+// rapid second click overwrites the singleton dialog's callbacks and
+// orphans the first invocation's Promise.
+// ----------------------------------------------------------------------
+describe('PRManager._promptCancelJob re-entry guard', () => {
+  let m;
+  let origCancelHelper;
+
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    m = makeBareManager();
+    origCancelHelper = window.CancelBackgroundJob;
+  });
+
+  afterEach(() => {
+    window.CancelBackgroundJob = origCancelHelper;
+  });
+
+  it('drops a second click while the first dialog is still open', async () => {
+    let resolveFirst;
+    const firstDialog = new Promise((res) => { resolveFirst = res; });
+    const showCancelTourDialog = vi.fn(() => firstDialog);
+    window.CancelBackgroundJob = {
+      showCancelTourDialog,
+      showCancelSummariesDialog: vi.fn(),
+    };
+
+    const onCleared = vi.fn();
+    const first = m._promptCancelJob({ kind: 'tour', onCleared });
+    // Second click while first awaits the dialog — must NOT call show again.
+    const second = m._promptCancelJob({ kind: 'tour', onCleared });
+    await second; // second returns immediately
+    expect(showCancelTourDialog).toHaveBeenCalledTimes(1);
+    expect(m._cancelPromptOpen).toBe(true);
+
+    // Resolve the first dialog and finish the first call.
+    resolveFirst();
+    await first;
+    expect(m._cancelPromptOpen).toBe(false);
+  });
+
+  it('releases the guard after dialog close so subsequent clicks work', async () => {
+    const showCancelTourDialog = vi.fn().mockResolvedValue(undefined);
+    window.CancelBackgroundJob = {
+      showCancelTourDialog,
+      showCancelSummariesDialog: vi.fn(),
+    };
+    await m._promptCancelJob({ kind: 'tour', onCleared: vi.fn() });
+    expect(m._cancelPromptOpen).toBe(false);
+    await m._promptCancelJob({ kind: 'tour', onCleared: vi.fn() });
+    expect(showCancelTourDialog).toHaveBeenCalledTimes(2);
+  });
+
+  it('releases the guard even when the dialog show() rejects', async () => {
+    const showCancelTourDialog = vi.fn().mockRejectedValue(new Error('boom'));
+    window.CancelBackgroundJob = {
+      showCancelTourDialog,
+      showCancelSummariesDialog: vi.fn(),
+    };
+    await expect(
+      m._promptCancelJob({ kind: 'tour', onCleared: vi.fn() })
+    ).rejects.toThrow('boom');
+    expect(m._cancelPromptOpen).toBe(false);
+  });
+
+  it('summary handler also respects the guard (shared singleton)', async () => {
+    // A user mashing the summaries pulse must not stack two dialogs either.
+    let resolveFirst;
+    const firstDialog = new Promise((res) => { resolveFirst = res; });
+    const showCancelSummariesDialog = vi.fn(() => firstDialog);
+    window.CancelBackgroundJob = {
+      showCancelTourDialog: vi.fn(),
+      showCancelSummariesDialog,
+    };
+    const first = m._promptCancelJob({ kind: 'summaries', onCleared: vi.fn() });
+    const second = m._promptCancelJob({ kind: 'summaries', onCleared: vi.fn() });
+    await second;
+    expect(showCancelSummariesDialog).toHaveBeenCalledTimes(1);
+    resolveFirst();
+    await first;
+  });
+
+  it('returns early without setting the guard when no helper is registered', async () => {
+    window.CancelBackgroundJob = null;
+    await m._promptCancelJob({ kind: 'tour', onCleared: vi.fn() });
+    // Guard must NOT remain stuck on after an early-return path.
+    expect(m._cancelPromptOpen).toBe(false);
+  });
+
+  it('returns early without setting the guard when currentPR.id is missing', async () => {
+    m.currentPR = null;
+    const showCancelTourDialog = vi.fn();
+    window.CancelBackgroundJob = {
+      showCancelTourDialog,
+      showCancelSummariesDialog: vi.fn(),
+    };
+    await m._promptCancelJob({ kind: 'tour', onCleared: vi.fn() });
+    expect(showCancelTourDialog).not.toHaveBeenCalled();
+    expect(m._cancelPromptOpen).toBe(false);
+  });
+});
+
+describe('PRManager toggle-click handlers', () => {
+  let m;
+  let origCancelHelper;
+
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    m = makeBareManager();
+    origCancelHelper = window.CancelBackgroundJob;
+    window.CancelBackgroundJob = {
+      showCancelTourDialog: vi.fn().mockResolvedValue(undefined),
+      showCancelSummariesDialog: vi.fn().mockResolvedValue(undefined),
+    };
+  });
+  afterEach(() => {
+    window.CancelBackgroundJob = origCancelHelper;
+  });
+
+  it('_handleSummaryToggleClick falls through to toggleSummariesVisibility when not generating', async () => {
+    m._summariesGenerating = false;
+    m.toggleSummariesVisibility = vi.fn();
+    await m._handleSummaryToggleClick();
+    expect(m.toggleSummariesVisibility).toHaveBeenCalledTimes(1);
+    expect(window.CancelBackgroundJob.showCancelSummariesDialog).not.toHaveBeenCalled();
+  });
+
+  it('_handleSummaryToggleClick routes to the cancel flow when generating', async () => {
+    m._summariesGenerating = true;
+    m.toggleSummariesVisibility = vi.fn();
+    await m._handleSummaryToggleClick();
+    expect(window.CancelBackgroundJob.showCancelSummariesDialog).toHaveBeenCalledTimes(1);
+    expect(m.toggleSummariesVisibility).not.toHaveBeenCalled();
+  });
+
+  it('_handleTourToggleClick falls through to startOrToggleTour when not generating', async () => {
+    m._tourGenerating = false;
+    m.startOrToggleTour = vi.fn().mockResolvedValue(undefined);
+    await m._handleTourToggleClick();
+    expect(m.startOrToggleTour).toHaveBeenCalledTimes(1);
+    expect(window.CancelBackgroundJob.showCancelTourDialog).not.toHaveBeenCalled();
+  });
+
+  it('_handleTourToggleClick routes to the cancel flow when generating', async () => {
+    m._tourGenerating = true;
+    m.startOrToggleTour = vi.fn().mockResolvedValue(undefined);
+    await m._handleTourToggleClick();
+    expect(window.CancelBackgroundJob.showCancelTourDialog).toHaveBeenCalledTimes(1);
+    expect(m.startOrToggleTour).not.toHaveBeenCalled();
   });
 });

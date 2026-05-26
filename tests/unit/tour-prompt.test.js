@@ -140,8 +140,8 @@ describe('exported constants', () => {
     expect(TOUR_PROMPT_MIN_STOPS).toBe(1);
     expect(TOUR_PERSIST_MIN_STOPS).toBe(2);
     expect(TOUR_MAX_STOPS).toBe(12);
-    expect(TOUR_TITLE_MAX).toBe(60);
-    expect(TOUR_DESCRIPTION_MAX).toBe(280);
+    expect(TOUR_TITLE_MAX).toBe(120);
+    expect(TOUR_DESCRIPTION_MAX).toBe(800);
   });
 });
 

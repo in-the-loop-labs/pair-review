@@ -58,9 +58,17 @@ async function generateSummariesForReview({
   diffText,
   worktreePath,
   reviewContext,
+  abortSignal,
   _deps
 }) {
   const deps = { ...defaults, ..._deps };
+
+  // Helper: bail between per-file iterations once the user cancels.
+  // Summaries are written file-by-file, so a mid-loop abort can leave a
+  // subset of files persisted — that is intentional ("stop burning more
+  // tokens"). The check only prevents doing MORE work, not undoing
+  // already-persisted summaries.
+  const isAborted = () => abortSignal && abortSignal.aborted;
 
   if (!diffText || !diffText.trim()) {
     return { filesProcessed: 0, hunksPersisted: 0 };
@@ -134,6 +142,15 @@ async function generateSummariesForReview({
   let hunksPersisted = 0;
 
   for (const [filePath, hunks] of hunksByFile.entries()) {
+    if (isAborted()) {
+      // Cancelled mid-loop: surface as an AbortError so the queue's
+      // broadcast carries `cancelled: true`. Any per-file work already
+      // persisted stays — see comment on `isAborted` declaration.
+      const err = new Error(`Hunk summaries for review ${reviewId} cancelled`);
+      err.name = 'AbortError';
+      err.isCancellation = true;
+      throw err;
+    }
     // Use the basename for log readability — full repo-relative paths can be
     // long enough to clutter each log line, and within a single review the
     // basename is almost always unique enough to identify the file.
@@ -188,9 +205,15 @@ async function generateSummariesForReview({
         try {
           result = await provider.execute(prompt, {
             cwd: worktreePath,
-            logPrefix: summaryPrefix
+            logPrefix: summaryPrefix,
+            abortSignal,
           });
         } catch (execErr) {
+          if (execErr && (execErr.name === 'AbortError' || execErr.isCancellation)) {
+            // Propagate cancellation up so the queue marks the broadcast as
+            // cancelled instead of "completed normally with no output".
+            throw execErr;
+          }
           // (Intentional: see retry-on-reload note below — no sentinel row.)
           logger.error(`${summaryPrefix} Hunk summary provider error for ${filePath}: ${execErr.message}`);
           await broadcastFile(deps, repo, reviewId, filePath);
@@ -305,6 +328,12 @@ async function generateSummariesForReview({
       await broadcastFile(deps, repo, reviewId, filePath);
       filesProcessed++;
     } catch (fileErr) {
+      // AbortErrors must escape the file-level recover-and-continue path —
+      // otherwise we'd silently swallow a user cancel and move on to the
+      // next file, defeating the whole point of cancellation.
+      if (fileErr && (fileErr.name === 'AbortError' || fileErr.isCancellation)) {
+        throw fileErr;
+      }
       logger.error(`${summaryPrefix} Hunk summary processing failed: ${fileErr.message}`);
       await broadcastFile(deps, repo, reviewId, filePath);
       filesProcessed++;
@@ -378,7 +407,7 @@ function kickOffSummaryJob({
   const deps = { ...defaults, ...(_deps || {}) };
   const queue = deps.backgroundQueue || require('./background-queue').backgroundQueue;
   const digest = deps.hashDiff(diffText);
-  return queue.enqueue(reviewId, `summaries:${digest}`, () =>
+  return queue.enqueue(reviewId, `summaries:${digest}`, (signal) =>
     generateSummariesForReview({
       db,
       config,
@@ -386,6 +415,9 @@ function kickOffSummaryJob({
       diffText,
       worktreePath,
       reviewContext,
+      // BackgroundQueue invokes our thunk as `fn(signal)`. Pass it through
+      // so a user cancel reaches the per-file provider.execute call.
+      abortSignal: signal,
       _deps
     })
   );

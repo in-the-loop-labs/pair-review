@@ -37,6 +37,7 @@ const { getDefaultBranch, tryGraphiteState } = require('../git/base-branch');
 const { CommentRepository } = require('../database');
 const { runExecutableAnalysis, getChangedFiles } = require('./executable-analysis');
 const { rejectUrlLikeLocalReviewPath } = require('../utils/local-path-input');
+const reviewsRouter = require('./reviews');
 const summaryGenerator = require('../ai/summary-generator');
 const tourGenerator = require('../ai/tour-generator');
 const { parseUnifiedDiffPatches } = require('../utils/diff-file-list');
@@ -2260,6 +2261,41 @@ router.post('/api/local/:reviewId/analyses/council', async (req, res) => {
   } catch (error) {
     logger.error('Error starting local council analysis:', error);
     res.status(500).json({ error: 'Failed to start council analysis' });
+  }
+});
+
+/**
+ * POST /api/local/:reviewId/jobs/:jobKey/cancel
+ *
+ * Local-mode wrapper around the shared cancel handler in reviews.js.
+ * The unified `/api/reviews/:reviewId/jobs/:jobKey/cancel` already works
+ * for local reviews (both modes share the `reviews` table), but exposing
+ * it under both prefixes lets the frontend pick whichever helper matches
+ * its current mode without a special case. See `handleJobCancel` in
+ * `src/routes/reviews.js` for the canonical implementation.
+ */
+router.post('/api/local/:reviewId/jobs/:jobKey/cancel', async (req, res) => {
+  try {
+    const reviewId = parseInt(req.params.reviewId, 10);
+    if (isNaN(reviewId) || reviewId <= 0) {
+      return res.status(400).json({ error: 'Invalid review ID' });
+    }
+    const db = req.app.get('db');
+    // Same shape that validateReviewId attaches — we re-derive here because
+    // local routes don't pass through that middleware by convention.
+    const review = await queryOne(db, 'SELECT * FROM reviews WHERE id = ?', [reviewId]);
+    if (!review) {
+      return res.status(404).json({ error: `Review #${reviewId} not found` });
+    }
+    req.reviewId = reviewId;
+    req.review = review;
+    // await (not return) so any rejection from the delegated handler is
+    // caught by the outer try/catch — Express 4 does not forward rejected
+    // promises from async route handlers.
+    await reviewsRouter.handleJobCancel(req, res);
+  } catch (error) {
+    logger.error(`Error cancelling background job for local review: ${error.message}`);
+    res.status(500).json({ error: 'Failed to cancel background job' });
   }
 });
 

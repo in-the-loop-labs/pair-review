@@ -18,6 +18,7 @@ const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { CancellationError, isAnalysisCancelled } = require('../routes/shared');
 const { StreamParser, parseOpenCodeLine } = require('./stream-parser');
+const { wireAbortToChild, makeAbortError } = require('./abort-signal-wiring');
 
 // Directory containing bin scripts (git-diff-lines, etc.)
 const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
@@ -102,7 +103,7 @@ class OpenCodeProvider extends AIProvider {
    */
   async execute(prompt, options = {}) {
     return new Promise((resolve, reject) => {
-      const { cwd = process.cwd(), timeout = 300000, level = 'unknown', analysisId, registerProcess, onStreamEvent, logPrefix } = options;
+      const { cwd = process.cwd(), timeout = 300000, level = 'unknown', analysisId, registerProcess, onStreamEvent, logPrefix, abortSignal } = options;
 
       const levelPrefix = logPrefix || `[Level ${level}]`;
       logger.info(`${levelPrefix} Executing OpenCode CLI...`);
@@ -128,7 +129,8 @@ class OpenCodeProvider extends AIProvider {
           ...this.extraEnv,
           PATH: `${BIN_DIR}:${process.env.PATH}`
         },
-        shell: this.useShell
+        shell: this.useShell,
+        detached: this.useShell
       });
 
       const pid = opencode.pid;
@@ -139,6 +141,9 @@ class OpenCodeProvider extends AIProvider {
         registerProcess(analysisId, opencode);
         logger.info(`${levelPrefix} Registered process ${pid} for analysis ${analysisId}`);
       }
+
+      // Wire AbortSignal -> SIGTERM for tour/summary cancellation.
+      const abortWiring = wireAbortToChild(opencode, abortSignal, { logPrefix: levelPrefix, shell: this.useShell });
 
       let stdout = '';
       let stderr = '';
@@ -151,6 +156,7 @@ class OpenCodeProvider extends AIProvider {
         if (settled) return;
         settled = true;
         if (timeoutId) clearTimeout(timeoutId);
+        abortWiring.detach();
         fn(value);
       };
 
@@ -201,9 +207,18 @@ class OpenCodeProvider extends AIProvider {
       opencode.on('close', (code) => {
         if (settled) return;  // Already settled by timeout or error
 
+        // Detach is centralized in `settle`.
+
         // Flush any remaining stream parser buffer
         if (streamParser) {
           streamParser.flush();
+        }
+
+        // BackgroundQueue-driven cancellation — mirror of claude-provider.
+        if (abortWiring.cancelled()) {
+          logger.info(`${levelPrefix} OpenCode CLI terminated by user cancel (exit code ${code})`);
+          settle(reject, makeAbortError(`${levelPrefix} Cancelled by user`));
+          return;
         }
 
         // Check for cancellation signals (SIGTERM=143, SIGKILL=137)
@@ -281,6 +296,7 @@ class OpenCodeProvider extends AIProvider {
 
       // Handle errors
       opencode.on('error', (error) => {
+        // Detach happens inside `settle`.
         if (error.code === 'ENOENT') {
           logger.error(`${levelPrefix} OpenCode CLI not found. Please ensure OpenCode CLI is installed.`);
           settle(reject, new Error(`${levelPrefix} OpenCode CLI not found. ${OpenCodeProvider.getInstallInstructions()}`));

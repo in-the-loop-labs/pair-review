@@ -225,6 +225,53 @@ for (const mode of MODES) {
       await expect(bar.locator('.tour-bar__progress')).toContainText('complete');
     });
 
+    test('long description shows a Show more toggle that expands and collapses', async ({ page }) => {
+      await enableToursConfig(page);
+      // Build a stop with a deliberately long description so the
+      // line-clamp triggers the overflow probe. ~700 chars is well past
+      // what fits in the 3-line clamp at the annotation's font size.
+      const LONG_DESC =
+        'This stop deserves a longer explanation because the surrounding code carries a lot of subtle invariants that only become visible when you read through every branch carefully and consider what would happen if a caller passes unexpected inputs. ' +
+        'The reviewer should pay particular attention to the error-handling path, where a silent swallow could mask a real upstream bug. ' +
+        'The change touches both the happy path and the rollback path, so make sure each is exercised by a test before approving. ' +
+        'Extra context follows so the description actually overflows the three-line clamp regardless of viewport width.';
+      const longStops = [
+        {
+          ...FIXED_STOPS[0],
+          description: LONG_DESC,
+        },
+        FIXED_STOPS[1],
+        FIXED_STOPS[2],
+      ];
+      await mockTourEndpoint(page, longStops);
+
+      await page.goto(mode.path);
+      await waitForDiffToRender(page);
+      await page.locator('#tour-toggle-btn').click();
+
+      const stopRow = page.locator('tr.tour-annotation-row[data-stop-index="0"]');
+      await expect(stopRow).toBeVisible();
+
+      const wrap = stopRow.locator('.tour-annotation-description-wrap');
+      const btn = stopRow.locator('.tour-annotation-show-more-btn');
+
+      // The overflow probe runs on the next rAF after mount; allow Playwright's
+      // auto-waiting to find the button once it appears.
+      await expect(btn).toBeVisible();
+      await expect(btn).toHaveText('Show more');
+      await expect(wrap).not.toHaveClass(/expanded/);
+
+      // Expand.
+      await btn.click();
+      await expect(wrap).toHaveClass(/expanded/);
+      await expect(btn).toHaveText('Show less');
+
+      // Collapse again.
+      await btn.click();
+      await expect(wrap).not.toHaveClass(/expanded/);
+      await expect(btn).toHaveText('Show more');
+    });
+
     test('Escape exits the tour and restores normal view', async ({ page }) => {
       await enableToursConfig(page);
       await mockTourEndpoint(page);
