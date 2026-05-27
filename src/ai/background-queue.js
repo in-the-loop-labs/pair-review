@@ -219,6 +219,27 @@ class BackgroundQueue {
     return false;
   }
 
+  /**
+   * Like `hasActiveForReview` but returns the in-flight/queued jobType string
+   * (without the `${reviewId}:` prefix), or null. Useful when callers track a
+   * versioned key like `summaries:${digest}` and need to know the *exact* key
+   * to cancel before re-enqueueing under a new digest.
+   *
+   * @param {string|number} reviewId
+   * @param {string} jobTypePrefix
+   * @returns {string|null}
+   */
+  findActiveJobType(reviewId, jobTypePrefix) {
+    if (!jobTypePrefix) return null;
+    const prefix = `${reviewId}:${jobTypePrefix}`;
+    for (const key of this.inFlight.keys()) {
+      if (key === prefix || key.startsWith(prefix + ':')) {
+        return key.slice(String(reviewId).length + 1);
+      }
+    }
+    return null;
+  }
+
   /** Broadcast job completion; broadcast failures are logged, not thrown. */
   _onComplete(reviewId, jobType, error) {
     try {

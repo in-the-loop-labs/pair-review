@@ -395,19 +395,43 @@ function kickOffSummaryJob({
     return null;
   }
 
-  const missing = [];
-  if (!reviewId) missing.push('reviewId');
-  if (!diffText) missing.push('diffText');
-  if (!worktreePath) missing.push('worktreePath');
-  if (missing.length > 0) {
-    logger.debug(`kickOffSummaryJob skipped: missing ${missing.join(', ')}`);
+  if (!reviewId) {
+    logger.debug('kickOffSummaryJob skipped: missing reviewId');
     return null;
   }
 
   const deps = { ...defaults, ...(_deps || {}) };
   const queue = deps.backgroundQueue || require('./background-queue').backgroundQueue;
+
+  // Cancel any in-flight summaries job for this review whose digest no longer
+  // matches the new one. This is load-bearing for correctness, not just cost:
+  // generateSummariesForReview persists content_hash-keyed rows without any
+  // staleness check at upsert time (unlike tour-generator), so a stale worker
+  // that escapes cancellation will persist summaries for hunks the user has
+  // already moved past. Calling this even when the new diff is empty (refresh
+  // or scope change that removed all changes is a valid terminal snapshot)
+  // ensures the old job stops burning tokens and writing stale rows.
+  const cancelActiveSummariesJob = (excludeJobType) => {
+    if (typeof queue.findActiveJobType !== 'function') return;
+    const activeJobType = queue.findActiveJobType(reviewId, 'summaries');
+    if (activeJobType && activeJobType !== excludeJobType && typeof queue.cancel === 'function') {
+      queue.cancel(reviewId, activeJobType);
+    }
+  };
+
+  if (!diffText || !worktreePath) {
+    const missing = [];
+    if (!diffText) missing.push('diffText');
+    if (!worktreePath) missing.push('worktreePath');
+    logger.debug(`kickOffSummaryJob skipped: missing ${missing.join(', ')}`);
+    cancelActiveSummariesJob();
+    return null;
+  }
+
   const digest = deps.hashDiff(diffText);
-  return queue.enqueue(reviewId, `summaries:${digest}`, (signal) =>
+  const newJobType = `summaries:${digest}`;
+  cancelActiveSummariesJob(newJobType);
+  return queue.enqueue(reviewId, newJobType, (signal) =>
     generateSummariesForReview({
       db,
       config,

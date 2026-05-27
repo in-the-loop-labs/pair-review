@@ -371,12 +371,14 @@ async function generateTourForReview({
     model: resolvedModel
   });
 
-  // Successful persist: if the map still holds OUR hash, clean it up. Leave
-  // it alone if a newer kickoff has already replaced it.
-  if (latestRequestedDiffHash.get(reviewId) === diffHash) {
-    latestRequestedDiffHash.delete(reviewId);
-  }
-
+  // Intentionally do NOT clear `latestRequestedDiffHash` on success. A
+  // predecessor worker whose cancel was lost (e.g., the provider's HTTP call
+  // didn't honor AbortSignal) may still be poised to reach its pre-upsert
+  // check. If we deleted our entry, that predecessor would see `undefined`,
+  // pass its `latestBeforeUpsert !== undefined && ...` guard, and overwrite
+  // our fresh row with a tour for the now-stale diff. Leaving the entry set
+  // to our hash makes the predecessor's hash mismatch and skip. The map
+  // grows by at most one entry per review until the next kickoff overwrites.
   deps.broadcastReviewEvent(reviewId, { type: 'review:tour_ready' });
 
   logger.info(
@@ -402,7 +404,7 @@ async function generateTourForReview({
  * @param {Object} [params._deps]
  * @returns {Promise<Object>|null}
  */
-function kickOffTourJob({
+async function kickOffTourJob({
   db,
   config,
   reviewId,
@@ -413,23 +415,80 @@ function kickOffTourJob({
 }) {
   if (!config || !config.tours_enabled) return null;
 
-  const missing = [];
-  if (!reviewId) missing.push('reviewId');
-  if (!diffText) missing.push('diffText');
-  if (!worktreePath) missing.push('worktreePath');
-  if (missing.length > 0) {
-    logger.debug(`kickOffTourJob skipped: missing ${missing.join(', ')}`);
+  if (!reviewId) {
+    logger.debug('kickOffTourJob skipped: missing reviewId');
     return null;
   }
 
   const deps = { ...defaults, ...(_deps || {}) };
   const queue = deps.backgroundQueue || require('./background-queue').backgroundQueue;
 
+  // Cancel any in-flight tour job whose diff hash no longer matches. This is
+  // load-bearing for both cost (stops a stale provider call from burning
+  // tokens) and correctness — the in-generator superseded check relies on
+  // `latestRequestedDiffHash` reflecting the current desired snapshot. Calling
+  // this even when the new diff is empty (a valid terminal snapshot after a
+  // refresh or scope change) keeps the old worker from observing a stale,
+  // matching hash and persisting a tour the user has moved past.
+  const cancelActiveTourJob = () => {
+    if (
+      typeof queue.findActiveJobType === 'function' &&
+      queue.findActiveJobType(reviewId, 'tour') &&
+      typeof queue.cancel === 'function'
+    ) {
+      queue.cancel(reviewId, 'tour');
+    }
+  };
+
+  if (!diffText || !worktreePath) {
+    const missing = [];
+    if (!diffText) missing.push('diffText');
+    if (!worktreePath) missing.push('worktreePath');
+    logger.debug(`kickOffTourJob skipped: missing ${missing.join(', ')}`);
+    // Stamp a sentinel so any in-flight worker's pre-upsert check sees a
+    // different value than its own hash and bails. The sentinel is intentionally
+    // non-hashlike so a real diff can never collide with it.
+    //
+    // Run cleanup unconditionally (not gated on a prior in-process hash). The
+    // map is in-memory: after a server restart it's empty, but a persisted
+    // row from a pre-restart session can still exist. Without unconditional
+    // cleanup, the first post-restart empty-diff transition would leave a
+    // stale row that GET /api/reviews/:id/tour serves verbatim (no diff_hash
+    // check), pointing the UI at stops no longer in the diff. `deleteByReview`
+    // is idempotent; the `changes > 0` guard below suppresses the broadcast
+    // on a fresh review that never had a tour.
+    latestRequestedDiffHash.set(reviewId, '__empty__');
+    cancelActiveTourJob();
+    try {
+      const repo = new deps.TourRepository(db);
+      const result = await repo.deleteByReview(reviewId);
+      if (result && result.changes > 0) {
+        deps.broadcastReviewEvent(reviewId, { type: 'review:tour_ready' });
+      }
+    } catch (err) {
+      logger.warn(
+        `${TOUR_LOG_PREFIX} review ${reviewId}: failed to delete stale tour row on empty-diff cleanup: ${err.message}`
+      );
+    }
+    return null;
+  }
+
   // Stamp the latest requested diff hash BEFORE enqueueing so that an
   // in-flight job (potentially started by a previous kickoff with an older
   // diff) can observe it and decide to skip persistence.
   const diffHash = deps.hashDiff(diffText);
+  const previousHash = latestRequestedDiffHash.get(reviewId);
   latestRequestedDiffHash.set(reviewId, diffHash);
+
+  // Belt-and-suspenders: if a tour job is in flight with a different diff
+  // hash, cancel it now. The worker's staleness check at persistence time
+  // would discard its output anyway (the suspenders); cancelling stops the
+  // upstream provider call from burning more tokens (the belt). The order
+  // matters: the hash above is already stamped, so any not-yet-cancelled
+  // worker observing the map sees the new hash and skips persistence.
+  if (previousHash && previousHash !== diffHash) {
+    cancelActiveTourJob();
+  }
 
   const worker = deps.generateTourForReview || generateTourForReview;
   return queue.enqueue(reviewId, 'tour', (signal) =>

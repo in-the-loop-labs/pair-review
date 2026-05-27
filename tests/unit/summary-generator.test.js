@@ -866,6 +866,94 @@ describe('kickOffSummaryJob', () => {
     expect(enqueue.mock.calls[0][1]).toBe(enqueue.mock.calls[1][1]);
   });
 
+  describe('smart-cancel on diff change', () => {
+    function makeQueueMock() {
+      return {
+        enqueue: vi.fn(() => Promise.resolve()),
+        findActiveJobType: vi.fn(() => null),
+        cancel: vi.fn(() => ({ cancelled: 0 }))
+      };
+    }
+
+    it('happy path: no in-flight job → enqueue called, cancel NOT called', () => {
+      const queue = makeQueueMock();
+      kickOffSummaryJob({
+        db: {},
+        config: { summaries_enabled: true },
+        reviewId: 1,
+        diffText: 'DIFF-A',
+        worktreePath: '/wt',
+        _deps: { backgroundQueue: queue, hashDiff: () => 'digestA' }
+      });
+      expect(queue.findActiveJobType).toHaveBeenCalledWith(1, 'summaries');
+      expect(queue.cancel).not.toHaveBeenCalled();
+      expect(queue.enqueue).toHaveBeenCalledWith(1, 'summaries:digestA', expect.any(Function));
+    });
+
+    it('same-digest in flight: cancel NOT called (enqueue dedup handles it)', () => {
+      const queue = makeQueueMock();
+      // First call enqueues; record the digest.
+      kickOffSummaryJob({
+        db: {},
+        config: { summaries_enabled: true },
+        reviewId: 1,
+        diffText: 'DIFF-A',
+        worktreePath: '/wt',
+        _deps: { backgroundQueue: queue, hashDiff: () => 'digestA' }
+      });
+      // Now pretend findActiveJobType reports the same digest is still in flight.
+      queue.findActiveJobType.mockReturnValue('summaries:digestA');
+      queue.cancel.mockClear();
+      queue.enqueue.mockClear();
+      kickOffSummaryJob({
+        db: {},
+        config: { summaries_enabled: true },
+        reviewId: 1,
+        diffText: 'DIFF-A',
+        worktreePath: '/wt',
+        _deps: { backgroundQueue: queue, hashDiff: () => 'digestA' }
+      });
+      expect(queue.cancel).not.toHaveBeenCalled();
+      // Second enqueue is still invoked — dedup happens inside the queue,
+      // not the kickoff. This matches the contract of BackgroundQueue.enqueue.
+      expect(queue.enqueue).toHaveBeenCalledWith(1, 'summaries:digestA', expect.any(Function));
+    });
+
+    it('different-digest in flight: cancel the stale digest, then enqueue the new one', () => {
+      const queue = makeQueueMock();
+      // Pretend the previous (stale) digest is still in flight.
+      queue.findActiveJobType.mockReturnValue('summaries:digestOLD');
+      kickOffSummaryJob({
+        db: {},
+        config: { summaries_enabled: true },
+        reviewId: 1,
+        diffText: 'DIFF-B',
+        worktreePath: '/wt',
+        _deps: { backgroundQueue: queue, hashDiff: () => 'digestNEW' }
+      });
+      expect(queue.cancel).toHaveBeenCalledTimes(1);
+      expect(queue.cancel).toHaveBeenCalledWith(1, 'summaries:digestOLD');
+      expect(queue.enqueue).toHaveBeenCalledWith(1, 'summaries:digestNEW', expect.any(Function));
+    });
+
+    it('cancel happens BEFORE enqueue (call order matters for queue invariants)', () => {
+      const queue = makeQueueMock();
+      queue.findActiveJobType.mockReturnValue('summaries:digestOLD');
+      const order = [];
+      queue.cancel.mockImplementation(() => { order.push('cancel'); return { cancelled: 1 }; });
+      queue.enqueue.mockImplementation(() => { order.push('enqueue'); return Promise.resolve(); });
+      kickOffSummaryJob({
+        db: {},
+        config: { summaries_enabled: true },
+        reviewId: 1,
+        diffText: 'DIFF-B',
+        worktreePath: '/wt',
+        _deps: { backgroundQueue: queue, hashDiff: () => 'digestNEW' }
+      });
+      expect(order).toEqual(['cancel', 'enqueue']);
+    });
+  });
+
   it('thunk invokes generateSummariesForReview with provided params', async () => {
     let captured;
     const enqueue = vi.fn((_id, _type, fn) => {

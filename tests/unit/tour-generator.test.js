@@ -585,9 +585,17 @@ describe('generateTourForReview', () => {
 // ---------- kickOffTourJob ------------------------------------------------
 
 describe('kickOffTourJob', () => {
-  it('returns null when tours_enabled !== true', () => {
+  beforeEach(() => {
+    resetLatestRequestedDiffHash();
+  });
+
+  afterEach(() => {
+    resetLatestRequestedDiffHash();
+  });
+
+  it('returns null when tours_enabled !== true', async () => {
     const enqueue = vi.fn();
-    const result = kickOffTourJob({
+    const result = await kickOffTourJob({
       db: {},
       config: { tours_enabled: false },
       reviewId: 1,
@@ -599,9 +607,9 @@ describe('kickOffTourJob', () => {
     expect(enqueue).not.toHaveBeenCalled();
   });
 
-  it('fires regardless of summaries_enabled (tour is decoupled from summaries)', () => {
+  it('fires regardless of summaries_enabled (tour is decoupled from summaries)', async () => {
     const enqueue = vi.fn((_id, _type, fn) => Promise.resolve({ ran: typeof fn === 'function' }));
-    const result = kickOffTourJob({
+    const result = await kickOffTourJob({
       db: {},
       config: { summaries_enabled: false, tours_enabled: true },
       reviewId: 7,
@@ -609,13 +617,13 @@ describe('kickOffTourJob', () => {
       worktreePath: '/wt',
       _deps: { backgroundQueue: { enqueue, hasActiveForReview: vi.fn() } }
     });
-    expect(result).toBeInstanceOf(Promise);
+    expect(result).toEqual({ ran: true });
     expect(enqueue).toHaveBeenCalledTimes(1);
   });
 
-  it('returns null when reviewId is missing', () => {
+  it('returns null when reviewId is missing', async () => {
     const enqueue = vi.fn();
-    const result = kickOffTourJob({
+    const result = await kickOffTourJob({
       db: {},
       config: { tours_enabled: true },
       reviewId: null,
@@ -627,9 +635,9 @@ describe('kickOffTourJob', () => {
     expect(enqueue).not.toHaveBeenCalled();
   });
 
-  it('returns null when diffText is missing', () => {
+  it('returns null when diffText is missing', async () => {
     const enqueue = vi.fn();
-    const result = kickOffTourJob({
+    const result = await kickOffTourJob({
       db: {},
       config: { tours_enabled: true },
       reviewId: 1,
@@ -641,9 +649,9 @@ describe('kickOffTourJob', () => {
     expect(enqueue).not.toHaveBeenCalled();
   });
 
-  it('returns null when worktreePath is missing', () => {
+  it('returns null when worktreePath is missing', async () => {
     const enqueue = vi.fn();
-    const result = kickOffTourJob({
+    const result = await kickOffTourJob({
       db: {},
       config: { tours_enabled: true },
       reviewId: 1,
@@ -657,7 +665,7 @@ describe('kickOffTourJob', () => {
 
   it('returns enqueue() result and uses (reviewId, "tour", fn) shape', async () => {
     const enqueue = vi.fn((_id, _type, fn) => Promise.resolve({ ran: typeof fn === 'function' }));
-    const result = kickOffTourJob({
+    const result = await kickOffTourJob({
       db: {},
       config: { tours_enabled: true },
       reviewId: 7,
@@ -669,7 +677,215 @@ describe('kickOffTourJob', () => {
     expect(enqueue.mock.calls[0][0]).toBe(7);
     expect(enqueue.mock.calls[0][1]).toBe('tour');
     expect(typeof enqueue.mock.calls[0][2]).toBe('function');
-    expect(await result).toEqual({ ran: true });
+    expect(result).toEqual({ ran: true });
+  });
+});
+
+// ---------- Smart-cancel on diff change ----------------------------------
+
+describe('kickOffTourJob smart-cancel on diff change', () => {
+  beforeEach(() => {
+    resetLatestRequestedDiffHash();
+  });
+
+  afterEach(() => {
+    resetLatestRequestedDiffHash();
+  });
+
+  function makeQueueMock(opts = {}) {
+    return {
+      enqueue: vi.fn(() => Promise.resolve()),
+      findActiveJobType: vi.fn(() => opts.activeJobType ?? null),
+      cancel: vi.fn(() => ({ cancelled: 0 })),
+      hasActiveForReview: vi.fn(() => false)
+    };
+  }
+
+  it('no previous hash: enqueue called, cancel NOT called', () => {
+    const queue = makeQueueMock();
+    kickOffTourJob({
+      db: {},
+      config: { tours_enabled: true },
+      reviewId: 1,
+      diffText: 'diff-A',
+      worktreePath: '/wt',
+      _deps: { backgroundQueue: queue, hashDiff: () => 'hashA' }
+    });
+    expect(queue.cancel).not.toHaveBeenCalled();
+    expect(queue.enqueue).toHaveBeenCalledWith(1, 'tour', expect.any(Function));
+  });
+
+  it('previous hash same as new: enqueue called (dedup), cancel NOT called', () => {
+    const queue = makeQueueMock({ activeJobType: 'tour' });
+    // Seed previous hash.
+    latestRequestedDiffHash.set(1, 'hashSAME');
+    kickOffTourJob({
+      db: {},
+      config: { tours_enabled: true },
+      reviewId: 1,
+      diffText: 'diff-SAME',
+      worktreePath: '/wt',
+      _deps: { backgroundQueue: queue, hashDiff: () => 'hashSAME' }
+    });
+    expect(queue.cancel).not.toHaveBeenCalled();
+    expect(queue.enqueue).toHaveBeenCalledWith(1, 'tour', expect.any(Function));
+  });
+
+  it('previous hash differs AND tour active: cancel(reviewId, "tour"), then enqueue', () => {
+    const queue = makeQueueMock({ activeJobType: 'tour' });
+    latestRequestedDiffHash.set(1, 'hashOLD');
+    const order = [];
+    queue.cancel.mockImplementation(() => { order.push('cancel'); return { cancelled: 1 }; });
+    queue.enqueue.mockImplementation(() => { order.push('enqueue'); return Promise.resolve(); });
+
+    kickOffTourJob({
+      db: {},
+      config: { tours_enabled: true },
+      reviewId: 1,
+      diffText: 'diff-NEW',
+      worktreePath: '/wt',
+      _deps: { backgroundQueue: queue, hashDiff: () => 'hashNEW' }
+    });
+
+    expect(queue.cancel).toHaveBeenCalledTimes(1);
+    expect(queue.cancel).toHaveBeenCalledWith(1, 'tour');
+    expect(queue.enqueue).toHaveBeenCalledWith(1, 'tour', expect.any(Function));
+    expect(order).toEqual(['cancel', 'enqueue']);
+    // Hash must be updated BEFORE cancel, so any racing worker reads the
+    // new hash and skips persistence.
+    expect(latestRequestedDiffHash.get(1)).toBe('hashNEW');
+  });
+
+  it('previous hash differs but NO tour active: cancel NOT called', () => {
+    const queue = makeQueueMock({ activeJobType: null });
+    latestRequestedDiffHash.set(1, 'hashOLD');
+    kickOffTourJob({
+      db: {},
+      config: { tours_enabled: true },
+      reviewId: 1,
+      diffText: 'diff-NEW',
+      worktreePath: '/wt',
+      _deps: { backgroundQueue: queue, hashDiff: () => 'hashNEW' }
+    });
+    expect(queue.cancel).not.toHaveBeenCalled();
+    expect(queue.enqueue).toHaveBeenCalledWith(1, 'tour', expect.any(Function));
+  });
+});
+
+// ---------- Empty-diff cleanup regression --------------------------------
+
+describe('kickOffTourJob empty-diff cleanup', () => {
+  let db;
+
+  beforeEach(() => {
+    db = createTestDatabase();
+    seedTestReview(db, { id: REVIEW_ID, prNumber: 1, repository: 'owner/repo' });
+    resetLatestRequestedDiffHash();
+  });
+
+  afterEach(() => {
+    closeTestDatabase(db);
+    resetLatestRequestedDiffHash();
+  });
+
+  function makeQueueMock() {
+    return {
+      enqueue: vi.fn(() => Promise.resolve()),
+      findActiveJobType: vi.fn(() => null),
+      cancel: vi.fn(() => ({ cancelled: 0 })),
+      hasActiveForReview: vi.fn(() => false)
+    };
+  }
+
+  it('deletes the persisted tour row and broadcasts tour_ready when diff becomes empty after a prior kickoff', async () => {
+    // Seed a persisted tour row, then simulate a prior successful kickoff
+    // (which would have stamped a hash) and verify the empty-diff kickoff
+    // removes the row and notifies clients.
+    const tourRepo = new TourRepository(db);
+    await tourRepo.upsert({
+      review_id: REVIEW_ID,
+      stops: JSON.stringify([{ file_path: 'a.js', side: 'RIGHT', line_start: 1, line_end: 1, title: 't', description: 'd' }]),
+      diff_hash: 'priorHash',
+      provider: 'fake',
+      model: 'm'
+    });
+    expect(await tourRepo.get(REVIEW_ID)).toBeDefined();
+
+    latestRequestedDiffHash.set(REVIEW_ID, 'priorHash');
+    const broadcastReviewEvent = vi.fn();
+    const queue = makeQueueMock();
+
+    const result = await kickOffTourJob({
+      db,
+      config: { tours_enabled: true },
+      reviewId: REVIEW_ID,
+      diffText: '',
+      worktreePath: '/wt',
+      _deps: { backgroundQueue: queue, broadcastReviewEvent }
+    });
+
+    expect(result).toBeNull();
+    expect(await tourRepo.get(REVIEW_ID)).toBeUndefined();
+    expect(broadcastReviewEvent).toHaveBeenCalledWith(REVIEW_ID, { type: 'review:tour_ready' });
+    expect(latestRequestedDiffHash.get(REVIEW_ID)).toBe('__empty__');
+    expect(queue.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('does not broadcast when there is no persisted row to delete', async () => {
+    latestRequestedDiffHash.set(REVIEW_ID, 'priorHash');
+    const broadcastReviewEvent = vi.fn();
+    const queue = makeQueueMock();
+
+    const result = await kickOffTourJob({
+      db,
+      config: { tours_enabled: true },
+      reviewId: REVIEW_ID,
+      diffText: '',
+      worktreePath: '/wt',
+      _deps: { backgroundQueue: queue, broadcastReviewEvent }
+    });
+
+    expect(result).toBeNull();
+    expect(broadcastReviewEvent).not.toHaveBeenCalled();
+    expect(latestRequestedDiffHash.get(REVIEW_ID)).toBe('__empty__');
+  });
+
+  it('deletes the persisted row even when no prior in-process hash exists (post-restart case)', async () => {
+    // Simulates a server restart: the in-memory `latestRequestedDiffHash`
+    // map is empty, but a `tours` row persisted by a pre-restart session
+    // still exists. The first post-restart empty-diff transition must
+    // still clean up — otherwise the stale row keeps surfacing via
+    // GET /api/reviews/:id/tour.
+    //
+    // TODO: once the GET handler compares row.diff_hash against a hash of
+    // the current canonical diff (deferred follow-up), that handler-side
+    // check becomes the primary guard for the restart case and this
+    // kickoff-side cleanup is belt-and-suspenders.
+    const tourRepo = new TourRepository(db);
+    await tourRepo.upsert({
+      review_id: REVIEW_ID,
+      stops: JSON.stringify([{ file_path: 'a.js', side: 'RIGHT', line_start: 1, line_end: 1, title: 't', description: 'd' }]),
+      diff_hash: 'priorHash',
+      provider: 'fake',
+      model: 'm'
+    });
+    const broadcastReviewEvent = vi.fn();
+    const queue = makeQueueMock();
+
+    // No prior hash set — represents a fresh process / first kickoff.
+    const result = await kickOffTourJob({
+      db,
+      config: { tours_enabled: true },
+      reviewId: REVIEW_ID,
+      diffText: '',
+      worktreePath: '/wt',
+      _deps: { backgroundQueue: queue, broadcastReviewEvent }
+    });
+
+    expect(result).toBeNull();
+    expect(await tourRepo.get(REVIEW_ID)).toBeUndefined();
+    expect(broadcastReviewEvent).toHaveBeenCalledWith(REVIEW_ID, { type: 'review:tour_ready' });
+    expect(latestRequestedDiffHash.get(REVIEW_ID)).toBe('__empty__');
   });
 });
 
@@ -684,41 +900,26 @@ describe('kickOffTourJob staleness handling', () => {
     resetLatestRequestedDiffHash();
   });
 
-  it('only the latest diff hash persists when two kickoffs arrive back-to-back', async () => {
-    // The queue dedups on (reviewId, 'tour'), so a second kickoff while
-    // the first is in flight returns the SAME promise. The fix is to stamp
-    // `latestRequestedDiffHash` BEFORE enqueueing in kickOffTourJob and
-    // have the in-flight worker observe it before its terminal upsert.
+  it('kickoff orchestration: back-to-back kickoffs each get their own enqueue, latest stamp wins', async () => {
+    // Orchestration-only assertion: the second kickoff with a different diff
+    // hash cancels the in-flight job and enqueues a fresh one (its promise is
+    // NOT the dedup'd predecessor), and the map ends up holding the newer
+    // hash. This test does NOT validate the real in-generator superseded
+    // check — that lives in `generateTourForReview` and is covered by the
+    // "in-generator superseded check" test below.
     const queue = new BackgroundQueue({ _deps: { broadcast: vi.fn() } });
 
-    // Defer the in-flight worker: only release it after the second
-    // kickoff has stamped its newer hash.
-    let releaseFirst;
-    const releaseFirstSignal = new Promise((resolve) => {
-      releaseFirst = resolve;
-    });
+    const releases = [];
+    function nextRelease() {
+      let resolveFn;
+      const promise = new Promise((resolve) => { resolveFn = resolve; });
+      releases.push(resolveFn);
+      return promise;
+    }
 
-    const persisted = [];
-
-    // Hash by string equality of the diff text so we can drive two distinct hashes.
     const hashDiff = vi.fn((s) => `H(${s})`);
-
-    let workerCallIdx = 0;
-    const fakeGenerate = vi.fn(async ({ reviewId, diffText }) => {
-      workerCallIdx++;
-      const myHash = hashDiff(diffText);
-      // Wait so both kickoffs definitely got their .set() in.
-      await releaseFirstSignal;
-      // Mimic the in-generator superseded check.
-      const latest = latestRequestedDiffHash.get(reviewId);
-      if (latest !== undefined && latest !== myHash) {
-        return { generated: false, stops: 0, superseded: true, reason: 'superseded' };
-      }
-      persisted.push({ reviewId, hash: myHash });
-      // Same cleanup behavior as the real generator.
-      if (latestRequestedDiffHash.get(reviewId) === myHash) {
-        latestRequestedDiffHash.delete(reviewId);
-      }
+    const fakeGenerate = vi.fn(async () => {
+      await nextRelease();
       return { generated: true, stops: 2 };
     });
 
@@ -731,61 +932,210 @@ describe('kickOffTourJob staleness handling', () => {
     const reviewId = 9001;
     const config = { tours_enabled: true };
 
-    // Kickoff #1 — older diff. Enqueues the worker (the queue starts it
-    // immediately since concurrency >= 1, but the worker awaits releaseFirst).
     const p1 = kickOffTourJob({
-      db: {},
-      config,
-      reviewId,
-      diffText: 'diff-OLD',
-      worktreePath: '/wt',
+      db: {}, config, reviewId,
+      diffText: 'diff-OLD', worktreePath: '/wt',
       _deps: baseDeps
     });
     expect(p1).toBeInstanceOf(Promise);
     expect(latestRequestedDiffHash.get(reviewId)).toBe('H(diff-OLD)');
 
-    // Kickoff #2 — newer diff. Queue dedups so this returns the SAME promise
-    // as p1 — the second worker thunk is dropped. But our staleness map
-    // gets stamped with the newer hash BEFORE enqueue checks dedup.
     const p2 = kickOffTourJob({
-      db: {},
-      config,
-      reviewId,
-      diffText: 'diff-NEW',
-      worktreePath: '/wt',
+      db: {}, config, reviewId,
+      diffText: 'diff-NEW', worktreePath: '/wt',
       _deps: baseDeps
     });
     expect(p2).toBeInstanceOf(Promise);
+    expect(p2).not.toBe(p1);
     expect(latestRequestedDiffHash.get(reviewId)).toBe('H(diff-NEW)');
 
-    // Now release the in-flight worker. It sees the newer stamped hash and
-    // skips persistence.
-    releaseFirst();
-    const r1 = await p1;
-    const r2 = await p2;
-    expect(r1).toEqual({ generated: false, stops: 0, superseded: true, reason: 'superseded' });
-    expect(r2).toBe(r1); // same promise
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(releases.length).toBe(2);
 
-    // The first worker bailed; nothing persisted.
-    expect(persisted).toHaveLength(0);
-    expect(workerCallIdx).toBe(1);
+    releases[0]();
+    releases[1]();
+    await p1;
+    await p2;
 
-    // The newer hash remains stamped — a follow-up kickoff for the same
-    // diff would now run and persist normally.
+    // The map retains the latest stamped hash after a successful persist —
+    // see the "don't clear on success" invariant in tour-generator.js. A
+    // follow-up kickoff with the SAME diff is dedup'd by the queue key and
+    // returns the in-flight promise (or a no-op if nothing's in flight).
     expect(latestRequestedDiffHash.get(reviewId)).toBe('H(diff-NEW)');
+  });
+});
 
-    // Run a follow-up kickoff for the newer diff to confirm end-state: it
-    // persists with the newer hash.
-    const p3 = kickOffTourJob({
-      db: {},
-      config,
-      reviewId,
-      diffText: 'diff-NEW',
+// ---------- In-generator suspenders (real generateTourForReview) ----------
+
+describe('generateTourForReview in-generator superseded check', () => {
+  let db;
+  let baseParams;
+
+  beforeEach(() => {
+    db = createTestDatabase();
+    seedTestReview(db, { id: REVIEW_ID, prNumber: 1, repository: 'owner/repo' });
+    resetLatestRequestedDiffHash();
+    baseParams = {
+      db,
+      config: { tours_enabled: true, summaries_enabled: true },
+      reviewId: REVIEW_ID,
+      diffText: SAMPLE_DIFF,
       worktreePath: '/wt',
-      _deps: baseDeps
+      reviewContext: { prTitle: 'T', prDescription: 'D' }
+    };
+  });
+
+  afterEach(() => {
+    closeTestDatabase(db);
+    resetLatestRequestedDiffHash();
+  });
+
+  it('bails BEFORE the provider call when a newer kickoff already stamped a different hash', async () => {
+    // Pre-stamp a NEWER hash to simulate a fresh kickoff that arrived while
+    // a previous worker was queued. The worker must skip the provider call
+    // entirely and return superseded.
+    latestRequestedDiffHash.set(REVIEW_ID, 'newer-hash-from-later-kickoff');
+
+    const { deps, providerInstance } = makeDeps();
+    // hashDiff returns 'abc123def456' from makeDeps — that's the "old" hash
+    // belonging to this worker.
+    const result = await generateTourForReview({ ...baseParams, _deps: deps });
+
+    expect(result).toEqual({
+      generated: false, stops: 0, superseded: true, reason: 'superseded'
     });
-    const r3 = await p3;
-    expect(r3).toEqual({ generated: true, stops: 2 });
-    expect(persisted).toEqual([{ reviewId, hash: 'H(diff-NEW)' }]);
+    expect(providerInstance.execute).not.toHaveBeenCalled();
+
+    const tourRepo = new TourRepository(db);
+    expect(await tourRepo.get(REVIEW_ID)).toBeUndefined();
+    expect(deps.broadcastReviewEvent).not.toHaveBeenCalled();
+  });
+
+  it('bails AT pre-upsert when a newer kickoff stamps a different hash mid-flight', async () => {
+    // Provider call completes; the staleness check just BEFORE upsert must
+    // observe the newer stamped hash and skip persistence.
+    let executeCalls = 0;
+    const provider = makeProvider(async () => {
+      executeCalls++;
+      // Newer kickoff arrives while the provider is "running".
+      latestRequestedDiffHash.set(REVIEW_ID, 'newer-hash-mid-flight');
+      return {
+        stops: [
+          { file_path: 'a.js', side: 'RIGHT', line_start: 3, line_end: 3, title: 't1', description: 'd1' },
+          { file_path: 'a.js', side: 'RIGHT', line_start: 4, line_end: 4, title: 't2', description: 'd2' }
+        ]
+      };
+    });
+    const { deps } = makeDeps({ provider });
+
+    // Pre-stamp with this worker's own hash so the pre-provider check passes.
+    latestRequestedDiffHash.set(REVIEW_ID, 'abc123def456');
+
+    const result = await generateTourForReview({ ...baseParams, _deps: deps });
+
+    expect(result).toEqual({
+      generated: false, stops: 0, superseded: true, reason: 'superseded'
+    });
+    expect(executeCalls).toBe(1);
+
+    const tourRepo = new TourRepository(db);
+    expect(await tourRepo.get(REVIEW_ID)).toBeUndefined();
+    expect(deps.broadcastReviewEvent).not.toHaveBeenCalled();
+  });
+});
+
+// ---------- Replacement-tour race regression -----------------------------
+
+describe('generateTourForReview replacement-tour race', () => {
+  let db;
+  let baseParams;
+
+  beforeEach(() => {
+    db = createTestDatabase();
+    seedTestReview(db, { id: REVIEW_ID, prNumber: 1, repository: 'owner/repo' });
+    resetLatestRequestedDiffHash();
+    baseParams = {
+      db,
+      config: { tours_enabled: true, summaries_enabled: true },
+      reviewId: REVIEW_ID,
+      worktreePath: '/wt',
+      reviewContext: { prTitle: 'T', prDescription: 'D' }
+    };
+  });
+
+  afterEach(() => {
+    closeTestDatabase(db);
+    resetLatestRequestedDiffHash();
+  });
+
+  it('a fresh persist leaves the latest hash stamped so a cancelled predecessor cannot overwrite', async () => {
+    // Drive a stale worker A through to its pre-upsert check while a fresh
+    // worker B wins the race in the middle. With the "don't clear on success"
+    // invariant in place, A observes B's hash in the map and skips the write.
+    // With the OLD bug (delete after upsert), A would see `undefined` at
+    // pre-upsert and overwrite B's persisted row — the regression this test
+    // is guarding against.
+    const tourRepo = new TourRepository(db);
+
+    // Pre-state: A's kickoff has stamped its own hash. A's pre-provider
+    // check will pass; the corruption window is between provider return
+    // and the pre-upsert check.
+    latestRequestedDiffHash.set(REVIEW_ID, 'hash-A-stale');
+
+    // A's provider blocks on a deferred. The test controls when it returns.
+    let releaseA;
+    const aReleased = new Promise((resolve) => { releaseA = resolve; });
+    const providerA = makeProvider(async () => {
+      await aReleased;
+      return {
+        stops: [
+          { file_path: 'a.js', side: 'RIGHT', line_start: 3, line_end: 3, title: 'A1', description: 'A1' },
+          { file_path: 'a.js', side: 'RIGHT', line_start: 4, line_end: 4, title: 'A2', description: 'A2' }
+        ]
+      };
+    });
+    const { deps: depsA } = makeDeps({ provider: providerA });
+    depsA.hashDiff = vi.fn(() => 'hash-A-stale');
+
+    // Kick off worker A. It passes its pre-provider check (map matches its
+    // own hash) and blocks inside provider.execute.
+    const workerAPromise = generateTourForReview({
+      ...baseParams, diffText: SAMPLE_DIFF, _deps: depsA
+    });
+
+    // Yield microtasks so A reaches provider.execute.
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(providerA.instance.execute).toHaveBeenCalledTimes(1);
+
+    // Worker B wins the race: a fresh kickoff would stamp the new hash AND
+    // persist. Synthesize B's effects directly so the test stays focused on
+    // A's pre-upsert decision.
+    latestRequestedDiffHash.set(REVIEW_ID, 'hash-B-fresh');
+    await tourRepo.upsert({
+      review_id: REVIEW_ID,
+      stops: JSON.stringify([{ marker: 'B' }]),
+      diff_hash: 'hash-B-fresh',
+      provider: 'fake',
+      model: 'fast-model'
+    });
+
+    // Release A. With the fix in place, the map still holds 'hash-B-fresh'
+    // (B did NOT clear on success), so A's pre-upsert observes the mismatch
+    // and skips. With the old bug, the map would be undefined and A would
+    // upsert 'hash-A-stale' over B's row.
+    releaseA();
+    const resultA = await workerAPromise;
+
+    expect(resultA).toEqual({
+      generated: false, stops: 0, superseded: true, reason: 'superseded'
+    });
+
+    // B's row untouched.
+    const row = await tourRepo.get(REVIEW_ID);
+    expect(row.diff_hash).toBe('hash-B-fresh');
+    expect(JSON.parse(row.stops)).toEqual([{ marker: 'B' }]);
+
+    // Map still holds B's hash.
+    expect(latestRequestedDiffHash.get(REVIEW_ID)).toBe('hash-B-fresh');
   });
 });

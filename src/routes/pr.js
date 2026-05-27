@@ -598,6 +598,35 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
 
     res.json(response);
 
+    // Re-kick the summary and tour jobs against the freshly-refreshed diff.
+    // The frontend's refreshPR() calls this POST then GETs /diff (which is a
+    // read-only endpoint and does NOT enqueue), so without an explicit
+    // kickoff here the in-flight stale job would keep burning tokens until
+    // it completes. Each kickoff is dedup'd by diff digest/hash; when the
+    // diff actually changed (new PR HEAD), the kickoffs auto-cancel the
+    // stale in-flight job before enqueueing the fresh one.
+    (async () => {
+      const reviewContext = {
+        prTitle: prMetadata.title,
+        prDescription: prMetadata.description,
+        changedFiles: (changedFiles || []).map((f) => (typeof f === 'string' ? f : (f.filename || f.file || f.path))).filter(Boolean)
+      };
+      const results = await Promise.allSettled([
+        summaryGenerator.kickOffSummaryJob({
+          db, config, reviewId: review.id, diffText: extendedData.diff, worktreePath: extendedData.worktree_path, reviewContext
+        }),
+        tourGenerator.kickOffTourJob({
+          db, config, reviewId: review.id, diffText: extendedData.diff, worktreePath: extendedData.worktree_path, reviewContext
+        })
+      ]);
+      const labels = ['Hunk summary', 'Tour'];
+      results.forEach((r, i) => {
+        if (r.status === 'rejected') {
+          logger.warn(`${labels[i]} kickoff failed for review ${review.id} on refresh: ${r.reason?.message || r.reason}`);
+        }
+      });
+    })().catch((err) => logger.warn(`Background AI kickoff failed for review ${review.id} on refresh: ${err.message}`));
+
   } catch (error) {
     logger.error('Error refreshing PR:', error);
     res.status(500).json({

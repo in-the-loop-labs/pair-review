@@ -253,6 +253,69 @@ describe('BackgroundQueue', () => {
     });
   });
 
+  describe('findActiveJobType', () => {
+    it('returns the bare jobType when an exact-match job is in flight', async () => {
+      const { queue } = makeQueue();
+      const job = deferred();
+      const promise = queue.enqueue(7, 'tour', () => job.promise);
+      expect(queue.findActiveJobType(7, 'tour')).toBe('tour');
+      job.resolve('ok');
+      await promise;
+    });
+
+    it('returns the composite jobType when a prefix-match job is in flight', async () => {
+      const { queue } = makeQueue();
+      const job = deferred();
+      const promise = queue.enqueue(7, 'summaries:abc123', () => job.promise);
+      expect(queue.findActiveJobType(7, 'summaries')).toBe('summaries:abc123');
+      job.resolve('ok');
+      await promise;
+    });
+
+    it('returns null when no matching job is in flight', () => {
+      const { queue } = makeQueue();
+      expect(queue.findActiveJobType(7, 'summaries')).toBeNull();
+    });
+
+    it('returns null for a different reviewId', async () => {
+      const { queue } = makeQueue();
+      const job = deferred();
+      const promise = queue.enqueue(7, 'summaries:abc123', () => job.promise);
+      expect(queue.findActiveJobType(8, 'summaries')).toBeNull();
+      job.resolve('ok');
+      await promise;
+    });
+
+    it('returns null for an empty prefix (defensive)', () => {
+      const { queue } = makeQueue();
+      expect(queue.findActiveJobType(7, '')).toBeNull();
+      expect(queue.findActiveJobType(7, undefined)).toBeNull();
+      expect(queue.findActiveJobType(7, null)).toBeNull();
+    });
+
+    it('works with numeric reviewIds (string concatenation hazard)', async () => {
+      // The reviewId 42 produces key `42:summaries:abc123`; slicing must use
+      // String(reviewId).length so the returned jobType is `summaries:abc123`,
+      // not `:summaries:abc123` (off-by-one) or `summaries:abc12` (wrong slice).
+      const { queue } = makeQueue();
+      const job = deferred();
+      const promise = queue.enqueue(42, 'summaries:abc123', () => job.promise);
+      expect(queue.findActiveJobType(42, 'summaries')).toBe('summaries:abc123');
+      job.resolve('ok');
+      await promise;
+    });
+
+    it('works with multi-digit numeric reviewIds', async () => {
+      // Three-digit reviewId — must still slice correctly.
+      const { queue } = makeQueue();
+      const job = deferred();
+      const promise = queue.enqueue(123, 'tour', () => job.promise);
+      expect(queue.findActiveJobType(123, 'tour')).toBe('tour');
+      job.resolve('ok');
+      await promise;
+    });
+  });
+
   it('does not crash the queue when broadcast throws', async () => {
     const broadcast = vi.fn(() => {
       throw new Error('broadcast exploded');

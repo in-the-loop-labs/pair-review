@@ -1725,6 +1725,25 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
       }
     });
 
+    // Re-kick the summary and tour jobs against the fresh diff. Each kickoff
+    // is dedup'd by digest (summaries) or hash (tour); a no-op when the
+    // canonical diff is unchanged (e.g. user clicked refresh but nothing
+    // upstream changed). When the digest IS new, the kickoffs auto-cancel
+    // the stale in-flight job before enqueueing the fresh one — see
+    // kickOffSummaryJob / kickOffTourJob.
+    const config = req.app.get('config') || {};
+    const reviewContext = { prTitle: branchName || review.local_head_branch || undefined };
+    (async () => {
+      await summaryGenerator.kickOffSummaryJob({
+        db, config, reviewId, diffText: diff, worktreePath: localPath, reviewContext
+      });
+    })().catch((err) => logger.warn(`Hunk summary job failed for review ${reviewId}: ${err.message}`));
+    (async () => {
+      await tourGenerator.kickOffTourJob({
+        db, config, reviewId, diffText: diff, worktreePath: localPath, reviewContext
+      });
+    })().catch((err) => logger.warn(`Tour job failed for review ${reviewId}: ${err.message}`));
+
   } catch (error) {
     logger.error('Error refreshing local diff:', error);
     res.status(500).json({
@@ -1803,7 +1822,29 @@ router.post('/api/local/:reviewId/resolve-head-change', async (req, res) => {
       // branch-ahead commit, making the Branch scope stop selectable.
       const branchAvailable = isBranchAvailable(headBranch, scopeStart, localPath);
 
-      return res.json({ success: true, action: 'updated', branchAvailable });
+      res.json({ success: true, action: 'updated', branchAvailable });
+
+      // Re-kick the summary and tour jobs against the freshly-recomputed diff.
+      // The frontend's _resolveHeadChange path applies the refreshed diff in
+      // place via GET /diff (which is read-only and does NOT enqueue), so
+      // without an explicit kickoff here the in-flight stale job from the
+      // previous HEAD would keep burning tokens against a now-stale diff.
+      // Each kickoff is dedup'd by digest/hash; a no-op when the recomputed
+      // diff matches. When the digest IS new, the kickoffs auto-cancel the
+      // stale in-flight job before enqueueing the fresh one.
+      const config = req.app.get('config') || {};
+      const reviewContext = { prTitle: headBranch || review.local_head_branch || undefined };
+      (async () => {
+        await summaryGenerator.kickOffSummaryJob({
+          db, config, reviewId, diffText: scopedResult.diff, worktreePath: localPath, reviewContext
+        });
+      })().catch((err) => logger.warn(`Hunk summary job failed for review ${reviewId}: ${err.message}`));
+      (async () => {
+        await tourGenerator.kickOffTourJob({
+          db, config, reviewId, diffText: scopedResult.diff, worktreePath: localPath, reviewContext
+        });
+      })().catch((err) => logger.warn(`Tour job failed for review ${reviewId}: ${err.message}`));
+      return;
     }
 
     // action === 'new-session'
@@ -1958,6 +1999,23 @@ router.post('/api/local/:reviewId/set-scope', async (req, res) => {
         unstagedChanges: stats.unstagedChanges || 0
       }
     });
+
+    // Re-kick the summary and tour jobs against the freshly-scoped diff.
+    // Each kickoff is dedup'd by diff digest/hash; when the scope change
+    // actually produces a different diff, the kickoffs auto-cancel the
+    // stale in-flight job before enqueueing the fresh one.
+    const config = req.app.get('config') || {};
+    const reviewContext = { prTitle: currentBranch || review.local_head_branch || undefined };
+    (async () => {
+      await summaryGenerator.kickOffSummaryJob({
+        db, config, reviewId, diffText: diff, worktreePath: localPath, reviewContext
+      });
+    })().catch((err) => logger.warn(`Hunk summary job failed for review ${reviewId}: ${err.message}`));
+    (async () => {
+      await tourGenerator.kickOffTourJob({
+        db, config, reviewId, diffText: diff, worktreePath: localPath, reviewContext
+      });
+    })().catch((err) => logger.warn(`Tour job failed for review ${reviewId}: ${err.message}`));
 
   } catch (error) {
     logger.error(`Error setting scope: ${error.message}`);
