@@ -8960,3 +8960,102 @@ describe('hunk_hashes on diff responses', () => {
     });
   });
 });
+
+
+// ============================================================================
+// GET /api/local/:reviewId - capabilities flags (Phase 0)
+// ============================================================================
+
+describe('GET /api/local/:reviewId capabilities', () => {
+  let db;
+  let app;
+  let server;
+  let savedToken;
+
+  beforeEach(async () => {
+    db = await createTestDatabase();
+    app = createTestApp(db);
+    server = await listenOnLoopback(app);
+    // Suppress background detection by removing the env token; the test
+    // controls token availability via app.set('config', ...) per case.
+    savedToken = process.env.GITHUB_TOKEN;
+    delete process.env.GITHUB_TOKEN;
+  });
+
+  afterEach(async () => {
+    if (savedToken !== undefined) process.env.GITHUB_TOKEN = savedToken;
+    await closeServer(server);
+    if (db) {
+      await closeTestDatabase(db);
+    }
+  });
+
+  // Phase 0: associations go to associated_pr_* columns; pr_number on local
+  // rows would poison getReviewByPR. Test helper mirrors that contract.
+  async function insertLocal({ associatedPrNumber = null, associatedPrRepository = 'owner/repo', repository = 'placeholder', path: localPath = '/tmp/cap-test' } = {}) {
+    const result = await run(db, `
+      INSERT INTO reviews (
+        repository, status, review_type, local_path, local_head_sha,
+        associated_pr_number, associated_pr_repository
+      )
+      VALUES (?, 'draft', 'local', ?, 'deadbeef', ?, ?)
+    `, [repository, localPath, associatedPrNumber, associatedPrNumber ? associatedPrRepository : null]);
+    return result.lastID;
+  }
+
+  // Phase 0 action contracts are hard-coded false in providers/pr-context.js.
+  // Each phase flips its own when the implementation ships.
+  const ALL_ACTIONS_FALSE = {
+    canShowPRMetadata: false,
+    canViewPRComments: false,
+    canCheckStaleVsPR: false,
+    canSyncDrafts: false,
+    canSubmitToGitHub: false,
+  };
+
+  it('reports hasAssociatedPR=false when no PR is persisted', async () => {
+    // Token present in default test app config, but no PR -> all action caps false
+    const reviewId = await insertLocal({ associatedPrNumber: null });
+
+    const response = await request(server).get(`/api/local/${reviewId}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.capabilities).toEqual({
+      hasAssociatedPR: false,
+      hasGitHubToken: true,
+      ...ALL_ACTIONS_FALSE,
+    });
+    expect(response.body.associatedPR).toBeNull();
+  });
+
+  it('reports hasAssociatedPR=true and hasGitHubToken=false when no token', async () => {
+    // Use the server-resolved token slot rather than re-resolving via config.
+    app.set('githubToken', '');
+    const reviewId = await insertLocal({ associatedPrNumber: 123, associatedPrRepository: 'owner/repo' });
+
+    const response = await request(server).get(`/api/local/${reviewId}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.capabilities).toEqual({
+      hasAssociatedPR: true,
+      hasGitHubToken: false,
+      ...ALL_ACTIONS_FALSE,
+    });
+    expect(response.body.associatedPR).toEqual({ prNumber: 123, repository: 'owner/repo' });
+  });
+
+  it('reports both prerequisites true when PR is associated and token is present (action flags still Phase-0 false)', async () => {
+    // Default test app already has githubToken: 'test-token'
+    const reviewId = await insertLocal({ associatedPrNumber: 456, associatedPrRepository: 'owner/repo' });
+
+    const response = await request(server).get(`/api/local/${reviewId}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.capabilities).toEqual({
+      hasAssociatedPR: true,
+      hasGitHubToken: true,
+      ...ALL_ACTIONS_FALSE,
+    });
+    expect(response.body.associatedPR).toEqual({ prNumber: 456, repository: 'owner/repo' });
+  });
+});

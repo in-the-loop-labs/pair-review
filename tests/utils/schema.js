@@ -37,7 +37,9 @@ const SCHEMA_SQL = {
       local_base_branch TEXT,
       local_head_branch TEXT,
       local_scope_start TEXT DEFAULT 'unstaged',
-      local_scope_end TEXT DEFAULT 'untracked'
+      local_scope_end TEXT DEFAULT 'untracked',
+      associated_pr_number INTEGER,
+      associated_pr_repository TEXT
     )
   `,
 
@@ -410,7 +412,9 @@ const INDEX_SQL = [
   // Global settings (in-app overrides). Must match production src/database.js.
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_global_settings_key ON global_settings(key)',
   // Chat snippets MRU lookup. Must match production src/database.js.
-  'CREATE INDEX IF NOT EXISTS idx_chat_snippets_last_used ON chat_snippets(last_used_at DESC)'
+  'CREATE INDEX IF NOT EXISTS idx_chat_snippets_last_used ON chat_snippets(last_used_at DESC)',
+  // Local-review → associated PR lookup (Phase 0 bridge)
+  "CREATE INDEX IF NOT EXISTS idx_reviews_associated_pr ON reviews(associated_pr_number, associated_pr_repository) WHERE review_type = 'local'"
 ];
 
 /**

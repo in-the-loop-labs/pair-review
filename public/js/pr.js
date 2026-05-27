@@ -109,6 +109,32 @@ class PRManager {
 
   constructor() {
     this.currentPR = null;
+    // Capability surface mirrored from the backend `capabilities` object.
+    //
+    // PR mode advertises every capability that pure-PR-mode already ships
+    // (PR metadata, comment fetch, stale check vs PR head, draft sync,
+    // GitHub submit). Local mode hard-codes those `false` and flips them
+    // true only when each phase lands its local-mode implementation.
+    //
+    // Shared frontend components (SplitButton, PreviewModal, AIPanel,
+    // DiffOptionsDropdown) read `window.prManager.hasCapability(name)`
+    // and get the correct answer regardless of mode.
+    //
+    // LocalManager mirrors this surface in public/js/local.js and reads
+    // `capabilities` from the GET /api/local/:reviewId payload, then
+    // copies them onto this PRManager instance so consumers can always
+    // ask `window.prManager.hasCapability(...)`.
+    this.capabilities = {
+      // Prerequisite state — PR mode has both at startup.
+      hasAssociatedPR: true,
+      hasGitHubToken: true,
+      // Action contracts — true in PR mode (these all ship today).
+      canShowPRMetadata: true,
+      canViewPRComments: true,
+      canCheckStaleVsPR: true,
+      canSyncDrafts: true,
+      canSubmitToGitHub: true
+    };
     this.loadingState = false;
     this.expandedFolders = new Set();
     this.expandedSections = new Set();
@@ -439,6 +465,28 @@ class PRManager {
     if (!window.PAIR_REVIEW_LOCAL_MODE) {
       this.init();
     }
+  }
+
+  /**
+   * Check whether the manager advertises a given capability.
+   *
+   * Mirrors `LocalManager.hasCapability(name)` so shared components
+   * (SplitButton, PreviewModal, AIPanel, DiffOptionsDropdown) can ask
+   * `window.prManager.hasCapability(...)` in BOTH modes instead of
+   * mode-sniffing via `window.PAIR_REVIEW_LOCAL_MODE` or
+   * `window.location.pathname`.
+   *
+   * In local mode, LocalManager overrides `capabilities` with the
+   * backend response from GET /api/local/:reviewId so the contract
+   * stays a single source of truth.
+   *
+   * @param {string} name - One of 'hasAssociatedPR', 'hasGitHubToken',
+   *   'canShowPRMetadata', 'canViewPRComments', 'canCheckStaleVsPR',
+   *   'canSyncDrafts', 'canSubmitToGitHub'
+   * @returns {boolean}
+   */
+  hasCapability(name) {
+    return Boolean(this.capabilities && this.capabilities[name]);
   }
 
   /**
