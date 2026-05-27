@@ -259,4 +259,4 @@ function getDefaultBranch(localPath, _deps) {
   return null;
 }
 
-module.exports = { detectBaseBranch, getDefaultBranch, tryGraphiteState, buildStack };
+module.exports = { detectBaseBranch, getDefaultBranch, tryGraphiteState, tryGitHubPR, buildStack };

@@ -28,6 +28,21 @@ class LocalManager {
     this.reviewId = null;
     this.localData = null;
     this.isInitialized = false;
+    // Populated by loadLocalReview() from the backend response. Always
+    // present (defaults to all-false) so feature checks never throw.
+    // Mirrors the shape returned by providers/pr-context.js
+    // `buildCapabilities` and matches the PRManager surface in pr.js.
+    this.capabilities = {
+      // Prerequisite state
+      hasAssociatedPR: false,
+      hasGitHubToken: false,
+      // Action contracts — flipped true only when each phase ships.
+      canShowPRMetadata: false,   // Phase 1
+      canViewPRComments: false,   // Phase 2
+      canCheckStaleVsPR: false,   // Phase 3
+      canSyncDrafts: false,       // Phase 4
+      canSubmitToGitHub: false    // Phase 5
+    };
 
     // Wait for PRManager to be ready, then initialize local mode
     if (window.prManager) {
@@ -119,6 +134,25 @@ class LocalManager {
     }
 
     this.isInitialized = true;
+  }
+
+  /**
+   * Check whether the backend says this local review has a given capability.
+   * Use this instead of mode-sniffing (e.g. `window.location.pathname.startsWith('/local')`)
+   * when gating PR-only features in local mode.
+   *
+   * Mirrors `PRManager.hasCapability(name)` so shared components can call
+   * `window.prManager.hasCapability(...)` regardless of which manager owns
+   * the page — see loadLocalReview() which copies this.capabilities onto
+   * the PRManager instance.
+   *
+   * @param {string} name - One of 'hasAssociatedPR', 'hasGitHubToken',
+   *   'canShowPRMetadata', 'canViewPRComments', 'canCheckStaleVsPR',
+   *   'canSyncDrafts', 'canSubmitToGitHub'
+   * @returns {boolean}
+   */
+  hasCapability(name) {
+    return Boolean(this.capabilities && this.capabilities[name]);
   }
 
   /**
@@ -1057,6 +1091,27 @@ class LocalManager {
 
       const reviewData = await response.json();
       this.localData = reviewData;
+
+      // Capability flags from the backend — single source of truth for
+      // gating PR-only features in local mode. DO NOT mode-sniff via
+      // window.location.pathname; use hasCapability() instead.
+      //
+      // Also push the capability surface onto PRManager so shared
+      // components (SplitButton, PreviewModal, AIPanel, etc.) can call
+      // `window.prManager.hasCapability(...)` in either mode without
+      // knowing which manager they're attached to.
+      this.capabilities = reviewData.capabilities || {
+        hasAssociatedPR: false,
+        hasGitHubToken: false,
+        canShowPRMetadata: false,
+        canViewPRComments: false,
+        canCheckStaleVsPR: false,
+        canSyncDrafts: false,
+        canSubmitToGitHub: false
+      };
+      if (manager) {
+        manager.capabilities = this.capabilities;
+      }
 
       // Read scope from metadata (backend now returns these)
       const LS = window.LocalScope;
