@@ -1,11 +1,12 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { execSync } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 
-const { computeLocalDiffDigest, generateLocalDiff, findMainGitRoot, findGitRoot, generateScopedDiff, computeScopedDigest } = require('../../src/local-review');
+const { computeLocalDiffDigest, generateLocalDiff, findMainGitRoot, findGitRoot, generateScopedDiff, computeScopedDigest, detectAndBuildBranchInfo, detectPRForBranch } = require('../../src/local-review');
+const baseBranchModule = require('../../src/git/base-branch');
 
 describe('computeLocalDiffDigest', () => {
   let testDir;
@@ -844,5 +845,300 @@ describe('computeScopedDigest', () => {
     const legacyDigest = await computeLocalDiffDigest(testDir);
 
     expect(scopedDigest).toBe(legacyDigest);
+  });
+});
+
+describe('detectAndBuildBranchInfo - PR association persistence', () => {
+  let testDir;
+  let detectBaseBranchSpy;
+
+  beforeEach(async () => {
+    // Real git repo so getBranchCommitCount returns >0 against a real base.
+    testDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pair-review-pr-assoc-'));
+    execSync('git init -b main', { cwd: testDir, stdio: 'pipe' });
+    execSync('git config user.email "test@test.com"', { cwd: testDir, stdio: 'pipe' });
+    execSync('git config user.name "Test User"', { cwd: testDir, stdio: 'pipe' });
+    await fs.writeFile(path.join(testDir, 'base.txt'), 'base\n');
+    execSync('git add . && git commit -m "base"', { cwd: testDir, stdio: 'pipe' });
+    execSync('git checkout -b feature-branch', { cwd: testDir, stdio: 'pipe' });
+    await fs.writeFile(path.join(testDir, 'feat.txt'), 'feature\n');
+    execSync('git add . && git commit -m "feature commit"', { cwd: testDir, stdio: 'pipe' });
+  });
+
+  afterEach(async () => {
+    if (detectBaseBranchSpy) {
+      detectBaseBranchSpy.mockRestore();
+      detectBaseBranchSpy = null;
+    }
+    if (testDir) {
+      await fs.rm(testDir, { recursive: true, force: true });
+    }
+  });
+
+  it('persists pr_number and repository when GitHub returns a PR', async () => {
+    detectBaseBranchSpy = vi.spyOn(baseBranchModule, 'detectBaseBranch').mockResolvedValue({
+      baseBranch: 'main',
+      source: 'github',
+      prNumber: 42
+    });
+
+    const calls = [];
+    const reviewRepo = {
+      associatePR: vi.fn(async (id, { prNumber, repository }) => {
+        calls.push({ id, prNumber, repository });
+        return true;
+      })
+    };
+
+    const result = await detectAndBuildBranchInfo(testDir, 'feature-branch', {
+      repository: 'owner/repo',
+      diff: '',
+      untrackedFiles: [],
+      githubToken: 'test-token',
+      reviewRepo,
+      reviewId: 7
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      baseBranch: 'main',
+      prNumber: 42,
+      source: 'github'
+    }));
+    expect(reviewRepo.associatePR).toHaveBeenCalledTimes(1);
+    expect(calls[0]).toEqual({ id: 7, prNumber: 42, repository: 'owner/repo' });
+  });
+
+  it('does NOT persist when no PR is found', async () => {
+    detectBaseBranchSpy = vi.spyOn(baseBranchModule, 'detectBaseBranch').mockResolvedValue({
+      baseBranch: 'main',
+      source: 'default'
+      // no prNumber
+    });
+
+    const reviewRepo = { associatePR: vi.fn(async () => true) };
+
+    const result = await detectAndBuildBranchInfo(testDir, 'feature-branch', {
+      repository: 'owner/repo',
+      diff: '',
+      untrackedFiles: [],
+      githubToken: 'test-token',
+      reviewRepo,
+      reviewId: 9
+    });
+
+    expect(result).toEqual(expect.objectContaining({ baseBranch: 'main', prNumber: null }));
+    expect(reviewRepo.associatePR).not.toHaveBeenCalled();
+  });
+
+  it('does not crash when GitHub detection throws; leaves persistence untouched', async () => {
+    detectBaseBranchSpy = vi.spyOn(baseBranchModule, 'detectBaseBranch')
+      .mockRejectedValue(new Error('GitHub API down'));
+
+    const reviewRepo = { associatePR: vi.fn(async () => true) };
+
+    const result = await detectAndBuildBranchInfo(testDir, 'feature-branch', {
+      repository: 'owner/repo',
+      diff: '',
+      untrackedFiles: [],
+      githubToken: 'test-token',
+      reviewRepo,
+      reviewId: 11
+    });
+
+    expect(result).toBeNull();
+    expect(reviewRepo.associatePR).not.toHaveBeenCalled();
+  });
+
+  it('does not persist when reviewRepo / reviewId are not provided', async () => {
+    detectBaseBranchSpy = vi.spyOn(baseBranchModule, 'detectBaseBranch').mockResolvedValue({
+      baseBranch: 'main',
+      source: 'github',
+      prNumber: 99
+    });
+
+    const result = await detectAndBuildBranchInfo(testDir, 'feature-branch', {
+      repository: 'owner/repo',
+      diff: '',
+      untrackedFiles: [],
+      githubToken: 'test-token'
+    });
+
+    expect(result?.prNumber).toBe(99);
+    // No throw, no persistence requested — caller opted out.
+  });
+
+  it('swallows persistence errors without breaking detection', async () => {
+    detectBaseBranchSpy = vi.spyOn(baseBranchModule, 'detectBaseBranch').mockResolvedValue({
+      baseBranch: 'main',
+      source: 'github',
+      prNumber: 13
+    });
+
+    const reviewRepo = {
+      associatePR: vi.fn(async () => { throw new Error('db gone'); })
+    };
+
+    const result = await detectAndBuildBranchInfo(testDir, 'feature-branch', {
+      repository: 'owner/repo',
+      diff: '',
+      untrackedFiles: [],
+      githubToken: 'test-token',
+      reviewRepo,
+      reviewId: 13
+    });
+
+    expect(result?.prNumber).toBe(13);
+    expect(reviewRepo.associatePR).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('detectPRForBranch - guard-free PR detection', () => {
+  let testDir;
+  let detectBaseBranchSpy;
+  let tryGitHubPRSpy;
+
+  beforeEach(async () => {
+    testDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pair-review-pr-detect-'));
+    // Don't bother initialising git — detectPRForBranch shouldn't run any
+    // git commands itself; it delegates entirely to base-branch detection.
+  });
+
+  afterEach(async () => {
+    if (detectBaseBranchSpy) {
+      detectBaseBranchSpy.mockRestore();
+      detectBaseBranchSpy = null;
+    }
+    if (tryGitHubPRSpy) {
+      tryGitHubPRSpy.mockRestore();
+      tryGitHubPRSpy = null;
+    }
+    if (testDir) await fs.rm(testDir, { recursive: true, force: true });
+  });
+
+  it('returns PR number regardless of clean working tree state', async () => {
+    detectBaseBranchSpy = vi.spyOn(baseBranchModule, 'detectBaseBranch').mockResolvedValue({
+      baseBranch: 'main',
+      source: 'github-pr',
+      prNumber: 42
+    });
+
+    const reviewRepo = { associatePR: vi.fn(async () => true) };
+
+    const result = await detectPRForBranch(testDir, 'feature-branch', {
+      repository: 'owner/repo',
+      githubToken: 'tok',
+      reviewRepo,
+      reviewId: 5
+    });
+
+    expect(result).toEqual({ baseBranch: 'main', source: 'github-pr', prNumber: 42 });
+    expect(reviewRepo.associatePR).toHaveBeenCalledWith(5, { prNumber: 42, repository: 'owner/repo' });
+  });
+
+  it('runs the detection even when caller has untracked files (no guard)', async () => {
+    detectBaseBranchSpy = vi.spyOn(baseBranchModule, 'detectBaseBranch').mockResolvedValue({
+      baseBranch: 'main',
+      source: 'github-pr',
+      prNumber: 99
+    });
+    const reviewRepo = { associatePR: vi.fn(async () => true) };
+
+    // Note: this helper takes no diff/untrackedFiles options — that's the
+    // whole point. detectAndBuildBranchInfo has those guards; this one
+    // doesn't, so a dirty tree must not suppress the lookup.
+    const result = await detectPRForBranch(testDir, 'feature-branch', {
+      repository: 'owner/repo',
+      githubToken: 'tok',
+      reviewRepo,
+      reviewId: 6
+    });
+    expect(result?.prNumber).toBe(99);
+  });
+
+  it('does NOT run when branch is detached (HEAD)', async () => {
+    detectBaseBranchSpy = vi.spyOn(baseBranchModule, 'detectBaseBranch');
+    const result = await detectPRForBranch(testDir, 'HEAD', { repository: 'owner/repo' });
+    expect(result).toBeNull();
+    expect(detectBaseBranchSpy).not.toHaveBeenCalled();
+  });
+
+  it('enriches Graphite result with a separate GitHub PR lookup when prNumber missing', async () => {
+    // Graphite returns base branch but no prNumber — by design.
+    detectBaseBranchSpy = vi.spyOn(baseBranchModule, 'detectBaseBranch').mockResolvedValue({
+      baseBranch: 'parent-branch',
+      source: 'graphite',
+      prNumber: null
+    });
+    tryGitHubPRSpy = vi.spyOn(baseBranchModule, 'tryGitHubPR').mockResolvedValue({
+      baseBranch: 'parent-branch',
+      source: 'github-pr',
+      prNumber: 42
+    });
+    const reviewRepo = { associatePR: vi.fn(async () => true) };
+
+    const result = await detectPRForBranch(testDir, 'feature-branch', {
+      repository: 'owner/repo',
+      githubToken: 'tok',
+      enableGraphite: true,
+      reviewRepo,
+      reviewId: 7
+    });
+
+    expect(result).toEqual({ baseBranch: 'parent-branch', source: 'graphite', prNumber: 42 });
+    expect(tryGitHubPRSpy).toHaveBeenCalledTimes(1);
+    expect(reviewRepo.associatePR).toHaveBeenCalledWith(7, { prNumber: 42, repository: 'owner/repo' });
+  });
+
+  it('does not call enrichment lookup when prNumber already present', async () => {
+    detectBaseBranchSpy = vi.spyOn(baseBranchModule, 'detectBaseBranch').mockResolvedValue({
+      baseBranch: 'main',
+      source: 'github-pr',
+      prNumber: 5
+    });
+    tryGitHubPRSpy = vi.spyOn(baseBranchModule, 'tryGitHubPR');
+
+    const result = await detectPRForBranch(testDir, 'feature-branch', {
+      repository: 'owner/repo',
+      githubToken: 'tok'
+    });
+
+    expect(result?.prNumber).toBe(5);
+    expect(tryGitHubPRSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not enrich when no token is supplied', async () => {
+    detectBaseBranchSpy = vi.spyOn(baseBranchModule, 'detectBaseBranch').mockResolvedValue({
+      baseBranch: 'main',
+      source: 'graphite',
+      prNumber: null
+    });
+    tryGitHubPRSpy = vi.spyOn(baseBranchModule, 'tryGitHubPR');
+
+    const result = await detectPRForBranch(testDir, 'feature-branch', {
+      repository: 'owner/repo'
+    });
+
+    expect(result?.prNumber).toBeNull();
+    expect(tryGitHubPRSpy).not.toHaveBeenCalled();
+  });
+
+  it('swallows persistence errors without breaking detection', async () => {
+    detectBaseBranchSpy = vi.spyOn(baseBranchModule, 'detectBaseBranch').mockResolvedValue({
+      baseBranch: 'main',
+      source: 'github-pr',
+      prNumber: 21
+    });
+    const reviewRepo = {
+      associatePR: vi.fn(async () => { throw new Error('db gone'); })
+    };
+
+    const result = await detectPRForBranch(testDir, 'feature-branch', {
+      repository: 'owner/repo',
+      githubToken: 'tok',
+      reviewRepo,
+      reviewId: 11
+    });
+
+    expect(result?.prNumber).toBe(21);
   });
 });

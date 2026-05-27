@@ -12,13 +12,29 @@ class SplitButton {
     this.dropdown = null;
     this.isOpen = false;
     this.commentCount = 0;
-    // In local mode, default to preview since submit is hidden
-    const isLocalMode = window.PAIR_REVIEW_LOCAL_MODE === true;
-    this.hideSubmit = isLocalMode || options.hideSubmit === true;
+    // Hide submit unless the active manager advertises canSubmitToGitHub.
+    // This replaces the previous `window.PAIR_REVIEW_LOCAL_MODE` mode-sniff
+    // so local mode with an associated PR (Phase 5) can flip the flag on
+    // without SplitButton needing to know which manager owns the page.
+    //
+    // Guarded: when PRManager isn't ready yet (early construction), we
+    // fall back to `options.hideSubmit` and the legacy flag so existing
+    // behavior is preserved. `_canSubmitToGitHub` collapses that into a
+    // single source the rest of the file consults.
+    const managerSaysCanSubmit = typeof window !== 'undefined'
+      && window.prManager
+      && typeof window.prManager.hasCapability === 'function'
+      ? window.prManager.hasCapability('canSubmitToGitHub')
+      : null;
+    const legacyLocalMode = window.PAIR_REVIEW_LOCAL_MODE === true;
+    const canSubmit = managerSaysCanSubmit !== null
+      ? managerSaysCanSubmit
+      : !legacyLocalMode;
+    this.hideSubmit = !canSubmit || options.hideSubmit === true;
 
-    // Determine default action: local mode always uses preview,
-    // otherwise check localStorage for saved preference
-    if (isLocalMode) {
+    // Determine default action: when submit is hidden, fall back to
+    // preview. Otherwise honor saved preference or caller default.
+    if (this.hideSubmit) {
       this.defaultAction = 'preview';
     } else {
       const savedAction = this.loadSavedAction();
