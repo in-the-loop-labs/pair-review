@@ -27,7 +27,8 @@ const { mergeInstructions } = require('../utils/instructions');
 const { getGitHubToken, resolveLoadSkills, buildCouncilProviderOverrides, getSummaryEnabled, getTourEnabled } = require('../config');
 const { backgroundQueue } = require('../ai/background-queue');
 const localReview = require('../local-review');
-const { generateScopedDiff, computeScopedDigest, getBranchCommitCount, getFirstCommitSubject, detectAndBuildBranchInfo, findMergeBase, getCurrentBranch, getRepositoryName } = localReview;
+const { generateScopedDiff, computeScopedDigest, getBranchCommitCount, getFirstCommitSubject, detectAndBuildBranchInfo, detectPRForBranch, findMergeBase, getCurrentBranch, getRepositoryName, getUntrackedFiles } = localReview;
+const { getAssociatedPR, buildCapabilities } = require('../providers/pr-context');
 const { STOPS, isValidScope, normalizeScope, reviewScope, includesBranch, DEFAULT_SCOPE, EMPTY_SCOPE_MESSAGE } = require('../local-scope');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
 const { getShaAbbrevLength } = require('../git/sha-abbrev');
@@ -58,6 +59,45 @@ const {
   parseEnabledLevels,
   registerProcess: registerProcessForCancellation
 } = require('./shared');
+
+/**
+ * Per-process negative cache for background PR-association detection.
+ *
+ * Keyed by `${repository}:${branch}`. When detectPRForBranch returns no
+ * PR for a branch we record the timestamp here so subsequent GETs on the
+ * same metadata endpoint don't re-hit GitHub for five minutes. The Map
+ * stays small in practice because keys are repo+branch — the only way
+ * to grow it is to view many different local reviews.
+ *
+ * Successful associations bypass this cache entirely: once a row has
+ * associated_pr_number set, the background block doesn't fire at all.
+ */
+const PR_DETECTION_NEGATIVE_CACHE_TTL_MS = 5 * 60 * 1000;
+const prDetectionNegativeCache = new Map();
+
+function prDetectionCacheKey(repository, branch) {
+  return `${repository}:${branch}`;
+}
+
+function isPRDetectionRecentlyNegative(repository, branch, now = Date.now()) {
+  const key = prDetectionCacheKey(repository, branch);
+  const ts = prDetectionNegativeCache.get(key);
+  if (!ts) return false;
+  if (now - ts > PR_DETECTION_NEGATIVE_CACHE_TTL_MS) {
+    prDetectionNegativeCache.delete(key);
+    return false;
+  }
+  return true;
+}
+
+function recordPRDetectionNegative(repository, branch, now = Date.now()) {
+  prDetectionNegativeCache.set(prDetectionCacheKey(repository, branch), now);
+}
+
+// Exposed for tests; not part of the public route surface.
+function _clearPRDetectionNegativeCache() {
+  prDetectionNegativeCache.clear();
+}
 
 const router = express.Router();
 
@@ -496,7 +536,10 @@ router.post('/api/local/start', async (req, res) => {
     // Compute digest for staleness detection
     const digest = await computeScopedDigest(repoPath, scopeStart, scopeEnd);
 
-    // Branch detection: when no uncommitted changes, check if branch has commits ahead
+    // Branch detection: when no uncommitted changes, check if branch has commits ahead.
+    // When a PR is discovered, detectAndBuildBranchInfo persists associated_pr_number +
+    // associated_pr_repository to the reviews row via reviewRepo. Same call shape used
+    // by the CLI entry path in handleLocalReview (src/local-review.js) — keep them in sync.
     const { resolveHostBinding: _resolveHostBindingForBranch } = require('../config');
     const branchBinding = repository ? _resolveHostBindingForBranch(repository, config) : null;
     const branchInfo = await detectAndBuildBranchInfo(repoPath, branch, {
@@ -504,7 +547,9 @@ router.post('/api/local/start', async (req, res) => {
       diff,
       githubToken: branchBinding?.token || getGitHubToken(config),
       hostBinding: branchBinding,
-      enableGraphite: config.enable_graphite === true
+      enableGraphite: config.enable_graphite === true,
+      reviewRepo,
+      reviewId: sessionId
     });
 
     // Persist to in-memory Map
@@ -688,6 +733,20 @@ router.get('/api/local/:reviewId', async (req, res) => {
       }
     }
 
+    // Capability flags surfaced to the frontend — the source of truth for
+    // gating PR-only features in local mode. Frontend MUST NOT mode-sniff
+    // via `window.location.pathname`; it reads `capabilities` only.
+    //
+    // Token comes from the resolved value the server set on app startup
+    // (req.app.get('githubToken')). Never re-resolve via getGitHubToken()
+    // here — that would re-run `gh auth token` on every metadata GET.
+    const resolvedToken = req.app.get('githubToken') || '';
+    const hasToken = Boolean(resolvedToken);
+    const association = (review.associated_pr_number && review.associated_pr_repository)
+      ? { prNumber: review.associated_pr_number, repository: review.associated_pr_repository }
+      : null;
+    const capabilities = buildCapabilities({ association, hasToken });
+
     const metadataElapsed = Date.now() - tEndpoint;
     if (metadataElapsed > 200) {
       logger.debug(`[perf] metadata#${reviewId} took ${metadataElapsed}ms (threshold: 200ms)`);
@@ -710,9 +769,56 @@ router.get('/api/local/:reviewId', async (req, res) => {
       branchAvailable,
       stackData,
       shaAbbrevLength,
+      capabilities,
+      associatedPR: association
+        ? { prNumber: association.prNumber, repository: association.repository }
+        : null,
       createdAt: review.created_at,
       updatedAt: review.updated_at
     });
+
+    // Soft migration: when this local review has no persisted PR association
+    // but could plausibly have one (owner/repo set, branch known), kick off a
+    // background detection. Uses `detectPRForBranch` directly — NOT
+    // detectAndBuildBranchInfo — because PR association is independent of
+    // working-tree state. The scope-suggestion guards on
+    // detectAndBuildBranchInfo (which short-circuit on uncommitted changes
+    // or untracked files) would suppress association for most real working
+    // trees and silently keep capabilities hidden.
+    //
+    // Token is the server-resolved value — never re-resolve via getGitHubToken.
+    //
+    // Negative cache: if a recent run for this (repo, branch) returned no PR,
+    // skip until the TTL expires. Successful associations don't reach this
+    // block at all (the `!review.associated_pr_number` guard short-circuits).
+    //
+    // Race guard: associatePR() updates only WHERE associated_pr_number IS
+    // NULL, so a concurrent write won't be clobbered. If the row was deleted
+    // between res.json and the background write, the UPDATE matches 0 rows.
+    if (!review.associated_pr_number
+        && review.local_path
+        && branchName && branchName !== 'HEAD' && branchName !== 'unknown'
+        && repositoryName && repositoryName.includes('/')
+        && resolvedToken
+        && !isPRDetectionRecentlyNegative(repositoryName, branchName)) {
+      const bgConfig = req.app.get('config') || {};
+      (async () => {
+        try {
+          const detection = await detectPRForBranch(review.local_path, branchName, {
+            repository: repositoryName,
+            githubToken: resolvedToken,
+            enableGraphite: bgConfig.enable_graphite === true,
+            reviewRepo,
+            reviewId
+          });
+          if (!detection || !detection.prNumber) {
+            recordPRDetectionNegative(repositoryName, branchName);
+          }
+        } catch (err) {
+          logger.warn(`Background PR association detection failed for review #${reviewId}: ${err.message}`);
+        }
+      })();
+    }
 
     // Background: pre-cache base branch detection so set-scope is fast later
     if (!includesBranch(scopeStart) && !review.local_base_branch
@@ -2591,5 +2697,15 @@ router.post('/api/local/:reviewId/jobs/:jobKey/cancel', async (req, res) => {
     res.status(500).json({ error: 'Failed to cancel background job' });
   }
 });
+
+// Expose internals on the router for unit tests (negative-cache helpers).
+// Router is a function so attaching properties is harmless at runtime; this
+// keeps require('../src/routes/local') as the single import surface.
+router._prDetectionCache = {
+  isPRDetectionRecentlyNegative,
+  recordPRDetectionNegative,
+  clear: _clearPRDetectionNegativeCache,
+  ttlMs: PR_DETECTION_NEGATIVE_CACHE_TTL_MS
+};
 
 module.exports = router;
