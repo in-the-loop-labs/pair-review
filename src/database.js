@@ -21,7 +21,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 55;
+const CURRENT_SCHEMA_VERSION = 56;
 
 /**
  * Database schema SQL statements
@@ -48,7 +48,9 @@ const SCHEMA_SQL = {
       local_base_branch TEXT,
       local_head_branch TEXT,
       local_scope_start TEXT DEFAULT 'unstaged',
-      local_scope_end TEXT DEFAULT 'untracked'
+      local_scope_end TEXT DEFAULT 'untracked',
+      associated_pr_number INTEGER,
+      associated_pr_repository TEXT
     )
   `,
 
@@ -447,7 +449,11 @@ const INDEX_SQL = [
   // the explicit index keeps parity with the test schema and lookup by key fast.
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_global_settings_key ON global_settings(key)',
   // Chat snippets MRU lookup by last_used_at.
-  'CREATE INDEX IF NOT EXISTS idx_chat_snippets_last_used ON chat_snippets(last_used_at DESC)'
+  'CREATE INDEX IF NOT EXISTS idx_chat_snippets_last_used ON chat_snippets(last_used_at DESC)',
+  // Local-review → associated PR lookup (Phase 0 bridge). Keeps the PR
+  // natural key (pr_number, repository) exclusive to review_type='pr' rows
+  // while still letting local rows reference a PR for capability surfacing.
+  "CREATE INDEX IF NOT EXISTS idx_reviews_associated_pr ON reviews(associated_pr_number, associated_pr_repository) WHERE review_type = 'local'"
 ];
 
 /**
@@ -2363,6 +2369,55 @@ const MIGRATIONS = {
       console.log('  pool_fetch_owner column already present; nothing to do');
     }
     console.log('Migration to schema version 55 complete');
+  },
+
+  // Migration to version 56: split PR-association columns out of the PR
+  // natural key. Phase 0 wrote pr_number+repository directly onto local rows
+  // which poisoned getReviewByPR(prNumber, repository) lookups by surfacing
+  // local rows for PR-mode queries. New columns hold the association on
+  // local rows; pr_number+repository stay exclusive to review_type='pr'.
+  56: (db) => {
+    console.log('Running migration to schema version 56: Split PR association out of natural key...');
+
+    // Helper to add column if not exists (idempotent — survives re-runs)
+    const addColumnIfNotExists = (table, column, definition) => {
+      if (!columnExists(db, table, column)) {
+        try {
+          db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`).run();
+          console.log(`  Added ${column} column to ${table} table`);
+        } catch (error) {
+          if (!error.message.includes('duplicate column name')) throw error;
+        }
+      }
+    };
+
+    addColumnIfNotExists('reviews', 'associated_pr_number', 'INTEGER');
+    addColumnIfNotExists('reviews', 'associated_pr_repository', 'TEXT');
+
+    // Backfill: any local row that Phase 0 wrote pr_number+repository onto
+    // must be moved into the new columns so the PR natural key stays clean.
+    // Wrap in transaction so partial failures leave the schema consistent.
+    const backfill = db.transaction(() => {
+      const moved = db.prepare(`
+        UPDATE reviews
+        SET associated_pr_number = pr_number,
+            associated_pr_repository = repository,
+            pr_number = NULL
+        WHERE review_type = 'local'
+          AND pr_number IS NOT NULL
+          AND associated_pr_number IS NULL
+      `).run();
+      if (moved.changes > 0) {
+        console.log(`  Moved PR association from natural-key columns to associated_pr_* on ${moved.changes} local row(s)`);
+      }
+    });
+    backfill();
+
+    // Create the partial index now so the migration is self-contained
+    // (the INDEX_SQL block at setup time will be a no-op via IF NOT EXISTS).
+    db.exec("CREATE INDEX IF NOT EXISTS idx_reviews_associated_pr ON reviews(associated_pr_number, associated_pr_repository) WHERE review_type = 'local'");
+
+    console.log('Migration to schema version 56 complete');
   }
 };
 
@@ -4662,6 +4717,37 @@ class ReviewRepository {
   }
 
   /**
+   * Associate a local review with a GitHub PR. Persists the PR number and
+   * repository to the dedicated `associated_pr_*` columns — NOT pr_number /
+   * repository. Keeping the PR natural key exclusive to review_type='pr'
+   * rows prevents getReviewByPR(prNumber, repository) from surfacing local
+   * reviews when the same PR is opened in PR mode.
+   *
+   * Only writes if associated_pr_number IS NULL — guards against
+   * overwriting an existing association on a race.
+   *
+   * @param {number} id - Review ID
+   * @param {Object} params
+   * @param {number} params.prNumber - GitHub PR number
+   * @param {string} params.repository - owner/repo string
+   * @returns {Promise<boolean>} True if the row was updated
+   */
+  async associatePR(id, { prNumber, repository }) {
+    if (!Number.isInteger(prNumber) || prNumber <= 0) return false;
+    if (!repository || typeof repository !== 'string') return false;
+    const result = await run(this.db, `
+      UPDATE reviews
+      SET associated_pr_number = ?,
+          associated_pr_repository = ?,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+        AND review_type = 'local'
+        AND associated_pr_number IS NULL
+    `, [prNumber, repository, id]);
+    return result.changes > 0;
+  }
+
+  /**
    * Get a review by its ID
    * @param {number} id - Review ID
    * @returns {Promise<Object|null>} Review record or null if not found
@@ -4686,7 +4772,12 @@ class ReviewRepository {
   }
 
   /**
-   * Get a review by PR number and repository
+   * Get a review by PR number and repository.
+   *
+   * Scoped to review_type='pr' — local reviews that point at the same PR
+   * via associated_pr_number must NOT surface here. Use getLocalReviewById
+   * + getAssociatedPR (in providers/pr-context.js) for local-side lookups.
+   *
    * @param {number} prNumber - Pull request number
    * @param {string} repository - Repository in owner/repo format
    * @returns {Promise<Object|null>} Review record or null if not found
@@ -4696,7 +4787,9 @@ class ReviewRepository {
       SELECT id, pr_number, repository, status, review_id,
              created_at, updated_at, submitted_at, review_data, custom_instructions, summary
       FROM reviews
-      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
+      WHERE pr_number = ?
+        AND repository = ? COLLATE NOCASE
+        AND review_type = 'pr'
     `, [prNumber, repository]);
 
     if (!row) return null;
@@ -5038,7 +5131,8 @@ class ReviewRepository {
       SELECT id, pr_number, repository, status, review_id,
              created_at, updated_at, submitted_at, review_data, custom_instructions,
              review_type, local_path, local_head_sha, summary, name,
-             local_mode, local_base_branch, local_head_branch, local_scope_start, local_scope_end
+             local_mode, local_base_branch, local_head_branch, local_scope_start, local_scope_end,
+             associated_pr_number, associated_pr_repository
       FROM reviews
       WHERE id = ? AND review_type = 'local'
     `, [id]);

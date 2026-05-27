@@ -919,21 +919,45 @@ async function setupLocalReviewSession({ db, config, repoPath, flags = {}, start
   }
 
   let branchInfo = null;
+  // Resolve binding so alt-host repos look up PRs on the right host.
+  const branchBinding = repository ? resolveHostBinding(repository, config) : null;
+  const branchToken = branchBinding?.token || getGitHubToken(config);
   if (!includesBranch(scopeStart)) {
     const untrackedFiles = await getUntrackedFiles(repoPath);
-    // Resolve binding so alt-host repos look up PRs on the right host.
-    const branchBinding = repository ? resolveHostBinding(repository, config) : null;
     branchInfo = await module.exports.detectAndBuildBranchInfo(repoPath, branch, {
       repository,
       diff,
       untrackedFiles,
-      githubToken: branchBinding?.token || getGitHubToken(config),
+      githubToken: branchToken,
       hostBinding: branchBinding,
-      enableGraphite: config.enable_graphite === true
+      enableGraphite: config.enable_graphite === true,
+      reviewRepo,
+      reviewId: sessionId
     });
     if (branchInfo) {
       console.log(`\nNo uncommitted changes, but branch has ${branchInfo.commitCount} commit(s) ahead of ${branchInfo.baseBranch}.`);
       console.log('The UI will offer to review branch changes.');
+    }
+  } else if (branchToken && repository) {
+    // Branch-in-scope path: detectAndBuildBranchInfo above doesn't fire, so PR
+    // association would never be seeded for users on branch scope. Run the
+    // guard-free helper directly to keep capability gating honest.
+    //
+    // Gated on a resolved token: without one there is no PR to look up, and the
+    // lookup would cost a redundant base-branch detection on every startup
+    // (scope/base resolution above has already settled the base branch).
+    // Best-effort: failures are logged but don't break startup.
+    try {
+      await module.exports.detectPRForBranch(repoPath, branch, {
+        repository,
+        githubToken: branchToken,
+        hostBinding: branchBinding,
+        enableGraphite: config.enable_graphite === true,
+        reviewRepo,
+        reviewId: sessionId
+      });
+    } catch (err) {
+      logger.warn(`CLI PR association detection failed: ${err.message}`);
     }
   }
 
@@ -1191,58 +1215,150 @@ async function getFirstCommitSubject(repoPath, baseBranch) {
 }
 
 /**
- * Detect whether the current branch has commits ahead of its base branch
- * and build a branchInfo object suitable for the frontend prompt.
+ * Detect the associated GitHub PR for a branch and (optionally) persist the
+ * association onto the local review row. Runs regardless of working-tree
+ * state — uncommitted changes, untracked files, and missing commits do NOT
+ * block PR association. Those guards belong to the scope-suggestion UX
+ * (see `detectAndBuildBranchInfo`), not to capability resolution.
  *
- * Encapsulates the full sequence: guard checks -> detectBaseBranch -> getBranchCommitCount.
- * All call sites should use this instead of assembling branchInfo inline.
+ * Used by:
+ *   - CLI entry (`handleLocalReview`) — to seed association on session start
+ *   - Web UI route (`GET /api/local/:reviewId`) — background backfill
+ *   - Web UI route (`POST /api/local/start`) — via detectAndBuildBranchInfo
+ *
+ * Graphite enrichment: if `enableGraphite=true` and Graphite returns a base
+ * branch but NO `prNumber`, this helper still runs a separate GitHub PR
+ * lookup so Graphite users get the association.
  *
  * @param {string} repoPath - Absolute path to the git repository
  * @param {string} branch - Current branch name
  * @param {Object} options
  * @param {string} options.repository - owner/repo string
- * @param {string} [options.diff] - The uncommitted diff content (empty = eligible)
- * @param {Array} [options.untrackedFiles] - Untracked files array (empty = eligible)
  * @param {string} [options.githubToken] - Resolved GitHub token for PR lookup
  * @param {Object} [options.hostBinding] - Resolved host binding (apiHost/token/features) for alt-host PR lookup
  * @param {boolean} [options.enableGraphite] - When true, try Graphite CLI for parent branch
- * @returns {Promise<{baseBranch: string, commitCount: number, source: string, prNumber?: number}|null>}
+ * @param {Object} [options.reviewRepo] - ReviewRepository instance for persistence
+ * @param {number} [options.reviewId] - Session/review ID to persist association onto
+ * @param {Object} [options._deps] - Dependency overrides for testing
+ * @returns {Promise<{baseBranch: string, source: string, prNumber: number|null}|null>}
  */
-async function detectAndBuildBranchInfo(repoPath, branch, options = {}) {
-  const { repository, diff, untrackedFiles, githubToken, hostBinding, enableGraphite } = options;
+async function detectPRForBranch(repoPath, branch, options = {}) {
+  const { repository, githubToken, hostBinding, enableGraphite, reviewRepo, reviewId, _deps } = options;
 
-  // Guard: detached HEAD, has uncommitted changes, or has untracked files
-  if (branch === 'HEAD') return null;
-  if (diff) return null;
-  if (untrackedFiles && untrackedFiles.length > 0) return null;
+  if (!branch || branch === 'HEAD' || branch === 'unknown') return null;
 
   try {
+    const bbModule = (_deps && _deps.baseBranchModule) || baseBranchModule;
     const depsOverride = githubToken || hostBinding
       ? {
           getGitHubToken: () => githubToken || '',
           getHostBinding: () => hostBinding || null
         }
       : undefined;
-    const detection = await baseBranchModule.detectBaseBranch(repoPath, branch, {
+
+    const detection = await bbModule.detectBaseBranch(repoPath, branch, {
       repository,
       enableGraphite,
       _deps: depsOverride
     });
     if (!detection) return null;
 
-    const commitCount = await getBranchCommitCount(repoPath, detection.baseBranch);
-    if (commitCount <= 0) return null;
+    let prNumber = detection.prNumber || null;
+
+    // Graphite enrichment: Graphite's `gt state` returns the parent branch but
+    // never a PR number, so detectBaseBranch short-circuits before the GitHub
+    // lookup. Run a separate lookup so Graphite users still get associations.
+    if (!prNumber && githubToken && repository && repository.includes('/')) {
+      try {
+        const ghLookup = bbModule.tryGitHubPR;
+        if (typeof ghLookup === 'function') {
+          const ghResult = await ghLookup(repoPath, branch, repository, {
+            getGitHubToken: () => githubToken,
+            // tryGitHubPR calls getHostBinding() unconditionally, so it must be
+            // supplied here — and passing it keeps alt-host repos routed to the
+            // configured api_host during Graphite enrichment.
+            getHostBinding: () => hostBinding || null,
+            createGitHubClient: (tokenOrBinding) => {
+              const { GitHubClient } = require('./github/client');
+              return new GitHubClient(tokenOrBinding);
+            }
+          });
+          if (ghResult && ghResult.prNumber) {
+            prNumber = ghResult.prNumber;
+          }
+        }
+      } catch (enrichError) {
+        // Non-fatal: enrichment failure leaves prNumber=null, caller proceeds.
+        logger.debug(`PR enrichment lookup failed: ${enrichError.message}`);
+      }
+    }
+
+    // Persist PR association on the reviews row when a PR is found.
+    // Best-effort: persistence failure must not break detection.
+    if (prNumber && reviewRepo && reviewId && repository) {
+      try {
+        const updated = await reviewRepo.associatePR(reviewId, { prNumber, repository });
+        if (updated) {
+          logger.log('LocalReview', `Associated local review #${reviewId} with PR #${prNumber} (${repository})`, 'cyan');
+        }
+      } catch (persistError) {
+        logger.warn(`Could not persist PR association for review #${reviewId}: ${persistError.message}`);
+      }
+    }
 
     return {
       baseBranch: detection.baseBranch,
-      commitCount,
       source: detection.source,
-      prNumber: detection.prNumber || null
+      prNumber
     };
   } catch (error) {
-    logger.warn(`Branch detection failed: ${error.message}`);
+    logger.warn(`PR detection failed: ${error.message}`);
     return null;
   }
+}
+
+/**
+ * Detect whether the current branch has commits ahead of its base branch
+ * and build a branchInfo object suitable for the frontend prompt.
+ *
+ * Wraps `detectPRForBranch` with the scope-suggestion UX guards:
+ *   - detached HEAD short-circuits
+ *   - uncommitted diff short-circuits (we'd suggest expanding scope only
+ *     when there's no uncommitted work to capture first)
+ *   - untracked files short-circuit (same reasoning)
+ *   - zero commits ahead of base short-circuits
+ *
+ * PR association persistence (when a PR is found) is delegated to the
+ * shared `detectPRForBranch` helper so the CLI, web UI start, and web UI
+ * background-backfill paths all converge on one code path.
+ *
+ * @param {string} repoPath - Absolute path to the git repository
+ * @param {string} branch - Current branch name
+ * @param {Object} options - Same options as detectPRForBranch, plus:
+ * @param {string} [options.diff] - The uncommitted diff content (empty = eligible)
+ * @param {Array} [options.untrackedFiles] - Untracked files array (empty = eligible)
+ * @returns {Promise<{baseBranch: string, commitCount: number, source: string, prNumber: number|null}|null>}
+ */
+async function detectAndBuildBranchInfo(repoPath, branch, options = {}) {
+  const { diff, untrackedFiles } = options;
+
+  // Scope-suggestion-specific guards.
+  if (branch === 'HEAD') return null;
+  if (diff) return null;
+  if (untrackedFiles && untrackedFiles.length > 0) return null;
+
+  const detection = await detectPRForBranch(repoPath, branch, options);
+  if (!detection) return null;
+
+  const commitCount = await getBranchCommitCount(repoPath, detection.baseBranch);
+  if (commitCount <= 0) return null;
+
+  return {
+    baseBranch: detection.baseBranch,
+    commitCount,
+    source: detection.source,
+    prNumber: detection.prNumber
+  };
 }
 
 module.exports = {
@@ -1261,6 +1377,7 @@ module.exports = {
   getBranchCommitCount,
   getFirstCommitSubject,
   detectAndBuildBranchInfo,
+  detectPRForBranch,
   generateLocalReviewId,
   getUntrackedFiles,
   computeLocalDiffDigest,

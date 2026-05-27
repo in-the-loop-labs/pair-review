@@ -24,11 +24,18 @@ const baseBranchModule = require('../../src/git/base-branch');
 
 describe('setupLocalReviewSession scope/base precedence', () => {
   let db;
+  let savedToken;
   const repoPath = '/mock/repo';
   const config = { port: 7247 };
 
   beforeEach(() => {
     db = createTestDatabase();
+
+    // Branch-scope PR association is gated on a resolved GitHub token, so a
+    // token leaking in from the developer's environment would add an extra
+    // detectBaseBranch call and break the precedence assertions below.
+    savedToken = process.env.GITHUB_TOKEN;
+    delete process.env.GITHUB_TOKEN;
 
     vi.spyOn(localReviewModule, 'getHeadSha').mockResolvedValue('abc123def456');
     vi.spyOn(localReviewModule, 'getRepositoryName').mockResolvedValue('owner/repo');
@@ -54,6 +61,7 @@ describe('setupLocalReviewSession scope/base precedence', () => {
   });
 
   afterEach(() => {
+    if (savedToken !== undefined) process.env.GITHUB_TOKEN = savedToken;
     closeTestDatabase(db);
     localReviewDiffs.clear();
     vi.restoreAllMocks();
@@ -183,6 +191,39 @@ describe('setupLocalReviewSession scope/base precedence', () => {
       await expect(setup({ scope: 'branch..untracked' })).rejects.toThrow(
         /Could not detect a base branch/
       );
+    });
+
+    it('(e) no token: branch scope skips PR association (no extra detection call)', async () => {
+      // detectAndBuildBranchInfo never fires for branch scopes, and without a
+      // token there is no PR to look up — so the only detection is the one
+      // resolveScopeAndBase makes for the base branch.
+      baseBranchModule.detectBaseBranch.mockResolvedValue({ baseBranch: 'main', source: 'github' });
+      const detectPRSpy = vi.spyOn(localReviewModule, 'detectPRForBranch');
+
+      const session = await setup({ scope: 'branch..untracked' });
+
+      expect(detectPRSpy).not.toHaveBeenCalled();
+      expect(baseBranchModule.detectBaseBranch).toHaveBeenCalledTimes(1);
+
+      const persisted = await new ReviewRepository(db).getLocalReviewById(session.sessionId);
+      expect(persisted.associated_pr_number).toBeNull();
+    });
+
+    it('(f) with a token: branch scope seeds the PR association', async () => {
+      // Branch scope bypasses detectAndBuildBranchInfo, so detectPRForBranch is
+      // what keeps capability gating honest for branch-scope users.
+      process.env.GITHUB_TOKEN = 'ghp_test';
+      baseBranchModule.detectBaseBranch.mockResolvedValue({
+        baseBranch: 'main', source: 'github-pr', prNumber: 321
+      });
+
+      const session = await setup({ scope: 'branch..untracked' });
+
+      const persisted = await new ReviewRepository(db).getLocalReviewById(session.sessionId);
+      expect(persisted.associated_pr_number).toBe(321);
+      expect(persisted.associated_pr_repository).toBe('owner/repo');
+      // The PR natural key stays exclusive to review_type='pr' rows.
+      expect(persisted.pr_number).toBeNull();
     });
 
     it('(d) explicit --base wins over a persisted base and persists', async () => {
