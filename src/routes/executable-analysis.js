@@ -426,7 +426,12 @@ async function runExecutableAnalysis(req, res, params, shared, callbacks) {
       };
       activeAnalyses.set(analysisId, completedStatus);
       broadcastProgress(analysisId, completedStatus);
-      broadcastReviewEvent(reviewId, { type: 'review:analysis_completed' });
+      broadcastReviewEvent(reviewId, {
+        type: 'review:analysis_completed',
+        analysisId,
+        status: 'success',
+        suggestionsCount: suggestions.length,
+      });
 
       // Fire analysis.completed hook
       if (hasHooks('analysis.completed', analysisHookConfig)) {

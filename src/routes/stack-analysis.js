@@ -505,7 +505,12 @@ async function launchStackSingleAnalysis(deps, db, config, {
       };
       activeAnalyses.set(analysisId, completedStatus);
       broadcastProgress(analysisId, completedStatus);
-      broadcastReviewEvent(reviewId, { type: 'review:analysis_completed' });
+      broadcastReviewEvent(reviewId, {
+        type: 'review:analysis_completed',
+        analysisId,
+        status: 'success',
+        suggestionsCount: completionInfo.totalSuggestions,
+      });
     }
 
     // Update pr_metadata with last_ai_run_id

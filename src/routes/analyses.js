@@ -286,7 +286,12 @@ router.post('/api/analyses/results', async (req, res) => {
     });
 
     // --- Broadcast completion event via WebSocket (after transaction completes) ---
-    broadcastReviewEvent(reviewId, { type: 'review:analysis_completed' });
+    broadcastReviewEvent(reviewId, {
+      type: 'review:analysis_completed',
+      analysisId: runId,
+      status: 'success',
+      suggestionsCount: totalSuggestions,
+    });
 
     logger.success(`Imported ${totalSuggestions} external analysis suggestions (run ${runId})`);
 
@@ -662,7 +667,12 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
       }
       activeAnalyses.set(analysisId, completedStatus);
       broadcastProgress(analysisId, completedStatus);
-      broadcastReviewEvent(initialStatus.reviewId, { type: 'review:analysis_completed' });
+      broadcastReviewEvent(initialStatus.reviewId, {
+        type: 'review:analysis_completed',
+        analysisId,
+        status: 'success',
+        suggestionsCount: result.suggestions.length,
+      });
 
       // Fire analysis.completed hook
       if (hasHooks('analysis.completed', effectiveConfig)) {

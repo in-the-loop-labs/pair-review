@@ -7778,7 +7778,7 @@ body.resizing * {
   border: 1px solid var(--color-border-primary, #d0d7de);
   border-radius: 8px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08), 0 8px 24px rgba(0, 0, 0, 0.12);
-  min-width: 180px;
+  min-width: 260px;
 }
 
 .notification-popover label:hover {

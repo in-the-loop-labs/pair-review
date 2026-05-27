@@ -1389,7 +1389,12 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
 
         // Broadcast completion status
         broadcastProgress(analysisId, completedStatus);
-        broadcastReviewEvent(reviewId, { type: 'review:analysis_completed' });
+        broadcastReviewEvent(reviewId, {
+          type: 'review:analysis_completed',
+          analysisId,
+          status: 'success',
+          suggestionsCount: completionInfo.totalSuggestions,
+        });
 
         // Fire analysis.completed hook
         const hookConfig = req.app.get('config') || {};

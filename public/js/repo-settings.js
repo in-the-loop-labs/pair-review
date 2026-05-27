@@ -31,6 +31,7 @@ class RepoSettingsPage {
 
     // Setup event listeners
     this.setupEventListeners();
+    this.initNotificationSettings();
 
     // Load providers first (needed to render model cards)
     await this.loadProviders();
@@ -288,6 +289,94 @@ class RepoSettingsPage {
         e.returnValue = '';
       }
     });
+  }
+
+  /**
+   * Initialize browser-local notification settings. These controls persist
+   * immediately to localStorage and intentionally do not mark repository
+   * settings as dirty.
+   */
+  initNotificationSettings() {
+    if (!window.notificationSounds) return;
+
+    const bindings = [
+      ['analysis', document.getElementById('notify-analysis-browser')],
+      ['setup', document.getElementById('notify-setup-browser')],
+    ];
+
+    for (const [eventType, checkbox] of bindings) {
+      if (!checkbox) continue;
+      checkbox.checked = window.notificationSounds.isBrowserEnabled(eventType);
+      checkbox.addEventListener('change', async () => {
+        if (checkbox.checked) {
+          const permission = window.notificationSounds.getBrowserPermission();
+          if (permission === 'default') {
+            const result = await window.notificationSounds.requestBrowserPermission();
+            if (result !== 'granted') checkbox.checked = false;
+          } else if (permission !== 'granted') {
+            checkbox.checked = false;
+          }
+        }
+        window.notificationSounds.setBrowserEnabled(eventType, checkbox.checked);
+        this.syncNotificationPermissionState();
+      });
+    }
+
+    const permissionBtn = document.getElementById('notification-permission-btn');
+    if (permissionBtn) {
+      permissionBtn.addEventListener('click', async () => {
+        await window.notificationSounds.requestBrowserPermission();
+        this.syncNotificationPermissionState();
+      });
+    }
+
+    const testBrowserBtn = document.getElementById('test-browser-notification');
+    if (testBrowserBtn) {
+      testBrowserBtn.addEventListener('click', async () => {
+        if (window.notificationSounds.getBrowserPermission() === 'default') {
+          await window.notificationSounds.requestBrowserPermission();
+          this.syncNotificationPermissionState();
+        }
+        await window.notificationSounds.showBrowserNotification('analysis', {
+          title: 'Pair Review',
+          body: 'Browser notifications are working.',
+          dedupeKey: 'repo-settings-test-notification-' + Date.now(),
+          showWhenVisible: true,
+          ignorePreference: true,
+        });
+      });
+    }
+
+    this.syncNotificationPermissionState();
+  }
+
+  syncNotificationPermissionState() {
+    const statusEl = document.getElementById('notification-permission-status');
+    const permissionBtn = document.getElementById('notification-permission-btn');
+    const browserCheckboxes = [
+      document.getElementById('notify-analysis-browser'),
+      document.getElementById('notify-setup-browser'),
+    ].filter(Boolean);
+    if (!statusEl || !window.notificationSounds) return;
+
+    const permission = window.notificationSounds.getBrowserPermission();
+    if (permission === 'unsupported') {
+      statusEl.textContent = 'Browser notifications are not supported in this browser.';
+      if (permissionBtn) permissionBtn.style.display = 'none';
+      browserCheckboxes.forEach((checkbox) => { checkbox.disabled = true; });
+    } else if (permission === 'granted') {
+      statusEl.textContent = 'Browser notifications are enabled for this site.';
+      if (permissionBtn) permissionBtn.style.display = 'none';
+      browserCheckboxes.forEach((checkbox) => { checkbox.disabled = false; });
+    } else if (permission === 'denied') {
+      statusEl.textContent = 'Browser notifications are blocked. Enable them in browser settings.';
+      if (permissionBtn) permissionBtn.style.display = 'none';
+      browserCheckboxes.forEach((checkbox) => { checkbox.disabled = true; });
+    } else {
+      statusEl.textContent = 'Browser notification permission has not been requested.';
+      if (permissionBtn) permissionBtn.style.display = '';
+      browserCheckboxes.forEach((checkbox) => { checkbox.disabled = false; });
+    }
   }
 
   /**
