@@ -87,7 +87,8 @@ describe('LLM-based JSON extraction fallback', () => {
         const provider = new ClaudeProvider();
         const config = provider.getExtractionConfig('haiku');
 
-        expect(config.args).toContain('haiku');
+        // haiku resolves to its pinned cli_model (latest Haiku 4.5)
+        expect(config.args).toContain('claude-haiku-4-5-20251001');
       });
 
       it('should use shell mode with custom command', () => {

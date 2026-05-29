@@ -17,19 +17,32 @@ const { StreamParser, parseClaudeLine } = require('./stream-parser');
 const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
 
 /**
- * Claude model definitions with tier mappings
+ * Claude model definitions with tier mappings.
+ *
+ * Effort is set via the CLAUDE_CODE_EFFORT_LEVEL env var (highest-precedence way
+ * to control reasoning effort; takes precedence over the --effort CLI flag and is
+ * not deprecated). Extended thinking is forced on globally via `--thinking enabled`
+ * in the constructor's base args; individual models can override this via extra_args
+ * (e.g., Haiku uses adaptive thinking for efficiency).
+ *
+ * Effort support by model (newest CLIs): Opus 4.8 / 4.7 support low|medium|high|
+ * xhigh|max; Opus 4.6 & Sonnet 4.6 support low|medium|high|max (no xhigh); Haiku
+ * has no effort levels.
  */
 const CLAUDE_MODELS = [
+  // ── Thorough tier ───────────────────────────────────────────────────────
   {
-    id: 'opus-4.7-xhigh',
+    id: 'opus',
+    aliases: ['opus-4.7-xhigh'],
     cli_model: 'claude-opus-4-7',
     env: { CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' },
     name: 'Opus 4.7 XHigh',
     tier: 'thorough',
-    tagline: 'Latest Gen',
-    description: 'Opus 4.7 (latest) with extra-high effort',
-    badge: 'Latest',
-    badgeClass: 'badge-power'
+    tagline: 'Maximum Depth',
+    description: 'Opus 4.7 with extra-high effort — deepest analysis',
+    badge: 'Most Thorough',
+    badgeClass: 'badge-power',
+    default: true
   },
   {
     id: 'opus-4.7-high',
@@ -37,33 +50,46 @@ const CLAUDE_MODELS = [
     env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' },
     name: 'Opus 4.7 High',
     tier: 'thorough',
-    tagline: 'Latest Gen',
-    description: 'Opus 4.7 (latest) with high effort',
+    tagline: 'High Effort',
+    description: 'Opus 4.7 with high effort — thorough, quicker than XHigh',
+    badge: 'Thorough',
+    badgeClass: 'badge-power'
+  },
+  {
+    id: 'opus-4.8-xhigh',
+    cli_model: 'claude-opus-4-8',
+    env: { CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' },
+    name: 'Opus 4.8 XHigh',
+    tier: 'thorough',
+    tagline: 'Newest',
+    description: 'Opus 4.8 (newest) with extra-high effort',
     badge: 'Latest',
     badgeClass: 'badge-power'
   },
   {
-    id: 'opus',
-    aliases: ['opus-4.6-high'],
+    id: 'opus-4.8-high',
+    cli_model: 'claude-opus-4-8',
+    env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' },
+    name: 'Opus 4.8 High',
+    tier: 'thorough',
+    tagline: 'Newest',
+    description: 'Opus 4.8 (newest) with high effort',
+    badge: 'Latest',
+    badgeClass: 'badge-power'
+  },
+  {
+    id: 'opus-4.6-high',
+    aliases: ['opus-4.6-low', 'opus-4.6-medium', 'opus-4.5'],
     cli_model: 'claude-opus-4-6',
     env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' },
     name: 'Opus 4.6 High',
     tier: 'thorough',
-    tagline: 'Maximum Depth',
-    description: 'Opus 4.6 with high effort — deepest analysis',
-    badge: 'Most Thorough',
-    badgeClass: 'badge-power',
-    default: true
+    tagline: 'Previous Gen',
+    description: 'Opus 4.6 with high effort',
+    badge: 'Previous Gen',
+    badgeClass: 'badge-power'
   },
-  {
-    id: 'haiku',
-    name: 'Haiku 4.6',
-    tier: 'fast',
-    tagline: 'Lightning Fast',
-    description: 'Quick analysis for simple changes',
-    badge: 'Fastest',
-    badgeClass: 'badge-speed'
-  },
+  // ── Balanced tier ───────────────────────────────────────────────────────
   {
     id: 'sonnet-4.6',
     cli_model: 'claude-sonnet-4-6',
@@ -75,28 +101,6 @@ const CLAUDE_MODELS = [
     badgeClass: 'badge-recommended'
   },
   {
-    id: 'opus-4.6-low',
-    cli_model: 'claude-opus-4-6',
-    env: { CLAUDE_CODE_EFFORT_LEVEL: 'low' },
-    name: 'Opus 4.6 Low',
-    tier: 'balanced',
-    tagline: 'Fast Opus',
-    description: 'Opus 4.6 with low effort — quick and capable',
-    badge: 'Balanced',
-    badgeClass: 'badge-recommended'
-  },
-  {
-    id: 'opus-4.6-medium',
-    cli_model: 'claude-opus-4-6',
-    env: { CLAUDE_CODE_EFFORT_LEVEL: 'medium' },
-    name: 'Opus 4.6 Medium',
-    tier: 'balanced',
-    tagline: 'Balanced Opus',
-    description: 'Opus 4.6 with medium effort — balanced depth',
-    badge: 'Thorough',
-    badgeClass: 'badge-power'
-  },
-  {
     id: 'opus-4.6-1m',
     cli_model: 'claude-opus-4-6[1m]',
     name: 'Opus 4.6 1M',
@@ -106,15 +110,17 @@ const CLAUDE_MODELS = [
     badge: 'More Context',
     badgeClass: 'badge-power'
   },
+  // ── Fast tier ───────────────────────────────────────────────────────────
   {
-    id: 'opus-4.5',
-    cli_model: 'claude-opus-4-5-20251101',
-    name: 'Opus 4.5',
-    tier: 'thorough',
-    tagline: 'Deep Thinker',
-    description: 'Extended thinking for complex analysis',
-    badge: 'Previous Gen',
-    badgeClass: 'badge-power'
+    id: 'haiku',
+    cli_model: 'claude-haiku-4-5-20251001',
+    name: 'Haiku 4.5',
+    tier: 'fast',
+    tagline: 'Lightning Fast',
+    description: 'Quick analysis for simple changes',
+    badge: 'Fastest',
+    badgeClass: 'badge-speed',
+    extra_args: ['--thinking', 'adaptive']
   }
 ];
 
@@ -196,7 +202,12 @@ class ClaudeProvider extends AIProvider {
     // user's configured environment. To disable skills, add --disable-slash-commands
     // to extra_args in provider/model config.
     const hooksArgs = ['--settings', '{"disableAllHooks":true}'];
-    const baseArgs = ['-p', '--verbose', ...cliModelArgs, '--output-format', 'stream-json', ...hooksArgs, ...permissionArgs];
+    // Force extended thinking on for every analysis call. The Claude CLI's
+    // `--thinking` flag accepts enabled|adaptive|disabled; we always want
+    // reasoning engaged for code review. User config extra_args appended later
+    // win over this (commander uses the last occurrence) if an override is set.
+    const thinkingArgs = ['--thinking', 'enabled'];
+    const baseArgs = ['-p', '--verbose', ...cliModelArgs, '--output-format', 'stream-json', ...thinkingArgs, ...hooksArgs, ...permissionArgs];
     if (maxBudget) {
       const budgetNum = parseFloat(maxBudget);
       if (isNaN(budgetNum) || budgetNum <= 0) {
@@ -242,7 +253,8 @@ class ClaudeProvider extends AIProvider {
     // - string: use this exact value for --model
     // - null: explicitly suppress --model (for tools that want the model set via env instead)
     const builtIn = CLAUDE_MODELS.find(m => m.id === modelId || (m.aliases && m.aliases.includes(modelId)));
-    const configModel = configOverrides.models?.find(m => m.id === modelId);
+    const modelKeys = new Set([modelId, builtIn?.id, ...(builtIn?.aliases || [])].filter(Boolean));
+    const configModel = configOverrides.models?.find(m => modelKeys.has(m.id));
     const resolvedCliModel = configModel?.cli_model !== undefined
       ? configModel.cli_model
       : (builtIn?.cli_model !== undefined ? builtIn.cli_model : modelId);
