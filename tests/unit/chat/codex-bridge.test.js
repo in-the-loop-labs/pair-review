@@ -62,6 +62,7 @@ function createMockDeps(overrides = {}) {
  */
 function setupHandshake(fakeProc, options = {}) {
   const threadId = options.threadId || 'test-thread-123';
+  const turnStartResult = options.turnStartResult || { turnId: 'turn-001' };
   const rl = createInterface({ input: fakeProc.stdin });
 
   rl.on('line', (line) => {
@@ -82,8 +83,8 @@ function setupHandshake(fakeProc, options = {}) {
       // thread/resume returns flat { threadId } per Codex protocol (unlike thread/start's nested shape)
       sendResponse(fakeProc, msg.id, { threadId: msg.params?.threadId || threadId });
     } else if (msg.method === 'turn/start') {
-      // Return turnId so the bridge can track the active turn
-      sendResponse(fakeProc, msg.id, { turnId: 'turn-001' });
+      // Return turn id so the bridge can track the active turn
+      sendResponse(fakeProc, msg.id, turnStartResult);
     } else if (msg.method === 'turn/interrupt') {
       sendResponse(fakeProc, msg.id, {});
     }
@@ -171,6 +172,15 @@ describe('CodexBridge', () => {
       expect(bridge.cwd).toBe(process.cwd());
       expect(bridge.systemPrompt).toBeNull();
       expect(bridge.codexCommand).toBe('codex');
+      expect(bridge.approvalPolicy).toBe('never');
+      expect(bridge.sandbox).toBe('workspace-write');
+      expect(bridge.sandboxPolicy).toEqual({
+        type: 'workspaceWrite',
+        writableRoots: [],
+        networkAccess: true,
+        excludeTmpdirEnvVar: false,
+        excludeSlashTmp: false,
+      });
     });
 
     it('should accept custom options', () => {
@@ -180,11 +190,15 @@ describe('CodexBridge', () => {
         systemPrompt: 'Be helpful',
         codexCommand: '/usr/local/bin/codex',
         env: { CUSTOM_VAR: '1' },
+        sandbox: 'read-only',
       });
       expect(bridge.model).toBe('o4-mini');
       expect(bridge.cwd).toBe('/tmp/work');
       expect(bridge.systemPrompt).toBe('Be helpful');
       expect(bridge.codexCommand).toBe('/usr/local/bin/codex');
+      expect(bridge.approvalPolicy).toBe('never');
+      expect(bridge.sandbox).toBe('read-only');
+      expect(bridge.sandboxPolicy).toEqual({ type: 'readOnly', networkAccess: true });
     });
 
     it('should use PAIR_REVIEW_CODEX_CMD env var when set', () => {
@@ -328,8 +342,9 @@ describe('CodexBridge', () => {
       );
     });
 
-    it('should include --model argument when model is set', async () => {
+    it('should pass configured model through thread params, not app-server CLI args', async () => {
       const { mockDeps, mockSpawn, fakeProc } = createMockDeps();
+      const { messages, rl } = collectStdinMessages(fakeProc);
       handshakeRl = setupHandshake(fakeProc);
 
       const bridge = new CodexBridge({
@@ -340,9 +355,13 @@ describe('CodexBridge', () => {
 
       expect(mockSpawn).toHaveBeenCalledWith(
         'codex',
-        expect.arrayContaining(['app-server', '--model', 'o4-mini']),
+        expect.not.arrayContaining(['--model', 'o4-mini']),
         expect.any(Object)
       );
+
+      rl.close();
+      const threadStart = messages.find((m) => m.method === 'thread/start');
+      expect(threadStart.params.model).toBe('o4-mini');
     });
 
     it('should not include --model argument when model is not set', async () => {
@@ -360,7 +379,7 @@ describe('CodexBridge', () => {
       expect(spawnCall[1]).not.toContain('--model');
     });
 
-    it('should include --model in shell command when useShell and model are set', async () => {
+    it('should not include --model in shell command when useShell and model are set', async () => {
       const { mockDeps, mockSpawn, fakeProc } = createMockDeps();
       handshakeRl = setupHandshake(fakeProc);
 
@@ -374,7 +393,30 @@ describe('CodexBridge', () => {
       await bridge.start();
 
       expect(mockSpawn).toHaveBeenCalledWith(
-        'devx codex app-server --model o4-mini',
+        'devx codex app-server',
+        [],
+        expect.objectContaining({ shell: true })
+      );
+    });
+
+    it('should quote Codex config args in shell mode', async () => {
+      const { mockDeps, mockSpawn, fakeProc } = createMockDeps();
+      handshakeRl = setupHandshake(fakeProc);
+
+      const bridge = new CodexBridge({
+        codexCommand: 'devx codex',
+        codexArgs: [
+          'app-server',
+          '-c', 'allow_login_shell=false',
+          '-c', 'shell_environment_policy.include_only=["PATH","HOME","USER"]',
+        ],
+        useShell: true,
+        _deps: mockDeps,
+      });
+      await bridge.start();
+
+      expect(mockSpawn).toHaveBeenCalledWith(
+        'devx codex app-server -c allow_login_shell=false -c \'shell_environment_policy.include_only=["PATH","HOME","USER"]\'',
         [],
         expect.objectContaining({ shell: true })
       );
@@ -436,6 +478,12 @@ describe('CodexBridge', () => {
       const threadStart = messages.find((m) => m.method === 'thread/start');
       expect(threadStart).toBeDefined();
       expect(threadStart.id).toBeDefined();
+      expect(threadStart.params).toEqual(expect.objectContaining({
+        cwd: process.cwd(),
+        approvalPolicy: 'never',
+        sandbox: 'workspace-write',
+      }));
+      expect(threadStart.params).not.toHaveProperty('model');
     });
 
     it('should emit session event with threadId', async () => {
@@ -505,6 +553,12 @@ describe('CodexBridge', () => {
       const threadResume = messages.find((m) => m.method === 'thread/resume');
       expect(threadResume).toBeDefined();
       expect(threadResume.params.threadId).toBe('existing-thread-456');
+      expect(threadResume.params).toEqual(expect.objectContaining({
+        cwd: process.cwd(),
+        approvalPolicy: 'never',
+        sandbox: 'workspace-write',
+      }));
+      expect(threadResume.params).not.toHaveProperty('model');
 
       const threadStart = messages.find((m) => m.method === 'thread/start');
       expect(threadStart).toBeUndefined();
@@ -605,6 +659,49 @@ describe('CodexBridge', () => {
       expect(turnReq.params.threadId).toBe('test-thread-123');
       expect(turnReq.params.input).toEqual([{ type: 'text', text: 'Review this code' }]);
       expect(turnReq.params.approvalPolicy).toBe('never');
+      expect(turnReq.params.cwd).toBe(process.cwd());
+      expect(turnReq.params).not.toHaveProperty('model');
+      expect(turnReq.params.sandboxPolicy).toEqual({
+        type: 'workspaceWrite',
+        writableRoots: [],
+        networkAccess: true,
+        excludeTmpdirEnvVar: false,
+        excludeSlashTmp: false,
+      });
+    });
+
+    it('should send CLI-style sandbox to thread params and policy object to turn params', async () => {
+      const { mockDeps, fakeProc } = createMockDeps();
+      const { messages, rl } = collectStdinMessages(fakeProc);
+      handshakeRl = setupHandshake(fakeProc);
+
+      const bridge = new CodexBridge({ sandbox: 'read-only', _deps: mockDeps });
+      await bridge.start();
+
+      bridge.sendMessage('Review this code');
+      await tick();
+
+      rl.close();
+      const threadReq = messages.find((m) => m.method === 'thread/start');
+      const turnReq = messages.find((m) => m.method === 'turn/start');
+      expect(threadReq.params.sandbox).toBe('read-only');
+      expect(turnReq.params.sandboxPolicy).toEqual({ type: 'readOnly', networkAccess: true });
+    });
+
+    it('should pass configured model through turn params', async () => {
+      const { mockDeps, fakeProc } = createMockDeps();
+      const { messages, rl } = collectStdinMessages(fakeProc);
+      handshakeRl = setupHandshake(fakeProc);
+
+      const bridge = new CodexBridge({ model: 'o4-mini', _deps: mockDeps });
+      await bridge.start();
+
+      bridge.sendMessage('Review this code');
+      await tick();
+
+      rl.close();
+      const turnReq = messages.find((m) => m.method === 'turn/start');
+      expect(turnReq.params.model).toBe('o4-mini');
     });
 
     it('should reset accumulated text on new message', async () => {
@@ -671,6 +768,20 @@ describe('CodexBridge', () => {
       expect(bridge._accumulatedText).toBe('Hello world');
     });
 
+    it('should preserve sentence spacing across adjacent deltas', async () => {
+      const { bridge, fakeProc } = await startedBridge();
+      const handler = vi.fn();
+      bridge.on('delta', handler);
+
+      sendNotification(fakeProc, 'item/agentMessage/delta', { delta: 'bad.' });
+      sendNotification(fakeProc, 'item/agentMessage/delta', { delta: 'First' });
+      await tick();
+
+      expect(handler).toHaveBeenNthCalledWith(1, { text: 'bad.' });
+      expect(handler).toHaveBeenNthCalledWith(2, { text: ' First' });
+      expect(bridge._accumulatedText).toBe('bad. First');
+    });
+
     it('should emit complete on turn/completed with status=completed', async () => {
       const { bridge, fakeProc } = await startedBridge();
       const handler = vi.fn();
@@ -716,6 +827,66 @@ describe('CodexBridge', () => {
       expect(handler).toHaveBeenCalledWith({ status: 'working' });
     });
 
+    it('should capture nested turn id from turn/started notification', async () => {
+      const { bridge, fakeProc } = await startedBridge();
+
+      sendNotification(fakeProc, 'turn/started', {
+        threadId: 'test-thread-123',
+        turn: { id: 'turn-nested-001', items: [], status: 'running' },
+      });
+      await tick();
+
+      expect(bridge._turnId).toBe('turn-nested-001');
+    });
+
+    it('should not revive turn id from terminal turn/statusChanged after completion', async () => {
+      const { bridge, fakeProc } = await startedBridge();
+
+      bridge._turnId = 'turn-active';
+      bridge._inMessage = true;
+      sendNotification(fakeProc, 'turn/completed', { status: 'completed' });
+      await tick();
+
+      sendNotification(fakeProc, 'turn/statusChanged', {
+        turn: { id: 'turn-late', status: 'completed' },
+      });
+      await tick();
+
+      expect(bridge._turnId).toBeNull();
+      expect(bridge._inMessage).toBe(false);
+    });
+
+    it('should capture turn id from active turn/statusChanged notification', async () => {
+      const { bridge, fakeProc } = await startedBridge();
+      const handler = vi.fn();
+      bridge.on('status', handler);
+
+      sendNotification(fakeProc, 'turn/statusChanged', {
+        turn: { id: 'turn-active-status', status: 'inProgress' },
+      });
+      await tick();
+
+      expect(bridge._turnId).toBe('turn-active-status');
+      expect(handler).toHaveBeenCalledWith({ status: 'working' });
+    });
+
+    it('should capture nested turn id from turn/start response', async () => {
+      const { mockDeps, fakeProc } = createMockDeps();
+      handshakeRl = setupHandshake(fakeProc, {
+        turnStartResult: {
+          turn: { id: 'turn-response-nested', items: [], status: 'running' },
+        },
+      });
+
+      const bridge = new CodexBridge({ _deps: mockDeps });
+      await bridge.start();
+
+      bridge.sendMessage('some task');
+      await tick();
+
+      expect(bridge._turnId).toBe('turn-response-nested');
+    });
+
     it('should emit tool_use with start on item/started (command type)', async () => {
       const { bridge, fakeProc } = await startedBridge();
       const handler = vi.fn();
@@ -730,7 +901,8 @@ describe('CodexBridge', () => {
 
       expect(handler).toHaveBeenCalledWith({
         toolCallId: 'item-1',
-        toolName: 'cat src/main.js',
+        toolName: 'bash',
+        args: { command: 'cat src/main.js' },
         status: 'start',
       });
     });
@@ -749,7 +921,8 @@ describe('CodexBridge', () => {
 
       expect(handler).toHaveBeenCalledWith({
         toolCallId: 'item-1',
-        toolName: 'cat src/main.js',
+        toolName: 'bash',
+        args: { command: 'cat src/main.js' },
         status: 'end',
       });
     });
@@ -849,20 +1022,11 @@ describe('CodexBridge', () => {
   describe('approval handling', () => {
     it('should auto-respond to requestApproval with accept', async () => {
       const { mockDeps, fakeProc } = createMockDeps();
+      const { messages, rl } = collectStdinMessages(fakeProc);
       handshakeRl = setupHandshake(fakeProc);
-      // Collect responses written back to stdin
-      const responses = [];
-      const origWrite = fakeProc.stdout.write.bind(fakeProc.stdout);
 
       const bridge = new CodexBridge({ _deps: mockDeps });
       await bridge.start();
-
-      // Intercept what bridge writes to the process stdin
-      const stdinRl = createInterface({ input: fakeProc.stdin });
-      const stdinMessages = [];
-      stdinRl.on('line', (line) => {
-        try { stdinMessages.push(JSON.parse(line)); } catch { /* ignore */ }
-      });
 
       // Server sends a requestApproval request
       sendServerRequest(fakeProc, 'requestApproval', {
@@ -871,12 +1035,134 @@ describe('CodexBridge', () => {
       }, 'server-req-1');
       await tick();
 
-      stdinRl.close();
-      const approvalResponse = stdinMessages.find(
+      rl.close();
+      const approvalResponse = messages.find(
         (m) => m.id === 'server-req-1' && m.result
       );
       expect(approvalResponse).toBeDefined();
       expect(approvalResponse.result.decision).toBe('accept');
+    });
+
+    it('should auto-respond to commandExecution approval with accept', async () => {
+      const { mockDeps, fakeProc } = createMockDeps();
+      const { messages, rl } = collectStdinMessages(fakeProc);
+      handshakeRl = setupHandshake(fakeProc);
+
+      const bridge = new CodexBridge({ _deps: mockDeps });
+      await bridge.start();
+
+      sendServerRequest(fakeProc, 'item/commandExecution/requestApproval', {
+        command: 'curl -s http://localhost:7247/api/reviews/1/comments',
+      }, 'server-req-command');
+      await tick();
+
+      rl.close();
+      const response = messages.find((m) => m.id === 'server-req-command' && m.result);
+      expect(response).toBeDefined();
+      expect(response.result.decision).toBe('accept');
+    });
+
+    it('should auto-respond to legacy execCommandApproval with approved', async () => {
+      const { mockDeps, fakeProc } = createMockDeps();
+      const { messages, rl } = collectStdinMessages(fakeProc);
+      handshakeRl = setupHandshake(fakeProc);
+
+      const bridge = new CodexBridge({ _deps: mockDeps });
+      await bridge.start();
+
+      sendServerRequest(fakeProc, 'execCommandApproval', {
+        command: 'curl -s http://localhost:7247/api/reviews/1/comments',
+      }, 'server-req-exec');
+      await tick();
+
+      rl.close();
+      const response = messages.find((m) => m.id === 'server-req-exec' && m.result);
+      expect(response).toBeDefined();
+      expect(response.result.decision).toBe('approved');
+    });
+
+    it('should grant requested network permissions', async () => {
+      const { mockDeps, fakeProc } = createMockDeps();
+      const { messages, rl } = collectStdinMessages(fakeProc);
+      handshakeRl = setupHandshake(fakeProc);
+
+      const bridge = new CodexBridge({ _deps: mockDeps });
+      await bridge.start();
+
+      sendServerRequest(fakeProc, 'item/permissions/requestApproval', {
+        permissions: { network: { enabled: true }, fileSystem: null },
+      }, 'server-req-permissions');
+      await tick();
+
+      rl.close();
+      const response = messages.find((m) => m.id === 'server-req-permissions' && m.result);
+      expect(response).toBeDefined();
+      expect(response.result).toEqual({
+        permissions: { network: { enabled: true } },
+        scope: 'session',
+        strictAutoReview: false,
+      });
+    });
+
+    it('should grant network permissions when request omits network payload', async () => {
+      const { mockDeps, fakeProc } = createMockDeps();
+      const { messages, rl } = collectStdinMessages(fakeProc);
+      handshakeRl = setupHandshake(fakeProc);
+
+      const bridge = new CodexBridge({ _deps: mockDeps });
+      await bridge.start();
+
+      sendServerRequest(fakeProc, 'item/permissions/requestApproval', {
+        permissions: { fileSystem: null },
+      }, 'server-req-permissions-no-network');
+      await tick();
+
+      rl.close();
+      const response = messages.find((m) => m.id === 'server-req-permissions-no-network' && m.result);
+      expect(response).toBeDefined();
+      expect(response.result).toEqual({
+        permissions: { network: { enabled: true } },
+        scope: 'session',
+        strictAutoReview: false,
+      });
+    });
+
+    it('should decline file change approval requests', async () => {
+      const { mockDeps, fakeProc } = createMockDeps();
+      const { messages, rl } = collectStdinMessages(fakeProc);
+      handshakeRl = setupHandshake(fakeProc);
+
+      const bridge = new CodexBridge({ _deps: mockDeps });
+      await bridge.start();
+
+      sendServerRequest(fakeProc, 'item/fileChange/requestApproval', {
+        reason: 'extra write access',
+      }, 'server-req-file');
+      await tick();
+
+      rl.close();
+      const response = messages.find((m) => m.id === 'server-req-file' && m.result);
+      expect(response).toBeDefined();
+      expect(response.result.decision).toBe('decline');
+    });
+
+    it('should deny applyPatchApproval requests', async () => {
+      const { mockDeps, fakeProc } = createMockDeps();
+      const { messages, rl } = collectStdinMessages(fakeProc);
+      handshakeRl = setupHandshake(fakeProc);
+
+      const bridge = new CodexBridge({ _deps: mockDeps });
+      await bridge.start();
+
+      sendServerRequest(fakeProc, 'applyPatchApproval', {
+        files: ['src/main.js'],
+      }, 'server-req-patch');
+      await tick();
+
+      rl.close();
+      const response = messages.find((m) => m.id === 'server-req-patch' && m.result);
+      expect(response).toBeDefined();
+      expect(response.result).toEqual({ decision: 'denied' });
     });
 
     it('should respond with JSON-RPC error for unknown server requests', async () => {
@@ -928,6 +1214,7 @@ describe('CodexBridge', () => {
       const interruptReq = messages.find((m) => m.method === 'turn/interrupt');
       expect(interruptReq).toBeDefined();
       expect(interruptReq.params.threadId).toBe('test-thread-123');
+      expect(interruptReq.params.turnId).toBe('turn-001');
     });
 
     it('should be a no-op when no active turn', async () => {

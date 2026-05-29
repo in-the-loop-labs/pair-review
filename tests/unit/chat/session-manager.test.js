@@ -1094,6 +1094,21 @@ describe('ChatSessionManager', () => {
       const bridge = _createdClaudeCodeBridges[0];
       expect(bridge._constructorOptions.model).toBe('claude-opus-4-6');
     });
+
+    it('should pass Codex sandbox setting from provider def to CodexBridge', async () => {
+      mockChatProviders.getChatProvider.mockImplementationOnce(
+        () => ({
+          id: 'codex',
+          type: 'codex',
+          command: 'codex',
+          args: ['app-server'],
+          sandbox: 'read-only',
+        })
+      );
+      await manager.createSession({ provider: 'codex', reviewId: 1 });
+      const bridge = _createdCodexBridges[0];
+      expect(bridge._constructorOptions.sandbox).toBe('read-only');
+    });
   });
 
   describe('constructor', () => {

@@ -35,32 +35,6 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
  */
 const CODEX_MODELS = [
   {
-    id: 'gpt-5.4-high',
-    // Alias keeps results/councils saved under the previous bare `gpt-5.4`
-    // model ID resolving to the now-explicit high-effort variant.
-    aliases: ['gpt-5.4'],
-    cli_model: 'gpt-5.4',
-    extra_args: ['-c', 'model_reasoning_effort="high"'],
-    name: 'GPT-5.4 High',
-    tier: 'thorough',
-    tagline: 'Deep Review',
-    description: 'GPT-5.4 with high reasoning effort for complex multi-file reviews, architectural consistency, and subtle behavioral regressions.',
-    badge: 'Recommended',
-    badgeClass: 'badge-recommended',
-    default: true
-  },
-  {
-    id: 'gpt-5.4-xhigh',
-    cli_model: 'gpt-5.4',
-    extra_args: ['-c', 'model_reasoning_effort="xhigh"'],
-    name: 'GPT-5.4 XHigh',
-    tier: 'thorough',
-    tagline: 'Max Depth',
-    description: 'GPT-5.4 with extra-high reasoning effort for difficult reviews that need broad context, careful tradeoff analysis, and deeper issue validation.',
-    badge: 'Extra High',
-    badgeClass: 'badge-power'
-  },
-  {
     id: 'gpt-5.5-high',
     cli_model: 'gpt-5.5',
     extra_args: ['-c', 'model_reasoning_effort="high"'],
@@ -68,8 +42,9 @@ const CODEX_MODELS = [
     tier: 'thorough',
     tagline: 'Latest Deep',
     description: 'Latest-generation GPT model with high reasoning effort for demanding PR reviews, strong code understanding, and careful cross-file analysis.',
-    badge: 'High Effort',
-    badgeClass: 'badge-power'
+    badge: 'Recommended',
+    badgeClass: 'badge-recommended',
+    default: true
   },
   {
     id: 'gpt-5.5-xhigh',
@@ -80,6 +55,31 @@ const CODEX_MODELS = [
     tagline: 'Frontier Depth',
     description: 'GPT-5.5 with extra-high reasoning effort for the hardest reviews: architecture, concurrency, security-sensitive changes, and large codebase context.',
     badge: 'Max Reasoning',
+    badgeClass: 'badge-power'
+  },
+  {
+    id: 'gpt-5.4-high',
+    // Alias keeps results/councils saved under the previous bare `gpt-5.4`
+    // model ID resolving to the now-explicit high-effort variant.
+    aliases: ['gpt-5.4'],
+    cli_model: 'gpt-5.4',
+    extra_args: ['-c', 'model_reasoning_effort="high"'],
+    name: 'GPT-5.4 High',
+    tier: 'thorough',
+    tagline: 'Deep Review',
+    description: 'GPT-5.4 with high reasoning effort for complex multi-file reviews, architectural consistency, and subtle behavioral regressions.',
+    badge: 'Previous Gen',
+    badgeClass: 'badge-power'
+  },
+  {
+    id: 'gpt-5.4-xhigh',
+    cli_model: 'gpt-5.4',
+    extra_args: ['-c', 'model_reasoning_effort="xhigh"'],
+    name: 'GPT-5.4 XHigh',
+    tier: 'thorough',
+    tagline: 'Max Depth',
+    description: 'GPT-5.4 with extra-high reasoning effort for difficult reviews that need broad context, careful tradeoff analysis, and deeper issue validation.',
+    badge: 'Extra High',
     badgeClass: 'badge-power'
   },
   {
@@ -121,7 +121,7 @@ class CodexProvider extends AIProvider {
    * @param {Object} configOverrides.env - Additional environment variables
    * @param {Object[]} configOverrides.models - Custom model definitions
    */
-  constructor(model = 'gpt-5.4-high', configOverrides = {}) {
+  constructor(model = 'gpt-5.5-high', configOverrides = {}) {
     super(model);
 
     // Command precedence: ENV > config > default
@@ -149,9 +149,9 @@ class CodexProvider extends AIProvider {
     // 2. "read-only" prevents ALL shell commands including git-diff-lines
     // 3. The AI is instructed to only analyze code, not modify it
     //
-    // --full-auto: Non-interactive mode that auto-approves within sandbox bounds.
-    // Combined with workspace-write sandbox, this limits damage to the worktree only.
-    // Note: The -a flag is for interactive mode only; exec subcommand uses --full-auto.
+    // Newer Codex CLI versions deprecate --full-auto; `codex exec` is already
+    // non-interactive, and `--sandbox workspace-write` selects the required
+    // sandbox policy.
     //
     // Shell environment config:
     // - allow_login_shell=false: Prevents zsh from using -l flag, which would
@@ -164,7 +164,7 @@ class CodexProvider extends AIProvider {
     // (--dangerously-bypass-approvals-and-sandbox is the Codex CLI equivalent of Claude's --dangerously-skip-permissions)
     const sandboxArgs = configOverrides.yolo
       ? ['--dangerously-bypass-approvals-and-sandbox']
-      : ['--sandbox', 'workspace-write', '--full-auto'];
+      : ['--sandbox', 'workspace-write'];
     // Shell env args prevent login shell from reconstructing PATH (orthogonal to
     // sandbox permissions). Overridable via configOverrides.args following the
     // same two-tier pattern as chat-providers.js: args replaces, extra_args appends.
@@ -352,7 +352,7 @@ class CodexProvider extends AIProvider {
 
         if (code !== 0) {
           logger.error(`${levelPrefix} Codex CLI exited with code ${code}`);
-          settle(reject, new Error(`${levelPrefix} Codex CLI exited with code ${code}: ${stderr}`));
+          settle(reject, this.createExitError(code, stderr, levelPrefix));
           return;
         }
 
@@ -431,6 +431,37 @@ class CodexProvider extends AIProvider {
       });
       codex.stdin.end();
     });
+  }
+
+  /**
+   * Build an actionable error for Codex CLI process failures.
+   *
+   * @param {number} code - Process exit code
+   * @param {string} stderr - Captured stderr
+   * @param {string} levelPrefix - Logging prefix
+   * @returns {Error}
+   */
+  createExitError(code, stderr, levelPrefix) {
+    const stderrText = stderr.trim();
+
+    if (this.isAuthError(stderrText)) {
+      return new Error(
+        `${levelPrefix} Codex CLI authentication failed. Check Codex CLI authentication and try again. ` +
+        `Original stderr: ${stderrText}`
+      );
+    }
+
+    return new Error(`${levelPrefix} Codex CLI exited with code ${code}: ${stderr}`);
+  }
+
+  /**
+   * Detect authentication failures reported by the Codex CLI.
+   *
+   * @param {string} stderr - Captured stderr
+   * @returns {boolean}
+   */
+  isAuthError(stderr) {
+    return /(?:401\s+Unauthorized|HTTP error:\s*401|Unauthorized)/i.test(stderr);
   }
 
   /**
@@ -664,7 +695,7 @@ class CodexProvider extends AIProvider {
 
     // Base args for extraction (read-only sandbox, no shell access needed)
     // Note: '-' (stdin marker) must come LAST, after any extra_args
-    const baseArgs = ['exec', '-m', cliModel, '--json', '--sandbox', 'read-only', '--full-auto'];
+    const baseArgs = ['exec', '-m', cliModel, '--json', '--sandbox', 'read-only'];
 
     // Append stdin marker '-' at the end after all other args
     return [...baseArgs, ...extraArgs, '-'];
@@ -790,7 +821,7 @@ class CodexProvider extends AIProvider {
   }
 
   static getDefaultModel() {
-    return 'gpt-5.4-high';
+    return 'gpt-5.5-high';
   }
 
   static getInstallInstructions() {
