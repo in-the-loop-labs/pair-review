@@ -12,6 +12,7 @@ const logger = require('../utils/logger');
 
 // Default dependencies (overridable for testing)
 const defaults = { spawn };
+const CODEX_SANDBOX_MODES = new Set(['workspace-write', 'read-only']);
 
 /**
  * Built-in chat provider definitions.
@@ -68,6 +69,7 @@ const CHAT_PROVIDERS = {
     name: 'Codex (JSON-RPC)',
     type: 'codex',
     command: 'codex',
+    sandbox: 'workspace-write',
     // Shell environment config prevents zsh -l from reconstructing PATH,
     // ensuring git-diff-lines and other bin/ scripts remain findable.
     args: [
@@ -126,6 +128,9 @@ function getChatProvider(id) {
     }
     if (overrides.load_skills !== undefined) provider.load_skills = overrides.load_skills;
     if (overrides.app_extensions !== undefined) provider.app_extensions = overrides.app_extensions;
+    if (provider.type === 'codex' && overrides.sandbox !== undefined) {
+      provider.sandbox = normalizeCodexSandbox(overrides.sandbox, id);
+    }
     if (provider.command.includes(' ')) {
       provider.useShell = true;
     }
@@ -152,11 +157,32 @@ function getChatProvider(id) {
   }
   if (overrides.load_skills !== undefined) merged.load_skills = overrides.load_skills;
   if (overrides.app_extensions !== undefined) merged.app_extensions = overrides.app_extensions;
+  if (base.type === 'codex' && overrides.sandbox !== undefined) {
+    merged.sandbox = normalizeCodexSandbox(overrides.sandbox, id);
+  }
   // For multi-word commands (e.g. "devx claude"), use shell mode
   if (merged.command && merged.command.includes(' ')) {
     merged.useShell = true;
   }
   return merged;
+}
+
+/**
+ * Validate the small user-facing Codex sandbox config surface.
+ * @param {string} sandbox
+ * @param {string} providerId
+ * @returns {string}
+ */
+function normalizeCodexSandbox(sandbox, providerId = 'codex') {
+  if (CODEX_SANDBOX_MODES.has(sandbox)) {
+    return sandbox;
+  }
+
+  logger.warn(
+    `[ChatProviders] Invalid sandbox "${sandbox}" for ${providerId}; ` +
+    'falling back to workspace-write. Supported values: workspace-write, read-only.'
+  );
+  return 'workspace-write';
 }
 
 /**

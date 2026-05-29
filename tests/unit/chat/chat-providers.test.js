@@ -105,6 +105,18 @@ describe('chat-providers', () => {
       expect(getChatProvider('unknown')).toBeNull();
     });
 
+    it('should return codex provider with chat-safe sandbox defaults', () => {
+      const codex = getChatProvider('codex');
+      expect(codex).toMatchObject({
+        id: 'codex',
+        name: 'Codex (JSON-RPC)',
+        type: 'codex',
+        command: 'codex',
+        sandbox: 'workspace-write',
+      });
+      expect(codex.args).toContain('app-server');
+    });
+
     it('should merge config overrides for command', () => {
       applyConfigOverrides({
         'copilot-acp': { command: '/usr/local/bin/copilot' },
@@ -128,6 +140,24 @@ describe('chat-providers', () => {
       });
       const provider = getChatProvider('copilot-acp');
       expect(provider.args).toEqual(['--acp', '--stdio', '--verbose']);
+    });
+
+    it('should merge codex sandbox override', () => {
+      applyConfigOverrides({
+        codex: {
+          sandbox: 'read-only',
+        },
+      });
+      const provider = getChatProvider('codex');
+      expect(provider.sandbox).toBe('read-only');
+    });
+
+    it('should fall back to workspace-write for invalid codex sandbox override', () => {
+      applyConfigOverrides({
+        codex: { sandbox: 'danger-full-access' },
+      });
+      const provider = getChatProvider('codex');
+      expect(provider.sandbox).toBe('workspace-write');
     });
 
     it('should merge config overrides for env', () => {

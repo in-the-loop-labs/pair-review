@@ -53,8 +53,8 @@ describe('CodexProvider', () => {
       expect(CodexProvider.getProviderId()).toBe('codex');
     });
 
-    it('should return gpt-5.4-high as default model', () => {
-      expect(CodexProvider.getDefaultModel()).toBe('gpt-5.4-high');
+    it('should return gpt-5.5-high as default model', () => {
+      expect(CodexProvider.getDefaultModel()).toBe('gpt-5.5-high');
     });
 
     it('should return array of models with expected structure', () => {
@@ -64,6 +64,12 @@ describe('CodexProvider', () => {
 
       // Check that we have the expected model IDs
       const modelIds = models.map(m => m.id);
+      expect(modelIds.slice(0, 4)).toEqual([
+        'gpt-5.5-high',
+        'gpt-5.5-xhigh',
+        'gpt-5.4-high',
+        'gpt-5.4-xhigh',
+      ]);
       expect(modelIds).toContain('gpt-5.4-nano');
       expect(modelIds).toContain('gpt-5.4-mini');
       expect(modelIds).toContain('gpt-5.3-codex');
@@ -80,12 +86,13 @@ describe('CodexProvider', () => {
 
       const high54 = models.find(m => m.id === 'gpt-5.4-high');
       expect(high54.aliases).toContain('gpt-5.4');
+      expect(high54.badge).toBe('Previous Gen');
 
-      // Check model structure — default is now gpt-5.4-high (explicit reasoning)
+      // Check model structure — default is now gpt-5.5-high (explicit reasoning)
       const defaultModel = models.find(m => m.default === true);
       expect(defaultModel).toMatchObject({
-        id: 'gpt-5.4-high',
-        name: 'GPT-5.4 High',
+        id: 'gpt-5.5-high',
+        name: 'GPT-5.5 High',
         tier: 'thorough',
         default: true
       });
@@ -120,7 +127,7 @@ describe('CodexProvider', () => {
   describe('constructor', () => {
     it('should create instance with default model', () => {
       const provider = new CodexProvider();
-      expect(provider.model).toBe('gpt-5.4-high');
+      expect(provider.model).toBe('gpt-5.5-high');
     });
 
     it('should create instance with specified model', () => {
@@ -165,7 +172,7 @@ describe('CodexProvider', () => {
       expect(provider.args).toContain('--json');
       expect(provider.args).toContain('--sandbox');
       expect(provider.args).toContain('workspace-write');
-      expect(provider.args).toContain('--full-auto');
+      expect(provider.args).not.toContain('--full-auto');
       expect(provider.args).toContain('-');
     });
 
@@ -307,7 +314,7 @@ describe('CodexProvider', () => {
         const provider = new CodexProvider('gpt-5.4-nano');
         expect(provider.args).toContain('--sandbox');
         expect(provider.args).toContain('workspace-write');
-        expect(provider.args).toContain('--full-auto');
+        expect(provider.args).not.toContain('--full-auto');
         expect(provider.args).not.toContain('--dangerously-bypass-approvals-and-sandbox');
       });
 
@@ -323,7 +330,7 @@ describe('CodexProvider', () => {
         const provider = new CodexProvider('gpt-5.4-nano', { yolo: false });
         expect(provider.args).toContain('--sandbox');
         expect(provider.args).toContain('workspace-write');
-        expect(provider.args).toContain('--full-auto');
+        expect(provider.args).not.toContain('--full-auto');
         expect(provider.args).not.toContain('--dangerously-bypass-approvals-and-sandbox');
       });
     });
@@ -549,6 +556,31 @@ describe('CodexProvider', () => {
     });
   });
 
+  describe('createExitError', () => {
+    it('should include Codex auth recovery steps for 401 Unauthorized failures', () => {
+      const provider = new CodexProvider('gpt-5.4-mini');
+      const stderr = [
+        'ERROR codex_api::endpoint::responses_websocket:',
+        'failed to connect to websocket: HTTP error: 401 Unauthorized, url: wss://api.openai.com/v1/responses'
+      ].join(' ');
+
+      const error = provider.createExitError(1, stderr, '[Level 2]');
+
+      expect(error.message).toContain('[Level 2] Codex CLI authentication failed');
+      expect(error.message).toContain('Check Codex CLI authentication and try again');
+      expect(error.message).toContain('Original stderr');
+      expect(error.message).toContain(stderr);
+      expect(error.message).not.toContain('CODEX_API_KEY');
+    });
+
+    it('should preserve the generic exit error for non-auth failures', () => {
+      const provider = new CodexProvider('gpt-5.4-mini');
+      const error = provider.createExitError(2, 'some other failure', '[Level 1]');
+
+      expect(error.message).toBe('[Level 1] Codex CLI exited with code 2: some other failure');
+    });
+  });
+
   describe('buildArgsForModel', () => {
     it('should resolve cli_model for gpt-5.4-high variant', () => {
       // Reasoning variants pass the base model to `-m` and add effort via
@@ -581,7 +613,7 @@ describe('CodexProvider', () => {
       const sandboxIdx = args.indexOf('--sandbox');
       expect(sandboxIdx).toBeGreaterThanOrEqual(0);
       expect(args[sandboxIdx + 1]).toBe('read-only');
-      expect(args).toContain('--full-auto');
+      expect(args).not.toContain('--full-auto');
       // Extraction must not inherit the constructor's workspace-write mode
       expect(args).not.toContain('workspace-write');
     });

@@ -13,6 +13,7 @@
 const { EventEmitter } = require('events');
 const { spawn } = require('child_process');
 const { createInterface } = require('readline');
+const { quoteShellArgs } = require('../ai/provider');
 const logger = require('../utils/logger');
 const { version: pkgVersion } = require('../../package.json');
 
@@ -21,6 +22,34 @@ const defaults = {
   spawn,
   createInterface,
 };
+
+const DEFAULT_APPROVAL_POLICY = 'never';
+const DEFAULT_SANDBOX_MODE = 'workspace-write';
+const ACTIVE_TURN_STATUSES = new Set(['inProgress', 'running', 'working']);
+const TERMINAL_TURN_STATUSES = new Set(['completed', 'failed', 'interrupted', 'cancelled', 'canceled']);
+
+function buildSandboxPolicy(sandbox = DEFAULT_SANDBOX_MODE) {
+  if (sandbox === 'read-only') {
+    return {
+      type: 'readOnly',
+      networkAccess: true,
+    };
+  }
+
+  return {
+    type: 'workspaceWrite',
+    writableRoots: [],
+    networkAccess: true,
+    excludeTmpdirEnvVar: false,
+    excludeSlashTmp: false,
+  };
+}
+
+function compactParams(params) {
+  return Object.fromEntries(
+    Object.entries(params).filter(([, value]) => value !== undefined && value !== null)
+  );
+}
 
 class CodexBridge extends EventEmitter {
   /**
@@ -33,6 +62,8 @@ class CodexBridge extends EventEmitter {
    * @param {Object} [options.env] - Extra env vars for subprocess
    * @param {boolean} [options.useShell] - Use shell mode for multi-word commands
    * @param {string} [options.resumeThreadId] - Thread ID to resume
+   * @param {string|null} [options.sandbox] - Thread sandbox mode (default: 'workspace-write')
+   * @param {Object|null} [options.sandboxPolicy] - Turn sandbox policy override for tests
    * @param {Object} [options._deps] - Dependency injection for testing
    */
   constructor(options = {}) {
@@ -43,6 +74,11 @@ class CodexBridge extends EventEmitter {
     this.env = options.env || {};
     this.useShell = options.useShell || false;
     this.resumeThreadId = options.resumeThreadId || null;
+    this.approvalPolicy = DEFAULT_APPROVAL_POLICY;
+    this.sandbox = options.sandbox !== undefined ? options.sandbox : DEFAULT_SANDBOX_MODE;
+    this.sandboxPolicy = options.sandboxPolicy !== undefined
+      ? options.sandboxPolicy
+      : buildSandboxPolicy(this.sandbox);
 
     // Command resolution: constructor option → env var → default
     this.codexCommand = options.codexCommand
@@ -81,13 +117,9 @@ class CodexBridge extends EventEmitter {
     const args = [...this.codexArgs];
     const useShell = this.useShell;
 
-    // Append model flag if configured
-    if (this.model) {
-      args.push('--model', this.model);
-    }
-
-    // For multi-word commands (e.g. "devx codex"), use shell mode
-    const spawnCmd = useShell ? `${command} ${args.join(' ')}` : command;
+    // For multi-word commands (e.g. "devx codex"), use shell mode. Quote args
+    // so TOML config values like include_only=["PATH","HOME"] survive the shell.
+    const spawnCmd = useShell ? `${command} ${quoteShellArgs(args).join(' ')}` : command;
     const spawnArgs = useShell ? [] : args;
 
     logger.info(`[CodexBridge] Starting Codex agent: ${command} ${args.join(' ')}`);
@@ -188,13 +220,13 @@ class CodexBridge extends EventEmitter {
 
     // 3. Start or resume thread
     if (this.resumeThreadId) {
-      const result = await this._sendRequest('thread/resume', {
+      const result = await this._sendRequest('thread/resume', this._buildThreadParams({
         threadId: this.resumeThreadId,
-      });
+      }));
       this._threadId = result.thread?.id || result.threadId || this.resumeThreadId;
       logger.info(`[CodexBridge] Thread resumed: ${this._threadId}`);
     } else {
-      const result = await this._sendRequest('thread/start', {});
+      const result = await this._sendRequest('thread/start', this._buildThreadParams());
       this._threadId = result.thread?.id || result.threadId;
       if (!this._threadId) {
         throw new Error('thread/start response missing thread ID');
@@ -204,6 +236,41 @@ class CodexBridge extends EventEmitter {
 
     // Emit session info so session-manager can store the threadId
     this.emit('session', { threadId: this._threadId });
+  }
+
+  /**
+   * Build thread start/resume settings that keep Codex chat able to call the
+   * pair-review API from the review worktree.
+   * @param {Object} [extra] - Additional params, e.g. threadId for resume.
+   * @returns {Object}
+   */
+  _buildThreadParams(extra = {}) {
+    return compactParams({
+      ...extra,
+      cwd: this.cwd,
+      model: this.model,
+      approvalPolicy: this.approvalPolicy,
+      // thread/start uses the same sandbox enum as the Codex CLI, while
+      // turn/start.sandboxPolicy uses the v2 camelCase policy object.
+      sandbox: this.sandbox,
+    });
+  }
+
+  /**
+   * Build turn/start params. App-server uses the v2 camelCase SandboxPolicy
+   * shape here, not the `codex exec --sandbox workspace-write` CLI flag.
+   * @param {Array<Object>} input
+   * @returns {Object}
+   */
+  _buildTurnStartParams(input) {
+    return compactParams({
+      threadId: this._threadId,
+      input,
+      cwd: this.cwd,
+      model: this.model,
+      approvalPolicy: this.approvalPolicy,
+      sandboxPolicy: this.sandboxPolicy,
+    });
   }
 
   /**
@@ -232,14 +299,11 @@ class CodexBridge extends EventEmitter {
     // not by this response. Store turnId for abort support.
     // Codex app-server expects `input` as an array of typed objects, not a
     // plain string.  See https://developers.openai.com/codex/app-server/
-    this._sendRequest('turn/start', {
-      threadId: this._threadId,
-      input: [{ type: 'text', text: messageContent }],
-      approvalPolicy: 'never',
-    })
+    this._sendRequest('turn/start', this._buildTurnStartParams([{ type: 'text', text: messageContent }]))
       .then((result) => {
-        if (result && result.turnId) {
-          this._turnId = result.turnId;
+        const turnId = this._extractTurnId(result);
+        if (turnId) {
+          this._turnId = turnId;
         }
       })
       .catch((err) => {
@@ -468,7 +532,14 @@ class CodexBridge extends EventEmitter {
         break;
 
       case 'turn/started':
-        this.emit('status', { status: 'working' });
+        this._handleTurnStarted(params);
+        break;
+
+      case 'turn/statusChanged':
+        this._handleTurnStatusChanged(params);
+        break;
+
+      case 'remoteControl/status/changed':
         break;
 
       case 'item/started':
@@ -490,10 +561,61 @@ class CodexBridge extends EventEmitter {
    */
   _handleDelta(params) {
     if (!params) return;
-    const text = params.delta || params.text;
+    let text = params.delta || params.text;
     if (text) {
+      text = this._normalizeDeltaBoundary(text);
       this._accumulatedText += text;
       this.emit('delta', { text });
+    }
+  }
+
+  /**
+   * Preserve readable boundaries when app-server splits prose deltas without
+   * carrying the whitespace between adjacent chunks.
+   * @param {string} text
+   * @returns {string}
+   */
+  _normalizeDeltaBoundary(text) {
+    const previous = this._accumulatedText;
+    if (
+      previous &&
+      /[.!?]$/.test(previous) &&
+      /^[A-Z]/.test(text)
+    ) {
+      return ` ${text}`;
+    }
+    return text;
+  }
+
+  /**
+   * Handle turn started notifications and capture the active turn id.
+   * @param {Object} params
+   */
+  _handleTurnStarted(params) {
+    const turnId = this._extractTurnId(params);
+    if (turnId) {
+      this._turnId = turnId;
+    }
+    this.emit('status', { status: 'working' });
+  }
+
+  /**
+   * Handle turn status changes without reviving a completed turn.
+   * @param {Object} params
+   */
+  _handleTurnStatusChanged(params) {
+    const status = params?.status || params?.turn?.status;
+
+    if (ACTIVE_TURN_STATUSES.has(status)) {
+      this._handleTurnStarted(params);
+      return;
+    }
+
+    if (TERMINAL_TURN_STATUSES.has(status)) {
+      this._turnId = null;
+      if (status === 'failed') {
+        this._inMessage = false;
+      }
     }
   }
 
@@ -530,12 +652,38 @@ class CodexBridge extends EventEmitter {
     if (!params) return;
     const type = params.type || params.itemType;
     if (type === 'command' || type === 'tool_call' || type === 'function_call') {
-      this.emit('tool_use', {
-        toolCallId: params.itemId || params.id,
-        toolName: params.name || params.title || params.command || type,
-        status: 'start',
-      });
+      this.emit('tool_use', this._buildToolUseEvent(params, 'start'));
     }
+  }
+
+  /**
+   * Build the normalized tool event shape consumed by the chat broadcaster.
+   * Command items are represented as bash calls so internal pair-review API
+   * curls can be suppressed consistently across providers.
+   * @param {Object} params
+   * @param {'start'|'end'} status
+   * @returns {Object}
+   */
+  _buildToolUseEvent(params, status) {
+    const type = params.type || params.itemType;
+    const toolCallId = params.itemId || params.id;
+    if (type === 'command') {
+      const event = {
+        toolCallId,
+        toolName: 'bash',
+        status,
+      };
+      if (params.command) {
+        event.args = { command: params.command };
+      }
+      return event;
+    }
+
+    return {
+      toolCallId,
+      toolName: params.name || params.title || params.command || type,
+      status,
+    };
   }
 
   /**
@@ -546,11 +694,7 @@ class CodexBridge extends EventEmitter {
     if (!params) return;
     const type = params.type || params.itemType;
     if (type === 'command' || type === 'tool_call' || type === 'function_call') {
-      this.emit('tool_use', {
-        toolCallId: params.itemId || params.id,
-        toolName: params.name || params.title || params.command || type,
-        status: 'end',
-      });
+      this.emit('tool_use', this._buildToolUseEvent(params, 'end'));
     }
   }
 
@@ -573,9 +717,74 @@ class CodexBridge extends EventEmitter {
       return;
     }
 
+    if (method === 'item/commandExecution/requestApproval') {
+      logger.debug(`[CodexBridge] Auto-approving command execution request (id=${id})`);
+      this._sendResponse(id, { decision: 'accept' });
+      return;
+    }
+
+    if (method === 'execCommandApproval') {
+      logger.debug(`[CodexBridge] Auto-approving execCommandApproval request (id=${id})`);
+      this._sendResponse(id, { decision: 'approved' });
+      return;
+    }
+
+    if (method === 'item/permissions/requestApproval') {
+      logger.debug(`[CodexBridge] Granting requested network permissions (id=${id})`);
+      this._sendResponse(id, this._buildPermissionsApproval(params));
+      return;
+    }
+
+    if (method === 'item/fileChange/requestApproval') {
+      logger.debug(`[CodexBridge] Declining file change approval request (id=${id})`);
+      this._sendResponse(id, { decision: 'decline' });
+      return;
+    }
+
+    if (method === 'applyPatchApproval') {
+      logger.debug(`[CodexBridge] Denying applyPatchApproval request (id=${id})`);
+      this._sendResponse(id, { decision: 'denied' });
+      return;
+    }
+
     // Unknown server request — respond with error to avoid hangs
     logger.warn(`[CodexBridge] Unknown server request: ${method} (id=${id})`);
     this._sendErrorResponse(id, -32601, `Method not found: ${method}`);
+  }
+
+  /**
+   * Build a response for Codex v2 permission requests. For pair-review chat we
+   * grant network permission so localhost API `curl` calls can proceed, while
+   * avoiding broad file-system permission grants beyond the configured sandbox.
+   * @param {Object} params
+   * @returns {Object}
+   */
+  _buildPermissionsApproval(params = {}) {
+    const requested = params.permissions || {};
+    const permissions = {};
+
+    if (requested.network) {
+      permissions.network = requested.network;
+    } else {
+      // Codex chat needs localhost network access to call pair-review's API.
+      // Grant it even if app-server requests permissions without a network body.
+      permissions.network = { enabled: true };
+    }
+
+    return {
+      permissions,
+      scope: 'session',
+      strictAutoReview: false,
+    };
+  }
+
+  /**
+   * Extract a turn id from legacy and current app-server shapes.
+   * @param {Object} value
+   * @returns {string|null}
+   */
+  _extractTurnId(value) {
+    return value?.turn?.id || value?.turnId || value?.id || null;
   }
 
   /**

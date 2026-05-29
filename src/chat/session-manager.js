@@ -571,6 +571,7 @@ class ChatSessionManager {
         codexArgs: def?.args,
         env: def?.env,
         useShell: def?.useShell,
+        sandbox: def?.sandbox,
       });
     }
     // Pi provider — resolve config overrides (command, model, env) from provider def.
