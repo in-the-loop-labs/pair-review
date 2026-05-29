@@ -1,5 +1,5 @@
 ---
-"@in-the-loop-labs/pair-review": minor
+"@in-the-loop-labs/pair-review": patch
 ---
 
 Update the built-in Claude model list: add Opus 4.8 (XHigh and High effort), keep
