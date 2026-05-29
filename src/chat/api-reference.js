@@ -235,7 +235,7 @@ curl -s -X POST http://localhost:{{PORT}}/api/pr/OWNER/REPO/PR_NUMBER/analyses \
   -H 'Content-Type: application/json' \\
   -d '{
     "provider": "claude",
-    "model": "claude-sonnet-4-5-20250929",
+    "model": "claude-opus-4-7",
     "tier": "balanced",
     "customInstructions": "Focus on security issues."
   }'
