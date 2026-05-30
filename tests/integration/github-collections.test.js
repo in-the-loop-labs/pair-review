@@ -518,4 +518,130 @@ describe('GitHub Collections Routes', () => {
       expect(res.body.success).toBe(false);
     });
   });
+
+  // ==========================================================================
+  // GET /api/github/team-reviews
+  // ==========================================================================
+
+  describe('GET /api/github/team-reviews', () => {
+    it('should return empty array when no cached data', async () => {
+      const res = await request(app).get('/api/github/team-reviews');
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.prs).toEqual([]);
+      expect(res.body.fetched_at).toBeNull();
+    });
+
+    it('should return only team-reviews cached data', async () => {
+      await insertCachedPR(db, {
+        owner: 'org', repo: 'repo', number: 1,
+        title: 'Direct request', author: 'alice',
+        updated_at: '2025-01-01T00:00:00Z',
+        html_url: 'https://github.com/org/repo/pull/1',
+        state: 'open', collection: 'review-requests'
+      });
+      await insertCachedPR(db, {
+        owner: 'org', repo: 'repo', number: 2,
+        title: 'Team request', author: 'bob',
+        updated_at: '2025-01-02T00:00:00Z',
+        html_url: 'https://github.com/org/repo/pull/2',
+        state: 'open', collection: 'team-reviews'
+      });
+
+      const res = await request(app).get('/api/github/team-reviews');
+
+      expect(res.body.prs).toHaveLength(1);
+      expect(res.body.prs[0].number).toBe(2);
+    });
+  });
+
+  // ==========================================================================
+  // POST /api/github/team-reviews/refresh
+  // ==========================================================================
+
+  describe('POST /api/github/team-reviews/refresh', () => {
+    it('should return 401 when no GitHub token configured', async () => {
+      configModule.getGitHubToken.mockReturnValue(null);
+
+      const res = await request(app).post('/api/github/team-reviews/refresh');
+
+      expect(res.status).toBe(401);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error).toContain('token not configured');
+    });
+
+    it('should query for team requests excluding direct requests', async () => {
+      configModule.getGitHubToken.mockReturnValue('test-token');
+      GitHubClient.prototype.getAuthenticatedUser.mockResolvedValue({
+        login: 'testuser', name: 'Test User', avatar_url: 'https://example.com/avatar.png'
+      });
+      GitHubClient.prototype.searchPullRequests.mockResolvedValue([
+        {
+          owner: 'org', repo: 'project', number: 20,
+          title: 'Team feature', author: 'carol',
+          updated_at: '2025-03-05T12:00:00Z',
+          html_url: 'https://github.com/org/project/pull/20',
+          state: 'open'
+        }
+      ]);
+
+      const res = await request(app).post('/api/github/team-reviews/refresh');
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.prs).toHaveLength(1);
+      expect(res.body.prs[0].number).toBe(20);
+
+      // Team reviews = requested via a team, excluding direct user requests
+      expect(GitHubClient.prototype.searchPullRequests).toHaveBeenCalledWith(
+        'is:pr is:open archived:false review-requested:testuser -user-review-requested:testuser'
+      );
+    });
+
+    it('should not clear data from other collections', async () => {
+      await insertCachedPR(db, {
+        owner: 'org', repo: 'repo', number: 50,
+        title: 'Direct request', author: 'me',
+        updated_at: '2025-01-01T00:00:00Z',
+        html_url: 'https://github.com/org/repo/pull/50',
+        state: 'open', collection: 'review-requests'
+      });
+
+      configModule.getGitHubToken.mockReturnValue('test-token');
+      GitHubClient.prototype.getAuthenticatedUser.mockResolvedValue({
+        login: 'testuser', name: 'Test User', avatar_url: 'https://example.com/avatar.png'
+      });
+      GitHubClient.prototype.searchPullRequests.mockResolvedValue([]);
+
+      await request(app).post('/api/github/team-reviews/refresh');
+
+      const reviewRequests = await query(db, "SELECT * FROM github_pr_cache WHERE collection = 'review-requests'", []);
+      expect(reviewRequests).toHaveLength(1);
+      expect(reviewRequests[0].number).toBe(50);
+    });
+
+    it('should return 401 when GitHub API returns 403 auth error', async () => {
+      configModule.getGitHubToken.mockReturnValue('bad-token');
+      const forbiddenError = new Error('Forbidden');
+      forbiddenError.status = 403;
+      GitHubClient.prototype.getAuthenticatedUser.mockRejectedValue(forbiddenError);
+
+      const res = await request(app).post('/api/github/team-reviews/refresh');
+
+      expect(res.status).toBe(401);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error).toContain('invalid or expired');
+    });
+
+    it('should return 500 on unexpected errors', async () => {
+      configModule.getGitHubToken.mockReturnValue('test-token');
+      GitHubClient.prototype.getAuthenticatedUser.mockRejectedValue(new Error('Network timeout'));
+
+      const res = await request(app).post('/api/github/team-reviews/refresh');
+
+      expect(res.status).toBe(500);
+      expect(res.body.success).toBe(false);
+    });
+  });
 });
