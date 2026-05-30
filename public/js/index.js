@@ -303,9 +303,29 @@
     loaded: false
   };
 
-  // ─── GitHub PR Collections (My Review Requests / My PRs) ───────────────────
+  // ─── GitHub PR Collections (Review Requests / Team Reviews / My PRs) ───────
+
+  /** Empty-state message per collection (used when a fetch returned no PRs). */
+  var COLLECTION_EMPTY_MESSAGES = {
+    'review-requests': 'No pull requests awaiting your review.',
+    'team-reviews': 'No pull requests awaiting your team’s review.',
+    'my-prs': 'You have no open pull requests.'
+  };
+
+  /** Noun used in the "Configure a GitHub token to see …" message per collection. */
+  var COLLECTION_TOKEN_LABELS = {
+    'review-requests': 'review requests',
+    'team-reviews': 'team review requests',
+    'my-prs': 'your pull requests'
+  };
 
   var reviewRequestsState = {
+    loaded: false,
+    prs: [],
+    fetchedAt: null
+  };
+
+  var teamReviewsState = {
     loaded: false,
     prs: [],
     fetchedAt: null
@@ -320,7 +340,7 @@
   /**
    * Render a single row for a collection PR table.
    * @param {Object} pr - PR object from the API
-   * @param {string} collection - The collection name ('review-requests' or 'my-prs')
+   * @param {string} collection - The collection name ('review-requests', 'team-reviews', or 'my-prs')
    * @returns {string} HTML string for the table row
    */
   function renderCollectionPrRow(pr, collection) {
@@ -366,14 +386,13 @@
    * Render the collection table into a container element.
    * @param {HTMLElement} container - The container element
    * @param {Object} state - The collection state object
-   * @param {string} collection - The collection name ('review-requests' or 'my-prs')
+   * @param {string} collection - The collection name ('review-requests', 'team-reviews', or 'my-prs')
    */
   function renderCollectionTable(container, state, collection) {
-    var sel = collection === 'review-requests' ? reviewRequestsSelection : myPrsSelection;
-    sel.exit();
+    var sel = collectionSelections[collection];
+    if (sel) sel.exit();
 
-    var fetchedAtId = collection === 'review-requests' ? 'review-requests-fetched-at' : 'my-prs-fetched-at';
-    var fetchedAtEl = document.getElementById(fetchedAtId);
+    var fetchedAtEl = document.getElementById(collection + '-fetched-at');
     if (fetchedAtEl) {
       var lsKey = 'github-collection-fetched-at:' + collection;
       var displayTs = localStorage.getItem(lsKey) || state.fetchedAt;
@@ -383,13 +402,11 @@
     }
 
     if (state.prs.length === 0) {
-      var emptyMsg = collection === 'review-requests'
-        ? 'No pull requests awaiting your review.'
-        : 'You have no open pull requests.';
-
-      if (!state.fetchedAt) {
-        emptyMsg = 'Click refresh to fetch from GitHub.';
-      }
+      var emptyLsKey = 'github-collection-fetched-at:' + collection;
+      var hasFetched = state.fetchedAt || localStorage.getItem(emptyLsKey);
+      var emptyMsg = hasFetched
+        ? (COLLECTION_EMPTY_MESSAGES[collection] || 'No pull requests found.')
+        : 'Click refresh to fetch from GitHub.';
 
       container.innerHTML =
         '<div class="recent-reviews-empty">' +
@@ -401,7 +418,7 @@
 
     var authorTh = collection === 'my-prs' ? '' : '<th>Author</th>';
 
-    var tbodyId = collection === 'review-requests' ? 'review-requests-tbody' : 'my-prs-tbody';
+    var tbodyId = collection + '-tbody';
 
     container.innerHTML =
       '<table class="recent-reviews-table">' +
@@ -424,7 +441,7 @@
 
   /**
    * Load collection PRs from cached backend data.
-   * @param {string} collection - 'review-requests' or 'my-prs'
+   * @param {string} collection - 'review-requests', 'team-reviews', or 'my-prs'
    * @param {string} containerId - DOM id of the container element
    * @param {Object} state - The collection state object
    */
@@ -453,14 +470,13 @@
 
   /**
    * Refresh collection PRs by fetching fresh data from GitHub.
-   * @param {string} collection - 'review-requests' or 'my-prs'
+   * @param {string} collection - 'review-requests', 'team-reviews', or 'my-prs'
    * @param {string} containerId - DOM id of the container element
    * @param {Object} state - The collection state object
    */
   async function refreshCollectionPrs(collection, containerId, state) {
     var container = document.getElementById(containerId);
-    var btnId = collection === 'review-requests' ? 'refresh-review-requests' : 'refresh-my-prs';
-    var btn = document.getElementById(btnId);
+    var btn = document.getElementById('refresh-' + collection);
 
     if (btn) btn.classList.add('refreshing');
 
@@ -478,7 +494,7 @@
           container.innerHTML =
             '<div class="recent-reviews-empty">' +
               '<p>Configure a GitHub token to see ' +
-              (collection === 'review-requests' ? 'review requests' : 'your pull requests') +
+              (COLLECTION_TOKEN_LABELS[collection] || 'pull requests') +
               '.</p>' +
             '</div>';
           container.classList.remove('recent-reviews-loading');
@@ -1610,6 +1626,17 @@
     ]
   });
 
+  var teamReviewsSelection = new SelectionMode({
+    tabId: 'team-reviews-tab',
+    containerId: 'team-reviews-container',
+    tbodyId: 'team-reviews-tbody',
+    rowIdAttr: 'prUrl',
+    actions: [
+      { label: 'Open', className: 'btn-bulk-open', handler: handleBulkOpen },
+      { label: 'Analyze', className: 'btn-bulk-analyze', handler: handleBulkAnalyze }
+    ]
+  });
+
   var myPrsSelection = new SelectionMode({
     tabId: 'my-prs-tab',
     containerId: 'my-prs-container',
@@ -1620,6 +1647,13 @@
       { label: 'Analyze', className: 'btn-bulk-analyze', handler: handleBulkAnalyze }
     ]
   });
+
+  /** Map of collection name → its SelectionMode instance. */
+  var collectionSelections = {
+    'review-requests': reviewRequestsSelection,
+    'team-reviews': teamReviewsSelection,
+    'my-prs': myPrsSelection
+  };
 
   async function handleBulkDeletePR(selectedIds, selectionInstance) {
     var count = selectedIds.size;
@@ -1762,6 +1796,13 @@
       return;
     }
 
+    var refreshTeamReviewsBtn = event.target.closest('#refresh-team-reviews');
+    if (refreshTeamReviewsBtn) {
+      event.preventDefault();
+      refreshCollectionPrs('team-reviews', 'team-reviews-container', teamReviewsState);
+      return;
+    }
+
     var refreshMyPrsBtn = event.target.closest('#refresh-my-prs');
     if (refreshMyPrsBtn) {
       event.preventDefault();
@@ -1774,7 +1815,7 @@
     if (selectToggle) {
       event.preventDefault();
       var tabId = selectToggle.dataset.selectionTab;
-      var instances = { 'pr-tab': prSelection, 'local-tab': localSelection, 'review-requests-tab': reviewRequestsSelection, 'my-prs-tab': myPrsSelection };
+      var instances = { 'pr-tab': prSelection, 'local-tab': localSelection, 'review-requests-tab': reviewRequestsSelection, 'team-reviews-tab': teamReviewsSelection, 'my-prs-tab': myPrsSelection };
       var instance = instances[tabId];
       if (instance) instance.toggle();
       return;
@@ -1851,6 +1892,12 @@
           }
           refreshCollectionPrs('review-requests', 'review-requests-container', reviewRequestsState);
         }
+        if (tabId === 'team-reviews-tab') {
+          if (!teamReviewsState.loaded) {
+            await loadCollectionPrs('team-reviews', 'team-reviews-container', teamReviewsState);
+          }
+          refreshCollectionPrs('team-reviews', 'team-reviews-container', teamReviewsState);
+        }
         if (tabId === 'my-prs-tab') {
           if (!myPrsState.loaded) {
             await loadCollectionPrs('my-prs', 'my-prs-container', myPrsState);
@@ -1893,6 +1940,10 @@
     if (savedTab === 'review-requests-tab') {
       loadCollectionPrs('review-requests', 'review-requests-container', reviewRequestsState)
         .then(function () { refreshCollectionPrs('review-requests', 'review-requests-container', reviewRequestsState); });
+    }
+    if (savedTab === 'team-reviews-tab') {
+      loadCollectionPrs('team-reviews', 'team-reviews-container', teamReviewsState)
+        .then(function () { refreshCollectionPrs('team-reviews', 'team-reviews-container', teamReviewsState); });
     }
     if (savedTab === 'my-prs-tab') {
       loadCollectionPrs('my-prs', 'my-prs-container', myPrsState)
@@ -1983,6 +2034,14 @@
       var rrBtn = createSelectButton('review-requests-tab');
       reviewRequestsSelection._toggleBtn = rrBtn;
       rrHeader.insertBefore(rrBtn, rrHeader.firstChild);
+    }
+
+    // Team Reviews tab: add to existing header
+    var trHeader = document.querySelector('#team-reviews-tab .tab-pane-header');
+    if (trHeader) {
+      var trBtn = createSelectButton('team-reviews-tab');
+      teamReviewsSelection._toggleBtn = trBtn;
+      trHeader.insertBefore(trBtn, trHeader.firstChild);
     }
 
     // My PRs tab: add to existing header
