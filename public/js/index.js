@@ -328,7 +328,10 @@
   var teamReviewsState = {
     loaded: false,
     prs: [],
-    fetchedAt: null
+    fetchedAt: null,
+    // Monotonic token for the most recent team-reviews request (see
+    // beginTeamReviewsRequest). Stale responses compare against this and bail.
+    activeRequest: 0
   };
 
   var myPrsState = {
@@ -336,6 +339,71 @@
     prs: [],
     fetchedAt: null
   };
+
+  // Filter-by-team support for the Team Review Requests tab.
+  // Client-side validation is UX only; the server re-validates before
+  // interpolating the value into the GitHub search query (query-injection
+  // guard). Pattern must match the server's TEAM_SLUG_PATTERN.
+  var TEAM_SLUG_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+  var TEAM_FILTER_LS_KEY = 'github-collection-team:team-reviews';
+
+  /**
+   * Read the persisted team filter, returning '' (all teams) for an absent or
+   * invalid stored value.
+   * @returns {string} A validated `org/team` slug, or ''.
+   */
+  function getStoredTeamFilter() {
+    try {
+      var v = (localStorage.getItem(TEAM_FILTER_LS_KEY) || '').trim();
+      return v && TEAM_SLUG_PATTERN.test(v) ? v : '';
+    } catch (e) {
+      return '';
+    }
+  }
+
+  /**
+   * Begin a new team-reviews request "epoch" and return its token. Every user
+   * action that (re)loads the team-reviews view — filter apply, tab switch,
+   * manual refresh, initial load — calls this once and threads the returned id
+   * through BOTH the cached GET and the live refresh. Because multiple in-flight
+   * fetches write into the shared `teamReviewsState` and render into the same
+   * container, completion order alone could otherwise let a slower earlier
+   * request (e.g. a previous team, or the all-teams view) repaint the table with
+   * PRs that no longer match the active selection. loadCollectionPrs /
+   * refreshCollectionPrs bail after `await fetch(...)` when their token is no
+   * longer `activeRequest`, discarding the stale response before it mutates
+   * state or the DOM.
+   * @returns {number} The token for this request epoch.
+   */
+  function beginTeamReviewsRequest() {
+    teamReviewsState.activeRequest += 1;
+    return teamReviewsState.activeRequest;
+  }
+
+  /**
+   * Resync the Team Review Requests filter controls to a known-applied value
+   * (typically getStoredTeamFilter()). Switching tabs only toggles `.active` —
+   * it does not rebuild the Team Reviews DOM — so unapplied draft text typed
+   * into the input survives a tab switch. Because every reload path keys its
+   * fetch off getStoredTeamFilter() (the persisted value) rather than the live
+   * input, the visible filter could otherwise advertise one team while the
+   * queue, row-click navigation, and bulk actions operate on another. Any path
+   * that re-consumes the stored filter must call this first so the displayed
+   * filter cannot diverge from the team actually being fetched and rendered.
+   * @param {string} value - The validated `org/team` slug to display, or '' for all teams.
+   */
+  function syncTeamFilterControls(value) {
+    var input = document.getElementById('team-reviews-team-input');
+    if (input) {
+      input.value = value || '';
+      input.classList.remove('invalid');
+      input.removeAttribute('aria-invalid');
+    }
+    var hint = document.getElementById('team-reviews-filter-hint');
+    if (hint) hint.hidden = true;
+    var clearBtn = document.getElementById('team-reviews-filter-clear');
+    if (clearBtn) clearBtn.hidden = !value;
+  }
 
   /**
    * Render a single row for a collection PR table.
@@ -394,6 +462,12 @@
 
     var fetchedAtEl = document.getElementById(collection + '-fetched-at');
     if (fetchedAtEl) {
+      // Note: this key is intentionally NOT per-team — unlike the DB cache key
+      // in src/routes/github-collections.js (which uses cacheKey()), the
+      // fetched-at timestamp is informational only. We accept a brief label
+      // mismatch when the user switches the team-reviews filter; the label
+      // updates once that view's next refresh completes. See the write site in
+      // refreshCollectionPrs.
       var lsKey = 'github-collection-fetched-at:' + collection;
       var displayTs = localStorage.getItem(lsKey) || state.fetchedAt;
       fetchedAtEl.textContent = displayTs
@@ -444,14 +518,24 @@
    * @param {string} collection - 'review-requests', 'team-reviews', or 'my-prs'
    * @param {string} containerId - DOM id of the container element
    * @param {Object} state - The collection state object
+   * @param {string} [team] - Optional validated `org/team` filter (team-reviews
+   *   only). When set, requests the namespaced cache for that team.
+   * @param {number} [requestId] - Optional team-reviews request token (see
+   *   beginTeamReviewsRequest). When provided, the response is discarded if a
+   *   newer request has superseded it before this fetch resolved.
    */
-  async function loadCollectionPrs(collection, containerId, state) {
+  async function loadCollectionPrs(collection, containerId, state, team, requestId) {
     var container = document.getElementById(containerId);
 
     try {
-      var response = await fetch('/api/github/' + collection);
+      var url = '/api/github/' + collection + (team ? '?team=' + encodeURIComponent(team) : '');
+      var response = await fetch(url);
       if (!response.ok) throw new Error('Failed to fetch');
       var data = await response.json();
+
+      // Discard a response a newer team-reviews request has superseded, so a
+      // slow earlier load can't repaint the table with a stale team's PRs.
+      if (requestId != null && requestId !== state.activeRequest) return;
 
       state.loaded = true;
       state.prs = data.prs || [];
@@ -460,6 +544,8 @@
       renderCollectionTable(container, state, collection);
     } catch (error) {
       console.error('Error loading ' + collection + ':', error);
+      // Don't paint the error over a view a newer request now owns.
+      if (requestId != null && requestId !== state.activeRequest) return;
       container.innerHTML =
         '<div class="recent-reviews-empty">' +
           '<p>Failed to load. Click refresh to try again.</p>' +
@@ -473,8 +559,13 @@
    * @param {string} collection - 'review-requests', 'team-reviews', or 'my-prs'
    * @param {string} containerId - DOM id of the container element
    * @param {Object} state - The collection state object
+   * @param {string} [team] - Optional validated `org/team` filter (team-reviews
+   *   only). When set, refreshes and caches under the namespaced key.
+   * @param {number} [requestId] - Optional team-reviews request token (see
+   *   beginTeamReviewsRequest). When provided, the response is discarded if a
+   *   newer request has superseded it before this fetch resolved.
    */
-  async function refreshCollectionPrs(collection, containerId, state) {
+  async function refreshCollectionPrs(collection, containerId, state, team, requestId) {
     var container = document.getElementById(containerId);
     var btn = document.getElementById('refresh-' + collection);
 
@@ -486,7 +577,12 @@
     }
 
     try {
-      var response = await fetch('/api/github/' + collection + '/refresh', { method: 'POST' });
+      var refreshUrl = '/api/github/' + collection + '/refresh' + (team ? '?team=' + encodeURIComponent(team) : '');
+      var response = await fetch(refreshUrl, { method: 'POST' });
+
+      // A newer team-reviews request has superseded this one; drop it before
+      // touching the 401 message, shared state, or the table.
+      if (requestId != null && requestId !== state.activeRequest) return;
 
       if (!response.ok) {
         var errData = await response.json().catch(function() { return {}; });
@@ -504,14 +600,26 @@
       }
 
       var data = await response.json();
+
+      // Re-check after the body parse: a newer request may have started while
+      // the response was streaming.
+      if (requestId != null && requestId !== state.activeRequest) return;
+
       state.prs = data.prs || [];
       state.fetchedAt = data.fetched_at;
       state.loaded = true;
+      // Note: this key is intentionally NOT per-team — unlike the DB cache key
+      // in src/routes/github-collections.js (which uses cacheKey()), the
+      // fetched-at timestamp is informational only. We accept a brief label
+      // mismatch when the user switches the team-reviews filter; the label
+      // updates once the next refresh completes (read site: renderCollectionTable).
       localStorage.setItem('github-collection-fetched-at:' + collection, new Date().toISOString());
 
       renderCollectionTable(container, state, collection);
     } catch (error) {
       console.error('Error refreshing ' + collection + ':', error);
+      // Don't repaint a view a newer request now owns.
+      if (requestId != null && requestId !== state.activeRequest) return;
       // If we had existing data, keep showing it
       if (state.prs.length > 0) {
         renderCollectionTable(container, state, collection);
@@ -525,6 +633,62 @@
     } finally {
       if (btn) btn.classList.remove('refreshing');
     }
+  }
+
+  /**
+   * Apply the Team Review Requests team filter from the input field.
+   * Validates client-side (UX only), persists the value, toggles the Clear
+   * affordance and inline hint, then reloads the team-reviews view for the
+   * selected team (empty input = all teams).
+   */
+  function applyTeamFilter() {
+    var input = document.getElementById('team-reviews-team-input');
+    if (!input) return;
+    var hint = document.getElementById('team-reviews-filter-hint');
+    var clearBtn = document.getElementById('team-reviews-filter-clear');
+    var value = input.value.trim();
+
+    // Non-empty input must match the org/team format; skip the fetch and show
+    // the inline hint on invalid input. Empty means "all teams" (valid).
+    if (value !== '' && !TEAM_SLUG_PATTERN.test(value)) {
+      input.classList.add('invalid');
+      input.setAttribute('aria-invalid', 'true');
+      if (hint) hint.hidden = false;
+      return;
+    }
+
+    input.classList.remove('invalid');
+    input.removeAttribute('aria-invalid');
+    if (hint) hint.hidden = true;
+
+    try {
+      if (value) {
+        localStorage.setItem(TEAM_FILTER_LS_KEY, value);
+      } else {
+        localStorage.removeItem(TEAM_FILTER_LS_KEY);
+      }
+    } catch (e) { /* localStorage unavailable; filter still applies for this view */ }
+
+    if (clearBtn) clearBtn.hidden = !value;
+
+    // Reset loaded state so we read the (namespaced) cache for the new view
+    // before refreshing live from GitHub.
+    teamReviewsState.loaded = false;
+    teamReviewsState.prs = [];
+    // Paint a placeholder so the previous team's rows don't linger while
+    // loadCollectionPrs / refreshCollectionPrs run asynchronously.
+    var container = document.getElementById('team-reviews-container');
+    if (container) {
+      container.innerHTML = '<div class="recent-reviews-loading">Loading...</div>';
+    }
+    var team = value || '';
+    // One token for this user action, threaded through both the cached GET and
+    // the live refresh, so a slower earlier request can't clobber this view.
+    var requestId = beginTeamReviewsRequest();
+    loadCollectionPrs('team-reviews', 'team-reviews-container', teamReviewsState, team, requestId)
+      .then(function () {
+        refreshCollectionPrs('team-reviews', 'team-reviews-container', teamReviewsState, team, requestId);
+      });
   }
 
   /**
@@ -1799,7 +1963,13 @@
     var refreshTeamReviewsBtn = event.target.closest('#refresh-team-reviews');
     if (refreshTeamReviewsBtn) {
       event.preventDefault();
-      refreshCollectionPrs('team-reviews', 'team-reviews-container', teamReviewsState);
+      // Resync the controls to the applied filter before refreshing: unapplied
+      // draft text in the input must not advertise a team different from the one
+      // we actually fetch (which keys off the persisted value).
+      var teamReviewsRefreshFilter = getStoredTeamFilter();
+      syncTeamFilterControls(teamReviewsRefreshFilter);
+      var teamReviewsRefreshId = beginTeamReviewsRequest();
+      refreshCollectionPrs('team-reviews', 'team-reviews-container', teamReviewsState, teamReviewsRefreshFilter, teamReviewsRefreshId);
       return;
     }
 
@@ -1893,10 +2063,16 @@
           refreshCollectionPrs('review-requests', 'review-requests-container', reviewRequestsState);
         }
         if (tabId === 'team-reviews-tab') {
+          var teamFilter = getStoredTeamFilter();
+          // Re-entering the tab preserves any unapplied draft text in the input
+          // (switchTab does not rebuild the DOM). Resync the controls to the
+          // applied filter so the visible team matches the one we reload.
+          syncTeamFilterControls(teamFilter);
+          var teamReviewsTabRequestId = beginTeamReviewsRequest();
           if (!teamReviewsState.loaded) {
-            await loadCollectionPrs('team-reviews', 'team-reviews-container', teamReviewsState);
+            await loadCollectionPrs('team-reviews', 'team-reviews-container', teamReviewsState, teamFilter, teamReviewsTabRequestId);
           }
-          refreshCollectionPrs('team-reviews', 'team-reviews-container', teamReviewsState);
+          refreshCollectionPrs('team-reviews', 'team-reviews-container', teamReviewsState, teamFilter, teamReviewsTabRequestId);
         }
         if (tabId === 'my-prs-tab') {
           if (!myPrsState.loaded) {
@@ -1942,8 +2118,10 @@
         .then(function () { refreshCollectionPrs('review-requests', 'review-requests-container', reviewRequestsState); });
     }
     if (savedTab === 'team-reviews-tab') {
-      loadCollectionPrs('team-reviews', 'team-reviews-container', teamReviewsState)
-        .then(function () { refreshCollectionPrs('team-reviews', 'team-reviews-container', teamReviewsState); });
+      var initialTeamFilter = getStoredTeamFilter();
+      var initialTeamRequestId = beginTeamReviewsRequest();
+      loadCollectionPrs('team-reviews', 'team-reviews-container', teamReviewsState, initialTeamFilter, initialTeamRequestId)
+        .then(function () { refreshCollectionPrs('team-reviews', 'team-reviews-container', teamReviewsState, initialTeamFilter, initialTeamRequestId); });
     }
     if (savedTab === 'my-prs-tab') {
       loadCollectionPrs('my-prs', 'my-prs-container', myPrsState)
@@ -1971,6 +2149,37 @@
     const browseBtn = document.getElementById('browse-local-btn');
     if (browseBtn) {
       browseBtn.addEventListener('click', handleBrowseLocal);
+    }
+
+    // Set up Team Review Requests team-filter handlers and restore the
+    // persisted value.
+    const teamFilterInput = document.getElementById('team-reviews-team-input');
+    const teamFilterForm = document.getElementById('team-reviews-filter');
+    const teamFilterClearBtn = document.getElementById('team-reviews-filter-clear');
+    if (teamFilterInput) {
+      // Restore the persisted filter into the controls on initial load (same
+      // resync the reload paths use, so the displayed team always matches the
+      // applied filter).
+      syncTeamFilterControls(getStoredTeamFilter());
+      // Clear the invalid state / inline hint as the user edits.
+      teamFilterInput.addEventListener('input', function () {
+        teamFilterInput.classList.remove('invalid');
+        teamFilterInput.removeAttribute('aria-invalid');
+        const hint = document.getElementById('team-reviews-filter-hint');
+        if (hint) hint.hidden = true;
+      });
+    }
+    if (teamFilterForm) {
+      teamFilterForm.addEventListener('submit', function (event) {
+        event.preventDefault();
+        applyTeamFilter();
+      });
+    }
+    if (teamFilterClearBtn) {
+      teamFilterClearBtn.addEventListener('click', function () {
+        if (teamFilterInput) teamFilterInput.value = '';
+        applyTeamFilter();
+      });
     }
 
     // Set up PR Analyze button handler
@@ -2036,12 +2245,17 @@
       rrHeader.insertBefore(rrBtn, rrHeader.firstChild);
     }
 
-    // Team Reviews tab: add to existing header
+    // Team Reviews tab: add to existing header. Insert before the fetched-at
+    // label rather than as firstChild — the leading `.team-filter-group` carries
+    // `margin-right: auto`, so a firstChild button would be shoved to the far
+    // left. Placing it here keeps Select grouped with fetched-at + refresh on
+    // the right, matching the other collection tabs.
     var trHeader = document.querySelector('#team-reviews-tab .tab-pane-header');
     if (trHeader) {
       var trBtn = createSelectButton('team-reviews-tab');
       teamReviewsSelection._toggleBtn = trBtn;
-      trHeader.insertBefore(trBtn, trHeader.firstChild);
+      var trFetchedAt = document.getElementById('team-reviews-fetched-at');
+      trHeader.insertBefore(trBtn, trFetchedAt || trHeader.firstChild);
     }
 
     // My PRs tab: add to existing header
