@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.5.2
+
+### Patch Changes
+
+- f82ed87: Add a team filter to the "Team Review Requests" tab. Enter a team in `org/team` form to narrow the tab to just that team's open review requests (GitHub `team-review-requested:org/team`); leave it blank to keep the default "all my teams" view. The entered team is remembered across sessions, and filtered results are cached separately so they never clobber the all-teams view.
+- aa52cb3: Add a "Team Review Requests" tab to the home page. It lists open pull requests where a team you belong to has been asked to review, but you have not been requested directly (GitHub `review-requested:<you> -user-review-requested:<you>`). This complements the existing "My Review Requests" tab, which shows requests addressed to you directly.
+
 ## 3.5.1
 
 ### Patch Changes
