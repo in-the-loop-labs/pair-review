@@ -599,6 +599,134 @@ describe('GitHub Collections Routes', () => {
       );
     });
 
+    it('should query a specific team and omit the user exclusion when ?team is given', async () => {
+      configModule.getGitHubToken.mockReturnValue('test-token');
+      GitHubClient.prototype.getAuthenticatedUser.mockResolvedValue({
+        login: 'testuser', name: 'Test User', avatar_url: 'https://example.com/avatar.png'
+      });
+      GitHubClient.prototype.searchPullRequests.mockResolvedValue([
+        {
+          owner: 'org', repo: 'project', number: 30,
+          title: 'Platform team PR', author: 'dave',
+          updated_at: '2025-03-06T12:00:00Z',
+          html_url: 'https://github.com/org/project/pull/30',
+          state: 'open'
+        }
+      ]);
+
+      const res = await request(app)
+        .post('/api/github/team-reviews/refresh')
+        .query({ team: 'org/platform' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.prs).toHaveLength(1);
+      expect(res.body.prs[0].number).toBe(30);
+
+      // Filtered view drops the -user-review-requested exclusion.
+      expect(GitHubClient.prototype.searchPullRequests).toHaveBeenCalledWith(
+        'is:pr is:open archived:false team-review-requested:org/platform'
+      );
+    });
+
+    it('should accept the team value from the request body', async () => {
+      configModule.getGitHubToken.mockReturnValue('test-token');
+      GitHubClient.prototype.getAuthenticatedUser.mockResolvedValue({
+        login: 'testuser', name: 'Test User', avatar_url: 'https://example.com/avatar.png'
+      });
+      GitHubClient.prototype.searchPullRequests.mockResolvedValue([]);
+
+      const res = await request(app)
+        .post('/api/github/team-reviews/refresh')
+        .send({ team: 'org/platform' });
+
+      expect(res.status).toBe(200);
+      expect(GitHubClient.prototype.searchPullRequests).toHaveBeenCalledWith(
+        'is:pr is:open archived:false team-review-requested:org/platform'
+      );
+    });
+
+    it.each(['foo', 'a/b/c', 'org/team;extra', 'org/te am', ''.padStart(3, ' ')])(
+      'should return 400 and make no GitHub call for invalid team %j',
+      async (team) => {
+        configModule.getGitHubToken.mockReturnValue('test-token');
+        GitHubClient.prototype.getAuthenticatedUser.mockResolvedValue({
+          login: 'testuser', name: 'Test User', avatar_url: 'https://example.com/avatar.png'
+        });
+
+        const res = await request(app)
+          .post('/api/github/team-reviews/refresh')
+          .query({ team });
+
+        expect(res.status).toBe(400);
+        expect(res.body.success).toBe(false);
+        expect(res.body.error).toMatch(/org\/team/);
+        expect(GitHubClient.prototype.searchPullRequests).not.toHaveBeenCalled();
+        expect(GitHubClient.prototype.getAuthenticatedUser).not.toHaveBeenCalled();
+      }
+    );
+
+    it('should cache filtered results under a namespaced key without clobbering all-teams', async () => {
+      // Seed the all-teams cache directly.
+      await insertCachedPR(db, {
+        owner: 'org', repo: 'repo', number: 1,
+        title: 'All-teams PR', author: 'alice',
+        updated_at: '2025-01-01T00:00:00Z',
+        html_url: 'https://github.com/org/repo/pull/1',
+        state: 'open', collection: 'team-reviews'
+      });
+
+      configModule.getGitHubToken.mockReturnValue('test-token');
+      GitHubClient.prototype.getAuthenticatedUser.mockResolvedValue({
+        login: 'testuser', name: 'Test User', avatar_url: 'https://example.com/avatar.png'
+      });
+      GitHubClient.prototype.searchPullRequests.mockResolvedValue([
+        {
+          owner: 'org', repo: 'project', number: 30,
+          title: 'Platform team PR', author: 'dave',
+          updated_at: '2025-03-06T12:00:00Z',
+          html_url: 'https://github.com/org/project/pull/30',
+          state: 'open'
+        }
+      ]);
+
+      // Refresh the filtered view.
+      await request(app)
+        .post('/api/github/team-reviews/refresh')
+        .query({ team: 'org/platform' });
+
+      // Filtered rows live under the namespaced collection key.
+      const namespaced = await query(db, "SELECT * FROM github_pr_cache WHERE collection = 'team-reviews:org/platform'", []);
+      expect(namespaced).toHaveLength(1);
+      expect(namespaced[0].number).toBe(30);
+
+      // The all-teams cache is untouched.
+      const allTeams = await query(db, "SELECT * FROM github_pr_cache WHERE collection = 'team-reviews'", []);
+      expect(allTeams).toHaveLength(1);
+      expect(allTeams[0].number).toBe(1);
+
+      // GET with the same ?team returns the namespaced rows.
+      const getRes = await request(app)
+        .get('/api/github/team-reviews')
+        .query({ team: 'org/platform' });
+      expect(getRes.status).toBe(200);
+      expect(getRes.body.prs).toHaveLength(1);
+      expect(getRes.body.prs[0].number).toBe(30);
+
+      // GET without ?team still returns the all-teams cache.
+      const getAll = await request(app).get('/api/github/team-reviews');
+      expect(getAll.body.prs).toHaveLength(1);
+      expect(getAll.body.prs[0].number).toBe(1);
+    });
+
+    it('should return 400 on GET with an invalid team', async () => {
+      const res = await request(app)
+        .get('/api/github/team-reviews')
+        .query({ team: 'not-a-slug' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.success).toBe(false);
+    });
+
     it('should not clear data from other collections', async () => {
       await insertCachedPR(db, {
         owner: 'org', repo: 'repo', number: 50,
