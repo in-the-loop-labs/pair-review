@@ -1616,7 +1616,7 @@ describe('Local Sessions API', () => {
 
     beforeEach(() => {
       // Enable both features via app config so the kickoffs don't early-exit.
-      app.set('config', { summaries_enabled: true, tours_enabled: true });
+      app.set('config', { summaries: { enabled: true }, tours: { enabled: true } });
       summarySpy = vi.spyOn(summaryGenerator, 'kickOffSummaryJob').mockReturnValue(null);
       tourSpy = vi.spyOn(tourGenerator, 'kickOffTourJob').mockReturnValue(null);
     });
@@ -1645,7 +1645,7 @@ describe('Local Sessions API', () => {
       expect(summaryArgs.reviewId).toBe(id);
       expect(summaryArgs.diffText).toContain('diff --git a/file.js b/file.js');
       expect(summaryArgs.worktreePath).toBe('/mock/repo');
-      expect(summaryArgs.config).toEqual({ summaries_enabled: true, tours_enabled: true });
+      expect(summaryArgs.config).toEqual({ summaries: { enabled: true }, tours: { enabled: true } });
       const tourArgs = tourSpy.mock.calls[0][0];
       expect(tourArgs.reviewId).toBe(id);
       expect(tourArgs.diffText).toContain('diff --git a/file.js b/file.js');

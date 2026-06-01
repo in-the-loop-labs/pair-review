@@ -141,7 +141,7 @@ describe('integration: cancel background job (tour)', () => {
 
     const tourPromise = kickOffTourJob({
       db,
-      config: { tours_enabled: true },
+      config: { tours: { enabled: true } },
       reviewId: REVIEW_ID,
       diffText: SIMPLE_DIFF,
       worktreePath: '/tmp/wt',
@@ -215,7 +215,7 @@ describe('integration: cancel background job (summaries)', () => {
 
     const promise = kickOffSummaryJob({
       db,
-      config: { summaries_enabled: true },
+      config: { summaries: { enabled: true } },
       reviewId: REVIEW_ID,
       diffText: SIMPLE_DIFF,
       worktreePath: '/tmp/wt',

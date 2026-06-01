@@ -328,7 +328,7 @@ describe('generateTourForReview', () => {
     resetLatestRequestedDiffHash();
     baseParams = {
       db,
-      config: { tours_enabled: true, summaries_enabled: true },
+      config: { tours: { enabled: true }, summaries: { enabled: true } },
       reviewId: REVIEW_ID,
       diffText: SAMPLE_DIFF,
       worktreePath: '/wt',
@@ -593,11 +593,11 @@ describe('kickOffTourJob', () => {
     resetLatestRequestedDiffHash();
   });
 
-  it('returns null when tours_enabled !== true', async () => {
+  it('returns null when tours.enabled !== true', async () => {
     const enqueue = vi.fn();
     const result = await kickOffTourJob({
       db: {},
-      config: { tours_enabled: false },
+      config: { tours: { enabled: false } },
       reviewId: 1,
       diffText: 'diff',
       worktreePath: '/wt',
@@ -607,11 +607,11 @@ describe('kickOffTourJob', () => {
     expect(enqueue).not.toHaveBeenCalled();
   });
 
-  it('fires regardless of summaries_enabled (tour is decoupled from summaries)', async () => {
+  it('fires regardless of summaries.enabled (tour is decoupled from summaries)', async () => {
     const enqueue = vi.fn((_id, _type, fn) => Promise.resolve({ ran: typeof fn === 'function' }));
     const result = await kickOffTourJob({
       db: {},
-      config: { summaries_enabled: false, tours_enabled: true },
+      config: { summaries: { enabled: false }, tours: { enabled: true } },
       reviewId: 7,
       diffText: 'diff',
       worktreePath: '/wt',
@@ -625,7 +625,7 @@ describe('kickOffTourJob', () => {
     const enqueue = vi.fn();
     const result = await kickOffTourJob({
       db: {},
-      config: { tours_enabled: true },
+      config: { tours: { enabled: true } },
       reviewId: null,
       diffText: 'diff',
       worktreePath: '/wt',
@@ -639,7 +639,7 @@ describe('kickOffTourJob', () => {
     const enqueue = vi.fn();
     const result = await kickOffTourJob({
       db: {},
-      config: { tours_enabled: true },
+      config: { tours: { enabled: true } },
       reviewId: 1,
       diffText: '',
       worktreePath: '/wt',
@@ -653,7 +653,7 @@ describe('kickOffTourJob', () => {
     const enqueue = vi.fn();
     const result = await kickOffTourJob({
       db: {},
-      config: { tours_enabled: true },
+      config: { tours: { enabled: true } },
       reviewId: 1,
       diffText: 'diff',
       worktreePath: '',
@@ -667,7 +667,7 @@ describe('kickOffTourJob', () => {
     const enqueue = vi.fn((_id, _type, fn) => Promise.resolve({ ran: typeof fn === 'function' }));
     const result = await kickOffTourJob({
       db: {},
-      config: { tours_enabled: true },
+      config: { tours: { enabled: true } },
       reviewId: 7,
       diffText: 'diff',
       worktreePath: '/wt',
@@ -705,7 +705,7 @@ describe('kickOffTourJob smart-cancel on diff change', () => {
     const queue = makeQueueMock();
     kickOffTourJob({
       db: {},
-      config: { tours_enabled: true },
+      config: { tours: { enabled: true } },
       reviewId: 1,
       diffText: 'diff-A',
       worktreePath: '/wt',
@@ -721,7 +721,7 @@ describe('kickOffTourJob smart-cancel on diff change', () => {
     latestRequestedDiffHash.set(1, 'hashSAME');
     kickOffTourJob({
       db: {},
-      config: { tours_enabled: true },
+      config: { tours: { enabled: true } },
       reviewId: 1,
       diffText: 'diff-SAME',
       worktreePath: '/wt',
@@ -740,7 +740,7 @@ describe('kickOffTourJob smart-cancel on diff change', () => {
 
     kickOffTourJob({
       db: {},
-      config: { tours_enabled: true },
+      config: { tours: { enabled: true } },
       reviewId: 1,
       diffText: 'diff-NEW',
       worktreePath: '/wt',
@@ -761,7 +761,7 @@ describe('kickOffTourJob smart-cancel on diff change', () => {
     latestRequestedDiffHash.set(1, 'hashOLD');
     kickOffTourJob({
       db: {},
-      config: { tours_enabled: true },
+      config: { tours: { enabled: true } },
       reviewId: 1,
       diffText: 'diff-NEW',
       worktreePath: '/wt',
@@ -817,7 +817,7 @@ describe('kickOffTourJob empty-diff cleanup', () => {
 
     const result = await kickOffTourJob({
       db,
-      config: { tours_enabled: true },
+      config: { tours: { enabled: true } },
       reviewId: REVIEW_ID,
       diffText: '',
       worktreePath: '/wt',
@@ -838,7 +838,7 @@ describe('kickOffTourJob empty-diff cleanup', () => {
 
     const result = await kickOffTourJob({
       db,
-      config: { tours_enabled: true },
+      config: { tours: { enabled: true } },
       reviewId: REVIEW_ID,
       diffText: '',
       worktreePath: '/wt',
@@ -875,7 +875,7 @@ describe('kickOffTourJob empty-diff cleanup', () => {
     // No prior hash set — represents a fresh process / first kickoff.
     const result = await kickOffTourJob({
       db,
-      config: { tours_enabled: true },
+      config: { tours: { enabled: true } },
       reviewId: REVIEW_ID,
       diffText: '',
       worktreePath: '/wt',
@@ -930,7 +930,7 @@ describe('kickOffTourJob staleness handling', () => {
     };
 
     const reviewId = 9001;
-    const config = { tours_enabled: true };
+    const config = { tours: { enabled: true } };
 
     const p1 = kickOffTourJob({
       db: {}, config, reviewId,
@@ -977,7 +977,7 @@ describe('generateTourForReview in-generator superseded check', () => {
     resetLatestRequestedDiffHash();
     baseParams = {
       db,
-      config: { tours_enabled: true, summaries_enabled: true },
+      config: { tours: { enabled: true }, summaries: { enabled: true } },
       reviewId: REVIEW_ID,
       diffText: SAMPLE_DIFF,
       worktreePath: '/wt',
@@ -1056,7 +1056,7 @@ describe('generateTourForReview replacement-tour race', () => {
     resetLatestRequestedDiffHash();
     baseParams = {
       db,
-      config: { tours_enabled: true, summaries_enabled: true },
+      config: { tours: { enabled: true }, summaries: { enabled: true } },
       reviewId: REVIEW_ID,
       worktreePath: '/wt',
       reviewContext: { prTitle: 'T', prDescription: 'D' }
@@ -1137,5 +1137,222 @@ describe('generateTourForReview replacement-tour race', () => {
 
     // Map still holds B's hash.
     expect(latestRequestedDiffHash.get(REVIEW_ID)).toBe('hash-B-fresh');
+  });
+});
+
+// ---------- auto_generate gate ordering ----------------------------------
+
+describe('auto_generate gate ordering', () => {
+  let db;
+
+  beforeEach(() => {
+    db = createTestDatabase();
+    seedTestReview(db, { id: REVIEW_ID, prNumber: 1, repository: 'owner/repo' });
+    resetLatestRequestedDiffHash();
+  });
+
+  afterEach(() => {
+    closeTestDatabase(db);
+    resetLatestRequestedDiffHash();
+  });
+
+  function makeQueueMock(opts = {}) {
+    return {
+      enqueue: vi.fn(() => Promise.resolve()),
+      findActiveJobType: vi.fn(() => opts.activeJobType ?? null),
+      cancel: vi.fn(() => ({ cancelled: 0 })),
+      hasActiveForReview: vi.fn(() => false)
+    };
+  }
+
+  it('auto trigger + auto_generate off → returns null, enqueue NOT called', async () => {
+    const queue = makeQueueMock();
+    const result = await kickOffTourJob({
+      db: {},
+      config: { tours: { enabled: true, auto_generate: false } },
+      reviewId: 1,
+      diffText: 'some-diff',
+      worktreePath: '/wt',
+      // trigger defaults to 'auto'
+      _deps: { backgroundQueue: queue, hashDiff: () => 'hashA' }
+    });
+    expect(result).toBeNull();
+    expect(queue.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('manual trigger + auto_generate off → enqueue IS called', async () => {
+    const queue = makeQueueMock();
+    const result = await kickOffTourJob({
+      db: {},
+      config: { tours: { enabled: true, auto_generate: false } },
+      reviewId: 1,
+      diffText: 'some-diff',
+      worktreePath: '/wt',
+      trigger: 'manual',
+      _deps: { backgroundQueue: queue, hashDiff: () => 'hashA' }
+    });
+    expect(result).not.toBeNull();
+    expect(queue.enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it('auto trigger + auto_generate true → enqueue IS called', async () => {
+    const queue = makeQueueMock();
+    const result = await kickOffTourJob({
+      db: {},
+      config: { tours: { enabled: true, auto_generate: true } },
+      reviewId: 1,
+      diffText: 'some-diff',
+      worktreePath: '/wt',
+      // trigger defaults to 'auto'
+      _deps: { backgroundQueue: queue, hashDiff: () => 'hashA' }
+    });
+    expect(result).not.toBeNull();
+    expect(queue.enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it('regression: empty-diff cleanup runs even when auto_generate off + auto trigger', async () => {
+    // auto_generate off should NOT prevent empty-diff cleanup (deleteByReview +
+    // broadcast) — the gate runs AFTER cleanup, not before it.
+    const queue = makeQueueMock();
+    const broadcastReviewEvent = vi.fn();
+
+    // Mock TourRepository so deleteByReview returns { changes: 1 }.
+    function MockTourRepository() {
+      return {
+        deleteByReview: vi.fn(async () => ({ changes: 1 }))
+      };
+    }
+
+    const result = await kickOffTourJob({
+      db,
+      config: { tours: { enabled: true, auto_generate: false } },
+      reviewId: REVIEW_ID,
+      diffText: '',         // empty → triggers cleanup path
+      worktreePath: '/wt',
+      // trigger defaults to 'auto'
+      _deps: { backgroundQueue: queue, broadcastReviewEvent, TourRepository: MockTourRepository }
+    });
+
+    expect(result).toBeNull();
+    expect(queue.enqueue).not.toHaveBeenCalled();
+    // Cleanup must have run regardless of gate.
+    const repoInstance = new MockTourRepository();
+    // Check broadcast fired — the mock returned { changes: 1 }.
+    expect(broadcastReviewEvent).toHaveBeenCalledWith(REVIEW_ID, { type: 'review:tour_ready' });
+  });
+
+  it('regression: stale non-empty job IS cancelled even when auto_generate off + auto trigger', async () => {
+    // Use a unique reviewId to avoid contaminating the module-level hash map
+    // used by other tests.
+    const uniqueReviewId = 88001;
+    const hashFn = (diff) => diff === 'OLD' ? 'hashOLD' : 'hashNEW';
+
+    // First call: manual trigger with 'OLD' diff — stamps hashOLD in the map.
+    const queueFirst = makeQueueMock();
+    await kickOffTourJob({
+      db: {},
+      config: { tours: { enabled: true, auto_generate: false } },
+      reviewId: uniqueReviewId,
+      diffText: 'OLD',
+      worktreePath: '/wt',
+      trigger: 'manual',
+      _deps: { backgroundQueue: queueFirst, hashDiff: hashFn }
+    });
+    expect(latestRequestedDiffHash.get(uniqueReviewId)).toBe('hashOLD');
+
+    // Second call: auto trigger with 'NEW' diff, auto_generate off, and a
+    // tour job still "active" in the queue. The stale job must be cancelled
+    // even though enqueue is skipped.
+    const queueSecond = makeQueueMock({ activeJobType: 'tour' });
+    queueSecond.cancel.mockImplementation(() => ({ cancelled: 1 }));
+
+    const result = await kickOffTourJob({
+      db: {},
+      config: { tours: { enabled: true, auto_generate: false } },
+      reviewId: uniqueReviewId,
+      diffText: 'NEW',
+      worktreePath: '/wt',
+      // trigger defaults to 'auto'
+      _deps: { backgroundQueue: queueSecond, hashDiff: hashFn }
+    });
+
+    expect(result).toBeNull();
+    // Cancel must have fired (previousHash 'hashOLD' ≠ newHash 'hashNEW').
+    expect(queueSecond.cancel).toHaveBeenCalledWith(uniqueReviewId, 'tour');
+    // Enqueue must NOT have fired (auto_generate gate).
+    expect(queueSecond.enqueue).not.toHaveBeenCalled();
+    // Hash map updated to new value.
+    expect(latestRequestedDiffHash.get(uniqueReviewId)).toBe('hashNEW');
+  });
+
+  it('regression: stale persisted row IS cleared + tour_ready broadcast when diff changes + auto_generate off', async () => {
+    // The diff changed to a new NON-empty value while auto_generate is off.
+    // The gate declines to enqueue, but it must still reconcile the persisted
+    // row: GET /api/reviews/:id/tour serves the row verbatim (no diff_hash
+    // check) and the frontend treats any non-empty stops as ready, so leaving
+    // the stale row would map the old tour onto the new diff AND block the
+    // manual-generate click path. Use the real TourRepository against a
+    // seeded DB so the actual DELETE is exercised.
+    const tourRepo = new TourRepository(db);
+    await tourRepo.upsert({
+      review_id: REVIEW_ID,
+      stops: JSON.stringify([{ file_path: 'a.js', side: 'RIGHT', line_start: 1, line_end: 1, title: 't', description: 'd' }]),
+      diff_hash: 'oldHash',
+      provider: 'fake',
+      model: 'm'
+    });
+    expect(await tourRepo.get(REVIEW_ID)).toBeDefined();
+
+    const broadcastReviewEvent = vi.fn();
+    const queue = makeQueueMock();
+
+    const result = await kickOffTourJob({
+      db,
+      config: { tours: { enabled: true, auto_generate: false } },
+      reviewId: REVIEW_ID,
+      diffText: 'new-diff',
+      worktreePath: '/wt',
+      // trigger defaults to 'auto'
+      _deps: { backgroundQueue: queue, broadcastReviewEvent, hashDiff: () => 'newHash' }
+    });
+
+    expect(result).toBeNull();
+    expect(queue.enqueue).not.toHaveBeenCalled();
+    // Stale row cleared (row.diff_hash 'oldHash' ≠ current 'newHash').
+    expect(await tourRepo.get(REVIEW_ID)).toBeUndefined();
+    expect(broadcastReviewEvent).toHaveBeenCalledWith(REVIEW_ID, { type: 'review:tour_ready' });
+  });
+
+  it('regression: persisted row matching current diff is left intact, no broadcast (no-op) + auto_generate off', async () => {
+    // The persisted row's diff_hash already matches the current diff — the
+    // tour is valid for this diff. The gate must NOT delete it or broadcast
+    // (no-op), so the user keeps the still-relevant tour.
+    const tourRepo = new TourRepository(db);
+    await tourRepo.upsert({
+      review_id: REVIEW_ID,
+      stops: JSON.stringify([{ file_path: 'a.js', side: 'RIGHT', line_start: 1, line_end: 1, title: 't', description: 'd' }]),
+      diff_hash: 'sameHash',
+      provider: 'fake',
+      model: 'm'
+    });
+
+    const broadcastReviewEvent = vi.fn();
+    const queue = makeQueueMock();
+
+    const result = await kickOffTourJob({
+      db,
+      config: { tours: { enabled: true, auto_generate: false } },
+      reviewId: REVIEW_ID,
+      diffText: 'matching-diff',
+      worktreePath: '/wt',
+      // trigger defaults to 'auto'
+      _deps: { backgroundQueue: queue, broadcastReviewEvent, hashDiff: () => 'sameHash' }
+    });
+
+    expect(result).toBeNull();
+    expect(queue.enqueue).not.toHaveBeenCalled();
+    // Row left intact — diff_hash matches the current diff.
+    expect(await tourRepo.get(REVIEW_ID)).toBeDefined();
+    expect(broadcastReviewEvent).not.toHaveBeenCalled();
   });
 });

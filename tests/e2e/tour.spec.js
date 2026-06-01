@@ -3,9 +3,9 @@
  * E2E Tests: Guided Tour UI (Phase 8)
  *
  * Verifies the inline tour-stop annotations + sticky top tour bar end to end:
- *   - Toolbar tour button stays hidden when tours_enabled=false
- *   - When `tours_enabled` is true, the button becomes visible
- *     (visibility is decoupled from `summaries_enabled` on the client;
+ *   - Toolbar tour button stays hidden when tours.enabled=false
+ *   - When `tours.enabled` is true, the button becomes visible
+ *     (visibility is decoupled from `summaries.enabled` on the client;
  *     the server still gates tour generation on the summaries dependency)
  *   - Clicking the button mounts the bar and the first stop annotation
  *   - Next/Prev (button or keyboard) advance / rewind the active stop
@@ -66,8 +66,8 @@ const FIXED_STOPS = [
 
 /**
  * Mock the global app config to flip tours on. The client gates the
- * toolbar button on `tours_enabled` alone (decoupled from
- * `summaries_enabled`), but we send both flags here to mirror a typical
+ * toolbar button on `tours.enabled` alone (decoupled from
+ * `summaries.enabled`), but we send both flags here to mirror a typical
  * production config response.
  * @param {import('@playwright/test').Page} page
  */
@@ -83,8 +83,8 @@ async function enableToursConfig(page) {
         chat_provider: 'pi',
         chat_providers: [],
         pi_available: false,
-        summaries_enabled: true,
-        tours_enabled: true,
+        summaries: { enabled: true },
+        tours: { enabled: true },
       }),
     });
   });
@@ -132,7 +132,7 @@ for (const mode of MODES) {
     });
 
     test('tour toggle is hidden when tours are disabled', async ({ page }) => {
-      // Default config (no tours_enabled) → button stays display:none.
+      // Default config (no tours.enabled) → button stays display:none.
       await page.goto(mode.path);
       await waitForDiffToRender(page);
       await expect(page.locator('#tour-toggle-btn')).toBeHidden();

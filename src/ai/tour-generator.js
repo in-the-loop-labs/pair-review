@@ -27,6 +27,8 @@ const defaults = {
   resolveNonExecutableProviderId: require('./provider').resolveNonExecutableProviderId,
   getTourProvider: require('../config').getTourProvider,
   getTourModel: require('../config').getTourModel,
+  getTourEnabled: require('../config').getTourEnabled,
+  getTourAutoGenerate: require('../config').getTourAutoGenerate,
   buildTourPrompt: require('./prompts/tour').buildTourPrompt,
   extractJSON: require('../utils/json-extractor').extractJSON,
   broadcastReviewEvent: require('../events/review-events').broadcastReviewEvent,
@@ -394,6 +396,11 @@ async function generateTourForReview({
  * a single execution. Staleness is checked inside the generator itself via
  * `diff_hash` comparison.
  *
+ * `trigger` controls how the enabled/auto_generate config interacts with
+ * kickoff:
+ *   - `'auto'`   (default): requires `tours.enabled && tours.auto_generate`
+ *   - `'manual'`: only requires `tours.enabled` (user-initiated start)
+ *
  * @param {Object} params
  * @param {Object} params.db
  * @param {Object} params.config
@@ -401,6 +408,7 @@ async function generateTourForReview({
  * @param {string} params.diffText
  * @param {string} params.worktreePath
  * @param {Object} [params.reviewContext]
+ * @param {'auto'|'manual'} [params.trigger='auto']
  * @param {Object} [params._deps]
  * @returns {Promise<Object>|null}
  */
@@ -411,16 +419,18 @@ async function kickOffTourJob({
   diffText,
   worktreePath,
   reviewContext,
+  trigger = 'auto',
   _deps
 }) {
-  if (!config || !config.tours_enabled) return null;
+  const deps = { ...defaults, ...(_deps || {}) };
+
+  if (!deps.getTourEnabled(config)) return null;
 
   if (!reviewId) {
     logger.debug('kickOffTourJob skipped: missing reviewId');
     return null;
   }
 
-  const deps = { ...defaults, ...(_deps || {}) };
   const queue = deps.backgroundQueue || require('./background-queue').backgroundQueue;
 
   // Cancel any in-flight tour job whose diff hash no longer matches. This is
@@ -488,6 +498,40 @@ async function kickOffTourJob({
   // worker observing the map sees the new hash and skips persistence.
   if (previousHash && previousHash !== diffHash) {
     cancelActiveTourJob();
+  }
+
+  // auto_generate gate, applied here — AFTER cancellation, the empty-diff
+  // cleanup, and the latestRequestedDiffHash stamp above — so all of that
+  // stale-state hygiene runs regardless of trigger. With `auto_generate`
+  // off, an auto-triggered kickoff (e.g. a refresh/scope-change re-invoke
+  // after a manual start) still cancels the in-flight job against the old
+  // diff and stamps the new hash; it simply declines to enqueue a
+  // replacement. Manual kickoffs always proceed.
+  //
+  // Before declining, reconcile the persisted row against the new diff. GET
+  // /api/reviews/:id/tour serves the row verbatim (no diff_hash check) and
+  // the frontend treats any non-empty stops as ready, so a stale row would
+  // map the old tour onto the new diff AND block the manual-generate click
+  // path (stops aren't empty). Compare against the PERSISTED diff_hash, not
+  // `previousHash`: `latestRequestedDiffHash` is empty after a server
+  // restart, so a previousHash-based guard would let a pre-restart stale
+  // row slip through. Same shape as the empty-diff branch above.
+  if (trigger !== 'manual' && !deps.getTourAutoGenerate(config)) {
+    try {
+      const repo = new deps.TourRepository(db);
+      const row = await repo.get(reviewId);
+      if (row && row.diff_hash !== diffHash) {
+        const result = await repo.deleteByReview(reviewId);
+        if (result && result.changes > 0) {
+          deps.broadcastReviewEvent(reviewId, { type: 'review:tour_ready' });
+        }
+      }
+    } catch (err) {
+      logger.warn(
+        `${TOUR_LOG_PREFIX} review ${reviewId}: failed to delete stale tour row on auto_generate=false gate: ${err.message}`
+      );
+    }
+    return null;
   }
 
   const worker = deps.generateTourForReview || generateTourForReview;

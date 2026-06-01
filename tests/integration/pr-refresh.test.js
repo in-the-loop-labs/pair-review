@@ -66,8 +66,8 @@ function createTestApp(db, config = {}) {
     github_token: 'test-token',
     port: 7247,
     theme: 'light',
-    summaries_enabled: true,
-    tours_enabled: true,
+    summaries: { enabled: true },
+    tours: { enabled: true },
     ...config
   });
   app.use('/', prRoutes);
@@ -133,8 +133,8 @@ describe('POST /api/pr/:owner/:repo/:number/refresh kickoffs', () => {
     expect(summaryArgs.diffText).toContain('diff --git a/file.js b/file.js');
     expect(summaryArgs.worktreePath).toBe('/tmp/worktree/test');
     expect(summaryArgs.config).toMatchObject({
-      summaries_enabled: true,
-      tours_enabled: true
+      summaries: { enabled: true },
+      tours: { enabled: true }
     });
     expect(summaryArgs.reviewContext).toEqual({
       prTitle: 'Refreshed PR',

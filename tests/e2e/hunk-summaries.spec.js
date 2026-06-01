@@ -3,7 +3,7 @@
  * E2E Tests: Hunk Summary UI (Phase 5)
  *
  * Verifies the inline natural-language hunk-summary feature end-to-end:
- *   - The toolbar toggle button is hidden when summaries_enabled=false
+ *   - The toolbar toggle button is hidden when summaries.enabled=false
  *   - When enabled, summaries fetched from the API render inline
  *   - WebSocket-style review:hunk_summaries_ready CustomEvents render new
  *     summaries without a reload
@@ -45,8 +45,8 @@ async function enableSummariesConfig(page) {
         chat_provider: 'pi',
         chat_providers: [],
         pi_available: false,
-        summaries_enabled: true,
-        tours_enabled: false
+        summaries: { enabled: true },
+        tours: { enabled: false }
       })
     });
   });
@@ -83,6 +83,21 @@ async function dispatchSummariesReady(page, payload) {
   }, { payload });
 }
 
+/**
+ * Dispatch a `review:background_job_finished` CustomEvent — mirrors what the
+ * WebSocket relay does when the queue finishes a job. With
+ * `hasActiveForType: false` this clears the toolbar's pulsing "generating"
+ * state so a subsequent click toggles visibility instead of opening the
+ * cancel dialog.
+ */
+async function dispatchJobFinished(page, { reviewId, jobType, hasActiveForType = false }) {
+  await page.evaluate(({ reviewId: rid, jobType: jt, hasActiveForType: active }) => {
+    document.dispatchEvent(new CustomEvent('review:background_job_finished', {
+      detail: { reviewId: rid, jobType: jt, hasActiveForType: active }
+    }));
+  }, { reviewId, jobType, hasActiveForType });
+}
+
 for (const mode of MODES) {
   test.describe(`Hunk Summary UI (${mode.name})`, () => {
     test.beforeEach(async ({ page, context }) => {
@@ -97,7 +112,7 @@ for (const mode of MODES) {
     });
 
     test('toolbar summary toggle is hidden when summaries are disabled', async ({ page }) => {
-      // Default config (no summaries_enabled) → button stays display:none
+      // Default config (no summaries.enabled) → button stays display:none
       await page.goto(mode.path);
       await waitForDiffToRender(page);
       const btn = page.locator('#summary-toggle-btn');
@@ -135,6 +150,16 @@ for (const mode of MODES) {
       await expect(annotation).toBeVisible();
       await expect(annotation.locator('.hunk-summary-text'))
         .toHaveText('Adds whitespace and inlines computeValue helper.');
+
+      // The hunk_summaries_ready event puts the toolbar button into its
+      // pulsing "generating" state (cleared only by background_job_finished).
+      // While pulsing, a click opens the cancel dialog instead of toggling
+      // visibility, so simulate job completion first — matching the real SSE
+      // lifecycle — before exercising the visibility toggle.
+      await dispatchJobFinished(page, {
+        reviewId: mode.reviewId, jobType: 'summaries', hasActiveForType: false
+      });
+      await expect(toggle).not.toHaveClass(/generating/);
 
       // Review-level toggle hides everything
       await toggle.click();

@@ -25,7 +25,8 @@ const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs').promises;
 const path = require('path');
-const { getGitHubToken, getWorktreeDisplayName, resolveLoadSkills, buildCouncilProviderOverrides, getRepoSkipBulkFetch } = require('../config');
+const { getGitHubToken, getWorktreeDisplayName, resolveLoadSkills, buildCouncilProviderOverrides, getRepoSkipBulkFetch, getSummaryEnabled, getTourEnabled } = require('../config');
+const { backgroundQueue } = require('../ai/background-queue');
 const logger = require('../utils/logger');
 const { buildDiffLineSet } = require('../utils/diff-annotator');
 const { broadcastReviewEvent } = require('../events/review-events');
@@ -387,7 +388,8 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
           reviewId: review.id,
           diffText: extendedData.diff,
           worktreePath: extendedData.worktree_path,
-          reviewContext
+          reviewContext,
+          trigger: 'auto'
         }),
         tourGenerator.kickOffTourJob({
           db,
@@ -395,7 +397,8 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
           reviewId: review.id,
           diffText: extendedData.diff,
           worktreePath: extendedData.worktree_path,
-          reviewContext
+          reviewContext,
+          trigger: 'auto'
         })
       ]);
       const labels = ['Hunk summary', 'Tour'];
@@ -613,10 +616,10 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
       };
       const results = await Promise.allSettled([
         summaryGenerator.kickOffSummaryJob({
-          db, config, reviewId: review.id, diffText: extendedData.diff, worktreePath: extendedData.worktree_path, reviewContext
+          db, config, reviewId: review.id, diffText: extendedData.diff, worktreePath: extendedData.worktree_path, reviewContext, trigger: 'auto'
         }),
         tourGenerator.kickOffTourJob({
-          db, config, reviewId: review.id, diffText: extendedData.diff, worktreePath: extendedData.worktree_path, reviewContext
+          db, config, reviewId: review.id, diffText: extendedData.diff, worktreePath: extendedData.worktree_path, reviewContext, trigger: 'auto'
         })
       ]);
       const labels = ['Hunk summary', 'Tour'];
@@ -632,6 +635,122 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
     res.status(500).json({
       error: 'Failed to refresh pull request: ' + error.message
     });
+  }
+});
+
+/**
+ * POST /api/pr/:owner/:repo/:number/jobs/:jobKey/start
+ *
+ * Manually trigger a summary or tour generation job for this PR. Used by the
+ * frontend when `auto_generate` is off and the user clicks the toolbar button.
+ *
+ * Mirrors the server-side kickoff that runs on PR load, but passes
+ * `trigger: 'manual'` so it bypasses the `auto_generate` gate (the `enabled`
+ * gate still applies — disabled features return 409).
+ *
+ * Request:
+ *   - `jobKey` path param: `summary` or `tour`
+ *
+ * Responses:
+ *   - 200 `{ started: true,  alreadyRunning: false }` — enqueued
+ *   - 200 `{ started: false, alreadyRunning: true  }` — feature on but a job
+ *                                                       is already in flight
+ *                                                       (idempotent no-op)
+ *   - 200 `{ started: false, reason: 'no-diff' }`   — diff is empty
+ *   - 400 `{ error: 'Invalid jobKey' }`             — unknown jobKey
+ *   - 404 `{ error: '...' }`                        — PR not found
+ *   - 409 `{ error: '... disabled' }`               — feature disabled in config
+ */
+const MANUAL_START_JOB_KEYS = new Set(['summary', 'tour']);
+
+router.post('/api/pr/:owner/:repo/:number/jobs/:jobKey/start', async (req, res) => {
+  try {
+    const { owner, repo, number, jobKey } = req.params;
+    const prNumber = parseInt(number, 10);
+
+    if (!Number.isInteger(prNumber) || prNumber <= 0) {
+      return res.status(400).json({ error: 'Invalid pull request number' });
+    }
+    if (!MANUAL_START_JOB_KEYS.has(jobKey)) {
+      return res.status(400).json({ error: `Invalid jobKey "${jobKey}" (expected "summary" or "tour")` });
+    }
+
+    const repository = normalizeRepository(owner, repo);
+    const db = req.app.get('db');
+    const config = req.app.get('config') || {};
+
+    // Enforce the feature-enabled gate at the HTTP boundary so the frontend
+    // gets a clean 409 instead of a silent no-op from the generator.
+    if (jobKey === 'summary' && !getSummaryEnabled(config)) {
+      return res.status(409).json({ error: 'Summaries feature is disabled in config' });
+    }
+    if (jobKey === 'tour' && !getTourEnabled(config)) {
+      return res.status(409).json({ error: 'Tours feature is disabled in config' });
+    }
+
+    const prMetadata = await queryOne(db, `
+      SELECT id, pr_number, repository, title, description, pr_data
+      FROM pr_metadata
+      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
+    `, [prNumber, repository]);
+
+    if (!prMetadata) {
+      return res.status(404).json({
+        error: `Pull request #${prNumber} not found in repository ${repository}`
+      });
+    }
+
+    const reviewRepo = new ReviewRepository(db);
+    const { review } = await reviewRepo.getOrCreate({ prNumber, repository });
+
+    let extendedData = {};
+    try {
+      extendedData = prMetadata.pr_data ? JSON.parse(prMetadata.pr_data) : {};
+    } catch (parseError) {
+      logger.warn(`Could not parse pr_data for PR #${prNumber}: ${parseError.message}`);
+    }
+
+    const diffText = extendedData.diff || '';
+    const worktreePath = extendedData.worktree_path || null;
+
+    if (!diffText || !worktreePath) {
+      return res.json({ started: false, reason: 'no-diff' });
+    }
+
+    // Idempotency: if a job is already in flight for this review/job-type,
+    // don't double-start. The frontend already has the in-flight event stream.
+    const activeJobType = typeof backgroundQueue.findActiveJobType === 'function'
+      ? backgroundQueue.findActiveJobType(review.id, jobKey === 'summary' ? 'summaries' : 'tour')
+      : null;
+    if (activeJobType) {
+      return res.json({ started: false, alreadyRunning: true });
+    }
+
+    const reviewContext = {
+      prTitle: prMetadata.title,
+      prDescription: prMetadata.description,
+      changedFiles: (extendedData.changed_files || [])
+        .map((f) => (typeof f === 'string' ? f : (f.filename || f.file || f.path)))
+        .filter(Boolean)
+    };
+
+    // Kick off in the background — return the start status immediately so
+    // the frontend can switch the button to its generating state. Errors
+    // are logged but the HTTP response is already sent.
+    if (jobKey === 'summary') {
+      Promise.resolve(summaryGenerator.kickOffSummaryJob({
+        db, config, reviewId: review.id, diffText, worktreePath, reviewContext, trigger: 'manual'
+      })).catch((err) => logger.warn(`Manual hunk summary kickoff failed for review ${review.id}: ${err.message}`));
+    } else {
+      Promise.resolve(tourGenerator.kickOffTourJob({
+        db, config, reviewId: review.id, diffText, worktreePath, reviewContext, trigger: 'manual'
+      })).catch((err) => logger.warn(`Manual tour kickoff failed for review ${review.id}: ${err.message}`));
+    }
+
+    return res.json({ started: true, alreadyRunning: false });
+  } catch (error) {
+    logger.error('Error starting manual job:', error);
+    res.status(500).json({ error: 'Failed to start job: ' + error.message });
   }
 });
 

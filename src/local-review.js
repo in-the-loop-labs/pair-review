@@ -839,7 +839,8 @@ async function setupLocalReviewSession({ db, config, repoPath, flags = {} }) {
     reviewId: sessionId,
     diffText: diff,
     worktreePath: repoPath,
-    reviewContext: { prTitle: branch }
+    reviewContext: { prTitle: branch },
+    trigger: 'auto'
   })?.catch((err) => logger.warn(`Hunk summary job failed for review ${sessionId}: ${err.message}`));
 
   tourGenerator.kickOffTourJob({
@@ -848,7 +849,8 @@ async function setupLocalReviewSession({ db, config, repoPath, flags = {} }) {
     reviewId: sessionId,
     diffText: diff,
     worktreePath: repoPath,
-    reviewContext: { prTitle: branch }
+    reviewContext: { prTitle: branch },
+    trigger: 'auto'
   })?.catch((err) => logger.warn(`Tour job failed for review ${sessionId}: ${err.message}`));
 
   return {

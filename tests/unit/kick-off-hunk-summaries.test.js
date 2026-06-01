@@ -33,7 +33,7 @@ function createTestPRManager() {
   prManager._summariesHidden = false;
   prManager.summariesHiddenFiles = new Set();
   // Stub the network bits and methods we don't exercise.
-  prManager._getAppConfig = vi.fn().mockResolvedValue({ summaries_enabled: true });
+  prManager._getAppConfig = vi.fn().mockResolvedValue({ summaries: { enabled: true } });
   prManager._syncSummaryToolbarButton = vi.fn();
   prManager._restoreSummariesHiddenFiles = vi.fn();
   prManager._refreshFileSummaryToggle = vi.fn();
@@ -101,9 +101,9 @@ describe('PRManager._kickOffHunkSummaries', () => {
     );
   });
 
-  it('bails out cleanly when summaries_enabled is false', async () => {
+  it('bails out cleanly when summaries.enabled is false', async () => {
     const prManager = createTestPRManager();
-    prManager._getAppConfig = vi.fn().mockResolvedValue({ summaries_enabled: false });
+    prManager._getAppConfig = vi.fn().mockResolvedValue({ summaries: { enabled: false } });
     const anchor = buildAnchorRow();
     prManager._pendingHunkRecords = [
       {

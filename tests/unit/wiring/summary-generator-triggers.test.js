@@ -63,7 +63,7 @@ describe('kickOffSummaryJob trigger sites', () => {
     app.use(express.json());
     app.set('db', db);
     app.set('config', {
-      summaries_enabled: true,
+      summaries: { enabled: true },
       port: 7247
     });
 
@@ -80,7 +80,7 @@ describe('kickOffSummaryJob trigger sites', () => {
   });
 
   describe('POST /api/local/start', () => {
-    it('calls kickOffSummaryJob with reviewId/diffText/worktreePath/db/config when summaries_enabled is true', async () => {
+    it('calls kickOffSummaryJob with reviewId/diffText/worktreePath/db/config when summaries.enabled is true', async () => {
       const res = await request(app)
         .post('/api/local/start')
         .send({ path: '/tmp' });
@@ -90,15 +90,18 @@ describe('kickOffSummaryJob trigger sites', () => {
 
       const call = summaryGenerator.kickOffSummaryJob.mock.calls[0][0];
       expect(call.db).toBe(db);
-      expect(call.config).toEqual(expect.objectContaining({ summaries_enabled: true }));
+      expect(call.config).toEqual(expect.objectContaining({ summaries: { enabled: true } }));
       expect(call.reviewId).toBe(res.body.sessionId);
       expect(call.diffText).toContain('diff --git');
       expect(call.worktreePath).toBe('/mock/repo');
       expect(call.reviewContext).toEqual({ prTitle: 'main' });
+      // Auto-kickoff path must tag the trigger so the orchestrator applies the
+      // auto_generate gate (vs. 'manual' which bypasses it).
+      expect(call.trigger).toBe('auto');
     });
 
-    it('still calls kickOffSummaryJob even when summaries_enabled is false (gating happens inside the orchestrator, not at the trigger)', async () => {
-      app.set('config', { summaries_enabled: false, port: 7247 });
+    it('still calls kickOffSummaryJob even when summaries.enabled is false (gating happens inside the orchestrator, not at the trigger)', async () => {
+      app.set('config', { summaries: { enabled: false }, port: 7247 });
 
       const res = await request(app)
         .post('/api/local/start')
@@ -107,7 +110,7 @@ describe('kickOffSummaryJob trigger sites', () => {
       expect(res.status).toBe(200);
       expect(summaryGenerator.kickOffSummaryJob).toHaveBeenCalledTimes(1);
       const call = summaryGenerator.kickOffSummaryJob.mock.calls[0][0];
-      expect(call.config.summaries_enabled).toBe(false);
+      expect(call.config.summaries.enabled).toBe(false);
     });
 
     it('does not throw when kickOffSummaryJob returns null (optional-chain catch)', async () => {
@@ -222,7 +225,7 @@ describe('kickOffSummaryJob trigger sites', () => {
       `, [1, 'owner/repo', 'My PR', 'A description', 'alice', 'main', 'feature', prData]);
 
       // Ensure no GitHub token so the pendingDraft branch is skipped
-      app.set('config', { summaries_enabled: true, port: 7247 });
+      app.set('config', { summaries: { enabled: true }, port: 7247 });
 
       const res = await request(app).get('/api/pr/owner/repo/1');
       expect(res.status).toBe(200);
@@ -244,8 +247,8 @@ describe('kickOffSummaryJob trigger sites', () => {
   });
 
   describe('Local CLI: handleLocalReview via setupLocalReviewSession', () => {
-    it('calls kickOffSummaryJob with reviewContext.prTitle = branch when summaries_enabled is true', async () => {
-      const config = { summaries_enabled: true, port: 7247 };
+    it('calls kickOffSummaryJob with reviewContext.prTitle = branch when summaries.enabled is true', async () => {
+      const config = { summaries: { enabled: true }, port: 7247 };
 
       const session = await localReviewModule.setupLocalReviewSession({
         db,
@@ -257,15 +260,16 @@ describe('kickOffSummaryJob trigger sites', () => {
       expect(summaryGenerator.kickOffSummaryJob).toHaveBeenCalledTimes(1);
       const call = summaryGenerator.kickOffSummaryJob.mock.calls[0][0];
       expect(call.db).toBe(db);
-      expect(call.config).toEqual(expect.objectContaining({ summaries_enabled: true }));
+      expect(call.config).toEqual(expect.objectContaining({ summaries: { enabled: true } }));
       expect(call.reviewId).toBe(session.sessionId);
       expect(call.diffText).toContain('diff --git');
       expect(call.worktreePath).toBe('/mock/repo');
       expect(call.reviewContext).toEqual({ prTitle: 'main' });
+      expect(call.trigger).toBe('auto');
     });
 
-    it('still calls kickOffSummaryJob when summaries_enabled is false (trigger is dumb; orchestrator gates)', async () => {
-      const config = { summaries_enabled: false, port: 7247 };
+    it('still calls kickOffSummaryJob when summaries.enabled is false (trigger is dumb; orchestrator gates)', async () => {
+      const config = { summaries: { enabled: false }, port: 7247 };
 
       await localReviewModule.setupLocalReviewSession({
         db,
@@ -276,7 +280,7 @@ describe('kickOffSummaryJob trigger sites', () => {
 
       expect(summaryGenerator.kickOffSummaryJob).toHaveBeenCalledTimes(1);
       const call = summaryGenerator.kickOffSummaryJob.mock.calls[0][0];
-      expect(call.config.summaries_enabled).toBe(false);
+      expect(call.config.summaries.enabled).toBe(false);
       expect(call.reviewContext).toEqual({ prTitle: 'main' });
     });
   });

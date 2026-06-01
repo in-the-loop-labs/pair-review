@@ -82,7 +82,7 @@ describe('integration: generateTourForReview persistence', () => {
 
     const result = await generateTourForReview({
       db,
-      config: { tours_enabled: true, summaries_enabled: true },
+      config: { tours: { enabled: true }, summaries: { enabled: true } },
       reviewId: REVIEW_ID,
       diffText: SIMPLE_DIFF,
       worktreePath: '/tmp/wt',
@@ -148,7 +148,7 @@ describe('integration: kickOffTourJob runs independently of summaries', () => {
 
     const tourPromise = kickOffTourJob({
       db,
-      config: { tours_enabled: true },
+      config: { tours: { enabled: true } },
       reviewId: REVIEW_ID,
       diffText: SIMPLE_DIFF,
       worktreePath: '/tmp/wt',

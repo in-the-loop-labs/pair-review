@@ -159,19 +159,33 @@ class PRManager {
     // Whether the background summary job is currently running for this review.
     // Cleared by the `review:background_job_finished` event for jobType=summaries.
     this._summariesGenerating = false;
-    // Tri-state: true when /api/config reports summaries_enabled, false when
+    // Whether any hunk summaries exist for this review (loaded from the server
+    // or mounted live during generation). Gates the toolbar button's `.active`
+    // (blue) state: before any summary exists the button stays colorless so the
+    // user can tell nothing has been generated yet. Set true by
+    // `_applyHunkSummaries` and the initial existing-summaries fetch.
+    this._summariesGenerated = false;
+    // Tri-state: true when /api/config reports summaries.enabled, false when
     // disabled, null until /api/config resolves. Per-file toggle buttons are
     // gated on this so users on disabled deployments don't see them flicker
     // in.
     this._summariesEnabled = null;
+    // Tri-state mirror of `summaries.auto_generate` in /api/config. When
+    // false, the click handler hits the manual-start endpoint instead of
+    // expecting a server-initiated kickoff. Null until /api/config resolves.
+    this._summariesAutoGenerate = null;
     // ---- Tour state (Phase 8) -----------------------------------------
     // Lazy-instantiated TourBar / TourRenderer; populated on first open.
     this._tourBar = null;
     this._tourRenderer = null;
-    // Tri-state mirror of `tours_enabled` in /api/config. Tours are
+    // Tri-state mirror of `tours.enabled` in /api/config. Tours are
     // independent of summaries on both the server and the client (see
     // the explanatory comment in setupEventHandlers()).
     this._toursEnabled = null;
+    // Tri-state mirror of `tours.auto_generate` in /api/config. When false,
+    // the click handler hits the manual-start endpoint instead of expecting
+    // a server-initiated kickoff. Null until /api/config resolves.
+    this._toursAutoGenerate = null;
     // Cached stops from the most recent /api/reviews/:id/tour fetch, or null
     // when nothing has been loaded for this review yet.
     this._tourStops = null;
@@ -397,7 +411,7 @@ class PRManager {
 
     // Hunk summary toolbar toggle (Phase 5).
     // Hidden by default in HTML; revealed asynchronously when /api/config
-    // reports summaries_enabled. The same config check also controls the
+    // reports summaries.enabled. The same config check also controls the
     // per-file `.file-header-summary-toggle` buttons (which are created
     // hidden by createFileHeader and revealed/removed once config resolves).
     const summaryToggle = document.getElementById('summary-toggle-btn');
@@ -405,7 +419,9 @@ class PRManager {
       summaryToggle.addEventListener('click', () => this._handleSummaryToggleClick());
     }
     this._getAppConfig().then((cfg) => {
-      this._summariesEnabled = cfg.summaries_enabled === true;
+      const summariesCfg = (cfg && cfg.summaries) || {};
+      this._summariesEnabled = summariesCfg.enabled === true;
+      this._summariesAutoGenerate = summariesCfg.auto_generate !== false;
       if (this._summariesEnabled) {
         if (summaryToggle) {
           summaryToggle.style.display = '';
@@ -425,15 +441,17 @@ class PRManager {
     });
 
     // Tour toolbar toggle (Phase 8). Hidden by default in HTML; revealed
-    // asynchronously once /api/config confirms `tours_enabled` is on.
-    // Tours are independent of `summaries_enabled` — both server- and
-    // client-side gates check only `tours_enabled`.
+    // asynchronously once /api/config confirms `tours.enabled` is on.
+    // Tours are independent of `summaries.enabled` — both server- and
+    // client-side gates check only `tours.enabled`.
     const tourToggle = document.getElementById('tour-toggle-btn');
     if (tourToggle) {
       tourToggle.addEventListener('click', () => this._handleTourToggleClick());
     }
     this._getAppConfig().then((cfg) => {
-      this._toursEnabled = cfg.tours_enabled === true;
+      const toursCfg = (cfg && cfg.tours) || {};
+      this._toursEnabled = toursCfg.enabled === true;
+      this._toursAutoGenerate = toursCfg.auto_generate !== false;
       if (this._toursEnabled && tourToggle) {
         tourToggle.style.display = '';
         this._syncTourToolbarButton();
@@ -1051,7 +1069,7 @@ class PRManager {
   /**
    * Attach `data-hunk-start` to each anchor row using the server-supplied
    * `content_hash`, then kick off the initial summary fetch (gated by
-   * `summaries_enabled` in `/api/config`). Drains any summaries that
+   * `summaries.enabled` in `/api/config`). Drains any summaries that
    * arrived before mounting finished.
    *
    * Order matters:
@@ -1078,7 +1096,7 @@ class PRManager {
     // 1. Config gate — bail before doing any work when the feature is off.
     const cfg = await this._getAppConfig();
     if (gen !== this._renderGen) return;
-    if (!cfg.summaries_enabled) return;
+    if (!(cfg.summaries && cfg.summaries.enabled)) return;
 
     // 2. Restore localStorage visibility state.
     if (this.currentPR?.id) {
@@ -1166,9 +1184,21 @@ class PRManager {
         if (!byFile.has(fp)) byFile.set(fp, []);
         byFile.get(fp).push(summary);
       }
-      // If summaries lack file_path, fall back to ungrouped rendering.
+      // If summaries lack file_path, fall back to ungrouped rendering. Set
+      // `_summariesGenerated` only after a summary actually mounts against the
+      // current render anchors — never from the raw fetch count — so stale-hash
+      // rows the anchor filter rejects can't flip the toolbar into Hide/Show
+      // mode with nothing in the DOM. The grouped path defers this to
+      // `_applyHunkSummaries`, which sets the flag on a successful mount.
       if (byFile.size === 0 && summaries.length > 0) {
-        for (const summary of summaries) this._renderOneSummary(summary);
+        let mountedAny = false;
+        for (const summary of summaries) {
+          if (this._renderOneSummary(summary)) mountedAny = true;
+        }
+        if (mountedAny) {
+          this._summariesGenerated = true;
+          this._syncSummaryToolbarButton();
+        }
       } else {
         for (const [filePath, fileSummaries] of byFile.entries()) {
           this._applyHunkSummaries(filePath, fileSummaries);
@@ -1212,6 +1242,12 @@ class PRManager {
       }
       const row = this._renderOneSummary(summary);
       if (row) mountedAny = true;
+    }
+    if (mountedAny) {
+      // At least one summary mounted — the feature now has data, so the
+      // toolbar button can show its `.active` (blue) state.
+      this._summariesGenerated = true;
+      this._syncSummaryToolbarButton();
     }
     if (mountedAny && filePath) this._refreshFileSummaryToggle(filePath);
   }
@@ -1375,7 +1411,10 @@ class PRManager {
   _syncSummaryToolbarButton() {
     const btn = document.getElementById('summary-toggle-btn');
     if (!btn) return;
-    btn.classList.toggle('active', !this._summariesHidden);
+    // `.active` (blue) only once summaries actually exist AND are visible.
+    // Before any generation the button stays colorless so the pre-generated
+    // state is visually distinct from "generated but hidden".
+    btn.classList.toggle('active', this._summariesGenerated && !this._summariesHidden);
     btn.classList.toggle('generating', this._summariesGenerating === true);
 
     let label;
@@ -1384,13 +1423,20 @@ class PRManager {
       // opens a confirm dialog ("Cancel Summaries" / "OK") instead of
       // toggling visibility. See _handleSummaryToggleClick.
       label = 'Generating summaries… (click to cancel)';
+    } else if (!this._summariesGenerated) {
+      // Pre-generated state: nothing generated yet. Colorless button; a click
+      // kicks off generation. See _handleSummaryToggleClick.
+      label = 'Generate hunk summaries';
     } else {
       label = this._summariesHidden ? 'Show hunk summaries' : 'Hide hunk summaries';
     }
     btn.title = label;
     btn.setAttribute('aria-label', label);
     btn.dataset.label = label;
-    btn.setAttribute('aria-pressed', this._summariesHidden ? 'false' : 'true');
+    btn.setAttribute(
+      'aria-pressed',
+      (this._summariesGenerated && !this._summariesHidden) ? 'true' : 'false'
+    );
   }
 
   // ===== Tour (Phase 8) ===================================================
@@ -1459,6 +1505,13 @@ class PRManager {
       });
       return;
     }
+    if (!this._summariesGenerated) {
+      // Pre-generated state: a click triggers generation rather than toggling
+      // visibility. `_startGenerationJob` sets the pulsing `.generating` state
+      // optimistically (there is no `review:background_job_started` event).
+      await this._startGenerationJob('summary');
+      return;
+    }
     this.toggleSummariesVisibility();
   }
 
@@ -1514,6 +1567,65 @@ class PRManager {
       await show({ reviewId, onCancelled: onCleared });
     } finally {
       this._cancelPromptOpen = false;
+    }
+  }
+
+  /**
+   * Manually trigger a summary or tour generation job for the current review.
+   * Used when `auto_generate` is off so generation does not kick off on load;
+   * the user clicks the toolbar button to start it.
+   *
+   * Mode-aware: PR reviews POST to `/api/pr/...`, local reviews to
+   * `/api/local/...`. The server enqueues the job with `trigger: 'manual'`
+   * (bypassing the `auto_generate` gate) and responds with `{ started }` /
+   * `{ alreadyRunning }`. There is no `review:background_job_started`
+   * broadcast, so this method optimistically sets the matching `*Generating`
+   * flag and pulses the button itself; `review:background_job_finished`
+   * clears the flag when the job ends.
+   *
+   * @param {'summary'|'tour'} jobKey
+   * @returns {Promise<void>}
+   */
+  async _startGenerationJob(jobKey) {
+    const pr = this.currentPR;
+    if (!pr || pr.id == null) return;
+    const isLocal = pr.reviewType === 'local'
+      || (typeof window !== 'undefined' && window.PAIR_REVIEW_LOCAL_MODE === true);
+    const url = isLocal
+      ? `/api/local/${encodeURIComponent(pr.id)}/jobs/${encodeURIComponent(jobKey)}/start`
+      : `/api/pr/${encodeURIComponent(pr.owner)}/${encodeURIComponent(pr.repo)}/${encodeURIComponent(pr.number)}/jobs/${encodeURIComponent(jobKey)}/start`;
+    try {
+      const resp = await fetch(url, { method: 'POST' });
+      if (resp.status === 409) {
+        // Feature disabled in config — shouldn't happen (the button is hidden
+        // when disabled) but surface it rather than failing silently.
+        // NOTE: the toast singleton is lowercase `window.toast` (see
+        // cancel-background-job.js); `window.Toast` does not exist.
+        if (window.toast?.error) window.toast.error('This feature is disabled in config.');
+        return;
+      }
+      if (!resp.ok) {
+        console.warn(`[StartJob] ${jobKey} start POST failed: ${resp.status}`);
+        return;
+      }
+      // Optimistic UI: there is no `review:background_job_started` broadcast,
+      // so set the generating flag now — when the server enqueued a job
+      // (`started`) or one was already running (`alreadyRunning`) — to start
+      // the pulse immediately. Results arrive via `review:hunk_summaries_ready`
+      // / `review:tour_ready`; `review:background_job_finished` clears the flag
+      // when the job ends.
+      const payload = await resp.json().catch(() => ({}));
+      if (payload.started || payload.alreadyRunning) {
+        if (jobKey === 'summary') {
+          this._summariesGenerating = true;
+          this._syncSummaryToolbarButton();
+        } else if (jobKey === 'tour') {
+          this._tourGenerating = true;
+          this._syncTourToolbarButton();
+        }
+      }
+    } catch (err) {
+      console.warn(`[StartJob] ${jobKey} start POST error:`, err.message);
     }
   }
 
@@ -1584,7 +1696,15 @@ class PRManager {
       await this._loadAndStashTour();
     }
     if (!this._tourStops || this._tourStops.length === 0) {
-      // Nothing to show — leave the button as-is.
+      // No tour stops available. When auto-generation is off and nothing is
+      // already in flight, a click triggers manual generation (mirrors the
+      // summaries button). `_startGenerationJob` sets the pulsing state
+      // optimistically (there is no `review:background_job_started` event).
+      // When `review:tour_ready` arrives the stops load and the button becomes
+      // "Start guided tour" — the user clicks again to open it (no auto-open).
+      if (this._toursAutoGenerate === false && !this._tourGenerating) {
+        await this._startGenerationJob('tour');
+      }
       return;
     }
     await this._openTourAtStart();
@@ -2896,6 +3016,12 @@ class PRManager {
     this._summaryAnchorsByHash = new Map();
     this._summaryHashesByFile = new Map();
     this._pendingSummariesByHash = new Map();
+    // Reset alongside the other per-render summary state. Set true again only
+    // when a summary actually mounts (see _applyHunkSummaries / the existing-
+    // summary fetch). Without this, a re-render whose subsequent fetch returns
+    // no matching rows keeps the stale `true`, leaving the toolbar stuck in
+    // Hide/Show mode with nothing in the DOM and blocking click-to-generate.
+    this._summariesGenerated = false;
     // Bump generation so any in-flight `_kickOffHunkSummaries` from the
     // previous render bails out instead of mutating maps we just reset.
     this._renderGen = (this._renderGen || 0) + 1;

@@ -118,7 +118,7 @@ describe('generateSummariesForReview', () => {
     repo = makeRealRepo(db);
     baseParams = {
       db: {},
-      config: { summaries_max_files: 50 },
+      config: { summaries: { max_files: 50 } },
       reviewId: REVIEW_ID,
       worktreePath: '/tmp/wt',
       reviewContext: {}
@@ -151,7 +151,7 @@ describe('generateSummariesForReview', () => {
     expect(providerInstance.execute).not.toHaveBeenCalled();
   });
 
-  it('respects summaries_max_files cap', async () => {
+  it('respects summaries.max_files cap', async () => {
     const { deps, providerInstance } = makeDeps({ repo });
     const diffText = makeDiff([
       { path: 'a.js', body: SIMPLE_HUNK_BODY },
@@ -160,7 +160,7 @@ describe('generateSummariesForReview', () => {
     ]);
     const result = await generateSummariesForReview({
       ...baseParams,
-      config: { summaries_max_files: 2 },
+      config: { summaries: { max_files: 2 } },
       diffText,
       _deps: deps
     });
@@ -168,12 +168,12 @@ describe('generateSummariesForReview', () => {
     expect(providerInstance.execute).not.toHaveBeenCalled();
   });
 
-  it('respects summaries_max_lines_added cap', async () => {
+  it('respects summaries.max_lines_added cap', async () => {
     const { deps, providerInstance } = makeDeps({ repo });
     const diffText = makeDiff([{ path: 'a.js', body: SIMPLE_HUNK_BODY }]);
     const result = await generateSummariesForReview({
       ...baseParams,
-      config: { summaries_max_lines_added: 0 },
+      config: { summaries: { max_lines_added: 0 } },
       diffText,
       _deps: deps
     });
@@ -737,11 +737,11 @@ describe('generateSummariesForReview', () => {
 });
 
 describe('kickOffSummaryJob', () => {
-  it('returns null and skips queue when summaries_enabled is false', () => {
+  it('returns null and skips queue when summaries.enabled is false', () => {
     const enqueue = vi.fn();
     const result = kickOffSummaryJob({
       db: {},
-      config: { summaries_enabled: false },
+      config: { summaries: { enabled: false } },
       reviewId: 1,
       diffText: 'diff',
       worktreePath: '/wt',
@@ -755,7 +755,7 @@ describe('kickOffSummaryJob', () => {
     const enqueue = vi.fn();
     const result = kickOffSummaryJob({
       db: {},
-      config: { summaries_enabled: true },
+      config: { summaries: { enabled: true } },
       reviewId: null,
       diffText: 'diff',
       worktreePath: '/wt',
@@ -769,7 +769,7 @@ describe('kickOffSummaryJob', () => {
     const enqueue = vi.fn();
     const result = kickOffSummaryJob({
       db: {},
-      config: { summaries_enabled: true },
+      config: { summaries: { enabled: true } },
       reviewId: 1,
       diffText: '',
       worktreePath: '/wt',
@@ -783,7 +783,7 @@ describe('kickOffSummaryJob', () => {
     const enqueue = vi.fn();
     const result = kickOffSummaryJob({
       db: {},
-      config: { summaries_enabled: true },
+      config: { summaries: { enabled: true } },
       reviewId: 1,
       diffText: 'diff',
       worktreePath: '',
@@ -797,7 +797,7 @@ describe('kickOffSummaryJob', () => {
     const enqueue = vi.fn((_id, _type, fn) => Promise.resolve({ called: fn }));
     const result = kickOffSummaryJob({
       db: {},
-      config: { summaries_enabled: true, summaries_max_files: 50 },
+      config: { summaries: { enabled: true, max_files: 50 } },
       reviewId: 7,
       diffText: 'some-diff-text',
       worktreePath: '/wt',
@@ -819,7 +819,7 @@ describe('kickOffSummaryJob', () => {
     };
     kickOffSummaryJob({
       db: {},
-      config: { summaries_enabled: true },
+      config: { summaries: { enabled: true } },
       reviewId: 1,
       diffText: 'AAA',
       worktreePath: '/wt',
@@ -827,7 +827,7 @@ describe('kickOffSummaryJob', () => {
     });
     kickOffSummaryJob({
       db: {},
-      config: { summaries_enabled: true },
+      config: { summaries: { enabled: true } },
       reviewId: 1,
       diffText: 'BBB',
       worktreePath: '/wt',
@@ -849,7 +849,7 @@ describe('kickOffSummaryJob', () => {
     };
     kickOffSummaryJob({
       db: {},
-      config: { summaries_enabled: true },
+      config: { summaries: { enabled: true } },
       reviewId: 1,
       diffText: 'SAME',
       worktreePath: '/wt',
@@ -857,7 +857,7 @@ describe('kickOffSummaryJob', () => {
     });
     kickOffSummaryJob({
       db: {},
-      config: { summaries_enabled: true },
+      config: { summaries: { enabled: true } },
       reviewId: 1,
       diffText: 'SAME',
       worktreePath: '/wt',
@@ -879,7 +879,7 @@ describe('kickOffSummaryJob', () => {
       const queue = makeQueueMock();
       kickOffSummaryJob({
         db: {},
-        config: { summaries_enabled: true },
+        config: { summaries: { enabled: true } },
         reviewId: 1,
         diffText: 'DIFF-A',
         worktreePath: '/wt',
@@ -895,7 +895,7 @@ describe('kickOffSummaryJob', () => {
       // First call enqueues; record the digest.
       kickOffSummaryJob({
         db: {},
-        config: { summaries_enabled: true },
+        config: { summaries: { enabled: true } },
         reviewId: 1,
         diffText: 'DIFF-A',
         worktreePath: '/wt',
@@ -907,7 +907,7 @@ describe('kickOffSummaryJob', () => {
       queue.enqueue.mockClear();
       kickOffSummaryJob({
         db: {},
-        config: { summaries_enabled: true },
+        config: { summaries: { enabled: true } },
         reviewId: 1,
         diffText: 'DIFF-A',
         worktreePath: '/wt',
@@ -925,7 +925,7 @@ describe('kickOffSummaryJob', () => {
       queue.findActiveJobType.mockReturnValue('summaries:digestOLD');
       kickOffSummaryJob({
         db: {},
-        config: { summaries_enabled: true },
+        config: { summaries: { enabled: true } },
         reviewId: 1,
         diffText: 'DIFF-B',
         worktreePath: '/wt',
@@ -944,7 +944,7 @@ describe('kickOffSummaryJob', () => {
       queue.enqueue.mockImplementation(() => { order.push('enqueue'); return Promise.resolve(); });
       kickOffSummaryJob({
         db: {},
-        config: { summaries_enabled: true },
+        config: { summaries: { enabled: true } },
         reviewId: 1,
         diffText: 'DIFF-B',
         worktreePath: '/wt',
@@ -977,7 +977,7 @@ describe('kickOffSummaryJob', () => {
 
     await kickOffSummaryJob({
       db: {},
-      config: { summaries_enabled: true, summaries_max_files: 50 },
+      config: { summaries: { enabled: true, max_files: 50 } },
       reviewId: 9,
       diffText: '   ',
       worktreePath: '/wt',
@@ -997,5 +997,82 @@ describe('kickOffSummaryJob', () => {
 
     const inner = await captured();
     expect(inner).toEqual({ filesProcessed: 0, hunksPersisted: 0 });
+  });
+});
+
+describe('auto_generate gate ordering', () => {
+  function makeQueueMock() {
+    return {
+      enqueue: vi.fn(() => Promise.resolve()),
+      findActiveJobType: vi.fn(() => null),
+      cancel: vi.fn(() => ({ cancelled: 0 }))
+    };
+  }
+
+  it('auto trigger + auto_generate off → returns null, enqueue NOT called', () => {
+    const queue = makeQueueMock();
+    const result = kickOffSummaryJob({
+      db: {},
+      config: { summaries: { enabled: true, auto_generate: false } },
+      reviewId: 1,
+      diffText: 'some-diff',
+      worktreePath: '/wt',
+      // trigger defaults to 'auto'
+      _deps: { backgroundQueue: queue, hashDiff: () => 'digest1' }
+    });
+    expect(result).toBeNull();
+    expect(queue.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('manual trigger + auto_generate off → enqueue IS called', () => {
+    const queue = makeQueueMock();
+    const result = kickOffSummaryJob({
+      db: {},
+      config: { summaries: { enabled: true, auto_generate: false } },
+      reviewId: 1,
+      diffText: 'some-diff',
+      worktreePath: '/wt',
+      trigger: 'manual',
+      _deps: { backgroundQueue: queue, hashDiff: () => 'digest1' }
+    });
+    expect(result).not.toBeNull();
+    expect(queue.enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it('auto trigger + auto_generate true → enqueue IS called', () => {
+    const queue = makeQueueMock();
+    const result = kickOffSummaryJob({
+      db: {},
+      config: { summaries: { enabled: true, auto_generate: true } },
+      reviewId: 1,
+      diffText: 'some-diff',
+      worktreePath: '/wt',
+      // trigger defaults to 'auto'
+      _deps: { backgroundQueue: queue, hashDiff: () => 'digest1' }
+    });
+    expect(result).not.toBeNull();
+    expect(queue.enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it('regression: stale job IS cancelled even when auto_generate off + auto trigger', () => {
+    const queue = makeQueueMock();
+    // Pretend a stale job with the OLD hash is in flight.
+    queue.findActiveJobType.mockReturnValue('summaries:OLDHASH');
+
+    const result = kickOffSummaryJob({
+      db: {},
+      config: { summaries: { enabled: true, auto_generate: false } },
+      reviewId: 1,
+      diffText: 'new-diff',
+      worktreePath: '/wt',
+      // trigger defaults to 'auto'
+      _deps: { backgroundQueue: queue, hashDiff: () => 'NEWHASH' }
+    });
+
+    // Gate fires AFTER cancel: job is cancelled but nothing is enqueued.
+    expect(queue.cancel).toHaveBeenCalledTimes(1);
+    expect(queue.cancel).toHaveBeenCalledWith(1, 'summaries:OLDHASH');
+    expect(result).toBeNull();
+    expect(queue.enqueue).not.toHaveBeenCalled();
   });
 });

@@ -734,8 +734,8 @@ describe('PRManager initial tour probe is deferred', () => {
 
     const m = Object.create(PRManager.prototype);
     m._getAppConfig = vi.fn().mockResolvedValue({
-      tours_enabled: true,
-      summaries_enabled: true
+      tours: { enabled: true },
+      summaries: { enabled: true }
     });
     m.toggleSummariesVisibility = vi.fn();
     m.toggleTheme = vi.fn();
@@ -756,14 +756,14 @@ describe('PRManager initial tour probe is deferred', () => {
     await Promise.resolve();
 
     expect(probeSpy).not.toHaveBeenCalled();
-    // Toolbar should be revealed since tours_enabled === true.
+    // Toolbar should be revealed since tours.enabled === true.
     const btn = document.getElementById('tour-toggle-btn');
     expect(btn.style.display).toBe('');
-    // _toursEnabled is gated on tours_enabled ALONE (not summaries).
+    // _toursEnabled is gated on tours.enabled ALONE (not summaries).
     expect(m._toursEnabled).toBe(true);
   });
 
-  it('_toursEnabled is true even when summaries_enabled is false', async () => {
+  it('_toursEnabled is true even when summaries.enabled is false', async () => {
     document.body.innerHTML = '';
     document.body.insertAdjacentHTML('beforeend', `
       <button id="theme-toggle"></button>
@@ -774,8 +774,8 @@ describe('PRManager initial tour probe is deferred', () => {
     `);
     const m = Object.create(PRManager.prototype);
     m._getAppConfig = vi.fn().mockResolvedValue({
-      tours_enabled: true,
-      summaries_enabled: false
+      tours: { enabled: true },
+      summaries: { enabled: false }
     });
     m.toggleSummariesVisibility = vi.fn();
     m.toggleTheme = vi.fn();
@@ -808,8 +808,8 @@ describe('PRManager initial tour probe is deferred', () => {
     `);
     const m = Object.create(PRManager.prototype);
     m._getAppConfig = vi.fn().mockResolvedValue({
-      tours_enabled: true,
-      summaries_enabled: true
+      tours: { enabled: true },
+      summaries: { enabled: true }
     });
     m.toggleSummariesVisibility = vi.fn();
     m.toggleTheme = vi.fn();
@@ -955,12 +955,29 @@ describe('PRManager toggle-click handlers', () => {
     window.CancelBackgroundJob = origCancelHelper;
   });
 
-  it('_handleSummaryToggleClick falls through to toggleSummariesVisibility when not generating', async () => {
+  it('_handleSummaryToggleClick falls through to toggleSummariesVisibility when not generating and summaries exist', async () => {
+    // Post-generation: summaries exist, so a click toggles visibility.
     m._summariesGenerating = false;
+    m._summariesGenerated = true;
     m.toggleSummariesVisibility = vi.fn();
+    m._startGenerationJob = vi.fn();
     await m._handleSummaryToggleClick();
     expect(m.toggleSummariesVisibility).toHaveBeenCalledTimes(1);
+    expect(m._startGenerationJob).not.toHaveBeenCalled();
     expect(window.CancelBackgroundJob.showCancelSummariesDialog).not.toHaveBeenCalled();
+  });
+
+  it('_handleSummaryToggleClick triggers manual generation when nothing generated yet', async () => {
+    // Pre-generated state (auto_generate off, no summaries): a click kicks off
+    // generation rather than toggling visibility.
+    m._summariesGenerating = false;
+    m._summariesGenerated = false;
+    m.toggleSummariesVisibility = vi.fn();
+    m._startGenerationJob = vi.fn().mockResolvedValue(undefined);
+    await m._handleSummaryToggleClick();
+    expect(m._startGenerationJob).toHaveBeenCalledTimes(1);
+    expect(m._startGenerationJob).toHaveBeenCalledWith('summary');
+    expect(m.toggleSummariesVisibility).not.toHaveBeenCalled();
   });
 
   it('_handleSummaryToggleClick routes to the cancel flow when generating', async () => {

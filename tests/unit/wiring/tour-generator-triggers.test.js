@@ -65,7 +65,7 @@ describe('kickOffTourJob trigger sites', () => {
     app.use(express.json());
     app.set('db', db);
     app.set('config', {
-      tours_enabled: true,
+      tours: { enabled: true },
       port: 7247
     });
 
@@ -92,17 +92,18 @@ describe('kickOffTourJob trigger sites', () => {
 
       const call = tourGenerator.kickOffTourJob.mock.calls[0][0];
       expect(call.db).toBe(db);
-      expect(call.config).toEqual(expect.objectContaining({ tours_enabled: true }));
+      expect(call.config).toEqual(expect.objectContaining({ tours: { enabled: true } }));
       expect(call.reviewId).toBe(res.body.sessionId);
       expect(call.diffText).toContain('diff --git');
       expect(call.worktreePath).toBe('/mock/repo');
       expect(call.reviewContext).toEqual({ prTitle: 'main' });
+      expect(call.trigger).toBe('auto');
       // The local-start seam must not leak PR-mode shape into local-mode context
       expect(call.reviewContext.changedFiles).toBeUndefined();
     });
 
-    it('still calls kickOffTourJob even when tours_enabled is false (gating happens inside the orchestrator, not at the trigger)', async () => {
-      app.set('config', { tours_enabled: false, port: 7247 });
+    it('still calls kickOffTourJob even when tours.enabled is false (gating happens inside the orchestrator, not at the trigger)', async () => {
+      app.set('config', { tours: { enabled: false }, port: 7247 });
 
       const res = await request(app)
         .post('/api/local/start')
@@ -111,7 +112,7 @@ describe('kickOffTourJob trigger sites', () => {
       expect(res.status).toBe(200);
       expect(tourGenerator.kickOffTourJob).toHaveBeenCalledTimes(1);
       const call = tourGenerator.kickOffTourJob.mock.calls[0][0];
-      expect(call.config.tours_enabled).toBe(false);
+      expect(call.config.tours.enabled).toBe(false);
     });
 
     it('does not throw when kickOffTourJob returns null (optional-chain catch)', async () => {
@@ -215,7 +216,7 @@ describe('kickOffTourJob trigger sites', () => {
       `, [1, 'owner/repo', 'My PR', 'A description', 'alice', 'main', 'feature', prData]);
 
       // Ensure no GitHub token so the pendingDraft branch is skipped
-      app.set('config', { tours_enabled: true, port: 7247 });
+      app.set('config', { tours: { enabled: true }, port: 7247 });
 
       const res = await request(app).get('/api/pr/owner/repo/1');
       expect(res.status).toBe(200);
@@ -237,8 +238,8 @@ describe('kickOffTourJob trigger sites', () => {
   });
 
   describe('Local CLI: handleLocalReview via setupLocalReviewSession', () => {
-    it('calls kickOffTourJob with reviewContext.prTitle = branch when tours_enabled is true', async () => {
-      const config = { tours_enabled: true, port: 7247 };
+    it('calls kickOffTourJob with reviewContext.prTitle = branch when tours.enabled is true', async () => {
+      const config = { tours: { enabled: true }, port: 7247 };
 
       const session = await localReviewModule.setupLocalReviewSession({
         db,
@@ -250,15 +251,16 @@ describe('kickOffTourJob trigger sites', () => {
       expect(tourGenerator.kickOffTourJob).toHaveBeenCalledTimes(1);
       const call = tourGenerator.kickOffTourJob.mock.calls[0][0];
       expect(call.db).toBe(db);
-      expect(call.config).toEqual(expect.objectContaining({ tours_enabled: true }));
+      expect(call.config).toEqual(expect.objectContaining({ tours: { enabled: true } }));
       expect(call.reviewId).toBe(session.sessionId);
       expect(call.diffText).toContain('diff --git');
       expect(call.worktreePath).toBe('/mock/repo');
       expect(call.reviewContext).toEqual({ prTitle: 'main' });
+      expect(call.trigger).toBe('auto');
     });
 
-    it('still calls kickOffTourJob when tours_enabled is false (trigger is dumb; orchestrator gates)', async () => {
-      const config = { tours_enabled: false, port: 7247 };
+    it('still calls kickOffTourJob when tours.enabled is false (trigger is dumb; orchestrator gates)', async () => {
+      const config = { tours: { enabled: false }, port: 7247 };
 
       await localReviewModule.setupLocalReviewSession({
         db,
@@ -269,7 +271,7 @@ describe('kickOffTourJob trigger sites', () => {
 
       expect(tourGenerator.kickOffTourJob).toHaveBeenCalledTimes(1);
       const call = tourGenerator.kickOffTourJob.mock.calls[0][0];
-      expect(call.config.tours_enabled).toBe(false);
+      expect(call.config.tours.enabled).toBe(false);
       expect(call.reviewContext).toEqual({ prTitle: 'main' });
     });
   });

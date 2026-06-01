@@ -13,6 +13,8 @@ const defaults = {
   resolveNonExecutableProviderId: require('./provider').resolveNonExecutableProviderId,
   getSummaryProvider: require('../config').getSummaryProvider,
   getSummaryModel: require('../config').getSummaryModel,
+  getSummaryEnabled: require('../config').getSummaryEnabled,
+  getSummaryAutoGenerate: require('../config').getSummaryAutoGenerate,
   buildHunkSummaryPrompt: require('./prompts/hunk-summary').buildHunkSummaryPrompt,
   extractJSON: require('../utils/json-extractor').extractJSON,
   getGeneratedFilePatterns: require('../git/gitattributes').getGeneratedFilePatterns,
@@ -79,23 +81,20 @@ async function generateSummariesForReview({
     return { filesProcessed: 0, hunksPersisted: 0 };
   }
 
-  const maxFiles = (config && config.summaries_max_files != null)
-    ? config.summaries_max_files
-    : 50;
+  const summariesCfg = (config && config.summaries) || {};
+  const maxFiles = (summariesCfg.max_files != null) ? summariesCfg.max_files : 50;
   if (hunksByFile.size > maxFiles) {
     logger.info(
-      `Skipping hunk summaries for review ${reviewId}: ${hunksByFile.size} files exceeds summaries_max_files=${maxFiles}`
+      `Skipping hunk summaries for review ${reviewId}: ${hunksByFile.size} files exceeds summaries.max_files=${maxFiles}`
     );
     return { filesProcessed: 0, hunksPersisted: 0, oversized: true };
   }
 
-  const maxLinesAdded = (config && config.summaries_max_lines_added != null)
-    ? config.summaries_max_lines_added
-    : 3000;
+  const maxLinesAdded = (summariesCfg.max_lines_added != null) ? summariesCfg.max_lines_added : 3000;
   const linesAdded = countAddedLines(hunksByFile);
   if (linesAdded > maxLinesAdded) {
     logger.info(
-      `Skipping hunk summaries for review ${reviewId}: ${linesAdded} added lines exceeds summaries_max_lines_added=${maxLinesAdded}`
+      `Skipping hunk summaries for review ${reviewId}: ${linesAdded} added lines exceeds summaries.max_lines_added=${maxLinesAdded}`
     );
     return { filesProcessed: 0, hunksPersisted: 0, oversized: true };
   }
@@ -372,6 +371,12 @@ async function broadcastFile(deps, repo, reviewId, filePath) {
 
 /**
  * Gate the summary job and enqueue it on the background queue.
+ *
+ * `trigger` controls how the enabled/auto_generate config interacts with
+ * kickoff:
+ *   - `'auto'`   (default): requires `summaries.enabled && summaries.auto_generate`
+ *   - `'manual'`: only requires `summaries.enabled` (user-initiated start)
+ *
  * @param {Object} params
  * @param {Object} params.db
  * @param {Object} params.config
@@ -379,6 +384,7 @@ async function broadcastFile(deps, repo, reviewId, filePath) {
  * @param {string} params.diffText
  * @param {string} params.worktreePath
  * @param {Object} [params.reviewContext]
+ * @param {'auto'|'manual'} [params.trigger='auto']
  * @param {Object} [params._deps]
  * @returns {Promise<{filesProcessed: number, hunksPersisted: number}>|null}
  */
@@ -389,9 +395,12 @@ function kickOffSummaryJob({
   diffText,
   worktreePath,
   reviewContext,
+  trigger = 'auto',
   _deps
 }) {
-  if (!config || !config.summaries_enabled) {
+  const deps = { ...defaults, ...(_deps || {}) };
+
+  if (!deps.getSummaryEnabled(config)) {
     return null;
   }
 
@@ -400,7 +409,6 @@ function kickOffSummaryJob({
     return null;
   }
 
-  const deps = { ...defaults, ...(_deps || {}) };
   const queue = deps.backgroundQueue || require('./background-queue').backgroundQueue;
 
   // Cancel any in-flight summaries job for this review whose digest no longer
@@ -431,6 +439,17 @@ function kickOffSummaryJob({
   const digest = deps.hashDiff(diffText);
   const newJobType = `summaries:${digest}`;
   cancelActiveSummariesJob(newJobType);
+
+  // auto_generate gate, applied here — AFTER cancellation (both the empty-diff
+  // branch above and the digest-mismatch cancel on this line) — so stale-job
+  // cancellation runs regardless of trigger. This is load-bearing: the
+  // summaries worker has no pre-upsert staleness guard, so an escaped stale
+  // worker would persist content_hash-keyed rows for hunks the user moved
+  // past. With `auto_generate` off, an auto-triggered kickoff still cancels
+  // that stale job; it simply declines to enqueue a replacement. Manual
+  // kickoffs always proceed.
+  if (trigger !== 'manual' && !deps.getSummaryAutoGenerate(config)) return null;
+
   return queue.enqueue(reviewId, newJobType, (signal) =>
     generateSummariesForReview({
       db,
