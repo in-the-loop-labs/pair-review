@@ -3168,6 +3168,22 @@ describe('Config Endpoints', () => {
 
       expect(response.body.theme).toBe('light');
       expect(response.body.comment_button_action).toBe('submit');
+      expect(response.body.default_provider).toBe('claude');
+      expect(response.body.default_model).toBe('sonnet');
+    });
+
+    it('should return configured provider and model defaults', async () => {
+      app.set('config', {
+        ...app.get('config'),
+        default_provider: 'pi',
+        default_model: 'multi-model'
+      });
+
+      const response = await request(app)
+        .get('/api/config');
+
+      expect(response.body.default_provider).toBe('pi');
+      expect(response.body.default_model).toBe('multi-model');
     });
 
     it('should return enable_chat and pi_available fields', async () => {

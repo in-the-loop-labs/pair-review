@@ -90,6 +90,8 @@
 
   /** localStorage key for persisting the active tab */
   const TAB_STORAGE_KEY = 'pair-review-active-tab';
+  const BULK_ANALYSIS_TAB_STORAGE_KEY = 'pair-review-bulk-analysis-tab';
+  const BULK_ANALYSIS_INSTRUCTIONS_STORAGE_KEY = 'pair-review-bulk-analysis-instructions';
 
   /**
    * Format a relative time string from a date
@@ -131,6 +133,22 @@
     const div = document.createElement('div');
     div.textContent = text || '';
     return div.innerHTML;
+  }
+
+  function encodeBase64Utf8(value) {
+    const bytes = new TextEncoder().encode(value);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    return btoa(binary);
+  }
+
+  function getRepoStorageKey(prefix, owner, repo) {
+    try {
+      const repoId = encodeBase64Utf8(owner + '/' + repo).replace(/=/g, '');
+      return prefix + ':' + repoId;
+    } catch (_error) {
+      return prefix + ':' + encodeURIComponent(owner + '/' + repo);
+    }
   }
 
   const LOCAL_REVIEW_PATH_URL_ERROR = 'Local reviews require a filesystem path, not a URL. Pass GitHub or Graphite URLs as PR review inputs instead.';
@@ -1377,6 +1395,9 @@
         window.__pairReview.chatProvider = config.chat_provider || 'pi';
         const chatProviders = config.chat_providers || [];
         window.__pairReview.chatProviders = chatProviders;
+        window.__pairReview.defaultProvider = config.default_provider || 'claude';
+        window.__pairReview.defaultModel = config.default_model || 'opus';
+        window.__pairReview.hasGithubToken = Boolean(config.has_github_token);
         window.__pairReview.enableGraphite = config.enable_graphite === true;
         window.__pairReview.chatSpinner = config.chat_spinner || 'dots';
         window.__pairReview.chatEnterToSend = config.chat_enter_to_send !== false;
@@ -1404,6 +1425,7 @@
 
   /** Currently active SelectionMode instance (only one tab at a time) */
   var activeSelection = null;
+  var bulkAnalysisConfigModal = null;
 
   /**
    * SelectionMode manages checkbox-based selection for a single tab's table.
@@ -1878,6 +1900,40 @@
   }
 
   /**
+   * Read selected collection rows as PR descriptors.
+   * @param {Set} selectedIds - PR URLs (data-pr-url values)
+   * @param {string} tbodyId - tbody element ID
+   * @returns {Array<{owner: string, repo: string, number: string, prUrl: string}>}
+   */
+  function getSelectedCollectionRows(selectedIds, tbodyId) {
+    var tbody = document.getElementById(tbodyId);
+    if (!tbody) return [];
+
+    var rows = [];
+    var trs = tbody.querySelectorAll('tr[data-pr-url]');
+    for (var i = 0; i < trs.length; i++) {
+      var tr = trs[i];
+      var prUrl = tr.dataset.prUrl;
+      if (!selectedIds.has(prUrl)) continue;
+      if (tr.dataset.owner && tr.dataset.repo && tr.dataset.number) {
+        rows.push({
+          owner: tr.dataset.owner,
+          repo: tr.dataset.repo,
+          number: tr.dataset.number,
+          prUrl: prUrl
+        });
+      }
+    }
+    return rows;
+  }
+
+  function buildReviewUrlsFromRows(rows, query) {
+    return rows.map(function (row) {
+      return '/pr/' + encodeURIComponent(row.owner) + '/' + encodeURIComponent(row.repo) + '/' + row.number + (query || '');
+    });
+  }
+
+  /**
    * Build pair-review URLs from selected collection rows.
    * @param {Set} selectedIds - PR URLs (data-pr-url values)
    * @param {string} tbodyId - tbody element ID
@@ -1885,20 +1941,97 @@
    * @returns {string[]} array of pair-review URLs
    */
   function buildReviewUrls(selectedIds, tbodyId, query) {
-    var tbody = document.getElementById(tbodyId);
-    if (!tbody) return [];
-    var urls = [];
-    selectedIds.forEach(function (prUrl) {
-      var row = tbody.querySelector('tr[data-pr-url="' + CSS.escape(prUrl) + '"]');
-      if (!row) return;
-      var owner = row.dataset.owner;
-      var repo = row.dataset.repo;
-      var number = row.dataset.number;
-      if (owner && repo && number) {
-        urls.push('/pr/' + encodeURIComponent(owner) + '/' + encodeURIComponent(repo) + '/' + number + (query || ''));
+    return buildReviewUrlsFromRows(getSelectedCollectionRows(selectedIds, tbodyId), query);
+  }
+
+  function getCommonRepository(rows) {
+    if (rows.length === 0) return null;
+    var first = rows[0];
+    var firstKey = (first.owner + '/' + first.repo).toLowerCase();
+    for (var i = 1; i < rows.length; i++) {
+      if ((rows[i].owner + '/' + rows[i].repo).toLowerCase() !== firstKey) {
+        return null;
       }
+    }
+    return { owner: first.owner, repo: first.repo };
+  }
+
+  async function fetchBulkRepoSettings(commonRepo) {
+    if (!commonRepo) return null;
+    try {
+      var response = await fetch('/api/repos/' + encodeURIComponent(commonRepo.owner) + '/' + encodeURIComponent(commonRepo.repo) + '/settings');
+      if (!response.ok) return null;
+      return await response.json();
+    } catch (error) {
+      console.warn('Failed to fetch repo settings for bulk analysis:', error);
+      return null;
+    }
+  }
+
+  function getBulkAnalysisStorageKeys(commonRepo) {
+    if (!commonRepo) {
+      return {
+        tab: BULK_ANALYSIS_TAB_STORAGE_KEY,
+        instructions: BULK_ANALYSIS_INSTRUCTIONS_STORAGE_KEY
+      };
+    }
+    return {
+      tab: getRepoStorageKey('pair-review-tab', commonRepo.owner, commonRepo.repo),
+      instructions: getRepoStorageKey('pair-review-instructions', commonRepo.owner, commonRepo.repo)
+    };
+  }
+
+  async function showBulkAnalysisConfig(rows) {
+    if (!window.AnalysisConfigModal) return null;
+
+    if (!bulkAnalysisConfigModal) {
+      bulkAnalysisConfigModal = new window.AnalysisConfigModal();
+    }
+
+    var commonRepo = getCommonRepository(rows);
+    var storageKeys = getBulkAnalysisStorageKeys(commonRepo);
+    var repoSettings = await fetchBulkRepoSettings(commonRepo);
+    var rememberedTab = localStorage.getItem(storageKeys.tab);
+    var lastInstructions = localStorage.getItem(storageKeys.instructions) || '';
+
+    bulkAnalysisConfigModal.onTabChange = function (tabId) {
+      localStorage.setItem(storageKeys.tab, tabId);
+    };
+
+    var config = await bulkAnalysisConfigModal.show({
+      currentModel: repoSettings?.default_model || window.__pairReview?.defaultModel || 'opus',
+      currentProvider: repoSettings?.default_provider || window.__pairReview?.defaultProvider || 'claude',
+      defaultTab: rememberedTab || repoSettings?.default_tab || 'single',
+      repoInstructions: commonRepo ? (repoSettings?.default_instructions || '') : '',
+      lastInstructions: lastInstructions,
+      defaultCouncilId: commonRepo ? (repoSettings?.default_council_id || null) : null,
+      hasPr: true,
+      hasGithubToken: window.__pairReview?.hasGithubToken !== false
     });
-    return urls;
+
+    if (!config) return null;
+
+    var submittedInstructions = config.customInstructions || '';
+    if (submittedInstructions) {
+      localStorage.setItem(storageKeys.instructions, submittedInstructions);
+    } else {
+      localStorage.removeItem(storageKeys.instructions);
+    }
+
+    return config;
+  }
+
+  async function storeBulkAnalysisConfig(config) {
+    var response = await fetch('/api/bulk-analysis-configs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ analysisConfig: config })
+    });
+    var data = await response.json().catch(function () { return {}; });
+    if (!response.ok || !data.id) {
+      throw new Error(data.error || 'Failed to save analysis settings');
+    }
+    return data.id;
   }
 
   /**
@@ -1924,10 +2057,29 @@
     bulkOpenUrls(urls);
   }
 
-  function handleBulkAnalyze(selectedIds, selectionInstance) {
-    var urls = buildReviewUrls(selectedIds, selectionInstance.config.tbodyId, '?analyze=true');
-    selectionInstance.exit();
-    bulkOpenUrls(urls);
+  async function handleBulkAnalyze(selectedIds, selectionInstance) {
+    var rows = getSelectedCollectionRows(selectedIds, selectionInstance.config.tbodyId);
+    if (rows.length === 0) return;
+
+    if (!window.AnalysisConfigModal) {
+      selectionInstance.exit();
+      bulkOpenUrls(buildReviewUrlsFromRows(rows, '?analyze=true'));
+      return;
+    }
+
+    try {
+      var config = await showBulkAnalysisConfig(rows);
+      if (!config) return;
+
+      var configId = await storeBulkAnalysisConfig(config);
+      var query = '?analyze=true&analysisConfigId=' + encodeURIComponent(configId);
+      var urls = buildReviewUrlsFromRows(rows, query);
+      selectionInstance.exit();
+      bulkOpenUrls(urls);
+    } catch (error) {
+      console.error('Bulk analyze error:', error);
+      if (window.toast) window.toast.error('Failed to start bulk analysis: ' + error.message);
+    }
   }
 
   // ─── Event Delegation ───────────────────────────────────────────────────────

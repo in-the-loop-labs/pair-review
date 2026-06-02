@@ -23,6 +23,8 @@ const { normalizeRepository } = require('../utils/paths');
 const {
   isRunningViaNpx,
   getGitHubToken,
+  getDefaultProvider,
+  getDefaultModel,
   getSummaryEnabled,
   getSummaryAutoGenerate,
   getTourEnabled,
@@ -88,6 +90,8 @@ router.get('/api/config', (req, res) => {
     has_github_token: Boolean(getGitHubToken(config)),
     comment_button_action: config.comment_button_action || 'submit',
     comment_format: config.comment_format || 'legacy',
+    default_provider: getDefaultProvider(config),
+    default_model: getDefaultModel(config),
     // Include npx detection for frontend command examples
     is_running_via_npx: isRunningViaNpx(),
     enable_chat: config.enable_chat !== false,

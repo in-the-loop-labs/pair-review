@@ -649,6 +649,7 @@ async function globalSetup() {
   const chatRoutes = require('../../src/routes/chat');
   const localRoutes = require('../../src/routes/local');
   const contextFilesRoutes = require('../../src/routes/context-files');
+  const bulkAnalysisConfigsRoutes = require('../../src/routes/bulk-analysis-configs');
 
   // Mock chat session manager for E2E (reads from DB, no real bridge)
   app.chatSessionManager = {
@@ -691,6 +692,7 @@ async function globalSetup() {
   app.use('/', chatRoutes);
   app.use('/', localRoutes);
   app.use('/', contextFilesRoutes);
+  app.use('/', bulkAnalysisConfigsRoutes);
 
   // Error handling
   app.use((error, req, res, next) => {

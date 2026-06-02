@@ -12,6 +12,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // Import the actual PRManager class from production code
 const { PRManager } = require('../../public/js/pr.js');
+const { URLSearchParams: NativeURLSearchParams } = require('url');
 
 let saved;
 
@@ -28,6 +29,7 @@ beforeEach(() => {
     MutationObserver: globalThis.MutationObserver,
     IntersectionObserver: globalThis.IntersectionObserver,
     URLSearchParams: globalThis.URLSearchParams,
+    location: globalThis.location,
   };
 
   globalThis.window = globalThis;
@@ -68,6 +70,7 @@ afterEach(() => {
   globalThis.MutationObserver = saved.MutationObserver;
   globalThis.IntersectionObserver = saved.IntersectionObserver;
   globalThis.URLSearchParams = saved.URLSearchParams;
+  globalThis.location = saved.location;
 
   vi.restoreAllMocks();
 });
@@ -94,9 +97,24 @@ describe('PRManager._buildDefaultAnalysisConfig', () => {
     });
   });
 
+  it('uses app config defaults when no repo settings exist', async () => {
+    const config = await manager._buildDefaultAnalysisConfig(null, {}, {
+      default_provider: 'pi',
+      default_model: 'multi-model',
+    });
+    expect(config).toEqual({
+      provider: 'pi',
+      model: 'multi-model',
+      customInstructions: null,
+    });
+  });
+
   it('uses repo default_provider and default_model', async () => {
     const repoSettings = { default_provider: 'gemini', default_model: 'pro' };
-    const config = await manager._buildDefaultAnalysisConfig(repoSettings, {});
+    const config = await manager._buildDefaultAnalysisConfig(repoSettings, {}, {
+      default_provider: 'pi',
+      default_model: 'multi-model',
+    });
     expect(config).toEqual({
       provider: 'gemini',
       model: 'pro',
@@ -234,5 +252,24 @@ describe('PRManager._buildDefaultAnalysisConfig', () => {
     const reviewSettings = { custom_instructions: 'Be extra strict' };
     const config = await manager._buildDefaultAnalysisConfig(null, reviewSettings);
     expect(config.customInstructions).toBeNull();
+  });
+});
+
+describe('PRManager.showWorktreeNotFoundError', () => {
+  it('preserves analysisConfigId in the reload link for auto-analysis setup', () => {
+    const container = { innerHTML: '', style: {} };
+    globalThis.document.getElementById = vi.fn((id) => id === 'pr-container' ? container : null);
+    globalThis.URLSearchParams = NativeURLSearchParams;
+    globalThis.window.location = { search: '?analyze=true&analysisConfigId=bulk-config-id' };
+
+    const manager = Object.create(PRManager.prototype);
+    manager._autoAnalyzeRequested = true;
+    manager.escapeHtml = (value) => value;
+    manager.resetButton = vi.fn();
+
+    manager.showWorktreeNotFoundError('owner', 'repo', 123);
+
+    expect(container.innerHTML).toContain('/pr/owner/repo/123?analyze=true&analysisConfigId=bulk-config-id');
+    expect(manager.resetButton).toHaveBeenCalled();
   });
 });

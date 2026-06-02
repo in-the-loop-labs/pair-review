@@ -75,11 +75,12 @@ class LocalManager {
       try {
         // Fetch repo settings so we honour the repository's default provider/council
         const manager = window.prManager;
-        const [repoSettings, reviewSettings] = await Promise.all([
+        const [repoSettings, reviewSettings, appConfig] = await Promise.all([
           manager.fetchRepoSettings().catch(() => null),
-          manager.fetchLastReviewSettings().catch(() => ({ custom_instructions: '', last_council_id: null }))
+          manager.fetchLastReviewSettings().catch(() => ({ custom_instructions: '', last_council_id: null })),
+          manager._getAppConfig()
         ]);
-        const config = await manager._buildDefaultAnalysisConfig(repoSettings, reviewSettings);
+        const config = await manager._buildDefaultAnalysisConfig(repoSettings, reviewSettings, appConfig);
 
         await this.startLocalAnalysis(null, config);
       } finally {
@@ -272,7 +273,7 @@ class LocalManager {
           staleCheckWithTimeout,
           manager.fetchRepoSettings().catch(() => null),
           manager.fetchLastReviewSettings().catch(() => ({ custom_instructions: '', last_council_id: null })),
-          fetch('/api/config').then(r => r.ok ? r.json() : {}).catch(() => ({}))
+          manager._getAppConfig()
         ]);
         console.debug(`[Analyze] parallel-fetch (stale+settings): ${Math.round(performance.now() - _tParallel0)}ms`);
 
@@ -310,9 +311,9 @@ class LocalManager {
 
         const lastCouncilId = reviewSettings.last_council_id;
 
-        // Determine model and provider (priority: repo default > defaults)
-        const currentModel = repoSettings?.default_model || 'opus';
-        const currentProvider = repoSettings?.default_provider || 'claude';
+        // Determine model and provider (priority: repo default > app config > defaults)
+        const currentModel = repoSettings?.default_model || appConfig.default_model || 'opus';
+        const currentProvider = repoSettings?.default_provider || appConfig.default_provider || 'claude';
 
         // Determine default tab (priority: localStorage > repo settings > 'single')
         const tabStorageKey = `pair-review-tab:local-${reviewId}`;

@@ -11,6 +11,13 @@
 // Timeout (ms) for stale check — git commands can hang on locked repos
 const STALE_TIMEOUT = 2000;
 
+function encodeBase64Utf8(value) {
+  const bytes = new TextEncoder().encode(value);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
 class PRManager {
   // Forward static constants from modules for backward compatibility
   static get FOLD_UP_ICON() {
@@ -88,9 +95,7 @@ class PRManager {
    * @returns {string} Safe localStorage key
    */
   static getRepoStorageKey(prefix, owner, repo) {
-    // Use encodeURIComponent + btoa to safely handle Unicode characters
-    // btoa() only accepts Latin1, so we encode Unicode first
-    const repoId = btoa(unescape(encodeURIComponent(`${owner}/${repo}`))).replace(/=/g, '');
+    const repoId = encodeBase64Utf8(`${owner}/${repo}`).replace(/=/g, '');
     return `${prefix}:${repoId}`;
   }
 
@@ -588,7 +593,7 @@ class PRManager {
    * @param {Object} reviewSettings - Review settings from fetchLastReviewSettings()
    * @returns {Promise<Object>} Config object suitable for startAnalysis / startLocalAnalysis
    */
-  async _buildDefaultAnalysisConfig(repoSettings, reviewSettings) {
+  async _buildDefaultAnalysisConfig(repoSettings, reviewSettings, appConfig = {}) {
     const defaultTab = repoSettings?.default_tab || 'single';
     const councilId = repoSettings?.default_council_id || reviewSettings?.last_council_id || null;
 
@@ -618,10 +623,31 @@ class PRManager {
     }
 
     return {
-      provider: repoSettings?.default_provider || 'claude',
-      model: repoSettings?.default_model || 'opus',
+      provider: repoSettings?.default_provider || appConfig.default_provider || 'claude',
+      model: repoSettings?.default_model || appConfig.default_model || 'opus',
       customInstructions: null
     };
+  }
+
+  async _fetchAutoAnalysisConfigFromUrl() {
+    const params = new URLSearchParams(window.location.search);
+    const configId = params.get('analysisConfigId');
+    if (!configId) return { requested: false, config: null, error: null };
+
+    try {
+      const response = await fetch(`/api/bulk-analysis-configs/${encodeURIComponent(configId)}`);
+      if (!response.ok) {
+        throw new Error('Stored analysis settings were not found');
+      }
+      const data = await response.json();
+      if (!data.analysisConfig) {
+        throw new Error('Stored analysis settings response was empty');
+      }
+      return { requested: true, config: data.analysisConfig, error: null };
+    } catch (error) {
+      console.warn('Failed to fetch bulk analysis config:', error);
+      return { requested: true, config: null, error };
+    }
   }
 
   /**
@@ -638,6 +664,7 @@ class PRManager {
     const autoAnalyze = new URLSearchParams(window.location.search).get('analyze');
     if (autoAnalyze === 'true' && !this.isAnalyzing) {
       this._autoAnalyzeRequested = true;
+      let shouldCleanUrl = true;
       try {
         // Skip refresh if we just loaded fresh data (loadPR sets _justLoaded = true).
         // Otherwise, refresh to ensure we have the latest PR data in case the worktree
@@ -654,19 +681,36 @@ class PRManager {
           }
         }
 
-        // Fetch repo settings so we honour the repository's default provider/council
-        const [repoSettings, reviewSettings] = await Promise.all([
-          this.fetchRepoSettings().catch(() => null),
-          this.fetchLastReviewSettings().catch(() => ({ custom_instructions: '', last_council_id: null }))
-        ]);
-        const config = await this._buildDefaultAnalysisConfig(repoSettings, reviewSettings);
+        const storedConfig = await this._fetchAutoAnalysisConfigFromUrl();
+        let config;
+        if (storedConfig.requested) {
+          if (!storedConfig.config) {
+            shouldCleanUrl = false;
+            const message = 'Could not load selected bulk analysis settings. Analysis was not started; retry or start analysis manually to choose new settings.';
+            if (window.toast) window.toast.showWarning(message);
+            this.showError(message);
+            return;
+          }
+          config = storedConfig.config;
+        } else {
+          // Fetch repo settings so we honour the repository's default provider/council
+          const [repoSettings, reviewSettings, appConfig] = await Promise.all([
+            this.fetchRepoSettings().catch(() => null),
+            this.fetchLastReviewSettings().catch(() => ({ custom_instructions: '', last_council_id: null })),
+            this._getAppConfig()
+          ]);
+          config = await this._buildDefaultAnalysisConfig(repoSettings, reviewSettings, appConfig);
+        }
 
         await this.startAnalysis(owner, repo, prNumber, null, config);
       } finally {
         this._autoAnalyzeRequested = false;
-        const cleanUrl = new URL(window.location);
-        cleanUrl.searchParams.delete('analyze');
-        history.replaceState(null, '', cleanUrl);
+        if (shouldCleanUrl) {
+          const cleanUrl = new URL(window.location);
+          cleanUrl.searchParams.delete('analyze');
+          cleanUrl.searchParams.delete('analysisConfigId');
+          history.replaceState(null, '', cleanUrl);
+        }
       }
     }
   }
@@ -2744,13 +2788,14 @@ class PRManager {
       }
 
       // Fetch settings in parallel
-      const [repoSettings, reviewSettings] = await Promise.all([
+      const [repoSettings, reviewSettings, appConfig] = await Promise.all([
         this.fetchRepoSettings().catch(() => null),
-        this.fetchLastReviewSettings().catch(() => ({ custom_instructions: '', last_council_id: null }))
+        this.fetchLastReviewSettings().catch(() => ({ custom_instructions: '', last_council_id: null })),
+        this._getAppConfig()
       ]);
 
-      const currentModel = repoSettings?.default_model || 'opus';
-      const currentProvider = repoSettings?.default_provider || 'claude';
+      const currentModel = repoSettings?.default_model || appConfig.default_model || 'opus';
+      const currentProvider = repoSettings?.default_provider || appConfig.default_provider || 'claude';
       const tabStorageKey = PRManager.getRepoStorageKey('pair-review-tab', owner, repo);
       const rememberedTab = localStorage.getItem(tabStorageKey);
       const defaultTab = rememberedTab || repoSettings?.default_tab || 'single';
@@ -6332,7 +6377,7 @@ class PRManager {
         staleCheckWithTimeout,
         this.fetchRepoSettings(),
         this.fetchLastReviewSettings(),
-        fetch('/api/config').then(r => r.ok ? r.json() : {}).catch(() => ({}))
+        this._getAppConfig()
       ]);
       console.debug(`[Analyze] parallel-fetch (stale+settings): ${Math.round(performance.now() - _tParallel0)}ms`);
 
@@ -6378,9 +6423,9 @@ class PRManager {
 
       const lastCouncilId = reviewSettings.last_council_id;
 
-      // Determine the model and provider to use (priority: repo default > defaults)
-      const currentModel = repoSettings?.default_model || 'opus';
-      const currentProvider = repoSettings?.default_provider || 'claude';
+      // Determine the model and provider to use (priority: repo default > app config > defaults)
+      const currentModel = repoSettings?.default_model || appConfig.default_model || 'opus';
+      const currentProvider = repoSettings?.default_provider || appConfig.default_provider || 'claude';
 
       // Determine default tab (priority: localStorage > repo settings > 'single')
       const tabStorageKey = PRManager.getRepoStorageKey('pair-review-tab', owner, repo);
@@ -6554,7 +6599,10 @@ class PRManager {
   showWorktreeNotFoundError(owner, repo, number) {
     let setupUrl = `/pr/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${encodeURIComponent(number)}`;
     if (this._autoAnalyzeRequested) {
-      setupUrl += '?analyze=true';
+      const params = new URLSearchParams({ analyze: 'true' });
+      const analysisConfigId = new URLSearchParams(window.location.search).get('analysisConfigId');
+      if (analysisConfigId) params.set('analysisConfigId', analysisConfigId);
+      setupUrl += `?${params.toString()}`;
     }
     const container = document.getElementById('pr-container');
     if (container) {
