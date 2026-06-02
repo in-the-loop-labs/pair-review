@@ -8,6 +8,7 @@ coverage/
 .vscode/
 .idea/
 .claude/settings.local.json.bak
+.claude/scheduled_tasks.lock
 
 test-*.js
 !tests/e2e/test-server.js

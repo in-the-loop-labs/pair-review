@@ -21,6 +21,11 @@ function cleanupLegacyLocalStorage() {
     'settingsReferrer',           // Unscoped version (now uses settingsReferrer:${repo})
   ];
 
+  // Legacy key prefixes (one entry per review id) that we need to sweep
+  const legacyPrefixes = [
+    'pair-review:dismissed-summaries:'  // Replaced by per-file toggle in v3.4
+  ];
+
   // Remove known legacy keys
   legacyKeys.forEach(key => {
     if (localStorage.getItem(key) !== null) {
@@ -28,6 +33,17 @@ function cleanupLegacyLocalStorage() {
       console.log(`[cleanup] Removed legacy localStorage key: ${key}`);
     }
   });
+
+  // Sweep prefixed keys. localStorage.length and key(i) iteration in
+  // reverse order so removals don't shift indexes we still need to read.
+  for (let i = localStorage.length - 1; i >= 0; i--) {
+    const key = localStorage.key(i);
+    if (!key) continue;
+    if (legacyPrefixes.some(prefix => key.startsWith(prefix))) {
+      localStorage.removeItem(key);
+      console.log(`[cleanup] Removed legacy localStorage key: ${key}`);
+    }
+  }
 }
 
 // Export for use in other modules

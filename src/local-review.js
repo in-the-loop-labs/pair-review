@@ -15,6 +15,8 @@ const { STOPS, scopeIncludes, includesBranch, DEFAULT_SCOPE, scopeLabel, reviewS
 const { initializeDatabase, ReviewRepository, RepoSettingsRepository } = require('./database');
 const { startServer } = require('./server');
 const { localReviewDiffs } = require('./routes/shared');
+const summaryGenerator = require('./ai/summary-generator');
+const tourGenerator = require('./ai/tour-generator');
 const { getShaAbbrevLength } = require('./git/sha-abbrev');
 const { GIT_DIFF_FLAGS, GIT_DIFF_FLAGS_ARRAY } = require('./git/diff-flags');
 const open = (...args) => process.env.PAIR_REVIEW_NO_OPEN ? Promise.resolve() : import('open').then(({ default: open }) => open(...args));
@@ -691,6 +693,183 @@ async function generateLocalDiff(repoPath, options = {}) {
 }
 
 /**
+ * Set up a local review session: resolve git state, persist the diff,
+ * and enqueue the background summary job. Caller is responsible for
+ * starting the server and opening the browser.
+ *
+ * @param {Object} params
+ * @param {Object} params.db - Database instance
+ * @param {Object} params.config - Loaded config
+ * @param {string} params.repoPath - Path to the working tree (already validated)
+ * @param {Object} [params.flags] - CLI flags / options
+ * @returns {Promise<{sessionId: number, repoPath: string, branch: string, repository: string, headSha: string, diff: string, stats: Object, digest: string|null, branchInfo: Object|null, scopeStart: string, scopeEnd: string, baseBranch: string|null}>}
+ */
+async function setupLocalReviewSession({ db, config, repoPath, flags = {} }) {
+  const headSha = await module.exports.getHeadSha(repoPath);
+  console.log(`HEAD SHA: ${headSha}`);
+
+  const branch = await module.exports.getCurrentBranch(repoPath);
+  console.log(`Current branch: ${branch}`);
+
+  const reviewId = generateLocalReviewId(repoPath, headSha);
+  console.log(`Local review ID: ${reviewId}`);
+
+  const reviewRepo = new ReviewRepository(db);
+  const repository = await module.exports.getRepositoryName(repoPath);
+  console.log(`Repository: ${repository}`);
+
+  if (repository.includes('/')) {
+    try {
+      const mainRepoRoot = await module.exports.findMainGitRoot(repoPath);
+      const repoSettingsRepo = new RepoSettingsRepository(db);
+      await repoSettingsRepo.setLocalPath(repository, mainRepoRoot);
+      console.log(`Registered repository location: ${mainRepoRoot}`);
+    } catch (error) {
+      console.warn(`Could not register repository location: ${error.message}`);
+    }
+  }
+
+  console.log('Checking for existing review session...');
+  let existingReview = await reviewRepo.getLocalReview(repoPath, headSha, branch);
+
+  if (!existingReview) {
+    const legacy = await reviewRepo.getLocalReviewByPathAndSha(repoPath, headSha);
+    if (legacy && legacy.local_head_branch === null) {
+      existingReview = legacy;
+    }
+  }
+
+  if (!existingReview) {
+    const branchSession = await reviewRepo.getLocalBranchReview(repoPath, branch);
+    if (branchSession) {
+      existingReview = branchSession;
+    }
+  }
+
+  let sessionId;
+  if (existingReview) {
+    sessionId = existingReview.id;
+    if (existingReview.local_head_sha !== headSha) {
+      await reviewRepo.updateLocalHeadSha(sessionId, headSha);
+      const abbrevLen = getShaAbbrevLength(repoPath);
+      console.log(`Updated HEAD SHA on session ${sessionId}: ${existingReview.local_head_sha.substring(0, abbrevLen)} -> ${headSha.substring(0, abbrevLen)}`);
+    }
+    if (existingReview.local_head_branch === null) {
+      await reviewRepo.updateReview(sessionId, { local_head_branch: branch });
+      console.log(`Backfilled branch on session ${sessionId}: ${branch}`);
+    }
+    console.log(`Resuming existing review session (ID: ${existingReview.id})`);
+  } else {
+    console.log('Creating new review session...');
+    sessionId = await reviewRepo.upsertLocalReview({
+      localPath: repoPath,
+      localHeadSha: headSha,
+      repository,
+      localHeadBranch: branch
+    });
+    console.log(`Created new review session (ID: ${sessionId})`);
+  }
+
+  const { start: scopeStart, end: scopeEnd } = existingReview ? reviewScope(existingReview) : DEFAULT_SCOPE;
+
+  const hookEvent = existingReview ? 'review.loaded' : 'review.started';
+  if (hasHooks(hookEvent, config)) {
+    getCachedUser(config).then(user => {
+      const builder = existingReview ? buildReviewLoadedPayload : buildReviewStartedPayload;
+      const si = STOPS.indexOf(scopeStart);
+      const ei = STOPS.indexOf(scopeEnd);
+      const scope = STOPS.slice(si, ei + 1);
+      const payload = builder({ reviewId: sessionId, mode: 'local', localContext: { path: repoPath, branch, headSha, scope }, user });
+      fireHooks(hookEvent, payload, config);
+    }).catch(err => { logger.warn(`Review hook failed: ${err.message}`); });
+  }
+  const baseBranch = existingReview?.local_base_branch || null;
+
+  console.log(`Generating diff for scope: ${scopeLabel(scopeStart, scopeEnd)}...`);
+  const { diff, stats } = await module.exports.generateScopedDiff(repoPath, scopeStart, scopeEnd, baseBranch);
+
+  let branchInfo = null;
+  if (!includesBranch(scopeStart)) {
+    const untrackedFiles = await getUntrackedFiles(repoPath);
+    branchInfo = await module.exports.detectAndBuildBranchInfo(repoPath, branch, {
+      repository,
+      diff,
+      untrackedFiles,
+      githubToken: getGitHubToken(config),
+      enableGraphite: config.enable_graphite === true
+    });
+    if (branchInfo) {
+      console.log(`\nNo uncommitted changes, but branch has ${branchInfo.commitCount} commit(s) ahead of ${branchInfo.baseBranch}.`);
+      console.log('The UI will offer to review branch changes.');
+    }
+  }
+
+  if (!diff && !branchInfo) {
+    console.log('\nNo changes detected in current scope. The UI will open anyway - you can change scope or make changes and refresh.');
+  } else if (diff) {
+    console.log(`Found ${stats.trackedChanges || 0} file(s) changed`);
+    if (stats.untrackedFiles > 0) {
+      console.log(`  - ${stats.untrackedFiles} untracked file(s)`);
+    }
+    if (stats.stagedChanges > 0 && !scopeIncludes(scopeStart, scopeEnd, 'staged')) {
+      console.log(`  - ${stats.stagedChanges} staged file(s) (outside current scope)`);
+    }
+  }
+
+  process.env.PAIR_REVIEW_LOCAL = 'true';
+  process.env.PAIR_REVIEW_LOCAL_PATH = repoPath;
+  process.env.PAIR_REVIEW_LOCAL_ID = String(sessionId);
+  process.env.PAIR_REVIEW_REPOSITORY = repository;
+  process.env.PAIR_REVIEW_BRANCH = branch;
+  process.env.PAIR_REVIEW_LOCAL_HEAD_SHA = headSha;
+
+  const digest = await module.exports.computeScopedDigest(repoPath, scopeStart, scopeEnd);
+
+  localReviewDiffs.set(sessionId, { diff, stats, digest, branchInfo });
+
+  try {
+    await reviewRepo.saveLocalDiff(sessionId, { diff, stats, digest });
+  } catch (persistError) {
+    logger.warn(`Could not persist diff to database: ${persistError.message}`);
+  }
+
+  summaryGenerator.kickOffSummaryJob({
+    db,
+    config,
+    reviewId: sessionId,
+    diffText: diff,
+    worktreePath: repoPath,
+    reviewContext: { prTitle: branch },
+    trigger: 'auto'
+  })?.catch((err) => logger.warn(`Hunk summary job failed for review ${sessionId}: ${err.message}`));
+
+  tourGenerator.kickOffTourJob({
+    db,
+    config,
+    reviewId: sessionId,
+    diffText: diff,
+    worktreePath: repoPath,
+    reviewContext: { prTitle: branch },
+    trigger: 'auto'
+  })?.catch((err) => logger.warn(`Tour job failed for review ${sessionId}: ${err.message}`));
+
+  return {
+    sessionId,
+    repoPath,
+    branch,
+    repository,
+    headSha,
+    diff,
+    stats,
+    digest,
+    branchInfo,
+    scopeStart,
+    scopeEnd,
+    baseBranch
+  };
+}
+
+/**
  * Handle local review mode
  * @param {string} targetPath - Target path to review (file or directory)
  * @param {Object} flags - Command line flags
@@ -698,201 +877,43 @@ async function generateLocalDiff(repoPath, options = {}) {
  */
 async function handleLocalReview(targetPath, flags = {}) {
   let db = null;
+  let setupComplete = false;
 
   try {
     rejectUrlLikeLocalReviewPath(targetPath);
 
-    // Resolve target path
     const resolvedPath = path.resolve(targetPath || process.cwd());
 
-    // Validate path exists
     try {
       await fs.access(resolvedPath);
     } catch {
       throw new Error(`Path does not exist: ${resolvedPath}`);
     }
 
-    // Find git repository root
     console.log(`Finding git repository root from ${resolvedPath}...`);
-    const repoPath = await findGitRoot(resolvedPath);
+    const repoPath = await module.exports.findGitRoot(resolvedPath);
     console.log(`Found git repository at: ${repoPath}`);
 
-    // Get HEAD SHA for session identity
-    const headSha = await getHeadSha(repoPath);
-    console.log(`HEAD SHA: ${headSha}`);
-
-    // Get current branch
-    const branch = await getCurrentBranch(repoPath);
-    console.log(`Current branch: ${branch}`);
-
-    // Generate local review ID
-    const reviewId = generateLocalReviewId(repoPath, headSha);
-    console.log(`Local review ID: ${reviewId}`);
-
-    // Load configuration
     const { config, isFirstRun } = await loadConfig();
 
-    // Show welcome message on first run
     if (isFirstRun) {
       showWelcomeMessage();
     }
 
-    // Initialize database
     console.log('Initializing database...');
     db = await initializeDatabase(resolveDbName(config));
 
-    // Check for existing session or create new one
-    const reviewRepo = new ReviewRepository(db);
-    const repository = await getRepositoryName(repoPath);
-    console.log(`Repository: ${repository}`);
+    const session = await setupLocalReviewSession({ db, config, repoPath, flags });
+    setupComplete = true;
 
-    // If this is a GitHub repository (has owner/repo format), register the local path
-    // This enables future web UI sessions to find this repository without cloning
-    // Use findMainGitRoot to resolve worktrees to their parent repo
-    if (repository.includes('/')) {
-      try {
-        const mainRepoRoot = await findMainGitRoot(repoPath);
-        const repoSettingsRepo = new RepoSettingsRepository(db);
-        await repoSettingsRepo.setLocalPath(repository, mainRepoRoot);
-        console.log(`Registered repository location: ${mainRepoRoot}`);
-      } catch (error) {
-        // Non-fatal: registration failure shouldn't block the review
-        console.warn(`Could not register repository location: ${error.message}`);
-      }
-    }
-
-    console.log('Checking for existing review session...');
-    let existingReview = await reviewRepo.getLocalReview(repoPath, headSha, branch);
-
-    if (!existingReview) {
-      // Adopt legacy sessions that predate branch tracking (local_head_branch is NULL)
-      const legacy = await reviewRepo.getLocalReviewByPathAndSha(repoPath, headSha);
-      if (legacy && legacy.local_head_branch === null) {
-        existingReview = legacy;
-      }
-    }
-
-    if (!existingReview) {
-      // Check for existing branch-scope session on this path
-      // (branch scope sessions persist across HEAD changes)
-      const branchSession = await reviewRepo.getLocalBranchReview(repoPath, branch);
-      if (branchSession) {
-        existingReview = branchSession;
-      }
-    }
-
-    let sessionId;
-    if (existingReview) {
-      sessionId = existingReview.id;
-      // Update HEAD SHA if it changed (branch mode: new commits on same branch)
-      if (existingReview.local_head_sha !== headSha) {
-        await reviewRepo.updateLocalHeadSha(sessionId, headSha);
-        const abbrevLen = getShaAbbrevLength(repoPath);
-        console.log(`Updated HEAD SHA on session ${sessionId}: ${existingReview.local_head_sha.substring(0, abbrevLen)} -> ${headSha.substring(0, abbrevLen)}`);
-      }
-      // Backfill branch on legacy sessions
-      if (existingReview.local_head_branch === null) {
-        await reviewRepo.updateReview(sessionId, { local_head_branch: branch });
-        console.log(`Backfilled branch on session ${sessionId}: ${branch}`);
-      }
-      console.log(`Resuming existing review session (ID: ${existingReview.id})`);
-    } else {
-      console.log('Creating new review session...');
-      sessionId = await reviewRepo.upsertLocalReview({
-        localPath: repoPath,
-        localHeadSha: headSha,
-        repository,
-        localHeadBranch: branch
-      });
-      console.log(`Created new review session (ID: ${sessionId})`);
-    }
-
-    // Read scope from session (or use defaults for new sessions)
-    // Use reviewScope() to normalize legacy scopes that may not include 'unstaged'
-    const { start: scopeStart, end: scopeEnd } = existingReview ? reviewScope(existingReview) : DEFAULT_SCOPE;
-
-    // Fire review hook (non-blocking)
-    const hookEvent = existingReview ? 'review.loaded' : 'review.started';
-    if (hasHooks(hookEvent, config)) {
-      getCachedUser(config).then(user => {
-        const builder = existingReview ? buildReviewLoadedPayload : buildReviewStartedPayload;
-        const si = STOPS.indexOf(scopeStart);
-        const ei = STOPS.indexOf(scopeEnd);
-        const scope = STOPS.slice(si, ei + 1);
-        const payload = builder({ reviewId: sessionId, mode: 'local', localContext: { path: repoPath, branch, headSha, scope }, user });
-        fireHooks(hookEvent, payload, config);
-      }).catch(err => { logger.warn(`Review hook failed: ${err.message}`); });
-    }
-    const baseBranch = existingReview?.local_base_branch || null;
-
-    // Generate diff using session's actual scope
-    console.log(`Generating diff for scope: ${scopeLabel(scopeStart, scopeEnd)}...`);
-    const { diff, stats } = await generateScopedDiff(repoPath, scopeStart, scopeEnd, baseBranch);
-
-    // Branch detection: when scope does NOT include branch and no uncommitted changes,
-    // check if branch has commits ahead (frontend uses this to suggest expanding scope)
-    let branchInfo = null;
-    if (!includesBranch(scopeStart)) {
-      const untrackedFiles = await getUntrackedFiles(repoPath);
-      branchInfo = await detectAndBuildBranchInfo(repoPath, branch, {
-        repository,
-        diff,
-        untrackedFiles,
-        githubToken: getGitHubToken(config),
-        enableGraphite: config.enable_graphite === true
-      });
-      if (branchInfo) {
-        console.log(`\nNo uncommitted changes, but branch has ${branchInfo.commitCount} commit(s) ahead of ${branchInfo.baseBranch}.`);
-        console.log('The UI will offer to review branch changes.');
-      }
-    }
-
-    if (!diff && !branchInfo) {
-      console.log('\nNo changes detected in current scope. The UI will open anyway - you can change scope or make changes and refresh.');
-    } else if (diff) {
-      console.log(`Found ${stats.trackedChanges || 0} file(s) changed`);
-      if (stats.untrackedFiles > 0) {
-        console.log(`  - ${stats.untrackedFiles} untracked file(s)`);
-      }
-      if (stats.stagedChanges > 0 && !scopeIncludes(scopeStart, scopeEnd, 'staged')) {
-        console.log(`  - ${stats.stagedChanges} staged file(s) (outside current scope)`);
-      }
-    }
-
-    // Set environment variables for local mode (metadata only, not large data)
-    process.env.PAIR_REVIEW_LOCAL = 'true';
-    process.env.PAIR_REVIEW_LOCAL_PATH = repoPath;
-    process.env.PAIR_REVIEW_LOCAL_ID = String(sessionId);
-    process.env.PAIR_REVIEW_REPOSITORY = repository;
-    process.env.PAIR_REVIEW_BRANCH = branch;
-    process.env.PAIR_REVIEW_LOCAL_HEAD_SHA = headSha;
-
-    // Compute baseline digest NOW for accurate staleness detection later
-    // This must be done at diff-capture time, not lazily at check time
-    const digest = await computeScopedDigest(repoPath, scopeStart, scopeEnd);
-
-    // Store diff data in module-level Map (avoids process.env size limits and security concerns)
-    localReviewDiffs.set(sessionId, { diff, stats, digest, branchInfo });
-
-    // Persist diff to database so past sessions remain viewable without the server running
-    try {
-      const reviewRepo = new ReviewRepository(db);
-      await reviewRepo.saveLocalDiff(sessionId, { diff, stats, digest });
-    } catch (persistError) {
-      logger.warn(`Could not persist diff to database: ${persistError.message}`);
-    }
-
-    // Set model override if provided
     if (flags.model) {
       process.env.PAIR_REVIEW_MODEL = flags.model;
     }
 
-    // Start server
     console.log('Starting server...');
     const port = await startServer(db);
 
-    // Open browser to local review view
-    let url = `http://localhost:${port}/local/${sessionId}`;
+    let url = `http://localhost:${port}/local/${session.sessionId}`;
     if (flags.ai) {
       url += '?analyze=true';
     }
@@ -900,17 +921,15 @@ async function handleLocalReview(targetPath, flags = {}) {
     await open(url);
 
     console.log(`\nLocal review session started.`);
-    console.log(`Repository: ${repoPath}`);
-    console.log(`Branch: ${branch}`);
-    console.log(`Session ID: ${sessionId}\n`);
+    console.log(`Repository: ${session.repoPath}`);
+    console.log(`Branch: ${session.branch}`);
+    console.log(`Session ID: ${session.sessionId}\n`);
 
   } catch (error) {
-    // Close database on error
-    if (db) {
+    if (db && !setupComplete) {
       db.close();
     }
 
-    // Provide cleaner error messages for common issues
     if (error.message.includes('does not exist')) {
       console.error(`\n[ERROR] ${error.message}\n`);
     } else if (error.message.includes('Not a git repository')) {
@@ -1057,6 +1076,7 @@ async function detectAndBuildBranchInfo(repoPath, branch, options = {}) {
 
 module.exports = {
   handleLocalReview,
+  setupLocalReviewSession,
   findGitRoot,
   findMainGitRoot,
   getHeadSha,

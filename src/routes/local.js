@@ -24,8 +24,10 @@ const { broadcastReviewEvent } = require('../events/review-events');
 const { fireHooks, hasHooks } = require('../hooks/hook-runner');
 const { buildReviewStartedPayload, buildReviewLoadedPayload, buildAnalysisStartedPayload, buildAnalysisCompletedPayload, getCachedUser } = require('../hooks/payloads');
 const { mergeInstructions } = require('../utils/instructions');
-const { getGitHubToken, resolveLoadSkills, buildCouncilProviderOverrides } = require('../config');
-const { generateScopedDiff, computeScopedDigest, getBranchCommitCount, getFirstCommitSubject, detectAndBuildBranchInfo, findMergeBase, getCurrentBranch, getRepositoryName } = require('../local-review');
+const { getGitHubToken, resolveLoadSkills, buildCouncilProviderOverrides, getSummaryEnabled, getTourEnabled } = require('../config');
+const { backgroundQueue } = require('../ai/background-queue');
+const localReview = require('../local-review');
+const { generateScopedDiff, computeScopedDigest, getBranchCommitCount, getFirstCommitSubject, detectAndBuildBranchInfo, findMergeBase, getCurrentBranch, getRepositoryName } = localReview;
 const { STOPS, isValidScope, normalizeScope, reviewScope, includesBranch, DEFAULT_SCOPE } = require('../local-scope');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
 const { getShaAbbrevLength } = require('../git/sha-abbrev');
@@ -36,6 +38,12 @@ const { getDefaultBranch, tryGraphiteState } = require('../git/base-branch');
 const { CommentRepository } = require('../database');
 const { runExecutableAnalysis, getChangedFiles } = require('./executable-analysis');
 const { rejectUrlLikeLocalReviewPath } = require('../utils/local-path-input');
+const reviewsRouter = require('./reviews');
+const summaryGenerator = require('../ai/summary-generator');
+const tourGenerator = require('../ai/tour-generator');
+const { parseUnifiedDiffPatches } = require('../utils/diff-file-list');
+const { parseHunks } = require('../utils/diff-hunks');
+const { hashHunk } = require('../ai/hunk-hashing');
 const {
   activeAnalyses,
   localReviewDiffs,
@@ -519,6 +527,30 @@ router.post('/api/local/start', async (req, res) => {
       }
     });
 
+    (async () => {
+      await summaryGenerator.kickOffSummaryJob({
+        db,
+        config,
+        reviewId: sessionId,
+        diffText: diff,
+        worktreePath: repoPath,
+        reviewContext: { prTitle: branch },
+        trigger: 'auto'
+      });
+    })().catch((err) => logger.warn(`Hunk summary job failed for review ${sessionId}: ${err.message}`));
+
+    (async () => {
+      await tourGenerator.kickOffTourJob({
+        db,
+        config,
+        reviewId: sessionId,
+        diffText: diff,
+        worktreePath: repoPath,
+        reviewContext: { prTitle: branch },
+        trigger: 'auto'
+      });
+    })().catch((err) => logger.warn(`Tour job failed for review ${sessionId}: ${err.message}`));
+
   } catch (error) {
     logger.error(`Error starting local review: ${error.message}`);
     res.status(500).json({
@@ -719,6 +751,48 @@ router.get('/api/local/:reviewId', async (req, res) => {
       }).catch(err => { logger.warn(`Review hook failed: ${err.message}`); });
     }
 
+    // Background: re-trigger hunk summary + tour generation on review load.
+    // Self-invoked so any rejection here cannot reach the outer try/catch
+    // and call res.status(500) on an already-flushed response.
+    (async () => {
+      let bgDiffText = getLocalReviewDiff(reviewId)?.diff;
+      if (!bgDiffText) {
+        const persistedDiff = await reviewRepo.getLocalDiff(reviewId);
+        bgDiffText = persistedDiff?.diff;
+      }
+      if (!bgDiffText) {
+        logger.debug(`Skipping background AI kickoff for review ${reviewId}: no diff available`);
+        return;
+      }
+      const reviewContext = { prTitle: review.name || branchName };
+      const results = await Promise.allSettled([
+        summaryGenerator.kickOffSummaryJob({
+          db,
+          config: localConfig,
+          reviewId,
+          diffText: bgDiffText,
+          worktreePath: review.local_path,
+          reviewContext,
+          trigger: 'auto'
+        }),
+        tourGenerator.kickOffTourJob({
+          db,
+          config: localConfig,
+          reviewId,
+          diffText: bgDiffText,
+          worktreePath: review.local_path,
+          reviewContext,
+          trigger: 'auto'
+        })
+      ]);
+      const labels = ['Hunk summary', 'Tour'];
+      results.forEach((r, i) => {
+        if (r.status === 'rejected') {
+          logger.warn(`${labels[i]} kickoff failed for review ${reviewId}: ${r.reason?.message || r.reason}`);
+        }
+      });
+    })().catch((err) => logger.warn(`Background AI kickoff failed for review ${reviewId}: ${err.message}`));
+
   } catch (error) {
     logger.error('Error fetching local review:', error.stack || error.message);
     res.status(500).json({
@@ -805,7 +879,11 @@ router.get('/api/local/:reviewId/diff', async (req, res) => {
 
     if ((hideWhitespace || baseBranchOverride) && review.local_path) {
       try {
-        const wsResult = await generateScopedDiff(review.local_path, scopeStart, scopeEnd, baseBranch, { hideWhitespace });
+        // Call via the module namespace so tests can stub `generateScopedDiff`
+        // with `vi.spyOn(localReview, 'generateScopedDiff')`. The destructured
+        // top-level binding is captured at require time and would not honor a
+        // spy.
+        const wsResult = await localReview.generateScopedDiff(review.local_path, scopeStart, scopeEnd, baseBranch, { hideWhitespace });
         diffData = { diff: wsResult.diff, stats: wsResult.stats };
       } catch (wsError) {
         logger.warn(`Could not generate diff for review #${reviewId}: ${wsError.message}`);
@@ -854,6 +932,52 @@ router.get('/api/local/:reviewId/diff', async (req, res) => {
       }
     }
 
+    // Compute per-file hunk hashes for the hunk-summary feature.
+    //
+    // The frontend stamps these hashes onto rendered hunks BY INDEX
+    // (`hunkHashes[blockIndex]`), so the array MUST be aligned to the
+    // diff that was actually returned to the client. Two cases:
+    //
+    //   1. `?w=1`: `git diff -w` only DROPS whitespace-only hunks; it
+    //      never rewrites kept hunks. The frontend renderPatch length
+    //      guard catches the drop case (mismatch between canonical hash
+    //      count and rendered block count) and bails. So for kept hunks
+    //      the canonical hash still identifies the right rendered hunk
+    //      AND matches the persisted summary key — fall back to the
+    //      canonical diff here for hash computation.
+    //
+    //   2. `?base=<branch>`: regen produces a DIFFERENT diff against a
+    //      different base. Hunk counts may match by coincidence, but the
+    //      content can differ. Hashing the canonical diff would mount a
+    //      summary onto an override hunk whose code it doesn't describe
+    //      — silent and wrong. Hash the override diff instead so:
+    //        - identical-content hunks (hash equals canonical) still
+    //          match a persisted summary and mount correctly;
+    //        - divergent-content hunks miss (hash mismatch) and stay
+    //          unmounted — visibly missing rather than silently wrong.
+    let canonicalDiff = diffContent;
+    if (hideWhitespace && !baseBranchOverride) {
+      const cached = getLocalReviewDiff(reviewId);
+      if (cached?.diff) {
+        canonicalDiff = cached.diff;
+      } else {
+        const persisted = await reviewRepo.getLocalDiff(reviewId);
+        if (persisted?.diff) canonicalDiff = persisted.diff;
+      }
+    }
+    const hunkHashesByFile = {};
+    if (canonicalDiff) {
+      const filePatchMap = parseUnifiedDiffPatches(canonicalDiff);
+      for (const [filePath, filePatch] of filePatchMap.entries()) {
+        const hunks = parseHunks(filePatch);
+        if (hunks.length > 0) {
+          hunkHashesByFile[filePath] = hunks.map((h) =>
+            hashHunk(filePath, `${h.header}\n${h.lines.join('\n')}`)
+          );
+        }
+      }
+    }
+
     const diffElapsed = Date.now() - tEndpoint;
     if (diffElapsed > 200) {
       logger.debug(`[perf] diff#${reviewId} took ${diffElapsed}ms (threshold: 200ms)`);
@@ -861,6 +985,7 @@ router.get('/api/local/:reviewId/diff', async (req, res) => {
     res.json({
       diff: diffContent || '',
       generated_files: generatedFiles,
+      hunk_hashes_by_file: hunkHashesByFile,
       stats: {
         trackedChanges: stats?.trackedChanges || 0,
         untrackedFiles: stats?.untrackedFiles || 0,
@@ -1605,6 +1730,25 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
       }
     });
 
+    // Re-kick the summary and tour jobs against the fresh diff. Each kickoff
+    // is dedup'd by digest (summaries) or hash (tour); a no-op when the
+    // canonical diff is unchanged (e.g. user clicked refresh but nothing
+    // upstream changed). When the digest IS new, the kickoffs auto-cancel
+    // the stale in-flight job before enqueueing the fresh one — see
+    // kickOffSummaryJob / kickOffTourJob.
+    const config = req.app.get('config') || {};
+    const reviewContext = { prTitle: branchName || review.local_head_branch || undefined };
+    (async () => {
+      await summaryGenerator.kickOffSummaryJob({
+        db, config, reviewId, diffText: diff, worktreePath: localPath, reviewContext, trigger: 'auto'
+      });
+    })().catch((err) => logger.warn(`Hunk summary job failed for review ${reviewId}: ${err.message}`));
+    (async () => {
+      await tourGenerator.kickOffTourJob({
+        db, config, reviewId, diffText: diff, worktreePath: localPath, reviewContext, trigger: 'auto'
+      });
+    })().catch((err) => logger.warn(`Tour job failed for review ${reviewId}: ${err.message}`));
+
   } catch (error) {
     logger.error('Error refreshing local diff:', error);
     res.status(500).json({
@@ -1683,7 +1827,29 @@ router.post('/api/local/:reviewId/resolve-head-change', async (req, res) => {
       // branch-ahead commit, making the Branch scope stop selectable.
       const branchAvailable = isBranchAvailable(headBranch, scopeStart, localPath);
 
-      return res.json({ success: true, action: 'updated', branchAvailable });
+      res.json({ success: true, action: 'updated', branchAvailable });
+
+      // Re-kick the summary and tour jobs against the freshly-recomputed diff.
+      // The frontend's _resolveHeadChange path applies the refreshed diff in
+      // place via GET /diff (which is read-only and does NOT enqueue), so
+      // without an explicit kickoff here the in-flight stale job from the
+      // previous HEAD would keep burning tokens against a now-stale diff.
+      // Each kickoff is dedup'd by digest/hash; a no-op when the recomputed
+      // diff matches. When the digest IS new, the kickoffs auto-cancel the
+      // stale in-flight job before enqueueing the fresh one.
+      const config = req.app.get('config') || {};
+      const reviewContext = { prTitle: headBranch || review.local_head_branch || undefined };
+      (async () => {
+        await summaryGenerator.kickOffSummaryJob({
+          db, config, reviewId, diffText: scopedResult.diff, worktreePath: localPath, reviewContext, trigger: 'auto'
+        });
+      })().catch((err) => logger.warn(`Hunk summary job failed for review ${reviewId}: ${err.message}`));
+      (async () => {
+        await tourGenerator.kickOffTourJob({
+          db, config, reviewId, diffText: scopedResult.diff, worktreePath: localPath, reviewContext, trigger: 'auto'
+        });
+      })().catch((err) => logger.warn(`Tour job failed for review ${reviewId}: ${err.message}`));
+      return;
     }
 
     // action === 'new-session'
@@ -1838,6 +2004,23 @@ router.post('/api/local/:reviewId/set-scope', async (req, res) => {
         unstagedChanges: stats.unstagedChanges || 0
       }
     });
+
+    // Re-kick the summary and tour jobs against the freshly-scoped diff.
+    // Each kickoff is dedup'd by diff digest/hash; when the scope change
+    // actually produces a different diff, the kickoffs auto-cancel the
+    // stale in-flight job before enqueueing the fresh one.
+    const config = req.app.get('config') || {};
+    const reviewContext = { prTitle: currentBranch || review.local_head_branch || undefined };
+    (async () => {
+      await summaryGenerator.kickOffSummaryJob({
+        db, config, reviewId, diffText: diff, worktreePath: localPath, reviewContext, trigger: 'auto'
+      });
+    })().catch((err) => logger.warn(`Hunk summary job failed for review ${reviewId}: ${err.message}`));
+    (async () => {
+      await tourGenerator.kickOffTourJob({
+        db, config, reviewId, diffText: diff, worktreePath: localPath, reviewContext, trigger: 'auto'
+      });
+    })().catch((err) => logger.warn(`Tour job failed for review ${reviewId}: ${err.message}`));
 
   } catch (error) {
     logger.error(`Error setting scope: ${error.message}`);
@@ -2141,6 +2324,130 @@ router.post('/api/local/:reviewId/analyses/council', async (req, res) => {
   } catch (error) {
     logger.error('Error starting local council analysis:', error);
     res.status(500).json({ error: 'Failed to start council analysis' });
+  }
+});
+
+/**
+ * POST /api/local/:reviewId/jobs/:jobKey/start
+ *
+ * Manually trigger a summary or tour generation job for this local review.
+ * Used by the frontend when `auto_generate` is off and the user clicks the
+ * toolbar button.
+ *
+ * Mirrors the server-side kickoff that runs on local review load, but passes
+ * `trigger: 'manual'` so it bypasses the `auto_generate` gate (the `enabled`
+ * gate still applies — disabled features return 409).
+ *
+ * Request:
+ *   - `jobKey` path param: `summary` or `tour`
+ *
+ * Responses:
+ *   - 200 `{ started: true,  alreadyRunning: false }` — enqueued
+ *   - 200 `{ started: false, alreadyRunning: true  }` — feature on but a job
+ *                                                       is already in flight
+ *                                                       (idempotent no-op)
+ *   - 200 `{ started: false, reason: 'no-diff' }`   — diff is empty
+ *   - 400 `{ error: 'Invalid jobKey' }`             — unknown jobKey
+ *   - 404 `{ error: '...' }`                        — review not found
+ *   - 409 `{ error: '... disabled' }`               — feature disabled in config
+ */
+const LOCAL_MANUAL_START_JOB_KEYS = new Set(['summary', 'tour']);
+
+router.post('/api/local/:reviewId/jobs/:jobKey/start', async (req, res) => {
+  try {
+    const reviewId = parseInt(req.params.reviewId, 10);
+    if (!Number.isInteger(reviewId) || reviewId <= 0) {
+      return res.status(400).json({ error: 'Invalid review ID' });
+    }
+    const { jobKey } = req.params;
+    if (!LOCAL_MANUAL_START_JOB_KEYS.has(jobKey)) {
+      return res.status(400).json({ error: `Invalid jobKey "${jobKey}" (expected "summary" or "tour")` });
+    }
+
+    const db = req.app.get('db');
+    const config = req.app.get('config') || {};
+
+    if (jobKey === 'summary' && !getSummaryEnabled(config)) {
+      return res.status(409).json({ error: 'Summaries feature is disabled in config' });
+    }
+    if (jobKey === 'tour' && !getTourEnabled(config)) {
+      return res.status(409).json({ error: 'Tours feature is disabled in config' });
+    }
+
+    const reviewRepo = new ReviewRepository(db);
+    const review = await reviewRepo.getLocalReviewById(reviewId);
+    if (!review) {
+      return res.status(404).json({ error: `Local review #${reviewId} not found` });
+    }
+
+    const localDiff = await reviewRepo.getLocalDiff(reviewId);
+    const diffText = localDiff ? (localDiff.diff || '') : '';
+    const worktreePath = review.local_path || null;
+
+    if (!diffText || !worktreePath) {
+      return res.json({ started: false, reason: 'no-diff' });
+    }
+
+    const activeJobType = typeof backgroundQueue.findActiveJobType === 'function'
+      ? backgroundQueue.findActiveJobType(reviewId, jobKey === 'summary' ? 'summaries' : 'tour')
+      : null;
+    if (activeJobType) {
+      return res.json({ started: false, alreadyRunning: true });
+    }
+
+    const reviewContext = {
+      prTitle: review.name || review.local_head_branch || undefined
+    };
+
+    if (jobKey === 'summary') {
+      Promise.resolve(summaryGenerator.kickOffSummaryJob({
+        db, config, reviewId, diffText, worktreePath, reviewContext, trigger: 'manual'
+      })).catch((err) => logger.warn(`Manual hunk summary kickoff failed for review ${reviewId}: ${err.message}`));
+    } else {
+      Promise.resolve(tourGenerator.kickOffTourJob({
+        db, config, reviewId, diffText, worktreePath, reviewContext, trigger: 'manual'
+      })).catch((err) => logger.warn(`Manual tour kickoff failed for review ${reviewId}: ${err.message}`));
+    }
+
+    return res.json({ started: true, alreadyRunning: false });
+  } catch (error) {
+    logger.error(`Error starting manual job for local review: ${error.message}`);
+    res.status(500).json({ error: 'Failed to start job: ' + error.message });
+  }
+});
+
+/**
+ * POST /api/local/:reviewId/jobs/:jobKey/cancel
+ *
+ * Local-mode wrapper around the shared cancel handler in reviews.js.
+ * The unified `/api/reviews/:reviewId/jobs/:jobKey/cancel` already works
+ * for local reviews (both modes share the `reviews` table), but exposing
+ * it under both prefixes lets the frontend pick whichever helper matches
+ * its current mode without a special case. See `handleJobCancel` in
+ * `src/routes/reviews.js` for the canonical implementation.
+ */
+router.post('/api/local/:reviewId/jobs/:jobKey/cancel', async (req, res) => {
+  try {
+    const reviewId = parseInt(req.params.reviewId, 10);
+    if (isNaN(reviewId) || reviewId <= 0) {
+      return res.status(400).json({ error: 'Invalid review ID' });
+    }
+    const db = req.app.get('db');
+    // Same shape that validateReviewId attaches — we re-derive here because
+    // local routes don't pass through that middleware by convention.
+    const review = await queryOne(db, 'SELECT * FROM reviews WHERE id = ?', [reviewId]);
+    if (!review) {
+      return res.status(404).json({ error: `Review #${reviewId} not found` });
+    }
+    req.reviewId = reviewId;
+    req.review = review;
+    // await (not return) so any rejection from the delegated handler is
+    // caught by the outer try/catch — Express 4 does not forward rejected
+    // promises from async route handlers.
+    await reviewsRouter.handleJobCancel(req, res);
+  } catch (error) {
+    logger.error(`Error cancelling background job for local review: ${error.message}`);
+    res.status(500).json({ error: 'Failed to cancel background job' });
   }
 });
 

@@ -25,7 +25,8 @@ const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs').promises;
 const path = require('path');
-const { getGitHubToken, getWorktreeDisplayName, resolveLoadSkills, buildCouncilProviderOverrides, getRepoSkipBulkFetch } = require('../config');
+const { getGitHubToken, getWorktreeDisplayName, resolveLoadSkills, buildCouncilProviderOverrides, getRepoSkipBulkFetch, getSummaryEnabled, getTourEnabled } = require('../config');
+const { backgroundQueue } = require('../ai/background-queue');
 const logger = require('../utils/logger');
 const { buildDiffLineSet } = require('../utils/diff-annotator');
 const { broadcastReviewEvent } = require('../events/review-events');
@@ -34,6 +35,8 @@ const { buildReviewStartedPayload, buildReviewLoadedPayload, buildAnalysisStarte
 const simpleGit = require('simple-git');
 const { GIT_DIFF_FLAGS_ARRAY, GIT_DIFF_SUMMARY_FLAGS_ARRAY } = require('../git/diff-flags');
 const { walkPRStack, DEFAULT_TRUNK_BRANCHES } = require('../github/stack-walker');
+const summaryGenerator = require('../ai/summary-generator');
+const tourGenerator = require('../ai/tour-generator');
 const {
   activeAnalyses,
   reviewToAnalysisId,
@@ -45,7 +48,9 @@ const {
   registerProcess: registerProcessForCancellation
 } = require('./shared');
 const { safeParseJson } = require('../utils/safe-parse-json');
-const { mergeChangedFilesWithDiff } = require('../utils/diff-file-list');
+const { mergeChangedFilesWithDiff, parseUnifiedDiffPatches } = require('../utils/diff-file-list');
+const { parseHunks } = require('../utils/diff-hunks');
+const { hashHunk } = require('../ai/hunk-hashing');
 const { resolveOriginalFileContentSpecs } = require('../utils/diff-file-content');
 const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
 const { TIERS, TIER_ALIASES, VALID_TIERS, resolveTier } = require('../ai/prompts/config');
@@ -55,6 +60,57 @@ const { runExecutableAnalysis } = require('./executable-analysis');
 const analysesRouter = require('./analyses');
 const { worktreeLock } = require('../git/worktree-lock');
 const router = express.Router();
+
+/**
+ * Compute per-file hunk hashes from a canonical (unfiltered) unified diff.
+ * Returns a Map<filePath, string[]> where the array is parallel to the order
+ * `parseHunks(filePatch)` returns hunks. The frontend's `parseDiffIntoBlocks`
+ * walks hunks in the same order, so `hunk_hashes[i]` matches `block[i]`.
+ *
+ * This is computed from the canonical (non-whitespace-filtered) diff so that
+ * the resulting hashes always match the keys persisted in `hunk_summaries`.
+ * Even when the rendered patch is `?w=1` (whitespace-filtered), the hashes
+ * stay aligned to the canonical hunks.
+ *
+ * @param {string} canonicalDiff - Full unified diff (NOT whitespace-filtered)
+ * @returns {Map<string, string[]>}
+ */
+function computeHunkHashesFromDiff(canonicalDiff) {
+  const result = new Map();
+  if (!canonicalDiff) return result;
+  const filePatchMap = parseUnifiedDiffPatches(canonicalDiff);
+  for (const [filePath, filePatch] of filePatchMap.entries()) {
+    const hunks = parseHunks(filePatch);
+    const hashes = hunks.map((h) => hashHunk(filePath, `${h.header}\n${h.lines.join('\n')}`));
+    result.set(filePath, hashes);
+  }
+  return result;
+}
+
+/**
+ * Decorate a `changed_files` array with a parallel `hunk_hashes` array per
+ * file. Hashes come from the canonical diff so they remain stable across
+ * whitespace-filtered renders.
+ *
+ * @param {Array<object>} changedFiles
+ * @param {string} canonicalDiff
+ * @returns {Array<object>} New array; inputs are not mutated.
+ */
+function attachHunkHashes(changedFiles, canonicalDiff) {
+  if (!Array.isArray(changedFiles) || changedFiles.length === 0) return changedFiles;
+  const hashes = computeHunkHashesFromDiff(canonicalDiff);
+  return changedFiles.map((file) => {
+    if (typeof file === 'string') return file;
+    const filePath = file?.file;
+    if (!filePath) return file;
+    const fileHashes = hashes.get(filePath);
+    if (!fileHashes) return file;
+    return { ...file, hunk_hashes: fileHashes };
+  });
+}
+
+module.exports._computeHunkHashesFromDiff = computeHunkHashesFromDiff;
+module.exports._attachHunkHashes = attachHunkHashes;
 
 /**
  * Sync pending draft review from GitHub with local database
@@ -254,8 +310,13 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
       }
     }
 
-    // Prepare response
-    const changedFiles = mergeChangedFilesWithDiff(extendedData.changed_files || [], extendedData.diff || '');
+    // Prepare response. Hunk hashes are computed from the canonical diff so
+    // they remain stable across whitespace-filtered renders (the rendered
+    // patch may be filtered, but the persisted hash keys are not).
+    const changedFiles = attachHunkHashes(
+      mergeChangedFilesWithDiff(extendedData.changed_files || [], extendedData.diff || ''),
+      extendedData.diff || ''
+    );
 
     // Use review.id instead of prMetadata.id to avoid ID collision with local mode
     const response = {
@@ -313,6 +374,40 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
         fireHooks(hookEvent, payload, config);
       }).catch(err => { logger.warn(`Review hook failed: ${err.message}`); });
     }
+
+    (async () => {
+      const reviewContext = {
+        prTitle: prMetadata.title,
+        prDescription: prMetadata.description,
+        changedFiles: changedFiles.map((f) => (typeof f === 'string' ? f : (f.filename || f.file || f.path))).filter(Boolean)
+      };
+      const results = await Promise.allSettled([
+        summaryGenerator.kickOffSummaryJob({
+          db,
+          config,
+          reviewId: review.id,
+          diffText: extendedData.diff,
+          worktreePath: extendedData.worktree_path,
+          reviewContext,
+          trigger: 'auto'
+        }),
+        tourGenerator.kickOffTourJob({
+          db,
+          config,
+          reviewId: review.id,
+          diffText: extendedData.diff,
+          worktreePath: extendedData.worktree_path,
+          reviewContext,
+          trigger: 'auto'
+        })
+      ]);
+      const labels = ['Hunk summary', 'Tour'];
+      results.forEach((r, i) => {
+        if (r.status === 'rejected') {
+          logger.warn(`${labels[i]} kickoff failed for review ${review.id}: ${r.reason?.message || r.reason}`);
+        }
+      });
+    })().catch((err) => logger.warn(`Background AI kickoff failed for review ${review.id}: ${err.message}`));
 
   } catch (error) {
     console.error('Error fetching PR data:', error);
@@ -506,11 +601,156 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
 
     res.json(response);
 
+    // Re-kick the summary and tour jobs against the freshly-refreshed diff.
+    // The frontend's refreshPR() calls this POST then GETs /diff (which is a
+    // read-only endpoint and does NOT enqueue), so without an explicit
+    // kickoff here the in-flight stale job would keep burning tokens until
+    // it completes. Each kickoff is dedup'd by diff digest/hash; when the
+    // diff actually changed (new PR HEAD), the kickoffs auto-cancel the
+    // stale in-flight job before enqueueing the fresh one.
+    (async () => {
+      const reviewContext = {
+        prTitle: prMetadata.title,
+        prDescription: prMetadata.description,
+        changedFiles: (changedFiles || []).map((f) => (typeof f === 'string' ? f : (f.filename || f.file || f.path))).filter(Boolean)
+      };
+      const results = await Promise.allSettled([
+        summaryGenerator.kickOffSummaryJob({
+          db, config, reviewId: review.id, diffText: extendedData.diff, worktreePath: extendedData.worktree_path, reviewContext, trigger: 'auto'
+        }),
+        tourGenerator.kickOffTourJob({
+          db, config, reviewId: review.id, diffText: extendedData.diff, worktreePath: extendedData.worktree_path, reviewContext, trigger: 'auto'
+        })
+      ]);
+      const labels = ['Hunk summary', 'Tour'];
+      results.forEach((r, i) => {
+        if (r.status === 'rejected') {
+          logger.warn(`${labels[i]} kickoff failed for review ${review.id} on refresh: ${r.reason?.message || r.reason}`);
+        }
+      });
+    })().catch((err) => logger.warn(`Background AI kickoff failed for review ${review.id} on refresh: ${err.message}`));
+
   } catch (error) {
     logger.error('Error refreshing PR:', error);
     res.status(500).json({
       error: 'Failed to refresh pull request: ' + error.message
     });
+  }
+});
+
+/**
+ * POST /api/pr/:owner/:repo/:number/jobs/:jobKey/start
+ *
+ * Manually trigger a summary or tour generation job for this PR. Used by the
+ * frontend when `auto_generate` is off and the user clicks the toolbar button.
+ *
+ * Mirrors the server-side kickoff that runs on PR load, but passes
+ * `trigger: 'manual'` so it bypasses the `auto_generate` gate (the `enabled`
+ * gate still applies — disabled features return 409).
+ *
+ * Request:
+ *   - `jobKey` path param: `summary` or `tour`
+ *
+ * Responses:
+ *   - 200 `{ started: true,  alreadyRunning: false }` — enqueued
+ *   - 200 `{ started: false, alreadyRunning: true  }` — feature on but a job
+ *                                                       is already in flight
+ *                                                       (idempotent no-op)
+ *   - 200 `{ started: false, reason: 'no-diff' }`   — diff is empty
+ *   - 400 `{ error: 'Invalid jobKey' }`             — unknown jobKey
+ *   - 404 `{ error: '...' }`                        — PR not found
+ *   - 409 `{ error: '... disabled' }`               — feature disabled in config
+ */
+const MANUAL_START_JOB_KEYS = new Set(['summary', 'tour']);
+
+router.post('/api/pr/:owner/:repo/:number/jobs/:jobKey/start', async (req, res) => {
+  try {
+    const { owner, repo, number, jobKey } = req.params;
+    const prNumber = parseInt(number, 10);
+
+    if (!Number.isInteger(prNumber) || prNumber <= 0) {
+      return res.status(400).json({ error: 'Invalid pull request number' });
+    }
+    if (!MANUAL_START_JOB_KEYS.has(jobKey)) {
+      return res.status(400).json({ error: `Invalid jobKey "${jobKey}" (expected "summary" or "tour")` });
+    }
+
+    const repository = normalizeRepository(owner, repo);
+    const db = req.app.get('db');
+    const config = req.app.get('config') || {};
+
+    // Enforce the feature-enabled gate at the HTTP boundary so the frontend
+    // gets a clean 409 instead of a silent no-op from the generator.
+    if (jobKey === 'summary' && !getSummaryEnabled(config)) {
+      return res.status(409).json({ error: 'Summaries feature is disabled in config' });
+    }
+    if (jobKey === 'tour' && !getTourEnabled(config)) {
+      return res.status(409).json({ error: 'Tours feature is disabled in config' });
+    }
+
+    const prMetadata = await queryOne(db, `
+      SELECT id, pr_number, repository, title, description, pr_data
+      FROM pr_metadata
+      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
+    `, [prNumber, repository]);
+
+    if (!prMetadata) {
+      return res.status(404).json({
+        error: `Pull request #${prNumber} not found in repository ${repository}`
+      });
+    }
+
+    const reviewRepo = new ReviewRepository(db);
+    const { review } = await reviewRepo.getOrCreate({ prNumber, repository });
+
+    let extendedData = {};
+    try {
+      extendedData = prMetadata.pr_data ? JSON.parse(prMetadata.pr_data) : {};
+    } catch (parseError) {
+      logger.warn(`Could not parse pr_data for PR #${prNumber}: ${parseError.message}`);
+    }
+
+    const diffText = extendedData.diff || '';
+    const worktreePath = extendedData.worktree_path || null;
+
+    if (!diffText || !worktreePath) {
+      return res.json({ started: false, reason: 'no-diff' });
+    }
+
+    // Idempotency: if a job is already in flight for this review/job-type,
+    // don't double-start. The frontend already has the in-flight event stream.
+    const activeJobType = typeof backgroundQueue.findActiveJobType === 'function'
+      ? backgroundQueue.findActiveJobType(review.id, jobKey === 'summary' ? 'summaries' : 'tour')
+      : null;
+    if (activeJobType) {
+      return res.json({ started: false, alreadyRunning: true });
+    }
+
+    const reviewContext = {
+      prTitle: prMetadata.title,
+      prDescription: prMetadata.description,
+      changedFiles: (extendedData.changed_files || [])
+        .map((f) => (typeof f === 'string' ? f : (f.filename || f.file || f.path)))
+        .filter(Boolean)
+    };
+
+    // Kick off in the background — return the start status immediately so
+    // the frontend can switch the button to its generating state. Errors
+    // are logged but the HTTP response is already sent.
+    if (jobKey === 'summary') {
+      Promise.resolve(summaryGenerator.kickOffSummaryJob({
+        db, config, reviewId: review.id, diffText, worktreePath, reviewContext, trigger: 'manual'
+      })).catch((err) => logger.warn(`Manual hunk summary kickoff failed for review ${review.id}: ${err.message}`));
+    } else {
+      Promise.resolve(tourGenerator.kickOffTourJob({
+        db, config, reviewId: review.id, diffText, worktreePath, reviewContext, trigger: 'manual'
+      })).catch((err) => logger.warn(`Manual tour kickoff failed for review ${review.id}: ${err.message}`));
+    }
+
+    return res.json({ started: true, alreadyRunning: false });
+  } catch (error) {
+    logger.error('Error starting manual job:', error);
+    res.status(500).json({ error: 'Failed to start job: ' + error.message });
   }
 });
 
@@ -824,6 +1064,21 @@ router.get('/api/pr/:owner/:repo/:number/diff', async (req, res) => {
         ...file,
         generated: gitattributes.isGenerated(file.file)
       }));
+    }
+
+    // Hunk hashes MUST come from the canonical (unfiltered) diff. When
+    // hideWhitespace is on the rendered `diffContent` is the filtered diff,
+    // which would produce hashes that diverge from the keys persisted in
+    // `hunk_summaries`. We deliberately do NOT fall back to `diffContent`:
+    // if `prData.diff` is missing, fail closed and emit no hashes so the
+    // frontend skips anchoring rather than anchoring to misaligned hunks.
+    if (prData.diff) {
+      changedFiles = attachHunkHashes(changedFiles, prData.diff);
+    } else {
+      logger.warn(
+        `[hunk-hash] PR #${prNumber} ${repository}: no canonical prData.diff; ` +
+        'omitting hunk_hashes (summaries will not anchor for this response).'
+      );
     }
 
     // When diff was regenerated (whitespace), compute aggregate stats from

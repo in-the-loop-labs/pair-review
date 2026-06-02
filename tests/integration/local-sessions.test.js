@@ -1604,6 +1604,153 @@ describe('Local Sessions API', () => {
     });
   });
 
+  describe('kickOff* on diff-changing endpoints', () => {
+    // The summary-generator and tour-generator modules are loaded once by
+    // src/routes/local.js. We vi.spyOn the exports so we can observe calls
+    // from the route handlers without touching the real queue/provider.
+    const summaryGenerator = require('../../src/ai/summary-generator');
+    const tourGenerator = require('../../src/ai/tour-generator');
+
+    let summarySpy;
+    let tourSpy;
+
+    beforeEach(() => {
+      // Enable both features via app config so the kickoffs don't early-exit.
+      app.set('config', { summaries: { enabled: true }, tours: { enabled: true } });
+      summarySpy = vi.spyOn(summaryGenerator, 'kickOffSummaryJob').mockReturnValue(null);
+      tourSpy = vi.spyOn(tourGenerator, 'kickOffTourJob').mockReturnValue(null);
+    });
+
+    it('POST /refresh kicks off summary and tour jobs with the freshly computed diff', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      // Use the same SHA the default getHeadSha mock returns so the refresh
+      // path doesn't detect a HEAD change and bail out before the kickoffs.
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/mock/repo',
+        localHeadSha: 'abc123def456',
+        repository: 'owner/repo'
+      });
+
+      // generateScopedDiff (mocked in beforeEach) returns a known diff string.
+      const res = await request(app).post(`/api/local/${id}/refresh`).send({});
+      expect(res.status).toBe(200);
+
+      // The kickoffs are fired-and-forgotten after res.json — give microtasks
+      // a chance to run before assertions.
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(summarySpy).toHaveBeenCalledTimes(1);
+      expect(tourSpy).toHaveBeenCalledTimes(1);
+      const summaryArgs = summarySpy.mock.calls[0][0];
+      expect(summaryArgs.reviewId).toBe(id);
+      expect(summaryArgs.diffText).toContain('diff --git a/file.js b/file.js');
+      expect(summaryArgs.worktreePath).toBe('/mock/repo');
+      expect(summaryArgs.config).toEqual({ summaries: { enabled: true }, tours: { enabled: true } });
+      const tourArgs = tourSpy.mock.calls[0][0];
+      expect(tourArgs.reviewId).toBe(id);
+      expect(tourArgs.diffText).toContain('diff --git a/file.js b/file.js');
+      expect(tourArgs.worktreePath).toBe('/mock/repo');
+    });
+
+    it('POST /refresh does NOT kick off when HEAD changed on non-branch scope (response is deferred)', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/mock/repo',
+        localHeadSha: 'sha-before-refresh',
+        repository: 'owner/repo'
+      });
+      localReviewModule.getHeadSha.mockResolvedValue('sha-after-refresh');
+
+      const res = await request(app).post(`/api/local/${id}/refresh`).send({});
+      expect(res.status).toBe(200);
+      expect(res.body.headShaChanged).toBe(true);
+
+      await new Promise((resolve) => setImmediate(resolve));
+      // The handler returns early before recomputing the diff, so no kickoff
+      // should occur on this path. The resolve-head-change endpoint handles
+      // it once the user picks an action.
+      expect(summarySpy).not.toHaveBeenCalled();
+      expect(tourSpy).not.toHaveBeenCalled();
+    });
+
+    it('POST /set-scope kicks off summary and tour jobs with the freshly scoped diff', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/mock/repo',
+        localHeadSha: 'sha-fresh',
+        repository: 'owner/repo'
+      });
+
+      const res = await request(app)
+        .post(`/api/local/${id}/set-scope`)
+        .send({ scopeStart: 'unstaged', scopeEnd: 'unstaged' });
+      expect(res.status).toBe(200);
+
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(summarySpy).toHaveBeenCalledTimes(1);
+      expect(tourSpy).toHaveBeenCalledTimes(1);
+      const summaryArgs = summarySpy.mock.calls[0][0];
+      expect(summaryArgs.reviewId).toBe(id);
+      expect(summaryArgs.diffText).toContain('diff --git a/file.js b/file.js');
+      expect(summaryArgs.worktreePath).toBe('/mock/repo');
+    });
+
+    it('POST /resolve-head-change action="update" kicks off summary and tour jobs with the recomputed diff', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/mock/repo',
+        localHeadSha: 'oldsha',
+        repository: 'owner/repo',
+        localHeadBranch: 'feature-branch'
+      });
+      localReviewModule.getCurrentBranch.mockResolvedValue('feature-branch');
+
+      const res = await request(app)
+        .post(`/api/local/${id}/resolve-head-change`)
+        .send({ action: 'update', newHeadSha: 'newsha' });
+      expect(res.status).toBe(200);
+      expect(res.body.action).toBe('updated');
+
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(summarySpy).toHaveBeenCalledTimes(1);
+      expect(tourSpy).toHaveBeenCalledTimes(1);
+      const summaryArgs = summarySpy.mock.calls[0][0];
+      expect(summaryArgs.reviewId).toBe(id);
+      expect(summaryArgs.diffText).toContain('diff --git a/file.js b/file.js');
+      expect(summaryArgs.worktreePath).toBe('/mock/repo');
+      expect(summaryArgs.reviewContext).toEqual({ prTitle: 'feature-branch' });
+      const tourArgs = tourSpy.mock.calls[0][0];
+      expect(tourArgs.reviewId).toBe(id);
+      expect(tourArgs.diffText).toContain('diff --git a/file.js b/file.js');
+      expect(tourArgs.worktreePath).toBe('/mock/repo');
+    });
+
+    it('POST /resolve-head-change action="new-session" does NOT fire kickoffs on the old reviewId (frontend redirects)', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      const id = await reviewRepo.upsertLocalReview({
+        localPath: '/mock/repo',
+        localHeadSha: 'oldsha',
+        repository: 'owner/repo'
+      });
+
+      const res = await request(app)
+        .post(`/api/local/${id}/resolve-head-change`)
+        .send({ action: 'new-session', newHeadSha: 'newsha' });
+      expect(res.status).toBe(200);
+      expect(res.body.action).toBe('new-session');
+
+      await new Promise((resolve) => setImmediate(resolve));
+
+      // The new-session branch returns a fresh reviewId and the frontend
+      // redirects to /local/<newId>, whose GET metadata route handles its
+      // own kickoff. No kickoff fires on the old reviewId from this branch.
+      expect(summarySpy).not.toHaveBeenCalled();
+      expect(tourSpy).not.toHaveBeenCalled();
+    });
+  });
+
   describe('POST /api/local/:reviewId/resolve-head-change (branchAvailable)', () => {
     it('action "update" should return branchAvailable: true when on a non-default feature branch', async () => {
       const reviewRepo = new ReviewRepository(db);

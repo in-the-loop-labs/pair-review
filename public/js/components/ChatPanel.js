@@ -1275,13 +1275,15 @@ class ChatPanel {
     // attached as tabs are created/restored.
     this._ensureSubscriptions();
 
-    // Recognise thread context (external systems) alongside suggestion / user
-    // comment / file when deciding whether to open with explicit context.
+    // Recognise thread context (external systems) and tour context alongside
+    // suggestion / user comment / file when deciding whether to open with
+    // explicit context.
     const hasExplicitContext = !!(
       options.suggestionContext ||
       options.commentContext ||
       options.threadContext ||
-      options.fileContext
+      options.fileContext ||
+      options.tourContext
     );
 
     // First-time open behaviour:
@@ -1355,6 +1357,15 @@ class ChatPanel {
       this._sendFileContextMessage(options.fileContext);
       this._contextSource = 'file';
       this._contextItemId = null;
+    } else if (options.tourContext) {
+      // If opening with tour-stop context, inject it as a context card.
+      // Awaited because tour stops on context files (outside the PR diff)
+      // need an async file-content fetch to populate the snippet.
+      await this._sendTourContextMessage(options.tourContext);
+      this._contextSource = 'tour';
+      this._contextItemId = options.tourContext.stopIndex != null
+        ? String(options.tourContext.stopIndex)
+        : null;
     }
 
     // Gate input when reviewId is not yet available (PanelGroup auto-restore race)
@@ -2787,6 +2798,155 @@ class ChatPanel {
 
     // Render the compact context card in the UI
     this._addFileContextCard(contextData, { removable: true });
+  }
+
+  /**
+   * Store pending context and render a compact context card for a tour stop.
+   * Called when the user clicks "Chat about" on a tour-stop annotation.
+   * The context is NOT sent to the agent immediately — it is prepended to
+   * the next user message so the agent receives question + context together.
+   *
+   * Async because tour stops on context files (files NOT in the PR diff) need
+   * to fetch a code snippet via the file-content API so the agent receives a
+   * meaningful snippet — same shape as the diff-hunk enrichment used for stops
+   * inside the diff.
+   *
+   * @param {Object} ctx - Tour stop context
+   *   {stopIndex, totalStops, title, description, file, line_start, line_end, side}
+   * @returns {Promise<void>}
+   */
+  async _sendTourContextMessage(ctx) {
+    const tab = this._getActiveTab();
+    if (!tab) return;
+
+    // Remove empty state if present
+    const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
+    if (emptyState) emptyState.remove();
+
+    const stopLabel = (typeof ctx.stopIndex === 'number' && typeof ctx.totalStops === 'number')
+      ? `Stop ${ctx.stopIndex + 1} of ${ctx.totalStops}`
+      : 'Tour stop';
+
+    // Store structured context data for DB persistence (session resumption).
+    const contextData = {
+      type: 'tour stop',
+      title: ctx.title || stopLabel,
+      file: ctx.file || null,
+      line_start: ctx.line_start || null,
+      line_end: ctx.line_end || null,
+      side: ctx.side || null,
+      body: ctx.description || null,
+      stopIndex: typeof ctx.stopIndex === 'number' ? ctx.stopIndex : null,
+      totalStops: typeof ctx.totalStops === 'number' ? ctx.totalStops : null
+    };
+    tab.pendingContextData.push(contextData);
+
+    // Build the plain-text context for the agent.
+    const lines = [`The user wants to discuss this tour stop (${stopLabel}):`];
+    if (contextData.title) {
+      lines.push(`- Title: ${contextData.title}`);
+    }
+    if (contextData.file) {
+      let fileLine = `- File: ${contextData.file}`;
+      if (contextData.line_start) {
+        fileLine += ` (line ${contextData.line_start}${contextData.line_end && contextData.line_end !== contextData.line_start ? '-' + contextData.line_end : ''})`;
+      }
+      lines.push(fileLine);
+    }
+    if (contextData.body) {
+      lines.push(`- Description: ${contextData.body}`);
+    }
+
+    // Enrich with code snippet.
+    //
+    // Primary path: pull from the in-memory PR diff via DiffContext. This is
+    // synchronous and matches the shape used by suggestion/comment context.
+    //
+    // Fallback path: tour-renderer.prepareStop auto-adds context files (files
+    // outside the PR diff) via prManager.ensureContextFile. Those files have
+    // no entry in filePatches, so the lookup misses — but the agent benefits
+    // most from a snippet in exactly that case (file isn't visible in the
+    // diff). Fetch the file content and slice [line_start-5, line_end+5].
+    //
+    // Both paths render as a fenced code block so the agent sees a consistent
+    // shape. A failed fetch logs a warning and falls through to no snippet.
+    const patch = window.prManager?.filePatches?.get(contextData.file);
+    let snippet = null;
+    if (patch && window.DiffContext && contextData.line_start) {
+      const hunk = window.DiffContext.extractHunkForLines(
+        patch,
+        contextData.line_start,
+        contextData.line_end || contextData.line_start,
+        contextData.side
+      );
+      if (hunk) {
+        snippet = `- Diff hunk:\n\`\`\`\n${hunk}\n\`\`\``;
+      }
+    } else if (!patch && contextData.file && contextData.line_start) {
+      const sliced = await this._fetchContextFileSnippet(
+        contextData.file,
+        contextData.line_start,
+        contextData.line_end || contextData.line_start
+      );
+      if (sliced) {
+        snippet = `- File snippet:\n\`\`\`\n${sliced}\n\`\`\``;
+      }
+    }
+    if (snippet) {
+      lines.push(snippet);
+    }
+
+    tab.pendingContext.push(lines.join('\n'));
+
+    // Render the compact context card in the UI (reuses suggestion card shape).
+    this._addContextCard(contextData, { removable: true });
+  }
+
+  /**
+   * Fetch a small slice of file content for tour stops on context files
+   * (files outside the PR diff). Returns the slice with line numbers prefixed
+   * so the agent can correlate with the stop's line range, or null on failure.
+   *
+   * @param {string} file - File path (will be URI-encoded)
+   * @param {number} lineStart - 1-based first line of the stop range
+   * @param {number} lineEnd   - 1-based last line of the stop range (inclusive)
+   * @param {number} [padding=5] - Extra lines to include on each side
+   * @returns {Promise<string|null>}
+   */
+  async _fetchContextFileSnippet(file, lineStart, lineEnd, padding = 5) {
+    const reviewId = this.reviewId || window.prManager?.currentPR?.id;
+    if (!reviewId || !file || !lineStart) return null;
+
+    try {
+      const resp = await fetch(
+        `/api/reviews/${reviewId}/file-content/${encodeURIComponent(file)}`
+      );
+      if (!resp || !resp.ok) {
+        console.warn(
+          '[ChatPanel] context-file snippet fetch failed',
+          { file, status: resp && resp.status }
+        );
+        return null;
+      }
+      const data = await resp.json();
+      const allLines = Array.isArray(data?.lines) ? data.lines : null;
+      if (!allLines || allLines.length === 0) return null;
+
+      // Clamp to file bounds; convert to 0-based slice indices.
+      const startIdx = Math.max(0, lineStart - 1 - padding);
+      const endIdx = Math.min(allLines.length, lineEnd + padding);
+      if (endIdx <= startIdx) return null;
+
+      const out = [];
+      const pad = String(endIdx).length;
+      for (let i = startIdx; i < endIdx; i++) {
+        out.push(`${String(i + 1).padStart(pad, ' ')}: ${allLines[i]}`);
+      }
+      return out.join('\n');
+    } catch (err) {
+      console.warn('[ChatPanel] context-file snippet fetch threw', { file, err });
+      return null;
+    }
   }
 
   /**

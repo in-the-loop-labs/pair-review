@@ -2843,6 +2843,156 @@ describe('ChatPanel', () => {
   });
 
   // -----------------------------------------------------------------------
+  // _sendTourContextMessage — diff-hunk enrichment for in-diff stops,
+  // file-content fallback for tour stops on context files.
+  // -----------------------------------------------------------------------
+  describe('_sendTourContextMessage', () => {
+    const TOUR_CTX = {
+      stopIndex: 0,
+      totalStops: 2,
+      title: 'Auth handler',
+      description: 'Look at the new branch',
+      file: 'src/auth.js',
+      line_start: 12,
+      line_end: 14,
+      side: 'RIGHT',
+    };
+
+    beforeEach(() => {
+      // Suppress card rendering so we can inspect the active tab's pendingContext directly.
+      vi.spyOn(chatPanel, '_addContextCard').mockImplementation(() => {});
+      global.window.prManager = null;
+      global.window.DiffContext = {
+        extractHunkForLines: vi.fn(() => '@@ -10,3 +10,5 @@\n line a\n+new line\n line b'),
+        extractHunkRangesForFile: vi.fn(() => []),
+      };
+      global.fetch = vi.fn();
+    });
+
+    afterEach(() => {
+      global.window.prManager = null;
+      delete global.window.DiffContext;
+    });
+
+    it('uses the in-memory diff hunk when the file is in filePatches', async () => {
+      const filePatches = new Map();
+      filePatches.set('src/auth.js', 'PATCH-TEXT');
+      global.window.prManager = { filePatches, currentPR: { id: 1 } };
+
+      await chatPanel._sendTourContextMessage({ ...TOUR_CTX });
+
+      expect(window.DiffContext.extractHunkForLines).toHaveBeenCalledWith(
+        'PATCH-TEXT', 12, 14, 'RIGHT'
+      );
+      // No fallback fetch.
+      expect(global.fetch).not.toHaveBeenCalled();
+
+      expect(chatPanel._getActiveTab().pendingContext).toHaveLength(1);
+      const text = chatPanel._getActiveTab().pendingContext[0];
+      expect(text).toContain('Diff hunk:');
+      expect(text).toContain('@@ -10,3 +10,5 @@');
+      // No file-snippet header (that's the fallback path's label).
+      expect(text).not.toContain('File snippet:');
+    });
+
+    it('falls back to the file-content API when the file is NOT in filePatches', async () => {
+      global.window.prManager = { filePatches: new Map(), currentPR: { id: 42 } };
+      chatPanel.reviewId = 42;
+
+      // Lines 1..20, so a stop on 12..14 with padding 5 picks indices 6..18 (lines 7..19).
+      const lines = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`);
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: vi.fn().mockResolvedValue({ lines }),
+      });
+
+      await chatPanel._sendTourContextMessage({ ...TOUR_CTX });
+
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      expect(global.fetch).toHaveBeenCalledWith(
+        '/api/reviews/42/file-content/src%2Fauth.js'
+      );
+      // Diff-hunk extractor never runs without a patch.
+      expect(window.DiffContext.extractHunkForLines).not.toHaveBeenCalled();
+
+      const text = chatPanel._getActiveTab().pendingContext[0];
+      expect(text).toContain('File snippet:');
+      // Padding picks line_start-5 (=7) through line_end+5 (=19).
+      expect(text).toContain('7: line 7');
+      expect(text).toContain('12: line 12');
+      expect(text).toContain('14: line 14');
+      expect(text).toContain('19: line 19');
+      // Lines outside the padded window are excluded.
+      expect(text).not.toMatch(/(^|\n)\s*6: /);
+      expect(text).not.toMatch(/(^|\n)\s*20: /);
+    });
+
+    it('sends without a snippet and warns when the fallback fetch fails (non-2xx)', async () => {
+      global.window.prManager = { filePatches: new Map(), currentPR: { id: 7 } };
+      chatPanel.reviewId = 7;
+
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        json: vi.fn().mockResolvedValue({}),
+      });
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      await chatPanel._sendTourContextMessage({ ...TOUR_CTX });
+
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      const text = chatPanel._getActiveTab().pendingContext[0];
+      // Title/description/file/line still present.
+      expect(text).toContain('Auth handler');
+      expect(text).toContain('src/auth.js');
+      expect(text).toContain('line 12-14');
+      // But no snippet block.
+      expect(text).not.toContain('File snippet:');
+      expect(text).not.toContain('Diff hunk:');
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][0]).toContain('[ChatPanel]');
+
+      warnSpy.mockRestore();
+    });
+
+    it('sends without a snippet and warns when the fallback fetch throws', async () => {
+      global.window.prManager = { filePatches: new Map(), currentPR: { id: 7 } };
+      chatPanel.reviewId = 7;
+
+      global.fetch = vi.fn().mockRejectedValue(new Error('network down'));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      await expect(
+        chatPanel._sendTourContextMessage({ ...TOUR_CTX })
+      ).resolves.toBeUndefined();
+
+      const text = chatPanel._getActiveTab().pendingContext[0];
+      expect(text).not.toContain('File snippet:');
+      expect(warnSpy).toHaveBeenCalled();
+
+      warnSpy.mockRestore();
+    });
+
+    it('skips the fallback fetch entirely when the stop has no line_start', async () => {
+      global.window.prManager = { filePatches: new Map(), currentPR: { id: 9 } };
+      chatPanel.reviewId = 9;
+      global.fetch = vi.fn();
+
+      await chatPanel._sendTourContextMessage({
+        ...TOUR_CTX,
+        line_start: null,
+        line_end: null,
+      });
+
+      expect(global.fetch).not.toHaveBeenCalled();
+      const text = chatPanel._getActiveTab().pendingContext[0];
+      expect(text).not.toContain('File snippet:');
+      expect(text).not.toContain('Diff hunk:');
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // _removeContextCard
   // -----------------------------------------------------------------------
   describe('_removeContextCard', () => {

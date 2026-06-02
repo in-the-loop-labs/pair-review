@@ -12,6 +12,7 @@ const { AIProvider, registerProvider, quoteShellArgs } = require('./provider');
 const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { CancellationError, isAnalysisCancelled } = require('../routes/shared');
+const { wireAbortToChild, makeAbortError } = require('./abort-signal-wiring');
 
 // Directory containing bin scripts (git-diff-lines, etc.)
 const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
@@ -220,7 +221,7 @@ class CopilotProvider extends AIProvider {
     return new Promise((resolve, reject) => {
       // Note: Copilot does not support streaming — output is plain text returned on process exit, not JSONL.
       // onStreamEvent is therefore not destructured here (no StreamParser integration).
-      const { cwd = process.cwd(), timeout = 300000, level = 'unknown', analysisId, registerProcess, logPrefix } = options;
+      const { cwd = process.cwd(), timeout = 300000, level = 'unknown', analysisId, registerProcess, logPrefix, abortSignal } = options;
 
       const levelPrefix = logPrefix || `[Level ${level}]`;
       logger.info(`${levelPrefix} Executing Copilot CLI...`);
@@ -249,7 +250,9 @@ class CopilotProvider extends AIProvider {
           ...this.extraEnv,
           PATH: `${BIN_DIR}:${process.env.PATH}`
         },
-        shell: this.useShell
+        shell: this.useShell,
+        // Detach in shell mode so group-kill can reap the CLI grandchild.
+        detached: this.useShell
       });
 
       const pid = copilot.pid;
@@ -261,15 +264,21 @@ class CopilotProvider extends AIProvider {
         logger.info(`${levelPrefix} Registered process ${pid} for analysis ${analysisId}`);
       }
 
+      // Wire AbortSignal -> SIGTERM for tour/summary cancellation.
+      const abortWiring = wireAbortToChild(copilot, abortSignal, { logPrefix: levelPrefix, shell: this.useShell });
+
       let stdout = '';
       let stderr = '';
       let timeoutId = null;
       let settled = false;  // Guard against multiple resolve/reject calls
 
+      // Detach centralized in settle so timeout-then-close cannot leak
+      // an abort listener on the per-job AbortSignal.
       const settle = (fn, value) => {
         if (settled) return;
         settled = true;
         if (timeoutId) clearTimeout(timeoutId);
+        abortWiring.detach();
         fn(value);
       };
 
@@ -296,6 +305,15 @@ class CopilotProvider extends AIProvider {
       copilot.on('close', (code) => {
         if (settled) return;  // Already settled by timeout or error
 
+        // Detach is centralized in `settle`.
+
+        // BackgroundQueue-driven cancellation — mirror of claude-provider.
+        if (abortWiring.cancelled()) {
+          logger.info(`${levelPrefix} Copilot CLI terminated by user cancel (exit code ${code})`);
+          settle(reject, makeAbortError(`${levelPrefix} Cancelled by user`));
+          return;
+        }
+
         // Check for cancellation signals (SIGTERM=143, SIGKILL=137)
         const isCancellationCode = code === 143 || code === 137;
         if (isCancellationCode && analysisId && isAnalysisCancelled(analysisId)) {
@@ -320,7 +338,7 @@ class CopilotProvider extends AIProvider {
         }
 
         // Extract JSON from the response
-        const extracted = extractJSON(stdout, level);
+        const extracted = extractJSON(stdout, level, levelPrefix);
         if (extracted.success) {
           logger.success(`${levelPrefix} Successfully parsed JSON response`);
           settle(resolve, extracted.data);
@@ -352,6 +370,7 @@ class CopilotProvider extends AIProvider {
 
       // Handle errors
       copilot.on('error', (error) => {
+        // Detach happens inside `settle`.
         if (error.code === 'ENOENT') {
           logger.error(`${levelPrefix} Copilot CLI not found. Please ensure Copilot CLI is installed.`);
           settle(reject, new Error(`${levelPrefix} Copilot CLI not found. ${CopilotProvider.getInstallInstructions()}`));

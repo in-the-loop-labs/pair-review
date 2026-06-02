@@ -12,6 +12,7 @@ const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { CancellationError, isAnalysisCancelled } = require('../routes/shared');
 const { StreamParser, parseGeminiLine } = require('./stream-parser');
+const { wireAbortToChild, makeAbortError } = require('./abort-signal-wiring');
 
 // Directory containing bin scripts (git-diff-lines, etc.)
 const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
@@ -190,7 +191,7 @@ class GeminiProvider extends AIProvider {
    */
   async execute(prompt, options = {}) {
     return new Promise((resolve, reject) => {
-      const { cwd = process.cwd(), timeout = 300000, level = 'unknown', analysisId, registerProcess, onStreamEvent, logPrefix } = options;
+      const { cwd = process.cwd(), timeout = 300000, level = 'unknown', analysisId, registerProcess, onStreamEvent, logPrefix, abortSignal } = options;
 
       const levelPrefix = logPrefix || `[Level ${level}]`;
       logger.info(`${levelPrefix} Executing Gemini CLI...`);
@@ -203,7 +204,8 @@ class GeminiProvider extends AIProvider {
           ...this.extraEnv,
           PATH: `${BIN_DIR}:${process.env.PATH}`
         },
-        shell: this.useShell
+        shell: this.useShell,
+        detached: this.useShell
       });
 
       const pid = gemini.pid;
@@ -214,6 +216,9 @@ class GeminiProvider extends AIProvider {
         registerProcess(analysisId, gemini);
         logger.info(`${levelPrefix} Registered process ${pid} for analysis ${analysisId}`);
       }
+
+      // Wire AbortSignal -> SIGTERM for tour/summary cancellation.
+      const abortWiring = wireAbortToChild(gemini, abortSignal, { logPrefix: levelPrefix, shell: this.useShell });
 
       let stdout = '';
       let stderr = '';
@@ -226,6 +231,7 @@ class GeminiProvider extends AIProvider {
         if (settled) return;
         settled = true;
         if (timeoutId) clearTimeout(timeoutId);
+        abortWiring.detach();
         fn(value);
       };
 
@@ -276,9 +282,19 @@ class GeminiProvider extends AIProvider {
       gemini.on('close', (code) => {
         if (settled) return;  // Already settled by timeout or error
 
+        // Detach is centralized in `settle`.
+
         // Flush any remaining stream parser buffer
         if (streamParser) {
           streamParser.flush();
+        }
+
+        // BackgroundQueue-driven cancellation — see claude-provider for
+        // the rationale; pattern is mirrored here.
+        if (abortWiring.cancelled()) {
+          logger.info(`${levelPrefix} Gemini CLI terminated by user cancel (exit code ${code})`);
+          settle(reject, makeAbortError(`${levelPrefix} Cancelled by user`));
+          return;
         }
 
         // Check for cancellation signals (SIGTERM=143, SIGKILL=137)
@@ -355,6 +371,7 @@ class GeminiProvider extends AIProvider {
 
       // Handle errors
       gemini.on('error', (error) => {
+        // Detach happens inside `settle`.
         if (error.code === 'ENOENT') {
           logger.error(`${levelPrefix} Gemini CLI not found. Please ensure Gemini CLI is installed.`);
           settle(reject, new Error(`${levelPrefix} Gemini CLI not found. ${GeminiProvider.getInstallInstructions()}`));
@@ -429,7 +446,7 @@ class GeminiProvider extends AIProvider {
         // The accumulated assistant text contains the AI's response
         // Try to extract JSON from it (the AI was asked to output JSON)
         logger.debug(`${levelPrefix} Extracted ${assistantText.length} chars of assistant message text from JSONL`);
-        const extracted = extractJSON(assistantText, level);
+        const extracted = extractJSON(assistantText, level, levelPrefix);
         if (extracted.success) {
           return extracted;
         }
@@ -441,12 +458,12 @@ class GeminiProvider extends AIProvider {
       }
 
       // No assistant message found, try extracting JSON directly from stdout
-      const extracted = extractJSON(stdout, level);
+      const extracted = extractJSON(stdout, level, levelPrefix);
       return extracted;
 
     } catch (parseError) {
       // stdout might not be valid JSONL at all, try extracting JSON from it
-      const extracted = extractJSON(stdout, level);
+      const extracted = extractJSON(stdout, level, levelPrefix);
       if (extracted.success) {
         return extracted;
       }

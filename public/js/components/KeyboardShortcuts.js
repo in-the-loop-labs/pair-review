@@ -299,45 +299,29 @@ class KeyboardShortcuts {
   }
 
   /**
-   * Check if a modal is currently open (excluding our help overlay)
+   * Check if a modal is currently open (excluding our help overlay).
+   * Delegates to the shared ModalDetection utility so the selector list
+   * and visibility check stay in sync with PRManager's tour handler.
    * @returns {boolean} True if a modal is open
    */
   isModalOpen() {
-    // Check for common modal patterns in the codebase
-    const modalSelectors = [
-      '.modal-overlay:not(#keyboard-shortcuts-help)',
-      '.review-modal-overlay',
-      '.preview-modal-overlay',
-      '.confirm-dialog-overlay',
-      '.analysis-config-overlay',
-      '.ai-summary-modal-overlay',
-      '[role="dialog"]:not(#keyboard-shortcuts-help)'
-    ];
-
-    for (const selector of modalSelectors) {
-      const modal = document.querySelector(selector);
-      if (modal && this.isElementVisible(modal)) {
-        return true;
-      }
+    if (window.ModalDetection && typeof window.ModalDetection.isModalOpen === 'function') {
+      return window.ModalDetection.isModalOpen();
     }
-
     return false;
   }
 
   /**
-   * Check if an element is visible
+   * Check if an element is visible. Delegates to the shared
+   * ModalDetection utility.
    * @param {HTMLElement} element - The element to check
    * @returns {boolean} True if element is visible
    */
   isElementVisible(element) {
-    if (!element) return false;
-
-    const style = window.getComputedStyle(element);
-    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
-      return false;
+    if (window.ModalDetection && typeof window.ModalDetection.isElementVisible === 'function') {
+      return window.ModalDetection.isElementVisible(element);
     }
-
-    return true;
+    return Boolean(element);
   }
 
   /**

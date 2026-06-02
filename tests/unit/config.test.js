@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const childProcess = require('child_process');
-const { deepMerge, getGitHubToken, expandPath, resolveDbName, warnIfDevModeWithoutDbName, loadConfig, shouldSkipUpdateNotifier, _resetTokenCache, getRepoConfig, getRepoPath, getRepoCheckoutScript, getRepoWorktreeDirectory, getRepoWorktreeNameTemplate, getRepoCheckoutTimeout, resolveRepoOptions, getRepoResetScript, getRepoSkipBulkFetch, getRepoPoolSize, getRepoPoolFetchInterval, resolvePoolConfig, getWorktreeDisplayName, getConfigDir, getRepoLoadSkills, resolveLoadSkills, buildCouncilProviderOverrides } = require('../../src/config');
+const { deepMerge, getGitHubToken, expandPath, resolveDbName, warnIfDevModeWithoutDbName, loadConfig, shouldSkipUpdateNotifier, _resetTokenCache, getRepoConfig, getRepoPath, getRepoCheckoutScript, getRepoWorktreeDirectory, getRepoWorktreeNameTemplate, getRepoCheckoutTimeout, resolveRepoOptions, getRepoResetScript, getRepoSkipBulkFetch, getRepoPoolSize, getRepoPoolFetchInterval, resolvePoolConfig, getWorktreeDisplayName, getConfigDir, getRepoLoadSkills, resolveLoadSkills, buildCouncilProviderOverrides, getSummaryProvider, getSummaryModel, getTourProvider, getTourModel, getSummaryEnabled, getSummaryAutoGenerate, getTourEnabled, getTourAutoGenerate } = require('../../src/config');
 
 describe('config.js', () => {
   describe('getGitHubToken', () => {
@@ -1954,6 +1954,160 @@ describe('config.js', () => {
       expect(providerOverrides).toEqual({ load_skills: true });
       // Tier 1 (DB) takes precedence over tier 3 (provider)
       expect(providerOverridesMap.pi).toEqual({ load_skills: true });
+    });
+  });
+
+  describe('getSummaryProvider', () => {
+    it('returns summaries.provider when set', () => {
+      const config = { summaries: { provider: 'gemini' }, default_provider: 'claude' };
+      expect(getSummaryProvider(config)).toBe('gemini');
+    });
+
+    it('falls back to default_provider when summaries.provider is empty string', () => {
+      const config = { summaries: { provider: '' }, default_provider: 'claude' };
+      expect(getSummaryProvider(config)).toBe('claude');
+    });
+
+    it('falls back to default_provider when summaries.provider is missing', () => {
+      const config = { default_provider: 'codex' };
+      expect(getSummaryProvider(config)).toBe('codex');
+    });
+
+    it('falls back to DEFAULT_CONFIG.default_provider when neither is set', () => {
+      const config = {};
+      expect(getSummaryProvider(config)).toBe('claude');
+    });
+  });
+
+  describe('getSummaryModel', () => {
+    it('returns summaries.model when set', () => {
+      const config = { summaries: { model: 'haiku' }, default_model: 'opus' };
+      expect(getSummaryModel(config)).toBe('haiku');
+    });
+
+    it('uses fast-tier model from providerClass when summaries.model is empty', () => {
+      const config = { summaries: { model: '' }, default_model: 'opus' };
+      const FakeProvider = { getModels: () => [
+        { id: 'big', tier: 'thorough' },
+        { id: 'small', tier: 'fast' }
+      ]};
+      expect(getSummaryModel(config, FakeProvider)).toBe('small');
+    });
+
+    it('falls back to default_model when no providerClass given', () => {
+      const config = { summaries: { model: '' }, default_model: 'opus' };
+      expect(getSummaryModel(config)).toBe('opus');
+    });
+
+    it('falls back to default_model when providerClass has no fast tier', () => {
+      const config = { default_model: 'opus' };
+      const FakeProvider = { getModels: () => [
+        { id: 'big', tier: 'thorough' },
+        { id: 'medium', tier: 'balanced' }
+      ]};
+      expect(getSummaryModel(config, FakeProvider)).toBe('opus');
+    });
+
+    it('ignores providerClass when summaries.model is explicitly set', () => {
+      const config = { summaries: { model: 'explicit' }, default_model: 'opus' };
+      const FakeProvider = { getModels: () => [{ id: 'small', tier: 'fast' }] };
+      expect(getSummaryModel(config, FakeProvider)).toBe('explicit');
+    });
+
+    it('falls back to DEFAULT_CONFIG.default_model when neither is set', () => {
+      const config = {};
+      expect(getSummaryModel(config)).toBe('opus');
+    });
+  });
+
+  describe('getTourProvider', () => {
+    it('returns tours.provider when set', () => {
+      const config = { tours: { provider: 'codex' }, summaries: { provider: 'gemini' }, default_provider: 'claude' };
+      expect(getTourProvider(config)).toBe('codex');
+    });
+
+    it('falls back to summaries.provider when tours.provider empty', () => {
+      const config = { tours: { provider: '' }, summaries: { provider: 'gemini' }, default_provider: 'claude' };
+      expect(getTourProvider(config)).toBe('gemini');
+    });
+
+    it('falls back through summaries.provider chain to default_provider', () => {
+      const config = { default_provider: 'claude' };
+      expect(getTourProvider(config)).toBe('claude');
+    });
+
+    it('falls back to DEFAULT_CONFIG.default_provider when nothing is set', () => {
+      const config = {};
+      expect(getTourProvider(config)).toBe('claude');
+    });
+  });
+
+  describe('getTourModel', () => {
+    it('returns tours.model when set', () => {
+      const config = { tours: { model: 'opus' }, summaries: { model: 'haiku' }, default_model: 'sonnet' };
+      expect(getTourModel(config)).toBe('opus');
+    });
+
+    it('falls back to summaries.model when tours.model empty', () => {
+      const config = { tours: { model: '' }, summaries: { model: 'haiku' }, default_model: 'sonnet' };
+      expect(getTourModel(config)).toBe('haiku');
+    });
+
+    it('falls back to providerClass fast-tier when both empty', () => {
+      const config = { tours: { model: '' }, summaries: { model: '' }, default_model: 'opus' };
+      const FakeProvider = { getModels: () => [
+        { id: 'big', tier: 'thorough' },
+        { id: 'small', tier: 'fast' }
+      ]};
+      expect(getTourModel(config, FakeProvider)).toBe('small');
+    });
+
+    it('falls back to default_model when nothing matches', () => {
+      const config = { default_model: 'opus' };
+      expect(getTourModel(config)).toBe('opus');
+    });
+  });
+
+  describe('getSummaryEnabled / getSummaryAutoGenerate', () => {
+    it('getSummaryEnabled is true only when summaries.enabled === true', () => {
+      expect(getSummaryEnabled({ summaries: { enabled: true } })).toBe(true);
+      expect(getSummaryEnabled({ summaries: { enabled: false } })).toBe(false);
+      expect(getSummaryEnabled({ summaries: {} })).toBe(false);
+      expect(getSummaryEnabled({})).toBe(false);
+      expect(getSummaryEnabled(null)).toBe(false);
+      expect(getSummaryEnabled(undefined)).toBe(false);
+    });
+
+    it('getSummaryAutoGenerate defaults to true when unset and respects explicit false', () => {
+      expect(getSummaryAutoGenerate({ summaries: { auto_generate: true } })).toBe(true);
+      expect(getSummaryAutoGenerate({ summaries: { auto_generate: false } })).toBe(false);
+      // Absent key/object → default true (opt-out within the enabled flag).
+      expect(getSummaryAutoGenerate({ summaries: { enabled: true } })).toBe(true);
+      expect(getSummaryAutoGenerate({ summaries: {} })).toBe(true);
+      expect(getSummaryAutoGenerate({})).toBe(true);
+      expect(getSummaryAutoGenerate(null)).toBe(true);
+      expect(getSummaryAutoGenerate(undefined)).toBe(true);
+    });
+  });
+
+  describe('getTourEnabled / getTourAutoGenerate', () => {
+    it('getTourEnabled is true only when tours.enabled === true', () => {
+      expect(getTourEnabled({ tours: { enabled: true } })).toBe(true);
+      expect(getTourEnabled({ tours: { enabled: false } })).toBe(false);
+      expect(getTourEnabled({ tours: {} })).toBe(false);
+      expect(getTourEnabled({})).toBe(false);
+      expect(getTourEnabled(null)).toBe(false);
+      expect(getTourEnabled(undefined)).toBe(false);
+    });
+
+    it('getTourAutoGenerate defaults to true when unset and respects explicit false', () => {
+      expect(getTourAutoGenerate({ tours: { auto_generate: true } })).toBe(true);
+      expect(getTourAutoGenerate({ tours: { auto_generate: false } })).toBe(false);
+      expect(getTourAutoGenerate({ tours: { enabled: true } })).toBe(true);
+      expect(getTourAutoGenerate({ tours: {} })).toBe(true);
+      expect(getTourAutoGenerate({})).toBe(true);
+      expect(getTourAutoGenerate(null)).toBe(true);
+      expect(getTourAutoGenerate(undefined)).toBe(true);
     });
   });
 });

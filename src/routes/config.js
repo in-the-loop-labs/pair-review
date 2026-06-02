@@ -20,7 +20,14 @@ const {
   isCheckInProgress
 } = require('../ai');
 const { normalizeRepository } = require('../utils/paths');
-const { isRunningViaNpx, getGitHubToken } = require('../config');
+const {
+  isRunningViaNpx,
+  getGitHubToken,
+  getSummaryEnabled,
+  getSummaryAutoGenerate,
+  getTourEnabled,
+  getTourAutoGenerate
+} = require('../config');
 const { version } = require('../../package.json');
 const semver = require('semver');
 const { getAllChatProviders, getAllCachedChatAvailability } = require('../chat/chat-providers');
@@ -93,6 +100,14 @@ router.get('/api/config', (req, res) => {
     enable_graphite: config.enable_graphite === true,
     external_comments: config.external_comments !== false,
     chat_spinner: config.chat_spinner || 'dots',
+    summaries: {
+      enabled: getSummaryEnabled(config),
+      auto_generate: getSummaryAutoGenerate(config)
+    },
+    tours: {
+      enabled: getTourEnabled(config),
+      auto_generate: getTourAutoGenerate(config)
+    },
     // Share configuration for external review viewers.
     // - url: The base URL of the external share site
     // - method: Plumbed through for future use (e.g., POST-based share flows).

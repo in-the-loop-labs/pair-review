@@ -100,6 +100,10 @@ global.window.getComputedStyle = vi.fn(() => ({
   opacity: '1'
 }));
 
+// Load modal-detection first — KeyboardShortcuts.isElementVisible /
+// .isModalOpen delegate to window.ModalDetection.
+require('../../public/js/utils/modal-detection.js');
+
 // Import the KeyboardShortcuts module
 require('../../public/js/components/KeyboardShortcuts.js');
 

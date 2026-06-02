@@ -8,6 +8,22 @@
   "theme": "light",
   "default_provider": "claude",
   "default_model": "opus",
+  "_summaries_comment": "Configures the inline natural-language hunk-summary feature. enabled gates the feature entirely; auto_generate controls whether a summary job kicks off automatically on review load (false = require a manual click on the toolbar button). provider/model fall back to default_provider/default_model and the provider's fast-tier model. max_files/max_lines_added are perf caps that skip generation for overly large diffs.",
+  "summaries": {
+    "enabled": false,
+    "auto_generate": true,
+    "provider": "",
+    "model": "",
+    "max_files": 50,
+    "max_lines_added": 3000
+  },
+  "_tours_comment": "Configures the guided-tour feature. enabled gates the feature entirely; auto_generate controls whether a tour job kicks off automatically on review load (false = require a manual click on the toolbar button). provider/model fall back through summaries.provider, default_provider, and the provider's fast-tier model.",
+  "tours": {
+    "enabled": false,
+    "auto_generate": true,
+    "provider": "",
+    "model": ""
+  },
   "worktree_retention_days": 7,
   "dev_mode": false,
   "debug_stream": false,

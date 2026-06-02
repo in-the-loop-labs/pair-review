@@ -23,6 +23,20 @@ const DEFAULT_CONFIG = {
   theme: "light",
   default_provider: "claude",  // AI provider: 'claude', 'gemini', 'codex', 'copilot', 'opencode', 'cursor-agent', 'pi'
   default_model: "opus",       // Model within the provider (e.g., 'opus' for Claude, 'gemini-2.5-pro' for Gemini)
+  tours: {
+    enabled: false,            // When true, the guided-tour feature is available (toolbar button visible, etc.)
+    auto_generate: true,       // When true, a tour generation job is kicked off automatically on review load
+    provider: "",              // Provider for agentic tour generation. Empty = falls back to summaries.provider, then default_provider
+    model: ""                  // Model for tour generation. Empty = falls back to summaries.model resolution
+  },
+  summaries: {
+    enabled: false,            // When true, the hunk-summaries feature is available (toolbar button + per-file toggles visible)
+    auto_generate: true,       // When true, a summary generation job is kicked off automatically on review load
+    provider: "",              // Provider for one-shot hunk summary AI tasks. Empty = falls back to default_provider
+    model: "",                 // Model for hunk summary tasks. Empty = uses provider's fast-tier model, then default_model
+    max_files: 50,             // Skip summary generation for reviews touching more than this many files (perf cap)
+    max_lines_added: 3000      // Skip summary generation when the diff adds more than this many lines (perf cap)
+  },
   worktree_retention_days: 7,
   review_retention_days: 21,
   dev_mode: false,  // When true, disables static file caching for development
@@ -119,6 +133,98 @@ function getDefaultProvider(config) {
  */
 function getDefaultModel(config) {
   return getConfigValue(config, 'default_model', 'model') || DEFAULT_CONFIG.default_model;
+}
+
+/**
+ * Whether the summaries feature is enabled (toolbar button visible, kickoff allowed).
+ * @param {Object} config - Configuration object
+ * @returns {boolean}
+ */
+function getSummaryEnabled(config) {
+  return Boolean(config && config.summaries && config.summaries.enabled === true);
+}
+
+/**
+ * Whether summaries should auto-generate on review load. Defaults to true when
+ * unset so the feature stays opt-out within the enabled flag.
+ * @param {Object} config - Configuration object
+ * @returns {boolean}
+ */
+function getSummaryAutoGenerate(config) {
+  if (!config || !config.summaries) return true;
+  return config.summaries.auto_generate !== false;
+}
+
+/**
+ * Whether the tours feature is enabled (toolbar button visible, kickoff allowed).
+ * @param {Object} config - Configuration object
+ * @returns {boolean}
+ */
+function getTourEnabled(config) {
+  return Boolean(config && config.tours && config.tours.enabled === true);
+}
+
+/**
+ * Whether tours should auto-generate on review load. Defaults to true when
+ * unset so the feature stays opt-out within the enabled flag.
+ * @param {Object} config - Configuration object
+ * @returns {boolean}
+ */
+function getTourAutoGenerate(config) {
+  if (!config || !config.tours) return true;
+  return config.tours.auto_generate !== false;
+}
+
+/**
+ * Gets the summary provider for summary/tour generation
+ * Falls back to default_provider when summaries.provider is not set
+ * @param {Object} config - Configuration object
+ * @returns {string} - Provider name
+ */
+function getSummaryProvider(config) {
+  const explicit = config && config.summaries && config.summaries.provider;
+  return explicit || getDefaultProvider(config);
+}
+
+/**
+ * Gets the summary model for summary/tour generation
+ * Resolution order: summaries.model → providerClass fast-tier → default_model
+ * @param {Object} config - Configuration object
+ * @param {Function} [providerClass] - Optional provider class with static getModels()
+ * @returns {string} - Model name
+ */
+function getSummaryModel(config, providerClass = null) {
+  const explicit = config && config.summaries && config.summaries.model;
+  if (explicit) return explicit;
+  if (providerClass && typeof providerClass.getModels === 'function') {
+    const fast = providerClass.getModels().find(m => m.tier === 'fast');
+    if (fast) return fast.id;
+  }
+  return getDefaultModel(config);
+}
+
+/**
+ * Gets the provider for tour generation.
+ * Resolution order: tours.provider → summaries.provider → default_provider
+ * @param {Object} config - Configuration object
+ * @returns {string} - Provider name
+ */
+function getTourProvider(config) {
+  const explicit = config && config.tours && config.tours.provider;
+  return explicit || getSummaryProvider(config);
+}
+
+/**
+ * Gets the model for tour generation.
+ * Resolution order: tours.model → summaries.model → providerClass fast-tier → default_model
+ * @param {Object} config - Configuration object
+ * @param {Function} [providerClass] - Optional provider class with static getModels()
+ * @returns {string} - Model name
+ */
+function getTourModel(config, providerClass = null) {
+  const explicit = config && config.tours && config.tours.model;
+  if (explicit) return explicit;
+  return getSummaryModel(config, providerClass);
 }
 
 /**
@@ -763,6 +869,14 @@ module.exports = {
   getGitHubToken,
   getDefaultProvider,
   getDefaultModel,
+  getSummaryProvider,
+  getSummaryModel,
+  getSummaryEnabled,
+  getSummaryAutoGenerate,
+  getTourProvider,
+  getTourModel,
+  getTourEnabled,
+  getTourAutoGenerate,
   isRunningViaNpx,
   showWelcomeMessage,
   expandPath,

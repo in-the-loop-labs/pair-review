@@ -13,6 +13,7 @@ const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { CancellationError, isAnalysisCancelled } = require('../routes/shared');
 const { StreamParser, parseCodexLine } = require('./stream-parser');
+const { wireAbortToChild, makeAbortError } = require('./abort-signal-wiring');
 
 // Directory containing bin scripts (git-diff-lines, etc.)
 const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
@@ -242,7 +243,7 @@ class CodexProvider extends AIProvider {
    */
   async execute(prompt, options = {}) {
     return new Promise((resolve, reject) => {
-      const { cwd = process.cwd(), timeout = 300000, level = 'unknown', analysisId, registerProcess, onStreamEvent, logPrefix } = options;
+      const { cwd = process.cwd(), timeout = 300000, level = 'unknown', analysisId, registerProcess, onStreamEvent, logPrefix, abortSignal } = options;
 
       const levelPrefix = logPrefix || `[Level ${level}]`;
       logger.info(`${levelPrefix} Executing Codex CLI...`);
@@ -255,7 +256,10 @@ class CodexProvider extends AIProvider {
           ...this.extraEnv,
           PATH: `${BIN_DIR}:${process.env.PATH}`
         },
-        shell: this.useShell
+        shell: this.useShell,
+        // Detach in shell mode so wireAbortToChild can group-kill via
+        // process.kill(-pid). See claude-provider for the rationale.
+        detached: this.useShell
       });
 
       const pid = codex.pid;
@@ -267,6 +271,10 @@ class CodexProvider extends AIProvider {
         logger.info(`${levelPrefix} Registered process ${pid} for analysis ${analysisId}`);
       }
 
+      // Wire AbortSignal -> SIGTERM for tour/summary cancellation.
+      // shell flag triggers group-kill so the CLI grandchild dies with the shell.
+      const abortWiring = wireAbortToChild(codex, abortSignal, { logPrefix: levelPrefix, shell: this.useShell });
+
       let stdout = '';
       let stderr = '';
       let timeoutId = null;
@@ -274,10 +282,15 @@ class CodexProvider extends AIProvider {
       let lineBuffer = '';  // Buffer for incomplete JSONL lines
       let lineCount = 0;    // Count of JSONL events for progress tracking
 
+      // Centralize detach in `settle` so the abort listener is removed
+      // regardless of which exit path (close/timeout/error) wins. Avoids
+      // leaking a listener on the per-job AbortSignal that tour/summary
+      // generators reuse across many provider.execute() calls.
       const settle = (fn, value) => {
         if (settled) return;
         settled = true;
         if (timeoutId) clearTimeout(timeoutId);
+        abortWiring.detach();
         fn(value);
       };
 
@@ -328,9 +341,18 @@ class CodexProvider extends AIProvider {
       codex.on('close', (code) => {
         if (settled) return;  // Already settled by timeout or error
 
+        // Detach is centralized in `settle`.
+
         // Flush any remaining stream parser buffer
         if (streamParser) {
           streamParser.flush();
+        }
+
+        // BackgroundQueue-driven cancellation — mirror of claude-provider.
+        if (abortWiring.cancelled()) {
+          logger.info(`${levelPrefix} Codex CLI terminated by user cancel (exit code ${code})`);
+          settle(reject, makeAbortError(`${levelPrefix} Cancelled by user`));
+          return;
         }
 
         // Check for cancellation signals (SIGTERM=143, SIGKILL=137)
@@ -407,6 +429,7 @@ class CodexProvider extends AIProvider {
 
       // Handle errors
       codex.on('error', (error) => {
+        // Detach happens inside `settle`.
         if (error.code === 'ENOENT') {
           logger.error(`${levelPrefix} Codex CLI not found. Please ensure Codex CLI is installed.`);
           settle(reject, new Error(`${levelPrefix} Codex CLI not found. ${CodexProvider.getInstallInstructions()}`));
@@ -510,7 +533,7 @@ class CodexProvider extends AIProvider {
         // The accumulated agent_message text contains the AI's response
         // Try to extract JSON from it (the AI was asked to output JSON)
         logger.debug(`${levelPrefix} Extracted ${agentMessageText.length} chars of agent message text from JSONL`);
-        const extracted = extractJSON(agentMessageText, level);
+        const extracted = extractJSON(agentMessageText, level, levelPrefix);
         if (extracted.success) {
           return extracted;
         }
@@ -522,12 +545,12 @@ class CodexProvider extends AIProvider {
       }
 
       // No agent message found, try extracting JSON directly from stdout
-      const extracted = extractJSON(stdout, level);
+      const extracted = extractJSON(stdout, level, levelPrefix);
       return extracted;
 
     } catch (parseError) {
       // stdout might not be valid JSONL at all, try extracting JSON from it
-      const extracted = extractJSON(stdout, level);
+      const extracted = extractJSON(stdout, level, levelPrefix);
       if (extracted.success) {
         return extracted;
       }

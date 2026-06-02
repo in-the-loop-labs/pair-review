@@ -1,0 +1,469 @@
+// Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
+
+const crypto = require('crypto');
+const path = require('path');
+const logger = require('../utils/logger');
+
+const defaults = {
+  parseUnifiedDiffHunks: require('../utils/diff-hunks').parseUnifiedDiffHunks,
+  hashHunk: require('./hunk-hashing').hashHunk,
+  isTrivialHunk: require('./hunk-hashing').isTrivialHunk,
+  HunkSummaryRepository: require('../database').HunkSummaryRepository,
+  createProvider: require('./provider').createProvider,
+  resolveNonExecutableProviderId: require('./provider').resolveNonExecutableProviderId,
+  getSummaryProvider: require('../config').getSummaryProvider,
+  getSummaryModel: require('../config').getSummaryModel,
+  getSummaryEnabled: require('../config').getSummaryEnabled,
+  getSummaryAutoGenerate: require('../config').getSummaryAutoGenerate,
+  buildHunkSummaryPrompt: require('./prompts/hunk-summary').buildHunkSummaryPrompt,
+  extractJSON: require('../utils/json-extractor').extractJSON,
+  getGeneratedFilePatterns: require('../git/gitattributes').getGeneratedFilePatterns,
+  broadcastReviewEvent: require('../events/review-events').broadcastReviewEvent,
+  hashDiff: (diffText) => crypto.createHash('sha256').update(diffText).digest('hex').slice(0, 16),
+  backgroundQueue: null
+};
+
+/**
+ * Count '+' lines in parsed hunks to gate summary generation by added-line volume.
+ * Hunk-header lines are not '+'-prefixed by `parseUnifiedDiffHunks`, so this is safe.
+ * @param {Map<string, Array<{header: string, lines: string[]}>>} hunksByFile
+ * @returns {number}
+ */
+function countAddedLines(hunksByFile) {
+  let total = 0;
+  for (const hunks of hunksByFile.values()) {
+    for (const hunk of hunks) {
+      for (const line of hunk.lines) {
+        if (line.startsWith('+') && !line.startsWith('+++')) total++;
+      }
+    }
+  }
+  return total;
+}
+
+/**
+ * Generate hunk summaries for a review's diff and persist + broadcast them.
+ * @param {Object} params
+ * @param {Object} params.db
+ * @param {Object} params.config
+ * @param {number} params.reviewId
+ * @param {string} params.diffText
+ * @param {string} params.worktreePath
+ * @param {Object} [params.reviewContext]
+ * @param {Object} [params._deps]
+ * @returns {Promise<{filesProcessed: number, hunksPersisted: number}>}
+ */
+async function generateSummariesForReview({
+  db,
+  config,
+  reviewId,
+  diffText,
+  worktreePath,
+  reviewContext,
+  abortSignal,
+  _deps
+}) {
+  const deps = { ...defaults, ..._deps };
+
+  // Helper: bail between per-file iterations once the user cancels.
+  // Summaries are written file-by-file, so a mid-loop abort can leave a
+  // subset of files persisted — that is intentional ("stop burning more
+  // tokens"). The check only prevents doing MORE work, not undoing
+  // already-persisted summaries.
+  const isAborted = () => abortSignal && abortSignal.aborted;
+
+  if (!diffText || !diffText.trim()) {
+    return { filesProcessed: 0, hunksPersisted: 0 };
+  }
+
+  const hunksByFile = deps.parseUnifiedDiffHunks(diffText);
+  if (!hunksByFile || hunksByFile.size === 0) {
+    return { filesProcessed: 0, hunksPersisted: 0 };
+  }
+
+  const summariesCfg = (config && config.summaries) || {};
+  const maxFiles = (summariesCfg.max_files != null) ? summariesCfg.max_files : 50;
+  if (hunksByFile.size > maxFiles) {
+    logger.info(
+      `Skipping hunk summaries for review ${reviewId}: ${hunksByFile.size} files exceeds summaries.max_files=${maxFiles}`
+    );
+    return { filesProcessed: 0, hunksPersisted: 0, oversized: true };
+  }
+
+  const maxLinesAdded = (summariesCfg.max_lines_added != null) ? summariesCfg.max_lines_added : 3000;
+  const linesAdded = countAddedLines(hunksByFile);
+  if (linesAdded > maxLinesAdded) {
+    logger.info(
+      `Skipping hunk summaries for review ${reviewId}: ${linesAdded} added lines exceeds summaries.max_lines_added=${maxLinesAdded}`
+    );
+    return { filesProcessed: 0, hunksPersisted: 0, oversized: true };
+  }
+
+  let isGeneratedFile = () => false;
+  try {
+    const parser = await deps.getGeneratedFilePatterns(worktreePath);
+    isGeneratedFile = (filePath) => parser.isGenerated(filePath);
+  } catch (err) {
+    logger.warn(`Failed to load .gitattributes for review ${reviewId}: ${err.message}`);
+  }
+
+  const preferredProviderId = deps.getSummaryProvider(config);
+  const providerId = deps.resolveNonExecutableProviderId(preferredProviderId);
+  if (!providerId) {
+    logger.info(
+      `Hunk summaries skipped for review ${reviewId}: no non-executable provider available`
+    );
+    return { filesProcessed: 0, hunksPersisted: 0 };
+  }
+
+  let provider;
+  let resolvedModel;
+  try {
+    const initialProvider = deps.createProvider(providerId);
+    const ProviderClass = initialProvider.constructor;
+    resolvedModel = deps.getSummaryModel(config, ProviderClass);
+    provider = deps.createProvider(providerId, resolvedModel);
+  } catch (err) {
+    logger.info(
+      `Hunk summaries skipped for review ${reviewId}: summary provider unavailable (${err.message})`
+    );
+    return { filesProcessed: 0, hunksPersisted: 0 };
+  }
+
+  const repo = new deps.HunkSummaryRepository(db);
+
+  const effectiveContext = { ...(reviewContext || {}) };
+  if (!effectiveContext.changedFiles) {
+    effectiveContext.changedFiles = Array.from(hunksByFile.keys());
+  }
+
+  let filesProcessed = 0;
+  let hunksPersisted = 0;
+
+  for (const [filePath, hunks] of hunksByFile.entries()) {
+    if (isAborted()) {
+      // Cancelled mid-loop: surface as an AbortError so the queue's
+      // broadcast carries `cancelled: true`. Any per-file work already
+      // persisted stays — see comment on `isAborted` declaration.
+      const err = new Error(`Hunk summaries for review ${reviewId} cancelled`);
+      err.name = 'AbortError';
+      err.isCancellation = true;
+      throw err;
+    }
+    // Use the basename for log readability — full repo-relative paths can be
+    // long enough to clutter each log line, and within a single review the
+    // basename is almost always unique enough to identify the file.
+    const summaryPrefix = `[Summary ${path.basename(filePath)}]`;
+    try {
+      const classified = hunks.map((hunk) => {
+        const content = [hunk.header, ...hunk.lines].join('\n');
+        const contentHash = deps.hashHunk(filePath, content);
+        const triviality = deps.isTrivialHunk(hunk, filePath, { isGeneratedFile });
+        return { hunk, contentHash, triviality };
+      });
+
+      const allHashes = classified.map((c) => c.contentHash);
+      const existingRows = await repo.getByHashes(reviewId, allHashes);
+      const existingHashes = new Set(existingRows.map((row) => row.content_hash));
+
+      const trivialRowsToPersist = [];
+      const missing = [];
+      for (const item of classified) {
+        if (existingHashes.has(item.contentHash)) continue;
+        if (item.triviality.trivial) {
+          trivialRowsToPersist.push({
+            review_id: reviewId,
+            file_path: filePath,
+            content_hash: item.contentHash,
+            summary_text: null,
+            trivial_reason: item.triviality.reason,
+            provider: null,
+            model: null
+          });
+        } else {
+          missing.push(item);
+        }
+      }
+
+      if (trivialRowsToPersist.length > 0) {
+        await repo.upsertMany(trivialRowsToPersist);
+        hunksPersisted += trivialRowsToPersist.length;
+      }
+
+      if (missing.length > 0) {
+        const prompt = deps.buildHunkSummaryPrompt({
+          filePath,
+          hunks: missing.map((m) => m.hunk),
+          prTitle: effectiveContext.prTitle,
+          prDescription: effectiveContext.prDescription,
+          changedFiles: effectiveContext.changedFiles,
+          cwd: worktreePath
+        });
+
+        let result;
+        try {
+          result = await provider.execute(prompt, {
+            cwd: worktreePath,
+            logPrefix: summaryPrefix,
+            abortSignal,
+          });
+        } catch (execErr) {
+          if (execErr && (execErr.name === 'AbortError' || execErr.isCancellation)) {
+            // Propagate cancellation up so the queue marks the broadcast as
+            // cancelled instead of "completed normally with no output".
+            throw execErr;
+          }
+          // (Intentional: see retry-on-reload note below — no sentinel row.)
+          logger.error(`${summaryPrefix} Hunk summary provider error for ${filePath}: ${execErr.message}`);
+          await broadcastFile(deps, repo, reviewId, filePath);
+          filesProcessed++;
+          continue;
+        }
+
+        let data;
+        let topLevelMalformed = false;
+        if (result && Array.isArray(result.summaries)) {
+          data = { summaries: result.summaries };
+        } else if (result && result.data && (result.parsed || result.success)) {
+          data = result.data;
+        } else {
+          const raw = (result && result.raw) || '';
+          const extracted = deps.extractJSON(raw, 'hunk-summary', summaryPrefix);
+          if (!extracted || !extracted.success) {
+            const errMsg = extracted && extracted.error ? extracted.error : 'unknown error';
+            logger.warn(`${summaryPrefix} Hunk summary JSON parse failed: ${errMsg}`);
+            topLevelMalformed = true;
+          } else {
+            data = extracted.data;
+          }
+        }
+
+        if (!topLevelMalformed && (!data || !Array.isArray(data.summaries))) {
+          logger.warn(`${summaryPrefix} Hunk summary response missing summaries[]`);
+          topLevelMalformed = true;
+        }
+
+        if (topLevelMalformed) {
+          // Asymmetry vs per-slot malformed handling, intentional:
+          //   - Envelope malformed (this branch): no sentinel persisted; the
+          //     hunks are eligible for re-enqueue on the next reload, the same
+          //     as a provider exception (see `execErr` catch above). Truncated
+          //     streams, stray markdown fences, and "model rambled past the
+          //     JSON" are transient failures and should not lock out hunks.
+          //   - Per-slot malformed (below): the model returned a valid envelope
+          //     but a specific entry was missing/wrong-type. That IS persisted
+          //     as a `model_malformed` sentinel because the model spoke
+          //     coherently for the file but not for that slot — re-enqueueing
+          //     would just produce the same bad output.
+          await broadcastFile(deps, repo, reviewId, filePath);
+          filesProcessed++;
+          continue;
+        }
+
+        // Per-hunk classification. For each slot in `missing`, choose the best
+        // outcome from the model's entries:
+        //   - valid (non-empty string)  > model_skipped (null) > model_malformed
+        // Slots the model never returned for fall through to model_malformed.
+        // No truncation: the prompt sets the length budget; we trust the model.
+        const VALID = 0;
+        const SKIPPED = 1;
+        const MALFORMED = 2;
+        const slotState = new Array(missing.length).fill(null);
+
+        const setSlot = (idx, kind, summary) => {
+          const current = slotState[idx];
+          if (!current || kind < current.kind) {
+            slotState[idx] = { kind, summary };
+          }
+        };
+
+        for (const item of data.summaries) {
+          if (!item || typeof item.index !== 'number') continue;
+          const idx = item.index - 1;
+          if (idx < 0 || idx >= missing.length) continue;
+
+          if (typeof item.summary === 'string' && item.summary.length > 0) {
+            setSlot(idx, VALID, item.summary);
+          } else if (item.summary === null) {
+            setSlot(idx, SKIPPED, null);
+          } else {
+            // undefined, empty string, wrong type
+            setSlot(idx, MALFORMED, null);
+          }
+        }
+
+        const rowsToPersist = [];
+        for (let i = 0; i < missing.length; i++) {
+          const state = slotState[i] || { kind: MALFORMED, summary: null };
+          if (state.kind === VALID) {
+            rowsToPersist.push({
+              review_id: reviewId,
+              file_path: filePath,
+              content_hash: missing[i].contentHash,
+              summary_text: state.summary,
+              trivial_reason: null,
+              provider: providerId,
+              model: resolvedModel
+            });
+          } else {
+            rowsToPersist.push({
+              review_id: reviewId,
+              file_path: filePath,
+              content_hash: missing[i].contentHash,
+              summary_text: null,
+              trivial_reason: state.kind === SKIPPED ? 'model_skipped' : 'model_malformed',
+              provider: providerId,
+              model: resolvedModel
+            });
+          }
+        }
+
+        if (rowsToPersist.length > 0) {
+          await repo.upsertMany(rowsToPersist);
+          hunksPersisted += rowsToPersist.length;
+        }
+      }
+
+      await broadcastFile(deps, repo, reviewId, filePath);
+      filesProcessed++;
+    } catch (fileErr) {
+      // AbortErrors must escape the file-level recover-and-continue path —
+      // otherwise we'd silently swallow a user cancel and move on to the
+      // next file, defeating the whole point of cancellation.
+      if (fileErr && (fileErr.name === 'AbortError' || fileErr.isCancellation)) {
+        throw fileErr;
+      }
+      logger.error(`${summaryPrefix} Hunk summary processing failed: ${fileErr.message}`);
+      await broadcastFile(deps, repo, reviewId, filePath);
+      filesProcessed++;
+    }
+  }
+
+  return { filesProcessed, hunksPersisted };
+}
+
+/**
+ * Fetch all summaries for a file and broadcast them on the review channel.
+ * @param {Object} deps
+ * @param {Object} repo
+ * @param {number} reviewId
+ * @param {string} filePath
+ * @returns {Promise<void>}
+ */
+async function broadcastFile(deps, repo, reviewId, filePath) {
+  try {
+    const fileRowsRaw = await repo.getByReviewAndFile(reviewId, filePath);
+    const fileRows = fileRowsRaw.map((r) => ({
+      file_path: r.file_path,
+      content_hash: r.content_hash,
+      summary_text: r.summary_text,
+      trivial_reason: r.trivial_reason
+    }));
+    deps.broadcastReviewEvent(reviewId, {
+      type: 'review:hunk_summaries_ready',
+      filePath,
+      summaries: fileRows
+    });
+  } catch (err) {
+    logger.warn(`[Summary ${path.basename(filePath)}] broadcast failed: ${err.message}`);
+  }
+}
+
+/**
+ * Gate the summary job and enqueue it on the background queue.
+ *
+ * `trigger` controls how the enabled/auto_generate config interacts with
+ * kickoff:
+ *   - `'auto'`   (default): requires `summaries.enabled && summaries.auto_generate`
+ *   - `'manual'`: only requires `summaries.enabled` (user-initiated start)
+ *
+ * @param {Object} params
+ * @param {Object} params.db
+ * @param {Object} params.config
+ * @param {number} params.reviewId
+ * @param {string} params.diffText
+ * @param {string} params.worktreePath
+ * @param {Object} [params.reviewContext]
+ * @param {'auto'|'manual'} [params.trigger='auto']
+ * @param {Object} [params._deps]
+ * @returns {Promise<{filesProcessed: number, hunksPersisted: number}>|null}
+ */
+function kickOffSummaryJob({
+  db,
+  config,
+  reviewId,
+  diffText,
+  worktreePath,
+  reviewContext,
+  trigger = 'auto',
+  _deps
+}) {
+  const deps = { ...defaults, ...(_deps || {}) };
+
+  if (!deps.getSummaryEnabled(config)) {
+    return null;
+  }
+
+  if (!reviewId) {
+    logger.debug('kickOffSummaryJob skipped: missing reviewId');
+    return null;
+  }
+
+  const queue = deps.backgroundQueue || require('./background-queue').backgroundQueue;
+
+  // Cancel any in-flight summaries job for this review whose digest no longer
+  // matches the new one. This is load-bearing for correctness, not just cost:
+  // generateSummariesForReview persists content_hash-keyed rows without any
+  // staleness check at upsert time (unlike tour-generator), so a stale worker
+  // that escapes cancellation will persist summaries for hunks the user has
+  // already moved past. Calling this even when the new diff is empty (refresh
+  // or scope change that removed all changes is a valid terminal snapshot)
+  // ensures the old job stops burning tokens and writing stale rows.
+  const cancelActiveSummariesJob = (excludeJobType) => {
+    if (typeof queue.findActiveJobType !== 'function') return;
+    const activeJobType = queue.findActiveJobType(reviewId, 'summaries');
+    if (activeJobType && activeJobType !== excludeJobType && typeof queue.cancel === 'function') {
+      queue.cancel(reviewId, activeJobType);
+    }
+  };
+
+  if (!diffText || !worktreePath) {
+    const missing = [];
+    if (!diffText) missing.push('diffText');
+    if (!worktreePath) missing.push('worktreePath');
+    logger.debug(`kickOffSummaryJob skipped: missing ${missing.join(', ')}`);
+    cancelActiveSummariesJob();
+    return null;
+  }
+
+  const digest = deps.hashDiff(diffText);
+  const newJobType = `summaries:${digest}`;
+  cancelActiveSummariesJob(newJobType);
+
+  // auto_generate gate, applied here — AFTER cancellation (both the empty-diff
+  // branch above and the digest-mismatch cancel on this line) — so stale-job
+  // cancellation runs regardless of trigger. This is load-bearing: the
+  // summaries worker has no pre-upsert staleness guard, so an escaped stale
+  // worker would persist content_hash-keyed rows for hunks the user moved
+  // past. With `auto_generate` off, an auto-triggered kickoff still cancels
+  // that stale job; it simply declines to enqueue a replacement. Manual
+  // kickoffs always proceed.
+  if (trigger !== 'manual' && !deps.getSummaryAutoGenerate(config)) return null;
+
+  return queue.enqueue(reviewId, newJobType, (signal) =>
+    generateSummariesForReview({
+      db,
+      config,
+      reviewId,
+      diffText,
+      worktreePath,
+      reviewContext,
+      // BackgroundQueue invokes our thunk as `fn(signal)`. Pass it through
+      // so a user cancel reaches the per-file provider.execute call.
+      abortSignal: signal,
+      _deps
+    })
+  );
+}
+
+module.exports = { generateSummariesForReview, kickOffSummaryJob, countAddedLines };

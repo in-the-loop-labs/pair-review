@@ -138,6 +138,95 @@ class PRManager {
     this.diffOptionsDropdown = null;
     // Comment minimizer — manages minimize mode indicators
     this.commentMinimizer = window.CommentMinimizer ? new window.CommentMinimizer() : null;
+    // Hunk summary renderer (Phase 5) — inline natural-language summaries
+    this.hunkSummaryRenderer = window.HunkSummaryRenderer ? new window.HunkSummaryRenderer(this) : null;
+    // Per-render anchor map: contentHash -> first code-line <tr> of the hunk
+    this._summaryAnchorsByHash = new Map();
+    // Per-render file map: filePath -> Set<contentHash>
+    this._summaryHashesByFile = new Map();
+    // Summaries that arrived (via WS or fetch) before their hunk had been hashed
+    this._pendingSummariesByHash = new Map();
+    // Per-file summary visibility (persisted in localStorage per-review)
+    this.summariesHiddenFiles = new Set();
+    // Render-generation token — incremented at the top of renderDiff() so any
+    // fire-and-forget _kickOffHunkSummaries() from a prior render can detect
+    // it's stale and bail (refresh / whitespace toggle / scope change race).
+    this._renderGen = 0;
+    // Cached /api/config response (lazy-loaded)
+    this._appConfigPromise = null;
+    // Review-level summary visibility (persisted in localStorage per-review)
+    this._summariesHidden = false;
+    // Whether the background summary job is currently running for this review.
+    // Cleared by the `review:background_job_finished` event for jobType=summaries.
+    this._summariesGenerating = false;
+    // Whether any hunk summaries exist for this review (loaded from the server
+    // or mounted live during generation). Gates the toolbar button's `.active`
+    // (blue) state: before any summary exists the button stays colorless so the
+    // user can tell nothing has been generated yet. Set true by
+    // `_applyHunkSummaries` and the initial existing-summaries fetch.
+    this._summariesGenerated = false;
+    // Tri-state: true when /api/config reports summaries.enabled, false when
+    // disabled, null until /api/config resolves. Per-file toggle buttons are
+    // gated on this so users on disabled deployments don't see them flicker
+    // in.
+    this._summariesEnabled = null;
+    // Tri-state mirror of `summaries.auto_generate` in /api/config. When
+    // false, the click handler hits the manual-start endpoint instead of
+    // expecting a server-initiated kickoff. Null until /api/config resolves.
+    this._summariesAutoGenerate = null;
+    // ---- Tour state (Phase 8) -----------------------------------------
+    // Lazy-instantiated TourBar / TourRenderer; populated on first open.
+    this._tourBar = null;
+    this._tourRenderer = null;
+    // Tri-state mirror of `tours.enabled` in /api/config. Tours are
+    // independent of summaries on both the server and the client (see
+    // the explanatory comment in setupEventHandlers()).
+    this._toursEnabled = null;
+    // Tri-state mirror of `tours.auto_generate` in /api/config. When false,
+    // the click handler hits the manual-start endpoint instead of expecting
+    // a server-initiated kickoff. Null until /api/config resolves.
+    this._toursAutoGenerate = null;
+    // Cached stops from the most recent /api/reviews/:id/tour fetch, or null
+    // when nothing has been loaded for this review yet.
+    this._tourStops = null;
+    // 0-based index of the current stop while a tour is open; -1 when no
+    // tour is mounted.
+    this._tourActiveIndex = -1;
+    // Whether the background tour-generation job is currently running; drives
+    // the pulse on the toolbar button.
+    this._tourGenerating = false;
+    // When a `review:tour_ready` event fires while a tour is already mounted,
+    // we stash the new stops here rather than yank the current tour out from
+    // under the user. The pending stops are applied on the next exit or
+    // restart. Cleared once consumed.
+    this._tourStopsPendingRestart = null;
+    // Bound keydown handler; tracked so it can be removed on tour exit.
+    this._tourKeydownHandler = null;
+    // Re-entry guard for `_promptCancelJob`. The cancel-confirm dialog
+    // opens off the same pulsing toolbar button that triggered it, and
+    // the button stays clickable while the dialog is up — `ConfirmDialog`
+    // is a singleton, so a second click would overwrite the first
+    // invocation's callbacks and leave its Promise dangling. Held true
+    // for the lifetime of the dialog; cleared in a `finally`.
+    this._cancelPromptOpen = false;
+    // Re-entrance latch for the async `_advanceTour` probe loop. Holds the
+    // `_tourGen` value the in-flight call belongs to (or -1 when no call
+    // is in flight). Generation-scoped — not a plain boolean — so a
+    // teardown that bumps `_tourGen` auto-invalidates the holder and the
+    // next reopen passes the latch check without any teardown path having
+    // to remember to reset the flag explicitly.
+    this._advanceInFlightGen = -1;
+    // Tour-open generation. Bumped on every open and exit so an in-flight
+    // async `_advanceTour` can detect that the tour it started navigating
+    // has since been torn down (Escape, exit button, toolbar toggle) and
+    // bail instead of mutating a dead tour's state.
+    this._tourGen = 0;
+    // Drain promise stashed by `_exitTour`. Resolves once every async
+    // teardown step from the prior tour (fire-and-forget context-file
+    // DELETEs + their loadContextFiles reloads) has settled. The next
+    // open awaits this before reading wrappers so a stale DELETE can't
+    // rip the newly-mounted tour's wrapper out from under it.
+    this._tourCleanupPending = null;
     // Cached staleness check promise — shared between on-load and triggerAIAnalysis
     this._stalenessPromise = null;
     // Unique client ID for self-echo suppression on WebSocket review events.
@@ -319,6 +408,67 @@ class PRManager {
         });
       }
     }
+
+    // Hunk summary toolbar toggle (Phase 5).
+    // Hidden by default in HTML; revealed asynchronously when /api/config
+    // reports summaries.enabled. The same config check also controls the
+    // per-file `.file-header-summary-toggle` buttons (which are created
+    // hidden by createFileHeader and revealed/removed once config resolves).
+    const summaryToggle = document.getElementById('summary-toggle-btn');
+    if (summaryToggle) {
+      summaryToggle.addEventListener('click', () => this._handleSummaryToggleClick());
+    }
+    this._getAppConfig().then((cfg) => {
+      const summariesCfg = (cfg && cfg.summaries) || {};
+      this._summariesEnabled = summariesCfg.enabled === true;
+      this._summariesAutoGenerate = summariesCfg.auto_generate !== false;
+      if (this._summariesEnabled) {
+        if (summaryToggle) {
+          summaryToggle.style.display = '';
+          this._syncSummaryToolbarButton();
+        }
+        document
+          .querySelectorAll('.file-header-summary-toggle.summary-toggle-pending')
+          .forEach((btn) => {
+            btn.classList.remove('summary-toggle-pending');
+            btn.style.display = '';
+          });
+      } else {
+        document
+          .querySelectorAll('.file-header-summary-toggle')
+          .forEach((btn) => btn.remove());
+      }
+    });
+
+    // Tour toolbar toggle (Phase 8). Hidden by default in HTML; revealed
+    // asynchronously once /api/config confirms `tours.enabled` is on.
+    // Tours are independent of `summaries.enabled` — both server- and
+    // client-side gates check only `tours.enabled`.
+    const tourToggle = document.getElementById('tour-toggle-btn');
+    if (tourToggle) {
+      tourToggle.addEventListener('click', () => this._handleTourToggleClick());
+    }
+    this._getAppConfig().then((cfg) => {
+      const toursCfg = (cfg && cfg.tours) || {};
+      this._toursEnabled = toursCfg.enabled === true;
+      this._toursAutoGenerate = toursCfg.auto_generate !== false;
+      if (this._toursEnabled && tourToggle) {
+        tourToggle.style.display = '';
+        this._syncTourToolbarButton();
+      }
+      // NOTE: do NOT probe /api/reviews/:id/tour here when no diff has
+      // rendered yet — `currentPR.id` is not populated until
+      // init()/LocalManager loads the review. The probe is normally
+      // deferred to renderDiff() (which fires after currentPR is set).
+      //
+      // RACE: if renderDiff() has ALREADY run by the time /api/config
+      // resolves, its `_toursEnabled === true` check failed (was still
+      // null) and the probe was skipped. Catch that case here so the
+      // tour toolbar still surfaces a generated tour.
+      if (this._toursEnabled && this._renderGen > 0) {
+        this._loadAndStashTour({ cancelOnRender: false }).catch(() => {});
+      }
+    });
 
     // PR description popover
     this.setupPRDescriptionPopover();
@@ -904,6 +1054,961 @@ class PRManager {
   }
 
   /**
+   * Resolve the cached `/api/config` payload, fetching it on first use.
+   * @returns {Promise<Object>}
+   */
+  _getAppConfig() {
+    if (!this._appConfigPromise) {
+      this._appConfigPromise = fetch('/api/config')
+        .then((r) => (r.ok ? r.json() : {}))
+        .catch(() => ({}));
+    }
+    return this._appConfigPromise;
+  }
+
+  /**
+   * Attach `data-hunk-start` to each anchor row using the server-supplied
+   * `content_hash`, then kick off the initial summary fetch (gated by
+   * `summaries.enabled` in `/api/config`). Drains any summaries that
+   * arrived before mounting finished.
+   *
+   * Order matters:
+   *   1. Config gate first — bail before paying any setup cost when the
+   *      feature is off.
+   *   2. Restore localStorage visibility state.
+   *   3. Walk records and wire each anchor row to its server-supplied
+   *      content hash. The server computes hashes from the canonical
+   *      (non-whitespace-filtered) diff so they stay aligned with persisted
+   *      summary keys; records lacking a `contentHash` are logged-and-skipped.
+   *   4. Drain pending summaries against the freshly-built anchor map.
+   *   5. Fetch existing summaries from the server.
+   *
+   * Race-safety: `_renderGen` is captured at entry and rechecked after
+   * every `await`. If `renderDiff()` ran again mid-flight, we stop touching
+   * the (now stale) maps and DOM.
+   * @returns {Promise<void>}
+   */
+  async _kickOffHunkSummaries() {
+    const gen = this._renderGen;
+    const records = this._pendingHunkRecords || [];
+    this._pendingHunkRecords = null; // single-use; renderDiff resets
+
+    // 1. Config gate — bail before doing any work when the feature is off.
+    const cfg = await this._getAppConfig();
+    if (gen !== this._renderGen) return;
+    if (!(cfg.summaries && cfg.summaries.enabled)) return;
+
+    // 2. Restore localStorage visibility state.
+    if (this.currentPR?.id) {
+      const hidden = window.localStorage.getItem(`pair-review:summaries-hidden:${this.currentPR.id}`) === '1';
+      this._summariesHidden = hidden;
+      document.body.classList.toggle('summaries-hidden', hidden);
+      this._syncSummaryToolbarButton();
+      this._restoreSummariesHiddenFiles();
+      // Apply per-file hidden state to wrappers already in the DOM, syncing
+      // both the wrapper class AND the toggle button so its visible state and
+      // aria-pressed match the persisted hidden flag.
+      for (const filePath of this.summariesHiddenFiles) {
+        const wrapper = document.querySelector(
+          `.d2h-file-wrapper[data-file-name="${CSS.escape(filePath)}"]`
+        );
+        if (!wrapper) continue;
+        wrapper.classList.add('summaries-hidden-file');
+        const btn = wrapper.querySelector('.file-header-summary-toggle');
+        if (btn) this._syncFileSummaryToggleButton(btn, filePath);
+      }
+    }
+
+    // 3. Wire each anchor row to its server-supplied content hash. The
+    // backend computes these from the canonical (unfiltered) diff so they
+    // stay aligned with persisted summary keys regardless of `?w=1`.
+    // Records missing `contentHash` indicate a server bug (or a hash array
+    // length mismatch the renderPatch guard already dropped) — log + skip.
+    for (const rec of records) {
+      if (!rec.anchorRow || !rec.anchorRow.isConnected) continue;
+      const hex = rec.contentHash;
+      if (!hex) {
+        console.warn(
+          `[HunkSummary] no server contentHash for ${rec.file} ` +
+          `hunk ${rec.header}; skipping (summaries will not anchor here).`
+        );
+        continue;
+      }
+      rec.anchorRow.dataset.hunkStart = hex;
+      this._summaryAnchorsByHash.set(hex, rec.anchorRow);
+      let bucket = this._summaryHashesByFile.get(rec.file);
+      if (!bucket) {
+        bucket = new Set();
+        this._summaryHashesByFile.set(rec.file, bucket);
+      }
+      bucket.add(hex);
+    }
+
+    // 4. Drain summaries that arrived (via WS) before hashing finished.
+    if (this._pendingSummariesByHash.size > 0) {
+      const filesWithMounts = new Set();
+      for (const [hash, summary] of this._pendingSummariesByHash.entries()) {
+        if (this._summaryAnchorsByHash.has(hash)) {
+          const row = this._renderOneSummary(summary);
+          if (row) {
+            // Find the file this hash belongs to, so we can re-enable its
+            // toggle button.
+            for (const [filePath, bucket] of this._summaryHashesByFile.entries()) {
+              if (bucket.has(hash)) {
+                filesWithMounts.add(filePath);
+                break;
+              }
+            }
+          }
+          this._pendingSummariesByHash.delete(hash);
+        }
+      }
+      for (const filePath of filesWithMounts) this._refreshFileSummaryToggle(filePath);
+    }
+
+    // 5. Load existing summaries from the server.
+    if (!this.currentPR?.id) return;
+
+    try {
+      const resp = await fetch(`/api/reviews/${this.currentPR.id}/hunk-summaries`);
+      if (gen !== this._renderGen) return;
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (gen !== this._renderGen) return;
+      const summaries = Array.isArray(data.summaries) ? data.summaries : [];
+      // Group by file path so we can refresh each file's toggle button once.
+      const byFile = new Map();
+      for (const summary of summaries) {
+        const fp = summary.file_path;
+        if (!fp) continue;
+        if (!byFile.has(fp)) byFile.set(fp, []);
+        byFile.get(fp).push(summary);
+      }
+      // If summaries lack file_path, fall back to ungrouped rendering. Set
+      // `_summariesGenerated` only after a summary actually mounts against the
+      // current render anchors — never from the raw fetch count — so stale-hash
+      // rows the anchor filter rejects can't flip the toolbar into Hide/Show
+      // mode with nothing in the DOM. The grouped path defers this to
+      // `_applyHunkSummaries`, which sets the flag on a successful mount.
+      if (byFile.size === 0 && summaries.length > 0) {
+        let mountedAny = false;
+        for (const summary of summaries) {
+          if (this._renderOneSummary(summary)) mountedAny = true;
+        }
+        if (mountedAny) {
+          this._summariesGenerated = true;
+          this._syncSummaryToolbarButton();
+        }
+      } else {
+        for (const [filePath, fileSummaries] of byFile.entries()) {
+          this._applyHunkSummaries(filePath, fileSummaries);
+        }
+      }
+      // Mirror the queue's view of whether summaries are still being generated.
+      // The `review:background_job_finished` WS event clears this when the job
+      // completes mid-session.
+      this._summariesGenerating = data.generating === true;
+      this._syncSummaryToolbarButton();
+    } catch (err) {
+      console.warn('[HunkSummary] failed to load summaries:', err);
+    }
+  }
+
+  /**
+   * Apply a batch of summaries delivered via the WS
+   * `review:hunk_summaries_ready` event for a single file. Validates each
+   * summary's hash against the per-file hash bucket so a hash collision
+   * across files can't pull a summary into the wrong file's view, and
+   * re-enables the per-file toggle button once a file has at least one
+   * summary mounted.
+   * @param {string} filePath - File path the summaries belong to
+   * @param {Array<Object>} summaries - Summary rows for that file
+   */
+  _applyHunkSummaries(filePath, summaries) {
+    if (!Array.isArray(summaries)) return;
+    const allowedHashes = this._summaryHashesByFile.get(filePath) || new Set();
+    let mountedAny = false;
+    for (const summary of summaries) {
+      if (!summary?.content_hash) continue;
+      if (allowedHashes.size > 0 && !allowedHashes.has(summary.content_hash)) {
+        if (!this._warnedCrossFileHashMismatch) {
+          this._warnedCrossFileHashMismatch = true;
+          console.warn(
+            `[HunkSummary] dropping summary for ${filePath}: hash ${summary.content_hash} ` +
+            'not present in file hash bucket. Likely cross-file collision or stale render.'
+          );
+        }
+        continue;
+      }
+      const row = this._renderOneSummary(summary);
+      if (row) mountedAny = true;
+    }
+    if (mountedAny) {
+      // At least one summary mounted — the feature now has data, so the
+      // toolbar button can show its `.active` (blue) state.
+      this._summariesGenerated = true;
+      this._syncSummaryToolbarButton();
+    }
+    if (mountedAny && filePath) this._refreshFileSummaryToggle(filePath);
+  }
+
+  /**
+   * Refresh the per-file summary toggle button for `filePath` so it reflects
+   * the current state: enabled iff there is at least one mounted summary in
+   * that file's hash bucket.
+   * @param {string} filePath
+   */
+  _refreshFileSummaryToggle(filePath) {
+    if (!filePath) return;
+    const wrapper = document.querySelector(
+      `.d2h-file-wrapper[data-file-name="${CSS.escape(filePath)}"]`
+    );
+    if (!wrapper) return;
+    const btn = wrapper.querySelector('.file-header-summary-toggle');
+    if (!btn) return;
+    this._syncFileSummaryToggleButton(btn, filePath);
+  }
+
+  /**
+   * Apply the canonical per-file summary toggle button state derived from
+   * `_summaryHashesByFile` and `summariesHiddenFiles`. Sets `disabled`,
+   * `summaries-off`, `aria-pressed`, and `title` on the button.
+   *
+   * Used by three call sites that must agree on the button's visible state:
+   *   - createFileHeader (initial render)
+   *   - _kickOffHunkSummaries (rehydrate after localStorage restore)
+   *   - _refreshFileSummaryToggle (when summaries arrive late)
+   *   - toggleFileSummaries (user click)
+   *
+   * @param {HTMLButtonElement} btn
+   * @param {string} filePath
+   */
+  _syncFileSummaryToggleButton(btn, filePath) {
+    if (!btn || !filePath) return;
+    const hasSummaries = (this._summaryHashesByFile.get(filePath)?.size || 0) > 0;
+    const isHidden = this.summariesHiddenFiles.has(filePath);
+    btn.classList.toggle('summaries-off', isHidden);
+    btn.setAttribute('aria-pressed', isHidden ? 'false' : 'true');
+    if (!hasSummaries) {
+      btn.disabled = true;
+      btn.title = 'No summaries available';
+    } else {
+      btn.disabled = false;
+      btn.title = isHidden ? 'Show file summaries' : 'Hide file summaries';
+    }
+  }
+
+  /**
+   * Render a single summary row, or queue it if the matching hunk hasn't
+   * been hashed yet (race between WS broadcast and post-render hashing).
+   * Trivial / model-skipped / model-malformed rows are ignored.
+   * @param {Object} summary - { content_hash, summary_text, trivial_reason }
+   * @returns {HTMLTableRowElement|null} The mounted row, or null if queued/skipped.
+   */
+  _renderOneSummary(summary) {
+    if (!summary || !summary.content_hash) return null;
+    if (!summary.summary_text) return null; // trivial / opt-out — nothing to show
+    const hash = summary.content_hash;
+    const anchor = this._summaryAnchorsByHash.get(hash);
+    if (!anchor || !anchor.isConnected) {
+      // Anchor missing or detached (stale render) → defer; the next render
+      // pass that re-establishes the hash will drain this map.
+      this._pendingSummariesByHash.set(hash, summary);
+      return null;
+    }
+    if (!this.hunkSummaryRenderer) return null;
+    return this.hunkSummaryRenderer.renderInline(anchor, summary);
+  }
+
+  /**
+   * Storage key for per-file summary visibility. Mirrors the
+   * `pair-review:summaries-hidden:${reviewId}` review-level key.
+   * @param {number|string} reviewId
+   * @returns {string}
+   */
+  static summariesHiddenFilesStorageKey(reviewId) {
+    return `pair-review:summaries-hidden-files:${reviewId}`;
+  }
+
+  /**
+   * Toggle the visibility of summaries for a single file. Updates the
+   * `summariesHiddenFiles` set, the wrapper's CSS class, the per-file toggle
+   * button's `summaries-off` class, and persists the set per-review.
+   * @param {string} filePath
+   * @param {HTMLElement} fileWrapper - The `.d2h-file-wrapper` element
+   */
+  toggleFileSummaries(filePath, fileWrapper) {
+    if (!filePath || !fileWrapper) return;
+    const isHidden = this.summariesHiddenFiles.has(filePath);
+    if (isHidden) {
+      this.summariesHiddenFiles.delete(filePath);
+    } else {
+      this.summariesHiddenFiles.add(filePath);
+    }
+    fileWrapper.classList.toggle('summaries-hidden-file', !isHidden);
+    const btn = fileWrapper.querySelector('.file-header-summary-toggle');
+    if (btn) this._syncFileSummaryToggleButton(btn, filePath);
+    if (this.currentPR?.id != null) {
+      try {
+        window.localStorage.setItem(
+          PRManager.summariesHiddenFilesStorageKey(this.currentPR.id),
+          JSON.stringify([...this.summariesHiddenFiles])
+        );
+      } catch {
+        // localStorage unavailable; in-session state still applies.
+      }
+    }
+  }
+
+  /**
+   * Hydrate `summariesHiddenFiles` from localStorage for the current review.
+   * Safe to call multiple times — the state always reflects what's in storage.
+   */
+  _restoreSummariesHiddenFiles() {
+    if (!this.currentPR?.id) return;
+    try {
+      const raw = window.localStorage.getItem(
+        PRManager.summariesHiddenFilesStorageKey(this.currentPR.id)
+      );
+      if (!raw) {
+        this.summariesHiddenFiles = new Set();
+        return;
+      }
+      const arr = JSON.parse(raw);
+      this.summariesHiddenFiles = new Set(Array.isArray(arr) ? arr : []);
+    } catch {
+      this.summariesHiddenFiles = new Set();
+    }
+  }
+
+  /**
+   * Toggle review-level summary visibility. Persists per-review.
+   */
+  toggleSummariesVisibility() {
+    this._summariesHidden = !this._summariesHidden;
+    document.body.classList.toggle('summaries-hidden', this._summariesHidden);
+    if (this.currentPR?.id != null) {
+      try {
+        window.localStorage.setItem(
+          `pair-review:summaries-hidden:${this.currentPR.id}`,
+          this._summariesHidden ? '1' : '0'
+        );
+      } catch {
+        // localStorage unavailable; in-session state still applies.
+      }
+    }
+    this._syncSummaryToolbarButton();
+  }
+
+  /**
+   * Reflect the current state (visible / hidden / generating) on the
+   * toolbar toggle button. The button gets:
+   *   - `.active` when summaries are visible
+   *   - `.generating` when a background summary job is in flight
+   *   - `title` + `aria-label` + `data-label` (CSS hover fallback) all kept
+   *     in sync so the user always knows what the button does.
+   */
+  _syncSummaryToolbarButton() {
+    const btn = document.getElementById('summary-toggle-btn');
+    if (!btn) return;
+    // `.active` (blue) only once summaries actually exist AND are visible.
+    // Before any generation the button stays colorless so the pre-generated
+    // state is visually distinct from "generated but hidden".
+    btn.classList.toggle('active', this._summariesGenerated && !this._summariesHidden);
+    btn.classList.toggle('generating', this._summariesGenerating === true);
+
+    let label;
+    if (this._summariesGenerating) {
+      // Hint at the cancel affordance — clicking the pulsing button now
+      // opens a confirm dialog ("Cancel Summaries" / "OK") instead of
+      // toggling visibility. See _handleSummaryToggleClick.
+      label = 'Generating summaries… (click to cancel)';
+    } else if (!this._summariesGenerated) {
+      // Pre-generated state: nothing generated yet. Colorless button; a click
+      // kicks off generation. See _handleSummaryToggleClick.
+      label = 'Generate hunk summaries';
+    } else {
+      label = this._summariesHidden ? 'Show hunk summaries' : 'Hide hunk summaries';
+    }
+    btn.title = label;
+    btn.setAttribute('aria-label', label);
+    btn.dataset.label = label;
+    btn.setAttribute(
+      'aria-pressed',
+      (this._summariesGenerated && !this._summariesHidden) ? 'true' : 'false'
+    );
+  }
+
+  // ===== Tour (Phase 8) ===================================================
+
+  /**
+   * Whether a tour is currently mounted in the UI.
+   * @returns {boolean}
+   */
+  _tourIsActive() {
+    return this._tourActiveIndex >= 0 && !!this._tourRenderer;
+  }
+
+  /**
+   * Reflect tour state on the toolbar toggle button. Mirrors the structure
+   * of `_syncSummaryToolbarButton` so future tweaks stay in lockstep.
+   */
+  _syncTourToolbarButton() {
+    const btn = document.getElementById('tour-toggle-btn');
+    if (!btn) return;
+    const active = this._tourIsActive();
+    const hasPending = active && Array.isArray(this._tourStopsPendingRestart);
+    btn.classList.toggle('active', active);
+    btn.classList.toggle('generating', this._tourGenerating === true);
+    btn.classList.toggle('tour-updated-pending', hasPending);
+
+    let label;
+    if (this._tourGenerating) {
+      // Hint at the cancel affordance — see _handleTourToggleClick.
+      label = active
+        ? 'Generating tour… (click to cancel)'
+        : 'Generating guided tour… (click to cancel)';
+    } else if (hasPending) {
+      label = 'Tour updated — restart to apply new stops';
+    } else if (active) {
+      label = 'Exit guided tour';
+    } else if (this._tourStops && this._tourStops.length > 0) {
+      label = 'Start guided tour';
+    } else {
+      label = 'Start guided tour (none available yet)';
+    }
+    btn.title = label;
+    btn.setAttribute('aria-label', label);
+    btn.dataset.label = label;
+    btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+  }
+
+  // ===== Cancel flow (shared) =============================================
+
+  /**
+   * Toolbar click handler for the summaries toggle. If a summary job is
+   * in flight (`.generating` pulse), intercept and open the cancel-confirm
+   * dialog instead of toggling visibility. Toggle visibility otherwise.
+   *
+   * Kept thin so `addEventListener` callers don't need to know about the
+   * cancel flow — that lives in `_promptCancelJob`.
+   * @returns {void}
+   */
+  async _handleSummaryToggleClick() {
+    if (this._summariesGenerating) {
+      await this._promptCancelJob({
+        kind: 'summaries',
+        onCleared: () => {
+          this._summariesGenerating = false;
+          this._syncSummaryToolbarButton();
+        },
+      });
+      return;
+    }
+    if (!this._summariesGenerated) {
+      // Pre-generated state: a click triggers generation rather than toggling
+      // visibility. `_startGenerationJob` sets the pulsing `.generating` state
+      // optimistically (there is no `review:background_job_started` event).
+      await this._startGenerationJob('summary');
+      return;
+    }
+    this.toggleSummariesVisibility();
+  }
+
+  /**
+   * Toolbar click handler for the tour toggle. If a tour job is in flight
+   * (`.generating` pulse), intercept and open the cancel-confirm dialog
+   * instead of opening/exiting the tour. Defer to `startOrToggleTour`
+   * otherwise.
+   * @returns {Promise<void>}
+   */
+  async _handleTourToggleClick() {
+    if (this._tourGenerating) {
+      await this._promptCancelJob({
+        kind: 'tour',
+        onCleared: () => {
+          this._tourGenerating = false;
+          this._syncTourToolbarButton();
+        },
+      });
+      return;
+    }
+    await this.startOrToggleTour();
+  }
+
+  /**
+   * Shared cancel-flow entrypoint: opens the right confirm dialog for the
+   * given job kind, POSTs the cancel on confirm, and runs `onCleared` so
+   * the caller can reset the pulse state. The corresponding broadcast
+   * (`review:background_job_finished` with `cancelled: true`) will arrive
+   * shortly after; that handler also clears the flag, so a double-clear
+   * is harmless.
+   *
+   * @param {Object} opts
+   * @param {'tour'|'summaries'} opts.kind
+   * @param {Function} opts.onCleared - Called after the user confirms.
+   * @returns {Promise<void>}
+   */
+  async _promptCancelJob({ kind, onCleared }) {
+    // Re-entry guard: the pulsing toolbar button stays clickable while the
+    // confirm dialog is up. ConfirmDialog is a singleton — a second call to
+    // .show() overwrites the first invocation's callbacks and orphans its
+    // Promise. Drop the second click instead.
+    if (this._cancelPromptOpen) return;
+    const helper = typeof window !== 'undefined' ? window.CancelBackgroundJob : null;
+    if (!helper) return;
+    const reviewId = this.currentPR && this.currentPR.id;
+    if (!reviewId) return;
+    const show = kind === 'tour'
+      ? helper.showCancelTourDialog
+      : helper.showCancelSummariesDialog;
+    this._cancelPromptOpen = true;
+    try {
+      await show({ reviewId, onCancelled: onCleared });
+    } finally {
+      this._cancelPromptOpen = false;
+    }
+  }
+
+  /**
+   * Manually trigger a summary or tour generation job for the current review.
+   * Used when `auto_generate` is off so generation does not kick off on load;
+   * the user clicks the toolbar button to start it.
+   *
+   * Mode-aware: PR reviews POST to `/api/pr/...`, local reviews to
+   * `/api/local/...`. The server enqueues the job with `trigger: 'manual'`
+   * (bypassing the `auto_generate` gate) and responds with `{ started }` /
+   * `{ alreadyRunning }`. There is no `review:background_job_started`
+   * broadcast, so this method optimistically sets the matching `*Generating`
+   * flag and pulses the button itself; `review:background_job_finished`
+   * clears the flag when the job ends.
+   *
+   * @param {'summary'|'tour'} jobKey
+   * @returns {Promise<void>}
+   */
+  async _startGenerationJob(jobKey) {
+    const pr = this.currentPR;
+    if (!pr || pr.id == null) return;
+    const isLocal = pr.reviewType === 'local'
+      || (typeof window !== 'undefined' && window.PAIR_REVIEW_LOCAL_MODE === true);
+    const url = isLocal
+      ? `/api/local/${encodeURIComponent(pr.id)}/jobs/${encodeURIComponent(jobKey)}/start`
+      : `/api/pr/${encodeURIComponent(pr.owner)}/${encodeURIComponent(pr.repo)}/${encodeURIComponent(pr.number)}/jobs/${encodeURIComponent(jobKey)}/start`;
+    try {
+      const resp = await fetch(url, { method: 'POST' });
+      if (resp.status === 409) {
+        // Feature disabled in config — shouldn't happen (the button is hidden
+        // when disabled) but surface it rather than failing silently.
+        // NOTE: the toast singleton is lowercase `window.toast` (see
+        // cancel-background-job.js); `window.Toast` does not exist.
+        if (window.toast?.error) window.toast.error('This feature is disabled in config.');
+        return;
+      }
+      if (!resp.ok) {
+        console.warn(`[StartJob] ${jobKey} start POST failed: ${resp.status}`);
+        return;
+      }
+      // Optimistic UI: there is no `review:background_job_started` broadcast,
+      // so set the generating flag now — when the server enqueued a job
+      // (`started`) or one was already running (`alreadyRunning`) — to start
+      // the pulse immediately. Results arrive via `review:hunk_summaries_ready`
+      // / `review:tour_ready`; `review:background_job_finished` clears the flag
+      // when the job ends.
+      const payload = await resp.json().catch(() => ({}));
+      if (payload.started || payload.alreadyRunning) {
+        if (jobKey === 'summary') {
+          this._summariesGenerating = true;
+          this._syncSummaryToolbarButton();
+        } else if (jobKey === 'tour') {
+          this._tourGenerating = true;
+          this._syncTourToolbarButton();
+        }
+      }
+    } catch (err) {
+      console.warn(`[StartJob] ${jobKey} start POST error:`, err.message);
+    }
+  }
+
+  /**
+   * Fetch /api/reviews/:reviewId/tour and stash the result in `_tourStops`
+   * / `_tourGenerating`. Does NOT open the tour.
+   *
+   * If `deferIfActive` is true and a tour is currently mounted, the fetched
+   * stops are stashed on `_tourStopsPendingRestart` instead of replacing
+   * the active tour's stops. The pending stops apply on the next exit or
+   * restart. This is the v1 simple approach — replacing the running tour
+   * mid-flight is doable but adds complexity (mounted refs keyed by old
+   * indices, current-stop drift, etc.) without a clear UX win.
+   *
+   * @param {Object} [opts]
+   * @param {boolean} [opts.deferIfActive=false]
+   * @param {boolean} [opts.cancelOnRender=true] - When true (default),
+   *   the probe captures `_renderGen` and aborts before mutating state
+   *   if a later render bumps the generation. Render-triggered probes
+   *   want this so a stale fetch can't clobber a fresh reset. One-shot
+   *   recovery callers (e.g. the deferred config-probe) pass `false`
+   *   so they don't self-cancel.
+   * @returns {Promise<Array<Object>|null>} resolved stops, or null on miss.
+   */
+  async _loadAndStashTour({ deferIfActive = false, cancelOnRender = true } = {}) {
+    if (!this.currentPR?.id) return null;
+    if (this._toursEnabled === false) return null;
+    // Capture the current render generation; if a later renderDiff bumps
+    // _renderGen between our awaits, bail before mutating state. Only
+    // applied when cancelOnRender is true — the deferred config probe
+    // and other one-shot recovery callers pass `cancelOnRender: false`.
+    const gen = this._renderGen;
+    const guardStale = () => cancelOnRender && gen !== this._renderGen;
+    try {
+      const resp = await fetch(`/api/reviews/${this.currentPR.id}/tour`);
+      if (guardStale()) return null;
+      if (!resp.ok) return null;
+      const data = await resp.json();
+      if (guardStale()) return null;
+      this._tourGenerating = data.generating === true;
+      const stops = Array.isArray(data.tour?.stops) ? data.tour.stops : null;
+      if (deferIfActive && this._tourIsActive()) {
+        this._tourStopsPendingRestart = stops;
+      } else {
+        this._tourStops = stops;
+        this._tourStopsPendingRestart = null;
+      }
+      this._syncTourToolbarButton();
+      return stops;
+    } catch (err) {
+      console.warn('[Tour] failed to load tour:', err);
+      return null;
+    }
+  }
+
+  /**
+   * Toolbar click entrypoint. If a tour is active, exit. Otherwise fetch
+   * stops if needed, then open from the first stop. No-ops when no stops
+   * exist (toolbar button stays inert with the "none available yet" label).
+   * @returns {Promise<void>}
+   */
+  async startOrToggleTour() {
+    if (this._tourIsActive()) {
+      this._exitTour();
+      return;
+    }
+    if (!this._tourStops || this._tourStops.length === 0) {
+      await this._loadAndStashTour();
+    }
+    if (!this._tourStops || this._tourStops.length === 0) {
+      // No tour stops available. When auto-generation is off and nothing is
+      // already in flight, a click triggers manual generation (mirrors the
+      // summaries button). `_startGenerationJob` sets the pulsing state
+      // optimistically (there is no `review:background_job_started` event).
+      // When `review:tour_ready` arrives the stops load and the button becomes
+      // "Start guided tour" — the user clicks again to open it (no auto-open).
+      if (this._toursAutoGenerate === false && !this._tourGenerating) {
+        await this._startGenerationJob('tour');
+      }
+      return;
+    }
+    await this._openTourAtStart();
+  }
+
+  /**
+   * Open the tour UI starting at stop 0. Lazy-creates the TourBar and
+   * TourRenderer on first call so we pay zero cost for users who never
+   * trigger a tour.
+   */
+  async _openTourAtStart() {
+    if (!this._tourStops || this._tourStops.length === 0) return;
+
+    // Drain any pending teardown from the previous tour BEFORE we read
+    // wrappers below. Otherwise a fire-and-forget DELETE + its
+    // loadContextFiles reload landing mid-open can rip the wrapper the
+    // first stop is about to mount against. allSettled-wrapped so it
+    // never rejects.
+    if (this._tourCleanupPending) {
+      const pending = this._tourCleanupPending;
+      this._tourCleanupPending = null;
+      await pending;
+    }
+
+    if (!this._tourRenderer && typeof window !== 'undefined' && window.TourRenderer) {
+      this._tourRenderer = new window.TourRenderer(this);
+    }
+    if (!this._tourBar && typeof window !== 'undefined' && window.TourBar) {
+      this._tourBar = new window.TourBar({
+        onPrev: () => this._advanceTour(-1),
+        onNext: () => this._advanceTour(1),
+        onExit: () => this._exitTour(),
+        onRestart: () => this._restartTour(),
+      });
+    }
+    if (!this._tourRenderer || !this._tourBar) {
+      console.warn('[Tour] TourRenderer/TourBar not available; cannot open tour');
+      return;
+    }
+
+    this._tourRenderer.setStops(this._tourStops);
+    this._tourRenderer.setActive(true);
+    // Mount inside the diff-view scroll container so the bar (position:
+    // sticky) spans only the diff width — the file-tree sidebar and its
+    // controls stay visible.
+    const diffView = document.querySelector('.main-layout .diff-view');
+    this._tourBar.mount(diffView || undefined);
+    this._tourBar.setStops(this._tourStops);
+    this._tourBar.setCompleted(false);
+
+    this._tourActiveIndex = -1;
+    // Bump the generation BEFORE the first _advanceTour call so it sees
+    // the fresh value as its baseline. Subsequent exits bump it again,
+    // making in-flight probes from this open detect the mismatch and bail.
+    this._tourGen += 1;
+    this._registerTourKeyboardHandlers();
+    this._advanceTour(1);
+    this._syncTourToolbarButton();
+  }
+
+  /**
+   * Advance (or rewind) the active stop by `delta`. Going past the end of
+   * the tour flips the bar into completion state; going before the start
+   * clamps at 0.
+   *
+   * Async because each probe candidate is run through
+   * `TourRenderer.prepareStop` first, which may need to await a file
+   * fetch (adding a non-diff file as a context file) and/or a gap-expand
+   * to surface folded rows the stop anchors on. Re-entrant calls (rapid
+   * Next presses, keyboard mashing) are dropped via `_advanceInFlight`
+   * so we never have two probe loops mutating tour state concurrently.
+   *
+   * @param {number} delta - Typically +1 (next) or -1 (prev).
+   * @returns {Promise<void>}
+   */
+  async _advanceTour(delta) {
+    if (!this._tourRenderer || !this._tourBar || !this._tourStops) return;
+    const total = this._tourStops.length;
+    if (total === 0) return;
+
+    // Drop overlapping nav requests. The keyboard / button callbacks all
+    // fire-and-forget, so a fast Next-Next-Next while a file fetch is in
+    // flight would otherwise interleave probe loops on shared mutable
+    // state (`_tourActiveIndex`, the renderer's `_mounted` map).
+    //
+    // Latch is generation-scoped: an in-flight call from a torn-down
+    // generation no longer matches `_tourGen`, so a fresh reopen passes
+    // the check without any teardown path having to remember to clear
+    // the slot. Fixes the exit-then-reopen wedge where the boolean
+    // latch survived `_exitTour` and silently dropped the next open's
+    // first `_advanceTour`.
+    if (this._advanceInFlightGen === this._tourGen) return;
+    this._advanceInFlightGen = this._tourGen;
+    // Capture the open-generation so we can detect a teardown (exit /
+    // reopen) that happened while we were sitting on an await below.
+    const startGen = this._tourGen;
+    const isStale = () => this._tourGen !== startGen;
+    try {
+      const startIndex = this._tourActiveIndex + delta;
+      const dir = delta >= 0 ? 1 : -1;
+
+      // Forward past the end (initial open uses delta=1 from -1, so this only
+      // fires once we've actually reached the last stop and pressed Next again).
+      if (startIndex >= total) {
+        this._tourBar.setCompleted(true);
+        this._tourBar.setActiveIndex(total - 1);
+        this._syncTourToolbarButton();
+        return;
+      }
+
+      // Probe-then-mount: locate the next mountable index WITHOUT unmounting
+      // the current one. Only swap once we have a confirmed replacement. This
+      // avoids the wedge where the current stop is torn down and no successor
+      // mounts (file filtered out, scope change, etc.).
+      let probe = Math.max(0, startIndex);
+      let nextRow = null;
+      let nextIndex = -1;
+      while (probe >= 0 && probe < total) {
+        // Skip re-probing the index that's already mounted — `mountStop` is
+        // idempotent and returns the existing row, but we want to keep going
+        // past the current active when delta moves us off it.
+        if (probe !== this._tourActiveIndex) {
+          // Prepare the stop first: add the file as a context file if it
+          // isn't in the diff, and unfold any gap covering its line range.
+          // prepareStop returning true is no guarantee mountStop will
+          // succeed — genuinely missing data still falls through.
+          await this._tourRenderer.prepareStop(probe);
+          // Tour could have been exited (or re-opened) while prepareStop
+          // was awaiting a file fetch / loadContextFiles. Bail before
+          // mounting against a torn-down tour.
+          if (isStale()) return;
+          const row = this._tourRenderer.mountStop(probe);
+          if (row) {
+            nextRow = row;
+            nextIndex = probe;
+            break;
+          }
+        } else if (dir > 0) {
+          // Already-active probe under forward motion shouldn't count as a hit;
+          // we want to advance past it.
+        } else {
+          // Backward delta landing on the current stop: nothing earlier mounted.
+          break;
+        }
+        probe += dir;
+      }
+
+      if (!nextRow) {
+        if (dir > 0) {
+          // Forward exhaustion: flip to completion using the last successfully
+          // mounted index. If we never mounted anything (initial open found no
+          // mountable stops), bail out cleanly so the toolbar resets.
+          if (this._tourActiveIndex < 0) {
+            console.warn('[Tour] no mountable stops found; exiting');
+            this._exitTour();
+            return;
+          }
+          this._tourBar.setCompleted(true);
+          this._tourBar.setActiveIndex(this._tourActiveIndex);
+          this._syncTourToolbarButton();
+          return;
+        }
+        // Backward exhaustion: leave the current stop mounted/active untouched.
+        console.debug('[Tour] no earlier mountable stop; staying put');
+        return;
+      }
+
+      // Successful candidate — only now unmount the previous stop.
+      if (this._tourActiveIndex >= 0 && this._tourActiveIndex !== nextIndex) {
+        this._tourRenderer.unmountStop(this._tourActiveIndex);
+      }
+
+      this._tourActiveIndex = nextIndex;
+      this._tourRenderer.highlightActive(nextIndex);
+      this._tourRenderer.scrollToStop(nextIndex);
+      this._tourBar.setCompleted(false);
+      this._tourBar.setActiveIndex(nextIndex);
+      this._syncTourToolbarButton();
+      // Suppress unused-var lints; nextRow exists for symmetry with future
+      // post-mount work (focus management, telemetry).
+      void nextRow;
+    } finally {
+      // Only release the latch if we still own the slot. A teardown that
+      // bumped `_tourGen` between entry and now has already invalidated
+      // our holder — and a fresh generation may have taken the slot for
+      // its own call. Clobbering it with `-1` would let two _advanceTour
+      // calls run concurrently on the new generation.
+      if (this._advanceInFlightGen === startGen) {
+        this._advanceInFlightGen = -1;
+      }
+    }
+  }
+
+  /**
+   * Tear down the tour: unmount every annotation, unmount the bar, drop the
+   * body class, and unregister keyboard handlers.
+   */
+  _exitTour() {
+    // Bump generation FIRST so any in-flight `_advanceTour` (sitting on an
+    // ensureContextFile / ensureLinesVisible await) sees the mismatch on
+    // resume and bails instead of mutating state for a torn-down tour.
+    this._tourGen += 1;
+    let drain = Promise.resolve();
+    if (this._tourRenderer) {
+      // unmountAll fires-and-forgets context-file DELETEs but returns a
+      // drain promise. Stash it on `_tourCleanupPending` so the next open
+      // can await it before reading wrappers — otherwise the DELETE's
+      // loadContextFiles reload can rip the new tour's wrapper out from
+      // under an active stop.
+      drain = this._tourRenderer.unmountAll();
+      this._tourRenderer.setActive(false);
+    }
+    this._tourCleanupPending = drain;
+    if (this._tourBar) {
+      this._tourBar.unmount();
+    }
+    this._unregisterTourKeyboardHandlers();
+    this._tourActiveIndex = -1;
+    // Consume any pending tour stashed by `review:tour_ready` while we
+    // were running. Next open uses the fresh stops.
+    if (Array.isArray(this._tourStopsPendingRestart)) {
+      this._tourStops = this._tourStopsPendingRestart;
+      this._tourStopsPendingRestart = null;
+    }
+    this._syncTourToolbarButton();
+  }
+
+  /**
+   * Exit, then re-open from stop 0. Async because `_openTourAtStart`
+   * drains the prior tour's pending teardown (context-file DELETEs +
+   * their loadContextFiles reloads) before reading wrappers, so the
+   * fresh tour can't mount against a wrapper the old DELETE is about to
+   * tear down. If a newer tour was stashed via `review:tour_ready`,
+   * `_exitTour` swaps it in before we reopen.
+   *
+   * Caller (`onRestart` toolbar callback) is fire-and-forget; the
+   * returned promise is for symmetry / testability.
+   *
+   * @returns {Promise<void>}
+   */
+  async _restartTour() {
+    this._exitTour();
+    await this._openTourAtStart();
+  }
+
+  /**
+   * Install the keyboard shortcut handler. Bound to `document` so it fires
+   * regardless of focus, with a guard that skips when the user is typing
+   * in a text field.
+   */
+  _registerTourKeyboardHandlers() {
+    if (this._tourKeydownHandler) return;
+    const handler = (e) => {
+      if (!this._tourIsActive()) return;
+
+      // Skip when the user is typing — text fields, contenteditable, etc.
+      // Arrow keys move the caret; Escape is owned by the surrounding form.
+      const target = e.target;
+      const tag = target && target.tagName;
+      const isEditable = tag === 'TEXTAREA' || tag === 'INPUT' || tag === 'SELECT' ||
+        (target && (target.isContentEditable || target.contentEditable === 'true'));
+      if (isEditable) return;
+
+      // Skip when a modal is open. Modals own their own Escape ladder
+      // (close dropdown, blur, dismiss); we don't want to compete. Defer
+      // to the shared ModalDetection utility so the selector list stays
+      // in sync with KeyboardShortcuts.
+      if (window.ModalDetection?.isModalOpen()) return;
+
+      // Skip ALL tour shortcuts when the chat panel is open. ChatPanel
+      // binds its own document-level Escape handler with a ladder of
+      // states (provider/session dropdown, streaming stop, blur input,
+      // close panel). Arrow keys may also be in use by chat surfaces.
+      // Yanking the tour out from under the user — by advancing OR
+      // exiting — when they have the chat panel open would be surprising.
+      const chatPanel = document.querySelector('.chat-panel.chat-panel--open');
+      if (chatPanel) return;
+
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        this._advanceTour(1);
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        this._advanceTour(-1);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        // Stop propagation so other Escape-bound listeners (chat panel
+        // when it's closed-but-bound, future keyboard shortcuts) don't
+        // also fire for the same key event.
+        e.stopImmediatePropagation();
+        this._exitTour();
+      }
+    };
+    document.addEventListener('keydown', handler);
+    this._tourKeydownHandler = handler;
+  }
+
+  _unregisterTourKeyboardHandlers() {
+    if (!this._tourKeydownHandler) return;
+    document.removeEventListener('keydown', this._tourKeydownHandler);
+    this._tourKeydownHandler = null;
+  }
+
+  /**
    * Listen for review-scoped CustomEvents dispatched by ChatPanel's
    * WebSocket pub/sub connection.
    */
@@ -982,6 +2087,50 @@ class PRManager {
       if (e.detail?.reviewId !== reviewId()) return;
       const { file, line_start, line_end, side } = e.detail;
       await this.ensureLinesVisible([{ file, line_start, line_end, side: side || 'right' }]);
+    });
+
+    document.addEventListener('review:hunk_summaries_ready', (e) => {
+      if (e.detail?.reviewId !== reviewId()) return;
+      // Per-file completion implies the review-level job is still working,
+      // so reflect "generating" until `background_job_finished` clears it.
+      // (No-op when the toolbar button is already pulsing.)
+      if (!this._summariesGenerating) {
+        this._summariesGenerating = true;
+        this._syncSummaryToolbarButton();
+      }
+      this._applyHunkSummaries(e.detail.filePath, e.detail.summaries || []);
+    });
+
+    // Tour-ready broadcasts arrive after the tour-generation job persists a
+    // new tour. We refresh the cached stops in the background but do NOT
+    // auto-open the tour — user must click the toolbar button. If a tour is
+    // already mounted, the new stops are stashed for restart so we don't
+    // yank the active tour out from under the user (v1 simple approach).
+    document.addEventListener('review:tour_ready', (e) => {
+      if (e.detail?.reviewId !== reviewId()) return;
+      this._loadAndStashTour({ deferIfActive: true }).catch(() => {});
+    });
+
+    document.addEventListener('review:background_job_finished', (e) => {
+      if (e.detail?.reviewId !== reviewId()) return;
+      const jobType = e.detail?.jobType || '';
+      const isSummaries = jobType === 'summaries' || jobType.startsWith('summaries:');
+      const isTour = jobType === 'tour' || jobType.startsWith('tour:');
+      if (!isSummaries && !isTour) return;
+      // The queue can host multiple `${type}:${digest}` jobs back-to-back
+      // (refresh, scope change, whitespace toggle). The broadcast payload
+      // carries `hasActiveForType` from the queue's view AFTER this job's
+      // key was deleted, so a sibling job still in flight keeps the pulse
+      // visible.
+      if (e.detail?.hasActiveForType === true) return;
+      if (isSummaries) {
+        this._summariesGenerating = false;
+        this._syncSummaryToolbarButton();
+      }
+      if (isTour) {
+        this._tourGenerating = false;
+        this._syncTourToolbarButton();
+      }
     });
 
     document.addEventListener('visibilitychange', () => {
@@ -1844,7 +2993,38 @@ class PRManager {
     const diffContainer = document.getElementById('diff-container');
     if (!diffContainer) return;
 
+    // Tear down any active tour BEFORE wiping the diff DOM: unmountAll()
+    // re-collapses files the tour auto-expanded by looking them up via
+    // `.d2h-file-wrapper[data-file-name=...]`. If we cleared innerHTML
+    // first those lookups would all miss, and the user's pre-tour
+    // collapse state would be silently lost. (Mirrors the rationale for
+    // hunkSummaryRenderer.reset below — anchor-based DOM state cannot
+    // survive a re-render.)
+    if (this._tourIsActive && this._tourIsActive()) {
+      this._exitTour();
+    }
+
     diffContainer.innerHTML = '';
+
+    // Reset hunk-summary tracking — `renderPatch` will populate this as it
+    // walks each block, and we hash the records once render finishes.
+    this._pendingHunkRecords = [];
+    if (this.hunkSummaryRenderer) {
+      this.hunkSummaryRenderer.reset();
+    }
+    this._tourStops = null;
+    this._summaryAnchorsByHash = new Map();
+    this._summaryHashesByFile = new Map();
+    this._pendingSummariesByHash = new Map();
+    // Reset alongside the other per-render summary state. Set true again only
+    // when a summary actually mounts (see _applyHunkSummaries / the existing-
+    // summary fetch). Without this, a re-render whose subsequent fetch returns
+    // no matching rows keeps the stale `true`, leaving the toolbar stuck in
+    // Hide/Show mode with nothing in the DOM and blocking click-to-generate.
+    this._summariesGenerated = false;
+    // Bump generation so any in-flight `_kickOffHunkSummaries` from the
+    // previous render bails out instead of mutating maps we just reset.
+    this._renderGen = (this._renderGen || 0) + 1;
 
     // Use changed_files array from API
     const files = pr.changed_files || pr.files || [];
@@ -1880,6 +3060,21 @@ class PRManager {
     // Load context files after diff is rendered
     this.contextFiles = [];
     this.loadContextFiles();
+
+    // Kick off hunk-summary hashing + load (Phase 5). Fire-and-forget — the
+    // diff is fully usable while summaries arrive asynchronously.
+    if (this.hunkSummaryRenderer) {
+      this._kickOffHunkSummaries().catch((err) => {
+        console.warn('[HunkSummary] kickoff failed:', err);
+      });
+    }
+
+    // Probe tour endpoint after diff is rendered. `currentPR.id` is now
+    // set (init()/LocalManager populates it before calling renderDiff),
+    // so the toolbar button can reflect the right state.
+    if (this._toursEnabled === true) {
+      this._loadAndStashTour().catch(() => {});
+    }
   }
 
   /**
@@ -1976,6 +3171,43 @@ class PRManager {
         }
       });
       header.appendChild(fileChatBtn);
+
+      // Per-file hunk-summary toggle. Mirrors the toolbar toggle but scoped to
+      // one file. Disabled (greyed) when no summaries exist yet for this file;
+      // _applyHunkSummaries / _kickOffHunkSummaries re-enable it as soon as
+      // hashes for this file are recorded (so a summary that arrives later
+      // doesn't get hidden behind a permanently-disabled button).
+      // Gated on `_summariesEnabled`: skipped entirely when /api/config has
+      // already reported the feature is off; created hidden + revealed later
+      // when config has not yet resolved.
+      if (this._summariesEnabled !== false) {
+        const summaryToggleBtn = document.createElement('button');
+        summaryToggleBtn.className = 'file-header-summary-toggle';
+        summaryToggleBtn.dataset.file = file.file;
+        summaryToggleBtn.innerHTML = `
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
+            <path d="M0 3.75C0 2.784.784 2 1.75 2h12.5c.966 0 1.75.784 1.75 1.75v8.5A1.75 1.75 0 0 1 14.25 14H1.75A1.75 1.75 0 0 1 0 12.25Zm1.75-.25a.25.25 0 0 0-.25.25v8.5c0 .138.112.25.25.25h12.5a.25.25 0 0 0 .25-.25v-8.5a.25.25 0 0 0-.25-.25ZM3.5 6.25a.75.75 0 0 1 .75-.75h7a.75.75 0 0 1 0 1.5h-7a.75.75 0 0 1-.75-.75Zm.75 2.25h4a.75.75 0 0 1 0 1.5h-4a.75.75 0 0 1 0-1.5Z"/>
+          </svg>
+        `;
+
+        if (this._summariesEnabled !== true) {
+          // Config still pending; hide until the gate resolves.
+          summaryToggleBtn.classList.add('summary-toggle-pending');
+          summaryToggleBtn.style.display = 'none';
+        }
+
+        const fileIsHidden = this.summariesHiddenFiles?.has(file.file) || false;
+        if (fileIsHidden) {
+          wrapper.classList.add('summaries-hidden-file');
+        }
+        this._syncFileSummaryToggleButton(summaryToggleBtn, file.file);
+
+        summaryToggleBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.toggleFileSummaries(file.file, wrapper);
+        });
+        header.appendChild(summaryToggleBtn);
+      }
     }
 
     // Create diff table
@@ -1986,7 +3218,7 @@ class PRManager {
 
     // Parse the diff content
     if (file.patch) {
-      this.renderPatch(tbody, file.patch, file.file);
+      this.renderPatch(tbody, file.patch, file.file, file.hunk_hashes || null);
     } else if (file.binary) {
       const row = document.createElement('tr');
       row.innerHTML = '<td colspan="2" class="binary-file">Binary file</td>';
@@ -2010,13 +3242,38 @@ class PRManager {
    * @param {HTMLElement} tbody - Table body element
    * @param {string} patch - Unified diff patch string
    * @param {string} fileName - File name
+   * @param {string[]|null} [hunkHashes] - Per-hunk content hashes parallel
+   *   to the order `parseDiffIntoBlocks` returns hunks. When supplied, these
+   *   are used instead of computing client-side hashes. Computed by the
+   *   backend from the canonical (non-whitespace-filtered) diff so they
+   *   stay aligned with persisted summary keys.
    */
-  renderPatch(tbody, patch, fileName) {
+  renderPatch(tbody, patch, fileName, hunkHashes = null) {
     let diffPosition = 0;  // GitHub diff_position (1-indexed, consecutive)
     let prevBlockEnd = { old: 0, new: 0 };
     let isFirstHunk = true;
 
     const blocks = window.HunkParser.parseDiffIntoBlocks(patch);
+
+    // Defend against length drift between server-supplied (canonical) hashes
+    // and the rendered (possibly whitespace-filtered) blocks: under `?w=1`,
+    // `git diff -w` can drop or merge whitespace-only hunks so the canonical
+    // and rendered hunk counts diverge. Misaligned hashes would write the
+    // wrong canonical hash onto every block after the first dropped hunk,
+    // anchoring summaries to the wrong rendered hunk. Fail closed: drop the
+    // hashes for this file. Summaries then simply won't anchor — visibly
+    // missing rather than visibly wrong.
+    if (Array.isArray(hunkHashes) && hunkHashes.length !== blocks.length) {
+      if (!this._warnedHunkHashLengthMismatch) {
+        this._warnedHunkHashLengthMismatch = true;
+        console.warn(
+          `[HunkSummary] hunk_hashes length mismatch for ${fileName}: ` +
+          `${hunkHashes.length} canonical hashes, ${blocks.length} rendered ` +
+          'blocks. Dropping hashes for this file.'
+        );
+      }
+      hunkHashes = null;
+    }
 
     // Render blocks with gap sections
     blocks.forEach((block, blockIndex) => {
@@ -2097,6 +3354,7 @@ class PRManager {
       let oldLineNum = block.oldStart;
       let newLineNum = block.newStart;
 
+      let firstLineRow = null;
       block.lines.forEach(line => {
         if (!line && line !== '') return; // Skip undefined
 
@@ -2126,7 +3384,23 @@ class PRManager {
         };
 
         this.renderDiffLine(tbody, lineData, fileName, diffPosition);
+        if (!firstLineRow) firstLineRow = tbody.lastElementChild;
       });
+
+      // Record this hunk's first rendered code row as the anchor for any
+      // inline summary annotation. The canonical hash comes from the
+      // backend (`hunkHashes[blockIndex]`); _kickOffHunkSummaries mounts
+      // it as `data-hunk-start` after render finishes so the summary
+      // renderer can find the anchor and insert the annotation above it.
+      if (this._pendingHunkRecords && firstLineRow) {
+        const serverHash = Array.isArray(hunkHashes) ? hunkHashes[blockIndex] || null : null;
+        this._pendingHunkRecords.push({
+          file: fileName,
+          header: block.header,
+          anchorRow: firstLineRow,
+          contentHash: serverHash
+        });
+      }
 
       // Update previous block end coordinates
       const endBounds = window.HunkParser.getBlockCoordinateBounds(
