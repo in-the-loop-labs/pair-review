@@ -1,5 +1,119 @@
 # Changelog
 
+## 3.6.0
+
+### Minor Changes
+
+- dd750c7: Add a user-facing cancel for in-flight tour and hunk-summary generation. Clicking the pulsing tour or summary toolbar button while a job is running now opens a confirmation dialog ("Cancel Tour" / "Cancel Summaries" vs "OK"). On confirm, the background job aborts and the upstream AI CLI call is killed so token spend stops immediately.
+
+  Backend: `BackgroundQueue` jobs now receive an `AbortSignal`, which is plumbed through tour/summary generators into every non-executable provider (Claude, Gemini, Codex, Copilot, Cursor Agent, OpenCode, Pi). A new `POST /api/reviews/:reviewId/jobs/:jobKey/cancel` endpoint (plus a `/api/local/...` mirror) cancels by bare prefix (`tour` | `summaries`) or full composite key. Works in both PR and Local modes.
+
+- c5171f1: Add `hunk_summaries` table (schema v47) and `HunkSummaryRepository` for storing per-hunk natural-language summaries. Foundation for upcoming semantic hunk summaries feature.
+- 15c470a: Add semantic hunk-summary backend (gated behind `summaries_enabled` config flag). When enabled, review load triggers a background job that classifies trivial vs non-trivial hunks, batches LLM calls per file via the configured `summary_provider`, and broadcasts `review:hunk_summaries_ready` events as files complete. Non-executable providers only; executable providers (Claude Code etc.) are skipped to avoid contract mismatch. New `GET /api/reviews/:reviewId/hunk-summaries` endpoint returns persisted rows. Frontend rendering arrives in a follow-up.
+- 8f7114e: Render semantic hunk summaries inline in the diff (gated behind `summaries_enabled`). Each non-trivial hunk gains a one-line natural-language annotation immediately above its first code row, fetched from `GET /api/reviews/:reviewId/hunk-summaries` on load and updated live via the `review:hunk_summaries_ready` WebSocket event. A toolbar button toggles every annotation at once (persisted per-review in localStorage), and a per-file header button toggles annotations for that file (also persisted per-review). Works in both PR and Local mode.
+- 9809ba3: Add `summaries_enabled`, `tours_enabled`, `summary_provider`, and `summary_model` config keys plus `getSummaryProvider` / `getSummaryModel` helpers as foundation for upcoming semantic hunk summaries and tour features.
+- dd750c7: Tour-stop descriptions are no longer cut off mid-sentence. The storage cap is raised from 280 to 800 characters and the UI clamps the visible text to ~3 lines, revealing the rest behind a "Show more" toggle on stops that actually overflow. The toggle only appears when needed, and a stop's expanded state is preserved if you scroll past and return to it within the same tour.
+- 5c504fc: Add agentic tour generation. When `tours_enabled=true`, an AI agent explores the worktree (using `git-diff-lines` and read-only shell tools) and produces a short guided walkthrough of the change as a list of file/line-range stops anchored on changed lines. New config keys `tour_provider` and `tour_model` (default to summary settings). `summaries_max_lines_added` (default 3000) gates summary and tour generation on large diffs.
+- dd750c7: Add a "Chat about" button to every tour-stop annotation so reviewers can pivot from a passive walk-through to an interactive conversation about the current stop. The button opens the chat panel pre-loaded with the stop's title, description, file, and line range as context — mirroring the existing "Chat about" affordances on comments, AI suggestions, and analysis findings.
+- f68a309: Guided-tour stops are now always reachable. Previously, a stop whose anchor line was folded out of the rendered diff — or whose file wasn't in the diff at all — silently jumped the bar to "Tour complete" without the user ever seeing that stop (the bar's "of N" count includes those stops but only the mountable ones could actually be navigated to). The navigator now unfolds covering gaps via the existing context-expand path and auto-adds out-of-diff files as transient context files (cleaned up on tour exit), so "Stop 7 of 8" → Next reliably shows Stop 8.
+
+  Also fixes three race conditions in the new async tour-navigation path: (1) exiting during an in-flight `ensureContextFile` POST no longer leaks a context file into the user's persistent list (rolled back directly when the tour is gone); (2) restarting the tour now drains pending context-file DELETEs before the new tour mounts, so a stale teardown can't rip the new tour's wrapper out from under an active stop; (3) the `_advanceTour` re-entrance latch is now generation-scoped, so exiting during a Next press no longer wedges the next reopen.
+
+- f168642: Render generated tours inline in the diff (gated behind `tours_enabled`). A floating toolbar exposes prev/next/restart/exit and a status pulse while the agent works; arrow keys, Home/End, and Escape drive navigation. Each stop mounts an annotation row at its anchor line, auto-expanding collapsed files on entry and restoring the user's collapse state on exit. Works in both PR and Local mode.
+- dd750c7: Hunk summaries and tour stops are now independent — both can render simultaneously in the diff. Previously, activating a tour hid all hunk-summary annotations via CSS; now the summary and tour toggles control their own visibility independently, so you can review with both annotation styles on at once (or hide either if the diff feels crowded).
+- 5d03773: Add `tours` table (schema v48) and `TourRepository` for storing per-review guided-tour walkthroughs. Tours are cached per diff via a `diff_hash` column. Foundation for the agentic tour-generation pipeline.
+- f67f230: Restructure tours and hunk-summaries configuration into nested objects with a
+  new `auto_generate` flag, and add click-to-generate toolbar behavior.
+
+  Config shape (replaces the previous flat `tours_enabled` / `summaries_enabled`
+  / `tour_provider` / `tour_model` / `summary_provider` / `summary_model` /
+  `summaries_max_files` / `summaries_max_lines_added` keys):
+
+  ```json
+  {
+    "tours": {
+      "enabled": false,
+      "auto_generate": true,
+      "provider": "",
+      "model": ""
+    },
+    "summaries": {
+      "enabled": false,
+      "auto_generate": true,
+      "provider": "",
+      "model": "",
+      "max_files": 50,
+      "max_lines_added": 3000
+    }
+  }
+  ```
+
+  - `enabled` gates whether the feature is available at all (toolbar button
+    visibility, per-file toggles).
+  - `auto_generate` (new) controls whether generation kicks off automatically
+    when a review loads. When `false`, generation is deferred until the user
+    clicks the toolbar button.
+  - New manual-trigger endpoints back the click-to-generate flow:
+    `POST /api/pr/:owner/:repo/:number/jobs/{summary,tour}/start` and
+    `POST /api/local/:reviewId/jobs/{summary,tour}/start` (409 when the feature
+    is disabled, idempotent when a job is already in flight).
+  - Toolbar button states: colorless before anything is generated, a pulsing
+    outline while generating, and the active (colored) state once results exist.
+
+  This is a breaking change to the configuration file shape, but the feature is
+  unreleased so no existing users are affected.
+
+  Note: manual E2E verification of the toolbar button states (colorless
+  pre-generation, pulsing while generating, active when done) in both PR and
+  Local mode is still needed.
+
+### Patch Changes
+
+- dd750c7: - Cancel-job helper now only clears the toolbar pulse on HTTP 200 (cancelled) or 404 (already gone); 4xx/5xx/network failures keep the active state and surface an error toast so the user can retry.
+  - Guard the tour/summary cancel-confirm dialog against re-entry: a rapid second click on the pulsing toolbar button while the singleton ConfirmDialog is already open is now dropped instead of orphaning the first invocation's Promise.
+- 1cfb992: Tour and hunk-summary generation now auto-cancel when the underlying diff
+  changes (refresh, scope change, PR HEAD update, HEAD-SHA resolution).
+  Cancellation is load-bearing for both cost AND correctness: it stops the
+  stale provider call from burning tokens, AND prevents the stale worker
+  from persisting summaries for hunks the user has already moved past
+  (summary writes are content-hash-keyed and have no upstream staleness
+  check). Tour persistence retains its in-generator superseded check as a
+  last-chance guard, fixing a race where a cancelled predecessor could
+  overwrite a fresh tour after the latest-hash marker had been cleared.
+  Whitespace toggle is unaffected — the canonical diff digest is unchanged
+  so the in-flight job continues.
+- dd750c7: Harden the cancel pipeline for in-flight tour and hunk-summary generation:
+
+  - Cancelling now reliably kills shell-wrapped provider CLIs (e.g. `devx claude`). Previously the SIGTERM only reached the shell wrapper while the CLI grandchild kept burning tokens. Shell-mode spawns are now detached and group-killed via `process.kill(-pid, …)` (`taskkill /T /F` on Windows).
+  - Clicking Cancel and immediately clicking Generate again now starts a fresh job. Before, the second click silently inherited the about-to-reject promise because the cancelled key was not evicted from the dedup map.
+  - Cancelling a job that was still queued (waiting on concurrency) now rejects it immediately and prevents the worker from being invoked with an already-aborted signal. `hasActiveForReview` also clears right away.
+  - Timed-out provider calls no longer leak an abort-event listener on the per-job AbortSignal. Tour and summary jobs reuse one signal across many provider calls, so the leak previously accumulated one listener per timed-out call until the job ended.
+  - When a cancelled worker's rejection lands after the same key was re-enqueued, the settling worker no longer clobbers the replacement job's bookkeeping. Previously the replacement became invisible to `hasActiveForReview`, immune to a follow-up cancel, and vulnerable to a duplicate-worker enqueue.
+
+- 1cfb992: Fix stale guided-tour stops surviving a diff-emptying refresh or scope change.
+  When `kickOffTourJob` was called with an empty diff, the in-flight worker was
+  cancelled and the supersede sentinel was stamped, but the persisted `tours`
+  row was left untouched — `GET /api/reviews/:id/tour` serves the stored row
+  without comparing `diff_hash`, so the UI kept offering stops pointing at lines
+  no longer in the diff (reachable by reverting all unstaged changes or flipping
+  scope to a range with no changes). The empty-diff path now unconditionally
+  deletes the persisted row and broadcasts `review:tour_ready` so open clients
+  re-fetch and see `{tour: null}`. Cleanup runs even on the first kickoff after
+  a server restart (when the in-memory supersede map is empty but a pre-restart
+  row still exists); `deleteByReview` is idempotent and the broadcast is gated
+  on `changes > 0` so fresh reviews stay silent.
+- 7c86b5d: Tighten hunk_summaries schema: CHECK constraint requires at least one of `summary_text` or `trivial_reason` to be set; upsertMany validates the same invariant; and conflict updates preserve the original `created_at`.
+- ceaf964: Swap the hunk-summary icon to the GitHub Primer `note` octicon so summaries are visually distinct from chat-bubble icons used by comments and chat.
+- dd750c7: Cancelling a tour or summary in Local mode now returns a clean 500 error instead of hanging when the database is briefly unavailable. The Local-mode cancel route was the only async handler missing a try/catch, so a transient SQLite lock or a database-closed-during-shutdown rejection escaped Express and left the client waiting until it timed out.
+- ded4c23: Move the guided-tour bar from the bottom of the diff panel to the top so it's harder to miss while a tour is active. The bar pins beneath the page header, and the sticky diff toolbar and per-file headers tuck in directly below it as you scroll.
+- dd750c7: Chat-about on a tour stop now includes the code snippet even when the stop targets a context file outside the PR diff. Previously the snippet enrichment only worked for stops inside the diff, so stops on auto-added context files were sent to the agent with only title/description/file/line — exactly the case where the snippet is most useful, because the file isn't visible in the diff. The chat panel now falls back to the file-content API and slices a small window (±5 lines) around the stop's line range when no diff hunk is available.
+- dd750c7: Two small UI polish changes:
+
+  - The "Chat about" button on a tour stop is now an icon-only button pinned to the upper-right of the stop header (same row as the "Stop N of M" marker), so it no longer competes with the description for vertical space.
+  - The summaries toggle button no longer draws a diagonal slash through its icon when summaries are hidden. The off state now matches the tour toggle — just the un-colored base styling — so the two buttons read consistently.
+
+- dd750c7: Raise tour-stop title cap from 60 to 120 characters so AI-generated titles can convey full intent without awkward truncation.
+
 ## 3.5.2
 
 ### Patch Changes
