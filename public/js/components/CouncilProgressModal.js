@@ -908,8 +908,16 @@ class CouncilProgressModal {
     if (this._completionHandled) return;
     this._completionHandled = true;
 
-    // Play notification sound before any async work so it fires promptly
-    if (window.notificationSounds) window.notificationSounds.playIfEnabled('analysis');
+    // Notify before any async work so feedback fires promptly.
+    if (window.notificationSounds) {
+      const label = this._renderMode === 'council' ? 'Council analysis complete' : 'Analysis complete';
+      window.notificationSounds.notifyIfEnabled('analysis', {
+        title: 'Pair Review',
+        body: label,
+        url: window.location.href,
+        dedupeKey: this.currentAnalysisId ? `analysis:${this.currentAnalysisId}` : undefined,
+      });
+    }
 
     if (this._renderMode === 'council') {
       // Voice-centric: mark all voice-level children as complete

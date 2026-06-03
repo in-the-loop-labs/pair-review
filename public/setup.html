@@ -820,15 +820,26 @@
                             updateProgressBar();
                             showRedirect();
 
-                            // Play notification sound for PR setup completion
-                            if (window.notificationSounds && mode !== 'local') window.notificationSounds.playIfEnabled('setup');
+                            var targetUrl = msg.reviewUrl ? new URL(msg.reviewUrl, window.location.origin) : null;
+                            if (targetUrl) {
+                                var qs = new URLSearchParams(window.location.search);
+                                if (qs.get('analyze') === 'true') targetUrl.searchParams.set('analyze', qs.get('analyze'));
+                            }
+
+                            // Notify for PR setup completion
+                            if (window.notificationSounds && mode !== 'local') {
+                                window.notificationSounds.notifyIfEnabled('setup', {
+                                    title: 'Pair Review',
+                                    body: 'Review setup complete',
+                                    url: targetUrl ? targetUrl.toString() : window.location.href,
+                                    dedupeKey: setupId ? 'setup:' + setupId : undefined,
+                                    showWhenVisible: true
+                                });
+                            }
 
                             // Small delay so the user sees the completed state
                             setTimeout(function() {
-                                if (msg.reviewUrl) {
-                                    var targetUrl = new URL(msg.reviewUrl, window.location.origin);
-                                    var qs = new URLSearchParams(window.location.search);
-                                    if (qs.get('analyze') === 'true') targetUrl.searchParams.set('analyze', qs.get('analyze'));
+                                if (targetUrl) {
                                     window.location.href = targetUrl.toString();
                                 }
                             }, 400);

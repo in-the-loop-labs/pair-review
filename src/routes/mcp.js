@@ -69,7 +69,12 @@ async function handleAnalysisCompletion(analysisId, runId, result, savePersisten
   activeAnalyses.set(analysisId, completedStatus);
   broadcastProgress(analysisId, completedStatus);
   if (currentStatus.reviewId) {
-    broadcastReviewEvent(currentStatus.reviewId, { type: 'review:analysis_completed' });
+    broadcastReviewEvent(currentStatus.reviewId, {
+      type: 'review:analysis_completed',
+      analysisId,
+      status: 'success',
+      suggestionsCount: completionInfo.totalSuggestions,
+    });
   }
 
   // Auto-cleanup after 30 minutes

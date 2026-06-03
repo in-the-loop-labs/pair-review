@@ -110,7 +110,14 @@ class StatusIndicator {
    * @param {string} message - Completion message
    */
   showComplete(message = 'Analysis complete') {
-    if (window.notificationSounds) window.notificationSounds.playIfEnabled('analysis');
+    if (window.notificationSounds) {
+      window.notificationSounds.notifyIfEnabled('analysis', {
+        title: 'Pair Review',
+        body: message,
+        url: window.location.href,
+        dedupeKey: this.currentAnalysisId ? `analysis:${this.currentAnalysisId}` : undefined,
+      });
+    }
     this.updateText(message);
     this.showCheckmark();
     this.stopDotsAnimation();

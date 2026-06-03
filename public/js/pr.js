@@ -296,7 +296,7 @@ class PRManager {
       });
     }
 
-    // Initialize notification sounds dropdown (bell icon)
+    // Initialize browser notifications dropdown (bell icon)
     const notifBtn = document.getElementById('notification-toggle');
     if (notifBtn && window.NotificationDropdown) {
       const notifEvents = window.PAIR_REVIEW_LOCAL_MODE ? ['analysis'] : ['analysis', 'setup'];
@@ -2065,7 +2065,22 @@ class PRManager {
 
     document.addEventListener('review:analysis_completed', (e) => {
       if (e.detail?.reviewId !== reviewId()) return;
-      if (document.hidden) { this._dirtyAnalysis = true; return; }
+      if (document.hidden) {
+        if (window.notificationSounds) {
+          const count = e.detail?.suggestionsCount;
+          const body = typeof count === 'number'
+            ? `Analysis complete: ${count} suggestion${count === 1 ? '' : 's'}`
+            : 'Analysis complete';
+          window.notificationSounds.notifyIfEnabled('analysis', {
+            title: 'Pair Review',
+            body,
+            url: window.location.href,
+            dedupeKey: e.detail?.analysisId ? `analysis:${e.detail.analysisId}` : `analysis:${e.detail.reviewId}:latest`,
+          });
+        }
+        this._dirtyAnalysis = true;
+        return;
+      }
       debounced('analysis', () => {
         if (this.analysisHistoryManager) {
           this.analysisHistoryManager.refresh({ switchToNew: true })

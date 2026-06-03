@@ -1,20 +1,9 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 /**
- * NotificationDropdown - Bell-icon popover for notification sound preferences.
+ * NotificationDropdown - Bell-icon popover for browser notification preferences.
  *
- * Anchors a small dropdown below the bell button with checkbox toggles that
- * control which events trigger a notification chime.  Supports configurable
- * event types (e.g. 'analysis', 'setup') and a "Test sound" link.
- *
- * Follows the same popover pattern as DiffOptionsDropdown (fixed positioning
- * via getBoundingClientRect, click-outside and Escape to dismiss,
- * opacity+transform animation).
- *
- * Usage:
- *   const dropdown = new NotificationDropdown(
- *     document.getElementById('notification-btn'),
- *     { events: ['analysis', 'setup'] }
- *   );
+ * Uses the standard Web Notifications API. Permission is requested only from an
+ * explicit user action.
  */
 
 const EVENT_LABELS = {
@@ -33,29 +22,24 @@ class NotificationDropdown {
     this._events = events || [];
 
     this._popoverEl = null;
-    this._checkboxes = {};
+    this._browserCheckboxes = {};
+    this._permissionStatusEl = null;
+    this._permissionButtonEl = null;
     this._visible = false;
     this._outsideClickHandler = null;
     this._escapeHandler = null;
 
     this._renderPopover();
     this._syncButtonActive();
+    this._syncPermissionState();
 
-    // Toggle popover on button click
     this._btnClickHandler = (e) => {
       e.stopPropagation();
-      if (this._visible) {
-        this._hide();
-      } else {
-        this._show();
-      }
+      if (this._visible) this._hide();
+      else this._show();
     };
     this._btn.addEventListener('click', this._btnClickHandler);
   }
-
-  // ---------------------------------------------------------------------------
-  // Public API
-  // ---------------------------------------------------------------------------
 
   /** Remove all DOM elements and event listeners. Safe to call multiple times. */
   destroy() {
@@ -70,14 +54,9 @@ class NotificationDropdown {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // DOM construction
-  // ---------------------------------------------------------------------------
-
   _renderPopover() {
     const popover = document.createElement('div');
     popover.className = 'notification-popover';
-    // Start hidden (opacity 0, shifted up)
     popover.style.opacity = '0';
     popover.style.transform = 'translateY(-4px)';
     popover.style.pointerEvents = 'none';
@@ -85,69 +64,114 @@ class NotificationDropdown {
     popover.style.zIndex = '1100';
     popover.style.transition = 'opacity 0.15s ease, transform 0.15s ease';
 
-    // --- Event checkboxes ---
     this._events.forEach((eventType) => {
-      const labelText = EVENT_LABELS[eventType] || eventType;
-      const enabled = window.notificationSounds
-        ? window.notificationSounds.isEnabled(eventType)
-        : false;
-
-      const label = this._createCheckboxLabel(labelText, enabled);
-      const checkbox = label.querySelector('input');
-      popover.appendChild(label);
-
-      this._checkboxes[eventType] = checkbox;
-
-      checkbox.addEventListener('change', () => {
-        if (window.notificationSounds) {
-          window.notificationSounds.setEnabled(eventType, checkbox.checked);
-        }
-        this._syncButtonActive();
-      });
+      popover.appendChild(this._createEventToggle(eventType));
     });
 
-    // --- Divider ---
-    const divider = document.createElement('div');
-    divider.style.height = '1px';
-    divider.style.background = 'var(--color-border-primary, #d0d7de)';
-    divider.style.margin = '0';
-    popover.appendChild(divider);
+    if (this._events.length > 0) popover.appendChild(this._createDivider());
 
-    // --- Test sound link ---
-    const testLink = document.createElement('div');
-    testLink.textContent = 'Test sound';
-    testLink.style.padding = '8px 12px';
-    testLink.style.fontSize = '0.8125rem';
-    testLink.style.color = 'var(--color-accent-primary)';
-    testLink.style.cursor = 'pointer';
-    testLink.style.textDecoration = 'none';
-    testLink.style.userSelect = 'none';
+    const permissionRow = document.createElement('div');
+    permissionRow.style.padding = '8px 12px';
+    permissionRow.style.display = 'flex';
+    permissionRow.style.flexDirection = 'column';
+    permissionRow.style.gap = '6px';
 
-    testLink.addEventListener('mouseenter', () => {
-      testLink.style.textDecoration = 'underline';
-    });
-    testLink.addEventListener('mouseleave', () => {
-      testLink.style.textDecoration = 'none';
-    });
-    testLink.addEventListener('click', (e) => {
+    this._permissionStatusEl = document.createElement('div');
+    this._permissionStatusEl.style.fontSize = '0.75rem';
+    this._permissionStatusEl.style.color = 'var(--color-text-secondary, #57606a)';
+
+    this._permissionButtonEl = document.createElement('button');
+    this._permissionButtonEl.type = 'button';
+    this._permissionButtonEl.className = 'btn btn-secondary btn-small';
+    this._permissionButtonEl.textContent = 'Enable browser notifications';
+    this._permissionButtonEl.addEventListener('click', async (e) => {
       e.stopPropagation();
-      if (window.notificationSounds) {
-        window.notificationSounds.playChime();
-      }
+      if (window.notificationSounds) await window.notificationSounds.requestBrowserPermission();
+      this._syncPermissionState();
     });
 
-    popover.appendChild(testLink);
+    permissionRow.appendChild(this._permissionStatusEl);
+    permissionRow.appendChild(this._permissionButtonEl);
+    popover.appendChild(permissionRow);
+
+    popover.appendChild(this._createDivider());
+
+    const actions = document.createElement('div');
+    actions.style.display = 'flex';
+    actions.style.gap = '12px';
+    actions.style.padding = '8px 12px';
+    actions.appendChild(this._createActionLink('Test browser notification', async () => {
+      if (!window.notificationSounds) return;
+      if (window.notificationSounds.getBrowserPermission() === 'default') {
+        await window.notificationSounds.requestBrowserPermission();
+        this._syncPermissionState();
+      }
+      await window.notificationSounds.showBrowserNotification('analysis', {
+        title: 'Pair Review',
+        body: 'Browser notifications are working.',
+        dedupeKey: 'pair-review-test-notification-' + Date.now(),
+        showWhenVisible: true,
+        ignorePreference: true
+      });
+    }));
+    popover.appendChild(actions);
 
     document.body.appendChild(popover);
     this._popoverEl = popover;
   }
 
-  /**
-   * Create a label element wrapping a checkbox.
-   * @param {string} text - Label text
-   * @param {boolean} checked - Initial checked state
-   * @returns {HTMLLabelElement}
-   */
+  _createEventToggle(eventType) {
+    const label = this._createCheckboxLabel(
+      EVENT_LABELS[eventType] || eventType,
+      window.notificationSounds ? window.notificationSounds.isBrowserEnabled(eventType) : false
+    );
+    const checkbox = label.querySelector('input');
+    this._browserCheckboxes[eventType] = checkbox;
+    checkbox.addEventListener('change', async () => {
+      if (!window.notificationSounds) return;
+      if (checkbox.checked) {
+        const permission = window.notificationSounds.getBrowserPermission();
+        if (permission === 'default') {
+          const result = await window.notificationSounds.requestBrowserPermission();
+          if (result !== 'granted') checkbox.checked = false;
+        } else if (permission !== 'granted') {
+          checkbox.checked = false;
+        }
+      }
+      window.notificationSounds.setBrowserEnabled(eventType, checkbox.checked);
+      this._syncPermissionState();
+      this._syncButtonActive();
+    });
+    return label;
+  }
+
+  _createDivider() {
+    const divider = document.createElement('div');
+    divider.style.height = '1px';
+    divider.style.background = 'var(--color-border-primary, #d0d7de)';
+    divider.style.margin = '0';
+    return divider;
+  }
+
+  _createActionLink(text, onClick) {
+    const link = document.createElement('div');
+    link.textContent = text;
+    link.style.fontSize = '0.8125rem';
+    link.style.color = 'var(--color-accent-primary)';
+    link.style.cursor = 'pointer';
+    link.style.textDecoration = 'none';
+    link.style.userSelect = 'none';
+
+    link.addEventListener('mouseenter', () => { link.style.textDecoration = 'underline'; });
+    link.addEventListener('mouseleave', () => { link.style.textDecoration = 'none'; });
+    link.addEventListener('click', (e) => {
+      e.stopPropagation();
+      onClick();
+    });
+
+    return link;
+  }
+
   _createCheckboxLabel(text, checked) {
     const label = document.createElement('label');
     label.style.display = 'flex';
@@ -171,44 +195,31 @@ class NotificationDropdown {
     return label;
   }
 
-  // ---------------------------------------------------------------------------
-  // Show / Hide (mirrors DiffOptionsDropdown pattern)
-  // ---------------------------------------------------------------------------
-
   _show() {
     if (!this._popoverEl || !this._btn) return;
 
-    // Position below the button
+    this._syncPermissionState();
+
     const rect = this._btn.getBoundingClientRect();
     this._popoverEl.style.top = `${rect.bottom + 4}px`;
     this._popoverEl.style.left = `${rect.left + rect.width / 2}px`;
     this._popoverEl.style.transform = 'translateX(-50%) translateY(-4px)';
 
-    // Make visible
     this._popoverEl.style.opacity = '1';
     this._popoverEl.style.pointerEvents = 'auto';
     this._visible = true;
 
-    // Animate into final position
     requestAnimationFrame(() => {
-      if (this._popoverEl) {
-        this._popoverEl.style.transform = 'translateX(-50%) translateY(0)';
-      }
+      if (this._popoverEl) this._popoverEl.style.transform = 'translateX(-50%) translateY(0)';
     });
 
-    // Click-outside-to-close
     this._outsideClickHandler = (e) => {
-      if (!this._popoverEl.contains(e.target) && !this._btn.contains(e.target)) {
-        this._hide();
-      }
+      if (!this._popoverEl.contains(e.target) && !this._btn.contains(e.target)) this._hide();
     };
     document.addEventListener('click', this._outsideClickHandler, true);
 
-    // Escape to dismiss
     this._escapeHandler = (e) => {
-      if (e.key === 'Escape') {
-        this._hide();
-      }
+      if (e.key === 'Escape') this._hide();
     };
     document.addEventListener('keydown', this._escapeHandler, true);
   }
@@ -231,16 +242,32 @@ class NotificationDropdown {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Helpers
-  // ---------------------------------------------------------------------------
+  _syncPermissionState() {
+    if (!this._permissionStatusEl || !this._permissionButtonEl) return;
+    const permission = window.notificationSounds
+      ? window.notificationSounds.getBrowserPermission()
+      : 'unsupported';
 
-  /** Swap bell icon visibility when any notification is enabled. */
+    if (permission === 'unsupported') {
+      this._permissionStatusEl.textContent = 'Browser notifications are not supported in this browser.';
+      this._permissionButtonEl.style.display = 'none';
+    } else if (permission === 'granted') {
+      this._permissionStatusEl.textContent = 'Browser notifications are enabled for this site.';
+      this._permissionButtonEl.style.display = 'none';
+    } else if (permission === 'denied') {
+      this._permissionStatusEl.textContent = 'Browser notifications are blocked. Enable them in browser settings.';
+      this._permissionButtonEl.style.display = 'none';
+    } else {
+      this._permissionStatusEl.textContent = 'Browser notification permission has not been requested.';
+      this._permissionButtonEl.style.display = '';
+    }
+  }
+
   _syncButtonActive() {
     if (!this._btn) return;
     const anyEnabled = this._events.some((eventType) => {
       return window.notificationSounds
-        ? window.notificationSounds.isEnabled(eventType)
+        ? window.notificationSounds.hasAnyEnabled(eventType)
         : false;
     });
     const onIcon = this._btn.querySelector('.bell-icon-on');

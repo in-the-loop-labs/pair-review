@@ -1528,3 +1528,66 @@ html, body {
     flex-wrap: wrap;
   }
 }
+
+/* ============================================
+   Local notification settings
+   ============================================ */
+
+.notification-settings-card {
+  border: 1px solid var(--color-border-primary);
+  border-radius: 8px;
+  background: var(--color-canvas-subtle);
+  padding: 16px;
+}
+
+.notification-settings-grid {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(220px, 1fr);
+  gap: 12px 16px;
+  align-items: center;
+}
+
+.notification-settings-label {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.notification-settings-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-text-primary);
+  font-size: 0.875rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.notification-settings-toggle input {
+  margin: 0;
+}
+
+.notification-settings-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--color-border-primary);
+}
+
+.notification-permission-status {
+  flex-basis: 100%;
+  color: var(--color-text-secondary);
+  font-size: 0.8125rem;
+}
+
+@media (max-width: 768px) {
+  .notification-settings-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .notification-settings-header {
+    display: none;
+  }
+}

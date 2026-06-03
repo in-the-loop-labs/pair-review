@@ -214,6 +214,36 @@ Examples:
                         </div>
                     </section>
 
+                    <!-- Local Notification Settings Section -->
+                    <section class="settings-section" id="notification-settings-section">
+                        <div class="section-header">
+                            <h2>Local Browser Notifications</h2>
+                            <p class="section-description">
+                                Configure standard browser notifications for this browser. These preferences are stored locally and are not shared with the repository.
+                            </p>
+                        </div>
+                        <div class="notification-settings-card">
+                            <div class="notification-settings-grid">
+                                <div class="notification-settings-label">Analysis complete</div>
+                                <label class="notification-settings-toggle">
+                                    <input type="checkbox" id="notify-analysis-browser">
+                                    <span>Show browser notification</span>
+                                </label>
+
+                                <div class="notification-settings-label">Setup complete</div>
+                                <label class="notification-settings-toggle">
+                                    <input type="checkbox" id="notify-setup-browser">
+                                    <span>Show browser notification</span>
+                                </label>
+                            </div>
+                            <div class="notification-settings-footer">
+                                <span id="notification-permission-status" class="notification-permission-status"></span>
+                                <button type="button" class="btn btn-secondary btn-small" id="notification-permission-btn">Enable browser notifications</button>
+                                <button type="button" class="btn btn-secondary btn-small" id="test-browser-notification">Test browser notification</button>
+                            </div>
+                        </div>
+                    </section>
+
                     <!-- Repository Location Section -->
                     <section class="settings-section" id="local-path-section">
                         <div class="section-header">
@@ -306,6 +336,7 @@ Examples:
 
     <!-- JavaScript -->
     <script src="/js/utils/tier-icons.js"></script>
+    <script src="/js/utils/notification-sounds.js"></script>
     <script src="/js/repo-settings.js"></script>
 </body>
 </html>

@@ -2163,7 +2163,12 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
         activeAnalyses.set(analysisId, completedStatus);
 
         broadcastProgress(analysisId, completedStatus);
-        broadcastReviewEvent(review.id, { type: 'review:analysis_completed' });
+        broadcastReviewEvent(review.id, {
+          type: 'review:analysis_completed',
+          analysisId,
+          status: 'success',
+          suggestionsCount: completionInfo.totalSuggestions,
+        });
 
         // Fire analysis.completed hook
         const hookConfig = req.app.get('config') || {};
