@@ -1594,18 +1594,23 @@ class PRManager {
     const url = isLocal
       ? `/api/local/${encodeURIComponent(pr.id)}/jobs/${encodeURIComponent(jobKey)}/start`
       : `/api/pr/${encodeURIComponent(pr.owner)}/${encodeURIComponent(pr.repo)}/${encodeURIComponent(pr.number)}/jobs/${encodeURIComponent(jobKey)}/start`;
+    // Phrasing varies by job kind. `featureLabel` goes into the HTTP/decline
+    // error messages; `noDiffMessage` is the dedicated "nothing to do" line.
+    // NOTE: the toast singleton is lowercase `window.toast` (see
+    // cancel-background-job.js); `window.Toast` does not exist.
+    const featureLabel = jobKey === 'tour' ? 'tour' : 'summary';
+    const noDiffMessage = jobKey === 'tour' ? 'No tour to generate.' : 'No summaries to generate.';
     try {
       const resp = await fetch(url, { method: 'POST' });
       if (resp.status === 409) {
         // Feature disabled in config — shouldn't happen (the button is hidden
         // when disabled) but surface it rather than failing silently.
-        // NOTE: the toast singleton is lowercase `window.toast` (see
-        // cancel-background-job.js); `window.Toast` does not exist.
-        if (window.toast?.error) window.toast.error('This feature is disabled in config.');
+        window.toast?.showError?.('This feature is disabled in config.');
         return;
       }
       if (!resp.ok) {
         console.warn(`[StartJob] ${jobKey} start POST failed: ${resp.status}`);
+        window.toast?.showError?.(`Failed to start ${featureLabel} generation (HTTP ${resp.status}).`);
         return;
       }
       // Optimistic UI: there is no `review:background_job_started` broadcast,
@@ -1623,9 +1628,20 @@ class PRManager {
           this._tourGenerating = true;
           this._syncTourToolbarButton();
         }
+        return;
+      }
+      // Server accepted the request but declined to enqueue. The known
+      // reason today is `'no-diff'` — review has no changes to act on. Tell
+      // the user so the button doesn't appear inert. Unknown decline
+      // reasons fall through to a generic message rather than silence.
+      if (payload.reason === 'no-diff') {
+        window.toast?.showInfo?.(noDiffMessage);
+      } else {
+        window.toast?.showError?.(`Could not start ${featureLabel} generation.`);
       }
     } catch (err) {
       console.warn(`[StartJob] ${jobKey} start POST error:`, err.message);
+      window.toast?.showError?.(`Failed to start ${featureLabel} generation: ${err.message}`);
     }
   }
 
