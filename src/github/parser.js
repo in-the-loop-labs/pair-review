@@ -1,19 +1,39 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 const simpleGit = require('simple-git');
 const path = require('path');
+const { matchRepoByUrl } = require('../config');
 
 /**
  * Parse command line arguments to extract PR information
  */
 class PRArgumentParser {
-  constructor() {
+  /**
+   * @param {Object} [config] - Optional pair-review config. When provided,
+   *   per-repo `url_pattern` regexes are tried before the built-in GitHub
+   *   and Graphite URL parsers, allowing pasted URLs from alternate hosts
+   *   to be resolved to the correct repo entry. The canonical
+   *   `owner/repo` from the config key (or named capture groups) takes
+   *   precedence over any host-specific parsing.
+   */
+  constructor(config = null) {
     this.git = simpleGit();
+    this.config = config;
   }
 
   /**
-   * Parse PR arguments from command line
+   * Parse PR arguments from command line.
+   *
+   * Returns at minimum `{ owner, repo, number }`. When the input was
+   * matched against a per-repo `url_pattern`, the returned object also
+   * includes `bindingRepository` — the `repos[...]` config key that was
+   * matched. Callers performing a host-binding lookup should prefer
+   * `bindingRepository` over `${owner}/${repo}` so monorepo-style configs
+   * where the URL pattern matches multiple sub-repos resolve to the
+   * correct entry. When `bindingRepository` is absent, callers should
+   * fall back to `${owner}/${repo}`.
+   *
    * @param {Array<string>} args - Command line arguments
-   * @returns {Promise<Object>} Parsed PR information { owner, repo, number }
+   * @returns {Promise<{owner: string, repo: string, number: number, bindingRepository?: string}>}
    */
   async parsePRArguments(args) {
     if (args.length === 0) {
@@ -39,14 +59,67 @@ class PRArgumentParser {
   }
 
   /**
+   * Match a URL against any configured `url_pattern` regex in the repos
+   * config. Returns `{ owner, repo, number, bindingRepository }` when a
+   * match yields a complete triple (owner+repo+number), otherwise null.
+   * Used to resolve URLs pasted from alternate Git hosts before falling
+   * back to the built-in GitHub/Graphite parsers.
+   *
+   * `bindingRepository` is the matched `repos[...]` config key — use it
+   * to look up the host binding (token, api_host, features) when the
+   * captured owner/repo differ from the config key.
+   *
+   * @param {string} url - The URL to match
+   * @returns {Object|null} `{ owner, repo, number, bindingRepository }` or null
+   * @private
+   */
+  _matchUrlPatternFromConfig(url) {
+    if (!this.config) return null;
+    const match = matchRepoByUrl(url, this.config);
+    if (!match) return null;
+
+    // Derive owner/repo: prefer named capture groups, fall back to the
+    // canonical "owner/repo" repository key from config.
+    let { owner, repo, number } = match;
+    if ((!owner || !repo) && match.repository && match.repository.includes('/')) {
+      const [keyOwner, keyRepo] = match.repository.split('/');
+      if (!owner) owner = keyOwner;
+      if (!repo) repo = keyRepo;
+    }
+
+    if (!owner || !repo || typeof number !== 'number' || isNaN(number) || number <= 0) {
+      return null;
+    }
+    return {
+      owner,
+      repo,
+      number,
+      bindingRepository: match.bindingRepository
+    };
+  }
+
+  /**
    * Parse a PR URL string and extract owner, repo, and PR number
-   * Handles both GitHub and Graphite URLs, with or without protocol
+   * Handles both GitHub and Graphite URLs, with or without protocol.
+   *
+   * When the parser was constructed with a config, per-repo `url_pattern`
+   * regexes are tried first so that alternate-host URLs resolve to the
+   * canonical owner/repo from config.
+   *
    * @param {string} url - The PR URL to parse
    * @returns {Object|null} { owner, repo, number } or null if not a valid PR URL
    */
   parsePRUrl(url) {
     if (!url || typeof url !== 'string') {
       return null;
+    }
+
+    // Try config-driven URL pattern matching first. This handles
+    // alternate-host URLs and lets host-specific repos override the
+    // built-in github.com path if they choose.
+    const configMatch = this._matchUrlPatternFromConfig(url.trim());
+    if (configMatch) {
+      return configMatch;
     }
 
     // Clean up the URL - trim whitespace
@@ -219,7 +292,160 @@ class PRArgumentParser {
       return { owner: match[1], repo: match[2] };
     }
 
+    // Fall through to config-driven alt-host matching. Only consulted
+    // when the built-in github.com patterns don't match, so common-case
+    // github.com behaviour is unchanged. Requires the parser to have
+    // been constructed with a config; otherwise short-circuits and
+    // throws.
+    const altHostMatch = this._parseAltHostRepositoryFromURL(url);
+    if (altHostMatch) {
+      return altHostMatch;
+    }
+
     throw new Error('Current directory is not a git repository or has no GitHub remote origin');
+  }
+
+  /**
+   * Try to resolve a non-github.com git remote URL to a configured repo
+   * entry. Walks `this.config.repos` looking for entries that declare an
+   * `api_host` (alt-host repos) and matches the URL against patterns
+   * derived from that host + the canonical "owner/repo" config key.
+   *
+   * Match order per repo entry:
+   *   1. The optional `git_remote_pattern` escape hatch (a regex string).
+   *      When present, it is tried FIRST so users with non-standard
+   *      remote URL layouts can opt in. If the regex matches anywhere
+   *      in the remote URL, the canonical config key is returned.
+   *   2. Patterns derived from `api_host` + canonical "owner/repo" key:
+   *        - `https://<host>/<owner>/<repo>(.git)?`
+   *        - `http://<host>/<owner>/<repo>(.git)?`  (for self-hosted dev)
+   *        - `git@<host>:<owner>/<repo>(.git)?`
+   *      The host portion of `api_host` is used as-is for HTTP(S)
+   *      patterns (it may already include a scheme/port — we strip the
+   *      scheme to derive the bare host for the SSH form).
+   *
+   * First match wins; the canonical "owner/repo" from the config KEY is
+   * returned (named groups in `git_remote_pattern` are not consulted —
+   * the contract is "if the regex matches the URL, the repo entry
+   * applies").
+   *
+   * Returns null when no entry matches (or when no config is available),
+   * letting the caller fall through to its existing error path.
+   *
+   * @param {string} url - Git remote URL
+   * @returns {Object|null} { owner, repo } or null
+   * @private
+   */
+  _parseAltHostRepositoryFromURL(url) {
+    if (!url || typeof url !== 'string') return null;
+    if (!this.config || !this.config.repos || typeof this.config.repos !== 'object') {
+      return null;
+    }
+
+    for (const [repoKey, repoEntry] of Object.entries(this.config.repos)) {
+      if (!repoEntry || typeof repoEntry !== 'object') continue;
+      const apiHost = (typeof repoEntry.api_host === 'string' && repoEntry.api_host)
+        ? repoEntry.api_host
+        : null;
+      // Only alt-host repos participate here. github.com repos take the
+      // built-in fast path above.
+      if (!apiHost) continue;
+
+      // 1. Escape hatch: per-repo git_remote_pattern. We treat it as a
+      //    regex (consistent with the existing url_pattern field) and
+      //    use RegExp#test so callers can omit `^` if they want a
+      //    substring-style match. validateRepoConfig() rejects invalid
+      //    regexes at startup; the try/catch here is purely defensive.
+      const remotePattern = repoEntry.git_remote_pattern;
+      if (typeof remotePattern === 'string' && remotePattern) {
+        try {
+          if (new RegExp(remotePattern).test(url)) {
+            const parts = this._splitRepoKey(repoKey);
+            if (parts) return parts;
+          }
+        } catch {
+          // Invalid regex — would have been caught at startup; skip.
+        }
+      }
+
+      const parts = this._splitRepoKey(repoKey);
+      if (!parts) continue;
+
+      // 2. Derive HTTPS/HTTP/SSH patterns from api_host. api_host may
+      //    already include a scheme (and possibly a port + path like
+      //    "https://althost.example/api/v3"). Strip the scheme to get
+      //    the bare host[:port] that appears in git remote URLs.
+      const bareHost = this._bareHostFromApiHost(apiHost);
+      if (!bareHost) continue;
+
+      const escapedHost = this._escapeRegex(bareHost);
+      const escapedOwner = this._escapeRegex(parts.owner);
+      const escapedRepo = this._escapeRegex(parts.repo);
+
+      // Allow either https:// or http:// scheme (self-hosted dev
+      // instances sometimes use plain HTTP). Tolerate optional .git
+      // suffix. Anchored to start/end so we don't accidentally match
+      // a substring inside a different host's URL.
+      const httpRegex = new RegExp(
+        `^https?:\\/\\/${escapedHost}\\/${escapedOwner}\\/${escapedRepo}(?:\\.git)?$`,
+        'i'
+      );
+      if (httpRegex.test(url)) return parts;
+
+      const sshRegex = new RegExp(
+        `^git@${escapedHost}:${escapedOwner}\\/${escapedRepo}(?:\\.git)?$`,
+        'i'
+      );
+      if (sshRegex.test(url)) return parts;
+    }
+
+    return null;
+  }
+
+  /**
+   * Strip a scheme (and any trailing path) off an `api_host` config
+   * value to derive the bare host[:port] string that appears in a git
+   * remote URL. `api_host` is conventionally something like
+   * `https://althost.example/api/v3`, but bare `althost.example` is
+   * also accepted.
+   *
+   * @param {string} apiHost
+   * @returns {string|null} - Host[:port] or null when the value is unusable
+   * @private
+   */
+  _bareHostFromApiHost(apiHost) {
+    if (typeof apiHost !== 'string' || !apiHost) return null;
+    // Strip scheme if present.
+    let host = apiHost.replace(/^https?:\/\//i, '');
+    // Strip everything from the first slash onward (path component).
+    const slashIdx = host.indexOf('/');
+    if (slashIdx >= 0) host = host.slice(0, slashIdx);
+    return host || null;
+  }
+
+  /**
+   * Split a canonical "owner/repo" config key into { owner, repo }.
+   * Returns null when the key is malformed.
+   *
+   * @param {string} repoKey
+   * @returns {{owner: string, repo: string}|null}
+   * @private
+   */
+  _splitRepoKey(repoKey) {
+    if (typeof repoKey !== 'string') return null;
+    const idx = repoKey.indexOf('/');
+    if (idx <= 0 || idx === repoKey.length - 1) return null;
+    return { owner: repoKey.slice(0, idx), repo: repoKey.slice(idx + 1) };
+  }
+
+  /**
+   * Escape a string for safe embedding inside a regex literal.
+   * @param {string} s
+   * @returns {string}
+   * @private
+   */
+  _escapeRegex(s) {
+    return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
   /**

@@ -47,9 +47,10 @@ router.post('/api/worktrees/create', async (req, res) => {
     const db = req.app.get('db');
     const config = req.app.get('config');
 
-    // Validate GitHub token
+    // Validate GitHub token. Pass the owner/repo so alt-host repos
+    // resolve their own per-repo token.
     const { getGitHubToken } = require('../config');
-    const githubToken = getGitHubToken(config);
+    const githubToken = getGitHubToken(config, `${owner}/${repo}`);
     if (!githubToken) {
       return res.status(500).json({
         success: false,

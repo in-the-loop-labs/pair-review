@@ -23,17 +23,27 @@ const logger = require('../utils/logger');
  * @param {string} params.owner - Repository owner
  * @param {string} params.repo - Repository name
  * @param {number} params.prNumber - Pull request number
- * @param {string} params.githubToken - GitHub personal access token
+ * @param {string} [params.githubToken] - GitHub personal access token (legacy). Prefer `binding`.
+ * @param {Object} [params.binding] - Resolved host binding (`resolveHostBinding(bindingRepository, config)`).
+ *   Required for alt-host repos so the right API host is used.
+ * @param {string} [params.bindingRepository] - `repos[...]` config-lookup key for this PR. Differs from
+ *   `${owner}/${repo}` for monorepo `url_pattern` configs. Surfaced for downstream
+ *   per-repo lookups (worktree pool, reset script) that key off the config entry.
  * @param {string} params.worktreePath - Path to the per-PR worktree
  * @param {import('../git/worktree').GitWorktreeManager} params.worktreeManager - Worktree manager instance
  * @param {Object} [params.prData] - Pre-fetched PR data from GitHub (skips API call when provided)
  * @returns {Promise<{ reviewId: number, prMetadata: Object, prData: Object, isNew: boolean }>}
  */
-async function setupStackPR({ db, owner, repo, prNumber, githubToken, worktreePath, worktreeManager, prData: prefetchedPRData }) {
+async function setupStackPR({ db, owner, repo, prNumber, githubToken, binding, bindingRepository, worktreePath, worktreeManager, prData: prefetchedPRData }) {
+  // `bindingRepository` is accepted so callers (e.g. `executeStackAnalysis`)
+  // can thread the resolved config-binding key through to any downstream
+  // per-repo lookups added in this function. Currently unused inside this
+  // function — `storePRData` keys off the PR identity.
+  void bindingRepository;
   logger.info(`Setting up stack PR #${prNumber} for ${owner}/${repo}`);
 
   // 1. Fetch PR data from GitHub (or use pre-fetched data)
-  const githubClient = new GitHubClient(githubToken);
+  const githubClient = new GitHubClient(binding || githubToken);
   let prData;
   if (prefetchedPRData) {
     prData = prefetchedPRData;

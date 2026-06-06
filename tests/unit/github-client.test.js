@@ -351,6 +351,54 @@ describe('GitHubClient', () => {
       expect(secondCallMutation).toContain('submitPullRequestReview');
     });
 
+    it('treats prContext.reviewId as the existing review when REST review-lifecycle is in effect and no node id is provided (Fix #5)', async () => {
+      // Construct a client whose binding is alt-host REST. The REST
+      // path can hand us only a numeric review id via
+      // `prContext.reviewId`; the orchestration must not create a
+      // brand-new review on top of that.
+      const client = new GitHubClient({
+        token: 't',
+        apiHost: 'https://althost.example/api/v3',
+        features: {
+          pending_review_check: 'rest',
+          stack_walker: 'rest',
+          review_lifecycle: 'rest',
+          pending_review_comments: 'host'
+        }
+      });
+
+      // Mock the operations modules so we can observe what arguments
+      // they received.
+      const reviewLifecycleOps = require('../../src/github/operations/review-lifecycle');
+      const addSpy = vi.spyOn(reviewLifecycleOps, 'addPullRequestReview');
+      const submitSpy = vi.spyOn(reviewLifecycleOps, 'submitPullRequestReview')
+        .mockResolvedValue({ id: 'PRR_x', databaseId: 88, url: 'u', state: 'COMMENTED' });
+
+      // Empty comments so we don't trigger the pending-review-comments
+      // dispatcher and so we don't need to mock it.
+      await client.createReviewGraphQL(
+        'unused-prNodeId',
+        'COMMENT',
+        'body',
+        [],
+        null, // explicit existingReviewId is NULL
+        { owner: 'o', repo: 'r', prNumber: 1, reviewId: 88 }
+      );
+
+      // The orchestrator must NOT have called addPullRequestReview —
+      // since we passed a numeric id via prContext.reviewId on the
+      // REST path, that signals an existing draft.
+      expect(addSpy).not.toHaveBeenCalled();
+      // Submit must have been called with the existing review id.
+      expect(submitSpy).toHaveBeenCalled();
+      const submitArgs = submitSpy.mock.calls[0];
+      // submitPullRequestReview signature: (octokit, features, reviewId, event, body, prContext)
+      expect(submitArgs[2]).toBe(88);
+
+      addSpy.mockRestore();
+      submitSpy.mockRestore();
+    });
+
     it('should still create a new pending review when existingReviewId is null', async () => {
       const client = new GitHubClient('test-token');
       const mockGraphql = vi.fn()
@@ -447,8 +495,175 @@ describe('GitHubClient', () => {
         client.createReviewGraphQL('PR_node123', 'COMMENT', 'Body', comments)
       ).rejects.toThrow('Failed to add');
 
-      // deletePendingReview SHOULD be called for reviews we created
-      expect(deleteSpy).toHaveBeenCalledWith('new-review-456');
+      // deletePendingReview SHOULD be called for reviews we created.
+      // The second arg is the optional prContext (null when not supplied
+      // by the caller — GraphQL mode ignores it; REST mode requires it).
+      expect(deleteSpy).toHaveBeenCalledWith('new-review-456', null);
+    });
+  });
+
+  // Regression tests for the bug where `createReviewGraphQL` /
+  // `createDraftReviewGraphQL` could leak a pending review on GitHub when
+  // `addCommentsInBatches` *threw* (as opposed to returning `failed: true`).
+  // The host pending-review-comments path used to throw on request
+  // failure, and the dispatcher still throws for unsupported modes — the
+  // orchestration must catch and clean up before rethrowing.
+  describe('createReviewGraphQL — cleanup when addCommentsInBatches throws', () => {
+    it('deletes the newly-created review and propagates the error when addCommentsInBatches throws', async () => {
+      const client = new GitHubClient('test-token');
+      // Create-review succeeds; addCommentsInBatches is stubbed to throw.
+      const mockGraphql = vi.fn().mockResolvedValueOnce({
+        addPullRequestReview: {
+          pullRequestReview: { id: 'new-review-throw-1', databaseId: 7777 }
+        }
+      });
+      client.octokit.graphql = mockGraphql;
+
+      const thrown = new Error('host pending-review-comments transport failed');
+      const addSpy = vi.spyOn(client, 'addCommentsInBatches').mockRejectedValue(thrown);
+      const deleteSpy = vi.spyOn(client, 'deletePendingReview').mockResolvedValue(true);
+
+      const comments = [{ path: 'src/file.js', line: 1, side: 'RIGHT', body: 'c' }];
+
+      await expect(
+        client.createReviewGraphQL(
+          'PR_node', 'COMMENT', 'Body', comments, null,
+          { owner: 'o', repo: 'r', prNumber: 1 }
+        )
+      ).rejects.toThrow(/comment batch threw before completion/);
+
+      // Critical: cleanup must run even though the comment path threw.
+      expect(deleteSpy).toHaveBeenCalledTimes(1);
+      expect(deleteSpy.mock.calls[0][0]).toBe('new-review-throw-1');
+      // Downstream prContext should carry numeric databaseId.
+      expect(deleteSpy.mock.calls[0][1]).toMatchObject({ owner: 'o', repo: 'r', prNumber: 1, reviewId: 7777 });
+      // Sanity: the add path was actually entered.
+      expect(addSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT delete a pre-existing review when addCommentsInBatches throws', async () => {
+      const client = new GitHubClient('test-token');
+      // No create-review call — we're using an existing review id.
+      client.octokit.graphql = vi.fn();
+
+      vi.spyOn(client, 'addCommentsInBatches').mockRejectedValue(new Error('host failed'));
+      const deleteSpy = vi.spyOn(client, 'deletePendingReview').mockResolvedValue(true);
+
+      const comments = [{ path: 'src/file.js', line: 1, side: 'RIGHT', body: 'c' }];
+
+      await expect(
+        client.createReviewGraphQL(
+          'PR_node', 'COMMENT', 'Body', comments, 'existing-review-keep', null
+        )
+      ).rejects.toThrow(/comment batch threw before completion/);
+
+      // Pre-existing review must be left untouched on a throw.
+      expect(deleteSpy).not.toHaveBeenCalled();
+    });
+
+    it('cleans up exactly once when addCommentsInBatches returns failed: true (no double-delete regression)', async () => {
+      const client = new GitHubClient('test-token');
+      client.octokit.graphql = vi.fn().mockResolvedValueOnce({
+        addPullRequestReview: {
+          pullRequestReview: { id: 'new-review-once', databaseId: 1234 }
+        }
+      });
+
+      vi.spyOn(client, 'addCommentsInBatches').mockResolvedValue({
+        successCount: 0,
+        failed: true,
+        failedDetails: ['src/file.js:1 - bad line']
+      });
+      const deleteSpy = vi.spyOn(client, 'deletePendingReview').mockResolvedValue(true);
+
+      const comments = [{ path: 'src/file.js', line: 1, side: 'RIGHT', body: 'c' }];
+
+      await expect(
+        client.createReviewGraphQL('PR_node', 'COMMENT', 'Body', comments)
+      ).rejects.toThrow(/Failed to add 1 of 1 comments to GitHub/);
+
+      // Exactly one cleanup — the failed-result path, not also the throw path.
+      expect(deleteSpy).toHaveBeenCalledTimes(1);
+      expect(deleteSpy).toHaveBeenCalledWith('new-review-once', { reviewId: 1234 });
+    });
+  });
+
+  describe('createDraftReviewGraphQL — cleanup when addCommentsInBatches throws', () => {
+    it('deletes the newly-created draft and propagates the error when addCommentsInBatches throws', async () => {
+      const client = new GitHubClient('test-token');
+      client.octokit.graphql = vi.fn().mockResolvedValueOnce({
+        addPullRequestReview: {
+          pullRequestReview: {
+            id: 'new-draft-throw-1',
+            databaseId: 8888,
+            url: 'https://github.com/o/r/pull/1#pullrequestreview-8888'
+          }
+        }
+      });
+
+      const thrown = new Error('host pending-review-comments transport failed');
+      vi.spyOn(client, 'addCommentsInBatches').mockRejectedValue(thrown);
+      const deleteSpy = vi.spyOn(client, 'deletePendingReview').mockResolvedValue(true);
+
+      const comments = [{ path: 'src/file.js', line: 1, side: 'RIGHT', body: 'c' }];
+
+      await expect(
+        client.createDraftReviewGraphQL(
+          'PR_node', 'Body', comments, null,
+          { owner: 'o', repo: 'r', prNumber: 1 }
+        )
+      ).rejects.toThrow(/comment batch threw before completion/);
+
+      expect(deleteSpy).toHaveBeenCalledTimes(1);
+      expect(deleteSpy.mock.calls[0][0]).toBe('new-draft-throw-1');
+      expect(deleteSpy.mock.calls[0][1]).toMatchObject({ owner: 'o', repo: 'r', prNumber: 1, reviewId: 8888 });
+    });
+
+    it('does NOT delete a pre-existing draft when addCommentsInBatches throws', async () => {
+      const client = new GitHubClient('test-token');
+      client.octokit.graphql = vi.fn();
+
+      vi.spyOn(client, 'addCommentsInBatches').mockRejectedValue(new Error('host failed'));
+      const deleteSpy = vi.spyOn(client, 'deletePendingReview').mockResolvedValue(true);
+
+      const comments = [{ path: 'src/file.js', line: 1, side: 'RIGHT', body: 'c' }];
+
+      await expect(
+        client.createDraftReviewGraphQL(
+          'PR_node', 'Body', comments, 'existing-draft-keep', null
+        )
+      ).rejects.toThrow(/comment batch threw before completion/);
+
+      expect(deleteSpy).not.toHaveBeenCalled();
+    });
+
+    it('cleans up exactly once when addCommentsInBatches returns failed: true (no double-delete regression)', async () => {
+      const client = new GitHubClient('test-token');
+      client.octokit.graphql = vi.fn().mockResolvedValueOnce({
+        addPullRequestReview: {
+          pullRequestReview: {
+            id: 'new-draft-once',
+            databaseId: 5678,
+            url: 'https://github.com/o/r/pull/1#pullrequestreview-5678'
+          }
+        }
+      });
+
+      vi.spyOn(client, 'addCommentsInBatches').mockResolvedValue({
+        successCount: 0,
+        failed: true,
+        failedDetails: ['src/file.js:1 - bad line']
+      });
+      const deleteSpy = vi.spyOn(client, 'deletePendingReview').mockResolvedValue(true);
+
+      const comments = [{ path: 'src/file.js', line: 1, side: 'RIGHT', body: 'c' }];
+
+      await expect(
+        client.createDraftReviewGraphQL('PR_node', 'Body', comments)
+      ).rejects.toThrow(/draft review has been deleted/);
+
+      expect(deleteSpy).toHaveBeenCalledTimes(1);
+      expect(deleteSpy).toHaveBeenCalledWith('new-draft-once', { reviewId: 5678 });
     });
   });
 

@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const childProcess = require('child_process');
-const { deepMerge, getGitHubToken, expandPath, resolveDbName, warnIfDevModeWithoutDbName, loadConfig, shouldSkipUpdateNotifier, _resetTokenCache, getRepoConfig, getRepoPath, getRepoCheckoutScript, getRepoWorktreeDirectory, getRepoWorktreeNameTemplate, getRepoCheckoutTimeout, resolveRepoOptions, getRepoResetScript, getRepoSkipBulkFetch, getRepoPoolSize, getRepoPoolFetchInterval, resolvePoolConfig, getWorktreeDisplayName, getConfigDir, getRepoLoadSkills, resolveLoadSkills, buildCouncilProviderOverrides, getSummaryProvider, getSummaryModel, getTourProvider, getTourModel, getSummaryEnabled, getSummaryAutoGenerate, getTourEnabled, getTourAutoGenerate } = require('../../src/config');
+const { deepMerge, getGitHubToken, expandPath, resolveDbName, warnIfDevModeWithoutDbName, loadConfig, shouldSkipUpdateNotifier, _resetTokenCache, getRepoConfig, getRepoPath, getRepoCheckoutScript, getRepoWorktreeDirectory, getRepoWorktreeNameTemplate, getRepoCheckoutTimeout, resolveRepoOptions, getRepoResetScript, getRepoSkipBulkFetch, getRepoPoolSize, getRepoPoolFetchInterval, resolvePoolConfig, getWorktreeDisplayName, getConfigDir, getRepoLoadSkills, resolveLoadSkills, buildCouncilProviderOverrides, getSummaryProvider, getSummaryModel, getTourProvider, getTourModel, getSummaryEnabled, getSummaryAutoGenerate, getTourEnabled, getTourAutoGenerate, resolveHostBinding, validateRepoConfig, matchRepoByUrl, resolveBindingRepositoryFromPR } = require('../../src/config');
 
 describe('config.js', () => {
   describe('getGitHubToken', () => {
@@ -2108,6 +2108,984 @@ describe('config.js', () => {
       expect(getTourAutoGenerate({})).toBe(true);
       expect(getTourAutoGenerate(null)).toBe(true);
       expect(getTourAutoGenerate(undefined)).toBe(true);
+    });
+  });
+
+  describe('resolveHostBinding', () => {
+    let originalEnv;
+    let execSyncSpy;
+    let warnSpy;
+
+    beforeEach(() => {
+      originalEnv = process.env.GITHUB_TOKEN;
+      delete process.env.GITHUB_TOKEN;
+      _resetTokenCache();
+      execSyncSpy = vi.spyOn(childProcess, 'execSync');
+      const logger = require('../../src/utils/logger');
+      warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      if (originalEnv !== undefined) {
+        process.env.GITHUB_TOKEN = originalEnv;
+      } else {
+        delete process.env.GITHUB_TOKEN;
+      }
+      _resetTokenCache();
+      execSyncSpy.mockRestore();
+      warnSpy.mockRestore();
+    });
+
+    it('returns null apiHost and graphql defaults for the no-repo fallback', () => {
+      const binding = resolveHostBinding(null, { github_token: 'top' });
+      expect(binding.apiHost).toBeNull();
+      expect(binding.token).toBe('top');
+      expect(binding.source).toBe('config:github_token');
+      expect(binding.features.pending_review_check).toBe('graphql');
+      expect(binding.features.stack_walker).toBe('graphql');
+      expect(binding.features.review_lifecycle).toBe('graphql');
+      expect(binding.features.pending_review_comments).toBe('graphql');
+    });
+
+    it('returns null apiHost and graphql defaults for a github.com repo with no api_host', () => {
+      const config = {
+        github_token: 'top',
+        repos: { 'owner/repo': { path: '/tmp/x' } }
+      };
+      const binding = resolveHostBinding('owner/repo', config);
+      expect(binding.apiHost).toBeNull();
+      expect(binding.features.pending_review_check).toBe('graphql');
+    });
+
+    it('returns rest defaults for every area when api_host is set', () => {
+      const config = {
+        repos: {
+          'owner/repo': {
+            api_host: 'https://althost.example/api/v3',
+            token: 'alt-token',
+            // Explicit override since the alt-host default for this area is "host"
+            features: { pending_review_comments: 'host' }
+          }
+        }
+      };
+      const binding = resolveHostBinding('owner/repo', config);
+      expect(binding.apiHost).toBe('https://althost.example/api/v3');
+      expect(binding.features.pending_review_check).toBe('rest');
+      expect(binding.features.stack_walker).toBe('rest');
+      expect(binding.features.review_lifecycle).toBe('rest');
+      expect(binding.features.pending_review_comments).toBe('host');
+    });
+
+    it('honours explicit features overrides on top of defaults', () => {
+      const config = {
+        repos: {
+          'owner/repo': {
+            api_host: 'https://althost.example/api/v3',
+            token: 'alt-token',
+            features: { pending_review_comments: 'host' }
+          }
+        }
+      };
+      const binding = resolveHostBinding('owner/repo', config);
+      expect(binding.features.pending_review_comments).toBe('host');
+      // Other areas keep alt-host default
+      expect(binding.features.review_lifecycle).toBe('rest');
+    });
+
+    describe('token resolution for github.com repos', () => {
+      it('uses GITHUB_TOKEN env var when api_host is unset', () => {
+        process.env.GITHUB_TOKEN = 'env-token';
+        const config = {
+          github_token: 'top',
+          repos: { 'owner/repo': { token: 'repo-literal' } }
+        };
+        const binding = resolveHostBinding('owner/repo', config);
+        expect(binding.token).toBe('env-token');
+        expect(binding.source).toBe('env:GITHUB_TOKEN');
+      });
+
+      it('falls back through repo:token -> repo:token_command -> config:github_token -> config:github_token_command', () => {
+        // repo:token wins over top-level keys
+        let binding = resolveHostBinding('owner/repo', {
+          github_token: 'top',
+          repos: { 'owner/repo': { token: 'repo-literal' } }
+        });
+        expect(binding.token).toBe('repo-literal');
+        expect(binding.source).toBe('repo:token');
+
+        // repo:token_command wins over top-level when no repo:token
+        execSyncSpy.mockReturnValueOnce('repo-cmd-token\n');
+        binding = resolveHostBinding('owner/repo', {
+          github_token: 'top',
+          repos: { 'owner/repo': { token_command: 'echo repo-cmd' } }
+        });
+        expect(binding.token).toBe('repo-cmd-token');
+        expect(binding.source).toBe('repo:token_command');
+
+        // top-level github_token used when no repo-level keys
+        binding = resolveHostBinding('owner/repo', {
+          github_token: 'top',
+          repos: { 'owner/repo': {} }
+        });
+        expect(binding.token).toBe('top');
+        expect(binding.source).toBe('config:github_token');
+
+        // top-level github_token_command used as last resort
+        _resetTokenCache();
+        execSyncSpy.mockReturnValueOnce('top-cmd-token\n');
+        binding = resolveHostBinding('owner/repo', {
+          github_token_command: 'echo top-cmd',
+          repos: { 'owner/repo': {} }
+        });
+        expect(binding.token).toBe('top-cmd-token');
+        expect(binding.source).toBe('config:github_token_command');
+      });
+    });
+
+    describe('token resolution for alt-host repos', () => {
+      it('does NOT use GITHUB_TOKEN env var when api_host is set', () => {
+        process.env.GITHUB_TOKEN = 'github-com-env-token';
+        const config = {
+          github_token: 'top',
+          repos: {
+            'owner/repo': {
+              api_host: 'https://althost.example/api/v3',
+              token: 'alt-literal'
+            }
+          }
+        };
+        const binding = resolveHostBinding('owner/repo', config);
+        expect(binding.token).toBe('alt-literal');
+        expect(binding.source).toBe('repo:token');
+      });
+
+      it('does NOT fall through to top-level github_token for alt-hosts (Fix #4)', () => {
+        process.env.GITHUB_TOKEN = 'github-com-env-token';
+        // Only top-level token configured — alt-host must NOT fall
+        // through. The top-level token is a github.com credential and
+        // would auth-fail against the alt-host endpoint.
+        const binding = resolveHostBinding('owner/repo', {
+          github_token: 'top-shared',
+          repos: { 'owner/repo': { api_host: 'https://althost.example/api/v3' } }
+        });
+        expect(binding.token).toBe('');
+        expect(binding.source).toBe('none');
+      });
+
+      it('prefers repo:token_command over top-level for alt-host', () => {
+        execSyncSpy.mockReturnValueOnce('alt-cmd-token\n');
+        const binding = resolveHostBinding('owner/repo', {
+          github_token: 'top',
+          repos: {
+            'owner/repo': {
+              api_host: 'https://althost.example/api/v3',
+              token_command: 'op read op://alt/token'
+            }
+          }
+        });
+        expect(binding.token).toBe('alt-cmd-token');
+        expect(binding.source).toBe('repo:token_command');
+      });
+    });
+
+    describe('token_command caching', () => {
+      it('caches per (repository, command) and does not collapse across repos', () => {
+        execSyncSpy.mockReturnValueOnce('token-a\n').mockReturnValueOnce('token-b\n');
+        const config = {
+          repos: {
+            'owner/a': { token_command: 'echo a' },
+            'owner/b': { token_command: 'echo b' }
+          }
+        };
+
+        // First call for each repo runs execSync
+        expect(resolveHostBinding('owner/a', config).token).toBe('token-a');
+        expect(resolveHostBinding('owner/b', config).token).toBe('token-b');
+        expect(execSyncSpy).toHaveBeenCalledTimes(2);
+
+        // Repeat calls are cached
+        expect(resolveHostBinding('owner/a', config).token).toBe('token-a');
+        expect(resolveHostBinding('owner/b', config).token).toBe('token-b');
+        expect(execSyncSpy).toHaveBeenCalledTimes(2);
+      });
+
+      it('treats the same command across different repos as separate cache entries', () => {
+        execSyncSpy.mockReturnValueOnce('alpha\n').mockReturnValueOnce('beta\n');
+        const config = {
+          repos: {
+            'owner/a': { token_command: 'gh auth token' },
+            'owner/b': { token_command: 'gh auth token' }
+          }
+        };
+        expect(resolveHostBinding('owner/a', config).token).toBe('alpha');
+        expect(resolveHostBinding('owner/b', config).token).toBe('beta');
+        // Two execSync invocations even though the command string is identical
+        expect(execSyncSpy).toHaveBeenCalledTimes(2);
+      });
+
+      it('does not cache empty or failing token_command results', () => {
+        execSyncSpy.mockReturnValueOnce('\n').mockReturnValueOnce('eventually\n');
+        const config = {
+          repos: { 'owner/a': { token_command: 'echo nothing' } }
+        };
+        expect(resolveHostBinding('owner/a', config).token).toBe('');
+        expect(resolveHostBinding('owner/a', config).token).toBe('eventually');
+        expect(execSyncSpy).toHaveBeenCalledTimes(2);
+      });
+
+      it('runs top-level github_token_command once total across multiple repos', () => {
+        // Top-level github_token_command is a SINGLE shared provider; it
+        // must NOT be re-invoked per repo. Previously the cache was keyed
+        // on (repository, command) for both repo-level and top-level
+        // commands, so each repo's fallback re-ran the command.
+        execSyncSpy.mockReturnValueOnce('shared-top-token\n');
+        const config = {
+          github_token_command: 'gh auth token',
+          repos: {
+            'owner/a': {},
+            'owner/b': {},
+            'owner/c': {}
+          }
+        };
+        expect(resolveHostBinding('owner/a', config).token).toBe('shared-top-token');
+        expect(resolveHostBinding('owner/b', config).token).toBe('shared-top-token');
+        expect(resolveHostBinding('owner/c', config).token).toBe('shared-top-token');
+        // One invocation total — not one per repo.
+        expect(execSyncSpy).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    it('returns empty token and source "none" when nothing resolves', () => {
+      const binding = resolveHostBinding('owner/repo', { repos: { 'owner/repo': {} } });
+      expect(binding.token).toBe('');
+      expect(binding.source).toBe('none');
+    });
+
+    describe('alt-host token isolation (Fix #4)', () => {
+      it('does NOT use top-level github_token for an alt-host repo', () => {
+        const config = {
+          github_token: 'top-level-ghp',
+          repos: {
+            'owner/alt': {
+              api_host: 'https://althost.example/api/v3',
+              features: { stack_walker: 'rest' }
+            }
+          }
+        };
+        const binding = resolveHostBinding('owner/alt', config);
+        expect(binding.token).toBe('');
+        expect(binding.source).toBe('none');
+        expect(binding.apiHost).toBe('https://althost.example/api/v3');
+      });
+
+      it('still uses top-level github_token for github.com repos', () => {
+        const config = {
+          github_token: 'top-level-ghp',
+          repos: { 'owner/normal': {} }
+        };
+        const binding = resolveHostBinding('owner/normal', config);
+        expect(binding.token).toBe('top-level-ghp');
+        expect(binding.source).toBe('config:github_token');
+        expect(binding.apiHost).toBe(null);
+      });
+
+      it('does NOT invoke top-level github_token_command for an alt-host repo', () => {
+        execSyncSpy.mockReturnValueOnce('cmd-token\n');
+        const config = {
+          github_token_command: 'gh auth token',
+          repos: {
+            'owner/alt': {
+              api_host: 'https://althost.example/api/v3'
+            }
+          }
+        };
+        const binding = resolveHostBinding('owner/alt', config);
+        expect(binding.token).toBe('');
+        expect(binding.source).toBe('none');
+        expect(execSyncSpy).not.toHaveBeenCalled();
+      });
+
+      it('does not warn when an alt-host repo has its own token', () => {
+        const config = {
+          github_token: 'top-level-ghp',
+          repos: {
+            'owner/alt': {
+              api_host: 'https://althost.example/api/v3',
+              token: 'alt-host-token'
+            }
+          }
+        };
+        const binding = resolveHostBinding('owner/alt', config);
+        expect(binding.token).toBe('alt-host-token');
+        const matched = warnSpy.mock.calls.find(c =>
+          /likely the wrong token/.test(String(c[0]))
+        );
+        expect(matched).toBeFalsy();
+      });
+    });
+  });
+
+  describe('validateRepoConfig', () => {
+    it('does not throw on the happy path (no repos, or repos without alt-host config)', () => {
+      expect(() => validateRepoConfig({})).not.toThrow();
+      expect(() => validateRepoConfig({ repos: {} })).not.toThrow();
+      expect(() => validateRepoConfig({
+        repos: { 'owner/repo': { path: '/tmp/x' } }
+      })).not.toThrow();
+      expect(() => validateRepoConfig({
+        repos: {
+          'owner/alt': {
+            api_host: 'https://althost.example/api/v3',
+            features: { pending_review_comments: 'host', stack_walker: 'rest' }
+          }
+        }
+      })).not.toThrow();
+    });
+
+    it('throws when api_host is set and a feature requests graphql', () => {
+      expect(() => validateRepoConfig({
+        repos: {
+          'owner/alt': {
+            api_host: 'https://althost.example/api/v3',
+            features: { stack_walker: 'graphql' }
+          }
+        }
+      })).toThrow(/repos\["owner\/alt"\] sets api_host but features\.stack_walker = "graphql"/);
+    });
+
+    it('throws when api_host is unset and a feature requests host', () => {
+      expect(() => validateRepoConfig({
+        repos: {
+          'owner/repo': {
+            features: { pending_review_comments: 'host' }
+          }
+        }
+      })).toThrow(/repos\["owner\/repo"\]\.features\.pending_review_comments = "host" requires api_host to be set/);
+    });
+
+    it('throws on an invalid features value', () => {
+      expect(() => validateRepoConfig({
+        repos: { 'owner/repo': { features: { stack_walker: 'magic' } } }
+      })).toThrow(/repos\["owner\/repo"\]\.features\.stack_walker = "magic" is not one of/);
+    });
+
+    it('throws on an invalid url_pattern regex', () => {
+      expect(() => validateRepoConfig({
+        repos: { 'owner/repo': { url_pattern: '([unterminated' } }
+      })).toThrow(/repos\["owner\/repo"\]\.url_pattern is not a valid regular expression:/);
+    });
+
+    it('accepts a valid url_pattern regex', () => {
+      expect(() => validateRepoConfig({
+        repos: {
+          'owner/repo': {
+            url_pattern: '^https://althost\\.example/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>[0-9]+)'
+          }
+        }
+      })).not.toThrow();
+    });
+
+    it('throws on an invalid git_remote_pattern regex', () => {
+      expect(() => validateRepoConfig({
+        repos: { 'owner/repo': { git_remote_pattern: '([unterminated' } }
+      })).toThrow(/repos\["owner\/repo"\]\.git_remote_pattern is not a valid regular expression:/);
+    });
+
+    it('throws when git_remote_pattern is not a string', () => {
+      expect(() => validateRepoConfig({
+        repos: { 'owner/repo': { git_remote_pattern: 123 } }
+      })).toThrow(/repos\["owner\/repo"\]\.git_remote_pattern must be a string regex/);
+    });
+
+    it('accepts a valid git_remote_pattern regex', () => {
+      expect(() => validateRepoConfig({
+        repos: {
+          'owner/repo': {
+            git_remote_pattern: '^git@althost\\.example:scm/owner/repo(\\.git)?$'
+          }
+        }
+      })).not.toThrow();
+    });
+
+    it('throws when links.external is missing label', () => {
+      expect(() => validateRepoConfig({
+        repos: {
+          'owner/repo': {
+            links: { external: { url_template: 'https://althost.example/x' } }
+          }
+        }
+      })).toThrow(/links\.external\.label/);
+    });
+
+    it('throws when links.external is missing url_template', () => {
+      expect(() => validateRepoConfig({
+        repos: {
+          'owner/repo': {
+            links: { external: { label: 'Open' } }
+          }
+        }
+      })).toThrow(/links\.external\.url_template/);
+    });
+
+    it('throws when links.external.url_template is not https://', () => {
+      expect(() => validateRepoConfig({
+        repos: {
+          'owner/repo': {
+            links: { external: { label: 'Open', url_template: 'http://althost.example/{owner}/{repo}' } }
+          }
+        }
+      })).toThrow(/url_template must start with "https:\/\/"/);
+    });
+
+    it('accepts a valid links.external block', () => {
+      expect(() => validateRepoConfig({
+        repos: {
+          'owner/repo': {
+            links: { external: { label: 'Open', url_template: 'https://althost.example/{owner}/{repo}/pull/{number}' } }
+          }
+        }
+      })).not.toThrow();
+    });
+
+    describe('pending_review_comments_endpoint override (Phase 5)', () => {
+      it('accepts a valid endpoint override with all four placeholders', () => {
+        expect(() => validateRepoConfig({
+          repos: {
+            'owner/alt': {
+              api_host: 'https://althost.example/api/v3',
+              features: {
+                pending_review_comments: 'host',
+                pending_review_comments_endpoint:
+                  '/repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}/comments'
+              }
+            }
+          }
+        })).not.toThrow();
+      });
+
+      it('throws when a placeholder is missing (e.g. {review_id})', () => {
+        expect(() => validateRepoConfig({
+          repos: {
+            'owner/alt': {
+              api_host: 'https://althost.example/api/v3',
+              features: {
+                pending_review_comments: 'host',
+                pending_review_comments_endpoint:
+                  '/repos/{owner}/{repo}/pulls/{pull_number}/reviews/comments'
+              }
+            }
+          }
+        })).toThrow(/missing required placeholder\(s\): \{review_id\}/);
+      });
+
+      it('throws when {pull_number} is missing (placeholder is {pull_number}, not {number})', () => {
+        expect(() => validateRepoConfig({
+          repos: {
+            'owner/alt': {
+              api_host: 'https://althost.example/api/v3',
+              features: {
+                pending_review_comments: 'host',
+                pending_review_comments_endpoint:
+                  '/repos/{owner}/{repo}/pulls/{number}/reviews/{review_id}/comments'
+              }
+            }
+          }
+        })).toThrow(/missing required placeholder\(s\): \{pull_number\}/);
+      });
+
+      it('throws when {owner} and {repo} are both missing', () => {
+        expect(() => validateRepoConfig({
+          repos: {
+            'owner/alt': {
+              api_host: 'https://althost.example/api/v3',
+              features: {
+                pending_review_comments: 'host',
+                pending_review_comments_endpoint:
+                  '/pulls/{pull_number}/reviews/{review_id}/comments'
+              }
+            }
+          }
+        })).toThrow(/missing required placeholder\(s\): \{owner\}, \{repo\}/);
+      });
+
+      it('rejects absolute http:// URLs', () => {
+        expect(() => validateRepoConfig({
+          repos: {
+            'owner/alt': {
+              api_host: 'https://althost.example/api/v3',
+              features: {
+                pending_review_comments: 'host',
+                pending_review_comments_endpoint:
+                  'http://althost.example/repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}/comments'
+              }
+            }
+          }
+        })).toThrow(/must be a relative path/);
+      });
+
+      it('rejects absolute https:// URLs', () => {
+        expect(() => validateRepoConfig({
+          repos: {
+            'owner/alt': {
+              api_host: 'https://althost.example/api/v3',
+              features: {
+                pending_review_comments: 'host',
+                pending_review_comments_endpoint:
+                  'https://althost.example/repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}/comments'
+              }
+            }
+          }
+        })).toThrow(/must be a relative path/);
+      });
+
+      it('rejects protocol-relative URLs', () => {
+        expect(() => validateRepoConfig({
+          repos: {
+            'owner/alt': {
+              api_host: 'https://althost.example/api/v3',
+              features: {
+                pending_review_comments: 'host',
+                pending_review_comments_endpoint:
+                  '//althost.example/repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}/comments'
+              }
+            }
+          }
+        })).toThrow(/must be a relative path/);
+      });
+
+      it('rejects empty-string endpoint override', () => {
+        expect(() => validateRepoConfig({
+          repos: {
+            'owner/alt': {
+              api_host: 'https://althost.example/api/v3',
+              features: {
+                pending_review_comments: 'host',
+                pending_review_comments_endpoint: ''
+              }
+            }
+          }
+        })).toThrow(/must be a non-empty string/);
+      });
+
+      it('throws when endpoint override is set but pending_review_comments is not "host"', () => {
+        // Note: this also implicitly checks the area = "graphql" path
+        // would fail first on a github.com repo, so use a repo with no
+        // api_host and the area still set to a non-host value indirectly
+        // via the default ("graphql" for github.com). Use the explicit
+        // case here.
+        expect(() => validateRepoConfig({
+          repos: {
+            'owner/repo': {
+              features: {
+                pending_review_comments_endpoint:
+                  '/repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}/comments'
+              }
+            }
+          }
+        })).toThrow(/only valid when pending_review_comments = "host"/);
+      });
+    });
+
+    describe('feature key allowlist', () => {
+      it('throws on an unknown feature key (typo) and lists valid keys', () => {
+        expect(() => validateRepoConfig({
+          repos: { 'owner/repo': { features: { pendin_review_check: 'rest' } } }
+        })).toThrow(/repos\["owner\/repo"\]\.features\.pendin_review_check is not a recognised feature area/);
+
+        // The error should enumerate valid feature areas so the user can
+        // self-correct without grepping the source.
+        try {
+          validateRepoConfig({
+            repos: { 'owner/repo': { features: { pendin_review_check: 'rest' } } }
+          });
+        } catch (err) {
+          expect(err.message).toContain('pending_review_check');
+          expect(err.message).toContain('stack_walker');
+          expect(err.message).toContain('review_lifecycle');
+          expect(err.message).toContain('pending_review_comments');
+        }
+      });
+
+      it('throws on an unknown _endpoint sub-key (typo)', () => {
+        expect(() => validateRepoConfig({
+          repos: {
+            'owner/alt': {
+              api_host: 'https://althost.example/api/v3',
+              features: {
+                pending_review_comments: 'host',
+                pending_review_commentes_endpoint:
+                  '/repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}/comments'
+              }
+            }
+          }
+        })).toThrow(/pending_review_commentes_endpoint is not a recognised endpoint override/);
+      });
+
+      it('accepts the recognised pending_review_comments_endpoint sub-key', () => {
+        expect(() => validateRepoConfig({
+          repos: {
+            'owner/alt': {
+              api_host: 'https://althost.example/api/v3',
+              features: {
+                pending_review_comments: 'host',
+                pending_review_comments_endpoint:
+                  '/repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}/comments'
+              }
+            }
+          }
+        })).not.toThrow();
+      });
+    });
+
+    describe('implementation matrix', () => {
+      // The matrix below mirrors IMPLEMENTATION_MATRIX in src/config.js,
+      // which is built from the IMPLEMENTED_MODES exports in each
+      // src/github/operations/*.js module. If a dispatcher gains a new
+      // mode, both the matrix and these tests should update together.
+
+      it('rejects review_lifecycle="host" on an alt-host (Phase 5 not implemented)', () => {
+        expect(() => validateRepoConfig({
+          repos: {
+            'owner/alt': {
+              api_host: 'https://althost.example/api/v3',
+              features: { review_lifecycle: 'host' }
+            }
+          }
+        })).toThrow(/features\.review_lifecycle = "host" is not implemented[\s\S]*Implemented modes for review_lifecycle: graphql, rest/);
+      });
+
+      it('rejects pending_review_comments="rest" on github.com (REST not supported for drafts)', () => {
+        expect(() => validateRepoConfig({
+          repos: {
+            'owner/repo': {
+              features: { pending_review_comments: 'rest' }
+            }
+          }
+        })).toThrow(/features\.pending_review_comments = "rest" is not implemented[\s\S]*Implemented modes for pending_review_comments: graphql, host/);
+      });
+
+      it('rejects stack_walker="host" on an alt-host (Phase 5 not implemented)', () => {
+        expect(() => validateRepoConfig({
+          repos: {
+            'owner/alt': {
+              api_host: 'https://althost.example/api/v3',
+              features: { stack_walker: 'host' }
+            }
+          }
+        })).toThrow(/features\.stack_walker = "host" is not implemented[\s\S]*Implemented modes for stack_walker: graphql, rest/);
+      });
+
+      it('rejects pending_review_check="host" on an alt-host (Phase 5 not implemented)', () => {
+        expect(() => validateRepoConfig({
+          repos: {
+            'owner/alt': {
+              api_host: 'https://althost.example/api/v3',
+              features: { pending_review_check: 'host' }
+            }
+          }
+        })).toThrow(/features\.pending_review_check = "host" is not implemented[\s\S]*Implemented modes for pending_review_check: graphql, rest/);
+      });
+
+      it('accepts every currently-implemented (area, mode) combination', () => {
+        // github.com — graphql is the default-implemented mode for all
+        // four areas.
+        expect(() => validateRepoConfig({
+          repos: {
+            'owner/repo': {
+              features: {
+                pending_review_check: 'graphql',
+                stack_walker: 'graphql',
+                review_lifecycle: 'graphql',
+                pending_review_comments: 'graphql'
+              }
+            }
+          }
+        })).not.toThrow();
+
+        // github.com — rest is implemented for the three non-comment areas.
+        expect(() => validateRepoConfig({
+          repos: {
+            'owner/repo': {
+              features: {
+                pending_review_check: 'rest',
+                stack_walker: 'rest',
+                review_lifecycle: 'rest'
+              }
+            }
+          }
+        })).not.toThrow();
+
+        // Alt-host — rest for everything, host for pending_review_comments.
+        expect(() => validateRepoConfig({
+          repos: {
+            'owner/alt': {
+              api_host: 'https://althost.example/api/v3',
+              features: {
+                pending_review_check: 'rest',
+                stack_walker: 'rest',
+                review_lifecycle: 'rest',
+                pending_review_comments: 'host'
+              }
+            }
+          }
+        })).not.toThrow();
+      });
+    });
+  });
+
+  describe('matchRepoByUrl', () => {
+    it('returns null when no repos have a url_pattern', () => {
+      const config = { repos: { 'owner/repo': { path: '/tmp/x' } } };
+      expect(matchRepoByUrl('https://althost.example/owner/repo/pull/42', config)).toBeNull();
+    });
+
+    it('returns null when the URL does not match any pattern', () => {
+      const config = {
+        repos: {
+          'owner/repo': {
+            url_pattern: '^https://althost\\.example/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>[0-9]+)'
+          }
+        }
+      };
+      expect(matchRepoByUrl('https://github.com/octocat/Hello-World/pull/1', config)).toBeNull();
+    });
+
+    it('extracts owner/repo/number from named capture groups', () => {
+      const config = {
+        repos: {
+          'owner/repo': {
+            url_pattern: '^https://althost\\.example/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>[0-9]+)'
+          }
+        }
+      };
+      const match = matchRepoByUrl('https://althost.example/acme/widgets/pull/123', config);
+      expect(match).not.toBeNull();
+      expect(match.owner).toBe('acme');
+      expect(match.repo).toBe('widgets');
+      expect(match.number).toBe(123);
+      expect(typeof match.number).toBe('number');
+      expect(match.repository).toBe('acme/widgets');
+      expect(match.repoConfig).toBe(config.repos['owner/repo']);
+    });
+
+    it('falls back to the repo config key when regex has no named groups', () => {
+      const config = {
+        repos: {
+          'owner/repo': {
+            url_pattern: '^https://althost\\.example/owner/repo/pull/[0-9]+'
+          }
+        }
+      };
+      const match = matchRepoByUrl('https://althost.example/owner/repo/pull/7', config);
+      expect(match).not.toBeNull();
+      expect(match.repository).toBe('owner/repo');
+      expect(match.owner).toBeUndefined();
+      expect(match.repo).toBeUndefined();
+      expect(match.number).toBeUndefined();
+    });
+
+    it('returns null for empty/missing URL inputs', () => {
+      const config = {
+        repos: {
+          'owner/repo': {
+            url_pattern: '^https://althost\\.example/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>[0-9]+)'
+          }
+        }
+      };
+      expect(matchRepoByUrl('', config)).toBeNull();
+      expect(matchRepoByUrl(null, config)).toBeNull();
+      expect(matchRepoByUrl(undefined, config)).toBeNull();
+    });
+
+    it('iterates multiple repos and matches the first hit', () => {
+      const config = {
+        repos: {
+          'first/repo': {
+            url_pattern: '^https://althost\\.example/first/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>[0-9]+)'
+          },
+          'second/repo': {
+            url_pattern: '^https://althost\\.example/second/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>[0-9]+)'
+          }
+        }
+      };
+      const match = matchRepoByUrl('https://althost.example/second/team/proj/pull/5', config);
+      expect(match.owner).toBe('team');
+      expect(match.repo).toBe('proj');
+      expect(match.number).toBe(5);
+    });
+  });
+
+  describe('getGitHubToken with repository arg', () => {
+    let originalEnv;
+    let execSyncSpy;
+    let warnSpy;
+
+    beforeEach(() => {
+      originalEnv = process.env.GITHUB_TOKEN;
+      delete process.env.GITHUB_TOKEN;
+      _resetTokenCache();
+      execSyncSpy = vi.spyOn(childProcess, 'execSync');
+      const logger = require('../../src/utils/logger');
+      warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      if (originalEnv !== undefined) {
+        process.env.GITHUB_TOKEN = originalEnv;
+      } else {
+        delete process.env.GITHUB_TOKEN;
+      }
+      _resetTokenCache();
+      execSyncSpy.mockRestore();
+      warnSpy.mockRestore();
+    });
+
+    it('delegates to resolveHostBinding for repo-aware lookups', () => {
+      const config = {
+        github_token: 'top',
+        repos: { 'owner/repo': { token: 'repo-literal' } }
+      };
+      expect(getGitHubToken(config, 'owner/repo')).toBe('repo-literal');
+    });
+
+    it('omitting repository preserves the no-repo fallback behaviour', () => {
+      const config = { github_token: 'top' };
+      expect(getGitHubToken(config)).toBe('top');
+    });
+
+    it('alt-host repo skips GITHUB_TOKEN env var', () => {
+      process.env.GITHUB_TOKEN = 'github-com-env';
+      const config = {
+        github_token: 'top-shared',
+        repos: {
+          'owner/alt': { api_host: 'https://althost.example/api/v3' }
+        }
+      };
+      // For alt-host repo: env var skipped AND top-level credentials
+      // are no longer consulted (Fix #4). The lookup returns '' so the
+      // caller can surface a clear missing-token error.
+      expect(getGitHubToken(config, 'owner/alt')).toBe('');
+      // No-repo call: env var still wins
+      expect(getGitHubToken(config)).toBe('github-com-env');
+    });
+  });
+
+  // -------------------------------------------------------------------
+  // Fix #3: alt-host pending_review_comments defaults to "host"
+  // -------------------------------------------------------------------
+  describe('_resolveFeatures alt-host defaults (Fix #3)', () => {
+    it('defaults pending_review_comments to "host" on an alt-host repo', () => {
+      const config = {
+        repos: {
+          'owner/alt': {
+            api_host: 'https://althost.example/api/v3',
+            token: 'tok'
+          }
+        }
+      };
+      const binding = resolveHostBinding('owner/alt', config);
+      expect(binding.features.pending_review_comments).toBe('host');
+      // Other areas still default to rest.
+      expect(binding.features.pending_review_check).toBe('rest');
+      expect(binding.features.stack_walker).toBe('rest');
+      expect(binding.features.review_lifecycle).toBe('rest');
+    });
+
+    it('does NOT change the github.com default — pending_review_comments stays "graphql"', () => {
+      const binding = resolveHostBinding('owner/normal', {
+        github_token: 'top',
+        repos: { 'owner/normal': {} }
+      });
+      expect(binding.features.pending_review_comments).toBe('graphql');
+    });
+
+    it('explicit features.pending_review_comments override still wins on alt-host', () => {
+      const binding = resolveHostBinding('owner/alt', {
+        repos: {
+          'owner/alt': {
+            api_host: 'https://althost.example/api/v3',
+            token: 'tok',
+            // user explicitly opts out (would be rejected by
+            // validateRepoConfig today, but the resolver itself must
+            // still honour the override so future modes work).
+            features: { pending_review_comments: 'rest' }
+          }
+        }
+      });
+      expect(binding.features.pending_review_comments).toBe('rest');
+    });
+
+    it('validateRepoConfig validates resolved defaults for areas the user did not override (Fix #3)', () => {
+      // Plain alt-host repo with no overrides. With Fix #3, the default
+      // pending_review_comments value resolves to "host" which IS
+      // implemented — must not throw.
+      expect(() => validateRepoConfig({
+        repos: {
+          'owner/alt': {
+            api_host: 'https://althost.example/api/v3'
+          }
+        }
+      })).not.toThrow();
+    });
+  });
+
+  // -------------------------------------------------------------------
+  // Fix #8: resolveBindingRepositoryFromPR
+  // -------------------------------------------------------------------
+  describe('resolveBindingRepositoryFromPR (Fix #8)', () => {
+    it('returns lowercased owner/repo when no config entry exists', () => {
+      expect(resolveBindingRepositoryFromPR('Acme', 'Widgets', { repos: {} }))
+        .toBe('acme/widgets');
+      expect(resolveBindingRepositoryFromPR('acme', 'widgets', {}))
+        .toBe('acme/widgets');
+    });
+
+    it('returns the exact config key when it matches case-insensitively', () => {
+      const config = {
+        repos: {
+          'Acme/Widgets': { path: '/tmp/x' }
+        }
+      };
+      // Direct (lowercased) key hit
+      expect(resolveBindingRepositoryFromPR('acme', 'widgets', { repos: { 'acme/widgets': {} } }))
+        .toBe('acme/widgets');
+      // Case-insensitive scan
+      expect(resolveBindingRepositoryFromPR('ACME', 'WIDGETS', config))
+        .toBe('Acme/Widgets');
+    });
+
+    it('finds a monorepo-shaped entry whose url_pattern captures the owner/repo', () => {
+      const config = {
+        repos: {
+          'company/monorepo': {
+            api_host: 'https://althost.example/api/v3',
+            url_pattern: '^https://althost\\.example/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>[0-9]+)'
+          }
+        }
+      };
+      expect(resolveBindingRepositoryFromPR('team', 'sub', config))
+        .toBe('company/monorepo');
+    });
+
+    it('falls back to owner/repo when no entry can be matched', () => {
+      const config = {
+        repos: {
+          'company/monorepo': {
+            api_host: 'https://althost.example/api/v3',
+            url_pattern: '^https://althost\\.example/specific/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>[0-9]+)'
+          }
+        }
+      };
+      // The pattern requires `/specific/` in the path; team/sub
+      // won't fit the candidates we probe.
+      expect(resolveBindingRepositoryFromPR('team', 'sub', config))
+        .toBe('team/sub');
+    });
+
+    it('returns owner/repo fallback when owner or repo is missing', () => {
+      expect(resolveBindingRepositoryFromPR('', '', {})).toBe('/');
+      expect(resolveBindingRepositoryFromPR(null, 'repo', {})).toBe('/repo');
+      expect(resolveBindingRepositoryFromPR('owner', undefined, {})).toBe('owner/');
     });
   });
 });

@@ -2661,11 +2661,23 @@ class PRManager {
 
     // Update Graphite link (gated on enable_graphite config)
     const graphiteLink = document.getElementById('graphite-link');
-    if (graphiteLink && pr.html_url && window.__pairReview?.enableGraphite) {
+    if (graphiteLink && pr.html_url && window.__pairReview?.enableGraphite
+        && graphiteLink.dataset.suppressed !== 'true') {
       // Derive from html_url to preserve GitHub's original casing (Graphite URLs are case-sensitive)
       const graphiteUrl = window.__pairReview.toGraphiteUrl(pr.html_url);
       graphiteLink.href = graphiteUrl;
       graphiteLink.style.display = '';
+    }
+
+    if (window.RepoLinks && pr.owner && pr.repo) {
+      window.RepoLinks.fetchAndApplyRepoLinks(pr.owner, pr.repo, {
+        owner: pr.owner,
+        repo: pr.repo,
+        number: pr.number,
+        branch: pr.head_branch,
+        base_branch: pr.base_branch,
+        head_sha: pr.head_sha,
+      });
     }
 
     // Update settings link
@@ -6780,11 +6792,15 @@ class PRManager {
         : this._fetchStaleness(owner, repo, number);
       this._stalenessPromise = null; // consume it
 
+      // Pass owner+repo to /api/config so has_github_token reflects the
+      // repo's actual auth (covers repo-scoped tokens, token_command, and
+      // alt-host bindings — not just the global github_token).
+      const configUrl = `/api/config?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}`;
       const [staleResult, repoSettings, reviewSettings, appConfig] = await Promise.all([
         staleCheckWithTimeout,
         this.fetchRepoSettings(),
         this.fetchLastReviewSettings(),
-        this._getAppConfig()
+        fetch(configUrl).then(r => r.ok ? r.json() : {}).catch(() => ({}))
       ]);
       console.debug(`[Analyze] parallel-fetch (stale+settings): ${Math.round(performance.now() - _tParallel0)}ms`);
 
@@ -6865,7 +6881,12 @@ class PRManager {
         lastCouncilId,
         defaultCouncilId: repoSettings?.default_council_id || null,
         hasPr: true,
-        hasGithubToken: Boolean(appConfig.has_github_token)
+        // Use the repo-aware field (we passed owner+repo to /api/config).
+        // Fall back to the global field only if the response was malformed
+        // or the params were rejected — defensive, should not happen.
+        hasGithubToken: Boolean(
+          appConfig.has_github_token ?? appConfig.has_global_github_token
+        )
       });
 
       // If user cancelled, do nothing

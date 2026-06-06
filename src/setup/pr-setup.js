@@ -17,7 +17,7 @@ const { WorktreePoolLifecycle } = require('../git/worktree-pool-lifecycle');
 const { GitHubClient } = require('../github/client');
 const { normalizeRepository } = require('../utils/paths');
 const { findMainGitRoot } = require('../local-review');
-const { getConfigDir, getRepoPath, resolveRepoOptions, resolvePoolConfig, getRepoResetScript, DEFAULT_CHECKOUT_TIMEOUT_MS } = require('../config');
+const { getConfigDir, getRepoPath, resolveRepoOptions, resolvePoolConfig, getRepoResetScript, resolveHostBinding, resolveBindingRepositoryFromPR, DEFAULT_CHECKOUT_TIMEOUT_MS } = require('../config');
 const logger = require('../utils/logger');
 const { fireReviewStartedHook } = require('../hooks/payloads');
 const simpleGit = require('simple-git');
@@ -213,9 +213,11 @@ async function registerRepositoryLocation(db, currentDir, owner, repo) {
  * @param {Object} params.db - Database instance
  * @param {string} params.owner - Repository owner
  * @param {string} params.repo - Repository name
- * @param {string} params.repository - Normalized "owner/repo" string
+ * @param {string} params.repository - Normalized "owner/repo" PR identity (used for DB lookups: worktrees, repo_settings)
+ * @param {string} [params.bindingRepository] - `repos[...]` config-lookup key; defaults to `repository`. Differs for monorepo url_pattern configs.
  * @param {number} params.prNumber - PR number (used for worktree lookup)
  * @param {Object} [params.config] - Application config (used for monorepo path lookup)
+ * @param {string} [params.cloneUrl] - Alt-host clone URL from `prData.repository.clone_url`; falls back to github.com when omitted.
  * @param {Function} [params.onProgress] - Optional progress callback
  * @returns {Promise<{ repositoryPath: string, knownPath: string|null, worktreeSourcePath: string|null, checkoutScript: string|null, checkoutTimeout: number, worktreeConfig: Object|null }>}
  *   - repositoryPath: the main git root (bare repo or .git parent)
@@ -225,7 +227,10 @@ async function registerRepositoryLocation(db, currentDir, owner, repo) {
  *   - checkoutTimeout: timeout in ms for checkout script (default: 300000 = 5 minutes)
  *   - worktreeConfig: { worktreeBaseDir, nameTemplate } if configured, null otherwise
  */
-async function findRepositoryPath({ db, owner, repo, repository, prNumber, config, onProgress }) {
+async function findRepositoryPath({ db, owner, repo, repository, bindingRepository, prNumber, config, cloneUrl, onProgress }) {
+  // `repository` is the PR identity (DB key). `bindingRepository` is the
+  // `repos[...]` config-lookup key — they differ for monorepo url_pattern configs.
+  const configKey = bindingRepository || repository;
   const worktreeManager = new GitWorktreeManager(db);
   const repoSettingsRepo = new RepoSettingsRepository(db);
   const worktreeRepo = new WorktreeRepository(db);
@@ -237,7 +242,7 @@ async function findRepositoryPath({ db, owner, repo, repository, prNumber, confi
   // ------------------------------------------------------------------
   // Tier -1: Explicit monorepo configuration (highest priority)
   // ------------------------------------------------------------------
-  const monorepoPath = config ? getRepoPath(config, repository) : null;
+  const monorepoPath = config ? getRepoPath(config, configKey) : null;
 
   if (monorepoPath) {
     // The configured path might be a worktree or a regular/bare repo.
@@ -289,7 +294,7 @@ async function findRepositoryPath({ db, owner, repo, repository, prNumber, confi
   // ------------------------------------------------------------------
   // Resolve monorepo worktree options (checkout_script, worktree_directory, worktree_name_template)
   // ------------------------------------------------------------------
-  const resolved = config ? resolveRepoOptions(config, repository, repoSettings) : { checkoutScript: null, checkoutTimeout: DEFAULT_CHECKOUT_TIMEOUT_MS, worktreeConfig: null };
+  const resolved = config ? resolveRepoOptions(config, configKey, repoSettings) : { checkoutScript: null, checkoutTimeout: DEFAULT_CHECKOUT_TIMEOUT_MS, worktreeConfig: null };
   const { checkoutScript, checkoutTimeout, worktreeConfig } = resolved;
 
   // When a checkout script is configured, null out worktreeSourcePath —
@@ -357,8 +362,10 @@ async function findRepositoryPath({ db, owner, repo, repository, prNumber, confi
       await fs.mkdir(path.dirname(cachedRepoPath), { recursive: true });
 
       const git = simpleGit();
-      const cloneUrl = `https://github.com/${owner}/${repo}.git`;
-      await git.clone(cloneUrl, cachedRepoPath, ['--filter=blob:none', '--no-checkout']);
+      // Honor alt-host clone URL when callers thread it through; older
+      // restore snapshots / pre-alt-host callers fall back to github.com.
+      const resolvedCloneUrl = cloneUrl || `https://github.com/${owner}/${repo}.git`;
+      await git.clone(resolvedCloneUrl, cachedRepoPath, ['--filter=blob:none', '--no-checkout']);
       repositoryPath = cachedRepoPath;
       if (onProgress) {
         onProgress({ step: 'repo', status: 'running', message: `Repository cloned to ${cachedRepoPath}` });
@@ -408,15 +415,30 @@ function isShaNotFoundError(err) {
  * @param {string} params.repo - Repository name
  * @param {number} params.prNumber - Pull request number
  * @param {string} params.githubToken - GitHub PAT
+ * @param {string} [params.bindingRepository] - `repos[...]` config-lookup key; resolved internally when omitted
  * @param {Object} [params.config] - Application config (for monorepo path lookup)
  * @param {import('../git/worktree-pool-lifecycle').WorktreePoolLifecycle} [params.poolLifecycle] - Shared pool lifecycle instance (avoids creating a fresh singleton)
  * @param {Object} [params.restoreMetadata] - Stored PR data for restore mode (skips GitHub fetch + diff)
  * @param {Function} [params.onProgress] - Optional progress callback
  * @returns {Promise<{ reviewUrl: string, title: string }>}
  */
-async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, onProgress, poolLifecycle: externalPoolLifecycle, restoreMetadata }) {
+async function setupPRReview({ db, owner, repo, prNumber, githubToken, bindingRepository: externalBindingRepository, config, onProgress, poolLifecycle: externalPoolLifecycle, restoreMetadata }) {
   const repository = normalizeRepository(owner, repo);
   const progress = onProgress || (() => {});
+
+  // Resolve the per-repo host binding so alt-host setups talk to the
+  // configured `api_host`. Use `resolveBindingRepositoryFromPR` so
+  // monorepo-style configs (one `repos[...]` entry serving many
+  // captured owner/repo) find the right binding. Fall back to the bare
+  // token shape if no config is available (legacy invocation path) or
+  // the binding resolved no token (callers in this case already
+  // pre-resolved it).
+  const bindingRepository = externalBindingRepository
+    || (config ? resolveBindingRepositoryFromPR(owner, repo, config) : repository);
+  const setupBinding = config ? resolveHostBinding(bindingRepository, config) : null;
+  const clientArg = (setupBinding && setupBinding.token)
+    ? setupBinding
+    : githubToken;
 
   const isRestore = !!(restoreMetadata && restoreMetadata.head_sha);
   let prData;
@@ -431,7 +453,7 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, o
     // Step: verify - Verify repository access
     // ------------------------------------------------------------------
     progress({ step: 'verify', status: 'running', message: 'Verifying repository access...' });
-    githubClient = new GitHubClient(githubToken);
+    githubClient = new GitHubClient(clientArg);
     const repoExists = await githubClient.repositoryExists(owner, repo);
     if (!repoExists) {
       throw new Error(`Repository ${owner}/${repo} not found`);
@@ -455,8 +477,10 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, o
     owner,
     repo,
     repository,
+    bindingRepository,
     prNumber,
     config,
+    cloneUrl: prData?.repository?.clone_url,
     onProgress: progress
   });
   progress({ step: 'repo', status: 'completed', message: `Repository located at ${repositoryPath}` });
@@ -467,8 +491,10 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, o
   const prInfo = { owner, repo, number: prNumber };
   const repoSettingsRepo = new RepoSettingsRepository(db);
   const repoSettings = await repoSettingsRepo.getRepoSettings(repository);
-  const { poolSize } = resolvePoolConfig(config || {}, repository, repoSettings);
-  const resetScript = config ? getRepoResetScript(config, repository) : null;
+  // Pool/reset settings live under the config-lookup key (`bindingRepository`),
+  // not the PR identity, so monorepo `repos[...]` entries are honored.
+  const { poolSize } = resolvePoolConfig(config || {}, bindingRepository, repoSettings);
+  const resetScript = config ? getRepoResetScript(config, bindingRepository) : null;
 
   let worktreePath;
   let worktreeManager;

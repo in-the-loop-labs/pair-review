@@ -262,6 +262,10 @@ Nested objects (like `chat`, `providers`, `chat_providers`, `monorepos`) are dee
 
 **`config.local.json`** files are intended for personal overrides that should not be committed to version control. Add `config.local.json` to your `.gitignore`.
 
+### Alternate Git Hosts
+
+pair-review can review pull requests on self-hosted Git platforms that expose a GitHub-compatible REST API, configured per-repository via `repos["owner/repo"].api_host` and related keys. See [docs/alt-host.md](docs/alt-host.md) for the full configuration guide.
+
 ### Environment Variables
 
 pair-review supports several environment variables for customizing behavior:

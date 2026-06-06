@@ -23,7 +23,8 @@ const {
   createProgressCallback
 } = require('./shared');
 const { safeParseJson } = require('../utils/safe-parse-json');
-const { resolveLoadSkills } = require('../config');
+const { resolveLoadSkills, resolveHostBinding } = require('../config');
+const { GitHubClient } = require('../github/client');
 
 // All valid tier values: canonical tiers + aliases (for Zod enum validation)
 const ALL_TIER_VALUES = /** @type {[string, ...string[]]} */ ([...TIERS, ...Object.keys(TIER_ALIASES)]);
@@ -640,7 +641,9 @@ function createMCPServer(db, options = {}) {
             headSha: localHeadSha
           });
 
-          // Launch analysis asynchronously (skipRunCreation since we created the record above)
+          // Launch analysis asynchronously (skipRunCreation since we created the record above).
+          // Local mode has no associated GitHub PR, so githubClient is intentionally
+          // omitted — the analyzer drops the GitHub dedup section when no client is supplied.
           analyzer.analyzeLevel1(reviewId, localPath, localMetadata, progressCallback, { repoInstructions, requestInstructions }, changedFiles, { analysisId, runId, skipRunCreation: true, tier, skipLevel3: args.skipLevel3, excludePrevious: args.excludePrevious, serverPort: (options.port || config.port || 7247) })
             .then(result => handleAnalysisCompletion(analysisId, runId, result, async (r) => {
               if (r.summary) {
@@ -762,6 +765,18 @@ function createMCPServer(db, options = {}) {
           const progressCallback = createProgressCallback(analysisId);
           const tier = resolveTier(args.tier);
 
+          // Build a GitHubClient so the analyzer can pre-fetch existing PR
+          // review comments when args.excludePrevious.github is set. Uses
+          // the repo's binding so alt-host repos route to the right host
+          // with the right token.
+          const prAnalysisBinding = resolveHostBinding(repository, config);
+          const prAnalysisGithubClient = prAnalysisBinding.token
+            ? new GitHubClient(prAnalysisBinding)
+            : undefined;
+          if (prAnalysisGithubClient) {
+            logger.debug(`analyzer githubClient wired for ${owner}/${repo}#${prNumber} (mcp)`);
+          }
+
           logger.log('MCP', `Starting PR analysis: PR #${prNumber} in ${repository}, runId=${runId}`, 'magenta');
 
           // Create DB analysis_runs record just before launching so it's queryable for polling
@@ -779,7 +794,7 @@ function createMCPServer(db, options = {}) {
           });
 
           // Launch analysis asynchronously (skipRunCreation since we created the record above)
-          analyzer.analyzeLevel1(review.id, worktreePath, prMetadata, progressCallback, { repoInstructions, requestInstructions }, null, { analysisId, runId, skipRunCreation: true, tier, skipLevel3: args.skipLevel3, excludePrevious: args.excludePrevious, serverPort: (options.port || config.port || 7247) })
+          analyzer.analyzeLevel1(review.id, worktreePath, prMetadata, progressCallback, { repoInstructions, requestInstructions }, null, { analysisId, runId, skipRunCreation: true, tier, skipLevel3: args.skipLevel3, excludePrevious: args.excludePrevious, serverPort: (options.port || config.port || 7247), githubClient: prAnalysisGithubClient })
             .then(result => handleAnalysisCompletion(analysisId, runId, result, async (r) => {
               try { await prMetadataRepo.updateLastAiRunId(prMetadata.id, r.runId); } catch (_) { /* ignore */ }
               if (r.summary) {

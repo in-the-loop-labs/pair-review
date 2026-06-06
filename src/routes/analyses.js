@@ -495,6 +495,7 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
     config: modeConfig,
     excludePrevious,
     serverPort,
+    githubClient,
     providerOverrides = {},
     providerOverridesMap = null,
     hookContext = {},
@@ -606,8 +607,8 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
     };
 
     analysisPromise = isVoiceCentric
-      ? analyzer.runReviewerCentricCouncil(reviewContext, councilConfig, { analysisId, runId, progressCallback, excludePrevious, serverPort })
-      : analyzer.runCouncilAnalysis(reviewContext, councilConfig, { analysisId, runId, progressCallback, excludePrevious, serverPort });
+      ? analyzer.runReviewerCentricCouncil(reviewContext, councilConfig, { analysisId, runId, progressCallback, excludePrevious, serverPort, githubClient })
+      : analyzer.runCouncilAnalysis(reviewContext, councilConfig, { analysisId, runId, progressCallback, excludePrevious, serverPort, githubClient });
   } catch (setupError) {
     // Synchronous setup failure — clean up the analysis hold immediately
     reviewToAnalysisId.delete(reviewId);

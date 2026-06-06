@@ -269,11 +269,25 @@ class LocalManager {
           ? manager._stalenessPromise
           : self._fetchLocalStaleness();
         manager._stalenessPromise = null; // consume it
+        // Pass owner+repo to /api/config (when we have a remote) so
+        // has_github_token reflects the repo's actual auth — covers
+        // repo-scoped tokens, token_command, and alt-host bindings.
+        // Local sessions without a remote origin fall back to the
+        // global-only response (has_global_github_token), which the
+        // modal already treats as no-GitHub-auth for dedup purposes.
+        let configUrl = '/api/config';
+        const localRepo = self.localData?.repository;
+        if (typeof localRepo === 'string' && localRepo.includes('/')) {
+          const [lOwner, lRepo] = localRepo.split('/');
+          if (lOwner && lRepo) {
+            configUrl = `/api/config?owner=${encodeURIComponent(lOwner)}&repo=${encodeURIComponent(lRepo)}`;
+          }
+        }
         const [staleResult, repoSettings, reviewSettings, appConfig] = await Promise.all([
           staleCheckWithTimeout,
           manager.fetchRepoSettings().catch(() => null),
           manager.fetchLastReviewSettings().catch(() => ({ custom_instructions: '', last_council_id: null })),
-          manager._getAppConfig()
+          fetch(configUrl).then(r => r.ok ? r.json() : {}).catch(() => ({}))
         ]);
         console.debug(`[Analyze] parallel-fetch (stale+settings): ${Math.round(performance.now() - _tParallel0)}ms`);
 
@@ -346,7 +360,14 @@ class LocalManager {
           lastCouncilId,
           defaultCouncilId: repoSettings?.default_council_id || null,
           hasPr: false,
-          hasGithubToken: Boolean(appConfig.has_github_token)
+          // Prefer the repo-aware field when present (we passed owner+repo
+          // to /api/config). For local sessions without a remote origin
+          // we fall back to the global capability — there is no repo
+          // binding to honour, so the global token is the only token a
+          // dedup operation could use anyway.
+          hasGithubToken: Boolean(
+            appConfig.has_github_token ?? appConfig.has_global_github_token
+          )
         });
 
         if (!config) {
@@ -1051,6 +1072,29 @@ class LocalManager {
 
       // Update header with local info
       this.updateLocalHeader(reviewData);
+
+      // Apply per-repo header link customisation (Phase 7: alt-host support).
+      // Only render the external link when the local review is associated
+      // with a `repos` entry — i.e. the stored repository looks like
+      // `owner/repo`. Local sessions without a remote origin skip this
+      // entirely; built-in GitHub/Graphite links don't appear in Local
+      // mode's header today so suppression has no visible effect there
+      // either, but we still call through so any external link is
+      // inserted into the icon group.
+      if (window.RepoLinks && typeof reviewData.repository === 'string'
+          && reviewData.repository.includes('/')) {
+        const [linkOwner, linkRepo] = reviewData.repository.split('/');
+        window.RepoLinks.fetchAndApplyRepoLinks(linkOwner, linkRepo, {
+          owner: linkOwner,
+          repo: linkRepo,
+          // {number} is intentionally omitted for Local mode — templates
+          // that require it will fail substitution and the link will be
+          // dropped. Local reviews are not associated with a PR number.
+          branch: reviewData.branch,
+          base_branch: reviewData.baseBranch,
+          head_sha: reviewData.localHeadSha,
+        });
+      }
 
       // Fetch and display diff
       await this.loadLocalDiff();

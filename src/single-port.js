@@ -116,12 +116,15 @@ function buildDelegationUrl(port, mode, context = {}) {
  * Parse PR arguments for URL construction without starting a server.
  * Reuses PRArgumentParser — synchronous for URLs, async for bare numbers.
  * @param {string[]} prArgs - Raw CLI PR arguments
+ * @param {object} [config] - Pair-review config, passed to the parser so
+ *   that per-repo `url_pattern` regexes are tried before the built-in
+ *   GitHub/Graphite parsers. Pass null to disable config-driven matching.
  * @param {object} [_deps] - Dependency overrides for testing
  * @returns {Promise<{owner: string, repo: string, number: number}>}
  */
-async function parsePRArgsForDelegation(prArgs, _deps) {
+async function parsePRArgsForDelegation(prArgs, config = null, _deps) {
   const deps = { ...defaults, ..._deps };
-  const parser = new deps.PRArgumentParser();
+  const parser = new deps.PRArgumentParser(config);
   return parser.parsePRArguments(prArgs);
 }
 
@@ -163,7 +166,7 @@ async function attemptDelegation(config, flags, prArgs, _deps) {
     const targetPath = path.resolve(flags.localPath || process.cwd());
     url = buildDelegationUrl(port, 'local', { localPath: targetPath, analyze: flags.ai });
   } else if (prArgs.length > 0) {
-    const prInfo = await parsePRArgsForDelegation(prArgs, _deps);
+    const prInfo = await parsePRArgsForDelegation(prArgs, config, _deps);
     url = buildDelegationUrl(port, 'pr', { ...prInfo, analyze: flags.ai });
   } else {
     url = buildDelegationUrl(port, 'server');

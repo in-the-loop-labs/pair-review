@@ -497,10 +497,13 @@ router.post('/api/local/start', async (req, res) => {
     const digest = await computeScopedDigest(repoPath, scopeStart, scopeEnd);
 
     // Branch detection: when no uncommitted changes, check if branch has commits ahead
+    const { resolveHostBinding: _resolveHostBindingForBranch } = require('../config');
+    const branchBinding = repository ? _resolveHostBindingForBranch(repository, config) : null;
     const branchInfo = await detectAndBuildBranchInfo(repoPath, branch, {
       repository,
       diff,
-      githubToken: getGitHubToken(config),
+      githubToken: branchBinding?.token || getGitHubToken(config),
+      hostBinding: branchBinding,
       enableGraphite: config.enable_graphite === true
     });
 
@@ -716,13 +719,18 @@ router.get('/api/local/:reviewId', async (req, res) => {
         && branchName && branchName !== 'HEAD' && branchName !== 'unknown'
         && repositoryName && repositoryName.includes('/')) {
       const bgConfig = req.app.get('config') || {};
-      const bgToken = getGitHubToken(bgConfig);
+      const { resolveHostBinding: _resolveHostBinding } = require('../config');
+      const bgBinding = _resolveHostBinding(repositoryName, bgConfig);
+      const bgToken = bgBinding.token;
       const bgT0 = Date.now();
       const { detectBaseBranch } = require('../git/base-branch');
       detectBaseBranch(review.local_path, branchName, {
         repository: repositoryName,
         enableGraphite: bgConfig.enable_graphite === true,
-        _deps: bgToken ? { getGitHubToken: () => bgToken } : undefined
+        _deps: bgToken ? {
+          getGitHubToken: () => bgToken,
+          getHostBinding: () => bgBinding
+        } : undefined
       }).then(detection => {
         if (detection && detection.baseBranch) {
           return reviewRepo.updateReview(reviewId, { local_base_branch: detection.baseBranch });
@@ -1450,7 +1458,9 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
 
     const progressCallback = createProgressCallback(analysisId);
 
-    // Start analysis asynchronously (skipRunCreation since we created the record above; also passes changedFiles for local mode path validation, tier for prompt selection, and skipLevel3 flag)
+    // Start analysis asynchronously (skipRunCreation since we created the record above; also passes changedFiles for local mode path validation, tier for prompt selection, and skipLevel3 flag).
+    // Local mode has no associated GitHub PR, so githubClient is intentionally omitted —
+    // the analyzer drops the GitHub dedup section when no client is supplied.
     analyzer.analyzeLevel1(reviewId, localPath, localMetadata, progressCallback, { globalInstructions, repoInstructions, requestInstructions }, changedFiles, { analysisId, runId, skipRunCreation: true, tier, skipLevel3: requestSkipLevel3, enabledLevels: levelsConfig, excludePrevious, serverPort: req.socket.localPort })
       .then(async result => {
         logger.section('Local Analysis Results');
@@ -1940,11 +1950,16 @@ router.post('/api/local/:reviewId/set-scope', async (req, res) => {
         } else {
           const { detectBaseBranch } = require('../git/base-branch');
           const config = req.app.get('config') || {};
-          const token = getGitHubToken(config);
+          const { resolveHostBinding: _resolveHostBinding } = require('../config');
+          const localBinding = _resolveHostBinding(review.repository, config);
+          const token = localBinding.token;
           const detection = await detectBaseBranch(localPath, currentBranch, {
             repository: review.repository,
             enableGraphite: config.enable_graphite === true,
-            _deps: token ? { getGitHubToken: () => token } : undefined
+            _deps: token ? {
+              getGitHubToken: () => token,
+              getHostBinding: () => localBinding
+            } : undefined
           });
           if (!detection) {
             return res.status(400).json({ error: 'Could not detect base branch' });
@@ -2286,6 +2301,8 @@ router.post('/api/local/:reviewId/analyses/council', async (req, res) => {
     const { providerOverrides: councilProviderOverrides, providerOverridesMap: councilProviderOverridesMap } =
       buildCouncilProviderOverrides(localCouncilConfig, review.repository, repoSettings);
 
+    // Local mode has no associated GitHub PR, so we do not pass a githubClient.
+    // The analyzer drops the GitHub dedup section when no client is supplied.
     const { analysisId, runId } = await analysesRouter.launchCouncilAnalysis(
       db,
       {

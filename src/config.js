@@ -5,7 +5,52 @@ const os = require('os');
 const childProcess = require('child_process');
 const logger = require('./utils/logger');
 
+// Implementation matrix for per-area dispatch. Each operations module
+// exports an `IMPLEMENTED_MODES` Set lifted from its dispatcher's if/else
+// chain, so validateRepoConfig() and the dispatcher cannot drift.
+const _stackWalkerOps = require('./github/operations/stack-walker');
+const _pendingReviewOps = require('./github/operations/pending-review');
+const _reviewLifecycleOps = require('./github/operations/review-lifecycle');
+const _pendingReviewCommentsOps = require('./github/operations/pending-review-comments');
+const IMPLEMENTATION_MATRIX = {
+  stack_walker: _stackWalkerOps.IMPLEMENTED_MODES,
+  pending_review_check: _pendingReviewOps.IMPLEMENTED_MODES,
+  review_lifecycle: _reviewLifecycleOps.IMPLEMENTED_MODES,
+  pending_review_comments: _pendingReviewCommentsOps.IMPLEMENTED_MODES
+};
+
+// Recognised `_endpoint` sub-keys. These ride alongside the area key in
+// `features` (e.g. `pending_review_comments_endpoint`) and are validated
+// separately from area modes. Listed explicitly so a typo like
+// `pending_review_commentes_endpoint` is rejected at startup rather than
+// silently ignored.
+const KNOWN_ENDPOINT_SUBKEYS = new Set([
+  'pending_review_comments_endpoint'
+]);
+
 let _cachedCommandToken = null;
+// Per-(repository, command) cache for repo-scoped token_command shell-outs.
+// Key format: `${repository ?? ""}|${command}`. Repo-aware resolution must
+// not collapse different (repo, command) pairs to a single shared token,
+// so we key on both. See plan Hazards: "Token caching across hosts".
+const _cachedRepoTokens = new Map();
+
+// Areas that have a GraphQL implementation in this codebase today. When
+// `api_host` is unset, these default to "graphql"; all other areas default
+// to "rest". When `api_host` is set, all areas default to "rest" regardless.
+const FEATURE_AREAS = [
+  'pending_review_check',
+  'stack_walker',
+  'review_lifecycle',
+  'pending_review_comments'
+];
+const GRAPHQL_DEFAULT_AREAS = new Set([
+  'pending_review_check',
+  'stack_walker',
+  'review_lifecycle',
+  'pending_review_comments'
+]);
+const ALLOWED_FEATURE_VALUES = new Set(['graphql', 'rest', 'host']);
 
 const CONFIG_DIR = path.join(os.homedir(), '.pair-review');
 const DEFAULT_CHECKOUT_TIMEOUT_MS = 300000;
@@ -343,6 +388,10 @@ async function loadConfig() {
   mergedConfig.repos = deepMerge(lowerMonorepos, lowerRepos);
   delete mergedConfig.monorepos;
 
+  // Validate per-repo config invariants. Throws on the first violation
+  // so misconfiguration fails loudly at startup rather than at runtime.
+  validateRepoConfig(mergedConfig);
+
   // PORT env var overrides all config layers (used by Preview and similar harnesses)
   if (process.env.PORT) {
     const envPort = Number(process.env.PORT);
@@ -403,26 +452,210 @@ function getConfigDir() {
 }
 
 /**
- * Gets the GitHub token with environment variable taking precedence over config file.
- * Priority:
- *   1. GITHUB_TOKEN environment variable (highest priority)
- *   2. config.github_token from ~/.pair-review/config.json
- *   3. config.github_token_command — execute shell command, use stdout (cached on success)
- *   4. Empty string (no token)
+ * Executes a shell command and returns its trimmed stdout as a token.
+ * Returns '' on failure or empty output; logs warnings via the shared
+ * logger.
+ *
+ * Results are cached in `_cachedRepoTokens` keyed on
+ * `${repository ?? ""}|${command}` to avoid re-running expensive
+ * helpers (e.g. `gh auth token`) on every API call while still
+ * keeping per-repo tokens isolated.
+ *
+ * @param {string} command - Shell command to execute
+ * @param {string|null|undefined} repository - Owner/repo for cache key (null for no-repo / top-level)
+ * @param {string} logContext - Short label for log messages (e.g. "github_token_command", "repo:token_command")
+ * @returns {string} - Token or empty string
+ */
+function _runTokenCommand(command, repository, logContext) {
+  const cacheKey = `${repository ?? ''}|${command}`;
+  if (_cachedRepoTokens.has(cacheKey)) {
+    logger.debug(`Using token from ${logContext} (cached)`);
+    return _cachedRepoTokens.get(cacheKey);
+  }
+  logger.debug(`Attempting token from ${logContext}: ${command}`);
+  try {
+    const result = childProcess.execSync(command, {
+      encoding: 'utf8',
+      timeout: 5000,
+      stdio: ['pipe', 'pipe', 'ignore']
+    }).trim();
+    if (!result) {
+      logger.warn(`${logContext} did not produce a token (command: ${command})`);
+      return '';
+    }
+    logger.debug(`Using token from ${logContext}`);
+    _cachedRepoTokens.set(cacheKey, result);
+    return result;
+  } catch (error) {
+    logger.warn(`${logContext} failed (command: ${command}): ${error.message}`);
+    return '';
+  }
+}
+
+/**
+ * Builds the `features` object for a host binding, filling in defaults.
+ * Default value is "graphql" when `apiHost` is null AND a GraphQL impl
+ * exists for that area; otherwise "rest". When `apiHost` is set, all
+ * defaults shift to "rest", EXCEPT `pending_review_comments` which
+ * defaults to "host" — the REST endpoint cannot reliably attach inline
+ * comments to a pending review, so the host-extension contract is the
+ * only supported alt-host mode (see docs/alt-host.md).
+ *
+ * @param {string|null} apiHost - Resolved api_host (null for github.com)
+ * @param {Object} explicit - User-supplied features overrides
+ * @returns {Object} - Features object with every known area populated
+ */
+function _resolveFeatures(apiHost, explicit) {
+  const out = {};
+  const overrides = (explicit && typeof explicit === 'object') ? explicit : {};
+  for (const area of FEATURE_AREAS) {
+    if (typeof overrides[area] === 'string') {
+      out[area] = overrides[area];
+      continue;
+    }
+    if (apiHost === null && GRAPHQL_DEFAULT_AREAS.has(area)) {
+      out[area] = 'graphql';
+    } else if (apiHost !== null && area === 'pending_review_comments') {
+      // REST has no working pending-review comments path; default to
+      // the host-extension contract for alt-hosts.
+      out[area] = 'host';
+    } else {
+      out[area] = 'rest';
+    }
+  }
+  // Preserve endpoint-override sub-keys (e.g. `pending_review_comments_endpoint`)
+  // so the operations layer can read them at dispatch time. Validation of
+  // these keys happens in `validateRepoConfig()` at startup.
+  for (const [key, value] of Object.entries(overrides)) {
+    if (key.endsWith('_endpoint') && typeof value === 'string') {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+/**
+ * Resolves the host binding for a given repository. The binding describes
+ * which API host pair-review should talk to, the token to authenticate
+ * with, and per-area dispatch flags.
+ *
+ * Token resolution priority for a repo with no `api_host` (github.com):
+ *   1. GITHUB_TOKEN environment variable
+ *   2. repo-level `token`
+ *   3. repo-level `token_command` (cached per (repo, command))
+ *   4. top-level `github_token`
+ *   5. top-level `github_token_command` (cached per (repo, command))
+ *
+ * For a repo with an `api_host` (alt-host), the github.com top-level
+ * credentials are NOT used — `GITHUB_TOKEN`, `config.github_token`, and
+ * `config.github_token_command` are all github.com-only and would be
+ * the wrong token for an alt-host endpoint. Only the repo-scoped
+ * `token` / `token_command` keys are consulted; missing those, the
+ * lookup returns an empty token so the caller can surface a clear
+ * "missing credential" error.
+ *
+ * @param {string|null|undefined} repository - "owner/repo" identifier, or null/undefined for no-repo fallback
+ * @param {Object} config - Configuration object from loadConfig()
+ * @returns {{ apiHost: string|null, token: string, features: Object, source: string }}
+ */
+function resolveHostBinding(repository, config) {
+  const safeConfig = config || {};
+  const repoConfig = repository ? getRepoConfig(safeConfig, repository) : null;
+  const apiHost = (repoConfig && typeof repoConfig.api_host === 'string' && repoConfig.api_host)
+    ? repoConfig.api_host
+    : null;
+  const features = _resolveFeatures(apiHost, repoConfig?.features);
+
+  // Token resolution
+  let token = '';
+  let source = 'none';
+
+  // 1. GITHUB_TOKEN env var, only for github.com (no api_host)
+  if (apiHost === null && process.env.GITHUB_TOKEN) {
+    token = process.env.GITHUB_TOKEN;
+    source = 'env:GITHUB_TOKEN';
+    logger.debug('Using GitHub token from GITHUB_TOKEN environment variable');
+    return { apiHost, token, features, source };
+  }
+
+  // 2. Repo-level literal token
+  if (repoConfig && typeof repoConfig.token === 'string' && repoConfig.token) {
+    token = repoConfig.token;
+    source = 'repo:token';
+    logger.debug(`Using token from repos[${repository}].token`);
+    return { apiHost, token, features, source };
+  }
+
+  // 3. Repo-level token_command
+  if (repoConfig && typeof repoConfig.token_command === 'string' && repoConfig.token_command) {
+    const result = _runTokenCommand(repoConfig.token_command, repository, 'repo:token_command');
+    if (result) {
+      return { apiHost, token: result, features, source: 'repo:token_command' };
+    }
+  }
+
+  // 4. Top-level github_token. Only consulted for github.com bindings —
+  // the top-level token is a github.com credential and would fail
+  // authentication when sent to an alt-host.
+  if (apiHost === null && typeof safeConfig.github_token === 'string' && safeConfig.github_token) {
+    token = safeConfig.github_token;
+    source = 'config:github_token';
+    logger.debug('Using GitHub token from config.github_token');
+    return { apiHost, token, features, source };
+  }
+
+  // 5. Top-level github_token_command. Like step 4, github.com-only.
+  // The top-level command is a SINGLE shared provider, so cache by
+  // command only — keying on repository would re-invoke the (often
+  // slow) command per repo per session. Repo-level `token_command`
+  // above keeps its per-(repo, command) cache key.
+  if (apiHost === null && typeof safeConfig.github_token_command === 'string' && safeConfig.github_token_command) {
+    const result = _runTokenCommand(safeConfig.github_token_command, null, 'config:github_token_command');
+    if (result) {
+      return { apiHost, token: result, features, source: 'config:github_token_command' };
+    }
+  }
+
+  if (apiHost !== null && repository) {
+    logger.debug(`No repo-scoped token resolved for alt-host repo ${repository} (${apiHost}); github.com top-level credentials are not used for alt-hosts`);
+  } else {
+    logger.debug('No token resolved for host binding');
+  }
+  return { apiHost, token: '', features, source: 'none' };
+}
+
+/**
+ * Gets the GitHub token. When `repository` is supplied, the lookup is
+ * delegated to `resolveHostBinding()` for repo-aware resolution. When
+ * `repository` is omitted, the no-repo fallback shape is preserved
+ * (top-level keys only, env var wins) so callers without repo context
+ * (setup flows, auth-test) continue to work unchanged.
+ *
+ * Priority (no-repo case):
+ *   1. GITHUB_TOKEN environment variable
+ *   2. config.github_token
+ *   3. config.github_token_command (cached on success)
  *
  * @param {Object} config - Configuration object from loadConfig()
+ * @param {string} [repository] - Optional "owner/repo" identifier
  * @returns {string} - GitHub token or empty string if not configured
  */
-function getGitHubToken(config) {
+function getGitHubToken(config, repository) {
+  if (repository) {
+    return resolveHostBinding(repository, config).token;
+  }
+  // No-repo fallback path. Preserves previous behaviour (and previous
+  // single-slot cache via _cachedCommandToken) for callers that have no
+  // repo context.
   if (process.env.GITHUB_TOKEN) {
     logger.debug('Using GitHub token from GITHUB_TOKEN environment variable');
     return process.env.GITHUB_TOKEN;
   }
-  if (config.github_token) {
+  if (config && config.github_token) {
     logger.debug('Using GitHub token from config.github_token');
     return config.github_token;
   }
-  if (config.github_token_command) {
+  if (config && config.github_token_command) {
     if (_cachedCommandToken !== null) {
       logger.debug('Using GitHub token from github_token_command (cached)');
       return _cachedCommandToken;
@@ -451,10 +684,328 @@ function getGitHubToken(config) {
 }
 
 /**
+ * Validates per-repo configuration entries. Called from `loadConfig()`
+ * after merging so that misconfiguration fails loudly at startup rather
+ * than silently degrading at runtime. Throws on the first invariant
+ * violation found.
+ *
+ * Invariants checked:
+ *   - `api_host` set + any `features.<area>: "graphql"` → fail.
+ *     Alt-hosts have no GraphQL endpoint; silently falling back would
+ *     mislead.
+ *   - `api_host` unset + any `features.<area>: "host"` → fail. Host
+ *     extensions require a host.
+ *   - `url_pattern` is present but not a valid regex → fail.
+ *   - `git_remote_pattern` is present but not a valid regex → fail.
+ *   - `links.external` is set but missing `label`/`url_template`, or
+ *     the `url_template` doesn't start with `https://` → fail.
+ *
+ * @param {Object} config - Merged configuration object
+ * @throws {Error} On the first invalid repo entry
+ */
+function validateRepoConfig(config) {
+  const repos = (config && config.repos) || {};
+  for (const [repoKey, repoEntry] of Object.entries(repos)) {
+    if (!repoEntry || typeof repoEntry !== 'object') continue;
+
+    const apiHost = (typeof repoEntry.api_host === 'string' && repoEntry.api_host) ? repoEntry.api_host : null;
+    const features = (repoEntry.features && typeof repoEntry.features === 'object') ? repoEntry.features : {};
+
+    for (const [area, value] of Object.entries(features)) {
+      // Endpoint-override sub-keys (e.g. `pending_review_comments_endpoint`)
+      // are validated separately below. Reject anything that ends in
+      // `_endpoint` but isn't a recognised override so typos surface here.
+      if (area.endsWith('_endpoint')) {
+        if (!KNOWN_ENDPOINT_SUBKEYS.has(area)) {
+          throw new Error(
+            `Invalid pair-review config: repos["${repoKey}"].features.${area} is not a recognised endpoint override. ` +
+            `Valid endpoint overrides: ${Array.from(KNOWN_ENDPOINT_SUBKEYS).join(', ')}.`
+          );
+        }
+        continue;
+      }
+      // Reject unknown feature keys (e.g. `pendin_review_check` typo).
+      // Without this, the key is silently ignored by _resolveFeatures.
+      if (!FEATURE_AREAS.includes(area)) {
+        throw new Error(
+          `Invalid pair-review config: repos["${repoKey}"].features.${area} is not a recognised feature area. ` +
+          `Valid feature areas: ${FEATURE_AREAS.join(', ')}.`
+        );
+      }
+      if (!ALLOWED_FEATURE_VALUES.has(value)) {
+        throw new Error(
+          `Invalid pair-review config: repos["${repoKey}"].features.${area} = "${value}" is not one of "graphql", "rest", or "host".`
+        );
+      }
+      // Implementation-matrix check: refuse modes that have no dispatcher
+      // entry. Without this, an unimplemented (area, mode) pair fails at
+      // dispatch time — which for review_lifecycle/pending_review_comments
+      // can happen AFTER a pending review has been created on GitHub.
+      const implemented = IMPLEMENTATION_MATRIX[area];
+      if (implemented && !implemented.has(value)) {
+        throw new Error(
+          `Invalid pair-review config: repos["${repoKey}"].features.${area} = "${value}" is not implemented. ` +
+          `Implemented modes for ${area}: ${Array.from(implemented).join(', ')}.`
+        );
+      }
+      if (apiHost && value === 'graphql') {
+        throw new Error(
+          `Invalid pair-review config: repos["${repoKey}"] sets api_host but features.${area} = "graphql". Alt-hosts do not support GraphQL; use "rest" or "host".`
+        );
+      }
+      if (!apiHost && value === 'host') {
+        throw new Error(
+          `Invalid pair-review config: repos["${repoKey}"].features.${area} = "host" requires api_host to be set.`
+        );
+      }
+    }
+
+    // Validate the resolved defaults so that areas the user did NOT
+    // override are also checked against the implementation matrix.
+    // Catches misconfigurations where the default for an area on a
+    // particular host kind has no dispatcher (e.g. an area whose default
+    // would resolve to a mode lacking a runtime implementation).
+    const resolvedFeatures = _resolveFeatures(apiHost, features);
+    for (const [area, value] of Object.entries(resolvedFeatures)) {
+      if (area.endsWith('_endpoint')) continue;
+      if (Object.prototype.hasOwnProperty.call(features, area)) continue; // already checked above
+      const implemented = IMPLEMENTATION_MATRIX[area];
+      if (implemented && !implemented.has(value)) {
+        throw new Error(
+          `Invalid pair-review config: repos["${repoKey}"] resolves features.${area} to "${value}" by default, which is not implemented. ` +
+          `Implemented modes for ${area}: ${Array.from(implemented).join(', ')}. ` +
+          `Set features.${area} explicitly to an implemented mode.`
+        );
+      }
+    }
+
+    // Validate the optional endpoint override for the host-extension
+    // `pending_review_comments` area. Only meaningful when that area is
+    // set to "host" — applying it otherwise is a config error.
+    const endpointOverride = features.pending_review_comments_endpoint;
+    if (endpointOverride !== undefined && endpointOverride !== null) {
+      if (typeof endpointOverride !== 'string' || !endpointOverride) {
+        throw new Error(
+          `Invalid pair-review config: repos["${repoKey}"].features.pending_review_comments_endpoint must be a non-empty string.`
+        );
+      }
+      if (features.pending_review_comments !== 'host') {
+        throw new Error(
+          `Invalid pair-review config: repos["${repoKey}"].features.pending_review_comments_endpoint is only valid when pending_review_comments = "host".`
+        );
+      }
+      // Must be a relative path (resolved against the configured baseUrl).
+      // Absolute URLs would silently bypass the host's baseUrl.
+      if (/^https?:\/\//i.test(endpointOverride) || /^\/\//.test(endpointOverride)) {
+        throw new Error(
+          `Invalid pair-review config: repos["${repoKey}"].features.pending_review_comments_endpoint must be a relative path (e.g. "/repos/{owner}/{repo}/..."), not an absolute URL.`
+        );
+      }
+      // All four placeholders must be present so callers don't accidentally
+      // send a request missing path components.
+      const required = ['{owner}', '{repo}', '{pull_number}', '{review_id}'];
+      const missing = required.filter(p => !endpointOverride.includes(p));
+      if (missing.length > 0) {
+        throw new Error(
+          `Invalid pair-review config: repos["${repoKey}"].features.pending_review_comments_endpoint is missing required placeholder(s): ${missing.join(', ')}.`
+        );
+      }
+    }
+
+    if (repoEntry.url_pattern !== undefined && repoEntry.url_pattern !== null) {
+      if (typeof repoEntry.url_pattern !== 'string') {
+        throw new Error(
+          `Invalid pair-review config: repos["${repoKey}"].url_pattern must be a string regex.`
+        );
+      }
+      try {
+        // eslint-disable-next-line no-new
+        new RegExp(repoEntry.url_pattern);
+      } catch (err) {
+        throw new Error(
+          `Invalid pair-review config: repos["${repoKey}"].url_pattern is not a valid regular expression: ${err.message}`
+        );
+      }
+    }
+
+    // Optional escape-hatch regex used by parseRepositoryFromURL to match
+    // a non-standard git remote URL to this repo entry. Validated here
+    // so misconfiguration fails loudly at startup rather than as a
+    // silent fall-through at CLI parse time.
+    if (repoEntry.git_remote_pattern !== undefined && repoEntry.git_remote_pattern !== null) {
+      if (typeof repoEntry.git_remote_pattern !== 'string') {
+        throw new Error(
+          `Invalid pair-review config: repos["${repoKey}"].git_remote_pattern must be a string regex.`
+        );
+      }
+      try {
+        // eslint-disable-next-line no-new
+        new RegExp(repoEntry.git_remote_pattern);
+      } catch (err) {
+        throw new Error(
+          `Invalid pair-review config: repos["${repoKey}"].git_remote_pattern is not a valid regular expression: ${err.message}`
+        );
+      }
+    }
+
+    const links = repoEntry.links;
+    if (links && typeof links === 'object' && links.external !== undefined && links.external !== null) {
+      const ext = links.external;
+      if (typeof ext !== 'object') {
+        throw new Error(
+          `Invalid pair-review config: repos["${repoKey}"].links.external must be an object with "label" and "url_template".`
+        );
+      }
+      if (typeof ext.label !== 'string' || !ext.label) {
+        throw new Error(
+          `Invalid pair-review config: repos["${repoKey}"].links.external.label must be a non-empty string.`
+        );
+      }
+      if (typeof ext.url_template !== 'string' || !ext.url_template) {
+        throw new Error(
+          `Invalid pair-review config: repos["${repoKey}"].links.external.url_template must be a non-empty string.`
+        );
+      }
+      if (!ext.url_template.startsWith('https://')) {
+        throw new Error(
+          `Invalid pair-review config: repos["${repoKey}"].links.external.url_template must start with "https://".`
+        );
+      }
+    }
+  }
+}
+
+/**
+ * Matches a URL against per-repo `url_pattern` regexes and returns the
+ * resolved repo identifier and any named-group captures. Does NOT fall
+ * back to GitHub URL parsing — callers should try `matchRepoByUrl()`
+ * first and then `parseGitHubUrl()`.
+ *
+ * Repo configs are expected to be valid at this point (regex compilation
+ * is checked at startup by `validateRepoConfig()`); invalid regexes are
+ * silently skipped here as a defensive measure.
+ *
+ * The returned shape includes both:
+ *   - `repository`: the canonical PR identity (`<owner>/<repo>`),
+ *     preferring named-group captures so monorepo-style configs where one
+ *     URL pattern maps to many sub-repos still return the captured PR.
+ *   - `bindingRepository`: the matched `repos[...]` key. Use this when
+ *     looking up host bindings (token, api_host, features) so a single
+ *     monorepo-shaped binding can serve URLs whose captured
+ *     owner/repo differ from the config key.
+ *
+ * When no pattern matches, this function returns `null`; callers are
+ * expected to fall back to `bindingRepository = "<owner>/<repo>"` on
+ * their own.
+ *
+ * @param {string} url - URL to match
+ * @param {Object} config - Configuration object from loadConfig()
+ * @returns {{ repository: string, bindingRepository: string, repoConfig: Object, owner?: string, repo?: string, number?: number }|null}
+ */
+function matchRepoByUrl(url, config) {
+  if (!url || typeof url !== 'string') return null;
+  const repos = (config && config.repos) || {};
+  for (const [repoKey, repoEntry] of Object.entries(repos)) {
+    if (!repoEntry || typeof repoEntry !== 'object' || !repoEntry.url_pattern) continue;
+    let regex;
+    try {
+      regex = new RegExp(repoEntry.url_pattern);
+    } catch {
+      // Invalid regex — would have been caught at startup; skip.
+      continue;
+    }
+    const match = regex.exec(url);
+    if (!match) continue;
+
+    const groups = match.groups || {};
+    const result = {
+      repository: groups.owner && groups.repo ? `${groups.owner}/${groups.repo}` : repoKey,
+      bindingRepository: repoKey,
+      repoConfig: repoEntry
+    };
+    if (groups.owner) result.owner = groups.owner;
+    if (groups.repo) result.repo = groups.repo;
+    if (groups.number !== undefined) {
+      const n = Number(groups.number);
+      if (!Number.isNaN(n)) result.number = n;
+    }
+    return result;
+  }
+  return null;
+}
+
+/**
+ * Resolve the `repos[...]` binding-key for a PR identified by `<owner>/<repo>`.
+ *
+ * Most of the time the binding key is just `<owner>/<repo>` (lowercased)
+ * and a direct lookup in `config.repos` suffices. For monorepo-style
+ * configs where one `repos[...]` entry serves URLs whose captured
+ * `owner/repo` differ from the config key (matched via `url_pattern`
+ * named capture groups), the direct lookup misses. In that case we
+ * scan `repos[...]` for an entry whose `url_pattern` regex captures
+ * the supplied owner and repo via named groups when probed against a
+ * candidate URL synthesized from its `api_host`.
+ *
+ * Returns the normalized `<owner>/<repo>` fallback when no monorepo
+ * entry matches, so callers always have a stable lookup key to pass to
+ * `resolveHostBinding()`.
+ *
+ * @param {string} owner
+ * @param {string} repo
+ * @param {Object} config - Configuration object from loadConfig()
+ * @returns {string} - The repository key to use with resolveHostBinding()
+ */
+function resolveBindingRepositoryFromPR(owner, repo, config) {
+  const fallback = `${String(owner || '').toLowerCase()}/${String(repo || '').toLowerCase()}`;
+  if (!owner || !repo) return fallback;
+  const safeConfig = config || {};
+  const repos = safeConfig.repos || {};
+
+  // Fast path: direct key hit.
+  if (repos[fallback]) return fallback;
+  // Case-insensitive scan in case the user keyed their config with
+  // mixed-case entries despite the loader's normalisation.
+  for (const repoKey of Object.keys(repos)) {
+    if (repoKey.toLowerCase() === fallback) return repoKey;
+  }
+
+  // Slow path: probe each entry's `url_pattern` against a synthetic URL
+  // built from `api_host`. If the regex captures named groups whose
+  // values equal the supplied owner/repo, the entry serves this PR.
+  for (const [repoKey, repoEntry] of Object.entries(repos)) {
+    if (!repoEntry || typeof repoEntry !== 'object') continue;
+    const pattern = repoEntry.url_pattern;
+    const apiHost = repoEntry.api_host;
+    if (typeof pattern !== 'string' || !pattern) continue;
+    if (typeof apiHost !== 'string' || !apiHost) continue;
+    let regex;
+    try { regex = new RegExp(pattern); } catch { continue; }
+    // Strip api_host to a bare scheme + host to construct candidate
+    // URLs the user's pattern might match. We try a couple of common
+    // shapes; if the user's URL layout is exotic, they can set the
+    // bindingRepository explicitly from the CLI parse path.
+    const hostOnly = apiHost.replace(/\/api(\/v\d+)?\/?$/i, '');
+    const candidates = [
+      `${hostOnly}/${owner}/${repo}/pull/1`,
+      `${apiHost}/${owner}/${repo}/pull/1`
+    ];
+    for (const candidate of candidates) {
+      const m = regex.exec(candidate);
+      if (m && m.groups && m.groups.owner === owner && m.groups.repo === repo) {
+        return repoKey;
+      }
+    }
+  }
+
+  return fallback;
+}
+
+/**
  * Resets the cached command token. Exported for testing only.
  */
 function _resetTokenCache() {
   _cachedCommandToken = null;
+  _cachedRepoTokens.clear();
 }
 
 /**
@@ -867,6 +1418,10 @@ module.exports = {
   getConfigDir,
   validatePort,
   getGitHubToken,
+  resolveHostBinding,
+  validateRepoConfig,
+  matchRepoByUrl,
+  resolveBindingRepositoryFromPR,
   getDefaultProvider,
   getDefaultModel,
   getSummaryProvider,
@@ -901,5 +1456,10 @@ module.exports = {
   warnIfDevModeWithoutDbName,
   shouldSkipUpdateNotifier,
   _resetTokenCache,
-  DEFAULT_CHECKOUT_TIMEOUT_MS
+  DEFAULT_CHECKOUT_TIMEOUT_MS,
+  // Canonical lists for per-area feature dispatch. Exported so tests
+  // (and `src/github/client.js`'s `DEFAULT_FEATURES`) can assert against
+  // a single source of truth.
+  FEATURE_AREAS,
+  GRAPHQL_DEFAULT_AREAS
 };
