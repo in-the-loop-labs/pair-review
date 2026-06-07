@@ -96,6 +96,101 @@ test.describe('Auto-Analyze Query Parameter', () => {
     expect(analyzeRequested).toBe(false);
   });
 
+  test('should use stored bulk analysis config when analysisConfigId is present', async ({ page }) => {
+    await page.route('**/api/reviews/*/analyses/status', route => {
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ running: false, analysisId: null, status: null })
+      });
+    });
+
+    await page.route('**/api/bulk-analysis-configs/test-config', route => {
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          analysisConfig: {
+            provider: 'gemini',
+            model: 'gemini-2.5-pro',
+            tier: 'thorough',
+            customInstructions: 'Review all selected PRs for migration risk.',
+            enabledLevels: [1, 2],
+            skipLevel3: true,
+            excludePrevious: { github: true, feedback: true }
+          }
+        })
+      });
+    });
+
+    const analyzeRequest = page.waitForRequest(
+      request => request.url().includes('/api/pr/test-owner/test-repo/1/analyses') &&
+                 request.method() === 'POST',
+      { timeout: 10000 }
+    );
+
+    await page.goto('/pr/test-owner/test-repo/1?analyze=true&analysisConfigId=test-config');
+    await waitForDiffToRender(page);
+
+    const request = await analyzeRequest;
+    expect(request.postDataJSON()).toMatchObject({
+      provider: 'gemini',
+      model: 'gemini-2.5-pro',
+      tier: 'thorough',
+      customInstructions: 'Review all selected PRs for migration risk.',
+      enabledLevels: [1, 2],
+      skipLevel3: true,
+      excludePrevious: { github: true, feedback: true }
+    });
+
+    await page.waitForFunction(() => {
+      const params = new URLSearchParams(window.location.search);
+      return !params.has('analyze') && !params.has('analysisConfigId');
+    }, { timeout: 5000 });
+  });
+
+  test('should not fall back to defaults when requested bulk config is missing', async ({ page }) => {
+    await page.route('**/api/reviews/*/analyses/status', route => {
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ running: false, analysisId: null, status: null })
+      });
+    });
+
+    await page.route('**/api/bulk-analysis-configs/missing-config', route => {
+      route.fulfill({
+        status: 404,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'Bulk analysis config not found' })
+      });
+    });
+
+    let analyzeRequested = false;
+    page.on('request', request => {
+      if (request.url().includes('/api/pr/test-owner/test-repo/1/analyses') && request.method() === 'POST') {
+        analyzeRequested = true;
+      }
+    });
+
+    await page.goto('/pr/test-owner/test-repo/1?analyze=true&analysisConfigId=missing-config');
+    await waitForDiffToRender(page);
+
+    // Warns via toast and does NOT silently fall back to a default analysis.
+    await expect(page.locator('.toast-warning')).toContainText('Could not load the selected bulk analysis settings');
+    expect(analyzeRequested).toBe(false);
+
+    // The PR view stays usable — no full-screen error pane wipes the diff.
+    await expect(page.locator('.error-message')).toHaveCount(0);
+
+    // Stale params are stripped so a refresh won't re-trigger the same failure.
+    await page.waitForFunction(() => {
+      const params = new URLSearchParams(window.location.search);
+      return !params.has('analyze') && !params.has('analysisConfigId');
+    }, { timeout: 5000 });
+  });
+
   test('should not auto-trigger analysis when analyze param is not "true"', async ({ page }) => {
     let analyzeRequested = false;
 

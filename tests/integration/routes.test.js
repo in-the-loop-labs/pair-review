@@ -3168,6 +3168,47 @@ describe('Config Endpoints', () => {
 
       expect(response.body.theme).toBe('light');
       expect(response.body.comment_button_action).toBe('submit');
+      expect(response.body.default_provider).toBe('claude');
+      // The test config carries the legacy `model: 'sonnet'`, which is NOT a real
+      // claude model id (the id is 'sonnet-4.6'). resolveDefaultProviderModel()
+      // rejects the foreign value and returns claude's coherent default rather than
+      // publishing a model id no model-card can match — matching what the modal's
+      // selectModel() guard does with 'sonnet' anyway.
+      expect(response.body.default_model).toBe('opus');
+    });
+
+    it('should return configured provider and model defaults', async () => {
+      app.set('config', {
+        ...app.get('config'),
+        default_provider: 'pi',
+        default_model: 'multi-model'
+      });
+
+      const response = await request(app)
+        .get('/api/config');
+
+      expect(response.body.default_provider).toBe('pi');
+      expect(response.body.default_model).toBe('multi-model');
+    });
+
+    it('derives default_model from the provider when only the provider is overridden', async () => {
+      // Provider overridden to gemini but NO model configured. The model must
+      // come from gemini's own default, not the provider-agnostic global default
+      // (which would publish an impossible gemini/opus pair).
+      app.set('config', {
+        github_token: 'test-token',
+        theme: 'light',
+        default_provider: 'gemini',
+        external_comments: false
+      });
+
+      const response = await request(app)
+        .get('/api/config');
+
+      expect(response.body.default_provider).toBe('gemini');
+      expect(response.body.default_model).not.toBe('opus');
+      // gemini's default model belongs to the gemini provider
+      expect(response.body.default_model).toMatch(/^gemini-/);
     });
 
     it('should return enable_chat and pi_available fields', async () => {

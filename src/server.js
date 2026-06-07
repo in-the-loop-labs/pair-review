@@ -348,6 +348,7 @@ async function startServer(sharedDb = null, sharedPoolLifecycle = null) {
     const chatRoutes = require('./routes/chat');
     const contextFilesRoutes = require('./routes/context-files');
     const githubCollectionsRoutes = require('./routes/github-collections');
+    const bulkAnalysisConfigsRoutes = require('./routes/bulk-analysis-configs');
     const stackAnalysisRoutes = require('./routes/stack-analysis');
     const externalCommentsRoutes = require('./routes/external-comments');
     const { createSoundRouter } = require('./routes/sound');
@@ -369,6 +370,7 @@ async function startServer(sharedDb = null, sharedPoolLifecycle = null) {
     app.use('/', setupRoutes);
     app.use('/', mcpRoutes);
     app.use('/', githubCollectionsRoutes);
+    app.use('/', bulkAnalysisConfigsRoutes);
     app.use('/', stackAnalysisRoutes);
     // External-comments routes (GitHub PR review-comment sync + fetch) are
     // gated by the `external_comments` config flag. When disabled, the

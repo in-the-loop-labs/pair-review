@@ -769,6 +769,7 @@
                         var targetUrl = new URL(data.reviewUrl, window.location.origin);
                         var qs = new URLSearchParams(window.location.search);
                         if (qs.get('analyze') === 'true') targetUrl.searchParams.set('analyze', qs.get('analyze'));
+                        if (qs.get('analysisConfigId')) targetUrl.searchParams.set('analysisConfigId', qs.get('analysisConfigId'));
                         window.location.href = targetUrl.toString();
                         return;
                     }
@@ -829,6 +830,7 @@
                                     var targetUrl = new URL(msg.reviewUrl, window.location.origin);
                                     var qs = new URLSearchParams(window.location.search);
                                     if (qs.get('analyze') === 'true') targetUrl.searchParams.set('analyze', qs.get('analyze'));
+                                    if (qs.get('analysisConfigId')) targetUrl.searchParams.set('analysisConfigId', qs.get('analysisConfigId'));
                                     window.location.href = targetUrl.toString();
                                 }
                             }, 400);

@@ -80,18 +80,17 @@ class PRManager {
   }
 
   /**
-   * Generate a safe localStorage key for repository-specific settings
-   * Uses base64 encoding to handle special characters in owner/repo names
+   * Generate a safe localStorage key for repository-specific settings.
+   * Delegates to the shared helper in public/js/utils/storage-keys.js
+   * (loaded before pr.js) so keys stay byte-identical with the index/bulk page,
+   * which writes the same per-repo keys this page reads.
    * @param {string} prefix - Key prefix (e.g., 'pair-review-model')
    * @param {string} owner - Repository owner
    * @param {string} repo - Repository name
    * @returns {string} Safe localStorage key
    */
   static getRepoStorageKey(prefix, owner, repo) {
-    // Use encodeURIComponent + btoa to safely handle Unicode characters
-    // btoa() only accepts Latin1, so we encode Unicode first
-    const repoId = btoa(unescape(encodeURIComponent(`${owner}/${repo}`))).replace(/=/g, '');
-    return `${prefix}:${repoId}`;
+    return window.getRepoStorageKey(prefix, owner, repo);
   }
 
   constructor() {
@@ -619,7 +618,7 @@ class PRManager {
    * @param {Object} reviewSettings - Review settings from fetchLastReviewSettings()
    * @returns {Promise<Object>} Config object suitable for startAnalysis / startLocalAnalysis
    */
-  async _buildDefaultAnalysisConfig(repoSettings, reviewSettings) {
+  async _buildDefaultAnalysisConfig(repoSettings, reviewSettings, appConfig = {}, providersInfo = null) {
     const defaultTab = repoSettings?.default_tab || 'single';
     const councilId = repoSettings?.default_council_id || reviewSettings?.last_council_id || null;
 
@@ -648,11 +647,42 @@ class PRManager {
       };
     }
 
+    // Resolve provider and model as a MATCHED pair. Resolving each half
+    // independently (repo || app || hardcoded) can mix a provider from one
+    // scope with a model from another, yielding an invalid pair (e.g.
+    // gemini/opus) that startAnalysis would forward to the backend as-is.
+    const providers = providersInfo || await this._getProvidersInfo();
+    const { provider, model } = window.resolveProviderModelPair([
+      { provider: repoSettings?.default_provider, model: repoSettings?.default_model },
+      { provider: appConfig.default_provider, model: appConfig.default_model }
+    ], providers);
+
     return {
-      provider: repoSettings?.default_provider || 'claude',
-      model: repoSettings?.default_model || 'opus',
+      provider,
+      model,
       customInstructions: null
     };
+  }
+
+  async _fetchAutoAnalysisConfigFromUrl() {
+    const params = new URLSearchParams(window.location.search);
+    const configId = params.get('analysisConfigId');
+    if (!configId) return { requested: false, config: null, error: null };
+
+    try {
+      const response = await fetch(`/api/bulk-analysis-configs/${encodeURIComponent(configId)}`);
+      if (!response.ok) {
+        throw new Error('Stored analysis settings were not found');
+      }
+      const data = await response.json();
+      if (!data.analysisConfig) {
+        throw new Error('Stored analysis settings response was empty');
+      }
+      return { requested: true, config: data.analysisConfig, error: null };
+    } catch (error) {
+      console.warn('Failed to fetch bulk analysis config:', error);
+      return { requested: true, config: null, error };
+    }
   }
 
   /**
@@ -669,6 +699,7 @@ class PRManager {
     const autoAnalyze = new URLSearchParams(window.location.search).get('analyze');
     if (autoAnalyze === 'true' && !this.isAnalyzing) {
       this._autoAnalyzeRequested = true;
+      let shouldCleanUrl = true;
       try {
         // Skip refresh if we just loaded fresh data (loadPR sets _justLoaded = true).
         // Otherwise, refresh to ensure we have the latest PR data in case the worktree
@@ -685,19 +716,39 @@ class PRManager {
           }
         }
 
-        // Fetch repo settings so we honour the repository's default provider/council
-        const [repoSettings, reviewSettings] = await Promise.all([
-          this.fetchRepoSettings().catch(() => null),
-          this.fetchLastReviewSettings().catch(() => ({ custom_instructions: '', last_council_id: null }))
-        ]);
-        const config = await this._buildDefaultAnalysisConfig(repoSettings, reviewSettings);
+        const storedConfig = await this._fetchAutoAnalysisConfigFromUrl();
+        let config;
+        if (storedConfig.requested) {
+          if (!storedConfig.config) {
+            // The stored bulk-analysis config expired (TTL/eviction/restart).
+            // The PR diff has already rendered, so don't replace it with a
+            // full-screen error whose Retry button would just re-trigger the
+            // same failed lookup. Warn, strip the stale params (so a refresh
+            // won't re-trigger), and leave the PR usable for manual analysis.
+            const message = 'Could not load the selected bulk analysis settings. Start analysis manually to choose new settings.';
+            if (window.toast) window.toast.showWarning(message);
+            return;
+          }
+          config = storedConfig.config;
+        } else {
+          // Fetch repo settings so we honour the repository's default provider/council
+          const [repoSettings, reviewSettings, appConfig] = await Promise.all([
+            this.fetchRepoSettings().catch(() => null),
+            this.fetchLastReviewSettings().catch(() => ({ custom_instructions: '', last_council_id: null })),
+            this._getAppConfig()
+          ]);
+          config = await this._buildDefaultAnalysisConfig(repoSettings, reviewSettings, appConfig);
+        }
 
         await this.startAnalysis(owner, repo, prNumber, null, config);
       } finally {
         this._autoAnalyzeRequested = false;
-        const cleanUrl = new URL(window.location);
-        cleanUrl.searchParams.delete('analyze');
-        history.replaceState(null, '', cleanUrl);
+        if (shouldCleanUrl) {
+          const cleanUrl = new URL(window.location);
+          cleanUrl.searchParams.delete('analyze');
+          cleanUrl.searchParams.delete('analysisConfigId');
+          history.replaceState(null, '', cleanUrl);
+        }
       }
     }
   }
@@ -1095,6 +1146,22 @@ class PRManager {
         .catch(() => ({}));
     }
     return this._appConfigPromise;
+  }
+
+  /**
+   * Fetch and cache the provider/model metadata from /api/providers. Used to
+   * resolve a coherent provider/model pair for the non-modal auto-analyze path
+   * (the modal loads its own copy). Resolves to the `providers` array, or [] on
+   * failure so callers can fall back to provider-agnostic defaults.
+   */
+  _getProvidersInfo() {
+    if (!this._providersInfoPromise) {
+      this._providersInfoPromise = fetch('/api/providers')
+        .then((r) => (r.ok ? r.json() : {}))
+        .then((data) => (Array.isArray(data.providers) ? data.providers : []))
+        .catch(() => []);
+    }
+    return this._providersInfoPromise;
   }
 
   /**
@@ -2901,13 +2968,20 @@ class PRManager {
       }
 
       // Fetch settings in parallel
-      const [repoSettings, reviewSettings] = await Promise.all([
+      const [repoSettings, reviewSettings, appConfig] = await Promise.all([
         this.fetchRepoSettings().catch(() => null),
-        this.fetchLastReviewSettings().catch(() => ({ custom_instructions: '', last_council_id: null }))
+        this.fetchLastReviewSettings().catch(() => ({ custom_instructions: '', last_council_id: null })),
+        this._getAppConfig()
       ]);
 
-      const currentModel = repoSettings?.default_model || 'opus';
-      const currentProvider = repoSettings?.default_provider || 'claude';
+      // Resolve provider and model as a MATCHED pair so the council/advanced tabs
+      // are never seeded with a cross-provider model (e.g. gemini + opus), which
+      // would blank the model <select> and be rejected by the backend.
+      const providersInfo = await this._getProvidersInfo();
+      const { provider: currentProvider, model: currentModel } = window.resolveProviderModelPair([
+        { provider: repoSettings?.default_provider, model: repoSettings?.default_model },
+        { provider: appConfig.default_provider, model: appConfig.default_model }
+      ], providersInfo);
       const tabStorageKey = PRManager.getRepoStorageKey('pair-review-tab', owner, repo);
       const rememberedTab = localStorage.getItem(tabStorageKey);
       const defaultTab = rememberedTab || repoSettings?.default_tab || 'single';
@@ -6710,7 +6784,7 @@ class PRManager {
         staleCheckWithTimeout,
         this.fetchRepoSettings(),
         this.fetchLastReviewSettings(),
-        fetch('/api/config').then(r => r.ok ? r.json() : {}).catch(() => ({}))
+        this._getAppConfig()
       ]);
       console.debug(`[Analyze] parallel-fetch (stale+settings): ${Math.round(performance.now() - _tParallel0)}ms`);
 
@@ -6756,9 +6830,14 @@ class PRManager {
 
       const lastCouncilId = reviewSettings.last_council_id;
 
-      // Determine the model and provider to use (priority: repo default > defaults)
-      const currentModel = repoSettings?.default_model || 'opus';
-      const currentProvider = repoSettings?.default_provider || 'claude';
+      // Resolve provider and model as a MATCHED pair so the council/advanced tabs
+      // are never seeded with a cross-provider model (e.g. gemini + opus), which
+      // would blank the model <select> and be rejected by the backend.
+      const providersInfo = await this._getProvidersInfo();
+      const { provider: currentProvider, model: currentModel } = window.resolveProviderModelPair([
+        { provider: repoSettings?.default_provider, model: repoSettings?.default_model },
+        { provider: appConfig.default_provider, model: appConfig.default_model }
+      ], providersInfo);
 
       // Determine default tab (priority: localStorage > repo settings > 'single')
       const tabStorageKey = PRManager.getRepoStorageKey('pair-review-tab', owner, repo);
@@ -6932,7 +7011,10 @@ class PRManager {
   showWorktreeNotFoundError(owner, repo, number) {
     let setupUrl = `/pr/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${encodeURIComponent(number)}`;
     if (this._autoAnalyzeRequested) {
-      setupUrl += '?analyze=true';
+      const params = new URLSearchParams({ analyze: 'true' });
+      const analysisConfigId = new URLSearchParams(window.location.search).get('analysisConfigId');
+      if (analysisConfigId) params.set('analysisConfigId', analysisConfigId);
+      setupUrl += `?${params.toString()}`;
     }
     const container = document.getElementById('pr-container');
     if (container) {
