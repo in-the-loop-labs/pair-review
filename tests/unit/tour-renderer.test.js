@@ -80,59 +80,59 @@ describe('TourRenderer', () => {
   });
 
   describe('mountStop', () => {
-    it('inserts the annotation row immediately before the anchor', () => {
+    it('inserts the annotation row immediately before the anchor', async () => {
       buildDiff();
       renderer.setStops([makeStop({ line_start: 11 })]);
-      const row = renderer.mountStop(0);
+      const row = await renderer.mountStop(0);
       expect(row).toBeTruthy();
       expect(row.classList.contains('tour-annotation-row')).toBe(true);
       const anchor = document.querySelector('tr[data-line-number="11"][data-side="RIGHT"]');
       expect(anchor.previousElementSibling).toBe(row);
     });
 
-    it('looks up by side as well as line number', () => {
+    it('looks up by side as well as line number', async () => {
       buildDiff();
       renderer.setStops([makeStop({ side: 'LEFT', line_start: 7 })]);
-      const row = renderer.mountStop(0);
+      const row = await renderer.mountStop(0);
       expect(row).toBeTruthy();
       const anchor = document.querySelector('tr[data-line-number="7"][data-side="LEFT"]');
       expect(anchor.previousElementSibling).toBe(row);
     });
 
-    it('renders title and description from the stop', () => {
+    it('renders title and description from the stop', async () => {
       buildDiff();
       renderer.setStops([makeStop({ title: 'My title', description: 'My description.' })]);
-      const row = renderer.mountStop(0);
+      const row = await renderer.mountStop(0);
       expect(row.querySelector('.tour-annotation-title').textContent).toBe('My title');
       expect(row.querySelector('.tour-annotation-description').textContent).toBe('My description.');
     });
 
-    it('includes a per-stop "Stop N of M" marker', () => {
+    it('includes a per-stop "Stop N of M" marker', async () => {
       buildDiff();
       renderer.setStops([
         makeStop({ line_start: 10 }),
         makeStop({ line_start: 11 }),
         makeStop({ line_start: 12 }),
       ]);
-      const row = renderer.mountStop(1);
+      const row = await renderer.mountStop(1);
       expect(row.querySelector('.tour-stop-marker').textContent).toMatch(/Stop 2 of 3/);
     });
 
-    it('returns null when no wrapper exists for the file', () => {
+    it('returns null when no wrapper exists for the file', async () => {
       buildDiff('src/other.js');
       renderer.setStops([makeStop({ file_path: 'src/missing.js' })]);
-      const row = renderer.mountStop(0);
+      const row = await renderer.mountStop(0);
       expect(row).toBeNull();
     });
 
-    it('returns null when the anchor row is missing', () => {
+    it('returns null when the anchor row is missing', async () => {
       buildDiff();
       renderer.setStops([makeStop({ line_start: 9999 })]);
-      const row = renderer.mountStop(0);
+      const row = await renderer.mountStop(0);
       expect(row).toBeNull();
     });
 
-    it('expands a collapsed file wrapper before mounting', () => {
+    it('expands a collapsed file wrapper before mounting', async () => {
       const { wrapper } = buildDiff('src/foo.js', { collapsed: true });
       // Provide a real prManager API; without it the renderer refuses
       // to expand (we don't strip the collapsed class directly because
@@ -144,11 +144,11 @@ describe('TourRenderer', () => {
       };
       renderer = new TourRenderer(pm);
       renderer.setStops([makeStop({ line_start: 11 })]);
-      renderer.mountStop(0);
+      await renderer.mountStop(0);
       expect(wrapper.classList.contains('collapsed')).toBe(false);
     });
 
-    it('prefers prManager.toggleFileCollapse when available', () => {
+    it('prefers prManager.toggleFileCollapse when available', async () => {
       const { wrapper } = buildDiff('src/foo.js', { collapsed: true });
       let called = null;
       const pm = {
@@ -159,26 +159,26 @@ describe('TourRenderer', () => {
       };
       renderer = new TourRenderer(pm);
       renderer.setStops([makeStop({ line_start: 11 })]);
-      renderer.mountStop(0);
+      await renderer.mountStop(0);
       expect(called).toBe('src/foo.js');
       expect(wrapper.classList.contains('collapsed')).toBe(false);
     });
 
-    it('is idempotent — remount of the same index returns the existing row', () => {
+    it('is idempotent — remount of the same index returns the existing row', async () => {
       buildDiff();
       renderer.setStops([makeStop({ line_start: 11 })]);
-      const first = renderer.mountStop(0);
-      const second = renderer.mountStop(0);
+      const first = await renderer.mountStop(0);
+      const second = await renderer.mountStop(0);
       expect(second).toBe(first);
       expect(document.querySelectorAll('.tour-annotation-row')).toHaveLength(1);
     });
   });
 
   describe('"Chat about" button', () => {
-    it('renders a chat button on every mounted stop annotation', () => {
+    it('renders a chat button on every mounted stop annotation', async () => {
       buildDiff();
       renderer.setStops([makeStop({ line_start: 11 })]);
-      const row = renderer.mountStop(0);
+      const row = await renderer.mountStop(0);
       const btn = row.querySelector('.tour-annotation-chat-btn');
       expect(btn).toBeTruthy();
       // Reuses the shared ai-action / ai-action-chat classes so it matches
@@ -189,7 +189,7 @@ describe('TourRenderer', () => {
       expect(btn.dataset.stopIndex).toBe('0');
     });
 
-    it('invokes window.chatPanel.open with the stop context on click', () => {
+    it('invokes window.chatPanel.open with the stop context on click', async () => {
       buildDiff();
       const opened = [];
       window.chatPanel = {
@@ -208,7 +208,7 @@ describe('TourRenderer', () => {
         }),
         makeStop({ line_start: 12 }),
       ]);
-      const row = renderer.mountStop(0);
+      const row = await renderer.mountStop(0);
       const btn = row.querySelector('.tour-annotation-chat-btn');
       btn.click();
 
@@ -229,10 +229,10 @@ describe('TourRenderer', () => {
       delete window.chatPanel;
     });
 
-    it('is a no-op when window.chatPanel is missing', () => {
+    it('is a no-op when window.chatPanel is missing', async () => {
       buildDiff();
       renderer.setStops([makeStop({ line_start: 11 })]);
-      const row = renderer.mountStop(0);
+      const row = await renderer.mountStop(0);
       const btn = row.querySelector('.tour-annotation-chat-btn');
       // Must not throw even without a chat panel mounted (e.g. very early
       // in startup, or in test harnesses).
@@ -241,26 +241,26 @@ describe('TourRenderer', () => {
   });
 
   describe('unmountStop / unmountAll', () => {
-    it('removes a specific stop row', () => {
+    it('removes a specific stop row', async () => {
       buildDiff();
       renderer.setStops([makeStop({ line_start: 11 })]);
-      renderer.mountStop(0);
+      await renderer.mountStop(0);
       expect(renderer.unmountStop(0)).toBe(true);
       expect(document.querySelectorAll('.tour-annotation-row')).toHaveLength(0);
       // Second call is a no-op now that the row is gone.
       expect(renderer.unmountStop(0)).toBe(false);
     });
 
-    it('removes every mounted row', () => {
+    it('removes every mounted row', async () => {
       buildDiff();
       renderer.setStops([
         makeStop({ line_start: 10 }),
         makeStop({ line_start: 11 }),
         makeStop({ line_start: 12 }),
       ]);
-      renderer.mountStop(0);
-      renderer.mountStop(1);
-      renderer.mountStop(2);
+      await renderer.mountStop(0);
+      await renderer.mountStop(1);
+      await renderer.mountStop(2);
       expect(document.querySelectorAll('.tour-annotation-row')).toHaveLength(3);
       renderer.unmountAll();
       expect(document.querySelectorAll('.tour-annotation-row')).toHaveLength(0);
@@ -268,16 +268,16 @@ describe('TourRenderer', () => {
   });
 
   describe('highlightActive', () => {
-    it('moves the active-stop class to the indexed row', () => {
+    it('moves the active-stop class to the indexed row', async () => {
       buildDiff();
       renderer.setStops([
         makeStop({ line_start: 10 }),
         makeStop({ line_start: 11 }),
         makeStop({ line_start: 12 }),
       ]);
-      renderer.mountStop(0);
-      renderer.mountStop(1);
-      renderer.mountStop(2);
+      await renderer.mountStop(0);
+      await renderer.mountStop(1);
+      await renderer.mountStop(2);
 
       renderer.highlightActive(1);
       const rows = document.querySelectorAll('.tour-annotation-row');
@@ -292,14 +292,14 @@ describe('TourRenderer', () => {
   });
 
   describe('setStops', () => {
-    it('unmounts every previously-mounted row when stops are replaced', () => {
+    it('unmounts every previously-mounted row when stops are replaced', async () => {
       buildDiff();
       renderer.setStops([
         makeStop({ line_start: 10 }),
         makeStop({ line_start: 11 }),
       ]);
-      renderer.mountStop(0);
-      renderer.mountStop(1);
+      await renderer.mountStop(0);
+      await renderer.mountStop(1);
       expect(document.querySelectorAll('.tour-annotation-row')).toHaveLength(2);
 
       renderer.setStops([makeStop({ line_start: 12 })]);
@@ -309,10 +309,10 @@ describe('TourRenderer', () => {
       expect(document.querySelectorAll('.tour-annotation-row')).toHaveLength(0);
     });
 
-    it('clears the internal _mounted map on replace', () => {
+    it('clears the internal _mounted map on replace', async () => {
       buildDiff();
       renderer.setStops([makeStop({ line_start: 10 })]);
-      renderer.mountStop(0);
+      await renderer.mountStop(0);
       expect(renderer._mounted.size).toBe(1);
 
       renderer.setStops([]);
@@ -321,10 +321,10 @@ describe('TourRenderer', () => {
   });
 
   describe('mountStop does not expand wrappers when anchor is missing', () => {
-    it('leaves a collapsed wrapper collapsed when no anchor row exists', () => {
+    it('leaves a collapsed wrapper collapsed when no anchor row exists', async () => {
       const { wrapper } = buildDiff('src/foo.js', { collapsed: true });
       renderer.setStops([makeStop({ line_start: 9999 })]);
-      const row = renderer.mountStop(0);
+      const row = await renderer.mountStop(0);
       expect(row).toBeNull();
       // Critical: we must not have expanded the file just to learn the
       // anchor was missing — that would visually disrupt the page for nothing.
@@ -333,7 +333,7 @@ describe('TourRenderer', () => {
   });
 
   describe('auto-expanded files are restored on tour exit', () => {
-    it('records the path in _autoExpanded and triggers exactly one toggle', () => {
+    it('records the path in _autoExpanded and triggers exactly one toggle', async () => {
       const { wrapper } = buildDiff('src/foo.js', { collapsed: true });
       const calls = [];
       const pm = {
@@ -345,13 +345,13 @@ describe('TourRenderer', () => {
       };
       renderer = new TourRenderer(pm);
       renderer.setStops([makeStop({ line_start: 11 })]);
-      renderer.mountStop(0);
+      await renderer.mountStop(0);
       expect(calls).toEqual(['src/foo.js']);
       expect(renderer._autoExpanded.has('src/foo.js')).toBe(true);
       expect(wrapper.classList.contains('collapsed')).toBe(false);
     });
 
-    it('unmountAll re-collapses everything in _autoExpanded and clears it', () => {
+    it('unmountAll re-collapses everything in _autoExpanded and clears it', async () => {
       const { wrapper } = buildDiff('src/foo.js', { collapsed: true });
       const calls = [];
       const pm = {
@@ -362,7 +362,7 @@ describe('TourRenderer', () => {
       };
       renderer = new TourRenderer(pm);
       renderer.setStops([makeStop({ line_start: 11 })]);
-      renderer.mountStop(0);
+      await renderer.mountStop(0);
       expect(wrapper.classList.contains('collapsed')).toBe(false);
 
       renderer.unmountAll();
@@ -373,7 +373,7 @@ describe('TourRenderer', () => {
       expect(renderer._autoExpanded.size).toBe(0);
     });
 
-    it('mountStop refuses to strip the class when toggleFileCollapse is missing', () => {
+    it('mountStop refuses to strip the class when toggleFileCollapse is missing', async () => {
       const { wrapper } = buildDiff('src/foo.js', { collapsed: true });
       // prManager without toggleFileCollapse — must NOT strip the class
       // directly, since that would desync PRManager.collapsedFiles from
@@ -383,7 +383,7 @@ describe('TourRenderer', () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
         renderer.setStops([makeStop({ line_start: 11 })]);
-        const row = renderer.mountStop(0);
+        const row = await renderer.mountStop(0);
         expect(row).toBeNull();
         expect(wrapper.classList.contains('collapsed')).toBe(true);
         expect(renderer._autoExpanded.size).toBe(0);
@@ -392,7 +392,60 @@ describe('TourRenderer', () => {
       }
     });
 
-    it('unmountAll honors a user manually re-collapsing during the tour', () => {
+    // ------------------------------------------------------------------
+    // Regression: mountStop must be staleness-aware against `_tourGen`,
+    // exactly like prepareStop. Making mountStop async (it awaits the lazy
+    // body render in `toggleFileCollapse`) introduced a suspension window.
+    // If the tour exits while that await is in flight, `unmountAll` runs
+    // against a snapshot that does NOT include this stop — so recording
+    // `_autoExpanded` / `_mounted` and inserting the annotation row on
+    // resume would leak an expanded file and an orphaned row that nothing
+    // ever cleans up.
+    // ------------------------------------------------------------------
+    it('bails without leaking state when the tour exits during the expand await', async () => {
+      const { wrapper } = buildDiff('src/foo.js', { collapsed: true });
+      let resolveToggle;
+      const pm = {
+        _tourGen: 1,
+        toggleFileCollapse(path) {
+          // Park: the real toggleFileCollapse awaits the lazy body render
+          // before resolving. We hold it open to simulate a mid-await exit.
+          return new Promise((res) => {
+            resolveToggle = () => {
+              if (path === 'src/foo.js') wrapper.classList.remove('collapsed');
+              res();
+            };
+          });
+        },
+      };
+      renderer = new TourRenderer(pm);
+      renderer.setStops([makeStop({ line_start: 11 })]);
+
+      // Kick off mountStop WITHOUT awaiting — it parks on toggleFileCollapse.
+      const mountPromise = renderer.mountStop(0);
+
+      // Tour exits while the expand is in flight: `_tourGen` bumps and
+      // unmountAll snapshots an empty `_autoExpanded` / `_mounted`.
+      pm._tourGen += 1;
+      await renderer.unmountAll();
+
+      // The expand finally resolves; mountStop's continuation runs on a
+      // stale tour and must bail.
+      resolveToggle();
+      const row = await mountPromise;
+
+      expect(row).toBeNull();
+      // No orphaned annotation row left in the DOM.
+      expect(document.querySelectorAll('.tour-annotation-row')).toHaveLength(0);
+      // The file must NOT be recorded as auto-expanded — unmountAll already
+      // ran with an empty snapshot, so this entry would orphan and
+      // mis-collapse on the next exit.
+      expect(renderer._autoExpanded.has('src/foo.js')).toBe(false);
+      // And the stop must not be tracked as mounted for the dead generation.
+      expect(renderer._mounted.has(0)).toBe(false);
+    });
+
+    it('unmountAll honors a user manually re-collapsing during the tour', async () => {
       const { wrapper } = buildDiff('src/foo.js', { collapsed: true });
       const calls = [];
       const pm = {
@@ -403,7 +456,7 @@ describe('TourRenderer', () => {
       };
       renderer = new TourRenderer(pm);
       renderer.setStops([makeStop({ line_start: 11 })]);
-      renderer.mountStop(0);
+      await renderer.mountStop(0);
       // User manually re-collapses mid-tour:
       pm.toggleFileCollapse('src/foo.js');
       expect(wrapper.classList.contains('collapsed')).toBe(true);
@@ -416,7 +469,7 @@ describe('TourRenderer', () => {
   });
 
   describe('mountStop range anchor lookup (line_start..line_end)', () => {
-    it('anchors at the first existing row inside [line_start+1, line_end]', () => {
+    it('anchors at the first existing row inside [line_start+1, line_end]', async () => {
       // Only line 13 exists; range is [11, 13].
       buildDiff('src/foo.js', {
         lines: [
@@ -425,13 +478,13 @@ describe('TourRenderer', () => {
         ]
       });
       renderer.setStops([makeStop({ line_start: 11, line_end: 13 })]);
-      const row = renderer.mountStop(0);
+      const row = await renderer.mountStop(0);
       expect(row).toBeTruthy();
       const anchor = document.querySelector('tr[data-line-number="13"][data-side="RIGHT"]');
       expect(anchor.previousElementSibling).toBe(row);
     });
 
-    it('warns and returns null when no row in [line_start, line_end] exists', () => {
+    it('warns and returns null when no row in [line_start, line_end] exists', async () => {
       buildDiff('src/foo.js', {
         lines: [
           { line: 100, side: 'RIGHT' }
@@ -440,7 +493,7 @@ describe('TourRenderer', () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
         renderer.setStops([makeStop({ line_start: 11, line_end: 13 })]);
-        const row = renderer.mountStop(0);
+        const row = await renderer.mountStop(0);
         expect(row).toBeNull();
         expect(warnSpy).toHaveBeenCalled();
       } finally {
@@ -448,10 +501,10 @@ describe('TourRenderer', () => {
       }
     });
 
-    it('honors single-line range (line_end === line_start) as exact-match lookup', () => {
+    it('honors single-line range (line_end === line_start) as exact-match lookup', async () => {
       buildDiff();
       renderer.setStops([makeStop({ line_start: 11, line_end: 11 })]);
-      const row = renderer.mountStop(0);
+      const row = await renderer.mountStop(0);
       expect(row).toBeTruthy();
       const anchor = document.querySelector('tr[data-line-number="11"][data-side="RIGHT"]');
       expect(anchor.previousElementSibling).toBe(row);
@@ -459,7 +512,7 @@ describe('TourRenderer', () => {
   });
 
   describe('scrollToStop honors prefers-reduced-motion', () => {
-    it('uses behavior:auto when prefers-reduced-motion is set', () => {
+    it('uses behavior:auto when prefers-reduced-motion is set', async () => {
       // Mock matchMedia BEFORE constructing the renderer (the value is
       // cached on the instance for the lifetime of the tour).
       const originalMatchMedia = window.matchMedia;
@@ -473,7 +526,7 @@ describe('TourRenderer', () => {
         buildDiff();
         const motionRenderer = new TourRenderer({});
         motionRenderer.setStops([makeStop({ line_start: 11 })]);
-        motionRenderer.mountStop(0);
+        await motionRenderer.mountStop(0);
         const row = motionRenderer._mounted.get(0);
         let captured = null;
         row.scrollIntoView = (opts) => { captured = opts; };
@@ -484,7 +537,7 @@ describe('TourRenderer', () => {
       }
     });
 
-    it('uses behavior:smooth when prefers-reduced-motion is NOT set', () => {
+    it('uses behavior:smooth when prefers-reduced-motion is NOT set', async () => {
       const originalMatchMedia = window.matchMedia;
       window.matchMedia = (q) => ({
         matches: false,
@@ -496,7 +549,7 @@ describe('TourRenderer', () => {
         buildDiff();
         const motionRenderer = new TourRenderer({});
         motionRenderer.setStops([makeStop({ line_start: 11 })]);
-        motionRenderer.mountStop(0);
+        await motionRenderer.mountStop(0);
         const row = motionRenderer._mounted.get(0);
         let captured = null;
         row.scrollIntoView = (opts) => { captured = opts; };
@@ -845,13 +898,13 @@ describe('TourRenderer', () => {
   // that mountStop normally uses to wait for browser layout).
   // ----------------------------------------------------------------------
   describe('show more / show less toggle', () => {
-    function mountWithOverflow({ overflow, expanded } = { overflow: true }) {
+    async function mountWithOverflow({ overflow, expanded } = { overflow: true }) {
       buildDiff();
       renderer.setStops([makeStop({ line_start: 11, description: 'long desc' })]);
       if (expanded) {
         renderer._expandedDescriptions.add(0);
       }
-      const row = renderer.mountStop(0);
+      const row = await renderer.mountStop(0);
       const wrap = row.querySelector('.tour-annotation-description-wrap');
       // Stub overflow geometry. jsdom returns 0 for both by default —
       // defineProperty is the standard escape hatch for this exact case.
@@ -869,10 +922,10 @@ describe('TourRenderer', () => {
       return { row, wrap };
     }
 
-    it('wraps the description in a clamp container', () => {
+    it('wraps the description in a clamp container', async () => {
       buildDiff();
       renderer.setStops([makeStop({ line_start: 11 })]);
-      const row = renderer.mountStop(0);
+      const row = await renderer.mountStop(0);
       const wrap = row.querySelector('.tour-annotation-description-wrap');
       expect(wrap).toBeTruthy();
       // Description <p> still exists inside the wrap for backwards
@@ -881,21 +934,21 @@ describe('TourRenderer', () => {
       expect(p).toBeTruthy();
     });
 
-    it('does NOT render a Show more button when the description fits', () => {
-      const { row } = mountWithOverflow({ overflow: false });
+    it('does NOT render a Show more button when the description fits', async () => {
+      const { row } = await mountWithOverflow({ overflow: false });
       expect(row.querySelector('.tour-annotation-show-more-btn')).toBeNull();
     });
 
-    it('renders a Show more button when the description overflows', () => {
-      const { row } = mountWithOverflow({ overflow: true });
+    it('renders a Show more button when the description overflows', async () => {
+      const { row } = await mountWithOverflow({ overflow: true });
       const btn = row.querySelector('.tour-annotation-show-more-btn');
       expect(btn).toBeTruthy();
       expect(btn.textContent).toBe('Show more');
       expect(btn.getAttribute('aria-expanded')).toBe('false');
     });
 
-    it('clicking Show more flips to Show less and adds .expanded', () => {
-      const { row, wrap } = mountWithOverflow({ overflow: true });
+    it('clicking Show more flips to Show less and adds .expanded', async () => {
+      const { row, wrap } = await mountWithOverflow({ overflow: true });
       const btn = row.querySelector('.tour-annotation-show-more-btn');
       btn.click();
       expect(wrap.classList.contains('expanded')).toBe(true);
@@ -903,8 +956,8 @@ describe('TourRenderer', () => {
       expect(btn.getAttribute('aria-expanded')).toBe('true');
     });
 
-    it('clicking Show less reverses the expansion', () => {
-      const { row, wrap } = mountWithOverflow({ overflow: true });
+    it('clicking Show less reverses the expansion', async () => {
+      const { row, wrap } = await mountWithOverflow({ overflow: true });
       const btn = row.querySelector('.tour-annotation-show-more-btn');
       btn.click();
       btn.click();
@@ -913,15 +966,15 @@ describe('TourRenderer', () => {
       expect(btn.getAttribute('aria-expanded')).toBe('false');
     });
 
-    it('a remount preserves the expanded state for the same stop index', () => {
+    it('a remount preserves the expanded state for the same stop index', async () => {
       // First mount: expand.
-      const first = mountWithOverflow({ overflow: true });
+      const first = await mountWithOverflow({ overflow: true });
       first.row.querySelector('.tour-annotation-show-more-btn').click();
       expect(renderer._expandedDescriptions.has(0)).toBe(true);
 
       // Unmount and re-mount the same index.
       renderer.unmountStop(0);
-      const row2 = renderer.mountStop(0);
+      const row2 = await renderer.mountStop(0);
       const wrap2 = row2.querySelector('.tour-annotation-description-wrap');
       // The wrap should be in expanded state immediately on re-mount
       // (no need to wait for the overflow probe to fire).
@@ -934,16 +987,16 @@ describe('TourRenderer', () => {
       expect(btn2.textContent).toBe('Show less');
     });
 
-    it('setStops resets _expandedDescriptions (indices remap to new stops)', () => {
-      mountWithOverflow({ overflow: true });
+    it('setStops resets _expandedDescriptions (indices remap to new stops)', async () => {
+      await mountWithOverflow({ overflow: true });
       renderer._toggleDescriptionExpansion(0);
       expect(renderer._expandedDescriptions.size).toBe(1);
       renderer.setStops([makeStop({ line_start: 12 })]);
       expect(renderer._expandedDescriptions.size).toBe(0);
     });
 
-    it('overflow evaluation is idempotent (no duplicate buttons on re-call)', () => {
-      const { row } = mountWithOverflow({ overflow: true });
+    it('overflow evaluation is idempotent (no duplicate buttons on re-call)', async () => {
+      const { row } = await mountWithOverflow({ overflow: true });
       renderer._evaluateDescriptionOverflow(0);
       renderer._evaluateDescriptionOverflow(0);
       expect(row.querySelectorAll('.tour-annotation-show-more-btn')).toHaveLength(1);
@@ -965,12 +1018,12 @@ describe('TourRenderer', () => {
       expect(stripped).not.toMatch(offender);
     });
 
-    it('keeps both .tour-annotation-row and .hunk-summary-row in the DOM when tour is active', () => {
+    it('keeps both .tour-annotation-row and .hunk-summary-row in the DOM when tour is active', async () => {
       buildDiff('src/foo.js');
       // Mount a tour stop above line 11.
       renderer.setStops([makeStop({ line_start: 11 })]);
       renderer.setActive(true);
-      renderer.mountStop(0);
+      await renderer.mountStop(0);
 
       // Mount a hunk-summary row above line 12 by hand — the HunkSummaryRenderer
       // module is loaded as a window-global; importing it here would add no
