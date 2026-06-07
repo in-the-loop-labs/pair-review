@@ -311,9 +311,14 @@ class LocalManager {
 
         const lastCouncilId = reviewSettings.last_council_id;
 
-        // Determine model and provider (priority: repo default > app config > defaults)
-        const currentModel = repoSettings?.default_model || appConfig.default_model || 'opus';
-        const currentProvider = repoSettings?.default_provider || appConfig.default_provider || 'claude';
+        // Resolve provider and model as a MATCHED pair so the council/advanced tabs
+        // are never seeded with a cross-provider model (e.g. gemini + opus), which
+        // would blank the model <select> and be rejected by the backend.
+        const providersInfo = await manager._getProvidersInfo();
+        const { provider: currentProvider, model: currentModel } = window.resolveProviderModelPair([
+          { provider: repoSettings?.default_provider, model: repoSettings?.default_model },
+          { provider: appConfig.default_provider, model: appConfig.default_model }
+        ], providersInfo);
 
         // Determine default tab (priority: localStorage > repo settings > 'single')
         const tabStorageKey = `pair-review-tab:local-${reviewId}`;

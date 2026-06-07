@@ -74,8 +74,38 @@ router.get('/runtime-config.js', (req, res) => {
  * Get user configuration (for frontend use)
  * Returns safe-to-expose configuration values
  */
+/**
+ * Resolve a coherent default provider/model PAIR for the frontend.
+ *
+ * `default_provider` and `default_model` seed the bulk modal, auto-analyze, and
+ * the manual analyze dialog as a single selection, so they must belong together.
+ * An explicitly configured model wins (the user opted into it). When no model is
+ * configured, derive it from the selected provider's own default rather than the
+ * provider-agnostic global default — otherwise a provider-only override (e.g.
+ * `default_provider: 'gemini'`) would pair with an Anthropic model like 'opus'.
+ *
+ * @param {Object} config - Configuration object
+ * @returns {{ provider: string, model: string }}
+ */
+function resolveDefaultProviderModel(config) {
+  const provider = getDefaultProvider(config);
+  const providerInfo = getAllProvidersInfo().find(p => p.id === provider);
+  const explicitModel = config.default_model || config.model;
+  // Only honour an explicit model if it actually belongs to the selected provider.
+  // `DEFAULT_CONFIG.default_model` is always populated (e.g. 'opus'), so a
+  // provider-only override like `default_provider: 'gemini'` would otherwise inherit
+  // a foreign Anthropic model and return a mismatched pair. When the model does not
+  // belong to the provider, derive a coherent default from the provider itself.
+  const modelBelongs = explicitModel && providerInfo?.models?.some(m => m.id === explicitModel);
+  if (modelBelongs) {
+    return { provider, model: explicitModel };
+  }
+  return { provider, model: providerInfo?.defaultModel || getDefaultModel(config) };
+}
+
 router.get('/api/config', (req, res) => {
   const config = req.app.get('config') || {};
+  const defaultPair = resolveDefaultProviderModel(config);
 
   // Build chat_providers array with availability
   const chatAvailability = getAllCachedChatAvailability();
@@ -90,8 +120,8 @@ router.get('/api/config', (req, res) => {
     has_github_token: Boolean(getGitHubToken(config)),
     comment_button_action: config.comment_button_action || 'submit',
     comment_format: config.comment_format || 'legacy',
-    default_provider: getDefaultProvider(config),
-    default_model: getDefaultModel(config),
+    default_provider: defaultPair.provider,
+    default_model: defaultPair.model,
     // Include npx detection for frontend command examples
     is_running_via_npx: isRunningViaNpx(),
     enable_chat: config.enable_chat !== false,
@@ -429,3 +459,4 @@ function _resetPendingUpdate() {
 
 module.exports = router;
 module.exports._resetPendingUpdate = _resetPendingUpdate;
+module.exports._resolveDefaultProviderModel = resolveDefaultProviderModel;

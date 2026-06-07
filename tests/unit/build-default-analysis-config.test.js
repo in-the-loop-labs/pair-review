@@ -12,7 +12,16 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // Import the actual PRManager class from production code
 const { PRManager } = require('../../public/js/pr.js');
+const { resolveProviderModelPair } = require('../../public/js/utils/provider-model.js');
 const { URLSearchParams: NativeURLSearchParams } = require('url');
+
+// Provider metadata used to resolve a matched provider/model pair. Mirrors the
+// shape of /api/providers (id, models, defaultModel).
+const PROVIDERS = [
+  { id: 'claude', defaultModel: 'opus', models: [{ id: 'opus' }, { id: 'sonnet-4.6' }, { id: 'haiku' }] },
+  { id: 'gemini', defaultModel: 'gemini-2.5-pro', models: [{ id: 'gemini-2.5-pro' }, { id: 'pro' }, { id: 'gemini-2.5-flash' }] },
+  { id: 'pi', defaultModel: 'multi-model', models: [{ id: 'multi-model' }] }
+];
 
 let saved;
 
@@ -33,6 +42,7 @@ beforeEach(() => {
   };
 
   globalThis.window = globalThis;
+  globalThis.resolveProviderModelPair = resolveProviderModelPair;
   globalThis.document = {
     getElementById: () => null,
     querySelector: () => null,
@@ -71,6 +81,7 @@ afterEach(() => {
   globalThis.IntersectionObserver = saved.IntersectionObserver;
   globalThis.URLSearchParams = saved.URLSearchParams;
   globalThis.location = saved.location;
+  delete globalThis.resolveProviderModelPair;
 
   vi.restoreAllMocks();
 });
@@ -81,6 +92,9 @@ describe('PRManager._buildDefaultAnalysisConfig', () => {
   beforeEach(() => {
     // Construct with minimal state — we only need the prototype method
     manager = Object.create(PRManager.prototype);
+    // Provider metadata is resolved via _getProvidersInfo(); stub it so the
+    // matched-pair resolver has real metadata without hitting /api/providers.
+    manager._getProvidersInfo = vi.fn(() => Promise.resolve(PROVIDERS));
     // Default: fetch returns empty council (no config/name)
     globalThis.fetch = vi.fn(() => Promise.resolve({
       ok: true,
@@ -120,6 +134,27 @@ describe('PRManager._buildDefaultAnalysisConfig', () => {
       model: 'pro',
       customInstructions: null,
     });
+  });
+
+  it('derives the model from the provider when the repo overrides only the provider', async () => {
+    // Repo overrides the provider but not the model; the app default model
+    // ('opus') belongs to a different provider. The pair must NOT be mixed —
+    // the model is derived from gemini's own default.
+    const repoSettings = { default_provider: 'gemini' };
+    const config = await manager._buildDefaultAnalysisConfig(repoSettings, {}, {
+      default_provider: 'claude',
+      default_model: 'opus',
+    });
+    expect(config.provider).toBe('gemini');
+    expect(config.model).toBe('gemini-2.5-pro');
+    expect(config.model).not.toBe('opus');
+  });
+
+  it('passes through an explicitly provided providersInfo without fetching', async () => {
+    const repoSettings = { default_provider: 'gemini', default_model: 'pro' };
+    const config = await manager._buildDefaultAnalysisConfig(repoSettings, {}, {}, PROVIDERS);
+    expect(config).toEqual({ provider: 'gemini', model: 'pro', customInstructions: null });
+    expect(manager._getProvidersInfo).not.toHaveBeenCalled();
   });
 
   it('returns council config when default_tab is "council" with a council ID', async () => {

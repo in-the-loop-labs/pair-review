@@ -53,6 +53,12 @@ class AdvancedConfigTab {
     this._injected = false;
     this._councilsLoaded = false;
 
+    // Default orchestration provider/model for new councils, updated via
+    // setDefaultOrchestration(). Seeded here so _defaultConfig() is coherent
+    // even if reset() runs before setDefaultOrchestration().
+    this._defaultProvider = 'claude';
+    this._defaultModel = 'sonnet';
+
     // Dirty state tracking
     this._isDirty = false;
 
@@ -179,6 +185,37 @@ class AdvancedConfigTab {
    */
   setDefaultCouncilId(councilId) {
     this._pendingDefaultCouncilId = councilId;
+    // On a cached reopen the councils are already loaded, so loadCouncils() —
+    // and the _renderCouncilSelector() call that applies the pending default —
+    // will not run again (the modal instance is reused; see AnalysisConfigModal
+    // caching on window.analysisConfigModal). Apply it now so the saved/default
+    // council is restored instead of being silently dropped onto a blank
+    // "+ New Council" selection.
+    if (this._councilsLoaded && this._injected) {
+      this._renderCouncilSelector();
+    }
+  }
+
+  /**
+   * Reset selection and editor state for a fresh modal open.
+   *
+   * The AnalysisConfigModal (and therefore this tab) is reused across runs — and
+   * in the index/bulk flow, across different repositories. Without this reset a
+   * council selected in a previous run (or its pending default / dirty edits)
+   * would carry over and could be displayed or submitted for the next batch.
+   */
+  reset() {
+    this.selectedCouncilId = null;
+    this._pendingDefaultCouncilId = null;
+    this._isDirty = false;
+    if (!this._injected) return;
+    const selector = this.modal.querySelector('#council-selector');
+    if (selector) {
+      selector.value = '';
+      selector.classList.add('new-council-selected');
+    }
+    this._applyConfigToUI(this._defaultConfig());
+    this._markClean();
   }
 
   /**
@@ -283,13 +320,23 @@ class AdvancedConfigTab {
   }
 
   _defaultConfig() {
+    const provider = this._defaultProvider || 'claude';
+    const model = this._defaultModel || 'sonnet';
+    const timeout = this._getProviderDefaultTimeout(provider);
+    // Seed one reviewer voice per enabled level. The server validator rejects an
+    // enabled level with an empty voices array (councils.js: "voices must be a
+    // non-empty array when enabled"), and _applyConfigToUI() wipes a level's row
+    // list when voices is empty — so an empty default would leave every level
+    // enabled with zero reviewer rows and fail at analysis kickoff. A fresh voice
+    // object per level avoids shared-reference aliasing.
+    const seedVoice = () => ({ provider, model, tier: 'balanced', timeout });
     return {
       levels: {
-        '1': { enabled: true, voices: [] },
-        '2': { enabled: true, voices: [] },
-        '3': { enabled: true, voices: [] }
+        '1': { enabled: true, voices: [seedVoice()] },
+        '2': { enabled: true, voices: [seedVoice()] },
+        '3': { enabled: true, voices: [seedVoice()] }
       },
-      consolidation: { provider: this._defaultProvider || 'claude', model: this._defaultModel || 'sonnet', tier: 'balanced', timeout: this._getProviderDefaultTimeout(this._defaultProvider || 'claude') }
+      consolidation: { provider, model, tier: 'balanced', timeout }
     };
   }
 
@@ -1431,4 +1478,9 @@ class AdvancedConfigTab {
 // Export for use in other modules
 if (typeof window !== 'undefined') {
   window.AdvancedConfigTab = AdvancedConfigTab;
+}
+
+// Export for unit testing (Node/CommonJS environment)
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { AdvancedConfigTab };
 }

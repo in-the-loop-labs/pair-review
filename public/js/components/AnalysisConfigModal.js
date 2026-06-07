@@ -625,6 +625,15 @@ class AnalysisConfigModal {
    * Select a model
    */
   selectModel(modelId) {
+    // Guard: never store a model that doesn't belong to the current provider.
+    // Callers can pass a model resolved from a different scope (e.g. 'opus'
+    // while the provider is 'gemini'); fall back to the provider's default so
+    // the UI always shows a selected card and submissions carry a valid pair.
+    if (modelId && this.models.length && !this.models.some(m => m.id === modelId)) {
+      const fallback = this.models.find(m => m.default) || this.models[0];
+      modelId = fallback ? fallback.id : modelId;
+    }
+
     this.selectedModel = modelId;
 
     // Update UI
@@ -897,42 +906,41 @@ class AnalysisConfigModal {
     // Build three-tab layout
     this._injectTabLayout(options);
 
-    // Initialize voice-centric council tab
+    // Re-baseline council-tab state every open. The modal is reused across runs
+    // (and across repositories in the bulk flow), so always reset selection and
+    // pass normalized values — including empties — so a previous run's repo
+    // instructions, council selection, or dirty edits cannot bleed into the next.
+    const councilDefault = options.lastCouncilId || options.defaultCouncilId || null;
+
+    // Initialize voice-centric council tab.
+    //
+    // Order matters: setProviders() and setDefaultOrchestration() must run BEFORE
+    // reset(), because reset() repaints the UI from _defaultConfig(), which reads
+    // _defaultProvider/_defaultModel and the provider dropdown data. Calling reset()
+    // first would paint stale (previous-open) provider/model values on the reused
+    // modal. setDefaultCouncilId() runs last so any saved/default council is applied
+    // on top of the freshly reset defaults — including on cached reopens.
     if (this.councilTab) {
       const councilPanel = this.modal.querySelector('#tab-panel-council');
       this.councilTab.inject(councilPanel);
       this.councilTab.setProviders(this.providers);
-
-      if (options.repoInstructions) {
-        this.councilTab.setRepoInstructions(options.repoInstructions);
-      }
-      if (options.lastInstructions) {
-        this.councilTab.setLastInstructions(options.lastInstructions);
-      }
       this.councilTab.setDefaultOrchestration(options.currentProvider, options.currentModel);
-      const councilDefault = options.lastCouncilId || options.defaultCouncilId || null;
-      if (councilDefault) {
-        this.councilTab.setDefaultCouncilId(councilDefault);
-      }
+      this.councilTab.reset();
+      this.councilTab.setRepoInstructions(options.repoInstructions || '');
+      this.councilTab.setLastInstructions(options.lastInstructions || '');
+      this.councilTab.setDefaultCouncilId(councilDefault);
     }
 
-    // Initialize advanced (level-centric) tab
+    // Initialize advanced (level-centric) tab — same ordering rationale as above.
     if (this.advancedTab) {
       const advancedPanel = this.modal.querySelector('#tab-panel-advanced');
       this.advancedTab.inject(advancedPanel);
       this.advancedTab.setProviders(this.providers);
-
-      if (options.repoInstructions) {
-        this.advancedTab.setRepoInstructions(options.repoInstructions);
-      }
-      if (options.lastInstructions) {
-        this.advancedTab.setLastInstructions(options.lastInstructions);
-      }
       this.advancedTab.setDefaultOrchestration(options.currentProvider, options.currentModel);
-      const councilDefault = options.lastCouncilId || options.defaultCouncilId || null;
-      if (councilDefault) {
-        this.advancedTab.setDefaultCouncilId(councilDefault);
-      }
+      this.advancedTab.reset();
+      this.advancedTab.setRepoInstructions(options.repoInstructions || '');
+      this.advancedTab.setLastInstructions(options.lastInstructions || '');
+      this.advancedTab.setDefaultCouncilId(councilDefault);
     }
 
     // Set initial provider and model
@@ -942,7 +950,11 @@ class AnalysisConfigModal {
       // Default to first available provider
       this.selectProvider(Object.keys(this.providers)[0]);
     }
-    if (options.currentModel) {
+    // Only honour currentModel when it belongs to the selected provider.
+    // selectProvider() has already chosen a valid model for the provider (via
+    // tier matching); applying a foreign model here (e.g. 'opus' under 'gemini')
+    // would leave no model card selected and submit an invalid pair.
+    if (options.currentModel && this.models.some(m => m.id === options.currentModel)) {
       this.selectModel(options.currentModel);
     }
 
@@ -1433,4 +1445,8 @@ class AnalysisConfigModal {
 // Export for use in other modules
 if (typeof window !== 'undefined') {
   window.AnalysisConfigModal = AnalysisConfigModal;
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { AnalysisConfigModal };
 }

@@ -175,13 +175,20 @@ test.describe('Auto-Analyze Query Parameter', () => {
     });
 
     await page.goto('/pr/test-owner/test-repo/1?analyze=true&analysisConfigId=missing-config');
+    await waitForDiffToRender(page);
 
-    await expect(page.locator('.error-message')).toContainText('Could not load selected bulk analysis settings');
+    // Warns via toast and does NOT silently fall back to a default analysis.
+    await expect(page.locator('.toast-warning')).toContainText('Could not load the selected bulk analysis settings');
     expect(analyzeRequested).toBe(false);
 
-    const url = new URL(page.url());
-    expect(url.searchParams.get('analyze')).toBe('true');
-    expect(url.searchParams.get('analysisConfigId')).toBe('missing-config');
+    // The PR view stays usable — no full-screen error pane wipes the diff.
+    await expect(page.locator('.error-message')).toHaveCount(0);
+
+    // Stale params are stripped so a refresh won't re-trigger the same failure.
+    await page.waitForFunction(() => {
+      const params = new URLSearchParams(window.location.search);
+      return !params.has('analyze') && !params.has('analysisConfigId');
+    }, { timeout: 5000 });
   });
 
   test('should not auto-trigger analysis when analyze param is not "true"', async ({ page }) => {

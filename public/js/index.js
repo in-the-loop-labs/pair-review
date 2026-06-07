@@ -135,21 +135,9 @@
     return div.innerHTML;
   }
 
-  function encodeBase64Utf8(value) {
-    const bytes = new TextEncoder().encode(value);
-    let binary = '';
-    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-    return btoa(binary);
-  }
-
-  function getRepoStorageKey(prefix, owner, repo) {
-    try {
-      const repoId = encodeBase64Utf8(owner + '/' + repo).replace(/=/g, '');
-      return prefix + ':' + repoId;
-    } catch (_error) {
-      return prefix + ':' + encodeURIComponent(owner + '/' + repo);
-    }
-  }
+  // encodeBase64Utf8 / getRepoStorageKey live in public/js/utils/storage-keys.js
+  // (window.encodeBase64Utf8 / window.getRepoStorageKey), shared with pr.js so the
+  // per-repo keys this page writes stay byte-identical to those the PR page reads.
 
   const LOCAL_REVIEW_PATH_URL_ERROR = 'Local reviews require a filesystem path, not a URL. Pass GitHub or Graphite URLs as PR review inputs instead.';
 
@@ -1976,9 +1964,22 @@
       };
     }
     return {
-      tab: getRepoStorageKey('pair-review-tab', commonRepo.owner, commonRepo.repo),
-      instructions: getRepoStorageKey('pair-review-instructions', commonRepo.owner, commonRepo.repo)
+      tab: window.getRepoStorageKey('pair-review-tab', commonRepo.owner, commonRepo.repo),
+      instructions: window.getRepoStorageKey('pair-review-instructions', commonRepo.owner, commonRepo.repo)
     };
+  }
+
+  // Cache the /api/providers metadata so the bulk modal can resolve a coherent
+  // provider/model pair before showing (mirrors PRManager._getProvidersInfo).
+  function getBulkProvidersInfo() {
+    window.__pairReview = window.__pairReview || {};
+    if (!window.__pairReview._providersInfoPromise) {
+      window.__pairReview._providersInfoPromise = fetch('/api/providers')
+        .then(function (r) { return r.ok ? r.json() : {}; })
+        .then(function (d) { return Array.isArray(d.providers) ? d.providers : []; })
+        .catch(function () { return []; });
+    }
+    return window.__pairReview._providersInfoPromise;
   }
 
   async function showBulkAnalysisConfig(rows) {
@@ -1998,9 +1999,15 @@
       localStorage.setItem(storageKeys.tab, tabId);
     };
 
+    var providersInfo = await getBulkProvidersInfo();
+    var resolvedPair = window.resolveProviderModelPair([
+      { provider: repoSettings?.default_provider, model: repoSettings?.default_model },
+      { provider: window.__pairReview?.defaultProvider, model: window.__pairReview?.defaultModel }
+    ], providersInfo);
+
     var config = await bulkAnalysisConfigModal.show({
-      currentModel: repoSettings?.default_model || window.__pairReview?.defaultModel || 'opus',
-      currentProvider: repoSettings?.default_provider || window.__pairReview?.defaultProvider || 'claude',
+      currentModel: resolvedPair.model,
+      currentProvider: resolvedPair.provider,
       defaultTab: rememberedTab || repoSettings?.default_tab || 'single',
       repoInstructions: commonRepo ? (repoSettings?.default_instructions || '') : '',
       lastInstructions: lastInstructions,

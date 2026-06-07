@@ -34,6 +34,23 @@ test('bulk Analyze opens analysis config modal and applies the config to all sel
     });
   });
 
+  // The bulk flow fetches repo settings for the common repository; pin a valid
+  // provider/model pair so the submitted config is deterministic.
+  await page.route('**/api/repos/test-owner/test-repo/settings', route => {
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        repository: 'test-owner/test-repo',
+        default_provider: 'claude',
+        default_model: 'sonnet-4.6',
+        default_instructions: null,
+        default_council_id: null,
+        default_tab: null
+      })
+    });
+  });
+
   await page.route('**/api/bulk-analysis-configs', async route => {
     storedConfigBody = route.request().postDataJSON();
     route.fulfill({
@@ -69,7 +86,7 @@ test('bulk Analyze opens analysis config modal and applies the config to all sel
   await expect.poll(() => storedConfigBody).not.toBeNull();
   expect(storedConfigBody.analysisConfig).toMatchObject({
     provider: 'claude',
-    model: 'sonnet',
+    model: 'sonnet-4.6',
     customInstructions: 'Use this prompt for every selected PR.'
   });
 

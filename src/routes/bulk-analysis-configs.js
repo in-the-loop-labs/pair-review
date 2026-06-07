@@ -12,6 +12,7 @@ const crypto = require('crypto');
 const express = require('express');
 const logger = require('../utils/logger');
 const { VALID_TIERS } = require('../ai/prompts/config');
+const { getAllProvidersInfo } = require('../ai');
 const { normalizeCouncilConfig, validateCouncilConfig } = require('./councils');
 
 const router = express.Router();
@@ -128,7 +129,14 @@ function sanitizeSingleConfig(config) {
     return { error: `tier must be one of ${VALID_TIERS.join(', ')}` };
   }
 
-  error = validateCustomInstructions(config.customInstructions);
+  // The modal builds two related fields: `instructions` carries the *effective*
+  // prompt (selected preset chips concatenated with the textarea) while
+  // `customInstructions` is the raw textarea only. Persist the effective prompt
+  // so bulk-launched analyses see the same prompt the modal showed the user —
+  // otherwise any chosen preset chips are silently dropped.
+  const effectiveInstructions = config.instructions || config.customInstructions;
+
+  error = validateCustomInstructions(effectiveInstructions);
   if (error) return { error };
 
   const enabledLevels = sanitizeEnabledLevels(config.enabledLevels);
@@ -137,13 +145,24 @@ function sanitizeSingleConfig(config) {
   const excludePrevious = sanitizeExcludePrevious(config.excludePrevious);
   if (excludePrevious.error) return { error: excludePrevious.error };
 
+  // Defense in depth: the bulk replay path forwards this stored pair straight to
+  // analysis with no client-side guard. If the model does not belong to the
+  // provider (a mismatched pair that slipped past the client resolver), fall back
+  // to the provider's own default rather than forwarding an invalid pair. Unknown
+  // providers (custom/unavailable, not in the registry) pass through unchanged.
+  let normalizedModel = config.model;
+  const providerInfo = getAllProvidersInfo().find(p => p.id === config.provider);
+  if (providerInfo && !providerInfo.models.some(m => m.id === config.model)) {
+    normalizedModel = providerInfo.defaultModel || config.model;
+  }
+
   return {
     error: null,
     config: {
       provider: config.provider,
-      model: config.model,
+      model: normalizedModel,
       tier: config.tier,
-      customInstructions: config.customInstructions || null,
+      customInstructions: effectiveInstructions || null,
       enabledLevels: enabledLevels.value,
       skipLevel3: config.skipLevel3 === true,
       noLevels: config.noLevels === true,
@@ -153,7 +172,13 @@ function sanitizeSingleConfig(config) {
 }
 
 function sanitizeCouncilConfig(config) {
-  const configType = VALID_CONFIG_TYPES.has(config.configType) ? config.configType : 'advanced';
+  // configType selects which downstream validator runs, so reject unrecognized
+  // values rather than silently coercing them (which could route councilConfig
+  // through the wrong validator).
+  if (config.configType != null && !VALID_CONFIG_TYPES.has(config.configType)) {
+    return { error: `configType must be one of ${[...VALID_CONFIG_TYPES].join(', ')}` };
+  }
+  const configType = config.configType || 'advanced';
 
   let error = validateString(config.councilId, 'councilId', { max: 128 });
   if (error) return { error };
@@ -188,7 +213,10 @@ function sanitizeCouncilConfig(config) {
     config: {
       isCouncil: true,
       configType,
-      councilId: config.councilId || undefined,
+      // When an inline snapshot is stored, drop councilId so the downstream
+      // analysis route is forced to use the exact modal-selected councilConfig
+      // rather than re-fetching (and possibly diverging from) the DB record.
+      councilId: councilConfig ? undefined : (config.councilId || undefined),
       councilName: config.councilName || null,
       councilConfig,
       customInstructions: config.customInstructions || null,

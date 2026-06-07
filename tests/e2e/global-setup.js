@@ -306,7 +306,7 @@ async function globalSetup() {
     github_token: 'test-token-e2e',
     port: parseInt(process.env.E2E_PORT || '3456', 10),
     theme: 'light',
-    model: 'sonnet'
+    model: 'sonnet-4.6'
   });
   configModule.getConfigDir = () => '/tmp/.pair-review-e2e-test';
 
@@ -720,7 +720,7 @@ async function globalSetup() {
       // e2e specs assume the feature is enabled — explicitly opt in here so
       // /runtime-config.js emits the enabled flag and the External segment +
       // refresh button render for the assertions in external-comments.spec.js.
-      app.set('config', { github_token: 'test-token-e2e', port, theme: 'light', model: 'sonnet', external_comments: true });
+      app.set('config', { github_token: 'test-token-e2e', port, theme: 'light', model: 'sonnet-4.6', external_comments: true });
       console.log(`E2E test server running on http://localhost:${port}`);
       return;
     } catch (err) {
