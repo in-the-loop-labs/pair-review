@@ -11,7 +11,7 @@
  * count, stamping by index would write the wrong canonical hash onto
  * every block after the first dropped hunk, anchoring summaries to the
  * wrong rendered hunk. The guard fails closed: drop the hashes, warn
- * once, and let `_kickOffHunkSummaries` log-and-skip the records (so
+ * once, and let `_registerHunkAnchorsForFile` log-and-skip the records (so
  * summaries simply won't anchor).
  */
 
@@ -109,7 +109,7 @@ describe('PRManager.renderPatch hunk-hash length-mismatch guard', () => {
     // 3. Pending hunk records were pushed (one per block), but every
     //    contentHash is null because the guard dropped the array. This
     //    is the direct assertion: renderPatch only PUSHES records — the
-    //    actual `data-hunk-start` stamping happens in _kickOffHunkSummaries
+    //    actual `data-hunk-start` stamping happens in _registerHunkAnchorsForFile
     //    where null contentHash is logged-and-skipped.
     expect(prManager._pendingHunkRecords).toHaveLength(3);
     for (const rec of prManager._pendingHunkRecords) {

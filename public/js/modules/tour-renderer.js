@@ -251,12 +251,28 @@ class TourRenderer {
    * `collapsedFiles` would leave the file-tree and viewed-badge state
    * lying.
    *
+   * Async because `toggleFileCollapse` is now async (it awaits the lazy file
+   * body render before revealing it). The caller (`_advanceTour`) awaits this
+   * so the file is visibly expanded before `scrollToStop` runs — otherwise a
+   * stop inside a just-expanded file could be scrolled to while its rows are
+   * still hidden.
+   *
    * @param {number} index
-   * @returns {HTMLTableRowElement|null}
+   * @returns {Promise<HTMLTableRowElement|null>}
    */
-  mountStop(index) {
+  async mountStop(index) {
     const stop = this._stops[index];
     if (!stop) return null;
+
+    // Capture the open-generation ONCE at entry. The `toggleFileCollapse`
+    // await below is a suspension window — the tour can be exited or
+    // restarted (Escape, reopen) while it's in flight, which bumps
+    // `_tourGen` and runs `unmountAll`. Mirrors prepareStop's guard so we
+    // can bail without recording state for a dead tour. `?.` because
+    // prManager may be absent (the non-collapsed path has no await, so
+    // isStale stays harmlessly false there).
+    const startGen = this.prManager?._tourGen;
+    const isStale = () => this.prManager?._tourGen !== startGen;
 
     if (this._mounted.has(index)) {
       const existing = this._mounted.get(index);
@@ -324,7 +340,21 @@ class TourRenderer {
     if (wrapper.classList.contains('collapsed')) {
       if (this.prManager && typeof this.prManager.toggleFileCollapse === 'function') {
         try {
-          this.prManager.toggleFileCollapse(filePath);
+          // Await: toggleFileCollapse renders the lazy body and removes the
+          // `collapsed` class. Awaiting here means the row is built into a
+          // visible body and the caller's scrollToStop lands correctly.
+          await this.prManager.toggleFileCollapse(filePath);
+          // The await above is a suspension window. If the tour exited or
+          // restarted while it was in flight, `unmountAll` already ran
+          // against a snapshot that does NOT include this stop (the
+          // `_autoExpanded.add` / `_mounted.set` below hadn't run yet).
+          // Recording state now would orphan it forever — the file would
+          // never be re-collapsed and the annotation row never removed.
+          // Bail without mutating renderer state, matching prepareStop's
+          // stale-bail behavior. (The file is left expanded; that minor
+          // cosmetic residue is preferable to a corrupted `_autoExpanded`
+          // set that mis-collapses an unrelated file on the next exit.)
+          if (isStale()) return null;
           // Record so unmountAll() can re-collapse on tour exit.
           this._autoExpanded.add(filePath);
         } catch (err) {

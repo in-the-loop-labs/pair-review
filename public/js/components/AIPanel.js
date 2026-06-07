@@ -1130,9 +1130,19 @@ class AIPanel {
     }
 
     /**
-     * Expand a file if it is collapsed
+     * Expand a file if it is collapsed.
+     *
+     * Return contract (callers must handle both):
+     *   - `false` when nothing was expanded (no file, no wrapper, or already
+     *     expanded), OR a truthy non-thenable for the DOM-only fallback.
+     *   - a Promise when it routed through `prManager.toggleFileCollapse`,
+     *     which is async (it renders the lazy file body before revealing it).
+     * Scroll callers await the Promise so the row lookup runs against a
+     * rendered, visible body; the synchronous fast path is preserved when no
+     * expansion is needed.
+     *
      * @param {string} file - The file path
-     * @returns {boolean} True if the file was expanded
+     * @returns {boolean|Promise<*>} See contract above.
      */
     expandFileIfCollapsed(file) {
         if (!file) return false;
@@ -1145,17 +1155,19 @@ class AIPanel {
 
         // Check if collapsed
         if (fileWrapper.classList.contains('collapsed')) {
-            // Use prManager's toggle method if available (keeps state in sync)
+            // Use prManager's toggle method if available (keeps state in sync).
             const filePath = fileWrapper.dataset.fileName;
             if (window.prManager?.toggleFileCollapse) {
-                window.prManager.toggleFileCollapse(filePath);
-            } else {
-                // Fallback: directly manipulate the DOM
-                fileWrapper.classList.remove('collapsed');
-                const header = fileWrapper.querySelector('.d2h-file-header');
-                if (header && window.DiffRenderer) {
-                    window.DiffRenderer.updateFileHeaderState(header, true);
-                }
+                // Async: renders the lazy body + removes `collapsed`. Hand the
+                // Promise back so the caller can await render completion rather
+                // than guessing with a fixed timeout.
+                return window.prManager.toggleFileCollapse(filePath);
+            }
+            // Fallback: directly manipulate the DOM (no lazy render path).
+            fileWrapper.classList.remove('collapsed');
+            const header = fileWrapper.querySelector('.d2h-file-header');
+            if (header && window.DiffRenderer) {
+                window.DiffRenderer.updateFileHeaderState(header, true);
             }
             return true;
         }
@@ -1168,9 +1180,8 @@ class AIPanel {
      */
     scrollToFinding(findingId, file, line) {
         // Expand the file first if it's collapsed
-        const wasExpanded = this.expandFileIfCollapsed(file);
+        const expansion = this.expandFileIfCollapsed(file);
 
-        // Small delay if we expanded to allow DOM to update
         const doScroll = () => {
             let targetSuggestion = null;
 
@@ -1219,9 +1230,11 @@ class AIPanel {
             }
         };
 
-        if (wasExpanded) {
-            // Give the DOM a moment to update after expanding
-            setTimeout(doScroll, 50);
+        // When expansion routed through the async lazy-body render, wait for it
+        // to settle so the row lookup runs against a rendered, visible body.
+        // Otherwise scroll synchronously (fast path: file already expanded).
+        if (expansion && typeof expansion.then === 'function') {
+            expansion.then(doScroll);
         } else {
             doScroll();
         }
@@ -1232,7 +1245,7 @@ class AIPanel {
      */
     scrollToComment(commentId, file, line) {
         // Expand the file first if it's collapsed
-        const wasExpanded = this.expandFileIfCollapsed(file);
+        const expansion = this.expandFileIfCollapsed(file);
 
         const doScroll = () => {
             let targetElement = null;
@@ -1291,9 +1304,10 @@ class AIPanel {
             }
         };
 
-        if (wasExpanded) {
-            // Give the DOM a moment to update after expanding
-            setTimeout(doScroll, 50);
+        // Await the async lazy-body render when expansion triggered one;
+        // scroll synchronously otherwise.
+        if (expansion && typeof expansion.then === 'function') {
+            expansion.then(doScroll);
         } else {
             doScroll();
         }
@@ -1313,7 +1327,7 @@ class AIPanel {
      */
     scrollToExternalThread(threadId, source, file, line) {
         // Expand the file first if it's collapsed
-        const wasExpanded = this.expandFileIfCollapsed(file);
+        const expansion = this.expandFileIfCollapsed(file);
 
         const doScroll = () => {
             let target = null;
@@ -1370,8 +1384,10 @@ class AIPanel {
             }
         };
 
-        if (wasExpanded) {
-            setTimeout(doScroll, 50);
+        // Await the async lazy-body render when expansion triggered one;
+        // scroll synchronously otherwise.
+        if (expansion && typeof expansion.then === 'function') {
+            expansion.then(doScroll);
         } else {
             doScroll();
         }

@@ -258,11 +258,35 @@ class SuggestionManager {
       existingSuggestionRows.forEach(row => row.remove());
       console.log(`[UI] Removed ${existingSuggestionRows.length} existing suggestion rows`);
 
+      // Only inline (line-targeted) suggestions need the diff body rendered
+      // ahead of time. File-level findings (is_file_level === 1 or no
+      // line_start) are handed to FileCommentManager and rendered above the
+      // diff — they never scan <tr> rows or call findHiddenSuggestions, so
+      // forcing their bodies to render would recreate the eager-render cost
+      // the lazy-body change removed (reviews dominated by file-level analyses
+      // are a common repository-wide pattern). Filter once and reuse below.
+      const inlineSuggestions = suggestions.filter(
+        s => s.file && s.line_start != null && s.is_file_level !== 1
+      );
+
+      // Render the lazy body of every file an INLINE suggestion targets BEFORE
+      // scanning rows. With lazy rendering an unrendered file has zero rows, so
+      // without this findHiddenSuggestions() would flag every line as "hidden"
+      // and we'd gap-expand against bodies that aren't even built yet.
+      // ensureFileBodyRendered is a cheap no-op for files already rendered or
+      // not in the diff.
+      if (this.prManager?.ensureFileBodyRendered) {
+        const targetFiles = new Set(inlineSuggestions.map(s => s.file));
+        for (const file of targetFiles) {
+          await this.prManager.ensureFileBodyRendered(file);
+        }
+      }
+
       // Auto-expand hidden lines for suggestions that target non-visible lines
       // Pass the side parameter so expandForSuggestion knows which coordinate system to use:
       // - RIGHT side = NEW coordinates (modified file, most common for AI suggestions)
       // - LEFT side = OLD coordinates (deleted lines from original file)
-      const hiddenSuggestions = this.findHiddenSuggestions(suggestions);
+      const hiddenSuggestions = this.findHiddenSuggestions(inlineSuggestions);
       if (hiddenSuggestions.length > 0) {
         console.log(`[UI] Found ${hiddenSuggestions.length} suggestions targeting hidden lines, expanding...`);
         for (const hidden of hiddenSuggestions) {
