@@ -622,7 +622,7 @@ describe('PRManager renderDiff tear-down', () => {
     m.loadContextFiles = vi.fn();
     m.validatePendingEofGaps = vi.fn();
     m.hunkSummaryRenderer = { reset: vi.fn() };
-    m._kickOffHunkSummaries = vi.fn().mockResolvedValue(null);
+    m._fetchHunkSummaryMap = vi.fn().mockResolvedValue(null);
     m._loadAndStashTour = vi.fn().mockResolvedValue(null);
   });
 
@@ -956,8 +956,10 @@ describe('PRManager toggle-click handlers', () => {
   });
 
   it('_handleSummaryToggleClick falls through to toggleSummariesVisibility when not generating and summaries exist', async () => {
-    // Post-generation: summaries exist, so a click toggles visibility.
+    // Post-generation: summaries exist (and mounted), so a click toggles
+    // visibility.
     m._summariesGenerating = false;
+    m._summariesAvailable = true;
     m._summariesGenerated = true;
     m.toggleSummariesVisibility = vi.fn();
     m._startGenerationJob = vi.fn();
@@ -967,10 +969,27 @@ describe('PRManager toggle-click handlers', () => {
     expect(window.CancelBackgroundJob.showCancelSummariesDialog).not.toHaveBeenCalled();
   });
 
+  it('_handleSummaryToggleClick toggles visibility when summaries are available but not yet mounted', async () => {
+    // Regression: with lazy file bodies a valid summary can be queued (its
+    // anchor isn't rendered yet) so `_summariesGenerated` stays false. The
+    // click must still toggle visibility — gating on `_summariesGenerated`
+    // here would dispatch a duplicate generation job for summaries that
+    // already exist server-side.
+    m._summariesGenerating = false;
+    m._summariesAvailable = true;
+    m._summariesGenerated = false;
+    m.toggleSummariesVisibility = vi.fn();
+    m._startGenerationJob = vi.fn();
+    await m._handleSummaryToggleClick();
+    expect(m.toggleSummariesVisibility).toHaveBeenCalledTimes(1);
+    expect(m._startGenerationJob).not.toHaveBeenCalled();
+  });
+
   it('_handleSummaryToggleClick triggers manual generation when nothing generated yet', async () => {
     // Pre-generated state (auto_generate off, no summaries): a click kicks off
     // generation rather than toggling visibility.
     m._summariesGenerating = false;
+    m._summariesAvailable = false;
     m._summariesGenerated = false;
     m.toggleSummariesVisibility = vi.fn();
     m._startGenerationJob = vi.fn().mockResolvedValue(undefined);

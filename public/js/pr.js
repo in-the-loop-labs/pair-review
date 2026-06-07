@@ -139,18 +139,40 @@ class PRManager {
     this.commentMinimizer = window.CommentMinimizer ? new window.CommentMinimizer() : null;
     // Hunk summary renderer (Phase 5) — inline natural-language summaries
     this.hunkSummaryRenderer = window.HunkSummaryRenderer ? new window.HunkSummaryRenderer(this) : null;
-    // Per-render anchor map: contentHash -> first code-line <tr> of the hunk
+    // Per-render anchor map, file-scoped so a content-hash shared across two
+    // files (renamed-with-tiny-edits, copy-pasted boilerplate, identical
+    // stubs) can't let the later file's anchor overwrite the earlier one's:
+    //   Map<filePath, Map<contentHash, anchorRow>>
+    // where anchorRow is the first code-line <tr> of the hunk. Symmetric with
+    // `_pendingSummariesByHash` so both sides of the queue/anchor handshake
+    // key on (filePath, hash).
     this._summaryAnchorsByHash = new Map();
     // Per-render file map: filePath -> Set<contentHash>
     this._summaryHashesByFile = new Map();
-    // Summaries that arrived (via WS or fetch) before their hunk had been hashed
+    // Summaries that arrived (via WS or fetch) before their hunk had been
+    // hashed, scoped by file path so a content-hash collision across files
+    // can't let one file's anchor consume another file's queued summary:
+    //   Map<filePath, Map<contentHash, summary>>
+    // The '' bucket holds summaries queued without a file path (the legacy
+    // ungrouped-fetch fallback in _fetchHunkSummaryMap).
     this._pendingSummariesByHash = new Map();
     // Per-file summary visibility (persisted in localStorage per-review)
     this.summariesHiddenFiles = new Set();
     // Render-generation token — incremented at the top of renderDiff() so any
-    // fire-and-forget _kickOffHunkSummaries() from a prior render can detect
+    // fire-and-forget _fetchHunkSummaryMap() from a prior render can detect
     // it's stale and bail (refresh / whitespace toggle / scope change race).
     this._renderGen = 0;
+    // ---- Lazy diff-body rendering (perf for very large PRs) -----------
+    // Each file's wrapper + header render eagerly, but the <tbody> of diff
+    // lines is built on demand: when the body scrolls near the viewport
+    // (IntersectionObserver), when the file is expanded, or when a code path
+    // needs to anchor into it (see ensureFileBodyRendered). Collapsed bodies
+    // are `display:none`, so they never intersect and stay unrendered until
+    // expanded. Key = file path; value = lazy entry (see renderFileDiff).
+    this._lazyFileBodies = new Map();
+    // The IntersectionObserver watching `.d2h-file-body` elements for the
+    // current render generation. Recreated on every renderDiff().
+    this._fileBodyObserver = null;
     // Cached /api/config response (lazy-loaded)
     this._appConfigPromise = null;
     // Review-level summary visibility (persisted in localStorage per-review)
@@ -164,6 +186,15 @@ class PRManager {
     // user can tell nothing has been generated yet. Set true by
     // `_applyHunkSummaries` and the initial existing-summaries fetch.
     this._summariesGenerated = false;
+    // Whether any non-trivial hunk summary EXISTS for this review — mounted
+    // OR merely queued because its lazy file body hasn't rendered yet. This is
+    // deliberately separate from `_summariesGenerated` (which gates the
+    // `.active` blue styling and tracks summaries actually in the DOM): with
+    // lazy bodies a valid summary can arrive before its anchor exists, and the
+    // toolbar must still treat the feature as "has data" so a click toggles
+    // visibility instead of dispatching a duplicate generation job. Set by
+    // `_applyHunkSummaries` / `_fetchHunkSummaryMap`; reset in renderDiff.
+    this._summariesAvailable = false;
     // Tri-state: true when /api/config reports summaries.enabled, false when
     // disabled, null until /api/config resolves. Per-file toggle buttons are
     // gated on this so users on disabled deployments don't see them flicker
@@ -1134,31 +1165,95 @@ class PRManager {
   }
 
   /**
-   * Attach `data-hunk-start` to each anchor row using the server-supplied
-   * `content_hash`, then kick off the initial summary fetch (gated by
-   * `summaries.enabled` in `/api/config`). Drains any summaries that
-   * arrived before mounting finished.
+   * Wire one file's hunk anchor rows to their server-supplied content hashes
+   * as that file's body renders (called from _renderFileBodyNow), then mount
+   * any summary that already arrived for those hunks.
    *
-   * Order matters:
-   *   1. Config gate first — bail before paying any setup cost when the
-   *      feature is off.
+   * Pre-lazy-render this happened once globally in _kickOffHunkSummaries;
+   * with lazy bodies a file's anchor rows don't exist until it renders, so
+   * anchoring is now incremental. The server computes hashes from the
+   * canonical (non-whitespace-filtered) diff so they stay aligned with
+   * persisted summary keys regardless of `?w=1`; records lacking a
+   * `contentHash` are logged-and-skipped.
+   *
+   * The bridge for "summary arrived before its anchor existed" is the existing
+   * `_pendingSummariesByHash` map: _renderOneSummary / _applyHunkSummaries
+   * queue there when no anchor is found, and we drain matching entries here.
+   * @param {Array<{file,header,anchorRow,contentHash}>} records
+   */
+  _registerHunkAnchorsForFile(records) {
+    if (!Array.isArray(records) || records.length === 0) return;
+    const filesWithMounts = new Set();
+    for (const rec of records) {
+      if (!rec.anchorRow || !rec.anchorRow.isConnected) continue;
+      const hex = rec.contentHash;
+      if (!hex) {
+        console.warn(
+          `[HunkSummary] no server contentHash for ${rec.file} ` +
+          `hunk ${rec.header}; skipping (summaries will not anchor here).`
+        );
+        continue;
+      }
+      rec.anchorRow.dataset.hunkStart = hex;
+      // Scope the anchor by file so a hash collision across files can't let
+      // the later file's anchor clobber the earlier file's (which would mount
+      // a summary against the wrong hunk). Symmetric with the file-scoped
+      // pending-summary queue.
+      let anchors = this._summaryAnchorsByHash.get(rec.file);
+      if (!anchors) {
+        anchors = new Map();
+        this._summaryAnchorsByHash.set(rec.file, anchors);
+      }
+      anchors.set(hex, rec.anchorRow);
+      let bucket = this._summaryHashesByFile.get(rec.file);
+      if (!bucket) {
+        bucket = new Set();
+        this._summaryHashesByFile.set(rec.file, bucket);
+      }
+      bucket.add(hex);
+
+      // Mount a summary that arrived before this anchor existed. Look it up by
+      // THIS file + hash so a content-hash that also appears in another file
+      // (renamed-with-tiny-edits, copy-pasted boilerplate, identical stubs)
+      // can't let this file's anchor consume the other file's queued summary.
+      const pending = this._takePendingSummary(rec.file, hex);
+      if (pending) {
+        const row = this._renderOneSummary(pending, rec.file);
+        if (row) {
+          this._summariesGenerated = true;
+          this._summariesAvailable = true;
+          filesWithMounts.add(rec.file);
+        }
+        // If it couldn't mount (anchor not connected after all),
+        // _renderOneSummary re-queued it scoped to rec.file for a later pass.
+      }
+    }
+    if (this._summariesGenerated) this._syncSummaryToolbarButton();
+    for (const filePath of filesWithMounts) this._refreshFileSummaryToggle(filePath);
+  }
+
+  /**
+   * Load the review's hunk summaries from the server and apply them to the
+   * anchors that exist so far (gated by `summaries.enabled` in `/api/config`).
+   *
+   * With lazy bodies, anchor wiring is incremental (_registerHunkAnchorsForFile
+   * runs as each body renders), so this method no longer walks render records.
+   * Summaries whose file hasn't rendered yet are queued in
+   * `_pendingSummariesByHash` (via _applyHunkSummaries / _renderOneSummary) and
+   * drained when that body renders.
+   *
+   * Order:
+   *   1. Config gate first — bail before paying any cost when the feature is off.
    *   2. Restore localStorage visibility state.
-   *   3. Walk records and wire each anchor row to its server-supplied
-   *      content hash. The server computes hashes from the canonical
-   *      (non-whitespace-filtered) diff so they stay aligned with persisted
-   *      summary keys; records lacking a `contentHash` are logged-and-skipped.
-   *   4. Drain pending summaries against the freshly-built anchor map.
-   *   5. Fetch existing summaries from the server.
+   *   3. Fetch existing summaries and apply/queue them.
    *
-   * Race-safety: `_renderGen` is captured at entry and rechecked after
-   * every `await`. If `renderDiff()` ran again mid-flight, we stop touching
-   * the (now stale) maps and DOM.
+   * Race-safety: `_renderGen` is captured at entry and rechecked after every
+   * `await`. If `renderDiff()` ran again mid-flight, we stop touching the (now
+   * stale) maps and DOM.
    * @returns {Promise<void>}
    */
-  async _kickOffHunkSummaries() {
+  async _fetchHunkSummaryMap() {
     const gen = this._renderGen;
-    const records = this._pendingHunkRecords || [];
-    this._pendingHunkRecords = null; // single-use; renderDiff resets
 
     // 1. Config gate — bail before doing any work when the feature is off.
     const cfg = await this._getAppConfig();
@@ -1186,54 +1281,7 @@ class PRManager {
       }
     }
 
-    // 3. Wire each anchor row to its server-supplied content hash. The
-    // backend computes these from the canonical (unfiltered) diff so they
-    // stay aligned with persisted summary keys regardless of `?w=1`.
-    // Records missing `contentHash` indicate a server bug (or a hash array
-    // length mismatch the renderPatch guard already dropped) — log + skip.
-    for (const rec of records) {
-      if (!rec.anchorRow || !rec.anchorRow.isConnected) continue;
-      const hex = rec.contentHash;
-      if (!hex) {
-        console.warn(
-          `[HunkSummary] no server contentHash for ${rec.file} ` +
-          `hunk ${rec.header}; skipping (summaries will not anchor here).`
-        );
-        continue;
-      }
-      rec.anchorRow.dataset.hunkStart = hex;
-      this._summaryAnchorsByHash.set(hex, rec.anchorRow);
-      let bucket = this._summaryHashesByFile.get(rec.file);
-      if (!bucket) {
-        bucket = new Set();
-        this._summaryHashesByFile.set(rec.file, bucket);
-      }
-      bucket.add(hex);
-    }
-
-    // 4. Drain summaries that arrived (via WS) before hashing finished.
-    if (this._pendingSummariesByHash.size > 0) {
-      const filesWithMounts = new Set();
-      for (const [hash, summary] of this._pendingSummariesByHash.entries()) {
-        if (this._summaryAnchorsByHash.has(hash)) {
-          const row = this._renderOneSummary(summary);
-          if (row) {
-            // Find the file this hash belongs to, so we can re-enable its
-            // toggle button.
-            for (const [filePath, bucket] of this._summaryHashesByFile.entries()) {
-              if (bucket.has(hash)) {
-                filesWithMounts.add(filePath);
-                break;
-              }
-            }
-          }
-          this._pendingSummariesByHash.delete(hash);
-        }
-      }
-      for (const filePath of filesWithMounts) this._refreshFileSummaryToggle(filePath);
-    }
-
-    // 5. Load existing summaries from the server.
+    // 3. Load existing summaries from the server.
     if (!this.currentPR?.id) return;
 
     try {
@@ -1259,13 +1307,14 @@ class PRManager {
       // `_applyHunkSummaries`, which sets the flag on a successful mount.
       if (byFile.size === 0 && summaries.length > 0) {
         let mountedAny = false;
+        let availableAny = false;
         for (const summary of summaries) {
+          if (summary.summary_text) availableAny = true;
           if (this._renderOneSummary(summary)) mountedAny = true;
         }
-        if (mountedAny) {
-          this._summariesGenerated = true;
-          this._syncSummaryToolbarButton();
-        }
+        if (availableAny) this._summariesAvailable = true;
+        if (mountedAny) this._summariesGenerated = true;
+        if (mountedAny || availableAny) this._syncSummaryToolbarButton();
       } else {
         for (const [filePath, fileSummaries] of byFile.entries()) {
           this._applyHunkSummaries(filePath, fileSummaries);
@@ -1295,6 +1344,7 @@ class PRManager {
     if (!Array.isArray(summaries)) return;
     const allowedHashes = this._summaryHashesByFile.get(filePath) || new Set();
     let mountedAny = false;
+    let availableAny = false;
     for (const summary of summaries) {
       if (!summary?.content_hash) continue;
       if (allowedHashes.size > 0 && !allowedHashes.has(summary.content_hash)) {
@@ -1307,15 +1357,26 @@ class PRManager {
         }
         continue;
       }
-      const row = this._renderOneSummary(summary);
+      // A non-trivial summary that belongs to this render (it passed the hash
+      // filter) means the feature has data even if its body hasn't rendered
+      // yet — _renderOneSummary will queue it rather than mount it in that
+      // case. Track availability separately from mounted rows.
+      if (summary.summary_text) availableAny = true;
+      const row = this._renderOneSummary(summary, filePath);
       if (row) mountedAny = true;
     }
+    if (availableAny) this._summariesAvailable = true;
     if (mountedAny) {
-      // At least one summary mounted — the feature now has data, so the
-      // toolbar button can show its `.active` (blue) state.
+      // At least one summary mounted — the feature now has visible data, so
+      // the toolbar button can show its `.active` (blue) state.
       this._summariesGenerated = true;
-      this._syncSummaryToolbarButton();
     }
+    // Refresh the toolbar when either flag changed: `.active` tracks
+    // `_summariesGenerated` (rows in the DOM) while the Generate-vs-Show/Hide
+    // decision tracks `_summariesAvailable` (mounted OR queued). Refreshing on
+    // availableAny prevents a not-yet-rendered file from leaving the toolbar
+    // in "Generate" mode, where a click would start a duplicate job.
+    if (mountedAny || availableAny) this._syncSummaryToolbarButton();
     if (mountedAny && filePath) this._refreshFileSummaryToggle(filePath);
   }
 
@@ -1343,7 +1404,7 @@ class PRManager {
    *
    * Used by three call sites that must agree on the button's visible state:
    *   - createFileHeader (initial render)
-   *   - _kickOffHunkSummaries (rehydrate after localStorage restore)
+   *   - _fetchHunkSummaryMap (rehydrate after localStorage restore)
    *   - _refreshFileSummaryToggle (when summaries arrive late)
    *   - toggleFileSummaries (user click)
    *
@@ -1366,21 +1427,90 @@ class PRManager {
   }
 
   /**
+   * Queue a summary that arrived before its hunk anchor existed, scoped by
+   * file path so a content-hash collision across files can't let one file's
+   * anchor consume another file's queued summary. Summaries arriving without
+   * a file path (legacy ungrouped fetch) land in the '' bucket.
+   * @param {string|undefined} filePath
+   * @param {Object} summary - must have `content_hash`
+   */
+  _queuePendingSummary(filePath, summary) {
+    const key = filePath || '';
+    let bucket = this._pendingSummariesByHash.get(key);
+    if (!bucket) {
+      bucket = new Map();
+      this._pendingSummariesByHash.set(key, bucket);
+    }
+    bucket.set(summary.content_hash, summary);
+  }
+
+  /**
+   * Pull (and remove) a queued summary for (filePath, hash). Checks the
+   * file-scoped bucket first, then the '' bucket that holds summaries queued
+   * without a file path (legacy ungrouped fetch). Returns null when nothing
+   * is queued for that pair.
+   * @param {string|undefined} filePath
+   * @param {string} hash
+   * @returns {Object|null}
+   */
+  _takePendingSummary(filePath, hash) {
+    for (const key of [filePath || '', '']) {
+      const bucket = this._pendingSummariesByHash.get(key);
+      if (bucket && bucket.has(hash)) {
+        const summary = bucket.get(hash);
+        bucket.delete(hash);
+        if (bucket.size === 0) this._pendingSummariesByHash.delete(key);
+        return summary;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Resolve the anchor row for (filePath, hash) against the file-scoped
+   * `_summaryAnchorsByHash` map.
+   *
+   * When `filePath` is known (the grouped path), the lookup is strictly
+   * scoped to that file so a content-hash shared across files can't pull a
+   * summary onto the wrong file's anchor. When it's absent — the legacy
+   * ungrouped-fetch fallback where summaries arrive without a `file_path` —
+   * there's no file to scope by, so we accept the first file whose bucket
+   * carries the hash. This mirrors `_takePendingSummary`'s `''` fallback
+   * bucket: file-scoped first, best-effort otherwise.
+   * @param {string|undefined} filePath
+   * @param {string} hash
+   * @returns {HTMLTableRowElement|null}
+   */
+  _findSummaryAnchor(filePath, hash) {
+    if (filePath) {
+      return this._summaryAnchorsByHash.get(filePath)?.get(hash) || null;
+    }
+    for (const anchors of this._summaryAnchorsByHash.values()) {
+      const anchor = anchors.get(hash);
+      if (anchor) return anchor;
+    }
+    return null;
+  }
+
+  /**
    * Render a single summary row, or queue it if the matching hunk hasn't
    * been hashed yet (race between WS broadcast and post-render hashing).
    * Trivial / model-skipped / model-malformed rows are ignored.
    * @param {Object} summary - { content_hash, summary_text, trivial_reason }
+   * @param {string} [filePath] - File the summary belongs to. Used to scope
+   *   both the anchor lookup and the pending-queue key so a cross-file hash
+   *   collision can't misroute it to the wrong file's hunk.
    * @returns {HTMLTableRowElement|null} The mounted row, or null if queued/skipped.
    */
-  _renderOneSummary(summary) {
+  _renderOneSummary(summary, filePath) {
     if (!summary || !summary.content_hash) return null;
     if (!summary.summary_text) return null; // trivial / opt-out — nothing to show
     const hash = summary.content_hash;
-    const anchor = this._summaryAnchorsByHash.get(hash);
+    const anchor = this._findSummaryAnchor(filePath, hash);
     if (!anchor || !anchor.isConnected) {
       // Anchor missing or detached (stale render) → defer; the next render
       // pass that re-establishes the hash will drain this map.
-      this._pendingSummariesByHash.set(hash, summary);
+      this._queuePendingSummary(filePath, summary);
       return null;
     }
     if (!this.hunkSummaryRenderer) return null;
@@ -1490,9 +1620,12 @@ class PRManager {
       // opens a confirm dialog ("Cancel Summaries" / "OK") instead of
       // toggling visibility. See _handleSummaryToggleClick.
       label = 'Generating summaries… (click to cancel)';
-    } else if (!this._summariesGenerated) {
-      // Pre-generated state: nothing generated yet. Colorless button; a click
-      // kicks off generation. See _handleSummaryToggleClick.
+    } else if (!this._summariesAvailable) {
+      // Pre-generated state: nothing generated yet (mounted or queued).
+      // Colorless button; a click kicks off generation. Gated on
+      // `_summariesAvailable` (not `_summariesGenerated`) so a review whose
+      // summaries exist but haven't mounted shows Show/Hide, matching the
+      // click behavior in _handleSummaryToggleClick.
       label = 'Generate hunk summaries';
     } else {
       label = this._summariesHidden ? 'Show hunk summaries' : 'Hide hunk summaries';
@@ -1572,10 +1705,14 @@ class PRManager {
       });
       return;
     }
-    if (!this._summariesGenerated) {
-      // Pre-generated state: a click triggers generation rather than toggling
-      // visibility. `_startGenerationJob` sets the pulsing `.generating` state
-      // optimistically (there is no `review:background_job_started` event).
+    if (!this._summariesAvailable) {
+      // Nothing generated yet (mounted OR queued): a click triggers generation
+      // rather than toggling visibility. `_startGenerationJob` sets the pulsing
+      // `.generating` state optimistically (there is no
+      // `review:background_job_started` event). We gate on `_summariesAvailable`
+      // rather than `_summariesGenerated` so summaries that exist server-side
+      // but haven't mounted (their lazy file body isn't rendered yet) toggle
+      // visibility instead of kicking off a duplicate generation job.
       await this._startGenerationJob('summary');
       return;
     }
@@ -1661,18 +1798,23 @@ class PRManager {
     const url = isLocal
       ? `/api/local/${encodeURIComponent(pr.id)}/jobs/${encodeURIComponent(jobKey)}/start`
       : `/api/pr/${encodeURIComponent(pr.owner)}/${encodeURIComponent(pr.repo)}/${encodeURIComponent(pr.number)}/jobs/${encodeURIComponent(jobKey)}/start`;
+    // Phrasing varies by job kind. `featureLabel` goes into the HTTP/decline
+    // error messages; `noDiffMessage` is the dedicated "nothing to do" line.
+    // NOTE: the toast singleton is lowercase `window.toast` (see
+    // cancel-background-job.js); `window.Toast` does not exist.
+    const featureLabel = jobKey === 'tour' ? 'tour' : 'summary';
+    const noDiffMessage = jobKey === 'tour' ? 'No tour to generate.' : 'No summaries to generate.';
     try {
       const resp = await fetch(url, { method: 'POST' });
       if (resp.status === 409) {
         // Feature disabled in config — shouldn't happen (the button is hidden
         // when disabled) but surface it rather than failing silently.
-        // NOTE: the toast singleton is lowercase `window.toast` (see
-        // cancel-background-job.js); `window.Toast` does not exist.
-        if (window.toast?.error) window.toast.error('This feature is disabled in config.');
+        window.toast?.showError?.('This feature is disabled in config.');
         return;
       }
       if (!resp.ok) {
         console.warn(`[StartJob] ${jobKey} start POST failed: ${resp.status}`);
+        window.toast?.showError?.(`Failed to start ${featureLabel} generation (HTTP ${resp.status}).`);
         return;
       }
       // Optimistic UI: there is no `review:background_job_started` broadcast,
@@ -1690,9 +1832,20 @@ class PRManager {
           this._tourGenerating = true;
           this._syncTourToolbarButton();
         }
+        return;
+      }
+      // Server accepted the request but declined to enqueue. The known
+      // reason today is `'no-diff'` — review has no changes to act on. Tell
+      // the user so the button doesn't appear inert. Unknown decline
+      // reasons fall through to a generic message rather than silence.
+      if (payload.reason === 'no-diff') {
+        window.toast?.showInfo?.(noDiffMessage);
+      } else {
+        window.toast?.showError?.(`Could not start ${featureLabel} generation.`);
       }
     } catch (err) {
       console.warn(`[StartJob] ${jobKey} start POST error:`, err.message);
+      window.toast?.showError?.(`Failed to start ${featureLabel} generation: ${err.message}`);
     }
   }
 
@@ -1903,7 +2056,11 @@ class PRManager {
           // was awaiting a file fetch / loadContextFiles. Bail before
           // mounting against a torn-down tour.
           if (isStale()) return;
-          const row = this._tourRenderer.mountStop(probe);
+          // mountStop is async (it awaits toggleFileCollapse so a collapsed
+          // file is rendered + visibly expanded before we scroll to it).
+          const row = await this._tourRenderer.mountStop(probe);
+          // Re-check staleness: the await above is a suspension window.
+          if (isStale()) return;
           if (row) {
             nextRow = row;
             nextIndex = probe;
@@ -3096,9 +3253,22 @@ class PRManager {
     // no matching rows keeps the stale `true`, leaving the toolbar stuck in
     // Hide/Show mode with nothing in the DOM and blocking click-to-generate.
     this._summariesGenerated = false;
-    // Bump generation so any in-flight `_kickOffHunkSummaries` from the
+    // Reset alongside `_summariesGenerated`. Set true again only when a fetch
+    // (or WS event) accepts/queues a non-trivial summary for this render.
+    this._summariesAvailable = false;
+    // Bump generation so any in-flight `_fetchHunkSummaryMap` from the
     // previous render bails out instead of mutating maps we just reset.
     this._renderGen = (this._renderGen || 0) + 1;
+
+    // Reset lazy-body state and (re)create the IntersectionObserver. The
+    // `innerHTML = ''` above detached every previously-observed body, so a
+    // stale observer would hold dead references and never fire — tear it down
+    // and start fresh for this render generation. This runs for every render
+    // path (initial load, whitespace toggle, scope change) since they all
+    // funnel through renderDiff().
+    this._teardownFileBodyObserver();
+    this._lazyFileBodies = new Map();
+    this._fileBodyObserver = this._createFileBodyObserver();
 
     // Use changed_files array from API
     const files = pr.changed_files || pr.files || [];
@@ -3124,9 +3294,8 @@ class PRManager {
         }
       });
 
-      // Async validate end-of-file gaps - removes any that have no trailing lines
-      // This runs after render to avoid blocking initial display
-      this.validatePendingEofGaps();
+      // NOTE: end-of-file gap validation runs per-file inside _renderFileBodyNow
+      // now (bodies render lazily), not once globally here.
     } else {
       diffContainer.innerHTML = '<div class="no-diff">No files changed</div>';
     }
@@ -3135,11 +3304,13 @@ class PRManager {
     this.contextFiles = [];
     this.loadContextFiles();
 
-    // Kick off hunk-summary hashing + load (Phase 5). Fire-and-forget — the
-    // diff is fully usable while summaries arrive asynchronously.
+    // Fetch hunk summaries (Phase 5). Fire-and-forget — the diff is fully
+    // usable while summaries arrive asynchronously. Anchors are wired lazily
+    // as each file body renders (_registerHunkAnchorsForFile); this just loads
+    // the server's summary map and applies it to whatever has rendered so far.
     if (this.hunkSummaryRenderer) {
-      this._kickOffHunkSummaries().catch((err) => {
-        console.warn('[HunkSummary] kickoff failed:', err);
+      this._fetchHunkSummaryMap().catch((err) => {
+        console.warn('[HunkSummary] summary fetch failed:', err);
       });
     }
 
@@ -3248,8 +3419,8 @@ class PRManager {
 
       // Per-file hunk-summary toggle. Mirrors the toolbar toggle but scoped to
       // one file. Disabled (greyed) when no summaries exist yet for this file;
-      // _applyHunkSummaries / _kickOffHunkSummaries re-enable it as soon as
-      // hashes for this file are recorded (so a summary that arrives later
+      // _applyHunkSummaries / _registerHunkAnchorsForFile re-enable it as soon
+      // as hashes for this file are recorded (so a summary that arrives later
       // doesn't get hidden behind a permanently-disabled button).
       // Gated on `_summariesEnabled`: skipped entirely when /api/config has
       // already reported the feature is off; created hidden + revealed later
@@ -3284,21 +3455,13 @@ class PRManager {
       }
     }
 
-    // Create diff table
+    // Create diff table with an EMPTY tbody. The rows are NOT rendered here —
+    // see the lazy-body machinery below. This is the core large-PR perf fix:
+    // building + syntax-highlighting every line of every (often collapsed)
+    // file up front froze the browser on big diffs.
     const table = document.createElement('table');
     table.className = 'd2h-diff-table';
-
     const tbody = document.createElement('tbody');
-
-    // Parse the diff content
-    if (file.patch) {
-      this.renderPatch(tbody, file.patch, file.file, file.hunk_hashes || null);
-    } else if (file.binary) {
-      const row = document.createElement('tr');
-      row.innerHTML = '<td colspan="2" class="binary-file">Binary file</td>';
-      tbody.appendChild(row);
-    }
-
     table.appendChild(tbody);
 
     // Wrap table in a scrollable container for horizontal scroll of long code lines
@@ -3308,7 +3471,195 @@ class PRManager {
     fileBody.appendChild(table);
     wrapper.appendChild(fileBody);
 
+    // Reserve approximate height for EXPANDED-but-not-yet-rendered bodies so
+    // the scrollbar stays roughly stable as the user scrolls and bodies fill
+    // in. Collapsed bodies are `display:none`, so they contribute no height
+    // and need no placeholder. Cleared once the body actually renders.
+    if (!isCollapsed && file.patch) {
+      const approxLines = file.patch.split('\n').length;
+      fileBody.style.minHeight = (approxLines * PRManager.APPROX_DIFF_LINE_PX) + 'px';
+    }
+
+    // Register the lazy entry. `gen` lets _renderFileBodyNow detect a body
+    // left over from a superseded render and skip anchor registration.
+    this._lazyFileBodies.set(file.file, {
+      fileName: file.file,
+      patch: file.patch || null,
+      binary: !!file.binary,
+      hunkHashes: file.hunk_hashes || null,
+      fileBody,
+      wrapper,
+      rendered: false,
+      renderPromise: null,
+      gen: this._renderGen
+    });
+
+    // Observe the body so it renders as it nears the viewport. Collapsed
+    // bodies (display:none) never intersect → stay unrendered until expanded.
+    if ((file.patch || file.binary) && this._fileBodyObserver) {
+      this._fileBodyObserver.observe(fileBody);
+    }
+
     return wrapper;
+  }
+
+  /**
+   * Approximate rendered height (px) of one diff line row. Used only to
+   * reserve placeholder height for expanded-but-unrendered file bodies so the
+   * scrollbar doesn't jump as lazy bodies fill in. Errs slightly high.
+   */
+  static get APPROX_DIFF_LINE_PX() { return 20; }
+
+  /**
+   * Create the IntersectionObserver that renders file bodies as they approach
+   * the viewport. One instance per render generation; recreated in renderDiff.
+   * Returns null where IntersectionObserver is unavailable (e.g. jsdom unit
+   * tests) — bodies then render only on demand via ensureFileBodyRendered().
+   * @returns {IntersectionObserver|null}
+   */
+  _createFileBodyObserver() {
+    if (typeof IntersectionObserver === 'undefined') return null;
+    // `.diff-view` is the vertical scroll container (see pr.css). Fall back to
+    // the viewport when it can't be resolved.
+    const root = document.querySelector('.diff-view') || null;
+    return new IntersectionObserver((entries, observer) => {
+      for (const ioEntry of entries) {
+        if (!ioEntry.isIntersecting) continue;
+        const lazyEntry = this._lazyFileBodyForElement(ioEntry.target);
+        observer.unobserve(ioEntry.target);
+        if (lazyEntry) this._renderFileBodyNow(lazyEntry);
+      }
+    }, { root, rootMargin: '800px 0px', threshold: 0 });
+  }
+
+  /**
+   * Disconnect and drop the current file-body observer, if any.
+   */
+  _teardownFileBodyObserver() {
+    if (this._fileBodyObserver) {
+      this._fileBodyObserver.disconnect();
+      this._fileBodyObserver = null;
+    }
+  }
+
+  /**
+   * Resolve the lazy entry for a `.d2h-file-body` element via its wrapper's
+   * data-file-name. Returns null if not a known lazy body.
+   * @param {Element} bodyEl
+   * @returns {object|null}
+   */
+  _lazyFileBodyForElement(bodyEl) {
+    if (!this._lazyFileBodies) return null;
+    const wrapper = bodyEl?.closest?.('.d2h-file-wrapper');
+    const filePath = wrapper?.dataset?.fileName;
+    if (!filePath) return null;
+    return this._lazyFileBodies.get(filePath) || null;
+  }
+
+  /**
+   * Ensure a file's diff-line body is rendered into the DOM, rendering it now
+   * if it hasn't been. Idempotent and cheap when already rendered. Every code
+   * path that scans a file's `<tr>` rows (comment/suggestion anchoring, gap
+   * expansion, scroll-to-file, expand) must await this first, because a lazy
+   * body has zero rows until rendered.
+   * @param {string|Element} fileOrWrapper - file path, file body, or wrapper
+   * @returns {Promise<HTMLElement|null>} the file body, or null if unknown
+   */
+  async ensureFileBodyRendered(fileOrWrapper) {
+    // No lazy map (e.g. called before renderDiff, or a non-lazy render path) →
+    // treat the body as already present and let callers scan as before.
+    if (!this._lazyFileBodies) return null;
+    let entry = null;
+    if (typeof fileOrWrapper === 'string') {
+      entry = this._lazyFileBodies.get(fileOrWrapper) || null;
+      if (!entry) {
+        // The map is keyed by the canonical `file.file` value, but callers
+        // (AI suggestions, external comments, tour stops) may pass a
+        // non-canonical path form. findFileElement normalizes './', '/', and
+        // git rename syntax ('{old => new}') against data-file-name, so
+        // resolve the wrapper first and retry with its canonical name. This
+        // keeps the strict Map.get fast path while tolerating the same path
+        // variants the rest of the diff UI accepts — without it the body
+        // stays unrendered and the downstream row scan sees zero <tr> rows.
+        const wrapper = this.findFileElement?.(fileOrWrapper);
+        const canonicalFile = wrapper?.dataset?.fileName;
+        if (canonicalFile) entry = this._lazyFileBodies.get(canonicalFile) || null;
+      }
+    } else if (fileOrWrapper && fileOrWrapper.nodeType === 1) {
+      entry = this._lazyFileBodyForElement(fileOrWrapper)
+        || (this._lazyFileBodies.get(fileOrWrapper.dataset?.fileName) || null);
+    }
+    if (!entry) return null;
+    if (entry.rendered) return entry.fileBody;
+    if (entry.renderPromise) return entry.renderPromise;
+    // _renderFileBodyNow is synchronous; wrapping in a resolved promise keeps
+    // the signature async and lets concurrent callers (observer + on-demand)
+    // share one promise so renderPatch runs exactly once.
+    entry.renderPromise = Promise.resolve().then(() => this._renderFileBodyNow(entry));
+    return entry.renderPromise;
+  }
+
+  /**
+   * Synchronously build a file's diff-line body: run renderPatch (or the
+   * binary placeholder), clear the height placeholder, wire hunk-summary
+   * anchors, and validate this file's EOF gap. Idempotent.
+   *
+   * Invariant: there must be NO `await` between the `_pendingHunkRecords`
+   * save and restore below — renderPatch pushes per-hunk anchor records into
+   * the shared `_pendingHunkRecords`, and JS single-threading only guarantees
+   * non-interleaving with other file renders while this stays synchronous.
+   * @param {object} entry - a _lazyFileBodies value
+   * @returns {HTMLElement} the file body element
+   */
+  _renderFileBodyNow(entry) {
+    if (entry.rendered) return entry.fileBody;
+    if (this._fileBodyObserver) this._fileBodyObserver.unobserve(entry.fileBody);
+
+    const tbody = entry.fileBody.querySelector('tbody');
+
+    // Capture only THIS file's hunk anchor records (renderPatch appends to
+    // this._pendingHunkRecords; see invariant above). The swap is wrapped in
+    // try/finally so a renderPatch throw can't leak the temporary buffer: were
+    // the restore skipped, every subsequent file render would append its
+    // anchor records into the stale array, silently cross-wiring
+    // _summaryAnchorsByHash / _summaryHashesByFile for the rest of the session.
+    const prevPending = this._pendingHunkRecords;
+    this._pendingHunkRecords = [];
+    let records;
+    try {
+      if (entry.patch && tbody) {
+        this.renderPatch(tbody, entry.patch, entry.fileName, entry.hunkHashes);
+      } else if (entry.binary && tbody) {
+        const row = document.createElement('tr');
+        row.innerHTML = '<td colspan="2" class="binary-file">Binary file</td>';
+        tbody.appendChild(row);
+      }
+    } finally {
+      records = this._pendingHunkRecords;
+      this._pendingHunkRecords = prevPending;
+    }
+
+    entry.fileBody.style.minHeight = '';
+    entry.rendered = true;
+    entry.renderPromise = null;
+
+    // Skip post-render wiring for a body left over from a superseded render
+    // (its maps were reset and the body is detached). Both anchor registration
+    // and EOF-gap validation are pointless/wasteful for a stale body.
+    if (entry.gen === this._renderGen) {
+      this._registerHunkAnchorsForFile(records);
+      // Validate this file's pending EOF gaps. Pre-lazy-render this was a
+      // single global pass at the end of renderDiff; now it runs per-file as
+      // bodies render. Cheap pre-check first: most files have no pending EOF
+      // gap, so skip the async work (Array.from + Promise.all + per-gap
+      // /file-content fetches) entirely when this body has none. The selector
+      // mirrors the one validatePendingEofGaps scans for.
+      if (entry.fileBody.querySelector('tr.context-expand-row[data-pending-eof-validation="true"]')) {
+        this.validatePendingEofGaps(entry.fileBody);
+      }
+    }
+
+    return entry.fileBody;
   }
 
   /**
@@ -3463,8 +3814,8 @@ class PRManager {
 
       // Record this hunk's first rendered code row as the anchor for any
       // inline summary annotation. The canonical hash comes from the
-      // backend (`hunkHashes[blockIndex]`); _kickOffHunkSummaries mounts
-      // it as `data-hunk-start` after render finishes so the summary
+      // backend (`hunkHashes[blockIndex]`); _registerHunkAnchorsForFile mounts
+      // it as `data-hunk-start` when this file's body renders so the summary
       // renderer can find the anchor and insert the annotation above it.
       if (this._pendingHunkRecords && firstLineRow) {
         const serverHash = Array.isArray(hunkHashes) ? hunkHashes[blockIndex] || null : null;
@@ -3648,7 +3999,7 @@ class PRManager {
    * Toggle collapse state of a file diff
    * @param {string} filePath - Path of the file
    */
-  toggleFileCollapse(filePath) {
+  async toggleFileCollapse(filePath) {
     const wrapper = this.findFileElement(filePath);
     if (!wrapper) return;
 
@@ -3656,6 +4007,8 @@ class PRManager {
     const header = wrapper.querySelector('.d2h-file-header');
 
     if (isCollapsed) {
+      // Render the body before revealing it (lazy bodies are empty until now).
+      await this.ensureFileBodyRendered(filePath);
       wrapper.classList.remove('collapsed');
       this.collapsedFiles.delete(filePath);
     } else {
@@ -3674,7 +4027,7 @@ class PRManager {
    * @param {string} filePath - Path of the file
    * @param {boolean} isViewed - Whether the file is now viewed
    */
-  toggleFileViewed(filePath, isViewed) {
+  async toggleFileViewed(filePath, isViewed) {
     const wrapper = this.findFileElement(filePath);
 
     if (isViewed) {
@@ -3692,6 +4045,8 @@ class PRManager {
       this.viewedFiles.delete(filePath);
       // Auto-expand when unchecking viewed (match GitHub behavior)
       if (wrapper && wrapper.classList.contains('collapsed')) {
+        // Render the body before revealing it (lazy bodies are empty until now).
+        await this.ensureFileBodyRendered(filePath);
         wrapper.classList.remove('collapsed');
         this.collapsedFiles.delete(filePath);
         const header = wrapper.querySelector('.d2h-file-header');
@@ -3817,7 +4172,7 @@ class PRManager {
    * @deprecated Use toggleFileCollapse instead - kept for backward compatibility
    */
   toggleGeneratedFile(filePath) {
-    this.toggleFileCollapse(filePath);
+    return this.toggleFileCollapse(filePath);
   }
 
   /**
@@ -3846,9 +4201,12 @@ class PRManager {
    * Validate pending end-of-file gaps asynchronously
    * Removes gap rows where there are no trailing lines to expand
    * This ensures users don't see expand buttons that do nothing
+   * @param {ParentNode} [root=document] - Scope the search. With lazy bodies,
+   *   _renderFileBodyNow passes the just-rendered file body so each file's EOF
+   *   gap is validated as it renders (rather than one global post-render pass).
    */
-  async validatePendingEofGaps() {
-    const pendingGaps = document.querySelectorAll('tr.context-expand-row[data-pending-eof-validation="true"]');
+  async validatePendingEofGaps(root = document) {
+    const pendingGaps = root.querySelectorAll('tr.context-expand-row[data-pending-eof-validation="true"]');
 
     // Process all pending gaps in parallel for efficiency
     const validationPromises = Array.from(pendingGaps).map(async (gapRow) => {
@@ -4213,11 +4571,14 @@ class PRManager {
       return false;
     }
 
+    // Render the body first — gap rows (and code rows) only exist once the
+    // lazy body has rendered. Without this the gap query below returns nothing.
+    await this.ensureFileBodyRendered(file);
+
     // Check if file is collapsed (generated files)
     if (fileElement.classList.contains('collapsed')) {
       debugLog?.('expandForSuggestion', 'File is collapsed, expanding first');
-      this.toggleGeneratedFile(file);
-      await new Promise(resolve => setTimeout(resolve, 50));
+      await this.toggleGeneratedFile(file);
     }
 
     // Find the gap section containing the target lines using the shared module
@@ -4300,6 +4661,12 @@ class PRManager {
 
       const fileElement = this.findFileElement(file);
       if (!fileElement) continue;
+
+      // Render the file body first — with lazy rendering an unrendered file
+      // has zero rows, so the visibility scan below would always miss and the
+      // line would be treated as "hidden in a gap" (then gap-expanded against
+      // zero gap rows → silent anchor failure).
+      await this.ensureFileBodyRendered(file);
 
       // Check if any line in the range is already visible
       let anyLineVisible = false;
@@ -5975,9 +6342,20 @@ class PRManager {
     collapsedBtn.addEventListener('click', () => toggleSidebar(false));
   }
 
-  scrollToFile(filePath) {
+  async scrollToFile(filePath) {
     const fileWrapper = this.findFileElement(filePath);
     if (fileWrapper) {
+      // Render the body so the scroll target has its real height (an empty
+      // lazy body would land the scroll at the wrong offset for expanded
+      // files). Skip it for collapsed files: their body is display:none
+      // (zero height) and `block: 'start'` aligns the header regardless, so
+      // force-rendering would only pay the full renderPatch + per-line
+      // highlight cost for content that stays hidden. scrollToFile does no
+      // post-render row scan, so gating on `!collapsed` is safe; expanding
+      // later still renders on demand via toggleFileCollapse.
+      if (!fileWrapper.classList.contains('collapsed')) {
+        await this.ensureFileBodyRendered(filePath);
+      }
       fileWrapper.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
   }

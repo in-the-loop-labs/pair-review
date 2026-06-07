@@ -94,33 +94,70 @@ describe('PRManager._startGenerationJob', () => {
     expect(mgr._syncTourToolbarButton).toHaveBeenCalledTimes(1);
   });
 
-  it('409 disabled: calls toast.error and sets no generating flag', async () => {
+  it('409 disabled: calls toast.showError and sets no generating flag', async () => {
     mgr.currentPR = { id: 7, owner: 'o', repo: 'r', number: 3, reviewType: 'pr' };
     sandbox.fetch = vi.fn().mockResolvedValue({
       ok: false,
       status: 409,
       json: async () => ({}),
     });
-    sandbox.toast = { error: vi.fn() };
+    sandbox.toast = { showError: vi.fn() };
 
     await mgr._startGenerationJob('summary');
 
-    expect(sandbox.toast.error).toHaveBeenCalledTimes(1);
-    expect(sandbox.toast.error).toHaveBeenCalledWith('This feature is disabled in config.');
+    expect(sandbox.toast.showError).toHaveBeenCalledTimes(1);
+    expect(sandbox.toast.showError).toHaveBeenCalledWith('This feature is disabled in config.');
     expect(mgr._summariesGenerating).toBe(false);
     expect(mgr._syncSummaryToolbarButton).not.toHaveBeenCalled();
   });
 
-  it('200 no-diff (started:false, no alreadyRunning): sets no flag and does not sync', async () => {
+  it('200 no-diff for summary: shows info toast and sets no flag', async () => {
     mgr.currentPR = { id: 7, owner: 'o', repo: 'r', number: 3, reviewType: 'pr' };
     sandbox.fetch = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
       json: async () => ({ started: false, reason: 'no-diff' }),
     });
+    sandbox.toast = { showInfo: vi.fn() };
 
     await mgr._startGenerationJob('summary');
 
+    expect(sandbox.toast.showInfo).toHaveBeenCalledTimes(1);
+    expect(sandbox.toast.showInfo).toHaveBeenCalledWith('No summaries to generate.');
+    expect(mgr._summariesGenerating).toBe(false);
+    expect(mgr._syncSummaryToolbarButton).not.toHaveBeenCalled();
+  });
+
+  it('200 no-diff for tour: shows info toast and sets no flag', async () => {
+    mgr.currentPR = { id: 7, owner: 'o', repo: 'r', number: 3, reviewType: 'local' };
+    sandbox.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ started: false, reason: 'no-diff' }),
+    });
+    sandbox.toast = { showInfo: vi.fn() };
+
+    await mgr._startGenerationJob('tour');
+
+    expect(sandbox.toast.showInfo).toHaveBeenCalledTimes(1);
+    expect(sandbox.toast.showInfo).toHaveBeenCalledWith('No tour to generate.');
+    expect(mgr._tourGenerating).toBe(false);
+    expect(mgr._syncTourToolbarButton).not.toHaveBeenCalled();
+  });
+
+  it('200 started:false with unknown reason: shows generic error toast', async () => {
+    mgr.currentPR = { id: 7, owner: 'o', repo: 'r', number: 3, reviewType: 'pr' };
+    sandbox.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ started: false }),
+    });
+    sandbox.toast = { showError: vi.fn() };
+
+    await mgr._startGenerationJob('summary');
+
+    expect(sandbox.toast.showError).toHaveBeenCalledTimes(1);
+    expect(sandbox.toast.showError).toHaveBeenCalledWith('Could not start summary generation.');
     expect(mgr._summariesGenerating).toBe(false);
     expect(mgr._syncSummaryToolbarButton).not.toHaveBeenCalled();
   });
@@ -139,17 +176,32 @@ describe('PRManager._startGenerationJob', () => {
     expect(mgr._syncSummaryToolbarButton).toHaveBeenCalledTimes(1);
   });
 
-  it('non-409 !ok (500): sets no flag and does not throw', async () => {
+  it('non-409 !ok (500): shows error toast, sets no flag, does not throw', async () => {
     mgr.currentPR = { id: 7, owner: 'o', repo: 'r', number: 3, reviewType: 'pr' };
     sandbox.fetch = vi.fn().mockResolvedValue({
       ok: false,
       status: 500,
       json: async () => ({}),
     });
+    sandbox.toast = { showError: vi.fn() };
 
     await expect(mgr._startGenerationJob('summary')).resolves.toBeUndefined();
+    expect(sandbox.toast.showError).toHaveBeenCalledTimes(1);
+    expect(sandbox.toast.showError).toHaveBeenCalledWith('Failed to start summary generation (HTTP 500).');
     expect(mgr._summariesGenerating).toBe(false);
     expect(mgr._syncSummaryToolbarButton).not.toHaveBeenCalled();
+  });
+
+  it('fetch rejects: shows error toast and swallows the error', async () => {
+    mgr.currentPR = { id: 7, owner: 'o', repo: 'r', number: 3, reviewType: 'local' };
+    sandbox.fetch = vi.fn().mockRejectedValue(new Error('network down'));
+    sandbox.toast = { showError: vi.fn() };
+
+    await expect(mgr._startGenerationJob('tour')).resolves.toBeUndefined();
+    expect(sandbox.toast.showError).toHaveBeenCalledTimes(1);
+    expect(sandbox.toast.showError).toHaveBeenCalledWith('Failed to start tour generation: network down');
+    expect(mgr._tourGenerating).toBe(false);
+    expect(mgr._syncTourToolbarButton).not.toHaveBeenCalled();
   });
 
   it('returns early without fetching when currentPR is null', async () => {
@@ -281,7 +333,7 @@ describe('_summariesGenerated reset on re-render', () => {
     mgr._renderGen = 0;
     mgr._toursEnabled = false;
     mgr._tourIsActive = vi.fn().mockReturnValue(false);
-    mgr.hunkSummaryRenderer = null; // disables _kickOffHunkSummaries branch
+    mgr.hunkSummaryRenderer = null; // disables _fetchHunkSummaryMap branch
     mgr.validatePendingEofGaps = vi.fn();
     mgr.loadContextFiles = vi.fn();
     mgr.currentPR = { id: 1, owner: 'o', repo: 'r', number: 1, reviewType: 'pr' };
