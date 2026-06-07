@@ -9,15 +9,16 @@
  * Playwright E2E suite.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createRequire } from 'node:module';
 
 const require2 = createRequire(import.meta.url);
 
 // The frontend module guards its `window.RepoLinks = ...` assignment so
 // it can be required from Node without throwing. The module.exports
-// includes substituteUrlTemplate.
-const { substituteUrlTemplate } = require2('../../public/js/repo-links.js');
+// includes substituteUrlTemplate and the host-identity accessors.
+const RepoLinks = require2('../../public/js/repo-links.js');
+const { substituteUrlTemplate } = RepoLinks;
 
 describe('frontend substituteUrlTemplate', () => {
   it('substitutes all whitelisted placeholders', () => {
@@ -78,5 +79,72 @@ describe('frontend substituteUrlTemplate', () => {
       { owner: 'acme', some_unknown: 'x' }
     );
     expect(url).toBe('https://h/acme/{some_unknown}');
+  });
+});
+
+describe('frontend host accessors (hostName / externalUrl / externalIcon)', () => {
+  // Drive fetchAndApplyRepoLinks with a mocked fetch. The accessors read
+  // module-scope state set before applyRepoLinks runs; applyRepoLinks
+  // harmlessly throws without a DOM and is caught internally.
+  function mockLinks(links) {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ links })
+    });
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    delete global.fetch;
+  });
+
+  it('exposes configured name, substituted url, and icon', async () => {
+    mockLinks({
+      external: {
+        name: 'Meteorite',
+        label: 'Open on Meteorite',
+        url_template: 'https://meteorite.example/{owner}/{repo}/pulls/{number}',
+        icon: '<svg><path d="M1 1"/></svg>',
+      },
+      github: false,
+      graphite: false,
+    });
+    await RepoLinks.fetchAndApplyRepoLinks('acme', 'widget', {
+      owner: 'acme', repo: 'widget', number: 7
+    });
+    expect(RepoLinks.hostName()).toBe('Meteorite');
+    expect(RepoLinks.externalUrl()).toBe('https://meteorite.example/acme/widget/pulls/7');
+    expect(RepoLinks.externalIcon()).toBe('<svg><path d="M1 1"/></svg>');
+  });
+
+  it('falls back to GitHub defaults when no external link is configured', async () => {
+    mockLinks({ external: null, github: true, graphite: true });
+    await RepoLinks.fetchAndApplyRepoLinks('acme', 'widget', {
+      owner: 'acme', repo: 'widget', number: 7
+    });
+    expect(RepoLinks.hostName()).toBe('GitHub');
+    expect(RepoLinks.externalUrl()).toBeNull();
+    expect(RepoLinks.externalIcon()).toBeNull();
+  });
+
+  it('externalUrl is null when the template needs {number} but Local mode omits it', async () => {
+    mockLinks({
+      external: {
+        name: 'Meteorite',
+        label: 'Open on Meteorite',
+        url_template: 'https://meteorite.example/{owner}/{repo}/pulls/{number}',
+      },
+      github: false,
+      graphite: false,
+    });
+    // Local-mode context: no `number`.
+    await RepoLinks.fetchAndApplyRepoLinks('acme', 'widget', {
+      owner: 'acme', repo: 'widget'
+    });
+    expect(RepoLinks.hostName()).toBe('Meteorite');   // name still works
+    expect(RepoLinks.externalUrl()).toBeNull();        // url substitution fails
   });
 });

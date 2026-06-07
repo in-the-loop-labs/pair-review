@@ -192,6 +192,9 @@ function resolveRepoLinks(config, repository) {
       }
     }
     result.external = {
+      // Optional host display name (e.g. "Meteorite"). When absent, the
+      // field is null and consumers fall back to "GitHub" via resolveHostName.
+      name: (typeof ext.name === 'string' && ext.name) ? ext.name : null,
       label: ext.label,
       url_template: ext.url_template,
       icon
@@ -201,9 +204,27 @@ function resolveRepoLinks(config, repository) {
   return result;
 }
 
+/**
+ * Resolve the display name of the remote code host for a repo, for use in
+ * user-facing text in place of the literal "GitHub".
+ *
+ * Returns `repos[owner/repo].links.external.name` when configured, otherwise
+ * `"GitHub"`. This is the server-side counterpart to the frontend
+ * `window.RepoLinks.hostName()` accessor.
+ *
+ * @param {Object} config
+ * @param {string} repository  Canonical `owner/repo` identifier
+ * @returns {string} The configured host name, or "GitHub" by default
+ */
+function resolveHostName(config, repository) {
+  const links = resolveRepoLinks(config, repository);
+  return (links.external && links.external.name) ? links.external.name : 'GitHub';
+}
+
 module.exports = {
   substituteUrlTemplate,
   sanitizeSvgIcon,
   resolveRepoLinks,
+  resolveHostName,
   ALLOWED_PLACEHOLDERS,
 };

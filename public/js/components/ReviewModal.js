@@ -64,9 +64,9 @@ class ReviewModal {
               </div>
               <div class="pending-draft-notice-content">
                 <span class="pending-draft-notice-text">
-                  You have a pending draft review on GitHub with <strong id="pending-draft-count">0</strong> comments.
+                  You have a pending draft review on <span class="rm-host-name">GitHub</span> with <strong id="pending-draft-count">0</strong> comments.
                   Submitting here will add to or complete this review.
-                  <a href="#" id="pending-draft-link" target="_blank" rel="noopener noreferrer">Manage on GitHub</a>.
+                  <a href="#" id="pending-draft-link" target="_blank" rel="noopener noreferrer">Manage on <span class="rm-host-name">GitHub</span></a>.
                 </span>
               </div>
             </div>
@@ -120,7 +120,7 @@ class ReviewModal {
                   <input type="radio" name="review-event" value="DRAFT">
                   <div class="review-type-content">
                     <span class="review-type-label">Save as Draft</span>
-                    <span class="review-type-desc">Save your review as a draft on GitHub to finish later.</span>
+                    <span class="review-type-desc">Save your review as a draft on <span class="rm-host-name">GitHub</span> to finish later.</span>
                   </div>
                 </label>
               </div>
@@ -284,6 +284,11 @@ class ReviewModal {
     // Update AI summary link visibility
     this.updateAISummaryLink();
 
+    // Apply the configured remote-host display name + icon (resolves
+    // asynchronously after the modal HTML was built).
+    this.applyHostName();
+    this.applySubmitButtonIcon();
+
     // Update pending draft notice
     this.updatePendingDraftNotice();
   }
@@ -311,11 +316,17 @@ class ReviewModal {
         countElement.textContent = String(pendingDraft.comments_count || 0);
       }
 
-      // Update the link - hide if no github_url
+      // Update the link. Prefer the URL built from the repo's configured
+      // url_template (host-correct) over the server-reported github_url,
+      // which some alt-hosts return as a wrong-host github.com/issues URL.
       const linkElement = notice.querySelector('#pending-draft-link');
       if (linkElement) {
-        if (pendingDraft.github_url) {
-          linkElement.href = pendingDraft.github_url;
+        const templatedUrl = (typeof window !== 'undefined' && window.RepoLinks
+          && typeof window.RepoLinks.externalUrl === 'function')
+          ? window.RepoLinks.externalUrl() : null;
+        const manageUrl = templatedUrl || pendingDraft.github_url;
+        if (manageUrl) {
+          linkElement.href = manageUrl;
           linkElement.style.display = 'inline';
         } else {
           linkElement.style.display = 'none';
@@ -452,6 +463,8 @@ class ReviewModal {
       submitBtn.disabled = false;
       cancelBtn.style.display = 'inline-block';
       closeBtn.style.display = 'inline-block';
+      // innerHTML reset drops any host icon — re-apply it.
+      this.applySubmitButtonIcon();
     }
   }
 
@@ -531,7 +544,7 @@ class ReviewModal {
         const reviewUrl = result.reviewUrl || result.github_url;
         if (isDraft) {
           window.toast.showSuccess(
-            'Draft review submitted to GitHub successfully!',
+            `Draft review submitted to ${ReviewModal.escapeHtml(ReviewModal.hostName())} successfully!`,
             {
               duration: 5000
             }
@@ -541,7 +554,7 @@ class ReviewModal {
             'Review submitted successfully!',
             {
               link: reviewUrl,
-              linkText: 'View on GitHub',
+              linkText: `View on ${ReviewModal.escapeHtml(ReviewModal.hostName())}`,
               duration: 5000
             }
           );
@@ -586,11 +599,16 @@ class ReviewModal {
       }
 
       if (isDraft) {
-        // After 2 seconds, open GitHub PR page for drafts
-        setTimeout(() => {
-          const githubUrl = result.github_url || `https://github.com/${pr.owner}/${pr.repo}/pull/${pr.number}`;
-          window.open(githubUrl, '_blank');
-        }, 2000);
+        // After 2 seconds, open the PR page for drafts. Use the PR's canonical
+        // html_url (correct host + `/pull/`) rather than the review's html_url,
+        // which some alt-hosts return as a github.com `/issues/<n>` URL. Never
+        // assume github.com — see resolveDraftPrUrl.
+        const prUrl = ReviewModal.resolveDraftPrUrl(pr, result);
+        if (prUrl) {
+          setTimeout(() => {
+            window.open(prUrl, '_blank');
+          }, 2000);
+        }
       }
       
     } catch (error) {
@@ -674,6 +692,110 @@ class ReviewModal {
     if (!checkbox) return;
 
     localStorage.setItem(ASSISTED_BY_STORAGE_KEY, String(checkbox.checked));
+  }
+
+  /**
+   * Display name of the remote code host, for user-facing text in place of
+   * the literal "GitHub". Reads the configured `links.external.name` via
+   * `window.RepoLinks.hostName()`, falling back to "GitHub".
+   *
+   * @returns {string}
+   */
+  static hostName() {
+    if (typeof window !== 'undefined' && window.RepoLinks
+        && typeof window.RepoLinks.hostName === 'function') {
+      return window.RepoLinks.hostName();
+    }
+    return 'GitHub';
+  }
+
+  /**
+   * Escape a string for safe interpolation into HTML. Used for the host
+   * name (user-supplied config) before it goes into the success toast,
+   * which renders its message/linkText via innerHTML.
+   *
+   * @param {string} text
+   * @returns {string}
+   */
+  static escapeHtml(text) {
+    return String(text == null ? '' : text)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  /**
+   * Resolve the URL to open in a new tab after a draft submit.
+   *
+   * Precedence:
+   *   1. The URL built from the repo's configured `links.external.url_template`
+   *      (`window.RepoLinks.externalUrl()`) — authoritative and host-correct.
+   *   2. The PR's canonical `html_url` (the host's own PR page).
+   *   3. The server-reported `github_url` as a last resort.
+   *
+   * Some alt-hosts return the pending-review `html_url` as a
+   * `github.com/.../issues/<n>` URL, which lands on the wrong host and page.
+   * We must never assume github.com, so there is no hardcoded fallback host:
+   * if none of the above yields a URL we open nothing.
+   *
+   * @param {{html_url?: string}|null|undefined} pr - current PR (from prManager)
+   * @param {{github_url?: string}|null|undefined} result - submit-review response
+   * @returns {string|null} URL to open, or null if none is available
+   */
+  static resolveDraftPrUrl(pr, result) {
+    if (typeof window !== 'undefined' && window.RepoLinks
+        && typeof window.RepoLinks.externalUrl === 'function') {
+      const templated = window.RepoLinks.externalUrl();
+      if (templated) return templated;
+    }
+    if (pr && pr.html_url) return pr.html_url;
+    if (result && result.github_url) return result.github_url;
+    return null;
+  }
+
+  /**
+   * Update host-name-dependent static text in the modal (the pending-draft
+   * notice and the "Save as Draft" description) to the configured host name.
+   * Called from `show()` because the name resolves asynchronously after the
+   * modal HTML is built. No-op when the modal isn't present.
+   */
+  applyHostName() {
+    if (!this.modal) return;
+    const name = ReviewModal.hostName();
+    const spans = this.modal.querySelectorAll('.rm-host-name');
+    spans.forEach((el) => { el.textContent = name; });
+  }
+
+  /**
+   * Prepend the configured external-host icon to the submit button, when an
+   * icon is configured for the repo. The icon is parsed via
+   * `window.RepoLinks.parseSvgIcon` (DOMParser + attribute stripping) and
+   * inserted as a DOM node — never via innerHTML. Idempotent: any previously
+   * inserted icon is removed first. No-op for plain github.com repos.
+   */
+  applySubmitButtonIcon() {
+    const submitBtn = this.modal?.querySelector('#submit-review-btn-modal');
+    if (!submitBtn) return;
+
+    const existing = submitBtn.querySelector?.('.submit-host-icon');
+    if (existing) existing.remove();
+
+    if (typeof window === 'undefined' || !window.RepoLinks
+        || typeof window.RepoLinks.externalIcon !== 'function'
+        || typeof window.RepoLinks.parseSvgIcon !== 'function') {
+      return;
+    }
+    const iconStr = window.RepoLinks.externalIcon();
+    if (!iconStr) return;
+    const svg = window.RepoLinks.parseSvgIcon(iconStr);
+    if (!svg) return;
+
+    svg.classList.add('submit-host-icon');
+    if (!svg.getAttribute('width')) svg.setAttribute('width', '16');
+    if (!svg.getAttribute('height')) svg.setAttribute('height', '16');
+    submitBtn.insertBefore(svg, submitBtn.firstChild);
   }
 
 }

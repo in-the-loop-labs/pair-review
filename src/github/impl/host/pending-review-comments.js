@@ -18,10 +18,16 @@ const logger = require('../../../utils/logger');
  *       "comments": [
  *         { "path": "...", "body": "...", "side": "RIGHT",
  *           "line": 42, "start_line": 40, "start_side": "RIGHT",
- *           "subject_type": "line" | "file" },
+ *           "subject_type": "line" | "file",
+ *           "commit_id": "<PR head SHA>" },
  *         ...
  *       ]
  *     }
+ *
+ *   `commit_id` is the PR head SHA. It is required by GitHub-compatible
+ *   hosts that validate each comment like `pulls.createReviewComment`
+ *   (which rejects a missing `commit_id` with a 422). It is sourced from
+ *   `prContext.headSha` and omitted entirely when that value is absent.
  *
  *   Response (HTTP 200, partial-success body):
  *     {
@@ -109,15 +115,27 @@ function substituteEndpoint(template, values) {
  * - Range comments include `start_line` and `start_side` (defaulting
  *   `start_side` to the same side as the end line, matching GitHub's
  *   own REST conventions).
+ * - `commitId` (the PR head SHA) is added as `commit_id` to every wire
+ *   comment when supplied. GitHub-compatible hosts validate comments like
+ *   `pulls.createReviewComment` and reject a missing `commit_id` with a
+ *   422. When `commitId` is empty/undefined the field is omitted entirely
+ *   (we never send `commit_id: undefined`).
+ *
+ * @param {Object} comment - Internal comment shape.
+ * @param {string} [commitId] - PR head SHA. Added as `commit_id` when a
+ *   non-empty string; omitted otherwise.
  */
-function toWireComment(comment) {
+function toWireComment(comment, commitId) {
+  const hasCommitId = typeof commitId === 'string' && commitId.length > 0;
   const isFileLevel = comment.isFileLevel || !comment.line;
   if (isFileLevel) {
-    return {
+    const wire = {
       path: comment.path,
       body: comment.body,
       subject_type: 'file'
     };
+    if (hasCommitId) wire.commit_id = commitId;
+    return wire;
   }
   const side = comment.side || 'RIGHT';
   const wire = {
@@ -131,6 +149,7 @@ function toWireComment(comment) {
     wire.start_line = comment.start_line;
     wire.start_side = comment.start_side || side;
   }
+  if (hasCommitId) wire.commit_id = commitId;
   return wire;
 }
 
@@ -143,9 +162,11 @@ function toWireComment(comment) {
  * @param {Object} features - Feature-flag object from the host binding.
  *   May include `pending_review_comments_endpoint` to override the
  *   default endpoint path.
- * @param {Object} prContext - `{ owner, repo, prNumber }`. Required —
- *   the host endpoint is path-shaped, so the GraphQL node IDs are not
- *   sufficient on their own.
+ * @param {Object} prContext - `{ owner, repo, prNumber, headSha? }`.
+ *   Required — the host endpoint is path-shaped, so the GraphQL node IDs
+ *   are not sufficient on their own. `headSha` (the PR head SHA) is
+ *   forwarded as each comment's `commit_id`, required by
+ *   GitHub-compatible hosts; omitted when absent.
  * @param {string} reviewId - The *host's* review identifier (returned
  *   by the host's M2 `review_lifecycle` impl, not a GraphQL node id).
  * @param {Array} comments - Comments with `{ path, line?, start_line?,
@@ -210,7 +231,12 @@ async function addCommentsInBatches(octokit, features, prContext, reviewId, comm
     review_id: resolvedReviewId
   });
 
-  const wireComments = comments.map(toWireComment);
+  // The PR head SHA is threaded through `prContext.headSha` from the
+  // submit site (see src/routes/pr.js). GitHub-compatible hosts require
+  // each comment to carry `commit_id`; when the SHA is absent we omit the
+  // field and let the host surface its own validation error.
+  const commitId = prContext.headSha;
+  const wireComments = comments.map((c) => toWireComment(c, commitId));
   logger.info(
     `Posting ${wireComments.length} comment(s) to host endpoint ${endpoint}`
   );

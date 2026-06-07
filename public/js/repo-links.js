@@ -25,6 +25,13 @@
     'owner', 'repo', 'number', 'branch', 'base_branch', 'head_sha'
   ];
 
+  // The most recently resolved links + substitution context for the
+  // current review. Stored so other code (ReviewModal, pr.js) can read
+  // the configured host name / external URL / icon instead of hardcoding
+  // "GitHub". `fetchAndApplyRepoLinks` refreshes these on every load.
+  let _currentLinks = null;
+  let _currentContext = null;
+
   /**
    * Substitute whitelisted placeholders in a URL template. Returns the
    * substituted URL, or null if any required placeholder is missing or
@@ -234,6 +241,10 @@
    */
   async function fetchAndApplyRepoLinks(owner, repo, context) {
     if (!owner || !repo) return;
+    // Reset so a failed fetch (or a repo with no links) falls back to the
+    // "GitHub" defaults rather than carrying a previous review's host name.
+    _currentLinks = null;
+    _currentContext = context || null;
     try {
       const response = await fetch(
         '/api/repos/' + encodeURIComponent(owner) + '/' + encodeURIComponent(repo) + '/links'
@@ -243,10 +254,54 @@
         return;
       }
       const data = await response.json();
-      applyRepoLinks(data && data.links, context);
+      _currentLinks = (data && data.links) || null;
+      applyRepoLinks(_currentLinks, context);
     } catch (err) {
       console.warn('[repo-links] Error fetching repo links:', err);
     }
+  }
+
+  /**
+   * Display name of the remote code host for the current review, for use
+   * in user-facing text in place of the literal "GitHub". Returns the
+   * configured `links.external.name`, or "GitHub" when unset. Server-side
+   * counterpart: `resolveHostName` in src/links/repo-links.js.
+   *
+   * @returns {string}
+   */
+  function hostName() {
+    if (_currentLinks && _currentLinks.external && _currentLinks.external.name) {
+      return _currentLinks.external.name;
+    }
+    return 'GitHub';
+  }
+
+  /**
+   * The substituted external URL for the current review (built from
+   * `links.external.url_template` and the stored context), or null when no
+   * external link is configured or substitution fails (e.g. Local mode,
+   * which has no `{number}`).
+   *
+   * @returns {string|null}
+   */
+  function externalUrl() {
+    if (!_currentLinks || !_currentLinks.external || !_currentLinks.external.url_template) {
+      return null;
+    }
+    return substituteUrlTemplate(_currentLinks.external.url_template, _currentContext || {});
+  }
+
+  /**
+   * The configured (server-sanitised) external host icon SVG string for the
+   * current review, or null when none is configured.
+   *
+   * @returns {string|null}
+   */
+  function externalIcon() {
+    if (_currentLinks && _currentLinks.external && _currentLinks.external.icon) {
+      return _currentLinks.external.icon;
+    }
+    return null;
   }
 
   const api = {
@@ -255,6 +310,9 @@
     buildExternalLink,
     applyRepoLinks,
     fetchAndApplyRepoLinks,
+    hostName,
+    externalUrl,
+    externalIcon,
   };
 
   // Expose on window for use by pr.js and local.js.

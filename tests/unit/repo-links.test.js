@@ -19,6 +19,7 @@ const {
   substituteUrlTemplate,
   sanitizeSvgIcon,
   resolveRepoLinks,
+  resolveHostName,
 } = require2('../../src/links/repo-links');
 const logger = require2('../../src/utils/logger');
 
@@ -252,6 +253,37 @@ describe('resolveRepoLinks', () => {
     expect(result.external.icon).not.toContain('<script');
   });
 
+  it('returns the configured name, and null when name is omitted', () => {
+    const withName = {
+      repos: {
+        'acme/widget': {
+          links: {
+            external: {
+              name: 'Meteorite',
+              label: 'Open on Meteorite',
+              url_template: 'https://meteorite.example/{owner}/{repo}/pulls/{number}',
+            }
+          }
+        }
+      }
+    };
+    expect(resolveRepoLinks(withName, 'acme/widget').external.name).toBe('Meteorite');
+
+    const withoutName = {
+      repos: {
+        'acme/widget': {
+          links: {
+            external: {
+              label: 'Open on AltHost',
+              url_template: 'https://althost.example/x',
+            }
+          }
+        }
+      }
+    };
+    expect(resolveRepoLinks(withoutName, 'acme/widget').external.name).toBeNull();
+  });
+
   it('returns external link with null icon when icon is missing', () => {
     const config = {
       repos: {
@@ -331,5 +363,45 @@ describe('resolveRepoLinks', () => {
       repos: { 'Acme/Widget': { links: { github: false } } }
     };
     expect(resolveRepoLinks(config, 'acme/widget').github).toBe(false);
+  });
+});
+
+describe('resolveHostName', () => {
+  it('returns the configured host name', () => {
+    const config = {
+      repos: {
+        'acme/widget': {
+          links: {
+            external: {
+              name: 'Meteorite',
+              label: 'Open on Meteorite',
+              url_template: 'https://meteorite.example/{owner}/{repo}/pulls/{number}',
+            }
+          }
+        }
+      }
+    };
+    expect(resolveHostName(config, 'acme/widget')).toBe('Meteorite');
+  });
+
+  it('falls back to "GitHub" when no name is configured', () => {
+    const noName = {
+      repos: {
+        'acme/widget': {
+          links: {
+            external: {
+              label: 'Open on AltHost',
+              url_template: 'https://althost.example/x',
+            }
+          }
+        }
+      }
+    };
+    expect(resolveHostName(noName, 'acme/widget')).toBe('GitHub');
+  });
+
+  it('falls back to "GitHub" with no config / no external link', () => {
+    expect(resolveHostName(null, 'acme/widget')).toBe('GitHub');
+    expect(resolveHostName({ repos: {} }, 'acme/widget')).toBe('GitHub');
   });
 });

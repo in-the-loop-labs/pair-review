@@ -186,15 +186,31 @@ endpoint described in "Host Extensions" is used.
 Customise the link buttons shown in the review header.
 
 - **`links.external`** — declare a new link with these fields:
-  - `label` (required) — display text.
+  - `name` (optional) — display name of the host (e.g. `"Meteorite"`). Used
+    in place of the literal "GitHub" in user-facing text: the review-submit
+    success toast, the pending-draft notice and indicator, and the
+    "Save as Draft" description. Defaults to `"GitHub"` when unset.
+  - `label` (required) — display text for the header link button.
   - `url_template` (required) — URL with `{owner}`, `{repo}`, `{number}`,
     `{branch}`, `{base_branch}`, `{head_sha}` placeholders. The resolved
-    URL must use `https://`.
-  - `icon` (optional) — inline SVG string for the button icon.
+    URL must use `https://`. In addition to the header link, this template
+    is the **authoritative source** for the URL opened after a draft submit
+    and the pending-draft "Manage" / indicator links — preferred over the
+    PR's API-returned `html_url`, which some hosts return on a different
+    (or wrong) domain.
+  - `icon` (optional) — inline SVG string for the button icon. Also shown on
+    the review-submit button. Sanitised server-side (script tags, `on*`
+    handlers, and `javascript:` URLs are stripped).
 - **`links.github: false`** — hide the default "Open on GitHub" link.
 - **`links.graphite: false`** — hide the Graphite stack link.
 
-When `links` is unset, the default link set is preserved.
+When `links` is unset, the default link set is preserved and all host-named
+text reads "GitHub".
+
+Note that the host's web URL frequently cannot be derived from `api_host`
+(the API host, web host, and the host returned in PR `html_url` values may
+be three different domains), which is why `url_template` exists and is used
+for every host-facing link.
 
 ## Host Extensions
 

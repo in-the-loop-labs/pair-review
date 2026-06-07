@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const childProcess = require('child_process');
-const { deepMerge, getGitHubToken, expandPath, resolveDbName, warnIfDevModeWithoutDbName, loadConfig, shouldSkipUpdateNotifier, _resetTokenCache, getRepoConfig, getRepoPath, getRepoCheckoutScript, getRepoWorktreeDirectory, getRepoWorktreeNameTemplate, getRepoCheckoutTimeout, resolveRepoOptions, getRepoResetScript, getRepoSkipBulkFetch, getRepoPoolSize, getRepoPoolFetchInterval, resolvePoolConfig, getWorktreeDisplayName, getConfigDir, getRepoLoadSkills, resolveLoadSkills, buildCouncilProviderOverrides, getSummaryProvider, getSummaryModel, getTourProvider, getTourModel, getSummaryEnabled, getSummaryAutoGenerate, getTourEnabled, getTourAutoGenerate, resolveHostBinding, validateRepoConfig, matchRepoByUrl, resolveBindingRepositoryFromPR } = require('../../src/config');
+const { deepMerge, getGitHubToken, expandPath, resolveDbName, warnIfDevModeWithoutDbName, loadConfig, shouldSkipUpdateNotifier, _resetTokenCache, getRepoConfig, getRepoPath, getRepoCheckoutScript, getRepoWorktreeDirectory, getRepoWorktreeNameTemplate, getRepoCheckoutTimeout, resolveRepoOptions, getRepoResetScript, getRepoSkipBulkFetch, getRepoPoolSize, getRepoPoolFetchInterval, resolvePoolConfig, getWorktreeDisplayName, getConfigDir, getRepoLoadSkills, resolveLoadSkills, buildCouncilProviderOverrides, getSummaryProvider, getSummaryModel, getTourProvider, getTourModel, getSummaryEnabled, getSummaryAutoGenerate, getTourEnabled, getTourAutoGenerate, resolveHostBinding, invalidateTokenCache, validateRepoConfig, matchRepoByUrl, resolveBindingRepositoryFromPR } = require('../../src/config');
 
 describe('config.js', () => {
   describe('getGitHubToken', () => {
@@ -2423,6 +2423,195 @@ describe('config.js', () => {
         expect(matched).toBeFalsy();
       });
     });
+
+    describe('refresh capability', () => {
+      it('attaches a working refresh for repo:token_command', () => {
+        execSyncSpy.mockReturnValueOnce('first-token\n');
+        const config = {
+          repos: {
+            'owner/alt': {
+              api_host: 'https://althost.example/api/v3',
+              token_command: 'op read op://alt/token'
+            }
+          }
+        };
+        const binding = resolveHostBinding('owner/alt', config);
+        expect(binding.token).toBe('first-token');
+        expect(binding.source).toBe('repo:token_command');
+        expect(typeof binding.refresh).toBe('function');
+
+        // Refresh busts the cache and re-runs the command, returning the new value.
+        execSyncSpy.mockReturnValueOnce('second-token\n');
+        const fresh = binding.refresh();
+        expect(fresh).toBe('second-token');
+        expect(execSyncSpy).toHaveBeenCalledTimes(2);
+      });
+
+      it('attaches a working refresh for config:github_token_command', () => {
+        execSyncSpy.mockReturnValueOnce('top-first\n');
+        const config = {
+          github_token_command: 'gh auth token',
+          repos: { 'owner/repo': {} }
+        };
+        const binding = resolveHostBinding('owner/repo', config);
+        expect(binding.token).toBe('top-first');
+        expect(binding.source).toBe('config:github_token_command');
+        expect(typeof binding.refresh).toBe('function');
+
+        execSyncSpy.mockReturnValueOnce('top-second\n');
+        const fresh = binding.refresh();
+        expect(fresh).toBe('top-second');
+        expect(execSyncSpy).toHaveBeenCalledTimes(2);
+      });
+
+      it('does NOT attach a refresh for literal repo:token', () => {
+        const binding = resolveHostBinding('owner/repo', {
+          repos: { 'owner/repo': { token: 'repo-literal' } }
+        });
+        expect(binding.source).toBe('repo:token');
+        expect(binding.refresh).toBeNull();
+      });
+
+      it('does NOT attach a refresh for config:github_token', () => {
+        const binding = resolveHostBinding('owner/repo', {
+          github_token: 'top-literal',
+          repos: { 'owner/repo': {} }
+        });
+        expect(binding.source).toBe('config:github_token');
+        expect(binding.refresh).toBeNull();
+      });
+
+      it('does NOT attach a refresh for env:GITHUB_TOKEN', () => {
+        process.env.GITHUB_TOKEN = 'env-token';
+        const binding = resolveHostBinding('owner/repo', { repos: { 'owner/repo': {} } });
+        expect(binding.source).toBe('env:GITHUB_TOKEN');
+        expect(binding.refresh).toBeNull();
+      });
+
+      it('does NOT attach a refresh when nothing resolves', () => {
+        const binding = resolveHostBinding('owner/repo', { repos: { 'owner/repo': {} } });
+        expect(binding.source).toBe('none');
+        expect(binding.refresh).toBeNull();
+      });
+
+      it('refresh returns empty string when the re-run command now fails', () => {
+        execSyncSpy.mockReturnValueOnce('initial\n');
+        const config = {
+          repos: {
+            'owner/alt': {
+              api_host: 'https://althost.example/api/v3',
+              token_command: 'op read op://alt/token'
+            }
+          }
+        };
+        const binding = resolveHostBinding('owner/alt', config);
+        expect(binding.token).toBe('initial');
+
+        execSyncSpy.mockImplementationOnce(() => { throw new Error('expired session'); });
+        expect(binding.refresh()).toBe('');
+      });
+
+      // Ordering regression: the refresh closure MUST invalidate the cache
+      // BEFORE re-resolving. If it re-resolved first (or never invalidated),
+      // _runTokenCommand would return the stale cached value and the command
+      // would NOT be re-run — refresh would silently be a no-op.
+      it('invalidates the cache BEFORE re-resolving (ordering regression)', () => {
+        execSyncSpy.mockReturnValueOnce('stale\n');
+        const config = {
+          repos: {
+            'owner/alt': {
+              api_host: 'https://althost.example/api/v3',
+              token_command: 'op read op://alt/token'
+            }
+          }
+        };
+        const binding = resolveHostBinding('owner/alt', config);
+        expect(binding.token).toBe('stale');
+        expect(execSyncSpy).toHaveBeenCalledTimes(1);
+
+        // A plain re-resolve (no invalidation) would return the cached
+        // 'stale' value without re-running the command. refresh() must run
+        // the command again and return the NEW value.
+        execSyncSpy.mockReturnValueOnce('rotated\n');
+        const fresh = binding.refresh();
+        expect(fresh).toBe('rotated');
+        // The command was actually re-executed (cache was busted first).
+        expect(execSyncSpy).toHaveBeenCalledTimes(2);
+        // Confirm the new value is now what a fresh resolve returns (cached).
+        expect(resolveHostBinding('owner/alt', config).token).toBe('rotated');
+        expect(execSyncSpy).toHaveBeenCalledTimes(2);
+      });
+    });
+
+    describe('invalidateTokenCache', () => {
+      it('deletes only the targeted repo:token_command key, leaving other repos intact', () => {
+        execSyncSpy
+          .mockReturnValueOnce('token-a\n')
+          .mockReturnValueOnce('token-b\n');
+        const config = {
+          repos: {
+            'owner/a': {
+              api_host: 'https://althost.example/api/v3',
+              token_command: 'echo a'
+            },
+            'owner/b': {
+              api_host: 'https://althost.example/api/v3',
+              token_command: 'echo b'
+            }
+          }
+        };
+        // Prime both caches.
+        expect(resolveHostBinding('owner/a', config).token).toBe('token-a');
+        expect(resolveHostBinding('owner/b', config).token).toBe('token-b');
+        expect(execSyncSpy).toHaveBeenCalledTimes(2);
+
+        // Invalidate ONLY owner/a.
+        invalidateTokenCache('owner/a', config, 'repo:token_command');
+
+        // owner/a re-runs the command; owner/b stays cached.
+        execSyncSpy.mockReturnValueOnce('token-a2\n');
+        expect(resolveHostBinding('owner/a', config).token).toBe('token-a2');
+        expect(resolveHostBinding('owner/b', config).token).toBe('token-b');
+        // Only one additional execSync (owner/a), owner/b not re-run.
+        expect(execSyncSpy).toHaveBeenCalledTimes(3);
+      });
+
+      it('deletes the top-level github_token_command key', () => {
+        execSyncSpy.mockReturnValueOnce('top-1\n');
+        const config = {
+          github_token_command: 'gh auth token',
+          repos: { 'owner/repo': {} }
+        };
+        expect(resolveHostBinding('owner/repo', config).token).toBe('top-1');
+        expect(execSyncSpy).toHaveBeenCalledTimes(1);
+
+        invalidateTokenCache('owner/repo', config, 'config:github_token_command');
+
+        execSyncSpy.mockReturnValueOnce('top-2\n');
+        expect(resolveHostBinding('owner/repo', config).token).toBe('top-2');
+        expect(execSyncSpy).toHaveBeenCalledTimes(2);
+      });
+
+      it('is a no-op for non-refreshable sources', () => {
+        execSyncSpy.mockReturnValueOnce('cached\n');
+        const config = {
+          repos: {
+            'owner/alt': {
+              api_host: 'https://althost.example/api/v3',
+              token_command: 'echo x'
+            }
+          }
+        };
+        expect(resolveHostBinding('owner/alt', config).token).toBe('cached');
+        expect(execSyncSpy).toHaveBeenCalledTimes(1);
+
+        // Wrong source label must not bust the repo:token_command cache.
+        invalidateTokenCache('owner/alt', config, 'repo:token');
+        invalidateTokenCache('owner/alt', config, 'env:GITHUB_TOKEN');
+        expect(resolveHostBinding('owner/alt', config).token).toBe('cached');
+        expect(execSyncSpy).toHaveBeenCalledTimes(1);
+      });
+    });
   });
 
   describe('validateRepoConfig', () => {
@@ -2545,6 +2734,28 @@ describe('config.js', () => {
           }
         }
       })).not.toThrow();
+    });
+
+    it('accepts an optional links.external.name', () => {
+      expect(() => validateRepoConfig({
+        repos: {
+          'owner/repo': {
+            links: { external: { name: 'Meteorite', label: 'Open', url_template: 'https://althost.example/{owner}/{repo}/pull/{number}' } }
+          }
+        }
+      })).not.toThrow();
+    });
+
+    it('throws when links.external.name is present but not a non-empty string', () => {
+      const make = (name) => () => validateRepoConfig({
+        repos: {
+          'owner/repo': {
+            links: { external: { name, label: 'Open', url_template: 'https://althost.example/{owner}/{repo}/pull/{number}' } }
+          }
+        }
+      });
+      expect(make(123)).toThrow(/links\.external\.name must be a non-empty string/);
+      expect(make('')).toThrow(/links\.external\.name must be a non-empty string/);
     });
 
     describe('pending_review_comments_endpoint override (Phase 5)', () => {

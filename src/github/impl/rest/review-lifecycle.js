@@ -20,7 +20,7 @@ function deriveRestReviewId(data) {
 
 /**
  * REST implementation of the review-lifecycle area:
- *   - addPullRequestReview         -> `pulls.createReview()` (no event, no body)
+ *   - addPullRequestReview         -> `pulls.createReview({ body: '' })` (no event, empty body)
  *   - addPullRequestReviewWithBody -> `pulls.createReview({ body })`
  *   - submitPullRequestReview      -> `pulls.submitReview({ event, body })`
  *   - deletePullRequestReview      -> `pulls.deletePendingReview()`
@@ -75,8 +75,20 @@ async function addPullRequestReview(octokit, prNodeId, prContext) {
   const { data } = await octokit.rest.pulls.createReview({
     owner: prContext.owner,
     repo: prContext.repo,
-    pull_number: prContext.prNumber
+    pull_number: prContext.prNumber,
     // No `event` -> review is created in PENDING state.
+    //
+    // The explicit empty `body` is REQUIRED, not cosmetic. Without any
+    // body params Octokit serializes a POST with an empty HTTP body.
+    // github.com tolerates that and creates an empty pending review, but
+    // strict GitHub-compatible alt-hosts (those with an `api_host`)
+    // reject it with HTTP 400 `{ message: "request body is empty" }`.
+    // Sending `body: ''` makes the serialized body non-empty (`{"body":""}`)
+    // while keeping the review PENDING. This is observationally identical
+    // on github.com to an empty-summary pending review and mirrors the
+    // sibling `addPullRequestReviewWithBody` (`body: body || ''`).
+    // Do NOT "simplify" this away.
+    body: ''
   });
 
   return {

@@ -27,6 +27,7 @@ const { v4: uuidv4 } = require('uuid');
 const fs = require('fs').promises;
 const path = require('path');
 const { resolveHostBinding, resolveBindingRepositoryFromPR, getWorktreeDisplayName, resolveLoadSkills, buildCouncilProviderOverrides, getRepoSkipBulkFetch, getSummaryEnabled, getTourEnabled } = require('../config');
+const { resolveHostName } = require('../links/repo-links');
 const { backgroundQueue } = require('../ai/background-queue');
 const logger = require('../utils/logger');
 const { buildDiffLineSet } = require('../utils/diff-annotator');
@@ -1624,11 +1625,30 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
 
     const prNodeId = prData.node_id ?? null;
 
+    // The PR head SHA is required by the host pending-review-comments path
+    // (GitHub-compatible alt-hosts validate each inline comment like
+    // `pulls.createReviewComment`, which mandates `commit_id`). The GraphQL
+    // path on github.com ignores it (the pending review pins the commit
+    // implicitly), so threading it through is harmless there.
+    // `prData.head_sha` is the canonical source (merged from the cached PR
+    // JSON); `prMetadata.head_sha` is a defensive fallback for callers whose
+    // record exposes it as a column. If neither is present, proceed without
+    // it but warn loudly so the resulting 422 is diagnosable.
+    const headSha = prData.head_sha || prMetadata.head_sha || null;
+    if (!headSha) {
+      logger.warn(
+        `Submit review for ${repository}#${prNumber}: PR head SHA is missing ` +
+        `(prData.head_sha and prMetadata.head_sha both absent). Host inline-comment ` +
+        `posting will likely fail with a 422 missing commit_id error.`
+      );
+    }
+
     const submitPrContext = {
       owner,
       repo,
       prNumber,
-      reviewId: existingDraft?.databaseId
+      reviewId: existingDraft?.databaseId,
+      headSha
     };
 
     if (event === 'DRAFT') {
@@ -1718,10 +1738,15 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
       // Commit transaction
       await run(db, 'COMMIT');
 
-      // Send success response after all database operations complete
+      // Send success response after all database operations complete.
+      // Use the configured remote-host display name (e.g. "Meteorite")
+      // instead of the literal "GitHub". Resolve via the binding repository
+      // so monorepo url_pattern configs map to the right repos[...] entry.
+      const cfg = req.app.get('config') || {};
+      const hostName = resolveHostName(cfg, resolveBindingRepositoryFromPR(owner, repo, cfg));
       res.json({
         success: true,
-        message: `${event === 'DRAFT' ? 'Draft review created' : 'Review submitted'} successfully ${event === 'DRAFT' ? 'on' : 'to'} GitHub`,
+        message: `${event === 'DRAFT' ? 'Draft review created' : 'Review submitted'} successfully ${event === 'DRAFT' ? 'on' : 'to'} ${hostName}`,
         github_url: githubReview.html_url,
         comments_submitted: githubReview.comments_count,
         event: event,

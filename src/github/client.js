@@ -21,20 +21,45 @@ const DEFAULT_FEATURES = Object.freeze({
 });
 
 /**
+ * Build the `Authorization` header value for a token, mirroring
+ * `@octokit/auth-token`'s scheme selection: JWTs (three dot-delimited
+ * segments) use the `bearer` scheme; everything else (classic/fine-grained
+ * PATs, installation tokens, alt-host token-command output) uses `token`.
+ *
+ * We stamp this header ourselves via an Octokit `before` hook instead of
+ * passing `auth` to the constructor, so a token refreshed mid-flight reaches
+ * every request without rebuilding the client. Replicating the prefix logic
+ * here keeps behaviour identical to the previous `auth: token` path.
+ *
+ * @param {string} token
+ * @returns {string}
+ */
+function withAuthorizationPrefix(token) {
+  return token.split('.').length === 3 ? `bearer ${token}` : `token ${token}`;
+}
+
+/**
  * Normalise the constructor argument into a binding object. Accepts the
  * legacy "bare token string" shape and the new
  * `{ token, apiHost, features }` shape so existing callers and tests do
  * not need to be updated.
  *
+ * The optional `refresh` capability from an object binding is preserved so
+ * the client can re-run a token command and retry on a 401 (see
+ * `resolveHostBinding` in `src/config.js`). The legacy bare-token path keeps
+ * `refresh: null`, so a github.com PAT client behaves exactly as before
+ * (no hook-driven retry).
+ *
  * @param {string|Object} arg - Token string or binding object
- * @returns {{ token: string, apiHost: string|null, features: Object }}
+ * @returns {{ token: string, apiHost: string|null, features: Object, refresh: (function(): (string|Promise<string>))|null }}
  */
 function normaliseBinding(arg) {
   if (typeof arg === 'string') {
     return {
       token: arg,
       apiHost: null,
-      features: { ...DEFAULT_FEATURES }
+      features: { ...DEFAULT_FEATURES },
+      refresh: null
     };
   }
   if (arg && typeof arg === 'object') {
@@ -43,9 +68,10 @@ function normaliseBinding(arg) {
     const features = (arg.features && typeof arg.features === 'object')
       ? { ...DEFAULT_FEATURES, ...arg.features }
       : { ...DEFAULT_FEATURES };
-    return { token, apiHost, features };
+    const refresh = typeof arg.refresh === 'function' ? arg.refresh : null;
+    return { token, apiHost, features, refresh };
   }
-  return { token: '', apiHost: null, features: { ...DEFAULT_FEATURES } };
+  return { token: '', apiHost: null, features: { ...DEFAULT_FEATURES }, refresh: null };
 }
 
 /**
@@ -71,12 +97,127 @@ class GitHubClient {
     this.binding = binding;
     this.features = binding.features;
     this.apiHost = binding.apiHost;
+    this.token = binding.token;
+    // Capability to obtain a fresh token (e.g. re-run a token_command).
+    // Only present for refreshable bindings; null for bare-token / literal
+    // / env sources, which therefore get NO 401 refresh-and-retry behaviour.
+    this.refresh = binding.refresh;
 
-    this.octokit = new Octokit({
-      auth: binding.token,
-      baseUrl: binding.apiHost || undefined,
+    // In-flight token refresh, shared across all concurrent/in-flight
+    // requests so a burst of 401s triggers exactly one `refresh()`. Reset to
+    // null once that refresh settles. See `_buildOctokit`.
+    this._refreshing = null;
+
+    this.octokit = this._buildOctokit();
+  }
+
+  /**
+   * Build the single, long-lived Octokit instance and register its request
+   * hooks. There is exactly ONE instance for the lifetime of the client — a
+   * mid-flight token refresh updates `this.token` in place rather than
+   * swapping the instance, so in-flight work (e.g. later pages of an
+   * `octokit.paginate` loop, concurrent requests) observes the new token
+   * instead of staying bound to a stale instance.
+   *
+   * Two hooks are registered, and ORDER MATTERS — `before` is registered
+   * first so it sits innermost and re-runs when the `wrap` hook re-issues a
+   * request:
+   *
+   *  1. `before('request')` stamps the CURRENT `this.token` onto the
+   *     `Authorization` header of every outgoing request at dispatch time
+   *     (REST via `octokit.rest.*`/`octokit.paginate` AND GraphQL via
+   *     `octokit.graphql` — both flow through this pipeline). We do this
+   *     instead of passing `auth` to the constructor precisely so the token
+   *     is read late, per-request.
+   *  2. `wrap('request')` implements refresh-on-401: on a 401, if a `refresh`
+   *     capability exists and the request has not already been retried, it
+   *     obtains a fresh token (coalescing concurrent refreshes onto one shared
+   *     promise) and re-issues the request exactly once.
+   *
+   * @returns {Octokit}
+   */
+  _buildOctokit() {
+    const octokit = new Octokit({
+      baseUrl: this.apiHost || undefined,
       userAgent: 'pair-review v1.0.0'
     });
+
+    // (1) Stamp the live token onto every request. Reads `this.token` at
+    // dispatch time, so requests issued after a refresh — including
+    // pagination follow-ups and the retry below — always carry the latest
+    // token. Registered BEFORE the wrap hook so it re-runs on the retry.
+    octokit.hook.before('request', (options) => {
+      options.headers = {
+        ...options.headers,
+        authorization: withAuthorizationPrefix(this.token)
+      };
+    });
+
+    // (2) Refresh-on-401, with concurrency-safe coalescing.
+    octokit.hook.wrap('request', async (request, options) => {
+      try {
+        return await request(options);
+      } catch (error) {
+        // Only token-expiry (401) is recoverable by re-running the token
+        // command. 403 (rate-limit/permissions), 404, 422, and 5xx are NOT
+        // auth-expiry and must not trigger a refresh.
+        if (error.status !== 401) {
+          throw error;
+        }
+        // No refresh capability (bare-token / literal / env source), or this
+        // request was already retried once → propagate without looping.
+        if (typeof this.refresh !== 'function' || options.request?._pairReviewRetried) {
+          throw error;
+        }
+
+        // Coalesce concurrent/in-flight 401s onto a SINGLE refresh. Without
+        // this, every straggler bound to the now-stale token (the next page
+        // of a `paginate` loop, sibling concurrent requests) would call
+        // `refresh()` independently. The first 401 to arrive starts the
+        // refresh; the rest await the same promise. The promise resolves to
+        // whether the token actually changed — an empty/unchanged result (or
+        // a thrown refresh) means retrying cannot help, so we re-throw the
+        // original 401 rather than burn a pointless attempt.
+        if (!this._refreshing) {
+          const previousToken = this.token;
+          this._refreshing = (async () => {
+            try {
+              const fresh = await this.refresh();
+              if (fresh && fresh !== this.token) {
+                this.token = fresh;
+              }
+            } catch (refreshError) {
+              logger.warn(`Token refresh after 401 failed: ${refreshError.message}`);
+            } finally {
+              this._refreshing = null;
+            }
+            return this.token !== previousToken;
+          })();
+        }
+
+        const tokenChanged = await this._refreshing;
+        if (!tokenChanged) {
+          throw error;
+        }
+
+        const host = this.apiHost || 'api.github.com';
+        logger.info(`401 from ${host}; refreshed token and retrying request once`);
+
+        // Re-issue once through the full pipeline. Mark `_pairReviewRetried`
+        // so a still-failing fresh token throws instead of looping. Strip the
+        // stale `authorization` header and the inherited `hook` binding so the
+        // `before` hook re-stamps the fresh token cleanly on the retry.
+        const { hook: _staleHook, ...staleRequest } = options.request || {};
+        const { authorization: _staleAuth, ...staleHeaders } = options.headers || {};
+        return await this.octokit.request({
+          ...options,
+          headers: staleHeaders,
+          request: { ...staleRequest, _pairReviewRetried: true }
+        });
+      }
+    });
+
+    return octokit;
   }
 
   /**
@@ -544,8 +685,13 @@ class GitHubClient {
    * @returns {Promise<Object>}
    */
   async createReviewGraphQL(prNodeId, event, body, comments = [], existingReviewId = null, prContext = null) {
+    // Transport label for user-facing log/error strings. This method name
+    // is historical (callers depend on it), but the actual transport may be
+    // the alt-host REST/extension path rather than GraphQL. Keep the
+    // messages accurate to what really ran.
+    const transport = this.apiHost ? 'alt-host' : 'GraphQL';
     try {
-      console.log(`Creating GraphQL review for PR ${prNodeId} with ${comments.length} comments`);
+      console.log(`Creating review (${transport}) for PR ${prNodeId} with ${comments.length} comments`);
 
       const validEvents = ['APPROVE', 'REQUEST_CHANGES', 'COMMENT'];
       if (!validEvents.includes(event)) {
@@ -662,14 +808,17 @@ class GitHubClient {
       };
 
     } catch (error) {
-      console.error('GraphQL review error:', error);
+      console.error(`Review error (${transport}):`, error);
 
+      // The `error.errors` branch is a GraphQL-shaped error envelope. It is
+      // harmless on the REST/host path (which won't populate it); we still
+      // label the message with the actual transport for accuracy.
       if (error.errors) {
         const messages = error.errors.map(e => e.message).join(', ');
-        throw new Error(`GitHub GraphQL error: ${messages}`);
+        throw new Error(`GitHub ${transport} error: ${messages}`);
       }
 
-      throw new Error(`Failed to submit review via GraphQL: ${error.message}`);
+      throw new Error(`Failed to submit review (${transport}): ${error.message}`);
     }
   }
 
@@ -687,8 +836,12 @@ class GitHubClient {
    * @returns {Promise<Object>}
    */
   async createDraftReviewGraphQL(prNodeId, body, comments = [], existingReviewId = null, prContext = null) {
+    // Transport label for user-facing log/error strings. The method name is
+    // historical; the real transport may be the alt-host REST/extension
+    // path rather than GraphQL. See createReviewGraphQL for the rationale.
+    const transport = this.apiHost ? 'alt-host' : 'GraphQL';
     try {
-      console.log(`Creating GraphQL draft review for PR ${prNodeId} with ${comments.length} comments`);
+      console.log(`Creating draft review (${transport}) for PR ${prNodeId} with ${comments.length} comments`);
 
       // See createReviewGraphQL for the rationale: on the REST
       // review-lifecycle path the caller may have only a numeric review
@@ -800,14 +953,16 @@ class GitHubClient {
       };
 
     } catch (error) {
-      console.error('GraphQL draft review error:', error);
+      console.error(`Draft review error (${transport}):`, error);
 
+      // The `error.errors` branch is a GraphQL-shaped error envelope,
+      // harmless on the REST/host path. Label with the actual transport.
       if (error.errors) {
         const messages = error.errors.map(e => e.message).join(', ');
-        throw new Error(`GitHub GraphQL error: ${messages}`);
+        throw new Error(`GitHub ${transport} error: ${messages}`);
       }
 
-      throw new Error(`Failed to create draft review via GraphQL: ${error.message}`);
+      throw new Error(`Failed to create draft review (${transport}): ${error.message}`);
     }
   }
 
@@ -1068,5 +1223,9 @@ module.exports = {
   isComplexityError,
   // Exported so tests can assert that the bare-token defaults stay in
   // sync with the canonical `GRAPHQL_DEFAULT_AREAS` set in `src/config.js`.
-  DEFAULT_FEATURES
+  DEFAULT_FEATURES,
+  // Exported for unit tests asserting binding normalisation (e.g. that the
+  // `refresh` capability is preserved for object bindings and null for the
+  // legacy bare-token path).
+  normaliseBinding
 };

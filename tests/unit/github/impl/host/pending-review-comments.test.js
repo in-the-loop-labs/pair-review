@@ -304,6 +304,102 @@ describe('impl/host/pending-review-comments', () => {
     });
   });
 
+  describe('commit_id (PR head SHA) threading', () => {
+    const HEAD_SHA = 'abc123def456abc123def456abc123def456abcd';
+
+    it('toWireComment adds commit_id to line comments when commitId is provided', () => {
+      const wire = hostImpl.toWireComment(
+        { path: 'src/a.js', line: 10, side: 'RIGHT', body: 'hi' },
+        HEAD_SHA
+      );
+      expect(wire).toEqual({
+        path: 'src/a.js',
+        body: 'hi',
+        side: 'RIGHT',
+        line: 10,
+        subject_type: 'line',
+        commit_id: HEAD_SHA
+      });
+    });
+
+    it('toWireComment adds commit_id to range comments when commitId is provided', () => {
+      const wire = hostImpl.toWireComment(
+        { path: 'src/a.js', line: 10, start_line: 7, side: 'RIGHT', body: 'range' },
+        HEAD_SHA
+      );
+      expect(wire).toEqual({
+        path: 'src/a.js',
+        body: 'range',
+        side: 'RIGHT',
+        line: 10,
+        start_line: 7,
+        start_side: 'RIGHT',
+        subject_type: 'line',
+        commit_id: HEAD_SHA
+      });
+    });
+
+    it('toWireComment adds commit_id to file-level comments when commitId is provided', () => {
+      const wire = hostImpl.toWireComment(
+        { path: 'README.md', body: 'whole file', isFileLevel: true },
+        HEAD_SHA
+      );
+      expect(wire).toEqual({
+        path: 'README.md',
+        body: 'whole file',
+        subject_type: 'file',
+        commit_id: HEAD_SHA
+      });
+    });
+
+    it('toWireComment OMITS commit_id (no key) when commitId is undefined', () => {
+      const wire = hostImpl.toWireComment(
+        { path: 'src/a.js', line: 10, body: 'hi' }
+      );
+      expect(wire).not.toHaveProperty('commit_id');
+    });
+
+    it('toWireComment OMITS commit_id (no key) when commitId is an empty string', () => {
+      const lineWire = hostImpl.toWireComment(
+        { path: 'src/a.js', line: 10, body: 'hi' },
+        ''
+      );
+      const fileWire = hostImpl.toWireComment(
+        { path: 'README.md', body: 'file', isFileLevel: true },
+        ''
+      );
+      expect(lineWire).not.toHaveProperty('commit_id');
+      expect(fileWire).not.toHaveProperty('commit_id');
+    });
+
+    it('addCommentsInBatches posts commit_id equal to prContext.headSha for every comment', async () => {
+      const octokit = makeOctokit(async () => ({ data: { added: 3, failed: [] } }));
+      const ctxWithSha = { ...PR_CTX, headSha: HEAD_SHA };
+      const comments = [
+        { path: 'a.js', line: 1, side: 'RIGHT', body: 'line' },
+        { path: 'b.js', line: 5, start_line: 3, side: 'RIGHT', body: 'range' },
+        { path: 'README.md', body: 'file', isFileLevel: true }
+      ];
+      await hostImpl.addCommentsInBatches(octokit, {}, ctxWithSha, 42, comments);
+      const [, options] = octokit.request.mock.calls[0];
+      expect(options.data.comments).toHaveLength(3);
+      for (const wire of options.data.comments) {
+        expect(wire.commit_id).toBe(HEAD_SHA);
+      }
+    });
+
+    it('addCommentsInBatches sends comments WITHOUT a commit_id key when prContext.headSha is absent', async () => {
+      const octokit = makeOctokit(async () => ({ data: { added: 1, failed: [] } }));
+      // PR_CTX deliberately has no headSha.
+      const comments = [{ path: 'a.js', line: 1, side: 'RIGHT', body: 'line' }];
+      await expect(
+        hostImpl.addCommentsInBatches(octokit, {}, PR_CTX, 42, comments)
+      ).resolves.toBeDefined();
+      const [, options] = octokit.request.mock.calls[0];
+      expect(options.data.comments[0]).not.toHaveProperty('commit_id');
+    });
+  });
+
   describe('substituteEndpoint', () => {
     it('replaces all four required placeholders', () => {
       const out = hostImpl.substituteEndpoint(

@@ -554,9 +554,17 @@ function _resolveFeatures(apiHost, explicit) {
  * lookup returns an empty token so the caller can surface a clear
  * "missing credential" error.
  *
+ * Refreshable sources (`repo:token_command`, `config:github_token_command`)
+ * additionally carry a `refresh` closure on the returned binding. Calling
+ * `refresh()` busts the cached token for that exact source, re-runs the
+ * command, and resolves to the fresh token (empty string if the command now
+ * fails). For non-refreshable sources (`env:GITHUB_TOKEN`, `repo:token`,
+ * `config:github_token`, `none`) `refresh` is `null` — re-running would not
+ * change a literal token or env var.
+ *
  * @param {string|null|undefined} repository - "owner/repo" identifier, or null/undefined for no-repo fallback
  * @param {Object} config - Configuration object from loadConfig()
- * @returns {{ apiHost: string|null, token: string, features: Object, source: string }}
+ * @returns {{ apiHost: string|null, token: string, features: Object, source: string, refresh: (function(): string)|null }}
  */
 function resolveHostBinding(repository, config) {
   const safeConfig = config || {};
@@ -575,7 +583,7 @@ function resolveHostBinding(repository, config) {
     token = process.env.GITHUB_TOKEN;
     source = 'env:GITHUB_TOKEN';
     logger.debug('Using GitHub token from GITHUB_TOKEN environment variable');
-    return { apiHost, token, features, source };
+    return { apiHost, token, features, source, refresh: null };
   }
 
   // 2. Repo-level literal token
@@ -583,14 +591,20 @@ function resolveHostBinding(repository, config) {
     token = repoConfig.token;
     source = 'repo:token';
     logger.debug(`Using token from repos[${repository}].token`);
-    return { apiHost, token, features, source };
+    return { apiHost, token, features, source, refresh: null };
   }
 
   // 3. Repo-level token_command
   if (repoConfig && typeof repoConfig.token_command === 'string' && repoConfig.token_command) {
     const result = _runTokenCommand(repoConfig.token_command, repository, 'repo:token_command');
     if (result) {
-      return { apiHost, token: result, features, source: 'repo:token_command' };
+      return {
+        apiHost,
+        token: result,
+        features,
+        source: 'repo:token_command',
+        refresh: _makeRefresh(repository, safeConfig, 'repo:token_command')
+      };
     }
   }
 
@@ -601,7 +615,7 @@ function resolveHostBinding(repository, config) {
     token = safeConfig.github_token;
     source = 'config:github_token';
     logger.debug('Using GitHub token from config.github_token');
-    return { apiHost, token, features, source };
+    return { apiHost, token, features, source, refresh: null };
   }
 
   // 5. Top-level github_token_command. Like step 4, github.com-only.
@@ -612,7 +626,13 @@ function resolveHostBinding(repository, config) {
   if (apiHost === null && typeof safeConfig.github_token_command === 'string' && safeConfig.github_token_command) {
     const result = _runTokenCommand(safeConfig.github_token_command, null, 'config:github_token_command');
     if (result) {
-      return { apiHost, token: result, features, source: 'config:github_token_command' };
+      return {
+        apiHost,
+        token: result,
+        features,
+        source: 'config:github_token_command',
+        refresh: _makeRefresh(repository, safeConfig, 'config:github_token_command')
+      };
     }
   }
 
@@ -621,7 +641,71 @@ function resolveHostBinding(repository, config) {
   } else {
     logger.debug('No token resolved for host binding');
   }
-  return { apiHost, token: '', features, source: 'none' };
+  return { apiHost, token: '', features, source: 'none', refresh: null };
+}
+
+/**
+ * Builds the `refresh` closure attached to a refreshable host binding.
+ *
+ * The closure busts the cached token for the exact (repository, command)
+ * pair backing `source`, then re-resolves the binding and returns the
+ * freshly-resolved token. Cache invalidation happens BEFORE re-resolving so
+ * `_runTokenCommand` re-executes the command rather than returning the stale
+ * cached value — without this ordering, refresh would be a no-op.
+ *
+ * @param {string|null|undefined} repository - "owner/repo" identifier as supplied to resolveHostBinding
+ * @param {Object} config - Configuration object from loadConfig()
+ * @param {('repo:token_command'|'config:github_token_command')} source - The refreshable source backing the binding
+ * @returns {function(): string} - Closure resolving to the fresh token (empty string on failure)
+ */
+function _makeRefresh(repository, config, source) {
+  return function refresh() {
+    invalidateTokenCache(repository, config, source);
+    // Re-resolve after invalidation so _runTokenCommand re-executes the
+    // command. Returns '' if the command now fails or yields nothing.
+    return resolveHostBinding(repository, config).token;
+  };
+}
+
+/**
+ * Invalidates the cached token for a single refreshable source so the next
+ * resolution re-runs its command. Surgical: deletes ONLY the cache key for
+ * the supplied (repository, command) pair — other repos' cached tokens are
+ * left intact.
+ *
+ *   - `repo:token_command`           → key `${repository}|${repoConfig.token_command}`
+ *   - `config:github_token_command`  → key `|${config.github_token_command}`
+ *     (also clears the single-slot `_cachedCommandToken` defensively, since
+ *     the no-repo `getGitHubToken()` path caches the top-level command there)
+ *
+ * Literal-token and env sources are not refreshable, so calling this with
+ * any other `source` is a no-op.
+ *
+ * @param {string|null|undefined} repository - "owner/repo" identifier
+ * @param {Object} config - Configuration object from loadConfig()
+ * @param {('repo:token_command'|'config:github_token_command')} source - Source to invalidate
+ */
+function invalidateTokenCache(repository, config, source) {
+  const safeConfig = config || {};
+  if (source === 'repo:token_command') {
+    const repoConfig = repository ? getRepoConfig(safeConfig, repository) : null;
+    const command = repoConfig && typeof repoConfig.token_command === 'string' ? repoConfig.token_command : '';
+    if (!command) return;
+    const cacheKey = `${repository ?? ''}|${command}`;
+    _cachedRepoTokens.delete(cacheKey);
+    logger.debug(`Invalidated cached token for repo:token_command (${repository})`);
+    return;
+  }
+  if (source === 'config:github_token_command') {
+    const command = typeof safeConfig.github_token_command === 'string' ? safeConfig.github_token_command : '';
+    if (!command) return;
+    const cacheKey = `|${command}`;
+    _cachedRepoTokens.delete(cacheKey);
+    // The no-repo getGitHubToken() path caches the same top-level command in
+    // a separate single slot; clear it too so both paths re-run the command.
+    _cachedCommandToken = null;
+    logger.debug('Invalidated cached token for config:github_token_command');
+  }
 }
 
 /**
@@ -869,6 +953,15 @@ function validateRepoConfig(config) {
       if (!ext.url_template.startsWith('https://')) {
         throw new Error(
           `Invalid pair-review config: repos["${repoKey}"].links.external.url_template must start with "https://".`
+        );
+      }
+      // Optional display name for the host (e.g. "Meteorite"). Used in place
+      // of the literal "GitHub" in user-facing text. When omitted, callers
+      // fall back to "GitHub" (see resolveHostName in src/links/repo-links.js).
+      if (ext.name !== undefined && ext.name !== null
+          && (typeof ext.name !== 'string' || !ext.name)) {
+        throw new Error(
+          `Invalid pair-review config: repos["${repoKey}"].links.external.name must be a non-empty string when present.`
         );
       }
     }
@@ -1419,6 +1512,7 @@ module.exports = {
   validatePort,
   getGitHubToken,
   resolveHostBinding,
+  invalidateTokenCache,
   validateRepoConfig,
   matchRepoByUrl,
   resolveBindingRepositoryFromPR,

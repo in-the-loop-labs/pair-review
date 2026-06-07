@@ -33,12 +33,34 @@ describe('impl/rest/review-lifecycle', () => {
     it('calls createReview without an event and returns { id, databaseId }', async () => {
       const octokit = makeOctokit({
         createReview: async (args) => {
-          expect(args).toEqual({ owner: 'o', repo: 'r', pull_number: 1 });
+          expect(args).toEqual({ owner: 'o', repo: 'r', pull_number: 1, body: '' });
+          // No `event` -> the review stays PENDING.
+          expect(args.event).toBeUndefined();
           return { data: { id: 555, node_id: 'PRR_new', html_url: 'https://althost.example/o/r/pull/1#pullrequestreview-555', state: 'PENDING' } };
         }
       });
       const result = await restImpl.addPullRequestReview(octokit, 'PR_xyz', PR_CTX);
       expect(result).toEqual({ id: 'PRR_new', databaseId: 555 });
+    });
+
+    it('sends an explicit empty body so strict alt-hosts do not reject an empty request body (regression)', async () => {
+      // Regression guard: without an explicit `body`, Octokit serializes a
+      // POST with an empty HTTP body. github.com tolerates this, but strict
+      // GitHub-compatible alt-hosts reject it with HTTP 400
+      // `{ message: "request body is empty" }`. The body MUST be present.
+      let captured;
+      const octokit = makeOctokit({
+        createReview: async (args) => {
+          captured = args;
+          return { data: { id: 1, node_id: 'PRR_b', html_url: 'u', state: 'PENDING' } };
+        }
+      });
+      await restImpl.addPullRequestReview(octokit, 'PR_xyz', PR_CTX);
+      expect(octokit.rest.pulls.createReview).toHaveBeenCalledTimes(1);
+      expect(captured).toHaveProperty('body');
+      expect(captured.body).toBe('');
+      // The serialized HTTP body must be non-empty.
+      expect(JSON.stringify(captured)).not.toBe('{}');
     });
 
     it('returns databaseId: null when REST response omits the numeric id', async () => {
