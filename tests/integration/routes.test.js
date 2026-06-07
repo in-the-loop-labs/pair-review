@@ -3914,6 +3914,7 @@ describe('Repo Links Endpoint', () => {
       expect(res.body.links.github).toBe(false);
       expect(res.body.links.graphite).toBe(false);
       expect(res.body.links.external).toEqual({
+        name: null,
         label: 'Open on AltHost',
         url_template: 'https://althost.example/{owner}/{repo}/pull/{number}',
         icon: '<svg xmlns="http://www.w3.org/2000/svg"><path d="M1 1"/></svg>',
