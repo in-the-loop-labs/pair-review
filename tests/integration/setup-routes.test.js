@@ -214,6 +214,46 @@ describe('POST /api/setup/pr/:owner/:repo/:number', () => {
     const callArgs = prSetupModule.setupPRReview.mock.calls[0][0];
     expect(callArgs.restoreMetadata).toBeNull();
   });
+
+  it('resolves binding key for monorepo url_pattern config and feeds it to getGitHubToken', async () => {
+    // Config has one `repos[...]` entry whose url_pattern captures
+    // many owner/repo pairs. The route must call getGitHubToken with
+    // the BINDING KEY ("acme-monorepo"), not the captured "acme/widget-a".
+    const monorepoConfig = {
+      repos: {
+        'acme-monorepo': {
+          api_host: 'https://ghe.acme.example/api/v3',
+          token: 'acme-monorepo-secret',
+          url_pattern: '^https://ghe\\.acme\\.example/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>\\d+)$',
+          features: { stack_walker: 'rest', pending_review_check: 'rest', review_lifecycle: 'rest', pending_review_comments: 'host' }
+        }
+      }
+    };
+
+    const app = createApp(db, monorepoConfig);
+    const res = await request(app).post('/api/setup/pr/acme/widget-a/7');
+
+    expect(res.status).toBe(200);
+    expect(configModule.getGitHubToken).toHaveBeenCalledWith(monorepoConfig, 'acme-monorepo');
+
+    // setupPRReview also receives the binding key so downstream config
+    // lookups (path, pool, reset_script) hit the right entry.
+    expect(prSetupModule.setupPRReview).toHaveBeenCalledOnce();
+    const callArgs = prSetupModule.setupPRReview.mock.calls[0][0];
+    expect(callArgs.bindingRepository).toBe('acme-monorepo');
+  });
+
+  it('falls back to PR identity when no url_pattern matches (negative case)', async () => {
+    const plainConfig = { github_token: 'test-token', repos: {} };
+    const app = createApp(db, plainConfig);
+    const res = await request(app).post('/api/setup/pr/alice/tool/3');
+
+    expect(res.status).toBe(200);
+    // Binding key = "alice/tool" (the PR identity) when nothing matched.
+    expect(configModule.getGitHubToken).toHaveBeenCalledWith(plainConfig, 'alice/tool');
+    const callArgs = prSetupModule.setupPRReview.mock.calls[0][0];
+    expect(callArgs.bindingRepository).toBe('alice/tool');
+  });
 });
 
 describe('POST /api/setup/local', () => {

@@ -15,7 +15,7 @@ const crypto = require('crypto');
 const { activeSetups, broadcastSetupProgress } = require('./shared');
 const { setupPRReview } = require('../setup/pr-setup');
 const { setupLocalReview } = require('../setup/local-setup');
-const { getGitHubToken, expandPath } = require('../config');
+const { getGitHubToken, expandPath, resolveBindingRepositoryFromPR } = require('../config');
 const { queryOne, ReviewRepository } = require('../database');
 const { normalizeRepository } = require('../utils/paths');
 const { rejectUrlLikeLocalReviewPath } = require('../utils/local-path-input');
@@ -63,8 +63,12 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
     const db = req.app.get('db');
     const config = req.app.get('config');
 
-    // GitHub token is required for PR setup
-    const githubToken = getGitHubToken(config);
+    // GitHub token is required for PR setup. Resolve the binding key
+    // first so monorepo-style `repos[...]` entries (matched via
+    // `url_pattern` named captures) supply their per-repo token even when
+    // the captured owner/repo differs from the config key.
+    const repositoryForToken = resolveBindingRepositoryFromPR(owner, repo, config);
+    const githubToken = getGitHubToken(config, repositoryForToken);
     if (!githubToken) {
       return res.status(401).json({ error: 'GitHub token not configured' });
     }
@@ -143,6 +147,7 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
           repo,
           prNumber,
           githubToken,
+          bindingRepository: repositoryForToken,
           config,
           poolLifecycle: req.app.get('poolLifecycle'),
           restoreMetadata,

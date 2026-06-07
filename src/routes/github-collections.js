@@ -161,7 +161,9 @@ function registerCollection(def) {
       }
 
       const config = req.app.get('config');
-      const githubToken = getGitHubToken(config);
+      // Cross-repo search on github.com — no per-repo binding applies here.
+      // Explicit `undefined` repository selects the no-repo (top-level) path.
+      const githubToken = getGitHubToken(config, undefined);
       if (!githubToken) {
         return res.status(401).json({ success: false, error: 'GitHub token not configured' });
       }

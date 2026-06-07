@@ -17,6 +17,7 @@ const express = require('express');
 const { query, queryOne, run, withTransaction, WorktreeRepository, ReviewRepository, GitHubReviewRepository, RepoSettingsRepository, AnalysisRunRepository, PRMetadataRepository, CouncilRepository } = require('../database');
 const { GitWorktreeManager } = require('../git/worktree');
 const { GitHubClient } = require('../github/client');
+const { PRArgumentParser } = require('../github/parser');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
 const { getShaAbbrevLength, DEFAULT_SHA_ABBREV_LENGTH } = require('../git/sha-abbrev');
 const { normalizeRepository, resolveRenamedFile, resolveRenamedFileOld } = require('../utils/paths');
@@ -25,7 +26,8 @@ const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs').promises;
 const path = require('path');
-const { getGitHubToken, getWorktreeDisplayName, resolveLoadSkills, buildCouncilProviderOverrides, getRepoSkipBulkFetch, getSummaryEnabled, getTourEnabled } = require('../config');
+const { resolveHostBinding, resolveBindingRepositoryFromPR, getWorktreeDisplayName, resolveLoadSkills, buildCouncilProviderOverrides, getRepoSkipBulkFetch, getSummaryEnabled, getTourEnabled } = require('../config');
+const { resolveHostName } = require('../links/repo-links');
 const { backgroundQueue } = require('../ai/background-queue');
 const logger = require('../utils/logger');
 const { buildDiffLineSet } = require('../utils/diff-annotator');
@@ -113,6 +115,57 @@ module.exports._computeHunkHashesFromDiff = computeHunkHashesFromDiff;
 module.exports._attachHunkHashes = attachHunkHashes;
 
 /**
+ * Resolve the host binding for a PR route, with alt-host safety checks.
+ *
+ * For an alt-host-configured repo we MUST NOT silently fall back to the
+ * server-startup github.com token cached at `req.app.get('githubToken')` —
+ * pointing that token at the alt-host would either auth-fail or, worse,
+ * leak it to a third party. When the binding resolves no token for an
+ * alt-host repo, throw a clear configuration error.
+ *
+ * For github.com repos (no `apiHost`) we preserve the pre-existing
+ * fallback to `req.app.get('githubToken')` so the GET endpoints that
+ * never touched per-repo config keep working.
+ *
+ * @param {import('express').Request} req
+ * @param {string} repository - "owner/repo" identifier
+ * @returns {{ binding: {apiHost: string|null, token: string, features: Object, source: string}, token: string }|null}
+ *   `null` when no token can be resolved AND the repo is github.com (so
+ *   callers can fall through to optional behaviour). Throws for alt-host
+ *   misconfiguration.
+ */
+function resolveBindingForRequest(req, repository) {
+  const config = req.app.get('config') || {};
+  // `repository` here is the PR-identity `${owner}/${repo}`. For
+  // monorepo-style configs the binding-key in `config.repos` can differ;
+  // resolve it via `resolveBindingRepositoryFromPR` before looking up
+  // the host binding so per-repo tokens/api_host/features apply.
+  const [owner, repo] = String(repository).split('/');
+  const bindingRepository = resolveBindingRepositoryFromPR(owner, repo, config);
+  const binding = resolveHostBinding(bindingRepository, config);
+  if (binding.token) {
+    return { binding, token: binding.token, bindingRepository };
+  }
+  // No token from repo or top-level config — for github.com fall back to
+  // the server-startup cached token (legacy behaviour); for alt-host we
+  // refuse to use that token because it's for github.com.
+  if (binding.apiHost) {
+    throw new Error(
+      `No GitHub token configured for alt-host repo ${repository} (${binding.apiHost}). Configure repos["${bindingRepository}"].token or token_command.`
+    );
+  }
+  const fallback = req.app.get('githubToken');
+  if (fallback) {
+    return {
+      binding: { ...binding, token: fallback, source: 'app:githubToken' },
+      token: fallback,
+      bindingRepository
+    };
+  }
+  return null;
+}
+
+/**
  * Sync pending draft review from GitHub with local database
  *
  * Handles three scenarios:
@@ -127,15 +180,24 @@ module.exports._attachHunkHashes = attachHunkHashes;
  * @param {number} reviewId - The local review ID
  * @param {Object} githubPendingReview - The pending review data from GitHub GraphQL API
  * @param {GitHubClient} [githubClient] - Optional GitHub client for querying old review states
+ * @param {Object} [prContext] - `{ owner, repo, prNumber }` — required for REST mode of `getReviewById`
  * @returns {Promise<Object>} The synced pending draft record with comments_count
  */
-async function syncPendingDraftFromGitHub(githubReviewRepo, reviewId, githubPendingReview, githubClient = null) {
+async function syncPendingDraftFromGitHub(githubReviewRepo, reviewId, githubPendingReview, githubClient = null, prContext = null) {
   // Find all our pending records for this review
   const existingPendingRecords = await githubReviewRepo.findPendingByReviewId(reviewId);
 
-  // Check if this GitHub draft matches any of our records by node_id
-  const matchingRecord = existingPendingRecords.find(
-    r => r.github_node_id === githubPendingReview.id
+  // Check if this GitHub draft matches any of our records. Match on
+  // either the GraphQL node id OR the stringified numeric databaseId —
+  // alt-host REST responses may not surface a node_id consistently, so
+  // a numeric-id-only record is the only identifier we have to anchor
+  // a draft against an existing local record.
+  const githubDbIdStr = (githubPendingReview.databaseId !== undefined && githubPendingReview.databaseId !== null)
+    ? String(githubPendingReview.databaseId)
+    : null;
+  const matchingRecord = existingPendingRecords.find(r =>
+    (r.github_node_id && r.github_node_id === githubPendingReview.id) ||
+    (githubDbIdStr !== null && r.github_review_id === githubDbIdStr)
   );
 
   let pendingDraft;
@@ -155,9 +217,20 @@ async function syncPendingDraftFromGitHub(githubReviewRepo, reviewId, githubPend
       let actualState = 'dismissed'; // Default if we can't determine
       let githubReviewData = null;
 
-      if (githubClient && oldRecord.github_node_id) {
+      // On the GraphQL path the node id is the canonical identifier; on
+      // the REST path the numeric id (`github_review_id`) is the only
+      // value we may have. Run the lookup whenever we have either —
+      // otherwise mark the record as dismissed without querying.
+      const oldLookupId = oldRecord.github_node_id || oldRecord.github_review_id;
+      if (githubClient && (oldRecord.github_node_id || oldRecord.github_review_id)) {
         try {
-          githubReviewData = await githubClient.getReviewById(oldRecord.github_node_id);
+          // prContext carries the REST review id when available. The
+          // GraphQL path ignores it. The github_review_id column holds
+          // the numeric REST id we received when the draft was created.
+          const reviewPrContext = prContext
+            ? { ...prContext, reviewId: oldRecord.github_review_id }
+            : null;
+          githubReviewData = await githubClient.getReviewById(oldLookupId, reviewPrContext);
 
           if (githubReviewData) {
             // Map GitHub state to our local state
@@ -172,15 +245,15 @@ async function syncPendingDraftFromGitHub(githubReviewRepo, reviewId, githubPend
               // APPROVED, CHANGES_REQUESTED, COMMENTED all mean it was submitted
               actualState = 'submitted';
             }
-            logger.debug(`Old review ${oldRecord.github_node_id} actual state from GitHub: ${githubReviewData.state} -> ${actualState}`);
+            logger.debug(`Old review ${oldLookupId} actual state from GitHub: ${githubReviewData.state} -> ${actualState}`);
           } else {
             // Review not found on GitHub - treat as dismissed
-            logger.debug(`Old review ${oldRecord.github_node_id} not found on GitHub, marking as dismissed`);
+            logger.debug(`Old review ${oldLookupId} not found on GitHub, marking as dismissed`);
             actualState = 'dismissed';
           }
         } catch (error) {
           // On error, default to dismissed (most likely scenario)
-          logger.warn(`Error querying GitHub for old review ${oldRecord.github_node_id}: ${error.message}, marking as dismissed`);
+          logger.warn(`Error querying GitHub for old review ${oldLookupId}: ${error.message}, marking as dismissed`);
           actualState = 'dismissed';
         }
       }
@@ -267,18 +340,30 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
     // Check for pending GitHub draft
     let pendingDraft = null;
     {
-      const config = req.app.get('config');
-      const githubToken = getGitHubToken(config || {}) || req.app.get('githubToken');
+      let resolved = null;
+      try {
+        resolved = resolveBindingForRequest(req, repository);
+      } catch (configErr) {
+        // Alt-host repo with no token configured — surface the message
+        // but don't fail the GET (draft info is supplementary).
+        logger.warn(configErr.message);
+      }
 
-      if (githubToken) {
+      if (resolved) {
         try {
-          const githubClient = new GitHubClient(githubToken);
+          const githubClient = new GitHubClient(resolved.binding);
           const githubReviewRepo = new GitHubReviewRepository(db);
 
           const githubPendingReview = await githubClient.getPendingReviewForUser(repoOwner, repoName, prNumber);
 
           if (githubPendingReview) {
-            pendingDraft = await syncPendingDraftFromGitHub(githubReviewRepo, review.id, githubPendingReview, githubClient);
+            pendingDraft = await syncPendingDraftFromGitHub(
+              githubReviewRepo,
+              review.id,
+              githubPendingReview,
+              githubClient,
+              { owner: repoOwner, repo: repoName, prNumber }
+            );
           }
         } catch (githubError) {
           // Log the error but don't fail the request - draft info is supplementary
@@ -295,11 +380,15 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
     // Detect PR stack via GitHub GraphQL chain-walking
     let stackData = null;
     {
-      const stackConfig = req.app.get('config') || {};
-      const githubToken = getGitHubToken(stackConfig) || req.app.get('githubToken');
-      if (githubToken) {
+      let resolved = null;
+      try {
+        resolved = resolveBindingForRequest(req, repository);
+      } catch (configErr) {
+        logger.warn(configErr.message);
+      }
+      if (resolved) {
         try {
-          const ghClient = new GitHubClient(githubToken);
+          const ghClient = new GitHubClient(resolved.binding);
           const defaultBranch = extendedData.repository?.default_branch;
           stackData = await walkPRStack(ghClient, repoOwner, repoName, prNumber, {
             defaultBranches: [defaultBranch, ...DEFAULT_TRUNK_BRANCHES].filter(Boolean)
@@ -449,10 +538,16 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
       });
     }
 
-    // Fetch fresh PR data from GitHub
-    const githubToken = getGitHubToken(config);
-    if (!githubToken) {
-      return res.status(401).json({ error: 'GitHub token not configured' });
+    // Resolve host binding for this repo (validates alt-host token presence).
+    let binding;
+    try {
+      const resolved = resolveBindingForRequest(req, repository);
+      if (!resolved) {
+        return res.status(401).json({ error: 'GitHub token not configured' });
+      }
+      binding = resolved.binding;
+    } catch (configErr) {
+      return res.status(500).json({ error: configErr.message });
     }
 
     // Check if worktree is locked before modifying it
@@ -468,7 +563,7 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
       }
     }
 
-    const githubClient = new GitHubClient(githubToken);
+    const githubClient = new GitHubClient(binding);
     const prData = await githubClient.fetchPullRequest(owner, repo, prNumber);
 
     // Update worktree with latest changes
@@ -555,10 +650,15 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
     // Refresh stack data via GitHub GraphQL
     let stackData = null;
     {
-      const githubToken = getGitHubToken(config) || req.app.get('githubToken');
-      if (githubToken) {
+      let resolved = null;
+      try {
+        resolved = resolveBindingForRequest(req, repository);
+      } catch (configErr) {
+        logger.warn(configErr.message);
+      }
+      if (resolved) {
         try {
-          const ghClient = new GitHubClient(githubToken);
+          const ghClient = new GitHubClient(resolved.binding);
           const defaultBranch = prData.repository?.default_branch;
           stackData = await walkPRStack(ghClient, ...repository.split('/'), prNumber, {
             defaultBranches: [defaultBranch, ...DEFAULT_TRUNK_BRANCHES].filter(Boolean)
@@ -807,11 +907,17 @@ router.get('/api/pr/:owner/:repo/:number/check-stale', async (req, res) => {
     }
 
     // Fetch current PR from GitHub
-    const githubToken = getGitHubToken(config);
-    if (!githubToken) {
-      return res.json({ isStale: null, error: 'GitHub token not configured' });
+    let binding;
+    try {
+      const resolved = resolveBindingForRequest(req, repository);
+      if (!resolved) {
+        return res.json({ isStale: null, error: 'GitHub token not configured' });
+      }
+      binding = resolved.binding;
+    } catch (configErr) {
+      return res.json({ isStale: null, error: configErr.message });
     }
-    const githubClient = new GitHubClient(githubToken);
+    const githubClient = new GitHubClient(binding);
     const remotePrData = await githubClient.fetchPullRequest(owner, repo, prNumber);
 
     const remoteHeadSha = remotePrData.head_sha;
@@ -873,14 +979,20 @@ router.get('/api/pr/:owner/:repo/:number/github-drafts', async (req, res) => {
     }
 
     // Initialize GitHub client and check for pending drafts on GitHub
-    const githubToken = getGitHubToken(config) || req.app.get('githubToken');
-    if (!githubToken) {
-      return res.status(500).json({
-        error: 'GitHub token not configured. Please check your ~/.pair-review/config.json'
-      });
+    let binding;
+    try {
+      const resolved = resolveBindingForRequest(req, repository);
+      if (!resolved) {
+        return res.status(500).json({
+          error: 'GitHub token not configured. Please check your ~/.pair-review/config.json'
+        });
+      }
+      binding = resolved.binding;
+    } catch (configErr) {
+      return res.status(500).json({ error: configErr.message });
     }
 
-    const githubClient = new GitHubClient(githubToken);
+    const githubClient = new GitHubClient(binding);
     const githubReviewRepo = new GitHubReviewRepository(db);
 
     // Fetch pending review from GitHub
@@ -889,7 +1001,13 @@ router.get('/api/pr/:owner/:repo/:number/github-drafts', async (req, res) => {
       const githubPendingReview = await githubClient.getPendingReviewForUser(owner, repo, prNumber);
 
       if (githubPendingReview) {
-        pendingDraft = await syncPendingDraftFromGitHub(githubReviewRepo, review.id, githubPendingReview, githubClient);
+        pendingDraft = await syncPendingDraftFromGitHub(
+          githubReviewRepo,
+          review.id,
+          githubPendingReview,
+          githubClient,
+          { owner, repo, prNumber }
+        );
       }
     } catch (githubError) {
       // Log the error but don't fail the request - return local data only
@@ -1340,16 +1458,22 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
     const repository = normalizeRepository(owner, repo);
     const db = req.app.get('db');
 
-    // Get GitHub token from app context (set during app initialization)
-    const githubToken = req.app.get('githubToken');
-    if (!githubToken) {
-      return res.status(500).json({
-        error: 'GitHub token not configured. Please check your ~/.pair-review/config.json'
-      });
+    // Resolve host binding (repo-aware: alt-host repos require their own token).
+    let binding;
+    try {
+      const resolved = resolveBindingForRequest(req, repository);
+      if (!resolved) {
+        return res.status(500).json({
+          error: 'GitHub token not configured. Please check your ~/.pair-review/config.json'
+        });
+      }
+      binding = resolved.binding;
+    } catch (configErr) {
+      return res.status(500).json({ error: configErr.message });
     }
 
     // Initialize GitHub client
-    const githubClient = new GitHubClient(githubToken);
+    const githubClient = new GitHubClient(binding);
 
     // Get PR metadata and worktree path
     const prMetadata = await queryOne(db, `
@@ -1405,13 +1529,6 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
     //
     // We check whether the comment's target line actually appears in a diff hunk
     // rather than relying on diff_position (which may not be set by all sources).
-    const prNodeId = prData.node_id;
-    if (!prNodeId) {
-      return res.status(400).json({
-        error: 'PR node_id not available. Please refresh the PR data and try again.'
-      });
-    }
-
     const diffLineSet = buildDiffLineSet(diffContent);
 
     const graphqlComments = comments.map(comment => {
@@ -1481,10 +1598,63 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
     // GitHub only allows one pending review per user per PR
     const existingDraft = await githubClient.getPendingReviewForUser(owner, repo, prNumber);
 
+    // GraphQL PR node id is only required when the dispatcher actually
+    // routes to a GraphQL implementation AND we'll be creating a brand
+    // new review (not reusing the existing draft) OR adding GraphQL
+    // review comments. REST review-lifecycle and host pending-review
+    // -comments address the PR by (owner, repo, prNumber) + numeric
+    // review id and ignore prNodeId; reusing an existing GraphQL draft
+    // also doesn't need the PR node id because the review node id is
+    // sufficient. Compute this after fetching existingDraft so the
+    // requirement is narrowed correctly.
+    const willCreateNewGraphQLReview =
+      binding.features.review_lifecycle === 'graphql' && !existingDraft;
+    const willAddGraphQLComments =
+      graphqlComments.length > 0 && binding.features.pending_review_comments === 'graphql';
+    const needsGraphQLNodeId = willCreateNewGraphQLReview || willAddGraphQLComments;
+
+    if (needsGraphQLNodeId && !prData.node_id) {
+      return res.status(400).json({
+        error:
+          `GraphQL PR node id required for ${repository}#${prNumber} ` +
+          `(features.review_lifecycle = "${binding.features.review_lifecycle}", ` +
+          `pending_review_comments = "${binding.features.pending_review_comments}"). ` +
+          `PR record is missing node_id — refresh the PR data and try again.`
+      });
+    }
+
+    const prNodeId = prData.node_id ?? null;
+
+    // The PR head SHA is required by the host pending-review-comments path
+    // (GitHub-compatible alt-hosts validate each inline comment like
+    // `pulls.createReviewComment`, which mandates `commit_id`). The GraphQL
+    // path on github.com ignores it (the pending review pins the commit
+    // implicitly), so threading it through is harmless there.
+    // `prData.head_sha` is the canonical source (merged from the cached PR
+    // JSON); `prMetadata.head_sha` is a defensive fallback for callers whose
+    // record exposes it as a column. If neither is present, proceed without
+    // it but warn loudly so the resulting 422 is diagnosable.
+    const headSha = prData.head_sha || prMetadata.head_sha || null;
+    if (!headSha) {
+      logger.warn(
+        `Submit review for ${repository}#${prNumber}: PR head SHA is missing ` +
+        `(prData.head_sha and prMetadata.head_sha both absent). Host inline-comment ` +
+        `posting will likely fail with a 422 missing commit_id error.`
+      );
+    }
+
+    const submitPrContext = {
+      owner,
+      repo,
+      prNumber,
+      reviewId: existingDraft?.databaseId,
+      headSha
+    };
+
     if (event === 'DRAFT') {
       // Delegate to createDraftReviewGraphQL (handles both new and existing drafts)
       githubReview = await githubClient.createDraftReviewGraphQL(
-        prNodeId, body || '', graphqlComments, existingDraft?.id
+        prNodeId, body || '', graphqlComments, existingDraft?.id, submitPrContext
       );
       // When adding to an existing draft, use the existing URL and include prior comments in total count
       if (existingDraft) {
@@ -1493,7 +1663,9 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
       }
     } else {
       // For non-drafts, create/use review, add comments, and submit
-      githubReview = await githubClient.createReviewGraphQL(prNodeId, event, body || '', graphqlComments, existingDraft?.id);
+      githubReview = await githubClient.createReviewGraphQL(
+        prNodeId, event, body || '', graphqlComments, existingDraft?.id, submitPrContext
+      );
     }
 
     // ID storage strategy:
@@ -1566,10 +1738,15 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
       // Commit transaction
       await run(db, 'COMMIT');
 
-      // Send success response after all database operations complete
+      // Send success response after all database operations complete.
+      // Use the configured remote-host display name (e.g. "Meteorite")
+      // instead of the literal "GitHub". Resolve via the binding repository
+      // so monorepo url_pattern configs map to the right repos[...] entry.
+      const cfg = req.app.get('config') || {};
+      const hostName = resolveHostName(cfg, resolveBindingRepositoryFromPR(owner, repo, cfg));
       res.json({
         success: true,
-        message: `${event === 'DRAFT' ? 'Draft review created' : 'Review submitted'} successfully ${event === 'DRAFT' ? 'on' : 'to'} GitHub`,
+        message: `${event === 'DRAFT' ? 'Draft review created' : 'Review submitted'} successfully ${event === 'DRAFT' ? 'on' : 'to'} ${hostName}`,
         github_url: githubReview.html_url,
         comments_submitted: githubReview.comments_count,
         event: event,
@@ -1744,11 +1921,12 @@ router.get('/api/pr/health', (req, res) => {
 
 /**
  * Parse a PR URL and extract owner, repo, and PR number
- * Supports GitHub and Graphite URLs (with or without protocol)
+ * Supports GitHub and Graphite URLs (with or without protocol), plus
+ * any per-repo `url_pattern` regexes configured in pair-review config.
  */
 router.post('/api/parse-pr-url', (req, res) => {
-  const { PRArgumentParser } = require('../github/parser');
-  const parser = new PRArgumentParser();
+  const config = req.app.get('config') || null;
+  const parser = new PRArgumentParser(config);
 
   const { url } = req.body;
 
@@ -1921,6 +2099,24 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
     const appConfig = req.app.get('config') || {};
     const globalInstructions = appConfig.globalInstructions || null;
 
+    // Build a GitHubClient so the analyzer can pre-fetch existing PR review
+    // comments when the request opts in via excludePrevious.github. If no token
+    // is available we pass undefined and the analyzer silently omits the GitHub
+    // dedup section. For alt-host repos we use the repo-bound token and host;
+    // for github.com repos we fall back to the server-startup cached token.
+    let analyzerGithubClient;
+    try {
+      const resolved = resolveBindingForRequest(req, repository);
+      analyzerGithubClient = resolved ? new GitHubClient(resolved.binding) : undefined;
+    } catch (configErr) {
+      // Alt-host misconfiguration — skip dedup pre-fetch with a clear log.
+      logger.warn(`Skipping GitHub dedup pre-fetch: ${configErr.message}`);
+      analyzerGithubClient = undefined;
+    }
+    if (analyzerGithubClient) {
+      logger.debug(`analyzer githubClient wired for ${owner}/${repo}#${prNumber}`);
+    }
+
     const { provider, model, repoInstructions, combinedInstructions, repoSettings: fetchedRepoSettings } = await withTransaction(db, async () => {
       const repoSettingsRepo = new RepoSettingsRepository(db);
       const fetchedRepoSettings = await repoSettingsRepo.getRepoSettings(repository);
@@ -2076,7 +2272,7 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
 
       const progressCallback = createProgressCallback(analysisId);
 
-      analysisPromise = analyzer.analyzeLevel1(review.id, worktreePath, prMetadata, progressCallback, { globalInstructions, repoInstructions, requestInstructions }, null, { analysisId, runId, skipRunCreation: true, tier, skipLevel3: requestSkipLevel3, enabledLevels: levelsConfig, excludePrevious, serverPort: req.socket.localPort });
+      analysisPromise = analyzer.analyzeLevel1(review.id, worktreePath, prMetadata, progressCallback, { globalInstructions, repoInstructions, requestInstructions }, null, { analysisId, runId, skipRunCreation: true, tier, skipLevel3: requestSkipLevel3, enabledLevels: levelsConfig, excludePrevious, serverPort: req.socket.localPort, githubClient: analyzerGithubClient });
     } catch (setupError) {
       // Synchronous setup failure — clean up the analysis hold immediately
       reviewToAnalysisId.delete(review.id);
@@ -2322,6 +2518,19 @@ router.post('/api/pr/:owner/:repo/:number/analyses/council', async (req, res) =>
     const { providerOverrides: councilProviderOverrides, providerOverridesMap: councilProviderOverridesMap } =
       buildCouncilProviderOverrides(prCouncilConfig, repository, repoSettings);
 
+    // Build a GitHubClient for analyzer-side dedup pre-fetch (PR mode only).
+    let councilGithubClient;
+    try {
+      const resolved = resolveBindingForRequest(req, repository);
+      councilGithubClient = resolved ? new GitHubClient(resolved.binding) : undefined;
+    } catch (configErr) {
+      logger.warn(`Skipping GitHub dedup pre-fetch (council): ${configErr.message}`);
+      councilGithubClient = undefined;
+    }
+    if (councilGithubClient) {
+      logger.debug(`analyzer githubClient wired for ${owner}/${repo}#${prNumber} (council)`);
+    }
+
     const { analysisId, runId } = await analysesRouter.launchCouncilAnalysis(
       db,
       {
@@ -2336,6 +2545,7 @@ router.post('/api/pr/:owner/:repo/:number/analyses/council', async (req, res) =>
         config: prCouncilConfig,
         excludePrevious,
         serverPort: req.socket.localPort,
+        githubClient: councilGithubClient,
         poolLifecycle: req.app.get('poolLifecycle'),
         providerOverrides: councilProviderOverrides,
         providerOverridesMap: councilProviderOverridesMap,
@@ -2427,13 +2637,14 @@ router.get('/api/pr/:owner/:repo/:number/share', async (req, res) => {
       deletions: f.deletions ?? 0
     }));
 
-    // Get the authenticated user (who is sharing)
+    // Get the authenticated user (who is sharing).
+    // Use the repo's binding so authentication targets the right host —
+    // an alt-host's `getAuthenticatedUser` resolves the user on that host.
     let sharedBy = null;
     try {
-      const config = req.app.get('config') || {};
-      const githubToken = getGitHubToken(config);
-      if (githubToken) {
-        const githubClient = new GitHubClient(githubToken);
+      const resolved = resolveBindingForRequest(req, repository);
+      if (resolved) {
+        const githubClient = new GitHubClient(resolved.binding);
         const user = await githubClient.getAuthenticatedUser();
         sharedBy = user.login;
       }
@@ -2563,8 +2774,15 @@ router.get('/api/pr/:owner/:repo/:number/stack-info', async (req, res) => {
     const db = req.app.get('db');
     const config = req.app.get('config') || {};
 
-    const githubToken = getGitHubToken(config) || req.app.get('githubToken');
-    if (!githubToken) {
+    let binding;
+    try {
+      const resolved = resolveBindingForRequest(req, repository);
+      if (!resolved) {
+        return res.json({ stack: [] });
+      }
+      binding = resolved.binding;
+    } catch (configErr) {
+      logger.warn(configErr.message);
       return res.json({ stack: [] });
     }
 
@@ -2576,7 +2794,7 @@ router.get('/api/pr/:owner/:repo/:number/stack-info', async (req, res) => {
     const parsedPrData = prMetadataRow?.pr_data ? JSON.parse(prMetadataRow.pr_data) : {};
     const defaultBranch = parsedPrData.repository?.default_branch;
 
-    const ghClient = new GitHubClient(githubToken);
+    const ghClient = new GitHubClient(binding);
     let stack;
     try {
       stack = await walkPRStack(ghClient, ...repository.split('/'), prNumber, {
@@ -2636,3 +2854,10 @@ router.get('/api/pr/:owner/:repo/:number/stack-info', async (req, res) => {
 });
 
 module.exports = router;
+// Exported for tests so behavioural changes to the GitHub pending-draft
+// sync logic (e.g. Fix #10: matching by numeric id when node_id is
+// absent) can be exercised directly without spinning up the route.
+module.exports._internals = {
+  syncPendingDraftFromGitHub,
+  resolveBindingForRequest
+};

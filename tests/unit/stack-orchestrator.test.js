@@ -93,6 +93,17 @@ function createMockDeps(overrides = {}) {
       this.fetchPullRequestFiles = vi.fn().mockResolvedValue([]);
     }),
     getGitHubToken: vi.fn().mockReturnValue('ghp_mock'),
+    resolveHostBinding: vi.fn().mockReturnValue({
+      apiHost: null,
+      token: 'ghp_mock',
+      features: {
+        pending_review_check: 'graphql',
+        stack_walker: 'graphql',
+        review_lifecycle: 'graphql',
+        pending_review_comments: 'graphql'
+      },
+      source: 'config:github_token'
+    }),
     setupStackPR: vi.fn().mockResolvedValue({
       reviewId: 1, prMetadata: {}, prData: {}, isNew: true
     }),
@@ -294,7 +305,7 @@ describe('executeStackAnalysis', () => {
 
   it('sets final status to failed on outer error', async () => {
     const deps = createMockDeps({
-      getGitHubToken: vi.fn().mockImplementation(() => { throw new Error('token exploded'); }),
+      resolveHostBinding: vi.fn().mockImplementation(() => { throw new Error('token exploded'); }),
     });
     const params = createDefaultParams(deps);
     initActiveState(params.stackAnalysisId, params.prNumbers);

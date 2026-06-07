@@ -34,8 +34,9 @@ const router = express.Router();
  * Default dependencies for the sync flow. Tests override these via the
  * `externalCommentsDeps` Express app setting (or by passing `_deps` to
  * `executeSync` directly). Credential resolution is delegated to the
- * adapter via `adapter.resolveCredentials(config)` — keeps the route
- * source-agnostic and lets each adapter name its own env var in errors.
+ * adapter via `adapter.resolveCredentials(config, repository)` — keeps the
+ * route source-agnostic, lets each adapter name its own env var in errors,
+ * and threads the repo through so per-repo alt-host bindings apply.
  */
 const defaults = {
   getAdapter
@@ -115,7 +116,7 @@ function isPRMode(review) {
  * @param {Object} params.config - Server config (for token lookup)
  * @param {Object} params.review - Validated review row
  * @param {string} params.source - Adapter source name (e.g. 'github')
- * @param {Object} [params._deps] - Test overrides for { GitHubClient, getGitHubToken, getAdapter }
+ * @param {Object} [params._deps] - Test overrides for { GitHubClient, getGitHubToken, getAdapter, resolveHostBinding, resolveBindingRepositoryFromPR }
  * @returns {Promise<{count: number, lostAnchors: number, syncedAt: string}>}
  */
 async function executeSync({ db, config, review, source, _deps }) {
@@ -124,18 +125,27 @@ async function executeSync({ db, config, review, source, _deps }) {
   // Look up adapter — throws on unknown sources, caught by the route.
   const adapter = deps.getAdapter(source);
 
-  // Delegate credential resolution to the adapter so the route stays
-  // source-agnostic and each adapter can name its own env var in errors.
-  // The adapter throws (e.g. GitHubApiError 401) when credentials are
-  // missing — the route's catch maps it to a 401 response.
-  const { client } = adapter.resolveCredentials(config || {}, _deps);
-
+  // Parse owner/repo BEFORE resolving credentials: the repository drives
+  // binding-aware credential resolution (per-repo api_host/token for
+  // alt-host repos), so it must be validated first.
   const [owner, repo] = String(review.repository).split('/');
   if (!owner || !repo) {
     throw new BadRequestError(
       `Invalid review.repository "${review.repository}"; expected "owner/repo"`
     );
   }
+
+  // Delegate credential resolution to the adapter so the route stays
+  // source-agnostic and each adapter can name its own env var in errors.
+  // Thread `review.repository` through so the adapter resolves the
+  // repo-scoped host binding (alt-host api_host + repo token) instead of
+  // always targeting api.github.com with the top-level github.com token.
+  // The adapter throws (e.g. GitHubApiError 401) when credentials are
+  // missing — the route's catch maps it to a 401 response.
+  // `isAltHost` reflects whether the resolved binding targets an alternate
+  // Git host. Alt-hosts don't implement GitHub's deprecated `position`
+  // field, so it drives line-based anchoring in `mapComment` below.
+  const { client, isAltHost } = adapter.resolveCredentials(config || {}, review.repository, _deps);
 
   const apiRows = await adapter.fetchComments({
     client,
@@ -156,7 +166,7 @@ async function executeSync({ db, config, review, source, _deps }) {
   for (const apiRow of apiRows || []) {
     let mapped;
     try {
-      mapped = adapter.mapComment(apiRow);
+      mapped = adapter.mapComment(apiRow, { isAltHost });
     } catch (mapError) {
       // A malformed row from the source shouldn't kill the whole sync — log
       // it and keep going. The adapter only throws for genuinely malformed

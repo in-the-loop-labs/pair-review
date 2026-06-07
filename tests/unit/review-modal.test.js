@@ -553,4 +553,54 @@ describe('ReviewModal', () => {
       expect(instance.hide).toHaveBeenCalled();
     });
   });
+
+  describe('resolveDraftPrUrl (post-draft-submit open URL)', () => {
+    let ReviewModal;
+    beforeEach(() => {
+      ({ ReviewModal } = require('../../public/js/components/ReviewModal.js'));
+    });
+
+    it('prefers the templated url (RepoLinks.externalUrl) over pr.html_url and github_url', () => {
+      global.window.RepoLinks = {
+        externalUrl: () => 'https://meteorite.example/o/r/pull/7'
+      };
+      const pr = { html_url: 'https://ghe.example.com/o/r/pull/7' };
+      const result = { github_url: 'https://github.com/o/r/issues/7' };
+      expect(ReviewModal.resolveDraftPrUrl(pr, result)).toBe('https://meteorite.example/o/r/pull/7');
+    });
+
+    it('falls back to pr.html_url when RepoLinks yields no templated url', () => {
+      global.window.RepoLinks = { externalUrl: () => null };
+      const pr = { html_url: 'https://ghe.example.com/o/r/pull/7' };
+      const result = { github_url: 'https://github.com/o/r/issues/7' };
+      expect(ReviewModal.resolveDraftPrUrl(pr, result)).toBe('https://ghe.example.com/o/r/pull/7');
+    });
+
+    it('prefers the PR canonical html_url over the review github_url', () => {
+      const pr = { html_url: 'https://ghe.example.com/o/r/pull/42', owner: 'o', repo: 'r', number: 42 };
+      const result = { github_url: 'https://github.com/o/r/issues/42' };
+      expect(ReviewModal.resolveDraftPrUrl(pr, result)).toBe('https://ghe.example.com/o/r/pull/42');
+    });
+
+    it('opens the alt-host PR page even when the review url is a github.com /issues/ URL (regression)', () => {
+      // Alt-hosts (e.g. gitstream) return the pending-review html_url as a
+      // github.com `/issues/<n>` URL. We must open the host's own PR page.
+      const pr = { html_url: 'https://staging-2.gitstream.shopify.io/shop/world-gitstream-perf/pull/2000121' };
+      const result = { github_url: 'https://github.com/shop/world-gitstream-perf/issues/2000121' };
+      expect(ReviewModal.resolveDraftPrUrl(pr, result))
+        .toBe('https://staging-2.gitstream.shopify.io/shop/world-gitstream-perf/pull/2000121');
+    });
+
+    it('falls back to the server github_url when the PR has no html_url', () => {
+      const result = { github_url: 'https://github.com/o/r/pull/1' };
+      expect(ReviewModal.resolveDraftPrUrl(null, result)).toBe('https://github.com/o/r/pull/1');
+      expect(ReviewModal.resolveDraftPrUrl({}, result)).toBe('https://github.com/o/r/pull/1');
+    });
+
+    it('never fabricates a github.com URL — returns null when nothing is available', () => {
+      expect(ReviewModal.resolveDraftPrUrl(null, null)).toBeNull();
+      expect(ReviewModal.resolveDraftPrUrl({}, {})).toBeNull();
+      expect(ReviewModal.resolveDraftPrUrl(undefined, undefined)).toBeNull();
+    });
+  });
 });

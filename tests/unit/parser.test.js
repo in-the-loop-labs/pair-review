@@ -264,6 +264,113 @@ describe('PRArgumentParser', () => {
     });
   });
 
+  describe('url_pattern matching from config (Phase 2 alt-host)', () => {
+    it('should resolve an alt-host URL via repo url_pattern', async () => {
+      const config = {
+        repos: {
+          'acme/widgets': {
+            url_pattern: '^https://althost\\.example/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>[0-9]+)'
+          }
+        }
+      };
+      const configuredParser = new PRArgumentParser(config);
+      const result = await configuredParser.parsePRArguments([
+        'https://althost.example/acme/widgets/pull/42'
+      ]);
+      expect(result).toEqual({ owner: 'acme', repo: 'widgets', number: 42, bindingRepository: 'acme/widgets' });
+    });
+
+    it('should still resolve github.com URLs via parseGitHubURL when config has no matching pattern', async () => {
+      const config = {
+        repos: {
+          'acme/widgets': {
+            url_pattern: '^https://althost\\.example/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>[0-9]+)'
+          }
+        }
+      };
+      const configuredParser = new PRArgumentParser(config);
+      const result = await configuredParser.parsePRArguments([
+        'https://github.com/octocat/Hello-World/pull/7'
+      ]);
+      expect(result).toEqual({ owner: 'octocat', repo: 'Hello-World', number: 7 });
+    });
+
+    it('should prefer matchRepoByUrl over parseGitHubURL when both could match', async () => {
+      // A url_pattern that matches a github.com URL too — matchRepoByUrl
+      // is tried first, so the config-driven result wins. The repository
+      // key serves as the canonical owner/repo when groups are absent.
+      const config = {
+        repos: {
+          'acme/widgets': {
+            url_pattern: '^https://github\\.com/[^/]+/[^/]+/pull/(?<number>[0-9]+)'
+          }
+        }
+      };
+      const configuredParser = new PRArgumentParser(config);
+      const result = await configuredParser.parsePRArguments([
+        'https://github.com/some-other/repo/pull/9'
+      ]);
+      expect(result).toEqual({ owner: 'acme', repo: 'widgets', number: 9, bindingRepository: 'acme/widgets' });
+    });
+
+    it('should fall back to GitHub parsing when url_pattern lacks a number', async () => {
+      // matchRepoByUrl yields no `number`, so the parser must skip the
+      // config result and let parseGitHubURL handle the URL.
+      const config = {
+        repos: {
+          'acme/widgets': {
+            url_pattern: '^https://github\\.com/octocat/Hello-World'
+          }
+        }
+      };
+      const configuredParser = new PRArgumentParser(config);
+      const result = await configuredParser.parsePRArguments([
+        'https://github.com/octocat/Hello-World/pull/11'
+      ]);
+      expect(result).toEqual({ owner: 'octocat', repo: 'Hello-World', number: 11 });
+    });
+
+    it('parsePRUrl should respect url_pattern when called directly', () => {
+      const config = {
+        repos: {
+          'acme/widgets': {
+            url_pattern: '^https://althost\\.example/[^/]+/[^/]+/pull/(?<number>[0-9]+)'
+          }
+        }
+      };
+      const configuredParser = new PRArgumentParser(config);
+      const result = configuredParser.parsePRUrl(
+        'https://althost.example/acme/widgets/pull/123'
+      );
+      expect(result).toEqual({ owner: 'acme', repo: 'widgets', number: 123, bindingRepository: 'acme/widgets' });
+    });
+
+    it('should ignore url_pattern when constructed without a config', () => {
+      // Default constructor (no config) — alt-host URLs are not
+      // recognised and the existing GitHub/Graphite parsers apply.
+      const result = parser.parsePRUrl('https://althost.example/acme/widgets/pull/42');
+      expect(result).toBeNull();
+    });
+
+    it('should match by named capture groups when present, overriding the repo key', async () => {
+      const config = {
+        repos: {
+          'default/repo': {
+            url_pattern: '^https://althost\\.example/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>[0-9]+)'
+          }
+        }
+      };
+      const configuredParser = new PRArgumentParser(config);
+      const result = await configuredParser.parsePRArguments([
+        'https://althost.example/teamA/projB/pull/5'
+      ]);
+      // Named groups (teamA/projB) win over the repo key (default/repo)
+      // for the PR identity, but bindingRepository still points at the
+      // matched config entry so host bindings resolve correctly.
+      expect(result).toEqual({ owner: 'teamA', repo: 'projB', number: 5, bindingRepository: 'default/repo' });
+    });
+  });
+
   describe('parseRepositoryFromURL', () => {
     it('should parse HTTPS URL with .git suffix', () => {
       const result = parser.parseRepositoryFromURL('https://github.com/owner/repo.git');
@@ -287,6 +394,233 @@ describe('PRArgumentParser', () => {
 
     it('should throw error for non-GitHub URL', () => {
       expect(() => parser.parseRepositoryFromURL('https://gitlab.com/owner/repo')).toThrow('not a git repository or has no GitHub remote origin');
+    });
+  });
+
+  describe('parseRepositoryFromURL alt-host support', () => {
+    it('should resolve HTTPS alt-host remote via config api_host', () => {
+      const config = {
+        repos: {
+          'team/widget': { api_host: 'ghe.acme.com' }
+        }
+      };
+      const configuredParser = new PRArgumentParser(config);
+      const result = configuredParser.parseRepositoryFromURL(
+        'https://ghe.acme.com/team/widget.git'
+      );
+      expect(result).toEqual({ owner: 'team', repo: 'widget' });
+    });
+
+    it('should resolve HTTPS alt-host remote without .git suffix', () => {
+      const config = {
+        repos: {
+          'team/widget': { api_host: 'ghe.acme.com' }
+        }
+      };
+      const configuredParser = new PRArgumentParser(config);
+      const result = configuredParser.parseRepositoryFromURL(
+        'https://ghe.acme.com/team/widget'
+      );
+      expect(result).toEqual({ owner: 'team', repo: 'widget' });
+    });
+
+    it('should resolve SSH alt-host remote via config api_host', () => {
+      const config = {
+        repos: {
+          'team/widget': { api_host: 'ghe.acme.com' }
+        }
+      };
+      const configuredParser = new PRArgumentParser(config);
+      const result = configuredParser.parseRepositoryFromURL(
+        'git@ghe.acme.com:team/widget.git'
+      );
+      expect(result).toEqual({ owner: 'team', repo: 'widget' });
+    });
+
+    it('should resolve when api_host includes scheme and path', () => {
+      // api_host is conventionally something like "https://althost.example/api/v3";
+      // the bare host is what appears in the git remote URL.
+      const config = {
+        repos: {
+          'team/widget': { api_host: 'https://ghe.acme.com/api/v3' }
+        }
+      };
+      const configuredParser = new PRArgumentParser(config);
+      expect(configuredParser.parseRepositoryFromURL(
+        'https://ghe.acme.com/team/widget.git'
+      )).toEqual({ owner: 'team', repo: 'widget' });
+      expect(configuredParser.parseRepositoryFromURL(
+        'git@ghe.acme.com:team/widget.git'
+      )).toEqual({ owner: 'team', repo: 'widget' });
+    });
+
+    it('should resolve plain HTTP alt-host remote (self-hosted dev)', () => {
+      const config = {
+        repos: {
+          'team/widget': { api_host: 'ghe.local' }
+        }
+      };
+      const configuredParser = new PRArgumentParser(config);
+      const result = configuredParser.parseRepositoryFromURL(
+        'http://ghe.local/team/widget.git'
+      );
+      expect(result).toEqual({ owner: 'team', repo: 'widget' });
+    });
+
+    it('should throw when alt-host remote has no matching config entry', () => {
+      const config = {
+        repos: {
+          'other/repo': { api_host: 'other-host.example' }
+        }
+      };
+      const configuredParser = new PRArgumentParser(config);
+      expect(() => configuredParser.parseRepositoryFromURL(
+        'https://ghe.acme.com/team/widget.git'
+      )).toThrow('not a git repository or has no GitHub remote origin');
+    });
+
+    it('should throw when alt-host remote matches no api_host (empty config)', () => {
+      const configuredParser = new PRArgumentParser({ repos: {} });
+      expect(() => configuredParser.parseRepositoryFromURL(
+        'https://ghe.acme.com/team/widget.git'
+      )).toThrow('not a git repository or has no GitHub remote origin');
+    });
+
+    it('should throw when alt-host remote host matches but owner/repo do not', () => {
+      const config = {
+        repos: {
+          'team/widget': { api_host: 'ghe.acme.com' }
+        }
+      };
+      const configuredParser = new PRArgumentParser(config);
+      expect(() => configuredParser.parseRepositoryFromURL(
+        'https://ghe.acme.com/other-team/other-repo.git'
+      )).toThrow('not a git repository or has no GitHub remote origin');
+    });
+
+    it('should resolve via git_remote_pattern escape hatch', () => {
+      // Host uses a non-standard SCM namespace segment that the derived
+      // pattern can't handle on its own.
+      const config = {
+        repos: {
+          'team/widget': {
+            api_host: 'ghe.acme.com',
+            git_remote_pattern: '^git@ghe\\.acme\\.com:scm/team/widget(\\.git)?$'
+          }
+        }
+      };
+      const configuredParser = new PRArgumentParser(config);
+      const result = configuredParser.parseRepositoryFromURL(
+        'git@ghe.acme.com:scm/team/widget.git'
+      );
+      expect(result).toEqual({ owner: 'team', repo: 'widget' });
+    });
+
+    it('should still parse github.com URLs via the built-in fast path', () => {
+      // Regression: alt-host config must NOT interfere with the common
+      // github.com remote-URL path. No api_host lookup is needed.
+      const config = {
+        repos: {
+          'team/widget': { api_host: 'ghe.acme.com' }
+        }
+      };
+      const configuredParser = new PRArgumentParser(config);
+      expect(configuredParser.parseRepositoryFromURL(
+        'https://github.com/octocat/Hello-World.git'
+      )).toEqual({ owner: 'octocat', repo: 'Hello-World' });
+      expect(configuredParser.parseRepositoryFromURL(
+        'git@github.com:octocat/Hello-World.git'
+      )).toEqual({ owner: 'octocat', repo: 'Hello-World' });
+    });
+
+    it('should short-circuit gracefully when constructed without a config', () => {
+      // Without a config, alt-host lookup must not crash — it returns
+      // null and the existing throw fires as before.
+      expect(() => parser.parseRepositoryFromURL(
+        'https://ghe.acme.com/team/widget.git'
+      )).toThrow('not a git repository or has no GitHub remote origin');
+    });
+
+    it('should ignore repo entries with no api_host', () => {
+      // Repos without api_host are github.com repos and must not match
+      // arbitrary alt-host remote URLs.
+      const config = {
+        repos: {
+          'team/widget': {} // no api_host
+        }
+      };
+      const configuredParser = new PRArgumentParser(config);
+      expect(() => configuredParser.parseRepositoryFromURL(
+        'https://ghe.acme.com/team/widget.git'
+      )).toThrow('not a git repository or has no GitHub remote origin');
+    });
+
+    it('should resolve bare-number CLI input through parseRepositoryFromGitRemote', async () => {
+      // End-to-end: the reported bug. Inside an alt-host checkout,
+      // `pair-review 42` must resolve to the alt-host repo entry rather
+      // than throwing.
+      const config = {
+        repos: {
+          'team/widget': { api_host: 'ghe.acme.com' }
+        }
+      };
+      const configuredParser = new PRArgumentParser(config);
+      configuredParser.git = {
+        checkIsRepo: vi.fn().mockResolvedValue(true),
+        getRemotes: vi.fn().mockResolvedValue([
+          { name: 'origin', refs: { fetch: 'https://ghe.acme.com/team/widget.git' } }
+        ]),
+        revparse: vi.fn()
+      };
+
+      const result = await configuredParser.parsePRArguments(['42']);
+      expect(result).toEqual({ owner: 'team', repo: 'widget', number: 42 });
+    });
+
+    it('isMatchingRepository should resolve alt-host remotes correctly', async () => {
+      const config = {
+        repos: {
+          'team/widget': { api_host: 'ghe.acme.com' }
+        }
+      };
+      const configuredParser = new PRArgumentParser(config);
+      const mockGit = {
+        checkIsRepo: vi.fn().mockResolvedValue(true),
+        getRemotes: vi.fn().mockResolvedValue([
+          { name: 'origin', refs: { fetch: 'https://ghe.acme.com/team/widget.git' } }
+        ])
+      };
+      configuredParser._createGitForDirectory = vi.fn().mockReturnValue(mockGit);
+
+      const result = await configuredParser.isMatchingRepository(
+        '/some/path',
+        'team',
+        'widget'
+      );
+      expect(result).toBe(true);
+    });
+
+    it('isMatchingRepository should resolve alt-host SSH remotes', async () => {
+      const config = {
+        repos: {
+          'team/widget': { api_host: 'ghe.acme.com' }
+        }
+      };
+      const configuredParser = new PRArgumentParser(config);
+      const mockGit = {
+        checkIsRepo: vi.fn().mockResolvedValue(true),
+        getRemotes: vi.fn().mockResolvedValue([
+          { name: 'origin', refs: { fetch: 'git@ghe.acme.com:team/widget.git' } }
+        ])
+      };
+      configuredParser._createGitForDirectory = vi.fn().mockReturnValue(mockGit);
+
+      const result = await configuredParser.isMatchingRepository(
+        '/some/path',
+        'team',
+        'widget'
+      );
+      expect(result).toBe(true);
     });
   });
 

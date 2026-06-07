@@ -1,6 +1,6 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 const fs = require('fs');
-const { loadConfig, getConfigDir, getGitHubToken, showWelcomeMessage, resolveDbName, resolveRepoOptions, resolvePoolConfig, getRepoResetScript, resolveLoadSkills } = require('./config');
+const { loadConfig, getConfigDir, getGitHubToken, resolveHostBinding, showWelcomeMessage, resolveDbName, resolveRepoOptions, resolvePoolConfig, getRepoResetScript, resolveLoadSkills } = require('./config');
 const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository, ReviewRepository, RepoSettingsRepository, GitHubReviewRepository, WorktreePoolRepository } = require('./database');
 const { PRArgumentParser } = require('./github/parser');
 const { GitHubClient } = require('./github/client');
@@ -25,6 +25,47 @@ const { registerProtocolHandler, unregisterProtocolHandler } = require('./protoc
 const { attemptDelegation } = require('./single-port');
 
 let db = null;
+
+/**
+ * Build a user-facing "missing token" error message tailored to the
+ * resolved host binding.
+ *
+ * For github.com bindings (`apiHost === null`), suggest the legacy
+ * options: `GITHUB_TOKEN` env var, `config.github_token`, or
+ * `config.github_token_command`. For alt-host bindings, suppress those
+ * suggestions (the github.com top-level credentials are intentionally
+ * not used for alt-hosts) and point exclusively at the per-repo
+ * `token` / `token_command` keys under the resolved bindingRepository.
+ *
+ * @param {Object} params
+ * @param {string} params.owner
+ * @param {string} params.repo
+ * @param {string} params.bindingRepository - The `repos[...]` config key
+ *   that the binding lookup was performed against. May differ from
+ *   `<owner>/<repo>` for monorepo-style configs (see Fix #8).
+ * @param {string|null} params.apiHost - Resolved api_host (null = github.com)
+ * @returns {string}
+ */
+function buildMissingTokenError({ owner, repo, bindingRepository, apiHost }) {
+  if (apiHost) {
+    return (
+      `GitHub token not found for alt-host repo ${owner}/${repo} (${apiHost}). ` +
+      `GITHUB_TOKEN and top-level github_token/github_token_command are github.com-only ` +
+      `and are not used for alt-hosts. Configure ` +
+      `\`config.repos["${bindingRepository}"].token\` or ` +
+      `\`config.repos["${bindingRepository}"].token_command\` ` +
+      `(e.g., "althost-cli auth token"). Run: npx pair-review --configure`
+    );
+  }
+  return (
+    `GitHub token not found for ${owner}/${repo}. ` +
+    `Set GITHUB_TOKEN env var, or configure a token at ` +
+    `\`config.repos["${bindingRepository}"].token\` or ` +
+    `\`config.repos["${bindingRepository}"].token_command\`, or set ` +
+    `top-level \`github_token\` / \`github_token_command\` ` +
+    `(e.g., "gh auth token"). Run: npx pair-review --configure`
+  );
+}
 
 /**
  * Detect PR information from GitHub Actions environment variables.
@@ -573,15 +614,32 @@ AI PROVIDERS:
  */
 async function handlePullRequest(args, config, db, flags = {}, poolLifecycle = null) {
   try {
-    // Get GitHub token (env var takes precedence over config)
-    const githubToken = getGitHubToken(config);
-    if (!githubToken) {
-      throw new Error('GitHub token not found. Set GITHUB_TOKEN env var, add github_token to config, or set github_token_command (e.g., "gh auth token"). Run: npx pair-review --configure');
-    }
-
-    // Parse PR arguments
-    const parser = new PRArgumentParser();
+    // Parse PR arguments FIRST — pass config so url_pattern matching for
+    // alternate hosts can resolve pasted URLs to the canonical
+    // owner/repo before falling back to GitHub/Graphite parsers.
+    // We must know the target repo before resolving its token, so that
+    // repo-scoped tokens, repo-scoped token_command entries, and alt-host
+    // configurations are honored. A no-repository token preflight only
+    // sees env + top-level credentials and would reject valid configs.
+    const parser = new PRArgumentParser(config);
     const prInfo = await parser.parsePRArguments(args);
+
+    // Resolve token via repo-aware host binding so alt-host and
+    // repo-scoped credentials are respected. When a per-repo
+    // `url_pattern` matched, prefer its `bindingRepository` — that's the
+    // matched `repos[...]` config key, which may differ from the
+    // captured `${owner}/${repo}` for monorepo-style patterns.
+    const repositoryForBinding = prInfo.bindingRepository
+      || normalizeRepository(prInfo.owner, prInfo.repo);
+    const binding = resolveHostBinding(repositoryForBinding, config);
+    if (!binding.token) {
+      throw new Error(buildMissingTokenError({
+        owner: prInfo.owner,
+        repo: prInfo.repo,
+        bindingRepository: repositoryForBinding,
+        apiHost: binding.apiHost
+      }));
+    }
 
     // Register cwd as known repo path if it matches the target repo
     const currentDir = parser.getCurrentDirectory();
@@ -677,20 +735,33 @@ async function performHeadlessReview(args, config, db, flags, options, externalP
   let poolLifecycle = null;
 
   try {
-    // Get GitHub token (env var takes precedence over config)
-    const githubToken = getGitHubToken(config);
-    if (!githubToken) {
-      throw new Error('GitHub token not found. Set GITHUB_TOKEN env var, add github_token to config, or set github_token_command (e.g., "gh auth token"). Run: npx pair-review --configure');
-    }
-
-    // Parse PR arguments
-    const parser = new PRArgumentParser();
+    // Parse PR arguments — pass config so url_pattern matching for
+    // alternate hosts can resolve pasted URLs to the canonical
+    // owner/repo before falling back to GitHub/Graphite parsers.
+    const parser = new PRArgumentParser(config);
     prInfo = await parser.parsePRArguments(args);
+
+    // Resolve host binding for the target repo (handles alt-host).
+    // Prefer `bindingRepository` (from url_pattern match) over the raw
+    // `${owner}/${repo}` since they can differ when one config entry
+    // serves many monorepo-shaped URLs.
+    const repositoryForBinding = prInfo.bindingRepository
+      || normalizeRepository(prInfo.owner, prInfo.repo);
+    const headlessBinding = resolveHostBinding(repositoryForBinding, config);
+    if (!headlessBinding.token) {
+      throw new Error(buildMissingTokenError({
+        owner: prInfo.owner,
+        repo: prInfo.repo,
+        bindingRepository: repositoryForBinding,
+        apiHost: headlessBinding.apiHost
+      }));
+    }
+    const githubToken = headlessBinding.token;
 
     console.log(`Processing pull request #${prInfo.number} from ${prInfo.owner}/${prInfo.repo} in ${options.modeLabel}`);
 
     // Create GitHub client and verify repository access
-    const githubClient = new GitHubClient(githubToken);
+    const githubClient = new GitHubClient(headlessBinding);
     const repoExists = await githubClient.repositoryExists(prInfo.owner, prInfo.repo);
     if (!repoExists) {
       throw new Error(`Repository ${prInfo.owner}/${prInfo.repo} not found or not accessible`);
@@ -786,9 +857,10 @@ async function performHeadlessReview(args, config, db, flags, options, externalP
 
         // Resolve monorepo config options (checkout_script, worktree_directory, worktree_name_template)
         // even when running from inside the target repo, so they are not silently ignored.
+        // Config lookups must use the binding key (matched `repos[...]` entry), not the PR identity.
         const repoSettingsRepo = new RepoSettingsRepository(db);
         const repoSettings = await repoSettingsRepo.getRepoSettings(repository);
-        const resolved = resolveRepoOptions(config, repository, repoSettings);
+        const resolved = resolveRepoOptions(config, repositoryForBinding, repoSettings);
         checkoutScript = resolved.checkoutScript;
         checkoutTimeout = resolved.checkoutTimeout;
         worktreeConfig = resolved.worktreeConfig;
@@ -802,8 +874,10 @@ async function performHeadlessReview(args, config, db, flags, options, externalP
           owner: prInfo.owner,
           repo: prInfo.repo,
           repository,
+          bindingRepository: repositoryForBinding,
           prNumber: prInfo.number,
           config,
+          cloneUrl: prData?.repository?.clone_url,
           onProgress: (progress) => {
             if (progress.message) {
               console.log(progress.message);
@@ -816,11 +890,12 @@ async function performHeadlessReview(args, config, db, flags, options, externalP
         checkoutTimeout = result.checkoutTimeout;
         worktreeConfig = result.worktreeConfig;
         // findRepositoryPath doesn't return pool config; resolve from DB + file config
+        // (binding key, not PR identity).
         const repoSettingsRepo = new RepoSettingsRepository(db);
         const repoSettings = await repoSettingsRepo.getRepoSettings(repository);
-        const { poolSize: resolvedPoolSize, poolFetchIntervalMinutes: _resolvedFetchInterval } = resolvePoolConfig(config, repository, repoSettings);
+        const { poolSize: resolvedPoolSize, poolFetchIntervalMinutes: _resolvedFetchInterval } = resolvePoolConfig(config, repositoryForBinding, repoSettings);
         poolSize = resolvedPoolSize || 0;
-        resetScript = config ? getRepoResetScript(config, repository) : null;
+        resetScript = config ? getRepoResetScript(config, repositoryForBinding) : null;
       }
 
       const worktreeManager = new GitWorktreeManager(db, worktreeConfig || {});
@@ -906,8 +981,11 @@ async function performHeadlessReview(args, config, db, flags, options, externalP
 
     let analysisSummary = null;
     try {
-      // Pass all instruction levels to ensure they're captured in the analysis run
-      const analysisResult = await analyzer.analyzeAllLevels(review.id, worktreePath, storedPRData, null, { globalInstructions, repoInstructions });
+      // Pass all instruction levels to ensure they're captured in the analysis run.
+      // githubClient is forwarded so the analyzer can pre-fetch existing PR review
+      // comments when callers opt in via excludePrevious.github.
+      logger.debug(`analyzer githubClient wired for ${prInfo.owner}/${prInfo.repo}#${prInfo.number}`);
+      const analysisResult = await analyzer.analyzeAllLevels(review.id, worktreePath, storedPRData, null, { globalInstructions, repoInstructions }, null, { githubClient });
       analysisSummary = analysisResult.summary;
       console.log('AI analysis completed successfully');
     } catch (analysisError) {
@@ -992,24 +1070,49 @@ Found ${validSuggestions.length} suggestion${validSuggestions.length === 1 ? '' 
     // Submit review to GitHub via GraphQL (same path as web UI)
     console.log(`Submitting review with ${githubComments.length} comments...`);
 
-    const prNodeId = storedPRData.node_id;
-    if (!prNodeId) {
-      throw new Error(`PR node_id not available for ${prInfo.owner}/${prInfo.repo}#${prInfo.number}. Cannot submit review without GraphQL node ID.`);
-    }
-
     // Check for existing pending draft (GitHub only allows one per user per PR)
     const existingDraft = await githubClient.getPendingReviewForUser(
       prInfo.owner, prInfo.repo, prInfo.number
     );
 
+    // GraphQL PR node id is only required when we'll be creating a NEW
+    // GraphQL review (no existing draft to reuse) OR adding GraphQL
+    // review comments. REST and host-impl configurations address the
+    // PR by (owner, repo, prNumber) + numeric review id and ignore
+    // prNodeId; reusing an existing GraphQL draft also doesn't need
+    // the PR node id because the review node id is sufficient.
+    const willCreateNewGraphQLReview =
+      headlessBinding.features.review_lifecycle === 'graphql' && !existingDraft;
+    const willAddGraphQLComments =
+      githubComments.length > 0 && headlessBinding.features.pending_review_comments === 'graphql';
+    const needsGraphQLNodeId = willCreateNewGraphQLReview || willAddGraphQLComments;
+
+    if (needsGraphQLNodeId && !storedPRData.node_id) {
+      throw new Error(
+        `GraphQL PR node id required for ${prInfo.owner}/${prInfo.repo}#${prInfo.number} ` +
+        `(features.review_lifecycle = "${headlessBinding.features.review_lifecycle}", ` +
+        `pending_review_comments = "${headlessBinding.features.pending_review_comments}"). ` +
+        `PR record is missing node_id — refresh the PR data and try again.`
+      );
+    }
+
+    const prNodeId = storedPRData.node_id ?? null;
+
+    const submitPrContext = {
+      owner: prInfo.owner,
+      repo: prInfo.repo,
+      prNumber: prInfo.number,
+      reviewId: existingDraft?.databaseId
+    };
+
     let githubReview;
     if (options.reviewEvent === 'DRAFT') {
       githubReview = await githubClient.createDraftReviewGraphQL(
-        prNodeId, reviewBody, githubComments, existingDraft?.id
+        prNodeId, reviewBody, githubComments, existingDraft?.id, submitPrContext
       );
     } else {
       githubReview = await githubClient.createReviewGraphQL(
-        prNodeId, options.reviewEvent, reviewBody, githubComments, existingDraft?.id
+        prNodeId, options.reviewEvent, reviewBody, githubComments, existingDraft?.id, submitPrContext
       );
     }
 

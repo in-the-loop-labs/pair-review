@@ -8,9 +8,13 @@ const defaults = {
   // This default returns empty so GitHub lookup is silently skipped
   // when no token is provided — never re-resolve config internally.
   getGitHubToken: () => '',
-  createGitHubClient: (token) => {
+  // Callers may optionally pass a binding via _deps.getHostBinding so
+  // alt-host repos route to the configured api_host. The default
+  // returns null which makes the client default to github.com.
+  getHostBinding: () => null,
+  createGitHubClient: (tokenOrBinding) => {
     const { GitHubClient } = require('../github/client');
-    return new GitHubClient(token);
+    return new GitHubClient(tokenOrBinding);
   }
 };
 
@@ -139,11 +143,14 @@ async function tryGitHubPR(repoPath, currentBranch, repository, deps) {
   if (!repository || !repository.includes('/')) return null;
 
   try {
+    // Prefer the host binding (alt-host aware) when callers provide one.
+    // Falls back to the bare token for legacy callers.
+    const binding = deps.getHostBinding();
     const token = deps.getGitHubToken();
-    if (!token) return null;
+    if (!binding && !token) return null;
 
     const [owner, repo] = repository.split('/');
-    const client = deps.createGitHubClient(token);
+    const client = deps.createGitHubClient(binding || token);
     const result = await client.findPRByBranch(owner, repo, currentBranch);
 
     if (result) {

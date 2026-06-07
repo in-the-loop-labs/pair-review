@@ -216,10 +216,78 @@ function buildDedupContext(prMetadata, { reviewId, serverPort, runId, excludeRun
 }
 
 /**
+ * Fetch existing PR review comments via the injected GitHubClient/Octokit.
+ *
+ * Replaces the previous `gh api repos/.../comments --paginate` shell-out so the
+ * analyzer no longer depends on the `gh` CLI. The result is embedded directly
+ * in the dedup prompt section, removing the need for the AI to spawn a process
+ * to fetch the data.
+ *
+ * Pagination is delegated to Octokit's `paginate` helper so PRs with more than
+ * 100 comments are handled transparently. The Octokit instance is taken from
+ * the caller-supplied `GitHubClient` so per-repo host bindings (api host,
+ * token) are honoured.
+ *
+ * @param {Object} githubClient - GitHubClient instance (must expose `.octokit`)
+ * @param {Object} target - { owner, repo, pullNumber }
+ * @param {string} [logPrefix=''] - Log prefix for traceability
+ * @returns {Promise<Array<{path: string, line: number|null, start_line: number|null, original_line: number|null, original_start_line: number|null, body: string}>|null>}
+ *   Array of simplified comment objects, or `null` if the fetch failed or the
+ *   client/target was incomplete.
+ */
+async function fetchExistingReviewComments(githubClient, target, logPrefix = '') {
+  if (!githubClient || !githubClient.octokit) {
+    return null;
+  }
+  const { owner, repo, pullNumber } = target || {};
+  if (!owner || !repo || !pullNumber) {
+    return null;
+  }
+
+  try {
+    logger.info(`${logPrefix}[Dedup] Fetching existing PR review comments for ${owner}/${repo}#${pullNumber} via Octokit`);
+    const comments = await githubClient.octokit.paginate(
+      githubClient.octokit.rest.pulls.listReviewComments,
+      {
+        owner,
+        repo,
+        pull_number: pullNumber,
+        per_page: 100
+      }
+    );
+
+    const simplified = (comments || []).map(c => ({
+      path: c.path,
+      line: c.line ?? null,
+      start_line: c.start_line ?? null,
+      original_line: c.original_line ?? null,
+      original_start_line: c.original_start_line ?? null,
+      body: c.body || ''
+    }));
+
+    logger.info(`${logPrefix}[Dedup] Fetched ${simplified.length} existing review comment(s) for dedup`);
+    return simplified;
+  } catch (err) {
+    logger.warn(`${logPrefix}[Dedup] Failed to fetch existing review comments: ${err.message}`);
+    return null;
+  }
+}
+
+/**
  * Build dedup instructions text for excluding previously identified issues.
  *
+ * The GitHub section is rendered when `context.githubComments` is a non-empty
+ * array of pre-fetched comments (see `fetchExistingReviewComments`). The
+ * comments are embedded as JSON directly in the prompt so the AI does not
+ * need to spawn `gh` (which is unavailable on alt-hosts) to fetch them.
+ *
+ * If `excludePrevious.github` is set but no comments were supplied (no client,
+ * empty list, or fetch failed), the GitHub section is silently omitted — a
+ * warning will already have been logged at fetch time.
+ *
  * @param {Object|null} excludePrevious - { github: bool, feedback: bool } (or falsy if disabled)
- * @param {Object} context - { owner, repo, pullNumber, reviewId, serverPort, runId, excludeRunIds }
+ * @param {Object} context - { reviewId, serverPort, runId, excludeRunIds, githubComments }
+ * @param {Array} [context.githubComments] - Pre-fetched PR review comments (path, line, original_line, body)
  * @param {string} [context.runId] - Single run ID to exclude (backward compat)
  * @param {string[]} [context.excludeRunIds] - Array of run IDs to exclude (takes precedence over runId)
  * @returns {string} Instruction text for the dedup-instructions prompt section, or empty string
@@ -236,13 +304,13 @@ function buildDedupInstructions(excludePrevious, context) {
 
 After consolidating suggestions, check your results against previously identified issues and remove any that are duplicates or substantially similar. If you have zero suggestions after consolidation, skip this step entirely.`);
 
-  if (excludePrevious.github && context.owner && context.repo && context.pullNumber) {
+  const githubComments = Array.isArray(context.githubComments) ? context.githubComments : null;
+  if (excludePrevious.github && githubComments && githubComments.length > 0) {
     sections.push(`### GitHub PR Review Comments
-Fetch inline review comments:
+The following inline review comments already exist on this pull request. Each entry has \`path\` (file), \`line\`/\`original_line\` (end line), \`start_line\`/\`original_start_line\` (start line for multi-line comments; null for single-line comments), and \`body\` (content):
+\`\`\`json
+${JSON.stringify(githubComments, null, 2)}
 \`\`\`
-gh api repos/${context.owner}/${context.repo}/pulls/${context.pullNumber}/comments --paginate
-\`\`\`
-Each comment has \`path\` (file), \`line\`/\`original_line\` (line number), and \`body\` (content).
 A suggestion is a duplicate if it matches on **all three** of: (1) same file, (2) overlapping or adjacent line range (within 5 lines), and (3) substantially similar issue — i.e., the same category of issue (error handling, validation, naming, etc.) applied to the same code. If a previous comment partially overlaps your suggestion — e.g., it flags missing error handling while your suggestion flags missing error handling *and* input validation — keep only the novel portion that the previous comment does not address. If there is no novel portion, exclude it entirely.`);
   }
 
@@ -321,11 +389,12 @@ class Analyzer {
    * @param {string} [options.tier='balanced'] - Analysis tier (fast, balanced, thorough)
    * @param {Object} [options.excludePrevious] - { github: bool, feedback: bool } for dedup
    * @param {number} [options.serverPort] - Server port for dedup API calls
+   * @param {Object} [options.githubClient] - GitHubClient used to pre-fetch existing PR review comments for dedup (PR mode only)
    * @returns {Promise<Object>} Analysis results
    */
   async analyzeAllLevels(prId, worktreePath, prMetadata, progressCallback = null, instructions = null, changedFiles = null, options = {}) {
     const runId = options.runId || uuidv4();
-    const { analysisId, skipRunCreation, skipLevel3, reviewerNum, excludePrevious, serverPort } = options;
+    const { analysisId, skipRunCreation, skipLevel3, reviewerNum, excludePrevious, serverPort, githubClient } = options;
     const logPrefix = options.logPrefix || '';
     // Respect provider-configured timeout (e.g. Pi's 15 min, executable providers)
     const ProviderClass = getProviderClass(this.provider);
@@ -526,7 +595,7 @@ class Analyzer {
         // Build dedup context from prMetadata and options
         const dedupContext = buildDedupContext(prMetadata, { reviewId: prId, serverPort, runId });
 
-        const orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata, mergedInstructions, worktreePath, { analysisId, tier, progressCallback, timeout: executionTimeout, logPrefix, reviewerNum, excludePrevious, dedupContext });
+        const orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata, mergedInstructions, worktreePath, { analysisId, tier, progressCallback, timeout: executionTimeout, logPrefix, reviewerNum, excludePrevious, dedupContext, githubClient });
 
         // Report orchestration step as completed
         if (progressCallback) {
@@ -2661,10 +2730,11 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @param {string} options.analysisId - Analysis ID for process tracking (enables cancellation)
    * @param {Object} [options.excludePrevious] - { github: bool, feedback: bool } for dedup
    * @param {Object} [options.dedupContext] - { owner, repo, pullNumber, reviewId, serverPort }
+   * @param {Object} [options.githubClient] - GitHubClient used to pre-fetch existing PR review comments for dedup
    * @returns {Promise<Array>} Curated suggestions array
    */
   async orchestrateWithAI(allSuggestions, prMetadata, customInstructions = null, worktreePath = null, options = {}) {
-    const { analysisId, tier = 'balanced', progressCallback, providerOverride, modelOverride, timeout = 600000, logPrefix: lp = '', reviewerNum, excludePrevious, dedupContext } = options;
+    const { analysisId, tier = 'balanced', progressCallback, providerOverride, modelOverride, timeout = 600000, logPrefix: lp = '', reviewerNum, excludePrevious, dedupContext, githubClient } = options;
     // Build adapter-level log prefix: when reviewerNum is set (council mode),
     // use compact format like [R1 Orch] so concurrent reviewers are disambiguated
     const adapterLogPrefix = reviewerNum ? `[R${reviewerNum} Orch]` : '';
@@ -2685,8 +2755,26 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       // Create provider instance for consolidation (use overrides if provided)
       const aiProvider = createProvider(providerOverride || this.provider, modelOverride || this.model, this.providerOverrides);
 
+      // Pre-fetch existing PR review comments for dedup (replaces the prior
+      // `gh api` shell-out — the analyzer no longer depends on the `gh` CLI).
+      // The fetch runs only when the caller opted in via excludePrevious.github
+      // *and* supplied a GitHubClient. When the client is unavailable (e.g.
+      // local mode or a caller that has not yet been updated) the GitHub dedup
+      // section is silently omitted; buildDedupInstructions handles that case.
+      let resolvedDedupContext = dedupContext;
+      if (excludePrevious?.github && githubClient && dedupContext?.owner && dedupContext?.repo && dedupContext?.pullNumber) {
+        const githubComments = await fetchExistingReviewComments(
+          githubClient,
+          { owner: dedupContext.owner, repo: dedupContext.repo, pullNumber: dedupContext.pullNumber },
+          lp
+        );
+        resolvedDedupContext = { ...dedupContext, githubComments: githubComments || [] };
+      } else if (excludePrevious?.github && !githubClient) {
+        logger.warn(`${lp}[Dedup] excludePrevious.github is enabled but no githubClient was supplied — GitHub dedup section will be omitted`);
+      }
+
       // Build the consolidation prompt
-      const prompt = this.buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions, worktreePath, tier, lp, { excludePrevious, dedupContext });
+      const prompt = this.buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions, worktreePath, tier, lp, { excludePrevious, dedupContext: resolvedDedupContext });
 
       // Execute AI for cross-level consolidation
       logger.info(`${lp}[Consolidation] Running AI consolidation to curate and merge suggestions...`);
@@ -2849,11 +2937,12 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @param {Function} [options.progressCallback] - Progress callback
    * @param {Object} [options.excludePrevious] - { github: bool, feedback: bool } for dedup
    * @param {number} [options.serverPort] - Server port for dedup API calls
+   * @param {Object} [options.githubClient] - GitHubClient used to pre-fetch existing PR review comments for dedup
    * @returns {Promise<Object>} Analysis results { runId, suggestions, summary }
    */
   async runReviewerCentricCouncil(reviewContext, councilConfig, options = {}) {
     const { reviewId, worktreePath, prMetadata, changedFiles, instructions } = reviewContext;
-    const { analysisId, progressCallback, excludePrevious, serverPort } = options;
+    const { analysisId, progressCallback, excludePrevious, serverPort, githubClient } = options;
     const parentRunId = options.runId || uuidv4();
 
     logger.section('Review Council Analysis Starting (Reviewer-Centric)');
@@ -3027,7 +3116,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           logPrefix: `[${reviewerLabel}] `,
           reviewerNum: 1,
           excludePrevious,
-          serverPort
+          serverPort,
+          githubClient
         }
       );
 
@@ -3305,7 +3395,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 
       const consolidated = await this._crossVoiceConsolidate(
         voiceReviews, prMetadata, consolInstructions, worktreePath,
-        { provider: consolProvider, model: consolModel, tier: consolTier, timeout: consolConfig.timeout, analysisId, progressCallback, excludePrevious, dedupContext, providerOverrides: this.providerOverrides }
+        { provider: consolProvider, model: consolModel, tier: consolTier, timeout: consolConfig.timeout, analysisId, progressCallback, excludePrevious, dedupContext, githubClient, providerOverrides: this.providerOverrides }
       );
 
       const finalSuggestions = this.validateAndFinalizeSuggestions(
@@ -3391,7 +3481,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    */
   async runCouncilAnalysis(reviewContext, councilConfig, options = {}) {
     const { reviewId, worktreePath, prMetadata, changedFiles, instructions } = reviewContext;
-    const { analysisId, progressCallback, excludePrevious, serverPort } = options;
+    const { analysisId, progressCallback, excludePrevious, serverPort, githubClient } = options;
     const runId = options.runId || uuidv4();
 
     logger.section('Review Council Analysis Starting');
@@ -3647,7 +3737,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 
       const orchestrationResult = await this.orchestrateWithAI(
         allSuggestions, prMetadata, orchInstructions, worktreePath,
-        { analysisId, tier: orchTier, progressCallback, providerOverride: orchProvider, modelOverride: orchModel, timeout: orchConfig.timeout || 600000, excludePrevious, dedupContext }
+        { analysisId, tier: orchTier, progressCallback, providerOverride: orchProvider, modelOverride: orchModel, timeout: orchConfig.timeout || 600000, excludePrevious, dedupContext, githubClient }
       );
 
       // Report cross-level orchestration step as completed
@@ -3958,9 +4048,25 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @private
    */
   async _crossVoiceConsolidate(voiceReviews, prMetadata, customInstructions, worktreePath, config) {
-    const { provider, model, tier, timeout, analysisId, progressCallback, excludePrevious, dedupContext, providerOverrides } = config;
+    const { provider, model, tier, timeout, analysisId, progressCallback, excludePrevious, dedupContext, githubClient, providerOverrides } = config;
 
     const aiProvider = createProvider(provider, model, providerOverrides || {});
+
+    // Pre-fetch existing PR review comments for dedup (replaces the prior
+    // `gh api` shell-out — the analyzer no longer depends on the `gh` CLI).
+    // See orchestrateWithAI for the matching code path used by the other two
+    // top-level analysis flows (analyzeAllLevels, runCouncilAnalysis).
+    let resolvedDedupContext = dedupContext;
+    if (excludePrevious?.github && githubClient && dedupContext?.owner && dedupContext?.repo && dedupContext?.pullNumber) {
+      const githubComments = await fetchExistingReviewComments(
+        githubClient,
+        { owner: dedupContext.owner, repo: dedupContext.repo, pullNumber: dedupContext.pullNumber },
+        '[ReviewerCouncil]'
+      );
+      resolvedDedupContext = { ...dedupContext, githubComments: githubComments || [] };
+    } else if (excludePrevious?.github && !githubClient) {
+      logger.warn('[ReviewerCouncil][Dedup] excludePrevious.github is enabled but no githubClient was supplied — GitHub dedup section will be omitted');
+    }
 
     const voiceDescriptions = voiceReviews.map(v => {
       let desc = `### Reviewer: ${v.voiceKey}`;
@@ -3987,7 +4093,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       reviewIntro: `You are consolidating code review results from ${voiceReviews.length} independent AI reviewers for ${reviewDescription}. Each reviewer independently analyzed the same code changes and produced a complete review.`,
       customInstructions: customInstructions ? this.buildCustomInstructionsSection(customInstructions) : '',
       lineNumberGuidance: this.buildOrchestrationLineNumberGuidance(worktreePath),
-      dedupInstructions: buildDedupInstructions(excludePrevious, dedupContext || {}),
+      dedupInstructions: buildDedupInstructions(excludePrevious, resolvedDedupContext || {}),
       reviewerSuggestions: voiceDescriptions,
       suggestionCount: voiceReviews.reduce((sum, v) => sum + v.suggestionCount, 0),
       reviewerCount: voiceReviews.length
@@ -4053,3 +4159,4 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 module.exports = Analyzer;
 module.exports.buildDedupContext = buildDedupContext;
 module.exports.buildDedupInstructions = buildDedupInstructions;
+module.exports.fetchExistingReviewComments = fetchExistingReviewComments;

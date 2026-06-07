@@ -351,6 +351,54 @@ describe('GitHubClient', () => {
       expect(secondCallMutation).toContain('submitPullRequestReview');
     });
 
+    it('treats prContext.reviewId as the existing review when REST review-lifecycle is in effect and no node id is provided (Fix #5)', async () => {
+      // Construct a client whose binding is alt-host REST. The REST
+      // path can hand us only a numeric review id via
+      // `prContext.reviewId`; the orchestration must not create a
+      // brand-new review on top of that.
+      const client = new GitHubClient({
+        token: 't',
+        apiHost: 'https://althost.example/api/v3',
+        features: {
+          pending_review_check: 'rest',
+          stack_walker: 'rest',
+          review_lifecycle: 'rest',
+          pending_review_comments: 'host'
+        }
+      });
+
+      // Mock the operations modules so we can observe what arguments
+      // they received.
+      const reviewLifecycleOps = require('../../src/github/operations/review-lifecycle');
+      const addSpy = vi.spyOn(reviewLifecycleOps, 'addPullRequestReview');
+      const submitSpy = vi.spyOn(reviewLifecycleOps, 'submitPullRequestReview')
+        .mockResolvedValue({ id: 'PRR_x', databaseId: 88, url: 'u', state: 'COMMENTED' });
+
+      // Empty comments so we don't trigger the pending-review-comments
+      // dispatcher and so we don't need to mock it.
+      await client.createReviewGraphQL(
+        'unused-prNodeId',
+        'COMMENT',
+        'body',
+        [],
+        null, // explicit existingReviewId is NULL
+        { owner: 'o', repo: 'r', prNumber: 1, reviewId: 88 }
+      );
+
+      // The orchestrator must NOT have called addPullRequestReview —
+      // since we passed a numeric id via prContext.reviewId on the
+      // REST path, that signals an existing draft.
+      expect(addSpy).not.toHaveBeenCalled();
+      // Submit must have been called with the existing review id.
+      expect(submitSpy).toHaveBeenCalled();
+      const submitArgs = submitSpy.mock.calls[0];
+      // submitPullRequestReview signature: (octokit, features, reviewId, event, body, prContext)
+      expect(submitArgs[2]).toBe(88);
+
+      addSpy.mockRestore();
+      submitSpy.mockRestore();
+    });
+
     it('should still create a new pending review when existingReviewId is null', async () => {
       const client = new GitHubClient('test-token');
       const mockGraphql = vi.fn()
@@ -447,8 +495,175 @@ describe('GitHubClient', () => {
         client.createReviewGraphQL('PR_node123', 'COMMENT', 'Body', comments)
       ).rejects.toThrow('Failed to add');
 
-      // deletePendingReview SHOULD be called for reviews we created
-      expect(deleteSpy).toHaveBeenCalledWith('new-review-456');
+      // deletePendingReview SHOULD be called for reviews we created.
+      // The second arg is the optional prContext (null when not supplied
+      // by the caller — GraphQL mode ignores it; REST mode requires it).
+      expect(deleteSpy).toHaveBeenCalledWith('new-review-456', null);
+    });
+  });
+
+  // Regression tests for the bug where `createReviewGraphQL` /
+  // `createDraftReviewGraphQL` could leak a pending review on GitHub when
+  // `addCommentsInBatches` *threw* (as opposed to returning `failed: true`).
+  // The host pending-review-comments path used to throw on request
+  // failure, and the dispatcher still throws for unsupported modes — the
+  // orchestration must catch and clean up before rethrowing.
+  describe('createReviewGraphQL — cleanup when addCommentsInBatches throws', () => {
+    it('deletes the newly-created review and propagates the error when addCommentsInBatches throws', async () => {
+      const client = new GitHubClient('test-token');
+      // Create-review succeeds; addCommentsInBatches is stubbed to throw.
+      const mockGraphql = vi.fn().mockResolvedValueOnce({
+        addPullRequestReview: {
+          pullRequestReview: { id: 'new-review-throw-1', databaseId: 7777 }
+        }
+      });
+      client.octokit.graphql = mockGraphql;
+
+      const thrown = new Error('host pending-review-comments transport failed');
+      const addSpy = vi.spyOn(client, 'addCommentsInBatches').mockRejectedValue(thrown);
+      const deleteSpy = vi.spyOn(client, 'deletePendingReview').mockResolvedValue(true);
+
+      const comments = [{ path: 'src/file.js', line: 1, side: 'RIGHT', body: 'c' }];
+
+      await expect(
+        client.createReviewGraphQL(
+          'PR_node', 'COMMENT', 'Body', comments, null,
+          { owner: 'o', repo: 'r', prNumber: 1 }
+        )
+      ).rejects.toThrow(/comment batch threw before completion/);
+
+      // Critical: cleanup must run even though the comment path threw.
+      expect(deleteSpy).toHaveBeenCalledTimes(1);
+      expect(deleteSpy.mock.calls[0][0]).toBe('new-review-throw-1');
+      // Downstream prContext should carry numeric databaseId.
+      expect(deleteSpy.mock.calls[0][1]).toMatchObject({ owner: 'o', repo: 'r', prNumber: 1, reviewId: 7777 });
+      // Sanity: the add path was actually entered.
+      expect(addSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT delete a pre-existing review when addCommentsInBatches throws', async () => {
+      const client = new GitHubClient('test-token');
+      // No create-review call — we're using an existing review id.
+      client.octokit.graphql = vi.fn();
+
+      vi.spyOn(client, 'addCommentsInBatches').mockRejectedValue(new Error('host failed'));
+      const deleteSpy = vi.spyOn(client, 'deletePendingReview').mockResolvedValue(true);
+
+      const comments = [{ path: 'src/file.js', line: 1, side: 'RIGHT', body: 'c' }];
+
+      await expect(
+        client.createReviewGraphQL(
+          'PR_node', 'COMMENT', 'Body', comments, 'existing-review-keep', null
+        )
+      ).rejects.toThrow(/comment batch threw before completion/);
+
+      // Pre-existing review must be left untouched on a throw.
+      expect(deleteSpy).not.toHaveBeenCalled();
+    });
+
+    it('cleans up exactly once when addCommentsInBatches returns failed: true (no double-delete regression)', async () => {
+      const client = new GitHubClient('test-token');
+      client.octokit.graphql = vi.fn().mockResolvedValueOnce({
+        addPullRequestReview: {
+          pullRequestReview: { id: 'new-review-once', databaseId: 1234 }
+        }
+      });
+
+      vi.spyOn(client, 'addCommentsInBatches').mockResolvedValue({
+        successCount: 0,
+        failed: true,
+        failedDetails: ['src/file.js:1 - bad line']
+      });
+      const deleteSpy = vi.spyOn(client, 'deletePendingReview').mockResolvedValue(true);
+
+      const comments = [{ path: 'src/file.js', line: 1, side: 'RIGHT', body: 'c' }];
+
+      await expect(
+        client.createReviewGraphQL('PR_node', 'COMMENT', 'Body', comments)
+      ).rejects.toThrow(/Failed to add 1 of 1 comments to GitHub/);
+
+      // Exactly one cleanup — the failed-result path, not also the throw path.
+      expect(deleteSpy).toHaveBeenCalledTimes(1);
+      expect(deleteSpy).toHaveBeenCalledWith('new-review-once', { reviewId: 1234 });
+    });
+  });
+
+  describe('createDraftReviewGraphQL — cleanup when addCommentsInBatches throws', () => {
+    it('deletes the newly-created draft and propagates the error when addCommentsInBatches throws', async () => {
+      const client = new GitHubClient('test-token');
+      client.octokit.graphql = vi.fn().mockResolvedValueOnce({
+        addPullRequestReview: {
+          pullRequestReview: {
+            id: 'new-draft-throw-1',
+            databaseId: 8888,
+            url: 'https://github.com/o/r/pull/1#pullrequestreview-8888'
+          }
+        }
+      });
+
+      const thrown = new Error('host pending-review-comments transport failed');
+      vi.spyOn(client, 'addCommentsInBatches').mockRejectedValue(thrown);
+      const deleteSpy = vi.spyOn(client, 'deletePendingReview').mockResolvedValue(true);
+
+      const comments = [{ path: 'src/file.js', line: 1, side: 'RIGHT', body: 'c' }];
+
+      await expect(
+        client.createDraftReviewGraphQL(
+          'PR_node', 'Body', comments, null,
+          { owner: 'o', repo: 'r', prNumber: 1 }
+        )
+      ).rejects.toThrow(/comment batch threw before completion/);
+
+      expect(deleteSpy).toHaveBeenCalledTimes(1);
+      expect(deleteSpy.mock.calls[0][0]).toBe('new-draft-throw-1');
+      expect(deleteSpy.mock.calls[0][1]).toMatchObject({ owner: 'o', repo: 'r', prNumber: 1, reviewId: 8888 });
+    });
+
+    it('does NOT delete a pre-existing draft when addCommentsInBatches throws', async () => {
+      const client = new GitHubClient('test-token');
+      client.octokit.graphql = vi.fn();
+
+      vi.spyOn(client, 'addCommentsInBatches').mockRejectedValue(new Error('host failed'));
+      const deleteSpy = vi.spyOn(client, 'deletePendingReview').mockResolvedValue(true);
+
+      const comments = [{ path: 'src/file.js', line: 1, side: 'RIGHT', body: 'c' }];
+
+      await expect(
+        client.createDraftReviewGraphQL(
+          'PR_node', 'Body', comments, 'existing-draft-keep', null
+        )
+      ).rejects.toThrow(/comment batch threw before completion/);
+
+      expect(deleteSpy).not.toHaveBeenCalled();
+    });
+
+    it('cleans up exactly once when addCommentsInBatches returns failed: true (no double-delete regression)', async () => {
+      const client = new GitHubClient('test-token');
+      client.octokit.graphql = vi.fn().mockResolvedValueOnce({
+        addPullRequestReview: {
+          pullRequestReview: {
+            id: 'new-draft-once',
+            databaseId: 5678,
+            url: 'https://github.com/o/r/pull/1#pullrequestreview-5678'
+          }
+        }
+      });
+
+      vi.spyOn(client, 'addCommentsInBatches').mockResolvedValue({
+        successCount: 0,
+        failed: true,
+        failedDetails: ['src/file.js:1 - bad line']
+      });
+      const deleteSpy = vi.spyOn(client, 'deletePendingReview').mockResolvedValue(true);
+
+      const comments = [{ path: 'src/file.js', line: 1, side: 'RIGHT', body: 'c' }];
+
+      await expect(
+        client.createDraftReviewGraphQL('PR_node', 'Body', comments)
+      ).rejects.toThrow(/draft review has been deleted/);
+
+      expect(deleteSpy).toHaveBeenCalledTimes(1);
+      expect(deleteSpy).toHaveBeenCalledWith('new-draft-once', { reviewId: 5678 });
     });
   });
 
@@ -2036,6 +2251,404 @@ describe('GitHubClient', () => {
 
       await expect(client.getAuthenticatedUser())
         .rejects.toThrow('Bad credentials');
+    });
+  });
+
+  describe('normaliseBinding refresh preservation', () => {
+    const { normaliseBinding } = require('../../src/github/client');
+
+    it('preserves a refresh function from an object binding', () => {
+      const refresh = () => 'fresh';
+      const result = normaliseBinding({ token: 't', apiHost: null, refresh });
+      expect(result.refresh).toBe(refresh);
+    });
+
+    it('sets refresh to null for the legacy bare-token path', () => {
+      const result = normaliseBinding('bare-token');
+      expect(result.refresh).toBeNull();
+    });
+
+    it('sets refresh to null when an object binding has no refresh', () => {
+      const result = normaliseBinding({ token: 't' });
+      expect(result.refresh).toBeNull();
+    });
+  });
+
+  describe('refresh-on-401 retry', () => {
+    let originalFetch;
+    let infoSpy;
+    let warnSpy;
+
+    // Build a minimal fetch Response octokit's request layer can parse.
+    // Captures the outgoing Authorization header so tests can assert which
+    // token was used on each attempt. `extraHeaders` (e.g. a `link` header)
+    // lets pagination tests drive octokit's "next page" detection.
+    function makeResponse(status, bodyObj, extraHeaders = {}) {
+      const bodyText = JSON.stringify(bodyObj ?? {});
+      const headerEntries = [
+        ['content-type', 'application/json; charset=utf-8'],
+        ...Object.entries(extraHeaders)
+      ];
+      const headers = {
+        get: (name) => {
+          const found = headerEntries.find(([k]) => k.toLowerCase() === name.toLowerCase());
+          return found ? found[1] : null;
+        },
+        [Symbol.iterator]: function* () { yield* headerEntries; }
+      };
+      return {
+        url: 'https://api.github.com/test',
+        status,
+        headers,
+        json: async () => JSON.parse(bodyText),
+        text: async () => bodyText
+      };
+    }
+
+    beforeEach(() => {
+      originalFetch = globalThis.fetch;
+      const logger = require('../../src/utils/logger');
+      infoSpy = vi.spyOn(logger, 'info').mockImplementation(() => {});
+      warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      globalThis.fetch = originalFetch;
+      infoSpy.mockRestore();
+      warnSpy.mockRestore();
+    });
+
+    it('refreshes the token and retries once on a 401, returning the success result', async () => {
+      const authHeaders = [];
+      const refresh = vi.fn(() => 'fresh-token');
+      globalThis.fetch = vi.fn(async (url, opts) => {
+        authHeaders.push(opts.headers.authorization);
+        if (authHeaders.length === 1) {
+          return makeResponse(401, { message: 'Bad credentials' });
+        }
+        return makeResponse(200, { login: 'octocat', name: 'Octo', avatar_url: 'x' });
+      });
+
+      const client = new GitHubClient({ token: 'stale-token', apiHost: null, refresh });
+
+      const user = await client.getAuthenticatedUser();
+      expect(user.login).toBe('octocat');
+
+      // refresh called once; two HTTP attempts.
+      expect(refresh).toHaveBeenCalledTimes(1);
+      expect(authHeaders).toHaveLength(2);
+      // First attempt used the stale token, retry used the fresh token.
+      expect(authHeaders[0]).toBe('token stale-token');
+      expect(authHeaders[1]).toBe('token fresh-token');
+      // Client now carries the fresh token for future calls.
+      expect(client.token).toBe('fresh-token');
+      expect(infoSpy).toHaveBeenCalled();
+    });
+
+    it('uses the refreshed instance for all future calls (no second refresh)', async () => {
+      const refresh = vi.fn(() => 'fresh-token');
+      let call = 0;
+      globalThis.fetch = vi.fn(async () => {
+        call += 1;
+        if (call === 1) return makeResponse(401, { message: 'Bad credentials' });
+        return makeResponse(200, { login: 'octocat', name: 'Octo', avatar_url: 'x' });
+      });
+
+      const client = new GitHubClient({ token: 'stale-token', apiHost: null, refresh });
+      await client.getAuthenticatedUser(); // triggers refresh
+      await client.getAuthenticatedUser(); // should NOT refresh again
+
+      expect(refresh).toHaveBeenCalledTimes(1);
+      expect(call).toBe(3); // 401, retry-success, second-call-success
+    });
+
+    it('does NOT retry when no refresh capability is available (bare token)', async () => {
+      let attempts = 0;
+      globalThis.fetch = vi.fn(async () => {
+        attempts += 1;
+        return makeResponse(401, { message: 'Bad credentials' });
+      });
+
+      const client = new GitHubClient('bare-token'); // no refresh
+
+      await expect(client.getAuthenticatedUser()).rejects.toThrow();
+      expect(attempts).toBe(1);
+    });
+
+    it('retries at most once even when the fresh token is also rejected', async () => {
+      const refresh = vi.fn(() => 'fresh-token');
+      let attempts = 0;
+      globalThis.fetch = vi.fn(async () => {
+        attempts += 1;
+        return makeResponse(401, { message: 'Bad credentials' });
+      });
+
+      const client = new GitHubClient({ token: 'stale-token', apiHost: null, refresh });
+
+      await expect(client.getAuthenticatedUser()).rejects.toThrow();
+      // Exactly two attempts (original + one retry); refresh called once.
+      expect(attempts).toBe(2);
+      expect(refresh).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT refresh-and-retry when refresh returns an unchanged token', async () => {
+      const refresh = vi.fn(() => 'stale-token'); // same as current
+      let attempts = 0;
+      globalThis.fetch = vi.fn(async () => {
+        attempts += 1;
+        return makeResponse(401, { message: 'Bad credentials' });
+      });
+
+      const client = new GitHubClient({ token: 'stale-token', apiHost: null, refresh });
+
+      await expect(client.getAuthenticatedUser()).rejects.toThrow();
+      expect(refresh).toHaveBeenCalledTimes(1);
+      // No retry because the token did not change.
+      expect(attempts).toBe(1);
+    });
+
+    it('does NOT refresh-and-retry when refresh returns an empty token', async () => {
+      const refresh = vi.fn(() => '');
+      let attempts = 0;
+      globalThis.fetch = vi.fn(async () => {
+        attempts += 1;
+        return makeResponse(401, { message: 'Bad credentials' });
+      });
+
+      const client = new GitHubClient({ token: 'stale-token', apiHost: null, refresh });
+
+      await expect(client.getAuthenticatedUser()).rejects.toThrow();
+      expect(refresh).toHaveBeenCalledTimes(1);
+      expect(attempts).toBe(1);
+    });
+
+    it('does NOT retry on a 403 error', async () => {
+      const refresh = vi.fn(() => 'fresh-token');
+      let attempts = 0;
+      globalThis.fetch = vi.fn(async () => {
+        attempts += 1;
+        return makeResponse(403, { message: 'Forbidden' });
+      });
+
+      const client = new GitHubClient({ token: 'stale-token', apiHost: null, refresh });
+
+      await expect(client.getAuthenticatedUser()).rejects.toThrow();
+      expect(refresh).not.toHaveBeenCalled();
+      expect(attempts).toBe(1);
+    });
+
+    it('does NOT retry on a 404 error', async () => {
+      const refresh = vi.fn(() => 'fresh-token');
+      let attempts = 0;
+      globalThis.fetch = vi.fn(async () => {
+        attempts += 1;
+        return makeResponse(404, { message: 'Not Found' });
+      });
+
+      const client = new GitHubClient({ token: 'stale-token', apiHost: null, refresh });
+
+      await expect(client.repositoryExists('o', 'r')).resolves.toBe(false);
+      expect(refresh).not.toHaveBeenCalled();
+      expect(attempts).toBe(1);
+    });
+
+    it('covers GraphQL calls (401 on a graphql request triggers refresh-and-retry)', async () => {
+      const authHeaders = [];
+      const refresh = vi.fn(() => 'fresh-token');
+      globalThis.fetch = vi.fn(async (url, opts) => {
+        authHeaders.push(opts.headers.authorization);
+        if (authHeaders.length === 1) {
+          return makeResponse(401, { message: 'Bad credentials' });
+        }
+        return makeResponse(200, { data: { viewer: { login: 'octocat' } } });
+      });
+
+      const client = new GitHubClient({ token: 'stale-token', apiHost: null, refresh });
+
+      const result = await client.octokit.graphql('query { viewer { login } }');
+      expect(result.viewer.login).toBe('octocat');
+      expect(refresh).toHaveBeenCalledTimes(1);
+      expect(authHeaders).toEqual(['token stale-token', 'token fresh-token']);
+    });
+
+    // Regression: a token that expires mid-`octokit.paginate` must recover on
+    // EVERY page. This reproduces the old instance-swap bug: page 1's 401
+    // refreshes the token, and under the old design the paginate loop stayed
+    // bound to the stale instance, so page 2's 401 hit the `fresh === this.token`
+    // short-circuit and re-threw. With one long-lived instance reading
+    // `this.token` per request, page 2 simply dispatches with the fresh token.
+    it('recovers across pages when the token expires mid-paginate', async () => {
+      const refresh = vi.fn(async () => 'fresh-token');
+      globalThis.fetch = vi.fn(async (url, opts) => {
+        const auth = opts.headers.authorization;
+        // The stale token is rejected everywhere; only the fresh token works.
+        if (auth === 'token stale-token') {
+          return makeResponse(401, { message: 'Bad credentials' });
+        }
+        const isPage2 = String(url).includes('page=2');
+        if (!isPage2) {
+          return makeResponse(
+            200,
+            [{ filename: 'a.js', status: 'modified', additions: 1, deletions: 0, changes: 1 }],
+            { link: '<https://api.github.com/repos/o/r/pulls/1/files?per_page=100&page=2>; rel="next"' }
+          );
+        }
+        return makeResponse(
+          200,
+          [{ filename: 'b.js', status: 'added', additions: 2, deletions: 0, changes: 2 }]
+        );
+      });
+
+      const client = new GitHubClient({ token: 'stale-token', apiHost: null, refresh });
+
+      const files = await client.fetchPullRequestFiles('o', 'r', 1);
+
+      // Both pages came back: the paginate loop survived the mid-flight refresh.
+      expect(files.map((f) => f.filename)).toEqual(['a.js', 'b.js']);
+      // Page 1's 401 refreshes once; page 2 then dispatches with the fresh
+      // token and never 401s, so no second refresh.
+      expect(refresh).toHaveBeenCalledTimes(1);
+      expect(client.token).toBe('fresh-token');
+    });
+
+    // Regression: a burst of concurrent requests that all 401 on the now-stale
+    // token must trigger exactly ONE refresh (coalesced via the shared
+    // `_refreshing` promise) and all recover — not each refresh independently
+    // and trip the old `fresh === this.token` short-circuit.
+    it('coalesces concurrent 401s into a single refresh and recovers all', async () => {
+      const refresh = vi.fn(async () => 'fresh-token');
+      const seen = [];
+      globalThis.fetch = vi.fn(async (url, opts) => {
+        const auth = opts.headers.authorization;
+        seen.push(auth);
+        if (auth === 'token stale-token') {
+          return makeResponse(401, { message: 'Bad credentials' });
+        }
+        return makeResponse(200, { login: 'octocat', name: 'Octo', avatar_url: 'x' });
+      });
+
+      const client = new GitHubClient({ token: 'stale-token', apiHost: null, refresh });
+
+      const [a, b, c] = await Promise.all([
+        client.getAuthenticatedUser(),
+        client.getAuthenticatedUser(),
+        client.getAuthenticatedUser()
+      ]);
+
+      expect(a.login).toBe('octocat');
+      expect(b.login).toBe('octocat');
+      expect(c.login).toBe('octocat');
+      // Exactly one refresh despite three simultaneous 401s.
+      expect(refresh).toHaveBeenCalledTimes(1);
+      // Three initial attempts on the stale token, three retries on the fresh.
+      expect(seen.filter((h) => h === 'token stale-token')).toHaveLength(3);
+      expect(seen.filter((h) => h === 'token fresh-token')).toHaveLength(3);
+    });
+  });
+
+  describe('transport-accurate review logging', () => {
+    let logSpy;
+    let errSpy;
+
+    beforeEach(() => {
+      logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      logSpy.mockRestore();
+      errSpy.mockRestore();
+    });
+
+    function makeAltHostClient() {
+      return new GitHubClient({
+        token: 't',
+        apiHost: 'https://althost.example/api/v3',
+        features: {
+          pending_review_check: 'rest',
+          stack_walker: 'rest',
+          review_lifecycle: 'rest',
+          pending_review_comments: 'host'
+        }
+      });
+    }
+
+    it('logs "alt-host" (not "GraphQL") on createReviewGraphQL when apiHost is set', async () => {
+      const client = makeAltHostClient();
+      const reviewLifecycleOps = require('../../src/github/operations/review-lifecycle');
+      vi.spyOn(reviewLifecycleOps, 'submitPullRequestReview')
+        .mockResolvedValue({ id: 'PRR_x', databaseId: 88, url: 'u', state: 'COMMENTED' });
+
+      await client.createReviewGraphQL(
+        'unused', 'COMMENT', 'body', [], null,
+        { owner: 'o', repo: 'r', prNumber: 1, reviewId: 88 }
+      );
+
+      const creatingLine = logSpy.mock.calls
+        .map((args) => args.join(' '))
+        .find((line) => line.startsWith('Creating review'));
+      expect(creatingLine).toBeTruthy();
+      expect(creatingLine).toContain('alt-host');
+      expect(creatingLine).not.toContain('GraphQL');
+    });
+
+    it('logs "GraphQL" on createReviewGraphQL for github.com (apiHost null)', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn()
+        .mockResolvedValueOnce({ addPullRequestReview: { pullRequestReview: { id: 'review-1' } } })
+        .mockResolvedValueOnce({
+          submitPullRequestReview: {
+            pullRequestReview: { id: 'review-1', url: 'u', state: 'COMMENTED' }
+          }
+        });
+      client.octokit.graphql = mockGraphql;
+
+      await client.createReviewGraphQL('PR_node', 'COMMENT', 'body', []);
+
+      const creatingLine = logSpy.mock.calls
+        .map((args) => args.join(' '))
+        .find((line) => line.startsWith('Creating review'));
+      expect(creatingLine).toContain('GraphQL');
+    });
+  });
+
+  describe('headSha propagation to the host pending-review-comments path', () => {
+    it('forwards prContext.headSha through downstreamPrContext to addCommentsInBatches', async () => {
+      const client = new GitHubClient({
+        token: 't',
+        apiHost: 'https://althost.example/api/v3',
+        features: {
+          pending_review_check: 'rest',
+          stack_walker: 'rest',
+          review_lifecycle: 'rest',
+          pending_review_comments: 'host'
+        }
+      });
+
+      const reviewLifecycleOps = require('../../src/github/operations/review-lifecycle');
+      vi.spyOn(reviewLifecycleOps, 'submitPullRequestReview')
+        .mockResolvedValue({ id: 'PRR_x', databaseId: 88, url: 'u', state: 'COMMENTED' });
+
+      // Capture the prContext that reaches addCommentsInBatches.
+      const addSpy = vi.spyOn(client, 'addCommentsInBatches')
+        .mockResolvedValue({ successCount: 1, failed: false, failedDetails: [] });
+
+      const HEAD_SHA = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef';
+      await client.createReviewGraphQL(
+        'unused',
+        'COMMENT',
+        'body',
+        [{ path: 'a.js', line: 1, body: 'hi' }],
+        null,
+        { owner: 'o', repo: 'r', prNumber: 1, reviewId: 88, headSha: HEAD_SHA }
+      );
+
+      expect(addSpy).toHaveBeenCalledTimes(1);
+      // addCommentsInBatches(prNodeId, reviewId, comments, batchSize, prContext)
+      const downstreamPrContext = addSpy.mock.calls[0][4];
+      expect(downstreamPrContext).toMatchObject({ headSha: HEAD_SHA });
+
+      addSpy.mockRestore();
     });
   });
 });

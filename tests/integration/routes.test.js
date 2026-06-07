@@ -2821,11 +2821,13 @@ describe('Review Submission Endpoint', () => {
       expect(response.body.success).toBe(true);
 
       // Should have called createDraftReviewGraphQL with the existing draft ID as 4th argument
+      // and the PR coordinates (5th arg, prContext) for REST mode compatibility.
       expect(GitHubClient.prototype.createDraftReviewGraphQL).toHaveBeenCalledWith(
         'PR_node123', // prNodeId
         'Draft review', // body
         expect.any(Array), // graphqlComments
-        'PRR_existing123' // existingDraft.id
+        'PRR_existing123', // existingDraft.id
+        expect.objectContaining({ owner: 'owner', repo: 'repo', prNumber: 1 })
       );
 
       // Verify the response uses the existing draft's URL (falls back from null to existingDraft.url)
@@ -3128,6 +3130,81 @@ describe('Review Submission Endpoint', () => {
       expect(analysisRunsAfter.length).toBe(1);
       expect(analysisRunsAfter[0].id).toBe('draft-test-run');
     });
+
+    describe('GraphQL PR node id feature-gating', () => {
+      /**
+       * Helper: replace the PR record so prData has no node_id.
+       * Mirrors insertTestPR but omits `node_id` from the stored JSON.
+       */
+      async function insertPRWithoutNodeId(database, prNumber, repository) {
+        await run(database, 'DELETE FROM pr_metadata WHERE pr_number = ? AND repository = ?', [prNumber, repository]);
+        const prData = JSON.stringify({
+          state: 'open',
+          diff: 'diff content',
+          changed_files: [{ file: 'file.js', additions: 1, deletions: 0 }],
+          additions: 10,
+          deletions: 5,
+          html_url: `https://github.com/${repository}/pull/${prNumber}`,
+          base_sha: 'abc123',
+          head_sha: 'def456'
+          // node_id intentionally omitted
+        });
+        await run(database, `
+          INSERT INTO pr_metadata (pr_number, repository, title, description, author, base_branch, head_branch, pr_data)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `, [prNumber, repository, 'Test PR Title', 'Test Description', 'testuser', 'main', 'feature-branch', prData]);
+      }
+
+      it('returns 400 when node_id is missing for default github.com (GraphQL review_lifecycle)', async () => {
+        // github.com defaults: review_lifecycle = 'graphql', pending_review_comments = 'graphql'
+        // Without node_id, the GraphQL dispatcher cannot address the PR.
+        await insertPRWithoutNodeId(db, 1, 'owner/repo');
+
+        const response = await request(app)
+          .post('/api/pr/owner/repo/1/submit-review')
+          .send({ event: 'COMMENT', body: 'No node_id' });
+
+        expect(response.status).toBe(400);
+        expect(response.body.error).toMatch(/GraphQL PR node id required/);
+        expect(response.body.error).toMatch(/review_lifecycle = "graphql"/);
+        expect(response.body.error).toMatch(/refresh the PR data/);
+      });
+
+      it('succeeds without node_id when review_lifecycle=rest and pending_review_comments=host (alt-host all-REST/host)', async () => {
+        // Configure the app with an alt-host repo whose features avoid GraphQL.
+        // The route should NOT 400 just because node_id is missing.
+        app.set('config', {
+          github_token: 'top-level-token',
+          port: 7247,
+          theme: 'light',
+          model: 'sonnet',
+          repos: {
+            'owner/repo': {
+              api_host: 'ghe.example.com',
+              token: 'alt-host-token',
+              features: {
+                review_lifecycle: 'rest',
+                pending_review_comments: 'host'
+              }
+            }
+          }
+        });
+
+        await insertPRWithoutNodeId(db, 1, 'owner/repo');
+
+        const response = await request(app)
+          .post('/api/pr/owner/repo/1/submit-review')
+          .send({ event: 'COMMENT', body: 'REST + host config' });
+
+        // Should not be a 400 — the route should let the request through
+        // to the dispatcher which addresses the PR via (owner, repo, prNumber).
+        expect(response.status).not.toBe(400);
+        // With the default mocked createReviewGraphQL response (which the
+        // operations layer would route to REST under these features) the
+        // route returns 200.
+        expect(response.status).toBe(200);
+      });
+    });
   });
 });
 
@@ -3320,6 +3397,147 @@ describe('Config Endpoints', () => {
       app.set('config', { ...app.get('config'), external_comments: true });
       const response = await request(app).get('/api/config');
       expect(response.body.external_comments).toBe(true);
+    });
+
+    // --------------------------------------------------------------------
+    // Repo-aware GitHub token presence
+    //
+    // The endpoint exposes two distinct fields:
+    //   - has_global_github_token: always present, derived from the
+    //     top-level (no-repo) lookup via getGitHubToken(config).
+    //   - has_github_token: ONLY present when both ?owner and ?repo are
+    //     supplied, derived from resolveHostBinding(repo, config). This
+    //     is the field a caller rendering a specific repo should consult.
+    // --------------------------------------------------------------------
+    describe('GitHub token presence fields', () => {
+      // resolveHostBinding consults GITHUB_TOKEN for github.com repos. If a
+      // developer has it set in their shell, several of these cases would
+      // resolve a token unintentionally. Stub it to undefined for the whole
+      // block so the only sources of truth are config-driven.
+      let originalGithubToken;
+      beforeEach(() => {
+        originalGithubToken = process.env.GITHUB_TOKEN;
+        delete process.env.GITHUB_TOKEN;
+      });
+      afterEach(() => {
+        if (originalGithubToken === undefined) {
+          delete process.env.GITHUB_TOKEN;
+        } else {
+          process.env.GITHUB_TOKEN = originalGithubToken;
+        }
+      });
+
+      it('returns has_global_github_token=true and omits has_github_token when no repo params are supplied', async () => {
+        // Default test config has github_token: 'test-token'
+        const response = await request(app).get('/api/config');
+
+        expect(response.status).toBe(200);
+        expect(response.body.has_global_github_token).toBe(true);
+        // Repo-aware field MUST be absent — no repo context was provided.
+        expect(response.body).not.toHaveProperty('has_github_token');
+      });
+
+      it('returns has_global_github_token=false when no token is configured anywhere', async () => {
+        app.set('config', { theme: 'light' }); // no github_token, no github_token_command
+        const response = await request(app).get('/api/config');
+
+        expect(response.body.has_global_github_token).toBe(false);
+        expect(response.body).not.toHaveProperty('has_github_token');
+      });
+
+      it('returns has_github_token=true for a repo with a repo-scoped token when global token is absent', async () => {
+        app.set('config', {
+          theme: 'light',
+          // No global github_token. Repo-scoped token only.
+          repos: {
+            'foo/bar': { token: 'repo-scoped-token' }
+          }
+        });
+
+        const response = await request(app)
+          .get('/api/config')
+          .query({ owner: 'foo', repo: 'bar' });
+
+        expect(response.status).toBe(200);
+        expect(response.body.has_global_github_token).toBe(false);
+        expect(response.body.has_github_token).toBe(true);
+      });
+
+      it('returns has_github_token=true via fall-through to the global token when repo has no token of its own', async () => {
+        app.set('config', {
+          theme: 'light',
+          github_token: 'global-token',
+          // foo/bar has no token entry of its own; resolveHostBinding
+          // should fall through to the top-level github_token.
+          repos: {}
+        });
+
+        const response = await request(app)
+          .get('/api/config')
+          .query({ owner: 'foo', repo: 'bar' });
+
+        expect(response.body.has_global_github_token).toBe(true);
+        expect(response.body.has_github_token).toBe(true);
+      });
+
+      it('returns has_github_token=false when neither repo-scoped nor global token is configured', async () => {
+        app.set('config', {
+          theme: 'light',
+          repos: {
+            'foo/bar': {} // no token, no token_command
+          }
+        });
+
+        const response = await request(app)
+          .get('/api/config')
+          .query({ owner: 'foo', repo: 'bar' });
+
+        expect(response.body.has_global_github_token).toBe(false);
+        expect(response.body.has_github_token).toBe(false);
+      });
+
+      it('treats missing repo param (only owner supplied) as the no-repo case', async () => {
+        app.set('config', {
+          theme: 'light',
+          github_token: 'global-token'
+        });
+
+        const response = await request(app)
+          .get('/api/config')
+          .query({ owner: 'foo' }); // no `repo`
+
+        expect(response.body.has_global_github_token).toBe(true);
+        // Defensive: partial params must NOT activate the repo-aware field.
+        expect(response.body).not.toHaveProperty('has_github_token');
+      });
+
+      it('treats missing owner param (only repo supplied) as the no-repo case', async () => {
+        app.set('config', {
+          theme: 'light',
+          github_token: 'global-token'
+        });
+
+        const response = await request(app)
+          .get('/api/config')
+          .query({ repo: 'bar' }); // no `owner`
+
+        expect(response.body.has_global_github_token).toBe(true);
+        expect(response.body).not.toHaveProperty('has_github_token');
+      });
+
+      it('treats empty-string owner/repo params as the no-repo case', async () => {
+        app.set('config', {
+          theme: 'light',
+          github_token: 'global-token'
+        });
+
+        const response = await request(app)
+          .get('/api/config')
+          .query({ owner: '', repo: '' });
+
+        expect(response.body.has_global_github_token).toBe(true);
+        expect(response.body).not.toHaveProperty('has_github_token');
+      });
     });
   });
 
@@ -3643,6 +3861,108 @@ describe('Repository Settings Endpoints', () => {
       const res = await request(app).get('/api/repos/owner/repo/settings');
       expect(res.status).toBe(200);
       expect(res.body.load_skills).toBe(null);
+    });
+  });
+});
+
+// ============================================================================
+// Repo Links Endpoint Tests (Phase 7 alt-host support)
+// ============================================================================
+
+describe('Repo Links Endpoint', () => {
+  let db;
+  let app;
+
+  beforeEach(async () => {
+    db = await createTestDatabase();
+    app = createTestApp(db);
+  });
+
+  afterEach(async () => {
+    if (db) {
+      await closeTestDatabase(db);
+    }
+  });
+
+  describe('GET /api/repos/:owner/:repo/links', () => {
+    it('returns default config when no repos entry exists', async () => {
+      const res = await request(app).get('/api/repos/acme/widget/links');
+      expect(res.status).toBe(200);
+      expect(res.body.repository).toBe('acme/widget');
+      expect(res.body.links).toEqual({ external: null, github: true, graphite: true });
+    });
+
+    it('returns external link, hides github + graphite when configured', async () => {
+      app.set('config', {
+        ...app.get('config'),
+        repos: {
+          'acme/widget': {
+            links: {
+              external: {
+                label: 'Open on AltHost',
+                url_template: 'https://althost.example/{owner}/{repo}/pull/{number}',
+                icon: '<svg xmlns="http://www.w3.org/2000/svg"><path d="M1 1"/></svg>',
+              },
+              github: false,
+              graphite: false,
+            },
+          },
+        },
+      });
+      const res = await request(app).get('/api/repos/acme/widget/links');
+      expect(res.status).toBe(200);
+      expect(res.body.links.github).toBe(false);
+      expect(res.body.links.graphite).toBe(false);
+      expect(res.body.links.external).toEqual({
+        name: null,
+        label: 'Open on AltHost',
+        url_template: 'https://althost.example/{owner}/{repo}/pull/{number}',
+        icon: '<svg xmlns="http://www.w3.org/2000/svg"><path d="M1 1"/></svg>',
+      });
+    });
+
+    it('strips dangerous content from the external icon', async () => {
+      app.set('config', {
+        ...app.get('config'),
+        repos: {
+          'acme/widget': {
+            links: {
+              external: {
+                label: 'Open',
+                url_template: 'https://althost.example/x',
+                icon: '<svg onload="alert(1)"><script>bad()</script><path d="M1"/></svg>',
+              },
+            },
+          },
+        },
+      });
+      const res = await request(app).get('/api/repos/acme/widget/links');
+      expect(res.status).toBe(200);
+      expect(res.body.links.external).not.toBeNull();
+      expect(res.body.links.external.icon).not.toContain('<script');
+      expect(res.body.links.external.icon).not.toMatch(/\son[a-zA-Z]+\s*=/);
+      expect(res.body.links.external.icon).toContain('<path');
+    });
+
+    it('drops a malformed icon to null', async () => {
+      app.set('config', {
+        ...app.get('config'),
+        repos: {
+          'acme/widget': {
+            links: {
+              external: {
+                label: 'Open',
+                url_template: 'https://althost.example/x',
+                icon: '<div>not svg</div>',
+              },
+            },
+          },
+        },
+      });
+      const res = await request(app).get('/api/repos/acme/widget/links');
+      expect(res.status).toBe(200);
+      expect(res.body.links.external).not.toBeNull();
+      expect(res.body.links.external.icon).toBeNull();
     });
   });
 });

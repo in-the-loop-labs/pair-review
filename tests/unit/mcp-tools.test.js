@@ -700,6 +700,72 @@ describe('start_analysis tool', () => {
     expect(analyzeLevel1Spy).toHaveBeenCalled();
   });
 
+  it('should pass a githubClient option when a github_token is configured (PR mode)', async () => {
+    // Tear down the default server (which has no token) and rebuild with a token.
+    await client.close();
+    await mcpServer.close();
+
+    mcpServer = createMCPServer(db, {
+      config: {
+        default_provider: 'claude',
+        default_model: 'sonnet',
+        github_token: 'ghp_test_token_phase_6_5'
+      }
+    });
+    client = new Client({ name: 'test-client', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await mcpServer.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    const reviewRepo = new ReviewRepository(db);
+    await reviewRepo.createReview({ prNumber: 99, repository: 'octo/cat' });
+    await run(db, `
+      INSERT INTO pr_metadata (pr_number, repository, title, description, author, base_branch, head_branch)
+      VALUES (99, 'octo/cat', 'PR with token', 'Desc', 'author', 'main', 'feature')
+    `);
+
+    const result = await client.callTool({
+      name: 'start_analysis',
+      arguments: { repo: 'octo/cat', prNumber: 99 },
+    });
+    const content = JSON.parse(result.content[0].text);
+    expect(content.status).toBe('started');
+
+    // The last analyzeLevel1 call should have a non-null githubClient in its
+    // options bag — the analyzer pre-fetches existing PR review comments
+    // through this client when excludePrevious.github is enabled.
+    expect(analyzeLevel1Spy).toHaveBeenCalled();
+    const lastCallArgs = analyzeLevel1Spy.mock.calls[analyzeLevel1Spy.mock.calls.length - 1];
+    const options = lastCallArgs[6];
+    expect(options).toBeDefined();
+    expect(options.githubClient).toBeDefined();
+    expect(typeof options.githubClient).toBe('object');
+  });
+
+  it('should omit githubClient on local-mode analyses', async () => {
+    const reviewRepo = new ReviewRepository(db);
+    await reviewRepo.upsertLocalReview({
+      localPath: '/tmp/test-repo-no-gh',
+      localHeadSha: 'abc999',
+      repository: 'test-repo',
+    });
+
+    const result = await client.callTool({
+      name: 'start_analysis',
+      arguments: { path: '/tmp/test-repo-no-gh', headSha: 'abc999' },
+    });
+    const content = JSON.parse(result.content[0].text);
+    expect(content.status).toBe('started');
+
+    // Local mode has no associated PR — there must be no githubClient on the
+    // options bag (analyzer drops the GitHub dedup section in this case).
+    expect(analyzeLevel1Spy).toHaveBeenCalled();
+    const lastCallArgs = analyzeLevel1Spy.mock.calls[analyzeLevel1Spy.mock.calls.length - 1];
+    const options = lastCallArgs[6];
+    expect(options).toBeDefined();
+    expect(options.githubClient).toBeUndefined();
+  });
+
   it('should return error when PR metadata not found', async () => {
     const result = await client.callTool({
       name: 'start_analysis',

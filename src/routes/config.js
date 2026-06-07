@@ -25,11 +25,14 @@ const {
   getGitHubToken,
   getDefaultProvider,
   getDefaultModel,
+  resolveHostBinding,
+  resolveBindingRepositoryFromPR,
   getSummaryEnabled,
   getSummaryAutoGenerate,
   getTourEnabled,
   getTourAutoGenerate
 } = require('../config');
+const { resolveRepoLinks } = require('../links/repo-links');
 const { version } = require('../../package.json');
 const semver = require('semver');
 const { getAllChatProviders, getAllCachedChatAvailability } = require('../chat/chat-providers');
@@ -72,7 +75,21 @@ router.get('/runtime-config.js', (req, res) => {
 
 /**
  * Get user configuration (for frontend use)
- * Returns safe-to-expose configuration values
+ * Returns safe-to-expose configuration values.
+ *
+ * GitHub token presence is reported with two distinct fields:
+ *   - has_global_github_token: always present. True iff `getGitHubToken(config)`
+ *     resolves a token from the top-level config / env (no repo context).
+ *   - has_github_token: present ONLY when both ?owner and ?repo query
+ *     parameters are supplied. True iff a token can be resolved for that
+ *     specific repository via `resolveHostBinding(repo, config)` — this
+ *     covers repo-scoped `token`, `token_command`, alt-host bindings, AND
+ *     falls through to the global lookup. Callers that know which repo
+ *     they're rendering should pass these params so that repo-scoped
+ *     authentication is reflected accurately (e.g. for deciding whether
+ *     to enable GitHub-comment dedup). When the params are absent, the
+ *     repo-aware field is omitted entirely — there is no safe default
+ *     that doesn't risk silently meaning the wrong thing.
  */
 /**
  * Resolve a coherent default provider/model PAIR for the frontend.
@@ -113,11 +130,30 @@ router.get('/api/config', (req, res) => {
     id: p.id, name: p.name, type: p.type, available: chatAvailability[p.id]?.available || false
   }));
 
+  // Repo-aware token resolution (opt-in via ?owner & ?repo query params).
+  // Both must be non-empty strings; missing/partial params fall back to the
+  // global-only response shape.
+  const { owner, repo } = req.query;
+  const hasRepoContext = typeof owner === 'string' && owner.length > 0
+    && typeof repo === 'string' && repo.length > 0;
+
+  const hasGlobalGithubToken = Boolean(getGitHubToken(config));
+  let hasRepoGithubToken = null;
+  if (hasRepoContext) {
+    const repository = `${owner}/${repo}`;
+    // resolveHostBinding already falls through to top-level config when
+    // no repo-scoped token is configured, so this is a true union of
+    // "repo-scoped binding works" OR "global token works".
+    hasRepoGithubToken = Boolean(resolveHostBinding(repository, config).token);
+  }
+
   // Only return safe configuration values (not secrets like github_token)
   res.json({
     version,
     theme: config.theme || 'light',
-    has_github_token: Boolean(getGitHubToken(config)),
+    has_global_github_token: hasGlobalGithubToken,
+    // Repo-aware field — only included when owner+repo were supplied.
+    ...(hasRepoContext ? { has_github_token: hasRepoGithubToken } : {}),
     comment_button_action: config.comment_button_action || 'submit',
     comment_format: config.comment_format || 'legacy',
     default_provider: defaultPair.provider,
@@ -246,6 +282,35 @@ router.get('/api/repos/:owner/:repo/settings', async (req, res) => {
     res.status(500).json({
       error: 'Failed to fetch repository settings'
     });
+  }
+});
+
+/**
+ * Get repository-specific header link configuration.
+ * Reads `config.repos["owner/repo"].links` and returns:
+ *   - external: { label, url_template, icon } | null
+ *   - github: boolean (false means hide the default GitHub link)
+ *   - graphite: boolean (false means hide the Graphite link)
+ *
+ * The icon SVG is sanitised server-side (script tags, on* handlers, and
+ * `javascript:` URLs stripped). The url_template is NOT substituted here —
+ * the frontend has the live PR/branch context, so it performs the
+ * whitelisted substitution at render time.
+ */
+router.get('/api/repos/:owner/:repo/links', (req, res) => {
+  try {
+    const { owner, repo } = req.params;
+    const repository = normalizeRepository(owner, repo);
+    const config = req.app.get('config') || {};
+    // Resolve via bindingRepository so monorepo-style configs (one
+    // `repos[...]` entry serving many captured owner/repo via
+    // url_pattern) surface the right link config.
+    const bindingRepository = resolveBindingRepositoryFromPR(owner, repo, config);
+    const links = resolveRepoLinks(config, bindingRepository);
+    res.json({ repository, links });
+  } catch (error) {
+    logger.error('Error resolving repo links:', error);
+    res.status(500).json({ error: 'Failed to resolve repository links' });
   }
 });
 

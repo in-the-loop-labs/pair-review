@@ -4,7 +4,7 @@ const { promisify } = require('util');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs').promises;
-const { loadConfig, showWelcomeMessage, resolveDbName, getGitHubToken } = require('./config');
+const { loadConfig, showWelcomeMessage, resolveDbName, getGitHubToken, resolveHostBinding } = require('./config');
 const logger = require('./utils/logger');
 const { rejectUrlLikeLocalReviewPath } = require('./utils/local-path-input');
 const { fireHooks, hasHooks } = require('./hooks/hook-runner');
@@ -791,11 +791,14 @@ async function setupLocalReviewSession({ db, config, repoPath, flags = {} }) {
   let branchInfo = null;
   if (!includesBranch(scopeStart)) {
     const untrackedFiles = await getUntrackedFiles(repoPath);
+    // Resolve binding so alt-host repos look up PRs on the right host.
+    const branchBinding = repository ? resolveHostBinding(repository, config) : null;
     branchInfo = await module.exports.detectAndBuildBranchInfo(repoPath, branch, {
       repository,
       diff,
       untrackedFiles,
-      githubToken: getGitHubToken(config),
+      githubToken: branchBinding?.token || getGitHubToken(config),
+      hostBinding: branchBinding,
       enableGraphite: config.enable_graphite === true
     });
     if (branchInfo) {
@@ -1038,11 +1041,12 @@ async function getFirstCommitSubject(repoPath, baseBranch) {
  * @param {string} [options.diff] - The uncommitted diff content (empty = eligible)
  * @param {Array} [options.untrackedFiles] - Untracked files array (empty = eligible)
  * @param {string} [options.githubToken] - Resolved GitHub token for PR lookup
+ * @param {Object} [options.hostBinding] - Resolved host binding (apiHost/token/features) for alt-host PR lookup
  * @param {boolean} [options.enableGraphite] - When true, try Graphite CLI for parent branch
  * @returns {Promise<{baseBranch: string, commitCount: number, source: string, prNumber?: number}|null>}
  */
 async function detectAndBuildBranchInfo(repoPath, branch, options = {}) {
-  const { repository, diff, untrackedFiles, githubToken, enableGraphite } = options;
+  const { repository, diff, untrackedFiles, githubToken, hostBinding, enableGraphite } = options;
 
   // Guard: detached HEAD, has uncommitted changes, or has untracked files
   if (branch === 'HEAD') return null;
@@ -1051,7 +1055,12 @@ async function detectAndBuildBranchInfo(repoPath, branch, options = {}) {
 
   try {
     const { detectBaseBranch } = require('./git/base-branch');
-    const depsOverride = githubToken ? { getGitHubToken: () => githubToken } : undefined;
+    const depsOverride = githubToken || hostBinding
+      ? {
+          getGitHubToken: () => githubToken || '',
+          getHostBinding: () => hostBinding || null
+        }
+      : undefined;
     const detection = await detectBaseBranch(repoPath, branch, {
       repository,
       enableGraphite,

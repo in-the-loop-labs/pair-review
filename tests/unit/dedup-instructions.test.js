@@ -4,18 +4,25 @@
  *
  * Verifies the function that builds dedup instruction text for excluding
  * previously identified issues during orchestration/consolidation.
+ *
+ * The GitHub PR comments section is now rendered from pre-fetched comments
+ * (see fetchExistingReviewComments) rather than asking the AI to spawn
+ * `gh api` — the analyzer no longer depends on the `gh` CLI.
  */
 import { describe, it, expect } from 'vitest';
 
 const { buildDedupInstructions } = require('../../src/ai/analyzer');
 
 describe('buildDedupInstructions', () => {
+  const sampleComments = [
+    { path: 'src/foo.js', line: 12, original_line: 12, body: 'Missing error handling here' },
+    { path: 'src/bar.js', line: 45, original_line: 44, body: 'Consider renaming this variable' }
+  ];
+
   const fullContext = {
-    owner: 'acme',
-    repo: 'widgets',
-    pullNumber: 42,
     reviewId: 7,
     serverPort: 7247,
+    githubComments: sampleComments,
   };
 
   // ── Falsy / disabled cases ────────────────────────────────────────
@@ -42,41 +49,37 @@ describe('buildDedupInstructions', () => {
 
   // ── GitHub-only ───────────────────────────────────────────────────
 
-  it('returns instructions with GitHub section when github=true and context has PR info', () => {
+  it('returns instructions with GitHub section when github=true and pre-fetched comments are present', () => {
     const result = buildDedupInstructions({ github: true, feedback: false }, fullContext);
     expect(result).toContain('## Exclude Previously Identified Issues');
     expect(result).toContain('### GitHub PR Review Comments');
     expect(result).not.toContain('### Existing Pair-Review Feedback');
   });
 
-  it('GitHub section includes correct gh api command with owner/repo/pullNumber', () => {
+  it('GitHub section embeds the pre-fetched comments as JSON (no gh CLI invocation)', () => {
     const result = buildDedupInstructions({ github: true }, {
-      owner: 'my-org',
-      repo: 'my-repo',
-      pullNumber: 99,
+      githubComments: sampleComments,
     });
-    expect(result).toContain('gh api repos/my-org/my-repo/pulls/99/comments --paginate');
+    // The shell-out should be gone entirely
+    expect(result).not.toContain('gh api');
+    expect(result).not.toMatch(/gh\s+api/);
+    // The data should be embedded in the prompt
+    expect(result).toContain('src/foo.js');
+    expect(result).toContain('Missing error handling here');
+    expect(result).toContain('src/bar.js');
+    expect(result).toContain('Consider renaming this variable');
   });
 
-  it('returns empty string when github=true but owner is missing from context', () => {
-    expect(buildDedupInstructions({ github: true }, {
-      repo: 'widgets',
-      pullNumber: 42,
-    })).toBe('');
+  it('returns empty string when github=true but no comments were provided (githubComments missing)', () => {
+    expect(buildDedupInstructions({ github: true }, {})).toBe('');
   });
 
-  it('returns empty string when github=true but repo is missing from context', () => {
-    expect(buildDedupInstructions({ github: true }, {
-      owner: 'acme',
-      pullNumber: 42,
-    })).toBe('');
+  it('returns empty string when github=true but the comments array is empty', () => {
+    expect(buildDedupInstructions({ github: true }, { githubComments: [] })).toBe('');
   });
 
-  it('returns empty string when github=true but pullNumber is missing from context', () => {
-    expect(buildDedupInstructions({ github: true }, {
-      owner: 'acme',
-      repo: 'widgets',
-    })).toBe('');
+  it('returns empty string when github=true but githubComments is not an array', () => {
+    expect(buildDedupInstructions({ github: true }, { githubComments: 'not-an-array' })).toBe('');
   });
 
   // ── Pair-review feedback-only ─────────────────────────────────────
@@ -128,15 +131,17 @@ describe('buildDedupInstructions', () => {
 
   // ── Both sources ──────────────────────────────────────────────────
 
-  it('returns instructions with both sections when both are true', () => {
+  it('returns instructions with both sections when both are true and both context bundles are present', () => {
     const result = buildDedupInstructions({ github: true, feedback: true }, fullContext);
     expect(result).toContain('### GitHub PR Review Comments');
     expect(result).toContain('### Existing Pair-Review Feedback');
     expect(result).toContain('## Exclude Previously Identified Issues');
+    // No shell-out leaks through
+    expect(result).not.toContain('gh api');
   });
 
   it('includes the exclusion-count reporting instruction when at least one source is active', () => {
-    const result = buildDedupInstructions({ github: true }, fullContext);
+    const result = buildDedupInstructions({ github: true }, { githubComments: sampleComments });
     expect(result).toContain('Report how many suggestions were excluded');
   });
 
@@ -145,13 +150,13 @@ describe('buildDedupInstructions', () => {
   it('returns GitHub section only when feedback=true but feedback context fields are absent', () => {
     const result = buildDedupInstructions(
       { github: true, feedback: true },
-      { owner: 'acme', repo: 'widgets', pullNumber: 42 }
+      { githubComments: sampleComments }
     );
     expect(result).toContain('### GitHub PR Review Comments');
     expect(result).not.toContain('### Existing Pair-Review Feedback');
   });
 
-  it('returns pair-review section only when github=true but PR context fields are absent', () => {
+  it('returns pair-review section only when github=true but no comments were pre-fetched', () => {
     const result = buildDedupInstructions(
       { github: true, feedback: true },
       { reviewId: 7, serverPort: 7247 }

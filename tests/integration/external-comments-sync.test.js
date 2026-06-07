@@ -443,17 +443,19 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
   it('missing token: returns 401 via the REAL adapter (no inline override)', async () => {
     // The previous version of this test duplicated adapter behavior inline,
     // violating CLAUDE.md. Now we flow through the real github adapter via
-    // the dispatcher and only override `getGitHubToken` (config lookup —
-    // not adapter contract). resolveCredentials throws the typed 401
-    // before any GitHub client is constructed; the integration test pins
-    // the route's HTTP mapping. Adapter contract coverage lives in the
-    // unit test (tests/unit/external/github-adapter.test.js).
+    // the dispatcher. Credential resolution is binding-aware, so we override
+    // `resolveHostBinding` (config lookup — not adapter contract) to yield an
+    // empty token deterministically regardless of any ambient GITHUB_TOKEN.
+    // resolveCredentials throws the typed 401 before any GitHub client is
+    // constructed; the integration test pins the route's HTTP mapping.
+    // Adapter contract coverage lives in the unit test
+    // (tests/unit/external/github-adapter.test.js).
     const FakeGitHubClient = vi.fn();
 
     const app = createTestApp(db, {
       // No `getAdapter` override — real github adapter handles this end-to-end.
       GitHubClient: FakeGitHubClient,
-      getGitHubToken: () => '',
+      resolveHostBinding: () => ({ apiHost: null, token: '', features: {}, source: 'none' }),
     });
 
     const res = await request(app)
@@ -464,6 +466,129 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
     expect(res.body.error).toMatch(/token not configured/i);
     // GitHubClient must not be constructed when credentials are missing.
     expect(FakeGitHubClient).not.toHaveBeenCalled();
+  });
+
+  it('alt-host repo: builds the client with the repo-scoped binding (api_host + repo token)', async () => {
+    // Regression for the alt-host bug: external-comments sync used to always
+    // target api.github.com with the top-level github.com token. With
+    // binding-aware credential resolution, a repos[...] entry with api_host +
+    // a repo-scoped token must route the GitHubClient to that host with that
+    // token. We capture the binding passed to the injected client.
+    let capturedBinding;
+    class CapturingClient {
+      constructor(binding) { capturedBinding = binding; }
+      async listReviewComments() { return []; }
+    }
+
+    const app = express();
+    app.use(express.json());
+    app.set('db', db);
+    // owner/repo matches the seeded review.repository.
+    app.set('config', {
+      github_token: 'github-com-top-level-token',
+      repos: {
+        'owner/repo': {
+          api_host: 'https://git.example.com/api/v3',
+          token: 'alt-host-repo-token'
+        }
+      }
+    });
+    app.set('externalCommentsDeps', { GitHubClient: CapturingClient });
+    app.use('/', externalCommentsRoutes);
+
+    const res = await request(app)
+      .post(`/api/reviews/${reviewId}/external-comments/sync`)
+      .query({ source: 'github' });
+
+    expect(res.status).toBe(200);
+    expect(capturedBinding).toBeDefined();
+    // Routes to the alt-host, not api.github.com.
+    expect(capturedBinding.apiHost).toBe('https://git.example.com/api/v3');
+    // Uses the repo-scoped token, NOT the top-level github.com token.
+    expect(capturedBinding.token).toBe('alt-host-repo-token');
+    expect(capturedBinding.token).not.toBe('github-com-top-level-token');
+  });
+
+  it('alt-host regression: position:null + valid line + null original_line are NOT lost anchors', async () => {
+    // The user's exact symptom: an alt-host returns review comments with
+    // position:null (it doesn't implement GitHub's deprecated diff-relative
+    // `position`) but WITH a valid modern `line`. The github.com path would
+    // discard `line` → every such comment counts as a lost anchor → spurious
+    // "N comments lost their anchor" toast + dropped comments. With
+    // host-aware anchoring, isAltHost drives line-based mapping so these
+    // comments persist with lostAnchors === 0.
+    const rows = [
+      makeApiRow({
+        id: 1001,
+        body: 'current alt-host comment',
+        position: null,
+        line: 41,
+        start_line: null,
+        original_position: null,
+        original_line: null,
+        original_start_line: null,
+        commit_id: 'altsha1',
+        original_commit_id: null,
+      }),
+      makeApiRow({
+        id: 1002,
+        body: 'current alt-host range comment',
+        position: null,
+        line: 50,
+        start_line: 47,
+        original_position: null,
+        original_line: null,
+        original_start_line: null,
+      }),
+    ];
+
+    class AltHostClient {
+      constructor(binding) { this.binding = binding; }
+      async listReviewComments() { return rows; }
+    }
+
+    const app = express();
+    app.use(express.json());
+    app.set('db', db);
+    // owner/repo matches the seeded review.repository → resolves to this
+    // alt-host binding (api_host set → isAltHost true).
+    app.set('config', {
+      github_token: 'github-com-top-level-token',
+      repos: {
+        'owner/repo': {
+          api_host: 'https://git.example.com/api/v3',
+          token: 'alt-host-repo-token'
+        }
+      }
+    });
+    app.set('externalCommentsDeps', { GitHubClient: AltHostClient });
+    app.use('/', externalCommentsRoutes);
+
+    const res = await request(app)
+      .post(`/api/reviews/${reviewId}/external-comments/sync`)
+      .query({ source: 'github' });
+
+    expect(res.status).toBe(200);
+    // No spurious lost-anchor toast — the whole point of the fix.
+    expect(res.body.lostAnchors).toBe(0);
+    expect(res.body.count).toBe(2);
+
+    // Both rows persisted and line-anchored, not dropped.
+    const stored = db.prepare(
+      'SELECT * FROM external_comments WHERE review_id = ? ORDER BY external_id'
+    ).all(reviewId);
+    expect(stored.map(r => r.external_id)).toEqual(['1001', '1002']);
+
+    const single = stored.find(r => r.external_id === '1001');
+    expect(single.line_end).toBe(41);
+    expect(single.line_start).toBe(41);
+    expect(single.is_outdated).toBe(0);
+    expect(single.diff_position).toBeNull();
+
+    const range = stored.find(r => r.external_id === '1002');
+    expect(range.line_start).toBe(47);
+    expect(range.line_end).toBe(50);
+    expect(range.is_outdated).toBe(0);
   });
 
   it('GitHub 401 from fetch: propagates 401 with auth-failure message', async () => {

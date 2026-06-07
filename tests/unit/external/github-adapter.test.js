@@ -43,12 +43,15 @@ describe('github-adapter', () => {
   });
 
   describe('resolveCredentials', () => {
-    it('happy path: returns { client } constructed with the resolved token', () => {
+    // --- No-repo fallback path (repository omitted) ---
+
+    it('no-repo fallback: returns { client } constructed with the resolved token', () => {
       const FakeGitHubClient = vi.fn(function (tok) { this.tok = tok; });
       const getGitHubToken = vi.fn(() => 'ghp_test_token');
 
       const result = githubAdapter.resolveCredentials(
         { github_token: 'ghp_test_token' },
+        undefined,
         { GitHubClient: FakeGitHubClient, getGitHubToken }
       );
 
@@ -57,9 +60,11 @@ describe('github-adapter', () => {
       expect(FakeGitHubClient).toHaveBeenCalledWith('ghp_test_token');
       expect(result.client).toBeInstanceOf(FakeGitHubClient);
       expect(result.client.tok).toBe('ghp_test_token');
+      // No-repo fallback always targets api.github.com — never alt-host.
+      expect(result.isAltHost).toBe(false);
     });
 
-    it('missing token: throws GitHubApiError(status=401) naming GITHUB_TOKEN', () => {
+    it('no-repo fallback: missing token throws GitHubApiError(status=401) naming GITHUB_TOKEN', () => {
       const FakeGitHubClient = vi.fn();
       const getGitHubToken = vi.fn(() => '');
 
@@ -67,6 +72,7 @@ describe('github-adapter', () => {
       try {
         githubAdapter.resolveCredentials(
           {},
+          undefined,
           { GitHubClient: FakeGitHubClient, getGitHubToken }
         );
       } catch (err) {
@@ -83,19 +89,20 @@ describe('github-adapter', () => {
       expect(FakeGitHubClient).not.toHaveBeenCalled();
     });
 
-    it('null config: still calls getGitHubToken with an empty object', () => {
+    it('no-repo fallback: null config still calls getGitHubToken with an empty object', () => {
       const getGitHubToken = vi.fn(() => 'tok');
       const FakeGitHubClient = vi.fn();
 
       githubAdapter.resolveCredentials(
         null,
+        undefined,
         { GitHubClient: FakeGitHubClient, getGitHubToken }
       );
 
       expect(getGitHubToken).toHaveBeenCalledWith({});
     });
 
-    it('uses module defaults when _deps is omitted (production code path)', () => {
+    it('no-repo fallback: uses module defaults when _deps is omitted (production code path)', () => {
       // No _deps argument — this exercises the production defaults: the
       // real getGitHubToken (which reads from config) and the real
       // GitHubClient. Pass a config with the token to drive resolution
@@ -103,6 +110,132 @@ describe('github-adapter', () => {
       const result = githubAdapter.resolveCredentials({ github_token: 'real-tok' });
       const { GitHubClient } = require('../../../src/github/client');
       expect(result.client).toBeInstanceOf(GitHubClient);
+    });
+
+    // --- Binding-aware path (repository supplied) ---
+
+    it('github.com repo (no api_host): builds client with the github.com binding and does NOT use the no-repo fallback', () => {
+      // Drive resolution through the REAL config helpers so we exercise the
+      // production resolveHostBinding path. A repo with no `repos[...]`
+      // entry resolves to apiHost:null (api.github.com) using the top-level
+      // github_token — identical to the old behaviour.
+      const FakeGitHubClient = vi.fn(function (binding) { this.binding = binding; });
+      const getGitHubToken = vi.fn(() => 'should-not-be-called');
+
+      const result = githubAdapter.resolveCredentials(
+        { github_token: 'top-level-token' },
+        'octocat/hello-world',
+        { GitHubClient: FakeGitHubClient, getGitHubToken }
+      );
+
+      // The no-repo fallback (getGitHubToken + bare token) must NOT run.
+      expect(getGitHubToken).not.toHaveBeenCalled();
+
+      // GitHubClient is constructed from the FULL binding object.
+      expect(FakeGitHubClient).toHaveBeenCalledTimes(1);
+      const binding = FakeGitHubClient.mock.calls[0][0];
+      expect(typeof binding).toBe('object');
+      // github.com → apiHost is null → Octokit defaults to api.github.com.
+      expect(binding.apiHost).toBeNull();
+      // Token comes from the top-level github.com config, same as before.
+      expect(binding.token).toBe('top-level-token');
+      expect(result.client).toBeInstanceOf(FakeGitHubClient);
+      // No api_host on the binding → github.com → NOT alt-host. Keeps the
+      // position-based mapComment path.
+      expect(result.isAltHost).toBe(false);
+    });
+
+    it('alt-host repo (api_host + repo token): builds client with the alt-host binding and the repo-scoped token', () => {
+      // A repos["owner/repo"] entry with api_host + token must route to that
+      // host with that token — NOT api.github.com / the top-level token.
+      const FakeGitHubClient = vi.fn(function (binding) { this.binding = binding; });
+
+      const config = {
+        github_token: 'github-com-top-level-token',
+        repos: {
+          'shop/world-gitstream-perf': {
+            api_host: 'https://git.example.com/api/v3',
+            token: 'alt-host-repo-token'
+          }
+        }
+      };
+
+      const result = githubAdapter.resolveCredentials(
+        config,
+        'shop/world-gitstream-perf',
+        { GitHubClient: FakeGitHubClient }
+      );
+
+      expect(FakeGitHubClient).toHaveBeenCalledTimes(1);
+      const binding = FakeGitHubClient.mock.calls[0][0];
+      // Routes to the alt-host api_host, not api.github.com.
+      expect(binding.apiHost).toBe('https://git.example.com/api/v3');
+      // Uses the repo-scoped token, NOT the top-level github.com token.
+      expect(binding.token).toBe('alt-host-repo-token');
+      expect(binding.token).not.toBe('github-com-top-level-token');
+      expect(result.client).toBeInstanceOf(FakeGitHubClient);
+      // api_host present on the binding → alt-host → drives line-based
+      // anchoring in mapComment.
+      expect(result.isAltHost).toBe(true);
+    });
+
+    it('binding-aware: resolves the binding key via resolveBindingRepositoryFromPR before resolveHostBinding', () => {
+      // Verify the helper chain wiring using injected fakes: the binding key
+      // returned by resolveBindingRepositoryFromPR is what gets passed to
+      // resolveHostBinding (mirrors resolveBindingForRequest in routes/pr.js).
+      const FakeGitHubClient = vi.fn(function (binding) { this.binding = binding; });
+      const fakeBinding = { apiHost: 'https://ghe.internal/api/v3', token: 'tok', features: {}, source: 'repo:token' };
+      const resolveBindingRepositoryFromPR = vi.fn(() => 'monorepo/key');
+      const resolveHostBinding = vi.fn(() => fakeBinding);
+
+      const result = githubAdapter.resolveCredentials(
+        { repos: {} },
+        'OctoCat/Hello-World',
+        { GitHubClient: FakeGitHubClient, resolveBindingRepositoryFromPR, resolveHostBinding }
+      );
+
+      expect(resolveBindingRepositoryFromPR).toHaveBeenCalledWith('OctoCat', 'Hello-World', { repos: {} });
+      expect(resolveHostBinding).toHaveBeenCalledWith('monorepo/key', { repos: {} });
+      expect(FakeGitHubClient).toHaveBeenCalledWith(fakeBinding);
+      expect(result.client.binding).toBe(fakeBinding);
+      // fakeBinding.apiHost is set → alt-host.
+      expect(result.isAltHost).toBe(true);
+    });
+
+    it('binding-aware: alt-host repo with no token throws GitHubApiError(status=401) mentioning repo-scoped token', () => {
+      // An alt-host repo (api_host set) does NOT fall back to the github.com
+      // top-level token, so a missing repo-scoped token must surface a 401.
+      const FakeGitHubClient = vi.fn();
+
+      const config = {
+        github_token: 'github-com-top-level-token',
+        repos: {
+          'shop/world-gitstream-perf': {
+            api_host: 'https://git.example.com/api/v3'
+            // no token / token_command
+          }
+        }
+      };
+
+      let captured = null;
+      try {
+        githubAdapter.resolveCredentials(
+          config,
+          'shop/world-gitstream-perf',
+          { GitHubClient: FakeGitHubClient }
+        );
+      } catch (err) {
+        captured = err;
+      }
+
+      const { GitHubApiError } = require('../../../src/github/client');
+      expect(captured).toBeInstanceOf(GitHubApiError);
+      expect(captured.status).toBe(401);
+      // Mentions the canonical env var/config key AND the repo-scoped token.
+      expect(captured.message).toContain('GITHUB_TOKEN');
+      expect(captured.message).toMatch(/token_command|repos\[/);
+      // Client must NOT be constructed when credentials are missing.
+      expect(FakeGitHubClient).not.toHaveBeenCalled();
     });
   });
 
@@ -323,6 +456,140 @@ describe('github-adapter', () => {
       expect(mapped.external_url).toBeNull();
       expect(mapped.external_created_at).toBeNull();
       expect(mapped.is_outdated).toBe(1);
+    });
+
+    // --- github.com parity pin (CRITICAL) ---
+    // These pin the github.com (default / isAltHost:false) path so the
+    // host-aware change can NEVER regress github.com behavior.
+
+    it('github.com (explicit isAltHost:false): position null + line present → is_outdated 1, line_* null, diff_position null', () => {
+      // Byte-identical to the implicit-default behavior. `position` is the
+      // outdated signal on github.com; a leftover `line` must be discarded.
+      const row = baseRow({
+        position: null,
+        line: 42,
+        start_line: 40,
+        original_start_line: 12,
+        original_line: 17,
+      });
+      const mapped = githubAdapter.mapComment(row, { isAltHost: false });
+
+      expect(mapped.is_outdated).toBe(1);
+      expect(mapped.line_start).toBeNull();
+      expect(mapped.line_end).toBeNull();
+      expect(mapped.diff_position).toBeNull();
+      // original_* still authoritative.
+      expect(mapped.original_line_start).toBe(12);
+      expect(mapped.original_line_end).toBe(17);
+    });
+
+    it('github.com: a normal current comment maps as today (position-based)', () => {
+      // No options arg == github.com. A current comment (position set) keeps
+      // its line anchors and is_outdated 0.
+      const row = baseRow({ position: 5, line: 17, start_line: 12 });
+      const mapped = githubAdapter.mapComment(row);
+
+      expect(mapped.is_outdated).toBe(0);
+      expect(mapped.line_start).toBe(12);
+      expect(mapped.line_end).toBe(17);
+      expect(mapped.diff_position).toBe(5);
+    });
+  });
+
+  // --- Alt-host mapComment (line-based anchoring) ---
+  describe('mapComment (alt-host)', () => {
+    function baseRow(overrides = {}) {
+      return {
+        id: 100,
+        in_reply_to_id: null,
+        html_url: 'https://git.example.com/owner/repo/pull/42#discussion_r100',
+        user: { login: 'octocat', html_url: 'https://git.example.com/octocat' },
+        path: 'src/file.js',
+        side: 'RIGHT',
+        start_line: null,
+        line: 41,
+        // Alt-hosts don't implement GitHub's deprecated diff-relative
+        // `position`, so it arrives null even for current comments.
+        position: null,
+        commit_id: 'abc123',
+        original_start_line: null,
+        original_line: 41,
+        original_commit_id: 'def456',
+        body: 'Alt-host comment.',
+        created_at: '2026-01-02T03:04:05Z',
+        ...overrides,
+      };
+    }
+
+    it('current comment: position null but line present → line-anchored, is_outdated 0, diff_position null', () => {
+      // The user's exact symptom: alt-host returns position:null + a good
+      // `line`. The github.com path would discard `line` (→ lost anchor).
+      // The alt-host path must keep it.
+      const row = baseRow({ position: null, line: 41, start_line: null });
+      const mapped = githubAdapter.mapComment(row, { isAltHost: true });
+
+      expect(mapped.is_outdated).toBe(0);
+      expect(mapped.line_end).toBe(41);
+      // line_start falls back to line when start_line is null.
+      expect(mapped.line_start).toBe(41);
+      // diff_position carried through (null is fine — frontend renders by line).
+      expect(mapped.diff_position).toBeNull();
+    });
+
+    it('range comment: start_line + line map both anchors', () => {
+      const row = baseRow({ position: null, start_line: 38, line: 41 });
+      const mapped = githubAdapter.mapComment(row, { isAltHost: true });
+
+      expect(mapped.is_outdated).toBe(0);
+      expect(mapped.line_start).toBe(38);
+      expect(mapped.line_end).toBe(41);
+    });
+
+    it('genuinely outdated: line null, original_line set → is_outdated 1, anchored via original_*', () => {
+      const row = baseRow({
+        position: null,
+        line: null,
+        start_line: null,
+        original_start_line: null,
+        original_line: 38,
+        original_commit_id: 'old-sha',
+      });
+      const mapped = githubAdapter.mapComment(row, { isAltHost: true });
+
+      expect(mapped.is_outdated).toBe(1);
+      expect(mapped.line_start).toBeNull();
+      expect(mapped.line_end).toBeNull();
+      expect(mapped.original_line_start).toBe(38);
+      expect(mapped.original_line_end).toBe(38);
+      expect(mapped.original_commit_sha).toBe('old-sha');
+    });
+
+    it('truly lost anchor: line null AND original_line null → both anchors null (still counts as lost)', () => {
+      const row = baseRow({
+        position: null,
+        line: null,
+        start_line: null,
+        original_line: null,
+        original_start_line: null,
+      });
+      const mapped = githubAdapter.mapComment(row, { isAltHost: true });
+
+      expect(mapped.is_outdated).toBe(1);
+      expect(mapped.line_end).toBeNull();
+      expect(mapped.original_line_end).toBeNull();
+      // Still a valid row (identity/body preserved) — the route filters it.
+      expect(mapped.external_id).toBe('100');
+    });
+
+    it('carries position through when an alt-host does happen to return it', () => {
+      // Uniformly line-based: even if `position` is non-null, anchoring keys
+      // off `line`. position is carried through to diff_position unchanged.
+      const row = baseRow({ position: 7, line: 41 });
+      const mapped = githubAdapter.mapComment(row, { isAltHost: true });
+
+      expect(mapped.is_outdated).toBe(0);
+      expect(mapped.line_end).toBe(41);
+      expect(mapped.diff_position).toBe(7);
     });
   });
 });

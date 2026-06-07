@@ -19,7 +19,7 @@ const { normalizeRepository } = require('../utils/paths');
 const { mergeInstructions } = require('../utils/instructions');
 const { GitWorktreeManager } = require('../git/worktree');
 const { GitHubClient } = require('../github/client');
-const { getGitHubToken, resolveLoadSkills, buildCouncilProviderOverrides } = require('../config');
+const { getGitHubToken, resolveHostBinding, resolveBindingRepositoryFromPR, resolveLoadSkills, buildCouncilProviderOverrides } = require('../config');
 const { setupStackPR } = require('../setup/stack-setup');
 const Analyzer = require('../ai/analyzer');
 const { getProviderClass, createProvider } = require('../ai/provider');
@@ -164,6 +164,8 @@ const defaults = {
   GitWorktreeManager,
   GitHubClient,
   getGitHubToken,
+  resolveHostBinding,
+  resolveBindingRepositoryFromPR,
   setupStackPR,
   Analyzer,
   getProviderClass,
@@ -229,10 +231,17 @@ async function executeStackAnalysis(params) {
     }
 
     // 3. Fetch all PR data from GitHub in parallel
-    const githubToken = deps.getGitHubToken(config);
+    // Use the per-repo binding so alt-host stack analyses target the right host.
+    // The PR identity (`${owner}/${repo}`) is used for DB rows and worktree
+    // identity. For host-binding lookups we MUST use the config-binding key,
+    // which differs from the PR identity for monorepo-style `url_pattern`
+    // configs (one `repos[...]` entry serves many captured owner/repo pairs).
+    const bindingRepository = deps.resolveBindingRepositoryFromPR(owner, repo, config);
+    const stackBinding = deps.resolveHostBinding(bindingRepository, config);
+    const githubToken = stackBinding.token;
     const prDataMap = new Map();
     if (githubToken) {
-      const githubClient = new deps.GitHubClient(githubToken);
+      const githubClient = new deps.GitHubClient(stackBinding);
       const fetchResults = await Promise.allSettled(
         prNumbers.map(async (prNum) => {
           const prData = await githubClient.fetchPullRequest(owner, repo, prNum);
@@ -294,10 +303,10 @@ async function executeStackAnalysis(params) {
         };
 
         return analyzeStackPR(deps, db, config, {
-          owner, repo, repository, prNum,
+          owner, repo, repository, bindingRepository, prNum,
           worktreePath: worktreePathMap.get(prNum),
           analysisConfig, stackAnalysisId, state,
-          githubToken, prData: prDataMap.get(prNum),
+          githubToken, binding: stackBinding, prData: prDataMap.get(prNum),
           onAnalysisIdReady
         }).then(result => {
           state.prStatuses.set(prNum, {
@@ -335,15 +344,25 @@ async function executeStackAnalysis(params) {
  * Called in parallel for all PRs.
  */
 async function analyzeStackPR(deps, db, config, {
-  owner, repo, repository, prNum, worktreePath,
-  analysisConfig, stackAnalysisId, state, githubToken, prData,
+  owner, repo, repository, bindingRepository, prNum, worktreePath,
+  analysisConfig, stackAnalysisId, state, githubToken, binding, prData,
   onAnalysisIdReady
 }) {
+  // Build a GitHubClient for analyzer-side dedup pre-fetch. The stack
+  // analysis flow is PR mode only — local mode does not enter this path.
+  // Prefer the host-aware binding (alt-host capable) and fall back to the
+  // bare token for legacy callers.
+  const clientArg = binding || githubToken;
+  const stackGithubClient = clientArg ? new deps.GitHubClient(clientArg) : undefined;
+  if (stackGithubClient) {
+    logger.debug(`analyzer githubClient wired for ${owner}/${repo}#${prNum} (stack)`);
+  }
   // 1. Setup PR (generates diff, stores metadata)
   const worktreeManager = new deps.GitWorktreeManager(db);
   await deps.setupStackPR({
     db, owner, repo, prNumber: prNum,
-    githubToken, worktreePath, worktreeManager, prData
+    githubToken, binding, bindingRepository,
+    worktreePath, worktreeManager, prData
   });
 
   // 2. Fetch prMetadata from DB
@@ -381,6 +400,7 @@ async function analyzeStackPR(deps, db, config, {
       reviewId, worktreePath, prMetadata, prNum, owner, repo, repository,
       globalInstructions, repoInstructions, requestInstructions,
       councilId, rawCouncilConfig, configType, onAnalysisIdReady,
+      githubClient: stackGithubClient,
       providerOverrides: councilProviderOverrides,
       providerOverridesMap: councilProviderOverridesMap
     });
@@ -408,6 +428,7 @@ async function analyzeStackPR(deps, db, config, {
         selectedProvider, selectedModel,
         globalInstructions, repoInstructions, requestInstructions,
         reqTier, reqEnabledLevels, onAnalysisIdReady,
+        githubClient: stackGithubClient,
         providerOverrides
       });
     }
@@ -428,6 +449,7 @@ async function launchStackSingleAnalysis(deps, db, config, {
   selectedProvider, selectedModel,
   globalInstructions, repoInstructions, requestInstructions,
   reqTier, reqEnabledLevels, onAnalysisIdReady,
+  githubClient,
   providerOverrides = {}
 }) {
   const runId = uuidv4();
@@ -485,7 +507,7 @@ async function launchStackSingleAnalysis(deps, db, config, {
       reviewId, worktreePath, prMetadata, progressCallback,
       { globalInstructions, repoInstructions, requestInstructions },
       null,
-      { analysisId, runId, skipRunCreation: true, tier, enabledLevels: levelsConfig }
+      { analysisId, runId, skipRunCreation: true, tier, enabledLevels: levelsConfig, githubClient }
     );
 
     const completionInfo = determineCompletionInfo(result);
@@ -552,6 +574,7 @@ async function launchStackCouncilAnalysis(deps, db, config, {
   reviewId, worktreePath, prMetadata, prNum, owner, repo, repository,
   globalInstructions, repoInstructions, requestInstructions,
   councilId, rawCouncilConfig, configType, onAnalysisIdReady,
+  githubClient,
   providerOverrides = {},
   providerOverridesMap = null
 }) {
@@ -595,6 +618,7 @@ async function launchStackCouncilAnalysis(deps, db, config, {
       logLabel: `Stack PR #${prNum}`,
       initialStatusExtra: { prNumber: prNum, reviewType: 'pr' },
       config,
+      githubClient,
       providerOverrides,
       providerOverridesMap,
       hookContext: {
