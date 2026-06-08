@@ -1,5 +1,65 @@
 # Changelog
 
+## 3.7.0
+
+### Minor Changes
+
+- dec2647: Add support for self-hosted Git platforms that expose a GitHub-compatible REST API. Configure per-repo via `repos["owner/repo"].api_host`, `token` / `token_command`, `url_pattern`, `features`, and `links` keys. See `docs/alt-host.md` for the configuration guide. Existing `github.com` behaviour is unchanged.
+- 6ab9517: Show the analysis configuration modal before bulk-analyzing selected PRs from index collection tabs, then apply the chosen model/council and prompt to every opened PR.
+- 000f4de: Make the external code host's name, URL, and icon configurable for alt-host
+  repos, and use them consistently in the review UI.
+
+  - Add an optional `repos["owner/repo"].links.external.name` (e.g. `"Meteorite"`)
+    that replaces the literal "GitHub" in user-facing text: the submit success
+    toast, the pending-draft notice/indicator, and the "Save as Draft"
+    description. Defaults to "GitHub" when unset.
+  - The post-draft-submit browser tab, the pending-draft "Manage" link, and the
+    pending-draft indicator now open the URL built from the repo's configured
+    `links.external.url_template` (host-correct) instead of the review's
+    API-returned `html_url`, which some alt-hosts return as a wrong-host
+    `github.com/.../issues/<n>` URL. No URL is ever fabricated as github.com.
+  - The configured `links.external.icon` is now also shown on the review-submit
+    button.
+  - New `window.RepoLinks.hostName()` / `externalUrl()` / `externalIcon()`
+    accessors and a server-side `resolveHostName()` helper expose the resolved
+    host identity to the rest of the app.
+
+  Behaviour is unchanged for github.com repos with no `links.external` config.
+
+- df0ae80: Render diff file bodies lazily so very large PRs (hundreds of files, many of them large/generated translation files) stay responsive. Previously every changed file's diff lines were built into the DOM and syntax-highlighted on load — even for files collapsed behind a generated/viewed header — which froze the browser on big diffs.
+
+  Now each file renders its header eagerly but builds its `<tbody>` of diff lines on demand: when the body scrolls near the viewport (IntersectionObserver), when the file is expanded, or when a comment, AI suggestion, gap expansion, or navigation needs to anchor into it (via a new `ensureFileBodyRendered` primitive). Collapsed bodies are never rendered until expanded. Hunk-summary anchoring became incremental to match (anchors are wired as each file body renders). Works in both PR and Local modes.
+
+  Note: because off-screen and collapsed file bodies are no longer in the DOM, the browser's native Find (Ctrl/Cmd+F) will not match text in files you haven't scrolled to or expanded.
+
+### Patch Changes
+
+- 000f4de: Fix alt-host review submission failing at "Step 2" with HTTP 422 `{ field: "comments[0].commit_id", code: "missing_field" }` when attaching inline comments to a pending review. The host pending-review-comments path now threads the PR head SHA through to each comment as `commit_id`, which GitHub-compatible alt-hosts require (they validate each comment like `pulls.createReviewComment`). The github.com GraphQL path is unchanged — it pins the commit implicitly and ignores the field.
+
+  Also make review-submission logging transport-accurate: `createReviewGraphQL` / `createDraftReviewGraphQL` no longer hardcode "GraphQL" in user-facing log and error strings when the review actually ran over the alt-host REST/extension transport; they now label messages "alt-host" or "GraphQL" based on the active binding.
+
+- 000f4de: Fix alt-host review submission failing at "Step 1: Creating pending review" with HTTP 400 `{ message: "request body is empty" }`. The REST `addPullRequestReview` now sends an explicit empty `body: ''` when creating a pending review, so the serialized HTTP request body is non-empty (`{"body":""}`). github.com tolerates an empty POST body, but strict GitHub-compatible alt-hosts (repos configured with an `api_host`) reject it. The review still stays PENDING (no `event` is sent), and `github.com` behaviour is unchanged.
+- 000f4de: Fix a spurious "N comments lost their anchor" toast when loading a review on an alternate Git host ("alt-host"). Alt-hosts don't implement GitHub's deprecated diff-relative `position` field — they return external review comments with `position: null` but a valid modern `line`. The external-comments sync mapper previously keyed "outdated" off `position`, discarding the good `line` and mis-flagging current comments as lost anchors, which dropped them from the mirror.
+
+  Comment anchoring is now host-aware. For alt-host repos (a binding with `api_host`), `mapComment` anchors by `line`: a comment with a non-null `line` is current (`is_outdated = 0`); only a null `line` marks it outdated (anchored via `original_*`). The github.com path is unchanged and remains position-based.
+
+- 000f4de: Fix external/inline PR review comment sync so it respects per-repo alt-host bindings instead of always calling `api.github.com`. The sync flow now resolves the review's `repository` to its host binding (`api_host` + repo-scoped `token` / `token_command`) before fetching comments, mirroring the binding-aware credential resolution used elsewhere. Alt-host PRs previously 404'd because the sync targeted `api.github.com` with the top-level github.com token; `github.com` repos are unaffected.
+- b06e2dc: Fix false "No tour to generate" / "No summary to generate" in local mode. The manual **Start guided tour** and **Generate summaries** buttons reported `no-diff` for local reviews that clearly had changes, because the manual job-start handler read the diff only from the `local_diffs` table — and several paths created/analyzed a local review without ever writing that table (the analysis-push, council, and MCP-analyze flows cached the diff in memory only or in `analysis_runs`).
+
+  Two complementary fixes:
+
+  - The local manual job-start handler now resolves the diff through the same chain the rest of local mode uses — in-memory cache → persisted `local_diffs` row → regenerate from the live working tree (scope-aware) — and persists the regenerated diff. It only reports `no-diff` when the working tree genuinely has no changes in scope, and self-heals reviews created before this fix. The working-tree regeneration is now gated by the same HEAD-snapshot guard as `refresh-diff`: for a non-branch review whose HEAD has moved off its recorded `local_head_sha`, regeneration is skipped and the user is funneled through the explicit `resolve-head-change` flow instead of silently re-snapshotting the moved HEAD onto a pinned review. Branch-scoped reviews (which persist across HEAD changes) keep regenerating as before.
+  - The analysis-push (`POST /api/analyses/results`), local council, and MCP `start_analysis` (local) paths now durably persist the diff to `local_diffs`, so the diff survives a restart regardless of which path created the review. Each path persists using the review's recorded scope (`unstaged`/`staged`/`branch`) rather than the default-scope wrapper, so re-using a review that was moved to a different scope no longer overwrites its durable row with a narrower patch, and the MCP path also refreshes the in-memory diff cache alongside the database row.
+
+  PR mode is unaffected: a PR's diff is always persisted in `pr_data` at load time, so its `no-diff` cannot be a false negative.
+
+- ace4731: Surface user-visible toast feedback when the toolbar tour/summary generate button can't kick off a job. Previously, clicking the button when `auto_generate: false` and the review had no diff (or the request failed) silently did nothing — making the button appear broken. Now the user sees:
+
+  - An info toast ("No tour to generate." / "No summaries to generate.") when the diff is empty.
+  - An error toast when the HTTP request fails or the server declines for an unknown reason.
+
+- 000f4de: Automatically refresh expired tokens on HTTP 401 for repos whose credential comes from a shell command (`token_command` / `github_token_command`). When a GitHub API request (REST or GraphQL) fails with 401 and the binding's token was produced by a command, pair-review now busts the cached token, re-runs the command to obtain a fresh token, and retries the failed request once. The client uses a single long-lived connection that stamps the current token onto each request as it is dispatched, so a refresh triggered by one request is observed by all in-flight work — including later pages of a paginated fetch and other concurrent requests — instead of leaving them stranded on the stale token. Concurrent 401s are coalesced onto a single refresh rather than each re-running the token command. This keeps alt-host sessions with short-lived tokens working past token expiry without restarting the server. Literal tokens and `GITHUB_TOKEN` are not refreshable (re-running would not change them), and github.com PAT clients behave exactly as before. The retry is at-most-once per request: it never loops, and only 401 (not 403/404/422/5xx) triggers a refresh.
+
 ## 3.6.0
 
 ### Minor Changes
