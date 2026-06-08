@@ -19,7 +19,11 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { execSync } from 'child_process';
 import express from 'express';
+import nodeFs from 'fs';
+import os from 'os';
+import path from 'path';
 import request from 'supertest';
 import { createTestDatabase, closeTestDatabase } from '../utils/schema';
 
@@ -29,6 +33,45 @@ const { ReviewRepository, run } = require('../../src/database');
 const summaryGenerator = require('../../src/ai/summary-generator');
 const tourGenerator = require('../../src/ai/tour-generator');
 const { backgroundQueue } = require('../../src/ai/background-queue');
+const { localReviewDiffs } = require('../../src/routes/shared');
+
+/**
+ * Create a throwaway git repo with an unstaged change so the manual-start
+ * handler's working-tree regeneration (scope-aware) produces a real diff.
+ * Returns the repo path; caller is responsible for cleanup.
+ */
+function createTempRepoWithChanges() {
+  const tempRepo = nodeFs.mkdtempSync(path.join(os.tmpdir(), 'pair-review-manual-start-'));
+  execSync('git init -b main', { cwd: tempRepo, stdio: 'pipe' });
+  execSync('git config user.email "test@test.com"', { cwd: tempRepo, stdio: 'pipe' });
+  execSync('git config user.name "Test User"', { cwd: tempRepo, stdio: 'pipe' });
+  const repoFile = path.join(tempRepo, 'file.js');
+  nodeFs.writeFileSync(repoFile, 'line 1\nline 2\nline 3\n');
+  execSync('git add file.js', { cwd: tempRepo, stdio: 'pipe' });
+  execSync('git commit -m "initial"', { cwd: tempRepo, stdio: 'pipe' });
+  // Unstaged modification — falls within the default 'unstaged'→'untracked' scope.
+  nodeFs.writeFileSync(repoFile, 'line 1 changed\nline 2\nline 3\nline 4 added\n');
+  return tempRepo;
+}
+
+/**
+ * Create a throwaway git repo with a clean working tree (a committed file and
+ * NO unstaged/untracked changes). Working-tree regeneration succeeds but
+ * produces an empty diff, exercising the genuine "no changes in scope" path
+ * (as opposed to the regeneration-throws path). Caller cleans up.
+ */
+function createTempRepoNoChanges() {
+  const tempRepo = nodeFs.mkdtempSync(path.join(os.tmpdir(), 'pair-review-manual-start-clean-'));
+  execSync('git init -b main', { cwd: tempRepo, stdio: 'pipe' });
+  execSync('git config user.email "test@test.com"', { cwd: tempRepo, stdio: 'pipe' });
+  execSync('git config user.name "Test User"', { cwd: tempRepo, stdio: 'pipe' });
+  const repoFile = path.join(tempRepo, 'file.js');
+  nodeFs.writeFileSync(repoFile, 'line 1\nline 2\nline 3\n');
+  execSync('git add file.js', { cwd: tempRepo, stdio: 'pipe' });
+  execSync('git commit -m "initial"', { cwd: tempRepo, stdio: 'pipe' });
+  // No further edits — the working tree is clean, so the default-scope diff is empty.
+  return tempRepo;
+}
 
 const SAMPLE_DIFF =
   'diff --git a/file.js b/file.js\n--- a/file.js\n+++ b/file.js\n@@ -1 +1 @@\n-old\n+new';
@@ -94,6 +137,10 @@ describe('Manual start endpoints', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    // The manual-start handler caches regenerated diffs in this module-level
+    // Map (keyed by reviewId). Clear it so an entry from one test cannot make a
+    // later test reusing the same reviewId see a diff it never seeded.
+    localReviewDiffs.clear();
     closeTestDatabase(db);
   });
 
@@ -231,7 +278,13 @@ describe('Manual start endpoints', () => {
       expect(tourSpy.mock.calls[0][0].trigger).toBe('manual');
     });
 
-    it('returns no-diff when the local review has no persisted diff', async () => {
+    it('returns no-diff when regeneration fails (worktree missing) and no diff is cached', async () => {
+      // The toast must still appear when the diff cannot be resolved at all.
+      // There is no local_diffs row, no in-memory cache entry, and the
+      // (non-existent) local_path makes working-tree regeneration throw, which
+      // the handler catches and treats as an empty diff → no-diff. This covers
+      // the regeneration-error fallthrough; the genuine clean-working-tree case
+      // is covered by the next test.
       const app = buildApp(db, { summaries: { enabled: true } });
       const reviewRepo = new ReviewRepository(db);
       const reviewId = await reviewRepo.upsertLocalReview({
@@ -245,6 +298,190 @@ describe('Manual start endpoints', () => {
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ started: false, reason: 'no-diff' });
       expect(summarySpy).not.toHaveBeenCalled();
+    });
+
+    it('returns no-diff when the working tree is clean (genuinely no changes in scope)', async () => {
+      // The toast must appear when there is truly nothing to review: a real git
+      // repo with a committed file and no unstaged/untracked changes. There is
+      // no local_diffs row and no in-memory cache entry, so the handler
+      // regenerates from the working tree — regeneration SUCCEEDS but yields an
+      // empty diff (default 'unstaged'→'untracked' scope, clean tree) → no-diff.
+      // We seed the review's recorded HEAD to the repo's REAL HEAD so the
+      // snapshot guard passes and regen actually runs (rather than being
+      // blocked for a moved HEAD, which would be the wrong reason for no-diff).
+      const tempRepo = createTempRepoNoChanges();
+      try {
+        const app = buildApp(db, { summaries: { enabled: true } });
+        const reviewRepo = new ReviewRepository(db);
+        const realHead = execSync('git rev-parse HEAD', { cwd: tempRepo, encoding: 'utf8' }).trim();
+        const reviewId = await reviewRepo.upsertLocalReview({
+          localPath: tempRepo,
+          localHeadSha: realHead,
+          repository: 'owner/repo',
+          localHeadBranch: 'main',
+        });
+        expect(await reviewRepo.getLocalDiff(reviewId)).toBeNull();
+
+        const res = await request(app).post(`/api/local/${reviewId}/jobs/summary/start`);
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual({ started: false, reason: 'no-diff' });
+        expect(summarySpy).not.toHaveBeenCalled();
+      } finally {
+        nodeFs.rmSync(tempRepo, { recursive: true, force: true });
+      }
+    });
+
+    it('regenerates the diff from the working tree when no local_diffs row exists', async () => {
+      // Regression for the reported bug: a local review created via an
+      // analysis/council/MCP path never wrote local_diffs, so the DB-only read
+      // falsely reported no-diff. The handler must now regenerate from the live
+      // working tree, kick the job, and persist the diff for next time.
+      const tempRepo = createTempRepoWithChanges();
+      try {
+        const app = buildApp(db, { tours: { enabled: true, auto_generate: false } });
+        const reviewRepo = new ReviewRepository(db);
+        // Seed the review's recorded HEAD to the repo's REAL HEAD so the
+        // snapshot guard (non-branch HEAD-pinning) passes and regeneration runs.
+        // A fake SHA would now be (correctly) blocked by the moved-HEAD guard.
+        const realHead = execSync('git rev-parse HEAD', { cwd: tempRepo, encoding: 'utf8' }).trim();
+        const reviewId = await reviewRepo.upsertLocalReview({
+          localPath: tempRepo,
+          localHeadSha: realHead,
+          repository: 'owner/repo',
+          localHeadBranch: 'main',
+        });
+        // Intentionally no saveLocalDiff and no in-memory cache entry.
+        expect(await reviewRepo.getLocalDiff(reviewId)).toBeNull();
+
+        const res = await request(app).post(`/api/local/${reviewId}/jobs/tour/start`);
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual({ started: true, alreadyRunning: false });
+        expect(tourSpy).toHaveBeenCalledTimes(1);
+        const call = tourSpy.mock.calls[0][0];
+        expect(call.trigger).toBe('manual');
+        expect(call.diffText).toContain('diff --git');
+        expect(call.worktreePath).toBe(tempRepo);
+
+        // The regenerated diff is now durably persisted (self-heal).
+        const persisted = await reviewRepo.getLocalDiff(reviewId);
+        expect(persisted).not.toBeNull();
+        expect(persisted.diff).toContain('diff --git');
+      } finally {
+        nodeFs.rmSync(tempRepo, { recursive: true, force: true });
+      }
+    });
+
+    it('does NOT regenerate (no-diff) for a non-branch review whose HEAD has moved', async () => {
+      // Regression for the snapshot-invariant bug: the self-heal regen block used
+      // to persist a diff describing the CURRENT worktree onto a review row still
+      // pinned to the OLDER local_head_sha. For a non-branch review whose HEAD has
+      // since moved, regenerating + persisting here would silently re-snapshot the
+      // moved HEAD onto a pinned review — the same hole the refresh-diff handler
+      // closes by routing through resolve-head-change. The guard must now BLOCK
+      // regen: no generator call, no persisted local_diffs row, and a no-diff
+      // response so the user is funneled through the established flow.
+      //
+      // NOTE: without the guard this test FAILS — regen would succeed against the
+      // (changed) working tree and return { started: true }.
+      const tempRepo = createTempRepoWithChanges();
+      try {
+        const app = buildApp(db, { tours: { enabled: true, auto_generate: false } });
+        const reviewRepo = new ReviewRepository(db);
+        // Pin the review to the repo's INITIAL HEAD...
+        const initialHead = execSync('git rev-parse HEAD', { cwd: tempRepo, encoding: 'utf8' }).trim();
+        const reviewId = await reviewRepo.upsertLocalReview({
+          localPath: tempRepo,
+          localHeadSha: initialHead,
+          repository: 'owner/repo',
+          localHeadBranch: 'main',
+        });
+        // ...then move HEAD by committing a new change so current HEAD differs.
+        nodeFs.writeFileSync(path.join(tempRepo, 'file2.js'), 'new file\n');
+        execSync('git add file2.js', { cwd: tempRepo, stdio: 'pipe' });
+        execSync('git commit -m "second"', { cwd: tempRepo, stdio: 'pipe' });
+        const movedHead = execSync('git rev-parse HEAD', { cwd: tempRepo, encoding: 'utf8' }).trim();
+        expect(movedHead).not.toBe(initialHead);
+
+        // No cache entry, no local_diffs row.
+        expect(await reviewRepo.getLocalDiff(reviewId)).toBeNull();
+
+        const res = await request(app).post(`/api/local/${reviewId}/jobs/tour/start`);
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual({ started: false, reason: 'no-diff' });
+        // Guard blocked regen: generator not called and nothing persisted.
+        expect(tourSpy).not.toHaveBeenCalled();
+        expect(await reviewRepo.getLocalDiff(reviewId)).toBeNull();
+      } finally {
+        nodeFs.rmSync(tempRepo, { recursive: true, force: true });
+      }
+    });
+
+    it('STILL regenerates for a branch-scoped review whose HEAD has moved', async () => {
+      // Branch-scoped reviews persist across HEAD changes (the diff is computed
+      // against the base branch, not a pinned HEAD snapshot), so the snapshot
+      // guard must NOT block them. Even with a moved HEAD, regen runs and the job
+      // starts. This complements the non-branch regression test above.
+      const tempRepo = createTempRepoWithChanges();
+      try {
+        const app = buildApp(db, { tours: { enabled: true, auto_generate: false } });
+        const reviewRepo = new ReviewRepository(db);
+        const initialHead = execSync('git rev-parse HEAD', { cwd: tempRepo, encoding: 'utf8' }).trim();
+        // Branch scope: start='branch', end='unstaged', with a base branch.
+        const reviewId = await reviewRepo.upsertLocalReview({
+          localPath: tempRepo,
+          localHeadSha: initialHead,
+          repository: 'owner/repo',
+          localHeadBranch: 'main',
+          scopeStart: 'branch',
+          scopeEnd: 'unstaged',
+          localBaseBranch: 'main',
+        });
+        // Move HEAD: create a feature branch with a new commit so there is a
+        // branch-ahead diff against the 'main' base branch.
+        execSync('git checkout -b feature', { cwd: tempRepo, stdio: 'pipe' });
+        nodeFs.writeFileSync(path.join(tempRepo, 'file3.js'), 'branch change\n');
+        execSync('git add file3.js', { cwd: tempRepo, stdio: 'pipe' });
+        execSync('git commit -m "feature commit"', { cwd: tempRepo, stdio: 'pipe' });
+        const movedHead = execSync('git rev-parse HEAD', { cwd: tempRepo, encoding: 'utf8' }).trim();
+        expect(movedHead).not.toBe(initialHead);
+
+        expect(await reviewRepo.getLocalDiff(reviewId)).toBeNull();
+
+        const res = await request(app).post(`/api/local/${reviewId}/jobs/tour/start`);
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual({ started: true, alreadyRunning: false });
+        expect(tourSpy).toHaveBeenCalledTimes(1);
+        expect(tourSpy.mock.calls[0][0].diffText).toContain('diff --git');
+      } finally {
+        nodeFs.rmSync(tempRepo, { recursive: true, force: true });
+      }
+    });
+
+    it('starts the job from the in-memory diff cache when no DB row exists', async () => {
+      // The analysis/council paths populate the in-memory cache before any DB
+      // write. The handler must honor that cache without needing a local_diffs
+      // row and without touching the working tree.
+      const app = buildApp(db, { tours: { enabled: true, auto_generate: false } });
+      const reviewRepo = new ReviewRepository(db);
+      const reviewId = await reviewRepo.upsertLocalReview({
+        localPath: '/mock/repo',
+        localHeadSha: 'abc123',
+        repository: 'owner/repo',
+        localHeadBranch: 'main',
+      });
+      // Seed only the module-level in-memory cache (keyed by integer reviewId).
+      localReviewDiffs.set(reviewId, {
+        diff: SAMPLE_DIFF,
+        stats: { trackedChanges: 1 },
+        digest: 'mem-1',
+      });
+      expect(await reviewRepo.getLocalDiff(reviewId)).toBeNull();
+
+      const res = await request(app).post(`/api/local/${reviewId}/jobs/tour/start`);
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ started: true, alreadyRunning: false });
+      expect(tourSpy).toHaveBeenCalledTimes(1);
+      expect(tourSpy.mock.calls[0][0].diffText).toContain('diff --git');
     });
 
     it('is idempotent: returns alreadyRunning when a job is in flight', async () => {

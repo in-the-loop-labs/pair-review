@@ -11,13 +11,15 @@ const { getTierForModel } = require('../ai/provider');
 const { TIERS, TIER_ALIASES, resolveTier } = require('../ai/prompts/config');
 const { GitWorktreeManager } = require('../git/worktree');
 const path = require('path');
-const { getCurrentBranch } = require('../local-review');
+const { getCurrentBranch, generateScopedDiff, computeScopedDigest } = require('../local-review');
+const { reviewScope } = require('../local-scope');
 const { normalizeRepository } = require('../utils/paths');
 const logger = require('../utils/logger');
 const { broadcastReviewEvent } = require('../events/review-events');
 const {
   activeAnalyses,
   reviewToAnalysisId,
+  localReviewDiffs,
   determineCompletionInfo,
   broadcastProgress,
   createProgressCallback
@@ -557,6 +559,32 @@ function createMCPServer(db, options = {}) {
           }
 
           const review = await reviewRepo.getLocalReviewById(reviewId);
+
+          // Persist the diff so the web UI can display it and the manual
+          // tour/summary buttons work (including after a restart). The MCP path
+          // previously stored the diff only in analysis_runs, leaving no
+          // `local_diffs` row.
+          //
+          // Use the review's recorded scope — not the default-scope wrapper — so
+          // re-using a review that was moved to `staged` or `branch` scope does
+          // not clobber its durable row with a narrower default-scope patch. Set
+          // the in-memory cache alongside the DB row so the cache-first readers
+          // in routes/local.js don't keep serving a stale entry. Non-fatal:
+          // matches the analysis-push path.
+          try {
+            const { start: scopeStart, end: scopeEnd } = reviewScope(review);
+            const diffResult = await generateScopedDiff(
+              localPath,
+              scopeStart,
+              scopeEnd,
+              review.local_base_branch || null
+            );
+            const digest = await computeScopedDigest(localPath, scopeStart, scopeEnd);
+            localReviewDiffs.set(reviewId, { diff: diffResult.diff, stats: diffResult.stats, digest });
+            await reviewRepo.saveLocalDiff(reviewId, { diff: diffResult.diff, stats: diffResult.stats, digest });
+          } catch (diffError) {
+            logger.warn(`Could not generate or persist diff for local review ${reviewId}: ${diffError.message}`);
+          }
 
           // Resolve provider and model
           const repoSettings = repository ? await repoSettingsRepo.getRepoSettings(repository) : null;

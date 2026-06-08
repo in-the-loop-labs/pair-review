@@ -813,6 +813,11 @@ router.post('/api/pr/:owner/:repo/:number/jobs/:jobKey/start', async (req, res) 
     const diffText = extendedData.diff || '';
     const worktreePath = extendedData.worktree_path || null;
 
+    // Unlike local mode, a PR's diff is always persisted in `pr_data` at PR-load
+    // time — there is no in-memory cache or working-tree regeneration to fall
+    // back on. So an empty diff here genuinely means `pr_data` has no diff, and
+    // this `no-diff` cannot be a false negative (no parity fix needed; see the
+    // local manual-start handler in local.js for the self-healing variant).
     if (!diffText || !worktreePath) {
       return res.json({ started: false, reason: 'no-diff' });
     }

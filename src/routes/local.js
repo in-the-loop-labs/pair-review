@@ -2272,11 +2272,19 @@ router.post('/api/local/:reviewId/analyses/council', async (req, res) => {
       baseBranch: review.local_base_branch || null,
     });
 
-    // Generate and cache diff
+    // Generate and cache diff. Hoist the result out of the try so we can also
+    // persist it to `local_diffs` below (after reviewRepo is constructed) — the
+    // council path previously cached the diff in-memory only, which left the
+    // manual tour/summary buttons reporting a false "no-diff" after a restart.
+    let councilDiff = null;
+    let councilStats = null;
+    let councilDigest = null;
     try {
       const diffResult = await generateScopedDiff(localPath, councilScopeStart, councilScopeEnd, review.local_base_branch);
-      const digest = await computeScopedDigest(localPath, councilScopeStart, councilScopeEnd);
-      setLocalReviewDiff(reviewId, { diff: diffResult.diff, stats: diffResult.stats, digest });
+      councilDigest = await computeScopedDigest(localPath, councilScopeStart, councilScopeEnd);
+      councilDiff = diffResult.diff;
+      councilStats = diffResult.stats;
+      setLocalReviewDiff(reviewId, { diff: councilDiff, stats: councilStats, digest: councilDigest });
     } catch (diffError) {
       logger.warn(`Could not generate diff for local council review ${reviewId}: ${diffError.message}`);
     }
@@ -2284,6 +2292,16 @@ router.post('/api/local/:reviewId/analyses/council', async (req, res) => {
     // Resolve instructions
     const repoSettingsRepo = new RepoSettingsRepository(db);
     const reviewRepo = new ReviewRepository(db);
+
+    // Durably persist the diff so it survives a restart and the manual
+    // tour/summary buttons can find it (parity with the analysis-push path).
+    if (councilDiff) {
+      try {
+        await reviewRepo.saveLocalDiff(reviewId, { diff: councilDiff, stats: councilStats, digest: councilDigest });
+      } catch (saveError) {
+        logger.warn(`Could not persist diff for local council review ${reviewId}: ${saveError.message}`);
+      }
+    }
     const repoSettings = await repoSettingsRepo.getRepoSettings(review.repository);
     const repoInstructions = repoSettings?.default_instructions || null;
     const requestInstructions = rawInstructions?.trim() || null;
@@ -2397,9 +2415,64 @@ router.post('/api/local/:reviewId/jobs/:jobKey/start', async (req, res) => {
       return res.status(404).json({ error: `Local review #${reviewId} not found` });
     }
 
-    const localDiff = await reviewRepo.getLocalDiff(reviewId);
-    const diffText = localDiff ? (localDiff.diff || '') : '';
     const worktreePath = review.local_path || null;
+
+    // Resolve the diff through the same chain the rest of this file uses, rather
+    // than a DB-only read. Reviews created via the analysis-push, council, or MCP
+    // paths may have a diff only in the in-memory cache (or nowhere yet), so a
+    // DB-only read would falsely report "no-diff" for a review that clearly has
+    // changes. Order: (1) in-memory cache, (2) persisted `local_diffs` row,
+    // (3) regenerate from the live working tree (scope-aware) and persist.
+    let diffText = getLocalReviewDiff(reviewId)?.diff || '';
+
+    if (!diffText) {
+      const persistedDiff = await reviewRepo.getLocalDiff(reviewId);
+      diffText = persistedDiff?.diff || '';
+    }
+
+    if (!diffText && worktreePath) {
+      // Regenerate from the current working tree and persist (in-memory + DB) so
+      // the next read is fast and durable, and so pre-Fix-B reviews self-heal.
+      // Mirrors the council diff block above: on error, log and leave it empty.
+      try {
+        const { start: scopeStart, end: scopeEnd } = reviewScope(review);
+        const hasBranch = includesBranch(scopeStart);
+
+        // Snapshot guard: mirror the HEAD invariant enforced by the refresh-diff
+        // handler (see ~line 1702). For a non-branch review, the persisted diff is
+        // pinned to `local_head_sha`. If HEAD has since moved, regenerating here
+        // would silently re-snapshot the CURRENT worktree onto a row that still
+        // claims the OLDER SHA — a data-consistency hole. So we only regenerate
+        // when HEAD still matches; otherwise we leave diffText empty and let the
+        // `{ started: false, reason: 'no-diff' }` response funnel the user through
+        // the established refresh-diff / resolve-head-change flow. Branch-scoped
+        // reviews persist across HEAD changes, so they always regenerate.
+        let headPinned = true;
+        if (!hasBranch && review.local_head_sha) {
+          // Lazy require keeps getHeadSha stubbable via vi.spyOn in tests.
+          const { getHeadSha } = require('../local-review');
+          const currentHeadSha = await getHeadSha(worktreePath);
+          if (currentHeadSha !== review.local_head_sha) {
+            headPinned = false;
+            logger.warn(`Skipping self-heal diff regen for local review ${reviewId} (${jobKey}): HEAD moved on non-branch review (recorded ${review.local_head_sha}, current ${currentHeadSha}) — funneling through resolve-head-change`);
+          }
+        }
+
+        if (headPinned) {
+          const diffResult = await generateScopedDiff(worktreePath, scopeStart, scopeEnd, review.local_base_branch);
+          diffText = diffResult.diff || '';
+          if (diffText) {
+            const digest = await computeScopedDigest(worktreePath, scopeStart, scopeEnd);
+            setLocalReviewDiff(reviewId, { diff: diffText, stats: diffResult.stats, digest });
+            await reviewRepo.saveLocalDiff(reviewId, { diff: diffText, stats: diffResult.stats, digest });
+          }
+        }
+      } catch (regenError) {
+        // A getHeadSha throw (e.g. missing worktree) lands here: leave diffText
+        // empty so the no-diff response fires, matching prior behavior.
+        logger.warn(`Could not regenerate diff for local review ${reviewId} manual ${jobKey} start: ${regenError.message}`);
+      }
+    }
 
     if (!diffText || !worktreePath) {
       return res.json({ started: false, reason: 'no-diff' });

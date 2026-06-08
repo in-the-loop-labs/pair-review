@@ -33,7 +33,8 @@ const {
   killProcesses,
   createProgressCallback
 } = require('./shared');
-const { generateLocalDiff, computeLocalDiffDigest, getCurrentBranch } = require('../local-review');
+const { generateScopedDiff, computeScopedDigest, getCurrentBranch } = require('../local-review');
+const { reviewScope } = require('../local-scope');
 const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
 const { TIERS, TIER_ALIASES, VALID_TIERS, resolveTier } = require('../ai/prompts/config');
 
@@ -229,13 +230,34 @@ router.post('/api/analyses/results', async (req, res) => {
         });
       }
 
-      // Generate and store diff so the web UI can display it
+      // Generate and store diff so the web UI can display it. Persist to the
+      // `local_diffs` table as well as the in-memory cache so the diff survives
+      // a restart and the manual tour/summary buttons never falsely report
+      // "no-diff" for a review created via this analysis-push path.
+      //
+      // Use the review's recorded scope (mirroring the council path) — NOT the
+      // default-scope `generateLocalDiff` wrapper — so that re-using an existing
+      // review whose scope is `staged` or `branch` does not clobber its durable
+      // `local_diffs` row with a narrower default-scope patch. For brand-new
+      // reviews the upsert above created a default-scope row, so either lookup
+      // yields the correct scope; reviewScope() falls back to the default scope
+      // when the columns are unset.
+      const reviewForScope = existingReview || await reviewRepo.getLocalReviewById(reviewId);
+      const { start: scopeStart, end: scopeEnd } = reviewScope(reviewForScope);
       try {
-        const diffResult = await generateLocalDiff(localPath);
-        const digest = await computeLocalDiffDigest(localPath);
+        const diffResult = await generateScopedDiff(
+          localPath,
+          scopeStart,
+          scopeEnd,
+          reviewForScope.local_base_branch || null
+        );
+        const digest = await computeScopedDigest(localPath, scopeStart, scopeEnd);
         localReviewDiffs.set(reviewId, { diff: diffResult.diff, stats: diffResult.stats, digest });
+        await reviewRepo.saveLocalDiff(reviewId, { diff: diffResult.diff, stats: diffResult.stats, digest });
       } catch (diffError) {
-        logger.warn(`Could not generate diff for local review ${reviewId}: ${diffError.message}`);
+        // Covers both diff generation AND the durable saveLocalDiff write, so the
+        // message names both failure modes rather than only generation.
+        logger.warn(`Could not generate or persist diff for local review ${reviewId}: ${diffError.message}`);
       }
     } else {
       const repoParts = repo.split('/');

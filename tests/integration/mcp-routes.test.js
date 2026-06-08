@@ -1,10 +1,32 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { execSync } from 'child_process';
 import express from 'express';
+import nodeFs from 'fs';
+import os from 'os';
+import path from 'path';
 import request from 'supertest';
 import { createTestDatabase, closeTestDatabase } from '../utils/schema';
 
 const { run, ReviewRepository, CommentRepository, AnalysisRunRepository } = require('../../src/database.js');
+
+/**
+ * Create a throwaway git repo with an unstaged change so the real local-diff
+ * helpers (generateLocalDiff/computeLocalDiffDigest) produce a non-empty diff
+ * within the default 'unstaged'→'untracked' scope. Caller cleans up.
+ */
+function createTempRepoWithChanges() {
+  const tempRepo = nodeFs.mkdtempSync(path.join(os.tmpdir(), 'pair-review-mcp-diff-'));
+  execSync('git init -b main', { cwd: tempRepo, stdio: 'pipe' });
+  execSync('git config user.email "test@test.com"', { cwd: tempRepo, stdio: 'pipe' });
+  execSync('git config user.name "Test User"', { cwd: tempRepo, stdio: 'pipe' });
+  const repoFile = path.join(tempRepo, 'file.js');
+  nodeFs.writeFileSync(repoFile, 'line 1\nline 2\nline 3\n');
+  execSync('git add file.js', { cwd: tempRepo, stdio: 'pipe' });
+  execSync('git commit -m "initial"', { cwd: tempRepo, stdio: 'pipe' });
+  nodeFs.writeFileSync(repoFile, 'line 1 changed\nline 2\nline 3\nline 4 added\n');
+  return tempRepo;
+}
 
 // We need a fresh MCP server per test to avoid state leakage
 // Import only the route creator, not the cached singleton
@@ -320,6 +342,51 @@ describe('MCP Routes Integration', () => {
       const result = extractResult(res);
       const content = JSON.parse(result.result.content[0].text);
       expect(content.comments).toEqual({});
+    });
+
+    it('start_analysis (local) durably persists the diff to the local_diffs table', async () => {
+      const tempRepo = createTempRepoWithChanges();
+      const headSha = execSync('git rev-parse HEAD', { cwd: tempRepo, encoding: 'utf8' }).trim();
+
+      // The local branch launches the analyzer fire-and-forget AND calls
+      // getLocalChangedFiles. Mock both on the prototype so no real provider
+      // calls occur. The diff persistence runs synchronously before the launch.
+      const Analyzer = require('../../src/ai/analyzer');
+      const changedFilesSpy = vi.spyOn(Analyzer.prototype, 'getLocalChangedFiles')
+        .mockResolvedValue([{ file: 'file.js' }]);
+      const level1Spy = vi.spyOn(Analyzer.prototype, 'analyzeLevel1')
+        .mockResolvedValue({ suggestions: [], summary: null });
+
+      try {
+        const res = await mcpRequest(app, {
+          jsonrpc: '2.0',
+          id: 20,
+          method: 'tools/call',
+          params: {
+            name: 'start_analysis',
+            arguments: { path: tempRepo, headSha }
+          }
+        });
+
+        expect(res.status).toBe(200);
+        const result = extractResult(res);
+        expect(result.result).toBeDefined();
+        const content = JSON.parse(result.result.content[0].text);
+        expect(content.status).toBe('started');
+        expect(content.reviewId).toBeDefined();
+
+        // The MCP local branch must persist the diff to the local_diffs table
+        // so the web UI can display it (including after a restart). Previously
+        // the diff lived only in analysis_runs, leaving no local_diffs row.
+        const reviewRepo = new ReviewRepository(db);
+        const dbDiff = await reviewRepo.getLocalDiff(content.reviewId);
+        expect(dbDiff).not.toBeNull();
+        expect(dbDiff.diff).toContain('diff --git');
+      } finally {
+        changedFilesSpy.mockRestore();
+        level1Spy.mockRestore();
+        nodeFs.rmSync(tempRepo, { recursive: true, force: true });
+      }
     });
   });
 
