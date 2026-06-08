@@ -1,8 +1,31 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { execSync } from 'child_process';
 import express from 'express';
+import nodeFs from 'fs';
+import os from 'os';
+import path from 'path';
 import request from 'supertest';
 import { createTestDatabase, closeTestDatabase } from '../utils/schema';
+
+/**
+ * Create a throwaway git repo with an unstaged change so the real local-diff
+ * helpers (generateLocalDiff/computeLocalDiffDigest) produce a non-empty diff
+ * within the default 'unstaged'→'untracked' scope. Caller cleans up.
+ */
+function createTempRepoWithChanges() {
+  const tempRepo = nodeFs.mkdtempSync(path.join(os.tmpdir(), 'pair-review-analysis-results-'));
+  execSync('git init -b main', { cwd: tempRepo, stdio: 'pipe' });
+  execSync('git config user.email "test@test.com"', { cwd: tempRepo, stdio: 'pipe' });
+  execSync('git config user.name "Test User"', { cwd: tempRepo, stdio: 'pipe' });
+  const repoFile = path.join(tempRepo, 'file.js');
+  nodeFs.writeFileSync(repoFile, 'line 1\nline 2\nline 3\n');
+  execSync('git add file.js', { cwd: tempRepo, stdio: 'pipe' });
+  execSync('git commit -m "initial"', { cwd: tempRepo, stdio: 'pipe' });
+  // Unstaged modification — falls within the default 'unstaged'→'untracked' scope.
+  nodeFs.writeFileSync(repoFile, 'line 1 changed\nline 2\nline 3\nline 4 added\n');
+  return tempRepo;
+}
 
 // Mock modules that analysis routes depend on but we don't need
 vi.mock('../../src/ai/analyzer', () => ({
@@ -28,7 +51,7 @@ vi.spyOn(configModule, 'loadConfig').mockResolvedValue({
 });
 vi.spyOn(configModule, 'getConfigDir').mockReturnValue('/tmp/.pair-review-test');
 
-const { query, queryOne, run } = require('../../src/database');
+const { query, queryOne, run, ReviewRepository } = require('../../src/database');
 const ws = require('../../src/ws');
 
 const analysisRoutes = require('../../src/routes/analyses');
@@ -333,6 +356,50 @@ describe('POST /api/analyses/results', () => {
     expect(comments[1].file).toBe('src/utils.js');
     expect(comments[1].side).toBe('LEFT');
     expect(comments[1].type).toBe('improvement');
+  });
+
+  // --- Durable diff persistence (local mode) ---
+
+  it('should durably persist the local diff to the local_diffs table', async () => {
+    const tempRepo = createTempRepoWithChanges();
+    try {
+      const headSha = execSync('git rev-parse HEAD', { cwd: tempRepo, encoding: 'utf8' }).trim();
+
+      const response = await request(app)
+        .post('/api/analyses/results')
+        .send({
+          path: tempRepo,
+          headSha,
+          provider: 'claude',
+          model: 'sonnet',
+          summary: 'Found 1 issue',
+          suggestions: [
+            {
+              file: 'file.js',
+              line_start: 1,
+              line_end: 1,
+              old_or_new: 'NEW',
+              type: 'bug',
+              title: 'Example issue',
+              description: 'Something to look at.',
+              confidence: 0.8
+            }
+          ]
+        });
+
+      expect(response.status).toBe(201);
+      expect(response.body.reviewId).toBeDefined();
+
+      // The diff must be durably persisted to the local_diffs table so it
+      // survives a restart and the manual tour/summary buttons never falsely
+      // report "no-diff" for a review created via this analysis-push path.
+      const reviewRepo = new ReviewRepository(db);
+      const dbDiff = await reviewRepo.getLocalDiff(response.body.reviewId);
+      expect(dbDiff).not.toBeNull();
+      expect(dbDiff.diff).toContain('diff --git');
+    } finally {
+      nodeFs.rmSync(tempRepo, { recursive: true, force: true });
+    }
   });
 
   // --- PR mode happy path ---

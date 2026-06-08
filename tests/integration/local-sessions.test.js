@@ -1,8 +1,31 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { execSync } from 'child_process';
 import express from 'express';
+import nodeFs from 'fs';
+import os from 'os';
+import path from 'path';
 import request from 'supertest';
 import { createTestDatabase, closeTestDatabase } from '../utils/schema';
+
+/**
+ * Create a throwaway git repo with an unstaged change. The council endpoint
+ * calls the real getChangedFiles (not mocked) in both the empty-scope guard
+ * and the main flow, so the review must point at a repo with real changes
+ * within the default 'unstaged'→'untracked' scope. Caller cleans up.
+ */
+function createTempRepoWithChanges() {
+  const tempRepo = nodeFs.mkdtempSync(path.join(os.tmpdir(), 'pair-review-council-diff-'));
+  execSync('git init -b main', { cwd: tempRepo, stdio: 'pipe' });
+  execSync('git config user.email "test@test.com"', { cwd: tempRepo, stdio: 'pipe' });
+  execSync('git config user.name "Test User"', { cwd: tempRepo, stdio: 'pipe' });
+  const repoFile = path.join(tempRepo, 'file.js');
+  nodeFs.writeFileSync(repoFile, 'line 1\nline 2\nline 3\n');
+  execSync('git add file.js', { cwd: tempRepo, stdio: 'pipe' });
+  execSync('git commit -m "initial"', { cwd: tempRepo, stdio: 'pipe' });
+  nodeFs.writeFileSync(repoFile, 'line 1 changed\nline 2\nline 3\nline 4 added\n');
+  return tempRepo;
+}
 
 /**
  * Local Sessions API Integration Tests
@@ -1792,6 +1815,64 @@ describe('Local Sessions API', () => {
       expect(res.status).toBe(200);
       expect(res.body.action).toBe('updated');
       expect(res.body.branchAvailable).toBe(false);
+    });
+  });
+
+  describe('POST /api/local/:reviewId/analyses/council (diff persistence)', () => {
+    it('should durably persist the local diff to the local_diffs table when starting a council analysis', async () => {
+      const tempRepo = createTempRepoWithChanges();
+
+      // The council endpoint imports launchCouncilAnalysis from analyses.js and
+      // calls it to spawn a real analyzer. Mock it so no provider/CLI runs.
+      const analysesRouter = require('../../src/routes/analyses');
+      const launchSpy = vi.spyOn(analysesRouter, 'launchCouncilAnalysis')
+        .mockResolvedValue({ analysisId: 'a1', runId: 'r1' });
+
+      try {
+        const reviewRepo = new ReviewRepository(db);
+        const reviewId = await reviewRepo.upsertLocalReview({
+          localPath: tempRepo,
+          localHeadSha: 'abc123',
+          repository: 'owner/repo',
+          localHeadBranch: 'main'
+        });
+
+        // Minimal valid advanced-format council config: one enabled level, one voice.
+        const councilConfig = {
+          levels: {
+            '1': {
+              enabled: true,
+              voices: [{ provider: 'claude', model: 'sonnet', tier: 'balanced' }]
+            },
+            '2': { enabled: false, voices: [] },
+            '3': { enabled: false, voices: [] }
+          }
+        };
+
+        const res = await request(app)
+          .post(`/api/local/${reviewId}/analyses/council`)
+          .send({ councilConfig, configType: 'advanced' });
+
+        expect(res.status).toBe(200);
+        expect(res.body.status).toBe('started');
+        expect(launchSpy).toHaveBeenCalledTimes(1);
+
+        // NOTE: the council route calls the destructured `generateScopedDiff`
+        // binding (see src/routes/local.js:30 and the explanatory note at
+        // lines 890-894), so the vi.spyOn on localReviewModule.generateScopedDiff
+        // from beforeEach does NOT intercept it here — the spy only replaces the
+        // property on the exports object, not the reference captured at require
+        // time. The REAL helper therefore runs against the temp repo's unstaged
+        // change. We assert that whatever diff it produced was persisted to
+        // local_diffs so it survives a restart and the manual tour/summary
+        // buttons can find it.
+        const dbDiff = await reviewRepo.getLocalDiff(reviewId);
+        expect(dbDiff).not.toBeNull();
+        expect(dbDiff.diff).toContain('diff --git');
+      } finally {
+        launchSpy.mockRestore();
+        nodeFs.rmSync(tempRepo, { recursive: true, force: true });
+      }
     });
   });
 });
