@@ -50,6 +50,7 @@ const {
   localReviewDiffs,
   reviewToAnalysisId,
   getModel,
+  getProvider,
   determineCompletionInfo,
   broadcastProgress,
   CancellationError,
@@ -1446,7 +1447,7 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
     } else if (repoSettings && repoSettings.default_provider) {
       selectedProvider = repoSettings.default_provider;
     } else {
-      selectedProvider = appConfig.default_provider || appConfig.provider || 'claude';
+      selectedProvider = getProvider(req);
     }
 
     // Determine model: request body > repo settings > config/CLI > default

@@ -44,6 +44,7 @@ const {
   activeAnalyses,
   reviewToAnalysisId,
   getModel,
+  getProvider,
   determineCompletionInfo,
   broadcastProgress,
   createProgressCallback,
@@ -2248,7 +2249,7 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
       } else if (fetchedRepoSettings && fetchedRepoSettings.default_provider) {
         selectedProvider = fetchedRepoSettings.default_provider;
       } else {
-        selectedProvider = appConfig.default_provider || appConfig.provider || 'claude';
+        selectedProvider = getProvider(req);
       }
 
       let selectedModel;

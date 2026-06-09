@@ -201,6 +201,13 @@ OPTIONS:
                                   sonnet-5-high, sonnet-4.6
                             (opus is Opus 4.8 XHigh, the default)
                             or use provider-specific models with Antigravity/Codex
+    --provider <name>       Override the AI provider for headless modes
+                            (--ai-draft / --ai-review). Defaults to the
+                            repo/app default provider (claude). Pair with
+                            --model when the model belongs to a non-default
+                            provider (e.g. --provider codex --model gpt-5.5).
+                            Available: claude, antigravity, codex, copilot,
+                            opencode, cursor-agent, pi
     --council <handle>      Run analysis with a saved council (multi-voice). Handle is a
                             council name, name-slug, or id (prefix). See --list-councils.
     --list-councils         List saved councils (handles to use with --council) and exit
@@ -233,6 +240,7 @@ ENVIRONMENT VARIABLES:
     PAIR_REVIEW_ANTIGRAVITY_CMD  Custom command to invoke Antigravity CLI (default: agy)
     PAIR_REVIEW_CODEX_CMD   Custom command to invoke Codex CLI (default: codex)
     PAIR_REVIEW_MODEL       Override the AI model (same as --model flag, default: opus)
+    PAIR_REVIEW_PROVIDER    Override the AI provider (same as --provider flag, default: claude)
 
 CONFIGURATION:
     Config file: ~/.pair-review/config.json
@@ -396,6 +404,7 @@ const KNOWN_FLAGS = new Set([
   '-l', '--local',
   '--mcp',
   '--model',
+  '--provider',
   '--council',
   '--list-councils',
   '--register',
@@ -469,6 +478,14 @@ function parseArgs(args) {
         i++; // Skip next argument since we consumed it
       } else {
         throw new Error('--model flag requires a model name (e.g., --model sonnet)');
+      }
+    } else if (arg === '--provider') {
+      // Next argument is the provider name
+      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+        flags.provider = args[i + 1];
+        i++; // Skip next argument since we consumed it
+      } else {
+        throw new Error('--provider flag requires a provider name (e.g., --provider codex)');
       }
     } else if (arg === '--council') {
       // Next argument is the council handle (name, name-slug, or id prefix)
@@ -983,6 +1000,13 @@ async function handlePullRequest(args, config, db, flags = {}, poolLifecycle = n
       process.env.PAIR_REVIEW_MODEL = flags.model;
     }
 
+    // Set provider override if provided via CLI flag. Mirrored into the env
+    // var so the web/UI analysis paths (which read PAIR_REVIEW_PROVIDER via
+    // getProvider()) honor it too, matching how --model works.
+    if (flags.provider) {
+      process.env.PAIR_REVIEW_PROVIDER = flags.provider;
+    }
+
     // Resolve the council handle FAIL-FAST before starting the server, so a bad
     // handle surfaces as a clean error (caught below) instead of after the
     // browser has opened.
@@ -1361,10 +1385,13 @@ async function performHeadlessReview(args, config, db, flags, options, externalP
     // The early councilSelection above already fail-fast validated an explicit
     // --council; resolveReviewConfig re-resolves the same handle (cheap in-memory
     // match) and unifies single/council selection with the headless path.
+    // --provider (flags.provider) rides in as an explicit single-model pick; the
+    // resolver's ladder (explicit › PAIR_REVIEW_PROVIDER › repo › config › 'claude')
+    // delivers the CLI override that commit 662e introduced.
     const reviewConfig = await resolveReviewConfig(
       db,
       repository,
-      { council: flags.council, model: flags.model },
+      { council: flags.council, provider: flags.provider, model: flags.model },
       config
     );
 

@@ -64,6 +64,28 @@ describe('main.js parseArgs', () => {
       expect(result.prArgs).toEqual(['123']);
     });
 
+    it('should parse --provider flag with value', () => {
+      const result = parseArgs(['123', '--provider', 'codex']);
+      expect(result.flags.provider).toBe('codex');
+      expect(result.prArgs).toEqual(['123']);
+    });
+
+    it('should throw error when --provider flag has no value', () => {
+      expect(() => parseArgs(['123', '--provider'])).toThrow('--provider flag requires a provider name');
+    });
+
+    it('should throw error when --provider flag is followed by another flag', () => {
+      expect(() => parseArgs(['123', '--provider', '--ai'])).toThrow('--provider flag requires a provider name');
+    });
+
+    it('should parse --provider together with --model', () => {
+      const result = parseArgs(['123', '--ai-draft', '--provider', 'codex', '--model', 'gpt-5.5-xhigh']);
+      expect(result.flags.aiDraft).toBe(true);
+      expect(result.flags.provider).toBe('codex');
+      expect(result.flags.model).toBe('gpt-5.5-xhigh');
+      expect(result.prArgs).toEqual(['123']);
+    });
+
     it('should parse --local flag without path', () => {
       const result = parseArgs(['--local']);
       expect(result.flags.local).toBe(true);
