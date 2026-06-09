@@ -163,6 +163,13 @@ OPTIONS:
                                   opus-4.7-high, opus-4.6-high, opus-4.6-1m, sonnet-4.6
                             (opus is Opus 4.7 XHigh, the default)
                             or use provider-specific models with Gemini/Codex
+    --provider <name>       Override the AI provider for headless modes
+                            (--ai-draft / --ai-review). Defaults to the
+                            repo/app default provider (claude). Pair with
+                            --model when the model belongs to a non-default
+                            provider (e.g. --provider codex --model gpt-5.5).
+                            Available: claude, gemini, codex, copilot,
+                            opencode, cursor-agent, pi
     --use-checkout          Use current directory instead of creating worktree
                             (automatic in GitHub Actions)
     --yolo                  Allow AI providers full system access (skip read-only
@@ -187,6 +194,7 @@ ENVIRONMENT VARIABLES:
     PAIR_REVIEW_GEMINI_CMD  Custom command to invoke Gemini CLI (default: gemini)
     PAIR_REVIEW_CODEX_CMD   Custom command to invoke Codex CLI (default: codex)
     PAIR_REVIEW_MODEL       Override the AI model (same as --model flag, default: opus)
+    PAIR_REVIEW_PROVIDER    Override the AI provider (same as --provider flag, default: claude)
 
 CONFIGURATION:
     Config file: ~/.pair-review/config.json
@@ -278,6 +286,7 @@ const KNOWN_FLAGS = new Set([
   '-l', '--local',
   '--mcp',
   '--model',
+  '--provider',
   '--register',
   '--unregister',
   '--command',
@@ -326,6 +335,14 @@ function parseArgs(args) {
         i++; // Skip next argument since we consumed it
       } else {
         throw new Error('--model flag requires a model name (e.g., --model sonnet)');
+      }
+    } else if (arg === '--provider') {
+      // Next argument is the provider name
+      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+        flags.provider = args[i + 1];
+        i++; // Skip next argument since we consumed it
+      } else {
+        throw new Error('--provider flag requires a provider name (e.g., --provider codex)');
       }
     } else if (arg === '-l' || arg === '--local') {
       // -l/--local flag is always a boolean
@@ -653,6 +670,13 @@ async function handlePullRequest(args, config, db, flags = {}, poolLifecycle = n
       process.env.PAIR_REVIEW_MODEL = flags.model;
     }
 
+    // Set provider override if provided via CLI flag. Mirrored into the env
+    // var so the web/UI analysis paths (which read PAIR_REVIEW_PROVIDER via
+    // getProvider()) honor it too, matching how --model works.
+    if (flags.provider) {
+      process.env.PAIR_REVIEW_PROVIDER = flags.provider;
+    }
+
     // Start server and open browser to setup page
     const port = await startServer(db, poolLifecycle);
 
@@ -972,7 +996,7 @@ async function performHeadlessReview(args, config, db, flags, options, externalP
 
     // Run AI analysis
     console.log('Running AI analysis (all 3 levels)...');
-    const cliProvider = repoSettings?.default_provider || config.default_provider || config.provider || 'claude';
+    const cliProvider = flags.provider || process.env.PAIR_REVIEW_PROVIDER || repoSettings?.default_provider || config.default_provider || config.provider || 'claude';
     const model = flags.model || process.env.PAIR_REVIEW_MODEL || repoSettings?.default_model || config.default_model || config.model || 'opus';
     const providerLoadSkills = config.providers?.[cliProvider]?.load_skills;
     const loadSkills = resolveLoadSkills(config, repository, repoSettings, providerLoadSkills);
