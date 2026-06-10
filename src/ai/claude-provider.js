@@ -26,12 +26,40 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
  * in the constructor's base args; individual models can override this via extra_args
  * (e.g., Haiku uses adaptive thinking for efficiency).
  *
- * Effort support by model (newest CLIs): Opus 4.8 / 4.7 support low|medium|high|
- * xhigh|max; Opus 4.6 & Sonnet 4.6 support low|medium|high|max (no xhigh); Haiku
- * has no effort levels.
+ * Effort support by model (newest CLIs): Fable 5 and Opus 4.8 / 4.7 support
+ * low|medium|high|xhigh|max; Opus 4.6 & Sonnet 4.6 support low|medium|high|max
+ * (no xhigh); Haiku has no effort levels.
  */
 const CLAUDE_MODELS = [
   // ── Thorough tier ───────────────────────────────────────────────────────
+  {
+    id: 'fable',
+    aliases: ['fable-5-xhigh'],
+    cli_model: 'claude-fable-5',
+    env: { CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' },
+    name: 'Fable 5 XHigh',
+    tier: 'thorough',
+    tagline: 'New Model Tier',
+    description: 'Fable 5 (new tier above Opus) with extra-high effort',
+    badge: 'Extra-High Effort',
+    badgeClass: 'badge-power',
+    // Fable 5 is adaptive-thinking-only: an explicit "enabled"/"disabled"
+    // thinking mode is rejected by the API, so override the global
+    // `--thinking enabled` base arg (last occurrence wins in commander).
+    extra_args: ['--thinking', 'adaptive']
+  },
+  {
+    id: 'fable-5-high',
+    cli_model: 'claude-fable-5',
+    env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' },
+    name: 'Fable 5 High',
+    tier: 'thorough',
+    tagline: 'New Model Tier',
+    description: 'Fable 5 with high effort — quicker than XHigh',
+    badge: 'High Effort',
+    badgeClass: 'badge-power',
+    extra_args: ['--thinking', 'adaptive']
+  },
   {
     id: 'opus',
     aliases: ['opus-4.7-xhigh'],
