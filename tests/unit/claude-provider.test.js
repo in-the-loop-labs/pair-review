@@ -63,11 +63,13 @@ describe('ClaudeProvider', () => {
     it('should return array of models with expected structure', () => {
       const models = ClaudeProvider.getModels();
       expect(Array.isArray(models)).toBe(true);
-      expect(models.length).toBe(8);
+      expect(models.length).toBe(10);
 
-      // Check that we have haiku, sonnet, and opus variants
+      // Check that we have haiku, sonnet, opus, and fable variants
       const modelIds = models.map(m => m.id);
       expect(modelIds).toContain('haiku');
+      expect(modelIds).toContain('fable');
+      expect(modelIds).toContain('fable-5-high');
       expect(modelIds).toContain('sonnet-4.6');
       expect(modelIds).toContain('opus-4.8-xhigh');
       expect(modelIds).toContain('opus-4.8-high');
@@ -120,6 +122,38 @@ describe('ClaudeProvider', () => {
       expect(models.find(m => m.id === 'opus-4.7-high').env).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'high' });
       expect(models.find(m => m.id === 'opus-4.8-xhigh').env).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' });
       expect(models.find(m => m.id === 'opus-4.8-high').env).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'high' });
+
+      // Fable 5 variants are thorough, pinned to claude-fable-5, and adaptive-thinking-only
+      const fable = models.find(m => m.id === 'fable');
+      expect(fable).toMatchObject({
+        tier: 'thorough',
+        cli_model: 'claude-fable-5',
+        env: { CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' },
+        extra_args: ['--thinking', 'adaptive']
+      });
+      expect(fable.aliases).toContain('fable-5-xhigh');
+      const fableHigh = models.find(m => m.id === 'fable-5-high');
+      expect(fableHigh).toMatchObject({
+        tier: 'thorough',
+        cli_model: 'claude-fable-5',
+        env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' },
+        extra_args: ['--thinking', 'adaptive']
+      });
+    });
+
+    it('should override base --thinking enabled with adaptive for fable', () => {
+      const provider = new ClaudeProvider('fable');
+      expect(provider.args).toContain('claude-fable-5');
+      // Model extra_args come after base args so the adaptive override wins
+      const lastThinkingValue = provider.args[provider.args.lastIndexOf('--thinking') + 1];
+      expect(lastThinkingValue).toBe('adaptive');
+      expect(provider.extraEnv).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' });
+    });
+
+    it('should resolve fable-5-xhigh alias to the fable model', () => {
+      const provider = new ClaudeProvider('fable-5-xhigh');
+      expect(provider.args).toContain('claude-fable-5');
+      expect(provider.extraEnv).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' });
     });
 
     it('should return install instructions', () => {
