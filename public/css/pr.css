@@ -1661,6 +1661,23 @@
   scroll-margin-top: var(--toolbar-height, 0px);
 }
 
+/* Suggestion / finding / comment / chat-line navigation lands the target at
+   the TOP of the diff panel (scrollIntoView block:'start'). Offset it below
+   the sticky toolbar AND the sticky file header so it isn't hidden behind
+   them. `--diff-file-header-height` is measured in JS (_measureFileHeaderHeight)
+   with a sane fallback. Suppressed during a tour, which scrolls to center and
+   manages its own sticky offsets. */
+:root {
+  --diff-scroll-offset: calc(var(--toolbar-height, 0px) + var(--diff-file-header-height, 38px));
+}
+body:not(.tour-active) .d2h-file-wrapper tr,
+body:not(.tour-active) .ai-suggestion,
+body:not(.tour-active) .file-comment-card,
+body:not(.tour-active) .user-comment-row,
+body:not(.tour-active) .external-comment-row {
+  scroll-margin-top: var(--diff-scroll-offset);
+}
+
 /* Hide diff content when collapsed */
 .d2h-file-wrapper.collapsed .d2h-file-body,
 .d2h-file-wrapper.collapsed .d2h-diff-table {

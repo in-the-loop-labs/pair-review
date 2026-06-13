@@ -86,6 +86,9 @@ function createTestPanel(overrides = {}) {
   panel.currentIndex = -1;
   panel.selectedItemKey = null;
   panel.fileOrder = new Map();
+  // Mirror the real constructor: latest-wins token for scrollTo* guards.
+  // Without this, ++undefined -> NaN and NaN !== NaN wrongly bails the scroll.
+  panel._navGen = 0;
 
   // DOM stubs — methods we don't care about in these tests are no-ops.
   panel.panel = {
@@ -642,7 +645,7 @@ describe('AIPanel.scrollToExternalThread', () => {
 
     panel.scrollToExternalThread('42', 'github', 'src/utils.js', 5);
 
-    expect(row.scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' });
+    expect(row.scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' });
   });
 
   it('adds a transient .external-comment-row--focused class', () => {
