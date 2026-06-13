@@ -4613,7 +4613,17 @@ class ChatPanel {
     const isVisible = rect.top >= 0 && rect.bottom <= window.innerHeight;
 
     if (!isVisible) {
-      primaryRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      // Stable variant re-corrects after lazy file bodies render mid-scroll
+      // and shift the layout (plain scrollIntoView lands off target the
+      // first time on large diffs). Fire-and-forget.
+      // Land the target at the top of the diff panel (scroll-margin-top in
+      // pr.css offsets it below the sticky toolbar + file header).
+      const scrollOptions = { behavior: 'smooth', block: 'start' };
+      if (window.ScrollUtils?.scrollIntoViewStable) {
+        window.ScrollUtils.scrollIntoViewStable(primaryRow, scrollOptions);
+      } else {
+        primaryRow.scrollIntoView(scrollOptions);
+      }
     }
 
     // Apply the highlight to all target rows

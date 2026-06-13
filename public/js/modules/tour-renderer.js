@@ -488,10 +488,20 @@ class TourRenderer {
   scrollToStop(index) {
     const row = this._mounted.get(index);
     if (!row || !row.isConnected) return;
-    row.scrollIntoView({
+    const options = {
       behavior: this._reduceMotion ? 'auto' : 'smooth',
       block: 'center'
-    });
+    };
+    // Lazy bodies between the viewport and the stop render as the scroll
+    // passes them, shifting layout so a plain scrollIntoView lands off
+    // target. The stable variant re-corrects once the scroll settles.
+    // Fire-and-forget: it bails on its own if the row unmounts (tour exit)
+    // or the user scrolls.
+    if (window.ScrollUtils?.scrollIntoViewStable) {
+      window.ScrollUtils.scrollIntoViewStable(row, options);
+    } else {
+      row.scrollIntoView(options);
+    }
   }
 
   /**

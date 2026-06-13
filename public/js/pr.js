@@ -403,6 +403,22 @@ class PRManager {
   }
 
   /**
+   * Keep --diff-file-header-height in sync with the rendered sticky file
+   * header so navigation (block:'start' + scroll-margin-top in pr.css) lands
+   * targets just below the header rather than hidden behind it. Headers are
+   * single-line and uniform, so measuring the first one is representative.
+   * Call after renderDiff appends the headers.
+   */
+  _measureFileHeaderHeight() {
+    const header = document.querySelector('.d2h-file-wrapper .d2h-file-header');
+    if (header && header.offsetHeight) {
+      document.documentElement.style.setProperty(
+        '--diff-file-header-height', header.offsetHeight + 'px'
+      );
+    }
+  }
+
+  /**
    * Set up event handlers
    */
   setupEventHandlers() {
@@ -3323,6 +3339,10 @@ class PRManager {
 
       // NOTE: end-of-file gap validation runs per-file inside _renderFileBodyNow
       // now (bodies render lazily), not once globally here.
+
+      // Measure the now-rendered sticky file header so navigation can offset
+      // targets below it (scroll-margin-top in pr.css).
+      this._measureFileHeaderHeight();
     } else {
       diffContainer.innerHTML = '<div class="no-diff">No files changed</div>';
     }
@@ -6383,7 +6403,16 @@ class PRManager {
       if (!fileWrapper.classList.contains('collapsed')) {
         await this.ensureFileBodyRendered(filePath);
       }
-      fileWrapper.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      // Stable variant: lazy bodies between here and the target render as
+      // the smooth scroll passes them, shifting layout mid-flight. The
+      // helper re-corrects after the scroll settles so the first attempt
+      // lands where the second used to.
+      const scrollOptions = { behavior: 'smooth', block: 'start' };
+      if (window.ScrollUtils?.scrollIntoViewStable) {
+        await window.ScrollUtils.scrollIntoViewStable(fileWrapper, scrollOptions);
+      } else {
+        fileWrapper.scrollIntoView(scrollOptions);
+      }
     }
   }
 
@@ -7750,7 +7779,7 @@ class PRManager {
    * @param {string} file - File path
    * @param {number} [lineStart] - Optional line number to highlight
    */
-  scrollToContextFile(file, lineStart, contextId) {
+  async scrollToContextFile(file, lineStart, contextId) {
     // Use contextId to find a specific chunk tbody within a merged wrapper,
     // or fall back to a standalone wrapper or the file-level wrapper.
     let target;
@@ -7769,23 +7798,30 @@ class PRManager {
     }
     if (!target) return;
 
-    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    // Stable variant ensures the target's lazy body is rendered and
+    // re-corrects after lazy renders along the scroll path shift layout.
+    const scrollOptions = { behavior: 'smooth', block: 'start' };
+    if (window.ScrollUtils?.scrollIntoViewStable) {
+      await window.ScrollUtils.scrollIntoViewStable(target, scrollOptions);
+    } else {
+      target.scrollIntoView(scrollOptions);
+    }
 
     if (lineStart) {
       // Search for the line row within the wrapper (not just the target chunk)
       const wrapper = target.closest('.d2h-file-wrapper') || target;
-      // Brief delay to let scroll settle, then highlight the target line
-      setTimeout(() => {
-        const row = wrapper.querySelector(`tr[data-line-number="${lineStart}"]`);
-        if (row) {
+      // The awaited stable scroll has already settled (and rendered the lazy
+      // body), so the row exists now — highlight it immediately rather than
+      // pulsing on a stale timer that would fire after the scroll completes.
+      const row = wrapper.querySelector(`tr[data-line-number="${lineStart}"]`);
+      if (row) {
+        row.classList.remove('chat-line-highlight');
+        void row.offsetWidth;
+        row.classList.add('chat-line-highlight');
+        row.addEventListener('animationend', () => {
           row.classList.remove('chat-line-highlight');
-          void row.offsetWidth;
-          row.classList.add('chat-line-highlight');
-          row.addEventListener('animationend', () => {
-            row.classList.remove('chat-line-highlight');
-          }, { once: true });
-        }
-      }, 400);
+        }, { once: true });
+      }
     }
   }
 

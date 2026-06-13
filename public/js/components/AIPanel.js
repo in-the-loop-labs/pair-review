@@ -44,6 +44,10 @@ class AIPanel {
         // Track selected item by stable identifier for restoration
         this.selectedItemKey = null; // Format: "file:lineNumber:itemType:identity"
 
+        // Monotonic token so a fast move between items that supersedes an
+        // in-flight scrollTo* can tell the older call to bail after its await.
+        this._navGen = 0;
+
         // Canonical file order for consistent sorting across components
         this.fileOrder = new Map(); // Map of file path -> index
 
@@ -1178,9 +1182,18 @@ class AIPanel {
     /**
      * Scroll to an AI finding/suggestion in the diff view
      */
-    scrollToFinding(findingId, file, line) {
+    async scrollToFinding(findingId, file, line) {
+        const myGen = ++this._navGen;
         // Expand the file first if it's collapsed
         const expansion = this.expandFileIfCollapsed(file);
+        if (expansion && typeof expansion.then === 'function') await expansion;
+        // Always render the target's lazy body — an expanded-but-offscreen
+        // body has no suggestion rows until rendered, so the lookup below
+        // would miss on the first attempt (expansion only covers the
+        // collapsed case).
+        if (file && window.prManager?.ensureFileBodyRendered) {
+            try { await window.prManager.ensureFileBodyRendered(file); } catch { /* best effort */ }
+        }
 
         const doScroll = () => {
             let targetSuggestion = null;
@@ -1216,36 +1229,54 @@ class AIPanel {
 
             if (targetSuggestion) {
                 const minimizer = window.prManager?.commentMinimizer;
+                let scrollTarget = targetSuggestion;
                 if (minimizer?.active) {
                     // Expand file-level comments so the target becomes visible
                     minimizer.expandForElement(targetSuggestion);
                     // Comments are minimized — scroll to the parent diff line instead
-                    const diffRow = minimizer.findDiffRowFor(targetSuggestion);
-                    (diffRow || targetSuggestion).scrollIntoView({ behavior: 'smooth', block: 'center' });
-                } else {
-                    targetSuggestion.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    scrollTarget = minimizer.findDiffRowFor(targetSuggestion) || targetSuggestion;
                 }
+                this._scrollDiffTarget(scrollTarget);
                 targetSuggestion.classList.add('current-suggestion');
                 setTimeout(() => targetSuggestion.classList.remove('current-suggestion'), 2000);
             }
         };
 
-        // When expansion routed through the async lazy-body render, wait for it
-        // to settle so the row lookup runs against a rendered, visible body.
-        // Otherwise scroll synchronously (fast path: file already expanded).
-        if (expansion && typeof expansion.then === 'function') {
-            expansion.then(doScroll);
+        // A newer navigation took over while we awaited — let it win.
+        if (myGen !== this._navGen) return;
+        doScroll();
+    }
+
+    /**
+     * Scroll a diff-panel element into view, preferring the stable helper
+     * (re-corrects after lazy file bodies render mid-scroll and shift
+     * layout). Fire-and-forget.
+     * @param {Element} target
+     */
+    _scrollDiffTarget(target) {
+        // Land the target at the top of the diff panel (scroll-margin-top in
+        // pr.css offsets it below the sticky toolbar + file header).
+        const options = { behavior: 'smooth', block: 'start' };
+        if (window.ScrollUtils?.scrollIntoViewStable) {
+            window.ScrollUtils.scrollIntoViewStable(target, options);
         } else {
-            doScroll();
+            target.scrollIntoView(options);
         }
     }
 
     /**
      * Scroll to a user comment in the diff view
      */
-    scrollToComment(commentId, file, line) {
+    async scrollToComment(commentId, file, line) {
+        const myGen = ++this._navGen;
         // Expand the file first if it's collapsed
         const expansion = this.expandFileIfCollapsed(file);
+        if (expansion && typeof expansion.then === 'function') await expansion;
+        // Always render the target's lazy body — comment rows don't exist
+        // inside an unrendered body, so the lookup below would miss.
+        if (file && window.prManager?.ensureFileBodyRendered) {
+            try { await window.prManager.ensureFileBodyRendered(file); } catch { /* best effort */ }
+        }
 
         const doScroll = () => {
             let targetElement = null;
@@ -1288,13 +1319,13 @@ class AIPanel {
 
             if (targetElement) {
                 const minimizer = window.prManager?.commentMinimizer;
+                let scrollTarget = targetElement;
                 if (minimizer?.active) {
                     minimizer.expandForElement(targetElement);
                     const diffRow = isFileLevel ? null : minimizer.findDiffRowFor(targetElement);
-                    (diffRow || targetElement).scrollIntoView({ behavior: 'smooth', block: 'center' });
-                } else {
-                    targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    scrollTarget = diffRow || targetElement;
                 }
+                this._scrollDiffTarget(scrollTarget);
                 // Add highlight effect
                 const commentDiv = isFileLevel ? targetElement : targetElement.querySelector('.user-comment');
                 if (commentDiv) {
@@ -1304,13 +1335,9 @@ class AIPanel {
             }
         };
 
-        // Await the async lazy-body render when expansion triggered one;
-        // scroll synchronously otherwise.
-        if (expansion && typeof expansion.then === 'function') {
-            expansion.then(doScroll);
-        } else {
-            doScroll();
-        }
+        // A newer navigation took over while we awaited — let it win.
+        if (myGen !== this._navGen) return;
+        doScroll();
     }
 
     /**
@@ -1325,9 +1352,16 @@ class AIPanel {
      * @param {string} file - File path for collapse-expand fallback
      * @param {string|number} line - Anchor line; used for file/line fallback
      */
-    scrollToExternalThread(threadId, source, file, line) {
+    async scrollToExternalThread(threadId, source, file, line) {
+        const myGen = ++this._navGen;
         // Expand the file first if it's collapsed
         const expansion = this.expandFileIfCollapsed(file);
+        if (expansion && typeof expansion.then === 'function') await expansion;
+        // Always render the target's lazy body — external thread rows don't
+        // exist inside an unrendered body, so the lookup below would miss.
+        if (file && window.prManager?.ensureFileBodyRendered) {
+            try { await window.prManager.ensureFileBodyRendered(file); } catch { /* best effort */ }
+        }
 
         const doScroll = () => {
             let target = null;
@@ -1368,13 +1402,12 @@ class AIPanel {
 
             if (target) {
                 const minimizer = window.prManager?.commentMinimizer;
+                let scrollTarget = target;
                 if (minimizer?.active) {
                     minimizer.expandForElement(target);
-                    const diffRow = minimizer.findDiffRowFor(target);
-                    (diffRow || target).scrollIntoView({ behavior: 'smooth', block: 'center' });
-                } else {
-                    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    scrollTarget = minimizer.findDiffRowFor(target) || target;
                 }
+                this._scrollDiffTarget(scrollTarget);
 
                 // Transient focus flash. The class is removed after 2s — if
                 // the row is rebuilt before then, the class is lost with it,
@@ -1384,13 +1417,9 @@ class AIPanel {
             }
         };
 
-        // Await the async lazy-body render when expansion triggered one;
-        // scroll synchronously otherwise.
-        if (expansion && typeof expansion.then === 'function') {
-            expansion.then(doScroll);
-        } else {
-            doScroll();
-        }
+        // A newer navigation took over while we awaited — let it win.
+        if (myGen !== this._navGen) return;
+        doScroll();
     }
 
     // ========================================

@@ -10,7 +10,10 @@ class SuggestionNavigator {
     this.isCollapsed = this.loadCollapsedState();
     this.element = null;
     this.collapseToggle = null;
-    
+    // Monotonic token so a fast Next/Prev that supersedes an in-flight
+    // goToSuggestion can tell the older call to bail after its await.
+    this._navGen = 0;
+
     this.init();
     this.bindEvents();
   }
@@ -236,7 +239,7 @@ class SuggestionNavigator {
   /**
    * Navigate to specific suggestion by index
    */
-  goToSuggestion(index) {
+  async goToSuggestion(index) {
     if (index < 0 || index >= this.suggestions.length) {
       return;
     }
@@ -244,8 +247,40 @@ class SuggestionNavigator {
     this.currentSuggestionIndex = index;
     this.updateCounter();
     this.updateNavigationButtons();
+    // The suggestion's row only exists once its file body has rendered
+    // (lazy bodies start empty), so render it before the highlight/scroll
+    // lookups below — otherwise both silently miss on the first attempt.
+    // A collapsed file is expanded first so the row is actually visible.
+    const myGen = ++this._navGen;
+    await this.ensureSuggestionVisible(this.suggestions[index]);
+    // A newer goToSuggestion ran while we awaited and moved
+    // this.currentSuggestionIndex — let it own the highlight/scroll.
+    if (myGen !== this._navGen) return;
     this.highlightCurrentSuggestion();
     this.scrollToSuggestion();
+  }
+
+  /**
+   * Make sure a suggestion's file is expanded and its lazy diff body is
+   * rendered so the suggestion row exists in the DOM. Best effort: any
+   * failure falls through to the old lookup-miss behavior.
+   * @param {Object} suggestion
+   */
+  async ensureSuggestionVisible(suggestion) {
+    const file = suggestion?.file;
+    const pm = window.prManager;
+    if (!file || !pm) return;
+    try {
+      const wrapper = pm.findFileElement?.(file);
+      if (wrapper?.classList.contains('collapsed') && pm.toggleFileCollapse) {
+        // Renders the lazy body and removes `collapsed`.
+        await pm.toggleFileCollapse(wrapper.dataset.fileName || file);
+      } else if (pm.ensureFileBodyRendered) {
+        await pm.ensureFileBodyRendered(file);
+      }
+    } catch (err) {
+      console.warn('[SuggestionNavigator] could not prepare suggestion file', file, err);
+    }
   }
 
   /**
@@ -370,18 +405,22 @@ class SuggestionNavigator {
       
       if (suggestionEl) {
         const minimizer = window.prManager?.commentMinimizer;
+        let scrollTarget = suggestionEl;
         if (minimizer?.active) {
           // Expand file-level comments so the target becomes visible
           minimizer.expandForElement(suggestionEl);
           // Comments are minimized — scroll to the parent diff line instead
-          const diffRow = minimizer.findDiffRowFor(suggestionEl);
-          if (diffRow) {
-            diffRow.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
-          } else {
-            suggestionEl.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
-          }
+          scrollTarget = minimizer.findDiffRowFor(suggestionEl) || suggestionEl;
+        }
+        // Land the target at the top of the diff panel (scroll-margin-top in
+        // pr.css offsets it below the sticky toolbar + file header).
+        const options = { behavior: 'smooth', block: 'start', inline: 'nearest' };
+        // Stable variant re-corrects after lazy file bodies render
+        // mid-scroll and shift the layout. Fire-and-forget.
+        if (window.ScrollUtils?.scrollIntoViewStable) {
+          window.ScrollUtils.scrollIntoViewStable(scrollTarget, options);
         } else {
-          suggestionEl.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+          scrollTarget.scrollIntoView(options);
         }
       }
     }
@@ -474,4 +513,10 @@ class SuggestionNavigator {
 }
 
 // Export for use
-window.SuggestionNavigator = SuggestionNavigator;
+if (typeof window !== 'undefined') {
+  window.SuggestionNavigator = SuggestionNavigator;
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = SuggestionNavigator;
+}
