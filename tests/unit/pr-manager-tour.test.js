@@ -1023,3 +1023,39 @@ describe('PRManager toggle-click handlers', () => {
     expect(m.startOrToggleTour).not.toHaveBeenCalled();
   });
 });
+
+describe('PRManager._syncTourToolbarButton label', () => {
+  let m;
+  let btn;
+
+  beforeEach(() => {
+    btn = buildToolbar();
+    m = makeBareManager();
+  });
+
+  it('reads "Generate guided tour" when no stops exist and auto-generate is off', () => {
+    // Auto-generation off: clicking kicks off manual generation, so the verb
+    // is "Generate" rather than "Start".
+    m._tourStops = null;
+    m._toursAutoGenerate = false;
+    m._syncTourToolbarButton();
+    expect(btn.title).toBe('Generate guided tour');
+    expect(btn.getAttribute('aria-label')).toBe('Generate guided tour');
+  });
+
+  it('reads "(none available yet)" when no stops exist and auto-generate is on', () => {
+    // Auto-generation on: the tour is produced for us, so the inert button
+    // keeps its passive label.
+    m._tourStops = null;
+    m._toursAutoGenerate = true;
+    m._syncTourToolbarButton();
+    expect(btn.title).toBe('Guided tour (none available yet)');
+  });
+
+  it('reads "Start guided tour" once stops exist regardless of auto-generate', () => {
+    m._tourStops = [{ title: 's0' }];
+    m._toursAutoGenerate = false;
+    m._syncTourToolbarButton();
+    expect(btn.title).toBe('Start guided tour');
+  });
+});
