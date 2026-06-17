@@ -32,9 +32,12 @@ const logger = require('../utils/logger');
  * @param {string} params.worktreePath - Path to the per-PR worktree
  * @param {import('../git/worktree').GitWorktreeManager} params.worktreeManager - Worktree manager instance
  * @param {Object} [params.prData] - Pre-fetched PR data from GitHub (skips API call when provided)
+ * @param {string|null} [params.checkoutScript] - Repo's configured checkout script, if any. When set,
+ *   the script owns all sparse-checkout setup, so built-in sparse-cone expansion is skipped (mirrors
+ *   the non-stack `pr-setup.js` contract).
  * @returns {Promise<{ reviewId: number, prMetadata: Object, prData: Object, isNew: boolean }>}
  */
-async function setupStackPR({ db, owner, repo, prNumber, githubToken, binding, bindingRepository, worktreePath, worktreeManager, prData: prefetchedPRData }) {
+async function setupStackPR({ db, owner, repo, prNumber, githubToken, binding, bindingRepository, worktreePath, worktreeManager, prData: prefetchedPRData, checkoutScript }) {
   // `bindingRepository` is accepted so callers (e.g. `executeStackAnalysis`)
   // can thread the resolved config-binding key through to any downstream
   // per-repo lookups added in this function. Currently unused inside this
@@ -56,13 +59,38 @@ async function setupStackPR({ db, owner, repo, prNumber, githubToken, binding, b
   const prFiles = await githubClient.fetchPullRequestFiles(owner, repo, prNumber);
   logger.info(`PR #${prNumber} has ${prFiles.length} changed files`);
 
-  // 3. Generate diff in the worktree (SHA-based, works after checkout)
+  // 3. Expand sparse-checkout for PR-changed directories (mirrors pr-setup.js).
+  // Stack worktrees inherit the trigger worktree's sparse-checkout layout, which
+  // may omit directories a sibling PR touches. The SHA-based diff below reads
+  // commit objects (not the working tree) so it is unaffected, but the later
+  // file-context and codebase-context analysis steps DO read files from disk —
+  // an unexpanded cone would silently under-review those files. Expanding here
+  // ensures every PR-changed directory is present on disk.
+  //
+  // IMPORTANT: when a checkout_script is configured the script owns all
+  // sparse-checkout setup, so we must NOT auto-expand — doing so would override
+  // the cone the script just configured. This matches the pr-setup.js contract.
+  if (!checkoutScript && prFiles.length > 0) {
+    const isSparse = await worktreeManager.isSparseCheckoutEnabled(worktreePath);
+    if (isSparse) {
+      try {
+        const addedDirs = await worktreeManager.ensurePRDirectoriesInSparseCheckout(worktreePath, prFiles);
+        if (addedDirs.length > 0) {
+          logger.info(`Stack PR #${prNumber}: expanded sparse-checkout for: ${addedDirs.join(', ')}`);
+        }
+      } catch (sparseError) {
+        logger.warn(`Stack PR #${prNumber}: sparse-checkout expansion failed (non-fatal): ${sparseError.message}`);
+      }
+    }
+  }
+
+  // 4. Generate diff in the worktree (SHA-based, works after checkout)
   const diff = await worktreeManager.generateUnifiedDiff(worktreePath, prData);
 
-  // 4. Get changed files with stats
+  // 5. Get changed files with stats
   const changedFiles = await worktreeManager.getChangedFiles(worktreePath, prData);
 
-  // 5. Store via storePRData (creates/updates pr_metadata, reviews, worktrees records)
+  // 6. Store via storePRData (creates/updates pr_metadata, reviews, worktrees records)
   const prInfo = { owner, repo, number: prNumber };
   const { isNewReview, reviewId } = await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath);
 
