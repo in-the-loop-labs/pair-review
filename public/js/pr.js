@@ -3513,6 +3513,9 @@ class PRManager {
       fileName: file.file,
       patch: file.patch || null,
       binary: !!file.binary,
+      insertions: file.insertions || 0,
+      deletions: file.deletions || 0,
+      changes: file.changes || 0,
       hunkHashes: file.hunk_hashes || null,
       fileBody,
       wrapper,
@@ -3523,7 +3526,10 @@ class PRManager {
 
     // Observe the body so it renders as it nears the viewport. Collapsed
     // bodies (display:none) never intersect → stay unrendered until expanded.
-    if ((file.patch || file.binary) && this._fileBodyObserver) {
+    // Even patchless, non-binary files need a rendered placeholder (for
+    // example, newly-added empty files have no hunks and should not appear as
+    // binary/unsupported or as a blank file body).
+    if (this._fileBodyObserver) {
       this._fileBodyObserver.observe(fileBody);
     }
 
@@ -3627,8 +3633,51 @@ class PRManager {
   }
 
   /**
+   * Return the placeholder text for a changed file that has no renderable
+   * text hunks.
+   * @param {object} entry - a _lazyFileBodies value
+   * @returns {string}
+   */
+  getNoTextDiffPlaceholderText(entry) {
+    const patch = entry?.patch || '';
+    const hasZeroLineChanges = (entry?.insertions || 0) === 0 && (entry?.deletions || 0) === 0;
+    const emptyBlob = 'e69de29';
+
+    if (/^new file mode /m.test(patch) && new RegExp(`^index 0+\\.\\.${emptyBlob}\\b`, 'm').test(patch)) {
+      return 'Empty file added';
+    }
+
+    if (/^deleted file mode /m.test(patch) && new RegExp(`^index ${emptyBlob}\\.\\.0+\\b`, 'm').test(patch)) {
+      return 'Empty file deleted';
+    }
+
+    if (hasZeroLineChanges && (patch.includes(emptyBlob) || !patch)) {
+      return 'Empty file';
+    }
+
+    return 'No textual changes';
+  }
+
+  /**
+   * Append a single placeholder row for a changed file with no renderable
+   * text hunks.
+   * @param {HTMLElement} tbody - Diff table body
+   * @param {string} text - Placeholder text
+   */
+  appendNoTextDiffPlaceholder(tbody, text) {
+    if (!tbody) return;
+    const row = document.createElement('tr');
+    const cell = document.createElement('td');
+    cell.colSpan = 2;
+    cell.className = 'no-text-diff-file';
+    cell.textContent = text;
+    row.appendChild(cell);
+    tbody.appendChild(row);
+  }
+
+  /**
    * Synchronously build a file's diff-line body: run renderPatch (or the
-   * binary placeholder), clear the height placeholder, wire hunk-summary
+   * binary/patchless placeholder), clear the height placeholder, wire hunk-summary
    * anchors, and validate this file's EOF gap. Idempotent.
    *
    * Invariant: there must be NO `await` between the `_pendingHunkRecords`
@@ -3656,10 +3705,15 @@ class PRManager {
     try {
       if (entry.patch && tbody) {
         this.renderPatch(tbody, entry.patch, entry.fileName, entry.hunkHashes);
+        if (tbody.children.length === 0) {
+          this.appendNoTextDiffPlaceholder(tbody, this.getNoTextDiffPlaceholderText(entry));
+        }
       } else if (entry.binary && tbody) {
         const row = document.createElement('tr');
         row.innerHTML = '<td colspan="2" class="binary-file">Binary file</td>';
         tbody.appendChild(row);
+      } else if (tbody) {
+        this.appendNoTextDiffPlaceholder(tbody, this.getNoTextDiffPlaceholderText(entry));
       }
     } finally {
       records = this._pendingHunkRecords;

@@ -139,7 +139,46 @@ describe('PRManager.ensureFileBodyRendered', () => {
     m.renderFileDiff({ file: 'img.png', binary: true });
     const body = await m.ensureFileBodyRendered('img.png');
     expect(body.querySelector('td.binary-file')).toBeTruthy();
+    expect(body.querySelector('td.binary-file').textContent).toBe('Binary file');
     expect(m.renderPatch).not.toHaveBeenCalled();
+  });
+
+  it('renders an empty-file placeholder for patchless zero-change text entries', async () => {
+    const m = makeManager();
+    m.renderFileDiff({ file: 'empty.txt', insertions: 0, deletions: 0, changes: 0, binary: false });
+
+    const body = await m.ensureFileBodyRendered('empty.txt');
+
+    const placeholder = body.querySelector('td.no-text-diff-file');
+    expect(placeholder).toBeTruthy();
+    expect(placeholder.textContent).toBe('Empty file');
+    expect(m.renderPatch).not.toHaveBeenCalled();
+  });
+
+  it('renders an empty-file-added placeholder when an empty-file patch has no hunks', async () => {
+    const m = makeManager();
+    m.renderPatch = vi.fn();
+    const emptyFilePatch = 'diff --git a/empty.txt b/empty.txt\nnew file mode 100644\nindex 0000000..e69de29\n';
+    m.renderFileDiff({ file: 'empty.txt', patch: emptyFilePatch, insertions: 0, deletions: 0, changes: 0 });
+
+    const body = await m.ensureFileBodyRendered('empty.txt');
+
+    const placeholder = body.querySelector('td.no-text-diff-file');
+    expect(m.renderPatch).toHaveBeenCalledWith(expect.anything(), emptyFilePatch, 'empty.txt', null);
+    expect(placeholder).toBeTruthy();
+    expect(placeholder.textContent).toBe('Empty file added');
+  });
+
+  it('renders a no-textual-changes placeholder when a non-empty patch has no hunks', async () => {
+    const m = makeManager();
+    const modeOnlyPatch = 'diff --git a/script.sh b/script.sh\nold mode 100644\nnew mode 100755\n';
+    m.renderFileDiff({ file: 'script.sh', patch: modeOnlyPatch, insertions: 0, deletions: 0, changes: 0 });
+
+    const body = await m.ensureFileBodyRendered('script.sh');
+
+    const placeholder = body.querySelector('td.no-text-diff-file');
+    expect(placeholder).toBeTruthy();
+    expect(placeholder.textContent).toBe('No textual changes');
   });
 
   it('skips hunk-anchor registration for a body from a superseded render', async () => {
