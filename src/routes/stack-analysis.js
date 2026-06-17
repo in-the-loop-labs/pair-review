@@ -19,7 +19,7 @@ const { normalizeRepository } = require('../utils/paths');
 const { mergeInstructions } = require('../utils/instructions');
 const { GitWorktreeManager } = require('../git/worktree');
 const { GitHubClient } = require('../github/client');
-const { getGitHubToken, resolveHostBinding, resolveBindingRepositoryFromPR, resolveLoadSkills, buildCouncilProviderOverrides } = require('../config');
+const { getGitHubToken, resolveHostBinding, resolveBindingRepositoryFromPR, resolveRepoOptions, resolveLoadSkills, buildCouncilProviderOverrides } = require('../config');
 const { setupStackPR } = require('../setup/stack-setup');
 const Analyzer = require('../ai/analyzer');
 const { getProviderClass, createProvider } = require('../ai/provider');
@@ -166,6 +166,7 @@ const defaults = {
   getGitHubToken,
   resolveHostBinding,
   resolveBindingRepositoryFromPR,
+  resolveRepoOptions,
   setupStackPR,
   Analyzer,
   getProviderClass,
@@ -205,8 +206,23 @@ async function executeStackAnalysis(params) {
   if (!state) return;
 
   try {
+    // 0. Resolve the config-binding key once. It drives both the per-repo
+    //    worktree config (just below) and the host binding (step 3). For
+    //    monorepo-style `url_pattern` configs this differs from the PR
+    //    identity `${owner}/${repo}`.
+    const bindingRepository = deps.resolveBindingRepositoryFromPR(owner, repo, config);
+    // Honor the repo's configured worktree options so stack worktrees match the
+    // non-stack path. This carries through:
+    //  - worktreeConfig (worktree_name_template / worktree_directory) so they
+    //    don't fall back to pair-review's default naming and location, and
+    //  - the checkout script + timeout and sparse-checkout inheritance used
+    //    during per-PR worktree creation (forwarded to createWorktreeForPR).
+    // These derive purely from file config, so DB repo_settings (pool config)
+    // are not needed here.
+    const { worktreeConfig, checkoutScript, checkoutTimeout } = deps.resolveRepoOptions(config, bindingRepository);
+
     // 1. Resolve repositoryPath from trigger worktree
-    const worktreeManager = new deps.GitWorktreeManager(db);
+    const worktreeManager = new deps.GitWorktreeManager(db, worktreeConfig || {});
     let repositoryPath;
     try {
       const owningRepoGit = await worktreeManager.resolveOwningRepo(triggerWorktreePath);
@@ -230,13 +246,13 @@ async function executeStackAnalysis(params) {
       logger.warn(`Bulk git fetch failed, will fetch per-PR: ${fetchError.message}`);
     }
 
-    // 3. Fetch all PR data from GitHub in parallel
-    // Use the per-repo binding so alt-host stack analyses target the right host.
-    // The PR identity (`${owner}/${repo}`) is used for DB rows and worktree
-    // identity. For host-binding lookups we MUST use the config-binding key,
-    // which differs from the PR identity for monorepo-style `url_pattern`
-    // configs (one `repos[...]` entry serves many captured owner/repo pairs).
-    const bindingRepository = deps.resolveBindingRepositoryFromPR(owner, repo, config);
+    // 3. Fetch all PR data from GitHub in parallel.
+    // `bindingRepository` (resolved in step 0) is the config-binding key. We use
+    // it — not the PR identity `${owner}/${repo}` — for host-binding lookups so
+    // alt-host stack analyses target the right host. The two differ for
+    // monorepo-style `url_pattern` configs (one `repos[...]` entry serves many
+    // captured owner/repo pairs). The PR identity is still used for DB rows and
+    // worktree identity.
     const stackBinding = deps.resolveHostBinding(bindingRepository, config);
     const githubToken = stackBinding.token;
     const prDataMap = new Map();
@@ -275,7 +291,16 @@ async function executeStackAnalysis(params) {
 
         const prInfo = { owner, repo, number: prNum };
         const { path: perPRWorktreePath } = await worktreeManager.createWorktreeForPR(
-          prInfo, prData, repositoryPath
+          prInfo, prData, repositoryPath,
+          {
+            checkoutScript,
+            checkoutTimeout,
+            // No checkout script → inherit the trigger worktree's sparse-checkout
+            // layout instead of a full checkout from the repo root. When a script is
+            // configured it sets up sparse-checkout itself, so worktreeSourcePath is
+            // unused (and omitted) in that case.
+            ...(checkoutScript ? {} : { worktreeSourcePath: triggerWorktreePath }),
+          }
         );
         worktreePathMap.set(prNum, perPRWorktreePath);
       } catch (wtError) {
@@ -307,6 +332,7 @@ async function executeStackAnalysis(params) {
           worktreePath: worktreePathMap.get(prNum),
           analysisConfig, stackAnalysisId, state,
           githubToken, binding: stackBinding, prData: prDataMap.get(prNum),
+          worktreeConfig, checkoutScript,
           onAnalysisIdReady
         }).then(result => {
           state.prStatuses.set(prNum, {
@@ -346,6 +372,7 @@ async function executeStackAnalysis(params) {
 async function analyzeStackPR(deps, db, config, {
   owner, repo, repository, bindingRepository, prNum, worktreePath,
   analysisConfig, stackAnalysisId, state, githubToken, binding, prData,
+  worktreeConfig, checkoutScript,
   onAnalysisIdReady
 }) {
   // Build a GitHubClient for analyzer-side dedup pre-fetch. The stack
@@ -357,12 +384,17 @@ async function analyzeStackPR(deps, db, config, {
   if (stackGithubClient) {
     logger.debug(`analyzer githubClient wired for ${owner}/${repo}#${prNum} (stack)`);
   }
-  // 1. Setup PR (generates diff, stores metadata)
-  const worktreeManager = new deps.GitWorktreeManager(db);
+  // 1. Setup PR (expands sparse-checkout, generates diff, stores metadata)
+  // Construct with the repo's resolved worktreeConfig for consistency with the
+  // creation manager. setupStackPR operates against the explicit worktreePath
+  // (diff generation + sparse-cone expansion), so the worktreeConfig naming /
+  // directory options are not exercised today — threading them through guards
+  // against silent latent regressions if that changes.
+  const worktreeManager = new deps.GitWorktreeManager(db, worktreeConfig || {});
   await deps.setupStackPR({
     db, owner, repo, prNumber: prNum,
     githubToken, binding, bindingRepository,
-    worktreePath, worktreeManager, prData
+    worktreePath, worktreeManager, prData, checkoutScript
   });
 
   // 2. Fetch prMetadata from DB

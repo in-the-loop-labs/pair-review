@@ -80,6 +80,10 @@ describe('setupStackPR', () => {
         { filename: 'src/index.js', additions: 5, deletions: 2 },
         { filename: 'src/utils.js', additions: 20, deletions: 0 },
       ]),
+      // Default to non-sparse so the expansion path is a no-op for existing
+      // tests; sparse-specific tests override these per-case.
+      isSparseCheckoutEnabled: vi.fn().mockResolvedValue(false),
+      ensurePRDirectoriesInSparseCheckout: vi.fn().mockResolvedValue([]),
     };
   });
 
@@ -181,5 +185,84 @@ describe('setupStackPR', () => {
     mockStorePRData.mockRejectedValue(new Error('DB write failed'));
 
     await expect(setupStackPR(defaultParams())).rejects.toThrow('DB write failed');
+  });
+
+  // -------------------------------------------------------------------------
+  // Sparse-checkout expansion (regression: stack worktrees inherit the trigger
+  // worktree's sparse cone but never expanded it for the PR's directories, so
+  // downstream file-context / codebase-context analysis read an incomplete
+  // on-disk checkout and silently under-reviewed sibling-PR files).
+  // -------------------------------------------------------------------------
+
+  it('expands sparse-checkout for PR directories when sparse and no checkout script', async () => {
+    mockWorktreeManager.isSparseCheckoutEnabled.mockResolvedValue(true);
+    mockWorktreeManager.ensurePRDirectoriesInSparseCheckout.mockResolvedValue(['src']);
+
+    await setupStackPR(defaultParams());
+
+    expect(mockWorktreeManager.isSparseCheckoutEnabled)
+      .toHaveBeenCalledWith('/tmp/worktree/test-repo');
+    expect(mockWorktreeManager.ensurePRDirectoriesInSparseCheckout)
+      .toHaveBeenCalledWith('/tmp/worktree/test-repo', fakePRFiles);
+  });
+
+  it('expands the sparse cone BEFORE generating the diff (downstream disk reads)', async () => {
+    mockWorktreeManager.isSparseCheckoutEnabled.mockResolvedValue(true);
+    const callOrder = [];
+    mockWorktreeManager.ensurePRDirectoriesInSparseCheckout.mockImplementation(async () => {
+      callOrder.push('expand');
+      return ['src'];
+    });
+    mockWorktreeManager.generateUnifiedDiff.mockImplementation(async () => {
+      callOrder.push('diff');
+      return 'diff';
+    });
+
+    await setupStackPR(defaultParams());
+
+    expect(callOrder).toEqual(['expand', 'diff']);
+  });
+
+  it('does NOT expand sparse-checkout when a checkout script is configured (script owns the cone)', async () => {
+    mockWorktreeManager.isSparseCheckoutEnabled.mockResolvedValue(true);
+
+    await setupStackPR({ ...defaultParams(), checkoutScript: '/scripts/checkout.sh' });
+
+    // The script owns sparse-checkout setup — we must not touch it at all.
+    expect(mockWorktreeManager.isSparseCheckoutEnabled).not.toHaveBeenCalled();
+    expect(mockWorktreeManager.ensurePRDirectoriesInSparseCheckout).not.toHaveBeenCalled();
+  });
+
+  it('skips expansion when the worktree is not sparse', async () => {
+    mockWorktreeManager.isSparseCheckoutEnabled.mockResolvedValue(false);
+
+    await setupStackPR(defaultParams());
+
+    expect(mockWorktreeManager.isSparseCheckoutEnabled).toHaveBeenCalled();
+    expect(mockWorktreeManager.ensurePRDirectoriesInSparseCheckout).not.toHaveBeenCalled();
+  });
+
+  it('skips expansion when the PR has no changed files', async () => {
+    vi.spyOn(clientModule.GitHubClient.prototype, 'fetchPullRequestFiles')
+      .mockResolvedValue([]);
+    mockWorktreeManager.isSparseCheckoutEnabled.mockResolvedValue(true);
+
+    await setupStackPR(defaultParams());
+
+    expect(mockWorktreeManager.isSparseCheckoutEnabled).not.toHaveBeenCalled();
+    expect(mockWorktreeManager.ensurePRDirectoriesInSparseCheckout).not.toHaveBeenCalled();
+  });
+
+  it('treats a sparse-checkout expansion failure as non-fatal', async () => {
+    mockWorktreeManager.isSparseCheckoutEnabled.mockResolvedValue(true);
+    mockWorktreeManager.ensurePRDirectoriesInSparseCheckout
+      .mockRejectedValue(new Error('sparse-checkout add failed'));
+
+    // Setup must still complete and persist the PR despite the expansion error.
+    const result = await setupStackPR(defaultParams());
+
+    expect(result.reviewId).toBe(101);
+    expect(mockWorktreeManager.generateUnifiedDiff).toHaveBeenCalled();
+    expect(mockStorePRData).toHaveBeenCalled();
   });
 });
