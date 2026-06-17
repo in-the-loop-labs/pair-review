@@ -1690,8 +1690,12 @@ class PRManager {
       label = 'Exit guided tour';
     } else if (this._tourStops && this._tourStops.length > 0) {
       label = 'Start guided tour';
+    } else if (this._toursAutoGenerate === false) {
+      // No stops yet and auto-generation is off: a click kicks off manual
+      // generation (see startOrToggleTour), so the verb is "Generate".
+      label = 'Generate guided tour';
     } else {
-      label = 'Start guided tour (none available yet)';
+      label = 'Guided tour (none available yet)';
     }
     btn.title = label;
     btn.setAttribute('aria-label', label);
