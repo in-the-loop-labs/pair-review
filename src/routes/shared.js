@@ -69,6 +69,37 @@ function getModel(req) {
 }
 
 /**
+ * Get the provider to use for AI analysis
+ * Priority: CLI flag (PAIR_REVIEW_PROVIDER env var) > config.default_provider
+ *           > config.provider (legacy) > 'claude' default
+ * Mirrors getModel() so the --provider CLI flag / PAIR_REVIEW_PROVIDER env var
+ * is honored by the web/UI analysis paths the same way --model is.
+ * @param {Object} req - Express request object
+ * @returns {string} Provider id to use
+ */
+function getProvider(req) {
+  // CLI flag takes priority (passed via environment variable)
+  if (process.env.PAIR_REVIEW_PROVIDER) {
+    return process.env.PAIR_REVIEW_PROVIDER;
+  }
+
+  // Config file setting (default_provider preferred, provider for backwards compatibility)
+  const config = req.app.get('config');
+  if (config) {
+    if (config.default_provider) {
+      return config.default_provider;
+    }
+    // Backwards compatibility with old config key
+    if (config.provider) {
+      return config.provider;
+    }
+  }
+
+  // Default fallback
+  return 'claude';
+}
+
+/**
  * Determine completion level and suggestion counts from analysis result
  * @param {Object} result - Analysis result object
  * @returns {Object} Completion information with level, counts, and progress message
@@ -474,6 +505,7 @@ module.exports = {
   activeProcesses,
   activeSetups,
   getModel,
+  getProvider,
   determineCompletionInfo,
   broadcastProgress,
   broadcastIndexAnalysisEvent,

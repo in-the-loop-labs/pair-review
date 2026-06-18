@@ -17,7 +17,8 @@ import {
   createProgressCallback,
   broadcastProgress,
   _indexAnnouncedIds,
-  parseEnabledLevels
+  parseEnabledLevels,
+  getProvider
 } from '../../src/routes/shared.js';
 
 /**
@@ -1621,5 +1622,42 @@ describe('broadcastProgress index:analyses integration', () => {
 
     const indexCalls = broadcastSpy.mock.calls.filter(c => c[0] === 'index:analyses');
     expect(indexCalls).toHaveLength(0);
+  });
+});
+
+describe('getProvider', () => {
+  const ORIGINAL_PROVIDER = process.env.PAIR_REVIEW_PROVIDER;
+
+  function makeReq(config) {
+    return { app: { get: (key) => (key === 'config' ? config : undefined) } };
+  }
+
+  afterEach(() => {
+    if (ORIGINAL_PROVIDER === undefined) {
+      delete process.env.PAIR_REVIEW_PROVIDER;
+    } else {
+      process.env.PAIR_REVIEW_PROVIDER = ORIGINAL_PROVIDER;
+    }
+  });
+
+  it('prefers PAIR_REVIEW_PROVIDER env var (set by the --provider CLI flag)', () => {
+    process.env.PAIR_REVIEW_PROVIDER = 'codex';
+    expect(getProvider(makeReq({ default_provider: 'gemini' }))).toBe('codex');
+  });
+
+  it('falls back to config.default_provider when env var is unset', () => {
+    delete process.env.PAIR_REVIEW_PROVIDER;
+    expect(getProvider(makeReq({ default_provider: 'gemini' }))).toBe('gemini');
+  });
+
+  it('falls back to legacy config.provider key', () => {
+    delete process.env.PAIR_REVIEW_PROVIDER;
+    expect(getProvider(makeReq({ provider: 'copilot' }))).toBe('copilot');
+  });
+
+  it('defaults to claude when nothing is configured', () => {
+    delete process.env.PAIR_REVIEW_PROVIDER;
+    expect(getProvider(makeReq({}))).toBe('claude');
+    expect(getProvider(makeReq(null))).toBe('claude');
   });
 });

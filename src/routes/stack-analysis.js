@@ -437,7 +437,7 @@ async function analyzeStackPR(deps, db, config, {
       providerOverridesMap: councilProviderOverridesMap
     });
   } else {
-    let selectedProvider = reqProvider || repoSettings?.default_provider || config.default_provider || config.provider || 'claude';
+    let selectedProvider = reqProvider || process.env.PAIR_REVIEW_PROVIDER || repoSettings?.default_provider || config.default_provider || config.provider || 'claude';
     let selectedModel = reqModel || repoSettings?.default_model || config.default_model || config.model || 'opus';
 
     // Resolve load_skills across all config tiers
