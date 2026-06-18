@@ -12,10 +12,11 @@
  * to ensure tests verify real behavior, not a reimplementation.
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // Setup global.window before importing production code that assigns to it
 global.window = global.window || {};
+global.window.SuggestionUI = require('../../public/js/utils/suggestion-ui.js');
 
 // Import the actual SuggestionManager class from production code
 const { SuggestionManager } = require('../../public/js/modules/suggestion-manager.js');
@@ -822,5 +823,160 @@ describe('SuggestionManager chat button event delegation', () => {
     // Should bail out — these clicks are handled by other managers
     expect(mockChatPanel.open).not.toHaveBeenCalled();
     expect(mockEvent.stopPropagation).not.toHaveBeenCalled();
+  });
+});
+
+describe('SuggestionManager suggestion copy event delegation', () => {
+  let clickHandlers;
+
+  beforeEach(() => {
+    clickHandlers = [];
+    vi.useFakeTimers();
+
+    global.document = {
+      addEventListener: vi.fn((event, handler) => {
+        if (event === 'click') clickHandlers.push(handler);
+      }),
+      querySelector: vi.fn(() => null),
+      querySelectorAll: vi.fn(() => []),
+      createElement: vi.fn(() => ({
+        className: '',
+        innerHTML: '',
+        textContent: '',
+        appendChild: vi.fn(),
+        remove: vi.fn(),
+        querySelector: vi.fn(() => null),
+      })),
+    };
+
+    vi.stubGlobal('navigator', {
+      clipboard: {
+        writeText: vi.fn().mockResolvedValue(undefined)
+      }
+    });
+
+    global.window.toast = {
+      showSuccess: vi.fn(),
+      showError: vi.fn()
+    };
+    global.window.SuggestionUI = require('../../public/js/utils/suggestion-ui.js');
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    delete global.document;
+    delete global.window.toast;
+  });
+
+  function createSuggestionCopyClick({ fileLevel = false } = {}) {
+    const suggestionDiv = {
+      dataset: {
+        title: fileLevel ? 'Document module ownership' : 'Reject oversized Vault user IDs before querying',
+        type: 'bug',
+        severity: 'critical',
+        originalBody: JSON.stringify('Raw body'),
+        formattedBody: JSON.stringify('Bug: `parse_vault_user_id` currently accepts any positive integer.'),
+        reasoning: JSON.stringify(['Checked the resolver input path.']),
+        fileName: fileLevel ? 'src/ownership.js' : 'app/graphql/resolvers/vault_user_resolver.rb',
+        lineNumber: fileLevel ? '' : '44',
+        lineEnd: fileLevel ? '' : '48',
+        side: fileLevel ? '' : 'RIGHT',
+        diffPosition: fileLevel ? '' : '12',
+        isFileLevel: fileLevel ? 'true' : 'false'
+      },
+      closest: vi.fn((selector) => {
+        if (selector === 'tr') return { previousElementSibling: null };
+        return null;
+      }),
+      querySelector: vi.fn(() => null)
+    };
+
+    const copyBtn = {
+      classList: { add: vi.fn(), remove: vi.fn() },
+      closest: vi.fn((selector) => {
+        if (selector === '.btn-suggestion-copy') return copyBtn;
+        if (selector === '.ai-suggestion') return suggestionDiv;
+        return null;
+      }),
+      setAttribute: vi.fn(),
+      title: 'Copy suggestion',
+      innerHTML: global.window.SuggestionUI.COPY_ICON
+    };
+
+    const event = {
+      target: {
+        closest: vi.fn((selector) => {
+          if (selector === '.ai-action-chat') return null;
+          if (selector === '.btn-suggestion-copy') return copyBtn;
+          if (selector === '.btn-reasoning-toggle') return null;
+          if (selector === '.reasoning-popover') return null;
+          return null;
+        })
+      },
+      stopPropagation: vi.fn()
+    };
+
+    return { copyBtn, event };
+  }
+
+  it('copies line-level suggestion markdown to the clipboard', async () => {
+    new SuggestionManager({
+      currentPR: { id: 'review-1' },
+      escapeHtml: (s) => s
+    });
+
+    expect(clickHandlers.length).toBeGreaterThanOrEqual(3);
+    const copyHandler = clickHandlers[1];
+    const { copyBtn, event } = createSuggestionCopyClick();
+
+    copyHandler(event);
+    await Promise.resolve();
+
+    expect(event.stopPropagation).toHaveBeenCalled();
+    expect(global.navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining('## Reject oversized Vault user IDs before querying'));
+    expect(global.navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining('- File: `app/graphql/resolvers/vault_user_resolver.rb`'));
+    expect(global.navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining('- Location: lines 44-48'));
+    expect(global.navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining('- Type: Bug'));
+    expect(global.navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining('- Severity: Critical'));
+    expect(global.navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining('Bug: `parse_vault_user_id` currently accepts any positive integer.'));
+    expect(global.window.toast.showSuccess).toHaveBeenCalledWith('Suggestion copied');
+    expect(copyBtn.classList.add).toHaveBeenCalledWith('copied');
+  });
+
+  it('copies file-level suggestion markdown with file-level location', async () => {
+    new SuggestionManager({
+      currentPR: { id: 'review-1' },
+      escapeHtml: (s) => s
+    });
+
+    const copyHandler = clickHandlers[1];
+    const { event } = createSuggestionCopyClick({ fileLevel: true });
+
+    copyHandler(event);
+    await Promise.resolve();
+
+    expect(global.navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining('- Location: file-level'));
+  });
+
+  it('shows an error toast when clipboard writing fails', async () => {
+    global.navigator.clipboard.writeText.mockRejectedValueOnce(new Error('no clipboard'));
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    new SuggestionManager({
+      currentPR: { id: 'review-1' },
+      escapeHtml: (s) => s
+    });
+
+    const copyHandler = clickHandlers[1];
+    const { copyBtn, event } = createSuggestionCopyClick();
+
+    copyHandler(event);
+    await Promise.resolve();
+
+    expect(global.window.toast.showError).toHaveBeenCalledWith('Failed to copy suggestion');
+    expect(copyBtn.classList.add).toHaveBeenCalledWith('copy-failed');
+
+    consoleSpy.mockRestore();
   });
 });
