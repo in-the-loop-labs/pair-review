@@ -288,6 +288,44 @@ describe('PRManager._buildDefaultAnalysisConfig', () => {
     const config = await manager._buildDefaultAnalysisConfig(null, reviewSettings);
     expect(config.customInstructions).toBeNull();
   });
+
+  it('honors a ?council=<id> URL param with highest priority (CLI --council)', async () => {
+    // Simulate the CLI-provided ?council=<id> param via the URLSearchParams stub.
+    globalThis.URLSearchParams = class { get(k) { return k === 'council' ? 'url-council-id' : null; } };
+    globalThis.fetch = vi.fn(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({
+        council: {
+          id: 'url-council-id',
+          name: 'URL Council',
+          type: 'council',
+          config: { voices: [{ provider: 'claude', model: 'opus' }], levels: { '1': true } },
+        },
+      }),
+    }));
+
+    // Repo defaults point at a single-model config; the URL param must still win.
+    const repoSettings = { default_tab: 'single', default_provider: 'gemini', default_model: 'pro' };
+    const config = await manager._buildDefaultAnalysisConfig(repoSettings, {});
+
+    expect(config.isCouncil).toBe(true);
+    expect(config.councilId).toBe('url-council-id');
+    expect(config.councilName).toBe('URL Council');
+    expect(config.configType).toBe('council'); // derived from the council's own type
+    expect(config.councilConfig).toEqual({ voices: [{ provider: 'claude', model: 'opus' }], levels: { '1': true } });
+    expect(globalThis.fetch).toHaveBeenCalledWith('/api/councils/url-council-id');
+  });
+
+  it('falls back to default selection when the URL council fetch fails', async () => {
+    globalThis.URLSearchParams = class { get(k) { return k === 'council' ? 'bad-id' : null; } };
+    globalThis.fetch = vi.fn(() => Promise.resolve({ ok: false, status: 404 }));
+
+    const config = await manager._buildDefaultAnalysisConfig(null, {});
+    // Unknown URL council -> not forced into council mode; single-provider default.
+    expect(config.isCouncil).toBeUndefined();
+    expect(config.provider).toBe('claude');
+    expect(config.model).toBe('opus');
+  });
 });
 
 describe('PRManager.showWorktreeNotFoundError', () => {

@@ -770,6 +770,10 @@
                         var qs = new URLSearchParams(window.location.search);
                         if (qs.get('analyze') === 'true') targetUrl.searchParams.set('analyze', qs.get('analyze'));
                         if (qs.get('analysisConfigId')) targetUrl.searchParams.set('analysisConfigId', qs.get('analysisConfigId'));
+                        // Forward the CLI-supplied council selection (PR & local cold-start
+                        // and delegated paths route through here); the review page keys
+                        // council auto-analysis on this param.
+                        if (qs.get('council')) targetUrl.searchParams.set('council', qs.get('council'));
                         window.location.href = targetUrl.toString();
                         return;
                     }
@@ -831,6 +835,10 @@
                                     var qs = new URLSearchParams(window.location.search);
                                     if (qs.get('analyze') === 'true') targetUrl.searchParams.set('analyze', qs.get('analyze'));
                                     if (qs.get('analysisConfigId')) targetUrl.searchParams.set('analysisConfigId', qs.get('analysisConfigId'));
+                                    // Forward the CLI-supplied council selection (PR & local cold-start
+                                    // and delegated paths route through here); the review page keys
+                                    // council auto-analysis on this param.
+                                    if (qs.get('council')) targetUrl.searchParams.set('council', qs.get('council'));
                                     window.location.href = targetUrl.toString();
                                 }
                             }, 400);

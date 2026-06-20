@@ -95,18 +95,24 @@ function notifyVersion(port, currentVersion, _deps) {
  * @param {number} [context.number]
  * @param {string} [context.localPath]
  * @param {boolean} [context.analyze] - Whether to trigger auto-analysis
+ * @param {string} [context.councilId] - Resolved council id for council auto-analysis
  * @returns {string} Full URL
  */
 function buildDelegationUrl(port, mode, context = {}) {
   const base = `http://localhost:${port}`;
   if (mode === 'pr') {
     let url = `${base}/pr/${context.owner}/${context.repo}/${context.number}`;
-    if (context.analyze) url += '?analyze=true';
+    const query = [];
+    if (context.analyze) query.push('analyze=true');
+    if (context.councilId) query.push(`council=${encodeURIComponent(context.councilId)}`);
+    if (query.length) url += `?${query.join('&')}`;
     return url;
   }
   if (mode === 'local') {
+    // The `?path=` segment is always present, so analyze/council append with `&`.
     let url = `${base}/local?path=${encodeURIComponent(context.localPath)}`;
     if (context.analyze) url += '&analyze=true';
+    if (context.councilId) url += `&council=${encodeURIComponent(context.councilId)}`;
     return url;
   }
   return `${base}/`;
@@ -137,11 +143,21 @@ async function parsePRArgsForDelegation(prArgs, config = null, _deps) {
  * @param {object} flags - Parsed CLI flags
  * @param {string[]} prArgs - PR arguments from CLI
  * @param {object} [_deps] - Dependency overrides for testing
+ * @param {object} [options] - Pre-resolved values from the caller
+ * @param {string|null} [options.councilId] - Resolved council id (the caller
+ *   resolves `flags.council` against the DB before delegation, since this
+ *   module has no DB access). When set, the delegated URL carries
+ *   `&council=<id>` and auto-analysis is forced on.
  * @returns {Promise<boolean>} true if delegated, false if should start fresh
  */
-async function attemptDelegation(config, flags, prArgs, _deps) {
+async function attemptDelegation(config, flags, prArgs, _deps, options = {}) {
   const deps = { ...defaults, ..._deps };
   const port = config.port;
+  const councilId = options.councilId || null;
+  // A council selection implies analysis: the browser-side council
+  // auto-analysis is gated on the `council` param + `analyze=true`, mirroring
+  // the cold-start URL built in handlePullRequest/handleLocalReview.
+  const analyze = !!(flags.ai || flags.council);
 
   const result = await detectRunningServer(port, _deps);
 
@@ -164,10 +180,10 @@ async function attemptDelegation(config, flags, prArgs, _deps) {
   if (flags.local) {
     rejectUrlLikeLocalReviewPath(flags.localPath);
     const targetPath = path.resolve(flags.localPath || process.cwd());
-    url = buildDelegationUrl(port, 'local', { localPath: targetPath, analyze: flags.ai });
+    url = buildDelegationUrl(port, 'local', { localPath: targetPath, analyze, councilId });
   } else if (prArgs.length > 0) {
     const prInfo = await parsePRArgsForDelegation(prArgs, config, _deps);
-    url = buildDelegationUrl(port, 'pr', { ...prInfo, analyze: flags.ai });
+    url = buildDelegationUrl(port, 'pr', { ...prInfo, analyze, councilId });
   } else {
     url = buildDelegationUrl(port, 'server');
   }

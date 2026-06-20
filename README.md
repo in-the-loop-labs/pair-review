@@ -192,6 +192,8 @@ pair-review --local [path]
 | `<PR-URL>` | Full GitHub PR URL (e.g., `https://github.com/owner/repo/pull/123`) |
 | `--ai` | Automatically run AI analysis when the review loads |
 | `--ai-draft` | Run AI analysis and save suggestions as a draft review on GitHub |
+| `--council <handle>` | Run analysis with a saved multi-voice council. Implies analysis. The handle resolves by council name, name-slug, id (prefix), or a partial name fragment (resolving when it matches a single council, otherwise listing the candidates). When set, `--model` is ignored (council voices use their own per-voice models). Works in headless PR (`--ai-draft`/`--ai-review`), interactive PR (`--ai`), and local (`--local --ai`) modes. |
+| `--list-councils` | List saved councils with their handles, names, types, and last-used repo, then exit. Use a printed handle with `--council`. |
 | `--configure` | Show setup instructions and configuration options |
 | `-d`, `--debug` | Enable verbose debug logging for troubleshooting |
 | `-h`, `--help` | Show help message with full CLI documentation |
@@ -209,9 +211,19 @@ pair-review 123                        # Review PR #123 in current repo
 pair-review https://github.com/owner/repo/pull/456
 pair-review --local                    # Review uncommitted local changes
 pair-review 123 --ai                   # Auto-run AI analysis
+pair-review --list-councils            # List saved councils and their handles
+pair-review 123 --ai-draft --council security-review  # Headless draft with a council
+pair-review --local --ai --council security-review    # Local review with a council
 pair-review --register                 # Register pair-review:// URL scheme (macOS)
 pair-review --register --command "node bin/pair-review.js"  # Custom command
 ```
+
+> **Councils** are saved multi-voice review configurations created and managed
+> in the web UI (under Analysis settings). `--council <handle>` selects one from
+> the CLI; the handle can be the council's name, its name-slug, an id prefix, or
+> a partial name fragment (which resolves when it uniquely identifies a council,
+> otherwise lists the candidates). Run `pair-review --list-councils` to discover
+> available handles.
 
 ## Configuration
 

@@ -13,6 +13,7 @@ const { buildReviewStartedPayload, buildReviewLoadedPayload, getCachedUser } = r
 const execAsync = promisify(exec);
 const { STOPS, scopeIncludes, includesBranch, DEFAULT_SCOPE, scopeLabel, reviewScope } = require('./local-scope');
 const { initializeDatabase, ReviewRepository, RepoSettingsRepository } = require('./database');
+const { resolveCouncilHandle } = require('./councils/resolve-council');
 const { startServer } = require('./server');
 const { localReviewDiffs } = require('./routes/shared');
 const summaryGenerator = require('./ai/summary-generator');
@@ -906,10 +907,18 @@ async function handleLocalReview(targetPath, flags = {}) {
     console.log('Initializing database...');
     db = await initializeDatabase(resolveDbName(config));
 
+    // Resolve the council handle FAIL-FAST before any further setup, so a bad
+    // handle surfaces as a clean error instead of after the browser opens.
+    let councilSelection = null;
+    if (flags.council) {
+      councilSelection = await resolveCouncilHandle(db, flags.council);
+    }
+
     const session = await setupLocalReviewSession({ db, config, repoPath, flags });
     setupComplete = true;
 
-    if (flags.model) {
+    // Skipped when --council is set: council voices carry their own per-voice models.
+    if (flags.model && !flags.council) {
       process.env.PAIR_REVIEW_MODEL = flags.model;
     }
 
@@ -917,9 +926,9 @@ async function handleLocalReview(targetPath, flags = {}) {
     const port = await startServer(db);
 
     let url = `http://localhost:${port}/local/${session.sessionId}`;
-    if (flags.ai) {
-      url += '?analyze=true';
-    }
+    const shouldAnalyze = flags.ai || flags.council;
+    if (shouldAnalyze) url += '?analyze=true';
+    if (councilSelection) url += `&council=${councilSelection.id}`;
     console.log(`\nOpening browser to: ${url}`);
     await open(url);
 
