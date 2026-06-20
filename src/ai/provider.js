@@ -113,9 +113,13 @@ class AIProvider {
 
   /**
    * Test if the provider's CLI is available
+   * @param {number} [timeoutMs] - Optional timeout in milliseconds for the
+   *   availability probe. Subclasses that spawn a child process should use this
+   *   to bound the check (the value is resolved per-provider by
+   *   testProviderAvailability). Defaults to DEFAULT_AVAILABILITY_TIMEOUT_MS.
    * @returns {Promise<boolean>}
    */
-  async testAvailability() {
+  async testAvailability(timeoutMs) {
     throw new Error('testAvailability() must be implemented by subclass');
   }
 
@@ -354,6 +358,28 @@ const providerRegistry = new Map();
 const providerConfigOverrides = new Map();
 
 /**
+ * Default timeout (ms) for a provider availability probe when no
+ * per-provider `availability_timeout_seconds` is configured.
+ */
+const DEFAULT_AVAILABILITY_TIMEOUT_MS = 10000;
+
+/**
+ * Convert a configured `availability_timeout_seconds` value to milliseconds.
+ * Single source of truth for the "valid positive seconds" predicate shared by
+ * every availability-probe timeout (AI providers, executable providers, and
+ * chat providers); falls back to `defaultMs` when the value is unset,
+ * non-numeric, non-finite, or <= 0.
+ * @param {*} seconds - Raw config value, expected to be a number of seconds
+ * @param {number} [defaultMs=DEFAULT_AVAILABILITY_TIMEOUT_MS] - Fallback in ms
+ * @returns {number} Timeout in milliseconds
+ */
+function secondsToTimeoutMs(seconds, defaultMs = DEFAULT_AVAILABILITY_TIMEOUT_MS) {
+  return (typeof seconds === 'number' && Number.isFinite(seconds) && seconds > 0)
+    ? seconds * 1000
+    : defaultMs;
+}
+
+/**
  * Whether yolo mode is enabled (skips fine-grained provider permissions)
  */
 let yoloMode = false;
@@ -534,6 +560,7 @@ function applyConfigOverrides(config) {
         env: providerConfig.env,
         load_skills: providerConfig.load_skills,
         app_extensions: providerConfig.app_extensions,
+        availability_timeout_seconds: providerConfig.availability_timeout_seconds,
         models: AliasClass.getModels() !== BaseClass.getModels() ? AliasClass.getModels() : null
       });
       logger.debug(`Registered aliased provider: ${providerId} (base: ${providerConfig.type})`);
@@ -561,6 +588,7 @@ function applyConfigOverrides(config) {
       env: providerConfig.env,
       load_skills: providerConfig.load_skills,
       app_extensions: providerConfig.app_extensions,
+      availability_timeout_seconds: providerConfig.availability_timeout_seconds,
       models: processedModels
     });
   }
@@ -725,26 +753,53 @@ function createProvider(providerId, model = null, overrides = {}) {
 }
 
 /**
+ * Resolve the availability-probe timeout (ms) for a provider.
+ * Reads the per-provider `availability_timeout_seconds` config override
+ * (in seconds, mirroring `checkout_timeout_seconds`); falls back to
+ * DEFAULT_AVAILABILITY_TIMEOUT_MS when unset, non-numeric, or <= 0.
+ * @param {string} providerId - Provider ID
+ * @returns {number} Timeout in milliseconds
+ */
+function resolveAvailabilityTimeoutMs(providerId) {
+  const seconds = providerConfigOverrides.get(providerId)?.availability_timeout_seconds;
+  return secondsToTimeoutMs(seconds);
+}
+
+/**
  * Test availability of a provider with timeout
  * @param {string} providerId - Provider ID
- * @param {number} timeout - Timeout in milliseconds (default 10 seconds)
+ * @param {number} [timeoutMs] - Timeout in milliseconds. When omitted, resolved
+ *   per-provider from `availability_timeout_seconds` (default 10 seconds).
  * @returns {Promise<{available: boolean, error?: string}>}
  */
-async function testProviderAvailability(providerId, timeout = 10000) {
+async function testProviderAvailability(providerId, timeoutMs) {
+  const effectiveTimeoutMs = timeoutMs != null ? timeoutMs : resolveAvailabilityTimeoutMs(providerId);
   try {
     const provider = createProvider(providerId);
 
-    // Race between availability test and timeout
+    // Race between availability test and timeout. The provider's own probe
+    // receives the same timeout so it can kill its child process on expiry;
+    // this race is the only guard for providers without an internal timeout.
+    // Capture the timer handle so we can clear it once the race settles —
+    // otherwise a fast probe with a large configured timeout would keep the
+    // Node event loop alive (and its rejection unobserved) until the timer fires.
+    let timeoutId;
     const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('Provider test timed out')), timeout);
+      timeoutId = setTimeout(
+        () => reject(new Error(`Provider test timed out after ${Math.round(effectiveTimeoutMs / 1000)}s`)),
+        effectiveTimeoutMs
+      );
     });
 
-    const available = await Promise.race([
-      provider.testAvailability(),
-      timeoutPromise
-    ]);
-
-    return { available };
+    try {
+      const available = await Promise.race([
+        provider.testAvailability(effectiveTimeoutMs),
+        timeoutPromise
+      ]);
+      return { available };
+    } finally {
+      clearTimeout(timeoutId);
+    }
   } catch (error) {
     const ProviderClass = providerRegistry.get(providerId);
     const installInstructions = ProviderClass?.getInstallInstructions() || 'Check the provider documentation.';
@@ -791,6 +846,9 @@ module.exports = {
   getAllProvidersInfo,
   createProvider,
   testProviderAvailability,
+  resolveAvailabilityTimeoutMs,
+  secondsToTimeoutMs,
+  DEFAULT_AVAILABILITY_TIMEOUT_MS,
   // Config override support
   applyConfigOverrides,
   createAliasedProviderClass,

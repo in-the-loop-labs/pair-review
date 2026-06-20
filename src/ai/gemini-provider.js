@@ -659,9 +659,11 @@ class GeminiProvider extends AIProvider {
   /**
    * Test if Gemini CLI is available
    * Uses the command configured in the instance (respects ENV > config > default precedence)
+   * @param {number} [timeoutMs=10000] - Timeout in milliseconds for the probe.
+   *   Production passes the per-provider resolved value; the default is only hit by tests.
    * @returns {Promise<boolean>}
    */
-  async testAvailability() {
+  async testAvailability(timeoutMs = 10000) {
     return new Promise((resolve) => {
       // For availability test, we just need to check --version
       // Use the already-resolved command from the constructor (this.geminiCmd)
@@ -685,6 +687,16 @@ class GeminiProvider extends AIProvider {
       let stdout = '';
       let settled = false;
 
+      // Timeout guard: if the CLI hangs, kill it and resolve false so the probe
+      // does not leak a child process.
+      const availabilityTimeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        logger.warn(`Gemini CLI availability check timed out after ${Math.round(timeoutMs / 1000)}s`);
+        try { gemini.kill(); } catch { /* ignore */ }
+        resolve(false);
+      }, timeoutMs);
+
       gemini.stdout.on('data', (data) => {
         stdout += data.toString();
       });
@@ -692,6 +704,7 @@ class GeminiProvider extends AIProvider {
       gemini.on('close', (code) => {
         if (settled) return;
         settled = true;
+        clearTimeout(availabilityTimeout);
         if (code === 0 && stdout.includes('.')) {
           logger.info(`Gemini CLI available: ${stdout.trim()}`);
           resolve(true);
@@ -704,6 +717,7 @@ class GeminiProvider extends AIProvider {
       gemini.on('error', (error) => {
         if (settled) return;
         settled = true;
+        clearTimeout(availabilityTimeout);
         logger.warn(`Gemini CLI not available: ${error.message}`);
         resolve(false);
       });

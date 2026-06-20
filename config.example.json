@@ -238,6 +238,9 @@
       "diff_args": [],
       "output_glob": "**/results.json",
       "mapping_instructions": "The tool outputs JSON with a 'findings' array and a 'summary' string. Each finding has: category (bug/style/perf), priority (high/medium/low), title, body, fix, path, start_line, end_line. Map path to file, body to description, fix to suggestion. Map priority to severity: high=critical, medium=medium, low=minor. Map confidence: high=0.9, medium=0.7, low=0.4.",
+      "availability_command": "my-review-tool --version",
+      "availability_timeout_seconds": 30,
+      "_comment_availability": "availability_command is run at startup to decide if the provider is available (defaults to 'true', i.e. always available). availability_timeout_seconds bounds that check (default 10); raise it when the command runs a slow build/compile step. Also supported on chat_providers entries.",
       "env": {},
       "installInstructions": "Install my-review-tool: pip install my-review-tool",
       "models": [
@@ -252,7 +255,7 @@
   },
 
   "chat_providers": {
-    "_comment": "Chat provider command overrides. Separate from 'providers' (AI analysis). Chat providers are: pi, claude, codex, copilot-acp, gemini-acp, opencode-acp, cursor-acp. Supports 'command', 'args' (replaces defaults), 'extra_args' (appends), 'env', 'load_skills' (Pi: false suppresses skill auto-discovery), and 'app_extensions' (Pi: false omits pair-review task extension) overrides. Codex also supports 'sandbox' ('workspace-write' or 'read-only').",
+    "_comment": "Chat provider command overrides. Separate from 'providers' (AI analysis). Chat providers are: pi, claude, codex, copilot-acp, gemini-acp, opencode-acp, cursor-acp. Supports 'command', 'args' (replaces defaults), 'extra_args' (appends), 'env', 'load_skills' (Pi: false suppresses skill auto-discovery), and 'app_extensions' (Pi: false omits pair-review task extension) overrides. Codex also supports 'sandbox' ('workspace-write' or 'read-only'). 'availability_command' overrides the startup availability probe and 'availability_timeout_seconds' bounds it (default 10; raise for slow build commands).",
     "claude": {
       "_comment": "Example: use a wrapper script for Claude chat",
       "command": "claude"

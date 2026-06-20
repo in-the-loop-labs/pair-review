@@ -858,9 +858,10 @@ class ClaudeProvider extends AIProvider {
    * Test if Claude CLI is available
    * Uses fast `--version` check instead of running a prompt.
    * Uses the command configured in the instance (respects ENV > config > default precedence)
+   * @param {number} [timeoutMs=10000] - Timeout in milliseconds for the probe
    * @returns {Promise<boolean>}
    */
-  async testAvailability() {
+  async testAvailability(timeoutMs = 10000) {
     return new Promise((resolve) => {
       // For availability test, we just need to check --version
       // Use the already-resolved command from the constructor (this.claudeCmd)
@@ -889,10 +890,10 @@ class ClaudeProvider extends AIProvider {
       const availabilityTimeout = setTimeout(() => {
         if (settled) return;
         settled = true;
-        logger.warn('Claude CLI availability check timed out after 10s');
+        logger.warn(`Claude CLI availability check timed out after ${Math.round(timeoutMs / 1000)}s`);
         try { claude.kill(); } catch { /* ignore */ }
         resolve(false);
-      }, 10000);
+      }, timeoutMs);
 
       claude.stdout.on('data', (data) => {
         stdout += data.toString();

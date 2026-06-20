@@ -17,6 +17,9 @@ const {
   getAllProvidersInfo,
   createProvider,
   testProviderAvailability,
+  resolveAvailabilityTimeoutMs,
+  secondsToTimeoutMs,
+  DEFAULT_AVAILABILITY_TIMEOUT_MS,
   applyConfigOverrides,
   getProviderConfigOverrides,
   inferModelDefaults,
@@ -69,6 +72,9 @@ module.exports = {
 
   // Utilities
   testProviderAvailability,
+  resolveAvailabilityTimeoutMs,
+  secondsToTimeoutMs,
+  DEFAULT_AVAILABILITY_TIMEOUT_MS,
 
   // Config override support
   applyConfigOverrides,

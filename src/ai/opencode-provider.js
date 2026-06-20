@@ -587,9 +587,11 @@ class OpenCodeProvider extends AIProvider {
   /**
    * Test if OpenCode CLI is available
    * Uses the command configured in the instance (respects ENV > config > default precedence)
+   * @param {number} [timeoutMs=10000] - Timeout in milliseconds for the probe.
+   *   Production passes the per-provider resolved value; the default is only hit by tests.
    * @returns {Promise<boolean>}
    */
-  async testAvailability() {
+  async testAvailability(timeoutMs = 10000) {
     return new Promise((resolve) => {
       // For availability test, we just need to check --version
       // Use the already-resolved command from the constructor (this.opencodeCmd)
@@ -613,6 +615,16 @@ class OpenCodeProvider extends AIProvider {
       let stdout = '';
       let settled = false;
 
+      // Timeout guard: if the CLI hangs, kill it and resolve false so the probe
+      // does not leak a child process.
+      const availabilityTimeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        logger.warn(`OpenCode CLI availability check timed out after ${Math.round(timeoutMs / 1000)}s`);
+        try { opencode.kill(); } catch { /* ignore */ }
+        resolve(false);
+      }, timeoutMs);
+
       opencode.stdout.on('data', (data) => {
         stdout += data.toString();
       });
@@ -620,6 +632,7 @@ class OpenCodeProvider extends AIProvider {
       opencode.on('close', (code) => {
         if (settled) return;
         settled = true;
+        clearTimeout(availabilityTimeout);
         if (code === 0) {
           logger.info(`OpenCode CLI available: ${stdout.trim()}`);
           resolve(true);
@@ -632,6 +645,7 @@ class OpenCodeProvider extends AIProvider {
       opencode.on('error', (error) => {
         if (settled) return;
         settled = true;
+        clearTimeout(availabilityTimeout);
         logger.warn(`OpenCode CLI not available: ${error.message}`);
         resolve(false);
       });

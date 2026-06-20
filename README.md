@@ -407,6 +407,8 @@ You can override provider settings and define custom models in your config file.
 | `extra_args` | Additional arguments to pass to the CLI |
 | `env` | Environment variables to set when running the CLI |
 | `installInstructions` | Custom installation instructions shown in UI |
+| `availability_timeout_seconds` | Seconds to allow for the startup availability probe before the provider is reported unavailable (default `10`). Raise it for providers whose check runs a slow build/compile step. Also supported per chat provider under `chat_providers.<id>`. |
+| `availability_command` | Command run to decide availability. Executable providers default to always-available when omitted; chat providers fall back to `<command> --version` (or, for the built-in Pi, the cached AI-provider status). Pair with `availability_timeout_seconds` when the probe runs a slow build. |
 | `models` | Array of model definitions (see below) |
 
 #### Model Configuration Fields

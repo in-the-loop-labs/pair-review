@@ -20,7 +20,10 @@ import {
   getProviderClass,
   createProvider,
   createAliasedProviderClass,
-  getTierForModel
+  getTierForModel,
+  resolveAvailabilityTimeoutMs,
+  secondsToTimeoutMs,
+  DEFAULT_AVAILABILITY_TIMEOUT_MS
 } from '../../src/ai/index.js';
 
 describe('Provider Configuration', () => {
@@ -1082,6 +1085,103 @@ describe('Provider Configuration', () => {
       expect(BaseClass.defaultTimeout).toBe(900000);
       // The alias should not have its own
       expect(Object.hasOwn(AliasClass, 'defaultTimeout')).toBe(false);
+    });
+  });
+
+  describe('availability_timeout_seconds', () => {
+    beforeEach(() => {
+      applyConfigOverrides({ providers: {} });
+    });
+
+    afterEach(() => {
+      applyConfigOverrides({ providers: {} });
+    });
+
+    it('stores availability_timeout_seconds in overrides for standard providers', () => {
+      applyConfigOverrides({
+        providers: { pi: { availability_timeout_seconds: 30 } }
+      });
+      expect(getProviderConfigOverrides('pi').availability_timeout_seconds).toBe(30);
+    });
+
+    it('stores availability_timeout_seconds in overrides for alias providers', () => {
+      applyConfigOverrides({
+        providers: {
+          'pi-custom': {
+            type: 'pi',
+            name: 'Custom Pi',
+            availability_timeout_seconds: 45,
+            models: [{ id: 'default', tier: 'balanced', default: true }]
+          }
+        }
+      });
+      expect(getProviderConfigOverrides('pi-custom').availability_timeout_seconds).toBe(45);
+    });
+
+    it('stores availability_timeout_seconds in overrides for executable providers', () => {
+      applyConfigOverrides({
+        providers: {
+          'my-tool': {
+            type: 'executable',
+            command: 'my-tool',
+            availability_timeout_seconds: 60
+          }
+        }
+      });
+      expect(getProviderConfigOverrides('my-tool').availability_timeout_seconds).toBe(60);
+    });
+
+    describe('secondsToTimeoutMs', () => {
+      it('converts a positive number of seconds to ms', () => {
+        expect(secondsToTimeoutMs(30)).toBe(30000);
+        expect(secondsToTimeoutMs(0.5)).toBe(500);
+      });
+
+      it('falls back to the default for non-positive or non-numeric values', () => {
+        for (const bad of [0, -5, NaN, Infinity, 'abc', null, undefined, {}]) {
+          expect(secondsToTimeoutMs(bad)).toBe(DEFAULT_AVAILABILITY_TIMEOUT_MS);
+        }
+      });
+
+      it('honors a custom defaultMs when the value is invalid', () => {
+        expect(secondsToTimeoutMs(0, 5000)).toBe(5000);
+        expect(secondsToTimeoutMs('nope', 5000)).toBe(5000);
+      });
+
+      it('uses the configured value even when a custom defaultMs is supplied', () => {
+        expect(secondsToTimeoutMs(12, 5000)).toBe(12000);
+      });
+    });
+
+    describe('resolveAvailabilityTimeoutMs', () => {
+      it('converts a configured positive value from seconds to ms', () => {
+        applyConfigOverrides({
+          providers: { pi: { availability_timeout_seconds: 30 } }
+        });
+        expect(resolveAvailabilityTimeoutMs('pi')).toBe(30000);
+      });
+
+      it('falls back to the default when unset', () => {
+        applyConfigOverrides({ providers: { pi: { command: '/custom/pi' } } });
+        expect(resolveAvailabilityTimeoutMs('pi')).toBe(DEFAULT_AVAILABILITY_TIMEOUT_MS);
+      });
+
+      it('falls back to the default for an unknown provider id', () => {
+        expect(resolveAvailabilityTimeoutMs('does-not-exist')).toBe(DEFAULT_AVAILABILITY_TIMEOUT_MS);
+      });
+
+      it('falls back to the default for non-positive or non-numeric values', () => {
+        for (const bad of [0, -5, NaN, 'abc', null]) {
+          applyConfigOverrides({
+            providers: { pi: { availability_timeout_seconds: bad } }
+          });
+          expect(resolveAvailabilityTimeoutMs('pi')).toBe(DEFAULT_AVAILABILITY_TIMEOUT_MS);
+        }
+      });
+
+      it('exposes 10000 as the default timeout constant', () => {
+        expect(DEFAULT_AVAILABILITY_TIMEOUT_MS).toBe(10000);
+      });
     });
   });
 });

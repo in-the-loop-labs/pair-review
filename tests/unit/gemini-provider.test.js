@@ -27,6 +27,11 @@ vi.mock('../../src/utils/logger', () => {
   };
 });
 
+// Spy on child_process.spawn BEFORE the provider is required, so the provider's
+// destructured `spawn` reference resolves to the spy. vi.mock does not intercept
+// CJS requires of Node built-in modules in vitest (see executable-provider.test.js).
+const mockSpawn = vi.spyOn(require('child_process'), 'spawn');
+
 // Import after mocks are set up
 const GeminiProvider = require('../../src/ai/gemini-provider');
 
@@ -42,6 +47,64 @@ describe('GeminiProvider', () => {
   afterEach(() => {
     // Restore original environment
     process.env = { ...originalEnv };
+  });
+
+  describe('testAvailability', () => {
+    it('kills the child and resolves false when the probe exceeds timeoutMs', async () => {
+      const { EventEmitter } = require('events');
+      vi.useFakeTimers();
+      try {
+        const child = new EventEmitter();
+        child.stdout = new EventEmitter();
+        child.kill = vi.fn();
+        mockSpawn.mockReturnValue(child);
+
+        const provider = new GeminiProvider('gemini-2.5-pro');
+        const p = provider.testAvailability(5000);
+
+        let settled = false;
+        p.then(() => { settled = true; });
+
+        // Before the configured timeout the probe is still pending.
+        vi.advanceTimersByTime(4999);
+        await Promise.resolve();
+        expect(settled).toBe(false);
+        expect(child.kill).not.toHaveBeenCalled();
+
+        // Crossing the timeout kills the child and resolves false.
+        vi.advanceTimersByTime(2);
+        expect(await p).toBe(false);
+        expect(child.kill).toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('clears the timeout when the probe succeeds', async () => {
+      const { EventEmitter } = require('events');
+      vi.useFakeTimers();
+      try {
+        const child = new EventEmitter();
+        child.stdout = new EventEmitter();
+        child.kill = vi.fn();
+        mockSpawn.mockReturnValue(child);
+
+        const provider = new GeminiProvider('gemini-2.5-pro');
+        const p = provider.testAvailability(5000);
+
+        // Gemini requires a "." in the version output to be considered available.
+        child.stdout.emit('data', Buffer.from('0.1.2\n'));
+        child.emit('close', 0);
+
+        expect(await p).toBe(true);
+
+        // The timer was cleared, so advancing past it does not kill anything.
+        vi.advanceTimersByTime(10000);
+        expect(child.kill).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   describe('static methods', () => {
