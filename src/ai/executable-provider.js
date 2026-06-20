@@ -12,7 +12,7 @@
  */
 
 const providerModule = require('./provider');
-const { AIProvider, resolveDefaultModel, inferModelDefaults } = providerModule;
+const { AIProvider, resolveDefaultModel, inferModelDefaults, secondsToTimeoutMs } = providerModule;
 const { spawn } = require('child_process');
 const { glob } = require('glob');
 const fs = require('fs').promises;
@@ -136,6 +136,10 @@ function createExecutableProviderClass(id, config) {
       this.mappingInstructions = config.mapping_instructions || '';
       this.timeout = config.timeout || 600000; // Default 10 minutes
       this.availabilityCommand = config.availability_command || 'true';
+      // Availability-probe timeout. Configured in seconds (mirrors
+      // checkout_timeout_seconds); falls back to the shared default when
+      // unset/invalid.
+      this.availabilityTimeoutMs = secondsToTimeoutMs(config.availability_timeout_seconds);
       this.extraEnv = {
         ...(config.env || {}),
         ...(configOverrides.env || {}),
@@ -454,9 +458,13 @@ function createExecutableProviderClass(id, config) {
      * Test if the external tool is available.
      * Runs the configured availability_command (defaults to 'true', i.e. always available).
      *
+     * @param {number} [timeoutMs] - Timeout in milliseconds for the probe.
+     *   Defaults to the provider's configured availability_timeout_seconds
+     *   (or 10s). Tools with slow build-based availability commands can raise
+     *   this via `availability_timeout_seconds` in their provider config.
      * @returns {Promise<boolean>}
      */
-    async testAvailability() {
+    async testAvailability(timeoutMs = this.availabilityTimeoutMs) {
       return new Promise((resolve) => {
         const command = this.availabilityCommand;
         logger.debug(`${id} availability check: ${command}`);
@@ -471,10 +479,10 @@ function createExecutableProviderClass(id, config) {
         const availabilityTimeout = setTimeout(() => {
           if (settled) return;
           settled = true;
-          logger.warn(`${id} availability check timed out after 10s`);
+          logger.warn(`${id} availability check timed out after ${Math.round(timeoutMs / 1000)}s`);
           try { child.kill(); } catch { /* ignore */ }
           resolve(false);
-        }, 10000);
+        }, timeoutMs);
 
         child.on('close', (code) => {
           if (settled) return;

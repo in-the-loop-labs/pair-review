@@ -7,7 +7,7 @@
  */
 
 const { spawn } = require('child_process');
-const { getCachedAvailability } = require('../ai');
+const { getCachedAvailability, secondsToTimeoutMs, DEFAULT_AVAILABILITY_TIMEOUT_MS } = require('../ai');
 const logger = require('../utils/logger');
 
 // Default dependencies (overridable for testing)
@@ -123,6 +123,9 @@ function getChatProvider(id) {
     if (overrides.availability_command !== undefined) {
       provider.availability_command = overrides.availability_command;
     }
+    if (overrides.availability_timeout_seconds !== undefined) {
+      provider.availability_timeout_seconds = overrides.availability_timeout_seconds;
+    }
     if (overrides.extra_args && Array.isArray(overrides.extra_args)) {
       provider.args = [...provider.args, ...overrides.extra_args];
     }
@@ -146,6 +149,9 @@ function getChatProvider(id) {
   if (overrides.provider) merged.provider = overrides.provider;
   if (overrides.availability_command !== undefined) {
     merged.availability_command = overrides.availability_command;
+  }
+  if (overrides.availability_timeout_seconds !== undefined) {
+    merged.availability_timeout_seconds = overrides.availability_timeout_seconds;
   }
   if (overrides.env) merged.env = { ...merged.env, ...overrides.env };
   if (overrides.args) {
@@ -230,9 +236,10 @@ function isCodexProvider(id) {
 /**
  * Check availability of a single chat provider.
  * Providers with `availability_command` run that command first.
- * Without an availability command, Pi delegates to the existing AI provider
- * availability cache and other providers spawn `<command> --version` to verify
- * the binary exists.
+ * Without an availability command, the built-in Pi provider (no `command`
+ * override) delegates to the existing AI provider availability cache; every
+ * other provider — including custom `type: 'pi'` providers and built-in Pi with
+ * a `command` override — spawns `<command> --version` to verify the binary exists.
  * @param {string} id - Provider ID
  * @param {Object} [_deps] - Dependency overrides for testing
  * @returns {Promise<{available: boolean, error?: string}>}
@@ -245,6 +252,12 @@ async function checkChatProviderAvailability(id, _deps) {
 
   const deps = { ...defaults, ..._deps };
 
+  // Per-provider availability-probe timeout. Configured in seconds (mirrors
+  // checkout_timeout_seconds); falls back to the shared default when
+  // unset/invalid. Build-based availability commands can raise this via
+  // `availability_timeout_seconds`.
+  const timeout = secondsToTimeoutMs(provider.availability_timeout_seconds);
+
   if (provider.availability_command) {
     return runCommandAvailabilityCheck({
       deps,
@@ -253,11 +266,18 @@ async function checkChatProviderAvailability(id, _deps) {
       displayCommand: 'availability command',
       shell: true,
       env: provider.env,
+      timeout,
     });
   }
 
-  // Pi delegates to existing AI provider availability
-  if (provider.type === 'pi') {
+  // Delegate to the AI provider's cached availability only for the built-in Pi
+  // chat provider with no command override — i.e. the same binary the AI
+  // provider already probed. The built-in `pi` definition intentionally omits
+  // `command` (PiBridge resolves its own default at runtime), so `!provider.command`
+  // cleanly distinguishes it. Custom `type: 'pi'` providers and built-in Pi
+  // overridden with a different `command` point at a different binary, so they
+  // fall through to the `<command> --version` probe below (which honors `timeout`).
+  if (provider.type === 'pi' && !provider.command) {
     const cached = getCachedAvailability('pi');
     return { available: cached?.available || false, error: cached?.error };
   }
@@ -278,6 +298,7 @@ async function checkChatProviderAvailability(id, _deps) {
     displayCommand: `${command} --version`,
     shell: useShell,
     env: provider.env,
+    timeout,
   });
 }
 
@@ -296,15 +317,15 @@ async function checkChatProviderAvailability(id, _deps) {
  * - `displayCommand` is used in error messages so user-configured shell strings
  *   do not need to be printed verbatim.
  *
- * @param {{deps: {spawn: Function}, command: string, args: string[], displayCommand: string, shell: boolean, env?: Object}} opts
+ * @param {{deps: {spawn: Function}, command: string, args: string[], displayCommand: string, shell: boolean, env?: Object, timeout?: number}} opts
  * @returns {Promise<{available: boolean, error?: string}>}
  */
-function runCommandAvailabilityCheck({ deps, command, args, displayCommand, shell, env }) {
+function runCommandAvailabilityCheck({ deps, command, args, displayCommand, shell, env, timeout = DEFAULT_AVAILABILITY_TIMEOUT_MS }) {
   return new Promise((resolve) => {
     try {
       const proc = deps.spawn(command, args, {
         stdio: ['ignore', 'ignore', 'ignore'],
-        timeout: 10000,
+        timeout,
         shell,
         env: { ...process.env, ...(env || {}) },
       });

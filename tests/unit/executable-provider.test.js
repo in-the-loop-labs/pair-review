@@ -31,24 +31,25 @@ const { mockGetProviderClass, mockCreateProvider, mockGetRegisteredProviderIds }
   mockGetRegisteredProviderIds: vi.fn(() => [])
 }));
 
-vi.mock('../../src/ai/provider', () => ({
-  AIProvider: class AIProvider {
-    constructor(model) { this.model = model; }
-  },
-  getProviderClass: mockGetProviderClass,
-  createProvider: mockCreateProvider,
-  getRegisteredProviderIds: mockGetRegisteredProviderIds,
-  // Mirror the production helper, routed through the mocked lookup fns so the
-  // existing tests that configure mockGetProviderClass /
-  // mockGetRegisteredProviderIds continue to control resolution.
-  // Note: this entry only exists because vi.mock requires us to declare every
-  // export. The actual implementation used by the source is spied on below
-  // (actualMockResolveNonExecutableProviderId) to match how getProviderClass
-  // and similar are handled.
-  resolveNonExecutableProviderId: vi.fn(() => null),
-  resolveDefaultModel: vi.fn((models) => models.find(m => m.default)?.id || models[0]?.id),
-  inferModelDefaults: vi.fn((m) => m)
-}));
+vi.mock('../../src/ai/provider', async () => {
+  // importActual loads the real module so we inherit any exports we don't
+  // explicitly override (AIProvider, resolveDefaultModel, inferModelDefaults,
+  // secondsToTimeoutMs, …). Newly added helpers come along for free and won't
+  // silently become `undefined` — destructuring a missing mock export does not
+  // throw at import, it just yields `undefined` and blows up the first time the
+  // source calls it. Spreading the real module prevents that class of drift.
+  const actual = await vi.importActual('../../src/ai/provider');
+  return {
+    ...actual,
+    // Only override the lookup fns these tests need to control. The default
+    // resolveNonExecutableProviderId is a vi.fn so the spy installed below
+    // (actualMockResolveNonExecutableProviderId) can attach an implementation.
+    getProviderClass: mockGetProviderClass,
+    createProvider: mockCreateProvider,
+    getRegisteredProviderIds: mockGetRegisteredProviderIds,
+    resolveNonExecutableProviderId: vi.fn(() => null)
+  };
+});
 
 vi.mock('../../src/utils/json-extractor', () => ({
   extractJSON: mockExtractJSON
@@ -914,6 +915,48 @@ describe('createExecutableProviderClass', () => {
       mockSpawn.mockReturnValue(child);
       const p = instance.testAvailability();
       vi.advanceTimersByTime(10001);
+      expect(await p).toBe(false);
+      expect(child.kill).toHaveBeenCalled();
+      vi.useRealTimers();
+    });
+
+    it('honors a configured availability_timeout_seconds (seconds → ms)', async () => {
+      vi.useFakeTimers();
+      const si = new (createExecutableProviderClass('slow-tool', {
+        command: 'slow-tool', availability_timeout_seconds: 30
+      }))();
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+      const p = si.testAvailability();
+
+      let settled = false;
+      p.then(() => { settled = true; });
+
+      // Past the old 10s default, but not yet at the configured 30s — still pending.
+      vi.advanceTimersByTime(29999);
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      expect(child.kill).not.toHaveBeenCalled();
+
+      // Crossing 30s times out and kills the child.
+      vi.advanceTimersByTime(2);
+      expect(await p).toBe(false);
+      expect(child.kill).toHaveBeenCalled();
+      vi.useRealTimers();
+    });
+
+    it('honors a timeoutMs argument passed by testProviderAvailability', async () => {
+      vi.useFakeTimers();
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+      // Default instance is 10s, but an explicit arg overrides it.
+      const p = instance.testAvailability(20000);
+      vi.advanceTimersByTime(10001);
+      let settled = false;
+      p.then(() => { settled = true; });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      vi.advanceTimersByTime(10000);
       expect(await p).toBe(false);
       expect(child.kill).toHaveBeenCalled();
       vi.useRealTimers();

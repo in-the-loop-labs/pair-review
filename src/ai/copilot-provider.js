@@ -439,9 +439,11 @@ class CopilotProvider extends AIProvider {
   /**
    * Test if Copilot CLI is available
    * Uses the command configured in the instance (respects ENV > config > default precedence)
+   * @param {number} [timeoutMs=10000] - Timeout in milliseconds for the probe.
+   *   Production passes the per-provider resolved value; the default is only hit by tests.
    * @returns {Promise<boolean>}
    */
-  async testAvailability() {
+  async testAvailability(timeoutMs = 10000) {
     return new Promise((resolve) => {
       // For availability test, check --version
       // Use the already-resolved command from the constructor (this.copilotCmd)
@@ -465,6 +467,16 @@ class CopilotProvider extends AIProvider {
       let stdout = '';
       let settled = false;
 
+      // Timeout guard: if the CLI hangs, kill it and resolve false so the probe
+      // does not leak a child process.
+      const availabilityTimeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        logger.warn(`Copilot CLI availability check timed out after ${Math.round(timeoutMs / 1000)}s`);
+        try { copilot.kill(); } catch { /* ignore */ }
+        resolve(false);
+      }, timeoutMs);
+
       copilot.stdout.on('data', (data) => {
         stdout += data.toString();
       });
@@ -472,6 +484,7 @@ class CopilotProvider extends AIProvider {
       copilot.on('close', (code) => {
         if (settled) return;
         settled = true;
+        clearTimeout(availabilityTimeout);
         // Copilot CLI typically outputs version info on success
         if (code === 0) {
           logger.info(`Copilot CLI available: ${stdout.trim()}`);
@@ -485,6 +498,7 @@ class CopilotProvider extends AIProvider {
       copilot.on('error', (error) => {
         if (settled) return;
         settled = true;
+        clearTimeout(availabilityTimeout);
         logger.warn(`Copilot CLI not available: ${error.message}`);
         resolve(false);
       });

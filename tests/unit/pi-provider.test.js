@@ -1286,6 +1286,34 @@ describe('PiProvider', () => {
       expect(fakeChild.kill).toHaveBeenCalled();
     });
 
+    it('should honor a custom timeoutMs argument for the hang guard', async () => {
+      vi.useFakeTimers();
+      const { EventEmitter } = require('events');
+
+      const fakeChild = new EventEmitter();
+      fakeChild.stdout = new EventEmitter();
+      fakeChild.kill = vi.fn();
+
+      mockSpawn.mockReturnValueOnce(fakeChild);
+
+      const provider = new PiProvider('test-model');
+      const resultPromise = provider.testAvailability(20000);
+
+      // Past the 10s default but before the 20s argument — still pending.
+      vi.advanceTimersByTime(10001);
+      let settled = false;
+      resultPromise.then(() => { settled = true; });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      expect(fakeChild.kill).not.toHaveBeenCalled();
+
+      // Crossing 20s times out and kills the child.
+      vi.advanceTimersByTime(10000);
+      const result = await resultPromise;
+      expect(result).toBe(false);
+      expect(fakeChild.kill).toHaveBeenCalled();
+    });
+
     it('should not kill the process when CLI exits before timeout', async () => {
       vi.useFakeTimers();
       const { EventEmitter } = require('events');

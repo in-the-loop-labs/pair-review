@@ -411,6 +411,47 @@ describe('chat-providers', () => {
       expect(result).toEqual({ available: false, error: undefined });
     });
 
+    it('does not consult the pi cache for a custom type:pi provider with its own command', async () => {
+      // A custom type:'pi' provider points at a different binary than the
+      // AI-provider's pi, so the cached AI-provider status would be a wrong
+      // answer. It must run its own probe and respect its configured timeout.
+      applyConfigOverrides({
+        'river': { type: 'pi', command: '/bin/false', availability_timeout_seconds: 5 },
+      });
+      mockGetCachedAvailability.mockReturnValue({ available: true });
+
+      const { EventEmitter } = require('events');
+      const fakeProc = new EventEmitter();
+      const mockSpawn = vi.fn().mockReturnValue(fakeProc);
+
+      const promise = checkChatProviderAvailability('river', { spawn: mockSpawn });
+      fakeProc.emit('close', 1);
+
+      const result = await promise;
+      expect(result.available).toBe(false);
+      expect(mockGetCachedAvailability).not.toHaveBeenCalled();
+      expect(mockSpawn).toHaveBeenCalledWith(
+        '/bin/false', ['--version'], expect.objectContaining({ timeout: 5000 })
+      );
+    });
+
+    it('does not consult the pi cache when built-in pi is overridden with a command', async () => {
+      applyConfigOverrides({ 'pi': { command: '/opt/pi' } });
+      mockGetCachedAvailability.mockReturnValue({ available: true });
+
+      const { EventEmitter } = require('events');
+      const fakeProc = new EventEmitter();
+      const mockSpawn = vi.fn().mockReturnValue(fakeProc);
+
+      const promise = checkChatProviderAvailability('pi', { spawn: mockSpawn });
+      fakeProc.emit('close', 0);
+
+      const result = await promise;
+      expect(result).toEqual({ available: true });
+      expect(mockGetCachedAvailability).not.toHaveBeenCalled();
+      expect(mockSpawn).toHaveBeenCalledWith('/opt/pi', ['--version'], expect.any(Object));
+    });
+
     it('should return unavailable for unknown provider', async () => {
       const result = await checkChatProviderAvailability('unknown');
       expect(result).toEqual({ available: false, error: 'Unknown provider: unknown' });
@@ -591,6 +632,71 @@ describe('chat-providers', () => {
       expect(result.error).toContain('availability command timed out or was terminated (SIGTERM)');
       expect(result.error).not.toContain('sleep 30');
       expect(mockSpawn).toHaveBeenCalledWith('sleep 30', [], expect.objectContaining({ timeout: 10000 }));
+    });
+
+    it('passes availability_timeout_seconds through to getChatProvider', () => {
+      applyConfigOverrides({
+        'custom-chat': { command: 'custom-chat', availability_timeout_seconds: 45 },
+      });
+      expect(getChatProvider('custom-chat').availability_timeout_seconds).toBe(45);
+    });
+
+    it('uses configured availability_timeout_seconds for the availability_command spawn timeout', async () => {
+      applyConfigOverrides({
+        'custom-chat': {
+          command: 'custom-chat',
+          availability_command: 'slow-build',
+          availability_timeout_seconds: 30,
+        },
+      });
+
+      const { EventEmitter } = require('events');
+      const fakeProc = new EventEmitter();
+      const mockSpawn = vi.fn().mockReturnValue(fakeProc);
+
+      const promise = checkChatProviderAvailability('custom-chat', { spawn: mockSpawn });
+      fakeProc.emit('close', 0);
+
+      const result = await promise;
+      expect(result).toEqual({ available: true });
+      expect(mockSpawn).toHaveBeenCalledWith('slow-build', [], expect.objectContaining({ timeout: 30000 }));
+    });
+
+    it('uses configured availability_timeout_seconds for the --version fallback spawn timeout', async () => {
+      applyConfigOverrides({
+        'custom-chat': { command: 'custom-chat', availability_timeout_seconds: 25 },
+      });
+
+      const { EventEmitter } = require('events');
+      const fakeProc = new EventEmitter();
+      const mockSpawn = vi.fn().mockReturnValue(fakeProc);
+
+      const promise = checkChatProviderAvailability('custom-chat', { spawn: mockSpawn });
+      fakeProc.emit('close', 0);
+
+      const result = await promise;
+      expect(result).toEqual({ available: true });
+      expect(mockSpawn).toHaveBeenCalledWith('custom-chat', ['--version'], expect.objectContaining({ timeout: 25000 }));
+    });
+
+    it('falls back to 10s when availability_timeout_seconds is invalid', async () => {
+      applyConfigOverrides({
+        'custom-chat': {
+          command: 'custom-chat',
+          availability_command: 'true',
+          availability_timeout_seconds: 0,
+        },
+      });
+
+      const { EventEmitter } = require('events');
+      const fakeProc = new EventEmitter();
+      const mockSpawn = vi.fn().mockReturnValue(fakeProc);
+
+      const promise = checkChatProviderAvailability('custom-chat', { spawn: mockSpawn });
+      fakeProc.emit('close', 0);
+
+      await promise;
+      expect(mockSpawn).toHaveBeenCalledWith('true', [], expect.objectContaining({ timeout: 10000 }));
     });
 
     it('should merge provider.env over process.env when running availability_command', async () => {
