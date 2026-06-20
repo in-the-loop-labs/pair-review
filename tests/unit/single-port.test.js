@@ -188,8 +188,23 @@ describe('buildDelegationUrl', () => {
   });
 
   it('encodes special characters in local path', () => {
-    const url = buildDelegationUrl(7247, 'local', { localPath: '/path with spaces/dir' });
-    expect(url).toContain(encodeURIComponent('/path with spaces/dir'));
+    const urlSpaces = buildDelegationUrl(7247, 'local', { localPath: '/path with spaces/dir' });
+    expect(urlSpaces).toBe('http://localhost:7247/local?path=%2Fpath%20with%20spaces%2Fdir');
+  });
+
+  it('appends council to PR URL after analyze', () => {
+    const url = buildDelegationUrl(7247, 'pr', { owner: 'acme', repo: 'widgets', number: 42, analyze: true, councilId: 'abc-123' });
+    expect(url).toBe('http://localhost:7247/pr/acme/widgets/42?analyze=true&council=abc-123');
+  });
+
+  it('appends council to PR URL even without analyze', () => {
+    const url = buildDelegationUrl(7247, 'pr', { owner: 'acme', repo: 'widgets', number: 42, councilId: 'abc-123' });
+    expect(url).toBe('http://localhost:7247/pr/acme/widgets/42?council=abc-123');
+  });
+
+  it('appends council to local URL after analyze', () => {
+    const url = buildDelegationUrl(7247, 'local', { localPath: '/tmp/project', analyze: true, councilId: 'abc-123' });
+    expect(url).toBe('http://localhost:7247/local?path=%2Ftmp%2Fproject&analyze=true&council=abc-123');
   });
 
   it('builds server landing URL', () => {
@@ -326,6 +341,40 @@ describe('attemptDelegation', () => {
     expect(deps.open).toHaveBeenCalledWith(
       expect.stringContaining('&analyze=true')
     );
+  });
+
+  it('appends council to PR delegation URL when a resolved councilId is provided', async () => {
+    const deps = createMockDeps();
+    await attemptDelegation(baseConfig, { council: 'my-council' }, ['42'], deps, { councilId: 'abc-123' });
+    expect(deps.open).toHaveBeenCalledWith(
+      expect.stringContaining('/pr/test-owner/test-repo/42?analyze=true&council=abc-123')
+    );
+  });
+
+  it('appends council to local delegation URL when a resolved councilId is provided', async () => {
+    const deps = createMockDeps();
+    await attemptDelegation(
+      baseConfig,
+      { local: true, localPath: '/tmp/project', council: 'my-council' },
+      [],
+      deps,
+      { councilId: 'abc-123' }
+    );
+    const url = deps.open.mock.calls[0][0];
+    expect(url).toContain('&analyze=true');
+    expect(url).toContain('&council=abc-123');
+  });
+
+  it('treats flags.council as implying analyze=true even without flags.ai', async () => {
+    const deps = createMockDeps();
+    await attemptDelegation(baseConfig, { council: 'my-council' }, ['42'], deps, { councilId: 'abc-123' });
+    expect(deps.open).toHaveBeenCalledWith(expect.stringContaining('analyze=true'));
+  });
+
+  it('does not append council when no councilId is resolved', async () => {
+    const deps = createMockDeps();
+    await attemptDelegation(baseConfig, { ai: true }, ['42'], deps);
+    expect(deps.open).toHaveBeenCalledWith(expect.not.stringContaining('council='));
   });
 
   it('notifies version when current is newer than running server', async () => {

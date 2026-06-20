@@ -1,7 +1,7 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 const fs = require('fs');
-const { loadConfig, getConfigDir, getGitHubToken, resolveHostBinding, showWelcomeMessage, resolveDbName, resolveRepoOptions, resolvePoolConfig, getRepoResetScript, resolveLoadSkills } = require('./config');
-const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository, ReviewRepository, RepoSettingsRepository, GitHubReviewRepository, WorktreePoolRepository } = require('./database');
+const { loadConfig, getConfigDir, getGitHubToken, resolveHostBinding, showWelcomeMessage, resolveDbName, resolveRepoOptions, resolvePoolConfig, getRepoResetScript, resolveLoadSkills, buildCouncilProviderOverrides } = require('./config');
+const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository, ReviewRepository, RepoSettingsRepository, GitHubReviewRepository, WorktreePoolRepository, CouncilRepository } = require('./database');
 const { PRArgumentParser } = require('./github/parser');
 const { GitHubClient } = require('./github/client');
 const { GitWorktreeManager } = require('./git/worktree');
@@ -11,6 +11,9 @@ const { startServer } = require('./server');
 const Analyzer = require('./ai/analyzer');
 const { applyConfigOverrides } = require('./ai');
 const { handleLocalReview, findMainGitRoot } = require('./local-review');
+const { resolveCouncilHandle, getCouncilLastUsedRepos, shortId } = require('./councils/resolve-council');
+const { runHeadlessCouncilAnalysis } = require('./councils/headless-council');
+const { normalizeCouncilConfig, validateCouncilConfig } = require('./routes/councils');
 const { storePRData, registerRepositoryLocation, findRepositoryPath } = require('./setup/pr-setup');
 const { fireReviewStartedHook } = require('./hooks/payloads');
 const { normalizeRepository, resolveRenamedFile, resolveRenamedFileOld } = require('./utils/paths');
@@ -164,6 +167,9 @@ OPTIONS:
                                   opus-4.6-high, opus-4.6-1m, sonnet-4.6
                             (opus is Opus 4.7 XHigh, the default)
                             or use provider-specific models with Gemini/Codex
+    --council <handle>      Run analysis with a saved council (multi-voice). Handle is a
+                            council name, name-slug, or id (prefix). See --list-councils.
+    --list-councils         List saved councils (handles to use with --council) and exit
     --use-checkout          Use current directory instead of creating worktree
                             (automatic in GitHub Actions)
     --yolo                  Allow AI providers full system access (skip read-only
@@ -179,6 +185,8 @@ EXAMPLES:
     pair-review --local                # Review uncommitted local changes
     pair-review 123 --ai               # Auto-run AI analysis
     pair-review --ai-review            # CI mode: auto-detect PR, submit review
+    pair-review 123 --ai-draft --council security-review  # Headless council draft
+    pair-review --list-councils        # List saved councils and their handles
     pair-review --register                     # Register URL scheme handler
     pair-review --register --command "node bin/pair-review.js"  # Custom command
 
@@ -205,6 +213,74 @@ CONFIGURATION:
 MORE INFO:
     https://github.com/in-the-loop-labs/pair-review
 `);
+}
+
+/**
+ * Print the list of saved councils (handles, names, types, and "last used"
+ * metadata) as an aligned table, then exit guidance. Used by --list-councils.
+ *
+ * @param {Object} db - Database instance
+ */
+async function printCouncilList(db) {
+  const councils = await new CouncilRepository(db).list();
+
+  if (!councils || councils.length === 0) {
+    console.log('No councils found. Create one in the web UI under Analysis settings.');
+    return;
+  }
+
+  const repoMap = await getCouncilLastUsedRepos(db);
+
+  const rows = councils.map(c => {
+    const entry = repoMap.get(c.id);
+    const lastTs = entry?.last_started || c.last_used_at;
+    const lastUsed = lastTs ? String(lastTs).slice(0, 10) : 'never';
+    let lastUsedWith = '—';
+    if (entry) {
+      lastUsedWith = `${entry.repository}${entry.pr_number ? `#${entry.pr_number}` : ''}`;
+    }
+    return {
+      handle: shortId(c.id),
+      name: c.name || '',
+      type: c.type || '',
+      lastUsed,
+      lastUsedWith
+    };
+  });
+
+  const headers = {
+    handle: 'HANDLE',
+    name: 'NAME',
+    type: 'TYPE',
+    lastUsed: 'LAST USED',
+    lastUsedWith: 'LAST USED WITH'
+  };
+
+  const widths = {};
+  for (const key of Object.keys(headers)) {
+    widths[key] = Math.max(
+      headers[key].length,
+      ...rows.map(r => String(r[key]).length)
+    );
+  }
+
+  const formatRow = r =>
+    [
+      String(r.handle).padEnd(widths.handle),
+      String(r.name).padEnd(widths.name),
+      String(r.type).padEnd(widths.type),
+      String(r.lastUsed).padEnd(widths.lastUsed),
+      String(r.lastUsedWith).padEnd(widths.lastUsedWith)
+    ].join('  ');
+
+  console.log(formatRow(headers));
+  for (const r of rows) {
+    console.log(formatRow(r));
+  }
+
+  console.log('');
+  console.log('Pass a handle with --council, e.g.:');
+  console.log('  pair-review <pr> --ai-draft --council ' + shortId(councils[0].id));
 }
 
 /**
@@ -279,6 +355,8 @@ const KNOWN_FLAGS = new Set([
   '-l', '--local',
   '--mcp',
   '--model',
+  '--council',
+  '--list-councils',
   '--register',
   '--unregister',
   '--command',
@@ -328,6 +406,16 @@ function parseArgs(args) {
       } else {
         throw new Error('--model flag requires a model name (e.g., --model sonnet)');
       }
+    } else if (arg === '--council') {
+      // Next argument is the council handle (name, name-slug, or id prefix)
+      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+        flags.council = args[i + 1];
+        i++; // Skip next argument since we consumed it
+      } else {
+        throw new Error('--council flag requires a council handle (e.g., --council my-council)');
+      }
+    } else if (arg === '--list-councils') {
+      flags.listCouncils = true;
     } else if (arg === '-l' || arg === '--local') {
       // -l/--local flag is always a boolean
       flags.local = true;
@@ -497,26 +585,84 @@ AI PROVIDERS:
       process.env.PAIR_REVIEW_YOLO = 'true';
     }
 
+    // --model is ignored when --council is set: council voices use their own
+    // per-voice models, so a top-level --model has no effect on the analysis.
+    if (flags.council && flags.model) {
+      console.warn('Warning: --model is ignored when --council is set; council voices use their own per-voice models.');
+    }
+
     // Apply provider config overrides (including yolo) for all code paths
     // (interactive, headless, local). server.js calls this independently on
     // startup, but headless paths (--ai-draft, --ai-review) never start the
     // server, so we must also apply here.
     applyConfigOverrides(config);
 
+    // --list-councils: print the saved councils and exit. Needs the database
+    // but no server, no PR/local context, and no single-port delegation.
+    if (flags.listCouncils) {
+      const listDb = await initializeDatabase(resolveDbName(config));
+      try {
+        await printCouncilList(listDb);
+      } finally {
+        try { listDb.close(); } catch { /* ignore */ }
+      }
+      process.exit(0);
+    }
+
+    // --council requires something to analyze: a PR identifier or --local.
+    // Reject early (before single-port delegation) so a contextless `--council`
+    // fails fast with a clear message instead of silently delegating to — or
+    // starting — the generic landing page with the council ignored.
+    //
+    // Exception: in GitHub Actions, `--ai-review --council <handle>` is a
+    // documented headless flow where the PR is auto-detected from the
+    // environment further below (detectPRFromGitHubEnvironment). At this point
+    // prArgs is still empty, so guarding on it alone would reject that valid CI
+    // invocation. Defer to the later `--ai-review` PR check, which reports a
+    // clear error if no PR can be detected.
+    if (
+      flags.council &&
+      prArgs.length === 0 &&
+      !flags.local &&
+      !(flags.aiReview && process.env.GITHUB_ACTIONS === 'true')
+    ) {
+      throw new Error('--council flag requires a pull request number/URL or --local to run analysis');
+    }
+
+    // Resolve the council handle FAIL-FAST, before single-port delegation, so
+    // that (a) a bad handle errors out for every mode (interactive, headless,
+    // and delegated) rather than only on a cold start, and (b) the resolved id
+    // can be threaded into the delegated URL — the browser-side council
+    // auto-analysis is keyed on the `council` query param. Resolution needs the
+    // DB, so when --council is set we open the shared connection now and the
+    // downstream handlers reuse it (they re-resolve for their own purposes;
+    // that is a cheap in-memory match against the same connection).
+    let cliCouncil = null;
+    if (flags.council) {
+      db = await initializeDatabase(resolveDbName(config));
+      cliCouncil = await resolveCouncilHandle(db, flags.council);
+    }
+
     // Single-port delegation: if a pair-review server is already running on the
     // configured port, delegate to it (open browser URL) and exit immediately.
     // Skipped for: headless modes (no browser), single_port: false (dev mode).
     if (config.single_port !== false && !flags.aiReview && !flags.aiDraft) {
-      const delegated = await attemptDelegation(config, flags, prArgs);
+      const delegated = await attemptDelegation(config, flags, prArgs, undefined, {
+        councilId: cliCouncil?.id || null
+      });
       if (delegated) {
+        if (db) { try { db.close(); } catch { /* ignore */ } }
         process.exit(0);
       }
       // Not delegated — no server running, proceed to start one
     }
 
-    // Initialize database
-    console.log('Initializing database...');
-    db = await initializeDatabase(resolveDbName(config));
+    // Initialize database (reuse the connection already opened for council
+    // resolution above, if any).
+    if (!db) {
+      console.log('Initializing database...');
+      db = await initializeDatabase(resolveDbName(config));
+    }
 
     // Migrate existing worktrees to database (if any)
     const path = require('path');
@@ -649,9 +795,18 @@ async function handlePullRequest(args, config, db, flags = {}, poolLifecycle = n
       await registerRepositoryLocation(db, currentDir, prInfo.owner, prInfo.repo);
     }
 
-    // Set model override if provided via CLI flag
-    if (flags.model) {
+    // Set model override if provided via CLI flag. Skipped when --council is
+    // set: council voices carry their own per-voice models.
+    if (flags.model && !flags.council) {
       process.env.PAIR_REVIEW_MODEL = flags.model;
+    }
+
+    // Resolve the council handle FAIL-FAST before starting the server, so a bad
+    // handle surfaces as a clean error (caught below) instead of after the
+    // browser has opened.
+    let councilSelection = null;
+    if (flags.council) {
+      councilSelection = await resolveCouncilHandle(db, flags.council);
     }
 
     // Start server and open browser to setup page
@@ -663,9 +818,9 @@ async function handlePullRequest(args, config, db, flags = {}, poolLifecycle = n
     startPoolBackgroundFetches(db, config);
 
     let url = `http://localhost:${port}/pr/${prInfo.owner}/${prInfo.repo}/${prInfo.number}`;
-    if (flags.ai) {
-      url += '?analyze=true';
-    }
+    const shouldAnalyze = flags.ai || flags.council;
+    if (shouldAnalyze) url += '?analyze=true';
+    if (councilSelection) url += `&council=${councilSelection.id}`;
 
     console.log(`Opening browser to: ${url}`);
     await open(url);
@@ -741,6 +896,21 @@ async function performHeadlessReview(args, config, db, flags, options, externalP
     // owner/repo before falling back to GitHub/Graphite parsers.
     const parser = new PRArgumentParser(config);
     prInfo = await parser.parsePRArguments(args);
+
+    // Resolve + validate the council FAIL-FAST, before any worktree/network
+    // work, so a bad handle or invalid config surfaces immediately.
+    let councilSelection = null;
+    if (flags.council) {
+      const council = await resolveCouncilHandle(db, flags.council);
+      const configType = council.type || 'advanced';
+      const councilConfig = normalizeCouncilConfig(council.config, configType);
+      // validateCouncilConfig returns an error string, or null when valid.
+      const validationError = validateCouncilConfig(councilConfig, configType);
+      if (validationError) {
+        throw new Error(`Invalid council "${council.name}": ${validationError}`);
+      }
+      councilSelection = { council, configType, councilConfig };
+    }
 
     // Resolve host binding for the target repo (handles alt-host).
     // Prefer `bindingRepository` (from url_pattern match) over the raw
@@ -972,13 +1142,11 @@ async function performHeadlessReview(args, config, db, flags, options, externalP
     const globalInstructions = config.globalInstructions || null;
 
     // Run AI analysis
-    console.log('Running AI analysis (all 3 levels)...');
     const cliProvider = repoSettings?.default_provider || config.default_provider || config.provider || 'claude';
     const model = flags.model || process.env.PAIR_REVIEW_MODEL || repoSettings?.default_model || config.default_model || config.model || 'opus';
     const providerLoadSkills = config.providers?.[cliProvider]?.load_skills;
     const loadSkills = resolveLoadSkills(config, repository, repoSettings, providerLoadSkills);
     const providerOverrides = { load_skills: loadSkills };
-    const analyzer = new Analyzer(db, model, cliProvider, providerOverrides);
 
     let analysisSummary = null;
     try {
@@ -986,7 +1154,33 @@ async function performHeadlessReview(args, config, db, flags, options, externalP
       // githubClient is forwarded so the analyzer can pre-fetch existing PR review
       // comments when callers opt in via excludePrevious.github.
       logger.debug(`analyzer githubClient wired for ${prInfo.owner}/${prInfo.repo}#${prInfo.number}`);
-      const analysisResult = await analyzer.analyzeAllLevels(review.id, worktreePath, storedPRData, null, { globalInstructions, repoInstructions }, null, { githubClient });
+      let analysisResult;
+      if (councilSelection) {
+        console.log(`Running council analysis: ${councilSelection.council.name} (${councilSelection.configType})...`);
+        // Council voices can span multiple providers, so resolve a per-provider
+        // load_skills map (tier-3 resolution per provider) the same way every
+        // other council invoker does (pr.js / local.js / stack-analysis.js).
+        // Passing only the shared `providerOverrides` would collapse every voice
+        // onto the default provider's load_skills — see buildVoiceContext.
+        const { providerOverrides: councilProviderOverrides, providerOverridesMap: councilProviderOverridesMap } =
+          buildCouncilProviderOverrides(config, repository, repoSettings);
+        const analyzer = new Analyzer(db, 'council', 'council', councilProviderOverrides, councilProviderOverridesMap);
+        analysisResult = await runHeadlessCouncilAnalysis(db, {
+          analyzer,
+          reviewId: review.id,
+          council: councilSelection.council,
+          configType: councilSelection.configType,
+          councilConfig: councilSelection.councilConfig,
+          worktreePath,
+          prMetadata: storedPRData,
+          instructions: { globalInstructions, repoInstructions, requestInstructions: null },
+          githubClient
+        });
+      } else {
+        console.log('Running AI analysis (all 3 levels)...');
+        const analyzer = new Analyzer(db, model, cliProvider, providerOverrides);
+        analysisResult = await analyzer.analyzeAllLevels(review.id, worktreePath, storedPRData, null, { globalInstructions, repoInstructions }, null, { githubClient });
+      }
       analysisSummary = analysisResult.summary;
       console.log('AI analysis completed successfully');
     } catch (analysisError) {
@@ -1402,4 +1596,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { main, parseArgs, detectPRFromGitHubEnvironment };
+module.exports = { main, parseArgs, detectPRFromGitHubEnvironment, printCouncilList };

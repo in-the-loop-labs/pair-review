@@ -34,6 +34,33 @@ describe('main.js parseArgs', () => {
       expect(() => parseArgs(['123', '--model', '--ai'])).toThrow('--model flag requires a model name');
     });
 
+    it('should parse --council flag with value', () => {
+      const result = parseArgs(['123', '--council', 'my-council']);
+      expect(result.flags.council).toBe('my-council');
+      expect(result.prArgs).toEqual(['123']);
+    });
+
+    it('should throw error when --council flag has no value', () => {
+      expect(() => parseArgs(['123', '--council'])).toThrow('--council flag requires a council handle');
+    });
+
+    it('should throw error when --council flag is followed by another flag', () => {
+      expect(() => parseArgs(['123', '--council', '--ai'])).toThrow('--council flag requires a council handle');
+    });
+
+    it('should parse --list-councils flag', () => {
+      const result = parseArgs(['--list-councils']);
+      expect(result.flags.listCouncils).toBe(true);
+      expect(result.prArgs).toEqual([]);
+    });
+
+    it('should parse --ai-draft together with --council', () => {
+      const result = parseArgs(['123', '--ai-draft', '--council', 'x']);
+      expect(result.flags.aiDraft).toBe(true);
+      expect(result.flags.council).toBe('x');
+      expect(result.prArgs).toEqual(['123']);
+    });
+
     it('should parse --local flag without path', () => {
       const result = parseArgs(['--local']);
       expect(result.flags.local).toBe(true);

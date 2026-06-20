@@ -638,6 +638,44 @@ class PRManager {
     const defaultTab = repoSettings?.default_tab || 'single';
     const councilId = repoSettings?.default_council_id || reviewSettings?.last_council_id || null;
 
+    // A `?council=<id>` URL param (set by the CLI when opening the browser) takes
+    // highest priority for council selection. When present we force the council
+    // branch regardless of default_tab/settings, and derive configType from the
+    // council's own type ('council' or 'advanced') rather than the repo default.
+    const urlSearch = (typeof window !== 'undefined' && window.location && window.location.search) || '';
+    const urlCouncilId = new URLSearchParams(urlSearch).get('council');
+    if (urlCouncilId) {
+      let councilConfig = null;
+      let councilName = null;
+      let councilType = null;
+      try {
+        const resp = await fetch(`/api/councils/${urlCouncilId}`);
+        if (resp.ok) {
+          const data = await resp.json();
+          councilConfig = data.council?.config || null;
+          councilName = data.council?.name || null;
+          councilType = data.council?.type || null;
+        } else {
+          console.warn(`Failed to fetch council "${urlCouncilId}" from URL param (status ${resp.status}); falling back to default analysis config`);
+        }
+      } catch (e) {
+        console.warn('Failed to fetch council config for URL council param:', e);
+      }
+
+      // Only honor the URL council if we successfully fetched its config.
+      // Otherwise fall through to the existing default-selection logic.
+      if (councilConfig) {
+        return {
+          isCouncil: true,
+          councilId: urlCouncilId,
+          councilConfig,
+          councilName,
+          configType: councilType || 'advanced',
+          customInstructions: null
+        };
+      }
+    }
+
     if ((defaultTab === 'council' || defaultTab === 'advanced') && councilId) {
       // Fetch the full council config so the progress modal can render correctly
       let councilConfig = null;
@@ -763,6 +801,7 @@ class PRManager {
           const cleanUrl = new URL(window.location);
           cleanUrl.searchParams.delete('analyze');
           cleanUrl.searchParams.delete('analysisConfigId');
+          cleanUrl.searchParams.delete('council');
           history.replaceState(null, '', cleanUrl);
         }
       }
@@ -7069,22 +7108,42 @@ class PRManager {
   }
 
   /**
+   * Build the worktree-not-found recovery URL. When the user arrived via
+   * auto-analyze (?analyze=true), the reload link preserves the auto-analyze
+   * state so analysis re-triggers after worktree setup. Both the
+   * `analysisConfigId` and `council` params are carried through, since
+   * `_buildDefaultAnalysisConfig()` treats `?council=<id>` as the
+   * highest-priority analysis source — dropping it would silently fall back to
+   * the repo/default analysis configuration on retry.
+   * @param {string} owner - Repository owner
+   * @param {string} repo - Repository name
+   * @param {number} number - PR number
+   * @returns {string} The recovery URL (unescaped)
+   */
+  _buildWorktreeRecoveryUrl(owner, repo, number) {
+    let setupUrl = `/pr/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${encodeURIComponent(number)}`;
+    if (this._autoAnalyzeRequested) {
+      const currentParams = new URLSearchParams(window.location.search);
+      const params = new URLSearchParams({ analyze: 'true' });
+      const analysisConfigId = currentParams.get('analysisConfigId');
+      const councilId = currentParams.get('council');
+      if (analysisConfigId) params.set('analysisConfigId', analysisConfigId);
+      if (councilId) params.set('council', councilId);
+      setupUrl += `?${params.toString()}`;
+    }
+    return setupUrl;
+  }
+
+  /**
    * Show an error when the worktree is not found during analysis.
-   * Displays a helpful message with a reload link. If the user arrived
-   * via auto-analyze (?analyze=true), the reload link preserves that
-   * parameter so analysis re-triggers after setup.
+   * Displays a helpful message with a reload link that preserves any
+   * auto-analyze state (see _buildWorktreeRecoveryUrl).
    * @param {string} owner - Repository owner
    * @param {string} repo - Repository name
    * @param {number} number - PR number
    */
   showWorktreeNotFoundError(owner, repo, number) {
-    let setupUrl = `/pr/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${encodeURIComponent(number)}`;
-    if (this._autoAnalyzeRequested) {
-      const params = new URLSearchParams({ analyze: 'true' });
-      const analysisConfigId = new URLSearchParams(window.location.search).get('analysisConfigId');
-      if (analysisConfigId) params.set('analysisConfigId', analysisConfigId);
-      setupUrl += `?${params.toString()}`;
-    }
+    const setupUrl = this._buildWorktreeRecoveryUrl(owner, repo, number);
     const container = document.getElementById('pr-container');
     if (container) {
       container.innerHTML = `

@@ -86,6 +86,7 @@ class LocalManager {
       } finally {
         const cleanUrl = new URL(window.location);
         cleanUrl.searchParams.delete('analyze');
+        cleanUrl.searchParams.delete('council');
         history.replaceState(null, '', cleanUrl);
       }
     }
