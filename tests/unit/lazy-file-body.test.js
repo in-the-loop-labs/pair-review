@@ -142,6 +142,40 @@ describe('PRManager.ensureFileBodyRendered', () => {
     expect(m.renderPatch).not.toHaveBeenCalled();
   });
 
+  it('captures the EOF-gap validation promise on the entry when a gap is pending', async () => {
+    // Line-anchoring callers (expandForSuggestion) await this promise so the
+    // trailing EOF gap's sentinel coords are resolved before findMatchingGap.
+    const m = makeManager();
+    m.validatePendingEofGaps = vi.fn().mockResolvedValue();
+    // makeManager stubs renderPatch as a no-op; append a pending EOF gap row so
+    // _renderFileBodyNow's post-render validation kicks in.
+    m.renderPatch = vi.fn((tbody) => {
+      const gapRow = document.createElement('tr');
+      gapRow.className = 'context-expand-row';
+      gapRow.dataset.pendingEofValidation = 'true';
+      tbody.appendChild(gapRow);
+    });
+
+    m.renderFileDiff({ file: 'a.js', patch: '@@ -1 +1 @@\n+x\n' });
+    await m.ensureFileBodyRendered('a.js');
+
+    const entry = m._lazyFileBodies.get('a.js');
+    expect(m.validatePendingEofGaps).toHaveBeenCalledWith(entry.fileBody);
+    expect(entry.eofValidationPromise).toBeInstanceOf(Promise);
+  });
+
+  it('leaves eofValidationPromise unset when there is no pending EOF gap', async () => {
+    const m = makeManager();
+    m.validatePendingEofGaps = vi.fn().mockResolvedValue();
+    // Default no-op renderPatch appends no gap rows.
+    m.renderFileDiff({ file: 'a.js', patch: '@@ -1 +1 @@\n+x\n' });
+    await m.ensureFileBodyRendered('a.js');
+
+    const entry = m._lazyFileBodies.get('a.js');
+    expect(m.validatePendingEofGaps).not.toHaveBeenCalled();
+    expect(entry.eofValidationPromise).toBeUndefined();
+  });
+
   it('skips hunk-anchor registration for a body from a superseded render', async () => {
     const m = makeManager();
     m.renderFileDiff({ file: 'a.js', patch: '@@ -1 +1 @@\n+x\n' });

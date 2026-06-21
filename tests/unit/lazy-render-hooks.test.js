@@ -54,6 +54,47 @@ describe('PRManager.expandForSuggestion force-render', () => {
     // No matching gap → returns false (the line wasn't in a collapsed gap).
     expect(result).toBe(false);
   });
+
+  it('awaits the pending EOF-gap validation before matching gaps', async () => {
+    // Regression: with lazy rendering, _renderFileBodyNow fires
+    // validatePendingEofGaps() fire-and-forget. Until it resolves, the trailing
+    // EOF gap still carries EOF_SENTINEL coords, so findMatchingGap() can never
+    // match a real target line and a suggestion on a trailing unchanged line
+    // silently fails to expand/anchor. expandForSuggestion must await that
+    // in-flight validation before matching.
+    const m = Object.create(PRManager.prototype);
+    const wrapper = document.createElement('div');
+    wrapper.className = 'd2h-file-wrapper';
+    wrapper.dataset.fileName = 'a.js';
+    document.body.appendChild(wrapper);
+
+    m.findFileElement = vi.fn(() => wrapper);
+    m.ensureFileBodyRendered = vi.fn(async () => {});
+
+    const order = [];
+    let resolveValidation;
+    const eofValidationPromise = new Promise((resolve) => {
+      resolveValidation = () => { order.push('eof-validated'); resolve(); };
+    });
+    m._lazyFileBodies = new Map([['a.js', { eofValidationPromise }]]);
+
+    // Capture-at-call: expandForSuggestion destructures findMatchingGap from
+    // window.GapCoordinates at entry, so install the ordering spy beforehand.
+    window.GapCoordinates.findMatchingGap = vi.fn(() => { order.push('match'); return null; });
+
+    const pending = m.expandForSuggestion('a.js', 100, 100, 'RIGHT');
+
+    // Flush microtasks: the gap match must NOT run while EOF validation is
+    // still pending. This is the guard that would fail before the fix.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(window.GapCoordinates.findMatchingGap).not.toHaveBeenCalled();
+
+    resolveValidation();
+    await pending;
+
+    // Validation resolved before the gap was matched.
+    expect(order).toEqual(['eof-validated', 'match']);
+  });
 });
 
 describe('SuggestionManager.displayAISuggestions force-render', () => {
