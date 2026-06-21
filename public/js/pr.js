@@ -3745,7 +3745,13 @@ class PRManager {
       // /file-content fetches) entirely when this body has none. The selector
       // mirrors the one validatePendingEofGaps scans for.
       if (entry.fileBody.querySelector('tr.context-expand-row[data-pending-eof-validation="true"]')) {
-        this.validatePendingEofGaps(entry.fileBody);
+        // Keep the in-flight promise on the entry. Until it resolves, the
+        // trailing EOF gap still carries EOF_SENTINEL coords, which makes
+        // findMatchingGap()'s overlap test unmatchable for a real target line.
+        // Line-anchoring callers (expandForSuggestion) await this so a
+        // suggestion/comment on a trailing unchanged line doesn't silently fail
+        // to expand. Fire-and-forget for everyone else.
+        entry.eofValidationPromise = this.validatePendingEofGaps(entry.fileBody);
       }
     }
 
@@ -4664,6 +4670,26 @@ class PRManager {
     // Render the body first — gap rows (and code rows) only exist once the
     // lazy body has rendered. Without this the gap query below returns nothing.
     await this.ensureFileBodyRendered(file);
+
+    // The trailing end-of-file gap is created with EOF_SENTINEL (-1) coords and
+    // resolved to real line numbers asynchronously by validatePendingEofGaps(),
+    // which _renderFileBodyNow fires fire-and-forget as the body renders. Until
+    // it settles the gap's NEW/OLD end is negative, so findMatchingGap()'s
+    // overlap test can never match a real target line — a suggestion (or
+    // comment, via ensureLinesVisible) on a trailing unchanged line silently
+    // fails to expand and never anchors. Pre-lazy-render this validation ran at
+    // renderDiff time, long before any suggestion was placed; lazy rendering
+    // collapsed that head start to nothing, which is the regression. Await the
+    // same in-flight promise (not a second /file-content fetch) so the EOF gap
+    // carries real coordinates before we match below.
+    const lazyEntry = this._lazyFileBodies?.get(fileElement.dataset?.fileName || file);
+    if (lazyEntry?.eofValidationPromise) {
+      try {
+        await lazyEntry.eofValidationPromise;
+      } catch {
+        // Validation removes the gap on fetch failure; matching simply misses.
+      }
+    }
 
     // Check if file is collapsed (generated files)
     if (fileElement.classList.contains('collapsed')) {
