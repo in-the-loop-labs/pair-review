@@ -1,7 +1,8 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 const fs = require('fs');
+const { v4: uuidv4 } = require('uuid');
 const { loadConfig, getConfigDir, getGitHubToken, resolveHostBinding, showWelcomeMessage, resolveDbName, resolveRepoOptions, resolvePoolConfig, getRepoResetScript, resolveLoadSkills, buildCouncilProviderOverrides } = require('./config');
-const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository, ReviewRepository, RepoSettingsRepository, GitHubReviewRepository, WorktreePoolRepository, CouncilRepository } = require('./database');
+const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository, ReviewRepository, RepoSettingsRepository, GitHubReviewRepository, WorktreePoolRepository, CouncilRepository, CommentRepository, AnalysisRunRepository } = require('./database');
 const { PRArgumentParser } = require('./github/parser');
 const { GitHubClient } = require('./github/client');
 const { GitWorktreeManager } = require('./git/worktree');
@@ -10,10 +11,16 @@ const { WorktreePoolLifecycle } = require('./git/worktree-pool-lifecycle');
 const { startServer } = require('./server');
 const Analyzer = require('./ai/analyzer');
 const { applyConfigOverrides } = require('./ai');
-const { handleLocalReview, findMainGitRoot } = require('./local-review');
+const { handleLocalReview, findMainGitRoot, setupLocalReviewSession, findGitRoot, findMergeBase, getRepositoryName } = require('./local-review');
+const { resolveCliInstructions, prepareInteractiveAnalysisConfig } = require('./interactive-analysis-config');
 const { resolveCouncilHandle, getCouncilLastUsedRepos, shortId } = require('./councils/resolve-council');
 const { runHeadlessCouncilAnalysis } = require('./councils/headless-council');
 const { normalizeCouncilConfig, validateCouncilConfig } = require('./routes/councils');
+const { resolveReviewConfig } = require('./review-config');
+const { redirectConsoleToStderr } = require('./mcp-stdio');
+const { getChangedFiles } = require('./routes/executable-analysis');
+const { safeParseJson } = require('./utils/safe-parse-json');
+const { includesBranch } = require('./local-scope');
 const { storePRData, registerRepositoryLocation, findRepositoryPath } = require('./setup/pr-setup');
 const { fireReviewStartedHook } = require('./hooks/payloads');
 const { normalizeRepository, resolveRenamedFile, resolveRenamedFileOld } = require('./utils/paths');
@@ -152,6 +159,22 @@ OPTIONS:
                             review on GitHub (headless mode)
     --ai-review             Run AI analysis and submit review to GitHub (CI mode)
                             Auto-detects PR in GitHub Actions environment
+    --headless              Run AI analysis, store it in the local database, and
+                            report the results to stdout/stderr, then exit. No
+                            server, no browser, no GitHub post. Works with a
+                            <pr> argument or --local.
+    --json                  With --headless, emit the completed run plus its
+                            consolidated final suggestions as a single JSON
+                            document on a clean stdout (all logs go to stderr).
+                            Only valid together with --headless.
+    --instructions <text>   Per-run custom instructions for the analysis.
+                            Applies to any mode that runs analysis: --headless,
+                            --ai, --ai-draft, --ai-review, or --council (with
+                            --ai/--council the instructions are carried into the
+                            browser-triggered analysis). Default: none.
+    --instructions-file <path>
+                            Read per-run custom instructions from a file.
+                            Mutually exclusive with --instructions.
     --configure             Show setup instructions and configuration options
     -d, --debug             Enable verbose debug logging
     --debug-stream          Log AI provider streaming events (tool calls, text chunks)
@@ -186,6 +209,9 @@ EXAMPLES:
     pair-review 123 --ai               # Auto-run AI analysis
     pair-review --ai-review            # CI mode: auto-detect PR, submit review
     pair-review 123 --ai-draft --council security-review  # Headless council draft
+    pair-review --local --headless --json   # Analyze local changes, emit JSON, exit
+    pair-review 123 --headless              # Analyze a PR, print a summary, exit
+    pair-review --local --headless --council security  # Headless council analysis
     pair-review --list-councils        # List saved councils and their handles
     pair-review --register                     # Register URL scheme handler
     pair-review --register --command "node bin/pair-review.js"  # Custom command
@@ -348,6 +374,10 @@ const KNOWN_FLAGS = new Set([
   '--ai',
   '--ai-draft',
   '--ai-review',
+  '--headless',
+  '--json',
+  '--instructions',
+  '--instructions-file',
   '--configure',
   '-d', '--debug',
   '--debug-stream',
@@ -394,6 +424,29 @@ function parseArgs(args) {
       flags.aiDraft = true;
     } else if (arg === '--ai-review') {
       flags.aiReview = true;
+    } else if (arg === '--headless') {
+      flags.headless = true;
+    } else if (arg === '--json') {
+      flags.json = true;
+    } else if (arg === '--instructions') {
+      // Next argument is free-text instructions. Unlike --model/--council, the
+      // value may legitimately begin with '-' (free text), so we only require
+      // that a token follows — we do NOT apply the !startsWith('-') guard.
+      if (i + 1 < args.length) {
+        flags.instructions = args[i + 1];
+        i++; // Skip next argument since we consumed it
+      } else {
+        throw new Error('--instructions flag requires a text value (e.g., --instructions "focus on error handling")');
+      }
+    } else if (arg === '--instructions-file') {
+      // Next argument is a file path. A path won't legitimately start with '-',
+      // so apply the same guard as --model to catch a missing value early.
+      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+        flags.instructionsFile = args[i + 1];
+        i++; // Skip next argument since we consumed it
+      } else {
+        throw new Error('--instructions-file flag requires a file path (e.g., --instructions-file ./review-notes.txt)');
+      }
     } else if (arg === '--use-checkout') {
       flags.useCheckout = true;
     } else if (arg === '--yolo') {
@@ -559,17 +612,66 @@ AI PROVIDERS:
       process.exit(0);
     }
 
+    // In headless --json mode, stdout is reserved for the single JSON document,
+    // so lock it down as EARLY as possible — before loadConfig() (which on a
+    // genuine first run creates the config dir and can log) and before the
+    // first-run welcome box below, both of which would otherwise corrupt the
+    // JSON. Peek the raw args here: neither flag takes a value, parseArgs() still
+    // runs afterwards for full validation, and redirectConsoleToStderr() is
+    // idempotent (it only reassigns console.* → console.error), so the later
+    // gated call is unnecessary once this fires.
+    const isHeadlessJson = args.includes('--headless') && args.includes('--json');
+    if (isHeadlessJson) {
+      redirectConsoleToStderr();
+    }
+
     // Load configuration
     const { config, isFirstRun } = await loadConfig();
 
-    // Show welcome message on first run (after early-exit flags are handled above)
-    if (isFirstRun) {
+    // Show welcome message on first run (after early-exit flags are handled
+    // above). Suppressed in headless --json mode so nothing reaches stdout but
+    // the JSON document.
+    if (isFirstRun && !isHeadlessJson) {
       showWelcomeMessage();
     }
 
     // Parse command line arguments including flags (before DB init so
     // single-port delegation can skip DB entirely)
     const { prArgs, flags } = parseArgs(args);
+
+    // Headless-mode flag validation (fail fast, before any DB/server work).
+    // --instructions and --instructions-file are mutually exclusive.
+    if (flags.instructions && flags.instructionsFile) {
+      throw new Error('--instructions and --instructions-file are mutually exclusive; provide only one.');
+    }
+    // --json only makes sense as the machine-readable sink for --headless.
+    if (flags.json && !flags.headless) {
+      throw new Error('--json requires --headless (it emits the headless run as JSON).');
+    }
+    // --headless needs something to analyze: a PR identifier or --local.
+    if (flags.headless && prArgs.length === 0 && !flags.local) {
+      throw new Error('--headless flag requires a pull request number/URL or --local to run analysis.');
+    }
+    // --instructions[-file] only takes effect in a mode that actually runs
+    // analysis. Plain interactive mode never auto-analyzes, so reject the
+    // orphaned case with a clear message rather than silently dropping the text
+    // (the failure mode this flag's parity is meant to avoid). The consuming
+    // modes are: --headless / --ai-draft / --ai-review (consume directly) and
+    // --ai / --council (threaded to the browser via analysisConfigId).
+    if (
+      (flags.instructions || flags.instructionsFile) &&
+      !(flags.headless || flags.aiDraft || flags.aiReview || flags.ai || flags.council)
+    ) {
+      throw new Error(
+        '--instructions/--instructions-file require a mode that runs analysis: ' +
+        '--headless, --ai, --ai-draft, --ai-review, or --council.'
+      );
+    }
+
+    // NOTE: in headless --json mode, stdout was already redirected to stderr
+    // above (before loadConfig + the first-run welcome) — see `isHeadlessJson`.
+    // No redirect is repeated here: it would be too late to matter and is
+    // redundant given the early call.
 
     // Apply debug_stream from config if not already enabled by CLI flag
     if (!flags.debugStream && config.debug_stream) {
@@ -646,9 +748,33 @@ AI PROVIDERS:
     // Single-port delegation: if a pair-review server is already running on the
     // configured port, delegate to it (open browser URL) and exit immediately.
     // Skipped for: headless modes (no browser), single_port: false (dev mode).
-    if (config.single_port !== false && !flags.aiReview && !flags.aiDraft) {
+    // --headless never delegates/opens a browser — it runs analysis locally and
+    // reports to stdout/stderr.
+    if (config.single_port !== false && !flags.aiReview && !flags.aiDraft && !flags.headless) {
+      // Carry --instructions across delegation. When an analyzing mode
+      // (--ai/--council) ALSO supplies per-run instructions and a server is
+      // already running, attemptDelegation resolves the analysis config and POSTs
+      // it to that (separate) process, threading the returned id as
+      // `analysisConfigId`. That handoff needs an open DB (repo-default/council
+      // resolution) and, for local mode, the repository name — PR mode derives it
+      // from the args inside attemptDelegation. Without instructions this is a
+      // no-op and the prior councilId/analyze URL shape is preserved.
+      const wantsInstructionHandoff =
+        (flags.instructions || flags.instructionsFile) && (flags.ai || flags.council);
+      if (wantsInstructionHandoff && !db) {
+        db = await initializeDatabase(resolveDbName(config));
+      }
+      let localRepository = null;
+      if (wantsInstructionHandoff && flags.local) {
+        const localTarget = require('path').resolve(flags.localPath || process.cwd());
+        const localRoot = await findGitRoot(localTarget);
+        localRepository = await getRepositoryName(localRoot);
+      }
+
       const delegated = await attemptDelegation(config, flags, prArgs, undefined, {
-        councilId: cliCouncil?.id || null
+        councilId: cliCouncil?.id || null,
+        db,
+        localRepository
       });
       if (delegated) {
         if (db) { try { db.close(); } catch { /* ignore */ } }
@@ -678,6 +804,14 @@ AI PROVIDERS:
     // Reset stale pool entries, wire idle callbacks, and rehydrate preserved entries
     const poolLifecycle = new WorktreePoolLifecycle(db, config);
     await poolLifecycle.resetAndRehydrate();
+
+    // Headless analysis mode: run analysis (single or council), store in the DB,
+    // report results to stdout/stderr, and exit. No server, no browser, no GitHub
+    // post. Works with a PR arg or --local. Handled before the local/PR split.
+    if (flags.headless) {
+      await handleHeadlessAnalysis(prArgs, config, db, flags, poolLifecycle);
+      return;
+    }
 
     // Check for local mode (review uncommitted local changes)
     if (flags.local) {
@@ -820,7 +954,20 @@ async function handlePullRequest(args, config, db, flags = {}, poolLifecycle = n
     let url = `http://localhost:${port}/pr/${prInfo.owner}/${prInfo.repo}/${prInfo.number}`;
     const shouldAnalyze = flags.ai || flags.council;
     if (shouldAnalyze) url += '?analyze=true';
-    if (councilSelection) url += `&council=${councilSelection.id}`;
+    // When the run carries --instructions, stash the resolved analysis config
+    // (provider/model or council snapshot + instructions) and thread its id so
+    // the browser-side auto-analyze honors the instructions instead of silently
+    // dropping them. The id already encodes the council selection, so prefer it
+    // over the bare &council= param; fall back to &council= otherwise.
+    const repository = normalizeRepository(prInfo.owner, prInfo.repo);
+    const analysisConfigId = shouldAnalyze
+      ? await prepareInteractiveAnalysisConfig({ db, config, flags, repository })
+      : null;
+    if (analysisConfigId) {
+      url += `&analysisConfigId=${analysisConfigId}`;
+    } else if (councilSelection) {
+      url += `&council=${councilSelection.id}`;
+    }
 
     console.log(`Opening browser to: ${url}`);
     await open(url);
@@ -898,8 +1045,9 @@ async function performHeadlessReview(args, config, db, flags, options, externalP
     prInfo = await parser.parsePRArguments(args);
 
     // Resolve + validate the council FAIL-FAST, before any worktree/network
-    // work, so a bad handle or invalid config surfaces immediately.
-    let councilSelection = null;
+    // work, so a bad handle or invalid config surfaces immediately. The actual
+    // council selection used for analysis is produced below by
+    // resolveReviewConfig; this is a pre-flight validation only.
     if (flags.council) {
       const council = await resolveCouncilHandle(db, flags.council);
       const configType = council.type || 'advanced';
@@ -909,7 +1057,6 @@ async function performHeadlessReview(args, config, db, flags, options, externalP
       if (validationError) {
         throw new Error(`Invalid council "${council.name}": ${validationError}`);
       }
-      councilSelection = { council, configType, councilConfig };
     }
 
     // Resolve host binding for the target repo (handles alt-host).
@@ -1141,10 +1288,26 @@ async function performHeadlessReview(args, config, db, flags, options, externalP
     const repoInstructions = repoSettings?.default_instructions || null;
     const globalInstructions = config.globalInstructions || null;
 
-    // Run AI analysis
-    const cliProvider = repoSettings?.default_provider || config.default_provider || config.provider || 'claude';
-    const model = flags.model || process.env.PAIR_REVIEW_MODEL || repoSettings?.default_model || config.default_model || config.model || 'opus';
-    const providerLoadSkills = config.providers?.[cliProvider]?.load_skills;
+    // Resolve per-run custom instructions from --instructions/--instructions-file.
+    // Default stays null, preserving prior --ai-draft/--ai-review behavior.
+    const requestInstructions = await resolveCliInstructions(flags);
+    const instructions = { globalInstructions, repoInstructions, requestInstructions };
+
+    // Resolve the review configuration (council vs single provider/model) via the
+    // shared resolver, so --ai-draft/--ai-review honor repo default councils too.
+    // The early councilSelection above already fail-fast validated an explicit
+    // --council; resolveReviewConfig re-resolves the same handle (cheap in-memory
+    // match) and unifies single/council selection with the headless path.
+    const reviewConfig = await resolveReviewConfig(
+      db,
+      repository,
+      { council: flags.council, model: flags.model },
+      config
+    );
+
+    // Single-provider runs honor the repo/global tier-3 load_skills resolution.
+    const cliProvider = reviewConfig.type === 'single' ? reviewConfig.provider : null;
+    const providerLoadSkills = cliProvider ? config.providers?.[cliProvider]?.load_skills : undefined;
     const loadSkills = resolveLoadSkills(config, repository, repoSettings, providerLoadSkills);
     const providerOverrides = { load_skills: loadSkills };
 
@@ -1154,33 +1317,18 @@ async function performHeadlessReview(args, config, db, flags, options, externalP
       // githubClient is forwarded so the analyzer can pre-fetch existing PR review
       // comments when callers opt in via excludePrevious.github.
       logger.debug(`analyzer githubClient wired for ${prInfo.owner}/${prInfo.repo}#${prInfo.number}`);
-      let analysisResult;
-      if (councilSelection) {
-        console.log(`Running council analysis: ${councilSelection.council.name} (${councilSelection.configType})...`);
-        // Council voices can span multiple providers, so resolve a per-provider
-        // load_skills map (tier-3 resolution per provider) the same way every
-        // other council invoker does (pr.js / local.js / stack-analysis.js).
-        // Passing only the shared `providerOverrides` would collapse every voice
-        // onto the default provider's load_skills — see buildVoiceContext.
-        const { providerOverrides: councilProviderOverrides, providerOverridesMap: councilProviderOverridesMap } =
-          buildCouncilProviderOverrides(config, repository, repoSettings);
-        const analyzer = new Analyzer(db, 'council', 'council', councilProviderOverrides, councilProviderOverridesMap);
-        analysisResult = await runHeadlessCouncilAnalysis(db, {
-          analyzer,
-          reviewId: review.id,
-          council: councilSelection.council,
-          configType: councilSelection.configType,
-          councilConfig: councilSelection.councilConfig,
-          worktreePath,
-          prMetadata: storedPRData,
-          instructions: { globalInstructions, repoInstructions, requestInstructions: null },
-          githubClient
-        });
-      } else {
-        console.log('Running AI analysis (all 3 levels)...');
-        const analyzer = new Analyzer(db, model, cliProvider, providerOverrides);
-        analysisResult = await analyzer.analyzeAllLevels(review.id, worktreePath, storedPRData, null, { globalInstructions, repoInstructions }, null, { githubClient });
-      }
+      const { result: analysisResult } = await runHeadlessAnalysis(db, config, {
+        reviewId: review.id,
+        worktreePath,
+        prMetadata: storedPRData,
+        changedFiles: null,
+        repository,
+        repoSettings,
+        instructions,
+        reviewConfig,
+        providerOverrides,
+        githubClient
+      });
       analysisSummary = analysisResult.summary;
       console.log('AI analysis completed successfully');
     } catch (analysisError) {
@@ -1422,6 +1570,690 @@ Found ${validSuggestions.length} suggestion${validSuggestions.length === 1 ? '' 
 }
 
 /**
+ * Shared single-vs-council analysis dispatch for headless runs.
+ *
+ * Both `performHeadlessReview` (GitHub-submit modes) and `handleHeadlessAnalysis`
+ * (analysis-only headless mode) call this so the single/council branching — and
+ * the instruction object threaded into every analyzer path — lives in exactly one
+ * place. It only RUNS analysis and returns the run id + analyzer result; it never
+ * submits to GitHub or releases pool worktrees (callers own that).
+ *
+ * The SAME `instructions` object ({ globalInstructions, repoInstructions,
+ * requestInstructions }) is passed to both branches, centralizing the
+ * three-analyzer-paths instruction hazard (analyzeAllLevels vs the two council
+ * paths inside runHeadlessCouncilAnalysis).
+ *
+ * @param {Object} db - Database instance
+ * @param {Object} config - Application configuration
+ * @param {Object} params
+ * @param {number} params.reviewId - Review id comments are stored under
+ * @param {string} params.worktreePath - Checked-out worktree / local repo path
+ * @param {Object} params.prMetadata - PR/local metadata (head_sha, base_sha, etc.)
+ * @param {Array|null} params.changedFiles - Changed-file list (local mode) or null (PR mode computes it)
+ * @param {string} params.repository - owner/repo
+ * @param {Object|null} params.repoSettings - Repo settings row
+ * @param {Object} params.instructions - { globalInstructions, repoInstructions, requestInstructions }
+ * @param {Object} params.reviewConfig - Result of resolveReviewConfig (single|council)
+ * @param {Object} params.providerOverrides - Single-provider overrides (e.g. { load_skills })
+ * @param {Object} [params.githubClient] - GitHub client (PR mode) or undefined (local)
+ * @returns {Promise<{ runId: string, result: Object }>}
+ */
+async function runHeadlessAnalysis(db, config, {
+  reviewId,
+  worktreePath,
+  prMetadata,
+  changedFiles,
+  repository,
+  repoSettings,
+  instructions,
+  reviewConfig,
+  providerOverrides,
+  githubClient
+}) {
+  if (reviewConfig.type === 'council') {
+    console.log(`Running council analysis: ${reviewConfig.council.name} (${reviewConfig.configType})...`);
+    // Council voices can span multiple providers, so resolve a per-provider
+    // load_skills map (tier-3 resolution per provider) the same way every other
+    // council invoker does (pr.js / local.js / stack-analysis.js). Passing only
+    // the shared providerOverrides would collapse every voice onto the default
+    // provider's load_skills — see buildVoiceContext.
+    const { providerOverrides: councilProviderOverrides, providerOverridesMap: councilProviderOverridesMap } =
+      buildCouncilProviderOverrides(config, repository, repoSettings);
+    const analyzer = new Analyzer(db, 'council', 'council', councilProviderOverrides, councilProviderOverridesMap);
+    const result = await runHeadlessCouncilAnalysis(db, {
+      analyzer,
+      reviewId,
+      council: reviewConfig.council,
+      configType: reviewConfig.configType,
+      councilConfig: reviewConfig.councilConfig,
+      worktreePath,
+      prMetadata,
+      changedFiles,
+      instructions,
+      githubClient
+    });
+    return { runId: result.runId, result };
+  }
+
+  console.log('Running AI analysis (all 3 levels)...');
+  const runId = uuidv4();
+  const analyzer = new Analyzer(db, reviewConfig.model, reviewConfig.provider, providerOverrides);
+  const result = await analyzer.analyzeAllLevels(
+    reviewId,
+    worktreePath,
+    prMetadata,
+    null,
+    instructions,
+    changedFiles,
+    { githubClient, runId }
+  );
+  return { runId, result };
+}
+
+/**
+ * Prepare a PR for headless analysis-only mode (no GitHub submit).
+ *
+ * This is the analysis-only twin of the prep block inside `performHeadlessReview`.
+ * It is intentionally a STANDALONE function rather than an extraction from
+ * `performHeadlessReview`: the latter's prep and submit blocks share many locals
+ * and that function is CI-critical, so duplicating the minimal prep here (the
+ * documented fallback in the plan) keeps the submit path byte-identical and
+ * untouched. The prep mirrors `performHeadlessReview` (parse → token/binding →
+ * client → fetch PR → worktree/pool acquire → diff → storePRData → metadata →
+ * review → repoSettings → reviewConfig), minus anything only the submit path
+ * needs.
+ *
+ * @param {Object} db - Database instance
+ * @param {Object} config - Application configuration
+ * @param {Object} flags - Parsed CLI flags
+ * @param {Array<string>} prArgs - PR identifier args
+ * @param {import('./git/worktree-pool-lifecycle').WorktreePoolLifecycle} [externalPoolLifecycle]
+ *   - The session's already-rehydrated pool lifecycle. Reused for pool
+ *   acquisition (mirrors `performHeadlessReview`'s `externalPoolLifecycle`
+ *   convention) so the in-memory usage tracker populated by
+ *   `resetAndRehydrate()` is the one acquisitions go through. Falls back to a
+ *   fresh instance only when not supplied.
+ * @returns {Promise<Object>} { githubClient, worktreePath, storedPRData, review,
+ *   repository, repoSettings, poolWorktreeId, poolLifecycle, reviewConfig,
+ *   providerOverrides }
+ */
+async function preparePrHeadless(db, config, flags, prArgs, externalPoolLifecycle = null) {
+  const parser = new PRArgumentParser(config);
+  const prInfo = await parser.parsePRArguments(prArgs);
+
+  // Fail-fast council validation (mirrors performHeadlessReview).
+  if (flags.council) {
+    const council = await resolveCouncilHandle(db, flags.council);
+    const configType = council.type || 'advanced';
+    const councilConfig = normalizeCouncilConfig(council.config, configType);
+    const validationError = validateCouncilConfig(councilConfig, configType);
+    if (validationError) {
+      throw new Error(`Invalid council "${council.name}": ${validationError}`);
+    }
+  }
+
+  const repositoryForBinding = prInfo.bindingRepository
+    || normalizeRepository(prInfo.owner, prInfo.repo);
+  const headlessBinding = resolveHostBinding(repositoryForBinding, config);
+  if (!headlessBinding.token) {
+    throw new Error(buildMissingTokenError({
+      owner: prInfo.owner,
+      repo: prInfo.repo,
+      bindingRepository: repositoryForBinding,
+      apiHost: headlessBinding.apiHost
+    }));
+  }
+
+  console.log(`Processing pull request #${prInfo.number} from ${prInfo.owner}/${prInfo.repo} in headless mode`);
+
+  const githubClient = new GitHubClient(headlessBinding);
+  const repoExists = await githubClient.repositoryExists(prInfo.owner, prInfo.repo);
+  if (!repoExists) {
+    throw new Error(`Repository ${prInfo.owner}/${prInfo.repo} not found or not accessible`);
+  }
+
+  console.log('Fetching pull request data from GitHub...');
+  const prData = await githubClient.fetchPullRequest(prInfo.owner, prInfo.repo, prInfo.number);
+
+  let worktreePath;
+  let diff;
+  let changedFiles;
+  let poolWorktreeId = null;
+  let poolLifecycle = null;
+  const repository = normalizeRepository(prInfo.owner, prInfo.repo);
+
+  // Everything from here on can acquire a pool worktree and then do work that
+  // may throw (diff generation, storePRData, metadata query, resolveReviewConfig).
+  // The caller (handleHeadlessAnalysis) releases the pool slot in a finally, but
+  // ONLY once it holds the returned prep object — a throw before that return would
+  // leak the acquired worktree. So on the throwing path we release it here before
+  // re-throwing. `poolWorktreeId` is null until acquire succeeds, so the guarded
+  // release is a no-op when the throw predates acquisition (no double-release: the
+  // caller's finally runs only on the success path that returns below).
+  try {
+  if (flags.useCheckout) {
+    worktreePath = process.cwd();
+    const isMatchingRepo = await parser.isMatchingRepository(worktreePath, prInfo.owner, prInfo.repo);
+    if (!isMatchingRepo) {
+      throw new Error(
+        `--use-checkout requires running from a checkout of ${prInfo.owner}/${prInfo.repo}, ` +
+        `but current directory does not match. Either cd to the correct repository or remove --use-checkout.`
+      );
+    }
+    await registerRepositoryLocation(db, worktreePath, prInfo.owner, prInfo.repo);
+    console.log(`Using current checkout at ${worktreePath}`);
+
+    console.log('Generating unified diff from checkout...');
+    const git = simpleGit(worktreePath);
+    try {
+      await fetchNoTags(git, ['origin', prData.base_sha]);
+    } catch (fetchError) {
+      try {
+        await git.raw(['cat-file', '-t', prData.base_sha]);
+      } catch {
+        throw new Error(`Base SHA ${prData.base_sha} is not available locally and fetch failed: ${fetchError.message}`);
+      }
+    }
+    diff = await git.diff([
+      `${prData.base_sha}...${prData.head_sha}`,
+      '--unified=3',
+      ...GIT_DIFF_FLAGS_ARRAY
+    ]);
+    const diffSummary = await git.diffSummary([
+      `${prData.base_sha}...${prData.head_sha}`,
+      ...GIT_DIFF_SUMMARY_FLAGS_ARRAY
+    ]);
+    const gitattributes = await getGeneratedFilePatterns(worktreePath);
+    changedFiles = diffSummary.files.map(file => {
+      const resolvedFile = resolveRenamedFile(file.file);
+      const isRenamed = resolvedFile !== file.file;
+      const result = {
+        file: resolvedFile,
+        insertions: file.insertions,
+        deletions: file.deletions,
+        changes: file.changes,
+        binary: file.binary || false,
+        generated: gitattributes.isGenerated(resolvedFile)
+      };
+      if (isRenamed) {
+        result.renamed = true;
+        result.renamedFrom = resolveRenamedFileOld(file.file);
+      }
+      return result;
+    });
+  } else {
+    const currentDir = parser.getCurrentDirectory();
+    const isMatchingRepo = await parser.isMatchingRepository(currentDir, prInfo.owner, prInfo.repo);
+
+    let repositoryPath;
+    let worktreeSourcePath;
+    let checkoutScript;
+    let checkoutTimeout;
+    let worktreeConfig = null;
+    let poolSize = 0;
+    let resetScript = null;
+    if (isMatchingRepo) {
+      repositoryPath = currentDir;
+      await registerRepositoryLocation(db, currentDir, prInfo.owner, prInfo.repo);
+      const repoSettingsRepo = new RepoSettingsRepository(db);
+      const repoSettings = await repoSettingsRepo.getRepoSettings(repository);
+      const resolved = resolveRepoOptions(config, repositoryForBinding, repoSettings);
+      checkoutScript = resolved.checkoutScript;
+      checkoutTimeout = resolved.checkoutTimeout;
+      worktreeConfig = resolved.worktreeConfig;
+      poolSize = resolved.poolSize || 0;
+      resetScript = resolved.resetScript || null;
+    } else {
+      console.log(`Current directory is not a checkout of ${prInfo.owner}/${prInfo.repo}, locating repository...`);
+      const result = await findRepositoryPath({
+        db,
+        owner: prInfo.owner,
+        repo: prInfo.repo,
+        repository,
+        bindingRepository: repositoryForBinding,
+        prNumber: prInfo.number,
+        config,
+        cloneUrl: prData?.repository?.clone_url,
+        onProgress: (progress) => {
+          if (progress.message) {
+            console.log(progress.message);
+          }
+        }
+      });
+      repositoryPath = result.repositoryPath;
+      worktreeSourcePath = result.worktreeSourcePath;
+      checkoutScript = result.checkoutScript;
+      checkoutTimeout = result.checkoutTimeout;
+      worktreeConfig = result.worktreeConfig;
+      const repoSettingsRepo = new RepoSettingsRepository(db);
+      const repoSettings = await repoSettingsRepo.getRepoSettings(repository);
+      const { poolSize: resolvedPoolSize } = resolvePoolConfig(config, repositoryForBinding, repoSettings);
+      poolSize = resolvedPoolSize || 0;
+      resetScript = config ? getRepoResetScript(config, repositoryForBinding) : null;
+    }
+
+    const worktreeManager = new GitWorktreeManager(db, worktreeConfig || {});
+    if (poolSize > 0) {
+      console.log('Acquiring pool worktree...');
+      poolLifecycle = externalPoolLifecycle || new WorktreePoolLifecycle(db, config);
+      const result = await poolLifecycle.acquireForPR(
+        { owner: prInfo.owner, repo: prInfo.repo, prNumber: prInfo.number, repository },
+        prData,
+        repositoryPath,
+        { worktreeSourcePath, checkoutScript, checkoutTimeout, resetScript, worktreeConfig, poolSize }
+      );
+      worktreePath = result.worktreePath;
+      poolWorktreeId = result.worktreeId;
+      console.log('Pool worktree acquired');
+    } else {
+      console.log('Setting up git worktree...');
+      ({ path: worktreePath } = await worktreeManager.createWorktreeForPR(prInfo, prData, repositoryPath, {
+        worktreeSourcePath,
+        checkoutScript,
+        checkoutTimeout
+      }));
+    }
+
+    console.log('Generating unified diff...');
+    diff = await worktreeManager.generateUnifiedDiff(worktreePath, prData);
+    changedFiles = await worktreeManager.getChangedFiles(worktreePath, prData);
+  }
+
+  console.log('Storing pull request data...');
+  const { isNewReview, reviewId: storedReviewId } = await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath, {
+    skipWorktreeRecord: !!flags.useCheckout
+  });
+
+  if (poolWorktreeId && poolLifecycle) {
+    await poolLifecycle.setReviewOwner(poolWorktreeId, storedReviewId);
+  }
+
+  if (isNewReview) {
+    fireReviewStartedHook({
+      reviewId: storedReviewId, prNumber: prInfo.number,
+      owner: prInfo.owner, repo: prInfo.repo, prData, config,
+    }).catch(err => { logger.warn(`Review hook failed: ${err.message}`); });
+  }
+
+  const prMetadata = await queryOne(db, `
+    SELECT id, pr_data FROM pr_metadata
+    WHERE pr_number = ? AND repository = ? COLLATE NOCASE
+  `, [prInfo.number, repository]);
+
+  if (!prMetadata) {
+    throw new Error('Failed to retrieve stored PR metadata');
+  }
+
+  const storedPRData = JSON.parse(prMetadata.pr_data);
+
+  const reviewRepo = new ReviewRepository(db);
+  const { review } = await reviewRepo.getOrCreate({ prNumber: prInfo.number, repository });
+
+  const repoSettingsRepo = new RepoSettingsRepository(db);
+  const repoSettings = await repoSettingsRepo.getRepoSettings(repository);
+
+  const reviewConfig = await resolveReviewConfig(
+    db,
+    repository,
+    { council: flags.council, model: flags.model },
+    config
+  );
+
+  const cliProvider = reviewConfig.type === 'single' ? reviewConfig.provider : null;
+  const providerLoadSkills = cliProvider ? config.providers?.[cliProvider]?.load_skills : undefined;
+  const loadSkills = resolveLoadSkills(config, repository, repoSettings, providerLoadSkills);
+  const providerOverrides = { load_skills: loadSkills };
+
+  return {
+    githubClient,
+    worktreePath,
+    storedPRData,
+    review,
+    repository,
+    repoSettings,
+    poolWorktreeId,
+    poolLifecycle,
+    reviewConfig,
+    providerOverrides
+  };
+  } catch (prepErr) {
+    // Release the acquired pool worktree (if any) before propagating — the
+    // caller never received a prep object, so its finally won't run. Guarded on
+    // poolWorktreeId so a throw before acquisition is a no-op. Release errors are
+    // logged, not allowed to mask the original failure.
+    if (poolWorktreeId && poolLifecycle) {
+      try {
+        await poolLifecycle.releaseAfterHeadless(poolWorktreeId);
+        logger.info(`Released pool worktree ${poolWorktreeId} after headless prep failure`);
+      } catch (releaseErr) {
+        logger.error(`Failed to release pool worktree ${poolWorktreeId} after prep failure: ${releaseErr.message}`);
+      }
+    }
+    throw prepErr;
+  }
+}
+
+/**
+ * Record a completed, zero-suggestion analysis run for an empty-scope headless
+ * local review (the analyzer is never invoked). Mirrors the web routes'
+ * empty-scope guard but, lacking an HTTP response, persists a normal-shaped run
+ * so `buildHeadlessJson` emits the standard `{ run, suggestions: [], count: 0 }`
+ * envelope and the command still exits 0 ("zero suggestions is still success").
+ * The run is attributed to whatever `reviewConfig` resolved (single or council).
+ *
+ * @param {Object} db - Database instance
+ * @param {Object} params
+ * @param {number} params.reviewId - Review id the run belongs to
+ * @param {Object} params.reviewConfig - resolveReviewConfig result (single|council)
+ * @param {Object} params.instructions - { globalInstructions, repoInstructions, requestInstructions }
+ * @param {string|null} params.headSha - Head SHA recorded on the run
+ * @returns {Promise<string>} The created run id
+ */
+async function recordEmptyScopeRun(db, { reviewId, reviewConfig, instructions, headSha }) {
+  const runId = uuidv4();
+  const runRepo = new AnalysisRunRepository(db);
+  const isCouncil = reviewConfig.type === 'council';
+  await runRepo.create({
+    id: runId,
+    reviewId,
+    provider: isCouncil ? 'council' : reviewConfig.provider,
+    model: isCouncil ? reviewConfig.council.id : reviewConfig.model,
+    tier: null,
+    globalInstructions: instructions?.globalInstructions || null,
+    repoInstructions: instructions?.repoInstructions || null,
+    requestInstructions: instructions?.requestInstructions || null,
+    headSha: headSha || null,
+    configType: isCouncil ? reviewConfig.configType : 'single',
+    levelsConfig: null
+  });
+  await runRepo.update(runId, {
+    status: 'completed',
+    summary: 'No changes found in the selected scope — analysis skipped.',
+    totalSuggestions: 0,
+    filesAnalyzed: 0
+  });
+  return runId;
+}
+
+/**
+ * Headless analysis-only handler: run analysis (single or council), store it in
+ * the DB, report the consolidated run to stdout/stderr, and exit. No server, no
+ * browser, no GitHub post. Works with a PR arg or --local.
+ *
+ * @param {Array<string>} prArgs - PR identifier args (empty for --local)
+ * @param {Object} config - Application configuration
+ * @param {Object} db - Database instance
+ * @param {Object} flags - Parsed CLI flags
+ * @param {import('./git/worktree-pool-lifecycle').WorktreePoolLifecycle} poolLifecycle
+ *   - The session's rehydrated pool lifecycle. Forwarded to `preparePrHeadless`
+ *   for PR-mode pool acquisition so the rehydrated in-memory tracker is used;
+ *   local mode has no worktree/pool and ignores it.
+ */
+async function handleHeadlessAnalysis(prArgs, config, db, flags, poolLifecycle) {
+  // NOTE: In --json mode, redirectConsoleToStderr() is already called in main()
+  // BEFORE the DB-init/migration/pool-rehydrate block, so stdout is clean by the
+  // time we get here (those earlier steps log to stdout and would otherwise
+  // precede and corrupt the JSON document). No redirect is needed in this
+  // handler — it would be too late and is redundant.
+
+  // Resolve per-run custom instructions; a bad --instructions-file path fails
+  // fast with a clear operational error (propagates to main()'s catch → exit 1).
+  const requestInstructions = await resolveCliInstructions(flags);
+
+  const globalInstructions = config.globalInstructions || null;
+
+  let runId;
+  let mode;
+
+  if (flags.local) {
+    mode = 'local';
+
+    // Fail-fast council validation (mirror the PR path; local mode otherwise
+    // lacks an explicit pre-flight check here).
+    if (flags.council) {
+      const council = await resolveCouncilHandle(db, flags.council);
+      const configType = council.type || 'advanced';
+      const councilConfig = normalizeCouncilConfig(council.config, configType);
+      const validationError = validateCouncilConfig(councilConfig, configType);
+      if (validationError) {
+        throw new Error(`Invalid council "${council.name}": ${validationError}`);
+      }
+    }
+
+    const resolvedPath = require('path').resolve(flags.localPath || process.cwd());
+    console.log(`Finding git repository root from ${resolvedPath}...`);
+    const repoPath = await findGitRoot(resolvedPath);
+    console.log(`Found git repository at: ${repoPath}`);
+
+    // Headless is a one-shot run: suppress the interactive summary/tour jobs so
+    // they don't spend provider budget after the result is reported or keep the
+    // event loop alive (CLI hang). See setupLocalReviewSession.
+    const session = await setupLocalReviewSession({ db, config, repoPath, flags, startBackgroundJobs: false });
+
+    const repository = session.repository;
+    const repoSettings = await new RepoSettingsRepository(db).getRepoSettings(repository);
+    const repoInstructions = repoSettings?.default_instructions || null;
+
+    // Build local analysis metadata (mirror src/routes/local.js).
+    const hasBranch = includesBranch(session.scopeStart);
+    let analysisBaseSha = session.headSha;
+    if (hasBranch && session.baseBranch) {
+      try {
+        analysisBaseSha = await findMergeBase(repoPath, session.baseBranch);
+      } catch {
+        // Fall back to HEAD
+      }
+    }
+    const localMetadata = {
+      id: session.sessionId,
+      repository,
+      title: hasBranch
+        ? `Branch changes: ${session.baseBranch}..HEAD`
+        : `Local changes in ${repository}`,
+      description: hasBranch
+        ? `Reviewing committed changes on branch against ${session.baseBranch}`
+        : `Reviewing uncommitted changes in ${repoPath}`,
+      base_sha: analysisBaseSha,
+      head_sha: session.headSha,
+      // Scope context the analyzer's executable-provider path consults FIRST when
+      // rebuilding the local diff (src/ai/analyzer.js → generateDiffForExecutable /
+      // getChangedFiles check scopeStart/scopeEnd before base_sha/head_sha). Without
+      // these, unstaged-/untracked-only and mixed scopes (where base_sha === head_sha
+      // === HEAD) fall through to the SHA branch and produce an empty/partial diff.
+      // Matches the interactive local council metadata (src/routes/local.js).
+      base_branch: session.baseBranch || null,
+      head_branch: session.branch || null,
+      scopeStart: session.scopeStart,
+      scopeEnd: session.scopeEnd,
+      reviewType: 'local'
+    };
+
+    const reviewConfig = await resolveReviewConfig(
+      db,
+      repository,
+      { council: flags.council, model: flags.model },
+      config
+    );
+    const cliProvider = reviewConfig.type === 'single' ? reviewConfig.provider : null;
+    const providerLoadSkills = cliProvider ? config.providers?.[cliProvider]?.load_skills : undefined;
+    const loadSkills = resolveLoadSkills(config, repository, repoSettings, providerLoadSkills);
+    const providerOverrides = { load_skills: loadSkills };
+
+    const instructions = { globalInstructions, repoInstructions, requestInstructions };
+
+    // Empty-scope detection is driven by the SESSION DIFF, not a second
+    // changed-file enumeration. setupLocalReviewSession already generated the
+    // scoped diff via generateScopedDiff, which THROWS on a hard git failure and
+    // returns '' only when the scope is genuinely empty — so an empty diff is
+    // authoritative, while an operational git error has already aborted the run.
+    // (getChangedFiles, by contrast, swallows git errors and returns [], which
+    // would let a failure masquerade as "no changes" and exit 0.)
+    const isEmptyScope = !session.diff || session.diff.trim().length === 0;
+
+    if (isEmptyScope) {
+      // Empty-scope guard, mirroring the web routes' rejectIfEmptyScope (which
+      // returns 409). Headless has no HTTP response, so instead emit a normal-
+      // shaped, completed run with zero suggestions: emitHeadlessResult then
+      // produces the standard { mode, run, suggestions: [], count: 0 } envelope
+      // and exits 0 (zero suggestions is still success). Skipping the analyzer
+      // avoids spending provider tokens on a guaranteed-empty result.
+      runId = await recordEmptyScopeRun(db, {
+        reviewId: session.sessionId,
+        reviewConfig,
+        instructions,
+        headSha: session.headSha
+      });
+    } else {
+      // Scope is non-empty (diff present), so the analyzer needs the scope-aware
+      // changed-file list for suggestion validation. Use the throwing variant:
+      // since we KNOW the scope is non-empty, a [] from a swallowed git error
+      // would be a lie — surface it as a non-zero exit instead.
+      const changedFiles = await getChangedFiles(repoPath, {
+        scopeStart: session.scopeStart,
+        scopeEnd: session.scopeEnd,
+        baseBranch: session.baseBranch || null,
+      }, { throwOnError: true });
+
+      ({ runId } = await runHeadlessAnalysis(db, config, {
+        reviewId: session.sessionId,
+        worktreePath: repoPath,
+        prMetadata: localMetadata,
+        changedFiles,
+        repository,
+        repoSettings,
+        instructions,
+        reviewConfig,
+        providerOverrides,
+        githubClient: undefined
+      }));
+    }
+  } else {
+    mode = 'pr';
+    // Forward the session's rehydrated pool lifecycle so pool acquisition goes
+    // through the instance whose in-memory tracker resetAndRehydrate() populated
+    // (mirrors performHeadlessReview's externalPoolLifecycle convention).
+    const prep = await preparePrHeadless(db, config, flags, prArgs, poolLifecycle);
+    try {
+      const repoInstructions = prep.repoSettings?.default_instructions || null;
+      const instructions = { globalInstructions, repoInstructions, requestInstructions };
+      ({ runId } = await runHeadlessAnalysis(db, config, {
+        reviewId: prep.review.id,
+        worktreePath: prep.worktreePath,
+        prMetadata: prep.storedPRData,
+        changedFiles: null,
+        repository: prep.repository,
+        repoSettings: prep.repoSettings,
+        instructions,
+        reviewConfig: prep.reviewConfig,
+        providerOverrides: prep.providerOverrides,
+        githubClient: prep.githubClient
+      }));
+    } finally {
+      // Release the pool worktree (mirror performHeadlessReview's finally) so a
+      // pool slot isn't leaked per headless run. Local mode has no pool.
+      if (prep.poolWorktreeId && prep.poolLifecycle) {
+        try {
+          await prep.poolLifecycle.releaseAfterHeadless(prep.poolWorktreeId);
+          logger.info(`Released pool worktree ${prep.poolWorktreeId} after headless analysis`);
+        } catch (releaseErr) {
+          logger.error(`Failed to release pool worktree ${prep.poolWorktreeId}: ${releaseErr.message}`);
+        }
+      }
+    }
+  }
+
+  await emitHeadlessResult(db, { runId, mode, flags });
+}
+
+/**
+ * Build the machine-readable JSON document for a completed headless run.
+ *
+ * Returns the run metadata (with `level_outcomes` / `levels_config` parsed) plus
+ * the run's consolidated final suggestions (orchestrated layer; per-suggestion
+ * `reasoning` parsed) and a count. Exported for unit testing.
+ *
+ * @param {Object} db - Database instance
+ * @param {string} runId - Analysis run id
+ * @param {'pr'|'local'} mode - Review mode (passthrough)
+ * @returns {Promise<Object>} { mode, run, suggestions, count }
+ */
+async function buildHeadlessJson(db, runId, mode) {
+  const run = await new AnalysisRunRepository(db).getById(runId, { includeDiff: false });
+  if (run) {
+    run.level_outcomes = safeParseJson(run.level_outcomes);
+    run.levels_config = safeParseJson(run.levels_config);
+  }
+
+  const rawSuggestions = await new CommentRepository(db).getFinalSuggestionsByRunId(runId);
+  const suggestions = rawSuggestions.map(s => ({
+    ...s,
+    reasoning: safeParseJson(s.reasoning)
+  }));
+
+  return {
+    mode,
+    run,
+    suggestions,
+    count: suggestions.length
+  };
+}
+
+/**
+ * Emit the result of a headless run.
+ *
+ * In --json mode, writes the buildHeadlessJson document to stdout (via
+ * process.stdout.write, since console.log is remapped to stderr in JSON mode).
+ * Otherwise prints a human-readable summary to stdout. A successful run with zero
+ * suggestions is still success — operational errors propagate to main()'s catch.
+ *
+ * @param {Object} db - Database instance
+ * @param {Object} params
+ * @param {string} params.runId - Analysis run id
+ * @param {'pr'|'local'} params.mode - Review mode
+ * @param {Object} params.flags - Parsed CLI flags
+ */
+async function emitHeadlessResult(db, { runId, mode, flags }) {
+  const doc = await buildHeadlessJson(db, runId, mode);
+
+  if (flags.json) {
+    process.stdout.write(JSON.stringify(doc, null, 2) + '\n');
+    return;
+  }
+
+  const run = doc.run || {};
+  const lines = [];
+  lines.push('');
+  lines.push('Headless analysis complete');
+  lines.push(`  Run ID:      ${runId}`);
+  lines.push(`  Mode:        ${mode}`);
+  if (run.config_type === 'council' || run.provider === 'council') {
+    lines.push(`  Council:     ${run.model || '(unknown)'}`);
+  } else {
+    lines.push(`  Provider:    ${run.provider || '(unknown)'}`);
+    lines.push(`  Model:       ${run.model || '(unknown)'}`);
+  }
+  lines.push(`  Config type: ${run.config_type || 'standard'}`);
+  lines.push(`  Status:      ${run.status || '(unknown)'}`);
+  if (run.summary) {
+    lines.push('');
+    lines.push('Summary:');
+    lines.push(run.summary);
+  }
+  lines.push('');
+  lines.push(`Suggestions: ${doc.count}`);
+  for (const s of doc.suggestions) {
+    const line = s.line_end && s.line_end !== s.line_start
+      ? `${s.line_start}-${s.line_end}`
+      : `${s.line_start}`;
+    const sev = s.severity ? `/${s.severity}` : '';
+    lines.push(`  ${s.file}:${line} [${s.type || 'comment'}${sev}] ${s.title || ''}`.trimEnd());
+  }
+  lines.push('');
+
+  process.stdout.write(lines.join('\n') + '\n');
+}
+
+/**
  * Handle draft mode review workflow
  * Runs AI analysis and submits draft review to GitHub without opening browser
  * @param {Array<string>} args - Command line arguments
@@ -1596,4 +2428,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { main, parseArgs, detectPRFromGitHubEnvironment, printCouncilList };
+module.exports = { main, parseArgs, detectPRFromGitHubEnvironment, printCouncilList, runHeadlessAnalysis, recordEmptyScopeRun, buildHeadlessJson, resolveCliInstructions };

@@ -20,6 +20,7 @@
   - [AI-Guided Review](#3-ai-guided-review-when-youre-accountable)
 - [Quick Start](#quick-start)
 - [Command Line Interface](#command-line-interface)
+  - [Headless analysis mode](#headless-analysis-mode)
 - [Configuration](#configuration)
   - [Environment Variables](#environment-variables)
   - [GitHub Token](#github-token)
@@ -192,7 +193,11 @@ pair-review --local [path]
 | `<PR-URL>` | Full GitHub PR URL (e.g., `https://github.com/owner/repo/pull/123`) |
 | `--ai` | Automatically run AI analysis when the review loads |
 | `--ai-draft` | Run AI analysis and save suggestions as a draft review on GitHub |
-| `--council <handle>` | Run analysis with a saved multi-voice council. Implies analysis. The handle resolves by council name, name-slug, id (prefix), or a partial name fragment (resolving when it matches a single council, otherwise listing the candidates). When set, `--model` is ignored (council voices use their own per-voice models). Works in headless PR (`--ai-draft`/`--ai-review`), interactive PR (`--ai`), and local (`--local --ai`) modes. |
+| `--headless` | Run AI analysis, store it in the local database, report the results, then exit. No server, no browser, no GitHub post. Implies analysis (does not require `--ai`). Works with a `<PR-number-or-URL>` or with `--local`. See [Headless analysis mode](#headless-analysis-mode). |
+| `--json` | With `--headless`, emit the completed run plus its consolidated suggestions as a single JSON document on a clean stdout (all logs go to stderr). Only valid together with `--headless`. |
+| `--instructions <text>` | Per-run custom instructions for this analysis. Applies to any mode that runs analysis — `--headless`, `--ai-draft`, `--ai-review` (consumed directly), and `--ai`/`--council` (carried into the browser-triggered analysis). Rejected with a clear error if no analysis mode is selected, so it is never silently dropped. Default: none. |
+| `--instructions-file <path>` | Read per-run custom instructions from a file (5000-character cap). Mutually exclusive with `--instructions`. |
+| `--council <handle>` | Run analysis with a saved multi-voice council. Implies analysis. The handle resolves by council name, name-slug, id (prefix), or a partial name fragment (resolving when it matches a single council, otherwise listing the candidates). When set, `--model` is ignored (council voices use their own per-voice models). Works in headless PR (`--ai-draft`/`--ai-review`/`--headless`), interactive PR (`--ai`), and local (`--local --ai`) modes. |
 | `--list-councils` | List saved councils with their handles, names, types, and last-used repo, then exit. Use a printed handle with `--council`. |
 | `--configure` | Show setup instructions and configuration options |
 | `-d`, `--debug` | Enable verbose debug logging for troubleshooting |
@@ -214,6 +219,9 @@ pair-review 123 --ai                   # Auto-run AI analysis
 pair-review --list-councils            # List saved councils and their handles
 pair-review 123 --ai-draft --council security-review  # Headless draft with a council
 pair-review --local --ai --council security-review    # Local review with a council
+pair-review --local --headless         # Analyze local changes, print a summary, exit
+pair-review --local --headless --json  # Analyze local changes, emit JSON, exit
+pair-review 123 --headless             # Analyze a PR, print a summary, exit
 pair-review --register                 # Register pair-review:// URL scheme (macOS)
 pair-review --register --command "node bin/pair-review.js"  # Custom command
 ```
@@ -224,6 +232,117 @@ pair-review --register --command "node bin/pair-review.js"  # Custom command
 > a partial name fragment (which resolves when it uniquely identifies a council,
 > otherwise lists the candidates). Run `pair-review --list-councils` to discover
 > available handles.
+
+> **Repo default review config:** when neither `--council` nor `--model` is
+> given, pair-review uses the repository's configured default — its default
+> council if one is set, otherwise its default provider/model, otherwise the
+> global config default. This applies to `--headless`, the submit modes, and the
+> web UI's default **Analyze** action, so `--council`/`--model` are optional when
+> a repo default is configured.
+
+### Headless analysis mode
+
+`--headless` runs an AI analysis (single provider or council), stores the results
+in the local SQLite database exactly as the web UI does, reports them, and exits.
+It never starts the server, opens a browser, or posts to GitHub — it is the
+analysis core without the interactive or submit steps.
+
+```bash
+# Analyze uncommitted local changes, print a human-readable summary
+pair-review --local --headless
+
+# Analyze a PR (no review is created on GitHub)
+pair-review 123 --headless
+
+# Use a council and per-run instructions
+pair-review --local --headless --council security-review \
+  --instructions "Focus on auth and input validation."
+```
+
+**Exit codes:** a successful analysis exits `0` regardless of how many findings it
+surfaces (zero findings is still success, with an empty `suggestions` array).
+Non-zero exit is reserved for operational errors — invalid flags, an unreadable
+`--instructions-file`, or an analysis failure.
+
+**Machine-readable output (`--json`):** add `--json` to emit the completed run
+plus its consolidated final suggestions as a single JSON document on stdout. In
+this mode all logs are redirected to stderr, so stdout is a clean, parseable
+document suitable for scripting and AI coding agents:
+
+```bash
+pair-review --local --headless --json | jq '.suggestions | length'
+```
+
+The JSON document has this shape (fields reflect the stored run and the
+consolidated suggestion layer the app shows by default):
+
+```jsonc
+{
+  "mode": "local",            // "pr" or "local"
+  "run": {
+    "id": "…",                 // analysis run id
+    "review_id": 1,
+    "provider": "claude",      // for a council run: "council"
+    "model": "opus",           // for a council run: the council id
+    "tier": "balanced",
+    "config_type": "standard", // or "council" / "advanced"
+    "status": "completed",
+    "summary": "…",
+    "total_suggestions": 3,
+    "files_analyzed": 5,
+    "started_at": "…",
+    "completed_at": "…",
+    "head_sha": "…",
+    "parent_run_id": null,
+    "custom_instructions": null,
+    "global_instructions": null,
+    "repo_instructions": null,
+    "request_instructions": "Focus on auth…",  // from --instructions[-file]
+    "levels_config": { /* parsed */ },
+    "level_outcomes": { /* parsed */ }
+  },
+  "suggestions": [
+    {
+      "id": 42,
+      "ai_run_id": "…",
+      "ai_level": null,        // consolidated layer (per-level rows excluded)
+      "ai_confidence": 0.9,
+      "file": "src/app.js",
+      "line_start": 120,
+      "line_end": 124,
+      "type": "bug",
+      "title": "…",
+      "body": "…",
+      "severity": "high",
+      "status": "active",      // active or adopted
+      "is_file_level": 0,
+      "reasoning": { /* parsed */ },
+      "created_at": "…"
+    }
+  ],
+  "count": 1                   // suggestions.length
+}
+```
+
+**Agent workflow.** A coding agent can run a headless analysis against its own
+uncommitted work, parse the JSON, and act on the suggestions:
+
+```bash
+result=$(pair-review --local --headless --json \
+  --council security-review \
+  --instructions "Review the changes I just made for security issues.")
+
+# Act on high-severity findings
+echo "$result" | jq -r '.suggestions[]
+  | select(.severity == "high")
+  | "\(.file):\(.line_start) [\(.type)] \(.title)"'
+
+# Exit code 0 = analysis ran (any number of findings); non-zero = operational error
+```
+
+Because `--json` keeps stdout clean and exit `0` means "analysis ran," the agent
+can branch on `count`/`severity` rather than on the exit code, reserving non-zero
+handling for genuine failures.
 
 ## Configuration
 

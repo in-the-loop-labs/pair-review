@@ -32,6 +32,7 @@ const { STOPS, isValidScope, normalizeScope, reviewScope, includesBranch, DEFAUL
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
 const { getShaAbbrevLength } = require('../git/sha-abbrev');
 const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
+const { resolveReviewConfig } = require('../review-config');
 const { TIERS, TIER_ALIASES, VALID_TIERS, resolveTier } = require('../ai/prompts/config');
 const { getProviderClass, createProvider } = require('../ai/provider');
 const { getDefaultBranch, tryGraphiteState } = require('../git/base-branch');
@@ -1220,6 +1221,137 @@ async function handleExecutableAnalysis(req, res, {
 }
 
 /**
+ * Launch a local-mode council analysis.
+ *
+ * Shared by the explicit council endpoint (`POST .../analyses/council`) and the
+ * plain-analyze default path (`POST .../analyses`) when a repo's
+ * `default_council_id` resolves to a council and the request made no explicit
+ * single-model pick. Both entry points build the same modeContext and call
+ * `analysesRouter.launchCouncilAnalysis`, so council dispatch is not duplicated.
+ *
+ * The caller is responsible for resolving + validating `councilConfig`/`configType`
+ * and for the empty-scope guard (`rejectIfEmptyScope`) before invoking this.
+ *
+ * @returns {{ analysisId: string, runId: string }}
+ */
+async function launchLocalCouncilAnalysis(req, {
+  reviewId, review, localPath, councilConfig, councilId, configType,
+  requestInstructions, excludePrevious
+}) {
+  const db = req.app.get('db');
+
+  const { start: councilScopeStart, end: councilScopeEnd } = reviewScope(review);
+  const councilHasBranch = includesBranch(councilScopeStart);
+
+  // Compute merge-base when branch is in scope
+  let analysisBaseSha = review.local_head_sha;
+  if (councilHasBranch && review.local_base_branch) {
+    try {
+      analysisBaseSha = await findMergeBase(localPath, review.local_base_branch);
+    } catch {
+      // Fall back to HEAD
+    }
+  }
+
+  const prMetadata = {
+    reviewType: 'local',
+    repository: review.repository,
+    title: null,
+    description: null,
+    base_sha: analysisBaseSha,
+    head_sha: review.local_head_sha,
+    base_branch: review.local_base_branch || null,
+    head_branch: review.local_head_branch || null,
+    scopeStart: councilScopeStart,
+    scopeEnd: councilScopeEnd,
+  };
+
+  // Use the scope-aware helper so the file list matches the generated diff
+  // (covers branch, staged, unstaged, and untracked stops as appropriate).
+  const changedFiles = await getChangedFiles(localPath, {
+    scopeStart: councilScopeStart,
+    scopeEnd: councilScopeEnd,
+    baseBranch: review.local_base_branch || null,
+  });
+
+  // Generate and cache diff. Hoist the result out of the try so we can also
+  // persist it to `local_diffs` below (after reviewRepo is constructed) — the
+  // council path previously cached the diff in-memory only, which left the
+  // manual tour/summary buttons reporting a false "no-diff" after a restart.
+  let councilDiff = null;
+  let councilStats = null;
+  let councilDigest = null;
+  try {
+    const diffResult = await generateScopedDiff(localPath, councilScopeStart, councilScopeEnd, review.local_base_branch);
+    councilDigest = await computeScopedDigest(localPath, councilScopeStart, councilScopeEnd);
+    councilDiff = diffResult.diff;
+    councilStats = diffResult.stats;
+    setLocalReviewDiff(reviewId, { diff: councilDiff, stats: councilStats, digest: councilDigest });
+  } catch (diffError) {
+    logger.warn(`Could not generate diff for local council review ${reviewId}: ${diffError.message}`);
+  }
+
+  // Resolve instructions
+  const repoSettingsRepo = new RepoSettingsRepository(db);
+  const reviewRepo = new ReviewRepository(db);
+
+  // Durably persist the diff so it survives a restart and the manual
+  // tour/summary buttons can find it (parity with the analysis-push path).
+  if (councilDiff) {
+    try {
+      await reviewRepo.saveLocalDiff(reviewId, { diff: councilDiff, stats: councilStats, digest: councilDigest });
+    } catch (saveError) {
+      logger.warn(`Could not persist diff for local council review ${reviewId}: ${saveError.message}`);
+    }
+  }
+  const repoSettings = await repoSettingsRepo.getRepoSettings(review.repository);
+  const repoInstructions = repoSettings?.default_instructions || null;
+
+  if (requestInstructions) {
+    await reviewRepo.updateReview(reviewId, {
+      customInstructions: requestInstructions
+    });
+  }
+
+  // Import launchCouncilAnalysis from analyses.js
+  const analysesRouter = require('./analyses');
+  const localCouncilConfig = req.app.get('config') || {};
+
+  const { providerOverrides: councilProviderOverrides, providerOverridesMap: councilProviderOverridesMap } =
+    buildCouncilProviderOverrides(localCouncilConfig, review.repository, repoSettings);
+
+  // Local mode has no associated GitHub PR, so we do not pass a githubClient.
+  // The analyzer drops the GitHub dedup section when no client is supplied.
+  return analysesRouter.launchCouncilAnalysis(
+    db,
+    {
+      reviewId,
+      worktreePath: localPath,
+      prMetadata,
+      changedFiles,
+      repository: review.repository,
+      headSha: review.local_head_sha,
+      logLabel: `local review #${reviewId}`,
+      initialStatusExtra: { reviewId, reviewType: 'local' },
+      config: localCouncilConfig,
+      excludePrevious,
+      serverPort: req.socket.localPort,
+      providerOverrides: councilProviderOverrides,
+      providerOverridesMap: councilProviderOverridesMap,
+      hookContext: {
+        mode: 'local',
+        localContext: { path: localPath, branch: review.local_head_branch, headSha: review.local_head_sha },
+      },
+      runUpdateExtra: { filesAnalyzed: changedFiles ? changedFiles.length : 0 }
+    },
+    councilConfig,
+    councilId,
+    { globalInstructions: localCouncilConfig.globalInstructions || null, repoInstructions, requestInstructions },
+    configType
+  );
+}
+
+/**
  * Start Level 1 AI analysis for local review
  */
 router.post('/api/local/:reviewId/analyses', async (req, res) => {
@@ -1272,6 +1404,40 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
     const repoSettings = repository ? await repoSettingsRepo.getRepoSettings(repository) : null;
 
     const appConfig = req.app.get('config') || {};
+
+    // Repo default-council parity: when the request makes NO explicit single-model
+    // pick (no provider/model in the body), honor the repo's saved
+    // default_council_id by dispatching to the same council path the explicit
+    // council endpoint uses. An explicit provider/model in the request always
+    // wins and falls through to the single-provider path unchanged below.
+    // For repos with no default_council_id the resolver returns type:'single' and
+    // we fall through, so single-provider behavior is byte-identical to before.
+    if (!requestProvider && !requestModel) {
+      const reviewConfig = await resolveReviewConfig(
+        db,
+        repository,
+        { provider: requestProvider, model: requestModel },
+        appConfig
+      );
+      if (reviewConfig.type === 'council') {
+        logger.log('API', `Honoring repo default council for ${repository}: ${reviewConfig.council.name}`, 'cyan');
+        const { analysisId: councilAnalysisId, runId: councilRunId } = await launchLocalCouncilAnalysis(req, {
+          reviewId, review, localPath,
+          councilConfig: reviewConfig.councilConfig,
+          councilId: reviewConfig.council.id,
+          configType: reviewConfig.configType,
+          requestInstructions,
+          excludePrevious
+        });
+        return res.json({
+          analysisId: councilAnalysisId,
+          runId: councilRunId,
+          status: 'started',
+          message: 'Council analysis started in background',
+          isCouncil: true
+        });
+      }
+    }
 
     // Determine provider: request body > repo settings > config > default ('claude')
     let selectedProvider;
@@ -2238,116 +2404,11 @@ router.post('/api/local/:reviewId/analyses/council', async (req, res) => {
     // Guard: reject if scope resolves to zero changed files
     if (await rejectIfEmptyScope(res, review, localPath)) return;
 
-    const { start: councilScopeStart, end: councilScopeEnd } = reviewScope(review);
-    const councilHasBranch = includesBranch(councilScopeStart);
-
-    // Compute merge-base when branch is in scope
-    let analysisBaseSha = review.local_head_sha;
-    if (councilHasBranch && review.local_base_branch) {
-      try {
-        analysisBaseSha = await findMergeBase(localPath, review.local_base_branch);
-      } catch {
-        // Fall back to HEAD
-      }
-    }
-
-    const prMetadata = {
-      reviewType: 'local',
-      repository: review.repository,
-      title: null,
-      description: null,
-      base_sha: analysisBaseSha,
-      head_sha: review.local_head_sha,
-      base_branch: review.local_base_branch || null,
-      head_branch: review.local_head_branch || null,
-      scopeStart: councilScopeStart,
-      scopeEnd: councilScopeEnd,
-    };
-
-    // Use the scope-aware helper so the file list matches the generated diff
-    // (covers branch, staged, unstaged, and untracked stops as appropriate).
-    const changedFiles = await getChangedFiles(localPath, {
-      scopeStart: councilScopeStart,
-      scopeEnd: councilScopeEnd,
-      baseBranch: review.local_base_branch || null,
+    const { analysisId, runId } = await launchLocalCouncilAnalysis(req, {
+      reviewId, review, localPath, councilConfig, councilId, configType,
+      requestInstructions: rawInstructions?.trim() || null,
+      excludePrevious
     });
-
-    // Generate and cache diff. Hoist the result out of the try so we can also
-    // persist it to `local_diffs` below (after reviewRepo is constructed) — the
-    // council path previously cached the diff in-memory only, which left the
-    // manual tour/summary buttons reporting a false "no-diff" after a restart.
-    let councilDiff = null;
-    let councilStats = null;
-    let councilDigest = null;
-    try {
-      const diffResult = await generateScopedDiff(localPath, councilScopeStart, councilScopeEnd, review.local_base_branch);
-      councilDigest = await computeScopedDigest(localPath, councilScopeStart, councilScopeEnd);
-      councilDiff = diffResult.diff;
-      councilStats = diffResult.stats;
-      setLocalReviewDiff(reviewId, { diff: councilDiff, stats: councilStats, digest: councilDigest });
-    } catch (diffError) {
-      logger.warn(`Could not generate diff for local council review ${reviewId}: ${diffError.message}`);
-    }
-
-    // Resolve instructions
-    const repoSettingsRepo = new RepoSettingsRepository(db);
-    const reviewRepo = new ReviewRepository(db);
-
-    // Durably persist the diff so it survives a restart and the manual
-    // tour/summary buttons can find it (parity with the analysis-push path).
-    if (councilDiff) {
-      try {
-        await reviewRepo.saveLocalDiff(reviewId, { diff: councilDiff, stats: councilStats, digest: councilDigest });
-      } catch (saveError) {
-        logger.warn(`Could not persist diff for local council review ${reviewId}: ${saveError.message}`);
-      }
-    }
-    const repoSettings = await repoSettingsRepo.getRepoSettings(review.repository);
-    const repoInstructions = repoSettings?.default_instructions || null;
-    const requestInstructions = rawInstructions?.trim() || null;
-
-    if (requestInstructions) {
-      await reviewRepo.updateReview(reviewId, {
-        customInstructions: requestInstructions
-      });
-    }
-
-    // Import launchCouncilAnalysis from analyses.js
-    const analysesRouter = require('./analyses');
-    const localCouncilConfig = req.app.get('config') || {};
-
-    const { providerOverrides: councilProviderOverrides, providerOverridesMap: councilProviderOverridesMap } =
-      buildCouncilProviderOverrides(localCouncilConfig, review.repository, repoSettings);
-
-    // Local mode has no associated GitHub PR, so we do not pass a githubClient.
-    // The analyzer drops the GitHub dedup section when no client is supplied.
-    const { analysisId, runId } = await analysesRouter.launchCouncilAnalysis(
-      db,
-      {
-        reviewId,
-        worktreePath: localPath,
-        prMetadata,
-        changedFiles,
-        repository: review.repository,
-        headSha: review.local_head_sha,
-        logLabel: `local review #${reviewId}`,
-        initialStatusExtra: { reviewId, reviewType: 'local' },
-        config: localCouncilConfig,
-        excludePrevious,
-        serverPort: req.socket.localPort,
-        providerOverrides: councilProviderOverrides,
-        providerOverridesMap: councilProviderOverridesMap,
-        hookContext: {
-          mode: 'local',
-          localContext: { path: localPath, branch: review.local_head_branch, headSha: review.local_head_sha },
-        },
-        runUpdateExtra: { filesAnalyzed: changedFiles ? changedFiles.length : 0 }
-      },
-      councilConfig,
-      councilId,
-      { globalInstructions: localCouncilConfig.globalInstructions || null, repoInstructions, requestInstructions },
-      configType
-    );
 
     res.json({
       analysisId,

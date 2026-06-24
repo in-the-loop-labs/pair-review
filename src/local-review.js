@@ -14,6 +14,7 @@ const execAsync = promisify(exec);
 const { STOPS, scopeIncludes, includesBranch, DEFAULT_SCOPE, scopeLabel, reviewScope } = require('./local-scope');
 const { initializeDatabase, ReviewRepository, RepoSettingsRepository } = require('./database');
 const { resolveCouncilHandle } = require('./councils/resolve-council');
+const { prepareInteractiveAnalysisConfig } = require('./interactive-analysis-config');
 const { startServer } = require('./server');
 const { localReviewDiffs } = require('./routes/shared');
 const summaryGenerator = require('./ai/summary-generator');
@@ -703,9 +704,14 @@ async function generateLocalDiff(repoPath, options = {}) {
  * @param {Object} params.config - Loaded config
  * @param {string} params.repoPath - Path to the working tree (already validated)
  * @param {Object} [params.flags] - CLI flags / options
+ * @param {boolean} [params.startBackgroundJobs=true] - When false, skip the
+ *   fire-and-forget summary/tour generation jobs. The interactive UI wants them
+ *   (they populate the review while the human reads the diff), but a one-shot
+ *   headless run does not: they would spend provider budget after the JSON
+ *   result is already printed and keep the event loop alive (CLI hang).
  * @returns {Promise<{sessionId: number, repoPath: string, branch: string, repository: string, headSha: string, diff: string, stats: Object, digest: string|null, branchInfo: Object|null, scopeStart: string, scopeEnd: string, baseBranch: string|null}>}
  */
-async function setupLocalReviewSession({ db, config, repoPath, flags = {} }) {
+async function setupLocalReviewSession({ db, config, repoPath, flags = {}, startBackgroundJobs = true }) {
   const headSha = await module.exports.getHeadSha(repoPath);
   console.log(`HEAD SHA: ${headSha}`);
 
@@ -837,25 +843,30 @@ async function setupLocalReviewSession({ db, config, repoPath, flags = {} }) {
     logger.warn(`Could not persist diff to database: ${persistError.message}`);
   }
 
-  summaryGenerator.kickOffSummaryJob({
-    db,
-    config,
-    reviewId: sessionId,
-    diffText: diff,
-    worktreePath: repoPath,
-    reviewContext: { prTitle: branch },
-    trigger: 'auto'
-  })?.catch((err) => logger.warn(`Hunk summary job failed for review ${sessionId}: ${err.message}`));
+  // Fire-and-forget summary/tour generation. Skipped for headless one-shot runs
+  // (startBackgroundJobs:false) — they would spend provider budget after the
+  // result is reported and keep the event loop alive, hanging the CLI.
+  if (startBackgroundJobs) {
+    summaryGenerator.kickOffSummaryJob({
+      db,
+      config,
+      reviewId: sessionId,
+      diffText: diff,
+      worktreePath: repoPath,
+      reviewContext: { prTitle: branch },
+      trigger: 'auto'
+    })?.catch((err) => logger.warn(`Hunk summary job failed for review ${sessionId}: ${err.message}`));
 
-  tourGenerator.kickOffTourJob({
-    db,
-    config,
-    reviewId: sessionId,
-    diffText: diff,
-    worktreePath: repoPath,
-    reviewContext: { prTitle: branch },
-    trigger: 'auto'
-  })?.catch((err) => logger.warn(`Tour job failed for review ${sessionId}: ${err.message}`));
+    tourGenerator.kickOffTourJob({
+      db,
+      config,
+      reviewId: sessionId,
+      diffText: diff,
+      worktreePath: repoPath,
+      reviewContext: { prTitle: branch },
+      trigger: 'auto'
+    })?.catch((err) => logger.warn(`Tour job failed for review ${sessionId}: ${err.message}`));
+  }
 
   return {
     sessionId,
@@ -928,7 +939,18 @@ async function handleLocalReview(targetPath, flags = {}) {
     let url = `http://localhost:${port}/local/${session.sessionId}`;
     const shouldAnalyze = flags.ai || flags.council;
     if (shouldAnalyze) url += '?analyze=true';
-    if (councilSelection) url += `&council=${councilSelection.id}`;
+    // When the run carries --instructions, stash the resolved analysis config and
+    // thread its id so the browser-side auto-analyze honors the instructions
+    // instead of silently dropping them (mirrors handlePullRequest). The id
+    // encodes the council selection, so prefer it over the bare &council= param.
+    const analysisConfigId = shouldAnalyze
+      ? await prepareInteractiveAnalysisConfig({ db, config, flags, repository: session.repository })
+      : null;
+    if (analysisConfigId) {
+      url += `&analysisConfigId=${analysisConfigId}`;
+    } else if (councilSelection) {
+      url += `&council=${councilSelection.id}`;
+    }
     console.log(`\nOpening browser to: ${url}`);
     await open(url);
 

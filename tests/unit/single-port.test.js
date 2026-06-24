@@ -4,6 +4,7 @@ import { describe, it, expect, vi } from 'vitest';
 const {
   detectRunningServer,
   notifyVersion,
+  storeAnalysisConfigRemote,
   buildDelegationUrl,
   attemptDelegation,
   HEALTH_TIMEOUT_MS
@@ -71,6 +72,39 @@ function mockHttpRequest(capture = {}) {
     if (cb) cb({ on() {} });
     const req = {
       on() { return req; },
+      write(data) { capture.body = data; return req; },
+      end() { return req; },
+      destroy() {}
+    };
+    return req;
+  };
+}
+
+/**
+ * Mock http.request that emits a JSON response (statusCode + body), captures the
+ * request opts + written body, and can simulate transport error / timeout. Used
+ * for storeAnalysisConfigRemote, which (unlike notifyVersion) reads the response.
+ */
+function mockHttpRequestWithResponse({ statusCode = 200, body = { success: true, id: 'cfg-xyz' }, error = null, timeout = false } = {}, capture = {}) {
+  return (opts, cb) => {
+    capture.opts = opts;
+    if (cb && !error && !timeout) {
+      const res = {
+        statusCode,
+        on(event, handler) {
+          if (event === 'data') handler(JSON.stringify(body));
+          if (event === 'end') handler();
+          return res;
+        }
+      };
+      cb(res);
+    }
+    const req = {
+      on(event, handler) {
+        if (event === 'error' && error) handler(error);
+        if (event === 'timeout' && timeout) handler();
+        return req;
+      },
       write(data) { capture.body = data; return req; },
       end() { return req; },
       destroy() {}
@@ -207,6 +241,28 @@ describe('buildDelegationUrl', () => {
     expect(url).toBe('http://localhost:7247/local?path=%2Ftmp%2Fproject&analyze=true&council=abc-123');
   });
 
+  it('appends analysisConfigId to PR URL and DROPS council when both are present', () => {
+    const url = buildDelegationUrl(7247, 'pr', {
+      owner: 'acme', repo: 'widgets', number: 42, analyze: true, councilId: 'abc-123', analysisConfigId: 'cfg-9'
+    });
+    // The id already encodes the council snapshot, so council= is omitted.
+    expect(url).toBe('http://localhost:7247/pr/acme/widgets/42?analyze=true&analysisConfigId=cfg-9');
+  });
+
+  it('appends analysisConfigId to local URL and DROPS council when both are present', () => {
+    const url = buildDelegationUrl(7247, 'local', {
+      localPath: '/tmp/project', analyze: true, councilId: 'abc-123', analysisConfigId: 'cfg-9'
+    });
+    expect(url).toBe('http://localhost:7247/local?path=%2Ftmp%2Fproject&analyze=true&analysisConfigId=cfg-9');
+  });
+
+  it('url-encodes the analysisConfigId', () => {
+    const url = buildDelegationUrl(7247, 'pr', {
+      owner: 'acme', repo: 'widgets', number: 42, analyze: true, analysisConfigId: 'a b/c'
+    });
+    expect(url).toBe('http://localhost:7247/pr/acme/widgets/42?analyze=true&analysisConfigId=a%20b%2Fc');
+  });
+
   it('builds server landing URL', () => {
     const url = buildDelegationUrl(7247, 'server');
     expect(url).toBe('http://localhost:7247/');
@@ -246,6 +302,50 @@ describe('notifyVersion', () => {
       }
     });
     expect(() => notifyVersion(7247, '3.3.0', deps)).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// storeAnalysisConfigRemote
+// ---------------------------------------------------------------------------
+
+describe('storeAnalysisConfigRemote', () => {
+  const analysisConfig = { provider: 'claude', model: 'opus', customInstructions: 'be terse' };
+
+  it('POSTs the analysisConfig and resolves the returned id', async () => {
+    const capture = {};
+    const httpRequest = mockHttpRequestWithResponse({ body: { success: true, id: 'cfg-42' } }, capture);
+    const id = await storeAnalysisConfigRemote(7247, analysisConfig, { httpRequest });
+
+    expect(id).toBe('cfg-42');
+    expect(capture.opts.method).toBe('POST');
+    expect(capture.opts.port).toBe(7247);
+    expect(capture.opts.path).toBe('/api/bulk-analysis-configs');
+    expect(JSON.parse(capture.body)).toEqual({ analysisConfig });
+  });
+
+  it('rejects with the server error message on a non-2xx status', async () => {
+    const httpRequest = mockHttpRequestWithResponse({ statusCode: 400, body: { error: 'provider is required' } });
+    await expect(storeAnalysisConfigRemote(7247, analysisConfig, { httpRequest }))
+      .rejects.toThrow(/Failed to store analysis config on the running server: provider is required/);
+  });
+
+  it('rejects on a 2xx response with no id', async () => {
+    const httpRequest = mockHttpRequestWithResponse({ statusCode: 200, body: { success: true } });
+    await expect(storeAnalysisConfigRemote(7247, analysisConfig, { httpRequest }))
+      .rejects.toThrow(/Failed to store analysis config/);
+  });
+
+  it('rejects on a transport error', async () => {
+    const httpRequest = mockHttpRequestWithResponse({ error: new Error('ECONNRESET') });
+    await expect(storeAnalysisConfigRemote(7247, analysisConfig, { httpRequest }))
+      .rejects.toThrow(/Failed to reach pair-review server on port 7247: ECONNRESET/);
+  });
+
+  it('rejects on timeout', async () => {
+    const httpRequest = mockHttpRequestWithResponse({ timeout: true });
+    await expect(storeAnalysisConfigRemote(7247, analysisConfig, { httpRequest }))
+      .rejects.toThrow(/Timed out storing analysis config/);
   });
 });
 
@@ -400,6 +500,113 @@ describe('attemptDelegation', () => {
     });
     await attemptDelegation(baseConfig, {}, [], deps);
     expect(capture.body).toBeUndefined();
+  });
+
+  // ── Instruction handoff across delegation (Bug: --instructions silently
+  //    dropped when a server is already running). When an analyzing mode carries
+  //    instructions and an open DB is supplied, the resolved analysis config is
+  //    POSTed to the running server and its id is threaded as analysisConfigId.
+  describe('analysis-config handoff', () => {
+    // Match the running version so notifyVersion never fires — keeps the single
+    // captured httpRequest call the bulk-config POST.
+    const { version } = require('../../package.json');
+    const STORED = { provider: 'claude', model: 'opus', customInstructions: 'be terse' };
+
+    function handoffDeps({ capture = {}, buildResult = STORED, httpRequestOpts = { body: { success: true, id: 'cfg-77' } } } = {}) {
+      return createMockDeps({
+        httpGet: mockHttpGetSuccess({ status: 'ok', service: 'pair-review', version }),
+        httpRequest: mockHttpRequestWithResponse(httpRequestOpts, capture),
+        buildInteractiveAnalysisConfig: vi.fn().mockResolvedValue(buildResult)
+      });
+    }
+
+    it('PR mode: builds with the normalized repo, POSTs, and threads analysisConfigId (no council)', async () => {
+      const capture = {};
+      const deps = handoffDeps({ capture });
+      await attemptDelegation(
+        baseConfig,
+        { ai: true, instructions: 'be terse' },
+        ['42'],
+        deps,
+        { db: {}, councilId: 'abc-123' }
+      );
+
+      // Builder received the resolved (normalized) PR repository + same db/flags.
+      expect(deps.buildInteractiveAnalysisConfig).toHaveBeenCalledTimes(1);
+      const buildArgs = deps.buildInteractiveAnalysisConfig.mock.calls[0][0];
+      expect(buildArgs.repository).toBe('test-owner/test-repo');
+      expect(buildArgs.db).toEqual({});
+
+      // The config was POSTed.
+      expect(capture.opts.path).toBe('/api/bulk-analysis-configs');
+      expect(JSON.parse(capture.body)).toEqual({ analysisConfig: STORED });
+
+      // URL carries the stored id and DROPS council (the id encodes everything).
+      const url = deps.open.mock.calls[0][0];
+      expect(url).toContain('analysisConfigId=cfg-77');
+      expect(url).not.toContain('council=');
+    });
+
+    it('local mode: builds with options.localRepository', async () => {
+      const deps = handoffDeps();
+      await attemptDelegation(
+        baseConfig,
+        { local: true, localPath: '/tmp/project', ai: true, instructions: 'be terse' },
+        [],
+        deps,
+        { db: {}, localRepository: 'acme/local-repo' }
+      );
+
+      const buildArgs = deps.buildInteractiveAnalysisConfig.mock.calls[0][0];
+      expect(buildArgs.repository).toBe('acme/local-repo');
+      const url = deps.open.mock.calls[0][0];
+      expect(url).toContain('analysisConfigId=cfg-77');
+    });
+
+    it('no instructions (builder returns null): no POST, falls back to council param', async () => {
+      const capture = {};
+      const deps = handoffDeps({ capture, buildResult: null });
+      await attemptDelegation(
+        baseConfig,
+        { council: 'my-council' },
+        ['42'],
+        deps,
+        { db: {}, councilId: 'abc-123' }
+      );
+
+      expect(deps.buildInteractiveAnalysisConfig).toHaveBeenCalledTimes(1);
+      // No bulk-config POST happened.
+      expect(capture.opts).toBeUndefined();
+      const url = deps.open.mock.calls[0][0];
+      expect(url).toContain('council=abc-123');
+      expect(url).not.toContain('analysisConfigId=');
+    });
+
+    it('skips the handoff entirely when no db is supplied (gate)', async () => {
+      const deps = handoffDeps();
+      await attemptDelegation(
+        baseConfig,
+        { ai: true, instructions: 'be terse' },
+        ['42'],
+        deps,
+        { councilId: 'abc-123' } // no db
+      );
+      expect(deps.buildInteractiveAnalysisConfig).not.toHaveBeenCalled();
+      const url = deps.open.mock.calls[0][0];
+      expect(url).not.toContain('analysisConfigId=');
+    });
+
+    it('throws (loud-fail) and does not open a browser when the POST fails', async () => {
+      const deps = handoffDeps({ httpRequestOpts: { error: new Error('ECONNRESET') } });
+      await expect(attemptDelegation(
+        baseConfig,
+        { ai: true, instructions: 'be terse' },
+        ['42'],
+        deps,
+        { db: {} }
+      )).rejects.toThrow(/Failed to reach pair-review server/);
+      expect(deps.open).not.toHaveBeenCalled();
+    });
   });
 });
 

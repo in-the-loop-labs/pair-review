@@ -4,7 +4,7 @@ const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
 const { z } = require('zod');
 const { v4: uuidv4 } = require('uuid');
-const { ReviewRepository, CommentRepository, AnalysisRunRepository, RepoSettingsRepository, PRMetadataRepository, query } = require('../database');
+const { ReviewRepository, CommentRepository, AnalysisRunRepository, RepoSettingsRepository, PRMetadataRepository } = require('../database');
 const { renderPromptForSkill } = require('../ai/prompts/render-for-skill');
 const Analyzer = require('../ai/analyzer');
 const { getTierForModel } = require('../ai/provider');
@@ -393,33 +393,15 @@ function createMCPServer(db, options = {}) {
         };
       }
 
-      // Build parameterized WHERE conditions
-      const params = [runId];
-      const conditions = ["ai_run_id = ?", "source = 'ai'", 'ai_level IS NULL', '(is_raw = 0 OR is_raw IS NULL)'];
-
-      if (args.status) {
-        conditions.push('status = ?');
-        params.push(args.status);
-      } else {
-        // Exclude dismissed by default — dismissed suggestions were explicitly
-        // rejected by the reviewer and would be noise for an iterating agent.
-        conditions.push("status IN ('active', 'adopted')");
-      }
-
-      if (args.file) {
-        conditions.push('file = ?');
-        params.push(args.file);
-      }
-
-      const filtered = await query(db, `
-        SELECT
-          id, ai_run_id, ai_level, ai_confidence,
-          file, line_start, line_end, type, title, body,
-          reasoning, status, is_file_level, severity, created_at
-        FROM comments
-        WHERE ${conditions.join('\n          AND ')}
-        ORDER BY file, line_start
-      `, params);
+      // Resolve the run's consolidated final suggestions via the shared
+      // CommentRepository query. When the caller passes an explicit `status`,
+      // filter by just that one; otherwise default to active + adopted
+      // (excluding dismissed — those were explicitly rejected by the reviewer
+      // and would be noise for an iterating agent).
+      const filtered = await new CommentRepository(db).getFinalSuggestionsByRunId(runId, {
+        statuses: args.status ? [args.status] : ['active', 'adopted'],
+        file: args.file || null,
+      });
 
       return {
         content: [{
@@ -453,7 +435,10 @@ function createMCPServer(db, options = {}) {
     'Start an AI analysis within pair-review for local or PR changes. ' +
     'Returns immediately with tracking IDs so the caller can poll for completion. ' +
     'For local mode, provide (path + headSha). For PR mode, provide (repo + prNumber). ' +
-    'Use get_ai_analysis_runs with limit=1 to poll for completion, then get_ai_suggestions to fetch results.',
+    'Use get_ai_analysis_runs with limit=1 to poll for completion, then get_ai_suggestions to fetch results. ' +
+    'Note: this tool runs a single provider/model only — it does NOT dispatch a repo\'s ' +
+    'configured default council (repo_settings.default_council_id), unlike the CLI ' +
+    '(--headless) and the web "Analyze" action. To run a council, use the web UI or the CLI.',
     {
       ...reviewLookupSchema,
       customInstructions: z.string().max(5000).optional()
@@ -586,7 +571,16 @@ function createMCPServer(db, options = {}) {
             logger.warn(`Could not generate or persist diff for local review ${reviewId}: ${diffError.message}`);
           }
 
-          // Resolve provider and model
+          // Resolve provider and model.
+          //
+          // INTENTIONAL DIVERGENCE (documented in the tool description): MCP
+          // resolves a single provider/model here and does NOT consult
+          // resolveReviewConfig()/repo_settings.default_council_id, so a repo's
+          // default council is ignored on this path (the CLI --headless and the
+          // web "Analyze" action DO honor it). This ladder is also env-first
+          // (PAIR_REVIEW_* over repo defaults), matching review-config.js's
+          // _buildSingleSelection. Routing this through resolveReviewConfig (and
+          // adding council dispatch) is a deliberate follow-up, not an oversight.
           const repoSettings = repository ? await repoSettingsRepo.getRepoSettings(repository) : null;
           const provider = process.env.PAIR_REVIEW_PROVIDER || repoSettings?.default_provider || config.default_provider || config.provider || 'claude';
           const model = process.env.PAIR_REVIEW_MODEL || repoSettings?.default_model || config.default_model || config.model || 'opus';
@@ -741,7 +735,10 @@ function createMCPServer(db, options = {}) {
           // Get or create review record
           const { review } = await reviewRepo.getOrCreate({ prNumber, repository });
 
-          // Resolve provider and model
+          // Resolve provider and model. INTENTIONAL DIVERGENCE: single
+          // provider/model only — no resolveReviewConfig / default-council
+          // dispatch (see the local branch above and the tool description). The
+          // env-first ladder matches review-config.js's _buildSingleSelection.
           const repoSettings = await repoSettingsRepo.getRepoSettings(repository);
           const provider = process.env.PAIR_REVIEW_PROVIDER || repoSettings?.default_provider || config.default_provider || config.provider || 'claude';
           const model = process.env.PAIR_REVIEW_MODEL || repoSettings?.default_model || config.default_model || config.model || 'opus';

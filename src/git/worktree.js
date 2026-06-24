@@ -423,7 +423,13 @@ class GitWorktreeManager {
       child.stdout.on('data', (data) => {
         const chunk = data.toString();
         stdout += chunk;
-        process.stdout.write(chunk);
+        // When PAIR_REVIEW_QUIET_STDOUT is set (headless --json or MCP stdio
+        // mode, via redirectConsoleToStderr in src/mcp-stdio.js), stdout is
+        // reserved for a machine-readable document (JSON / JSON-RPC). Mirror the
+        // child's stdout to stderr in that case so it doesn't corrupt the
+        // reserved stream; otherwise mirror it to stdout as before.
+        const sink = process.env.PAIR_REVIEW_QUIET_STDOUT ? process.stderr : process.stdout;
+        sink.write(chunk);
       });
       child.stderr.on('data', (data) => {
         const chunk = data.toString();

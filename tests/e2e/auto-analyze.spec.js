@@ -259,4 +259,93 @@ test.describe('Auto-Analyze Query Parameter - Local Mode', () => {
 
     expect(analyzeRequested).toBe(false);
   });
+
+  test('should use stored bulk analysis config when analysisConfigId is present (local mode)', async ({ page }) => {
+    // Covers the CLI `--local --ai/--council --instructions` bridge: the resolved
+    // config (provider/model + instructions) is stashed and threaded as
+    // analysisConfigId, which LocalManager must consume instead of building a
+    // default. Mirrors the PR-mode coverage above.
+    await page.route('**/api/bulk-analysis-configs/local-test-config', route => {
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          analysisConfig: {
+            provider: 'gemini',
+            model: 'gemini-2.5-pro',
+            tier: 'thorough',
+            customInstructions: 'Review the changes I just made for security issues.',
+            enabledLevels: [1, 2],
+            skipLevel3: true
+          }
+        })
+      });
+    });
+
+    await page.route('**/api/local/2/analyses', route => {
+      if (route.request().method() === 'POST') {
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ analysisId: 'test-local-analysis', status: 'started' })
+        });
+      } else {
+        route.continue();
+      }
+    });
+
+    const analyzeRequest = page.waitForRequest(
+      request => request.url().includes('/api/local/2/analyses') &&
+                 request.method() === 'POST',
+      { timeout: 10000 }
+    );
+
+    await page.goto('/local/2?analyze=true&analysisConfigId=local-test-config');
+    await waitForDiffToRender(page);
+
+    const request = await analyzeRequest;
+    expect(request.postDataJSON()).toMatchObject({
+      provider: 'gemini',
+      model: 'gemini-2.5-pro',
+      tier: 'thorough',
+      customInstructions: 'Review the changes I just made for security issues.',
+      skipLevel3: true
+    });
+
+    await page.waitForFunction(() => {
+      const params = new URLSearchParams(window.location.search);
+      return !params.has('analyze') && !params.has('analysisConfigId');
+    }, { timeout: 5000 });
+  });
+
+  test('should not fall back to defaults when requested bulk config is missing (local mode)', async ({ page }) => {
+    await page.route('**/api/bulk-analysis-configs/missing-local-config', route => {
+      route.fulfill({
+        status: 404,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'Bulk analysis config not found' })
+      });
+    });
+
+    let analyzeRequested = false;
+    page.on('request', request => {
+      if (request.url().includes('/api/local/2/analyses') && request.method() === 'POST') {
+        analyzeRequested = true;
+      }
+    });
+
+    await page.goto('/local/2?analyze=true&analysisConfigId=missing-local-config');
+    await waitForDiffToRender(page);
+
+    // Warns via toast and does NOT silently fall back to a default analysis.
+    await expect(page.locator('.toast-warning')).toContainText('Could not load the selected analysis settings');
+    expect(analyzeRequested).toBe(false);
+
+    // Stale params are stripped so a refresh won't re-trigger the same failure.
+    await page.waitForFunction(() => {
+      const params = new URLSearchParams(window.location.search);
+      return !params.has('analyze') && !params.has('analysisConfigId');
+    }, { timeout: 5000 });
+  });
 });
