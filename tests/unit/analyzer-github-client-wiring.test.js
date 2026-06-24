@@ -22,8 +22,10 @@ function readSource(relativePath) {
 describe('PR-mode analyzer call sites pass githubClient', () => {
   it('src/main.js — analyzeAllLevels receives githubClient via options', () => {
     const src = readSource('src/main.js');
+    // The options bag carries githubClient (and may include additional keys
+    // such as runId now that the headless dispatch threads an explicit run id).
     expect(src).toMatch(
-      /analyzer\.analyzeAllLevels\([^)]*\{\s*githubClient\s*\}\s*\)/
+      /analyzer\.analyzeAllLevels\([^)]*\{[^{}]*\bgithubClient\b[^{}]*\}\s*\)/
     );
   });
 
@@ -98,8 +100,11 @@ describe('Local-mode analyzer call sites do not pass githubClient', () => {
   it('src/routes/local.js — launchCouncilAnalysis omits githubClient with a documenting comment', () => {
     const src = readSource('src/routes/local.js');
     // Find the council launch site and confirm it has no githubClient on the
-    // immediately-preceding 20 lines.
-    const idx = src.indexOf('analysesRouter.launchCouncilAnalysis');
+    // immediately-preceding 20 lines. Match the actual call invocation (with the
+    // opening paren) rather than a bare name reference, so a JSDoc mention of
+    // `analysesRouter.launchCouncilAnalysis` earlier in the file doesn't win the
+    // indexOf and shift the preamble window away from the documented call site.
+    const idx = src.indexOf('analysesRouter.launchCouncilAnalysis(');
     expect(idx).toBeGreaterThan(-1);
     const preamble = src.slice(Math.max(0, idx - 600), idx);
     expect(preamble).toMatch(/[Ll]ocal mode[^\n]*(githubClient|no associated GitHub PR)/);

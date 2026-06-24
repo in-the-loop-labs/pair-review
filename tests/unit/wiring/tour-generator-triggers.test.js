@@ -274,5 +274,22 @@ describe('kickOffTourJob trigger sites', () => {
       expect(call.config.tours.enabled).toBe(false);
       expect(call.reviewContext).toEqual({ prTitle: 'main' });
     });
+
+    it('does NOT call kickOffTourJob when startBackgroundJobs is false (headless one-shot)', async () => {
+      // tours.enabled is true; only the explicit opt-out the headless path passes
+      // suppresses the job. Guards the CLI-hang / wasted-budget fix.
+      const config = { tours: { enabled: true }, port: 7247 };
+
+      const session = await localReviewModule.setupLocalReviewSession({
+        db,
+        config,
+        repoPath: '/mock/repo',
+        flags: {},
+        startBackgroundJobs: false
+      });
+
+      expect(session.sessionId).toBeDefined();
+      expect(tourGenerator.kickOffTourJob).not.toHaveBeenCalled();
+    });
   });
 });

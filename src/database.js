@@ -3680,6 +3680,58 @@ class CommentRepository {
   }
 
   /**
+   * Get the consolidated final AI suggestions for a single analysis run.
+   *
+   * This returns the run-scoped, orchestrated (consolidated) layer: the final
+   * suggestions the app shows by default for a run — `source='ai'`,
+   * `ai_level IS NULL` (not per-level), non-raw, and (by default) not dismissed.
+   * It is the shared retrieval used by both the MCP `get_ai_suggestions` tool
+   * and the CLI JSON output for agents.
+   *
+   * INTENTIONALLY DISTINCT from the review-scoped submit query in
+   * `performHeadlessReview` (src/main.js ~1195-1207), which must NOT be migrated
+   * to this method. That query has different semantics on purpose:
+   *   - review-scoped (latest-review-wide), not single-run-scoped;
+   *   - `status = 'active'` only (no adopted);
+   *   - thin columns tailored for GitHub submission.
+   * Keep the two queries separate.
+   *
+   * @param {string} runId - Analysis run ID (`ai_run_id`)
+   * @param {Object} [options] - Query options
+   * @param {string[]} [options.statuses=['active','adopted']] - Statuses to include
+   * @param {string|null} [options.file=null] - Restrict to a single file path
+   * @returns {Promise<Array<Object>>} Consolidated final suggestion rows
+   */
+  async getFinalSuggestionsByRunId(runId, { statuses = ['active', 'adopted'], file = null } = {}) {
+    const params = [runId];
+    const conditions = [
+      'ai_run_id = ?',
+      "source = 'ai'",
+      'ai_level IS NULL',
+      '(is_raw = 0 OR is_raw IS NULL)'
+    ];
+
+    const placeholders = statuses.map(() => '?').join(', ');
+    conditions.push(`status IN (${placeholders})`);
+    params.push(...statuses);
+
+    if (file) {
+      conditions.push('file = ?');
+      params.push(file);
+    }
+
+    return await query(this.db, `
+      SELECT
+        id, ai_run_id, ai_level, ai_confidence,
+        file, line_start, line_end, type, title, body,
+        reasoning, status, is_file_level, severity, created_at
+      FROM comments
+      WHERE ${conditions.join('\n          AND ')}
+      ORDER BY file, line_start
+    `, params);
+  }
+
+  /**
    * Restore a soft-deleted user comment (set status from 'inactive' back to 'active')
    * @param {number} id - Comment ID
    * @returns {Promise<boolean>} True if restored successfully

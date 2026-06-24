@@ -283,5 +283,23 @@ describe('kickOffSummaryJob trigger sites', () => {
       expect(call.config.summaries.enabled).toBe(false);
       expect(call.reviewContext).toEqual({ prTitle: 'main' });
     });
+
+    it('does NOT call kickOffSummaryJob when startBackgroundJobs is false (headless one-shot)', async () => {
+      // summaries.enabled is true, so the only thing suppressing the job is the
+      // explicit opt-out the headless path passes. This guards the CLI-hang /
+      // wasted-budget fix for `--local --headless`.
+      const config = { summaries: { enabled: true }, port: 7247 };
+
+      const session = await localReviewModule.setupLocalReviewSession({
+        db,
+        config,
+        repoPath: '/mock/repo',
+        flags: {},
+        startBackgroundJobs: false
+      });
+
+      expect(session.sessionId).toBeDefined();
+      expect(summaryGenerator.kickOffSummaryJob).not.toHaveBeenCalled();
+    });
   });
 });

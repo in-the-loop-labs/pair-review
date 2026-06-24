@@ -72,20 +72,39 @@ class LocalManager {
     // Auto-trigger analysis if ?analyze=true is present
     const autoAnalyze = new URLSearchParams(window.location.search).get('analyze');
     if (autoAnalyze === 'true' && !window.prManager.isAnalyzing) {
+      const manager = window.prManager;
       try {
-        // Fetch repo settings so we honour the repository's default provider/council
-        const manager = window.prManager;
-        const [repoSettings, reviewSettings, appConfig] = await Promise.all([
-          manager.fetchRepoSettings().catch(() => null),
-          manager.fetchLastReviewSettings().catch(() => ({ custom_instructions: '', last_council_id: null })),
-          manager._getAppConfig()
-        ]);
-        const config = await manager._buildDefaultAnalysisConfig(repoSettings, reviewSettings, appConfig);
+        // Prefer a stashed bulk-analysis config (threaded via analysisConfigId).
+        // The CLI uses it to carry --instructions plus the resolved
+        // provider/model or council snapshot into the browser auto-analyze;
+        // mirrors PRManager._maybeAutoAnalyze.
+        const storedConfig = await manager._fetchAutoAnalysisConfigFromUrl();
+        let config;
+        if (storedConfig.requested) {
+          if (!storedConfig.config) {
+            // The stored config expired (TTL/eviction/restart). The diff has
+            // already rendered, so leave the review usable for manual analysis
+            // rather than failing; warn and bail.
+            const message = 'Could not load the selected analysis settings. Start analysis manually to choose new settings.';
+            if (window.toast) window.toast.showWarning(message);
+            return;
+          }
+          config = storedConfig.config;
+        } else {
+          // Fetch repo settings so we honour the repository's default provider/council
+          const [repoSettings, reviewSettings, appConfig] = await Promise.all([
+            manager.fetchRepoSettings().catch(() => null),
+            manager.fetchLastReviewSettings().catch(() => ({ custom_instructions: '', last_council_id: null })),
+            manager._getAppConfig()
+          ]);
+          config = await manager._buildDefaultAnalysisConfig(repoSettings, reviewSettings, appConfig);
+        }
 
         await this.startLocalAnalysis(null, config);
       } finally {
         const cleanUrl = new URL(window.location);
         cleanUrl.searchParams.delete('analyze');
+        cleanUrl.searchParams.delete('analysisConfigId');
         cleanUrl.searchParams.delete('council');
         history.replaceState(null, '', cleanUrl);
       }

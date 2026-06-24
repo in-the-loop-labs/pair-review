@@ -239,24 +239,45 @@ function sanitizeAnalysisConfig(config) {
   return sanitizeSingleConfig(config);
 }
 
+/**
+ * Validate + store an analysis config, returning its short id. Single source of
+ * truth for the in-memory store, shared by the HTTP POST handler (index-page bulk
+ * launcher) and the CLI interactive `--instructions` flow, which stashes the
+ * resolved config so the browser-side auto-analyze can pick it up via the
+ * `analysisConfigId` URL param (same in-process Map the GET handler reads).
+ *
+ * @param {Object} analysisConfig - Raw analysis config (single or council shape)
+ * @returns {{ id: string, expiresInMs: number }}
+ * @throws {Error} with `.statusCode = 400` when the config fails validation
+ */
+function createBulkAnalysisConfig(analysisConfig) {
+  const result = sanitizeAnalysisConfig(analysisConfig);
+  if (result.error) {
+    const err = new Error(result.error);
+    err.statusCode = 400;
+    throw err;
+  }
+
+  pruneExpired();
+
+  const id = crypto.randomUUID();
+  configs.set(id, {
+    analysisConfig: result.config,
+    expiresAt: Date.now() + CONFIG_TTL_MS
+  });
+  enforceMaxConfigs();
+
+  return { id, expiresInMs: CONFIG_TTL_MS };
+}
+
 router.post('/api/bulk-analysis-configs', (req, res) => {
   try {
-    const result = sanitizeAnalysisConfig(req.body?.analysisConfig);
-    if (result.error) {
-      return res.status(400).json({ error: result.error });
-    }
-
-    pruneExpired();
-
-    const id = crypto.randomUUID();
-    configs.set(id, {
-      analysisConfig: result.config,
-      expiresAt: Date.now() + CONFIG_TTL_MS
-    });
-    enforceMaxConfigs();
-
-    res.json({ success: true, id, expiresInMs: CONFIG_TTL_MS });
+    const { id, expiresInMs } = createBulkAnalysisConfig(req.body?.analysisConfig);
+    res.json({ success: true, id, expiresInMs });
   } catch (error) {
+    if (error.statusCode === 400) {
+      return res.status(400).json({ error: error.message });
+    }
     logger.error('Failed to store bulk analysis config:', error);
     res.status(500).json({ error: 'Failed to store bulk analysis config' });
   }
@@ -287,6 +308,7 @@ function _getBulkAnalysisConfig(id) {
 }
 
 module.exports = router;
+module.exports.createBulkAnalysisConfig = createBulkAnalysisConfig;
 module.exports._resetBulkAnalysisConfigs = _resetBulkAnalysisConfigs;
 module.exports._getBulkAnalysisConfig = _getBulkAnalysisConfig;
 module.exports._pruneExpired = pruneExpired;

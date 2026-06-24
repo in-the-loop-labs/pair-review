@@ -55,6 +55,7 @@ const { parseHunks } = require('../utils/diff-hunks');
 const { hashHunk } = require('../ai/hunk-hashing');
 const { resolveOriginalFileContentSpecs } = require('../utils/diff-file-content');
 const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
+const { resolveReviewConfig } = require('../review-config');
 const { TIERS, TIER_ALIASES, VALID_TIERS, resolveTier } = require('../ai/prompts/config');
 const { getProviderClass, createProvider } = require('../ai/provider');
 const { CommentRepository } = require('../database');
@@ -2039,6 +2040,84 @@ async function handleExecutablePRAnalysis(req, res, {
 }
 
 /**
+ * Launch a PR-mode council analysis.
+ *
+ * Shared by the explicit council endpoint (`POST .../analyses/council`) and the
+ * plain-analyze default path (`POST .../analyses`) when a repo's
+ * `default_council_id` resolves to a council and the request made no explicit
+ * single-model pick. Both entry points build the same modeContext and call
+ * `analysesRouter.launchCouncilAnalysis`, so council dispatch is not duplicated.
+ *
+ * Caller is responsible for resolving + validating `councilConfig`/`configType`
+ * and persisting any request instructions before calling this.
+ *
+ * @returns {{ analysisId: string, runId: string }}
+ */
+async function launchPrCouncilAnalysis(req, {
+  repository, owner, repo, prNumber, prMetadata, worktreePath,
+  review, reviewRepo, repoSettings, councilConfig, councilId, configType,
+  repoInstructions, requestInstructions, excludePrevious
+}) {
+  const db = req.app.get('db');
+  const prCouncilConfig = req.app.get('config') || {};
+
+  const { providerOverrides: councilProviderOverrides, providerOverridesMap: councilProviderOverridesMap } =
+    buildCouncilProviderOverrides(prCouncilConfig, repository, repoSettings);
+
+  // Build a GitHubClient for analyzer-side dedup pre-fetch (PR mode only).
+  let councilGithubClient;
+  try {
+    const resolved = resolveBindingForRequest(req, repository);
+    councilGithubClient = resolved ? new GitHubClient(resolved.binding) : undefined;
+  } catch (configErr) {
+    logger.warn(`Skipping GitHub dedup pre-fetch (council): ${configErr.message}`);
+    councilGithubClient = undefined;
+  }
+  if (councilGithubClient) {
+    logger.debug(`analyzer githubClient wired for ${owner}/${repo}#${prNumber} (council)`);
+  }
+
+  return analysesRouter.launchCouncilAnalysis(
+    db,
+    {
+      reviewId: review.id,
+      worktreePath,
+      prMetadata,
+      changedFiles: null,
+      repository,
+      headSha: prMetadata.head_sha,
+      logLabel: `PR #${prNumber}`,
+      initialStatusExtra: { prNumber, reviewType: 'pr' },
+      config: prCouncilConfig,
+      excludePrevious,
+      serverPort: req.socket.localPort,
+      githubClient: councilGithubClient,
+      poolLifecycle: req.app.get('poolLifecycle'),
+      providerOverrides: councilProviderOverrides,
+      providerOverridesMap: councilProviderOverridesMap,
+      hookContext: {
+        mode: 'pr',
+        prContext: {
+          number: prNumber, owner, repo,
+          author: prMetadata.author, baseBranch: prMetadata.base_branch,
+          headBranch: prMetadata.head_branch,
+          baseSha: prMetadata.base_sha || null, headSha: prMetadata.head_sha || null,
+        },
+      },
+      onSuccess: async (result) => {
+        if (result.summary) {
+          await reviewRepo.upsertSummary(prNumber, repository, result.summary);
+        }
+      }
+    },
+    councilConfig,
+    councilId,
+    { globalInstructions: prCouncilConfig.globalInstructions || null, repoInstructions, requestInstructions },
+    configType
+  );
+}
+
+/**
  * Trigger AI analysis for a PR
  */
 router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
@@ -2164,6 +2243,40 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
     const analysisId = runId;
 
     const { review } = await reviewRepo.getOrCreate({ prNumber, repository });
+
+    // Repo default-council parity: when the request makes NO explicit single-model
+    // pick (no provider/model in the body), honor the repo's saved
+    // default_council_id by dispatching to the same council path the explicit
+    // council endpoint uses. An explicit provider/model in the request always
+    // wins and falls through to the single-provider path unchanged below.
+    // For repos with no default_council_id the resolver returns type:'single' and
+    // we fall through, so single-provider behavior is byte-identical to before.
+    if (!requestProvider && !requestModel) {
+      const reviewConfig = await resolveReviewConfig(
+        db,
+        repository,
+        { provider: requestProvider, model: requestModel },
+        appConfig
+      );
+      if (reviewConfig.type === 'council') {
+        logger.log('API', `Honoring repo default council for ${repository}: ${reviewConfig.council.name}`, 'cyan');
+        const { analysisId: councilAnalysisId, runId: councilRunId } = await launchPrCouncilAnalysis(req, {
+          repository, owner, repo, prNumber, prMetadata, worktreePath,
+          review, reviewRepo, repoSettings: fetchedRepoSettings,
+          councilConfig: reviewConfig.councilConfig,
+          councilId: reviewConfig.council.id,
+          configType: reviewConfig.configType,
+          repoInstructions, requestInstructions, excludePrevious
+        });
+        return res.json({
+          analysisId: councilAnalysisId,
+          runId: councilRunId,
+          status: 'started',
+          message: 'Council analysis started in background',
+          isCouncil: true
+        });
+      }
+    }
 
     // Resolve load_skills across all config tiers
     const providerLoadSkills = appConfig.providers?.[provider]?.load_skills;
@@ -2518,62 +2631,11 @@ router.post('/api/pr/:owner/:repo/:number/analyses/council', async (req, res) =>
       await reviewRepo.upsertCustomInstructions(prNumber, repository, requestInstructions);
     }
 
-    const prCouncilConfig = req.app.get('config') || {};
-
-    const { providerOverrides: councilProviderOverrides, providerOverridesMap: councilProviderOverridesMap } =
-      buildCouncilProviderOverrides(prCouncilConfig, repository, repoSettings);
-
-    // Build a GitHubClient for analyzer-side dedup pre-fetch (PR mode only).
-    let councilGithubClient;
-    try {
-      const resolved = resolveBindingForRequest(req, repository);
-      councilGithubClient = resolved ? new GitHubClient(resolved.binding) : undefined;
-    } catch (configErr) {
-      logger.warn(`Skipping GitHub dedup pre-fetch (council): ${configErr.message}`);
-      councilGithubClient = undefined;
-    }
-    if (councilGithubClient) {
-      logger.debug(`analyzer githubClient wired for ${owner}/${repo}#${prNumber} (council)`);
-    }
-
-    const { analysisId, runId } = await analysesRouter.launchCouncilAnalysis(
-      db,
-      {
-        reviewId: review.id,
-        worktreePath,
-        prMetadata,
-        changedFiles: null,
-        repository,
-        headSha: prMetadata.head_sha,
-        logLabel: `PR #${prNumber}`,
-        initialStatusExtra: { prNumber, reviewType: 'pr' },
-        config: prCouncilConfig,
-        excludePrevious,
-        serverPort: req.socket.localPort,
-        githubClient: councilGithubClient,
-        poolLifecycle: req.app.get('poolLifecycle'),
-        providerOverrides: councilProviderOverrides,
-        providerOverridesMap: councilProviderOverridesMap,
-        hookContext: {
-          mode: 'pr',
-          prContext: {
-            number: prNumber, owner, repo,
-            author: prMetadata.author, baseBranch: prMetadata.base_branch,
-            headBranch: prMetadata.head_branch,
-            baseSha: prMetadata.base_sha || null, headSha: prMetadata.head_sha || null,
-          },
-        },
-        onSuccess: async (result) => {
-          if (result.summary) {
-            await reviewRepo.upsertSummary(prNumber, repository, result.summary);
-          }
-        }
-      },
-      councilConfig,
-      councilId,
-      { globalInstructions: prCouncilConfig.globalInstructions || null, repoInstructions, requestInstructions },
-      configType
-    );
+    const { analysisId, runId } = await launchPrCouncilAnalysis(req, {
+      repository, owner, repo, prNumber, prMetadata, worktreePath,
+      review, reviewRepo, repoSettings, councilConfig, councilId, configType,
+      repoInstructions, requestInstructions, excludePrevious
+    });
 
     res.json({
       analysisId,

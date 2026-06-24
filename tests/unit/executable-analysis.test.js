@@ -560,6 +560,53 @@ describe('getChangedFiles', () => {
       // findMergeBase should NOT be called since baseBranch is null
       expect(mockFindMergeBase).not.toHaveBeenCalled();
     });
+
+    // ── throwOnError option (regression guard for the false-success bug) ──
+    // Headless local review enumerates files ONLY after confirming the scope is
+    // non-empty via the session diff. With { throwOnError: true } a git failure
+    // must surface (non-zero exit) instead of being swallowed to [] — which would
+    // masquerade as "no changes" and a false exit-0 success.
+    describe('throwOnError option', () => {
+      it('rethrows a clear error on git failure instead of returning []', async () => {
+        mockExec.mockImplementation((cmd, opts, cb) => {
+          const callback = typeof opts === 'function' ? opts : cb;
+          process.nextTick(() => callback(new Error('git failed'), null));
+        });
+
+        await expect(
+          getChangedFiles('/repo', {}, { throwOnError: true })
+        ).rejects.toThrow(/Failed to enumerate changed files in \/repo: git failed/);
+      });
+
+      it('rethrows when findMergeBase fails for branch scope', async () => {
+        mockFindMergeBase.mockRejectedValue(new Error('no merge-base'));
+
+        await expect(
+          getChangedFiles('/repo', {
+            scopeStart: 'branch', scopeEnd: 'unstaged', baseBranch: 'main'
+          }, { throwOnError: true })
+        ).rejects.toThrow(/Failed to enumerate changed files in \/repo: no merge-base/);
+      });
+
+      it('still returns the file list normally when git succeeds', async () => {
+        mockExecForCalls({ '...': 'a.js\nb.js\n' });
+
+        const files = await getChangedFiles('/repo', { baseSha: 'x', headSha: 'y' }, { throwOnError: true });
+
+        expect(files).toEqual(['a.js', 'b.js']);
+      });
+
+      it('default (no options) still swallows errors to []', async () => {
+        mockExec.mockImplementation((cmd, opts, cb) => {
+          const callback = typeof opts === 'function' ? opts : cb;
+          process.nextTick(() => callback(new Error('git failed'), null));
+        });
+
+        const files = await getChangedFiles('/repo', {});
+
+        expect(files).toEqual([]);
+      });
+    });
   });
 });
 

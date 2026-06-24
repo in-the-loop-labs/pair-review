@@ -15,12 +15,22 @@ const logger = require('./utils/logger');
 /**
  * Redirect all console output and logger writes to stderr.
  * Must be called before any other module logs to stdout.
+ *
+ * Also sets `PAIR_REVIEW_QUIET_STDOUT=1` so that code which writes directly to
+ * `process.stdout` (bypassing console/logger) can detect that stdout is reserved
+ * and route its output to stderr instead. The only such path today is the child
+ * stdout of a configured checkout script (`executeCheckoutScript`,
+ * src/git/worktree.js). In both modes that call this function — MCP stdio (stdout
+ * is JSON-RPC) and headless `--json` (stdout is the JSON document) — keeping that
+ * child output off stdout is the correct, desired behavior.
  */
 function redirectConsoleToStderr() {
   console.log = console.error;
   console.info = console.error;
   console.warn = console.error;
   logger.setOutputStream(process.stderr);
+  // Process-level signal for raw process.stdout.write paths (see JSDoc above).
+  process.env.PAIR_REVIEW_QUIET_STDOUT = '1';
 }
 
 /**

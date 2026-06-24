@@ -36,10 +36,17 @@ const logger = require('../utils/logger');
  * @param {Object} params.councilConfig - The council's parsed config object
  * @param {string} params.worktreePath - Path to the checked-out worktree
  * @param {Object} [params.prMetadata] - PR metadata (head_sha used for the run row)
+ * @param {Array<Object|string>|null} [params.changedFiles] - Precomputed scope-aware
+ *   changed-file list (local mode) so council validation uses the same file set as
+ *   the generated diff; `null` in PR mode (the analyzer derives it from Git). Mirrors
+ *   the route contract (`src/routes/local.js` passes the list, `src/routes/pr.js`
+ *   passes `null`).
  * @param {Object} params.instructions - { globalInstructions, repoInstructions, requestInstructions }
  *   (requestInstructions may be null)
  * @param {Object} [params.githubClient] - GitHub client passed through to the analyzer
- * @returns {Promise<Object>} The analyzer result ({ suggestions, summary, levelOutcomes, ... })
+ * @returns {Promise<Object>} `{ runId, ...result }` — the parent run id created
+ *   here, spread together with the analyzer result
+ *   ({ suggestions, summary, levelOutcomes, ... }).
  */
 async function runHeadlessCouncilAnalysis(db, params) {
   const {
@@ -50,6 +57,7 @@ async function runHeadlessCouncilAnalysis(db, params) {
     councilConfig,
     worktreePath,
     prMetadata,
+    changedFiles,
     instructions,
     githubClient,
   } = params;
@@ -90,7 +98,9 @@ async function runHeadlessCouncilAnalysis(db, params) {
     reviewId,
     worktreePath,
     prMetadata,
-    changedFiles: null,
+    // Local headless runs forward a scope-aware list; PR mode passes null and
+    // the analyzer derives the file set from Git (matches src/routes/pr.js).
+    changedFiles: changedFiles || null,
     instructions
   };
 
@@ -108,7 +118,7 @@ async function runHeadlessCouncilAnalysis(db, params) {
       logger.warn(`Failed to update analysis_run: ${err.message}`);
     });
 
-    return result;
+    return { runId, ...result };
   } catch (error) {
     await runRepo.update(runId, { status: 'failed' }).catch(() => {});
     throw error;

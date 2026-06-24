@@ -96,9 +96,15 @@ async function generateDiffForExecutable(cwd, context, diffArgs, outputPath) {
  * (branch, staged, unstaged, untracked) that were included in the diff.
  * @param {string} cwd - Working directory
  * @param {Object} context - Executable context with baseSha/headSha or scope fields
+ * @param {Object} [options]
+ * @param {boolean} [options.throwOnError=false] - When true, a git failure rethrows
+ *   instead of being logged-and-swallowed to `[]`. Callers that have already
+ *   established the scope is non-empty (e.g. headless local, which checks the
+ *   session diff first) use this so an operational git error becomes a non-zero
+ *   exit rather than masquerading as an empty changed-file set / "no changes".
  * @returns {Promise<string[]>} Changed file paths
  */
-async function getChangedFiles(cwd, context) {
+async function getChangedFiles(cwd, context, { throwOnError = false } = {}) {
   try {
     if (context.baseSha && context.headSha) {
       const { stdout } = await execPromise(
@@ -154,6 +160,9 @@ async function getChangedFiles(cwd, context) {
       .filter(f => f.length > 0);
     return [...new Set(all)];
   } catch (error) {
+    if (throwOnError) {
+      throw new Error(`Failed to enumerate changed files in ${cwd}: ${error.message}`);
+    }
     logger.warn(`Could not get changed files list: ${error.message}`);
     return [];
   }

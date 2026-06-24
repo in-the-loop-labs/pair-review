@@ -295,6 +295,99 @@ describe('main.js parseArgs', () => {
       expect(result.prArgs).toEqual([]);
       expect(result.flags).toEqual({});
     });
+
+    // --- Headless CLI analysis flags (--headless, --json, --instructions[-file]) ---
+
+    it('should parse --headless flag', () => {
+      const result = parseArgs(['123', '--headless']);
+      expect(result.flags.headless).toBe(true);
+      expect(result.prArgs).toEqual(['123']);
+    });
+
+    it('should parse --json flag', () => {
+      const result = parseArgs(['123', '--headless', '--json']);
+      expect(result.flags.headless).toBe(true);
+      expect(result.flags.json).toBe(true);
+      expect(result.prArgs).toEqual(['123']);
+    });
+
+    it('should parse --headless and --json together with --local', () => {
+      const result = parseArgs(['--local', '--headless', '--json']);
+      expect(result.flags.local).toBe(true);
+      expect(result.flags.headless).toBe(true);
+      expect(result.flags.json).toBe(true);
+      expect(result.flags.localPath).toBeUndefined();
+      expect(result.prArgs).toEqual([]);
+    });
+
+    it('should parse --headless and --json together with a PR arg', () => {
+      const result = parseArgs(['456', '--headless', '--json']);
+      expect(result.flags.headless).toBe(true);
+      expect(result.flags.json).toBe(true);
+      expect(result.prArgs).toEqual(['456']);
+    });
+
+    it('should parse --instructions flag and consume its text value', () => {
+      const result = parseArgs(['123', '--instructions', 'be terse']);
+      expect(result.flags.instructions).toBe('be terse');
+      // The text value must NOT be left in prArgs.
+      expect(result.prArgs).toEqual(['123']);
+    });
+
+    it('should accept an --instructions value that starts with "-" (free text)', () => {
+      const result = parseArgs(['--local', '--headless', '--instructions', '-be terse']);
+      expect(result.flags.local).toBe(true);
+      expect(result.flags.headless).toBe(true);
+      // Unlike --model/--council, a value beginning with '-' is allowed for free text.
+      expect(result.flags.instructions).toBe('-be terse');
+      expect(result.prArgs).toEqual([]);
+    });
+
+    it('should throw error when --instructions has no following token', () => {
+      expect(() => parseArgs(['123', '--instructions'])).toThrow('--instructions flag requires a text value');
+    });
+
+    it('should parse --instructions-file flag with a path', () => {
+      const result = parseArgs(['123', '--instructions-file', './x.md']);
+      expect(result.flags.instructionsFile).toBe('./x.md');
+      expect(result.prArgs).toEqual(['123']);
+    });
+
+    it('should throw error when --instructions-file has no value', () => {
+      expect(() => parseArgs(['123', '--instructions-file'])).toThrow('--instructions-file flag requires a file path');
+    });
+
+    it('should throw error when --instructions-file is followed by another flag', () => {
+      expect(() => parseArgs(['123', '--instructions-file', '--headless'])).toThrow('--instructions-file flag requires a file path');
+    });
+
+    it('should parse a full headless council invocation', () => {
+      const result = parseArgs(['--local', '--headless', '--json', '--council', 'security', '--instructions', 'focus on auth']);
+      expect(result.flags.local).toBe(true);
+      expect(result.flags.headless).toBe(true);
+      expect(result.flags.json).toBe(true);
+      expect(result.flags.council).toBe('security');
+      expect(result.flags.instructions).toBe('focus on auth');
+      expect(result.prArgs).toEqual([]);
+    });
+
+    // Regression: a representative pre-existing invocation must still parse exactly.
+    it('should still parse a representative pre-headless invocation', () => {
+      const result = parseArgs(['123', '--ai', '--model', 'opus']);
+      expect(result.flags.ai).toBe(true);
+      expect(result.flags.model).toBe('opus');
+      expect(result.flags.headless).toBeUndefined();
+      expect(result.flags.json).toBeUndefined();
+      expect(result.prArgs).toEqual(['123']);
+    });
+
+    // NOTE: Cross-flag validations live in main() AFTER parseArgs, not in
+    // parseArgs itself: "--json requires --headless", mutual exclusion of
+    // --instructions/--instructions-file, and "--headless requires a PR arg or
+    // --local". These are exercised by the guarded CLI-spawn smoke tests in the
+    // "headless CLI smoke" describe block below (main() is not cleanly unit-
+    // testable without spawning, since it performs DB init, config load, and a
+    // process.exit path).
   });
 });
 
@@ -468,6 +561,59 @@ describe('CLI --configure', () => {
     const result = spawnSync(process.execPath, ['bin/pair-review.js', '--configure']);
     expect(result.status).toBe(0);
   });
+});
+
+describe('headless CLI smoke (main()-level validations)', () => {
+  // These exercise the cross-flag validations that live in main() AFTER
+  // parseArgs and so are not reachable from parseArgs unit tests. Each guard
+  // throws BEFORE any database init, GitHub call, or analyzer spawn, so the
+  // child exits immediately — these are cheap and reliable (unlike a full
+  // `--local --headless --json` run, which would spawn a real provider CLI and
+  // is known-flaky locally; see coverage-gap note below).
+  //
+  // PAIR_REVIEW_NO_OPEN=1 guarantees no browser tab is opened (project rule).
+  const childEnv = { ...process.env, PAIR_REVIEW_NO_OPEN: '1' };
+  const run = (args) =>
+    spawnSync(process.execPath, ['bin/pair-review.js', ...args], { env: childEnv, encoding: 'utf-8' });
+
+  it('--json without --headless exits non-zero with a clear message', () => {
+    const result = run(['--json']);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr + result.stdout).toMatch(/--json requires --headless/);
+  });
+
+  it('--headless without a PR arg or --local exits non-zero with a clear message', () => {
+    const result = run(['--headless']);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr + result.stdout).toMatch(/--headless flag requires a pull request number\/URL or --local/);
+  });
+
+  it('--instructions together with --instructions-file is rejected as mutually exclusive', () => {
+    const result = run(['--local', '--headless', '--instructions', 'a', '--instructions-file', './x.md']);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr + result.stdout).toMatch(/mutually exclusive/);
+  });
+
+  it('--instructions without an analysis-running mode exits non-zero with a clear message', () => {
+    // A bare PR arg never auto-analyzes interactively, so --instructions would
+    // be silently dropped — reject it instead of advertising a no-op. This guard
+    // throws in the same early validation block as the others (before any DB /
+    // server / network work), so it stays cheap and reliable.
+    const result = run(['123', '--instructions', 'focus on auth']);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr + result.stdout).toMatch(/require a mode that runs analysis/);
+  });
+
+  // COVERAGE GAP (intentional): the full happy-path smoke — `--local --headless
+  // --json` in a temp git repo emitting a single clean JSON document on stdout
+  // with no leading log lines — is NOT spawned here. It would invoke a real
+  // provider CLI (claude/gemini/etc.) for the analysis step, which is slow,
+  // environment-dependent, and flaky in CI/local (see project memory:
+  // first-run.test.js local hang). The stdout-discipline + JSON-shape behavior
+  // is instead covered deterministically at the DB level by
+  // tests/unit/headless-json.test.js (buildHeadlessJson) and
+  // tests/integration/headless-analysis.test.js (runHeadlessAnalysis end to
+  // end), and stderr redirection is covered by mcp-stdio.test.js.
 });
 
 describe('detectPRFromGitHubEnvironment', () => {
