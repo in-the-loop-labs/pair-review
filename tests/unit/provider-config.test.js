@@ -240,6 +240,16 @@ describe('Provider Configuration', () => {
       expect(resolveDefaultModel(models, null)).toBe('model-b');
       expect(resolveDefaultModel(models, undefined)).toBe('model-b');
     });
+
+    it('should resolve a preferredId that names an alias to the canonical id', () => {
+      const models = [
+        { id: 'opus-4.8-xhigh', aliases: ['opus'], tier: 'thorough' },
+        { id: 'sonnet-4.6', tier: 'balanced' }
+      ];
+
+      // preferredId 'opus' is an alias → resolves to canonical 'opus-4.8-xhigh'
+      expect(resolveDefaultModel(models, 'opus')).toBe('opus-4.8-xhigh');
+    });
   });
 
   describe('getTierForModel', () => {
@@ -692,6 +702,95 @@ describe('Provider Configuration', () => {
       expect(pi.models.find(m => m.id === 'default').tier).toBe('thorough');
       // 'multi-model' should be unaffected
       expect(pi.models.find(m => m.id === 'multi-model').tier).toBe('thorough');
+    });
+
+    it('should replace a built-in model when a config model names its alias', () => {
+      // The canonical built-in id is 'opus-4.8-xhigh' (aliased by 'opus').
+      // A config override keyed to the alias must REPLACE the built-in (keeping
+      // the canonical id) rather than append a duplicate.
+      const before = getAllProvidersInfo().find(p => p.id === 'claude').models.length;
+      applyConfigOverrides({
+        providers: {
+          claude: {
+            models: [
+              { id: 'opus', tier: 'thorough', cli_model: 'custom-x', name: 'Custom Opus' }
+            ]
+          }
+        }
+      });
+      const claude = getAllProvidersInfo().find(p => p.id === 'claude');
+
+      // No standalone 'opus' id leaked in; the canonical entry persists
+      expect(claude.models.find(m => m.id === 'opus')).toBeUndefined();
+      const canonical = claude.models.find(m => m.id === 'opus-4.8-xhigh');
+      expect(canonical).toBeDefined();
+      // The override is reflected on the canonical entry
+      expect(canonical.cli_model).toBe('custom-x');
+      expect(canonical.name).toBe('Custom Opus');
+      // Built-in aliases preserved (override supplied none of its own)
+      expect(canonical.aliases).toContain('opus');
+      // Replacement, not append — total count unchanged
+      expect(claude.models.length).toBe(before);
+      applyConfigOverrides({ providers: {} });
+    });
+
+    it('should canonicalize an alias-keyed override id in the stored override', () => {
+      // Regression: the metadata path (mergeModels) resolves aliases, but the
+      // runtime path forwards the RAW stored `models` array to the provider, where
+      // per-model config is matched by EXACT id against the frontend-submitted
+      // canonical id. An alias-keyed entry must therefore be canonicalized before
+      // storage, or its cli_model/env/extra_args would be silently dropped.
+      applyConfigOverrides({
+        providers: {
+          claude: {
+            models: [
+              { id: 'opus', tier: 'thorough', cli_model: 'custom-x' }
+            ]
+          }
+        }
+      });
+      const overrides = getProviderConfigOverrides('claude');
+      const stored = overrides.models.find(m => m.cli_model === 'custom-x');
+      expect(stored).toBeDefined();
+      // The raw stored id is the canonical built-in id, not the alias 'opus'.
+      expect(stored.id).toBe('opus-4.8-xhigh');
+      expect(overrides.models.some(m => m.id === 'opus')).toBe(false);
+      applyConfigOverrides({ providers: {} });
+    });
+
+    it('should leave a canonical-id override id unchanged in the stored override', () => {
+      applyConfigOverrides({
+        providers: {
+          claude: {
+            models: [
+              { id: 'opus-4.8-xhigh', tier: 'thorough', cli_model: 'custom-y' }
+            ]
+          }
+        }
+      });
+      const overrides = getProviderConfigOverrides('claude');
+      const stored = overrides.models.find(m => m.cli_model === 'custom-y');
+      expect(stored).toBeDefined();
+      expect(stored.id).toBe('opus-4.8-xhigh');
+      applyConfigOverrides({ providers: {} });
+    });
+
+    it('should leave an override id with no built-in match unchanged (genuinely new model)', () => {
+      applyConfigOverrides({
+        providers: {
+          claude: {
+            models: [
+              { id: 'brand-new-model', tier: 'balanced', cli_model: 'cli-new' }
+            ]
+          }
+        }
+      });
+      const overrides = getProviderConfigOverrides('claude');
+      const stored = overrides.models.find(m => m.cli_model === 'cli-new');
+      expect(stored).toBeDefined();
+      // No built-in matches by id or alias, so the new id is preserved verbatim.
+      expect(stored.id).toBe('brand-new-model');
+      applyConfigOverrides({ providers: {} });
     });
 
     it('should include defaultTimeout for providers that define it', () => {
@@ -1333,7 +1432,41 @@ describe('Provider Configuration', () => {
       const claude = getAllProvidersInfo().find(p => p.id === 'claude');
       expect(claude.models.find(m => m.id === 'haiku')).toBeUndefined();
       // Other built-ins are still present
-      expect(claude.models.find(m => m.id === 'opus')).toBeDefined();
+      expect(claude.models.find(m => m.id === 'opus-4.8-xhigh')).toBeDefined();
+    });
+
+    it('hides the canonical model when disabled_models names an alias (fable)', () => {
+      // 'fable' is an alias of the canonical 'fable-5-xhigh'
+      applyConfigOverrides({
+        providers: { claude: { disabled_models: ['fable'] } }
+      });
+      const claude = getAllProvidersInfo().find(p => p.id === 'claude');
+      expect(claude.models.find(m => m.id === 'fable-5-xhigh')).toBeUndefined();
+      // Unrelated built-ins remain
+      expect(claude.models.find(m => m.id === 'fable-5-high')).toBeDefined();
+      expect(claude.models.find(m => m.id === 'opus-4.8-xhigh')).toBeDefined();
+    });
+
+    it('hides the canonical model when disabled_models names an alias (opus)', () => {
+      // 'opus' is an alias of the canonical 'opus-4.8-xhigh'
+      applyConfigOverrides({
+        providers: { claude: { disabled_models: ['opus'] } }
+      });
+      const claude = getAllProvidersInfo().find(p => p.id === 'claude');
+      expect(claude.models.find(m => m.id === 'opus-4.8-xhigh')).toBeUndefined();
+      // Unrelated built-ins remain
+      expect(claude.models.find(m => m.id === 'sonnet-4.6')).toBeDefined();
+    });
+
+    it('does not warn when disabled_models names a valid alias', () => {
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      applyConfigOverrides({
+        providers: { claude: { disabled_models: ['fable'] } }
+      });
+      expect(warnSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining('disabled_models references unknown model')
+      );
+      warnSpy.mockRestore();
     });
 
     it('stores the normalized disabled_models on the overrides', () => {
@@ -1344,23 +1477,23 @@ describe('Provider Configuration', () => {
     });
 
     it('moves the default off a disabled model', () => {
-      // claude's built-in default is 'opus'; disable it and the resolver picks another
+      // claude's built-in default is 'opus-4.8-xhigh'; disable it and the resolver picks another
       applyConfigOverrides({
-        providers: { claude: { disabled_models: ['opus'] } }
+        providers: { claude: { disabled_models: ['opus-4.8-xhigh'] } }
       });
       const claude = getAllProvidersInfo().find(p => p.id === 'claude');
-      expect(claude.models.find(m => m.id === 'opus')).toBeUndefined();
-      expect(claude.defaultModel).not.toBe('opus');
+      expect(claude.models.find(m => m.id === 'opus-4.8-xhigh')).toBeUndefined();
+      expect(claude.defaultModel).not.toBe('opus-4.8-xhigh');
       // The resolved default must be one of the still-available models
       expect(claude.models.find(m => m.id === claude.defaultModel)).toBeDefined();
     });
 
     it('does not pick a disabled model as the default in createProvider', () => {
       applyConfigOverrides({
-        providers: { claude: { disabled_models: ['opus'] } }
+        providers: { claude: { disabled_models: ['opus-4.8-xhigh'] } }
       });
       const provider = createProvider('claude');
-      expect(provider.model).not.toBe('opus');
+      expect(provider.model).not.toBe('opus-4.8-xhigh');
     });
 
     it('wires disabled_models and default_model onto executable provider overrides', () => {
@@ -1409,13 +1542,33 @@ describe('Provider Configuration', () => {
       expect(provider.model).toBe('sonnet-4.6');
     });
 
+    it('resolves a default_model alias to the canonical id in getAllProvidersInfo', () => {
+      // 'opus' is an alias of the canonical 'opus-4.8-xhigh'
+      applyConfigOverrides({
+        providers: { claude: { default_model: 'opus' } }
+      });
+      const claude = getAllProvidersInfo().find(p => p.id === 'claude');
+      expect(claude.defaultModel).toBe('opus-4.8-xhigh');
+    });
+
+    it('does not warn when default_model names a valid alias', () => {
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      applyConfigOverrides({
+        providers: { claude: { default_model: 'opus' } }
+      });
+      expect(warnSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining('is not a known model')
+      );
+      warnSpy.mockRestore();
+    });
+
     it('falls back to automatic default when default_model names an unknown model', () => {
       applyConfigOverrides({
         providers: { claude: { default_model: 'no-such-model' } }
       });
       const claude = getAllProvidersInfo().find(p => p.id === 'claude');
-      // Falls back to the built-in default ('opus')
-      expect(claude.defaultModel).toBe('opus');
+      // Falls back to the built-in default ('opus-4.8-xhigh')
+      expect(claude.defaultModel).toBe('opus-4.8-xhigh');
     });
 
     it('falls back to automatic default when default_model is also disabled', () => {
@@ -1449,7 +1602,7 @@ describe('Provider Configuration', () => {
 
     it('normalizes per-model default flags so models.find(m => m.default) agrees with default_model', () => {
       // 'sonnet-4.6' does not carry a legacy default:true flag; the built-in
-      // default ('opus') does. After resolving default_model, exactly one model
+      // default ('opus-4.8-xhigh') does. After resolving default_model, exactly one model
       // — the targeted one — should be flagged default:true.
       applyConfigOverrides({
         providers: { claude: { default_model: 'sonnet-4.6' } }

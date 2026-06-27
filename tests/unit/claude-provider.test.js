@@ -56,8 +56,8 @@ describe('ClaudeProvider', () => {
       expect(ClaudeProvider.getProviderId()).toBe('claude');
     });
 
-    it('should return opus as default model', () => {
-      expect(ClaudeProvider.getDefaultModel()).toBe('opus');
+    it('should return opus-4.8-xhigh as default model', () => {
+      expect(ClaudeProvider.getDefaultModel()).toBe('opus-4.8-xhigh');
     });
 
     it('should return array of models with expected structure', () => {
@@ -68,13 +68,12 @@ describe('ClaudeProvider', () => {
       // Check that we have haiku, sonnet, opus, and fable variants
       const modelIds = models.map(m => m.id);
       expect(modelIds).toContain('haiku');
-      expect(modelIds).toContain('fable');
+      expect(modelIds).toContain('fable-5-xhigh');
       expect(modelIds).toContain('fable-5-high');
       expect(modelIds).toContain('sonnet-4.6');
       expect(modelIds).toContain('opus-4.8-xhigh');
       expect(modelIds).toContain('opus-4.8-high');
       expect(modelIds).toContain('opus-4.7-high');
-      expect(modelIds).toContain('opus');
       expect(modelIds).toContain('opus-4.6-high');
       expect(modelIds).toContain('opus-4.6-1m');
 
@@ -82,18 +81,22 @@ describe('ClaudeProvider', () => {
       expect(modelIds).not.toContain('opus-4.5');
       expect(modelIds).not.toContain('opus-4.6-low');
       expect(modelIds).not.toContain('opus-4.6-medium');
-      // 'opus-4.7-xhigh' is now an alias of 'opus', not a standalone id
-      expect(modelIds).not.toContain('opus-4.7-xhigh');
+      // 'opus' is now a convenience alias of the canonical 'opus-4.8-xhigh', not a standalone id
+      expect(modelIds).not.toContain('opus');
+      // 'opus-4.7-xhigh' is its own standalone id (the previous-gen xhigh model)
+      expect(modelIds).toContain('opus-4.7-xhigh');
+      // 'fable' is now a convenience alias of the canonical 'fable-5-xhigh', not a standalone id
+      expect(modelIds).not.toContain('fable');
 
-      // Check model structure - 'opus' is the canonical default, aliased by 'opus-4.7-xhigh'
-      const defaultModel = models.find(m => m.id === 'opus');
+      // Check model structure - 'opus-4.8-xhigh' is the canonical default, aliased by 'opus'
+      const defaultModel = models.find(m => m.id === 'opus-4.8-xhigh');
       expect(defaultModel).toMatchObject({
-        id: 'opus',
-        name: 'Opus 4.7 XHigh',
+        id: 'opus-4.8-xhigh',
+        name: 'Opus 4.8 XHigh',
         tier: 'thorough',
         default: true
       });
-      expect(defaultModel.aliases).toContain('opus-4.7-xhigh');
+      expect(defaultModel.aliases).toContain('opus');
       // Exactly one model is the default
       expect(models.filter(m => m.default).length).toBe(1);
 
@@ -102,36 +105,42 @@ describe('ClaudeProvider', () => {
       // opus-4.6-high is thorough and pinned to claude-opus-4-6
       expect(models.find(m => m.id === 'opus-4.6-high').tier).toBe('thorough');
       expect(models.find(m => m.id === 'opus-4.6-high').cli_model).toBe('claude-opus-4-6');
-      // opus-4.7-high is thorough and pinned to claude-opus-4-7
-      // (opus-4.7-xhigh is an alias of canonical 'opus' now, checked below)
+      // opus-4.7-high and standalone opus-4.7-xhigh are thorough and pinned to claude-opus-4-7
       const opus47High = models.find(m => m.id === 'opus-4.7-high');
       expect(opus47High.tier).toBe('thorough');
       expect(opus47High.cli_model).toBe('claude-opus-4-7');
-      // opus-4.8 high/xhigh are thorough and pinned to claude-opus-4-8
-      for (const id of ['opus-4.8-high', 'opus-4.8-xhigh']) {
+      const opus47XHigh = models.find(m => m.id === 'opus-4.7-xhigh');
+      expect(opus47XHigh.tier).toBe('thorough');
+      expect(opus47XHigh.cli_model).toBe('claude-opus-4-7');
+      // opus-4.8-high is thorough and pinned to claude-opus-4-8
+      for (const id of ['opus-4.8-high']) {
         const model = models.find(m => m.id === id);
         expect(model.tier).toBe('thorough');
         expect(model.cli_model).toBe('claude-opus-4-8');
       }
+      // canonical 'opus-4.8-xhigh' is thorough and pinned to claude-opus-4-8
+      expect(models.find(m => m.id === 'opus-4.8-xhigh').cli_model).toBe('claude-opus-4-8');
+      expect(models.find(m => m.id === 'opus-4.8-xhigh').tier).toBe('thorough');
       // haiku is fixed to the latest Haiku 4.5 cli_model
       const haiku = models.find(m => m.id === 'haiku');
       expect(haiku.name).toBe('Haiku 4.5');
       expect(haiku.cli_model).toBe('claude-haiku-4-5-20251001');
       // Effort is carried on the env var for opus variants
-      expect(models.find(m => m.id === 'opus').env).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' });
-      expect(models.find(m => m.id === 'opus-4.7-high').env).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'high' });
       expect(models.find(m => m.id === 'opus-4.8-xhigh').env).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' });
+      expect(models.find(m => m.id === 'opus-4.7-high').env).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'high' });
+      expect(models.find(m => m.id === 'opus-4.7-xhigh').env).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' });
       expect(models.find(m => m.id === 'opus-4.8-high').env).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'high' });
 
-      // Fable 5 variants are thorough, pinned to claude-fable-5, and adaptive-thinking-only
-      const fable = models.find(m => m.id === 'fable');
+      // Fable 5 variants are thorough, pinned to claude-fable-5, and adaptive-thinking-only.
+      // 'fable-5-xhigh' is the canonical id, aliased by the convenience id 'fable'.
+      const fable = models.find(m => m.id === 'fable-5-xhigh');
       expect(fable).toMatchObject({
         tier: 'thorough',
         cli_model: 'claude-fable-5',
         env: { CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' },
         extra_args: ['--thinking', 'adaptive']
       });
-      expect(fable.aliases).toContain('fable-5-xhigh');
+      expect(fable.aliases).toContain('fable');
       const fableHigh = models.find(m => m.id === 'fable-5-high');
       expect(fableHigh).toMatchObject({
         tier: 'thorough',
@@ -142,6 +151,8 @@ describe('ClaudeProvider', () => {
     });
 
     it('should override base --thinking enabled with adaptive for fable', () => {
+      // 'fable' is now a convenience alias of the canonical 'fable-5-xhigh';
+      // it resolves to the same entry, so the adaptive override still applies.
       const provider = new ClaudeProvider('fable');
       expect(provider.args).toContain('claude-fable-5');
       // Model extra_args come after base args so the adaptive override wins
@@ -150,7 +161,19 @@ describe('ClaudeProvider', () => {
       expect(provider.extraEnv).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' });
     });
 
-    it('should resolve fable-5-xhigh alias to the fable model', () => {
+    it('should resolve the "fable" alias to the canonical fable-5-xhigh model', () => {
+      const provider = new ClaudeProvider('fable');
+      expect(provider.args).toContain('claude-fable-5');
+      expect(provider.extraEnv).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' });
+      // The adaptive --thinking override carries through the alias resolution
+      const lastThinkingValue = provider.args[provider.args.lastIndexOf('--thinking') + 1];
+      expect(lastThinkingValue).toBe('adaptive');
+      const resolved = provider._resolveModelConfig('fable');
+      expect(resolved.builtIn).toBeDefined();
+      expect(resolved.builtIn.id).toBe('fable-5-xhigh');
+    });
+
+    it('should resolve the canonical fable-5-xhigh id', () => {
       const provider = new ClaudeProvider('fable-5-xhigh');
       expect(provider.args).toContain('claude-fable-5');
       expect(provider.extraEnv).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' });
@@ -166,7 +189,8 @@ describe('ClaudeProvider', () => {
   describe('constructor', () => {
     it('should create instance with default model', () => {
       const provider = new ClaudeProvider();
-      expect(provider.model).toBe('opus');
+      // No-arg constructor falls back to getDefaultModel() (single source of truth)
+      expect(provider.model).toBe('opus-4.8-xhigh');
     });
 
     it('should create instance with specified model', () => {
@@ -381,24 +405,42 @@ describe('ClaudeProvider', () => {
     });
 
     describe('alias resolution', () => {
-      it('should resolve the "opus-4.7-xhigh" alias to the canonical opus model', () => {
+      it('should resolve the "opus" alias to the canonical opus-4.8-xhigh model', () => {
+        const provider = new ClaudeProvider('opus');
+        // 'opus' is a convenience alias of the canonical 'opus-4.8-xhigh' (4.8 xhigh)
+        expect(provider.extraEnv).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' });
+        const modelIdx = provider.args.indexOf('--model');
+        expect(provider.args[modelIdx + 1]).toBe('claude-opus-4-8');
+      });
+
+      it('should resolve the "opus" alias in _resolveModelConfig', () => {
+        const provider = new ClaudeProvider('sonnet');
+        const resolved = provider._resolveModelConfig('opus');
+        expect(resolved.builtIn).toBeDefined();
+        // 'opus' resolves to the canonical standalone id 'opus-4.8-xhigh'
+        expect(resolved.builtIn.id).toBe('opus-4.8-xhigh');
+        expect(resolved.env).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' });
+      });
+
+      it('should resolve opus-4.7-xhigh to the standalone previous-gen model', () => {
         const provider = new ClaudeProvider('opus-4.7-xhigh');
         expect(provider.model).toBe('opus-4.7-xhigh');
-        // 'opus-4.7-xhigh' is an alias of canonical 'opus' (xhigh effort)
+        // 'opus-4.7-xhigh' is now its own standalone id (Opus 4.7 at xhigh effort)
         expect(provider.extraEnv).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' });
         const modelIdx = provider.args.indexOf('--model');
         expect(provider.args[modelIdx + 1]).toBe('claude-opus-4-7');
       });
 
-      it('should resolve the "opus-4.7-xhigh" alias in _resolveModelConfig', () => {
+      it('should resolve opus-4.7-xhigh in _resolveModelConfig', () => {
         const provider = new ClaudeProvider('sonnet');
         const resolved = provider._resolveModelConfig('opus-4.7-xhigh');
         expect(resolved.builtIn).toBeDefined();
-        expect(resolved.builtIn.id).toBe('opus');
+        // 'opus-4.7-xhigh' is its own standalone id, not an alias of canonical 'opus'
+        expect(resolved.builtIn.id).toBe('opus-4.7-xhigh');
         expect(resolved.env).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' });
       });
 
-      it('should resolve the "opus-4.7-xhigh" alias in getExtractionConfig', () => {
+      it('should resolve opus-4.7-xhigh in getExtractionConfig', () => {
         const provider = new ClaudeProvider('sonnet');
         const config = provider.getExtractionConfig('opus-4.7-xhigh');
         expect(config.env).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' });
@@ -478,13 +520,13 @@ describe('ClaudeProvider', () => {
       });
 
       it('should match config model override keyed to alias against canonical id', () => {
-        // Regression: when the canonical id ('opus') is passed but the
-        // user's config override is keyed to its alias ('opus-4.7-xhigh'),
-        // the override must still apply. Previously the config lookup matched
-        // only the exact modelId and silently dropped alias-keyed overrides.
-        const provider = new ClaudeProvider('opus', {
+        // Regression: when the canonical id ('opus-4.8-xhigh') is passed but the
+        // user's config override is keyed to its alias ('opus'), the override
+        // must still apply. Previously the config lookup matched only the exact
+        // modelId and silently dropped alias-keyed overrides.
+        const provider = new ClaudeProvider('opus-4.8-xhigh', {
           models: [
-            { id: 'opus-4.7-xhigh', env: { CUSTOM_VAR: 'from-alias-override' }, extra_args: ['--custom-flag'] }
+            { id: 'opus', env: { CUSTOM_VAR: 'from-alias-override' }, extra_args: ['--custom-flag'] }
           ]
         });
         expect(provider.extraEnv.CUSTOM_VAR).toBe('from-alias-override');

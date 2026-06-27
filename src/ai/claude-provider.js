@@ -33,8 +33,8 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
 const CLAUDE_MODELS = [
   // ── Thorough tier ───────────────────────────────────────────────────────
   {
-    id: 'fable',
-    aliases: ['fable-5-xhigh'],
+    id: 'fable-5-xhigh',
+    aliases: ['fable'],
     cli_model: 'claude-fable-5',
     env: { CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' },
     name: 'Fable 5 XHigh',
@@ -61,39 +61,17 @@ const CLAUDE_MODELS = [
     extra_args: ['--thinking', 'adaptive']
   },
   {
-    id: 'opus',
-    aliases: ['opus-4.7-xhigh'],
-    cli_model: 'claude-opus-4-7',
-    env: { CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' },
-    name: 'Opus 4.7 XHigh',
-    tier: 'thorough',
-    tagline: 'Maximum Depth',
-    description: 'Opus 4.7 with extra-high effort — deepest analysis',
-    badge: 'Most Thorough',
-    badgeClass: 'badge-power',
-    default: true
-  },
-  {
-    id: 'opus-4.7-high',
-    cli_model: 'claude-opus-4-7',
-    env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' },
-    name: 'Opus 4.7 High',
-    tier: 'thorough',
-    tagline: 'High Effort',
-    description: 'Opus 4.7 with high effort — thorough, quicker than XHigh',
-    badge: 'Thorough',
-    badgeClass: 'badge-power'
-  },
-  {
     id: 'opus-4.8-xhigh',
+    aliases: ['opus'],
     cli_model: 'claude-opus-4-8',
     env: { CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' },
     name: 'Opus 4.8 XHigh',
     tier: 'thorough',
-    tagline: 'Newest',
-    description: 'Opus 4.8 (newest) with extra-high effort',
-    badge: 'Latest',
-    badgeClass: 'badge-power'
+    tagline: 'Maximum Depth',
+    description: 'Opus 4.8 (newest) with extra-high effort — deepest analysis',
+    badge: 'Most Thorough',
+    badgeClass: 'badge-power',
+    default: true
   },
   {
     id: 'opus-4.8-high',
@@ -104,6 +82,28 @@ const CLAUDE_MODELS = [
     tagline: 'Newest',
     description: 'Opus 4.8 (newest) with high effort',
     badge: 'Latest',
+    badgeClass: 'badge-power'
+  },
+  {
+    id: 'opus-4.7-xhigh',
+    cli_model: 'claude-opus-4-7',
+    env: { CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' },
+    name: 'Opus 4.7 XHigh',
+    tier: 'thorough',
+    tagline: 'Previous Gen',
+    description: 'Opus 4.7 with extra-high effort',
+    badge: 'Previous Gen',
+    badgeClass: 'badge-power'
+  },
+  {
+    id: 'opus-4.7-high',
+    cli_model: 'claude-opus-4-7',
+    env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' },
+    name: 'Opus 4.7 High',
+    tier: 'thorough',
+    tagline: 'High Effort',
+    description: 'Opus 4.7 with high effort — thorough, quicker than XHigh',
+    badge: 'Thorough',
     badgeClass: 'badge-power'
   },
   {
@@ -162,7 +162,7 @@ class ClaudeProvider extends AIProvider {
    * @param {Object} configOverrides.env - Additional environment variables
    * @param {Object[]} configOverrides.models - Custom model definitions
    */
-  constructor(model = 'opus', configOverrides = {}) {
+  constructor(model = ClaudeProvider.getDefaultModel(), configOverrides = {}) {
     super(model);
 
     // Command precedence: ENV > config > default
@@ -940,7 +940,7 @@ class ClaudeProvider extends AIProvider {
   }
 
   static getDefaultModel() {
-    return 'opus';
+    return 'opus-4.8-xhigh';
   }
 
   static getInstallInstructions() {

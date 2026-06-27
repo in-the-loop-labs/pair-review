@@ -13,6 +13,7 @@ const express = require('express');
 const logger = require('../utils/logger');
 const { VALID_TIERS } = require('../ai/prompts/config');
 const { getAllProvidersInfo } = require('../ai');
+const { modelMatches } = require('../ai/provider');
 const { normalizeCouncilConfig, validateCouncilConfig } = require('./councils');
 
 const router = express.Router();
@@ -150,9 +151,16 @@ function sanitizeSingleConfig(config) {
   // provider (a mismatched pair that slipped past the client resolver), fall back
   // to the provider's own default rather than forwarding an invalid pair. Unknown
   // providers (custom/unavailable, not in the registry) pass through unchanged.
+  // A model "belongs" to the provider if config.model matches a model id OR one of
+  // its aliases (e.g. 'opus' is an alias of the canonical 'opus-4.8-xhigh'). Matching
+  // id-only would wrongly treat a valid alias as a mismatched pair and silently coerce
+  // it to the provider default.
   let normalizedModel = config.model;
   const providerInfo = getAllProvidersInfo().find(p => p.id === config.provider);
-  if (providerInfo && !providerInfo.models.some(m => m.id === config.model)) {
+  const modelBelongsToProvider = providerInfo && providerInfo.models.some(
+    m => modelMatches(m, config.model)
+  );
+  if (providerInfo && !modelBelongsToProvider) {
     normalizedModel = providerInfo.defaultModel || config.model;
   }
 

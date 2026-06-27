@@ -530,7 +530,7 @@ You can override provider settings and define custom models in your config file.
 | `availability_command` | Command run to decide availability. Executable providers default to always-available when omitted; chat providers fall back to `<command> --version` (or, for the built-in Pi, the cached AI-provider status). Pair with `availability_timeout_seconds` when the probe runs a slow build. |
 | `models` | Array of model definitions (see below) |
 | `default_model` | Model `id` to use as the provider's default (in the picker and when no model is specified). Preferred over the per-model `default: true` flag. If it names an unknown or disabled model, the provider falls back to automatic selection. |
-| `disabled_models` | Array of model `id`s to hide. Disabled models disappear from the model picker for that provider. Works on built-in models too, so you can remove a built-in option without redefining the rest. A list that would hide *every* model is ignored. |
+| `disabled_models` | Array of model selectors to hide, matched by model `id` or alias. Disabled models disappear from the model picker for that provider. Works on built-in models too, so you can remove a built-in option without redefining the rest. A list that would hide *every* model is ignored. |
 
 #### Model Configuration Fields
 
@@ -562,7 +562,7 @@ Use the provider-level `default_model` and `disabled_models` fields to tailor wh
 }
 ```
 
-- `disabled_models` removes those model IDs from the picker. To find the built-in IDs for a provider, see the comments in `config.example.json` (e.g. Claude ships `opus`, `sonnet-4.6`, `haiku`, …).
+- `disabled_models` removes those models from the picker. It matches by model id or alias, so either a canonical id (`opus-4.8-xhigh`) or a convenience alias (`opus`) works. To find the built-in IDs for a provider, see the comments in `config.example.json` (e.g. Claude ships `opus-4.8-xhigh`, `sonnet-4.6`, `haiku`, …).
 - `default_model` selects which of the *remaining* models is the default. If it points at a model that is unknown or also disabled, the provider falls back to automatic selection (the model marked `default: true`, then the first `balanced`-tier model, then the first model).
 - Prefer `default_model` over the per-model `default: true` flag, which is deprecated. Setting `default_model` suppresses the deprecation warning.
 
