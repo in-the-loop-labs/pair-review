@@ -229,6 +229,30 @@ describe('bulk analysis config routes', () => {
     expect(stored.model).toBe(validModel);
   });
 
+  it('preserves a valid model alias instead of coercing it to the provider default', async () => {
+    // Regression: the server-side "does this model belong to the provider" guard must
+    // recognize aliases (e.g. 'opus' is an alias of the canonical 'opus-4.8-xhigh'),
+    // not just canonical ids. Matching id-only treated valid aliases as mismatched
+    // pairs and silently rewrote them to the provider default.
+    const claude = getAllProvidersInfo().find(p => p.id === 'claude');
+    const aliasedModel = claude.models.find(m => Array.isArray(m.aliases) && m.aliases.length > 0);
+    expect(aliasedModel, 'expected a claude model with at least one alias').toBeTruthy();
+    const alias = aliasedModel.aliases[0];
+
+    const response = await request(app)
+      .post('/api/bulk-analysis-configs')
+      .send({
+        analysisConfig: { provider: 'claude', model: alias, enabledLevels: [1, 2] }
+      })
+      .expect(200);
+
+    const stored = bulkAnalysisConfigsRoutes._getBulkAnalysisConfig(response.body.id);
+    expect(stored.provider).toBe('claude');
+    // The alias is preserved verbatim — neither canonicalized to the model id nor
+    // coerced to the provider default.
+    expect(stored.model).toBe(alias);
+  });
+
   it('returns 404 for unknown config ids', async () => {
     await request(app)
       .get('/api/bulk-analysis-configs/00000000-0000-0000-0000-000000000000')

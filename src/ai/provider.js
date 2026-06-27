@@ -447,6 +447,23 @@ function inferModelDefaults(model) {
 }
 
 /**
+ * Match a model definition against a selector that may be the model's canonical
+ * id OR one of its aliases. Used by config-driven selectors (`default_model`,
+ * `disabled_models`, `models` overrides) so legacy config naming an alias (e.g.
+ * `opus`, an alias of the canonical `opus-4.8-xhigh`) keeps working.
+ *
+ * Optional-chaining is intentional: a model with no `aliases` short-circuits to
+ * undefined/falsy, so no Array.isArray guard is needed.
+ *
+ * @param {Object} model - Model definition (must have an `id`; may have `aliases`)
+ * @param {string} selector - Selector to match against id or aliases
+ * @returns {boolean}
+ */
+function modelMatches(model, selector) {
+  return model.id === selector || model.aliases?.includes(selector);
+}
+
+/**
  * Resolve the default model from an array of model definitions.
  * Priority: provider-level `default_model` (preferredId) > legacy model with
  * `default:true` > first balanced tier model > first model.
@@ -468,8 +485,9 @@ function resolveDefaultModel(models, preferredId = null) {
   }
 
   // Provider-level `default_model` wins when it names an available model
+  // (by canonical id or alias). Returns the canonical id either way.
   if (preferredId) {
-    const preferred = models.find(m => m.id === preferredId);
+    const preferred = models.find(m => modelMatches(m, preferredId));
     if (preferred) {
       return preferred.id;
     }
@@ -618,9 +636,28 @@ function applyConfigOverrides(config) {
       }
     }
 
+    const builtInModels = providerRegistry.get(providerId)?.getModels();
+
+    // Canonicalize alias-keyed override ids to their built-in canonical id.
+    // A config entry may key a model by a short alias (e.g. `opus` for the
+    // canonical `opus-4.8-xhigh`). mergeModels() already resolves aliases for the
+    // display/metadata path, but the runtime path forwards this raw `models` array
+    // to the provider instance, where per-model config is looked up by EXACT id
+    // (e.g. `configOverrides.models.find(m => m.id === model)`). The frontend
+    // submits the canonical id, so an alias-keyed entry would never match and its
+    // cli_model/env/extra_args would be silently dropped. Rewriting the id here —
+    // the single point where the override is stored — keeps metadata and runtime
+    // execution in agreement.
+    if (processedModels && builtInModels) {
+      processedModels = processedModels.map(cm => {
+        const builtIn = builtInModels.find(bm => modelMatches(bm, cm.id));
+        return builtIn && builtIn.id !== cm.id ? { ...cm, id: builtIn.id } : cm;
+      });
+    }
+
     const disabledModels = normalizeDisabledModels(providerId, providerConfig.disabled_models);
     const defaultModel = providerConfig.default_model || null;
-    validateModelSelectors(providerId, providerRegistry.get(providerId)?.getModels(), processedModels, disabledModels, defaultModel);
+    validateModelSelectors(providerId, builtInModels, processedModels, disabledModels, defaultModel);
 
     // Store the overrides
     providerConfigOverrides.set(providerId, {
@@ -697,8 +734,12 @@ function resolveNonExecutableProviderId(preferredId) {
 
 /**
  * Merge config-override models with a provider's built-in models.
- * Config models with matching IDs replace built-ins; config models with new IDs
- * are appended. If no config models exist, returns built-ins unchanged.
+ * A config model whose id matches a built-in's canonical id OR one of its
+ * aliases replaces that built-in in place (preserving display order). The
+ * canonical built-in id is preserved as the internal source of truth, and the
+ * built-in's aliases are kept unless the override supplies its own. Config
+ * models that match no built-in are appended. If no config models exist,
+ * returns built-ins unchanged.
  *
  * @param {Array<Object>} builtInModels - Models from ProviderClass.getModels()
  * @param {Array<Object>|undefined} configModels - Models from config overrides
@@ -708,13 +749,25 @@ function mergeModels(builtInModels, configModels) {
   if (!configModels || configModels.length === 0) {
     return builtInModels;
   }
-  const configById = new Map(configModels.map(m => [m.id, m]));
-  // Replace overridden built-ins in-place to preserve display order
-  const merged = builtInModels.map(m => configById.get(m.id) || m);
-  // Append config models with new IDs not present in built-ins
-  const builtInIds = new Set(builtInModels.map(m => m.id));
-  const newModels = configModels.filter(m => !builtInIds.has(m.id));
-  return [...merged, ...newModels];
+  // Replace overridden built-ins in-place to preserve display order. An override
+  // matched by alias (e.g. config `{ id: 'opus' }` against built-in
+  // `opus-4.8-xhigh`) still replaces, but keeps the canonical built-in id.
+  const matched = new Set();
+  const merged = builtInModels.map(bm => {
+    const override = configModels.find(cm => modelMatches(bm, cm.id));
+    if (override) {
+      matched.add(override);
+      return { ...override, id: bm.id, aliases: override.aliases ?? bm.aliases };
+    }
+    return bm;
+  });
+  // Append config models that matched no built-in (genuinely new ids)
+  for (const cm of configModels) {
+    if (!matched.has(cm)) {
+      merged.push(cm);
+    }
+  }
+  return merged;
 }
 
 /**
@@ -741,8 +794,8 @@ function applyModelOverrides(builtInModels, overrides) {
   if (!Array.isArray(disabled) || disabled.length === 0) {
     return merged;
   }
-  const disabledSet = new Set(disabled);
-  const filtered = merged.filter(m => !disabledSet.has(m.id));
+  // Drop a model if ANY disabled selector matches it by canonical id or alias.
+  const filtered = merged.filter(m => !disabled.some(d => modelMatches(m, d)));
   // Never strip a provider down to zero models — fall back to the unfiltered set.
   return filtered.length > 0 ? filtered : merged;
 }
@@ -782,22 +835,23 @@ function normalizeDisabledModels(providerId, raw) {
  */
 function validateModelSelectors(providerId, builtInModels, configModels, disabledModels, defaultModel) {
   const merged = mergeModels(builtInModels || [], configModels);
-  const ids = new Set(merged.map(m => m.id));
+  // A selector is "known" if it matches some model by canonical id OR alias.
+  const isKnown = (sel) => merged.some(m => modelMatches(m, sel));
 
   if (disabledModels) {
     for (const id of disabledModels) {
-      if (!ids.has(id)) {
+      if (!isKnown(id)) {
         logger.warn(`Provider "${providerId}": disabled_models references unknown model "${id}".`);
       }
     }
-    const remaining = merged.filter(m => !disabledModels.includes(m.id));
+    const remaining = merged.filter(m => !disabledModels.some(d => modelMatches(m, d)));
     if (merged.length > 0 && remaining.length === 0) {
       logger.warn(`Provider "${providerId}": disabled_models removes every model; the filter will be ignored.`);
     }
   }
 
   if (defaultModel != null) {
-    if (!ids.has(defaultModel)) {
+    if (!isKnown(defaultModel)) {
       logger.warn(`Provider "${providerId}": default_model "${defaultModel}" is not a known model; falling back to automatic default.`);
     } else if (disabledModels && disabledModels.includes(defaultModel)) {
       logger.warn(`Provider "${providerId}": default_model "${defaultModel}" is also listed in disabled_models; falling back to automatic default.`);
@@ -971,7 +1025,7 @@ function getTierForModel(providerId, modelId) {
   const overrides = providerConfigOverrides.get(providerId);
   const models = mergeModels(ProviderClass.getModels(), overrides?.models);
 
-  const model = models.find(m => m.id === modelId || m.aliases?.includes(modelId));
+  const model = models.find(m => modelMatches(m, modelId));
   return model?.tier || null;
 }
 
@@ -995,6 +1049,7 @@ module.exports = {
   getProviderConfigOverrides,
   inferModelDefaults,
   resolveDefaultModel,
+  modelMatches,
   mergeModels,
   applyModelOverrides,
   normalizeDisabledModels,

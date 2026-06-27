@@ -3247,11 +3247,12 @@ describe('Config Endpoints', () => {
       expect(response.body.comment_button_action).toBe('submit');
       expect(response.body.default_provider).toBe('claude');
       // The test config carries the legacy `model: 'sonnet'`, which is NOT a real
-      // claude model id (the id is 'sonnet-4.6'). resolveDefaultProviderModel()
+      // claude model id (the id is 'sonnet-4.6') nor an alias. resolveDefaultProviderModel()
       // rejects the foreign value and returns claude's coherent default rather than
       // publishing a model id no model-card can match — matching what the modal's
-      // selectModel() guard does with 'sonnet' anyway.
-      expect(response.body.default_model).toBe('opus');
+      // selectModel() guard does with 'sonnet' anyway. Claude's coherent default is
+      // the canonical 'opus-4.8-xhigh'.
+      expect(response.body.default_model).toBe('opus-4.8-xhigh');
     });
 
     it('should return configured provider and model defaults', async () => {

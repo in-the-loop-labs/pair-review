@@ -17,7 +17,8 @@ const {
   getCachedAvailability,
   getAllCachedAvailability,
   checkAllProviders,
-  isCheckInProgress
+  isCheckInProgress,
+  modelMatches
 } = require('../ai');
 const { normalizeRepository } = require('../utils/paths');
 const {
@@ -113,9 +114,13 @@ function resolveDefaultProviderModel(config) {
   // provider-only override like `default_provider: 'gemini'` would otherwise inherit
   // a foreign Anthropic model and return a mismatched pair. When the model does not
   // belong to the provider, derive a coherent default from the provider itself.
-  const modelBelongs = explicitModel && providerInfo?.models?.some(m => m.id === explicitModel);
-  if (modelBelongs) {
-    return { provider, model: explicitModel };
+  // Match by canonical id OR alias so a config naming an alias (e.g. 'opus') is
+  // recognized — but return the canonical id, because the frontend matches model
+  // cards by canonical id only; returning the raw alias would fail to match and
+  // silently fall back to the provider default.
+  const matchedModel = explicitModel && providerInfo?.models?.find(m => modelMatches(m, explicitModel));
+  if (matchedModel) {
+    return { provider, model: matchedModel.id };
   }
   return { provider, model: providerInfo?.defaultModel || getDefaultModel(config) };
 }

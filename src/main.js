@@ -188,7 +188,7 @@ OPTIONS:
                             also: fable-5-xhigh, fable-5-high, opus-4.8-xhigh,
                                   opus-4.8-high, opus-4.7-xhigh, opus-4.7-high,
                                   opus-4.6-high, opus-4.6-1m, sonnet-4.6
-                            (opus is Opus 4.7 XHigh, the default)
+                            (opus is Opus 4.8 XHigh, the default)
                             or use provider-specific models with Gemini/Codex
     --council <handle>      Run analysis with a saved council (multi-voice). Handle is a
                             council name, name-slug, or id (prefix). See --list-councils.

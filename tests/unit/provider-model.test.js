@@ -12,7 +12,8 @@ const PROVIDERS = [
   {
     id: 'claude',
     defaultModel: 'opus',
-    models: [{ id: 'opus' }, { id: 'sonnet-4.6' }, { id: 'haiku' }]
+    // `sonnet-4.6` carries an alias to exercise alias-aware membership matching.
+    models: [{ id: 'opus' }, { id: 'sonnet-4.6', aliases: ['sonnet'] }, { id: 'haiku' }]
   },
   {
     id: 'gemini',
@@ -51,6 +52,23 @@ describe('resolveProviderModelPair', () => {
   it('attributes a model-only scope to whichever provider owns the model', () => {
     expect(resolveProviderModelPair([{ provider: null, model: 'gemini-2.5-flash' }], PROVIDERS))
       .toEqual({ provider: 'gemini', model: 'gemini-2.5-flash' });
+  });
+
+  it('keeps a model named by an alias rather than falling back to the default', () => {
+    // A persisted value may name an alias ('sonnet') instead of the canonical id
+    // ('sonnet-4.6'). It belongs to claude, so the user's choice must be kept.
+    expect(resolveProviderModelPair([{ provider: 'claude', model: 'sonnet' }], PROVIDERS))
+      .toEqual({ provider: 'claude', model: 'sonnet' });
+  });
+
+  it('attributes a model-only scope named by an alias to its owning provider', () => {
+    expect(resolveProviderModelPair([{ provider: null, model: 'sonnet' }], PROVIDERS))
+      .toEqual({ provider: 'claude', model: 'sonnet' });
+  });
+
+  it('falls back to the provider default for an unknown id (not an alias)', () => {
+    expect(resolveProviderModelPair([{ provider: 'claude', model: 'opus-99' }], PROVIDERS))
+      .toEqual({ provider: 'claude', model: 'opus' });
   });
 
   it('falls through a model-only scope whose model no provider owns', () => {

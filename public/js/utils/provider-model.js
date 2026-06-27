@@ -19,13 +19,20 @@
 /**
  * @param {Object} providerInfo - One entry from /api/providers
  * @param {string} modelId
- * @returns {boolean} Whether modelId is one of the provider's models
+ * @returns {boolean} Whether modelId is one of the provider's models, matched by
+ *   canonical id OR any of its aliases. A persisted/configured value may name an
+ *   alias (e.g. `opus`) rather than the canonical id; matching aliases keeps the
+ *   user's choice instead of silently falling back to the provider default. The
+ *   model cards carry their `aliases` in the /api/providers payload. Mirrors the
+ *   backend `modelMatches()` helper in src/ai/provider.js.
  */
 function _modelBelongsToProvider(providerInfo, modelId) {
   return !!(
     providerInfo &&
     Array.isArray(providerInfo.models) &&
-    providerInfo.models.some(m => m && m.id === modelId)
+    // Optional chaining: a model with no `aliases` short-circuits to undefined
+    // (falsy) rather than throwing, so no Array.isArray guard is needed.
+    providerInfo.models.some(m => m && (m.id === modelId || m.aliases?.includes(modelId)))
   );
 }
 
