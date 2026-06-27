@@ -2267,10 +2267,12 @@ tr.newly-expanded .d2h-code-line-ctn {
   position: relative;
   display: flex;
   align-items: center;
+  gap: 4px;
   flex-shrink: 0;
 }
 
-.btn-reasoning-toggle {
+.btn-reasoning-toggle,
+.btn-suggestion-copy {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2285,10 +2287,22 @@ tr.newly-expanded .d2h-code-line-ctn {
   transition: all 0.15s ease;
 }
 
-.btn-reasoning-toggle:hover {
+.btn-reasoning-toggle:hover,
+.btn-suggestion-copy:hover {
   color: var(--color-reasoning-hover);
   background: var(--color-reasoning-hover-bg);
   border-color: var(--color-reasoning-hover-border);
+}
+
+.btn-suggestion-copy.copied {
+  color: var(--color-success, #1a7f37);
+  background: var(--color-success-subtle, rgba(46, 160, 67, 0.1));
+  border-color: var(--color-success, #1a7f37);
+}
+
+.btn-suggestion-copy.copy-failed {
+  color: var(--color-danger, #cf222e);
+  border-color: var(--color-danger, #cf222e);
 }
 
 .btn-reasoning-toggle.active {
@@ -2411,7 +2425,8 @@ tr.newly-expanded .d2h-code-line-ctn {
   gap: 4px;
 }
 
-.btn-reasoning-toggle.collapsed-reasoning {
+.btn-reasoning-toggle.collapsed-reasoning,
+.btn-suggestion-copy.collapsed-copy {
   width: 24px;
   height: 24px;
   border-radius: 4px;

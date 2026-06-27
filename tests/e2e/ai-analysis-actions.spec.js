@@ -162,6 +162,34 @@ test.describe('Suggestion Actions', () => {
     await expect(dismissBtn).toBeVisible();
   });
 
+  test('should copy suggestion markdown to clipboard', async ({ page, context }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+
+    await seedAISuggestions(page);
+
+    const suggestion = page.locator('.ai-suggestion:not(.collapsed)', {
+      has: page.locator('.ai-title', { hasText: 'Consider using const for immutable values' })
+    }).first();
+    await expect(suggestion).toBeVisible({ timeout: 5000 });
+    await suggestion.scrollIntoViewIfNeeded();
+
+    await suggestion.locator('.ai-suggestion-header .btn-suggestion-copy').click();
+
+    const clipboardText = await page.evaluate(() => navigator.clipboard.readText());
+
+    expect(clipboardText).toContain('## Consider using const for immutable values');
+    expect(clipboardText).toContain('- File: `src/utils.js`');
+    expect(clipboardText).toContain('- Location: line 3');
+    expect(clipboardText).toContain('- Type: Improvement');
+    expect(clipboardText).toContain('- Severity: Minor');
+    expect(clipboardText).toContain('The variable `result` could be declared with `const`');
+    expect(clipboardText).toContain('### Reasoning');
+    expect(clipboardText).toContain('- The variable `result` is assigned once and never reassigned.');
+  });
+
   test('should collapse suggestion when dismissed', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
