@@ -47,11 +47,11 @@
         "OPENCODE_TELEMETRY": "off"
       },
       "installInstructions": "Install OpenCode: curl -fsSL https://opencode.ai/install | bash",
+      "default_model": "anthropic/claude-sonnet-4",
       "models": [
         {
           "id": "anthropic/claude-sonnet-4",
           "tier": "balanced",
-          "default": true,
           "name": "Claude Sonnet 4",
           "description": "Fast and capable for most reviews",
           "tagline": "Best balance of speed and quality",
@@ -96,10 +96,14 @@
 
     "claude": {
       "_comment": "Override Claude's built-in configuration. Useful for custom paths, wrapper scripts, or additional arguments. Built-in models include fable, fable-5-high, opus, opus-4.7-high, opus-4.8-xhigh, opus-4.8-high, opus-4.6-high, sonnet-4.6, opus-4.6-1m, and haiku. Use 'cli_model' to decouple the app-level model ID from the CLI --model argument. Use 'env' for model-specific environment variables.",
+      "_comment_default_model": "Provider-level 'default_model' selects which model is the default in the picker and when no model is specified. Preferred over the per-model 'default: true' flag (which is deprecated). If it names an unknown or disabled model, the provider falls back to automatic selection.",
+      "_comment_disabled_models": "'disabled_models' hides specific model IDs (built-in or config-defined) from the picker for this provider. A list that would hide every model is ignored. Example below removes the fast-tier 'haiku' model and the thorough-tier 'fable' model.",
       "command": "claude",
       "extra_args": [],
       "env": {},
       "installInstructions": "Install Claude CLI: npm install -g @anthropic-ai/claude-code",
+      "default_model": "opus",
+      "disabled_models": ["haiku", "fable"],
       "models": [
         {
           "_comment": "Example: simple override — customize the display name and description of a built-in model. Note: 'tier' is required even for overrides (valid values: fast, balanced, thorough, premium).",
@@ -182,11 +186,11 @@
       "extra_args": [],
       "env": {},
       "installInstructions": "Install Pi: npm install -g @mariozechner/pi-coding-agent",
+      "default_model": "gemini-2.5-flash",
       "models": [
         {
           "id": "gemini-2.5-flash",
           "tier": "fast",
-          "default": true,
           "name": "Gemini 2.5 Flash",
           "description": "Google's fast model (suggested default)",
           "tagline": "Lightning Fast",
@@ -243,12 +247,12 @@
       "_comment_availability": "availability_command is run at startup to decide if the provider is available (defaults to 'true', i.e. always available). availability_timeout_seconds bounds that check (default 10); raise it when the command runs a slow build/compile step. Also supported on chat_providers entries.",
       "env": {},
       "installInstructions": "Install my-review-tool: pip install my-review-tool",
+      "default_model": "default",
       "models": [
         {
           "id": "default",
           "name": "Default",
-          "tier": "thorough",
-          "default": true
+          "tier": "thorough"
         }
       ]
     }
