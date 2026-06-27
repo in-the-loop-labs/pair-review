@@ -8,7 +8,13 @@
  * - Config override application (applyConfigOverrides)
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+// NOTE: production code (src/ai/provider.js) loads the logger via CommonJS
+// `require('../utils/logger')`. Under vitest the ESM `import` of this CJS
+// singleton resolves to a DIFFERENT instance than `require`, so a spy on the
+// imported binding would never see production's calls. Spy on the require'd
+// instance instead (matches the pattern in github-client.test.js).
+const logger = require('../../src/utils/logger');
 import {
   prettifyModelId,
   inferModelDefaults,
@@ -16,6 +22,8 @@ import {
   applyConfigOverrides,
   getProviderConfigOverrides,
   getAllProvidersInfo,
+  applyModelOverrides,
+  normalizeDisabledModels,
   getRegisteredProviderIds,
   getProviderClass,
   createProvider,
@@ -192,6 +200,45 @@ describe('Provider Configuration', () => {
       ];
 
       expect(resolveDefaultModel(models)).toBe('model-a');
+    });
+
+    it('should honor preferredId (default_model) over legacy default:true', () => {
+      const models = [
+        { id: 'model-a', tier: 'fast', default: true },
+        { id: 'model-b', tier: 'balanced' },
+        { id: 'model-c', tier: 'thorough' }
+      ];
+
+      expect(resolveDefaultModel(models, 'model-c')).toBe('model-c');
+    });
+
+    it('should fall through to legacy default:true when preferredId is not present', () => {
+      const models = [
+        { id: 'model-a', tier: 'fast' },
+        { id: 'model-b', tier: 'balanced', default: true }
+      ];
+
+      // preferredId names a model that was disabled/removed → fall through
+      expect(resolveDefaultModel(models, 'model-disabled')).toBe('model-b');
+    });
+
+    it('should fall through to automatic selection when preferredId is absent and no default:true', () => {
+      const models = [
+        { id: 'model-a', tier: 'fast' },
+        { id: 'model-b', tier: 'balanced' }
+      ];
+
+      expect(resolveDefaultModel(models, 'nope')).toBe('model-b');
+    });
+
+    it('should ignore a null/undefined preferredId', () => {
+      const models = [
+        { id: 'model-a', tier: 'fast' },
+        { id: 'model-b', tier: 'balanced', default: true }
+      ];
+
+      expect(resolveDefaultModel(models, null)).toBe('model-b');
+      expect(resolveDefaultModel(models, undefined)).toBe('model-b');
     });
   });
 
@@ -775,6 +822,20 @@ describe('Provider Configuration', () => {
       expect(AliasClass.getModels()).toEqual(BaseClass.getModels());
     });
 
+    it('wires disabled_models and default_model onto the aliased provider overrides', () => {
+      applyConfigOverrides({
+        providers: {
+          myalias: {
+            type: 'claude',
+            disabled_models: ['haiku'],
+            default_model: 'sonnet-4.6'
+          }
+        }
+      });
+      expect(getProviderConfigOverrides('myalias').disabled_models).toEqual(['haiku']);
+      expect(getProviderConfigOverrides('myalias').default_model).toBe('sonnet-4.6');
+    });
+
     it('should store config overrides for the aliased provider', () => {
       applyConfigOverrides({
         providers: {
@@ -1182,6 +1243,221 @@ describe('Provider Configuration', () => {
       it('exposes 10000 as the default timeout constant', () => {
         expect(DEFAULT_AVAILABILITY_TIMEOUT_MS).toBe(10000);
       });
+    });
+  });
+
+  describe('normalizeDisabledModels', () => {
+    // Spy on logger.warn so the warning-behavior tests can assert it fires.
+    // Scoped to this describe block and restored after each test so call
+    // counts don't leak across tests or into other describe blocks.
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('returns null for null/undefined', () => {
+      expect(normalizeDisabledModels('claude', null)).toBe(null);
+      expect(normalizeDisabledModels('claude', undefined)).toBe(null);
+    });
+
+    it('returns null and warns for a non-array value', () => {
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      expect(normalizeDisabledModels('claude', 'haiku')).toBe(null);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns the list of string ids', () => {
+      expect(normalizeDisabledModels('claude', ['haiku', 'fable'])).toEqual(['haiku', 'fable']);
+    });
+
+    it('filters out non-string entries', () => {
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      expect(normalizeDisabledModels('claude', ['haiku', 42, null, ''])).toEqual(['haiku']);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns null for an empty (or all-invalid) array', () => {
+      expect(normalizeDisabledModels('claude', [])).toBe(null);
+      expect(normalizeDisabledModels('claude', [123, null])).toBe(null);
+    });
+  });
+
+  describe('applyModelOverrides (disabled_models filtering)', () => {
+    const builtIns = [
+      { id: 'a', tier: 'fast' },
+      { id: 'b', tier: 'balanced' },
+      { id: 'c', tier: 'thorough' }
+    ];
+
+    it('returns merged models unchanged when no disabled_models', () => {
+      expect(applyModelOverrides(builtIns, {}).map(m => m.id)).toEqual(['a', 'b', 'c']);
+      expect(applyModelOverrides(builtIns, undefined).map(m => m.id)).toEqual(['a', 'b', 'c']);
+    });
+
+    it('removes disabled model ids from the effective list', () => {
+      const result = applyModelOverrides(builtIns, { disabled_models: ['b'] });
+      expect(result.map(m => m.id)).toEqual(['a', 'c']);
+    });
+
+    it('removes disabled config-added models too', () => {
+      const result = applyModelOverrides(builtIns, {
+        models: [{ id: 'd', tier: 'fast' }],
+        disabled_models: ['a', 'd']
+      });
+      expect(result.map(m => m.id)).toEqual(['b', 'c']);
+    });
+
+    it('ignores the filter when it would remove every model', () => {
+      const result = applyModelOverrides(builtIns, { disabled_models: ['a', 'b', 'c'] });
+      expect(result.map(m => m.id)).toEqual(['a', 'b', 'c']);
+    });
+
+    it('ignores unknown disabled ids without affecting real ones', () => {
+      const result = applyModelOverrides(builtIns, { disabled_models: ['b', 'does-not-exist'] });
+      expect(result.map(m => m.id)).toEqual(['a', 'c']);
+    });
+  });
+
+  describe('disabled_models via config (end to end)', () => {
+    beforeEach(() => {
+      applyConfigOverrides({ providers: {} });
+    });
+
+    afterEach(() => {
+      applyConfigOverrides({ providers: {} });
+    });
+
+    it('hides a disabled built-in model from getAllProvidersInfo', () => {
+      applyConfigOverrides({
+        providers: { claude: { disabled_models: ['haiku'] } }
+      });
+      const claude = getAllProvidersInfo().find(p => p.id === 'claude');
+      expect(claude.models.find(m => m.id === 'haiku')).toBeUndefined();
+      // Other built-ins are still present
+      expect(claude.models.find(m => m.id === 'opus')).toBeDefined();
+    });
+
+    it('stores the normalized disabled_models on the overrides', () => {
+      applyConfigOverrides({
+        providers: { claude: { disabled_models: ['haiku', 'fable'] } }
+      });
+      expect(getProviderConfigOverrides('claude').disabled_models).toEqual(['haiku', 'fable']);
+    });
+
+    it('moves the default off a disabled model', () => {
+      // claude's built-in default is 'opus'; disable it and the resolver picks another
+      applyConfigOverrides({
+        providers: { claude: { disabled_models: ['opus'] } }
+      });
+      const claude = getAllProvidersInfo().find(p => p.id === 'claude');
+      expect(claude.models.find(m => m.id === 'opus')).toBeUndefined();
+      expect(claude.defaultModel).not.toBe('opus');
+      // The resolved default must be one of the still-available models
+      expect(claude.models.find(m => m.id === claude.defaultModel)).toBeDefined();
+    });
+
+    it('does not pick a disabled model as the default in createProvider', () => {
+      applyConfigOverrides({
+        providers: { claude: { disabled_models: ['opus'] } }
+      });
+      const provider = createProvider('claude');
+      expect(provider.model).not.toBe('opus');
+    });
+
+    it('wires disabled_models and default_model onto executable provider overrides', () => {
+      applyConfigOverrides({
+        providers: {
+          'exec-tool': {
+            type: 'executable',
+            command: 'exec-tool',
+            disabled_models: ['fast-model'],
+            default_model: 'thorough-model',
+            models: [
+              { id: 'fast-model', tier: 'fast' },
+              { id: 'thorough-model', tier: 'thorough' }
+            ]
+          }
+        }
+      });
+      const overrides = getProviderConfigOverrides('exec-tool');
+      expect(overrides.disabled_models).toEqual(['fast-model']);
+      expect(overrides.default_model).toBe('thorough-model');
+    });
+  });
+
+  describe('provider-level default_model', () => {
+    beforeEach(() => {
+      applyConfigOverrides({ providers: {} });
+    });
+
+    afterEach(() => {
+      applyConfigOverrides({ providers: {} });
+    });
+
+    it('selects the configured default_model in getAllProvidersInfo', () => {
+      applyConfigOverrides({
+        providers: { claude: { default_model: 'haiku' } }
+      });
+      const claude = getAllProvidersInfo().find(p => p.id === 'claude');
+      expect(claude.defaultModel).toBe('haiku');
+    });
+
+    it('selects the configured default_model in createProvider', () => {
+      applyConfigOverrides({
+        providers: { claude: { default_model: 'sonnet-4.6' } }
+      });
+      const provider = createProvider('claude');
+      expect(provider.model).toBe('sonnet-4.6');
+    });
+
+    it('falls back to automatic default when default_model names an unknown model', () => {
+      applyConfigOverrides({
+        providers: { claude: { default_model: 'no-such-model' } }
+      });
+      const claude = getAllProvidersInfo().find(p => p.id === 'claude');
+      // Falls back to the built-in default ('opus')
+      expect(claude.defaultModel).toBe('opus');
+    });
+
+    it('falls back to automatic default when default_model is also disabled', () => {
+      applyConfigOverrides({
+        providers: { claude: { default_model: 'haiku', disabled_models: ['haiku'] } }
+      });
+      const claude = getAllProvidersInfo().find(p => p.id === 'claude');
+      expect(claude.models.find(m => m.id === 'haiku')).toBeUndefined();
+      expect(claude.defaultModel).not.toBe('haiku');
+    });
+
+    it('default_model wins over a config model marked default:true', () => {
+      applyConfigOverrides({
+        providers: {
+          claude: {
+            default_model: 'haiku',
+            models: [{ id: 'sonnet-4.6', tier: 'balanced', default: true }]
+          }
+        }
+      });
+      const claude = getAllProvidersInfo().find(p => p.id === 'claude');
+      expect(claude.defaultModel).toBe('haiku');
+    });
+
+    it('stores default_model on the overrides', () => {
+      applyConfigOverrides({
+        providers: { claude: { default_model: 'haiku' } }
+      });
+      expect(getProviderConfigOverrides('claude').default_model).toBe('haiku');
+    });
+
+    it('normalizes per-model default flags so models.find(m => m.default) agrees with default_model', () => {
+      // 'sonnet-4.6' does not carry a legacy default:true flag; the built-in
+      // default ('opus') does. After resolving default_model, exactly one model
+      // — the targeted one — should be flagged default:true.
+      applyConfigOverrides({
+        providers: { claude: { default_model: 'sonnet-4.6' } }
+      });
+      const claude = getAllProvidersInfo().find(p => p.id === 'claude');
+      expect(claude.defaultModel).toBe('sonnet-4.6');
+      expect(claude.models.find(m => m.default).id).toBe('sonnet-4.6');
+      expect(claude.models.filter(m => m.default === true)).toHaveLength(1);
     });
   });
 });

@@ -170,7 +170,8 @@ class AIProvider {
    * @returns {string} Model ID for extraction
    */
   getFastTierModel() {
-    const models = this.constructor.getModels();
+    const overrides = providerConfigOverrides.get(this.constructor.getProviderId());
+    const models = applyModelOverrides(this.constructor.getModels(), overrides);
     const fastModel = models.find(m => m.tier === 'fast');
     if (fastModel) {
       return fastModel.id;
@@ -446,17 +447,35 @@ function inferModelDefaults(model) {
 }
 
 /**
- * Resolve the default model from an array of model definitions
- * Priority: model with default:true > first balanced tier model > first model
- * @param {Array<Object>} models - Array of model definitions
+ * Resolve the default model from an array of model definitions.
+ * Priority: provider-level `default_model` (preferredId) > legacy model with
+ * `default:true` > first balanced tier model > first model.
+ *
+ * `preferredId` is the provider-level `default_model` config value. It is the
+ * preferred way to pick a default; the per-model `default:true` flag is the
+ * deprecated legacy mechanism, kept for backward compatibility. When
+ * `preferredId` names a model that isn't present (e.g. it was disabled or
+ * mistyped), resolution falls through to the legacy/automatic logic — the
+ * mismatch is warned about once at config-apply time, not here.
+ *
+ * @param {Array<Object>} models - Array of model definitions (already filtered)
+ * @param {string|null} [preferredId] - Provider-level `default_model` id
  * @returns {string|null} - Default model ID or null if no models
  */
-function resolveDefaultModel(models) {
+function resolveDefaultModel(models, preferredId = null) {
   if (!models || models.length === 0) {
     return null;
   }
 
-  // First, look for a model explicitly marked as default
+  // Provider-level `default_model` wins when it names an available model
+  if (preferredId) {
+    const preferred = models.find(m => m.id === preferredId);
+    if (preferred) {
+      return preferred.id;
+    }
+  }
+
+  // Legacy: model explicitly marked default:true (deprecated in favor of default_model)
   const explicitDefault = models.find(m => m.default === true);
   if (explicitDefault) {
     return explicitDefault.id;
@@ -493,7 +512,7 @@ function createAliasedProviderClass(aliasId, BaseClass, aliasConfig) {
   AliasedProvider.getProviderId = () => aliasId;
   if (processedModels) {
     AliasedProvider.getModels = () => processedModels;
-    AliasedProvider.getDefaultModel = () => resolveDefaultModel(processedModels);
+    AliasedProvider.getDefaultModel = () => resolveDefaultModel(processedModels, aliasConfig.default_model || null);
   }
   if (aliasConfig.installInstructions) {
     AliasedProvider.getInstallInstructions = () => aliasConfig.installInstructions;
@@ -539,7 +558,15 @@ function applyConfigOverrides(config) {
       const { createExecutableProviderClass } = require('./executable-provider');
       const ExecClass = createExecutableProviderClass(providerId, providerConfig);
       registerProvider(providerId, ExecClass);
-      providerConfigOverrides.set(providerId, { ...providerConfig, models: ExecClass.getModels() });
+      const execDisabled = normalizeDisabledModels(providerId, providerConfig.disabled_models);
+      const execDefault = providerConfig.default_model || null;
+      validateModelSelectors(providerId, ExecClass.getModels(), null, execDisabled, execDefault);
+      providerConfigOverrides.set(providerId, {
+        ...providerConfig,
+        models: ExecClass.getModels(),
+        disabled_models: execDisabled,
+        default_model: execDefault
+      });
       logger.debug(`Registered executable provider: ${providerId}`);
       continue;
     }
@@ -549,6 +576,10 @@ function applyConfigOverrides(config) {
       const BaseClass = providerRegistry.get(providerConfig.type);
       const AliasClass = createAliasedProviderClass(providerId, BaseClass, providerConfig);
       registerProvider(providerId, AliasClass);
+
+      const aliasDisabled = normalizeDisabledModels(providerId, providerConfig.disabled_models);
+      const aliasDefault = providerConfig.default_model || null;
+      validateModelSelectors(providerId, AliasClass.getModels(), null, aliasDisabled, aliasDefault);
 
       // Aliases reuse the base provider's implementation class, not its config.
       // Only universal override fields are forwarded; provider-specific fields
@@ -561,7 +592,9 @@ function applyConfigOverrides(config) {
         load_skills: providerConfig.load_skills,
         app_extensions: providerConfig.app_extensions,
         availability_timeout_seconds: providerConfig.availability_timeout_seconds,
-        models: AliasClass.getModels() !== BaseClass.getModels() ? AliasClass.getModels() : null
+        models: AliasClass.getModels() !== BaseClass.getModels() ? AliasClass.getModels() : null,
+        disabled_models: aliasDisabled,
+        default_model: aliasDefault
       });
       logger.debug(`Registered aliased provider: ${providerId} (base: ${providerConfig.type})`);
       continue;
@@ -578,7 +611,16 @@ function applyConfigOverrides(config) {
     if (Array.isArray(providerConfig.models) && providerConfig.models.length > 0) {
       processedModels = providerConfig.models.map(inferModelDefaults);
       logger.debug(`Configured ${processedModels.length} models for ${providerId}`);
+      // Deprecation: per-model `default: true` is superseded by provider-level `default_model`.
+      // Only warn when the user didn't already adopt the new field.
+      if (providerConfig.default_model == null && processedModels.some(m => m.default === true)) {
+        logger.warn(`Provider "${providerId}": per-model "default: true" is deprecated. Set provider-level "default_model": "<id>" instead.`);
+      }
     }
+
+    const disabledModels = normalizeDisabledModels(providerId, providerConfig.disabled_models);
+    const defaultModel = providerConfig.default_model || null;
+    validateModelSelectors(providerId, providerRegistry.get(providerId)?.getModels(), processedModels, disabledModels, defaultModel);
 
     // Store the overrides
     providerConfigOverrides.set(providerId, {
@@ -589,7 +631,9 @@ function applyConfigOverrides(config) {
       load_skills: providerConfig.load_skills,
       app_extensions: providerConfig.app_extensions,
       availability_timeout_seconds: providerConfig.availability_timeout_seconds,
-      models: processedModels
+      models: processedModels,
+      disabled_models: disabledModels,
+      default_model: defaultModel
     });
   }
 
@@ -674,6 +718,94 @@ function mergeModels(builtInModels, configModels) {
 }
 
 /**
+ * Compute the effective model list for a provider: built-in models merged with
+ * config-override models, then with any `disabled_models` IDs removed.
+ *
+ * This is the single source of truth for "which models does this provider
+ * actually expose" — every call site that surfaces or selects a model should go
+ * through here so a disabled model is hidden consistently (UI, default
+ * resolution, instance creation).
+ *
+ * If `disabled_models` would remove every model, the filter is ignored (a
+ * provider with zero models is unusable). Unknown/empty-list validation and
+ * warnings happen once at config-apply time in {@link applyConfigOverrides};
+ * this function is intentionally silent so it can run on every request.
+ *
+ * @param {Array<Object>} builtInModels - Models from ProviderClass.getModels()
+ * @param {Object} [overrides] - Stored config overrides for the provider
+ * @returns {Array<Object>} Effective model list
+ */
+function applyModelOverrides(builtInModels, overrides) {
+  const merged = mergeModels(builtInModels, overrides?.models);
+  const disabled = overrides?.disabled_models;
+  if (!Array.isArray(disabled) || disabled.length === 0) {
+    return merged;
+  }
+  const disabledSet = new Set(disabled);
+  const filtered = merged.filter(m => !disabledSet.has(m.id));
+  // Never strip a provider down to zero models — fall back to the unfiltered set.
+  return filtered.length > 0 ? filtered : merged;
+}
+
+/**
+ * Normalize a `disabled_models` config value into a clean array of string IDs
+ * (or null when absent/empty). Warns on malformed input.
+ * @param {string} providerId - Provider ID (for log messages)
+ * @param {*} raw - Raw config value
+ * @returns {string[]|null}
+ */
+function normalizeDisabledModels(providerId, raw) {
+  if (raw == null) {
+    return null;
+  }
+  if (!Array.isArray(raw)) {
+    logger.warn(`Provider "${providerId}": "disabled_models" must be an array of model IDs; ignoring.`);
+    return null;
+  }
+  const ids = raw.filter(id => typeof id === 'string' && id.length > 0);
+  if (ids.length !== raw.length) {
+    logger.warn(`Provider "${providerId}": "disabled_models" contained non-string entries which were ignored.`);
+  }
+  return ids.length > 0 ? ids : null;
+}
+
+/**
+ * Validate provider-level model selectors against the effective model set and
+ * warn about mistakes. Never throws — bad selectors degrade gracefully at
+ * resolution time (a disabled-everything list is ignored, an unknown
+ * default_model falls back to automatic selection).
+ * @param {string} providerId - Provider ID (for log messages)
+ * @param {Array<Object>} builtInModels - Provider's built-in models
+ * @param {Array<Object>|null} configModels - Processed config-override models
+ * @param {string[]|null} disabledModels - Normalized disabled list
+ * @param {string|null} defaultModel - Provider-level default_model id
+ */
+function validateModelSelectors(providerId, builtInModels, configModels, disabledModels, defaultModel) {
+  const merged = mergeModels(builtInModels || [], configModels);
+  const ids = new Set(merged.map(m => m.id));
+
+  if (disabledModels) {
+    for (const id of disabledModels) {
+      if (!ids.has(id)) {
+        logger.warn(`Provider "${providerId}": disabled_models references unknown model "${id}".`);
+      }
+    }
+    const remaining = merged.filter(m => !disabledModels.includes(m.id));
+    if (merged.length > 0 && remaining.length === 0) {
+      logger.warn(`Provider "${providerId}": disabled_models removes every model; the filter will be ignored.`);
+    }
+  }
+
+  if (defaultModel != null) {
+    if (!ids.has(defaultModel)) {
+      logger.warn(`Provider "${providerId}": default_model "${defaultModel}" is not a known model; falling back to automatic default.`);
+    } else if (disabledModels && disabledModels.includes(defaultModel)) {
+      logger.warn(`Provider "${providerId}": default_model "${defaultModel}" is also listed in disabled_models; falling back to automatic default.`);
+    }
+  }
+}
+
+/**
  * Get provider info for all registered providers
  * Uses config overrides for models/installInstructions if available
  * @returns {Array<Object>}
@@ -683,11 +815,17 @@ function getAllProvidersInfo() {
   for (const [id, ProviderClass] of providerRegistry) {
     const overrides = providerConfigOverrides.get(id);
 
-    // Merge config models with built-in models (config wins on ID collision)
-    const models = mergeModels(ProviderClass.getModels(), overrides?.models);
+    // Effective models: config merged with built-ins, minus disabled_models
+    const effectiveModels = applyModelOverrides(ProviderClass.getModels(), overrides);
 
-    // Resolve default model from merged models array
-    const defaultModel = resolveDefaultModel(models) || ProviderClass.getDefaultModel();
+    // Resolve default model: provider-level default_model wins, then legacy/auto
+    const defaultModel = resolveDefaultModel(effectiveModels, overrides?.default_model) || ProviderClass.getDefaultModel();
+
+    // Normalize per-model `default` flags to agree with the resolved defaultModel.
+    // Many frontend consumers derive the default via models.find(m => m.default),
+    // so the payload's flags must reflect the new source of truth (default_model).
+    // Produce NEW objects — never mutate the shared built-in model objects.
+    const models = effectiveModels.map(m => ({ ...m, default: m.id === defaultModel }));
 
     // Use overridden install instructions if available
     const installInstructions = overrides?.installInstructions || ProviderClass.getInstallInstructions();
@@ -736,11 +874,13 @@ function createProvider(providerId, model = null, overrides = {}) {
   // Determine the actual model to use
   let actualModel = model;
   if (!actualModel) {
-    // Resolve default from merged models (config + built-in).
+    // Resolve default from effective models (config + built-in, minus disabled).
     // Checks both sources because some providers (e.g., Pi) define built-in
-    // modes with default:true that aren't in config overrides.
+    // modes with default:true that aren't in config overrides. Honors the
+    // provider-level `default_model` selector.
     if (configOverrides?.models || ProviderClass.getModels().length > 0) {
-      actualModel = resolveDefaultModel(mergeModels(ProviderClass.getModels(), configOverrides?.models));
+      const effectiveModels = applyModelOverrides(ProviderClass.getModels(), configOverrides);
+      actualModel = resolveDefaultModel(effectiveModels, configOverrides?.default_model);
     }
     // Fall back to provider's built-in default
     if (!actualModel) {
@@ -855,6 +995,9 @@ module.exports = {
   getProviderConfigOverrides,
   inferModelDefaults,
   resolveDefaultModel,
+  mergeModels,
+  applyModelOverrides,
+  normalizeDisabledModels,
   prettifyModelId,
   getTierForModel
 };

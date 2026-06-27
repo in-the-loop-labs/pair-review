@@ -24,6 +24,9 @@ const {
   getProviderConfigOverrides,
   inferModelDefaults,
   resolveDefaultModel,
+  mergeModels,
+  applyModelOverrides,
+  normalizeDisabledModels,
   prettifyModelId,
   createAliasedProviderClass,
   getTierForModel
@@ -81,6 +84,9 @@ module.exports = {
   getProviderConfigOverrides,
   inferModelDefaults,
   resolveDefaultModel,
+  mergeModels,
+  applyModelOverrides,
+  normalizeDisabledModels,
   prettifyModelId,
   getTierForModel,
 
