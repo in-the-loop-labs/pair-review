@@ -165,8 +165,17 @@ OPTIONS:
                             <pr> argument or --local.
     --json                  With --headless, emit the completed run plus its
                             consolidated final suggestions as a single JSON
-                            document on a clean stdout (all logs go to stderr).
-                            Only valid together with --headless.
+                            document on a clean stdout. For any outcome of the
+                            headless run — success, zero findings, or an error
+                            raised while running it — stdout carries a JSON
+                            document with an "ok" field; on failure that envelope
+                            is { "ok": false, "error": ... } and the exit code is
+                            non-zero. Pre-flight config/startup failures are the
+                            exception: they exit non-zero with a stderr message
+                            and no JSON envelope, so branch on the exit code
+                            first. stderr is quiet by default (only
+                            warnings/errors); add --debug for verbose progress
+                            logs. Only valid together with --headless.
     --instructions <text>   Per-run custom instructions for the analysis.
                             Applies to any mode that runs analysis: --headless,
                             --ai, --ai-draft, --ai-review, or --council (with
@@ -618,11 +627,18 @@ AI PROVIDERS:
     // first-run welcome box below, both of which would otherwise corrupt the
     // JSON. Peek the raw args here: neither flag takes a value, parseArgs() still
     // runs afterwards for full validation, and redirectConsoleToStderr() is
-    // idempotent (it only reassigns console.* → console.error), so the later
+    // idempotent (it only reassigns console.* / the logger stream), so the later
     // gated call is unnecessary once this fires.
+    //
+    // Quiet by default: --headless --json is consumed mostly by coding agents,
+    // whose shell tools capture stderr into context — so we DROP progress
+    // narration rather than relocating it to stderr (warnings/errors still emit).
+    // --debug/-d restores the full verbose stderr stream for humans diagnosing a
+    // run. parseArgs() hasn't run yet, so peek raw args for the debug flags too.
     const isHeadlessJson = args.includes('--headless') && args.includes('--json');
     if (isHeadlessJson) {
-      redirectConsoleToStderr();
+      const wantsDebug = args.includes('-d') || args.includes('--debug');
+      redirectConsoleToStderr({ quiet: !wantsDebug });
     }
 
     // Load configuration
@@ -878,8 +894,33 @@ AI PROVIDERS:
       console.log('No pull request specified. Starting server...');
       await startServerOnly(config, poolLifecycle);
     }
-    
+
   } catch (error) {
+    // In headless --json mode the consumer (typically a coding agent) parses
+    // stdout as JSON. A prose error on stderr + empty stdout forces it to scrape
+    // English to learn what broke, so emit a structured failure envelope on
+    // stdout instead — one stream, JSON for success and failure alike. Read
+    // process.argv directly: `args`/`flags` are block-scoped to the try and
+    // unavailable here, and the throw may even predate parseArgs(). Exit stays
+    // non-zero so exit-code consumers are unaffected.
+    const argv = process.argv.slice(2);
+    const jsonMode = argv.includes('--headless') && argv.includes('--json');
+    if (jsonMode) {
+      // Canonical source for local-mode detection is parseArgs' -l/--local
+      // handling; we re-check argv here only because `flags` is block-scoped to
+      // the try and may not exist yet if the throw predates parseArgs. Keep any
+      // future local-mode alias in sync with that handling. Mode is best-effort
+      // (agents branch on `ok`, not `mode`).
+      const mode = (argv.includes('--local') || argv.includes('-l')) ? 'local' : 'pr';
+      // stdout may be a pipe (e.g. `pair-review … | jq`); a synchronous
+      // process.exit() can truncate a buffered write, so exit only once the
+      // envelope has flushed. The non-JSON branch below keeps the immediate exit.
+      process.stdout.write(
+        JSON.stringify(buildHeadlessErrorJson({ mode, error }), null, 2) + '\n',
+        () => process.exit(1)
+      );
+      return;
+    }
     console.error(`\n❌ Error: ${error.message}\n`);
     process.exit(1);
   }
@@ -2175,7 +2216,7 @@ async function handleHeadlessAnalysis(prArgs, config, db, flags, poolLifecycle) 
  * @param {Object} db - Database instance
  * @param {string} runId - Analysis run id
  * @param {'pr'|'local'} mode - Review mode (passthrough)
- * @returns {Promise<Object>} { mode, run, suggestions, count }
+ * @returns {Promise<Object>} { ok, mode, run, suggestions, count }
  */
 async function buildHeadlessJson(db, runId, mode) {
   const run = await new AnalysisRunRepository(db).getById(runId, { includeDiff: false });
@@ -2191,10 +2232,36 @@ async function buildHeadlessJson(db, runId, mode) {
   }));
 
   return {
+    // `ok` lets a machine consumer branch on success/failure with a single field;
+    // see buildHeadlessErrorJson for the failure shape.
+    ok: true,
     mode,
     run,
     suggestions,
     count: suggestions.length
+  };
+}
+
+/**
+ * Build the machine-readable JSON document for a FAILED headless run.
+ *
+ * Mirrors buildHeadlessJson's envelope so a --headless --json consumer parses one
+ * stream and branches on `ok`: success → { ok: true, ... }, failure → this. The
+ * process still exits non-zero, so exit-code-based consumers are unaffected.
+ * Exported for unit testing.
+ *
+ * @param {Object} params
+ * @param {'pr'|'local'} params.mode - Review mode (best-effort, derived from args)
+ * @param {Error} params.error - The thrown error
+ * @returns {Object} { ok: false, mode, error: { message } }
+ */
+function buildHeadlessErrorJson({ mode, error }) {
+  return {
+    ok: false,
+    mode,
+    error: {
+      message: error && error.message ? error.message : String(error)
+    }
   };
 }
 
@@ -2412,7 +2479,14 @@ function gracefulShutdown(signal) {
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 
-// Handle uncaught exceptions
+// Handle uncaught exceptions.
+//
+// Note: in --headless --json mode, errors that ESCAPE main()'s try (floating
+// promises, timer/child-process callbacks) reach here and are reported as prose
+// on stderr, not the JSON failure envelope. The headless flow awaits its full
+// analysis, so this is a narrow gap; a JSON envelope here would need an
+// emit-once guard to avoid a second document on stdout during post-success
+// teardown.
 process.on('uncaughtException', (error) => {
   console.error('Uncaught exception:', error);
   process.exit(1);
@@ -2428,4 +2502,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { main, parseArgs, detectPRFromGitHubEnvironment, printCouncilList, runHeadlessAnalysis, recordEmptyScopeRun, buildHeadlessJson, resolveCliInstructions };
+module.exports = { main, parseArgs, detectPRFromGitHubEnvironment, printCouncilList, runHeadlessAnalysis, recordEmptyScopeRun, buildHeadlessJson, buildHeadlessErrorJson, resolveCliInstructions };

@@ -19,7 +19,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createTestDatabase, closeTestDatabase, seedTestReview } from '../utils/schema.js';
 
-const { buildHeadlessJson } = require('../../src/main.js');
+const { buildHeadlessJson, buildHeadlessErrorJson } = require('../../src/main.js');
 
 const RUN_ID = 'run-under-test';
 const OTHER_RUN_ID = 'some-other-run';
@@ -134,6 +134,11 @@ describe('buildHeadlessJson', () => {
     closeTestDatabase(db);
   });
 
+  it('marks the success envelope with ok: true', async () => {
+    const doc = await buildHeadlessJson(db, RUN_ID, 'pr');
+    expect(doc.ok).toBe(true);
+  });
+
   it('returns ONLY the consolidated finals for the run, with a matching count', async () => {
     const doc = await buildHeadlessJson(db, RUN_ID, 'pr');
 
@@ -233,5 +238,23 @@ describe('buildHeadlessJson', () => {
     expect(doc.suggestions).toEqual([]);
     expect(doc.count).toBe(0);
     expect(doc.mode).toBe('pr');
+  });
+});
+
+describe('buildHeadlessErrorJson', () => {
+  it('builds the failure envelope with ok:false, mode, and the error message', () => {
+    const doc = buildHeadlessErrorJson({ mode: 'local', error: new Error('boom') });
+    expect(doc).toEqual({ ok: false, mode: 'local', error: { message: 'boom' } });
+  });
+
+  it('passes the mode through unchanged', () => {
+    const doc = buildHeadlessErrorJson({ mode: 'pr', error: new Error('nope') });
+    expect(doc.mode).toBe('pr');
+  });
+
+  it('falls back to String(error) when there is no message', () => {
+    const doc = buildHeadlessErrorJson({ mode: 'pr', error: 'plain string failure' });
+    expect(doc.ok).toBe(false);
+    expect(doc.error.message).toBe('plain string failure');
   });
 });

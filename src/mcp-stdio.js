@@ -23,12 +23,37 @@ const logger = require('./utils/logger');
  * src/git/worktree.js). In both modes that call this function — MCP stdio (stdout
  * is JSON-RPC) and headless `--json` (stdout is the JSON document) — keeping that
  * child output off stdout is the correct, desired behavior.
+ *
+ * @param {Object} [opts]
+ * @param {boolean} [opts.quiet=false] - When true (headless `--json` without
+ *   `--debug`), *drop* progress narration entirely rather than relocating it to
+ *   stderr. A coding agent's shell tool captures stderr into its context window,
+ *   so relocated narration still costs tokens; quiet mode no-ops the ungated
+ *   `console.log/info` narration and puts the logger into quiet mode
+ *   (suppressing info/success/log/section). `console.warn`, `console.error`,
+ *   `logger.warn`, and `logger.error` still emit to stderr — quiet drops only
+ *   progress narration and never swallows warnings/errors.
  */
-function redirectConsoleToStderr() {
-  console.log = console.error;
-  console.info = console.error;
-  console.warn = console.error;
-  logger.setOutputStream(process.stderr);
+function redirectConsoleToStderr({ quiet = false } = {}) {
+  if (quiet) {
+    // Drop ungated narration; keep console.error real (→ stderr).
+    const noop = () => {};
+    console.log = noop;
+    console.info = noop;
+    // console.warn carries genuine diagnostics agents need (e.g. the
+    // --council/--model advisory, worktree-migration warnings) — route it to
+    // stderr rather than swallowing it. Quiet drops progress narration only.
+    console.warn = console.error;
+    // logger.warn writes to _stdout — point it at stderr so a warning during a
+    // run never corrupts the JSON document on real stdout.
+    logger.setOutputStream(process.stderr);
+    logger.setQuietEnabled(true);
+  } else {
+    console.log = console.error;
+    console.info = console.error;
+    console.warn = console.error;
+    logger.setOutputStream(process.stderr);
+  }
   // Process-level signal for raw process.stdout.write paths (see JSDoc above).
   process.env.PAIR_REVIEW_QUIET_STDOUT = '1';
 }
