@@ -1,5 +1,22 @@
 # Changelog
 
+## 3.9.0
+
+### Minor Changes
+
+- 236c20a: The default Claude analysis model is now the explicit `opus-4.8-xhigh` (Opus 4.8 at xhigh effort), with `opus` retained as a convenience alias; Opus 4.7 xhigh remains available as the standalone `opus-4.7-xhigh` model id. The Fable model's canonical id is likewise now `fable-5-xhigh`, with `fable` retained as a convenience alias.
+
+  Provider config selectors (`default_model`, `disabled_models`, and `models` overrides) now match a model by its canonical id OR any of its aliases, so legacy config values naming `opus` or `fable` keep working — a `default_model` or `models` override resolves to the canonical model, and a `disabled_models` entry naming an alias hides the canonical model. Alias-keyed selectors are canonicalized to the built-in id at config-load time, so an alias-keyed `models` override now actually applies at runtime (its `cli_model`/`env`/`extra_args` are no longer silently dropped when the CLI command is built), and an alias-named `default_model` reaches the frontend as the canonical id its model picker can select. This also fixes a latent bug where the bulk-analysis-config server-side guard matched models by id only, silently coercing a valid model alias (e.g. `opus`) to the provider default; aliases are now recognized and preserved.
+
+- c6685a6: Add a headless, analysis-only review mode for scripts and AI coding agents. `--headless` runs an AI analysis (single provider or council), stores the results in the local database as usual, reports them, and exits — without starting the server, opening a browser, or posting to GitHub. It implies analysis (no `--ai` needed) and works with a `<PR-number-or-URL>` or with `--local`. A successful analysis exits `0` regardless of how many findings it surfaces; non-zero is reserved for operational errors.
+
+  `--json` (only valid with `--headless`) emits the completed run plus its consolidated final suggestions as a single JSON document on a clean stdout, with all logs redirected to stderr, so agents can parse it directly. `--instructions "<text>"` adds per-run custom instructions for the analysis; `--instructions-file <path>` reads them from a file instead (5000-character cap, mutually exclusive with `--instructions`). Instructions apply to every mode that runs analysis — the headless and submit modes consume them directly, and the interactive `--ai`/`--council` modes carry them into the browser-triggered analysis. Passing `--instructions` without an analysis mode is now rejected with a clear error instead of being silently dropped.
+
+  Also wires the repository's configured default review config into resolution: when neither `--council` nor `--model` is given, pair-review now uses `repo_settings.default_council_id` (a saved council) if set, otherwise the repo's `default_provider`/`default_model`, otherwise the global config default. This applies to `--headless` and to the web UI's default **Analyze** action, so an interactive analysis with no explicit pick honors a repo's default council too.
+
+- 1ef2e45: Make `--headless --json` an agent-friendly contract. stderr is now quiet by default in this mode (only warnings and errors, not progress narration) since coding agents capture stderr into their context — add `--debug`/`-d` to restore verbose logging. Failures now emit a structured `{ "ok": false, "error": { "message": … } }` envelope on stdout (with a non-zero exit) instead of leaving stdout empty, and the success document gains an `ok: true` field, so a consumer parses one stream and branches on `ok`.
+- bb4f3ff: Add provider-level `default_model` and `disabled_models` config options. Set `providers.<id>.default_model` to choose a provider's default model (preferred over the now-deprecated per-model `default: true` flag), and `providers.<id>.disabled_models` to hide specific built-in or custom model IDs from the picker.
+
 ## 3.8.0
 
 ### Minor Changes
