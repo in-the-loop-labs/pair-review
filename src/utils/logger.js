@@ -30,6 +30,7 @@ class AILogger {
     this.enabled = true;
     this.debugEnabled = false;
     this.streamDebugEnabled = false;
+    this.quietEnabled = false;
     this._stdout = process.stdout;
   }
 
@@ -75,6 +76,26 @@ class AILogger {
   }
 
   /**
+   * Enable or disable quiet mode.
+   * Quiet suppresses chatty progress output (info/success/log/section) while
+   * still allowing warn and error through. Used in headless --json mode (the
+   * machine-readable sink for coding agents) so stderr carries only genuine
+   * warnings and errors, not progress narration.
+   * @param {boolean} enabled - Whether quiet mode should be enabled
+   */
+  setQuietEnabled(enabled) {
+    this.quietEnabled = enabled;
+  }
+
+  /**
+   * Check if quiet mode is enabled
+   * @returns {boolean} Whether quiet mode is enabled
+   */
+  isQuietEnabled() {
+    return this.quietEnabled;
+  }
+
+  /**
    * Log debug message (only shown when debug is enabled)
    */
   debug(message) {
@@ -105,7 +126,7 @@ class AILogger {
    * Log AI analysis info
    */
   info(message) {
-    if (!this.enabled) return;
+    if (!this.enabled || this.quietEnabled) return;
     const timestamp = new Date().toISOString().split('T')[1].split('.')[0];
     this._stdout.write(
       `${COLORS.cyan}[${timestamp}]${COLORS.reset} ` +
@@ -118,7 +139,7 @@ class AILogger {
    * Log AI analysis success
    */
   success(message) {
-    if (!this.enabled) return;
+    if (!this.enabled || this.quietEnabled) return;
     const timestamp = new Date().toISOString().split('T')[1].split('.')[0];
     this._stdout.write(
       `${COLORS.cyan}[${timestamp}]${COLORS.reset} ` +
@@ -167,7 +188,7 @@ class AILogger {
    * Log with custom prefix
    */
   log(prefix, message, color = 'blue') {
-    if (!this.enabled) return;
+    if (!this.enabled || this.quietEnabled) return;
     const timestamp = new Date().toISOString().split('T')[1].split('.')[0];
     const prefixColor = COLORS[color] || COLORS.blue;
     this._stdout.write(
@@ -181,7 +202,7 @@ class AILogger {
    * Start a progress section
    */
   section(title) {
-    if (!this.enabled) return;
+    if (!this.enabled || this.quietEnabled) return;
     this._stdout.write(
       `\n${COLORS.bright}${COLORS.cyan}${'─'.repeat(60)}${COLORS.reset}\n` +
       `${COLORS.bright}${COLORS.cyan}▶ ${title}${COLORS.reset}\n` +

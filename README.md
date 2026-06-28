@@ -194,7 +194,7 @@ pair-review --local [path]
 | `--ai` | Automatically run AI analysis when the review loads |
 | `--ai-draft` | Run AI analysis and save suggestions as a draft review on GitHub |
 | `--headless` | Run AI analysis, store it in the local database, report the results, then exit. No server, no browser, no GitHub post. Implies analysis (does not require `--ai`). Works with a `<PR-number-or-URL>` or with `--local`. See [Headless analysis mode](#headless-analysis-mode). |
-| `--json` | With `--headless`, emit the completed run plus its consolidated suggestions as a single JSON document on a clean stdout (all logs go to stderr). Only valid together with `--headless`. |
+| `--json` | With `--headless`, emit the completed run plus its consolidated suggestions as a single JSON document on a clean stdout. For any outcome of the headless run (success, zero findings, or an error raised while running it), stdout carries a JSON document with an `ok` field; failures emit an `{ "ok": false, "error": … }` envelope on stdout with a non-zero exit. (Pre-flight config/startup failures are the exception: they exit non-zero with a stderr message and no JSON envelope — branch on the exit code first.) stderr is quiet by default (only warnings/errors) — add `--debug` for verbose progress logs. Only valid together with `--headless`. |
 | `--instructions <text>` | Per-run custom instructions for this analysis. Applies to any mode that runs analysis — `--headless`, `--ai-draft`, `--ai-review` (consumed directly), and `--ai`/`--council` (carried into the browser-triggered analysis). Rejected with a clear error if no analysis mode is selected, so it is never silently dropped. Default: none. |
 | `--instructions-file <path>` | Read per-run custom instructions from a file (5000-character cap). Mutually exclusive with `--instructions`. |
 | `--council <handle>` | Run analysis with a saved multi-voice council. Implies analysis. The handle resolves by council name, name-slug, id (prefix), or a partial name fragment (resolving when it matches a single council, otherwise listing the candidates). When set, `--model` is ignored (council voices use their own per-voice models). Works in headless PR (`--ai-draft`/`--ai-review`/`--headless`), interactive PR (`--ai`), and local (`--local --ai`) modes. |
@@ -265,19 +265,25 @@ Non-zero exit is reserved for operational errors — invalid flags, an unreadabl
 `--instructions-file`, or an analysis failure.
 
 **Machine-readable output (`--json`):** add `--json` to emit the completed run
-plus its consolidated final suggestions as a single JSON document on stdout. In
-this mode all logs are redirected to stderr, so stdout is a clean, parseable
-document suitable for scripting and AI coding agents:
+plus its consolidated final suggestions as a single JSON document on stdout, so
+stdout is a clean, parseable document suitable for scripting and AI coding
+agents:
 
 ```bash
 pair-review --local --headless --json | jq '.suggestions | length'
 ```
+
+Because this mode is consumed mostly by coding agents — whose shell tools capture
+stderr alongside stdout — **stderr is quiet by default**: only genuine warnings
+and errors are emitted, not progress narration. Add `--debug` to restore the full
+verbose log stream on stderr when diagnosing a run.
 
 The JSON document has this shape (fields reflect the stored run and the
 consolidated suggestion layer the app shows by default):
 
 ```jsonc
 {
+  "ok": true,                 // false on failure (see below)
   "mode": "local",            // "pr" or "local"
   "run": {
     "id": "…",                 // analysis run id
@@ -324,6 +330,25 @@ consolidated suggestion layer the app shows by default):
 }
 ```
 
+**On failure** (invalid flags, an unreadable `--instructions-file`, or an
+analysis error raised while running the headless flow) `--json` emits a JSON
+document on stdout — a compact failure envelope — and the exit code is non-zero,
+so a consumer parses one stream and branches on `ok`:
+
+```jsonc
+{
+  "ok": false,
+  "mode": "local",            // "pr" or "local"
+  "error": { "message": "…" }
+}
+```
+
+The envelope covers errors raised once the headless run is under way. A fatal
+*pre-flight* failure — an unreadable or malformed `~/.pair-review/config.json`, an
+unwritable config directory, or an invalid port — exits non-zero with a message
+on **stderr** and does **not** emit a JSON envelope on stdout. Branch on the exit
+code first (as the example below does), then parse stdout.
+
 **Agent workflow.** A coding agent can run a headless analysis against its own
 uncommitted work, parse the JSON, and act on the suggestions:
 
@@ -332,17 +357,24 @@ result=$(pair-review --local --headless --json \
   --council security-review \
   --instructions "Review the changes I just made for security issues.")
 
+# Bail out on failure: non-zero exit, and `ok` is false in the JSON envelope.
+if [ $? -ne 0 ] || [ "$(echo "$result" | jq -r '.ok')" != "true" ]; then
+  echo "analysis failed: $(echo "$result" | jq -r '.error.message')" >&2
+  exit 1
+fi
+
 # Act on high-severity findings
 echo "$result" | jq -r '.suggestions[]
   | select(.severity == "high")
   | "\(.file):\(.line_start) [\(.type)] \(.title)"'
-
-# Exit code 0 = analysis ran (any number of findings); non-zero = operational error
 ```
 
-Because `--json` keeps stdout clean and exit `0` means "analysis ran," the agent
-can branch on `count`/`severity` rather than on the exit code, reserving non-zero
-handling for genuine failures.
+Once the run starts, `--json` produces a JSON document on stdout for any outcome
+— `{ "ok": true, … }` on success (any number of findings, including zero) and
+`{ "ok": false, … }` with a non-zero exit on an error raised while running it —
+so the agent reads exactly one stream and branches on `ok`. Because a pre-flight
+config/startup failure is the one case that exits without a JSON envelope,
+checking the exit code first (as above) covers every outcome.
 
 ## Configuration
 

@@ -10,12 +10,14 @@ describe('redirectConsoleToStderr', () => {
   let origInfo;
   let origWarn;
   let origLoggerStdout;
+  let origQuiet;
 
   beforeEach(() => {
     origLog = console.log;
     origInfo = console.info;
     origWarn = console.warn;
     origLoggerStdout = logger._stdout;
+    origQuiet = logger.quietEnabled;
   });
 
   afterEach(() => {
@@ -23,26 +25,64 @@ describe('redirectConsoleToStderr', () => {
     console.info = origInfo;
     console.warn = origWarn;
     logger._stdout = origLoggerStdout;
+    logger.quietEnabled = origQuiet;
   });
 
-  it('should redirect console.log to console.error', () => {
-    redirectConsoleToStderr();
-    expect(console.log).toBe(console.error);
+  describe('default (non-quiet) mode — relocates output to stderr', () => {
+    it('should redirect console.log to console.error', () => {
+      redirectConsoleToStderr();
+      expect(console.log).toBe(console.error);
+    });
+
+    it('should redirect console.info to console.error', () => {
+      redirectConsoleToStderr();
+      expect(console.info).toBe(console.error);
+    });
+
+    it('should redirect console.warn to console.error', () => {
+      redirectConsoleToStderr();
+      expect(console.warn).toBe(console.error);
+    });
+
+    it('should set logger._stdout to process.stderr', () => {
+      redirectConsoleToStderr();
+      expect(logger._stdout).toBe(process.stderr);
+    });
+
+    it('should NOT put the logger into quiet mode', () => {
+      logger.quietEnabled = false;
+      redirectConsoleToStderr();
+      expect(logger.quietEnabled).toBe(false);
+    });
   });
 
-  it('should redirect console.info to console.error', () => {
-    redirectConsoleToStderr();
-    expect(console.info).toBe(console.error);
-  });
+  describe('quiet mode — drops narration, keeps errors', () => {
+    it('drops console.log/info but preserves console.warn', () => {
+      redirectConsoleToStderr({ quiet: true });
+      // log/info are progress narration — no-op'd (not relocated to error).
+      expect(console.log).not.toBe(console.error);
+      expect(console.info).not.toBe(console.error);
+      // warn carries genuine diagnostics — preserved and routed to stderr.
+      expect(console.warn).toBe(console.error);
+      // Dropped narration must not throw and must produce no output.
+      expect(() => console.log('dropped')).not.toThrow();
+    });
 
-  it('should redirect console.warn to console.error', () => {
-    redirectConsoleToStderr();
-    expect(console.warn).toBe(console.error);
-  });
+    it('should keep console.error intact', () => {
+      const before = console.error;
+      redirectConsoleToStderr({ quiet: true });
+      expect(console.error).toBe(before);
+    });
 
-  it('should set logger._stdout to process.stderr', () => {
-    redirectConsoleToStderr();
-    expect(logger._stdout).toBe(process.stderr);
+    it('should put the logger into quiet mode', () => {
+      redirectConsoleToStderr({ quiet: true });
+      expect(logger.quietEnabled).toBe(true);
+    });
+
+    it('should still point logger output at stderr so logger.warn never hits stdout', () => {
+      redirectConsoleToStderr({ quiet: true });
+      expect(logger._stdout).toBe(process.stderr);
+    });
   });
 });
 
