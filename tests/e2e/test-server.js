@@ -50,6 +50,7 @@ const mockAISuggestions = [
       'Using `const` communicates immutability intent to other developers.',
       'This is a minor readability improvement with no behavioral change.'
     ],
+    severity: 'minor',
     status: 'active',
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString()
@@ -393,8 +394,8 @@ async function startTestServer(port) {
       const insertStmt = db.prepare(`
         INSERT INTO comments (
           review_id, source, ai_run_id, ai_level, file, line_start, line_end,
-          type, title, body, reasoning, status, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          type, title, body, reasoning, severity, status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       for (const suggestion of mockAISuggestions) {
         insertStmt.run(
@@ -409,6 +410,7 @@ async function startTestServer(port) {
           suggestion.title,
           suggestion.body,
           suggestion.reasoning ? JSON.stringify(suggestion.reasoning) : null,
+          suggestion.severity || null,
           suggestion.status,
           now,
           now
@@ -515,7 +517,7 @@ async function startTestServer(port) {
       const rows = db.prepare(`
         SELECT id, source, author, ai_run_id, ai_level, ai_confidence,
                file, line_start, line_end, side, type, title, body,
-               reasoning, status, is_file_level, created_at, updated_at
+               reasoning, severity, status, is_file_level, created_at, updated_at
         FROM comments
         WHERE review_id = ? AND source = 'ai'
           AND (ai_level IS NULL)
