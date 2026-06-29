@@ -6939,66 +6939,6 @@ body:not([data-theme="dark"]) .theme-icon-light {
   border-color: var(--color-border-secondary);
 }
 
-/* ============================================
-   Analysis Progress Dots
-   ============================================ */
-
-.analysis-progress-dots {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-right: 8px;
-}
-
-.progress-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  border: 1.5px solid var(--color-accent-ai);
-  background: transparent;
-  transition: all 0.3s ease;
-}
-
-.progress-dot.active {
-  animation: pulse-dot 1.2s ease-in-out infinite;
-}
-
-.progress-dot.completed {
-  background: var(--color-accent-ai);
-  border-color: var(--color-accent-ai);
-}
-
-.progress-dot.error {
-  background: #ef4444;
-  border-color: #ef4444;
-}
-
-@keyframes pulse-dot {
-  0%, 100% {
-    transform: scale(1);
-    opacity: 1;
-  }
-  50% {
-    transform: scale(1.3);
-    opacity: 0.9;
-  }
-}
-
-/* Dark theme for progress dots */
-[data-theme="dark"] .progress-dot {
-  border-color: var(--color-accent-ai-dark);
-}
-
-[data-theme="dark"] .progress-dot.completed {
-  background: var(--color-accent-ai-dark);
-  border-color: var(--color-accent-ai-dark);
-}
-
-[data-theme="dark"] .progress-dot.error {
-  background: #f87171;
-  border-color: #f87171;
-}
-
 /* Magical Analyze Button - Amber AI CTA */
 #analyze-btn {
   background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
@@ -12957,6 +12897,18 @@ body.resizing * {
 .status-setting_up .stack-progress-status-icon {
   color: var(--color-text-secondary, #656d76);
   animation: pulse-dot 1.2s ease-in-out infinite;
+}
+
+/* Pulse used by the running/setting-up stack-progress status icons above. */
+@keyframes pulse-dot {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.3);
+    opacity: 0.9;
+  }
 }
 
 .status-pending .stack-progress-status-icon {
