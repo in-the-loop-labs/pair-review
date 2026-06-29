@@ -304,16 +304,6 @@ class CouncilProgressModal {
       }
     }
 
-    // Update toolbar progress dots
-    const manager = window.prManager || window.localManager;
-    if (manager?.updateProgressDot) {
-      for (let level = 1; level <= 4; level++) {
-        if (status.levels[level]) {
-          manager.updateProgressDot(level, status.levels[level].status);
-        }
-      }
-    }
-
     // Terminal states
     if (status.status === 'completed') {
       this._handleCompletion(status);
