@@ -63,13 +63,15 @@ describe('ClaudeProvider', () => {
     it('should return array of models with expected structure', () => {
       const models = ClaudeProvider.getModels();
       expect(Array.isArray(models)).toBe(true);
-      expect(models.length).toBe(10);
+      expect(models.length).toBe(12);
 
       // Check that we have haiku, sonnet, opus, and fable variants
       const modelIds = models.map(m => m.id);
       expect(modelIds).toContain('haiku');
       expect(modelIds).toContain('fable-5-xhigh');
       expect(modelIds).toContain('fable-5-high');
+      expect(modelIds).toContain('sonnet-5-xhigh');
+      expect(modelIds).toContain('sonnet-5-high');
       expect(modelIds).toContain('sonnet-4.6');
       expect(modelIds).toContain('opus-4.8-xhigh');
       expect(modelIds).toContain('opus-4.8-high');
@@ -148,6 +150,21 @@ describe('ClaudeProvider', () => {
         env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' },
         extra_args: ['--thinking', 'adaptive']
       });
+
+      // Sonnet 5 variants are balanced tier, pinned to claude-sonnet-5
+      const sonnet5XHigh = models.find(m => m.id === 'sonnet-5-xhigh');
+      expect(sonnet5XHigh).toMatchObject({
+        tier: 'balanced',
+        cli_model: 'claude-sonnet-5',
+        env: { CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' }
+      });
+      const sonnet5High = models.find(m => m.id === 'sonnet-5-high');
+      expect(sonnet5High).toMatchObject({
+        tier: 'balanced',
+        cli_model: 'claude-sonnet-5',
+        env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' }
+      });
+      expect(models.find(m => m.id === 'sonnet-4.6').tier).toBe('balanced');
     });
 
     it('should override base --thinking enabled with adaptive for fable', () => {
