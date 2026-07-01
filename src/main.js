@@ -196,7 +196,8 @@ OPTIONS:
                             Available models: opus, sonnet, haiku (Claude Code);
                             also: fable-5-xhigh, fable-5-high, opus-4.8-xhigh,
                                   opus-4.8-high, opus-4.7-xhigh, opus-4.7-high,
-                                  opus-4.6-high, opus-4.6-1m, sonnet-4.6
+                                  opus-4.6-high, opus-4.6-1m, sonnet-5-xhigh,
+                                  sonnet-5-high, sonnet-4.6
                             (opus is Opus 4.8 XHigh, the default)
                             or use provider-specific models with Gemini/Codex
     --council <handle>      Run analysis with a saved council (multi-voice). Handle is a

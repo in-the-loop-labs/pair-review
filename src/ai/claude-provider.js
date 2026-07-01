@@ -26,9 +26,9 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
  * in the constructor's base args; individual models can override this via extra_args
  * (e.g., Haiku uses adaptive thinking for efficiency).
  *
- * Effort support by model (newest CLIs): Fable 5 and Opus 4.8 / 4.7 support
- * low|medium|high|xhigh|max; Opus 4.6 & Sonnet 4.6 support low|medium|high|max
- * (no xhigh); Haiku has no effort levels.
+ * Effort support by model (newest CLIs): Fable 5, Opus 4.8 / 4.7, and Sonnet 5
+ * support low|medium|high|xhigh|max; Opus 4.6 & Sonnet 4.6 support
+ * low|medium|high|max (no xhigh); Haiku has no effort levels.
  */
 const CLAUDE_MODELS = [
   // ── Thorough tier ───────────────────────────────────────────────────────
@@ -120,14 +120,36 @@ const CLAUDE_MODELS = [
   },
   // ── Balanced tier ───────────────────────────────────────────────────────
   {
+    id: 'sonnet-5-xhigh',
+    cli_model: 'claude-sonnet-5',
+    env: { CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' },
+    name: 'Sonnet 5 XHigh',
+    tier: 'balanced',
+    tagline: 'Best Balance',
+    description: 'Sonnet 5 (newest) with extra-high effort — recommended for most reviews',
+    badge: 'Recommended',
+    badgeClass: 'badge-recommended'
+  },
+  {
+    id: 'sonnet-5-high',
+    cli_model: 'claude-sonnet-5',
+    env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' },
+    name: 'Sonnet 5 High',
+    tier: 'balanced',
+    tagline: 'Faster',
+    description: 'Sonnet 5 with high effort — quicker than XHigh, still sharp',
+    badge: 'Quick & Sharp',
+    badgeClass: 'badge-speed'
+  },
+  {
     id: 'sonnet-4.6',
     cli_model: 'claude-sonnet-4-6',
     name: 'Sonnet 4.6',
     tier: 'balanced',
-    tagline: 'Best Balance',
-    description: 'Recommended for most reviews',
-    badge: 'Standard',
-    badgeClass: 'badge-recommended'
+    tagline: 'Previous Gen',
+    description: 'Sonnet 4.6 — previous generation balanced model',
+    badge: 'Previous Gen',
+    badgeClass: 'badge-balanced'
   },
   {
     id: 'opus-4.6-1m',
