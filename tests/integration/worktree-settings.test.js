@@ -1,9 +1,13 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { createTestDatabase, closeTestDatabase } from '../utils/schema';
+import { listenOnLoopback, closeServer } from '../utils/loopback-server';
 
 const express = require('express');
 const request = require('supertest');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 // Mock GitWorktreeManager to prevent real git operations
 const { GitWorktreeManager } = require('../../src/git/worktree');
@@ -15,7 +19,13 @@ vi.spyOn(configModule, 'loadConfig').mockResolvedValue({
   config: { github_token: 'test-token', port: 7247, theme: 'light' },
   isFirstRun: false,
 });
-vi.spyOn(configModule, 'getConfigDir').mockReturnValue('/tmp/.pair-review-test');
+// Unique per test file so parallel forks never share a config dir on disk.
+const testConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pair-review-cfg-'));
+vi.spyOn(configModule, 'getConfigDir').mockReturnValue(testConfigDir);
+
+afterAll(() => {
+  fs.rmSync(testConfigDir, { recursive: true, force: true });
+});
 
 // Load the route under test after mocks are in place
 const worktreesRoutes = require('../../src/routes/worktrees');
@@ -42,6 +52,29 @@ function createApp(db, { config, poolLifecycle } = {}) {
   app.use('/', worktreesRoutes);
   return app;
 }
+
+/**
+ * Per-test servers created via startServer() are tracked here and closed in
+ * the file-level afterEach, so tests that build their own app don't leak
+ * listeners.
+ */
+const openServers = [];
+
+/**
+ * Bind an app to 127.0.0.1 and track the resulting server for automatic
+ * cleanup. Pass the returned server to supertest instead of the bare app.
+ */
+async function startServer(app) {
+  const server = await listenOnLoopback(app);
+  openServers.push(server);
+  return server;
+}
+
+afterEach(async () => {
+  for (const s of openServers.splice(0)) {
+    await closeServer(s);
+  }
+});
 
 function seedWorktree(db, { id, prNumber, repository = REPO, branch = 'feature', path = `/tmp/wt/${id}` }) {
   const now = new Date().toISOString();
@@ -77,7 +110,8 @@ describe('GET /api/repos/:owner/:repo/worktrees', () => {
 
   it('returns pool config when pool_size is configured', async () => {
     const app = createApp(db);
-    const res = await request(app).get('/api/repos/owner/repo/worktrees');
+    const server = await startServer(app);
+    const res = await request(server).get('/api/repos/owner/repo/worktrees');
 
     expect(res.status).toBe(200);
     expect(res.body.pool).toEqual({
@@ -95,7 +129,8 @@ describe('GET /api/repos/:owner/:repo/worktrees', () => {
       repos: { [REPO]: { pool_size: 0 } },
     };
     const app = createApp(db, { config });
-    const res = await request(app).get('/api/repos/owner/repo/worktrees');
+    const server = await startServer(app);
+    const res = await request(server).get('/api/repos/owner/repo/worktrees');
 
     expect(res.status).toBe(200);
     expect(res.body.pool.configured).toBe(false);
@@ -105,7 +140,8 @@ describe('GET /api/repos/:owner/:repo/worktrees', () => {
   it('returns pool config with configured=false when no repo config exists', async () => {
     const config = { github_token: 'test-token' };
     const app = createApp(db, { config });
-    const res = await request(app).get('/api/repos/owner/repo/worktrees');
+    const server = await startServer(app);
+    const res = await request(server).get('/api/repos/owner/repo/worktrees');
 
     expect(res.status).toBe(200);
     expect(res.body.pool.configured).toBe(false);
@@ -115,7 +151,8 @@ describe('GET /api/repos/:owner/:repo/worktrees', () => {
 
   it('returns empty worktrees array when none exist', async () => {
     const app = createApp(db);
-    const res = await request(app).get('/api/repos/owner/repo/worktrees');
+    const server = await startServer(app);
+    const res = await request(server).get('/api/repos/owner/repo/worktrees');
 
     expect(res.status).toBe(200);
     expect(res.body.worktrees).toEqual([]);
@@ -127,7 +164,8 @@ describe('GET /api/repos/:owner/:repo/worktrees', () => {
     seedWorktree(db, { id: 'wt-regular', prNumber: 2 });
 
     const app = createApp(db);
-    const res = await request(app).get('/api/repos/owner/repo/worktrees');
+    const server = await startServer(app);
+    const res = await request(server).get('/api/repos/owner/repo/worktrees');
 
     expect(res.status).toBe(200);
     expect(res.body.worktrees).toHaveLength(2);
@@ -156,7 +194,8 @@ describe('GET /api/repos/:owner/:repo/worktrees', () => {
     seedWorktree(db, { id: 'non-pool', prNumber: 30 });
 
     const app = createApp(db);
-    const res = await request(app).get('/api/repos/owner/repo/worktrees');
+    const server = await startServer(app);
+    const res = await request(server).get('/api/repos/owner/repo/worktrees');
 
     expect(res.status).toBe(200);
     expect(res.body.worktrees).toHaveLength(3);
@@ -178,7 +217,8 @@ describe('GET /api/repos/:owner/:repo/worktrees', () => {
     seedPoolEntry(db, { id: 'creating-1', status: 'creating', prNumber: null });
 
     const app = createApp(db);
-    const res = await request(app).get('/api/repos/owner/repo/worktrees');
+    const server = await startServer(app);
+    const res = await request(server).get('/api/repos/owner/repo/worktrees');
 
     expect(res.status).toBe(200);
     expect(res.body.worktrees).toHaveLength(1);
@@ -195,7 +235,8 @@ describe('GET /api/repos/:owner/:repo/worktrees', () => {
     seedPoolEntry(db, { id: 'p2', status: 'available', prNumber: 2 });
 
     const app = createApp(db);
-    const res = await request(app).get('/api/repos/owner/repo/worktrees');
+    const server = await startServer(app);
+    const res = await request(server).get('/api/repos/owner/repo/worktrees');
 
     expect(res.status).toBe(200);
     expect(res.body.pool.current_count).toBe(2);
@@ -205,7 +246,8 @@ describe('GET /api/repos/:owner/:repo/worktrees', () => {
     seedWorktree(db, { id: 'wt-1', prNumber: 1, path: '/nonexistent/path' });
 
     const app = createApp(db);
-    const res = await request(app).get('/api/repos/owner/repo/worktrees');
+    const server = await startServer(app);
+    const res = await request(server).get('/api/repos/owner/repo/worktrees');
 
     expect(res.status).toBe(200);
     expect(res.body.worktrees).toHaveLength(1);
@@ -233,7 +275,8 @@ describe('DELETE /api/repos/:owner/:repo/worktrees/:worktreeId', () => {
     seedWorktree(db, { id: 'wt-1', prNumber: 1 });
 
     const app = createApp(db);
-    const res = await request(app).delete('/api/repos/owner/repo/worktrees/wt-1');
+    const server = await startServer(app);
+    const res = await request(server).delete('/api/repos/owner/repo/worktrees/wt-1');
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
@@ -248,14 +291,16 @@ describe('DELETE /api/repos/:owner/:repo/worktrees/:worktreeId', () => {
     seedWorktree(db, { id: 'wt-1', prNumber: 1, path: '/tmp/wt/wt-1' });
 
     const app = createApp(db);
-    await request(app).delete('/api/repos/owner/repo/worktrees/wt-1');
+    const server = await startServer(app);
+    await request(server).delete('/api/repos/owner/repo/worktrees/wt-1');
 
     expect(GitWorktreeManager.prototype.cleanupWorktree).toHaveBeenCalledWith('/tmp/wt/wt-1');
   });
 
   it('returns 404 for unknown worktree ID (non-pool)', async () => {
     const app = createApp(db);
-    const res = await request(app).delete('/api/repos/owner/repo/worktrees/nonexistent');
+    const server = await startServer(app);
+    const res = await request(server).delete('/api/repos/owner/repo/worktrees/nonexistent');
 
     expect(res.status).toBe(404);
     expect(res.body.error).toContain('not found');
@@ -269,7 +314,8 @@ describe('DELETE /api/repos/:owner/:repo/worktrees/:worktreeId', () => {
     const poolLifecycle = { destroyPoolWorktree };
 
     const app = createApp(db, { poolLifecycle });
-    const res = await request(app).delete('/api/repos/owner/repo/worktrees/pool-wt');
+    const server = await startServer(app);
+    const res = await request(server).delete('/api/repos/owner/repo/worktrees/pool-wt');
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
@@ -290,7 +336,8 @@ describe('DELETE /api/repos/:owner/:repo/worktrees/:worktreeId', () => {
     const poolLifecycle = { destroyPoolWorktree };
 
     const app = createApp(db, { poolLifecycle });
-    await request(app).delete('/api/repos/owner/repo/worktrees/pool-wt');
+    const server = await startServer(app);
+    await request(server).delete('/api/repos/owner/repo/worktrees/pool-wt');
 
     expect(capturedOptions).toBeDefined();
     expect(typeof capturedOptions.cancelAnalyses).toBe('function');
@@ -302,7 +349,8 @@ describe('DELETE /api/repos/:owner/:repo/worktrees/:worktreeId', () => {
 
     // No poolLifecycle set on app
     const app = createApp(db);
-    const res = await request(app).delete('/api/repos/owner/repo/worktrees/pool-wt');
+    const server = await startServer(app);
+    const res = await request(server).delete('/api/repos/owner/repo/worktrees/pool-wt');
 
     expect(res.status).toBe(500);
     expect(res.body.error).toContain('Pool lifecycle not available');
@@ -332,7 +380,8 @@ describe('DELETE /api/repos/:owner/:repo/worktrees', () => {
     seedWorktree(db, { id: 'wt-other', prNumber: 3, repository: 'other/repo' });
 
     const app = createApp(db);
-    const res = await request(app).delete('/api/repos/owner/repo/worktrees');
+    const server = await startServer(app);
+    const res = await request(server).delete('/api/repos/owner/repo/worktrees');
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
@@ -351,7 +400,8 @@ describe('DELETE /api/repos/:owner/:repo/worktrees', () => {
 
   it('returns success with 0 deleted when no worktrees exist', async () => {
     const app = createApp(db);
-    const res = await request(app).delete('/api/repos/owner/repo/worktrees');
+    const server = await startServer(app);
+    const res = await request(server).delete('/api/repos/owner/repo/worktrees');
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
@@ -365,7 +415,8 @@ describe('DELETE /api/repos/:owner/:repo/worktrees', () => {
     seedWorktree(db, { id: 'wt-2', prNumber: 2 });
 
     const app = createApp(db);
-    const res = await request(app).delete('/api/repos/owner/repo/worktrees');
+    const server = await startServer(app);
+    const res = await request(server).delete('/api/repos/owner/repo/worktrees');
 
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty('deleted');
@@ -385,7 +436,8 @@ describe('DELETE /api/repos/:owner/:repo/worktrees', () => {
     const poolLifecycle = { destroyPoolWorktree };
 
     const app = createApp(db, { poolLifecycle });
-    const res = await request(app).delete('/api/repos/owner/repo/worktrees');
+    const server = await startServer(app);
+    const res = await request(server).delete('/api/repos/owner/repo/worktrees');
 
     expect(res.status).toBe(200);
     expect(res.body.deleted).toBe(2);
@@ -401,7 +453,8 @@ describe('DELETE /api/repos/:owner/:repo/worktrees', () => {
     const poolLifecycle = { destroyPoolWorktree };
 
     const app = createApp(db, { poolLifecycle });
-    const res = await request(app).delete('/api/repos/owner/repo/worktrees');
+    const server = await startServer(app);
+    const res = await request(server).delete('/api/repos/owner/repo/worktrees');
 
     expect(res.status).toBe(200);
     expect(res.body.deleted).toBe(1);

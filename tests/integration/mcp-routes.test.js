@@ -7,6 +7,7 @@ import os from 'os';
 import path from 'path';
 import request from 'supertest';
 import { createTestDatabase, closeTestDatabase } from '../utils/schema';
+import { listenOnLoopback, closeServer } from '../utils/loopback-server';
 
 const { run, ReviewRepository, CommentRepository, AnalysisRunRepository } = require('../../src/database.js');
 
@@ -49,8 +50,8 @@ function createTestApp(db) {
 /**
  * Send a JSON-RPC request to the MCP endpoint.
  */
-function mcpRequest(app, body) {
-  return request(app)
+function mcpRequest(server, body) {
+  return request(server)
     .post('/mcp')
     .set('Content-Type', 'application/json')
     .set('Accept', 'application/json, text/event-stream')
@@ -91,10 +92,12 @@ function extractResult(res) {
 describe('MCP Routes Integration', () => {
   let db;
   let app;
+  let server;
 
   beforeEach(async () => {
     db = createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
 
     // Seed test data
     const reviewRepo = new ReviewRepository(db);
@@ -135,12 +138,13 @@ describe('MCP Routes Integration', () => {
   });
 
   afterEach(async () => {
+    await closeServer(server);
     if (db) closeTestDatabase(db);
   });
 
   describe('POST /mcp - initialize', () => {
     it('should handle MCP initialize handshake', async () => {
-      const res = await mcpRequest(app, {
+      const res = await mcpRequest(server, {
         jsonrpc: '2.0',
         id: 1,
         method: 'initialize',
@@ -163,7 +167,7 @@ describe('MCP Routes Integration', () => {
 
   describe('POST /mcp - tools/list', () => {
     it('should return all registered tools', async () => {
-      const res = await mcpRequest(app, {
+      const res = await mcpRequest(server, {
         jsonrpc: '2.0',
         id: 2,
         method: 'tools/list',
@@ -188,7 +192,7 @@ describe('MCP Routes Integration', () => {
 
   describe('POST /mcp - tools/call', () => {
     it('should call get_user_comments and return user comments', async () => {
-      const res = await mcpRequest(app, {
+      const res = await mcpRequest(server, {
         jsonrpc: '2.0',
         id: 3,
         method: 'tools/call',
@@ -208,7 +212,7 @@ describe('MCP Routes Integration', () => {
     });
 
     it('should call get_ai_analysis_runs and return runs', async () => {
-      const res = await mcpRequest(app, {
+      const res = await mcpRequest(server, {
         jsonrpc: '2.0',
         id: 10,
         method: 'tools/call',
@@ -231,7 +235,7 @@ describe('MCP Routes Integration', () => {
     });
 
     it('should call get_ai_suggestions and return suggestions', async () => {
-      const res = await mcpRequest(app, {
+      const res = await mcpRequest(server, {
         jsonrpc: '2.0',
         id: 4,
         method: 'tools/call',
@@ -254,7 +258,7 @@ describe('MCP Routes Integration', () => {
     });
 
     it('should call get_ai_suggestions with runId filter', async () => {
-      const res = await mcpRequest(app, {
+      const res = await mcpRequest(server, {
         jsonrpc: '2.0',
         id: 11,
         method: 'tools/call',
@@ -274,7 +278,7 @@ describe('MCP Routes Integration', () => {
     });
 
     it('should return empty suggestions for nonexistent runId', async () => {
-      const res = await mcpRequest(app, {
+      const res = await mcpRequest(server, {
         jsonrpc: '2.0',
         id: 12,
         method: 'tools/call',
@@ -292,7 +296,7 @@ describe('MCP Routes Integration', () => {
     });
 
     it('should return error for missing review', async () => {
-      const res = await mcpRequest(app, {
+      const res = await mcpRequest(server, {
         jsonrpc: '2.0',
         id: 6,
         method: 'tools/call',
@@ -310,7 +314,7 @@ describe('MCP Routes Integration', () => {
     });
 
     it('should return error when no lookup params provided', async () => {
-      const res = await mcpRequest(app, {
+      const res = await mcpRequest(server, {
         jsonrpc: '2.0',
         id: 7,
         method: 'tools/call',
@@ -328,7 +332,7 @@ describe('MCP Routes Integration', () => {
     });
 
     it('should filter comments by file', async () => {
-      const res = await mcpRequest(app, {
+      const res = await mcpRequest(server, {
         jsonrpc: '2.0',
         id: 8,
         method: 'tools/call',
@@ -346,7 +350,6 @@ describe('MCP Routes Integration', () => {
 
     it('start_analysis (local) durably persists the diff to the local_diffs table', async () => {
       const tempRepo = createTempRepoWithChanges();
-      const headSha = execSync('git rev-parse HEAD', { cwd: tempRepo, encoding: 'utf8' }).trim();
 
       // The local branch launches the analyzer fire-and-forget AND calls
       // getLocalChangedFiles. Mock both on the prototype so no real provider
@@ -358,7 +361,8 @@ describe('MCP Routes Integration', () => {
         .mockResolvedValue({ suggestions: [], summary: null });
 
       try {
-        const res = await mcpRequest(app, {
+        const headSha = execSync('git rev-parse HEAD', { cwd: tempRepo, encoding: 'utf8' }).trim();
+        const res = await mcpRequest(server, {
           jsonrpc: '2.0',
           id: 20,
           method: 'tools/call',
@@ -392,7 +396,7 @@ describe('MCP Routes Integration', () => {
 
   describe('GET /mcp', () => {
     it('should return 405', async () => {
-      const res = await request(app).get('/mcp');
+      const res = await request(server).get('/mcp');
       expect(res.status).toBe(405);
       expect(res.body.error).toBeDefined();
     });
@@ -400,7 +404,7 @@ describe('MCP Routes Integration', () => {
 
   describe('DELETE /mcp', () => {
     it('should return 405', async () => {
-      const res = await request(app).delete('/mcp');
+      const res = await request(server).delete('/mcp');
       expect(res.status).toBe(405);
       expect(res.body.error).toBeDefined();
     });

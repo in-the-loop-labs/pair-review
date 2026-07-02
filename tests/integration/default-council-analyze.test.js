@@ -16,10 +16,14 @@
  * Covers BOTH PR mode and local mode (CLAUDE.md Local/PR parity).
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { createTestDatabase, closeTestDatabase } from '../utils/schema';
+import { listenOnLoopback, closeServer } from '../utils/loopback-server';
 
 // --- Module mocks (analysis routes depend on these but we don't exercise them) ---
 
@@ -61,7 +65,9 @@ const configModule = require('../../src/config');
 vi.spyOn(configModule, 'loadConfig').mockResolvedValue({
   github_token: 'test-token', port: 7247, theme: 'light'
 });
-vi.spyOn(configModule, 'getConfigDir').mockReturnValue('/tmp/.pair-review-test');
+// Unique per test file so parallel vitest forks never share a config dir
+const testConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pair-review-cfg-'));
+vi.spyOn(configModule, 'getConfigDir').mockReturnValue(testConfigDir);
 
 const { run } = require('../../src/database');
 const analysisRoutes = require('../../src/routes/analyses');
@@ -107,12 +113,14 @@ async function setRepoDefaultCouncil(db, repository, councilId) {
 describe('Repo default-council parity in plain Analyze routes', () => {
   let db;
   let app;
+  let server;
   let launchSpy;
   let analyzeSpy;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
     analyzerCalls.reset();
     // Stub the real Analyzer.analyzeLevel1 so the single-provider path is
     // observable (records provider/model from `this`) and never spawns a CLI.
@@ -128,11 +136,16 @@ describe('Repo default-council parity in plain Analyze routes', () => {
       .mockResolvedValue({ analysisId: 'council-analysis-id', runId: 'council-run-id' });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await closeServer(server);
     analyzeSpy.mockRestore();
     launchSpy.mockRestore();
     if (db) closeTestDatabase(db);
     vi.clearAllMocks();
+  });
+
+  afterAll(() => {
+    fs.rmSync(testConfigDir, { recursive: true, force: true });
   });
 
   // ===================== PR MODE =====================
@@ -149,7 +162,7 @@ describe('Repo default-council parity in plain Analyze routes', () => {
     });
 
     it('(a) repo WITHOUT default_council_id → runs single-provider, no council dispatch', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/pr/${owner}/${repo}/${prNumber}/analyses`)
         .send({});
 
@@ -166,7 +179,7 @@ describe('Repo default-council parity in plain Analyze routes', () => {
       const councilId = await seedCouncil(db);
       await setRepoDefaultCouncil(db, repository, councilId);
 
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/pr/${owner}/${repo}/${prNumber}/analyses`)
         .send({});
 
@@ -185,7 +198,7 @@ describe('Repo default-council parity in plain Analyze routes', () => {
       const councilId = await seedCouncil(db);
       await setRepoDefaultCouncil(db, repository, councilId);
 
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/pr/${owner}/${repo}/${prNumber}/analyses`)
         .send({ provider: 'gemini', model: 'pro' });
 
@@ -216,7 +229,7 @@ describe('Repo default-council parity in plain Analyze routes', () => {
     });
 
     it('(a) repo WITHOUT default_council_id → runs single-provider, no council dispatch', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/local/${reviewId}/analyses`)
         .send({});
 
@@ -231,7 +244,7 @@ describe('Repo default-council parity in plain Analyze routes', () => {
       const councilId = await seedCouncil(db, 'default-council-local');
       await setRepoDefaultCouncil(db, repository, councilId);
 
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/local/${reviewId}/analyses`)
         .send({});
 
@@ -249,7 +262,7 @@ describe('Repo default-council parity in plain Analyze routes', () => {
       const councilId = await seedCouncil(db, 'default-council-local-2');
       await setRepoDefaultCouncil(db, repository, councilId);
 
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/local/${reviewId}/analyses`)
         .send({ provider: 'gemini', model: 'pro' });
 

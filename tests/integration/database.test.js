@@ -1455,16 +1455,18 @@ describe('WorktreeRepository', () => {
         path: '/tmp/path'
       });
 
-      const originalTime = created.last_accessed_at;
-
-      // Wait a tiny bit to ensure timestamp changes
-      await new Promise(resolve => setTimeout(resolve, 10));
+      // Backdate the row so the fresh timestamp is guaranteed to differ — no sleep needed
+      const backdated = new Date(Date.now() - 60000).toISOString();
+      await run(db, `UPDATE worktrees SET last_accessed_at = ? WHERE id = ?`, [backdated, created.id]);
 
       const result = await worktreeRepo.updateLastAccessed(created.id);
       expect(result).toBe(true);
 
       const updated = await worktreeRepo.findById(created.id);
-      expect(updated.last_accessed_at).not.toBe(originalTime);
+      expect(updated.last_accessed_at).not.toBe(backdated);
+      expect(new Date(updated.last_accessed_at).getTime()).toBeGreaterThan(
+        new Date(backdated).getTime()
+      );
     });
   });
 
@@ -2021,10 +2023,13 @@ describe('RepoSettingsRepository', () => {
         await repoSettingsRepo.saveRepoSettings('owner/repo', {});
         await repoSettingsRepo.tryClaimFetch('owner/repo');
 
+        // Backdate the lease so the refreshed timestamp is guaranteed to be
+        // strictly greater — no sleep needed
+        const backdated = new Date(Date.now() - 60000).toISOString();
+        await run(db, `UPDATE repo_settings SET pool_fetch_started_at = ? WHERE repository = ?`, [backdated, 'owner/repo']);
+
         const rowBefore = await queryOne(db, 'SELECT pool_fetch_started_at FROM repo_settings WHERE repository = ?', ['owner/repo']);
 
-        // Small delay to ensure timestamps differ
-        await new Promise(resolve => setTimeout(resolve, 10));
         await repoSettingsRepo.refreshFetchLease('owner/repo');
 
         const rowAfter = await queryOne(db, 'SELECT pool_fetch_started_at FROM repo_settings WHERE repository = ?', ['owner/repo']);

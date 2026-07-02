@@ -21,6 +21,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import { createTestDatabase, closeTestDatabase } from '../../utils/schema';
+import { listenOnLoopback, closeServer } from '../../utils/loopback-server';
 
 // vi.mock doesn't work for CommonJS require() under the forks pool, so we use
 // vi.spyOn on the actual module exports. The trigger sites call
@@ -36,9 +37,10 @@ const { run } = require('../../../src/database');
 
 describe('kickOffSummaryJob trigger sites', () => {
   let app;
+  let server;
   let db;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = createTestDatabase();
 
     // Spy on local-review functions to prevent real git operations
@@ -71,9 +73,12 @@ describe('kickOffSummaryJob trigger sites', () => {
     const prRouter = require('../../../src/routes/pr');
     app.use(localRouter);
     app.use(prRouter);
+
+    server = await listenOnLoopback(app);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await closeServer(server);
     closeTestDatabase(db);
     localReviewDiffs.clear();
     vi.restoreAllMocks();
@@ -81,7 +86,7 @@ describe('kickOffSummaryJob trigger sites', () => {
 
   describe('POST /api/local/start', () => {
     it('calls kickOffSummaryJob with reviewId/diffText/worktreePath/db/config when summaries.enabled is true', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/local/start')
         .send({ path: '/tmp' });
 
@@ -103,7 +108,7 @@ describe('kickOffSummaryJob trigger sites', () => {
     it('still calls kickOffSummaryJob even when summaries.enabled is false (gating happens inside the orchestrator, not at the trigger)', async () => {
       app.set('config', { summaries: { enabled: false }, port: 7247 });
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/local/start')
         .send({ path: '/tmp' });
 
@@ -116,7 +121,7 @@ describe('kickOffSummaryJob trigger sites', () => {
     it('does not throw when kickOffSummaryJob returns null (optional-chain catch)', async () => {
       summaryGenerator.kickOffSummaryJob.mockReturnValue(null);
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/local/start')
         .send({ path: '/tmp' });
 
@@ -124,8 +129,8 @@ describe('kickOffSummaryJob trigger sites', () => {
     });
 
     it('is invoked twice across two POST calls; the trigger does no dedup itself (queue handles dedup)', async () => {
-      await request(app).post('/api/local/start').send({ path: '/tmp' });
-      await request(app).post('/api/local/start').send({ path: '/tmp' });
+      await request(server).post('/api/local/start').send({ path: '/tmp' });
+      await request(server).post('/api/local/start').send({ path: '/tmp' });
 
       expect(summaryGenerator.kickOffSummaryJob).toHaveBeenCalledTimes(2);
       const firstReviewId = summaryGenerator.kickOffSummaryJob.mock.calls[0][0].reviewId;
@@ -150,7 +155,7 @@ describe('kickOffSummaryJob trigger sites', () => {
         digest: 'd1'
       });
 
-      const res = await request(app).get(`/api/local/${sessionId}`);
+      const res = await request(server).get(`/api/local/${sessionId}`);
       expect(res.status).toBe(200);
 
       expect(summaryGenerator.kickOffSummaryJob).toHaveBeenCalledTimes(1);
@@ -177,7 +182,7 @@ describe('kickOffSummaryJob trigger sites', () => {
         digest: 'd1'
       });
 
-      const res = await request(app).get(`/api/local/${sessionId}`);
+      const res = await request(server).get(`/api/local/${sessionId}`);
       expect(res.status).toBe(200);
 
       const call = summaryGenerator.kickOffSummaryJob.mock.calls[0][0];
@@ -194,7 +199,7 @@ describe('kickOffSummaryJob trigger sites', () => {
       });
       // No saveLocalDiff call — DB has no row.
 
-      const res = await request(app).get(`/api/local/${sessionId}`);
+      const res = await request(server).get(`/api/local/${sessionId}`);
       expect(res.status).toBe(200);
 
       expect(summaryGenerator.kickOffSummaryJob).not.toHaveBeenCalled();
@@ -227,7 +232,7 @@ describe('kickOffSummaryJob trigger sites', () => {
       // Ensure no GitHub token so the pendingDraft branch is skipped
       app.set('config', { summaries: { enabled: true }, port: 7247 });
 
-      const res = await request(app).get('/api/pr/owner/repo/1');
+      const res = await request(server).get('/api/pr/owner/repo/1');
       expect(res.status).toBe(200);
 
       expect(summaryGenerator.kickOffSummaryJob).toHaveBeenCalledTimes(1);

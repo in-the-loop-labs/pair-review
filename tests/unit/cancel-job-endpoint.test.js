@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import { createTestDatabase, closeTestDatabase } from '../utils/schema';
+import { listenOnLoopback, closeServer } from '../utils/loopback-server';
 
 const reviewsRouter = require('../../src/routes/reviews');
 const { handleJobCancel, CANCELLABLE_JOB_PREFIXES } = reviewsRouter;
@@ -124,6 +125,7 @@ describe('POST /api/reviews/:reviewId/jobs/:jobKey/cancel', () => {
  */
 describe('POST /api/local/:reviewId/jobs/:jobKey/cancel (local wrapper)', () => {
   let app;
+  let server;
   let db;
   let cancelSpy;
   let loggerErrorSpy;
@@ -134,7 +136,7 @@ describe('POST /api/local/:reviewId/jobs/:jobKey/cancel (local wrapper)', () => 
     ).run(reviewId);
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = createTestDatabase();
     cancelSpy = vi.spyOn(backgroundQueue, 'cancel').mockReturnValue({ cancelled: 0 });
     loggerErrorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
@@ -144,9 +146,12 @@ describe('POST /api/local/:reviewId/jobs/:jobKey/cancel (local wrapper)', () => 
     app.set('db', db);
     const localRouter = require('../../src/routes/local');
     app.use(localRouter);
+
+    server = await listenOnLoopback(app);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await closeServer(server);
     cancelSpy.mockRestore();
     loggerErrorSpy.mockRestore();
     closeTestDatabase(db);
@@ -154,28 +159,28 @@ describe('POST /api/local/:reviewId/jobs/:jobKey/cancel (local wrapper)', () => 
   });
 
   it('returns 400 on a non-numeric reviewId', async () => {
-    const res = await request(app).post('/api/local/abc/jobs/tour/cancel');
+    const res = await request(server).post('/api/local/abc/jobs/tour/cancel');
     expect(res.status).toBe(400);
     expect(res.body).toEqual({ error: 'Invalid review ID' });
     expect(cancelSpy).not.toHaveBeenCalled();
   });
 
   it('returns 400 on a negative reviewId', async () => {
-    const res = await request(app).post('/api/local/-5/jobs/tour/cancel');
+    const res = await request(server).post('/api/local/-5/jobs/tour/cancel');
     expect(res.status).toBe(400);
     expect(res.body).toEqual({ error: 'Invalid review ID' });
     expect(cancelSpy).not.toHaveBeenCalled();
   });
 
   it('returns 400 on a zero reviewId', async () => {
-    const res = await request(app).post('/api/local/0/jobs/tour/cancel');
+    const res = await request(server).post('/api/local/0/jobs/tour/cancel');
     expect(res.status).toBe(400);
     expect(res.body).toEqual({ error: 'Invalid review ID' });
     expect(cancelSpy).not.toHaveBeenCalled();
   });
 
   it('returns 404 when the review row is not in the DB', async () => {
-    const res = await request(app).post('/api/local/12345/jobs/tour/cancel');
+    const res = await request(server).post('/api/local/12345/jobs/tour/cancel');
     expect(res.status).toBe(404);
     expect(res.body).toEqual({ error: 'Review #12345 not found' });
     expect(cancelSpy).not.toHaveBeenCalled();
@@ -185,7 +190,7 @@ describe('POST /api/local/:reviewId/jobs/:jobKey/cancel (local wrapper)', () => 
     seedLocalReview(4242);
     cancelSpy.mockReturnValue({ cancelled: 1 });
 
-    const res = await request(app).post('/api/local/4242/jobs/tour/cancel');
+    const res = await request(server).post('/api/local/4242/jobs/tour/cancel');
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ cancelled: true, count: 1 });
     expect(cancelSpy).toHaveBeenCalledWith(4242, 'tour');
@@ -195,7 +200,7 @@ describe('POST /api/local/:reviewId/jobs/:jobKey/cancel (local wrapper)', () => 
     seedLocalReview(4243);
     cancelSpy.mockReturnValue({ cancelled: 3 });
 
-    const res = await request(app).post('/api/local/4243/jobs/summaries/cancel');
+    const res = await request(server).post('/api/local/4243/jobs/summaries/cancel');
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ cancelled: true, count: 3 });
     expect(cancelSpy).toHaveBeenCalledWith(4243, 'summaries');
@@ -204,7 +209,7 @@ describe('POST /api/local/:reviewId/jobs/:jobKey/cancel (local wrapper)', () => 
   it('delegates jobKey validation to handleJobCancel (400 for empty jobKey)', async () => {
     seedLocalReview(4244);
     // Express collapses empty path segments, so use a clearly invalid prefix.
-    const res = await request(app).post('/api/local/4244/jobs/analysis/cancel');
+    const res = await request(server).post('/api/local/4244/jobs/analysis/cancel');
     expect(res.status).toBe(400);
     expect(cancelSpy).not.toHaveBeenCalled();
   });
@@ -216,7 +221,7 @@ describe('POST /api/local/:reviewId/jobs/:jobKey/cancel (local wrapper)', () => 
       throw new Error('database is locked');
     });
 
-    const res = await request(app).post('/api/local/4245/jobs/tour/cancel');
+    const res = await request(server).post('/api/local/4245/jobs/tour/cancel');
     expect(res.status).toBe(500);
     expect(res.body).toEqual({ error: 'Failed to cancel background job' });
     expect(loggerErrorSpy).toHaveBeenCalledTimes(1);
@@ -231,7 +236,7 @@ describe('POST /api/local/:reviewId/jobs/:jobKey/cancel (local wrapper)', () => 
       throw new Error('queue exploded');
     });
 
-    const res = await request(app).post('/api/local/4246/jobs/tour/cancel');
+    const res = await request(server).post('/api/local/4246/jobs/tour/cancel');
     expect(res.status).toBe(500);
     expect(res.body).toEqual({ error: 'Failed to cancel background job' });
     expect(loggerErrorSpy).toHaveBeenCalledTimes(1);

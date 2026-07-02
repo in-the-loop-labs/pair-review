@@ -7,6 +7,7 @@ import os from 'os';
 import path from 'path';
 import request from 'supertest';
 import { createTestDatabase, closeTestDatabase } from '../utils/schema';
+import { listenOnLoopback, closeServer } from '../utils/loopback-server';
 
 const fsPromises = require('fs').promises;
 const { run } = require('../../src/database');
@@ -24,15 +25,18 @@ function createTestApp(db) {
 describe('GET /api/reviews/:reviewId/file-content/:fileName', () => {
   let db;
   let app;
+  let server;
   let readFileSpy;
 
   beforeEach(async () => {
     db = await createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
     readFileSpy = vi.spyOn(fsPromises, 'readFile');
   });
 
   afterEach(async () => {
+    await closeServer(server);
     readFileSpy?.mockRestore();
     vi.restoreAllMocks();
     if (db) {
@@ -92,7 +96,7 @@ describe('GET /api/reviews/:reviewId/file-content/:fileName', () => {
       vi.spyOn(GitWorktreeManager.prototype, 'getWorktreePath').mockResolvedValue(tempRepo);
       vi.spyOn(GitWorktreeManager.prototype, 'worktreeExists').mockResolvedValue(true);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${reviewResult.lastID}/file-content/${encodeURIComponent(relativeFile)}`);
 
       expect(response.status).toBe(200);
@@ -157,7 +161,7 @@ describe('GET /api/reviews/:reviewId/file-content/:fileName', () => {
       vi.spyOn(GitWorktreeManager.prototype, 'getWorktreePath').mockResolvedValue(tempRepo);
       vi.spyOn(GitWorktreeManager.prototype, 'worktreeExists').mockResolvedValue(true);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${reviewResult.lastID}/file-content/${encodeURIComponent(relativeFile)}`);
 
       expect(response.status).toBe(200);

@@ -993,8 +993,9 @@ describe('start_analysis tool', () => {
     const content = JSON.parse(result.content[0].text);
     expect(content.status).toBe('started');
 
-    // The mock resolves immediately, so wait a tick for the async completion handler to run
-    await new Promise(r => setTimeout(r, 50));
+    // The mock resolves immediately; wait deterministically for the async
+    // completion handler to run
+    await vi.waitFor(() => expect(activeAnalyses.get(content.analysisId).status).toBe('completed'));
 
     const status = activeAnalyses.get(content.analysisId);
     expect(status).toBeDefined();
@@ -1015,9 +1016,9 @@ describe('start_analysis tool', () => {
       repository: 'fail-repo',
     });
 
-    // Make analyzeLevel1 reject after a short delay so initial status is set up
+    // Make analyzeLevel1 reject on the next macrotask so initial status is set up
     analyzeLevel1Spy.mockImplementation(() => new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('analysis failed')), 10)
+      setImmediate(() => reject(new Error('analysis failed')))
     ));
 
     const result = await client.callTool({
@@ -1031,8 +1032,9 @@ describe('start_analysis tool', () => {
     const content = JSON.parse(result.content[0].text);
     expect(content.status).toBe('started');
 
-    // Wait for the rejection to propagate
-    await new Promise(r => setTimeout(r, 50));
+    // Wait deterministically for the rejection to propagate through the
+    // failure handler
+    await vi.waitFor(() => expect(activeAnalyses.get(content.analysisId).status).toBe('failed'));
 
     const status = activeAnalyses.get(content.analysisId);
     expect(status).toBeDefined();
@@ -1069,8 +1071,10 @@ describe('start_analysis tool', () => {
     const content = JSON.parse(result.content[0].text);
     expect(content.status).toBe('started');
 
-    // Wait for the rejection to propagate
-    await new Promise(r => setTimeout(r, 50));
+    // Wait for the fire-and-forget chain to settle: its .finally() deletes the
+    // reviewToAnalysisId entry, so this is a deterministic signal that the
+    // failure handler has already run (or declined to run, for cancellations)
+    await vi.waitFor(() => expect(reviewToAnalysisId.has(content.reviewId)).toBe(false));
 
     const status = activeAnalyses.get(content.analysisId);
     expect(status).toBeDefined();

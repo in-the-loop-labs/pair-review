@@ -10,6 +10,27 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const { GitHubClient, GitHubApiError, isComplexityError } = require('../../src/github/client');
 
+/**
+ * Run an operation that hits the fixed 1s retry delay inside
+ * addCommentsInBatches under fake timers so the delay elapses instantly.
+ * The factory creates the promise AFTER fake timers are installed; all
+ * pending timers are then flushed before the promise is awaited. A no-op
+ * rejection handler is attached before advancing timers so an early
+ * rejection is not reported as unhandled, real timers are always restored,
+ * and `expect(...).rejects` assertions still see the original rejection.
+ */
+async function runWithFakeRetryDelay(promiseFactory) {
+  vi.useFakeTimers();
+  try {
+    const promise = promiseFactory();
+    promise.catch(() => {});
+    await vi.runAllTimersAsync();
+    return await promise;
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
 describe('GitHubClient', () => {
   describe('createReviewGraphQL', () => {
     it('should format file-level comments with subjectType: FILE', async () => {
@@ -459,7 +480,9 @@ describe('GitHubClient', () => {
       }];
 
       await expect(
-        client.createReviewGraphQL('PR_node123', 'COMMENT', 'Body', comments, 'existing-review-id')
+        runWithFakeRetryDelay(() =>
+          client.createReviewGraphQL('PR_node123', 'COMMENT', 'Body', comments, 'existing-review-id')
+        )
       ).rejects.toThrow('Failed to add');
 
       // deletePendingReview should NOT be called for pre-existing reviews
@@ -492,7 +515,9 @@ describe('GitHubClient', () => {
       }];
 
       await expect(
-        client.createReviewGraphQL('PR_node123', 'COMMENT', 'Body', comments)
+        runWithFakeRetryDelay(() =>
+          client.createReviewGraphQL('PR_node123', 'COMMENT', 'Body', comments)
+        )
       ).rejects.toThrow('Failed to add');
 
       // deletePendingReview SHOULD be called for reviews we created.
@@ -911,7 +936,9 @@ describe('GitHubClient', () => {
         body: 'Comment'
       }];
 
-      const result = await client.addCommentsInBatches('PR_node123', 'review-123', comments, 25);
+      const result = await runWithFakeRetryDelay(() =>
+        client.addCommentsInBatches('PR_node123', 'review-123', comments, 25)
+      );
 
       expect(result.successCount).toBe(1);
       expect(result.failed).toBe(false);
@@ -950,7 +977,9 @@ describe('GitHubClient', () => {
         body: 'Comment'
       }];
 
-      const result = await client.addCommentsInBatches('PR_node123', 'review-123', comments, 25);
+      const result = await runWithFakeRetryDelay(() =>
+        client.addCommentsInBatches('PR_node123', 'review-123', comments, 25)
+      );
 
       expect(result.successCount).toBe(0);
       expect(result.failed).toBe(true);
@@ -991,7 +1020,9 @@ describe('GitHubClient', () => {
         { path: 'file2.js', line: 2, side: 'RIGHT', body: 'Comment 2' }
       ];
 
-      const result = await client.addCommentsInBatches('PR_node123', 'review-123', comments, 25);
+      const result = await runWithFakeRetryDelay(() =>
+        client.addCommentsInBatches('PR_node123', 'review-123', comments, 25)
+      );
 
       // Should succeed because all comments in error.data succeeded
       expect(result.successCount).toBe(2);
@@ -1020,7 +1051,9 @@ describe('GitHubClient', () => {
         { path: 'src/bad.js', line: 999, side: 'RIGHT', body: 'Bad comment' }
       ];
 
-      const result = await client.addCommentsInBatches('PR_node123', 'review-123', comments, 25);
+      const result = await runWithFakeRetryDelay(() =>
+        client.addCommentsInBatches('PR_node123', 'review-123', comments, 25)
+      );
 
       expect(result.failed).toBe(true);
       expect(result.successCount).toBe(1);
@@ -1038,7 +1071,9 @@ describe('GitHubClient', () => {
         { path: 'file2.js', line: 2, side: 'RIGHT', body: 'Comment 2' }
       ];
 
-      const result = await client.addCommentsInBatches('PR_node123', 'review-123', comments, 25);
+      const result = await runWithFakeRetryDelay(() =>
+        client.addCommentsInBatches('PR_node123', 'review-123', comments, 25)
+      );
 
       expect(result.failed).toBe(true);
       expect(result.successCount).toBe(0);
@@ -1103,7 +1138,9 @@ describe('GitHubClient', () => {
         { path: 'other-file.js', line: 100, side: 'RIGHT', body: 'Comment 2' }
       ];
 
-      const result = await client.addCommentsInBatches('PR_node123', 'review-123', comments, 25);
+      const result = await runWithFakeRetryDelay(() =>
+        client.addCommentsInBatches('PR_node123', 'review-123', comments, 25)
+      );
 
       expect(result.failed).toBe(true);
       expect(result.failedDetails).toHaveLength(2);
@@ -1236,7 +1273,9 @@ describe('GitHubClient', () => {
       const mockGraphql = vi.fn().mockRejectedValue(new Error('Mutation payload too large'));
       client.octokit.graphql = mockGraphql;
 
-      const result = await client.addCommentsInBatches('PR_node123', 'review-123', makeComments(1), 1);
+      const result = await runWithFakeRetryDelay(() =>
+        client.addCommentsInBatches('PR_node123', 'review-123', makeComments(1), 1)
+      );
 
       expect(result.failed).toBe(true);
       expect(result.successCount).toBe(0);
@@ -1249,7 +1288,9 @@ describe('GitHubClient', () => {
       const mockGraphql = vi.fn().mockRejectedValue(new Error('Server unavailable'));
       client.octokit.graphql = mockGraphql;
 
-      const result = await client.addCommentsInBatches('PR_node123', 'review-123', makeComments(4), 4);
+      const result = await runWithFakeRetryDelay(() =>
+        client.addCommentsInBatches('PR_node123', 'review-123', makeComments(4), 4)
+      );
 
       expect(result.failed).toBe(true);
       // Only 2 calls: initial + 1 retry (no re-batching)

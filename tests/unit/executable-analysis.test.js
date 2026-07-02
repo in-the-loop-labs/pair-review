@@ -668,8 +668,9 @@ describe('runExecutableAnalysis', () => {
 
     await runExecutableAnalysis(mockReq, mockRes, params, shared, callbacks);
 
-    // The async IIFE runs after res.json(), so wait a tick for createProvider to be called
-    await new Promise(resolve => setTimeout(resolve, 50));
+    // The async IIFE runs after res.json() (and awaits a real mkdtemp first),
+    // so wait deterministically for createProvider to be called
+    await vi.waitFor(() => expect(mockCreateProvider).toHaveBeenCalled());
 
     expect(mockCreateProvider).toHaveBeenCalledWith('test-exec', 'test-model', testOverrides);
   });

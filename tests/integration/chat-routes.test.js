@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import { createTestDatabase, closeTestDatabase } from '../utils/schema.js';
+import { listenOnLoopback, closeServer } from '../utils/loopback-server.js';
 
 // Mock logger
 vi.mock('../../src/utils/logger', () => ({
@@ -59,11 +60,12 @@ function createMockSessionManager(db) {
 
 describe('Chat Routes', () => {
   let app;
+  let server;
   let db;
   let mockManager;
   let broadcastSpy;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     broadcastSpy = vi.spyOn(ws, 'broadcast').mockImplementation(() => {});
 
     // Reset hook spies (don't restore — keeps wrappers intact for destructured refs)
@@ -89,9 +91,12 @@ describe('Chat Routes', () => {
     app.set('db', db);
 
     app.use(chatRouter);
+
+    server = await listenOnLoopback(app);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await closeServer(server);
     // Clean up any unsubscribers registered during tests
     _broadcastUnsubscribers.clear();
     broadcastSpy.mockRestore();
@@ -100,7 +105,7 @@ describe('Chat Routes', () => {
 
   describe('POST /api/chat/session', () => {
     it('should create a session', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session')
         .send({
           provider: 'pi',
@@ -123,7 +128,7 @@ describe('Chat Routes', () => {
     });
 
     it('should return 400 when provider is missing', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session')
         .send({ reviewId: 1 });
 
@@ -132,7 +137,7 @@ describe('Chat Routes', () => {
     });
 
     it('should return 400 when reviewId is missing', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session')
         .send({ provider: 'pi' });
 
@@ -141,7 +146,7 @@ describe('Chat Routes', () => {
     });
 
     it('should return 400 when reviewId is not a number', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session')
         .send({ provider: 'pi', reviewId: 'abc' });
 
@@ -149,7 +154,7 @@ describe('Chat Routes', () => {
     });
 
     it('should build system prompt from review when not provided', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session')
         .send({ provider: 'pi', reviewId: 1 });
 
@@ -164,7 +169,7 @@ describe('Chat Routes', () => {
     });
 
     it('should include port context in initialContext even when no AI suggestions exist', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session')
         .send({ provider: 'pi', reviewId: 1 });
 
@@ -196,7 +201,7 @@ describe('Chat Routes', () => {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(11, 1, 'ai', runId, null, 0.7, 'src/utils.js', 5, 5, 'improvement', 'Use const', 'Never reassigned', 'active', 0, 0);
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session')
         .send({ provider: 'pi', reviewId: 1 });
 
@@ -226,7 +231,7 @@ describe('Chat Routes', () => {
     });
 
     it('should not include context metadata when no AI suggestions exist (port is in initialContext but not in response)', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session')
         .send({ provider: 'pi', reviewId: 1 });
 
@@ -236,7 +241,7 @@ describe('Chat Routes', () => {
     });
 
     it('should register broadcast listeners on session creation', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session')
         .send({
           provider: 'pi',
@@ -254,7 +259,7 @@ describe('Chat Routes', () => {
     });
 
     it('should return 404 when review does not exist and no system prompt given', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session')
         .send({ provider: 'pi', reviewId: 999 });
 
@@ -265,7 +270,7 @@ describe('Chat Routes', () => {
     it('should include comment format in system prompt when config has comment_format', async () => {
       app.set('config', { comment_format: 'minimal' });
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session')
         .send({ provider: 'pi', reviewId: 1 });
 
@@ -278,7 +283,7 @@ describe('Chat Routes', () => {
     it('should use default comment format when config has no comment_format', async () => {
       app.set('config', {});
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session')
         .send({ provider: 'pi', reviewId: 1 });
 
@@ -297,7 +302,7 @@ describe('Chat Routes', () => {
         "INSERT INTO chat_sessions (id, review_id, provider, status) VALUES (1, 1, 'pi', 'active')"
       ).run();
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session/1/message')
         .send({ content: 'What does this code do?' });
 
@@ -316,7 +321,7 @@ describe('Chat Routes', () => {
         "INSERT INTO chat_sessions (id, review_id, provider, status) VALUES (1, 1, 'pi', 'active')"
       ).run();
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session/1/message')
         .send({
           content: 'Explain this bug',
@@ -336,7 +341,7 @@ describe('Chat Routes', () => {
       ).run();
 
       const ctxData = { type: 'bug', title: 'Null pointer', file: 'app.js', line_start: 42 };
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session/1/message')
         .send({
           content: 'Explain this bug',
@@ -357,7 +362,7 @@ describe('Chat Routes', () => {
         "INSERT INTO chat_sessions (id, review_id, provider, status) VALUES (1, 1, 'pi', 'active')"
       ).run();
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session/1/message')
         .send({
           content: 'test',
@@ -373,7 +378,7 @@ describe('Chat Routes', () => {
     });
 
     it('should return 404 for unknown session', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session/999/message')
         .send({ content: 'hello' });
 
@@ -386,7 +391,7 @@ describe('Chat Routes', () => {
         "INSERT INTO chat_sessions (id, review_id, provider, status) VALUES (2, 1, 'pi', 'active')"
       ).run();
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session/2/message')
         .send({});
 
@@ -407,7 +412,7 @@ describe('Chat Routes', () => {
       ];
       mockManager.getMessages.mockReturnValue(mockMessages);
 
-      const res = await request(app)
+      const res = await request(server)
         .get('/api/chat/session/1/messages');
 
       expect(res.status).toBe(200);
@@ -415,7 +420,7 @@ describe('Chat Routes', () => {
     });
 
     it('should return 404 for unknown session', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .get('/api/chat/session/999/messages');
 
       expect(res.status).toBe(404);
@@ -425,7 +430,7 @@ describe('Chat Routes', () => {
 
   describe('DELETE /api/chat/session/:id', () => {
     it('should close a session', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .delete('/api/chat/session/1');
 
       expect(res.status).toBe(200);
@@ -438,7 +443,7 @@ describe('Chat Routes', () => {
     it('should abort an active session', async () => {
       mockManager.isSessionActive.mockReturnValue(true);
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session/1/abort');
 
       expect(res.status).toBe(200);
@@ -449,7 +454,7 @@ describe('Chat Routes', () => {
     it('should return 404 for inactive session', async () => {
       mockManager.isSessionActive.mockReturnValue(false);
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session/999/abort');
 
       expect(res.status).toBe(404);
@@ -461,7 +466,7 @@ describe('Chat Routes', () => {
         throw new Error('abort failed');
       });
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session/1/abort');
 
       expect(res.status).toBe(500);
@@ -477,7 +482,7 @@ describe('Chat Routes', () => {
       mockManager.getSessionsWithMessageCount.mockReturnValue(mockSessions);
       mockManager.isSessionActive.mockReturnValue(false);
 
-      const res = await request(app)
+      const res = await request(server)
         .get('/api/review/1/chat/sessions');
 
       expect(res.status).toBe(200);
@@ -488,7 +493,7 @@ describe('Chat Routes', () => {
     it('should return empty array when no sessions exist', async () => {
       mockManager.getSessionsWithMessageCount.mockReturnValue([]);
 
-      const res = await request(app)
+      const res = await request(server)
         .get('/api/review/42/chat/sessions');
 
       expect(res.status).toBe(200);
@@ -516,7 +521,7 @@ describe('Chat Routes', () => {
       // After resume, sendMessage should work
       mockManager.resumeSession.mockResolvedValue({ id: 5, status: 'active' });
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session/5/message')
         .send({ content: 'hello after restart' });
 
@@ -552,7 +557,7 @@ describe('Chat Routes', () => {
         status: 'closed'
       });
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session/8/message')
         .send({ content: 'hello' });
 
@@ -573,7 +578,7 @@ describe('Chat Routes', () => {
         status: 'closed'
       });
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session/6/message')
         .send({ content: 'hello' });
 
@@ -595,7 +600,7 @@ describe('Chat Routes', () => {
       });
       mockManager.resumeSession.mockRejectedValue(new Error('Session file not found'));
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session/7/message')
         .send({ content: 'hello' });
 
@@ -608,7 +613,7 @@ describe('Chat Routes', () => {
     it('should return active if already active', async () => {
       mockManager.isSessionActive.mockReturnValue(true);
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session/1/resume');
 
       expect(res.status).toBe(200);
@@ -625,7 +630,7 @@ describe('Chat Routes', () => {
         status: 'closed'
       });
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session/1/resume');
 
       expect(res.status).toBe(200);
@@ -650,7 +655,7 @@ describe('Chat Routes', () => {
         status: 'closed'
       });
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session/1/resume');
 
       expect(res.status).toBe(200);
@@ -669,7 +674,7 @@ describe('Chat Routes', () => {
       mockManager.isSessionActive.mockReturnValue(false);
       mockManager.getSession.mockReturnValue(null);
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session/999/resume');
 
       expect(res.status).toBe(404);
@@ -684,7 +689,7 @@ describe('Chat Routes', () => {
         status: 'closed'
       });
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session/1/resume');
 
       expect(res.status).toBe(404);
@@ -700,7 +705,7 @@ describe('Chat Routes', () => {
         status: 'closed'
       });
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session/1/resume');
 
       expect(res.status).toBe(410);
@@ -717,7 +722,7 @@ describe('Chat Routes', () => {
       const contextData = { type: 'analysis', suggestionCount: 5, aiRunId: 'run-abc' };
       mockManager.saveContextMessage = vi.fn().mockReturnValue({ id: 200 });
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session/1/context')
         .send({ contextData });
 
@@ -727,7 +732,7 @@ describe('Chat Routes', () => {
     });
 
     it('should return 400 when contextData is missing', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session/1/context')
         .send({});
 
@@ -740,7 +745,7 @@ describe('Chat Routes', () => {
         throw new Error('Session 999 not found');
       });
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session/999/context')
         .send({ contextData: { type: 'analysis', suggestionCount: 1 } });
 
@@ -753,7 +758,7 @@ describe('Chat Routes', () => {
         throw new Error('database locked');
       });
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session/1/context')
         .send({ contextData: { type: 'analysis', suggestionCount: 1 } });
 
@@ -776,19 +781,17 @@ describe('Chat Routes', () => {
         return () => {};
       });
 
-      // Start on an ephemeral port so req.socket.localPort is available
-      const http = require('http');
-      const server = http.createServer(app);
-      await new Promise((resolve) => server.listen(0, resolve));
-      const port = server.address().port;
+      // Start on an ephemeral loopback port so req.socket.localPort is available
+      const captureServer = await listenOnLoopback(app);
+      const port = captureServer.address().port;
 
       try {
         // Create a session to trigger registerChatBroadcast
-        await request(server)
+        await request(captureServer)
           .post('/api/chat/session')
           .send({ provider: 'pi', reviewId: 1, systemPrompt: 'test' });
       } finally {
-        server.close();
+        await closeServer(captureServer);
       }
 
       // Collect broadcast events via the spy on ws.broadcast
@@ -1041,7 +1044,7 @@ describe('Chat Routes', () => {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(50, 1, 'ai', runId, null, 0.9, 'src/index.js', 1, 5, 'bug', 'Missing return', 'Function lacks return statement', 'active', 0, 0);
 
-      const res = await request(app)
+      const res = await request(server)
         .get(`/api/chat/analysis-context/${runId}?reviewId=1`);
 
       expect(res.status).toBe(200);
@@ -1064,7 +1067,7 @@ describe('Chat Routes', () => {
         VALUES (?, ?, ?, ?, ?, ?)
       `).run(runId, 1, 'claude', 'claude-sonnet-4', 'completed', 'single');
 
-      const res = await request(app)
+      const res = await request(server)
         .get(`/api/chat/analysis-context/${runId}?reviewId=1`);
 
       expect(res.status).toBe(200);
@@ -1088,7 +1091,7 @@ describe('Chat Routes', () => {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(60, 1, 'ai', runId, null, 0.8, 'src/raw.js', 1, 1, 'bug', 'Raw suggestion', 'Should be excluded', 'active', 0, 1);
 
-      const res = await request(app)
+      const res = await request(server)
         .get(`/api/chat/analysis-context/${runId}?reviewId=1`);
 
       expect(res.status).toBe(200);
@@ -1108,7 +1111,7 @@ describe('Chat Routes', () => {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(70, 1, 'ai', runId, 2, 0.8, 'src/level2.js', 1, 1, 'bug', 'Level 2 only', 'Should be excluded', 'active', 0, 0);
 
-      const res = await request(app)
+      const res = await request(server)
         .get(`/api/chat/analysis-context/${runId}?reviewId=1`);
 
       expect(res.status).toBe(200);
@@ -1116,7 +1119,7 @@ describe('Chat Routes', () => {
     });
 
     it('should return 400 when reviewId is missing', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .get('/api/chat/analysis-context/some-run-id');
 
       expect(res.status).toBe(400);
@@ -1124,7 +1127,7 @@ describe('Chat Routes', () => {
     });
 
     it('should return 400 when reviewId is not a number', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .get('/api/chat/analysis-context/some-run-id?reviewId=abc');
 
       expect(res.status).toBe(400);
@@ -1132,7 +1135,7 @@ describe('Chat Routes', () => {
     });
 
     it('should return run as null when run does not exist in analysis_runs', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .get('/api/chat/analysis-context/nonexistent-run?reviewId=1');
 
       expect(res.status).toBe(200);
@@ -1144,7 +1147,7 @@ describe('Chat Routes', () => {
 
   describe('GET /api.md', () => {
     it('should return rendered markdown with real values for valid reviewId', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .get('/api.md?reviewId=1');
 
       expect(res.status).toBe(200);
@@ -1155,7 +1158,7 @@ describe('Chat Routes', () => {
     });
 
     it('should return 400 when reviewId is missing', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .get('/api.md');
 
       expect(res.status).toBe(400);
@@ -1163,7 +1166,7 @@ describe('Chat Routes', () => {
     });
 
     it('should return 400 when reviewId is not a number', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .get('/api.md?reviewId=abc');
 
       expect(res.status).toBe(400);
@@ -1184,7 +1187,7 @@ describe('Chat Routes', () => {
       mockManager.onStatus.mockImplementation((_sid, cb) => { callbacks.status = cb; return () => {}; });
       mockManager.onToolUse.mockImplementation((_sid, cb) => { callbacks.toolUse = cb; return () => {}; });
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/chat/session')
         .send({ provider: 'pi', reviewId: 1, systemPrompt: 'test' });
 
@@ -1302,7 +1305,7 @@ describe('Chat Routes', () => {
       mockManager.getSessionsWithMessageCount.mockReturnValue(mockSessions);
       mockManager.isSessionActive.mockImplementation((id) => id === 1);
 
-      const res = await request(app)
+      const res = await request(server)
         .get('/api/review/1/chat/sessions');
 
       expect(res.status).toBe(200);
@@ -1332,16 +1335,19 @@ describe('Chat Routes', () => {
     /**
      * Helper: wait for the non-blocking fireChatHook promise chain to settle.
      * getCachedUser resolves in a microtask when no token is present, so a
-     * single macrotask tick is sufficient.
+     * few setImmediate rounds (each flushing the microtask queue) suffice —
+     * no real timer needed.
      */
-    function flushHooks() {
-      return new Promise(resolve => setTimeout(resolve, 10));
+    async function flushHooks() {
+      await new Promise(setImmediate);
+      await new Promise(setImmediate);
+      await new Promise(setImmediate);
     }
 
     it('fires chat.started hook on POST /api/chat/session', async () => {
       hookRunnerModule.hasHooks.mockImplementation(() => true);
 
-      await request(app)
+      await request(server)
         .post('/api/chat/session')
         .send({ provider: 'claude', model: 'opus', reviewId: 1, systemPrompt: 'test' });
 
@@ -1362,7 +1368,7 @@ describe('Chat Routes', () => {
     it('does not fire chat.started hook when no hooks configured', async () => {
       hookRunnerModule.hasHooks.mockImplementation(() => false);
 
-      await request(app)
+      await request(server)
         .post('/api/chat/session')
         .send({ provider: 'claude', model: 'opus', reviewId: 1, systemPrompt: 'test' });
 
@@ -1383,7 +1389,7 @@ describe('Chat Routes', () => {
       // Session must NOT be active in memory for resume to proceed
       mockManager.isSessionActive.mockReturnValue(false);
 
-      await request(app)
+      await request(server)
         .post('/api/chat/session/1/resume')
         .send();
 
@@ -1411,7 +1417,7 @@ describe('Chat Routes', () => {
       // Session is NOT active in memory → triggers auto-resume path
       mockManager.isSessionActive.mockReturnValue(false);
 
-      await request(app)
+      await request(server)
         .post('/api/chat/session/1/message')
         .send({ content: 'hello' });
 
@@ -1435,7 +1441,7 @@ describe('Chat Routes', () => {
         VALUES (2, 'my/repo', 'draft', 'local', '/tmp/code', 'feat-x', 'abc123')
       `).run();
 
-      await request(app)
+      await request(server)
         .post('/api/chat/session')
         .send({ provider: 'claude', model: 'opus', reviewId: 2, systemPrompt: 'test' });
 

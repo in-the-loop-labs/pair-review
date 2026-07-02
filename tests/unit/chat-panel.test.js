@@ -221,9 +221,13 @@ global.localStorage = {
 // Production code reads `window.localStorage` for persisted tabs.
 global.window.localStorage = global.localStorage;
 
+/** Shared unsubscribe fn returned by wsClient.subscribe (named so
+ * clearModuleLevelMocks can clear its call history between tests). */
+const wsSubscribeUnsub = vi.fn();
+
 global.wsClient = global.window.wsClient = {
   connect: vi.fn(),
-  subscribe: vi.fn().mockReturnValue(vi.fn()), // returns unsubscribe fn
+  subscribe: vi.fn().mockReturnValue(wsSubscribeUnsub), // returns unsubscribe fn
   close: vi.fn(),
   connected: true
 };
@@ -272,6 +276,54 @@ global.fetch = vi.fn();
 global.clearTimeout = vi.fn();
 global.setTimeout = vi.fn((cb) => { cb(); return 99; });
 global.requestAnimationFrame = vi.fn((cb) => { cb(); return 0; });
+
+/**
+ * Clear call history on the fixed set of module-level mocks that survive
+ * across tests. Do NOT use vi.clearAllMocks() here: every test's
+ * createChatPanel() creates ~700 new vi.fn()s that stay in vitest's mock
+ * registry forever, so clearAllMocks walks an ever-growing list —
+ * O(n^2) over the file (measured ~14ms/test at the start vs ~141ms/test
+ * at the end, ~37s total). Per-element mocks are rebuilt fresh each test
+ * and never need clearing.
+ *
+ * Uses .mockClear() (the exact per-mock equivalent of clearAllMocks —
+ * clears call history only, never implementations, so
+ * subscribe.mockReturnValue stays intact). Mocks are looked up at call
+ * time because some tests reassign them (getElementById, querySelectorAll,
+ * documentElement.getAttribute, ...).
+ */
+function clearModuleLevelMocks() {
+  const mocks = [
+    global.wsClient.connect,
+    global.wsClient.subscribe,
+    global.wsClient.close,
+    wsSubscribeUnsub,
+    global.localStorage.getItem,
+    global.localStorage.setItem,
+    global.localStorage.removeItem,
+    global.window.addEventListener,
+    global.window.removeEventListener,
+    global.document.createElement,
+    global.document.getElementById,
+    global.document.querySelector,
+    global.document.querySelectorAll,
+    global.document.addEventListener,
+    global.document.removeEventListener,
+    global.document.documentElement.style.setProperty,
+    global.document.documentElement.style.getPropertyValue,
+    global.document.documentElement.getAttribute,
+    global.document.body.classList.add,
+    global.document.body.classList.remove,
+    global.document.body.appendChild,
+    global.document.body.removeChild,
+    global.setTimeout,
+    global.clearTimeout,
+    global.requestAnimationFrame,
+  ];
+  for (const mock of mocks) {
+    if (mock && typeof mock.mockClear === 'function') mock.mockClear();
+  }
+}
 
 // Now require the production ChatPanel module
 const { ChatPanel, NEAR_BOTTOM_THRESHOLD } = require('../../public/js/components/ChatPanel.js');
@@ -416,9 +468,9 @@ describe('ChatPanel', () => {
   let chatPanel;
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    clearModuleLevelMocks();
     // Reset mockResolvedValueOnce/mockImplementation queues that leak across
-    // tests (clearAllMocks only clears CALL history, not implementations).
+    // tests (mockClear only clears CALL history, not implementations).
     global.fetch.mockReset();
     documentListeners = {};
     windowListeners = {};

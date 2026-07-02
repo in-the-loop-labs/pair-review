@@ -7,6 +7,7 @@ import os from 'os';
 import path from 'path';
 import request from 'supertest';
 import { createTestDatabase, closeTestDatabase } from '../utils/schema';
+import { listenOnLoopback, closeServer } from '../utils/loopback-server';
 
 /**
  * Create a throwaway git repo with an unstaged change. The council endpoint
@@ -45,9 +46,10 @@ const { RepoSettingsRepository } = require('../../src/database');
 
 describe('Local Sessions API', () => {
   let app;
+  let server;
   let db;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = createTestDatabase();
 
     // Spy on local-review functions to prevent real git operations
@@ -73,9 +75,12 @@ describe('Local Sessions API', () => {
     // Register the local routes
     const localRouter = require('../../src/routes/local');
     app.use(localRouter);
+
+    server = await listenOnLoopback(app);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await closeServer(server);
     closeTestDatabase(db);
     // Clear the in-memory diff cache between tests to prevent leakage
     localReviewDiffs.clear();
@@ -84,7 +89,7 @@ describe('Local Sessions API', () => {
 
   describe('GET /api/local/sessions', () => {
     it('should return empty sessions list when no local reviews exist', async () => {
-      const res = await request(app).get('/api/local/sessions');
+      const res = await request(server).get('/api/local/sessions');
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
       expect(res.body.sessions).toEqual([]);
@@ -113,7 +118,7 @@ describe('Local Sessions API', () => {
       await run(db, `UPDATE reviews SET updated_at = ? WHERE id = ?`,
         ['2025-01-02T00:00:00.000Z', id2]);
 
-      const res = await request(app).get('/api/local/sessions');
+      const res = await request(server).get('/api/local/sessions');
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
       expect(res.body.sessions).toHaveLength(2);
@@ -138,7 +143,7 @@ describe('Local Sessions API', () => {
         repository: 'owner/local-repo'
       });
 
-      const res = await request(app).get('/api/local/sessions');
+      const res = await request(server).get('/api/local/sessions');
       expect(res.status).toBe(200);
       expect(res.body.sessions).toHaveLength(1);
       expect(res.body.sessions[0].repository).toBe('owner/local-repo');
@@ -161,13 +166,13 @@ describe('Local Sessions API', () => {
       }
 
       // Request with limit=2 (ordered by updated_at DESC: repo3, repo2, repo1)
-      const res1 = await request(app).get('/api/local/sessions?limit=2');
+      const res1 = await request(server).get('/api/local/sessions?limit=2');
       expect(res1.body.sessions).toHaveLength(2);
       expect(res1.body.hasMore).toBe(true);
 
       // Request next page using cursor
       const cursor = res1.body.sessions[1].updated_at;
-      const res2 = await request(app).get(`/api/local/sessions?limit=2&before=${cursor}`);
+      const res2 = await request(server).get(`/api/local/sessions?limit=2&before=${cursor}`);
       expect(res2.body.sessions).toHaveLength(1);
       expect(res2.body.hasMore).toBe(false);
     });
@@ -182,7 +187,7 @@ describe('Local Sessions API', () => {
 
       await reviewRepo.updateReview(id, { name: 'My Feature Review' });
 
-      const res = await request(app).get('/api/local/sessions');
+      const res = await request(server).get('/api/local/sessions');
       expect(res.body.sessions[0].name).toBe('My Feature Review');
     });
   });
@@ -196,7 +201,7 @@ describe('Local Sessions API', () => {
         repository: 'owner/rename-repo'
       });
 
-      const res = await request(app)
+      const res = await request(server)
         .patch(`/api/local/${id}/name`)
         .send({ name: 'My Named Session' });
 
@@ -221,7 +226,7 @@ describe('Local Sessions API', () => {
       await reviewRepo.updateReview(id, { name: 'Some Name' });
 
       // Clear name
-      const res = await request(app)
+      const res = await request(server)
         .patch(`/api/local/${id}/name`)
         .send({ name: null });
 
@@ -238,7 +243,7 @@ describe('Local Sessions API', () => {
       });
 
       const longName = 'A'.repeat(300);
-      const res = await request(app)
+      const res = await request(server)
         .patch(`/api/local/${id}/name`)
         .send({ name: longName });
 
@@ -247,7 +252,7 @@ describe('Local Sessions API', () => {
     });
 
     it('should return 404 for non-existent review', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .patch('/api/local/9999/name')
         .send({ name: 'Test' });
 
@@ -255,7 +260,7 @@ describe('Local Sessions API', () => {
     });
 
     it('should return 400 for invalid review ID', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .patch('/api/local/abc/name')
         .send({ name: 'Test' });
 
@@ -265,7 +270,7 @@ describe('Local Sessions API', () => {
 
   describe('POST /api/local/start', () => {
     it('should return 400 when path is missing', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/local/start')
         .send({});
 
@@ -274,7 +279,7 @@ describe('Local Sessions API', () => {
     });
 
     it('should return 400 when path is empty string', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/local/start')
         .send({ path: '  ' });
 
@@ -283,7 +288,7 @@ describe('Local Sessions API', () => {
     });
 
     it('should return 400 immediately when path is a URL', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/local/start')
         .send({ path: 'https://github.com/owner/repo/pull/123' });
 
@@ -293,7 +298,7 @@ describe('Local Sessions API', () => {
     });
 
     it('should start a local review for a valid directory', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/local/start')
         .send({ path: '/tmp' });
 
@@ -324,7 +329,7 @@ describe('Local Sessions API', () => {
 
     it('should return 400 for non-existent path', async () => {
       // Use a path that definitely doesn't exist - the endpoint checks fs.stat first
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/local/start')
         .send({ path: '/nonexistent/path/that/does/not/exist/abc123xyz' });
 
@@ -426,7 +431,7 @@ describe('Local Sessions API', () => {
 
       await reviewRepo.updateReview(id, { name: 'Get Name Test' });
 
-      const res = await request(app).get(`/api/local/${id}`);
+      const res = await request(server).get(`/api/local/${id}`);
       expect(res.status).toBe(200);
       expect(res.body.name).toBe('Get Name Test');
     });
@@ -439,7 +444,7 @@ describe('Local Sessions API', () => {
         repository: 'owner/noname-repo'
       });
 
-      const res = await request(app).get(`/api/local/${id}`);
+      const res = await request(server).get(`/api/local/${id}`);
       expect(res.status).toBe(200);
       expect(res.body.name).toBeNull();
     });
@@ -454,7 +459,7 @@ describe('Local Sessions API', () => {
         repository: 'owner/delete-repo'
       });
 
-      const res = await request(app).delete(`/api/local/sessions/${id}`);
+      const res = await request(server).delete(`/api/local/sessions/${id}`);
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
       expect(res.body.reviewId).toBe(id);
@@ -465,19 +470,19 @@ describe('Local Sessions API', () => {
     });
 
     it('should return 404 for non-existent session', async () => {
-      const res = await request(app).delete('/api/local/sessions/9999');
+      const res = await request(server).delete('/api/local/sessions/9999');
       expect(res.status).toBe(404);
       expect(res.body.error).toMatch(/not found/i);
     });
 
     it('should return 400 for invalid review ID', async () => {
-      const res = await request(app).delete('/api/local/sessions/abc');
+      const res = await request(server).delete('/api/local/sessions/abc');
       expect(res.status).toBe(400);
       expect(res.body.error).toMatch(/invalid/i);
     });
 
     it('should return 400 for negative review ID', async () => {
-      const res = await request(app).delete('/api/local/sessions/-1');
+      const res = await request(server).delete('/api/local/sessions/-1');
       expect(res.status).toBe(400);
       expect(res.body.error).toMatch(/invalid/i);
     });
@@ -497,7 +502,7 @@ describe('Local Sessions API', () => {
         digest: 'somedigest'
       });
 
-      const res = await request(app).delete(`/api/local/sessions/${id}`);
+      const res = await request(server).delete(`/api/local/sessions/${id}`);
       expect(res.status).toBe(200);
 
       // In-memory cache should be cleared
@@ -518,7 +523,7 @@ describe('Local Sessions API', () => {
         digest: 'cascadedigest'
       });
 
-      const res = await request(app).delete(`/api/local/sessions/${id}`);
+      const res = await request(server).delete(`/api/local/sessions/${id}`);
       expect(res.status).toBe(200);
 
       // DB diff should be gone too (cascade)
@@ -536,7 +541,7 @@ describe('Local Sessions API', () => {
         repository: 'owner/scope-repo'
       });
 
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/set-scope`)
         .send({ scopeStart: 'staged', scopeEnd: 'untracked' });
 
@@ -559,7 +564,7 @@ describe('Local Sessions API', () => {
         repository: 'owner/bad-scope-repo'
       });
 
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/set-scope`)
         .send({ scopeStart: 'untracked', scopeEnd: 'staged' });
 
@@ -576,28 +581,28 @@ describe('Local Sessions API', () => {
       });
 
       // branch..branch (end < unstaged index)
-      let res = await request(app)
+      let res = await request(server)
         .post(`/api/local/${id}/set-scope`)
         .send({ scopeStart: 'branch', scopeEnd: 'branch' });
       expect(res.status).toBe(400);
       expect(res.body.error).toMatch(/invalid scope/i);
 
       // branch..staged (end < unstaged index)
-      res = await request(app)
+      res = await request(server)
         .post(`/api/local/${id}/set-scope`)
         .send({ scopeStart: 'branch', scopeEnd: 'staged' });
       expect(res.status).toBe(400);
       expect(res.body.error).toMatch(/invalid scope/i);
 
       // staged..staged (end < unstaged index)
-      res = await request(app)
+      res = await request(server)
         .post(`/api/local/${id}/set-scope`)
         .send({ scopeStart: 'staged', scopeEnd: 'staged' });
       expect(res.status).toBe(400);
       expect(res.body.error).toMatch(/invalid scope/i);
 
       // untracked..untracked (start > unstaged index)
-      res = await request(app)
+      res = await request(server)
         .post(`/api/local/${id}/set-scope`)
         .send({ scopeStart: 'untracked', scopeEnd: 'untracked' });
       expect(res.status).toBe(400);
@@ -612,7 +617,7 @@ describe('Local Sessions API', () => {
         repository: 'owner/miss-start-repo'
       });
 
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/set-scope`)
         .send({ scopeEnd: 'untracked' });
 
@@ -628,7 +633,7 @@ describe('Local Sessions API', () => {
         repository: 'owner/miss-end-repo'
       });
 
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/set-scope`)
         .send({ scopeStart: 'staged' });
 
@@ -652,7 +657,7 @@ describe('Local Sessions API', () => {
       });
 
       // set-scope should regenerate the diff and overwrite DB
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/set-scope`)
         .send({ scopeStart: 'staged', scopeEnd: 'untracked' });
 
@@ -671,7 +676,7 @@ describe('Local Sessions API', () => {
     });
 
     it('should return 404 for non-existent review', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/local/9999/set-scope')
         .send({ scopeStart: 'staged', scopeEnd: 'untracked' });
 
@@ -679,7 +684,7 @@ describe('Local Sessions API', () => {
     });
 
     it('should return 400 for invalid review ID', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/local/abc/set-scope')
         .send({ scopeStart: 'staged', scopeEnd: 'untracked' });
 
@@ -695,7 +700,7 @@ describe('Local Sessions API', () => {
         repository: 'owner/localmode-repo'
       });
 
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/set-scope`)
         .send({ scopeStart: 'staged', scopeEnd: 'untracked' });
 
@@ -714,7 +719,7 @@ describe('Local Sessions API', () => {
       // Mock findMergeBase to return a specific SHA for branch diff
       localReviewModule.findMergeBase.mockResolvedValue('abc123mergebase');
 
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/set-scope`)
         .send({ scopeStart: 'branch', scopeEnd: 'unstaged', baseBranch: 'main' });
 
@@ -747,7 +752,7 @@ describe('Local Sessions API', () => {
       localReviewModule.getCurrentBranch.mockResolvedValue('feature-branch');
       localReviewModule.findMergeBase.mockResolvedValue('abc123mergebase');
 
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/set-scope`)
         .send({ scopeStart: 'branch', scopeEnd: 'unstaged' });
 
@@ -774,7 +779,7 @@ describe('Local Sessions API', () => {
       localReviewModule.getCurrentBranch.mockResolvedValue('feature-branch');
       localReviewModule.findMergeBase.mockResolvedValue('abc123mergebase');
 
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/set-scope`)
         .send({ scopeStart: 'branch', scopeEnd: 'unstaged' });
 
@@ -795,7 +800,7 @@ describe('Local Sessions API', () => {
         repository: 'owner/pref-always-repo'
       });
 
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/branch-review-preference`)
         .send({ preference: 1 });
 
@@ -817,7 +822,7 @@ describe('Local Sessions API', () => {
         repository: 'owner/pref-never-repo'
       });
 
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/branch-review-preference`)
         .send({ preference: -1 });
 
@@ -838,7 +843,7 @@ describe('Local Sessions API', () => {
         repository: 'owner/pref-ask-repo'
       });
 
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/branch-review-preference`)
         .send({ preference: 0 });
 
@@ -855,7 +860,7 @@ describe('Local Sessions API', () => {
         repository: 'owner/pref-bad-repo'
       });
 
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/branch-review-preference`)
         .send({ preference: 42 });
 
@@ -871,7 +876,7 @@ describe('Local Sessions API', () => {
         repository: 'owner/pref-missing-repo'
       });
 
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/branch-review-preference`)
         .send({});
 
@@ -880,7 +885,7 @@ describe('Local Sessions API', () => {
     });
 
     it('should return 404 for non-existent review', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/local/9999/branch-review-preference')
         .send({ preference: 1 });
 
@@ -896,12 +901,12 @@ describe('Local Sessions API', () => {
       });
 
       // Create initial setting
-      await request(app)
+      await request(server)
         .post(`/api/local/${id}/branch-review-preference`)
         .send({ preference: 1 });
 
       // Update to a different value
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/branch-review-preference`)
         .send({ preference: -1 });
 
@@ -916,7 +921,7 @@ describe('Local Sessions API', () => {
 
   describe('DB persistence of scope columns', () => {
     it('should set local_scope_start and local_scope_end in database after POST /api/local/start', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/local/start')
         .send({ path: '/tmp' });
 
@@ -944,7 +949,7 @@ describe('Local Sessions API', () => {
       expect(beforeReview.local_scope_end).toBe('untracked');
 
       // Change scope
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/set-scope`)
         .send({ scopeStart: 'staged', scopeEnd: 'unstaged' });
 
@@ -965,7 +970,7 @@ describe('Local Sessions API', () => {
       });
 
       // First change: staged→untracked
-      await request(app)
+      await request(server)
         .post(`/api/local/${id}/set-scope`)
         .send({ scopeStart: 'staged', scopeEnd: 'untracked' });
 
@@ -974,7 +979,7 @@ describe('Local Sessions API', () => {
       expect(review.local_scope_end).toBe('untracked');
 
       // Second change: unstaged→unstaged
-      await request(app)
+      await request(server)
         .post(`/api/local/${id}/set-scope`)
         .send({ scopeStart: 'unstaged', scopeEnd: 'unstaged' });
 
@@ -993,7 +998,7 @@ describe('Local Sessions API', () => {
         repository: 'owner/scope-meta-repo'
       });
 
-      const res = await request(app).get(`/api/local/${id}`);
+      const res = await request(server).get(`/api/local/${id}`);
       expect(res.status).toBe(200);
       expect(res.body.scopeStart).toBe('unstaged');
       expect(res.body.scopeEnd).toBe('untracked');
@@ -1009,12 +1014,12 @@ describe('Local Sessions API', () => {
       });
 
       // Change scope
-      await request(app)
+      await request(server)
         .post(`/api/local/${id}/set-scope`)
         .send({ scopeStart: 'staged', scopeEnd: 'unstaged' });
 
       // Get metadata
-      const res = await request(app).get(`/api/local/${id}`);
+      const res = await request(server).get(`/api/local/${id}`);
       expect(res.status).toBe(200);
       expect(res.body.scopeStart).toBe('staged');
       expect(res.body.scopeEnd).toBe('unstaged');
@@ -1037,7 +1042,7 @@ describe('Local Sessions API', () => {
         digest: 'dbdigest'
       });
 
-      const res = await request(app).get(`/api/local/${id}/diff`);
+      const res = await request(server).get(`/api/local/${id}/diff`);
       expect(res.status).toBe(200);
       expect(res.body.diff).toContain('from database');
       expect(res.body.stats.unstagedChanges).toBe(1);
@@ -1051,7 +1056,7 @@ describe('Local Sessions API', () => {
         repository: 'owner/empty-repo'
       });
 
-      const res = await request(app).get(`/api/local/${id}/diff`);
+      const res = await request(server).get(`/api/local/${id}/diff`);
       expect(res.status).toBe(200);
       expect(res.body.diff).toBe('');
     });
@@ -1144,7 +1149,7 @@ describe('Local Sessions API', () => {
       localReviewModule.getCurrentBranch.mockResolvedValue('feature-a');
       localReviewModule.getHeadSha.mockResolvedValue('sha-a');
 
-      const res1 = await request(app)
+      const res1 = await request(server)
         .post('/api/local/start')
         .send({ path: '/tmp' });
       expect(res1.status).toBe(200);
@@ -1158,7 +1163,7 @@ describe('Local Sessions API', () => {
       localReviewModule.getCurrentBranch.mockResolvedValue('feature-b');
       localReviewModule.getHeadSha.mockResolvedValue('sha-b');
 
-      const res2 = await request(app)
+      const res2 = await request(server)
         .post('/api/local/start')
         .send({ path: '/tmp' });
       expect(res2.status).toBe(200);
@@ -1178,7 +1183,7 @@ describe('Local Sessions API', () => {
         repository: 'owner/resolve-repo'
       });
 
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/resolve-head-change`)
         .send({ action: 'update', newHeadSha: 'newsha222' });
 
@@ -1213,7 +1218,7 @@ describe('Local Sessions API', () => {
 
       localReviewModule.getCurrentBranch.mockResolvedValue('new-branch');
 
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/resolve-head-change`)
         .send({ action: 'update', newHeadSha: 'newsha' });
 
@@ -1255,7 +1260,7 @@ describe('Local Sessions API', () => {
       });
 
       // Try to update the original session's SHA to the conflict target SHA
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${originalId}/resolve-head-change`)
         .send({ action: 'update', newHeadSha: 'sha-conflict-target' });
 
@@ -1293,7 +1298,7 @@ describe('Local Sessions API', () => {
 
       // Try to update the original session — should detect the conflict
       // at the FINAL tuple (path, newHeadSha, new-branch) and redirect
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${originalId}/resolve-head-change`)
         .send({ action: 'update', newHeadSha: 'sha-new-head' });
 
@@ -1317,7 +1322,7 @@ describe('Local Sessions API', () => {
         repository: 'owner/repo'
       });
 
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/resolve-head-change`)
         .send({ action: 'new-session', newHeadSha: 'sha-brand-new' });
 
@@ -1334,7 +1339,7 @@ describe('Local Sessions API', () => {
       expect(newReview.local_path).toBe('/mock/repo');
 
       // Verify the new session has a diff immediately available
-      const diffRes = await request(app)
+      const diffRes = await request(server)
         .get(`/api/local/${res.body.newSessionId}/diff`);
       expect(diffRes.status).toBe(200);
       expect(diffRes.body.diff).toBeTruthy();
@@ -1357,7 +1362,7 @@ describe('Local Sessions API', () => {
         repository: 'owner/repo'
       });
 
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${originalId}/resolve-head-change`)
         .send({ action: 'new-session', newHeadSha: 'sha-already-exists' });
 
@@ -1368,7 +1373,7 @@ describe('Local Sessions API', () => {
     });
 
     it('should return 400 for invalid review ID', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/local/abc/resolve-head-change')
         .send({ action: 'update', newHeadSha: 'sha123' });
 
@@ -1377,7 +1382,7 @@ describe('Local Sessions API', () => {
     });
 
     it('should return 400 for negative review ID', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/local/-5/resolve-head-change')
         .send({ action: 'update', newHeadSha: 'sha123' });
 
@@ -1386,7 +1391,7 @@ describe('Local Sessions API', () => {
     });
 
     it('should return 404 for non-existent review ID', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/local/9999/resolve-head-change')
         .send({ action: 'update', newHeadSha: 'sha123' });
 
@@ -1402,7 +1407,7 @@ describe('Local Sessions API', () => {
         repository: 'owner/missing-action-repo'
       });
 
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/resolve-head-change`)
         .send({ newHeadSha: 'sha123' });
 
@@ -1418,7 +1423,7 @@ describe('Local Sessions API', () => {
         repository: 'owner/bad-action-repo'
       });
 
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/resolve-head-change`)
         .send({ action: 'delete', newHeadSha: 'sha123' });
 
@@ -1434,7 +1439,7 @@ describe('Local Sessions API', () => {
         repository: 'owner/missing-sha-repo'
       });
 
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/resolve-head-change`)
         .send({ action: 'update' });
 
@@ -1450,7 +1455,7 @@ describe('Local Sessions API', () => {
         repository: 'owner/bad-type-repo'
       });
 
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/resolve-head-change`)
         .send({ action: 'update', newHeadSha: 12345 });
 
@@ -1469,7 +1474,7 @@ describe('Local Sessions API', () => {
       // Set a non-default scope on the original session
       await reviewRepo.updateLocalScope(id, 'staged', 'unstaged');
 
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/resolve-head-change`)
         .send({ action: 'new-session', newHeadSha: 'sha-new-scoped' });
 
@@ -1496,7 +1501,7 @@ describe('Local Sessions API', () => {
       // Mock getHeadSha to return a different SHA than what was stored
       localReviewModule.getHeadSha.mockResolvedValue('sha-after-refresh');
 
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/refresh`)
         .send({});
 
@@ -1534,7 +1539,7 @@ describe('Local Sessions API', () => {
       // Mock getHeadSha to return a different SHA
       localReviewModule.getHeadSha.mockResolvedValue('sha-different');
 
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/refresh`)
         .send({});
 
@@ -1561,7 +1566,7 @@ describe('Local Sessions API', () => {
       // Mock getHeadSha to return a different SHA
       localReviewModule.getHeadSha.mockResolvedValue('sha-branch-new');
 
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/refresh`)
         .send({});
 
@@ -1594,7 +1599,7 @@ describe('Local Sessions API', () => {
       // Mock getCurrentBranch to return a non-default branch name
       localReviewModule.getCurrentBranch.mockResolvedValue('feature-branch');
 
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/refresh`)
         .send({});
 
@@ -1618,7 +1623,7 @@ describe('Local Sessions API', () => {
       // getCurrentBranch returns 'main' by default (from beforeEach),
       // which is a default branch name so branchAvailable should be false
 
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/refresh`)
         .send({});
 
@@ -1655,7 +1660,7 @@ describe('Local Sessions API', () => {
       });
 
       // generateScopedDiff (mocked in beforeEach) returns a known diff string.
-      const res = await request(app).post(`/api/local/${id}/refresh`).send({});
+      const res = await request(server).post(`/api/local/${id}/refresh`).send({});
       expect(res.status).toBe(200);
 
       // The kickoffs are fired-and-forgotten after res.json — give microtasks
@@ -1684,7 +1689,7 @@ describe('Local Sessions API', () => {
       });
       localReviewModule.getHeadSha.mockResolvedValue('sha-after-refresh');
 
-      const res = await request(app).post(`/api/local/${id}/refresh`).send({});
+      const res = await request(server).post(`/api/local/${id}/refresh`).send({});
       expect(res.status).toBe(200);
       expect(res.body.headShaChanged).toBe(true);
 
@@ -1704,7 +1709,7 @@ describe('Local Sessions API', () => {
         repository: 'owner/repo'
       });
 
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/set-scope`)
         .send({ scopeStart: 'unstaged', scopeEnd: 'unstaged' });
       expect(res.status).toBe(200);
@@ -1729,7 +1734,7 @@ describe('Local Sessions API', () => {
       });
       localReviewModule.getCurrentBranch.mockResolvedValue('feature-branch');
 
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/resolve-head-change`)
         .send({ action: 'update', newHeadSha: 'newsha' });
       expect(res.status).toBe(200);
@@ -1758,7 +1763,7 @@ describe('Local Sessions API', () => {
         repository: 'owner/repo'
       });
 
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/resolve-head-change`)
         .send({ action: 'new-session', newHeadSha: 'newsha' });
       expect(res.status).toBe(200);
@@ -1787,7 +1792,7 @@ describe('Local Sessions API', () => {
       // Mock getCurrentBranch to return a non-default branch name
       localReviewModule.getCurrentBranch.mockResolvedValue('feature-branch');
 
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/resolve-head-change`)
         .send({ action: 'update', newHeadSha: 'newsha' });
 
@@ -1808,7 +1813,7 @@ describe('Local Sessions API', () => {
       // getCurrentBranch returns 'main' by default (from beforeEach),
       // which is a default branch name so branchAvailable should be false
 
-      const res = await request(app)
+      const res = await request(server)
         .post(`/api/local/${id}/resolve-head-change`)
         .send({ action: 'update', newHeadSha: 'newsha' });
 
@@ -1849,7 +1854,7 @@ describe('Local Sessions API', () => {
           }
         };
 
-        const res = await request(app)
+        const res = await request(server)
           .post(`/api/local/${reviewId}/analyses/council`)
           .send({ councilConfig, configType: 'advanced' });
 

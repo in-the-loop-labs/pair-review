@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import { createTestDatabase, closeTestDatabase, seedTestReview } from '../utils/schema';
+import { listenOnLoopback, closeServer } from '../utils/loopback-server';
 
 const externalCommentsRoutes = require('../../src/routes/external-comments');
 const { GitHubApiError } = require('../../src/github/client');
@@ -118,6 +119,14 @@ function makeBlockingClient(rows) {
 function createTestApp(db, deps = {}) {
   const app = express();
   app.use(express.json());
+  // Count every request that reaches the app. Concurrency tests use this to
+  // wait until a request has OBSERVABLY arrived at the router, instead of
+  // guessing with fixed tick counts (which flake on slow runners).
+  app.locals.requestCount = 0;
+  app.use((req, res, next) => {
+    app.locals.requestCount++;
+    next();
+  });
   app.set('db', db);
   app.set('config', { github_token: 'test-token' });
   app.set('externalCommentsDeps', {
@@ -126,6 +135,22 @@ function createTestApp(db, deps = {}) {
   });
   app.use('/', externalCommentsRoutes);
   return app;
+}
+
+/**
+ * Per-test servers created via startServer() are tracked here and closed in
+ * afterEach, so tests that build their own app don't leak listeners.
+ */
+const openServers = [];
+
+/**
+ * Bind an app to 127.0.0.1 and track the resulting server for automatic
+ * cleanup. Pass the returned server to supertest instead of the bare app.
+ */
+async function startServer(app) {
+  const server = await listenOnLoopback(app);
+  openServers.push(server);
+  return server;
 }
 
 /**
@@ -143,7 +168,10 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
     externalCommentsRoutes._inFlight.clear();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    for (const s of openServers.splice(0)) {
+      await closeServer(s);
+    }
     externalCommentsRoutes._inFlight.clear();
     if (db) {
       closeTestDatabase(db);
@@ -161,7 +189,8 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
     const { FakeGitHubClient } = makeFakeClient(rows);
 
     const app = createTestApp(db, { GitHubClient: FakeGitHubClient });
-    const res = await request(app)
+    const server = await startServer(app);
+    const res = await request(server)
       .post(`/api/reviews/${reviewId}/external-comments/sync`)
       .query({ source: 'github' });
 
@@ -185,8 +214,9 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
     const { FakeGitHubClient } = makeFakeClient(rows);
 
     const app = createTestApp(db, { GitHubClient: FakeGitHubClient });
+    const server = await startServer(app);
 
-    const first = await request(app)
+    const first = await request(server)
       .post(`/api/reviews/${reviewId}/external-comments/sync`)
       .query({ source: 'github' });
     expect(first.status).toBe(200);
@@ -195,7 +225,7 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
     // Mutate the row body before the second call to verify update happens.
     rows[0].body = 'after edit';
 
-    const second = await request(app)
+    const second = await request(server)
       .post(`/api/reviews/${reviewId}/external-comments/sync`)
       .query({ source: 'github' });
     expect(second.status).toBe(200);
@@ -220,7 +250,8 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
     const { FakeGitHubClient } = makeFakeClient(rows);
 
     const app = createTestApp(db, { GitHubClient: FakeGitHubClient });
-    const res = await request(app)
+    const server = await startServer(app);
+    const res = await request(server)
       .post(`/api/reviews/${reviewId}/external-comments/sync`)
       .query({ source: 'github' });
 
@@ -251,7 +282,8 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
     const { FakeGitHubClient } = makeFakeClient(rows);
 
     const app = createTestApp(db, { GitHubClient: FakeGitHubClient });
-    const res = await request(app)
+    const server = await startServer(app);
+    const res = await request(server)
       .post(`/api/reviews/${reviewId}/external-comments/sync`)
       .query({ source: 'github' });
 
@@ -272,7 +304,8 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
     const { FakeGitHubClient } = makeFakeClient(rows);
 
     const app = createTestApp(db, { GitHubClient: FakeGitHubClient });
-    const res = await request(app)
+    const server = await startServer(app);
+    const res = await request(server)
       .post(`/api/reviews/${reviewId}/external-comments/sync`)
       .query({ source: 'github' });
 
@@ -290,36 +323,45 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
     const { FakeGitHubClient, calls, release } = makeBlockingClient(rows);
 
     const app = createTestApp(db, { GitHubClient: FakeGitHubClient });
+    const server = await startServer(app);
 
     // Start the first request and wait for it to enter the GitHub client
     // call (blocking gate). This guarantees the in-flight entry is set
     // before the second request arrives — otherwise the second request
     // could be scheduled before the first reaches the inFlight map.
-    const p1 = request(app)
+    const p1 = request(server)
       .post(`/api/reviews/${reviewId}/external-comments/sync`)
       .query({ source: 'github' })
       .then(r => r);
 
-    // Spin until the fake client receives its first call. This proves the
+    // Wait until the fake client receives its first call. This proves the
     // first request is inside `executeSync` and has already populated the
-    // inFlight map for the (reviewId, source) key.
-    const deadline = Date.now() + 2000;
-    while (calls.length === 0 && Date.now() < deadline) {
-      await new Promise(resolve => setImmediate(resolve));
-    }
+    // inFlight map for the (reviewId, source) key. Condition-based with a
+    // generous deadline — a fixed 2s Date.now() budget flaked on slow runners.
+    await vi.waitFor(() => {
+      expect(calls.length).toBeGreaterThanOrEqual(1);
+    }, { timeout: 8000, interval: 10 });
     expect(calls.length).toBe(1);
     // Sanity check: in-flight Map MUST have an entry for this (reviewId, source).
     expect(externalCommentsRoutes._inFlight.size).toBe(1);
 
     // Now launch the second request — it should fold into the existing
     // in-flight promise instead of making a second GitHub call.
-    const p2 = request(app)
+    const p2 = request(server)
       .post(`/api/reviews/${reviewId}/external-comments/sync`)
       .query({ source: 'github' })
       .then(r => r);
 
-    // Give p2 a chance to hit the route handler and consult the registry.
-    // Multiple microtask ticks because supertest layers add their own.
+    // Wait until p2 has OBSERVABLY reached the app (request counter hits 2)
+    // rather than assuming a fixed number of ticks is enough. On a slow
+    // runner p2 could otherwise still be in transit when we release() —
+    // p1 would complete, clear the in-flight slot, and p2 would trigger a
+    // second GitHub round-trip, failing the assertions below.
+    await vi.waitFor(() => {
+      expect(app.locals.requestCount).toBe(2);
+    }, { timeout: 8000, interval: 10 });
+    // Drain the remaining middleware/microtask layers so p2's route handler
+    // has consulted the in-flight registry before we release the gate.
     for (let i = 0; i < 10; i++) {
       await new Promise(resolve => setImmediate(resolve));
     }
@@ -357,8 +399,9 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
 
     const { FakeGitHubClient } = makeFakeClient([]);
     const app = createTestApp(db, { GitHubClient: FakeGitHubClient });
+    const server = await startServer(app);
 
-    const res = await request(app)
+    const res = await request(server)
       .post(`/api/reviews/${malformedReviewId}/external-comments/sync`)
       .query({ source: 'github' });
 
@@ -375,8 +418,9 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
 
     const { FakeGitHubClient } = makeFakeClient([]);
     const app = createTestApp(db, { GitHubClient: FakeGitHubClient });
+    const server = await startServer(app);
 
-    const res = await request(app)
+    const res = await request(server)
       .post(`/api/reviews/${localReviewId}/external-comments/sync`)
       .query({ source: 'github' });
 
@@ -387,8 +431,9 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
   it('unknown source: returns 400 echoing the source name', async () => {
     const { FakeGitHubClient } = makeFakeClient([]);
     const app = createTestApp(db, { GitHubClient: FakeGitHubClient });
+    const server = await startServer(app);
 
-    const res = await request(app)
+    const res = await request(server)
       .post(`/api/reviews/${reviewId}/external-comments/sync`)
       .query({ source: 'gitlab' });
 
@@ -399,8 +444,9 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
   it('unknown review: returns 404', async () => {
     const { FakeGitHubClient } = makeFakeClient([]);
     const app = createTestApp(db, { GitHubClient: FakeGitHubClient });
+    const server = await startServer(app);
 
-    const res = await request(app)
+    const res = await request(server)
       .post('/api/reviews/999999/external-comments/sync')
       .query({ source: 'github' });
 
@@ -413,7 +459,8 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
     const { FakeGitHubClient } = makeThrowingClient(err);
 
     const app = createTestApp(db, { GitHubClient: FakeGitHubClient });
-    const res = await request(app)
+    const server = await startServer(app);
+    const res = await request(server)
       .post(`/api/reviews/${reviewId}/external-comments/sync`)
       .query({ source: 'github' });
 
@@ -426,7 +473,8 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
     const { FakeGitHubClient } = makeThrowingClient(err);
 
     const app = createTestApp(db, { GitHubClient: FakeGitHubClient });
-    const res = await request(app)
+    const server = await startServer(app);
+    const res = await request(server)
       .post(`/api/reviews/${reviewId}/external-comments/sync`)
       .query({ source: 'github' });
 
@@ -457,8 +505,9 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
       GitHubClient: FakeGitHubClient,
       resolveHostBinding: () => ({ apiHost: null, token: '', features: {}, source: 'none' }),
     });
+    const server = await startServer(app);
 
-    const res = await request(app)
+    const res = await request(server)
       .post(`/api/reviews/${reviewId}/external-comments/sync`)
       .query({ source: 'github' });
 
@@ -495,8 +544,9 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
     });
     app.set('externalCommentsDeps', { GitHubClient: CapturingClient });
     app.use('/', externalCommentsRoutes);
+    const server = await startServer(app);
 
-    const res = await request(app)
+    const res = await request(server)
       .post(`/api/reviews/${reviewId}/external-comments/sync`)
       .query({ source: 'github' });
 
@@ -563,8 +613,9 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
     });
     app.set('externalCommentsDeps', { GitHubClient: AltHostClient });
     app.use('/', externalCommentsRoutes);
+    const server = await startServer(app);
 
-    const res = await request(app)
+    const res = await request(server)
       .post(`/api/reviews/${reviewId}/external-comments/sync`)
       .query({ source: 'github' });
 
@@ -596,7 +647,8 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
     const { FakeGitHubClient } = makeThrowingClient(err);
 
     const app = createTestApp(db, { GitHubClient: FakeGitHubClient });
-    const res = await request(app)
+    const server = await startServer(app);
+    const res = await request(server)
       .post(`/api/reviews/${reviewId}/external-comments/sync`)
       .query({ source: 'github' });
 
@@ -609,7 +661,8 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
     const { FakeGitHubClient } = makeThrowingClient(err);
 
     const app = createTestApp(db, { GitHubClient: FakeGitHubClient });
-    const res = await request(app)
+    const server = await startServer(app);
+    const res = await request(server)
       .post(`/api/reviews/${reviewId}/external-comments/sync`)
       .query({ source: 'github' });
 
@@ -622,7 +675,8 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
     const { FakeGitHubClient } = makeThrowingClient(err);
 
     const app = createTestApp(db, { GitHubClient: FakeGitHubClient });
-    const res = await request(app)
+    const server = await startServer(app);
+    const res = await request(server)
       .post(`/api/reviews/${reviewId}/external-comments/sync`)
       .query({ source: 'github' });
 
@@ -635,7 +689,8 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
     const { FakeGitHubClient } = makeThrowingClient(err);
 
     const app = createTestApp(db, { GitHubClient: FakeGitHubClient });
-    const res = await request(app)
+    const server = await startServer(app);
+    const res = await request(server)
       .post(`/api/reviews/${reviewId}/external-comments/sync`)
       .query({ source: 'github' });
 
@@ -659,8 +714,9 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
     }
 
     const app = createTestApp(db, { GitHubClient: FakeGitHubClient });
+    const server = await startServer(app);
 
-    const first = await request(app)
+    const first = await request(server)
       .post(`/api/reviews/${reviewId}/external-comments/sync`)
       .query({ source: 'github' });
     expect(first.status).toBe(200);
@@ -671,7 +727,7 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
     currentRows = [makeApiRow({ id: 700, body: 'first' })];
     externalCommentsRoutes._inFlight.clear();
 
-    const second = await request(app)
+    const second = await request(server)
       .post(`/api/reviews/${reviewId}/external-comments/sync`)
       .query({ source: 'github' });
     expect(second.status).toBe(200);
@@ -693,8 +749,9 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
       async listReviewComments() { return currentRows; }
     }
     const app = createTestApp(db, { GitHubClient: FakeGitHubClient });
+    const server = await startServer(app);
 
-    const first = await request(app)
+    const first = await request(server)
       .post(`/api/reviews/${reviewId}/external-comments/sync`)
       .query({ source: 'github' });
     expect(first.status).toBe(200);
@@ -719,7 +776,7 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
     ];
     externalCommentsRoutes._inFlight.clear();
 
-    const second = await request(app)
+    const second = await request(server)
       .post(`/api/reviews/${reviewId}/external-comments/sync`)
       .query({ source: 'github' });
     expect(second.status).toBe(200);
@@ -748,8 +805,9 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
       async listReviewComments() { return currentRows; }
     }
     const app = createTestApp(db, { GitHubClient: FakeGitHubClient });
+    const server = await startServer(app);
 
-    await request(app)
+    await request(server)
       .post(`/api/reviews/${reviewId}/external-comments/sync`)
       .query({ source: 'github' });
     expect(db.prepare(
@@ -760,7 +818,7 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
     currentRows = [];
     externalCommentsRoutes._inFlight.clear();
 
-    const second = await request(app)
+    const second = await request(server)
       .post(`/api/reviews/${reviewId}/external-comments/sync`)
       .query({ source: 'github' });
     expect(second.status).toBe(200);
@@ -799,11 +857,12 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
       }
     }
     const app = createTestApp(db, { GitHubClient: FakeGitHubClient });
+    const server = await startServer(app);
 
-    const p1 = request(app)
+    const p1 = request(server)
       .post(`/api/reviews/${reviewId}/external-comments/sync`)
       .query({ source: 'github' });
-    const p2 = request(app)
+    const p2 = request(server)
       .post(`/api/reviews/${otherReviewId}/external-comments/sync`)
       .query({ source: 'github' });
 

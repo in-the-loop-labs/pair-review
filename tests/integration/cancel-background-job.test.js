@@ -103,14 +103,11 @@ function flushMicrotasks(times = 10) {
   return Promise.all(Array.from({ length: times }, () => Promise.resolve()));
 }
 
-/** Poll until `cond()` returns true or the timeout fires. */
-async function waitFor(cond, { timeout = 2000, interval = 10 } = {}) {
-  const start = Date.now();
-  while (Date.now() - start < timeout) {
-    if (await cond()) return true;
-    await new Promise((r) => setTimeout(r, interval));
-  }
-  return cond();
+/** Poll until `cond()` returns truthy; throws (fails the test) on deadline. */
+async function waitFor(cond, { timeout = 5000, interval = 10 } = {}) {
+  await vi.waitFor(async () => {
+    expect(await cond()).toBeTruthy();
+  }, { timeout, interval });
 }
 
 describe('integration: cancel background job (tour)', () => {

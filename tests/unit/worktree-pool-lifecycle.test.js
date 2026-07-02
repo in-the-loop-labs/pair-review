@@ -787,11 +787,14 @@ describe('WorktreePoolLifecycle', () => {
 
       // Use fake timers to handle the 1s retry delay
       vi.useFakeTimers();
-      const promise = deps._mockUsageTracker.onIdle('pair-review--abc');
-      // Advance past the 1s retry delay
-      await vi.advanceTimersByTimeAsync(1000);
-      await promise;
-      vi.useRealTimers();
+      try {
+        const promise = deps._mockUsageTracker.onIdle('pair-review--abc');
+        // Advance past the 1s retry delay
+        await vi.advanceTimersByTimeAsync(1000);
+        await promise;
+      } finally {
+        vi.useRealTimers();
+      }
 
       expect(deps.poolRepo.markAvailable).toHaveBeenCalledTimes(2);
     });
@@ -804,10 +807,13 @@ describe('WorktreePoolLifecycle', () => {
         .mockRejectedValueOnce(new Error('db still busy'));
 
       vi.useFakeTimers();
-      const promise = deps._mockUsageTracker.onIdle('pair-review--abc');
-      await vi.advanceTimersByTimeAsync(1000);
-      await promise;
-      vi.useRealTimers();
+      try {
+        const promise = deps._mockUsageTracker.onIdle('pair-review--abc');
+        await vi.advanceTimersByTimeAsync(1000);
+        await promise;
+      } finally {
+        vi.useRealTimers();
+      }
 
       // Should not throw, just log. Both attempts were made.
       expect(deps.poolRepo.markAvailable).toHaveBeenCalledTimes(2);

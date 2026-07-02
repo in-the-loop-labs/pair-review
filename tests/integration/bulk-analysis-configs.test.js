@@ -1,7 +1,8 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
+import { listenOnLoopback, closeServer } from '../utils/loopback-server';
 
 const bulkAnalysisConfigsRoutes = require('../../src/routes/bulk-analysis-configs');
 const { getAllProvidersInfo } = require('../../src/ai');
@@ -15,10 +16,16 @@ function createApp() {
 
 describe('bulk analysis config routes', () => {
   let app;
+  let server;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     bulkAnalysisConfigsRoutes._resetBulkAnalysisConfigs();
     app = createApp();
+    server = await listenOnLoopback(app);
+  });
+
+  afterEach(async () => {
+    await closeServer(server);
   });
 
   it('stores and retrieves a bulk analysis config by id', async () => {
@@ -30,7 +37,7 @@ describe('bulk analysis config routes', () => {
       excludePrevious: { github: true, feedback: false }
     };
 
-    const createResponse = await request(app)
+    const createResponse = await request(server)
       .post('/api/bulk-analysis-configs')
       .send({ analysisConfig })
       .expect(200);
@@ -38,7 +45,7 @@ describe('bulk analysis config routes', () => {
     expect(createResponse.body.success).toBe(true);
     expect(createResponse.body.id).toMatch(/^[0-9a-f-]{36}$/);
 
-    const getResponse = await request(app)
+    const getResponse = await request(server)
       .get(`/api/bulk-analysis-configs/${createResponse.body.id}`)
       .expect(200);
 
@@ -49,19 +56,19 @@ describe('bulk analysis config routes', () => {
   });
 
   it('rejects missing or non-object configs', async () => {
-    await request(app)
+    await request(server)
       .post('/api/bulk-analysis-configs')
       .send({})
       .expect(400);
 
-    await request(app)
+    await request(server)
       .post('/api/bulk-analysis-configs')
       .send({ analysisConfig: [] })
       .expect(400);
   });
 
   it('allows shared tier aliases accepted by regular analysis routes', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/bulk-analysis-configs')
       .send({ analysisConfig: { provider: 'claude', model: 'haiku', tier: 'free' } })
       .expect(200);
@@ -78,7 +85,7 @@ describe('bulk analysis config routes', () => {
     // The modal sends `instructions` (effective: presets concatenated with the
     // textarea) alongside the raw `customInstructions`. The effective prompt must
     // win so preset chips are not silently dropped.
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/bulk-analysis-configs')
       .send({
         analysisConfig: {
@@ -95,7 +102,7 @@ describe('bulk analysis config routes', () => {
   });
 
   it('falls back to customInstructions when no effective instructions are sent', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/bulk-analysis-configs')
       .send({
         analysisConfig: { provider: 'claude', model: 'opus', customInstructions: 'Only textarea.' }
@@ -107,7 +114,7 @@ describe('bulk analysis config routes', () => {
   });
 
   it('rejects an invalid configType instead of coercing it to advanced', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/bulk-analysis-configs')
       .send({
         analysisConfig: {
@@ -130,7 +137,7 @@ describe('bulk analysis config routes', () => {
       }
     };
 
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/bulk-analysis-configs')
       .send({
         analysisConfig: {
@@ -150,7 +157,7 @@ describe('bulk analysis config routes', () => {
   });
 
   it('keeps councilId when only an id (no inline snapshot) is provided', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/bulk-analysis-configs')
       .send({
         analysisConfig: { isCouncil: true, configType: 'advanced', councilId: 'db-council-id' }
@@ -163,7 +170,7 @@ describe('bulk analysis config routes', () => {
   });
 
   it('rejects invalid single-model configs', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/bulk-analysis-configs')
       .send({ analysisConfig: { provider: 'claude', model: 'opus', tier: 'slow' } })
       .expect(400);
@@ -172,7 +179,7 @@ describe('bulk analysis config routes', () => {
   });
 
   it('rejects forbidden prototype-pollution keys', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/bulk-analysis-configs')
       .set('Content-Type', 'application/json')
       .send('{"analysisConfig":{"provider":"claude","model":"opus","__proto__":{"polluted":true}}}')
@@ -195,7 +202,7 @@ describe('bulk analysis config routes', () => {
     );
     expect(foreign, 'expected a non-claude provider for this test').toBeTruthy();
 
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/bulk-analysis-configs')
       .send({
         analysisConfig: {
@@ -217,7 +224,7 @@ describe('bulk analysis config routes', () => {
     const claude = providers.find(p => p.id === 'claude');
     const validModel = claude.models[0].id;
 
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/bulk-analysis-configs')
       .send({
         analysisConfig: { provider: 'claude', model: validModel, enabledLevels: [1, 2] }
@@ -239,7 +246,7 @@ describe('bulk analysis config routes', () => {
     expect(aliasedModel, 'expected a claude model with at least one alias').toBeTruthy();
     const alias = aliasedModel.aliases[0];
 
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/bulk-analysis-configs')
       .send({
         analysisConfig: { provider: 'claude', model: alias, enabledLevels: [1, 2] }
@@ -254,20 +261,20 @@ describe('bulk analysis config routes', () => {
   });
 
   it('returns 404 for unknown config ids', async () => {
-    await request(app)
+    await request(server)
       .get('/api/bulk-analysis-configs/00000000-0000-0000-0000-000000000000')
       .expect(404);
   });
 
   it('prunes expired configs before lookups', async () => {
-    const createResponse = await request(app)
+    const createResponse = await request(server)
       .post('/api/bulk-analysis-configs')
       .send({ analysisConfig: { provider: 'claude', model: 'opus' } })
       .expect(200);
 
     bulkAnalysisConfigsRoutes._pruneExpired(Date.now() + bulkAnalysisConfigsRoutes._CONFIG_TTL_MS + 1);
 
-    await request(app)
+    await request(server)
       .get(`/api/bulk-analysis-configs/${createResponse.body.id}`)
       .expect(404);
   });

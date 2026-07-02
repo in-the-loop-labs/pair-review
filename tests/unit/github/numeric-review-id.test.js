@@ -25,6 +25,27 @@ const restPending = require('../../../src/github/impl/rest/pending-review');
 const restLifecycle = require('../../../src/github/impl/rest/review-lifecycle');
 
 /**
+ * Run an operation that hits the fixed 1s retry delay inside
+ * addCommentsInBatches under fake timers so the delay elapses instantly.
+ * The factory creates the promise AFTER fake timers are installed; all
+ * pending timers are then flushed before the promise is awaited. A no-op
+ * rejection handler is attached before advancing timers so an early
+ * rejection is not reported as unhandled, real timers are always restored,
+ * and `expect(...).rejects` assertions still see the original rejection.
+ */
+async function runWithFakeRetryDelay(promiseFactory) {
+  vi.useFakeTimers();
+  try {
+    const promise = promiseFactory();
+    promise.catch(() => {});
+    await vi.runAllTimersAsync();
+    return await promise;
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
+/**
  * Build an alt-host binding whose feature flags dispatch the review
  * lifecycle through the REST impl. `pending_review_comments` is left as
  * graphql by default; individual tests override as needed.
@@ -180,14 +201,14 @@ describe('numeric review id propagation', () => {
         graphql: graphqlMock
       });
 
-      await expect(client.createReviewGraphQL(
+      await expect(runWithFakeRetryDelay(() => client.createReviewGraphQL(
         'PR_xyz',
         'COMMENT',
         'body',
         [{ path: 'a.js', line: 1, body: 'hi' }],
         null,
         { owner: 'o', repo: 'r', prNumber: 1 }
-      )).rejects.toThrow();
+      ))).rejects.toThrow();
 
       // deletePendingReview (REST cleanup) must address the review by
       // its numeric id, not a node id, otherwise the cleanup 404s and

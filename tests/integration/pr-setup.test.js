@@ -1,6 +1,8 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { createTestDatabase, closeTestDatabase } from '../utils/schema';
+import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 // ============================================================================
@@ -72,6 +74,13 @@ const { findRepositoryPath, storePRData, setupPRReview, isShaNotFoundError } = r
 // The test repo root is a real git directory we can use for success cases
 const TEST_REPO_ROOT = path.resolve(__dirname, '../..');
 
+// Unique per test file so parallel vitest forks never share a config dir
+const testConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pair-review-cfg-'));
+
+afterAll(() => {
+  fs.rmSync(testConfigDir, { recursive: true, force: true });
+});
+
 // ============================================================================
 // findRepositoryPath Integration Tests - Monorepo Configuration
 // ============================================================================
@@ -89,7 +98,7 @@ describe('findRepositoryPath with monorepo configuration', () => {
     // Default config object passed directly to findRepositoryPath
     testConfig = { github_token: 'test-token', monorepos: {} };
 
-    configModule.getConfigDir.mockReturnValue('/tmp/.pair-review-test');
+    configModule.getConfigDir.mockReturnValue(testConfigDir);
     configModule.getRepoPath.mockReturnValue(null);
     configModule.resolveRepoOptions.mockReturnValue({ checkoutScript: null, checkoutTimeout: 300000, worktreeConfig: null, resetScript: null, poolSize: 0, poolFetchIntervalMinutes: null });
     configModule.resolvePoolConfig.mockReturnValue({ poolSize: 0, poolFetchIntervalMinutes: null });
@@ -613,7 +622,7 @@ describe('pool-enabled PR setup', () => {
     };
 
     // Config spies: pool enabled (poolSize > 0)
-    configModule.getConfigDir.mockReturnValue('/tmp/.pair-review-test');
+    configModule.getConfigDir.mockReturnValue(testConfigDir);
     configModule.getRepoPath.mockReturnValue(TEST_REPO_ROOT);
     configModule.resolveRepoOptions.mockReturnValue({
       checkoutScript: null,
@@ -934,7 +943,7 @@ describe('restore mode (setupPRReview with restoreMetadata)', () => {
     };
 
     // Config spies: pool enabled (poolSize > 0)
-    configModule.getConfigDir.mockReturnValue('/tmp/.pair-review-test');
+    configModule.getConfigDir.mockReturnValue(testConfigDir);
     configModule.getRepoPath.mockReturnValue(TEST_REPO_ROOT);
     configModule.resolveRepoOptions.mockReturnValue({
       checkoutScript: null,
