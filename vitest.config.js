@@ -20,6 +20,11 @@ export default defineConfig({
     // Enable globals (describe, it, expect) without imports
     globals: true,
 
+    // Ensure jsdom test files get a working localStorage/sessionStorage.
+    // Node 26 ships Web Storage as a default global, which shadows jsdom's and
+    // makes vitest skip copying it — see tests/setup/web-storage-polyfill.js.
+    setupFiles: ['./tests/setup/web-storage-polyfill.js'],
+
     // Coverage configuration
     coverage: {
       provider: 'v8',
