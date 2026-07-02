@@ -21,7 +21,7 @@
 if (typeof window !== 'undefined') {
   const makeStorage = () => {
     const store = new Map();
-    return {
+    const api = {
       getItem: (key) => (store.has(String(key)) ? store.get(String(key)) : null),
       setItem: (key, value) => { store.set(String(key), String(value)); },
       removeItem: (key) => { store.delete(String(key)); },
@@ -32,6 +32,17 @@ if (typeof window !== 'undefined') {
       },
       get length() { return store.size; },
     };
+    // Real Storage also supports property/bracket access that stays in sync with
+    // the store (`localStorage.theme = 'dark'` <-> `getItem('theme')`). Route
+    // unknown string keys to the method API so a test that writes one way and
+    // reads the other doesn't silently diverge. Symbol keys (Symbol.toPrimitive,
+    // util.inspect.custom, etc.) fall through untouched so framework internals
+    // probing the object aren't misrouted into the store.
+    return new Proxy(api, {
+      get: (t, prop) => (typeof prop === 'symbol' || prop in t ? t[prop] : t.getItem(prop)),
+      set: (t, prop, value) => (typeof prop === 'symbol' ? (t[prop] = value) : t.setItem(prop, value), true),
+      deleteProperty: (t, prop) => (typeof prop === 'symbol' ? delete t[prop] : t.removeItem(prop), true),
+    });
   };
 
   for (const name of ['localStorage', 'sessionStorage']) {
