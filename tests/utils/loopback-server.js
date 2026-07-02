@@ -36,13 +36,21 @@ async function listenOnLoopback(app) {
 
 /**
  * Close a server created by listenOnLoopback. Safe to call with null or an
- * already-closed server.
+ * already-closed server. Force-closes any still-open sockets, including
+ * in-flight requests — a hung request must not stall test teardown.
  * @param {http.Server|null|undefined} server
  * @returns {Promise<void>}
  */
 async function closeServer(server) {
   if (server && server.listening) {
-    await new Promise((resolve) => server.close(resolve));
+    await new Promise((resolve) => {
+      server.close(resolve);
+      // server.close() alone waits for in-flight requests to finish before
+      // its callback runs. closeAllConnections() (Node 18.2+; this project
+      // requires >= 20) force-closes any still-open socket so a hung request
+      // can't stall afterEach until Vitest's hook timeout fires.
+      server.closeAllConnections();
+    });
   }
 }
 

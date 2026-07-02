@@ -119,14 +119,6 @@ function makeBlockingClient(rows) {
 function createTestApp(db, deps = {}) {
   const app = express();
   app.use(express.json());
-  // Count every request that reaches the app. Concurrency tests use this to
-  // wait until a request has OBSERVABLY arrived at the router, instead of
-  // guessing with fixed tick counts (which flake on slow runners).
-  app.locals.requestCount = 0;
-  app.use((req, res, next) => {
-    app.locals.requestCount++;
-    next();
-  });
   app.set('db', db);
   app.set('config', { github_token: 'test-token' });
   app.set('externalCommentsDeps', {
@@ -325,52 +317,63 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
     const app = createTestApp(db, { GitHubClient: FakeGitHubClient });
     const server = await startServer(app);
 
-    // Start the first request and wait for it to enter the GitHub client
-    // call (blocking gate). This guarantees the in-flight entry is set
-    // before the second request arrives — otherwise the second request
-    // could be scheduled before the first reaches the inFlight map.
-    const p1 = request(server)
-      .post(`/api/reviews/${reviewId}/external-comments/sync`)
-      .query({ source: 'github' })
-      .then(r => r);
+    // Spy on the in-flight registry's `get`. Every sync request consults the
+    // registry exactly once: p1 gets (miss) then sets; p2's get is therefore
+    // the SECOND recorded call. Observing it proves p2's route handler has
+    // reached the registry — the actual invariant the old requestCount
+    // middleware + fixed setImmediate drain loop only approximated.
+    const getSpy = vi.spyOn(externalCommentsRoutes._inFlight, 'get');
 
-    // Wait until the fake client receives its first call. This proves the
-    // first request is inside `executeSync` and has already populated the
-    // inFlight map for the (reviewId, source) key. Condition-based with a
-    // generous deadline — a fixed 2s Date.now() budget flaked on slow runners.
-    await vi.waitFor(() => {
-      expect(calls.length).toBeGreaterThanOrEqual(1);
-    }, { timeout: 8000, interval: 10 });
-    expect(calls.length).toBe(1);
-    // Sanity check: in-flight Map MUST have an entry for this (reviewId, source).
-    expect(externalCommentsRoutes._inFlight.size).toBe(1);
+    let p1;
+    let p2;
+    try {
+      // Start the first request and wait for it to enter the GitHub client
+      // call (blocking gate). This guarantees the in-flight entry is set
+      // before the second request arrives — otherwise the second request
+      // could be scheduled before the first reaches the inFlight map.
+      p1 = request(server)
+        .post(`/api/reviews/${reviewId}/external-comments/sync`)
+        .query({ source: 'github' })
+        .then(r => r);
 
-    // Now launch the second request — it should fold into the existing
-    // in-flight promise instead of making a second GitHub call.
-    const p2 = request(server)
-      .post(`/api/reviews/${reviewId}/external-comments/sync`)
-      .query({ source: 'github' })
-      .then(r => r);
+      // Wait until the fake client receives its first call. This proves the
+      // first request is inside `executeSync` and has already populated the
+      // inFlight map for the (reviewId, source) key. Condition-based with a
+      // generous deadline — a fixed 2s Date.now() budget flaked on slow runners.
+      await vi.waitFor(() => {
+        expect(calls.length).toBeGreaterThanOrEqual(1);
+      }, { timeout: 8000, interval: 10 });
+      expect(calls.length).toBe(1);
+      // Sanity check: in-flight Map MUST have an entry for this (reviewId, source).
+      expect(externalCommentsRoutes._inFlight.size).toBe(1);
 
-    // Wait until p2 has OBSERVABLY reached the app (request counter hits 2)
-    // rather than assuming a fixed number of ticks is enough. On a slow
-    // runner p2 could otherwise still be in transit when we release() —
-    // p1 would complete, clear the in-flight slot, and p2 would trigger a
-    // second GitHub round-trip, failing the assertions below.
-    await vi.waitFor(() => {
-      expect(app.locals.requestCount).toBe(2);
-    }, { timeout: 8000, interval: 10 });
-    // Drain the remaining middleware/microtask layers so p2's route handler
-    // has consulted the in-flight registry before we release the gate.
-    for (let i = 0; i < 10; i++) {
-      await new Promise(resolve => setImmediate(resolve));
+      // Now launch the second request — it should fold into the existing
+      // in-flight promise instead of making a second GitHub call.
+      p2 = request(server)
+        .post(`/api/reviews/${reviewId}/external-comments/sync`)
+        .query({ source: 'github' })
+        .then(r => r);
+
+      // Wait until p2 has consulted the in-flight registry (the second `get`
+      // call). Only then is it safe to release() — otherwise p1 could
+      // complete, clear the in-flight slot, and p2 would trigger a second
+      // GitHub round-trip, failing the assertions below.
+      await vi.waitFor(() => {
+        expect(getSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+      }, { timeout: 8000, interval: 10 });
+      // While p1 is still blocked on the gate, the in-flight map MUST still
+      // hold a single entry — both requests must observe the same promise.
+      expect(externalCommentsRoutes._inFlight.size).toBe(1);
+    } finally {
+      // Release the blocking fetch even when a pre-release assertion above
+      // throws — otherwise the hung in-flight request would stall afterEach's
+      // closeServer until the hook timeout instead of failing fast.
+      release();
+      // Restore the native Map#get so later tests see a clean registry.
+      getSpy.mockRestore();
     }
-    // While p1 is still blocked on the gate, the in-flight map MUST still
-    // hold a single entry — both requests must observe the same promise.
-    expect(externalCommentsRoutes._inFlight.size).toBe(1);
 
-    // Release the blocking fetch, then await both responses.
-    release();
+    // Await both responses (the gate was released in the finally above).
     const [r1, r2] = await Promise.all([p1, p2]);
 
     expect(r1.status).toBe(200);
