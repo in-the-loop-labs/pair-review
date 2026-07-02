@@ -1,8 +1,12 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { createTestDatabase, closeTestDatabase } from '../utils/schema';
+import { listenOnLoopback, closeServer } from '../utils/loopback-server';
 
 /**
  * PR-mode refresh kickoff tests
@@ -43,7 +47,9 @@ vi.spyOn(GitHubClient.prototype, 'fetchPullRequest').mockResolvedValue({
 });
 
 vi.spyOn(configModule, 'getGitHubToken').mockReturnValue('test-token');
-vi.spyOn(configModule, 'getConfigDir').mockReturnValue('/tmp/.pair-review-test');
+// Unique per test file so parallel vitest forks never share a config dir
+const testConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pair-review-cfg-'));
+vi.spyOn(configModule, 'getConfigDir').mockReturnValue(testConfigDir);
 
 vi.mock('../../src/github/stack-walker', () => ({
   walkPRStack: vi.fn().mockResolvedValue(null)
@@ -100,25 +106,32 @@ async function insertTestPR(db, { prNumber = 1, repository = 'owner/repo' } = {}
 describe('POST /api/pr/:owner/:repo/:number/refresh kickoffs', () => {
   let db;
   let app;
+  let server;
   let summarySpy;
   let tourSpy;
 
   beforeEach(async () => {
     db = createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
     await insertTestPR(db);
     summarySpy = vi.spyOn(summaryGenerator, 'kickOffSummaryJob').mockReturnValue(null);
     tourSpy = vi.spyOn(tourGenerator, 'kickOffTourJob').mockReturnValue(null);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await closeServer(server);
     if (db) closeTestDatabase(db);
     summarySpy.mockRestore();
     tourSpy.mockRestore();
   });
 
+  afterAll(() => {
+    fs.rmSync(testConfigDir, { recursive: true, force: true });
+  });
+
   it('kicks off summary and tour jobs with the freshly-refreshed diff and worktree path', async () => {
-    const res = await request(app).post('/api/pr/owner/repo/1/refresh').send({});
+    const res = await request(server).post('/api/pr/owner/repo/1/refresh').send({});
     expect(res.status).toBe(200);
 
     // Kickoffs are fired-and-forgotten after res.json. Yield microtasks so
@@ -166,7 +179,7 @@ describe('POST /api/pr/:owner/:repo/:number/refresh kickoffs', () => {
       { unknown: 'shape' } // falsy → dropped by filter(Boolean)
     ]);
 
-    const res = await request(app).post('/api/pr/owner/repo/1/refresh').send({});
+    const res = await request(server).post('/api/pr/owner/repo/1/refresh').send({});
     expect(res.status).toBe(200);
 
     await new Promise((resolve) => setImmediate(resolve));

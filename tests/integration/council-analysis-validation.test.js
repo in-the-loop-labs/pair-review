@@ -10,10 +10,14 @@
  * not passing the type parameter after the function signature was updated.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { createTestDatabase, closeTestDatabase } from '../utils/schema';
+import { listenOnLoopback, closeServer } from '../utils/loopback-server';
 
 // Mock modules that analysis routes depend on but we don't need
 vi.mock('../../src/ai/analyzer', () => ({
@@ -47,7 +51,9 @@ vi.spyOn(configModule, 'loadConfig').mockResolvedValue({
   port: 7247,
   theme: 'light'
 });
-vi.spyOn(configModule, 'getConfigDir').mockReturnValue('/tmp/.pair-review-test');
+// Unique per test file so parallel vitest forks never share a config dir
+const testConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pair-review-cfg-'));
+vi.spyOn(configModule, 'getConfigDir').mockReturnValue(testConfigDir);
 
 const { run } = require('../../src/database');
 
@@ -97,17 +103,24 @@ const advancedConfig = {
 describe('Council analysis config validation in analysis routes', () => {
   let db;
   let app;
+  let server;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await closeServer(server);
     if (db) {
       closeTestDatabase(db);
     }
     vi.clearAllMocks();
+  });
+
+  afterAll(() => {
+    fs.rmSync(testConfigDir, { recursive: true, force: true });
   });
 
   describe('POST /api/pr/:owner/:repo/:number/analyses/council (PR mode)', () => {
@@ -117,7 +130,7 @@ describe('Council analysis config validation in analysis routes', () => {
       // which rejects voice-centric configs.
       // With the fix, validation passes and the request proceeds to the next
       // check (PR metadata lookup), returning 404 since no PR exists.
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/pr/test-owner/test-repo/42/analyses/council')
         .send({
           councilConfig: voiceCentricConfig,
@@ -132,7 +145,7 @@ describe('Council analysis config validation in analysis routes', () => {
     });
 
     it('should reject voice-centric inline config when configType is advanced', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/pr/test-owner/test-repo/42/analyses/council')
         .send({
           councilConfig: voiceCentricConfig,
@@ -144,7 +157,7 @@ describe('Council analysis config validation in analysis routes', () => {
     });
 
     it('should accept advanced inline config when configType is advanced', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/pr/test-owner/test-repo/42/analyses/council')
         .send({
           councilConfig: advancedConfig,
@@ -158,7 +171,7 @@ describe('Council analysis config validation in analysis routes', () => {
 
     it('should normalize and accept advanced inline config when configType is council', async () => {
       // Normalization converts advanced format to voice-centric, so it passes validation
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/pr/test-owner/test-repo/42/analyses/council')
         .send({
           councilConfig: advancedConfig,
@@ -174,7 +187,7 @@ describe('Council analysis config validation in analysis routes', () => {
 
     it('should default to advanced validation when configType is omitted', async () => {
       // Advanced config should pass with default type
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/pr/test-owner/test-repo/42/analyses/council')
         .send({
           councilConfig: advancedConfig
@@ -193,7 +206,7 @@ describe('Council analysis config validation in analysis routes', () => {
       `, [councilId, 'Test Voice Council', 'council', JSON.stringify(voiceCentricConfig)]);
 
       // Send request without configType -- should use the saved council's type ('council')
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/pr/test-owner/test-repo/42/analyses/council')
         .send({
           councilId
@@ -216,7 +229,7 @@ describe('Council analysis config validation in analysis routes', () => {
 
       // Override with configType: 'council' -- normalization should convert
       // the advanced config to voice-centric format before validation
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/pr/test-owner/test-repo/42/analyses/council')
         .send({
           councilId,
@@ -239,7 +252,7 @@ describe('Council analysis config validation in analysis routes', () => {
         VALUES (?, ?, ?, ?)
       `, [councilId, 'Legacy Council', 'council', JSON.stringify(advancedConfig)]);
 
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/pr/test-owner/test-repo/42/analyses/council')
         .send({
           councilId
@@ -271,7 +284,7 @@ describe('Council analysis config validation in analysis routes', () => {
     it('should accept voice-centric inline config when configType is council', async () => {
       // Without the fix, this would return 400 because validateCouncilConfig
       // would default to advanced validation.
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/local/${localReviewId}/analyses/council`)
         .send({
           councilConfig: voiceCentricConfig,
@@ -287,7 +300,7 @@ describe('Council analysis config validation in analysis routes', () => {
     });
 
     it('should reject voice-centric inline config when configType is advanced', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/local/${localReviewId}/analyses/council`)
         .send({
           councilConfig: voiceCentricConfig,
@@ -299,7 +312,7 @@ describe('Council analysis config validation in analysis routes', () => {
     });
 
     it('should accept advanced inline config when configType is advanced', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/local/${localReviewId}/analyses/council`)
         .send({
           councilConfig: advancedConfig,
@@ -313,7 +326,7 @@ describe('Council analysis config validation in analysis routes', () => {
 
     it('should normalize and accept advanced inline config when configType is council', async () => {
       // Normalization converts advanced format to voice-centric, so it passes validation
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/local/${localReviewId}/analyses/council`)
         .send({
           councilConfig: advancedConfig,
@@ -327,7 +340,7 @@ describe('Council analysis config validation in analysis routes', () => {
     });
 
     it('should default to advanced validation when configType is omitted', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/local/${localReviewId}/analyses/council`)
         .send({
           councilConfig: advancedConfig
@@ -346,7 +359,7 @@ describe('Council analysis config validation in analysis routes', () => {
       `, [councilId, 'Local Voice Council', 'council', JSON.stringify(voiceCentricConfig)]);
 
       // Send request without configType -- should use the saved council's type
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/local/${localReviewId}/analyses/council`)
         .send({
           councilId
@@ -367,7 +380,7 @@ describe('Council analysis config validation in analysis routes', () => {
       `, [councilId, 'Local Advanced Council', 'advanced', JSON.stringify(advancedConfig)]);
 
       // Override with configType: 'council' -- normalization should convert
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/local/${localReviewId}/analyses/council`)
         .send({
           councilId,
@@ -388,7 +401,7 @@ describe('Council analysis config validation in analysis routes', () => {
         VALUES (?, ?, ?, ?)
       `, [councilId, 'Local Legacy Council', 'council', JSON.stringify(advancedConfig)]);
 
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/local/${localReviewId}/analyses/council`)
         .send({
           councilId

@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import { createTestDatabase, closeTestDatabase } from '../utils/schema';
+import { listenOnLoopback, closeServer } from '../utils/loopback-server';
 
 const { GitHubClient } = require('../../src/github/client');
 const configModule = require('../../src/config');
@@ -50,6 +51,7 @@ async function insertCachedPR(db, { owner, repo, number, title, author, updated_
 describe('GitHub Collections Routes', () => {
   let db;
   let app;
+  let server;
 
   beforeEach(async () => {
     db = createTestDatabase();
@@ -58,10 +60,12 @@ describe('GitHub Collections Routes', () => {
       port: 7247,
       theme: 'light'
     });
+    server = await listenOnLoopback(app);
     vi.clearAllMocks();
   });
 
   afterEach(async () => {
+    await closeServer(server);
     if (db) {
       closeTestDatabase(db);
     }
@@ -73,7 +77,7 @@ describe('GitHub Collections Routes', () => {
 
   describe('GET /api/github/review-requests', () => {
     it('should return empty array when no cached data', async () => {
-      const res = await request(app).get('/api/github/review-requests');
+      const res = await request(server).get('/api/github/review-requests');
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
@@ -90,7 +94,7 @@ describe('GitHub Collections Routes', () => {
         state: 'open', collection: 'review-requests'
       });
 
-      const res = await request(app).get('/api/github/review-requests');
+      const res = await request(server).get('/api/github/review-requests');
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
@@ -122,7 +126,7 @@ describe('GitHub Collections Routes', () => {
         state: 'open', collection: 'review-requests'
       });
 
-      const res = await request(app).get('/api/github/review-requests');
+      const res = await request(server).get('/api/github/review-requests');
 
       expect(res.status).toBe(200);
       expect(res.body.prs).toHaveLength(2);
@@ -146,7 +150,7 @@ describe('GitHub Collections Routes', () => {
         state: 'open', collection: 'my-prs'
       });
 
-      const res = await request(app).get('/api/github/review-requests');
+      const res = await request(server).get('/api/github/review-requests');
 
       expect(res.body.prs).toHaveLength(1);
       expect(res.body.prs[0].number).toBe(1);
@@ -161,7 +165,7 @@ describe('GitHub Collections Routes', () => {
     it('should return 401 when no GitHub token configured', async () => {
       configModule.getGitHubToken.mockReturnValue(null);
 
-      const res = await request(app).post('/api/github/review-requests/refresh');
+      const res = await request(server).post('/api/github/review-requests/refresh');
 
       expect(res.status).toBe(401);
       expect(res.body.success).toBe(false);
@@ -190,7 +194,7 @@ describe('GitHub Collections Routes', () => {
         }
       ]);
 
-      const res = await request(app).post('/api/github/review-requests/refresh');
+      const res = await request(server).post('/api/github/review-requests/refresh');
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
@@ -229,7 +233,7 @@ describe('GitHub Collections Routes', () => {
         }
       ]);
 
-      const res = await request(app).post('/api/github/review-requests/refresh');
+      const res = await request(server).post('/api/github/review-requests/refresh');
 
       expect(res.status).toBe(200);
       expect(res.body.prs).toHaveLength(1);
@@ -255,7 +259,7 @@ describe('GitHub Collections Routes', () => {
       });
       GitHubClient.prototype.searchPullRequests.mockResolvedValue([]);
 
-      await request(app).post('/api/github/review-requests/refresh');
+      await request(server).post('/api/github/review-requests/refresh');
 
       // my-prs data should still be intact
       const myPrs = await query(db, "SELECT * FROM github_pr_cache WHERE collection = 'my-prs'", []);
@@ -269,7 +273,7 @@ describe('GitHub Collections Routes', () => {
       authError.status = 401;
       GitHubClient.prototype.getAuthenticatedUser.mockRejectedValue(authError);
 
-      const res = await request(app).post('/api/github/review-requests/refresh');
+      const res = await request(server).post('/api/github/review-requests/refresh');
 
       expect(res.status).toBe(401);
       expect(res.body.success).toBe(false);
@@ -282,7 +286,7 @@ describe('GitHub Collections Routes', () => {
       forbiddenError.status = 403;
       GitHubClient.prototype.getAuthenticatedUser.mockRejectedValue(forbiddenError);
 
-      const res = await request(app).post('/api/github/review-requests/refresh');
+      const res = await request(server).post('/api/github/review-requests/refresh');
 
       expect(res.status).toBe(401);
       expect(res.body.success).toBe(false);
@@ -293,7 +297,7 @@ describe('GitHub Collections Routes', () => {
       configModule.getGitHubToken.mockReturnValue('test-token');
       GitHubClient.prototype.getAuthenticatedUser.mockRejectedValue(new Error('Network timeout'));
 
-      const res = await request(app).post('/api/github/review-requests/refresh');
+      const res = await request(server).post('/api/github/review-requests/refresh');
 
       expect(res.status).toBe(500);
       expect(res.body.success).toBe(false);
@@ -306,7 +310,7 @@ describe('GitHub Collections Routes', () => {
 
   describe('GET /api/github/my-prs', () => {
     it('should return empty array when no cached data', async () => {
-      const res = await request(app).get('/api/github/my-prs');
+      const res = await request(server).get('/api/github/my-prs');
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
@@ -323,7 +327,7 @@ describe('GitHub Collections Routes', () => {
         state: 'open', collection: 'my-prs'
       });
 
-      const res = await request(app).get('/api/github/my-prs');
+      const res = await request(server).get('/api/github/my-prs');
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
@@ -355,7 +359,7 @@ describe('GitHub Collections Routes', () => {
         state: 'open', collection: 'my-prs'
       });
 
-      const res = await request(app).get('/api/github/my-prs');
+      const res = await request(server).get('/api/github/my-prs');
 
       expect(res.body.prs).toHaveLength(2);
       expect(res.body.prs[0].number).toBe(4); // Newer first
@@ -378,7 +382,7 @@ describe('GitHub Collections Routes', () => {
         state: 'open', collection: 'review-requests'
       });
 
-      const res = await request(app).get('/api/github/my-prs');
+      const res = await request(server).get('/api/github/my-prs');
 
       expect(res.body.prs).toHaveLength(1);
       expect(res.body.prs[0].number).toBe(20);
@@ -393,7 +397,7 @@ describe('GitHub Collections Routes', () => {
     it('should return 401 when no GitHub token configured', async () => {
       configModule.getGitHubToken.mockReturnValue(null);
 
-      const res = await request(app).post('/api/github/my-prs/refresh');
+      const res = await request(server).post('/api/github/my-prs/refresh');
 
       expect(res.status).toBe(401);
       expect(res.body.success).toBe(false);
@@ -415,7 +419,7 @@ describe('GitHub Collections Routes', () => {
         }
       ]);
 
-      const res = await request(app).post('/api/github/my-prs/refresh');
+      const res = await request(server).post('/api/github/my-prs/refresh');
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
@@ -452,7 +456,7 @@ describe('GitHub Collections Routes', () => {
         }
       ]);
 
-      const res = await request(app).post('/api/github/my-prs/refresh');
+      const res = await request(server).post('/api/github/my-prs/refresh');
 
       expect(res.body.prs).toHaveLength(1);
       expect(res.body.prs[0].owner).toBe('new-org');
@@ -475,7 +479,7 @@ describe('GitHub Collections Routes', () => {
       });
       GitHubClient.prototype.searchPullRequests.mockResolvedValue([]);
 
-      await request(app).post('/api/github/my-prs/refresh');
+      await request(server).post('/api/github/my-prs/refresh');
 
       const reviewRequests = await query(db, "SELECT * FROM github_pr_cache WHERE collection = 'review-requests'", []);
       expect(reviewRequests).toHaveLength(1);
@@ -488,7 +492,7 @@ describe('GitHub Collections Routes', () => {
       authError.status = 401;
       GitHubClient.prototype.getAuthenticatedUser.mockRejectedValue(authError);
 
-      const res = await request(app).post('/api/github/my-prs/refresh');
+      const res = await request(server).post('/api/github/my-prs/refresh');
 
       expect(res.status).toBe(401);
       expect(res.body.success).toBe(false);
@@ -501,7 +505,7 @@ describe('GitHub Collections Routes', () => {
       forbiddenError.status = 403;
       GitHubClient.prototype.getAuthenticatedUser.mockRejectedValue(forbiddenError);
 
-      const res = await request(app).post('/api/github/my-prs/refresh');
+      const res = await request(server).post('/api/github/my-prs/refresh');
 
       expect(res.status).toBe(401);
       expect(res.body.success).toBe(false);
@@ -512,7 +516,7 @@ describe('GitHub Collections Routes', () => {
       configModule.getGitHubToken.mockReturnValue('test-token');
       GitHubClient.prototype.getAuthenticatedUser.mockRejectedValue(new Error('Something broke'));
 
-      const res = await request(app).post('/api/github/my-prs/refresh');
+      const res = await request(server).post('/api/github/my-prs/refresh');
 
       expect(res.status).toBe(500);
       expect(res.body.success).toBe(false);
@@ -525,7 +529,7 @@ describe('GitHub Collections Routes', () => {
 
   describe('GET /api/github/team-reviews', () => {
     it('should return empty array when no cached data', async () => {
-      const res = await request(app).get('/api/github/team-reviews');
+      const res = await request(server).get('/api/github/team-reviews');
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
@@ -549,7 +553,7 @@ describe('GitHub Collections Routes', () => {
         state: 'open', collection: 'team-reviews'
       });
 
-      const res = await request(app).get('/api/github/team-reviews');
+      const res = await request(server).get('/api/github/team-reviews');
 
       expect(res.body.prs).toHaveLength(1);
       expect(res.body.prs[0].number).toBe(2);
@@ -564,7 +568,7 @@ describe('GitHub Collections Routes', () => {
     it('should return 401 when no GitHub token configured', async () => {
       configModule.getGitHubToken.mockReturnValue(null);
 
-      const res = await request(app).post('/api/github/team-reviews/refresh');
+      const res = await request(server).post('/api/github/team-reviews/refresh');
 
       expect(res.status).toBe(401);
       expect(res.body.success).toBe(false);
@@ -586,7 +590,7 @@ describe('GitHub Collections Routes', () => {
         }
       ]);
 
-      const res = await request(app).post('/api/github/team-reviews/refresh');
+      const res = await request(server).post('/api/github/team-reviews/refresh');
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
@@ -614,7 +618,7 @@ describe('GitHub Collections Routes', () => {
         }
       ]);
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/github/team-reviews/refresh')
         .query({ team: 'org/platform' });
 
@@ -635,7 +639,7 @@ describe('GitHub Collections Routes', () => {
       });
       GitHubClient.prototype.searchPullRequests.mockResolvedValue([]);
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/github/team-reviews/refresh')
         .send({ team: 'org/platform' });
 
@@ -653,7 +657,7 @@ describe('GitHub Collections Routes', () => {
           login: 'testuser', name: 'Test User', avatar_url: 'https://example.com/avatar.png'
         });
 
-        const res = await request(app)
+        const res = await request(server)
           .post('/api/github/team-reviews/refresh')
           .query({ team });
 
@@ -690,7 +694,7 @@ describe('GitHub Collections Routes', () => {
       ]);
 
       // Refresh the filtered view.
-      await request(app)
+      await request(server)
         .post('/api/github/team-reviews/refresh')
         .query({ team: 'org/platform' });
 
@@ -705,7 +709,7 @@ describe('GitHub Collections Routes', () => {
       expect(allTeams[0].number).toBe(1);
 
       // GET with the same ?team returns the namespaced rows.
-      const getRes = await request(app)
+      const getRes = await request(server)
         .get('/api/github/team-reviews')
         .query({ team: 'org/platform' });
       expect(getRes.status).toBe(200);
@@ -713,13 +717,13 @@ describe('GitHub Collections Routes', () => {
       expect(getRes.body.prs[0].number).toBe(30);
 
       // GET without ?team still returns the all-teams cache.
-      const getAll = await request(app).get('/api/github/team-reviews');
+      const getAll = await request(server).get('/api/github/team-reviews');
       expect(getAll.body.prs).toHaveLength(1);
       expect(getAll.body.prs[0].number).toBe(1);
     });
 
     it('should return 400 on GET with an invalid team', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .get('/api/github/team-reviews')
         .query({ team: 'not-a-slug' });
 
@@ -742,7 +746,7 @@ describe('GitHub Collections Routes', () => {
       });
       GitHubClient.prototype.searchPullRequests.mockResolvedValue([]);
 
-      await request(app).post('/api/github/team-reviews/refresh');
+      await request(server).post('/api/github/team-reviews/refresh');
 
       const reviewRequests = await query(db, "SELECT * FROM github_pr_cache WHERE collection = 'review-requests'", []);
       expect(reviewRequests).toHaveLength(1);
@@ -755,7 +759,7 @@ describe('GitHub Collections Routes', () => {
       forbiddenError.status = 403;
       GitHubClient.prototype.getAuthenticatedUser.mockRejectedValue(forbiddenError);
 
-      const res = await request(app).post('/api/github/team-reviews/refresh');
+      const res = await request(server).post('/api/github/team-reviews/refresh');
 
       expect(res.status).toBe(401);
       expect(res.body.success).toBe(false);
@@ -766,7 +770,7 @@ describe('GitHub Collections Routes', () => {
       configModule.getGitHubToken.mockReturnValue('test-token');
       GitHubClient.prototype.getAuthenticatedUser.mockRejectedValue(new Error('Network timeout'));
 
-      const res = await request(app).post('/api/github/team-reviews/refresh');
+      const res = await request(server).post('/api/github/team-reviews/refresh');
 
       expect(res.status).toBe(500);
       expect(res.body.success).toBe(false);

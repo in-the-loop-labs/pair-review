@@ -1,6 +1,7 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createTestDatabase, closeTestDatabase } from '../utils/schema';
+import { listenOnLoopback, closeServer } from '../utils/loopback-server';
 
 // Mock config to provide a GitHub token without requiring real credentials
 const configModule = require('../../src/config');
@@ -57,6 +58,7 @@ function seedPoolEntry(db, { id = 'wt-abc', repository = 'owner/repo', path = '/
 
 describe('POST /api/setup/pr/:owner/:repo/:number', () => {
   let db;
+  let server;
 
   beforeEach(() => {
     db = createTestDatabase();
@@ -74,7 +76,9 @@ describe('POST /api/setup/pr/:owner/:repo/:number', () => {
     });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await closeServer(server);
+    server = null;
     activeSetups.clear();
     closeTestDatabase(db);
   });
@@ -85,7 +89,8 @@ describe('POST /api/setup/pr/:owner/:repo/:number', () => {
     // No pool entry — this is a traditional (non-pool) worktree
 
     const app = createApp(db);
-    const res = await request(app).post('/api/setup/pr/owner/repo/42');
+    server = await listenOnLoopback(app);
+    const res = await request(server).post('/api/setup/pr/owner/repo/42');
 
     expect(res.status).toBe(200);
     expect(res.body.existing).toBe(true);
@@ -98,7 +103,8 @@ describe('POST /api/setup/pr/:owner/:repo/:number', () => {
     seedPoolEntry(db, { id: 'pool-abc', status: 'in_use' });
 
     const app = createApp(db, undefined, { withPool: true });
-    const res = await request(app).post('/api/setup/pr/owner/repo/42');
+    server = await listenOnLoopback(app);
+    const res = await request(server).post('/api/setup/pr/owner/repo/42');
 
     expect(res.status).toBe(200);
     expect(res.body.existing).toBe(true);
@@ -111,7 +117,8 @@ describe('POST /api/setup/pr/:owner/:repo/:number', () => {
     seedPoolEntry(db, { id: 'pool-abc', status: 'available', prNumber: 42 });
 
     const app = createApp(db, undefined, { withPool: true });
-    const res = await request(app).post('/api/setup/pr/owner/repo/42');
+    server = await listenOnLoopback(app);
+    const res = await request(server).post('/api/setup/pr/owner/repo/42');
 
     expect(res.status).toBe(200);
     expect(res.body.existing).toBe(true);
@@ -128,7 +135,8 @@ describe('POST /api/setup/pr/:owner/:repo/:number', () => {
     seedPoolEntry(db, { id: 'pool-abc', status: 'available', prNumber: 99 });
 
     const app = createApp(db, undefined, { withPool: true });
-    const res = await request(app).post('/api/setup/pr/owner/repo/42');
+    server = await listenOnLoopback(app);
+    const res = await request(server).post('/api/setup/pr/owner/repo/42');
 
     expect(res.status).toBe(200);
     expect(res.body.existing).toBeUndefined();
@@ -141,7 +149,8 @@ describe('POST /api/setup/pr/:owner/:repo/:number', () => {
     seedPoolEntry(db, { id: 'pool-abc', status: 'switching' });
 
     const app = createApp(db, undefined, { withPool: true });
-    const res = await request(app).post('/api/setup/pr/owner/repo/42');
+    server = await listenOnLoopback(app);
+    const res = await request(server).post('/api/setup/pr/owner/repo/42');
 
     expect(res.status).toBe(200);
     expect(res.body.existing).toBeUndefined();
@@ -153,7 +162,8 @@ describe('POST /api/setup/pr/:owner/:repo/:number', () => {
     // No worktree row seeded
 
     const app = createApp(db);
-    const res = await request(app).post('/api/setup/pr/owner/repo/42');
+    server = await listenOnLoopback(app);
+    const res = await request(server).post('/api/setup/pr/owner/repo/42');
 
     expect(res.status).toBe(200);
     expect(res.body.existing).toBeUndefined();
@@ -170,7 +180,8 @@ describe('POST /api/setup/pr/:owner/:repo/:number', () => {
     // No worktree row — forces setup to run
 
     const app = createApp(db);
-    const res = await request(app).post('/api/setup/pr/owner/repo/42');
+    server = await listenOnLoopback(app);
+    const res = await request(server).post('/api/setup/pr/owner/repo/42');
 
     expect(res.status).toBe(200);
     expect(res.body.setupId).toBeTruthy();
@@ -191,7 +202,8 @@ describe('POST /api/setup/pr/:owner/:repo/:number', () => {
     ).run(42, 'owner/repo', 'Test PR', prDataJson, now, now);
 
     const app = createApp(db);
-    const res = await request(app).post('/api/setup/pr/owner/repo/42');
+    server = await listenOnLoopback(app);
+    const res = await request(server).post('/api/setup/pr/owner/repo/42');
 
     expect(res.status).toBe(200);
     expect(res.body.setupId).toBeTruthy();
@@ -205,7 +217,8 @@ describe('POST /api/setup/pr/:owner/:repo/:number', () => {
     // No PR metadata seeded at all
 
     const app = createApp(db);
-    const res = await request(app).post('/api/setup/pr/owner/repo/42');
+    server = await listenOnLoopback(app);
+    const res = await request(server).post('/api/setup/pr/owner/repo/42');
 
     expect(res.status).toBe(200);
     expect(res.body.setupId).toBeTruthy();
@@ -231,7 +244,8 @@ describe('POST /api/setup/pr/:owner/:repo/:number', () => {
     };
 
     const app = createApp(db, monorepoConfig);
-    const res = await request(app).post('/api/setup/pr/acme/widget-a/7');
+    server = await listenOnLoopback(app);
+    const res = await request(server).post('/api/setup/pr/acme/widget-a/7');
 
     expect(res.status).toBe(200);
     expect(configModule.getGitHubToken).toHaveBeenCalledWith(monorepoConfig, 'acme-monorepo');
@@ -246,7 +260,8 @@ describe('POST /api/setup/pr/:owner/:repo/:number', () => {
   it('falls back to PR identity when no url_pattern matches (negative case)', async () => {
     const plainConfig = { github_token: 'test-token', repos: {} };
     const app = createApp(db, plainConfig);
-    const res = await request(app).post('/api/setup/pr/alice/tool/3');
+    server = await listenOnLoopback(app);
+    const res = await request(server).post('/api/setup/pr/alice/tool/3');
 
     expect(res.status).toBe(200);
     // Binding key = "alice/tool" (the PR identity) when nothing matched.
@@ -258,6 +273,7 @@ describe('POST /api/setup/pr/:owner/:repo/:number', () => {
 
 describe('POST /api/setup/local', () => {
   let db;
+  let server;
 
   beforeEach(() => {
     db = createTestDatabase();
@@ -272,14 +288,17 @@ describe('POST /api/setup/local', () => {
     });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await closeServer(server);
+    server = null;
     activeSetups.clear();
     closeTestDatabase(db);
   });
 
   it('returns 400 immediately when local path is a URL', async () => {
     const app = createApp(db);
-    const res = await request(app)
+    server = await listenOnLoopback(app);
+    const res = await request(server)
       .post('/api/setup/local')
       .send({ path: 'https://github.com/owner/repo/pull/123' });
 

@@ -236,12 +236,19 @@ describe('generateLocalDiff', () => {
 describe('findMainGitRoot', () => {
   let mainRepoDir;
   let worktreeDir;
+  let worktreeParent;
 
   beforeEach(async () => {
     // Create a main git repository
     // Use realpath to resolve symlinks (e.g., /var -> /private/var on macOS)
     const tmpDir = await fs.realpath(os.tmpdir());
     mainRepoDir = await fs.mkdtemp(path.join(tmpDir, 'pair-review-main-repo-'));
+
+    // Unique parent for worktree paths. Tests derive worktreeDir INSIDE this
+    // mkdtemp'd parent (the worktree target itself must not pre-exist for
+    // `git worktree add`) instead of a Date.now()-suffixed path directly in
+    // the shared tmp root, which can collide across parallel workers.
+    worktreeParent = await fs.mkdtemp(path.join(tmpDir, 'pair-review-worktree-'));
 
     // Initialize git repo
     execSync('git init', { cwd: mainRepoDir, stdio: 'pipe' });
@@ -269,6 +276,12 @@ describe('findMainGitRoot', () => {
     if (mainRepoDir) {
       await fs.rm(mainRepoDir, { recursive: true, force: true });
     }
+
+    // Clean up the worktree parent directory
+    if (worktreeParent) {
+      await fs.rm(worktreeParent, { recursive: true, force: true });
+      worktreeParent = null;
+    }
   });
 
   it('should return the same path for a regular git repository', async () => {
@@ -277,9 +290,8 @@ describe('findMainGitRoot', () => {
   });
 
   it('should return the main repo root when called from a worktree', async () => {
-    // Create a worktree
-    const tmpDir = await fs.realpath(os.tmpdir());
-    worktreeDir = path.join(tmpDir, `pair-review-worktree-${Date.now()}`);
+    // Create a worktree inside the per-test mkdtemp'd parent
+    worktreeDir = path.join(worktreeParent, 'wt');
 
     // Create a branch for the worktree
     execSync('git branch test-branch', { cwd: mainRepoDir, stdio: 'pipe' });
@@ -291,9 +303,8 @@ describe('findMainGitRoot', () => {
   });
 
   it('should work when called from a subdirectory of a worktree', async () => {
-    // Create a worktree
-    const tmpDir = await fs.realpath(os.tmpdir());
-    worktreeDir = path.join(tmpDir, `pair-review-worktree-${Date.now()}`);
+    // Create a worktree inside the per-test mkdtemp'd parent
+    worktreeDir = path.join(worktreeParent, 'wt');
     execSync('git branch test-branch-2', { cwd: mainRepoDir, stdio: 'pipe' });
     execSync(`git worktree add "${worktreeDir}" test-branch-2`, { cwd: mainRepoDir, stdio: 'pipe' });
 
@@ -319,6 +330,7 @@ describe('findMainGitRoot', () => {
 describe('findGitRoot vs findMainGitRoot comparison', () => {
   let mainRepoDir;
   let worktreeDir;
+  let worktreeParent;
 
   beforeEach(async () => {
     // Create a main git repository
@@ -336,8 +348,11 @@ describe('findGitRoot vs findMainGitRoot comparison', () => {
     execSync('git add file.txt', { cwd: mainRepoDir, stdio: 'pipe' });
     execSync('git commit -m "Initial commit"', { cwd: mainRepoDir, stdio: 'pipe' });
 
-    // Create a worktree
-    worktreeDir = path.join(tmpDir, `pair-review-wt-${Date.now()}`);
+    // Create a worktree inside a unique mkdtemp'd parent — a Date.now()
+    // suffix directly in the shared tmp root can collide across workers.
+    // (`git worktree add` requires the target itself to not pre-exist.)
+    worktreeParent = await fs.mkdtemp(path.join(tmpDir, 'pair-review-wt-'));
+    worktreeDir = path.join(worktreeParent, 'wt');
     execSync('git branch compare-branch', { cwd: mainRepoDir, stdio: 'pipe' });
     execSync(`git worktree add "${worktreeDir}" compare-branch`, { cwd: mainRepoDir, stdio: 'pipe' });
   });
@@ -352,6 +367,10 @@ describe('findGitRoot vs findMainGitRoot comparison', () => {
     }
     if (mainRepoDir) {
       await fs.rm(mainRepoDir, { recursive: true, force: true });
+    }
+    if (worktreeParent) {
+      await fs.rm(worktreeParent, { recursive: true, force: true });
+      worktreeParent = null;
     }
   });
 

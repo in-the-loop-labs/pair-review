@@ -1,6 +1,9 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, beforeAll, afterAll } from 'vitest';
 import { execSync, spawnSync } from 'child_process';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
 
 // Test the parseArgs and detectPRFromGitHubEnvironment functions exported from main.js
 const { parseArgs, detectPRFromGitHubEnvironment } = require('../../src/main');
@@ -504,10 +507,6 @@ describe('CLI help and version', () => {
 
 describe('CLI child process spawning', () => {
   it('should use the same Node.js binary as the parent process, not node from PATH', () => {
-    const fs = require('fs');
-    const path = require('path');
-    const os = require('os');
-
     // Create a temp directory with a fake "node" that always fails
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-test-'));
     const fakeNode = path.join(tmpDir, 'node');
@@ -572,7 +571,33 @@ describe('headless CLI smoke (main()-level validations)', () => {
   // is known-flaky locally; see coverage-gap note below).
   //
   // PAIR_REVIEW_NO_OPEN=1 guarantees no browser tab is opened (project rule).
-  const childEnv = { ...process.env, PAIR_REVIEW_NO_OPEN: '1' };
+  //
+  // Each spawn also gets an ISOLATED temp HOME: main() runs loadConfig()
+  // BEFORE these flag validations (src/main.js), so spawning with the real
+  // HOME would create ~/.pair-review in the real home dir on a clean machine,
+  // and a malformed real config would exit with a different message —
+  // environment-dependent failures. Mirrors headless-json-error.test.js.
+  let testHomeDir;
+  let childEnv;
+
+  beforeAll(() => {
+    testHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pair-review-main-headless-'));
+    // Pre-create config so these are not first-runs (no welcome-box noise).
+    const configDir = path.join(testHomeDir, '.pair-review');
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(configDir, 'config.json'),
+      JSON.stringify({ github_token: '', port: 7247, theme: 'light' }, null, 2)
+    );
+    childEnv = { ...process.env, PAIR_REVIEW_NO_OPEN: '1', HOME: testHomeDir, GITHUB_TOKEN: '' };
+  });
+
+  afterAll(() => {
+    if (testHomeDir) {
+      fs.rmSync(testHomeDir, { recursive: true, force: true });
+    }
+  });
+
   const run = (args) =>
     spawnSync(process.execPath, ['bin/pair-review.js', ...args], { env: childEnv, encoding: 'utf-8' });
 

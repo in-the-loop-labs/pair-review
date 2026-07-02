@@ -8,11 +8,31 @@ import os from 'os';
 describe('First-run welcome message', () => {
   let testHomeDir;
   let originalHome;
+  let childEnv;
 
   beforeEach(async () => {
     // Create a temporary directory to act as HOME
     testHomeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pair-review-first-run-'));
     originalHome = process.env.HOME;
+
+    // Prepend a fake FAILING `gh` to PATH. On a dev machine with `gh auth`
+    // configured, the default github_token_command ("gh auth token") yields
+    // a real token and the CLI proceeds toward real GitHub — racing the 10s
+    // spawn timeout (known local flake). A failing gh keeps the run hermetic
+    // and deterministic. (Fake-binary pattern adapted from
+    // tests/unit/main.test.js "CLI child process spawning".)
+    const fakeBinDir = path.join(testHomeDir, 'fake-bin');
+    await fs.mkdir(fakeBinDir, { recursive: true });
+    await fs.writeFile(path.join(fakeBinDir, 'gh'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+
+    childEnv = {
+      ...process.env,
+      HOME: testHomeDir,
+      // Prevent any GITHUB_TOKEN from being used
+      GITHUB_TOKEN: '',
+      PAIR_REVIEW_NO_OPEN: '1',
+      PATH: `${fakeBinDir}${path.delimiter}${process.env.PATH}`
+    };
   });
 
   afterEach(async () => {
@@ -31,13 +51,7 @@ describe('First-run welcome message', () => {
 
     const result = spawnSync('node', ['bin/pair-review.js', '123'], {
       cwd: path.join(__dirname, '../..'),
-      env: {
-        ...process.env,
-        HOME: testHomeDir,
-        // Prevent any GITHUB_TOKEN from being used
-        GITHUB_TOKEN: '',
-        PAIR_REVIEW_NO_OPEN: '1'
-      },
+      env: childEnv,
       timeout: 10000
     });
 
@@ -66,12 +80,7 @@ describe('First-run welcome message', () => {
     // It will fail due to missing GitHub token, but should NOT show welcome message
     const result = spawnSync('node', ['bin/pair-review.js', '123'], {
       cwd: path.join(__dirname, '../..'),
-      env: {
-        ...process.env,
-        HOME: testHomeDir,
-        GITHUB_TOKEN: '',
-        PAIR_REVIEW_NO_OPEN: '1'
-      },
+      env: childEnv,
       timeout: 10000
     });
 
@@ -86,11 +95,7 @@ describe('First-run welcome message', () => {
   it('should NOT show welcome message when --help flag is used (even on first run)', async () => {
     const result = spawnSync('node', ['bin/pair-review.js', '--help'], {
       cwd: path.join(__dirname, '../..'),
-      env: {
-        ...process.env,
-        HOME: testHomeDir,
-        PAIR_REVIEW_NO_OPEN: '1'
-      },
+      env: childEnv,
       timeout: 10000
     });
 
@@ -104,11 +109,7 @@ describe('First-run welcome message', () => {
   it('should NOT show welcome message when --version flag is used (even on first run)', async () => {
     const result = spawnSync('node', ['bin/pair-review.js', '--version'], {
       cwd: path.join(__dirname, '../..'),
-      env: {
-        ...process.env,
-        HOME: testHomeDir,
-        PAIR_REVIEW_NO_OPEN: '1'
-      },
+      env: childEnv,
       timeout: 10000
     });
 
@@ -122,11 +123,7 @@ describe('First-run welcome message', () => {
   it('should NOT show welcome message when --configure flag is used (even on first run)', async () => {
     const result = spawnSync('node', ['bin/pair-review.js', '--configure'], {
       cwd: path.join(__dirname, '../..'),
-      env: {
-        ...process.env,
-        HOME: testHomeDir,
-        PAIR_REVIEW_NO_OPEN: '1'
-      },
+      env: childEnv,
       timeout: 10000
     });
 
@@ -141,12 +138,7 @@ describe('First-run welcome message', () => {
     // Run with a fake PR number to trigger the workflow and show welcome message
     const result = spawnSync('node', ['bin/pair-review.js', '123'], {
       cwd: path.join(__dirname, '../..'),
-      env: {
-        ...process.env,
-        HOME: testHomeDir,
-        GITHUB_TOKEN: '',
-        PAIR_REVIEW_NO_OPEN: '1'
-      },
+      env: childEnv,
       timeout: 10000
     });
 

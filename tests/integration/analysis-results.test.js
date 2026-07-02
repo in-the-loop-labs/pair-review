@@ -1,5 +1,5 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { execSync } from 'child_process';
 import express from 'express';
 import nodeFs from 'fs';
@@ -7,6 +7,7 @@ import os from 'os';
 import path from 'path';
 import request from 'supertest';
 import { createTestDatabase, closeTestDatabase } from '../utils/schema';
+import { listenOnLoopback, closeServer } from '../utils/loopback-server';
 
 /**
  * Create a throwaway git repo with an unstaged change so the real local-diff
@@ -49,7 +50,13 @@ vi.spyOn(configModule, 'loadConfig').mockResolvedValue({
   port: 7247,
   theme: 'light'
 });
-vi.spyOn(configModule, 'getConfigDir').mockReturnValue('/tmp/.pair-review-test');
+// Unique per test file so parallel forks never share a config dir on disk.
+const testConfigDir = nodeFs.mkdtempSync(path.join(os.tmpdir(), 'pair-review-cfg-'));
+vi.spyOn(configModule, 'getConfigDir').mockReturnValue(testConfigDir);
+
+afterAll(() => {
+  nodeFs.rmSync(testConfigDir, { recursive: true, force: true });
+});
 
 const { query, queryOne, run, ReviewRepository } = require('../../src/database');
 const ws = require('../../src/ws');
@@ -74,15 +81,18 @@ function createTestApp(db) {
 describe('POST /api/analyses/results', () => {
   let db;
   let app;
+  let server;
   let broadcastSpy;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     broadcastSpy = vi.spyOn(ws, 'broadcast').mockImplementation(() => {});
     db = createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await closeServer(server);
     broadcastSpy.mockRestore();
     if (db) {
       closeTestDatabase(db);
@@ -93,7 +103,7 @@ describe('POST /api/analyses/results', () => {
   // --- Validation ---
 
   it('should return 400 when no identification pair is provided', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/analyses/results')
       .send({ suggestions: [] });
 
@@ -102,7 +112,7 @@ describe('POST /api/analyses/results', () => {
   });
 
   it('should return 400 when both identification pairs are provided', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/analyses/results')
       .send({
         path: '/tmp/project',
@@ -117,7 +127,7 @@ describe('POST /api/analyses/results', () => {
   });
 
   it('should return 400 when path is provided without headSha', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/analyses/results')
       .send({ path: '/tmp/project', suggestions: [] });
 
@@ -126,7 +136,7 @@ describe('POST /api/analyses/results', () => {
   });
 
   it('should return 400 when repo is provided without prNumber', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/analyses/results')
       .send({ repo: 'owner/repo', suggestions: [] });
 
@@ -135,7 +145,7 @@ describe('POST /api/analyses/results', () => {
   });
 
   it('should return 400 when suggestions is not an array', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/analyses/results')
       .send({
         path: '/tmp/project',
@@ -148,7 +158,7 @@ describe('POST /api/analyses/results', () => {
   });
 
   it('should return 400 when fileLevelSuggestions is not an array', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/analyses/results')
       .send({
         path: '/tmp/project',
@@ -162,7 +172,7 @@ describe('POST /api/analyses/results', () => {
   });
 
   it('should return 400 when a suggestion is missing required fields', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/analyses/results')
       .send({
         path: '/tmp/project',
@@ -175,7 +185,7 @@ describe('POST /api/analyses/results', () => {
   });
 
   it('should return 400 when prNumber is not a positive integer', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/analyses/results')
       .send({ repo: 'owner/repo', prNumber: -1, suggestions: [] });
     expect(response.status).toBe(400);
@@ -183,7 +193,7 @@ describe('POST /api/analyses/results', () => {
   });
 
   it('should return 400 when prNumber is zero', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/analyses/results')
       .send({ repo: 'owner/repo', prNumber: 0, suggestions: [] });
     expect(response.status).toBe(400);
@@ -191,7 +201,7 @@ describe('POST /api/analyses/results', () => {
   });
 
   it('should return 400 when prNumber is not a number', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/analyses/results')
       .send({ repo: 'owner/repo', prNumber: 'abc', suggestions: [] });
     expect(response.status).toBe(400);
@@ -199,7 +209,7 @@ describe('POST /api/analyses/results', () => {
   });
 
   it('should return 400 when tier is provided but invalid', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/analyses/results')
       .send({
         path: '/tmp/project',
@@ -215,7 +225,7 @@ describe('POST /api/analyses/results', () => {
 
   it('should accept canonical tier values', async () => {
     for (const tier of ['fast', 'balanced', 'thorough']) {
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/analyses/results')
         .send({
           path: '/tmp/project',
@@ -233,7 +243,7 @@ describe('POST /api/analyses/results', () => {
   });
 
   it('should normalize tier aliases to canonical form', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/analyses/results')
       .send({
         path: '/tmp/project',
@@ -250,7 +260,7 @@ describe('POST /api/analyses/results', () => {
   });
 
   it('should allow null/undefined tier (external imports may omit it)', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/analyses/results')
       .send({
         path: '/tmp/project',
@@ -266,7 +276,7 @@ describe('POST /api/analyses/results', () => {
   });
 
   it('should return 400 when a file-level suggestion is missing required fields', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/analyses/results')
       .send({
         path: '/tmp/project',
@@ -282,7 +292,7 @@ describe('POST /api/analyses/results', () => {
   // --- Local mode happy path ---
 
   it('should create analysis run and suggestions for local mode', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/analyses/results')
       .send({
         path: '/tmp/my-project',
@@ -365,7 +375,7 @@ describe('POST /api/analyses/results', () => {
     try {
       const headSha = execSync('git rev-parse HEAD', { cwd: tempRepo, encoding: 'utf8' }).trim();
 
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/analyses/results')
         .send({
           path: tempRepo,
@@ -412,7 +422,7 @@ describe('POST /api/analyses/results', () => {
       VALUES (?, ?, 'draft', 'pr')
     `, [42, 'owner/repo']);
 
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/analyses/results')
       .send({
         repo: 'owner/repo',
@@ -445,7 +455,7 @@ describe('POST /api/analyses/results', () => {
   });
 
   it('should create a new review for PR mode if none exists', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/analyses/results')
       .send({
         repo: 'owner/repo',
@@ -467,7 +477,7 @@ describe('POST /api/analyses/results', () => {
   // --- Empty suggestions ---
 
   it('should create a run with zero suggestions', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/analyses/results')
       .send({
         path: '/tmp/empty-project',
@@ -488,7 +498,7 @@ describe('POST /api/analyses/results', () => {
   // --- Side mapping ---
 
   it('should map OLD to LEFT and NEW to RIGHT', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/analyses/results')
       .send({
         path: '/tmp/project',
@@ -524,7 +534,7 @@ describe('POST /api/analyses/results', () => {
   // --- File-level suggestions ---
 
   it('should store file-level suggestions with is_file_level=1 and null line numbers', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/analyses/results')
       .send({
         path: '/tmp/project',
@@ -556,7 +566,7 @@ describe('POST /api/analyses/results', () => {
 
   it('should store summary on the analysis_run record', async () => {
     const summary = 'This PR introduces 3 new utility functions. Overall quality is high.';
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/analyses/results')
       .send({
         path: '/tmp/project',
@@ -579,7 +589,7 @@ describe('POST /api/analyses/results', () => {
   // --- Suggestion body formatting ---
 
   it('should format suggestion body with description and suggestion text', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/analyses/results')
       .send({
         path: '/tmp/project',
@@ -602,7 +612,7 @@ describe('POST /api/analyses/results', () => {
   });
 
   it('should format suggestion body without suggestion text when absent', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/analyses/results')
       .send({
         path: '/tmp/project',
@@ -624,7 +634,7 @@ describe('POST /api/analyses/results', () => {
 
   it('should store suggestion blocks in suggestion_text without concatenation', async () => {
     const suggestionBlock = '```suggestion\nconst x = 1;\n```';
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/analyses/results')
       .send({
         path: '/tmp/project',
@@ -649,7 +659,7 @@ describe('POST /api/analyses/results', () => {
   // --- Mixed line-level and file-level suggestions ---
 
   it('should handle both line-level and file-level suggestions in one request', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/analyses/results')
       .send({
         path: '/tmp/project',
@@ -688,7 +698,7 @@ describe('POST /api/analyses/results', () => {
   // --- Line normalization ---
 
   it('should normalize line to line_start/line_end', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/analyses/results')
       .send({
         path: '/tmp/project',
@@ -720,8 +730,8 @@ describe('POST /api/analyses/results', () => {
       ]
     };
 
-    const first = await request(app).post('/api/analyses/results').send(payload);
-    const second = await request(app).post('/api/analyses/results').send(payload);
+    const first = await request(server).post('/api/analyses/results').send(payload);
+    const second = await request(server).post('/api/analyses/results').send(payload);
 
     expect(first.status).toBe(201);
     expect(second.status).toBe(201);
@@ -735,7 +745,7 @@ describe('POST /api/analyses/results', () => {
   it('should broadcast review:analysis_completed event for local mode', async () => {
     broadcastSpy.mockClear();
 
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/analyses/results')
       .send({
         path: '/tmp/sse-project',
@@ -764,7 +774,7 @@ describe('POST /api/analyses/results', () => {
   it('should broadcast review:analysis_completed event for PR mode', async () => {
     broadcastSpy.mockClear();
 
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/analyses/results')
       .send({
         repo: 'owner/repo',
@@ -795,20 +805,23 @@ describe('GET /api/analyses/active', () => {
   const { activeAnalyses } = require('../../src/routes/shared');
   let db;
   let app;
+  let server;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     activeAnalyses.clear();
     db = createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await closeServer(server);
     activeAnalyses.clear();
     if (db) closeTestDatabase(db);
   });
 
   it('should return empty array when no active analyses', async () => {
-    const res = await request(app).get('/api/analyses/active').expect(200);
+    const res = await request(server).get('/api/analyses/active').expect(200);
     expect(res.body.active).toEqual([]);
   });
 
@@ -832,7 +845,7 @@ describe('GET /api/analyses/active', () => {
       status: 'failed'
     });
 
-    const res = await request(app).get('/api/analyses/active').expect(200);
+    const res = await request(server).get('/api/analyses/active').expect(200);
     expect(res.body.active).toHaveLength(1);
     expect(res.body.active[0]).toEqual({
       analysisId: 'running-1',
@@ -860,7 +873,7 @@ describe('GET /api/analyses/active', () => {
       status: 'running'
     });
 
-    const res = await request(app).get('/api/analyses/active').expect(200);
+    const res = await request(server).get('/api/analyses/active').expect(200);
     expect(res.body.active).toHaveLength(2);
 
     const prEntry = res.body.active.find(a => a.reviewType === 'pr');
@@ -877,7 +890,7 @@ describe('GET /api/analyses/active', () => {
       status: 'running'
     });
 
-    const res = await request(app).get('/api/analyses/active').expect(200);
+    const res = await request(server).get('/api/analyses/active').expect(200);
     expect(res.body.active).toHaveLength(1);
     expect(res.body.active[0]).toEqual({
       analysisId: 'minimal',

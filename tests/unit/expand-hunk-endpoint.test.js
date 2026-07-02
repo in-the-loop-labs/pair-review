@@ -15,6 +15,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import { createTestDatabase, closeTestDatabase } from '../utils/schema';
+import { listenOnLoopback, closeServer } from '../utils/loopback-server';
 
 const { run } = require('../../src/database.js');
 
@@ -47,16 +48,18 @@ async function insertReview(db) {
 }
 
 describe('POST /api/reviews/:reviewId/expand-hunk', () => {
-  let db, app, reviewId;
+  let db, app, server, reviewId;
 
   beforeEach(async () => {
     db = await createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
     reviewId = await insertReview(db);
     vi.clearAllMocks();
   });
 
   afterEach(async () => {
+    await closeServer(server);
     if (db) {
       await closeTestDatabase(db);
     }
@@ -65,7 +68,7 @@ describe('POST /api/reviews/:reviewId/expand-hunk', () => {
   // --- success ---
 
   it('should return { success: true } for a valid request', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post(`/api/reviews/${reviewId}/expand-hunk`)
       .send({ file: 'src/app.js', line_start: 10, line_end: 20 });
 
@@ -74,7 +77,7 @@ describe('POST /api/reviews/:reviewId/expand-hunk', () => {
   });
 
   it('should default side to "right" when not provided', async () => {
-    await request(app)
+    await request(server)
       .post(`/api/reviews/${reviewId}/expand-hunk`)
       .send({ file: 'src/app.js', line_start: 10, line_end: 20 });
 
@@ -88,7 +91,7 @@ describe('POST /api/reviews/:reviewId/expand-hunk', () => {
   });
 
   it('should pass explicit side value through to the broadcast', async () => {
-    await request(app)
+    await request(server)
       .post(`/api/reviews/${reviewId}/expand-hunk`)
       .send({ file: 'src/app.js', line_start: 5, line_end: 15, side: 'left' });
 
@@ -102,7 +105,7 @@ describe('POST /api/reviews/:reviewId/expand-hunk', () => {
   });
 
   it('should accept line_start equal to line_end (single line)', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post(`/api/reviews/${reviewId}/expand-hunk`)
       .send({ file: 'x.js', line_start: 42, line_end: 42 });
 
@@ -113,7 +116,7 @@ describe('POST /api/reviews/:reviewId/expand-hunk', () => {
   // --- broadcastReviewEvent payload ---
 
   it('should call broadcastReviewEvent with type "review:expand_hunk"', async () => {
-    await request(app)
+    await request(server)
       .post(`/api/reviews/${reviewId}/expand-hunk`)
       .send({ file: 'index.js', line_start: 1, line_end: 10, side: 'right' });
 
@@ -130,7 +133,7 @@ describe('POST /api/reviews/:reviewId/expand-hunk', () => {
   // --- validation: file ---
 
   it('should return 400 when file is missing', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post(`/api/reviews/${reviewId}/expand-hunk`)
       .send({ line_start: 10, line_end: 20 });
 
@@ -139,7 +142,7 @@ describe('POST /api/reviews/:reviewId/expand-hunk', () => {
   });
 
   it('should return 400 when file is empty string', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post(`/api/reviews/${reviewId}/expand-hunk`)
       .send({ file: '', line_start: 10, line_end: 20 });
 
@@ -148,7 +151,7 @@ describe('POST /api/reviews/:reviewId/expand-hunk', () => {
   });
 
   it('should return 400 when file is not a string', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post(`/api/reviews/${reviewId}/expand-hunk`)
       .send({ file: 123, line_start: 10, line_end: 20 });
 
@@ -159,7 +162,7 @@ describe('POST /api/reviews/:reviewId/expand-hunk', () => {
   // --- validation: line_start ---
 
   it('should return 400 when line_start is missing', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post(`/api/reviews/${reviewId}/expand-hunk`)
       .send({ file: 'app.js', line_end: 20 });
 
@@ -168,7 +171,7 @@ describe('POST /api/reviews/:reviewId/expand-hunk', () => {
   });
 
   it('should return 400 when line_start is zero', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post(`/api/reviews/${reviewId}/expand-hunk`)
       .send({ file: 'app.js', line_start: 0, line_end: 5 });
 
@@ -177,7 +180,7 @@ describe('POST /api/reviews/:reviewId/expand-hunk', () => {
   });
 
   it('should return 400 when line_start is negative', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post(`/api/reviews/${reviewId}/expand-hunk`)
       .send({ file: 'app.js', line_start: -1, line_end: 5 });
 
@@ -186,7 +189,7 @@ describe('POST /api/reviews/:reviewId/expand-hunk', () => {
   });
 
   it('should return 400 when line_start is a float', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post(`/api/reviews/${reviewId}/expand-hunk`)
       .send({ file: 'app.js', line_start: 1.5, line_end: 5 });
 
@@ -197,7 +200,7 @@ describe('POST /api/reviews/:reviewId/expand-hunk', () => {
   // --- validation: line_end ---
 
   it('should return 400 when line_end is missing', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post(`/api/reviews/${reviewId}/expand-hunk`)
       .send({ file: 'app.js', line_start: 10 });
 
@@ -206,7 +209,7 @@ describe('POST /api/reviews/:reviewId/expand-hunk', () => {
   });
 
   it('should return 400 when line_end is less than line_start', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post(`/api/reviews/${reviewId}/expand-hunk`)
       .send({ file: 'app.js', line_start: 20, line_end: 10 });
 
@@ -217,7 +220,7 @@ describe('POST /api/reviews/:reviewId/expand-hunk', () => {
   // --- validation: side ---
 
   it('should return 400 when side is an invalid value', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post(`/api/reviews/${reviewId}/expand-hunk`)
       .send({ file: 'app.js', line_start: 1, line_end: 5, side: 'center' });
 
@@ -227,7 +230,7 @@ describe('POST /api/reviews/:reviewId/expand-hunk', () => {
 
   it('should return 400 when side is an uppercase value', async () => {
     // The route only accepts lowercase 'left' or 'right'
-    const response = await request(app)
+    const response = await request(server)
       .post(`/api/reviews/${reviewId}/expand-hunk`)
       .send({ file: 'app.js', line_start: 1, line_end: 5, side: 'LEFT' });
 
@@ -238,7 +241,7 @@ describe('POST /api/reviews/:reviewId/expand-hunk', () => {
   // --- validation: reviewId ---
 
   it('should return 404 for a non-existent review ID', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/reviews/99999/expand-hunk')
       .send({ file: 'app.js', line_start: 1, line_end: 5 });
 
@@ -246,7 +249,7 @@ describe('POST /api/reviews/:reviewId/expand-hunk', () => {
   });
 
   it('should return 400 for an invalid review ID', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/reviews/invalid/expand-hunk')
       .send({ file: 'app.js', line_start: 1, line_end: 5 });
 
@@ -256,7 +259,7 @@ describe('POST /api/reviews/:reviewId/expand-hunk', () => {
   // --- no broadcast on validation failure ---
 
   it('should not call broadcastReviewEvent when validation fails', async () => {
-    await request(app)
+    await request(server)
       .post(`/api/reviews/${reviewId}/expand-hunk`)
       .send({ line_start: 10, line_end: 20 }); // missing file
 

@@ -177,15 +177,18 @@ describe('CouncilRepository', () => {
 
     it('should update the updated_at timestamp', async () => {
       await repo.create({ id: 'upd-3', name: 'Timestamp', config: sampleConfig });
+
+      // Backdate the row so the CURRENT_TIMESTAMP write (1-second resolution)
+      // is guaranteed to differ — no sleep needed
+      const { run: dbRun } = require('../../src/database.js');
+      await dbRun(db, `UPDATE councils SET updated_at = '2020-01-01 00:00:00' WHERE id = ?`, ['upd-3']);
       const before = await repo.getById('upd-3');
 
-      // Tiny delay to ensure timestamp difference
-      await new Promise(r => setTimeout(r, 10));
       await repo.update('upd-3', { name: 'Changed' });
       const after = await repo.getById('upd-3');
 
-      // updated_at should be >= before
-      expect(new Date(after.updated_at).getTime()).toBeGreaterThanOrEqual(new Date(before.updated_at).getTime());
+      // updated_at must be strictly newer than the backdated value
+      expect(new Date(after.updated_at).getTime()).toBeGreaterThan(new Date(before.updated_at).getTime());
     });
   });
 

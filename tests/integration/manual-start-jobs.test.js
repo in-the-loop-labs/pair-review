@@ -26,6 +26,7 @@ import os from 'os';
 import path from 'path';
 import request from 'supertest';
 import { createTestDatabase, closeTestDatabase } from '../utils/schema';
+import { listenOnLoopback, closeServer } from '../utils/loopback-server';
 
 const prRouter = require('../../src/routes/pr');
 const localRouter = require('../../src/routes/local');
@@ -87,6 +88,22 @@ function buildApp(db, config) {
   return app;
 }
 
+/**
+ * Per-test servers created via startServer() are tracked here and closed in
+ * afterEach, so tests that build their own app don't leak listeners.
+ */
+const openServers = [];
+
+/**
+ * Bind an app to 127.0.0.1 and track the resulting server for automatic
+ * cleanup. Pass the returned server to supertest instead of the bare app.
+ */
+async function startServer(app) {
+  const server = await listenOnLoopback(app);
+  openServers.push(server);
+  return server;
+}
+
 async function seedPr(db, { prNumber = 1, repository = 'owner/repo' } = {}) {
   const prData = JSON.stringify({
     state: 'open',
@@ -135,7 +152,10 @@ describe('Manual start endpoints', () => {
     findActiveSpy = vi.spyOn(backgroundQueue, 'findActiveJobType').mockReturnValue(null);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    for (const s of openServers.splice(0)) {
+      await closeServer(s);
+    }
     vi.restoreAllMocks();
     // The manual-start handler caches regenerated diffs in this module-level
     // Map (keyed by reviewId). Clear it so an entry from one test cannot make a
@@ -147,37 +167,42 @@ describe('Manual start endpoints', () => {
   describe('PR mode: POST /api/pr/:owner/:repo/:number/jobs/:jobKey/start', () => {
     it('returns 409 when summaries are disabled', async () => {
       const app = buildApp(db, { summaries: { enabled: false } });
+      const server = await startServer(app);
       await seedPr(db);
-      const res = await request(app).post('/api/pr/owner/repo/1/jobs/summary/start');
+      const res = await request(server).post('/api/pr/owner/repo/1/jobs/summary/start');
       expect(res.status).toBe(409);
       expect(summarySpy).not.toHaveBeenCalled();
     });
 
     it('returns 409 when tours are disabled', async () => {
       const app = buildApp(db, { tours: { enabled: false } });
+      const server = await startServer(app);
       await seedPr(db);
-      const res = await request(app).post('/api/pr/owner/repo/1/jobs/tour/start');
+      const res = await request(server).post('/api/pr/owner/repo/1/jobs/tour/start');
       expect(res.status).toBe(409);
       expect(tourSpy).not.toHaveBeenCalled();
     });
 
     it('returns 400 for an unknown jobKey', async () => {
       const app = buildApp(db, { summaries: { enabled: true } });
+      const server = await startServer(app);
       await seedPr(db);
-      const res = await request(app).post('/api/pr/owner/repo/1/jobs/bogus/start');
+      const res = await request(server).post('/api/pr/owner/repo/1/jobs/bogus/start');
       expect(res.status).toBe(400);
     });
 
     it('returns 404 when the PR is not found', async () => {
       const app = buildApp(db, { summaries: { enabled: true } });
-      const res = await request(app).post('/api/pr/owner/repo/999/jobs/summary/start');
+      const server = await startServer(app);
+      const res = await request(server).post('/api/pr/owner/repo/999/jobs/summary/start');
       expect(res.status).toBe(404);
     });
 
     it('starts a summary job with trigger: manual when enabled', async () => {
       const app = buildApp(db, { summaries: { enabled: true, auto_generate: false } });
+      const server = await startServer(app);
       await seedPr(db);
-      const res = await request(app).post('/api/pr/owner/repo/1/jobs/summary/start');
+      const res = await request(server).post('/api/pr/owner/repo/1/jobs/summary/start');
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ started: true, alreadyRunning: false });
       expect(summarySpy).toHaveBeenCalledTimes(1);
@@ -189,8 +214,9 @@ describe('Manual start endpoints', () => {
 
     it('starts a tour job with trigger: manual when enabled', async () => {
       const app = buildApp(db, { tours: { enabled: true, auto_generate: false } });
+      const server = await startServer(app);
       await seedPr(db);
-      const res = await request(app).post('/api/pr/owner/repo/1/jobs/tour/start');
+      const res = await request(server).post('/api/pr/owner/repo/1/jobs/tour/start');
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ started: true, alreadyRunning: false });
       expect(tourSpy).toHaveBeenCalledTimes(1);
@@ -200,8 +226,9 @@ describe('Manual start endpoints', () => {
     it('is idempotent: returns alreadyRunning when a job is in flight', async () => {
       findActiveSpy.mockReturnValue('summaries:abc123');
       const app = buildApp(db, { summaries: { enabled: true } });
+      const server = await startServer(app);
       await seedPr(db);
-      const res = await request(app).post('/api/pr/owner/repo/1/jobs/summary/start');
+      const res = await request(server).post('/api/pr/owner/repo/1/jobs/summary/start');
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ started: false, alreadyRunning: true });
       expect(summarySpy).not.toHaveBeenCalled();
@@ -209,6 +236,7 @@ describe('Manual start endpoints', () => {
 
     it('returns no-diff when the PR has no diff in pr_data', async () => {
       const app = buildApp(db, { summaries: { enabled: true } });
+      const server = await startServer(app);
       // Seed a pr_metadata row whose pr_data has no diff (and no worktree_path).
       const prData = JSON.stringify({ state: 'open' });
       await run(
@@ -217,7 +245,7 @@ describe('Manual start endpoints', () => {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [2, 'owner/repo', 'Empty PR', '', 'bob', 'main', 'empty', prData]
       );
-      const res = await request(app).post('/api/pr/owner/repo/2/jobs/summary/start');
+      const res = await request(server).post('/api/pr/owner/repo/2/jobs/summary/start');
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ started: false, reason: 'no-diff' });
       expect(summarySpy).not.toHaveBeenCalled();
@@ -227,37 +255,42 @@ describe('Manual start endpoints', () => {
   describe('Local mode: POST /api/local/:reviewId/jobs/:jobKey/start', () => {
     it('returns 409 when summaries are disabled', async () => {
       const app = buildApp(db, { summaries: { enabled: false } });
+      const server = await startServer(app);
       const reviewId = await seedLocal(db);
-      const res = await request(app).post(`/api/local/${reviewId}/jobs/summary/start`);
+      const res = await request(server).post(`/api/local/${reviewId}/jobs/summary/start`);
       expect(res.status).toBe(409);
       expect(summarySpy).not.toHaveBeenCalled();
     });
 
     it('returns 409 when tours are disabled', async () => {
       const app = buildApp(db, { tours: { enabled: false } });
+      const server = await startServer(app);
       const reviewId = await seedLocal(db);
-      const res = await request(app).post(`/api/local/${reviewId}/jobs/tour/start`);
+      const res = await request(server).post(`/api/local/${reviewId}/jobs/tour/start`);
       expect(res.status).toBe(409);
       expect(tourSpy).not.toHaveBeenCalled();
     });
 
     it('returns 400 for an unknown jobKey', async () => {
       const app = buildApp(db, { summaries: { enabled: true } });
+      const server = await startServer(app);
       const reviewId = await seedLocal(db);
-      const res = await request(app).post(`/api/local/${reviewId}/jobs/bogus/start`);
+      const res = await request(server).post(`/api/local/${reviewId}/jobs/bogus/start`);
       expect(res.status).toBe(400);
     });
 
     it('returns 404 when the local review is not found', async () => {
       const app = buildApp(db, { summaries: { enabled: true } });
-      const res = await request(app).post('/api/local/999999/jobs/summary/start');
+      const server = await startServer(app);
+      const res = await request(server).post('/api/local/999999/jobs/summary/start');
       expect(res.status).toBe(404);
     });
 
     it('starts a summary job with trigger: manual when enabled', async () => {
       const app = buildApp(db, { summaries: { enabled: true, auto_generate: false } });
+      const server = await startServer(app);
       const reviewId = await seedLocal(db);
-      const res = await request(app).post(`/api/local/${reviewId}/jobs/summary/start`);
+      const res = await request(server).post(`/api/local/${reviewId}/jobs/summary/start`);
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ started: true, alreadyRunning: false });
       expect(summarySpy).toHaveBeenCalledTimes(1);
@@ -270,8 +303,9 @@ describe('Manual start endpoints', () => {
 
     it('starts a tour job with trigger: manual when enabled', async () => {
       const app = buildApp(db, { tours: { enabled: true, auto_generate: false } });
+      const server = await startServer(app);
       const reviewId = await seedLocal(db);
-      const res = await request(app).post(`/api/local/${reviewId}/jobs/tour/start`);
+      const res = await request(server).post(`/api/local/${reviewId}/jobs/tour/start`);
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ started: true, alreadyRunning: false });
       expect(tourSpy).toHaveBeenCalledTimes(1);
@@ -286,6 +320,7 @@ describe('Manual start endpoints', () => {
       // the regeneration-error fallthrough; the genuine clean-working-tree case
       // is covered by the next test.
       const app = buildApp(db, { summaries: { enabled: true } });
+      const server = await startServer(app);
       const reviewRepo = new ReviewRepository(db);
       const reviewId = await reviewRepo.upsertLocalReview({
         localPath: '/mock/repo',
@@ -294,7 +329,7 @@ describe('Manual start endpoints', () => {
         localHeadBranch: 'main',
       });
       // No saveLocalDiff — no diff row.
-      const res = await request(app).post(`/api/local/${reviewId}/jobs/summary/start`);
+      const res = await request(server).post(`/api/local/${reviewId}/jobs/summary/start`);
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ started: false, reason: 'no-diff' });
       expect(summarySpy).not.toHaveBeenCalled();
@@ -312,6 +347,7 @@ describe('Manual start endpoints', () => {
       const tempRepo = createTempRepoNoChanges();
       try {
         const app = buildApp(db, { summaries: { enabled: true } });
+        const server = await startServer(app);
         const reviewRepo = new ReviewRepository(db);
         const realHead = execSync('git rev-parse HEAD', { cwd: tempRepo, encoding: 'utf8' }).trim();
         const reviewId = await reviewRepo.upsertLocalReview({
@@ -322,7 +358,7 @@ describe('Manual start endpoints', () => {
         });
         expect(await reviewRepo.getLocalDiff(reviewId)).toBeNull();
 
-        const res = await request(app).post(`/api/local/${reviewId}/jobs/summary/start`);
+        const res = await request(server).post(`/api/local/${reviewId}/jobs/summary/start`);
         expect(res.status).toBe(200);
         expect(res.body).toEqual({ started: false, reason: 'no-diff' });
         expect(summarySpy).not.toHaveBeenCalled();
@@ -339,6 +375,7 @@ describe('Manual start endpoints', () => {
       const tempRepo = createTempRepoWithChanges();
       try {
         const app = buildApp(db, { tours: { enabled: true, auto_generate: false } });
+        const server = await startServer(app);
         const reviewRepo = new ReviewRepository(db);
         // Seed the review's recorded HEAD to the repo's REAL HEAD so the
         // snapshot guard (non-branch HEAD-pinning) passes and regeneration runs.
@@ -353,7 +390,7 @@ describe('Manual start endpoints', () => {
         // Intentionally no saveLocalDiff and no in-memory cache entry.
         expect(await reviewRepo.getLocalDiff(reviewId)).toBeNull();
 
-        const res = await request(app).post(`/api/local/${reviewId}/jobs/tour/start`);
+        const res = await request(server).post(`/api/local/${reviewId}/jobs/tour/start`);
         expect(res.status).toBe(200);
         expect(res.body).toEqual({ started: true, alreadyRunning: false });
         expect(tourSpy).toHaveBeenCalledTimes(1);
@@ -386,6 +423,7 @@ describe('Manual start endpoints', () => {
       const tempRepo = createTempRepoWithChanges();
       try {
         const app = buildApp(db, { tours: { enabled: true, auto_generate: false } });
+        const server = await startServer(app);
         const reviewRepo = new ReviewRepository(db);
         // Pin the review to the repo's INITIAL HEAD...
         const initialHead = execSync('git rev-parse HEAD', { cwd: tempRepo, encoding: 'utf8' }).trim();
@@ -405,7 +443,7 @@ describe('Manual start endpoints', () => {
         // No cache entry, no local_diffs row.
         expect(await reviewRepo.getLocalDiff(reviewId)).toBeNull();
 
-        const res = await request(app).post(`/api/local/${reviewId}/jobs/tour/start`);
+        const res = await request(server).post(`/api/local/${reviewId}/jobs/tour/start`);
         expect(res.status).toBe(200);
         expect(res.body).toEqual({ started: false, reason: 'no-diff' });
         // Guard blocked regen: generator not called and nothing persisted.
@@ -424,6 +462,7 @@ describe('Manual start endpoints', () => {
       const tempRepo = createTempRepoWithChanges();
       try {
         const app = buildApp(db, { tours: { enabled: true, auto_generate: false } });
+        const server = await startServer(app);
         const reviewRepo = new ReviewRepository(db);
         const initialHead = execSync('git rev-parse HEAD', { cwd: tempRepo, encoding: 'utf8' }).trim();
         // Branch scope: start='branch', end='unstaged', with a base branch.
@@ -447,7 +486,7 @@ describe('Manual start endpoints', () => {
 
         expect(await reviewRepo.getLocalDiff(reviewId)).toBeNull();
 
-        const res = await request(app).post(`/api/local/${reviewId}/jobs/tour/start`);
+        const res = await request(server).post(`/api/local/${reviewId}/jobs/tour/start`);
         expect(res.status).toBe(200);
         expect(res.body).toEqual({ started: true, alreadyRunning: false });
         expect(tourSpy).toHaveBeenCalledTimes(1);
@@ -462,6 +501,7 @@ describe('Manual start endpoints', () => {
       // write. The handler must honor that cache without needing a local_diffs
       // row and without touching the working tree.
       const app = buildApp(db, { tours: { enabled: true, auto_generate: false } });
+      const server = await startServer(app);
       const reviewRepo = new ReviewRepository(db);
       const reviewId = await reviewRepo.upsertLocalReview({
         localPath: '/mock/repo',
@@ -477,7 +517,7 @@ describe('Manual start endpoints', () => {
       });
       expect(await reviewRepo.getLocalDiff(reviewId)).toBeNull();
 
-      const res = await request(app).post(`/api/local/${reviewId}/jobs/tour/start`);
+      const res = await request(server).post(`/api/local/${reviewId}/jobs/tour/start`);
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ started: true, alreadyRunning: false });
       expect(tourSpy).toHaveBeenCalledTimes(1);
@@ -487,8 +527,9 @@ describe('Manual start endpoints', () => {
     it('is idempotent: returns alreadyRunning when a job is in flight', async () => {
       findActiveSpy.mockReturnValue('tour');
       const app = buildApp(db, { tours: { enabled: true } });
+      const server = await startServer(app);
       const reviewId = await seedLocal(db);
-      const res = await request(app).post(`/api/local/${reviewId}/jobs/tour/start`);
+      const res = await request(server).post(`/api/local/${reviewId}/jobs/tour/start`);
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ started: false, alreadyRunning: true });
       expect(tourSpy).not.toHaveBeenCalled();

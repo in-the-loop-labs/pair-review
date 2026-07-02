@@ -138,10 +138,12 @@ function collectStdinMessages(fakeProc) {
 }
 
 /**
- * Wait for a small delay to allow async processing.
+ * Yield the event loop to allow async processing. The PassThrough → readline
+ * stream chain delivers on next-tick/immediate, so a single setImmediate
+ * round is sufficient (no real timer needed).
  */
-function tick(ms = 10) {
-  return new Promise((r) => setTimeout(r, ms));
+async function tick() {
+  await new Promise(setImmediate);
 }
 
 // ---------------------------------------------------------------------------

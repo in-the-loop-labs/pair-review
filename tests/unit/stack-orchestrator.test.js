@@ -554,8 +554,11 @@ describe('executeStackAnalysis', () => {
     // Start execution but don't await — it will block on analyzeLevel1
     const executionPromise = executeStackAnalysis(params);
 
-    // Wait a tick for the PR to enter 'running' state and onAnalysisIdReady to fire
-    await new Promise(resolve => setTimeout(resolve, 50));
+    // Wait deterministically for the PR to enter 'running' state and
+    // onAnalysisIdReady to fire (registers the analysis as in-flight)
+    await vi.waitFor(() => {
+      expect(state.prStatuses.get(10)?.analysisId).toBeTruthy();
+    });
 
     // The PR should now have an analysisId (from onAnalysisIdReady)
     const prStatus = state.prStatuses.get(10);

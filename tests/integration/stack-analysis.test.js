@@ -1,8 +1,12 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import express from 'express';
+import nodeFs from 'fs';
+import os from 'os';
+import path from 'path';
 import request from 'supertest';
 import { createTestDatabase, closeTestDatabase } from '../utils/schema';
+import { listenOnLoopback, closeServer } from '../utils/loopback-server';
 
 /**
  * Stack Analysis API Integration Tests
@@ -42,7 +46,13 @@ vi.spyOn(configModule, 'loadConfig').mockResolvedValue({
   config: { github_token: 'test-token', port: 7247, theme: 'light', monorepos: {} },
   isFirstRun: false
 });
-vi.spyOn(configModule, 'getConfigDir').mockReturnValue('/tmp/.pair-review-test');
+// Unique per test file so parallel forks never share a config dir on disk.
+const testConfigDir = nodeFs.mkdtempSync(path.join(os.tmpdir(), 'pair-review-cfg-'));
+vi.spyOn(configModule, 'getConfigDir').mockReturnValue(testConfigDir);
+
+afterAll(() => {
+  nodeFs.rmSync(testConfigDir, { recursive: true, force: true });
+});
 vi.spyOn(configModule, 'getGitHubToken').mockReturnValue('test-token');
 
 // Mock the analyzer to prevent real AI calls
@@ -148,15 +158,18 @@ async function insertTestWorktree(db, prNumber = 1, repository = 'owner/repo') {
 describe('POST /api/pr/:owner/:repo/:number/analyses/stack', () => {
   let db;
   let app;
+  let server;
 
   beforeEach(async () => {
     db = createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
     await insertTestPR(db, 1);
     await insertTestWorktree(db, 1);
   });
 
   afterEach(async () => {
+    await closeServer(server);
     // Clear the in-memory stack analyses map
     stackAnalysisRoutes.activeStackAnalyses.clear();
     if (db) closeTestDatabase(db);
@@ -166,7 +179,7 @@ describe('POST /api/pr/:owner/:repo/:number/analyses/stack', () => {
   });
 
   it('returns stackAnalysisId and pending prAnalyses for valid request', async () => {
-    const res = await request(app)
+    const res = await request(server)
       .post('/api/pr/owner/repo/1/analyses/stack')
       .send({
         prNumbers: [1, 2, 3],
@@ -183,7 +196,7 @@ describe('POST /api/pr/:owner/:repo/:number/analyses/stack', () => {
   });
 
   it('rejects with 400 when prNumbers is empty', async () => {
-    const res = await request(app)
+    const res = await request(server)
       .post('/api/pr/owner/repo/1/analyses/stack')
       .send({
         prNumbers: [],
@@ -195,7 +208,7 @@ describe('POST /api/pr/:owner/:repo/:number/analyses/stack', () => {
   });
 
   it('rejects with 400 when prNumbers is not an array', async () => {
-    const res = await request(app)
+    const res = await request(server)
       .post('/api/pr/owner/repo/1/analyses/stack')
       .send({
         prNumbers: 'not-an-array',
@@ -207,7 +220,7 @@ describe('POST /api/pr/:owner/:repo/:number/analyses/stack', () => {
   });
 
   it('rejects with 400 when prNumbers is missing', async () => {
-    const res = await request(app)
+    const res = await request(server)
       .post('/api/pr/owner/repo/1/analyses/stack')
       .send({
         analysisConfig: { configType: 'single' }
@@ -218,7 +231,7 @@ describe('POST /api/pr/:owner/:repo/:number/analyses/stack', () => {
   });
 
   it('rejects with 400 when analysisConfig is missing', async () => {
-    const res = await request(app)
+    const res = await request(server)
       .post('/api/pr/owner/repo/1/analyses/stack')
       .send({
         prNumbers: [1, 2]
@@ -229,7 +242,7 @@ describe('POST /api/pr/:owner/:repo/:number/analyses/stack', () => {
   });
 
   it('rejects with 400 for invalid PR numbers in array', async () => {
-    const res = await request(app)
+    const res = await request(server)
       .post('/api/pr/owner/repo/1/analyses/stack')
       .send({
         prNumbers: [1, -5, 3],
@@ -241,7 +254,7 @@ describe('POST /api/pr/:owner/:repo/:number/analyses/stack', () => {
   });
 
   it('rejects with 400 for invalid trigger PR number', async () => {
-    const res = await request(app)
+    const res = await request(server)
       .post('/api/pr/owner/repo/abc/analyses/stack')
       .send({
         prNumbers: [1, 2],
@@ -257,7 +270,7 @@ describe('POST /api/pr/:owner/:repo/:number/analyses/stack', () => {
   it('returns 404 when worktree not found', async () => {
     vi.spyOn(GitWorktreeManager.prototype, 'getWorktreePath').mockResolvedValue(null);
 
-    const res = await request(app)
+    const res = await request(server)
       .post('/api/pr/owner/repo/1/analyses/stack')
       .send({
         prNumbers: [1, 2],
@@ -276,13 +289,16 @@ describe('POST /api/pr/:owner/:repo/:number/analyses/stack', () => {
 describe('GET /api/analyses/stack/:stackAnalysisId', () => {
   let db;
   let app;
+  let server;
 
   beforeEach(async () => {
     db = createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
   });
 
   afterEach(async () => {
+    await closeServer(server);
     stackAnalysisRoutes.activeStackAnalyses.clear();
     if (db) closeTestDatabase(db);
     vi.clearAllMocks();
@@ -305,7 +321,7 @@ describe('GET /api/analyses/stack/:stackAnalysisId', () => {
       prStatuses
     });
 
-    const res = await request(app)
+    const res = await request(server)
       .get(`/api/analyses/stack/${stackAnalysisId}`)
       .expect(200);
 
@@ -323,7 +339,7 @@ describe('GET /api/analyses/stack/:stackAnalysisId', () => {
   });
 
   it('returns 404 for unknown stack analysis ID', async () => {
-    const res = await request(app)
+    const res = await request(server)
       .get('/api/analyses/stack/nonexistent-id')
       .expect(404);
 
@@ -338,13 +354,16 @@ describe('GET /api/analyses/stack/:stackAnalysisId', () => {
 describe('POST /api/analyses/stack/:stackAnalysisId/cancel', () => {
   let db;
   let app;
+  let server;
 
   beforeEach(async () => {
     db = createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
   });
 
   afterEach(async () => {
+    await closeServer(server);
     stackAnalysisRoutes.activeStackAnalyses.clear();
     if (db) closeTestDatabase(db);
     vi.clearAllMocks();
@@ -367,7 +386,7 @@ describe('POST /api/analyses/stack/:stackAnalysisId/cancel', () => {
       prStatuses
     });
 
-    const res = await request(app)
+    const res = await request(server)
       .post(`/api/analyses/stack/${stackAnalysisId}/cancel`)
       .expect(200);
 
@@ -391,7 +410,7 @@ describe('POST /api/analyses/stack/:stackAnalysisId/cancel', () => {
       prStatuses
     });
 
-    const res = await request(app)
+    const res = await request(server)
       .post(`/api/analyses/stack/${stackAnalysisId}/cancel`)
       .expect(200);
 
@@ -401,7 +420,7 @@ describe('POST /api/analyses/stack/:stackAnalysisId/cancel', () => {
   });
 
   it('returns 404 for unknown stack analysis ID', async () => {
-    const res = await request(app)
+    const res = await request(server)
       .post('/api/analyses/stack/nonexistent-id/cancel')
       .expect(404);
 
@@ -416,10 +435,12 @@ describe('POST /api/analyses/stack/:stackAnalysisId/cancel', () => {
 describe('GET /api/pr/:owner/:repo/:number/stack-info', () => {
   let db;
   let app;
+  let server;
 
   beforeEach(async () => {
     db = createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
     await insertTestPR(db, 1);
     await insertTestWorktree(db, 1);
     // Restore spy implementations that vi.clearAllMocks() wipes.
@@ -429,13 +450,14 @@ describe('GET /api/pr/:owner/:repo/:number/stack-info', () => {
   });
 
   afterEach(async () => {
+    await closeServer(server);
     if (db) closeTestDatabase(db);
     vi.clearAllMocks();
     vi.spyOn(GitWorktreeManager.prototype, 'getWorktreePath').mockResolvedValue('/tmp/worktree/test');
   });
 
   it('returns 400 for invalid PR number', async () => {
-    const res = await request(app)
+    const res = await request(server)
       .get('/api/pr/owner/repo/abc/stack-info')
       .expect(400);
 
@@ -447,12 +469,17 @@ describe('GET /api/pr/:owner/:repo/:number/stack-info', () => {
     configModule.getGitHubToken.mockReturnValue('');
     const appNoToken = createTestApp(db, { github_token: undefined });
     appNoToken.set('githubToken', null);
+    const serverNoToken = await listenOnLoopback(appNoToken);
 
-    const res = await request(appNoToken)
-      .get('/api/pr/owner/repo/1/stack-info')
-      .expect(200);
+    try {
+      const res = await request(serverNoToken)
+        .get('/api/pr/owner/repo/1/stack-info')
+        .expect(200);
 
-    expect(res.body.stack).toEqual([]);
+      expect(res.body.stack).toEqual([]);
+    } finally {
+      await closeServer(serverNoToken);
+    }
   });
 
   it('returns enriched stack data from walkPRStack', async () => {
@@ -462,7 +489,7 @@ describe('GET /api/pr/:owner/:repo/:number/stack-info', () => {
       { branch: 'feat-2', isTrunk: false, prNumber: 2, title: 'Feature 2', state: 'OPEN' }
     ]);
 
-    const res = await request(app)
+    const res = await request(server)
       .get('/api/pr/owner/repo/1/stack-info')
       .expect(200);
 
@@ -474,7 +501,7 @@ describe('GET /api/pr/:owner/:repo/:number/stack-info', () => {
   it('returns empty stack when walkPRStack throws', async () => {
     stackWalkerModule.walkPRStack.mockRejectedValue(new Error('GraphQL rate limit'));
 
-    const res = await request(app)
+    const res = await request(server)
       .get('/api/pr/owner/repo/1/stack-info')
       .expect(200);
 
@@ -484,7 +511,7 @@ describe('GET /api/pr/:owner/:repo/:number/stack-info', () => {
   it('returns empty stack when walkPRStack returns null', async () => {
     stackWalkerModule.walkPRStack.mockResolvedValue(null);
 
-    const res = await request(app)
+    const res = await request(server)
       .get('/api/pr/owner/repo/1/stack-info')
       .expect(200);
 

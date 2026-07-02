@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import { createTestDatabase, closeTestDatabase } from '../utils/schema';
+import { listenOnLoopback, closeServer } from '../utils/loopback-server';
 
 // CommonJS require() is used here (instead of ESM import) because:
 // 1. vi.spyOn(fs, 'access') must be set up BEFORE the route module is loaded,
@@ -84,13 +85,16 @@ async function insertPRMetadata(db, { prNumber, repository, title, author, acces
 describe('GET /api/worktrees/recent — pagination', () => {
   let db;
   let app;
+  let server;
 
   beforeEach(async () => {
     db = createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
   });
 
   afterEach(async () => {
+    await closeServer(server);
     closeTestDatabase(db);
     vi.restoreAllMocks();
     // Re-apply the fs.access mock for the next test (restoreAllMocks clears it)
@@ -110,7 +114,7 @@ describe('GET /api/worktrees/recent — pagination', () => {
       });
     }
 
-    const res = await request(app).get('/api/worktrees/recent?limit=10');
+    const res = await request(server).get('/api/worktrees/recent?limit=10');
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
@@ -131,7 +135,7 @@ describe('GET /api/worktrees/recent — pagination', () => {
       });
     }
 
-    const res = await request(app).get('/api/worktrees/recent?limit=3');
+    const res = await request(server).get('/api/worktrees/recent?limit=3');
 
     expect(res.status).toBe(200);
     expect(res.body.reviews).toHaveLength(3);
@@ -153,7 +157,7 @@ describe('GET /api/worktrees/recent — pagination', () => {
     }
 
     // Page 1: no cursor (initial load), limit=2
-    const page1 = await request(app).get('/api/worktrees/recent?limit=2');
+    const page1 = await request(server).get('/api/worktrees/recent?limit=2');
     expect(page1.body.reviews).toHaveLength(2);
     expect(page1.body.reviews[0].pr_number).toBe(1); // Most recent
     expect(page1.body.reviews[1].pr_number).toBe(2);
@@ -161,7 +165,7 @@ describe('GET /api/worktrees/recent — pagination', () => {
 
     // Page 2: use last item's timestamp as cursor
     const cursor1 = page1.body.reviews[1].last_accessed_at;
-    const page2 = await request(app).get(`/api/worktrees/recent?limit=2&before=${encodeURIComponent(cursor1)}`);
+    const page2 = await request(server).get(`/api/worktrees/recent?limit=2&before=${encodeURIComponent(cursor1)}`);
     expect(page2.body.reviews).toHaveLength(2);
     expect(page2.body.reviews[0].pr_number).toBe(3);
     expect(page2.body.reviews[1].pr_number).toBe(4);
@@ -169,7 +173,7 @@ describe('GET /api/worktrees/recent — pagination', () => {
 
     // Page 3: use last item's timestamp as cursor
     const cursor2 = page2.body.reviews[1].last_accessed_at;
-    const page3 = await request(app).get(`/api/worktrees/recent?limit=2&before=${encodeURIComponent(cursor2)}`);
+    const page3 = await request(server).get(`/api/worktrees/recent?limit=2&before=${encodeURIComponent(cursor2)}`);
     expect(page3.body.reviews).toHaveLength(1);
     expect(page3.body.reviews[0].pr_number).toBe(5);
     expect(page3.body.hasMore).toBe(false);
@@ -187,7 +191,7 @@ describe('GET /api/worktrees/recent — pagination', () => {
 
     // Use a very old cursor that predates all entries
     const oldCursor = new Date('2000-01-01T00:00:00.000Z').toISOString();
-    const res = await request(app).get(`/api/worktrees/recent?limit=10&before=${encodeURIComponent(oldCursor)}`);
+    const res = await request(server).get(`/api/worktrees/recent?limit=10&before=${encodeURIComponent(oldCursor)}`);
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
@@ -207,7 +211,7 @@ describe('GET /api/worktrees/recent — pagination', () => {
       });
     }
 
-    const res = await request(app).get('/api/worktrees/recent?limit=2');
+    const res = await request(server).get('/api/worktrees/recent?limit=2');
 
     expect(res.body.reviews).toHaveLength(2);
     expect(res.body.reviews[0].pr_number).toBe(1); // Most recent
@@ -235,7 +239,7 @@ describe('GET /api/worktrees/recent — pagination', () => {
     `, [5, 'owner/repo', 'user', new Date(Date.now() - 5 * 60000).toISOString()]);
 
     // Request all — should only get PR 1 and PR 3 (the ones with valid titles)
-    const res = await request(app).get('/api/worktrees/recent?limit=10');
+    const res = await request(server).get('/api/worktrees/recent?limit=10');
     expect(res.status).toBe(200);
     expect(res.body.reviews).toHaveLength(2);
     expect(res.body.reviews[0].pr_number).toBe(1);
@@ -244,7 +248,7 @@ describe('GET /api/worktrees/recent — pagination', () => {
   });
 
   it('should return hasMore in response even for empty results', async () => {
-    const res = await request(app).get('/api/worktrees/recent?limit=10');
+    const res = await request(server).get('/api/worktrees/recent?limit=10');
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
@@ -266,7 +270,7 @@ describe('GET /api/worktrees/recent — pagination', () => {
     }
 
     // Request with limit=100 (should be capped at 50, but only 5 exist)
-    const res = await request(app).get('/api/worktrees/recent?limit=100');
+    const res = await request(server).get('/api/worktrees/recent?limit=100');
     expect(res.body.reviews).toHaveLength(5);
     expect(res.body.hasMore).toBe(false);
   });
@@ -291,7 +295,7 @@ describe('GET /api/worktrees/recent — pagination', () => {
       path.includes('stale') ? Promise.reject(new Error('ENOENT')) : Promise.resolve()
     );
 
-    const res = await request(app).get('/api/worktrees/recent?limit=10');
+    const res = await request(server).get('/api/worktrees/recent?limit=10');
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
@@ -329,7 +333,7 @@ describe('GET /api/worktrees/recent — pagination', () => {
     );
 
     // Page 1: limit=3 — all 3 entries appear with correct storage_status
-    const page1 = await request(app).get('/api/worktrees/recent?limit=3');
+    const page1 = await request(server).get('/api/worktrees/recent?limit=3');
     expect(page1.body.reviews).toHaveLength(3);
     expect(page1.body.reviews[0].pr_number).toBe(1);
     expect(page1.body.reviews[0].storage_status).toBe('local');
@@ -341,7 +345,7 @@ describe('GET /api/worktrees/recent — pagination', () => {
 
     // Page 2: cursor from page 1 — remaining 2 entries
     const cursor = page1.body.reviews[2].last_accessed_at;
-    const page2 = await request(app).get(`/api/worktrees/recent?limit=3&before=${encodeURIComponent(cursor)}`);
+    const page2 = await request(server).get(`/api/worktrees/recent?limit=3&before=${encodeURIComponent(cursor)}`);
     expect(page2.body.reviews).toHaveLength(2);
     expect(page2.body.reviews[0].pr_number).toBe(4);
     expect(page2.body.reviews[0].storage_status).toBe('cached');
@@ -386,7 +390,7 @@ describe('GET /api/worktrees/recent — pagination', () => {
       accessedAt: new Date(Date.now() - 4 * 60000).toISOString()
     });
 
-    const res = await request(app).get('/api/worktrees/recent?limit=10');
+    const res = await request(server).get('/api/worktrees/recent?limit=10');
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
@@ -425,7 +429,7 @@ describe('GET /api/worktrees/recent — pagination', () => {
       prData: { html_url: htmlUrl }
     });
 
-    const res = await request(app).get('/api/worktrees/recent?limit=10');
+    const res = await request(server).get('/api/worktrees/recent?limit=10');
 
     expect(res.status).toBe(200);
     expect(res.body.reviews).toHaveLength(1);
@@ -443,7 +447,7 @@ describe('GET /api/worktrees/recent — pagination', () => {
       prData: { some_field: 'value' }
     });
 
-    const res = await request(app).get('/api/worktrees/recent?limit=10');
+    const res = await request(server).get('/api/worktrees/recent?limit=10');
 
     expect(res.status).toBe(200);
     expect(res.body.reviews).toHaveLength(1);

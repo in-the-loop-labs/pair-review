@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import { createTestDatabase, closeTestDatabase, seedTestReview } from '../utils/schema.js';
+import { listenOnLoopback, closeServer } from '../utils/loopback-server';
 
 // Mock logger so test output stays clean and we can assert on error paths.
 vi.mock('../../src/utils/logger', () => ({
@@ -68,22 +69,25 @@ function buildApp(db) {
 describe('GET /api/reviews/:reviewId/external-comments', () => {
   let db;
   let app;
+  let server;
   let repo;
   let reviewId;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = createTestDatabase();
     repo = new ExternalCommentRepository(db);
     reviewId = seedTestReview(db);
     app = buildApp(db);
+    server = await listenOnLoopback(app);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await closeServer(server);
     closeTestDatabase(db);
   });
 
   it('returns empty threads array for a review with no external comments', async () => {
-    const res = await request(app).get(`/api/reviews/${reviewId}/external-comments`);
+    const res = await request(server).get(`/api/reviews/${reviewId}/external-comments`);
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ threads: [] });
@@ -96,7 +100,7 @@ describe('GET /api/reviews/:reviewId/external-comments', () => {
     }));
     await repo.resolveParents(reviewId, 'github');
 
-    const res = await request(app).get(`/api/reviews/${reviewId}/external-comments`);
+    const res = await request(server).get(`/api/reviews/${reviewId}/external-comments`);
 
     expect(res.status).toBe(200);
     expect(res.body.threads).toHaveLength(1);
@@ -126,7 +130,7 @@ describe('GET /api/reviews/:reviewId/external-comments', () => {
     }));
     await repo.resolveParents(reviewId, 'github');
 
-    const res = await request(app).get(`/api/reviews/${reviewId}/external-comments`);
+    const res = await request(server).get(`/api/reviews/${reviewId}/external-comments`);
 
     expect(res.status).toBe(200);
     expect(res.body.threads).toHaveLength(1);
@@ -152,7 +156,7 @@ describe('GET /api/reviews/:reviewId/external-comments', () => {
     }));
     await repo.resolveParents(reviewId, 'github');
 
-    const res = await request(app).get(`/api/reviews/${reviewId}/external-comments`);
+    const res = await request(server).get(`/api/reviews/${reviewId}/external-comments`);
 
     expect(res.status).toBe(200);
     const ids = res.body.threads.map(t => t.external_id);
@@ -170,12 +174,12 @@ describe('GET /api/reviews/:reviewId/external-comments', () => {
     await repo.upsert(reviewId, 'gitlab', makeRow({ external_id: 'gl-1' }));
 
     // No filter: all rows present
-    const allRes = await request(app).get(`/api/reviews/${reviewId}/external-comments`);
+    const allRes = await request(server).get(`/api/reviews/${reviewId}/external-comments`);
     expect(allRes.status).toBe(200);
     expect(allRes.body.threads).toHaveLength(3);
 
     // Filtered to github
-    const filteredRes = await request(app)
+    const filteredRes = await request(server)
       .get(`/api/reviews/${reviewId}/external-comments`)
       .query({ source: 'github' });
     expect(filteredRes.status).toBe(200);
@@ -184,7 +188,7 @@ describe('GET /api/reviews/:reviewId/external-comments', () => {
   });
 
   it('returns 400 with the source name when an unknown source is requested', async () => {
-    const res = await request(app)
+    const res = await request(server)
       .get(`/api/reviews/${reviewId}/external-comments`)
       .query({ source: 'mystery-tracker' });
 
@@ -205,7 +209,7 @@ describe('GET /api/reviews/:reviewId/external-comments', () => {
     }));
     await repo.resolveParents(reviewId, 'github');
 
-    const res = await request(app).get(`/api/reviews/${reviewId}/external-comments`);
+    const res = await request(server).get(`/api/reviews/${reviewId}/external-comments`);
 
     expect(res.status).toBe(200);
     expect(res.body.threads).toHaveLength(1);
@@ -219,21 +223,21 @@ describe('GET /api/reviews/:reviewId/external-comments', () => {
   });
 
   it('returns 404 when the review does not exist', async () => {
-    const res = await request(app).get('/api/reviews/999999/external-comments');
+    const res = await request(server).get('/api/reviews/999999/external-comments');
 
     expect(res.status).toBe(404);
     expect(res.body.error).toBe('Review not found');
   });
 
   it('returns 400 for an invalid (non-numeric) review id', async () => {
-    const res = await request(app).get('/api/reviews/not-a-number/external-comments');
+    const res = await request(server).get('/api/reviews/not-a-number/external-comments');
 
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('Invalid review ID');
   });
 
   it('returns 400 for a zero or negative review id', async () => {
-    const res = await request(app).get('/api/reviews/0/external-comments');
+    const res = await request(server).get('/api/reviews/0/external-comments');
 
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('Invalid review ID');
@@ -248,7 +252,7 @@ describe('GET /api/reviews/:reviewId/external-comments', () => {
     // Force a row in. The route should NOT surface it for a local review.
     await repo.upsert(reviewId, 'github', makeRow({ external_id: 'should-not-show' }));
 
-    const res = await request(app).get(`/api/reviews/${reviewId}/external-comments`);
+    const res = await request(server).get(`/api/reviews/${reviewId}/external-comments`);
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ threads: [] });

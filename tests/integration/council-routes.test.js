@@ -5,10 +5,11 @@
  * Tests the CRUD endpoints for managing Review Council configurations.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import { createTestDatabase } from '../utils/schema';
+import { listenOnLoopback, closeServer } from '../utils/loopback-server';
 
 const councilRoutes = require('../../src/routes/councils');
 
@@ -43,15 +44,21 @@ const sampleCouncilConfig = {
 describe('Council Routes', () => {
   let db;
   let app;
+  let server;
 
   beforeEach(async () => {
     db = await createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
+  });
+
+  afterEach(async () => {
+    await closeServer(server);
   });
 
   describe('POST /api/councils', () => {
     it('should create a council and return 201', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/councils')
         .send({ name: 'Test Council', config: sampleConfig });
 
@@ -63,7 +70,7 @@ describe('Council Routes', () => {
     });
 
     it('should return 400 for missing name', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/councils')
         .send({ config: sampleConfig });
 
@@ -72,7 +79,7 @@ describe('Council Routes', () => {
     });
 
     it('should return 400 for missing config', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/councils')
         .send({ name: 'No Config' });
 
@@ -81,7 +88,7 @@ describe('Council Routes', () => {
     });
 
     it('should return 400 for invalid config', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/councils')
         .send({ name: 'Bad Config', config: { levels: 'not-object' } });
 
@@ -90,7 +97,7 @@ describe('Council Routes', () => {
     });
 
     it('should trim the council name', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/councils')
         .send({ name: '  Padded Name  ', config: sampleConfig });
 
@@ -99,7 +106,7 @@ describe('Council Routes', () => {
     });
 
     it('should persist the type field when set to council', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/councils')
         .send({ name: 'Voice-Centric', config: sampleCouncilConfig, type: 'council' });
 
@@ -108,7 +115,7 @@ describe('Council Routes', () => {
     });
 
     it('should validate voice-centric config when type is council', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/councils')
         .send({ name: 'Council Type', config: sampleCouncilConfig, type: 'council' });
 
@@ -119,7 +126,7 @@ describe('Council Routes', () => {
     it('should reject advanced config format when type is council', async () => {
       // sampleConfig is advanced format (levels.X.enabled + levels.X.voices structure)
       // When type is 'council', the voice-centric validator should reject it
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/councils')
         .send({ name: 'Mismatched', config: sampleConfig, type: 'council' });
 
@@ -130,7 +137,7 @@ describe('Council Routes', () => {
     it('should reject voice-centric config format when type is advanced', async () => {
       // sampleCouncilConfig is voice-centric format
       // When type is 'advanced', the advanced validator should reject it
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/councils')
         .send({ name: 'Mismatched', config: sampleCouncilConfig, type: 'advanced' });
 
@@ -139,7 +146,7 @@ describe('Council Routes', () => {
     });
 
     it('should default type to advanced when not provided', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/councils')
         .send({ name: 'No Type', config: sampleConfig });
 
@@ -150,26 +157,26 @@ describe('Council Routes', () => {
 
   describe('GET /api/councils', () => {
     it('should return empty array when no councils exist', async () => {
-      const res = await request(app).get('/api/councils');
+      const res = await request(server).get('/api/councils');
 
       expect(res.status).toBe(200);
       expect(res.body.councils).toEqual([]);
     });
 
     it('should return all councils', async () => {
-      await request(app).post('/api/councils').send({ name: 'First', config: sampleConfig });
-      await request(app).post('/api/councils').send({ name: 'Second', config: sampleConfig });
+      await request(server).post('/api/councils').send({ name: 'First', config: sampleConfig });
+      await request(server).post('/api/councils').send({ name: 'Second', config: sampleConfig });
 
-      const res = await request(app).get('/api/councils');
+      const res = await request(server).get('/api/councils');
       expect(res.status).toBe(200);
       expect(res.body.councils).toHaveLength(2);
     });
 
     it('should include type in listed councils', async () => {
-      await request(app).post('/api/councils').send({ name: 'VC', config: sampleCouncilConfig, type: 'council' });
-      await request(app).post('/api/councils').send({ name: 'Adv', config: sampleConfig, type: 'advanced' });
+      await request(server).post('/api/councils').send({ name: 'VC', config: sampleCouncilConfig, type: 'council' });
+      await request(server).post('/api/councils').send({ name: 'Adv', config: sampleConfig, type: 'advanced' });
 
-      const res = await request(app).get('/api/councils');
+      const res = await request(server).get('/api/councils');
       expect(res.status).toBe(200);
       const vc = res.body.councils.find(c => c.name === 'VC');
       const adv = res.body.councils.find(c => c.name === 'Adv');
@@ -181,8 +188,8 @@ describe('Council Routes', () => {
   describe('GET /api/councils (MRU ordering)', () => {
     it('should return councils in MRU order (most recently used first)', async () => {
       // Create two councils
-      const res1 = await request(app).post('/api/councils').send({ name: 'Old', config: sampleConfig });
-      const res2 = await request(app).post('/api/councils').send({ name: 'New', config: sampleConfig });
+      const res1 = await request(server).post('/api/councils').send({ name: 'Old', config: sampleConfig });
+      const res2 = await request(server).post('/api/councils').send({ name: 'New', config: sampleConfig });
       const id1 = res1.body.council.id;
       const id2 = res2.body.council.id;
 
@@ -191,7 +198,7 @@ describe('Council Routes', () => {
       const councilRepo = new CouncilRepository(db);
       await councilRepo.touchLastUsedAt(id1);
 
-      const res = await request(app).get('/api/councils');
+      const res = await request(server).get('/api/councils');
       expect(res.status).toBe(200);
       expect(res.body.councils).toHaveLength(2);
       // id1 was touched (has last_used_at), should come first
@@ -201,31 +208,31 @@ describe('Council Routes', () => {
 
   describe('GET /api/councils/:id', () => {
     it('should return a specific council', async () => {
-      const createRes = await request(app)
+      const createRes = await request(server)
         .post('/api/councils')
         .send({ name: 'Specific', config: sampleConfig });
       const id = createRes.body.council.id;
 
-      const res = await request(app).get(`/api/councils/${id}`);
+      const res = await request(server).get(`/api/councils/${id}`);
       expect(res.status).toBe(200);
       expect(res.body.council.id).toBe(id);
       expect(res.body.council.name).toBe('Specific');
     });
 
     it('should return 404 for non-existent council', async () => {
-      const res = await request(app).get('/api/councils/does-not-exist');
+      const res = await request(server).get('/api/councils/does-not-exist');
       expect(res.status).toBe(404);
     });
   });
 
   describe('PUT /api/councils/:id', () => {
     it('should update a council name', async () => {
-      const createRes = await request(app)
+      const createRes = await request(server)
         .post('/api/councils')
         .send({ name: 'Original', config: sampleConfig });
       const id = createRes.body.council.id;
 
-      const res = await request(app)
+      const res = await request(server)
         .put(`/api/councils/${id}`)
         .send({ name: 'Updated' });
 
@@ -234,7 +241,7 @@ describe('Council Routes', () => {
     });
 
     it('should update a council config', async () => {
-      const createRes = await request(app)
+      const createRes = await request(server)
         .post('/api/councils')
         .send({ name: 'Config Update', config: sampleConfig });
       const id = createRes.body.council.id;
@@ -247,7 +254,7 @@ describe('Council Routes', () => {
         }
       };
 
-      const res = await request(app)
+      const res = await request(server)
         .put(`/api/councils/${id}`)
         .send({ config: newConfig });
 
@@ -257,13 +264,13 @@ describe('Council Routes', () => {
 
     it('should update a council type with compatible config provided', async () => {
       // Create with advanced-format config
-      const createRes = await request(app)
+      const createRes = await request(server)
         .post('/api/councils')
         .send({ name: 'Type Update', config: sampleConfig, type: 'advanced' });
       const id = createRes.body.council.id;
 
       // Switch to 'council' by providing BOTH the new type and a compatible config
-      const res = await request(app)
+      const res = await request(server)
         .put(`/api/councils/${id}`)
         .send({ type: 'council', config: sampleCouncilConfig });
 
@@ -274,13 +281,13 @@ describe('Council Routes', () => {
 
     it('should reject type change without config when existing config is incompatible', async () => {
       // Create with advanced-format config
-      const createRes = await request(app)
+      const createRes = await request(server)
         .post('/api/councils')
         .send({ name: 'Incompatible Type Change', config: sampleConfig, type: 'advanced' });
       const id = createRes.body.council.id;
 
       // Try to change type to 'council' without providing a council-format config
-      const res = await request(app)
+      const res = await request(server)
         .put(`/api/councils/${id}`)
         .send({ type: 'council' });
 
@@ -291,13 +298,13 @@ describe('Council Routes', () => {
 
     it('should reject type change in reverse direction when config is incompatible', async () => {
       // Create with council-format config
-      const createRes = await request(app)
+      const createRes = await request(server)
         .post('/api/councils')
         .send({ name: 'Reverse Incompatible', config: sampleCouncilConfig, type: 'council' });
       const id = createRes.body.council.id;
 
       // Try to change type to 'advanced' without providing an advanced-format config
-      const res = await request(app)
+      const res = await request(server)
         .put(`/api/councils/${id}`)
         .send({ type: 'advanced' });
 
@@ -308,13 +315,13 @@ describe('Council Routes', () => {
 
     it('should skip cross-type validation when type is unchanged', async () => {
       // Create with advanced-format config
-      const createRes = await request(app)
+      const createRes = await request(server)
         .post('/api/councils')
         .send({ name: 'Same Type', config: sampleConfig, type: 'advanced' });
       const id = createRes.body.council.id;
 
       // Send a PUT with the same type — no cross-type validation should fire
-      const res = await request(app)
+      const res = await request(server)
         .put(`/api/councils/${id}`)
         .send({ type: 'advanced' });
 
@@ -323,7 +330,7 @@ describe('Council Routes', () => {
     });
 
     it('should return 404 for non-existent council', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .put('/api/councils/does-not-exist')
         .send({ name: 'New' });
 
@@ -331,12 +338,12 @@ describe('Council Routes', () => {
     });
 
     it('should return 400 for invalid config update', async () => {
-      const createRes = await request(app)
+      const createRes = await request(server)
         .post('/api/councils')
         .send({ name: 'To Update', config: sampleConfig });
       const id = createRes.body.council.id;
 
-      const res = await request(app)
+      const res = await request(server)
         .put(`/api/councils/${id}`)
         .send({ config: { levels: 'invalid' } });
 
@@ -345,7 +352,7 @@ describe('Council Routes', () => {
 
     it('should validate config against the existing type when type is not provided in update', async () => {
       // Create a council with type: 'council' and voice-centric config
-      const createRes = await request(app)
+      const createRes = await request(server)
         .post('/api/councils')
         .send({ name: 'Council Type', config: sampleCouncilConfig, type: 'council' });
       const id = createRes.body.council.id;
@@ -355,7 +362,7 @@ describe('Council Routes', () => {
         voices: [{ provider: 'gemini', model: 'flash', tier: 'fast' }],
         levels: { '1': true, '2': false, '3': false }
       };
-      const res = await request(app)
+      const res = await request(server)
         .put(`/api/councils/${id}`)
         .send({ config: updatedConfig });
 
@@ -365,13 +372,13 @@ describe('Council Routes', () => {
 
     it('should reject advanced config format when existing type is council', async () => {
       // Create a council with type: 'council'
-      const createRes = await request(app)
+      const createRes = await request(server)
         .post('/api/councils')
         .send({ name: 'Council Type', config: sampleCouncilConfig, type: 'council' });
       const id = createRes.body.council.id;
 
       // Try to update with advanced-format config (should fail because existing type is 'council')
-      const res = await request(app)
+      const res = await request(server)
         .put(`/api/councils/${id}`)
         .send({ config: sampleConfig });
 
@@ -381,13 +388,13 @@ describe('Council Routes', () => {
 
     it('should use explicitly provided type for validation even when existing type differs', async () => {
       // Create a council with type: 'advanced'
-      const createRes = await request(app)
+      const createRes = await request(server)
         .post('/api/councils')
         .send({ name: 'Advanced', config: sampleConfig, type: 'advanced' });
       const id = createRes.body.council.id;
 
       // Update with type: 'council' and voice-centric config -- should validate against new type
-      const res = await request(app)
+      const res = await request(server)
         .put(`/api/councils/${id}`)
         .send({ config: sampleCouncilConfig, type: 'council' });
 
@@ -399,22 +406,22 @@ describe('Council Routes', () => {
 
   describe('DELETE /api/councils/:id', () => {
     it('should delete an existing council', async () => {
-      const createRes = await request(app)
+      const createRes = await request(server)
         .post('/api/councils')
         .send({ name: 'To Delete', config: sampleConfig });
       const id = createRes.body.council.id;
 
-      const res = await request(app).delete(`/api/councils/${id}`);
+      const res = await request(server).delete(`/api/councils/${id}`);
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
 
       // Verify it is gone
-      const getRes = await request(app).get(`/api/councils/${id}`);
+      const getRes = await request(server).get(`/api/councils/${id}`);
       expect(getRes.status).toBe(404);
     });
 
     it('should return 404 for non-existent council', async () => {
-      const res = await request(app).delete('/api/councils/does-not-exist');
+      const res = await request(server).delete('/api/councils/does-not-exist');
       expect(res.status).toBe(404);
     });
   });

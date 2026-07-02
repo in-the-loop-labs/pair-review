@@ -21,6 +21,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import { createTestDatabase, closeTestDatabase } from '../../utils/schema';
+import { listenOnLoopback, closeServer } from '../../utils/loopback-server';
 
 // vi.mock doesn't work for CommonJS require() under the forks pool, so we use
 // vi.spyOn on the actual module exports. The trigger sites call
@@ -37,9 +38,10 @@ const { run } = require('../../../src/database');
 
 describe('kickOffTourJob trigger sites', () => {
   let app;
+  let server;
   let db;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = createTestDatabase();
 
     // Spy on local-review functions to prevent real git operations
@@ -73,9 +75,12 @@ describe('kickOffTourJob trigger sites', () => {
     const prRouter = require('../../../src/routes/pr');
     app.use(localRouter);
     app.use(prRouter);
+
+    server = await listenOnLoopback(app);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await closeServer(server);
     closeTestDatabase(db);
     localReviewDiffs.clear();
     vi.restoreAllMocks();
@@ -83,7 +88,7 @@ describe('kickOffTourJob trigger sites', () => {
 
   describe('POST /api/local/start', () => {
     it('calls kickOffTourJob with reviewId/diffText/worktreePath/db/config and reviewContext.prTitle = branch', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/local/start')
         .send({ path: '/tmp' });
 
@@ -105,7 +110,7 @@ describe('kickOffTourJob trigger sites', () => {
     it('still calls kickOffTourJob even when tours.enabled is false (gating happens inside the orchestrator, not at the trigger)', async () => {
       app.set('config', { tours: { enabled: false }, port: 7247 });
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/local/start')
         .send({ path: '/tmp' });
 
@@ -118,7 +123,7 @@ describe('kickOffTourJob trigger sites', () => {
     it('does not throw when kickOffTourJob returns null (optional-chain catch)', async () => {
       tourGenerator.kickOffTourJob.mockReturnValue(null);
 
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/local/start')
         .send({ path: '/tmp' });
 
@@ -141,7 +146,7 @@ describe('kickOffTourJob trigger sites', () => {
         digest: 'd1'
       });
 
-      const res = await request(app).get(`/api/local/${sessionId}`);
+      const res = await request(server).get(`/api/local/${sessionId}`);
       expect(res.status).toBe(200);
 
       expect(tourGenerator.kickOffTourJob).toHaveBeenCalledTimes(1);
@@ -169,7 +174,7 @@ describe('kickOffTourJob trigger sites', () => {
         digest: 'd1'
       });
 
-      const res = await request(app).get(`/api/local/${sessionId}`);
+      const res = await request(server).get(`/api/local/${sessionId}`);
       expect(res.status).toBe(200);
 
       const call = tourGenerator.kickOffTourJob.mock.calls[0][0];
@@ -186,7 +191,7 @@ describe('kickOffTourJob trigger sites', () => {
       });
       // No saveLocalDiff call — DB has no row.
 
-      const res = await request(app).get(`/api/local/${sessionId}`);
+      const res = await request(server).get(`/api/local/${sessionId}`);
       expect(res.status).toBe(200);
 
       expect(tourGenerator.kickOffTourJob).not.toHaveBeenCalled();
@@ -218,7 +223,7 @@ describe('kickOffTourJob trigger sites', () => {
       // Ensure no GitHub token so the pendingDraft branch is skipped
       app.set('config', { tours: { enabled: true }, port: 7247 });
 
-      const res = await request(app).get('/api/pr/owner/repo/1');
+      const res = await request(server).get('/api/pr/owner/repo/1');
       expect(res.status).toBe(200);
 
       expect(tourGenerator.kickOffTourJob).toHaveBeenCalledTimes(1);

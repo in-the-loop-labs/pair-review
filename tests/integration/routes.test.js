@@ -2,7 +2,11 @@
 import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
+import fs from 'fs';
+import os from 'os';
+import nodePath from 'path';
 import { createTestDatabase, closeTestDatabase } from '../utils/schema';
+import { listenOnLoopback, closeServer } from '../utils/loopback-server';
 
 /**
  * API Route Integration Tests
@@ -20,6 +24,16 @@ import { createTestDatabase, closeTestDatabase } from '../utils/schema';
 const { GitHubClient } = require('../../src/github/client');
 const { GitWorktreeManager } = require('../../src/git/worktree');
 const configModule = require('../../src/config');
+
+// Per-file temp config dir. A fixed path like '/tmp/.pair-review-test' is
+// shared by every test file that mocks getConfigDir the same way — vitest
+// runs files in parallel forks, so concurrent writers/cleaners race.
+// mkdtemp gives this file (and this file only) an isolated directory.
+const testConfigDir = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'pair-review-cfg-'));
+
+afterAll(() => {
+  fs.rmSync(testConfigDir, { recursive: true, force: true });
+});
 
 // Define mock response values
 const mockGitHubResponses = {
@@ -60,34 +74,71 @@ const mockWorktreeResponses = {
   getChangedFiles: [{ file: 'file.js', additions: 1, deletions: 0 }]
 };
 
-// Spy on GitHubClient prototype methods
-vi.spyOn(GitHubClient.prototype, 'fetchPullRequest').mockResolvedValue(mockGitHubResponses.fetchPullRequest);
-vi.spyOn(GitHubClient.prototype, 'repositoryExists').mockResolvedValue(true);
-vi.spyOn(GitHubClient.prototype, 'createReviewGraphQL').mockResolvedValue(mockGitHubResponses.createReviewGraphQL);
-vi.spyOn(GitHubClient.prototype, 'createDraftReviewGraphQL').mockResolvedValue(mockGitHubResponses.createDraftReviewGraphQL);
-vi.spyOn(GitHubClient.prototype, 'getPendingReviewForUser').mockResolvedValue(null);
-vi.spyOn(GitHubClient.prototype, 'addCommentsInBatches').mockResolvedValue({ successCount: 1, failed: false });
+/**
+ * (Re)apply the default implementations for every GitHubClient,
+ * GitWorktreeManager, and config spy this file manages.
+ *
+ * vi.clearAllMocks() only clears call history — it does NOT reset
+ * implementations, nor does it flush unconsumed mock*Once queues. Several
+ * tests override these spies with persistent mockResolvedValue /
+ * mockImplementation calls inside the test body, so every afterEach that
+ * clears mocks must also call this function; otherwise a test's override
+ * (or a leftover *Once value) leaks into later tests, and any method
+ * without a re-applied default falls back to the REAL implementation —
+ * i.e. live GitHub API calls from a test run.
+ *
+ * mockReset() flushes both the persistent override and any queued *Once
+ * implementations while keeping the spy installed; the default is then
+ * re-applied on the clean spy.
+ */
+function applyDefaultMocks() {
+  const resetSpy = (obj, method) => {
+    const spy = vi.spyOn(obj, method);
+    spy.mockReset();
+    return spy;
+  };
 
-// Spy on GitWorktreeManager prototype methods
-vi.spyOn(GitWorktreeManager.prototype, 'getWorktreePath').mockResolvedValue(mockWorktreeResponses.getWorktreePath);
-vi.spyOn(GitWorktreeManager.prototype, 'worktreeExists').mockResolvedValue(true);
-vi.spyOn(GitWorktreeManager.prototype, 'generateUnifiedDiff').mockResolvedValue(mockWorktreeResponses.generateUnifiedDiff);
-vi.spyOn(GitWorktreeManager.prototype, 'getChangedFiles').mockResolvedValue(mockWorktreeResponses.getChangedFiles);
-vi.spyOn(GitWorktreeManager.prototype, 'updateWorktree').mockResolvedValue(mockWorktreeResponses.getWorktreePath);
-vi.spyOn(GitWorktreeManager.prototype, 'createWorktreeForPR').mockResolvedValue({ path: mockWorktreeResponses.getWorktreePath, id: 'test-wt-id' });
-vi.spyOn(GitWorktreeManager.prototype, 'pathExists').mockResolvedValue(true);
+  // GitHubClient prototype methods (everything routes can reach must be
+  // mocked here — getAuthenticatedUser and getReviewById previously had no
+  // default and hit the real api.github.com when a route reached them).
+  resetSpy(GitHubClient.prototype, 'fetchPullRequest').mockResolvedValue(mockGitHubResponses.fetchPullRequest);
+  resetSpy(GitHubClient.prototype, 'repositoryExists').mockResolvedValue(true);
+  resetSpy(GitHubClient.prototype, 'createReviewGraphQL').mockResolvedValue(mockGitHubResponses.createReviewGraphQL);
+  resetSpy(GitHubClient.prototype, 'createDraftReviewGraphQL').mockResolvedValue(mockGitHubResponses.createDraftReviewGraphQL);
+  resetSpy(GitHubClient.prototype, 'getPendingReviewForUser').mockResolvedValue(null);
+  resetSpy(GitHubClient.prototype, 'getReviewById').mockResolvedValue(null);
+  resetSpy(GitHubClient.prototype, 'addCommentsInBatches').mockResolvedValue({ successCount: 1, failed: false });
+  resetSpy(GitHubClient.prototype, 'getAuthenticatedUser').mockResolvedValue({
+    login: 'test-user',
+    name: 'Test User',
+    avatar_url: 'https://example.com/avatar.png'
+  });
 
-// Spy on config module functions to prevent reading user's real config
-vi.spyOn(configModule, 'loadConfig').mockResolvedValue({
-  config: {
-    github_token: 'test-token',
-    port: 7247,
-    theme: 'light',
-    monorepos: {}  // Empty monorepos config
-  },
-  isFirstRun: false
-});
-vi.spyOn(configModule, 'getConfigDir').mockReturnValue('/tmp/.pair-review-test');
+  // GitWorktreeManager prototype methods
+  resetSpy(GitWorktreeManager.prototype, 'getWorktreePath').mockResolvedValue(mockWorktreeResponses.getWorktreePath);
+  resetSpy(GitWorktreeManager.prototype, 'worktreeExists').mockResolvedValue(true);
+  resetSpy(GitWorktreeManager.prototype, 'generateUnifiedDiff').mockResolvedValue(mockWorktreeResponses.generateUnifiedDiff);
+  resetSpy(GitWorktreeManager.prototype, 'getChangedFiles').mockResolvedValue(mockWorktreeResponses.getChangedFiles);
+  resetSpy(GitWorktreeManager.prototype, 'updateWorktree').mockResolvedValue(mockWorktreeResponses.getWorktreePath);
+  resetSpy(GitWorktreeManager.prototype, 'createWorktreeForPR').mockResolvedValue({ path: mockWorktreeResponses.getWorktreePath, id: 'test-wt-id' });
+  resetSpy(GitWorktreeManager.prototype, 'pathExists').mockResolvedValue(true);
+
+  // Config module functions — prevent reading the user's real config and
+  // keep all config-dir writes inside this file's private temp dir.
+  resetSpy(configModule, 'loadConfig').mockResolvedValue({
+    config: {
+      github_token: 'test-token',
+      port: 7247,
+      theme: 'light',
+      monorepos: {}  // Empty monorepos config
+    },
+    isFirstRun: false
+  });
+  resetSpy(configModule, 'getConfigDir').mockReturnValue(testConfigDir);
+}
+
+// Install the spies before the route modules are loaded below.
+applyDefaultMocks();
 
 vi.mock('../../src/ai/analyzer', () => ({
   default: vi.fn().mockImplementation(() => ({
@@ -217,39 +268,29 @@ async function insertTestWorktree(db, prNumber = 1, repository = 'owner/repo') {
 describe('PR Management Endpoints', () => {
   let db;
   let app;
+  let server;
 
   beforeEach(async () => {
     db = await createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
   });
 
   afterEach(async () => {
+    await closeServer(server);
     if (db) {
       await closeTestDatabase(db);
     }
-    // Reset all mock implementations to their defaults
+    // Reset call history AND re-apply every default implementation.
+    // Restoring only createReviewGraphQL/createDraftReviewGraphQL here used
+    // to let per-test overrides of the other spies leak into later tests.
     vi.clearAllMocks();
-    // Restore default mock responses for GitHub client
-    vi.spyOn(GitHubClient.prototype, 'createReviewGraphQL').mockResolvedValue({
-      id: 'PRR_review12345',
-      databaseId: 12345,
-      html_url: 'https://github.com/owner/repo/pull/1#pullrequestreview-12345',
-      comments_count: 2,
-      submitted_at: new Date().toISOString(),
-      state: 'APPROVED'
-    });
-    vi.spyOn(GitHubClient.prototype, 'createDraftReviewGraphQL').mockResolvedValue({
-      id: 'PRR_draft12346',
-      databaseId: 12346,
-      html_url: 'https://github.com/owner/repo/pull/1#pullrequestreview-12346',
-      comments_count: 2,
-      state: 'PENDING'
-    });
+    applyDefaultMocks();
   });
 
   describe('GET /api/pr/:owner/:repo/:number', () => {
     it('should return 400 for invalid PR number', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/invalid');
 
       expect(response.status).toBe(400);
@@ -257,14 +298,14 @@ describe('PR Management Endpoints', () => {
     });
 
     it('should return 400 for negative PR number', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/-1');
 
       expect(response.status).toBe(400);
     });
 
     it('should return 404 for non-existent PR', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/999');
 
       expect(response.status).toBe(404);
@@ -274,7 +315,7 @@ describe('PR Management Endpoints', () => {
     it('should return PR data successfully', async () => {
       await insertTestPR(db, 1, 'owner/repo');
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/1');
 
       expect(response.status).toBe(200);
@@ -289,7 +330,7 @@ describe('PR Management Endpoints', () => {
     it('should include PR metadata in response', async () => {
       await insertTestPR(db, 1, 'owner/repo');
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/1');
 
       expect(response.body.data.author).toBe('testuser');
@@ -301,7 +342,7 @@ describe('PR Management Endpoints', () => {
       await insertTestPR(db, 1, 'owner/repo');
       await insertTestWorktree(db, 1, 'owner/repo');
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/1');
 
       expect(response.status).toBe(200);
@@ -311,14 +352,14 @@ describe('PR Management Endpoints', () => {
 
   describe('GET /api/pr/:owner/:repo/:number/diff', () => {
     it('should return 400 for invalid PR number', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/invalid/diff');
 
       expect(response.status).toBe(400);
     });
 
     it('should return 404 when PR not found', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/999/diff');
 
       expect(response.status).toBe(404);
@@ -328,7 +369,7 @@ describe('PR Management Endpoints', () => {
       await insertTestPR(db, 1, 'owner/repo');
       await insertTestWorktree(db, 1, 'owner/repo');
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/1/diff');
 
       expect(response.status).toBe(200);
@@ -341,7 +382,7 @@ describe('PR Management Endpoints', () => {
       await insertTestPR(db, 1, 'owner/repo');
       await insertTestWorktree(db, 1, 'owner/repo');
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/1/diff');
 
       expect(response.status).toBe(200);
@@ -374,7 +415,7 @@ describe('PR Management Endpoints', () => {
       `, [1, 'owner/repo', 'Test PR', 'Desc', 'testuser', 'main', 'feature', prData]);
       await insertTestWorktree(db, 1, 'owner/repo');
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/1/diff?w=1');
 
       expect(response.status).toBe(200);
@@ -390,7 +431,7 @@ describe('PR Management Endpoints', () => {
       await insertTestWorktree(db, 1, 'owner/repo');
 
       // ?w=0 should NOT trigger whitespace mode
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/1/diff?w=0');
 
       expect(response.status).toBe(200);
@@ -430,7 +471,7 @@ describe('PR Management Endpoints', () => {
       `, [1, 'owner/repo', 'Test PR', 'Desc', 'testuser', 'main', 'feature', prData]);
       await insertTestWorktree(db, 1, 'owner/repo');
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/1/diff');
 
       expect(response.status).toBe(200);
@@ -445,7 +486,7 @@ describe('PR Management Endpoints', () => {
 
   describe('GET /api/prs', () => {
     it('should return empty array when no PRs exist', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/prs');
 
       expect(response.status).toBe(200);
@@ -457,7 +498,7 @@ describe('PR Management Endpoints', () => {
       await insertTestPR(db, 1, 'owner/repo1');
       await insertTestPR(db, 2, 'owner/repo2');
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/prs?limit=10&offset=0');
 
       expect(response.status).toBe(200);
@@ -471,7 +512,7 @@ describe('PR Management Endpoints', () => {
       await insertTestPR(db, 2, 'owner/repo2');
       await insertTestPR(db, 3, 'owner/repo3');
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/prs?limit=2');
 
       expect(response.body.prs.length).toBe(2);
@@ -480,7 +521,7 @@ describe('PR Management Endpoints', () => {
 
   describe('GET /api/pr/:owner/:repo/:number/files/viewed', () => {
     it('should return 400 for invalid PR number', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/invalid/files/viewed');
 
       expect(response.status).toBe(400);
@@ -488,7 +529,7 @@ describe('PR Management Endpoints', () => {
     });
 
     it('should return 404 for non-existent PR', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/999/files/viewed');
 
       expect(response.status).toBe(404);
@@ -498,7 +539,7 @@ describe('PR Management Endpoints', () => {
     it('should return empty array when no files viewed', async () => {
       await insertTestPR(db, 1, 'owner/repo');
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/1/files/viewed');
 
       expect(response.status).toBe(200);
@@ -516,7 +557,7 @@ describe('PR Management Endpoints', () => {
         VALUES (?, ?, ?, ?)
       `, [1, 'owner/repo', 'Test PR', prData]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/1/files/viewed');
 
       expect(response.status).toBe(200);
@@ -526,7 +567,7 @@ describe('PR Management Endpoints', () => {
 
   describe('POST /api/pr/:owner/:repo/:number/files/viewed', () => {
     it('should return 400 for invalid PR number', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/pr/owner/repo/invalid/files/viewed')
         .send({ files: [] });
 
@@ -537,7 +578,7 @@ describe('PR Management Endpoints', () => {
     it('should return 400 when files is not an array', async () => {
       await insertTestPR(db, 1, 'owner/repo');
 
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/pr/owner/repo/1/files/viewed')
         .send({ files: 'not-an-array' });
 
@@ -546,7 +587,7 @@ describe('PR Management Endpoints', () => {
     });
 
     it('should return 404 for non-existent PR', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/pr/owner/repo/999/files/viewed')
         .send({ files: ['file.js'] });
 
@@ -557,7 +598,7 @@ describe('PR Management Endpoints', () => {
     it('should save viewed files successfully', async () => {
       await insertTestPR(db, 1, 'owner/repo');
 
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/pr/owner/repo/1/files/viewed')
         .send({ files: ['src/file1.js', 'src/file2.ts'] });
 
@@ -576,7 +617,7 @@ describe('PR Management Endpoints', () => {
     it('should preserve other pr_data fields when saving viewed files', async () => {
       await insertTestPR(db, 1, 'owner/repo');
 
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/pr/owner/repo/1/files/viewed')
         .send({ files: ['new-file.js'] });
 
@@ -603,7 +644,7 @@ describe('PR Management Endpoints', () => {
         VALUES (?, ?, ?, ?)
       `, [1, 'owner/repo', 'Test PR', initialPrData]);
 
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/pr/owner/repo/1/files/viewed')
         .send({ files: ['new-file1.js', 'new-file2.js'] });
 
@@ -620,7 +661,7 @@ describe('PR Management Endpoints', () => {
 
   describe('GET /api/pr/:owner/:repo/:number/github-drafts', () => {
     it('should return 400 for invalid PR number', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/invalid/github-drafts');
 
       expect(response.status).toBe(400);
@@ -634,7 +675,7 @@ describe('PR Management Endpoints', () => {
         VALUES (?, ?, ?)
       `, [1, 'owner/repo', 'Test PR']);
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/1/github-drafts');
 
       expect(response.status).toBe(200);
@@ -650,7 +691,7 @@ describe('PR Management Endpoints', () => {
       `, [1, 'owner/repo', 'Test PR']);
 
       // Make the GET request
-      await request(app)
+      await request(server)
         .get('/api/pr/owner/repo/1/github-drafts');
 
       // Verify no review record was created
@@ -676,7 +717,7 @@ describe('PR Management Endpoints', () => {
         comments: { totalCount: 3 }
       });
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/1/github-drafts');
 
       expect(response.status).toBe(200);
@@ -700,7 +741,7 @@ describe('PR Management Endpoints', () => {
       // Mock GitHub to return no pending draft
       vi.spyOn(GitHubClient.prototype, 'getPendingReviewForUser').mockResolvedValue(null);
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/1/github-drafts');
 
       expect(response.status).toBe(200);
@@ -731,7 +772,7 @@ describe('PR Management Endpoints', () => {
         comments: { totalCount: 7 }
       });
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/1/github-drafts');
 
       expect(response.status).toBe(200);
@@ -776,7 +817,7 @@ describe('PR Management Endpoints', () => {
         url: 'https://github.com/owner/repo/pull/1#old'
       });
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/1/github-drafts');
 
       expect(response.status).toBe(200);
@@ -837,7 +878,7 @@ describe('PR Management Endpoints', () => {
         return null;
       });
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/1/github-drafts');
 
       expect(response.status).toBe(200);
@@ -870,7 +911,7 @@ describe('PR Management Endpoints', () => {
 
       vi.spyOn(GitHubClient.prototype, 'getPendingReviewForUser').mockResolvedValue(null);
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/1');
 
       expect(response.status).toBe(200);
@@ -892,7 +933,7 @@ describe('PR Management Endpoints', () => {
         comments: { totalCount: 5 }
       });
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/1');
 
       expect(response.status).toBe(200);
@@ -909,7 +950,7 @@ describe('PR Management Endpoints', () => {
       // Mock GitHub to return no pending draft
       vi.spyOn(GitHubClient.prototype, 'getPendingReviewForUser').mockResolvedValue(null);
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/1');
 
       expect(response.status).toBe(200);
@@ -925,7 +966,7 @@ describe('PR Management Endpoints', () => {
         new Error('GitHub API rate limit exceeded')
       );
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/1');
 
       // Should still return 200 but with pendingDraft null
@@ -942,15 +983,18 @@ describe('PR Management Endpoints', () => {
 describe('User Comment Endpoints', () => {
   let db;
   let app;
+  let server;
   let prId;
 
   beforeEach(async () => {
     db = await createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
     prId = await insertTestPR(db, 1, 'owner/repo');
   });
 
   afterEach(async () => {
+    await closeServer(server);
     if (db) {
       await closeTestDatabase(db);
     }
@@ -958,7 +1002,7 @@ describe('User Comment Endpoints', () => {
 
   describe('POST /api/user-comment', () => {
     it('should return 400 when required fields are missing', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${prId}/comments`)
         .send({ review_id: prId });
 
@@ -967,7 +1011,7 @@ describe('User Comment Endpoints', () => {
     });
 
     it('should return 404 when review not found', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/9999/comments`)
         .send({
           file: 'file.js',
@@ -979,7 +1023,7 @@ describe('User Comment Endpoints', () => {
     });
 
     it('should create user comment successfully', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${prId}/comments`)
         .send({
           file: 'file.js',
@@ -994,7 +1038,7 @@ describe('User Comment Endpoints', () => {
     });
 
     it('should create comment with optional fields', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${prId}/comments`)
         .send({
           review_id: prId,
@@ -1020,7 +1064,7 @@ describe('User Comment Endpoints', () => {
 
   describe('POST /api/file-comment', () => {
     it('should return 400 when required fields are missing', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${prId}/comments`)
         .send({ review_id: prId });
 
@@ -1029,7 +1073,7 @@ describe('User Comment Endpoints', () => {
     });
 
     it('should return 404 when review not found', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/9999/comments`)
         .send({
           file: 'file.js',
@@ -1040,7 +1084,7 @@ describe('User Comment Endpoints', () => {
     });
 
     it('should create file-level comment successfully', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${prId}/comments`)
         .send({
           file: 'file.js',
@@ -1054,7 +1098,7 @@ describe('User Comment Endpoints', () => {
     });
 
     it('should create file-level comment with is_file_level=1 and NULL line fields', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${prId}/comments`)
         .send({
           review_id: prId,
@@ -1075,7 +1119,7 @@ describe('User Comment Endpoints', () => {
     });
 
     it('should create file-level comment with optional commit_sha', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${prId}/comments`)
         .send({
           review_id: prId,
@@ -1102,7 +1146,7 @@ describe('User Comment Endpoints', () => {
       `, [prId, 'file.js']);
 
       // Now adopt it as a file-level comment with metadata
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${prId}/comments`)
         .send({
           review_id: prId,
@@ -1135,7 +1179,7 @@ describe('User Comment Endpoints', () => {
       const parentId = parentResult.lastID;
 
       // Create a file-level comment with all metadata
-      const createResponse = await request(app)
+      const createResponse = await request(server)
         .post(`/api/reviews/${prId}/comments`)
         .send({
           review_id: prId,
@@ -1162,7 +1206,7 @@ describe('User Comment Endpoints', () => {
 
     it('should allow regular user comments without metadata', async () => {
       // Regular user file-level comment without parent_id, type, or title
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${prId}/comments`)
         .send({
           review_id: prId,
@@ -1190,7 +1234,7 @@ describe('User Comment Endpoints', () => {
       const parentId = parentResult.lastID;
 
       // Simulate adopting an AI suggestion and saving it
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${prId}/comments`)
         .send({
           review_id: prId,
@@ -1205,7 +1249,7 @@ describe('User Comment Endpoints', () => {
       const commentId = response.body.commentId;
 
       // Simulate page reload by fetching user comments
-      const getResponse = await request(app)
+      const getResponse = await request(server)
         .get(`/api/reviews/${prId}/comments`);
 
       expect(getResponse.status).toBe(200);
@@ -1221,7 +1265,7 @@ describe('User Comment Endpoints', () => {
     });
 
     it('should handle partial metadata (only type)', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${prId}/comments`)
         .send({
           review_id: prId,
@@ -1239,7 +1283,7 @@ describe('User Comment Endpoints', () => {
     });
 
     it('should handle partial metadata (only title)', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${prId}/comments`)
         .send({
           review_id: prId,
@@ -1257,7 +1301,7 @@ describe('User Comment Endpoints', () => {
     });
 
     it('should default type to "comment" when not provided', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${prId}/comments`)
         .send({
           review_id: prId,
@@ -1274,7 +1318,7 @@ describe('User Comment Endpoints', () => {
 
   describe('GET /api/pr/:owner/:repo/:number/user-comments', () => {
     it('should return empty array when no comments exist', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${prId}/comments`);
 
       expect(response.status).toBe(200);
@@ -1288,7 +1332,7 @@ describe('User Comment Endpoints', () => {
         VALUES (?, 'user', 'file.js', 10, 'Test comment', 'active')
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${prId}/comments`);
 
       expect(response.status).toBe(200);
@@ -1307,7 +1351,7 @@ describe('User Comment Endpoints', () => {
         VALUES (?, 'user', 'file.js', 20, 'Inactive comment', 'inactive')
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${prId}/comments`);
 
       expect(response.body.comments.length).toBe(1);
@@ -1326,7 +1370,7 @@ describe('User Comment Endpoints', () => {
         VALUES (?, 'user', 'another.js', 'File comment', 'active', 1)
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${prId}/comments`);
 
       expect(response.status).toBe(200);
@@ -1347,7 +1391,7 @@ describe('User Comment Endpoints', () => {
         VALUES (?, 'user', 'file.js', 10, 'Original', 'active')
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .put(`/api/reviews/${prId}/comments/${lastID}`)
         .send({ body: '' });
 
@@ -1356,7 +1400,7 @@ describe('User Comment Endpoints', () => {
     });
 
     it('should return 404 for non-existent comment', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .put(`/api/reviews/${prId}/comments/9999`)
         .send({ body: 'Updated' });
 
@@ -1369,7 +1413,7 @@ describe('User Comment Endpoints', () => {
         VALUES (?, 'ai', 'file.js', 10, 'AI suggestion', 'active')
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .put(`/api/reviews/${prId}/comments/${lastID}`)
         .send({ body: 'Updated' });
 
@@ -1383,7 +1427,7 @@ describe('User Comment Endpoints', () => {
         VALUES (?, 'user', 'file.js', 10, 'Original comment', 'active')
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .put(`/api/reviews/${prId}/comments/${lastID}`)
         .send({ body: 'Updated comment' });
 
@@ -1398,7 +1442,7 @@ describe('User Comment Endpoints', () => {
 
   describe('DELETE /api/user-comment/:id', () => {
     it('should return 404 for non-existent comment', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .delete(`/api/reviews/${prId}/comments/9999`);
 
       expect(response.status).toBe(404);
@@ -1410,7 +1454,7 @@ describe('User Comment Endpoints', () => {
         VALUES (?, 'user', 'file.js', 10, 'To delete', 'active')
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .delete(`/api/reviews/${prId}/comments/${lastID}`);
 
       expect(response.status).toBe(200);
@@ -1435,7 +1479,7 @@ describe('User Comment Endpoints', () => {
         VALUES (?, 'user', 'test.js', 10, 'User comment', 'active', ?)
       `, [prId, suggestionId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .delete(`/api/reviews/${prId}/comments/${commentResult.lastID}`);
 
       expect(response.status).toBe(200);
@@ -1454,7 +1498,7 @@ describe('User Comment Endpoints', () => {
         VALUES (?, 'user', 'test.js', 10, 'User comment', 'active')
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .delete(`/api/reviews/${prId}/comments/${commentResult.lastID}`);
 
       expect(response.status).toBe(200);
@@ -1465,7 +1509,7 @@ describe('User Comment Endpoints', () => {
 
   describe('PUT /api/user-comment/:id/restore', () => {
     it('should return 404 for non-existent comment', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .put(`/api/reviews/${prId}/comments/9999/restore`);
 
       expect(response.status).toBe(404);
@@ -1479,7 +1523,7 @@ describe('User Comment Endpoints', () => {
         VALUES (?, 'user', 'file.js', 10, 'Active comment', 'active')
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .put(`/api/reviews/${prId}/comments/${lastID}/restore`);
 
       expect(response.status).toBe(400);
@@ -1493,7 +1537,7 @@ describe('User Comment Endpoints', () => {
         VALUES (?, 'user', 'file.js', 10, 'Dismissed comment', 'inactive')
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .put(`/api/reviews/${prId}/comments/${lastID}/restore`);
 
       expect(response.status).toBe(200);
@@ -1521,7 +1565,7 @@ describe('User Comment Endpoints', () => {
         VALUES (?, 'user', 'file.js', 20, 'Dismissed comment', 'inactive')
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${prId}/comments`);
 
       expect(response.status).toBe(200);
@@ -1542,7 +1586,7 @@ describe('User Comment Endpoints', () => {
         VALUES (?, 'user', 'file.js', 20, 'Dismissed comment', 'inactive')
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${prId}/comments?includeDismissed=true`);
 
       expect(response.status).toBe(200);
@@ -1566,7 +1610,7 @@ describe('User Comment Endpoints', () => {
         VALUES (?, 'user', 'file.js', 20, 'Dismissed comment', 'inactive')
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${prId}/comments?includeDismissed=false`);
 
       expect(response.status).toBe(200);
@@ -1577,7 +1621,7 @@ describe('User Comment Endpoints', () => {
 
   describe('DELETE /api/reviews/:reviewId/comments', () => {
     it('should return 404 for non-existent review ID', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .delete('/api/reviews/99999/comments');
 
       expect(response.status).toBe(404);
@@ -1585,7 +1629,7 @@ describe('User Comment Endpoints', () => {
     });
 
     it('should return 200 with 0 deletions when review has no comments', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .delete(`/api/reviews/${prId}/comments`);
 
       expect(response.status).toBe(200);
@@ -1605,7 +1649,7 @@ describe('User Comment Endpoints', () => {
         VALUES (?, 'user', 'file2.js', 20, 'Comment 2', 'active')
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .delete(`/api/reviews/${prId}/comments`);
 
       expect(response.status).toBe(200);
@@ -1633,7 +1677,7 @@ describe('User Comment Endpoints', () => {
         VALUES (?, 'user', 'file4.js', 40, 'Already inactive', 'inactive')
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .delete(`/api/reviews/${prId}/comments`);
 
       expect(response.status).toBe(200);
@@ -1672,7 +1716,7 @@ describe('User Comment Endpoints', () => {
         VALUES (?, 'user', 'test.js', 20, 'User comment 2', 'active', ?)
       `, [prId, suggestion2Id]);
 
-      const response = await request(app)
+      const response = await request(server)
         .delete(`/api/reviews/${prId}/comments`);
 
       expect(response.status).toBe(200);
@@ -1702,7 +1746,7 @@ describe('User Comment Endpoints', () => {
         VALUES (?, 'user', 'test.js', 20, 'User comment 2', 'active')
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .delete(`/api/reviews/${prId}/comments`);
 
       expect(response.status).toBe(200);
@@ -1712,7 +1756,7 @@ describe('User Comment Endpoints', () => {
     });
 
     it('should return 0 deletedCount and empty dismissedSuggestionIds when no comments exist', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .delete(`/api/reviews/${prId}/comments`);
 
       expect(response.status).toBe(200);
@@ -1730,32 +1774,36 @@ describe('User Comment Endpoints', () => {
 describe('AI Suggestion Endpoints', () => {
   let db;
   let app;
+  let server;
   let prId;
 
   beforeEach(async () => {
     db = await createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
     prId = await insertTestPR(db, 1, 'owner/repo');
     await insertTestWorktree(db, 1, 'owner/repo');
   });
 
   afterEach(async () => {
+    await closeServer(server);
     if (db) {
       await closeTestDatabase(db);
     }
     vi.clearAllMocks();
+    applyDefaultMocks();
   });
 
   describe('GET /api/reviews/:reviewId/suggestions', () => {
     it('should return 404 for non-existent review', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/reviews/99999/suggestions');
 
       expect(response.status).toBe(404);
     });
 
     it('should return empty array when no suggestions exist', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${prId}/suggestions`);
 
       expect(response.status).toBe(200);
@@ -1769,7 +1817,7 @@ describe('AI Suggestion Endpoints', () => {
         VALUES (?, 'ai', 'file.js', 10, 'improvement', 'Test Suggestion', 'Suggestion body', 'active', 'test-run-1')
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${prId}/suggestions`);
 
       expect(response.status).toBe(200);
@@ -1783,7 +1831,7 @@ describe('AI Suggestion Endpoints', () => {
         VALUES (?, 'ai', 'file.js', 10, 'bug', 'Null check', 'Missing null check', 'Add guard clause', 'active', 'test-run-fmt')
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${prId}/suggestions`);
 
       expect(response.status).toBe(200);
@@ -1813,7 +1861,7 @@ describe('AI Suggestion Endpoints', () => {
       `, [prId, runId]);
 
       // Filter for level 1 only
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${prId}/suggestions?levels=1`);
 
       expect(response.status).toBe(200);
@@ -1832,7 +1880,7 @@ describe('AI Suggestion Endpoints', () => {
         VALUES (?, 'ai', 'file.js', 20, NULL, 'Final', 'active', ?)
       `, [prId, runId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${prId}/suggestions`);
 
       expect(response.body.suggestions.length).toBe(1);
@@ -1860,7 +1908,7 @@ describe('AI Suggestion Endpoints', () => {
         VALUES (?, 'ai', 'file.js', 30, NULL, 'New run suggestion', 'active', 'run-2', ?)
       `, [prId, newTime]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${prId}/suggestions`);
 
       // Should only return the suggestion from run-2 (the latest run based on created_at)
@@ -1883,7 +1931,7 @@ describe('AI Suggestion Endpoints', () => {
         VALUES (?, 'ai', 'file.js', 5, 'Comment on deleted line', 'active', ?, NULL, 'LEFT')
       `, [prId, runId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${prId}/suggestions`);
 
       expect(response.status).toBe(200);
@@ -1913,7 +1961,7 @@ describe('AI Suggestion Endpoints', () => {
         VALUES (?, 'ai', 'file.js', 10, 'Suggestion with default side', 'active', ?, NULL)
       `, [prId, runId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${prId}/suggestions`);
 
       expect(response.status).toBe(200);
@@ -1940,7 +1988,7 @@ describe('AI Suggestion Endpoints', () => {
         VALUES (?, 'ai', 'file.js', ?, 'Issue on added line 15', 'active', ?, NULL, 'RIGHT')
       `, [prId, sameLine, runId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${prId}/suggestions`);
 
       expect(response.status).toBe(200);
@@ -1976,7 +2024,7 @@ describe('AI Suggestion Endpoints', () => {
         VALUES (?, 'ai', 'file.js', 20, NULL, 'Active suggestion', 'active', ?)
       `, [prId, runId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${prId}/suggestions`);
 
       expect(response.status).toBe(200);
@@ -2006,7 +2054,7 @@ describe('AI Suggestion Endpoints', () => {
       `, [prId, newTime]);
 
       // Default: only latest run
-      const defaultResponse = await request(app)
+      const defaultResponse = await request(server)
         .get(`/api/reviews/${prId}/suggestions`);
       const defaultSuggestions = defaultResponse.body.suggestions.filter(s =>
         s.ai_run_id === 'allruns-1' || s.ai_run_id === 'allruns-2'
@@ -2015,7 +2063,7 @@ describe('AI Suggestion Endpoints', () => {
       expect(defaultSuggestions[0].ai_run_id).toBe('allruns-2');
 
       // allRuns=true: both runs
-      const allRunsResponse = await request(app)
+      const allRunsResponse = await request(server)
         .get(`/api/reviews/${prId}/suggestions?allRuns=true`);
       const allRunsSuggestions = allRunsResponse.body.suggestions.filter(s =>
         s.ai_run_id === 'allruns-1' || s.ai_run_id === 'allruns-2'
@@ -2040,7 +2088,7 @@ describe('AI Suggestion Endpoints', () => {
         VALUES (?, 'ai', 'file.js', 30, NULL, 'New active', 'active', 'both-2', ?)
       `, [prId, newTime]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${prId}/suggestions?allRuns=true`);
       const suggestions = response.body.suggestions.filter(s =>
         s.ai_run_id === 'both-1' || s.ai_run_id === 'both-2'
@@ -2066,7 +2114,7 @@ describe('AI Suggestion Endpoints', () => {
       `, [prId, newTime]);
 
       // allRuns=true with excludeRunId: should exclude the specified run
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${prId}/suggestions?allRuns=true&excludeRunId=exclude-run-b`);
       const suggestions = response.body.suggestions.filter(s =>
         s.ai_run_id === 'exclude-run-a' || s.ai_run_id === 'exclude-run-b'
@@ -2095,7 +2143,7 @@ describe('AI Suggestion Endpoints', () => {
       `, [prId, time3]);
 
       // Exclude both run B and run C via comma-separated excludeRunId
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${prId}/suggestions?allRuns=true&excludeRunId=multi-excl-b,multi-excl-c`);
       const suggestions = response.body.suggestions.filter(s =>
         s.ai_run_id?.startsWith('multi-excl-')
@@ -2119,7 +2167,7 @@ describe('AI Suggestion Endpoints', () => {
       `, [prId, newTime]);
 
       // excludeRunId without allRuns: should be ignored, only latest run returned
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${prId}/suggestions?excludeRunId=ignore-excl-2`);
       const suggestions = response.body.suggestions.filter(s =>
         s.ai_run_id === 'ignore-excl-1' || s.ai_run_id === 'ignore-excl-2'
@@ -2136,7 +2184,7 @@ describe('AI Suggestion Endpoints', () => {
         VALUES (?, 'ai', 'file.js', 10, 'Suggestion', 'active')
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${prId}/suggestions/${lastID}/status`)
         .send({ status: 'invalid_status' });
 
@@ -2145,7 +2193,7 @@ describe('AI Suggestion Endpoints', () => {
     });
 
     it('should return 404 for non-existent suggestion', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${prId}/suggestions/9999/status`)
         .send({ status: 'dismissed' });
 
@@ -2158,7 +2206,7 @@ describe('AI Suggestion Endpoints', () => {
         VALUES (?, 'ai', 'file.js', 10, 'Suggestion', 'active')
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${prId}/suggestions/${lastID}/status`)
         .send({ status: 'dismissed' });
 
@@ -2176,7 +2224,7 @@ describe('AI Suggestion Endpoints', () => {
         VALUES (?, 'ai', 'file.js', 10, 'Suggestion', 'active')
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${prId}/suggestions/${lastID}/status`)
         .send({ status: 'adopted' });
 
@@ -2207,7 +2255,7 @@ describe('AI Suggestion Endpoints', () => {
         UPDATE comments SET status = 'adopted', adopted_as_id = ? WHERE id = ?
       `, [adoptedCommentId, suggestionId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${prId}/suggestions/${suggestionId}/status`)
         .send({ status: 'active' });
 
@@ -2226,7 +2274,7 @@ describe('AI Suggestion Endpoints', () => {
         VALUES (?, 'ai', 'file.js', 10, 'Fix the bug here', 'bug', 'Null check needed', 'active')
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${prId}/suggestions/${suggestionId}/adopt`);
 
       expect(response.status).toBe(200);
@@ -2250,7 +2298,7 @@ describe('AI Suggestion Endpoints', () => {
     });
 
     it('should return 404 for non-existent suggestion', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${prId}/suggestions/9999/adopt`);
 
       expect(response.status).toBe(404);
@@ -2263,7 +2311,7 @@ describe('AI Suggestion Endpoints', () => {
         VALUES (?, 'ai', 'file.js', 10, 'Already adopted', 'bug', 'adopted')
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${prId}/suggestions/${suggestionId}/adopt`);
 
       expect(response.status).toBe(400);
@@ -2276,7 +2324,7 @@ describe('AI Suggestion Endpoints', () => {
         VALUES (?, 'ai', 'file.js', 10, 'Dismissed suggestion', 'bug', 'dismissed')
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${prId}/suggestions/${suggestionId}/adopt`);
 
       expect(response.status).toBe(400);
@@ -2296,7 +2344,7 @@ describe('AI Suggestion Endpoints', () => {
         VALUES (?, 'ai', 'file.js', 10, 'Other review suggestion', 'active')
       `, [otherReviewId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${prId}/suggestions/${suggestionId}/adopt`);
 
       expect(response.status).toBe(403);
@@ -2309,7 +2357,7 @@ describe('AI Suggestion Endpoints', () => {
         VALUES (?, 'ai', 'file.js', 10, 'Use const instead of let', 'improvement', 'active')
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${prId}/suggestions/${suggestionId}/adopt`);
 
       expect(response.status).toBe(200);
@@ -2326,7 +2374,7 @@ describe('AI Suggestion Endpoints', () => {
         VALUES (?, 'ai', 'file.js', 10, 'Description text', 'Fix it this way', 'bug', 'Null check needed', 'active')
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${prId}/suggestions/${suggestionId}/adopt`);
 
       expect(response.status).toBe(200);
@@ -2352,7 +2400,7 @@ describe('AI Suggestion Endpoints', () => {
         VALUES (?, 'ai', 'file.js', 10, 'Original body', 'Original suggestion', 'bug', 'Original title', 'active')
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${prId}/suggestions/${suggestionId}/edit`)
         .send({
           action: 'adopt_edited',
@@ -2373,7 +2421,7 @@ describe('AI Suggestion Endpoints', () => {
       `, [prId]);
 
       const editedText = '🐛 **Bug**: User-edited formatted text';
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${prId}/suggestions/${suggestionId}/edit`)
         .send({
           action: 'adopt_edited',
@@ -2391,7 +2439,7 @@ describe('AI Suggestion Endpoints', () => {
         VALUES (?, 'ai', 'file.js', 10, 'Original body', 'improvement', 'Fallback Title', 'active')
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${prId}/suggestions/${suggestionId}/edit`)
         .send({
           action: 'adopt_edited',
@@ -2409,7 +2457,7 @@ describe('AI Suggestion Endpoints', () => {
       `, [prId]);
 
       const editedText = 'Verbatim edited body';
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${prId}/suggestions/${suggestionId}/edit`)
         .send({
           action: 'adopt_edited',
@@ -2428,7 +2476,7 @@ describe('AI Suggestion Endpoints', () => {
         VALUES (?, 'ai', 'file.js', 10, 'Description', 'Remediation steps here', 'bug', 'Fix needed', 'active')
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${prId}/suggestions/${suggestionId}/edit`)
         .send({
           action: 'adopt_edited',
@@ -2443,7 +2491,7 @@ describe('AI Suggestion Endpoints', () => {
 
   describe('GET /api/reviews/:reviewId/suggestions/check', () => {
     it('should return false when no suggestions exist and no analysis run', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${prId}/suggestions/check`);
 
       expect(response.status).toBe(200);
@@ -2457,7 +2505,7 @@ describe('AI Suggestion Endpoints', () => {
         VALUES (?, 'ai', 'file.js', 10, 'Suggestion', 'active')
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${prId}/suggestions/check`);
 
       expect(response.status).toBe(200);
@@ -2472,7 +2520,7 @@ describe('AI Suggestion Endpoints', () => {
         VALUES ('test-run-123', ?, 'completed')
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${prId}/suggestions/check`);
 
       expect(response.status).toBe(200);
@@ -2524,7 +2572,7 @@ describe('AI Suggestion Endpoints', () => {
         VALUES (?, 'ai', 'file.js', 30, 'New praise', 'praise', 'run-2', NULL, 'active', ?)
       `, [prId, newTime]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${prId}/suggestions/check`);
 
       expect(response.status).toBe(200);
@@ -2553,21 +2601,21 @@ describe('AI Suggestion Endpoints', () => {
       `, [prId, newTime]);
 
       // Without runId, should return latest (run-2) summary
-      const responseLatest = await request(app)
+      const responseLatest = await request(server)
         .get(`/api/reviews/${prId}/suggestions/check`);
 
       expect(responseLatest.status).toBe(200);
       expect(responseLatest.body.summary).toBe('Summary from second run');
 
       // With runId=run-1, should return first run summary
-      const responseRun1 = await request(app)
+      const responseRun1 = await request(server)
         .get(`/api/reviews/${prId}/suggestions/check?runId=run-1`);
 
       expect(responseRun1.status).toBe(200);
       expect(responseRun1.body.summary).toBe('Summary from first run');
 
       // With runId=run-2, should return second run summary
-      const responseRun2 = await request(app)
+      const responseRun2 = await request(server)
         .get(`/api/reviews/${prId}/suggestions/check?runId=run-2`);
 
       expect(responseRun2.status).toBe(200);
@@ -2581,7 +2629,7 @@ describe('AI Suggestion Endpoints', () => {
       `, [prId]);
 
       // Request with non-existent runId should fall back to review summary
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${prId}/suggestions/check?runId=non-existent-run`);
 
       expect(response.status).toBe(200);
@@ -2597,25 +2645,29 @@ describe('AI Suggestion Endpoints', () => {
 describe('Review Submission Endpoint', () => {
   let db;
   let app;
+  let server;
   let prId;
 
   beforeEach(async () => {
     db = await createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
     prId = await insertTestPR(db, 1, 'owner/repo');
     await insertTestWorktree(db, 1, 'owner/repo');
   });
 
   afterEach(async () => {
+    await closeServer(server);
     if (db) {
       await closeTestDatabase(db);
     }
     vi.clearAllMocks();
+    applyDefaultMocks();
   });
 
   describe('POST /api/pr/:owner/:repo/:number/submit-review', () => {
     it('should return 400 for invalid PR number', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/pr/owner/repo/invalid/submit-review')
         .send({ event: 'APPROVE' });
 
@@ -2623,7 +2675,7 @@ describe('Review Submission Endpoint', () => {
     });
 
     it('should return 400 for invalid event type', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/pr/owner/repo/1/submit-review')
         .send({ event: 'INVALID_EVENT' });
 
@@ -2632,7 +2684,7 @@ describe('Review Submission Endpoint', () => {
     });
 
     it('should return 404 for non-existent PR', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/pr/owner/repo/999/submit-review')
         .send({ event: 'APPROVE' });
 
@@ -2645,7 +2697,7 @@ describe('Review Submission Endpoint', () => {
       const validEvents = ['APPROVE', 'REQUEST_CHANGES', 'COMMENT', 'DRAFT'];
 
       for (const event of validEvents) {
-        const response = await request(app)
+        const response = await request(server)
           .post('/api/pr/owner/repo/1/submit-review')
           .send({ event, body: 'Test' });
 
@@ -2682,7 +2734,7 @@ describe('Review Submission Endpoint', () => {
         `, [prId, i + 1, i + 1]);
       }
 
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/pr/owner/repo/1/submit-review')
         .send({ event: 'APPROVE' });
 
@@ -2698,7 +2750,7 @@ describe('Review Submission Endpoint', () => {
         VALUES (?, 'user', 'file.js', 'This is a file-level comment', 'active', 1)
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/pr/owner/repo/1/submit-review')
         .send({ event: 'COMMENT', body: 'Review with file-level comment' });
 
@@ -2733,7 +2785,7 @@ describe('Review Submission Endpoint', () => {
         VALUES (?, 'user', 'file.js', 2, 5, 'RIGHT', 'Line-level comment', 'active', 0)
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/pr/owner/repo/1/submit-review')
         .send({ event: 'COMMENT', body: 'Review with mixed comments' });
 
@@ -2769,7 +2821,7 @@ describe('Review Submission Endpoint', () => {
         VALUES (?, 'user', 'file.js', 'Draft file-level comment', 'active', 1)
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/pr/owner/repo/1/submit-review')
         .send({ event: 'DRAFT', body: 'Draft review' });
 
@@ -2813,7 +2865,7 @@ describe('Review Submission Endpoint', () => {
         VALUES (?, 'user', 'file.js', 10, 5, 'RIGHT', 'New draft comment', 'active')
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/pr/owner/repo/1/submit-review')
         .send({ event: 'DRAFT', body: 'Draft review' });
 
@@ -2856,7 +2908,7 @@ describe('Review Submission Endpoint', () => {
         VALUES (?, 'user', 'file.js', 10, 5, 'RIGHT', 'Review comment', 'active')
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/pr/owner/repo/1/submit-review')
         .send({ event: 'COMMENT', body: 'Submitting review' });
 
@@ -2881,7 +2933,7 @@ describe('Review Submission Endpoint', () => {
         VALUES (?, 'user', 'file.js', 10, 5, 'RIGHT', 'Review comment', 'active')
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/pr/owner/repo/1/submit-review')
         .send({ event: 'APPROVE', body: 'LGTM' });
 
@@ -2902,7 +2954,7 @@ describe('Review Submission Endpoint', () => {
         VALUES (?, 'user', 'file.js', 42, 'RIGHT', 'Expanded context comment', 'active', 0)
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/pr/owner/repo/1/submit-review')
         .send({ event: 'COMMENT', body: 'Review with expanded context comment' });
 
@@ -2929,7 +2981,7 @@ describe('Review Submission Endpoint', () => {
         VALUES (?, 'user', 'file.js', 2, 'RIGHT', 'Chat agent comment on diff line', 'active', 0)
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/pr/owner/repo/1/submit-review')
         .send({ event: 'COMMENT', body: 'Review with chat agent comment' });
 
@@ -2956,7 +3008,7 @@ describe('Review Submission Endpoint', () => {
         VALUES (?, 'user', 'file.js', 2, 4, 5, 'RIGHT', 'Multi-line comment spanning lines 2-4', 'active', 0)
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/pr/owner/repo/1/submit-review')
         .send({ event: 'COMMENT', body: 'Review with multi-line comment' });
 
@@ -2984,7 +3036,7 @@ describe('Review Submission Endpoint', () => {
         VALUES (?, 'user', 'file.js', 3, 10, 'RIGHT', 'Single-line comment', 'active', 0)
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/pr/owner/repo/1/submit-review')
         .send({ event: 'COMMENT', body: 'Review with single-line comment' });
 
@@ -3012,7 +3064,7 @@ describe('Review Submission Endpoint', () => {
         VALUES (?, 'user', 'file.js', 3, 3, 15, 'RIGHT', 'Single-line comment with both values', 'active', 0)
       `, [prId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/pr/owner/repo/1/submit-review')
         .send({ event: 'COMMENT', body: 'Review with single-line comment' });
 
@@ -3065,7 +3117,7 @@ describe('Review Submission Endpoint', () => {
       expect(analysisRunsBefore.length).toBe(1);
 
       // Submit the review
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/pr/owner/repo/1/submit-review')
         .send({ event: 'COMMENT', body: 'Test review submission' });
 
@@ -3113,7 +3165,7 @@ describe('Review Submission Endpoint', () => {
       expect(analysisRunsBefore.length).toBe(1);
 
       // Create draft review
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/pr/owner/repo/1/submit-review')
         .send({ event: 'DRAFT', body: 'Draft review' });
 
@@ -3160,7 +3212,7 @@ describe('Review Submission Endpoint', () => {
         // Without node_id, the GraphQL dispatcher cannot address the PR.
         await insertPRWithoutNodeId(db, 1, 'owner/repo');
 
-        const response = await request(app)
+        const response = await request(server)
           .post('/api/pr/owner/repo/1/submit-review')
           .send({ event: 'COMMENT', body: 'No node_id' });
 
@@ -3192,7 +3244,7 @@ describe('Review Submission Endpoint', () => {
 
         await insertPRWithoutNodeId(db, 1, 'owner/repo');
 
-        const response = await request(app)
+        const response = await request(server)
           .post('/api/pr/owner/repo/1/submit-review')
           .send({ event: 'COMMENT', body: 'REST + host config' });
 
@@ -3215,22 +3267,26 @@ describe('Review Submission Endpoint', () => {
 describe('Config Endpoints', () => {
   let db;
   let app;
+  let server;
 
   beforeEach(async () => {
     db = await createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
   });
 
   afterEach(async () => {
+    await closeServer(server);
     if (db) {
       await closeTestDatabase(db);
     }
     vi.clearAllMocks();
+    applyDefaultMocks();
   });
 
   describe('GET /api/config', () => {
     it('should return config without sensitive data', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/config');
 
       expect(response.status).toBe(200);
@@ -3240,7 +3296,7 @@ describe('Config Endpoints', () => {
     });
 
     it('should return default values', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/config');
 
       expect(response.body.theme).toBe('light');
@@ -3262,7 +3318,7 @@ describe('Config Endpoints', () => {
         default_model: 'multi-model'
       });
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/config');
 
       expect(response.body.default_provider).toBe('pi');
@@ -3280,7 +3336,7 @@ describe('Config Endpoints', () => {
         external_comments: false
       });
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/config');
 
       expect(response.body.default_provider).toBe('gemini');
@@ -3290,7 +3346,7 @@ describe('Config Endpoints', () => {
     });
 
     it('should return enable_chat and pi_available fields', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/config');
 
       expect(response.status).toBe(200);
@@ -3303,14 +3359,14 @@ describe('Config Endpoints', () => {
     it('should return enable_chat as false when explicitly disabled', async () => {
       app.set('config', { ...app.get('config'), enable_chat: false });
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/config');
 
       expect(response.body.enable_chat).toBe(false);
     });
 
     it('should return null share when not configured', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/config');
 
       expect(response.body.share).toBeNull();
@@ -3328,7 +3384,7 @@ describe('Config Endpoints', () => {
         }
       });
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/config');
 
       expect(response.body.share).toEqual({
@@ -3349,7 +3405,7 @@ describe('Config Endpoints', () => {
         }
       });
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/config');
 
       expect(response.body.share).toEqual({
@@ -3364,7 +3420,7 @@ describe('Config Endpoints', () => {
     it('should return comment_format from config', async () => {
       app.set('config', { ...app.get('config'), comment_format: 'minimal' });
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/config');
 
       expect(response.status).toBe(200);
@@ -3372,7 +3428,7 @@ describe('Config Endpoints', () => {
     });
 
     it('should return chat_enter_to_send as true by default', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/config');
 
       expect(response.status).toBe(200);
@@ -3382,21 +3438,21 @@ describe('Config Endpoints', () => {
     it('should return chat_enter_to_send as false when disabled', async () => {
       app.set('config', { ...app.get('config'), chat: { enter_to_send: false } });
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/config');
 
       expect(response.body.chat_enter_to_send).toBe(false);
     });
 
     it('returns external_comments as false by default (opt-in feature)', async () => {
-      const response = await request(app).get('/api/config');
+      const response = await request(server).get('/api/config');
       expect(response.status).toBe(200);
       expect(response.body.external_comments).toBe(false);
     });
 
     it('returns external_comments as true when explicitly enabled', async () => {
       app.set('config', { ...app.get('config'), external_comments: true });
-      const response = await request(app).get('/api/config');
+      const response = await request(server).get('/api/config');
       expect(response.body.external_comments).toBe(true);
     });
 
@@ -3430,7 +3486,7 @@ describe('Config Endpoints', () => {
 
       it('returns has_global_github_token=true and omits has_github_token when no repo params are supplied', async () => {
         // Default test config has github_token: 'test-token'
-        const response = await request(app).get('/api/config');
+        const response = await request(server).get('/api/config');
 
         expect(response.status).toBe(200);
         expect(response.body.has_global_github_token).toBe(true);
@@ -3440,7 +3496,7 @@ describe('Config Endpoints', () => {
 
       it('returns has_global_github_token=false when no token is configured anywhere', async () => {
         app.set('config', { theme: 'light' }); // no github_token, no github_token_command
-        const response = await request(app).get('/api/config');
+        const response = await request(server).get('/api/config');
 
         expect(response.body.has_global_github_token).toBe(false);
         expect(response.body).not.toHaveProperty('has_github_token');
@@ -3455,7 +3511,7 @@ describe('Config Endpoints', () => {
           }
         });
 
-        const response = await request(app)
+        const response = await request(server)
           .get('/api/config')
           .query({ owner: 'foo', repo: 'bar' });
 
@@ -3473,7 +3529,7 @@ describe('Config Endpoints', () => {
           repos: {}
         });
 
-        const response = await request(app)
+        const response = await request(server)
           .get('/api/config')
           .query({ owner: 'foo', repo: 'bar' });
 
@@ -3489,7 +3545,7 @@ describe('Config Endpoints', () => {
           }
         });
 
-        const response = await request(app)
+        const response = await request(server)
           .get('/api/config')
           .query({ owner: 'foo', repo: 'bar' });
 
@@ -3503,7 +3559,7 @@ describe('Config Endpoints', () => {
           github_token: 'global-token'
         });
 
-        const response = await request(app)
+        const response = await request(server)
           .get('/api/config')
           .query({ owner: 'foo' }); // no `repo`
 
@@ -3518,7 +3574,7 @@ describe('Config Endpoints', () => {
           github_token: 'global-token'
         });
 
-        const response = await request(app)
+        const response = await request(server)
           .get('/api/config')
           .query({ repo: 'bar' }); // no `owner`
 
@@ -3532,7 +3588,7 @@ describe('Config Endpoints', () => {
           github_token: 'global-token'
         });
 
-        const response = await request(app)
+        const response = await request(server)
           .get('/api/config')
           .query({ owner: '', repo: '' });
 
@@ -3544,7 +3600,7 @@ describe('Config Endpoints', () => {
 
   describe('GET /runtime-config.js', () => {
     it('serves a JS file that sets PAIR_REVIEW_RUNTIME_CONFIG (disabled by default — opt-in feature)', async () => {
-      const response = await request(app).get('/runtime-config.js');
+      const response = await request(server).get('/runtime-config.js');
       expect(response.status).toBe(200);
       expect(response.headers['content-type']).toMatch(/javascript/);
       expect(response.headers['cache-control']).toMatch(/no-store/);
@@ -3557,7 +3613,7 @@ describe('Config Endpoints', () => {
 
     it('emits external_comments_enabled:true when explicitly enabled', async () => {
       app.set('config', { ...app.get('config'), external_comments: true });
-      const response = await request(app).get('/runtime-config.js');
+      const response = await request(server).get('/runtime-config.js');
       expect(response.status).toBe(200);
       expect(response.text).toContain('"external_comments_enabled":true');
       // The class-add code remains in the script but is gated by the
@@ -3579,7 +3635,7 @@ describe('Config Endpoints', () => {
     });
 
     it('returns 400 for invalid semver', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/notify-update')
         .send({ version: 'not-semver' });
       expect(res.status).toBe(400);
@@ -3587,7 +3643,7 @@ describe('Config Endpoints', () => {
     });
 
     it('returns 400 for missing version', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/notify-update')
         .send({});
       expect(res.status).toBe(400);
@@ -3595,7 +3651,7 @@ describe('Config Endpoints', () => {
     });
 
     it('returns 400 for empty-string version', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/notify-update')
         .send({ version: '' });
       expect(res.status).toBe(400);
@@ -3604,7 +3660,7 @@ describe('Config Endpoints', () => {
 
     it('returns notified:false when version is not newer', async () => {
       // 0.0.1 is clearly older than any plausible running version
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/notify-update')
         .send({ version: '0.0.1' });
       expect(res.status).toBe(200);
@@ -3612,7 +3668,7 @@ describe('Config Endpoints', () => {
     });
 
     it('returns notified:false when version equals running', async () => {
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/notify-update')
         .send({ version: runningVersion });
       expect(res.status).toBe(200);
@@ -3621,25 +3677,25 @@ describe('Config Endpoints', () => {
     });
 
     it('accepts a newer version and exposes it via GET /api/config', async () => {
-      const postRes = await request(app)
+      const postRes = await request(server)
         .post('/api/notify-update')
         .send({ version: '999.0.0' });
       expect(postRes.status).toBe(200);
       expect(postRes.body).toEqual({ ok: true, notified: true });
 
-      const configRes = await request(app).get('/api/config');
+      const configRes = await request(server).get('/api/config');
       expect(configRes.body.pending_update).toBe('999.0.0');
     });
 
     it('suppresses repeat POST of the same pending version', async () => {
       // First POST succeeds
-      const first = await request(app)
+      const first = await request(server)
         .post('/api/notify-update')
         .send({ version: '999.0.0' });
       expect(first.body).toEqual({ ok: true, notified: true });
 
       // Second POST of the same version is suppressed
-      const second = await request(app)
+      const second = await request(server)
         .post('/api/notify-update')
         .send({ version: '999.0.0' });
       expect(second.status).toBe(200);
@@ -3647,32 +3703,32 @@ describe('Config Endpoints', () => {
       expect(second.body.reason).toBe('not_newer_than_pending');
 
       // pending_update is still the same
-      const configRes = await request(app).get('/api/config');
+      const configRes = await request(server).get('/api/config');
       expect(configRes.body.pending_update).toBe('999.0.0');
     });
 
     it('accepts a strictly newer version even when one is already pending', async () => {
       // First: v999.0.0 becomes pending
-      await request(app).post('/api/notify-update').send({ version: '999.0.0' });
+      await request(server).post('/api/notify-update').send({ version: '999.0.0' });
 
       // Then: v999.1.0 should escape suppression and replace pending
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/notify-update')
         .send({ version: '999.1.0' });
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ ok: true, notified: true });
 
-      const configRes = await request(app).get('/api/config');
+      const configRes = await request(server).get('/api/config');
       expect(configRes.body.pending_update).toBe('999.1.0');
     });
 
     it('suppresses a downgrade when a newer version is already pending', async () => {
       // First: v999.1.0 becomes pending
-      await request(app).post('/api/notify-update').send({ version: '999.1.0' });
+      await request(server).post('/api/notify-update').send({ version: '999.1.0' });
 
       // Then: v999.0.0 is older than pending but still newer than running.
       // Should be suppressed — user already knows about the newer version.
-      const res = await request(app)
+      const res = await request(server)
         .post('/api/notify-update')
         .send({ version: '999.0.0' });
       expect(res.status).toBe(200);
@@ -3680,12 +3736,12 @@ describe('Config Endpoints', () => {
       expect(res.body.reason).toBe('not_newer_than_pending');
 
       // pending_update is unchanged — monotonic behavior
-      const configRes = await request(app).get('/api/config');
+      const configRes = await request(server).get('/api/config');
       expect(configRes.body.pending_update).toBe('999.1.0');
     });
 
     it('GET /api/config returns null pending_update before any notification', async () => {
-      const res = await request(app).get('/api/config');
+      const res = await request(server).get('/api/config');
       expect(res.body.pending_update).toBeNull();
     });
   });
@@ -3698,20 +3754,24 @@ describe('Config Endpoints', () => {
 describe('Adoption with non-legacy preset', () => {
   let db;
   let app;
+  let server;
   let prId;
 
   beforeEach(async () => {
     db = await createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
     prId = await insertTestPR(db, 1, 'owner/repo');
     await insertTestWorktree(db, 1, 'owner/repo');
   });
 
   afterEach(async () => {
+    await closeServer(server);
     if (db) {
       await closeTestDatabase(db);
     }
     vi.clearAllMocks();
+    applyDefaultMocks();
   });
 
   it('should format adopted suggestion using minimal preset', async () => {
@@ -3723,7 +3783,7 @@ describe('Adoption with non-legacy preset', () => {
       VALUES (?, 'ai', 'file.js', 10, 'Null check missing', 'Add if (!x) return;', 'bug', 'Null Safety', 'active')
     `, [prId]);
 
-    const response = await request(app)
+    const response = await request(server)
       .post(`/api/reviews/${prId}/suggestions/${suggestionId}/adopt`);
 
     expect(response.status).toBe(200);
@@ -3745,13 +3805,16 @@ describe('Adoption with non-legacy preset', () => {
 describe('Repository Settings Endpoints', () => {
   let db;
   let app;
+  let server;
 
   beforeEach(async () => {
     db = await createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
   });
 
   afterEach(async () => {
+    await closeServer(server);
     if (db) {
       await closeTestDatabase(db);
     }
@@ -3759,7 +3822,7 @@ describe('Repository Settings Endpoints', () => {
 
   describe('GET /api/repos/:owner/:repo/settings', () => {
     it('should return null values when no settings exist', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/repos/owner/repo/settings');
 
       expect(response.status).toBe(200);
@@ -3769,7 +3832,7 @@ describe('Repository Settings Endpoints', () => {
     });
 
     it('should return load_skills: null by default', async () => {
-      const res = await request(app).get('/api/repos/owner/repo/settings');
+      const res = await request(server).get('/api/repos/owner/repo/settings');
       expect(res.status).toBe(200);
       expect(res.body.load_skills).toBe(null);
     });
@@ -3781,7 +3844,7 @@ describe('Repository Settings Endpoints', () => {
         default_model: 'claude-opus'
       });
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/repos/owner/repo/settings');
 
       expect(response.status).toBe(200);
@@ -3792,7 +3855,7 @@ describe('Repository Settings Endpoints', () => {
 
   describe('POST /api/repos/:owner/:repo/settings', () => {
     it('should return 400 when no settings provided', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/repos/owner/repo/settings')
         .send({});
 
@@ -3801,7 +3864,7 @@ describe('Repository Settings Endpoints', () => {
     });
 
     it('should save default_instructions', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/repos/owner/repo/settings')
         .send({ default_instructions: 'Be thorough' });
 
@@ -3811,7 +3874,7 @@ describe('Repository Settings Endpoints', () => {
     });
 
     it('should save default_model', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/repos/owner/repo/settings')
         .send({ default_model: 'sonnet' });
 
@@ -3821,12 +3884,12 @@ describe('Repository Settings Endpoints', () => {
 
     it('should update existing settings', async () => {
       // Create initial settings
-      await request(app)
+      await request(server)
         .post('/api/repos/owner/repo/settings')
         .send({ default_instructions: 'Initial' });
 
       // Update settings
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/repos/owner/repo/settings')
         .send({ default_instructions: 'Updated' });
 
@@ -3835,31 +3898,31 @@ describe('Repository Settings Endpoints', () => {
     });
 
     it('should save load_skills: 0 and GET retrieves it', async () => {
-      await request(app)
+      await request(server)
         .post('/api/repos/owner/repo/settings')
         .send({ load_skills: 0 });
-      const res = await request(app).get('/api/repos/owner/repo/settings');
+      const res = await request(server).get('/api/repos/owner/repo/settings');
       expect(res.status).toBe(200);
       expect(res.body.load_skills).toBe(0);
     });
 
     it('should save load_skills: 1', async () => {
-      await request(app)
+      await request(server)
         .post('/api/repos/owner/repo/settings')
         .send({ load_skills: 1 });
-      const res = await request(app).get('/api/repos/owner/repo/settings');
+      const res = await request(server).get('/api/repos/owner/repo/settings');
       expect(res.status).toBe(200);
       expect(res.body.load_skills).toBe(1);
     });
 
     it('should reset load_skills to null', async () => {
-      await request(app)
+      await request(server)
         .post('/api/repos/owner/repo/settings')
         .send({ load_skills: 1 });
-      await request(app)
+      await request(server)
         .post('/api/repos/owner/repo/settings')
         .send({ load_skills: null });
-      const res = await request(app).get('/api/repos/owner/repo/settings');
+      const res = await request(server).get('/api/repos/owner/repo/settings');
       expect(res.status).toBe(200);
       expect(res.body.load_skills).toBe(null);
     });
@@ -3873,13 +3936,16 @@ describe('Repository Settings Endpoints', () => {
 describe('Repo Links Endpoint', () => {
   let db;
   let app;
+  let server;
 
   beforeEach(async () => {
     db = await createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
   });
 
   afterEach(async () => {
+    await closeServer(server);
     if (db) {
       await closeTestDatabase(db);
     }
@@ -3887,7 +3953,7 @@ describe('Repo Links Endpoint', () => {
 
   describe('GET /api/repos/:owner/:repo/links', () => {
     it('returns default config when no repos entry exists', async () => {
-      const res = await request(app).get('/api/repos/acme/widget/links');
+      const res = await request(server).get('/api/repos/acme/widget/links');
       expect(res.status).toBe(200);
       expect(res.body.repository).toBe('acme/widget');
       expect(res.body.links).toEqual({ external: null, github: true, graphite: true });
@@ -3910,7 +3976,7 @@ describe('Repo Links Endpoint', () => {
           },
         },
       });
-      const res = await request(app).get('/api/repos/acme/widget/links');
+      const res = await request(server).get('/api/repos/acme/widget/links');
       expect(res.status).toBe(200);
       expect(res.body.links.github).toBe(false);
       expect(res.body.links.graphite).toBe(false);
@@ -3937,7 +4003,7 @@ describe('Repo Links Endpoint', () => {
           },
         },
       });
-      const res = await request(app).get('/api/repos/acme/widget/links');
+      const res = await request(server).get('/api/repos/acme/widget/links');
       expect(res.status).toBe(200);
       expect(res.body.links.external).not.toBeNull();
       expect(res.body.links.external.icon).not.toContain('<script');
@@ -3960,7 +4026,7 @@ describe('Repo Links Endpoint', () => {
           },
         },
       });
-      const res = await request(app).get('/api/repos/acme/widget/links');
+      const res = await request(server).get('/api/repos/acme/widget/links');
       expect(res.status).toBe(200);
       expect(res.body.links.external).not.toBeNull();
       expect(res.body.links.external.icon).toBeNull();
@@ -3975,13 +4041,16 @@ describe('Repo Links Endpoint', () => {
 describe('Health Check Endpoints', () => {
   let db;
   let app;
+  let server;
 
   beforeEach(async () => {
     db = await createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
   });
 
   afterEach(async () => {
+    await closeServer(server);
     if (db) {
       await closeTestDatabase(db);
     }
@@ -3989,7 +4058,7 @@ describe('Health Check Endpoints', () => {
 
   describe('GET /api/pr/health', () => {
     it('should return health status', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/health');
 
       expect(response.status).toBe(200);
@@ -4007,20 +4076,23 @@ describe('Health Check Endpoints', () => {
 describe('Error Handling', () => {
   let db;
   let app;
+  let server;
 
   beforeEach(async () => {
     db = await createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
   });
 
   afterEach(async () => {
+    await closeServer(server);
     if (db) {
       await closeTestDatabase(db);
     }
   });
 
   it('should handle malformed JSON gracefully', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/reviews/1/comments')
       .set('Content-Type', 'application/json')
       .send('not valid json');
@@ -4029,7 +4101,7 @@ describe('Error Handling', () => {
   });
 
   it('should return consistent error format', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .get('/api/pr/owner/repo/invalid');
 
     expect(response.status).toBe(400);
@@ -4045,17 +4117,21 @@ describe('Error Handling', () => {
 describe('Analysis Status Endpoints', () => {
   let db;
   let app;
+  let server;
 
   beforeEach(async () => {
     db = await createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
   });
 
   afterEach(async () => {
+    await closeServer(server);
     if (db) {
       await closeTestDatabase(db);
     }
     vi.clearAllMocks();
+    applyDefaultMocks();
   });
 
   describe('GET /api/reviews/:reviewId/analyses/status (PR mode)', () => {
@@ -4067,7 +4143,7 @@ describe('Analysis Status Endpoints', () => {
       `);
       const reviewId = reviewResult.lastID;
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${reviewId}/analyses/status`);
 
       expect(response.status).toBe(200);
@@ -4090,7 +4166,7 @@ describe('Analysis Status Endpoints', () => {
         VALUES (?, ?, 'running', 'claude', 'sonnet', 3, datetime('now'))
       `, [analysisId, reviewId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${reviewId}/analyses/status`);
 
       expect(response.status).toBe(200);
@@ -4121,7 +4197,7 @@ describe('Analysis Status Endpoints', () => {
         VALUES (?, ?, 'completed', 'claude', 'sonnet', datetime('now', '-5 minutes'), datetime('now'))
       `, ['db-fallback-completed-pr', reviewId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${reviewId}/analyses/status`);
 
       expect(response.status).toBe(200);
@@ -4132,7 +4208,7 @@ describe('Analysis Status Endpoints', () => {
 
   describe('GET /api/analyses/:id/status', () => {
     it('should return 404 for non-existent analysis', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/analyses/non-existent-id/status');
 
       expect(response.status).toBe(404);
@@ -4142,7 +4218,7 @@ describe('Analysis Status Endpoints', () => {
 
   describe('POST /api/analyses/:id/cancel', () => {
     it('should return 404 for non-existent analysis', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/analyses/non-existent-id/cancel');
 
       expect(response.status).toBe(404);
@@ -4175,7 +4251,7 @@ describe('Analysis Status Endpoints', () => {
       reviewToAnalysisId.set(reviewId, analysisId);
 
       try {
-        const response = await request(app)
+        const response = await request(server)
           .post(`/api/analyses/${analysisId}/cancel`);
 
         expect(response.status).toBe(200);
@@ -4215,7 +4291,7 @@ describe('Analysis Status Endpoints', () => {
       });
 
       try {
-        const response = await request(app)
+        const response = await request(server)
           .post(`/api/analyses/${analysisId}/cancel`);
 
         expect(response.status).toBe(200);
@@ -4242,7 +4318,7 @@ describe('Analysis Status Endpoints', () => {
       });
 
       try {
-        const response = await request(app)
+        const response = await request(server)
           .post(`/api/analyses/${analysisId}/cancel`);
 
         expect(response.status).toBe(200);
@@ -4278,7 +4354,7 @@ describe('Analysis Status Endpoints', () => {
       });
 
       try {
-        const response = await request(app)
+        const response = await request(server)
           .post(`/api/analyses/${analysisId}/cancel`);
 
         expect(response.status).toBe(200);
@@ -4338,7 +4414,7 @@ describe('Analysis Status Endpoints', () => {
       });
 
       try {
-        const response = await request(app)
+        const response = await request(server)
           .post(`/api/analyses/${analysisId}/cancel`);
 
         expect(response.status).toBe(200);
@@ -4392,7 +4468,7 @@ describe('Analysis Status Endpoints', () => {
         expect(activeAnalyses.get(analysisId).status).toBe('running');
 
         // Step 2: Cancel the analysis via the cancel endpoint
-        const cancelResponse = await request(app)
+        const cancelResponse = await request(server)
           .post(`/api/analyses/${analysisId}/cancel`);
 
         expect(cancelResponse.status).toBe(200);
@@ -4439,7 +4515,7 @@ describe('Analysis Status Endpoints', () => {
         VALUES (?, ?, 'running', 'claude', 'sonnet', 5, datetime('now'))
       `, [analysisId, reviewId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${reviewId}/analyses/status`);
 
       expect(response.status).toBe(200);
@@ -4470,7 +4546,7 @@ describe('Analysis Status Endpoints', () => {
         VALUES (?, ?, 'completed', 'claude', 'sonnet', datetime('now', '-5 minutes'), datetime('now'))
       `, ['db-fallback-completed-local', reviewId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${reviewId}/analyses/status`);
 
       expect(response.status).toBe(200);
@@ -4487,11 +4563,13 @@ describe('Analysis Status Endpoints', () => {
 describe('Local Review Settings Endpoints', () => {
   let db;
   let app;
+  let server;
   let reviewId;
 
   beforeEach(async () => {
     db = await createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
 
     // Create a local review
     const result = await run(db, `
@@ -4502,6 +4580,7 @@ describe('Local Review Settings Endpoints', () => {
   });
 
   afterEach(async () => {
+    await closeServer(server);
     if (db) {
       await closeTestDatabase(db);
     }
@@ -4509,7 +4588,7 @@ describe('Local Review Settings Endpoints', () => {
 
   describe('GET /api/local/:reviewId/review-settings', () => {
     it('should return null custom_instructions when not set', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/local/${reviewId}/review-settings`);
 
       expect(response.status).toBe(200);
@@ -4522,7 +4601,7 @@ describe('Local Review Settings Endpoints', () => {
         UPDATE reviews SET custom_instructions = ? WHERE id = ?
       `, ['Focus on performance', reviewId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/local/${reviewId}/review-settings`);
 
       expect(response.status).toBe(200);
@@ -4530,7 +4609,7 @@ describe('Local Review Settings Endpoints', () => {
     });
 
     it('should return null for non-existent review', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/local/9999/review-settings');
 
       expect(response.status).toBe(200);
@@ -4538,7 +4617,7 @@ describe('Local Review Settings Endpoints', () => {
     });
 
     it('should return 400 for invalid review ID', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/local/invalid/review-settings');
 
       expect(response.status).toBe(400);
@@ -4548,7 +4627,7 @@ describe('Local Review Settings Endpoints', () => {
 
   describe('POST /api/local/:reviewId/review-settings', () => {
     it('should save custom_instructions', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/local/${reviewId}/review-settings`)
         .send({ custom_instructions: 'Check for security issues' });
 
@@ -4568,7 +4647,7 @@ describe('Local Review Settings Endpoints', () => {
       `, ['Initial instructions', reviewId]);
 
       // Update instructions
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/local/${reviewId}/review-settings`)
         .send({ custom_instructions: 'Updated instructions' });
 
@@ -4583,7 +4662,7 @@ describe('Local Review Settings Endpoints', () => {
       `, ['Some instructions', reviewId]);
 
       // Clear instructions
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/local/${reviewId}/review-settings`)
         .send({ custom_instructions: null });
 
@@ -4592,7 +4671,7 @@ describe('Local Review Settings Endpoints', () => {
     });
 
     it('should return 404 for non-existent review', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/local/9999/review-settings')
         .send({ custom_instructions: 'Test' });
 
@@ -4601,7 +4680,7 @@ describe('Local Review Settings Endpoints', () => {
     });
 
     it('should return 400 for invalid review ID', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/local/invalid/review-settings')
         .send({ custom_instructions: 'Test' });
 
@@ -4618,12 +4697,14 @@ describe('Local Review Settings Endpoints', () => {
 describe('Local Review Check-Stale Endpoint', () => {
   let db;
   let app;
+  let server;
   let reviewId;
   const { localReviewDiffs } = require('../../src/routes/shared');
 
   beforeEach(async () => {
     db = await createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
 
     // Create a local review
     const result = await run(db, `
@@ -4637,6 +4718,7 @@ describe('Local Review Check-Stale Endpoint', () => {
   });
 
   afterEach(async () => {
+    await closeServer(server);
     localReviewDiffs.clear();
     if (db) {
       await closeTestDatabase(db);
@@ -4645,7 +4727,7 @@ describe('Local Review Check-Stale Endpoint', () => {
 
   describe('GET /api/local/:reviewId/check-stale', () => {
     it('should return 400 for invalid review ID', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/local/invalid/check-stale');
 
       expect(response.status).toBe(400);
@@ -4653,7 +4735,7 @@ describe('Local Review Check-Stale Endpoint', () => {
     });
 
     it('should return isStale null when review not found', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/local/9999/check-stale');
 
       expect(response.status).toBe(200);
@@ -4662,7 +4744,7 @@ describe('Local Review Check-Stale Endpoint', () => {
     });
 
     it('should return isStale null when no stored diff data', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/local/${reviewId}/check-stale`);
 
       expect(response.status).toBe(200);
@@ -4678,7 +4760,7 @@ describe('Local Review Check-Stale Endpoint', () => {
         digest: 'old_digest_12345678'
       });
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/local/${reviewId}/check-stale`);
 
       expect(response.status).toBe(200);
@@ -4696,7 +4778,7 @@ describe('Local Review Check-Stale Endpoint', () => {
         digest: 'test_digest_1234'
       });
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/local/${reviewId}/check-stale`);
 
       expect(response.status).toBe(200);
@@ -4715,7 +4797,7 @@ describe('Local Review Check-Stale Endpoint', () => {
         // No digest - endpoint should assume stale since baseline was never captured
       });
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/local/${reviewId}/check-stale`);
 
       expect(response.status).toBe(200);
@@ -4733,6 +4815,7 @@ describe('Local Review Check-Stale Endpoint', () => {
 describe('Local Review Diff Generated Files', () => {
   let db;
   let app;
+  let server;
   let reviewId;
   let tempDir;
   const { localReviewDiffs } = require('../../src/routes/shared');
@@ -4760,6 +4843,7 @@ describe('Local Review Diff Generated Files', () => {
   beforeEach(async () => {
     db = await createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
 
     // Create a real temp directory for .gitattributes tests
     tempDir = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'pair-review-test-'));
@@ -4774,6 +4858,7 @@ describe('Local Review Diff Generated Files', () => {
   });
 
   afterEach(async () => {
+    await closeServer(server);
     localReviewDiffs.clear();
     // Clean up temp directory
     if (tempDir) {
@@ -4797,7 +4882,7 @@ describe('Local Review Diff Generated Files', () => {
         'package-lock.json linguist-generated=true\n'
       );
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/local/${reviewId}/diff`);
 
       expect(response.status).toBe(200);
@@ -4814,7 +4899,7 @@ describe('Local Review Diff Generated Files', () => {
 
       // No .gitattributes file
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/local/${reviewId}/diff`);
 
       expect(response.status).toBe(200);
@@ -4833,7 +4918,7 @@ describe('Local Review Diff Generated Files', () => {
         '*.js text eol=lf\n'
       );
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/local/${reviewId}/diff`);
 
       expect(response.status).toBe(200);
@@ -4846,7 +4931,7 @@ describe('Local Review Diff Generated Files', () => {
         stats: { unstagedChanges: 0, untrackedFiles: 0 }
       });
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/local/${reviewId}/diff`);
 
       expect(response.status).toBe(200);
@@ -4859,7 +4944,7 @@ describe('Local Review Diff Generated Files', () => {
         stats: { unstagedChanges: 1, untrackedFiles: 0 }
       });
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/local/${reviewId}/diff`);
 
       expect(response.status).toBe(200);
@@ -4900,7 +4985,7 @@ describe('Local Review Diff Generated Files', () => {
         'b/test.js linguist-generated=true\n'
       );
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/local/${reviewId}/diff`);
 
       expect(response.status).toBe(200);
@@ -4916,7 +5001,7 @@ describe('Local Review Diff Generated Files', () => {
 
       // ?base=some-branch triggers the regeneration path, but generateScopedDiff
       // will fail (tempDir is not a real git repo), so it should fall through to cached diff
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/local/${reviewId}/diff?base=some-branch`);
 
       expect(response.status).toBe(200);
@@ -4933,6 +5018,7 @@ describe('Local Review Diff Generated Files', () => {
 describe('File Content Endpoints', () => {
   let db;
   let app;
+  let server;
   let fsRealpathSpy;
   let fsReadFileSpy;
 
@@ -4942,6 +5028,7 @@ describe('File Content Endpoints', () => {
   beforeEach(async () => {
     db = await createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
 
     // Reset fs spies
     fsRealpathSpy = vi.spyOn(fs, 'realpath');
@@ -4949,10 +5036,12 @@ describe('File Content Endpoints', () => {
   });
 
   afterEach(async () => {
+    await closeServer(server);
     if (db) {
       await closeTestDatabase(db);
     }
     vi.clearAllMocks();
+    applyDefaultMocks();
     fsRealpathSpy?.mockRestore();
     fsReadFileSpy?.mockRestore();
   });
@@ -4971,7 +5060,7 @@ describe('File Content Endpoints', () => {
       fsRealpathSpy.mockImplementation(async (p) => p);
       fsReadFileSpy.mockResolvedValue('line1\nline2\nline3');
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/file-content-original/src/test.js')
         .query({ owner: 'local', repo: 'test-repo', number: review.id });
 
@@ -4982,7 +5071,7 @@ describe('File Content Endpoints', () => {
     });
 
     it('should return 400 for invalid review ID', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/file-content-original/src/test.js')
         .query({ owner: 'local', repo: 'test-repo', number: 'invalid' });
 
@@ -4991,7 +5080,7 @@ describe('File Content Endpoints', () => {
     });
 
     it('should return 400 for negative review ID', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/file-content-original/src/test.js')
         .query({ owner: 'local', repo: 'test-repo', number: '-1' });
 
@@ -5000,7 +5089,7 @@ describe('File Content Endpoints', () => {
     });
 
     it('should return 400 for zero review ID', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/file-content-original/src/test.js')
         .query({ owner: 'local', repo: 'test-repo', number: '0' });
 
@@ -5009,7 +5098,7 @@ describe('File Content Endpoints', () => {
     });
 
     it('should return 404 when local review not found', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/file-content-original/src/test.js')
         .query({ owner: 'local', repo: 'test-repo', number: '999' });
 
@@ -5026,7 +5115,7 @@ describe('File Content Endpoints', () => {
 
       const review = await queryOne(db, 'SELECT id FROM reviews WHERE review_type = ?', ['local']);
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/file-content-original/src/test.js')
         .query({ owner: 'local', repo: 'test-repo', number: review.id });
 
@@ -5047,7 +5136,7 @@ describe('File Content Endpoints', () => {
       enoentError.code = 'ENOENT';
       fsRealpathSpy.mockRejectedValue(enoentError);
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/file-content-original/src/nonexistent.js')
         .query({ owner: 'local', repo: 'test-repo', number: review.id });
 
@@ -5069,7 +5158,7 @@ describe('File Content Endpoints', () => {
         return '/etc/passwd'; // Escaped path
       });
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/file-content-original/evil-symlink')
         .query({ owner: 'local', repo: 'test-repo', number: review.id });
 
@@ -5091,7 +5180,7 @@ describe('File Content Endpoints', () => {
       eisdirError.code = 'EISDIR';
       fsReadFileSpy.mockRejectedValue(eisdirError);
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/file-content-original/src')
         .query({ owner: 'local', repo: 'test-repo', number: review.id });
 
@@ -5110,7 +5199,7 @@ describe('File Content Endpoints', () => {
       fsRealpathSpy.mockImplementation(async (p) => p);
       fsReadFileSpy.mockResolvedValue('content');
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/file-content-original/src%2Futils%2Ftest.js')
         .query({ owner: 'local', repo: 'test-repo', number: review.id });
 
@@ -5135,7 +5224,7 @@ describe('File Content Endpoints', () => {
       fsRealpathSpy.mockImplementation(async (p) => p);
       fsReadFileSpy.mockResolvedValue('content from working directory');
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/file-content-original/src/new-file.js')
         .query({ owner: 'local', repo: 'test-repo', number: review.id });
 
@@ -5155,7 +5244,7 @@ describe('File Content Endpoints', () => {
       fsRealpathSpy.mockImplementation(async (p) => p);
       fsReadFileSpy.mockResolvedValue('working directory content');
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/file-content-original/src/test.js')
         .query({ owner: 'local', repo: 'test-repo', number: review.id });
 
@@ -5172,7 +5261,7 @@ describe('File Content Endpoints', () => {
       fsRealpathSpy.mockImplementation(async (p) => p);
       fsReadFileSpy.mockResolvedValue('line1\nline2\nline3');
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/file-content-original/src/test.js')
         .query({ owner: 'owner', repo: 'repo', number: '1' });
 
@@ -5183,7 +5272,7 @@ describe('File Content Endpoints', () => {
     });
 
     it('should return 400 when owner is missing', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/file-content-original/src/test.js')
         .query({ repo: 'repo', number: '1' });
 
@@ -5192,7 +5281,7 @@ describe('File Content Endpoints', () => {
     });
 
     it('should return 400 when repo is missing', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/file-content-original/src/test.js')
         .query({ owner: 'owner', number: '1' });
 
@@ -5201,7 +5290,7 @@ describe('File Content Endpoints', () => {
     });
 
     it('should return 400 when number is missing', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/file-content-original/src/test.js')
         .query({ owner: 'owner', repo: 'repo' });
 
@@ -5210,7 +5299,7 @@ describe('File Content Endpoints', () => {
     });
 
     it('should return 400 for invalid PR number (non-numeric)', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/file-content-original/src/test.js')
         .query({ owner: 'owner', repo: 'repo', number: 'invalid' });
 
@@ -5219,7 +5308,7 @@ describe('File Content Endpoints', () => {
     });
 
     it('should return 400 for negative PR number', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/file-content-original/src/test.js')
         .query({ owner: 'owner', repo: 'repo', number: '-1' });
 
@@ -5228,7 +5317,7 @@ describe('File Content Endpoints', () => {
     });
 
     it('should return 400 for zero PR number', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/file-content-original/src/test.js')
         .query({ owner: 'owner', repo: 'repo', number: '0' });
 
@@ -5242,7 +5331,7 @@ describe('File Content Endpoints', () => {
       // Mock worktreeExists to return false
       vi.spyOn(GitWorktreeManager.prototype, 'worktreeExists').mockResolvedValueOnce(false);
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/file-content-original/src/test.js')
         .query({ owner: 'owner', repo: 'repo', number: '1' });
 
@@ -5258,7 +5347,7 @@ describe('File Content Endpoints', () => {
       enoentError.code = 'ENOENT';
       fsRealpathSpy.mockRejectedValue(enoentError);
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/file-content-original/src/nonexistent.js')
         .query({ owner: 'owner', repo: 'repo', number: '1' });
 
@@ -5276,7 +5365,7 @@ describe('File Content Endpoints', () => {
         return '/etc/passwd'; // Escaped path
       });
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/file-content-original/evil-symlink')
         .query({ owner: 'owner', repo: 'repo', number: '1' });
 
@@ -5293,7 +5382,7 @@ describe('File Content Endpoints', () => {
       eisdirError.code = 'EISDIR';
       fsReadFileSpy.mockRejectedValue(eisdirError);
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/file-content-original/src')
         .query({ owner: 'owner', repo: 'repo', number: '1' });
 
@@ -5308,7 +5397,7 @@ describe('File Content Endpoints', () => {
       fsRealpathSpy.mockImplementation(async (p) => p);
       fsReadFileSpy.mockResolvedValue('content');
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/file-content-original/src%2Futils%2Ftest.js')
         .query({ owner: 'owner', repo: 'repo', number: '1' });
 
@@ -5323,7 +5412,7 @@ describe('File Content Endpoints', () => {
       fsRealpathSpy.mockImplementation(async (p) => p);
       fsReadFileSpy.mockResolvedValue('');
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/file-content-original/src/empty.js')
         .query({ owner: 'owner', repo: 'repo', number: '1' });
 
@@ -5340,7 +5429,7 @@ describe('File Content Endpoints', () => {
       fsRealpathSpy.mockImplementation(async (p) => p);
       fsReadFileSpy.mockResolvedValue(manyLines);
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/file-content-original/src/large.js')
         .query({ owner: 'owner', repo: 'repo', number: '1' });
 
@@ -5366,7 +5455,7 @@ describe('File Content Endpoints', () => {
       fsRealpathSpy.mockImplementation(async (p) => p);
       fsReadFileSpy.mockResolvedValue('filesystem content for new file');
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/file-content-original/src/new-file.js')
         .query({ owner: 'owner', repo: 'repo', number: '1' });
 
@@ -5394,7 +5483,7 @@ describe('File Content Endpoints', () => {
       fsRealpathSpy.mockImplementation(async (p) => p);
       fsReadFileSpy.mockResolvedValue('head version content');
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/file-content-original/src/test.js')
         .query({ owner: 'owner', repo: 'repo', number: '2' });
 
@@ -5414,7 +5503,7 @@ describe('File Content Endpoints', () => {
       fsRealpathSpy.mockImplementation(async (p) => p);
       fsReadFileSpy.mockResolvedValue('content from filesystem');
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/file-content-original/src/test.js')
         .query({ owner: 'owner', repo: 'repo', number: '3' });
 
@@ -5427,10 +5516,12 @@ describe('File Content Endpoints', () => {
 
 describe('Local Review File-Level Comments', () => {
   let app, db, reviewId;
+  let server;
 
   beforeEach(async () => {
     db = await createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
 
     // Create a local review
     const reviewResult = await run(db, `
@@ -5441,6 +5532,7 @@ describe('Local Review File-Level Comments', () => {
   });
 
   afterEach(async () => {
+    await closeServer(server);
     if (db) {
       await closeTestDatabase(db);
     }
@@ -5448,7 +5540,7 @@ describe('Local Review File-Level Comments', () => {
 
   describe('POST /api/local/:reviewId/file-comment', () => {
     it('should return 400 when required fields are missing', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${reviewId}/comments`)
         .send({ file: 'test.js' });
 
@@ -5457,7 +5549,7 @@ describe('Local Review File-Level Comments', () => {
     });
 
     it('should return 400 when body is empty', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${reviewId}/comments`)
         .send({
           file: 'test.js',
@@ -5469,7 +5561,7 @@ describe('Local Review File-Level Comments', () => {
     });
 
     it('should return 404 when review not found', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/reviews/9999/comments')
         .send({
           file: 'test.js',
@@ -5481,7 +5573,7 @@ describe('Local Review File-Level Comments', () => {
     });
 
     it('should create file-level comment successfully', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${reviewId}/comments`)
         .send({
           file: 'test.js',
@@ -5495,7 +5587,7 @@ describe('Local Review File-Level Comments', () => {
     });
 
     it('should create file-level comment with is_file_level=1 and NULL line fields', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${reviewId}/comments`)
         .send({
           file: 'test.js',
@@ -5524,7 +5616,7 @@ describe('Local Review File-Level Comments', () => {
       `, [reviewId]);
 
       // Now adopt it as a file-level comment with metadata
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${reviewId}/comments`)
         .send({
           file: 'test.js',
@@ -5549,7 +5641,7 @@ describe('Local Review File-Level Comments', () => {
 
   describe('PUT /api/local/:reviewId/file-comment/:commentId', () => {
     it('should return 400 for invalid review ID', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .put('/api/reviews/invalid/comments/1')
         .send({ body: 'Updated comment' });
 
@@ -5558,7 +5650,7 @@ describe('Local Review File-Level Comments', () => {
     });
 
     it('should return 404 for invalid comment ID', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .put(`/api/reviews/${reviewId}/comments/invalid`)
         .send({ body: 'Updated comment' });
 
@@ -5567,7 +5659,7 @@ describe('Local Review File-Level Comments', () => {
     });
 
     it('should return 400 when body is empty', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .put(`/api/reviews/${reviewId}/comments/1`)
         .send({ body: '   ' });
 
@@ -5576,7 +5668,7 @@ describe('Local Review File-Level Comments', () => {
     });
 
     it('should return 404 when file-level comment not found', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .put(`/api/reviews/${reviewId}/comments/9999`)
         .send({ body: 'Updated comment' });
 
@@ -5591,7 +5683,7 @@ describe('Local Review File-Level Comments', () => {
         VALUES (?, 'user', 'test.js', 10, 'Line comment', 'active', 0)
       `, [reviewId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .put(`/api/reviews/${reviewId}/comments/${lineCommentResult.lastID}`)
         .send({ body: 'Updated comment' });
 
@@ -5606,7 +5698,7 @@ describe('Local Review File-Level Comments', () => {
         VALUES (?, 'user', 'test.js', 'Original comment', 'active', 1)
       `, [reviewId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .put(`/api/reviews/${reviewId}/comments/${fileCommentResult.lastID}`)
         .send({ body: 'Updated file-level comment' });
 
@@ -5625,7 +5717,7 @@ describe('Local Review File-Level Comments', () => {
 
   describe('DELETE /api/local/:reviewId/file-comment/:commentId', () => {
     it('should return 400 for invalid review ID', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .delete('/api/reviews/invalid/comments/1');
 
       expect(response.status).toBe(400);
@@ -5633,7 +5725,7 @@ describe('Local Review File-Level Comments', () => {
     });
 
     it('should return 404 for invalid comment ID', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .delete(`/api/reviews/${reviewId}/comments/invalid`);
 
       expect(response.status).toBe(404);
@@ -5641,7 +5733,7 @@ describe('Local Review File-Level Comments', () => {
     });
 
     it('should return 404 when comment not found', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .delete(`/api/reviews/${reviewId}/comments/9999`);
 
       expect(response.status).toBe(404);
@@ -5655,7 +5747,7 @@ describe('Local Review File-Level Comments', () => {
         VALUES (?, 'user', 'test.js', 10, 'Line comment', 'active', 0)
       `, [reviewId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .delete(`/api/reviews/${reviewId}/comments/${lineCommentResult.lastID}`);
 
       expect(response.status).toBe(200);
@@ -5669,7 +5761,7 @@ describe('Local Review File-Level Comments', () => {
         VALUES (?, 'user', 'test.js', 'File comment to delete', 'active', 1)
       `, [reviewId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .delete(`/api/reviews/${reviewId}/comments/${fileCommentResult.lastID}`);
 
       expect(response.status).toBe(200);
@@ -5698,7 +5790,7 @@ describe('Local Review File-Level Comments', () => {
         VALUES (?, 'user', 'test.js', 'Adopted suggestion comment', 'active', ?, 1)
       `, [reviewId, suggestionId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .delete(`/api/reviews/${reviewId}/comments/${commentResult.lastID}`);
 
       expect(response.status).toBe(200);
@@ -5717,7 +5809,7 @@ describe('Local Review File-Level Comments', () => {
         VALUES (?, 'user', 'test.js', 'User file-level comment', 'active', 1)
       `, [reviewId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .delete(`/api/reviews/${reviewId}/comments/${commentResult.lastID}`);
 
       expect(response.status).toBe(200);
@@ -5734,7 +5826,7 @@ describe('Local Review File-Level Comments', () => {
         VALUES (?, 'user', 'Current User', 'test.js', 'File-level comment', 'active', 1)
       `, [reviewId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${reviewId}/comments`);
 
       expect(response.status).toBe(200);
@@ -5756,7 +5848,7 @@ describe('Local Review File-Level Comments', () => {
         VALUES (?, 'user', 'Current User', 'test.js', 10, 10, 'Line comment', 'active')
       `, [reviewId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${reviewId}/comments`);
 
       expect(response.status).toBe(200);
@@ -5782,7 +5874,7 @@ describe('Local Review File-Level Comments', () => {
         VALUES (?, 'user', 'file.js', 20, 'Dismissed comment', 'inactive')
       `, [reviewId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${reviewId}/comments`);
 
       expect(response.status).toBe(200);
@@ -5803,7 +5895,7 @@ describe('Local Review File-Level Comments', () => {
         VALUES (?, 'user', 'file.js', 20, 'Dismissed comment', 'inactive')
       `, [reviewId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${reviewId}/comments?includeDismissed=true`);
 
       expect(response.status).toBe(200);
@@ -5827,7 +5919,7 @@ describe('Local Review File-Level Comments', () => {
         VALUES (?, 'user', 'file.js', 20, 'Dismissed comment', 'inactive')
       `, [reviewId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${reviewId}/comments?includeDismissed=false`);
 
       expect(response.status).toBe(200);
@@ -5844,7 +5936,7 @@ describe('Local Review File-Level Comments', () => {
         VALUES (?, 'ai', 'test.js', 'File-level suggestion', 'active', 'run-1', 1)
       `, [reviewId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${reviewId}/suggestions`);
 
       expect(response.status).toBe(200);
@@ -5866,7 +5958,7 @@ describe('Local Review File-Level Comments', () => {
         VALUES (?, 'ai', 'test.js', 'File suggestion', 'active', 'run-1', 1)
       `, [reviewId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${reviewId}/suggestions`);
 
       expect(response.status).toBe(200);
@@ -5889,7 +5981,7 @@ describe('Local Review File-Level Comments', () => {
         VALUES (?, 'ai', 'file.js', 20, NULL, 'Active suggestion', 'active', ?)
       `, [reviewId, runId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${reviewId}/suggestions`);
 
       expect(response.status).toBe(200);
@@ -5919,7 +6011,7 @@ describe('Local Review File-Level Comments', () => {
       `, [reviewId, newTime]);
 
       // Default: only latest run
-      const defaultResponse = await request(app)
+      const defaultResponse = await request(server)
         .get(`/api/reviews/${reviewId}/suggestions`);
       const defaultSuggestions = defaultResponse.body.suggestions.filter(s =>
         s.ai_run_id === 'local-allruns-1' || s.ai_run_id === 'local-allruns-2'
@@ -5928,7 +6020,7 @@ describe('Local Review File-Level Comments', () => {
       expect(defaultSuggestions[0].ai_run_id).toBe('local-allruns-2');
 
       // allRuns=true: both runs
-      const allRunsResponse = await request(app)
+      const allRunsResponse = await request(server)
         .get(`/api/reviews/${reviewId}/suggestions?allRuns=true`);
       const allRunsSuggestions = allRunsResponse.body.suggestions.filter(s =>
         s.ai_run_id === 'local-allruns-1' || s.ai_run_id === 'local-allruns-2'
@@ -5953,7 +6045,7 @@ describe('Local Review File-Level Comments', () => {
         VALUES (?, 'ai', 'file.js', 30, NULL, 'New active', 'active', 'local-both-2', ?)
       `, [reviewId, newTime]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${reviewId}/suggestions?allRuns=true`);
       const suggestions = response.body.suggestions.filter(s =>
         s.ai_run_id === 'local-both-1' || s.ai_run_id === 'local-both-2'
@@ -5972,10 +6064,12 @@ describe('Local Review File-Level Comments', () => {
 
 describe('GET /api/reviews/:reviewId/suggestions/check (local mode)', () => {
   let app, db, reviewId;
+  let server;
 
   beforeEach(async () => {
     db = await createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
 
     // Create a local review
     const reviewResult = await run(db, `
@@ -5986,13 +6080,14 @@ describe('GET /api/reviews/:reviewId/suggestions/check (local mode)', () => {
   });
 
   afterEach(async () => {
+    await closeServer(server);
     if (db) {
       await closeTestDatabase(db);
     }
   });
 
   it('should return false when no suggestions exist', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .get(`/api/reviews/${reviewId}/suggestions/check`);
 
     expect(response.status).toBe(200);
@@ -6005,7 +6100,7 @@ describe('GET /api/reviews/:reviewId/suggestions/check (local mode)', () => {
       VALUES (?, 'ai', 'file.js', 10, 'Suggestion', 'active', 'run-1')
     `, [reviewId]);
 
-    const response = await request(app)
+    const response = await request(server)
       .get(`/api/reviews/${reviewId}/suggestions/check`);
 
     expect(response.status).toBe(200);
@@ -6056,7 +6151,7 @@ describe('GET /api/reviews/:reviewId/suggestions/check (local mode)', () => {
       VALUES (?, 'ai', 'file.js', 30, 'New praise', 'praise', 'run-2', NULL, 'active', ?)
     `, [reviewId, newTime]);
 
-    const response = await request(app)
+    const response = await request(server)
       .get(`/api/reviews/${reviewId}/suggestions/check`);
 
     expect(response.status).toBe(200);
@@ -6071,7 +6166,7 @@ describe('GET /api/reviews/:reviewId/suggestions/check (local mode)', () => {
   });
 
   it('should return 404 for non-existent review', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .get('/api/reviews/99999/suggestions/check');
 
     expect(response.status).toBe(404);
@@ -6092,21 +6187,21 @@ describe('GET /api/reviews/:reviewId/suggestions/check (local mode)', () => {
     `, [reviewId, newTime]);
 
     // Without runId, should return latest (run-2) summary
-    const responseLatest = await request(app)
+    const responseLatest = await request(server)
       .get(`/api/reviews/${reviewId}/suggestions/check`);
 
     expect(responseLatest.status).toBe(200);
     expect(responseLatest.body.summary).toBe('Summary from second run');
 
     // With runId=run-1, should return first run summary
-    const responseRun1 = await request(app)
+    const responseRun1 = await request(server)
       .get(`/api/reviews/${reviewId}/suggestions/check?runId=run-1`);
 
     expect(responseRun1.status).toBe(200);
     expect(responseRun1.body.summary).toBe('Summary from first run');
 
     // With runId=run-2, should return second run summary
-    const responseRun2 = await request(app)
+    const responseRun2 = await request(server)
       .get(`/api/reviews/${reviewId}/suggestions/check?runId=run-2`);
 
     expect(responseRun2.status).toBe(200);
@@ -6120,7 +6215,7 @@ describe('GET /api/reviews/:reviewId/suggestions/check (local mode)', () => {
     `, [reviewId]);
 
     // Request with non-existent runId should fall back to review summary
-    const response = await request(app)
+    const response = await request(server)
       .get(`/api/reviews/${reviewId}/suggestions/check?runId=non-existent-run`);
 
     expect(response.status).toBe(200);
@@ -6134,10 +6229,12 @@ describe('GET /api/reviews/:reviewId/suggestions/check (local mode)', () => {
 
 describe('Local Routes Dismissal Response Structure', () => {
   let app, db, reviewId;
+  let server;
 
   beforeEach(async () => {
     db = await createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
 
     // Create a local review
     const reviewResult = await run(db, `
@@ -6148,6 +6245,7 @@ describe('Local Routes Dismissal Response Structure', () => {
   });
 
   afterEach(async () => {
+    await closeServer(server);
     if (db) {
       await closeTestDatabase(db);
     }
@@ -6168,7 +6266,7 @@ describe('Local Routes Dismissal Response Structure', () => {
         VALUES (?, 'user', 'test.js', 10, 'User comment', 'active', ?)
       `, [reviewId, suggestionId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .delete(`/api/reviews/${reviewId}/comments/${commentResult.lastID}`);
 
       expect(response.status).toBe(200);
@@ -6187,7 +6285,7 @@ describe('Local Routes Dismissal Response Structure', () => {
         VALUES (?, 'user', 'test.js', 10, 'User comment', 'active')
       `, [reviewId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .delete(`/api/reviews/${reviewId}/comments/${commentResult.lastID}`);
 
       expect(response.status).toBe(200);
@@ -6196,21 +6294,21 @@ describe('Local Routes Dismissal Response Structure', () => {
     });
 
     it('should return 404 for non-existent comment', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .delete(`/api/reviews/${reviewId}/comments/9999`);
 
       expect(response.status).toBe(404);
     });
 
     it('should return 400 for invalid review ID', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .delete('/api/reviews/invalid/comments/1');
 
       expect(response.status).toBe(400);
     });
 
     it('should return 404 for invalid comment ID', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .delete(`/api/reviews/${reviewId}/comments/invalid`);
 
       expect(response.status).toBe(404);
@@ -6243,7 +6341,7 @@ describe('Local Routes Dismissal Response Structure', () => {
         VALUES (?, 'user', 'test.js', 20, 'User comment 2', 'active', ?)
       `, [reviewId, suggestion2Id]);
 
-      const response = await request(app)
+      const response = await request(server)
         .delete(`/api/reviews/${reviewId}/comments`);
 
       expect(response.status).toBe(200);
@@ -6285,7 +6383,7 @@ describe('Local Routes Dismissal Response Structure', () => {
         VALUES (?, 'user', 'test.js', 14, 'User comment 3', 'active', ?)
       `, [reviewId, suggestionId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .delete(`/api/reviews/${reviewId}/comments`);
 
       expect(response.status).toBe(200);
@@ -6312,7 +6410,7 @@ describe('Local Routes Dismissal Response Structure', () => {
         VALUES (?, 'user', 'test.js', 20, 'User comment 2', 'active')
       `, [reviewId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .delete(`/api/reviews/${reviewId}/comments`);
 
       expect(response.status).toBe(200);
@@ -6322,7 +6420,7 @@ describe('Local Routes Dismissal Response Structure', () => {
     });
 
     it('should return 0 deletedCount and empty dismissedSuggestionIds when no comments exist', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .delete(`/api/reviews/${reviewId}/comments`);
 
       expect(response.status).toBe(200);
@@ -6332,14 +6430,14 @@ describe('Local Routes Dismissal Response Structure', () => {
     });
 
     it('should return 404 for non-existent review', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .delete('/api/reviews/9999/comments');
 
       expect(response.status).toBe(404);
     });
 
     it('should return 400 for invalid review ID', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .delete('/api/reviews/invalid/comments');
 
       expect(response.status).toBe(400);
@@ -6348,7 +6446,7 @@ describe('Local Routes Dismissal Response Structure', () => {
 
   describe('PUT /api/local/:reviewId/user-comments/:commentId/restore', () => {
     it('should return 404 for non-existent comment', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .put(`/api/reviews/${reviewId}/comments/9999/restore`);
 
       expect(response.status).toBe(404);
@@ -6362,7 +6460,7 @@ describe('Local Routes Dismissal Response Structure', () => {
         VALUES (?, 'user', 'test.js', 10, 'Active comment', 'active')
       `, [reviewId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .put(`/api/reviews/${reviewId}/comments/${commentResult.lastID}/restore`);
 
       expect(response.status).toBe(400);
@@ -6376,7 +6474,7 @@ describe('Local Routes Dismissal Response Structure', () => {
         VALUES (?, 'user', 'test.js', 10, 'Dismissed comment', 'inactive')
       `, [reviewId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .put(`/api/reviews/${reviewId}/comments/${commentResult.lastID}/restore`);
 
       expect(response.status).toBe(200);
@@ -6390,7 +6488,7 @@ describe('Local Routes Dismissal Response Structure', () => {
     });
 
     it('should return 400 for invalid review ID', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .put('/api/reviews/invalid/comments/1/restore');
 
       expect(response.status).toBe(400);
@@ -6398,7 +6496,7 @@ describe('Local Routes Dismissal Response Structure', () => {
     });
 
     it('should return 400 for invalid comment ID', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .put(`/api/reviews/${reviewId}/comments/invalid/restore`);
 
       expect(response.status).toBe(400);
@@ -6413,10 +6511,12 @@ describe('Local Routes Dismissal Response Structure', () => {
 
 describe('Local Review AI Suggestion Status Endpoint', () => {
   let app, db, reviewId;
+  let server;
 
   beforeEach(async () => {
     db = await createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
 
     // Create a local review
     const reviewResult = await run(db, `
@@ -6427,6 +6527,7 @@ describe('Local Review AI Suggestion Status Endpoint', () => {
   });
 
   afterEach(async () => {
+    await closeServer(server);
     if (db) {
       await closeTestDatabase(db);
     }
@@ -6441,7 +6542,7 @@ describe('Local Review AI Suggestion Status Endpoint', () => {
       `, [reviewId]);
       const suggestionId = suggestionResult.lastID;
 
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${reviewId}/suggestions/${suggestionId}/status`)
         .send({ status: 'adopted' });
 
@@ -6462,7 +6563,7 @@ describe('Local Review AI Suggestion Status Endpoint', () => {
       `, [reviewId]);
       const suggestionId = suggestionResult.lastID;
 
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${reviewId}/suggestions/${suggestionId}/status`)
         .send({ status: 'dismissed' });
 
@@ -6483,7 +6584,7 @@ describe('Local Review AI Suggestion Status Endpoint', () => {
       `, [reviewId]);
       const suggestionId = suggestionResult.lastID;
 
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${reviewId}/suggestions/${suggestionId}/status`)
         .send({ status: 'active' });
 
@@ -6497,7 +6598,7 @@ describe('Local Review AI Suggestion Status Endpoint', () => {
     });
 
     it('should return 404 when suggestion not found', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${reviewId}/suggestions/9999/status`)
         .send({ status: 'dismissed' });
 
@@ -6521,7 +6622,7 @@ describe('Local Review AI Suggestion Status Endpoint', () => {
       const suggestionId = suggestionResult.lastID;
 
       // Try to update the suggestion using the wrong review ID
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${reviewId}/suggestions/${suggestionId}/status`)
         .send({ status: 'dismissed' });
 
@@ -6537,7 +6638,7 @@ describe('Local Review AI Suggestion Status Endpoint', () => {
       `, [reviewId]);
       const suggestionId = suggestionResult.lastID;
 
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${reviewId}/suggestions/${suggestionId}/status`)
         .send({ status: 'invalid-status' });
 
@@ -6546,7 +6647,7 @@ describe('Local Review AI Suggestion Status Endpoint', () => {
     });
 
     it('should return 400 for invalid review ID', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/reviews/invalid/suggestions/1/status')
         .send({ status: 'dismissed' });
 
@@ -6563,7 +6664,7 @@ describe('Local Review AI Suggestion Status Endpoint', () => {
       `, [reviewId]);
       const suggestionId = suggestionResult.lastID;
 
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${reviewId}/suggestions/${suggestionId}/adopt`);
 
       expect(response.status).toBe(200);
@@ -6585,7 +6686,7 @@ describe('Local Review AI Suggestion Status Endpoint', () => {
     });
 
     it('should return 404 for non-existent suggestion', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${reviewId}/suggestions/9999/adopt`);
 
       expect(response.status).toBe(404);
@@ -6599,7 +6700,7 @@ describe('Local Review AI Suggestion Status Endpoint', () => {
       `, [reviewId]);
       const suggestionId = suggestionResult.lastID;
 
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${reviewId}/suggestions/${suggestionId}/adopt`);
 
       expect(response.status).toBe(400);
@@ -6613,7 +6714,7 @@ describe('Local Review AI Suggestion Status Endpoint', () => {
       `, [reviewId]);
       const suggestionId = suggestionResult.lastID;
 
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${reviewId}/suggestions/${suggestionId}/adopt`);
 
       expect(response.status).toBe(400);
@@ -6635,7 +6736,7 @@ describe('Local Review AI Suggestion Status Endpoint', () => {
       `, [otherReviewId]);
       const suggestionId = suggestionResult.lastID;
 
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${reviewId}/suggestions/${suggestionId}/adopt`);
 
       expect(response.status).toBe(403);
@@ -6651,17 +6752,21 @@ describe('Local Review AI Suggestion Status Endpoint', () => {
 describe('Worktree Tiered Discovery', () => {
   let db;
   let app;
+  let server;
 
   beforeEach(async () => {
     db = await createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
   });
 
   afterEach(async () => {
+    await closeServer(server);
     if (db) {
       await closeTestDatabase(db);
     }
     vi.clearAllMocks();
+    applyDefaultMocks();
   });
 
   describe('POST /api/worktrees/create - Tier 0 (known local path lookup)', () => {
@@ -6674,13 +6779,17 @@ describe('Worktree Tiered Discovery', () => {
       const pathExistsCalls = [];
       vi.spyOn(GitWorktreeManager.prototype, 'pathExists').mockImplementation(async (path) => {
         pathExistsCalls.push(path);
-        // Return false to simulate path doesn't exist, forcing fallback
-        return false;
+        // Tier 0/1 candidate paths "don't exist" (forcing the fallback this
+        // test asserts on), but the Tier-2 cached-clone location under the
+        // test config dir DOES exist — otherwise setup falls through to
+        // Tier 3 and attempts a REAL `git clone` of
+        // https://github.com/owner/repo.git on every run.
+        return path.startsWith(testConfigDir);
       });
 
-      // Make the request - it will fail since paths don't exist,
-      // but we can verify the lookup order
-      const response = await request(app)
+      // Make the request - discovery stops at the Tier-2 cached clone,
+      // and we can verify the lookup order
+      const response = await request(server)
         .post('/api/worktrees/create')
         .send({ owner: 'owner', repo: 'repo', prNumber: 1 });
 
@@ -6725,11 +6834,13 @@ describe('Worktree Tiered Discovery', () => {
       const pathExistsCalls = [];
       vi.spyOn(GitWorktreeManager.prototype, 'pathExists').mockImplementation(async (path) => {
         pathExistsCalls.push(path);
-        // Return false to simulate path doesn't exist
-        return false;
+        // Tier 1 candidate paths "don't exist"; the Tier-2 cached-clone
+        // location under the test config dir exists so setup never reaches
+        // the Tier-3 real `git clone` fallback.
+        return path.startsWith(testConfigDir);
       });
 
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/worktrees/create')
         .send({ owner: 'owner', repo: 'repo', prNumber: 1 });
 
@@ -6855,11 +6966,13 @@ describe('Worktree Tiered Discovery', () => {
 describe('Context Files Endpoints', () => {
   let db;
   let app;
+  let server;
   let reviewId;
 
   beforeEach(async () => {
     db = await createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
 
     // Insert a review record for context file tests
     const result = await run(db, `
@@ -6881,6 +6994,7 @@ describe('Context Files Endpoints', () => {
   });
 
   afterEach(async () => {
+    await closeServer(server);
     if (db) {
       await closeTestDatabase(db);
     }
@@ -6888,7 +7002,7 @@ describe('Context Files Endpoints', () => {
 
   describe('POST /api/reviews/:reviewId/context-files', () => {
     it('should create a context file with valid data', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${reviewId}/context-files`)
         .send({ file: 'src/utils.js', line_start: 10, line_end: 25 });
 
@@ -6904,7 +7018,7 @@ describe('Context Files Endpoints', () => {
     });
 
     it('should create a context file with optional label', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${reviewId}/context-files`)
         .send({ file: 'src/utils.js', line_start: 1, line_end: 50, label: 'helper functions' });
 
@@ -6914,7 +7028,7 @@ describe('Context Files Endpoints', () => {
     });
 
     it('should return 400 when file is missing', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${reviewId}/context-files`)
         .send({ line_start: 10, line_end: 25 });
 
@@ -6923,7 +7037,7 @@ describe('Context Files Endpoints', () => {
     });
 
     it('should return 400 when file is empty string', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${reviewId}/context-files`)
         .send({ file: '  ', line_start: 10, line_end: 25 });
 
@@ -6932,7 +7046,7 @@ describe('Context Files Endpoints', () => {
     });
 
     it('should return 400 when line_start is missing', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${reviewId}/context-files`)
         .send({ file: 'src/utils.js', line_end: 25 });
 
@@ -6941,7 +7055,7 @@ describe('Context Files Endpoints', () => {
     });
 
     it('should return 400 when line_start is invalid', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${reviewId}/context-files`)
         .send({ file: 'src/utils.js', line_start: -1, line_end: 25 });
 
@@ -6950,7 +7064,7 @@ describe('Context Files Endpoints', () => {
     });
 
     it('should return 400 when line_end < line_start', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${reviewId}/context-files`)
         .send({ file: 'src/utils.js', line_start: 25, line_end: 10 });
 
@@ -6959,7 +7073,7 @@ describe('Context Files Endpoints', () => {
     });
 
     it('should return 400 when range exceeds 500 lines', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${reviewId}/context-files`)
         .send({ file: 'src/utils.js', line_start: 1, line_end: 502 });
 
@@ -6968,7 +7082,7 @@ describe('Context Files Endpoints', () => {
     });
 
     it('should allow exactly 500 lines', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${reviewId}/context-files`)
         .send({ file: 'src/utils.js', line_start: 1, line_end: 500 });
 
@@ -6977,7 +7091,7 @@ describe('Context Files Endpoints', () => {
     });
 
     it('should return 400 for path traversal in file', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${reviewId}/context-files`)
         .send({ file: '../../etc/passwd', line_start: 1, line_end: 10 });
 
@@ -6986,7 +7100,7 @@ describe('Context Files Endpoints', () => {
     });
 
     it('should return 400 for absolute path in file', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${reviewId}/context-files`)
         .send({ file: '/etc/passwd', line_start: 1, line_end: 10 });
 
@@ -6995,7 +7109,7 @@ describe('Context Files Endpoints', () => {
     });
 
     it('should return 400 for invalid reviewId', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/reviews/invalid/context-files')
         .send({ file: 'src/utils.js', line_start: 10, line_end: 25 });
 
@@ -7004,7 +7118,7 @@ describe('Context Files Endpoints', () => {
     });
 
     it('should return 404 for non-existent reviewId', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/reviews/99999/context-files')
         .send({ file: 'src/utils.js', line_start: 10, line_end: 25 });
 
@@ -7013,7 +7127,7 @@ describe('Context Files Endpoints', () => {
     });
 
     it('should return 400 when file is already in the diff', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${reviewId}/context-files`)
         .send({ file: 'src/existing-diff-file.js', line_start: 1, line_end: 10 });
 
@@ -7022,7 +7136,7 @@ describe('Context Files Endpoints', () => {
     });
 
     it('should allow files not in the diff', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/reviews/${reviewId}/context-files`)
         .send({ file: 'src/not-in-diff.js', line_start: 1, line_end: 10 });
 
@@ -7034,15 +7148,15 @@ describe('Context Files Endpoints', () => {
   describe('GET /api/reviews/:reviewId/context-files', () => {
     it('should return all context files for a review', async () => {
       // Add context files directly via POST
-      await request(app)
+      await request(server)
         .post(`/api/reviews/${reviewId}/context-files`)
         .send({ file: 'src/a.js', line_start: 1, line_end: 10 });
 
-      await request(app)
+      await request(server)
         .post(`/api/reviews/${reviewId}/context-files`)
         .send({ file: 'src/b.js', line_start: 20, line_end: 30, label: 'section B' });
 
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${reviewId}/context-files`);
 
       expect(response.status).toBe(200);
@@ -7054,7 +7168,7 @@ describe('Context Files Endpoints', () => {
     });
 
     it('should return empty array when none exist', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/reviews/${reviewId}/context-files`);
 
       expect(response.status).toBe(200);
@@ -7065,13 +7179,13 @@ describe('Context Files Endpoints', () => {
 
   describe('DELETE /api/reviews/:reviewId/context-files/:id', () => {
     it('should remove a specific context file', async () => {
-      const createResponse = await request(app)
+      const createResponse = await request(server)
         .post(`/api/reviews/${reviewId}/context-files`)
         .send({ file: 'src/utils.js', line_start: 10, line_end: 25 });
 
       const contextFileId = createResponse.body.contextFile.id;
 
-      const deleteResponse = await request(app)
+      const deleteResponse = await request(server)
         .delete(`/api/reviews/${reviewId}/context-files/${contextFileId}`);
 
       expect(deleteResponse.status).toBe(200);
@@ -7079,14 +7193,14 @@ describe('Context Files Endpoints', () => {
       expect(deleteResponse.body.message).toBe('Context file removed');
 
       // Verify it's gone
-      const listResponse = await request(app)
+      const listResponse = await request(server)
         .get(`/api/reviews/${reviewId}/context-files`);
 
       expect(listResponse.body.contextFiles).toHaveLength(0);
     });
 
     it('should return 404 for non-existent id', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .delete(`/api/reviews/${reviewId}/context-files/99999`);
 
       expect(response.status).toBe(404);
@@ -7094,7 +7208,7 @@ describe('Context Files Endpoints', () => {
     });
 
     it('should return 400 for invalid id', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .delete(`/api/reviews/${reviewId}/context-files/invalid`);
 
       expect(response.status).toBe(400);
@@ -7110,21 +7224,21 @@ describe('Context Files Endpoints', () => {
       const otherReviewId = result.lastID;
 
       // Create a context file under the other review
-      const createResponse = await request(app)
+      const createResponse = await request(server)
         .post(`/api/reviews/${otherReviewId}/context-files`)
         .send({ file: 'src/secret.js', line_start: 1, line_end: 10 });
 
       const contextFileId = createResponse.body.contextFile.id;
 
       // Attempt to delete it via the first review's URL
-      const deleteResponse = await request(app)
+      const deleteResponse = await request(server)
         .delete(`/api/reviews/${reviewId}/context-files/${contextFileId}`);
 
       expect(deleteResponse.status).toBe(404);
       expect(deleteResponse.body.error).toContain('Context file not found');
 
       // Verify the context file still exists under the correct review
-      const listResponse = await request(app)
+      const listResponse = await request(server)
         .get(`/api/reviews/${otherReviewId}/context-files`);
 
       expect(listResponse.body.contextFiles).toHaveLength(1);
@@ -7134,19 +7248,19 @@ describe('Context Files Endpoints', () => {
   describe('DELETE /api/reviews/:reviewId/context-files', () => {
     it('should remove all context files for a review', async () => {
       // Add multiple context files
-      await request(app)
+      await request(server)
         .post(`/api/reviews/${reviewId}/context-files`)
         .send({ file: 'src/a.js', line_start: 1, line_end: 10 });
 
-      await request(app)
+      await request(server)
         .post(`/api/reviews/${reviewId}/context-files`)
         .send({ file: 'src/b.js', line_start: 20, line_end: 30 });
 
-      await request(app)
+      await request(server)
         .post(`/api/reviews/${reviewId}/context-files`)
         .send({ file: 'src/c.js', line_start: 40, line_end: 50 });
 
-      const deleteResponse = await request(app)
+      const deleteResponse = await request(server)
         .delete(`/api/reviews/${reviewId}/context-files`);
 
       expect(deleteResponse.status).toBe(200);
@@ -7154,14 +7268,14 @@ describe('Context Files Endpoints', () => {
       expect(deleteResponse.body.deletedCount).toBe(3);
 
       // Verify they are all gone
-      const listResponse = await request(app)
+      const listResponse = await request(server)
         .get(`/api/reviews/${reviewId}/context-files`);
 
       expect(listResponse.body.contextFiles).toHaveLength(0);
     });
 
     it('should return 0 count when no context files exist', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .delete(`/api/reviews/${reviewId}/context-files`);
 
       expect(response.status).toBe(200);
@@ -7172,13 +7286,13 @@ describe('Context Files Endpoints', () => {
 
   describe('PATCH /api/reviews/:reviewId/context-files/:id', () => {
     it('should update line range of existing context file', async () => {
-      const createResponse = await request(app)
+      const createResponse = await request(server)
         .post(`/api/reviews/${reviewId}/context-files`)
         .send({ file: 'src/utils.js', line_start: 10, line_end: 25 });
 
       const contextFileId = createResponse.body.contextFile.id;
 
-      const patchResponse = await request(app)
+      const patchResponse = await request(server)
         .patch(`/api/reviews/${reviewId}/context-files/${contextFileId}`)
         .send({ line_start: 5, line_end: 40 });
 
@@ -7186,7 +7300,7 @@ describe('Context Files Endpoints', () => {
       expect(patchResponse.body.success).toBe(true);
 
       // Verify the range was updated
-      const listResponse = await request(app)
+      const listResponse = await request(server)
         .get(`/api/reviews/${reviewId}/context-files`);
 
       expect(listResponse.body.contextFiles).toHaveLength(1);
@@ -7195,14 +7309,14 @@ describe('Context Files Endpoints', () => {
     });
 
     it('should return 400 for invalid context file ID', async () => {
-      const zeroResponse = await request(app)
+      const zeroResponse = await request(server)
         .patch(`/api/reviews/${reviewId}/context-files/0`)
         .send({ line_start: 1, line_end: 10 });
 
       expect(zeroResponse.status).toBe(400);
       expect(zeroResponse.body.error).toContain('Invalid context file ID');
 
-      const abcResponse = await request(app)
+      const abcResponse = await request(server)
         .patch(`/api/reviews/${reviewId}/context-files/abc`)
         .send({ line_start: 1, line_end: 10 });
 
@@ -7211,13 +7325,13 @@ describe('Context Files Endpoints', () => {
     });
 
     it('should return 400 when line_start is missing', async () => {
-      const createResponse = await request(app)
+      const createResponse = await request(server)
         .post(`/api/reviews/${reviewId}/context-files`)
         .send({ file: 'src/utils.js', line_start: 10, line_end: 25 });
 
       const contextFileId = createResponse.body.contextFile.id;
 
-      const response = await request(app)
+      const response = await request(server)
         .patch(`/api/reviews/${reviewId}/context-files/${contextFileId}`)
         .send({ line_end: 30 });
 
@@ -7226,13 +7340,13 @@ describe('Context Files Endpoints', () => {
     });
 
     it('should return 400 when line_end < line_start', async () => {
-      const createResponse = await request(app)
+      const createResponse = await request(server)
         .post(`/api/reviews/${reviewId}/context-files`)
         .send({ file: 'src/utils.js', line_start: 10, line_end: 25 });
 
       const contextFileId = createResponse.body.contextFile.id;
 
-      const response = await request(app)
+      const response = await request(server)
         .patch(`/api/reviews/${reviewId}/context-files/${contextFileId}`)
         .send({ line_start: 30, line_end: 10 });
 
@@ -7241,13 +7355,13 @@ describe('Context Files Endpoints', () => {
     });
 
     it('should return 400 when range exceeds 500 lines', async () => {
-      const createResponse = await request(app)
+      const createResponse = await request(server)
         .post(`/api/reviews/${reviewId}/context-files`)
         .send({ file: 'src/utils.js', line_start: 10, line_end: 25 });
 
       const contextFileId = createResponse.body.contextFile.id;
 
-      const response = await request(app)
+      const response = await request(server)
         .patch(`/api/reviews/${reviewId}/context-files/${contextFileId}`)
         .send({ line_start: 1, line_end: 502 });
 
@@ -7256,7 +7370,7 @@ describe('Context Files Endpoints', () => {
     });
 
     it('should return 404 for non-existent context file', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .patch(`/api/reviews/${reviewId}/context-files/99999`)
         .send({ line_start: 1, line_end: 10 });
 
@@ -7265,7 +7379,7 @@ describe('Context Files Endpoints', () => {
     });
 
     it('should return 404 for invalid review ID', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .patch('/api/reviews/99999/context-files/1')
         .send({ line_start: 1, line_end: 10 });
 
@@ -7282,13 +7396,16 @@ describe('Context Files Endpoints', () => {
 describe('Share Endpoint', () => {
   let db;
   let app;
+  let server;
 
   beforeEach(async () => {
     db = await createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
   });
 
   afterEach(async () => {
+    await closeServer(server);
     if (db) {
       await closeTestDatabase(db);
     }
@@ -7296,7 +7413,7 @@ describe('Share Endpoint', () => {
 
   describe('GET /api/pr/:owner/:repo/:number/share', () => {
     it('should return 400 for invalid PR number', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/invalid/share');
 
       expect(response.status).toBe(400);
@@ -7304,7 +7421,7 @@ describe('Share Endpoint', () => {
     });
 
     it('should return 404 for non-existent PR', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/999/share');
 
       expect(response.status).toBe(404);
@@ -7314,7 +7431,7 @@ describe('Share Endpoint', () => {
       await insertTestPR(db);
       // Note: No insertTestWorktree needed - share endpoint doesn't query worktree table
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/1/share');
 
       expect(response.status).toBe(200);
@@ -7356,7 +7473,7 @@ describe('Share Endpoint', () => {
         VALUES (?, 'ai', 'AI', ?, 'src/example.js', 42, 45, 'RIGHT', 'bug', 'Null reference', 'Could be null', 'Add null check', 0.85, '["step1","step2"]', 'active', 0)
       `, [reviewId, runId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/1/share');
 
       expect(response.status).toBe(200);
@@ -7396,7 +7513,7 @@ describe('Share Endpoint', () => {
         VALUES ('running-run', ?, 'claude', 'opus', 'running', datetime('now'))
       `, [reviewId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/1/share');
 
       expect(response.status).toBe(200);
@@ -7422,7 +7539,7 @@ describe('Share Endpoint', () => {
       `, [newerRunId, reviewId]);
 
       // Request the older run specifically
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/pr/owner/repo/1/share?runId=${olderRunId}`);
 
       expect(response.status).toBe(200);
@@ -7445,7 +7562,7 @@ describe('Share Endpoint', () => {
       `, [validRunId, reviewId]);
 
       // Request with non-existent runId
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/1/share?runId=non-existent-id');
 
       // Should fall back to the valid completed run
@@ -7474,7 +7591,7 @@ describe('Share Endpoint', () => {
       `, [completedRunId, reviewId]);
 
       // Request the running run specifically
-      const response = await request(app)
+      const response = await request(server)
         .get(`/api/pr/owner/repo/1/share?runId=${runningRunId}`);
 
       // Should fall back to the completed run
@@ -7500,7 +7617,7 @@ describe('Share Endpoint', () => {
         VALUES ('latest-running', ?, 'gemini', 'gemini-2.0', 'running', datetime('now'))
       `, [reviewId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/1/share');
 
       expect(response.status).toBe(200);
@@ -7522,7 +7639,7 @@ describe('Share Endpoint', () => {
         VALUES (?, ?, 'claude', 'opus', 'completed', 'Analysis complete', ?, ?, datetime('now', '-1 minute'), datetime('now'))
       `, [runId, reviewId, snapshotDiff, snapshotHeadSha]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/1/share');
 
       expect(response.status).toBe(200);
@@ -7543,7 +7660,7 @@ describe('Share Endpoint', () => {
         VALUES (?, ?, 'claude', 'opus', 'completed', 'Legacy run', datetime('now', '-1 minute'), datetime('now'))
       `, [runId, reviewId]);
 
-      const response = await request(app)
+      const response = await request(server)
         .get('/api/pr/owner/repo/1/share');
 
       expect(response.status).toBe(200);
@@ -7563,13 +7680,16 @@ describe('Share Endpoint', () => {
 describe('POST /api/worktrees/bulk-delete', () => {
   let db;
   let app;
+  let server;
 
   beforeEach(async () => {
     db = await createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
   });
 
   afterEach(async () => {
+    await closeServer(server);
     if (db) {
       await closeTestDatabase(db);
     }
@@ -7591,7 +7711,7 @@ describe('POST /api/worktrees/bulk-delete', () => {
     const id2 = await insertPRAndGetMetadataId(20);
     const id3 = await insertPRAndGetMetadataId(30);
 
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/worktrees/bulk-delete')
       .send({ ids: [id1, id3] });
 
@@ -7613,7 +7733,7 @@ describe('POST /api/worktrees/bulk-delete', () => {
   });
 
   it('should return 400 when ids array is empty', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/worktrees/bulk-delete')
       .send({ ids: [] });
 
@@ -7623,7 +7743,7 @@ describe('POST /api/worktrees/bulk-delete', () => {
   });
 
   it('should return 400 when ids field is missing', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/worktrees/bulk-delete')
       .send({});
 
@@ -7633,7 +7753,7 @@ describe('POST /api/worktrees/bulk-delete', () => {
   });
 
   it('should return 400 when body is empty', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/worktrees/bulk-delete')
       .send();
 
@@ -7642,7 +7762,7 @@ describe('POST /api/worktrees/bulk-delete', () => {
   });
 
   it('should return 400 when ids contain non-integer values', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/worktrees/bulk-delete')
       .send({ ids: [1, 'abc', 3] });
 
@@ -7652,7 +7772,7 @@ describe('POST /api/worktrees/bulk-delete', () => {
   });
 
   it('should return 400 when ids contain zero or negative values', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/worktrees/bulk-delete')
       .send({ ids: [0, -1] });
 
@@ -7663,7 +7783,7 @@ describe('POST /api/worktrees/bulk-delete', () => {
 
   it('should return 400 when more than 50 ids are provided', async () => {
     const ids = Array.from({ length: 51 }, (_, i) => i + 1);
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/worktrees/bulk-delete')
       .send({ ids });
 
@@ -7675,7 +7795,7 @@ describe('POST /api/worktrees/bulk-delete', () => {
   it('should report partial failure when some ids do not exist', async () => {
     const id1 = await insertPRAndGetMetadataId(10);
 
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/worktrees/bulk-delete')
       .send({ ids: [id1, 99999] });
 
@@ -7689,7 +7809,7 @@ describe('POST /api/worktrees/bulk-delete', () => {
   });
 
   it('should report all failures when no ids exist', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/worktrees/bulk-delete')
       .send({ ids: [88888, 99999] });
 
@@ -7704,13 +7824,16 @@ describe('POST /api/worktrees/bulk-delete', () => {
 describe('POST /api/local/sessions/bulk-delete', () => {
   let db;
   let app;
+  let server;
 
   beforeEach(async () => {
     db = await createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
   });
 
   afterEach(async () => {
+    await closeServer(server);
     if (db) {
       await closeTestDatabase(db);
     }
@@ -7732,7 +7855,7 @@ describe('POST /api/local/sessions/bulk-delete', () => {
     const id2 = await insertLocalSession('session-2');
     const id3 = await insertLocalSession('session-3');
 
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/local/sessions/bulk-delete')
       .send({ ids: [id1, id3] });
 
@@ -7754,7 +7877,7 @@ describe('POST /api/local/sessions/bulk-delete', () => {
   });
 
   it('should return 400 when ids array is empty', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/local/sessions/bulk-delete')
       .send({ ids: [] });
 
@@ -7764,7 +7887,7 @@ describe('POST /api/local/sessions/bulk-delete', () => {
   });
 
   it('should return 400 when ids field is missing', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/local/sessions/bulk-delete')
       .send({});
 
@@ -7774,7 +7897,7 @@ describe('POST /api/local/sessions/bulk-delete', () => {
   });
 
   it('should return 400 when body is empty', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/local/sessions/bulk-delete')
       .send();
 
@@ -7783,7 +7906,7 @@ describe('POST /api/local/sessions/bulk-delete', () => {
   });
 
   it('should return 400 when ids contain non-integer values', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/local/sessions/bulk-delete')
       .send({ ids: [1, 'abc', 3] });
 
@@ -7793,7 +7916,7 @@ describe('POST /api/local/sessions/bulk-delete', () => {
   });
 
   it('should return 400 when ids contain zero or negative values', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/local/sessions/bulk-delete')
       .send({ ids: [0, -1] });
 
@@ -7804,7 +7927,7 @@ describe('POST /api/local/sessions/bulk-delete', () => {
 
   it('should return 400 when more than 50 ids are provided', async () => {
     const ids = Array.from({ length: 51 }, (_, i) => i + 1);
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/local/sessions/bulk-delete')
       .send({ ids });
 
@@ -7816,7 +7939,7 @@ describe('POST /api/local/sessions/bulk-delete', () => {
   it('should report partial failure when some ids do not exist', async () => {
     const id1 = await insertLocalSession('session-1');
 
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/local/sessions/bulk-delete')
       .send({ ids: [id1, 99999] });
 
@@ -7830,7 +7953,7 @@ describe('POST /api/local/sessions/bulk-delete', () => {
   });
 
   it('should report all failures when no ids exist', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/local/sessions/bulk-delete')
       .send({ ids: [88888, 99999] });
 
@@ -7845,7 +7968,7 @@ describe('POST /api/local/sessions/bulk-delete', () => {
     // Insert a PR review (not local)
     const reviewId = await insertTestPR(db, 42, 'owner/repo');
 
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/local/sessions/bulk-delete')
       .send({ ids: [reviewId] });
 
@@ -7862,11 +7985,13 @@ describe('POST /api/local/sessions/bulk-delete', () => {
 describe('GET /api/reviews/:reviewId/hunk-summaries', () => {
   let db;
   let app;
+  let server;
   let reviewId;
 
   beforeEach(async () => {
     db = await createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
 
     const result = await run(db, `
       INSERT INTO reviews (pr_number, repository, status)
@@ -7876,13 +8001,14 @@ describe('GET /api/reviews/:reviewId/hunk-summaries', () => {
   });
 
   afterEach(async () => {
+    await closeServer(server);
     if (db) {
       await closeTestDatabase(db);
     }
   });
 
   it('returns 400 when reviewId is not a number', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .get('/api/reviews/not-a-number/hunk-summaries');
 
     expect(response.status).toBe(400);
@@ -7890,7 +8016,7 @@ describe('GET /api/reviews/:reviewId/hunk-summaries', () => {
   });
 
   it('returns 400 when reviewId is zero', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .get('/api/reviews/0/hunk-summaries');
 
     expect(response.status).toBe(400);
@@ -7898,7 +8024,7 @@ describe('GET /api/reviews/:reviewId/hunk-summaries', () => {
   });
 
   it('returns 404 for a non-existent reviewId', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .get('/api/reviews/9999999/hunk-summaries');
 
     expect(response.status).toBe(404);
@@ -7906,7 +8032,7 @@ describe('GET /api/reviews/:reviewId/hunk-summaries', () => {
   });
 
   it('returns an empty summaries array for a review with no rows', async () => {
-    const response = await request(app)
+    const response = await request(server)
       .get(`/api/reviews/${reviewId}/hunk-summaries`);
 
     expect(response.status).toBe(200);
@@ -7925,7 +8051,7 @@ describe('GET /api/reviews/:reviewId/hunk-summaries', () => {
       VALUES (?, ?, ?, ?, ?)
     `, [reviewId, 'src/b.js', 'hash-b', null, 'whitespace-only']);
 
-    const response = await request(app)
+    const response = await request(server)
       .get(`/api/reviews/${reviewId}/hunk-summaries`);
 
     expect(response.status).toBe(200);
@@ -7968,7 +8094,7 @@ describe('GET /api/reviews/:reviewId/hunk-summaries', () => {
       VALUES (?, ?, ?, ?, ?)
     `, [otherReviewId, 'src/other.js', 'hash-other', 'Other review', null]);
 
-    const response = await request(app)
+    const response = await request(server)
       .get(`/api/reviews/${reviewId}/hunk-summaries`);
 
     expect(response.status).toBe(200);
@@ -7980,13 +8106,16 @@ describe('GET /api/reviews/:reviewId/hunk-summaries', () => {
 describe('hunk_hashes on diff responses', () => {
   let db;
   let app;
+  let server;
 
   beforeEach(async () => {
     db = await createTestDatabase();
     app = createTestApp(db);
+    server = await listenOnLoopback(app);
   });
 
   afterEach(async () => {
+    await closeServer(server);
     if (db) {
       await closeTestDatabase(db);
     }
@@ -8035,7 +8164,7 @@ describe('hunk_hashes on diff responses', () => {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `, [77, 'owner/repo', 'T', 'D', 'u', 'main', 'feature', prData]);
 
-    const response = await request(app)
+    const response = await request(server)
       .get('/api/pr/owner/repo/77/diff');
 
     expect(response.status).toBe(200);
@@ -8081,7 +8210,7 @@ describe('hunk_hashes on diff responses', () => {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `, [78, 'owner/repo', 'T', 'D', 'u', 'main', 'feature', prData]);
 
-    const response = await request(app).get('/api/pr/owner/repo/78/diff');
+    const response = await request(server).get('/api/pr/owner/repo/78/diff');
 
     expect(response.status).toBe(200);
     for (const file of response.body.changed_files || []) {
@@ -8133,7 +8262,7 @@ describe('hunk_hashes on diff responses', () => {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `, [79, 'owner/repo', 'T', 'D', 'u', 'main', 'feature', prData]);
 
-    const response = await request(app).get('/api/pr/owner/repo/79/diff?w=1');
+    const response = await request(server).get('/api/pr/owner/repo/79/diff?w=1');
 
     expect(response.status).toBe(200);
     const file = (response.body.changed_files || []).find((f) => f.file === 'c.js');
@@ -8199,7 +8328,7 @@ describe('hunk_hashes on diff responses', () => {
 
       localReviewDiffs.set(reviewId, { diff, stats: { unstagedChanges: 2 } });
 
-      const response = await request(app).get(`/api/local/${reviewId}/diff`);
+      const response = await request(server).get(`/api/local/${reviewId}/diff`);
 
       expect(response.status).toBe(200);
       const byFile = response.body.hunk_hashes_by_file;
@@ -8239,7 +8368,7 @@ describe('hunk_hashes on diff responses', () => {
 
       localReviewDiffs.set(reviewId, { diff: canonicalDiff, stats: {} });
 
-      const response = await request(app).get(`/api/local/${reviewId}/diff?w=1`);
+      const response = await request(server).get(`/api/local/${reviewId}/diff?w=1`);
 
       expect(response.status).toBe(200);
       const hashes = response.body.hunk_hashes_by_file?.['f.js'];
@@ -8274,7 +8403,7 @@ describe('hunk_hashes on diff responses', () => {
 
       localReviewDiffs.set(reviewId, { diff: canonicalDiff, stats: {} });
 
-      const response = await request(app).get(`/api/local/${reviewId}/diff?base=other-branch`);
+      const response = await request(server).get(`/api/local/${reviewId}/diff?base=other-branch`);
 
       expect(response.status).toBe(200);
       const hashes = response.body.hunk_hashes_by_file?.['g.js'];
@@ -8333,7 +8462,7 @@ describe('hunk_hashes on diff responses', () => {
           .spyOn(localReview, 'generateScopedDiff')
           .mockResolvedValue({ diff: overrideDiff, stats: { unstagedChanges: 1 } });
 
-        const response = await request(app).get(`/api/local/${reviewId}/diff?base=other-branch`);
+        const response = await request(server).get(`/api/local/${reviewId}/diff?base=other-branch`);
 
         expect(response.status).toBe(200);
         expect(scopedDiffSpy).toHaveBeenCalled();
@@ -8389,7 +8518,7 @@ describe('hunk_hashes on diff responses', () => {
           .spyOn(localReview, 'generateScopedDiff')
           .mockResolvedValue({ diff: overrideDiff, stats: { unstagedChanges: 1 } });
 
-        const response = await request(app).get(`/api/local/${reviewId}/diff?base=other-branch`);
+        const response = await request(server).get(`/api/local/${reviewId}/diff?base=other-branch`);
 
         expect(response.status).toBe(200);
         expect(scopedDiffSpy).toHaveBeenCalled();

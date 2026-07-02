@@ -1,7 +1,8 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
+import { listenOnLoopback, closeServer } from '../utils/loopback-server';
 
 const { createSoundRouter } = require('../../src/routes/sound');
 
@@ -28,6 +29,12 @@ function createApp(deps) {
 
 describe('POST /api/play-sound', () => {
   let deps;
+  let server;
+
+  afterEach(async () => {
+    await closeServer(server);
+    server = null;
+  });
 
   describe('macOS (darwin)', () => {
     beforeEach(() => {
@@ -36,13 +43,15 @@ describe('POST /api/play-sound', () => {
 
     it('returns 204', async () => {
       const app = createApp(deps);
-      const res = await request(app).post('/api/play-sound');
+      server = await listenOnLoopback(app);
+      const res = await request(server).post('/api/play-sound');
       expect(res.status).toBe(204);
     });
 
     it('calls execFile with afplay and the Glass sound', async () => {
       const app = createApp(deps);
-      await request(app).post('/api/play-sound');
+      server = await listenOnLoopback(app);
+      await request(server).post('/api/play-sound');
       expect(deps.execFile).toHaveBeenCalledWith(
         'afplay',
         ['/System/Library/Sounds/Glass.aiff'],
@@ -58,13 +67,15 @@ describe('POST /api/play-sound', () => {
 
     it('returns 204', async () => {
       const app = createApp(deps);
-      const res = await request(app).post('/api/play-sound');
+      server = await listenOnLoopback(app);
+      const res = await request(server).post('/api/play-sound');
       expect(res.status).toBe(204);
     });
 
     it('calls execFile with paplay and the freedesktop sound', async () => {
       const app = createApp(deps);
-      await request(app).post('/api/play-sound');
+      server = await listenOnLoopback(app);
+      await request(server).post('/api/play-sound');
       expect(deps.execFile).toHaveBeenCalledWith(
         'paplay',
         ['/usr/share/sounds/freedesktop/stereo/complete.oga'],
@@ -80,13 +91,15 @@ describe('POST /api/play-sound', () => {
 
     it('returns 204', async () => {
       const app = createApp(deps);
-      const res = await request(app).post('/api/play-sound');
+      server = await listenOnLoopback(app);
+      const res = await request(server).post('/api/play-sound');
       expect(res.status).toBe(204);
     });
 
     it('calls execFile with powershell SystemSounds command', async () => {
       const app = createApp(deps);
-      await request(app).post('/api/play-sound');
+      server = await listenOnLoopback(app);
+      await request(server).post('/api/play-sound');
       expect(deps.execFile).toHaveBeenCalledWith(
         'powershell',
         ['-Command', '[System.Media.SystemSounds]::Asterisk.Play()'],
@@ -102,7 +115,8 @@ describe('POST /api/play-sound', () => {
 
     it('returns 204 without calling execFile', async () => {
       const app = createApp(deps);
-      const res = await request(app).post('/api/play-sound');
+      server = await listenOnLoopback(app);
+      const res = await request(server).post('/api/play-sound');
       expect(res.status).toBe(204);
       expect(deps.execFile).not.toHaveBeenCalled();
     });
@@ -115,7 +129,8 @@ describe('POST /api/play-sound', () => {
         if (cb) cb(new Error('afplay not found'));
       });
       const app = createApp(deps);
-      const res = await request(app).post('/api/play-sound');
+      server = await listenOnLoopback(app);
+      const res = await request(server).post('/api/play-sound');
       expect(res.status).toBe(204);
       expect(deps.logger.warn).toHaveBeenCalledWith(
         expect.stringContaining('afplay not found')

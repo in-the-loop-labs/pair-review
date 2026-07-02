@@ -2,6 +2,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 
 // Import the logger so we can spy on it
 const logger = require('../../src/utils/logger');
@@ -11,11 +12,14 @@ const { buildFileLineCountMap, validateSuggestionLineNumbers } = require('../../
 let warnSpy;
 
 describe('buildFileLineCountMap', () => {
-  const testDir = '/tmp/line-validation-test-' + Date.now();
+  // mkdtemp gives a unique, collision-free directory per test — a fixed
+  // '/tmp/...-Date.now()' path at module scope can collide across parallel
+  // workers/repeated runs and pollutes the real /tmp.
+  let testDir;
 
   beforeEach(async () => {
     // Create test directory
-    await fs.promises.mkdir(testDir, { recursive: true });
+    testDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'line-validation-'));
   });
 
   afterEach(async () => {

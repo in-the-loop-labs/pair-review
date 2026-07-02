@@ -2,14 +2,22 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 const http = require('http');
 const WebSocket = require('ws');
+const { once } = require('events');
 
 // Freshly require the module for each test to reset module-level state
 let wsServer;
 
-function waitForOpen(ws) {
+function waitForOpen(ws, timeoutMs = 2000) {
   return new Promise((resolve, reject) => {
-    ws.on('open', resolve);
-    ws.on('error', reject);
+    const timer = setTimeout(() => reject(new Error('waitForOpen timed out')), timeoutMs);
+    ws.on('open', () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    ws.on('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
   });
 }
 
@@ -27,6 +35,31 @@ function sendJSON(ws, obj) {
   ws.send(JSON.stringify(obj));
 }
 
+// Connect a client and deterministically capture the matching server-side socket.
+// The 'connection' listener is registered before the client is created, and each
+// call is awaited to completion, so sequential calls pair client/server correctly.
+async function connectAndCapture(port, wss) {
+  const connP = once(wss, 'connection');
+  const client = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+  await waitForOpen(client);
+  const [serverWs] = await connP;
+  return { client, serverWs };
+}
+
+// Send a payload and wait until the server-side socket has processed it.
+// The production 'message' handler is registered at connection time (before
+// our once() listener), and ws emits 'message' to listeners synchronously in
+// registration order, so when this resolves the handler has already run.
+async function sendProcessed(client, serverWs, obj) {
+  const msgP = once(serverWs, 'message');
+  sendJSON(client, obj);
+  await msgP;
+}
+
+function subscribed(client, serverWs, topic) {
+  return sendProcessed(client, serverWs, { action: 'subscribe', topic });
+}
+
 describe('WebSocket Server', () => {
   let httpServer;
   let port;
@@ -38,7 +71,7 @@ describe('WebSocket Server', () => {
 
     httpServer = http.createServer();
     await new Promise((resolve) => {
-      httpServer.listen(0, () => {
+      httpServer.listen(0, '127.0.0.1', () => {
         port = httpServer.address().port;
         resolve();
       });
@@ -53,12 +86,9 @@ describe('WebSocket Server', () => {
 
   describe('subscribe and unsubscribe', () => {
     it('should deliver messages to subscribed clients', async () => {
-      const client = new WebSocket(`ws://localhost:${port}/ws`);
-      await waitForOpen(client);
+      const { client, serverWs } = await connectAndCapture(port, wsServer._wss);
 
-      sendJSON(client, { action: 'subscribe', topic: 'test-topic' });
-      // Small delay to let the server process the subscription
-      await new Promise((r) => setTimeout(r, 50));
+      await subscribed(client, serverWs, 'test-topic');
 
       const msgPromise = waitForMessage(client);
       wsServer.broadcast('test-topic', { data: 'hello' });
@@ -69,48 +99,47 @@ describe('WebSocket Server', () => {
     });
 
     it('should not deliver messages after unsubscribe', async () => {
-      const client = new WebSocket(`ws://localhost:${port}/ws`);
-      await waitForOpen(client);
+      const { client, serverWs } = await connectAndCapture(port, wsServer._wss);
 
-      sendJSON(client, { action: 'subscribe', topic: 'test-topic' });
-      await new Promise((r) => setTimeout(r, 50));
+      await subscribed(client, serverWs, 'test-topic');
+      await sendProcessed(client, serverWs, { action: 'unsubscribe', topic: 'test-topic' });
+      // Subscribe to a flush topic so a sentinel broadcast can prove ordering
+      await subscribed(client, serverWs, 'flush');
 
-      sendJSON(client, { action: 'unsubscribe', topic: 'test-topic' });
-      await new Promise((r) => setTimeout(r, 50));
+      const received = [];
+      client.on('message', (data) => received.push(JSON.parse(data)));
 
-      let received = false;
-      client.on('message', () => { received = true; });
-
+      // Broadcast the forbidden message first, then the sentinel. Frames on a
+      // single connection arrive in order, so receiving the sentinel proves the
+      // forbidden message was never sent.
       wsServer.broadcast('test-topic', { data: 'should-not-arrive' });
-      await new Promise((r) => setTimeout(r, 100));
+      const sentinelP = waitForMessage(client);
+      wsServer.broadcast('flush', { sentinel: true });
+      const msg = await sentinelP;
 
-      expect(received).toBe(false);
+      expect(msg).toEqual({ topic: 'flush', sentinel: true });
+      expect(received).toEqual([{ topic: 'flush', sentinel: true }]);
       client.close();
     });
 
     it('should ignore messages without a topic', async () => {
-      const client = new WebSocket(`ws://localhost:${port}/ws`);
-      await waitForOpen(client);
+      const { client, serverWs } = await connectAndCapture(port, wsServer._wss);
 
       // Send a message with no topic - should not throw
-      sendJSON(client, { action: 'subscribe' });
-      await new Promise((r) => setTimeout(r, 50));
+      await sendProcessed(client, serverWs, { action: 'subscribe' });
 
       // Verify the client has no topics subscribed
-      const wss = wsServer._wss;
-      for (const ws of wss.clients) {
-        expect(ws._topics.size).toBe(0);
-      }
+      expect(serverWs._topics.size).toBe(0);
       client.close();
     });
 
     it('should handle non-JSON messages gracefully', async () => {
-      const client = new WebSocket(`ws://localhost:${port}/ws`);
-      await waitForOpen(client);
+      const { client, serverWs } = await connectAndCapture(port, wsServer._wss);
 
       // Send invalid JSON - should not crash the server
+      const msgP = once(serverWs, 'message');
       client.send('not-json');
-      await new Promise((r) => setTimeout(r, 50));
+      await msgP;
 
       // Server should still be operational
       expect(wsServer._wss).not.toBeNull();
@@ -120,39 +149,44 @@ describe('WebSocket Server', () => {
 
   describe('broadcast routing', () => {
     it('should only send to clients subscribed to the specific topic', async () => {
-      const clientA = new WebSocket(`ws://localhost:${port}/ws`);
-      const clientB = new WebSocket(`ws://localhost:${port}/ws`);
-      await Promise.all([waitForOpen(clientA), waitForOpen(clientB)]);
+      // Connect sequentially so each client pairs with its server-side socket
+      const { client: clientA, serverWs: serverWsA } = await connectAndCapture(port, wsServer._wss);
+      const { client: clientB, serverWs: serverWsB } = await connectAndCapture(port, wsServer._wss);
 
-      sendJSON(clientA, { action: 'subscribe', topic: 'topic-a' });
-      sendJSON(clientB, { action: 'subscribe', topic: 'topic-b' });
-      await new Promise((r) => setTimeout(r, 50));
+      await subscribed(clientA, serverWsA, 'topic-a');
+      await subscribed(clientB, serverWsB, 'topic-b');
+      // Extra flush topic on clientA to deterministically prove non-delivery
+      await subscribed(clientA, serverWsA, 'flush');
 
-      let receivedA = false;
-      clientA.on('message', () => { receivedA = true; });
+      const receivedA = [];
+      clientA.on('message', (data) => receivedA.push(JSON.parse(data)));
 
       const msgPromiseB = waitForMessage(clientB);
+      // Broadcast the message clientA must NOT receive, then the sentinel.
       wsServer.broadcast('topic-b', { value: 42 });
 
       const msgB = await msgPromiseB;
       expect(msgB).toEqual({ topic: 'topic-b', value: 42 });
 
-      // Give clientA a moment to potentially receive
-      await new Promise((r) => setTimeout(r, 100));
-      expect(receivedA).toBe(false);
+      const sentinelP = waitForMessage(clientA);
+      wsServer.broadcast('flush', { sentinel: true });
+      const sentinel = await sentinelP;
+
+      // Frames on one connection arrive in order: the sentinel arriving first
+      // (and alone) proves the topic-b broadcast never reached clientA.
+      expect(sentinel).toEqual({ topic: 'flush', sentinel: true });
+      expect(receivedA).toEqual([{ topic: 'flush', sentinel: true }]);
 
       clientA.close();
       clientB.close();
     });
 
     it('should broadcast to multiple subscribers of the same topic', async () => {
-      const client1 = new WebSocket(`ws://localhost:${port}/ws`);
-      const client2 = new WebSocket(`ws://localhost:${port}/ws`);
-      await Promise.all([waitForOpen(client1), waitForOpen(client2)]);
+      const { client: client1, serverWs: serverWs1 } = await connectAndCapture(port, wsServer._wss);
+      const { client: client2, serverWs: serverWs2 } = await connectAndCapture(port, wsServer._wss);
 
-      sendJSON(client1, { action: 'subscribe', topic: 'shared' });
-      sendJSON(client2, { action: 'subscribe', topic: 'shared' });
-      await new Promise((r) => setTimeout(r, 50));
+      await subscribed(client1, serverWs1, 'shared');
+      await subscribed(client2, serverWs2, 'shared');
 
       const p1 = waitForMessage(client1);
       const p2 = waitForMessage(client2);
@@ -175,26 +209,22 @@ describe('WebSocket Server', () => {
 
   describe('client cleanup on close', () => {
     it('should clear topics when a client disconnects', async () => {
-      const client = new WebSocket(`ws://localhost:${port}/ws`);
-      await waitForOpen(client);
+      const { client, serverWs } = await connectAndCapture(port, wsServer._wss);
 
-      sendJSON(client, { action: 'subscribe', topic: 'cleanup-test' });
-      await new Promise((r) => setTimeout(r, 50));
+      await subscribed(client, serverWs, 'cleanup-test');
 
       // Verify client has topics
-      const wss = wsServer._wss;
-      let serverSideWs;
-      for (const ws of wss.clients) {
-        serverSideWs = ws;
-      }
-      expect(serverSideWs._topics.has('cleanup-test')).toBe(true);
+      expect(serverWs._topics.has('cleanup-test')).toBe(true);
 
-      // Close the client and wait for server to process
+      // Close the client and wait for the server-side close handler to run.
+      // The production 'close' handler is registered first, so by the time
+      // this once() listener fires the topics have been cleared.
+      const closeP = once(serverWs, 'close');
       client.close();
-      await new Promise((r) => setTimeout(r, 100));
+      await closeP;
 
       // After close, the topics set should have been cleared
-      expect(serverSideWs._topics.size).toBe(0);
+      expect(serverWs._topics.size).toBe(0);
     });
   });
 
@@ -215,61 +245,62 @@ describe('WebSocket Server', () => {
       // Patch setInterval to capture the heartbeat callback
       const originalSetInterval = global.setInterval;
       let heartbeatCallback = null;
-      global.setInterval = (fn, ms) => {
-        heartbeatCallback = fn;
-        // Return a real timer id so clearInterval works
-        return originalSetInterval(() => {}, 999999);
-      };
+      let freshWs;
+      let freshServer;
+      let freshPort;
 
-      const freshWs = require('../../src/ws/server');
-      const freshServer = http.createServer();
-      await new Promise((resolve) => freshServer.listen(0, resolve));
-      const freshPort = freshServer.address().port;
-      freshWs.attachWebSocket(freshServer);
+      try {
+        try {
+          global.setInterval = (fn, ms) => {
+            heartbeatCallback = fn;
+            // Return a real timer id so clearInterval works
+            return originalSetInterval(() => {}, 999999);
+          };
 
-      global.setInterval = originalSetInterval;
+          freshWs = require('../../src/ws/server');
+          freshServer = http.createServer();
+          await new Promise((resolve) => freshServer.listen(0, '127.0.0.1', resolve));
+          freshPort = freshServer.address().port;
+          freshWs.attachWebSocket(freshServer);
+        } finally {
+          global.setInterval = originalSetInterval;
+        }
 
-      expect(heartbeatCallback).not.toBeNull();
+        expect(heartbeatCallback).not.toBeNull();
 
-      const client = new WebSocket(`ws://localhost:${freshPort}/ws`);
-      await waitForOpen(client);
+        const { client, serverWs } = await connectAndCapture(freshPort, freshWs._wss);
 
-      // Disable automatic pong responses from the client
-      client.pong = () => {};
+        // Disable automatic pong responses from the client
+        client.pong = () => {};
 
-      // Get the server-side WebSocket
-      let serverWs;
-      for (const ws of freshWs._wss.clients) {
-        serverWs = ws;
+        // First heartbeat tick: sets isAlive=false and sends ping
+        heartbeatCallback();
+        expect(serverWs.isAlive).toBe(false);
+
+        // Second heartbeat tick: sees isAlive still false, terminates
+        heartbeatCallback();
+
+        // Wait for the termination to propagate to the client
+        await once(client, 'close');
+
+        expect(client.readyState).toBeGreaterThanOrEqual(WebSocket.CLOSING);
+      } finally {
+        if (freshWs) freshWs.closeAll();
+        if (freshServer) await new Promise((resolve) => freshServer.close(resolve));
       }
-
-      // First heartbeat tick: sets isAlive=false and sends ping
-      heartbeatCallback();
-      expect(serverWs.isAlive).toBe(false);
-
-      // Second heartbeat tick: sees isAlive still false, terminates
-      heartbeatCallback();
-
-      // Wait for termination to propagate
-      await new Promise((r) => setTimeout(r, 100));
-
-      expect(client.readyState).toBeGreaterThanOrEqual(WebSocket.CLOSING);
-
-      freshWs.closeAll();
-      await new Promise((resolve) => freshServer.close(resolve));
     });
   });
 
   describe('closeAll', () => {
     it('should terminate all connected clients', async () => {
-      const client1 = new WebSocket(`ws://localhost:${port}/ws`);
-      const client2 = new WebSocket(`ws://localhost:${port}/ws`);
-      await Promise.all([waitForOpen(client1), waitForOpen(client2)]);
+      const { client: client1 } = await connectAndCapture(port, wsServer._wss);
+      const { client: client2 } = await connectAndCapture(port, wsServer._wss);
 
+      const closes = Promise.all([once(client1, 'close'), once(client2, 'close')]);
       wsServer.closeAll();
 
       // Wait for close events to propagate
-      await new Promise((r) => setTimeout(r, 100));
+      await closes;
 
       expect(client1.readyState).toBeGreaterThanOrEqual(WebSocket.CLOSING);
       expect(client2.readyState).toBeGreaterThanOrEqual(WebSocket.CLOSING);
@@ -285,7 +316,7 @@ describe('WebSocket Server', () => {
 
   describe('upgrade path rejection', () => {
     it('should reject upgrade requests on non-/ws paths', async () => {
-      const client = new WebSocket(`ws://localhost:${port}/other`);
+      const client = new WebSocket(`ws://127.0.0.1:${port}/other`);
 
       await new Promise((resolve, reject) => {
         client.on('error', resolve); // Expect an error
