@@ -19,8 +19,9 @@
     "LICENSE"
   ],
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.0.0"
   },
+  "packageManager": "pnpm@11.9.0",
   "scripts": {
     "start": "node src/server.js",
     "dev": "node bin/pair-review.js",
@@ -83,10 +84,5 @@
     "jsdom": "^29.0.1",
     "supertest": "^7.1.4",
     "vitest": "^4.0.16"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "better-sqlite3"
-    ]
   }
 }

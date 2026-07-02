@@ -1,0 +1,3 @@
+# pnpm 11+ reads build-script allowlists from here, not the package.json "pnpm" field.
+onlyBuiltDependencies:
+  - better-sqlite3
