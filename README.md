@@ -959,8 +959,8 @@ These commands update your MCP configuration in `~/.claude/settings.json` (user-
 
 ### Prerequisites
 
-- Node.js 20.0.0 or higher
-- [pnpm](https://pnpm.io/) 10.x
+- Node.js 22.0.0 or higher
+- [pnpm](https://pnpm.io/) 11.x
 - Git
 
 ### Running Locally

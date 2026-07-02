@@ -1,0 +1,5 @@
+# pnpm 11+ reads build-script policy from here, not the package.json "pnpm" field.
+# allowBuilds is a map of package -> true/false (replaces v10's onlyBuiltDependencies list).
+# strictDepBuilds defaults to true in v11, so native modules must be explicitly allowed.
+allowBuilds:
+  better-sqlite3: true

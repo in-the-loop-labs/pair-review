@@ -66,6 +66,21 @@ because violating it produced a real, observed flake or measurable waste.
 - **No real network. Ever.** Mock every GitHub/API/git-clone path. A test
   that works only when github.com answers is a flake with extra steps.
 
+## Browser globals (jsdom)
+
+- **Do not rely on jsdom's ambient `localStorage`/`sessionStorage`.** Node 22.4+
+  (flagged) and Node 26 (default-on) expose the Web Storage API as a global.
+  That global pre-exists the jsdom environment, so vitest's `populateGlobal`
+  sees the key already present and skips copying jsdom's real `localStorage`
+  onto `window`; the leftover native accessor reads back `undefined` (or throws
+  under `--experimental-webstorage`). Result: a `@vitest-environment jsdom`
+  test that calls `window.localStorage.clear()` passes on Node 24 and fails on
+  Node 26 — a version-correlated flake, not fork ordering. A shared setup file
+  (`tests/setup/web-storage-polyfill.js`, wired via `setupFiles`) installs a
+  configurable in-memory Storage so jsdom tests are Node-version-agnostic.
+  Reproduce the Node 26 condition on any Node with
+  `NODE_OPTIONS="--experimental-webstorage --localstorage-file=$(mktemp)"`.
+
 ## Mock hygiene
 
 - **Do not call `vi.clearAllMocks()` in files that create many `vi.fn()` per
