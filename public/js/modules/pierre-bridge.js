@@ -759,8 +759,17 @@ class PierreBridge {
   setCollapsed(fileName, collapsed) {
     const fileState = this.files.get(fileName);
     if (!fileState) return;
+    const wasCollapsed = fileState.collapsed;
     fileState.collapsed = collapsed;
     fileState.instance.setOptions({ collapsed });
+    // A file rendered while collapsed has zero shadow-DOM lines (the vendor
+    // skips line rendering for collapsed instances). Flipping the option
+    // alone leaves the body empty on expand — force a rerender so the lines
+    // materialize. Cheap no-op when the lines already exist, and rerender
+    // re-applies fileState.annotations so nothing is lost.
+    if (wasCollapsed && !collapsed && typeof fileState.instance.rerender === 'function') {
+      fileState.instance.rerender();
+    }
   }
 
   /**
@@ -979,19 +988,7 @@ class PierreBridge {
     const indices = typeof instance.getLineIndex === 'function'
       ? instance.getLineIndex(lineNumber, pierreSide)
       : undefined;
-    if (!indices) return false;
-    // getLineIndex returns [unifiedIndex, splitIndex]
-    const [unifiedIndex] = indices;
-    if (unifiedIndex == null) return false;
-
-    const pre = instance.pre;
-    if (!pre) return false;
-
-    // In unified view, the unified code element holds all lines.
-    // Scope the selector to this instance's code element so we don't find
-    // ghost lines from other files rendered in the same document.
-    const codeEl = instance.codeUnified || pre.querySelector('code[data-unified]') || pre;
-    const lineEl = codeEl.querySelector(`[data-line][data-line-index="${unifiedIndex}"]`);
+    const lineEl = PierreBridge._queryLineElement(instance, indices);
     if (!lineEl) return false;
 
     // Use scrollIntoView on the shadow DOM element — it still scrolls the
@@ -1271,6 +1268,9 @@ class PierreBridge {
       'suggestion': 0,
       'comment-form': 1,
       'comment': 2,
+      // External (host-synced) threads stack below user comments on the same
+      // line, mirroring the legacy insertion order (AI → user → external).
+      'external-comment': 3,
     };
     const sorted = [...fileState.annotations].sort((a, b) => {
       if (a.lineNumber !== b.lineNumber) return a.lineNumber - b.lineNumber;
@@ -1312,15 +1312,34 @@ class PierreBridge {
     const instance = fileState.instance;
     const pierreSide = PierreBridge.toPierreSide(side);
     const indices = instance.getLineIndex(lineNumber, pierreSide);
-    if (!indices) return false;
     // getLineIndex returns indices even for lines in collapsed gaps.
     // Verify that the DOM element actually exists at the computed index.
+    return !!PierreBridge._queryLineElement(instance, indices);
+  }
+
+  /**
+   * Resolve the rendered shadow-DOM element for a line from the indices
+   * returned by instance.getLineIndex(). The vendor stamps data-line-index
+   * as a composite "unifiedIndex,splitIndex" key; fall back to the bare
+   * unified index for bundle versions that stamped a single number.
+   * @param {Object} instance - FileDiff instance
+   * @param {Array<number>|undefined} indices - [unifiedIndex, splitIndex]
+   * @returns {Element|null}
+   * @private
+   */
+  static _queryLineElement(instance, indices) {
+    if (!indices) return null;
     const [unifiedIndex] = indices;
-    if (unifiedIndex == null) return false;
+    if (unifiedIndex == null) return null;
     const pre = instance.pre;
-    if (!pre) return false;
+    if (!pre) return null;
+    // In unified view, the unified code element holds all lines. Scope the
+    // selector to this instance's code element so we don't find ghost lines
+    // from other files rendered in the same document.
     const codeEl = instance.codeUnified || pre.querySelector('code[data-unified]') || pre;
-    return !!codeEl.querySelector(`[data-line][data-line-index="${unifiedIndex}"]`);
+    const compositeKey = Array.isArray(indices) ? indices.join(',') : String(unifiedIndex);
+    return codeEl.querySelector(`[data-line][data-line-index="${compositeKey}"]`)
+      || codeEl.querySelector(`[data-line][data-line-index="${unifiedIndex}"]`);
   }
 
   /**
