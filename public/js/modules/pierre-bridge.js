@@ -463,8 +463,8 @@ class PierreBridge {
       ? {
         oldFile: fileState.oldFile,
         newFile: fileState.newFile,
-        fileDiff: fileState.contextRanges?.length && fileState.baseMetadata
-          ? window.PierreContext?.mergeContextRanges?.(fileState.baseMetadata, fileState.contextRanges) || fileState.baseMetadata
+        fileDiff: this._effectiveContextRanges(fileState).length && fileState.baseMetadata
+          ? window.PierreContext?.mergeContextRanges?.(fileState.baseMetadata, this._effectiveContextRanges(fileState)) || fileState.baseMetadata
           : fileState.baseMetadata || metadata,
         lineAnnotations: fileState.annotations,
         containerWrapper: fileState.container,
@@ -692,6 +692,12 @@ class PierreBridge {
       newFile: null,
       baseMetadata: null,   // metadata before context range merging
       contextRanges: [],     // [{startLine, endLine}] in NEW file coords
+      // Lines the ORIGINAL PATCH rendered, captured at content upgrade. The
+      // full-contents re-diff can produce narrower context than the patch;
+      // these spans are merged into every render so the upgrade never
+      // un-renders visible lines (which would orphan annotations anchored to
+      // them). Unlike contextRanges, they survive clearContextRanges.
+      patchParityRanges: null,
       forcePlainText: !!renderOptions.forcePlainText,
       collapsed: !!renderOptions.collapsed,
       usesWorkerManager: useWorkerManager,
@@ -722,6 +728,12 @@ class PierreBridge {
       ? { ...newFile, lang: 'text' }
       : newFile;
 
+    // Snapshot the currently-rendered hunk spans BEFORE render() replaces
+    // instance.fileDiff: the full-contents re-diff can compute narrower
+    // context than the original patch, silently un-rendering lines that
+    // annotations, comments, and the user's eyes are anchored to.
+    const prevHunks = fileState.instance.fileDiff?.hunks;
+
     const rendered = fileState.instance.render({
       oldFile: nextOldFile,
       newFile: nextNewFile,
@@ -735,7 +747,15 @@ class PierreBridge {
     // even if render() returned false (e.g. files-equal early exit)
     if (fileState.instance.fileDiff) {
       fileState.baseMetadata = fileState.instance.fileDiff;
-      if (fileState.contextRanges?.length) this._applyContextRanges(fileName);
+      if (!fileState.patchParityRanges && Array.isArray(prevHunks) && prevHunks.length) {
+        fileState.patchParityRanges = prevHunks
+          .filter(h => h.additionCount > 0)
+          .map(h => ({
+            startLine: h.additionStart,
+            endLine: h.additionStart + h.additionCount - 1,
+          }));
+      }
+      if (this._effectiveContextRanges(fileState).length) this._applyContextRanges(fileName);
     }
     if (rendered) this._installFallbackHoverTracking(fileName, fileState);
     if (rendered) this._restoreHoverAfterRender(fileState);
@@ -854,14 +874,30 @@ class PierreBridge {
     return rendered;
   }
 
+  /**
+   * All ranges that must be visible: patch-parity spans (immutable, captured
+   * at content upgrade) plus dynamically added context ranges.
+   * @param {Object} fileState
+   * @returns {Array<{startLine: number, endLine: number}>}
+   * @private
+   */
+  _effectiveContextRanges(fileState) {
+    return [
+      ...(fileState?.patchParityRanges || []),
+      ...(fileState?.contextRanges || []),
+    ];
+  }
+
   _applyContextRanges(fileName) {
     const fileState = this.files.get(fileName);
-    if (!fileState?.baseMetadata || !fileState.contextRanges?.length) return false;
+    if (!fileState?.baseMetadata) return false;
+    const ranges = this._effectiveContextRanges(fileState);
+    if (!ranges.length) return false;
 
     const { mergeContextRanges } = window.PierreContext || {};
     if (!mergeContextRanges) return false;
 
-    const merged = mergeContextRanges(fileState.baseMetadata, fileState.contextRanges);
+    const merged = mergeContextRanges(fileState.baseMetadata, ranges);
     return this._renderWithFileDiff(fileState, merged);
   }
 
@@ -881,7 +917,7 @@ class PierreBridge {
     fileState.contextRanges = subtractRanges(fileState.contextRanges || [], ranges);
 
     if (!fileState.baseMetadata) return false;
-    if (fileState.contextRanges.length === 0) {
+    if (this._effectiveContextRanges(fileState).length === 0) {
       return this._renderWithFileDiff(fileState, fileState.baseMetadata);
     }
     return this._applyContextRanges(fileName);
@@ -899,6 +935,11 @@ class PierreBridge {
     fileState.contextRanges = [];
 
     if (!fileState.baseMetadata) return false;
+    // Patch-parity spans are not "context ranges" — clearing must never
+    // shrink the view below what the original patch rendered.
+    if (this._effectiveContextRanges(fileState).length) {
+      return this._applyContextRanges(fileName);
+    }
     return this._renderWithFileDiff(fileState, fileState.baseMetadata);
   }
 
@@ -1309,12 +1350,33 @@ class PierreBridge {
   isLineVisible(fileName, lineNumber, side) {
     const fileState = this.files.get(fileName);
     if (!fileState || !fileState.instance) return false;
+    // A collapsed file renders zero code lines regardless of metadata.
+    if (fileState.collapsed) return false;
     const instance = fileState.instance;
-    const pierreSide = PierreBridge.toPierreSide(side);
-    const indices = instance.getLineIndex(lineNumber, pierreSide);
-    // getLineIndex returns indices even for lines in collapsed gaps.
-    // Verify that the DOM element actually exists at the computed index.
-    return !!PierreBridge._queryLineElement(instance, indices);
+    const hunks = instance.fileDiff?.hunks;
+    if (!Array.isArray(hunks) || hunks.length === 0) return false;
+
+    // Decide from the instance's CURRENT logical state, never the DOM.
+    // render()/rerender() paint asynchronously (worker highlighting), so the
+    // shadow DOM lags behind the latest render call — a DOM query here returns
+    // stale answers (e.g. a line still on screen right after
+    // clearContextRanges dropped it). instance.fileDiff is assigned
+    // synchronously inside render(), so hunk membership reflects the state the
+    // in-flight paint will converge to. A line is rendered iff it falls inside
+    // a hunk of the current (context-range-merged) metadata, widened by any
+    // user gap expansion tracked per hunk in hunksRenderer.expandedHunks.
+    const sideKey = PierreBridge.toPierreSide(side) === 'deletions' ? 'deletion' : 'addition';
+    for (let i = 0; i < hunks.length; i++) {
+      const hunk = hunks[i];
+      const count = hunk[`${sideKey}Count`];
+      if (!count) continue;
+      const start = hunk[`${sideKey}Start`];
+      const expanded = instance.hunksRenderer?.getExpandedHunk?.(i);
+      const from = start - (expanded?.fromStart || 0);
+      const to = start + count - 1 + (expanded?.fromEnd || 0);
+      if (lineNumber >= from && lineNumber <= to) return true;
+    }
+    return false;
   }
 
   /**

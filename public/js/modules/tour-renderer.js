@@ -362,9 +362,10 @@ class TourRenderer {
     }
 
     // Pick the anchor line: prefer line_end, scan back to line_start for the
-    // first line that actually renders (isLineVisible is shadow-DOM aware and
-    // returns true even for collapsed-but-present rows). No visible line in
-    // range → unmountable; return null so the navigator probes onward.
+    // first line that renders (isLineVisible checks the instance's current
+    // hunk metadata, so it is correct even while an async repaint is in
+    // flight). No visible line in range → unmountable; return null so the
+    // navigator probes onward.
     let anchorLine = null;
     if (typeof bridge.isLineVisible === 'function') {
       for (let n = lineEnd; n >= lineStart; n--) {

@@ -73,6 +73,101 @@ describe('PierreBridge._queryLineElement()', () => {
   });
 });
 
+// Regression coverage for the stale-DOM visibility bug: render()/rerender()
+// paint asynchronously (worker highlighting), so DOM queries lag the latest
+// render call. isLineVisible must consult the instance's CURRENT logical
+// state (fileDiff.hunks + per-hunk gap expansion), never the DOM — otherwise
+// a clear-ranges-then-check sequence sees lines that are about to disappear,
+// skips re-expansion, and leaves annotations unslotted (invisible orphans).
+describe('PierreBridge.isLineVisible()', () => {
+  let PierreBridge;
+
+  beforeEach(() => {
+    delete require.cache[require.resolve(BRIDGE_PATH)];
+    const dom = new JSDOM('<!doctype html><body></body>', { url: 'http://localhost/' });
+    global.document = dom.window.document;
+    global.window = {
+      PierreDiffs: undefined,
+      matchMedia: () => ({ matches: false }),
+    };
+    PierreBridge = require(BRIDGE_PATH);
+  });
+
+  afterEach(() => {
+    delete global.window;
+    delete global.document;
+  });
+
+  // Hunk shape mirrors @pierre/diffs fileDiff.hunks entries.
+  const HUNKS = [
+    { additionStart: 3, additionCount: 5, deletionStart: 3, deletionCount: 2 },   // lines 3-7 (RIGHT), 3-4 (LEFT)
+    { additionStart: 20, additionCount: 4, deletionStart: 17, deletionCount: 4 }, // lines 20-23 (RIGHT)
+  ];
+
+  function makeBridgeWithHunks({ hunks = HUNKS, collapsed = false, expandedHunks = new Map() } = {}) {
+    const bridge = new PierreBridge({});
+    const instance = {
+      fileDiff: hunks ? { hunks } : undefined,
+      hunksRenderer: { getExpandedHunk: (i) => expandedHunks.get(i) },
+    };
+    bridge.files.set('a.js', { instance, collapsed });
+    return bridge;
+  }
+
+  it('reports lines inside a hunk visible and gap lines hidden (RIGHT side)', () => {
+    const bridge = makeBridgeWithHunks();
+    expect(bridge.isLineVisible('a.js', 3, 'RIGHT')).toBe(true);
+    expect(bridge.isLineVisible('a.js', 7, 'RIGHT')).toBe(true);
+    expect(bridge.isLineVisible('a.js', 8, 'RIGHT')).toBe(false);   // gap between hunks
+    expect(bridge.isLineVisible('a.js', 14, 'RIGHT')).toBe(false);  // gap between hunks
+    expect(bridge.isLineVisible('a.js', 20, 'RIGHT')).toBe(true);
+    expect(bridge.isLineVisible('a.js', 24, 'RIGHT')).toBe(false);  // past last hunk
+    expect(bridge.isLineVisible('a.js', 1, 'RIGHT')).toBe(false);   // before first hunk
+  });
+
+  it('uses deletion-side coordinates for LEFT and skips zero-count sides', () => {
+    const bridge = makeBridgeWithHunks({
+      hunks: [
+        { additionStart: 5, additionCount: 3, deletionStart: 9, deletionCount: 2 },
+        { additionStart: 30, additionCount: 2, deletionStart: 26, deletionCount: 0 }, // pure addition
+      ],
+    });
+    expect(bridge.isLineVisible('a.js', 9, 'LEFT')).toBe(true);
+    expect(bridge.isLineVisible('a.js', 10, 'LEFT')).toBe(true);
+    expect(bridge.isLineVisible('a.js', 11, 'LEFT')).toBe(false);
+    // Pure-addition hunk has no deletion-side lines at all.
+    expect(bridge.isLineVisible('a.js', 26, 'LEFT')).toBe(false);
+  });
+
+  it('widens hunks by user gap expansion tracked in hunksRenderer.expandedHunks', () => {
+    const bridge = makeBridgeWithHunks({
+      expandedHunks: new Map([[1, { fromStart: 3, fromEnd: 2 }]]),
+    });
+    expect(bridge.isLineVisible('a.js', 17, 'RIGHT')).toBe(true);   // 20 - 3
+    expect(bridge.isLineVisible('a.js', 16, 'RIGHT')).toBe(false);
+    expect(bridge.isLineVisible('a.js', 25, 'RIGHT')).toBe(true);   // 23 + 2
+    expect(bridge.isLineVisible('a.js', 26, 'RIGHT')).toBe(false);
+  });
+
+  it('returns false for collapsed files even when the line is in a hunk', () => {
+    const bridge = makeBridgeWithHunks({ collapsed: true });
+    expect(bridge.isLineVisible('a.js', 3, 'RIGHT')).toBe(false);
+  });
+
+  it('returns false for unknown files or instances without fileDiff', () => {
+    const bridge = makeBridgeWithHunks({ hunks: null });
+    expect(bridge.isLineVisible('a.js', 3, 'RIGHT')).toBe(false);
+    expect(bridge.isLineVisible('missing.js', 3, 'RIGHT')).toBe(false);
+  });
+
+  it('ignores the DOM entirely — no stale answers during in-flight repaints', () => {
+    // No pre/codeUnified/DOM on the instance at all: if the implementation
+    // regresses to DOM queries this throws or returns the wrong value.
+    const bridge = makeBridgeWithHunks();
+    expect(bridge.isLineVisible('a.js', 5, 'RIGHT')).toBe(true);
+  });
+});
+
 // Regression: a file rendered while collapsed has zero shadow-DOM lines. If
 // setCollapsed only flips the instance option, expanding a start-collapsed
 // (viewed) file shows an empty diff — rerender() must run on the
