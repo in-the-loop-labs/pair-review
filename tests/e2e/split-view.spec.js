@@ -210,6 +210,75 @@ for (const mode of MODES) {
 }
 
 /**
+ * Full-width annotation cards in split. A lone card is stretched across both
+ * columns by PierreBridge._syncSplitAnnotationLayout (.pr-annotation-fullwidth
+ * + measured --pr-split-gutter-width). PR-mode only: the stretching runs in
+ * the shared bridge render path, identical in Local mode (comment rendering
+ * parity is already covered by the MODES loop above).
+ */
+test.describe('Split diff view — full-width annotation cards (PR mode)', () => {
+  const PR_PATH = '/pr/test-owner/test-repo/1';
+
+  test.afterEach(async ({ page }) => {
+    await cleanupComments(page, 1);
+  });
+
+  /**
+   * Resolve the shadow annotation cell hosting the light-DOM card containing
+   * `text`, plus the geometry needed to prove it spans both columns.
+   */
+  async function cardMetrics(page, text) {
+    return page.evaluate(({ file, text }) => {
+      const wrapper = document.querySelector(`.d2h-file-wrapper[data-file-name="${file}"]`);
+      const host = wrapper?.querySelector('diffs-container');
+      const pre = host?.shadowRoot?.querySelector('pre[data-diff-type="split"]');
+      if (!host || !pre) return null;
+      const lightWrappers = [...host.querySelectorAll('[data-annotation-slot]')];
+      const target = lightWrappers.find((w) => w.textContent.includes(text));
+      const cell = target?.assignedSlot?.closest('[data-line-annotation]');
+      if (!cell) return null;
+      return {
+        hasFullwidthClass: cell.classList.contains('pr-annotation-fullwidth'),
+        cellWidth: cell.getBoundingClientRect().width,
+        contentTrackWidth:
+          pre.querySelector('code[data-additions] [data-content]')?.getBoundingClientRect().width || 0,
+        preWidth: pre.getBoundingClientRect().width,
+        gutterVar: pre.style.getPropertyValue('--pr-split-gutter-width')
+      };
+    }, { file: FILE, text });
+  }
+
+  for (const [column, line, side] of [['additions', 3, 'RIGHT'], ['deletions', 3, 'LEFT']]) {
+    test(`stretches a lone ${column}-side card across both columns`, async ({ page }) => {
+      await page.goto(PR_PATH);
+      await waitForDiffToRender(page);
+
+      const body = `Full width ${column} ${Date.now()}`;
+      await seedComment(page, 1, { line, side, body });
+      await page.reload();
+      await waitForDiffToRender(page);
+      await expect(page.locator('.user-comment-body', { hasText: body })).toBeVisible();
+
+      await setDiffView(page, 'split');
+      await expectAnnotationInSplitColumn(page, { text: body, column });
+
+      // The stretch class is applied on a rAF after render — poll for it.
+      await expect.poll(async () => (await cardMetrics(page, body))?.hasFullwidthClass, {
+        timeout: 5000
+      }).toBe(true);
+
+      const metrics = await cardMetrics(page, body);
+      // The measured middle-gutter width was published for the calc().
+      expect(metrics.gutterVar).toMatch(/^\d+(\.\d+)?px$/);
+      // Spans well past its own column (~2× a content track) yet stays
+      // inside the pre.
+      expect(metrics.cellWidth).toBeGreaterThan(metrics.contentTrackWidth * 1.8);
+      expect(metrics.cellWidth).toBeLessThanOrEqual(metrics.preWidth);
+    });
+  }
+});
+
+/**
  * AI suggestions in split. PR-mode only: the harness mocks
  * POST /api/pr/:owner/:repo/:number/analyses to insert mock suggestions into
  * the DB. There is no equivalent mock for the Local analyses route (it would

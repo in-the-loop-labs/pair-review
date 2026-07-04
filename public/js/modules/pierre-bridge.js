@@ -172,7 +172,7 @@ class PierreBridge {
     if (style === this.diffStyle) return;
     this.diffStyle = style;
 
-    for (const [, fileState] of this.files) {
+    for (const [fileName, fileState] of this.files) {
       const instance = fileState?.instance;
       if (!instance) continue;
       if (typeof instance.setOptions === 'function') {
@@ -181,6 +181,7 @@ class PierreBridge {
         instance.mergeOptions({ diffStyle: style });
       }
       instance.rerender?.();
+      this._syncSplitAnnotationLayout(fileName);
     }
   }
 
@@ -455,6 +456,9 @@ class PierreBridge {
         if (this.options.onHunkExpand) {
           this.options.onHunkExpand(fileName, hunkIndex, direction, lineCount);
         }
+        // Expansion can widen the line-number gutter (digit growth) and
+        // rebuilds shadow rows — re-sync split card stretching.
+        this._syncSplitAnnotationLayout(fileName);
       },
 
       renderAnnotation: (annotation) => {
@@ -467,6 +471,7 @@ class PierreBridge {
         if (fileState) {
           fileState.shadowHost = node;
         }
+        this._syncSplitAnnotationLayout(fileName);
       },
     }, workerManager);
   }
@@ -1415,6 +1420,75 @@ class PierreBridge {
     // trigger the renderAnnotation callback and slot elements into the
     // light DOM of the <diffs-container> host.
     fileState.instance.rerender();
+    this._syncSplitAnnotationLayout(fileName);
+  }
+
+  /**
+   * Split view: stretch annotation cards across both columns.
+   *
+   * The vendor renders each annotation into ONE side's column plus an empty
+   * paired cell in the other column on the same shared grid row (split+wrap
+   * is a single four-track grid with display:contents columns), so a lone
+   * card only gets half the width. This pass:
+   *   1. Measures the middle (additions) gutter track — it is min-content
+   *      sized, so pure CSS cannot know its width — and publishes it on the
+   *      <pre> as --pr-split-gutter-width for ANNOTATION_CSS calc()s.
+   *   2. Marks cards whose opposite cell is empty with
+   *      .pr-annotation-fullwidth. When BOTH sides of a row hold cards
+   *      (LEFT + RIGHT annotation on the same row pair), neither is marked
+   *      and they stay half-width side by side.
+   *
+   * Vendor renders wipe shadow-DOM classes/inline vars, so this is invoked
+   * (rAF-debounced per file) after every pass that can rebuild the shadow
+   * DOM: initial render (onPostRender), annotation updates, diffStyle
+   * switches, and hunk expansion. In unified mode it no-ops (no split pre).
+   * @private
+   */
+  _syncSplitAnnotationLayout(fileName) {
+    const fileState = this.files.get(fileName);
+    if (!fileState || fileState._splitLayoutRaf != null) return;
+    const raf = typeof requestAnimationFrame === 'function'
+      ? requestAnimationFrame
+      : (fn) => setTimeout(fn, 16);
+    fileState._splitLayoutRaf = raf(() => {
+      fileState._splitLayoutRaf = null;
+      this._applySplitAnnotationLayout(fileName);
+    });
+  }
+
+  /**
+   * Synchronous body of _syncSplitAnnotationLayout — see its doc comment.
+   * @private
+   */
+  _applySplitAnnotationLayout(fileName) {
+    const fileState = this.files.get(fileName);
+    const shadowRoot = fileState?.shadowHost?.shadowRoot;
+    if (!shadowRoot) return;
+    const pre = shadowRoot.querySelector('pre[data-diff-type="split"]');
+    if (!pre) return;
+
+    const gutter = pre.querySelector('[data-additions] [data-gutter]');
+    const gutterWidth = gutter?.getBoundingClientRect?.().width || 0;
+    if (gutterWidth > 0) {
+      pre.style.setProperty('--pr-split-gutter-width', `${gutterWidth}px`);
+    }
+
+    // Paired cells share the same "hunkIndex,lineIndex" attribute value.
+    const byRow = new Map();
+    for (const cell of pre.querySelectorAll('[data-line-annotation]')) {
+      const key = cell.getAttribute('data-line-annotation');
+      if (!byRow.has(key)) byRow.set(key, []);
+      byRow.get(key).push(cell);
+    }
+    for (const cells of byRow.values()) {
+      const withContent = cells.filter((cell) => cell.querySelector('slot'));
+      for (const cell of cells) {
+        cell.classList.toggle(
+          'pr-annotation-fullwidth',
+          withContent.length === 1 && cell === withContent[0]
+        );
+      }
+    }
   }
 
   // ─── Gap Expansion ────────────────────────────────────────────────
@@ -2110,15 +2184,17 @@ class PierreBridge {
   // styled by the page stylesheet. Only the comment form annotation lives
   // entirely within the shadow DOM and needs styles here.
   //
-  // Split-layout constraint: @pierre/diffs anchors each annotation to ONE code
-  // column — a 'deletions' annotation renders in the LEFT column, an
-  // 'additions' annotation in the RIGHT column (see getAnnotations()/
-  // pushLineWithAnnotation in DiffHunksRenderer). The column is a subgrid cell,
-  // so a card CANNOT span both columns via CSS; it fills the width of its own
-  // side. min-width:0 lets cards wrap inside that (roughly half-width) cell
-  // rather than force horizontal overflow. This matches the vendor's layout;
-  // most pair-review annotations are RIGHT/additions, so they land in the
-  // right column in split view.
+  // Split layout: @pierre/diffs anchors each annotation to ONE code column —
+  // a 'deletions' annotation renders in the LEFT column, an 'additions'
+  // annotation in the RIGHT column — and emits an EMPTY paired cell in the
+  // opposite column on the same shared grid row (see getAnnotations()/
+  // pushLineWithAnnotation in DiffHunksRenderer). A lone card would only get
+  // half the width, so _syncSplitAnnotationLayout marks such cards with
+  // .pr-annotation-fullwidth and the rules below stretch them across both
+  // content tracks (the tracks are equal 1fr shares, so 200% + the measured
+  // middle-gutter width spans exactly to the far edge). min-width:0 lets
+  // unstretched cards (both sides annotated on one row) wrap inside their
+  // half-width cell rather than force horizontal overflow.
   static ANNOTATION_CSS = `
     .pierre-annotation {
       padding: 8px 12px;
@@ -2131,6 +2207,21 @@ class PierreBridge {
     /* Let annotation cards wrap within a split column instead of overflowing. */
     [data-line-annotation] { min-width: 0; }
     [data-annotation-content] { min-width: 0; }
+    /* Split view: stretch a lone card across both columns. The class and
+       --pr-split-gutter-width are maintained by _syncSplitAnnotationLayout
+       (the middle gutter track is min-content sized — unknowable in pure
+       CSS). Without the var the card degrades to stopping at the seam.
+       z-index clears the middle gutter, which the vendor paints at 3. */
+    [data-diff-type='split'] .pr-annotation-fullwidth {
+      position: relative;
+      z-index: 4;
+      width: calc(200% + var(--pr-split-gutter-width, 0px));
+    }
+    /* Right-column cards anchor at the additions track; pull them back to
+       the left content track's start edge. */
+    [data-diff-type='split'] [data-additions] .pr-annotation-fullwidth {
+      margin-left: calc(-100% - var(--pr-split-gutter-width, 0px));
+    }
     /* Brief flash applied by PierreBridge.scrollToLine. Generic [data-line]
        match so it flashes whichever column (unified/deletions/additions) the
        target line resolves to. */

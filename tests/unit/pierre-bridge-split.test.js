@@ -388,6 +388,130 @@ describe('PierreBridge._queryLineElement — split columns', () => {
   });
 });
 
+describe('PierreBridge split full-width annotation layout', () => {
+  let PierreBridge;
+  let dom;
+
+  beforeEach(() => {
+    dom = new JSDOM('<!doctype html><body></body>', { url: 'http://localhost/' });
+    PierreBridge = loadDisabledBridge({ document: dom.window.document });
+  });
+
+  afterEach(() => {
+    delete global.window;
+    delete global.document;
+    delete global.requestAnimationFrame;
+    vi.restoreAllMocks();
+  });
+
+  // Fake shadow tree: <pre data-diff-type="split"> with an additions gutter
+  // (measurable width) and a paired annotation-cell row per vendor layout —
+  // both cells share the same data-line-annotation key; only the annotated
+  // side contains <slot> elements.
+  function makeSplitShadow({ deletionHasSlot = false, additionHasSlot = true, key = '0,3' } = {}) {
+    const doc = dom.window.document;
+    const root = doc.createElement('div');
+    const pre = doc.createElement('pre');
+    pre.setAttribute('data-diff-type', 'split');
+    root.appendChild(pre);
+
+    const mkCol = (attr, hasSlot) => {
+      const code = doc.createElement('code');
+      code.setAttribute('data-code', '');
+      code.setAttribute(attr, '');
+      const gutter = doc.createElement('div');
+      gutter.setAttribute('data-gutter', '');
+      code.appendChild(gutter);
+      const content = doc.createElement('div');
+      content.setAttribute('data-content', '');
+      const cell = doc.createElement('div');
+      cell.setAttribute('data-line-annotation', key);
+      const inner = doc.createElement('div');
+      inner.setAttribute('data-annotation-content', '');
+      if (hasSlot) inner.appendChild(doc.createElement('slot'));
+      cell.appendChild(inner);
+      content.appendChild(cell);
+      code.appendChild(content);
+      pre.appendChild(code);
+      return { gutter, cell };
+    };
+
+    const del = mkCol('data-deletions', deletionHasSlot);
+    const add = mkCol('data-additions', additionHasSlot);
+    add.gutter.getBoundingClientRect = () => ({ width: 64 });
+    return { root, pre, deletionCell: del.cell, additionCell: add.cell };
+  }
+
+  function makeBridgeWithShadow(root) {
+    const bridge = new PierreBridge({ diffStyle: 'split' });
+    bridge.files.set('a.js', { shadowHost: { shadowRoot: root }, annotations: [] });
+    return bridge;
+  }
+
+  it('publishes the measured additions-gutter width on the pre', () => {
+    const { root, pre } = makeSplitShadow();
+    const bridge = makeBridgeWithShadow(root);
+    bridge._applySplitAnnotationLayout('a.js');
+    expect(pre.style.getPropertyValue('--pr-split-gutter-width')).toBe('64px');
+  });
+
+  it('marks a lone card full-width and leaves its empty pair unmarked', () => {
+    const { root, deletionCell, additionCell } = makeSplitShadow({
+      deletionHasSlot: false,
+      additionHasSlot: true,
+    });
+    const bridge = makeBridgeWithShadow(root);
+    bridge._applySplitAnnotationLayout('a.js');
+    expect(additionCell.classList.contains('pr-annotation-fullwidth')).toBe(true);
+    expect(deletionCell.classList.contains('pr-annotation-fullwidth')).toBe(false);
+  });
+
+  it('keeps both cards half-width when both sides of a row are annotated', () => {
+    const { root, deletionCell, additionCell } = makeSplitShadow({
+      deletionHasSlot: true,
+      additionHasSlot: true,
+    });
+    // Stale class from a previous pass must be cleared.
+    additionCell.classList.add('pr-annotation-fullwidth');
+    const bridge = makeBridgeWithShadow(root);
+    bridge._applySplitAnnotationLayout('a.js');
+    expect(additionCell.classList.contains('pr-annotation-fullwidth')).toBe(false);
+    expect(deletionCell.classList.contains('pr-annotation-fullwidth')).toBe(false);
+  });
+
+  it('no-ops in unified mode and for missing files/shadow roots', () => {
+    const doc = dom.window.document;
+    const root = doc.createElement('div');
+    root.appendChild(doc.createElement('pre')); // no data-diff-type="split"
+    const bridge = makeBridgeWithShadow(root);
+    expect(() => bridge._applySplitAnnotationLayout('a.js')).not.toThrow();
+    expect(() => bridge._applySplitAnnotationLayout('missing.js')).not.toThrow();
+    bridge.files.set('bare.js', {});
+    expect(() => bridge._applySplitAnnotationLayout('bare.js')).not.toThrow();
+  });
+
+  it('debounces repeated sync requests into one rAF pass', () => {
+    const scheduled = [];
+    global.requestAnimationFrame = (fn) => {
+      scheduled.push(fn);
+      return scheduled.length;
+    };
+    const { root, additionCell } = makeSplitShadow();
+    const bridge = makeBridgeWithShadow(root);
+
+    bridge._syncSplitAnnotationLayout('a.js');
+    bridge._syncSplitAnnotationLayout('a.js');
+    bridge._syncSplitAnnotationLayout('a.js');
+    expect(scheduled).toHaveLength(1);
+
+    scheduled[0]();
+    expect(additionCell.classList.contains('pr-annotation-fullwidth')).toBe(true);
+    // After the pass runs, a new sync can be scheduled again.
+    bridge._syncSplitAnnotationLayout('a.js');
+    expect(scheduled).toHaveLength(2);
+  });
+});
+
 describe('PierreBridge._deriveHoverSide', () => {
   let PierreBridge;
   let dom;
