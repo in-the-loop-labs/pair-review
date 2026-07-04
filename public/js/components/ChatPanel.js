@@ -4585,9 +4585,11 @@ class ChatPanel {
    * @param {string} file - File path
    * @param {number} lineStart - Target line number (start of range)
    * @param {number|null} [lineEnd] - End of target line range (used for expansion)
+   * @param {('LEFT'|'RIGHT')} [side='RIGHT'] - Diff side the line lives on.
+   *   Chat file-link references point at the new file, so RIGHT is the default.
    * @param {HTMLElement} [fileWrapper] - Pre-resolved file wrapper element
    */
-  async _scrollToLine(file, lineStart, lineEnd, fileWrapper) {
+  async _scrollToLine(file, lineStart, lineEnd, side = 'RIGHT', fileWrapper) {
     if (!fileWrapper) {
       const escaped = CSS.escape(file);
       fileWrapper = document.querySelector(`[data-file-name="${escaped}"]`) ||
@@ -4602,17 +4604,17 @@ class ChatPanel {
     if (bridge && bridge.files.has(file)) {
       const end = lineEnd || lineStart;
       // Ensure the line is visible — expand collapsed gaps if needed.
-      if (!bridge.isLineVisible(file, lineStart, 'RIGHT')
+      if (!bridge.isLineVisible(file, lineStart, side)
           && window.prManager?.ensureLinesVisible) {
         await window.prManager.ensureLinesVisible([
-          { file, line_start: lineStart, line_end: end, side: 'RIGHT' }
+          { file, line_start: lineStart, line_end: end, side }
         ]);
       }
       // Flash each line in the requested range.
       let scrolled = false;
       for (let ln = lineStart; ln <= end; ln++) {
         // Only scroll into view for the first line; highlight the rest.
-        const ok = bridge.scrollToLine(file, ln, 'RIGHT', ln === lineStart);
+        const ok = bridge.scrollToLine(file, ln, side, ln === lineStart);
         scrolled = scrolled || ok;
       }
       if (!scrolled && window.prManager?.scrollToFile) {
@@ -4628,13 +4630,13 @@ class ChatPanel {
     // If not found, try expanding the collapsed diff context
     if (targetRows.length === 0 && window.prManager?.ensureLinesVisible) {
       await window.prManager.ensureLinesVisible([
-        { file, line_start: lineStart, line_end: end, side: 'RIGHT' }
+        { file, line_start: lineStart, line_end: end, side }
       ]);
       const updatedBridge = window.prManager?.pierreBridge;
       if (updatedBridge?.files?.has(file)) {
         let scrolled = false;
         for (let ln = lineStart; ln <= end; ln++) {
-          const ok = updatedBridge.scrollToLine(file, ln, 'RIGHT', ln === lineStart);
+          const ok = updatedBridge.scrollToLine(file, ln, side, ln === lineStart);
           scrolled = scrolled || ok;
         }
         if (!scrolled && window.prManager?.scrollToFile) {

@@ -291,9 +291,14 @@ class PRManager {
     this.suggestionManager = new window.SuggestionManager(this);
     this.fileCommentManager = window.FileCommentManager ? new window.FileCommentManager(this) : null;
 
-    // Initialize PierreBridge for @pierre/diffs rendering
+    // Initialize PierreBridge for @pierre/diffs rendering.
+    // Read the persisted diff-view preference so the first render uses the
+    // saved style (no flash, no double render). localStorage is the single
+    // source of truth shared with DiffOptionsDropdown.
+    const initialDiffStyle = localStorage.getItem('pair-review-diff-view') === 'split' ? 'split' : 'unified';
     this.pierreBridge = window.PierreBridge ? new window.PierreBridge({
       theme: this.currentTheme,
+      diffStyle: initialDiffStyle,
       onCommentClick: (fileName, lineNumber, side, target) => {
         // target.isRange is true when the user selected multiple lines
         const diffPosition = this.pierreBridge.getDiffPosition(fileName, target.start, target.side);
@@ -405,6 +410,8 @@ class PRManager {
       this.diffOptionsDropdown = new window.DiffOptionsDropdown(diffOptionsBtn, {
         onToggleWhitespace: (hide) => this.handleWhitespaceToggle(hide),
         onToggleMinimize: (minimized) => this.handleMinimizeToggle(minimized),
+        onDiffViewChange: (mode) => this.handleDiffViewChange(mode),
+        diffView: initialDiffStyle,
       });
     }
 
@@ -2792,6 +2799,29 @@ class PRManager {
     if (this.commentMinimizer) {
       this.commentMinimizer.setMinimized(minimized);
     }
+  }
+
+  /**
+   * Handle the diff-view toggle (Unified / Split) from DiffOptionsDropdown.
+   *
+   * Unlike handleWhitespaceToggle, this does NOT re-fetch the diff — it asks
+   * PierreBridge to re-render the existing file instances in the new style.
+   * Per the bridge contract, setDiffStyle preserves annotations (user
+   * comments, AI suggestions, external comments) across the re-render, so
+   * there is no need to invoke _rerenderAllOverlays here — doing so would
+   * duplicate work the bridge already handles. Scroll position can shift when
+   * rows change height between unified/split, so we save and restore it.
+   * Shared by both PR mode and local mode (local.js patches PRManager).
+   * @param {('unified'|'split')} mode
+   */
+  handleDiffViewChange(mode) {
+    if (!this.pierreBridge) return;
+    const scrollY = window.scrollY;
+    this.pierreBridge.setDiffStyle(mode);
+    // Restore scroll position after the DOM settles
+    requestAnimationFrame(() => {
+      window.scrollTo(0, scrollY);
+    });
   }
 
   /**

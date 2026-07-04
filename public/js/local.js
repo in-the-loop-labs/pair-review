@@ -1085,6 +1085,10 @@ class LocalManager {
           onToggleWhitespace: (hide) => manager.handleWhitespaceToggle(hide),
           onToggleMinimize: (minimized) => manager.handleMinimizeToggle(minimized),
           onScopeChange: (start, end) => this._handleScopeChange(start, end),
+          // Diff view (Unified / Split) — the handler lives on PRManager and is
+          // shared with PR mode (no re-fetch, so local mode needs no override).
+          onDiffViewChange: (mode) => manager.handleDiffViewChange(mode),
+          diffView: localStorage.getItem('pair-review-diff-view') === 'split' ? 'split' : 'unified',
           initialScope: { start: scopeStart, end: scopeEnd },
           branchAvailable
         });

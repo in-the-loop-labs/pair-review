@@ -13596,7 +13596,14 @@ diffs-container {
 /* @pierre/diffs annotation styles (light DOM — slotted into shadow DOM)
    Suggestions, comments, and comment forms all reuse the legacy classes
    (.ai-suggestion, .user-comment, .user-comment-form, .comment-textarea, etc.)
-   so all existing CSS applies. No custom form styles needed. */
+   so all existing CSS applies. No custom form styles needed.
+
+   Split (side-by-side) layout: the two code columns live in the shadow DOM's
+   <pre data-diff-type="split"> grid; .pierre-diff-body keeps overflow-x:auto so
+   a wide split view scrolls instead of breaking the grid. @pierre/diffs slots
+   each annotation into a SINGLE column (deletions=left, additions=right), so
+   these cards occupy their side's (~half) width in split — they cannot span
+   both columns (subgrid cell). See PierreBridge.ANNOTATION_CSS. */
 
 /* Dual gutter buttons (chat + comment) inside @pierre/diffs */
 .pierre-gutter-buttons {

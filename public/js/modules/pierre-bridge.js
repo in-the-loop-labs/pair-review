@@ -25,6 +25,14 @@ class PierreBridge {
     this.options = options;
     this.theme = options.theme || PierreBridge.detectTheme();
 
+    // Diff layout: 'unified' (single column) or 'split' (side-by-side).
+    // Stored as instance state so every FileDiff instance (including lazily
+    // created / rebuilt ones) inherits the current style. Toggled at runtime
+    // via setDiffStyle(). Invalid values fall back to 'unified'.
+    this.diffStyle = PierreBridge.isValidDiffStyle(options.diffStyle)
+      ? options.diffStyle
+      : 'unified';
+
     // Per-file state: { instance: FileDiff, metadata: FileDiffMetadata, container: HTMLElement,
     //                   annotations: DiffLineAnnotation[], diffPositions: Map, formElements: Map }
     this.files = new Map();
@@ -117,6 +125,62 @@ class PierreBridge {
       if (fileState.instance) {
         fileState.instance.setThemeType(theme);
       }
+    }
+  }
+
+  // ─── Diff Style (unified / split) ─────────────────────────────────
+
+  /**
+   * @param {*} style
+   * @returns {boolean} true when `style` is a supported diff layout.
+   */
+  static isValidDiffStyle(style) {
+    return style === 'unified' || style === 'split';
+  }
+
+  /**
+   * Current diff layout.
+   * @returns {'unified'|'split'}
+   */
+  getDiffStyle() {
+    return this.diffStyle;
+  }
+
+  /**
+   * Switch every rendered file between unified and split (side-by-side) layout.
+   *
+   * Mirrors setTheme: validate, no-op when unchanged, update instance state,
+   * then re-render every FileDiff instance. Unlike theme, diffStyle is NOT a
+   * worker render option (it controls layout, not highlighting), so the worker
+   * pool is untouched here — only the per-instance FileDiff options change.
+   *
+   * `setOptions` replaces the instance's whole options object AND re-derives
+   * the hunks/interaction sub-managers, so we spread the instance's current
+   * options to preserve everything else (theme, gutter, selection, etc.). The
+   * instance keeps its stored lineAnnotations across setOptions, and rerender()
+   * re-runs the renderAnnotation callback, so user comments, AI suggestions,
+   * forms, and external threads survive the switch (they also live in
+   * fileState.annotations as the source of truth).
+   *
+   * @param {'unified'|'split'} style
+   */
+  setDiffStyle(style) {
+    if (!PierreBridge.isValidDiffStyle(style)) {
+      console.warn(`[PierreBridge] Ignoring invalid diffStyle "${style}"; expected 'unified' or 'split'.`);
+      return;
+    }
+    if (style === this.diffStyle) return;
+    this.diffStyle = style;
+
+    for (const [, fileState] of this.files) {
+      const instance = fileState?.instance;
+      if (!instance) continue;
+      if (typeof instance.setOptions === 'function') {
+        instance.setOptions({ ...(instance.options || {}), diffStyle: style });
+      } else if (typeof instance.mergeOptions === 'function') {
+        instance.mergeOptions({ diffStyle: style });
+      }
+      instance.rerender?.();
     }
   }
 
@@ -345,7 +409,7 @@ class PierreBridge {
       theme: this.getThemeConfig(),
       themeType: this.theme,
       disableFileHeader: true,
-      diffStyle: 'unified',
+      diffStyle: this.diffStyle,
       diffIndicators: 'bars',
       overflow: 'wrap',
       lineHoverHighlight: 'line',
@@ -547,6 +611,32 @@ class PierreBridge {
     return this._hoveredRows.get(fileName) || null;
   }
 
+  /**
+   * Derive the annotation side ('deletions'|'additions') for a hovered gutter
+   * line cell.
+   *
+   * Unified view stamps only one column, so the line-type string
+   * (change-deletion vs change-addition) is authoritative; context lines are
+   * addressable from the right (additions) side by convention.
+   *
+   * Split view renders two independent code columns and a context line's
+   * gutter carries a neutral 'context' line-type in BOTH columns — the string
+   * can no longer disambiguate. Derive the side from the enclosing
+   * `code[data-deletions]` / `code[data-additions]` column instead, falling
+   * back to the line-type string if (defensively) neither ancestor is found.
+   * @param {Element} lineCell - hovered gutter cell (has data-column-number)
+   * @returns {'deletions'|'additions'}
+   * @private
+   */
+  _deriveHoverSide(lineCell) {
+    if (this.diffStyle === 'split') {
+      if (lineCell.closest?.('code[data-deletions]')) return 'deletions';
+      if (lineCell.closest?.('code[data-additions]')) return 'additions';
+    }
+    const lineType = lineCell.dataset?.lineType || '';
+    return lineType.includes('deletion') ? 'deletions' : 'additions';
+  }
+
   _installFallbackHoverTracking(fileName, fileState) {
     fileState._fallbackHoverCleanup?.();
 
@@ -566,10 +656,9 @@ class PierreBridge {
       const lineNumber = parseInt(lineCell.dataset.columnNumber, 10);
       if (!Number.isFinite(lineNumber)) return;
 
-      const lineType = lineCell.dataset.lineType || '';
       this._hoveredRows.set(fileName, {
         lineNumber,
-        side: lineType.includes('deletion') ? 'deletions' : 'additions',
+        side: this._deriveHoverSide(lineCell),
       });
       this._positionFallbackGutter(fileName, lineCell);
     };
@@ -781,7 +870,10 @@ class PierreBridge {
     if (!fileState) return;
     const wasCollapsed = fileState.collapsed;
     fileState.collapsed = collapsed;
-    fileState.instance.setOptions({ collapsed });
+    // Vendor setOptions REPLACES the whole options object (it does not
+    // merge), so a bare { collapsed } would silently drop diffStyle, theme,
+    // renderAnnotation, and every other option — spread the live options in.
+    fileState.instance.setOptions({ ...(fileState.instance.options || {}), collapsed });
     // A file rendered while collapsed has zero shadow-DOM lines (the vendor
     // skips line rendering for collapsed instances). Flipping the option
     // alone leaves the body empty on expand — force a rerender so the lines
@@ -1029,7 +1121,7 @@ class PierreBridge {
     const indices = typeof instance.getLineIndex === 'function'
       ? instance.getLineIndex(lineNumber, pierreSide)
       : undefined;
-    const lineEl = PierreBridge._queryLineElement(instance, indices);
+    const lineEl = PierreBridge._queryLineElement(instance, indices, pierreSide);
     if (!lineEl) return false;
 
     // Use scrollIntoView on the shadow DOM element — it still scrolls the
@@ -1382,26 +1474,59 @@ class PierreBridge {
   /**
    * Resolve the rendered shadow-DOM element for a line from the indices
    * returned by instance.getLineIndex(). The vendor stamps data-line-index
-   * as a composite "unifiedIndex,splitIndex" key; fall back to the bare
-   * unified index for bundle versions that stamped a single number.
+   * as a composite "unifiedIndex,splitIndex" key on content lines in BOTH
+   * unified and split layouts (see @pierre/diffs renderDiffWithHighlighter);
+   * fall back to the bare unified index for bundle versions that stamped a
+   * single number.
+   *
+   * Column scoping avoids matching ghost lines from other files rendered in
+   * the same document, and — in split view — targets the requested side:
+   *   - unified: the single `code[data-unified]` column.
+   *   - split:   `code[data-deletions]` (LEFT) or `code[data-additions]`
+   *     (RIGHT). A context line exists in BOTH columns with the SAME composite
+   *     key, so we search the requested side first and fall back to the other.
    * @param {Object} instance - FileDiff instance
    * @param {Array<number>|undefined} indices - [unifiedIndex, splitIndex]
+   * @param {'deletions'|'additions'} [side] - preferred split column
    * @returns {Element|null}
    * @private
    */
-  static _queryLineElement(instance, indices) {
+  static _queryLineElement(instance, indices, side) {
     if (!indices) return null;
     const [unifiedIndex] = indices;
     if (unifiedIndex == null) return null;
     const pre = instance.pre;
     if (!pre) return null;
-    // In unified view, the unified code element holds all lines. Scope the
-    // selector to this instance's code element so we don't find ghost lines
-    // from other files rendered in the same document.
-    const codeEl = instance.codeUnified || pre.querySelector('code[data-unified]') || pre;
     const compositeKey = Array.isArray(indices) ? indices.join(',') : String(unifiedIndex);
-    return codeEl.querySelector(`[data-line][data-line-index="${compositeKey}"]`)
-      || codeEl.querySelector(`[data-line][data-line-index="${unifiedIndex}"]`);
+    for (const codeEl of PierreBridge._codeColumnsForSide(instance, pre, side)) {
+      if (!codeEl) continue;
+      const el = codeEl.querySelector(`[data-line][data-line-index="${compositeKey}"]`)
+        || codeEl.querySelector(`[data-line][data-line-index="${unifiedIndex}"]`);
+      if (el) return el;
+    }
+    return null;
+  }
+
+  /**
+   * Ordered list of code-column elements to search for a line, scoped to a
+   * single FileDiff instance. Unified returns the one unified column; split
+   * returns both columns with the requested `side` first. Falls back to the
+   * whole `pre` when no column element is resolvable.
+   * @param {Object} instance
+   * @param {Element} pre
+   * @param {'deletions'|'additions'} [side]
+   * @returns {Array<Element|null>}
+   * @private
+   */
+  static _codeColumnsForSide(instance, pre, side) {
+    const unified = instance.codeUnified || pre.querySelector('code[data-unified]');
+    if (unified) return [unified];
+    const deletions = instance.codeDeletions || pre.querySelector('code[data-deletions]');
+    const additions = instance.codeAdditions || pre.querySelector('code[data-additions]');
+    if (deletions || additions) {
+      return side === 'deletions' ? [deletions, additions] : [additions, deletions];
+    }
+    return [pre];
   }
 
   /**
@@ -1984,6 +2109,16 @@ class PierreBridge {
   // Suggestions and comments use legacy classes (.ai-suggestion, .user-comment)
   // styled by the page stylesheet. Only the comment form annotation lives
   // entirely within the shadow DOM and needs styles here.
+  //
+  // Split-layout constraint: @pierre/diffs anchors each annotation to ONE code
+  // column — a 'deletions' annotation renders in the LEFT column, an
+  // 'additions' annotation in the RIGHT column (see getAnnotations()/
+  // pushLineWithAnnotation in DiffHunksRenderer). The column is a subgrid cell,
+  // so a card CANNOT span both columns via CSS; it fills the width of its own
+  // side. min-width:0 lets cards wrap inside that (roughly half-width) cell
+  // rather than force horizontal overflow. This matches the vendor's layout;
+  // most pair-review annotations are RIGHT/additions, so they land in the
+  // right column in split view.
   static ANNOTATION_CSS = `
     .pierre-annotation {
       padding: 8px 12px;
@@ -1993,7 +2128,12 @@ class PierreBridge {
       font-size: 13px;
       line-height: 1.5;
     }
-    /* Brief flash applied by PierreBridge.scrollToLine */
+    /* Let annotation cards wrap within a split column instead of overflowing. */
+    [data-line-annotation] { min-width: 0; }
+    [data-annotation-content] { min-width: 0; }
+    /* Brief flash applied by PierreBridge.scrollToLine. Generic [data-line]
+       match so it flashes whichever column (unified/deletions/additions) the
+       target line resolves to. */
     [data-line].pierre-line-highlight {
       animation: pierre-line-highlight-flash 3.5s ease-out forwards;
     }

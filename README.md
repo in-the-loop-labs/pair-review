@@ -142,7 +142,7 @@ pair-review <PR-number-or-URL>
 Either way, pair-review will:
 1. Check out the PR branch locally (using git worktrees)
 2. Open the web UI in your browser
-3. Show you a familiar diff view
+3. Show you a familiar diff view (unified or split/side-by-side, switchable from the diff options menu)
 
 > **Note:** The examples below use the shorter `pair-review` command. If you're using npx without a global install, substitute `npx @in-the-loop-labs/pair-review` instead.
 
