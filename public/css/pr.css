@@ -723,6 +723,14 @@
   --color-reasoning-hover: #7c3aed;
   --color-reasoning-hover-bg: rgba(124, 58, 237, 0.1);
   --color-reasoning-hover-border: rgba(124, 58, 237, 0.35);
+
+  /* CSS variables for @pierre/diffs annotations (injected via unsafeCSS) */
+  --color-canvas-default: #ffffff;
+  --color-canvas-subtle: #f6f8fa;
+  --color-fg-default: #1f2328;
+  --color-fg-muted: #656d76;
+  --color-accent: #0969da;
+  --color-neutral-muted: rgba(175,184,193,0.2);
 }
 
 [data-theme="dark"] {
@@ -827,6 +835,14 @@
   --color-reasoning-hover: #9333ea;
   --color-reasoning-hover-bg: rgba(147, 51, 234, 0.12);
   --color-reasoning-hover-border: rgba(147, 51, 234, 0.4);
+
+  /* CSS variables for @pierre/diffs annotations (injected via unsafeCSS) */
+  --color-canvas-default: #0d1117;
+  --color-canvas-subtle: #161b22;
+  --color-fg-default: #e6edf3;
+  --color-fg-muted: #8b949e;
+  --color-accent: #58a6ff;
+  --color-neutral-muted: rgba(110,118,129,0.4);
 }
 
 /* Update PR container styles */
@@ -1680,6 +1696,7 @@ body:not(.tour-active) .external-comment-row {
 
 /* Hide diff content when collapsed */
 .d2h-file-wrapper.collapsed .d2h-file-body,
+.d2h-file-wrapper.collapsed .pierre-diff-body,
 .d2h-file-wrapper.collapsed .d2h-diff-table {
   display: none;
 }
@@ -1898,6 +1915,8 @@ tr.newly-expanded .d2h-code-line-ctn {
   box-shadow: 0 0 20px var(--ai-glow, rgba(245, 158, 11, 0.2)); /* Amber glow shadow */
   /* Explicitly list transitions to exclude max-width - prevents flicker on sidebar toggle */
   transition: box-shadow 0.2s ease, opacity 0.2s ease, background 0.2s ease, border-color 0.2s ease;
+  /* Account for sticky toolbar + file header when scrolling to this element */
+  scroll-margin-top: calc(var(--toolbar-height, 53px) + 48px);
   animation: slideUp 0.3s ease;
   overflow: visible;
   word-break: break-word;
@@ -3972,10 +3991,14 @@ tr.line-range-start .d2h-code-line-ctn {
 /* User Comments Display */
 .user-comment-row {
   border: none;
+  /* Account for sticky toolbar + file header when scrolling to this element */
+  scroll-margin-top: calc(var(--toolbar-height, 53px) + 48px);
 }
 
 .user-comment-cell {
   padding: 4px 0;
+  /* Account for sticky toolbar + file header when scrolling to this element */
+  scroll-margin-top: calc(var(--toolbar-height, 53px) + 48px);
   background: transparent;
 }
 
@@ -4557,6 +4580,13 @@ tr.line-range-start .d2h-code-line-ctn {
 .external-comment-cell {
   padding: 4px 0;
   background: transparent;
+}
+
+/* Pierre (@pierre/diffs) path: the thread card is slotted as a light-DOM
+   `<div class="external-comment-row">` (no `<td class="external-comment-cell">`
+   wrapper), so apply the same vertical padding directly to the div variant. */
+div.external-comment-row {
+  padding: 4px 0;
 }
 
 /* Source-agnostic defaults. .source-<name> rules below override these
@@ -7607,6 +7637,16 @@ body.resizing * {
   display: table-row;
 }
 
+/* File-level external comments live in the always-visible file-comments-zone,
+   not on a diff line. They have no per-line indicator to reveal them (the
+   minimizer's line scan skips zone cards, and its file-header indicator counts
+   only .file-comment-card), so the blanket .external-comment-row hide above
+   must not apply to cards inside a zone — keep them visible when minimized.
+   Higher specificity (three classes) wins over the two-class hide rule. */
+.comments-minimized .file-comments-zone .external-comment-row {
+  display: block;
+}
+
 /* When minimize mode is active, hide file-level comment cards */
 .comments-minimized .file-comment-card {
   display: none;
@@ -9731,7 +9771,8 @@ body.resizing * {
 
 /* Conditional styling - only show background/border when zone has actual content */
 .file-comments-zone:has(.file-comment-card),
-.file-comments-zone:has(.file-comment-form) {
+.file-comments-zone:has(.file-comment-form),
+.file-comments-zone:has(.external-comment-row) {
   background: var(--file-comment-bg);
   border-bottom: 1px solid var(--file-comment-border);
 }
@@ -9745,7 +9786,8 @@ body.resizing * {
 
 /* Only add padding when container has visible content */
 .file-comments-container:has(.file-comment-card),
-.file-comments-container:has(.file-comment-form) {
+.file-comments-container:has(.file-comment-form),
+.file-comments-container:has(.external-comment-row) {
   padding: 12px 16px;
 }
 
@@ -11924,39 +11966,6 @@ body.resizing * {
   color: var(--color-danger, #cf222e);
 }
 
-/* Context chunk header (range label + per-chunk dismiss) */
-.context-chunk-header td {
-  padding: 4px 12px;
-  font-size: 11px;
-  color: var(--color-text-secondary);
-  border-top: 1px dashed var(--color-border-secondary, #d0d7de);
-}
-
-.context-range-label {
-  font-family: var(--font-mono, 'JetBrains Mono', monospace);
-}
-
-.context-chunk-dismiss {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border: none;
-  background: transparent;
-  color: var(--color-text-tertiary);
-  cursor: pointer;
-  font-size: 14px;
-  margin-left: 8px;
-  border-radius: 3px;
-  vertical-align: middle;
-}
-
-.context-chunk-dismiss:hover {
-  background: var(--color-bg-tertiary);
-  color: var(--color-danger, #cf222e);
-}
-
 /* Separator between non-contiguous context chunks */
 .context-chunk-separator-row {
   height: 8px;
@@ -11984,10 +11993,6 @@ body.resizing * {
 }
 
 [data-theme="dark"] .context-file-dismiss:hover {
-  color: var(--color-danger, #f85149);
-}
-
-[data-theme="dark"] .context-chunk-dismiss:hover {
   color: var(--color-danger, #f85149);
 }
 
@@ -12019,7 +12024,8 @@ body.resizing * {
 [data-chat="disabled"] .external-comment-chat-btn,
 [data-chat="disabled"] .analysis-history-chat-btn,
 [data-chat="disabled"] .chat-line-btn,
-[data-chat="disabled"] .btn-chat-from-comment {
+[data-chat="disabled"] .btn-chat-from-comment,
+[data-chat="disabled"] .pierre-chat-btn {
   display: none !important;
 }
 
@@ -12034,7 +12040,8 @@ body.resizing * {
 [data-chat="unavailable"] .external-comment-chat-btn,
 [data-chat="unavailable"] .analysis-history-chat-btn,
 [data-chat="unavailable"] .chat-line-btn,
-[data-chat="unavailable"] .btn-chat-from-comment {
+[data-chat="unavailable"] .btn-chat-from-comment,
+[data-chat="unavailable"] .pierre-chat-btn {
   display: none !important;
 }
 
@@ -13548,4 +13555,97 @@ body.tour-active .d2h-file-header {
   50% {
     box-shadow: 0 0 0 4px rgba(187, 128, 9, 0.40);
   }
+}
+
+/* ============================================================
+   @pierre/diffs integration
+   ============================================================ */
+
+/* @pierre/diffs container */
+.pierre-diff-body {
+  overflow-x: auto;
+  border: 1px solid var(--color-border-default);
+  border-top: none;
+  border-radius: 0 0 6px 6px;
+}
+
+/* Custom elements default to display:inline — force block layout.
+   text-align: start guards against inherited centering (text-align crosses
+   the shadow boundary; the vendor styles never set it on code lines). */
+diffs-container {
+  display: block;
+  text-align: start;
+  --diffs-font-size: 12px;
+  --diffs-line-height: 1.45;
+}
+
+/* Dark-theme highlight: reduced opacity to match legacy chat-line-highlight-dark */
+[data-theme="dark"] diffs-container {
+  --pierre-highlight-start: 0.15;
+  --pierre-highlight-mid: 0.06;
+}
+
+/* Binary file placeholder inside @pierre/diffs */
+.pierre-binary-file {
+  padding: 16px;
+  text-align: center;
+  color: var(--color-fg-muted);
+  font-style: italic;
+}
+
+/* @pierre/diffs annotation styles (light DOM — slotted into shadow DOM)
+   Suggestions, comments, and comment forms all reuse the legacy classes
+   (.ai-suggestion, .user-comment, .user-comment-form, .comment-textarea, etc.)
+   so all existing CSS applies. No custom form styles needed. */
+
+/* Dual gutter buttons (chat + comment) inside @pierre/diffs */
+.pierre-gutter-buttons {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  position: absolute;
+  right: -12px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 20;
+  pointer-events: auto;
+}
+
+.pierre-gutter-btn {
+  width: 22px;
+  height: 22px;
+  background: linear-gradient(180deg, #0969da 0%, #0860ca 100%);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: opacity 0.1s ease, transform 0.1s ease, box-shadow 0.1s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  pointer-events: auto;
+}
+
+.pierre-gutter-btn:hover {
+  background: linear-gradient(180deg, #0860ca 0%, #0757b8 100%);
+  transform: scale(1.08);
+  box-shadow: 0 2px 6px rgba(9, 105, 218, 0.35), 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.pierre-gutter-btn:active {
+  transform: scale(0.96);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+.pierre-comment-btn {
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 1;
+}
+
+.pierre-chat-btn svg {
+  width: 12px;
+  height: 12px;
 }

@@ -679,6 +679,372 @@ describe('ExternalCommentManager outdated comment ensureLinesVisible fallback', 
   });
 });
 
+// =======================================================================
+// Pierre (@pierre/diffs) rendering path
+//
+// On the pierre-diffs branch, normal diff files render into a shadow-DOM
+// container with NO light-DOM <tr> rows, so external threads mount as
+// 'external-comment' annotations via PierreBridge instead of injected
+// table rows. These tests stub a minimal bridge (the real bridge needs the
+// @pierre/diffs vendor bundle + a live worker pool) that mirrors the two
+// behaviors the manager depends on: it invokes the registered renderer and
+// slots the returned <div> into the file's light-DOM container, and it
+// tracks annotations so removeAnnotationsByType un-slots them.
+// =======================================================================
+
+/**
+ * Build a fake PierreBridge over `files`, plus the `.d2h-file-wrapper` +
+ * light-DOM container each file's annotations slot into. `slots: false`
+ * makes addAnnotation a no-op reslot (simulating an anchor line that never
+ * rendered) so the manager's file-level fallback path can be exercised.
+ */
+function makePierreBridge({ files = ['src/app.js'], slots = true } = {}) {
+  const renderers = new Map();
+  const annotationsByFile = new Map();
+  const fileMap = new Map();
+
+  const reslot = (file) => {
+    if (!slots) return;
+    const { container } = fileMap.get(file);
+    container.querySelectorAll('.external-comment-row').forEach((r) => r.remove());
+    for (const ann of annotationsByFile.get(file)) {
+      const fn = renderers.get(ann.type);
+      if (!fn) continue;
+      const el = fn(ann.data, ann.id, file);
+      if (el) container.appendChild(el);
+    }
+  };
+
+  for (const f of files) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'd2h-file-wrapper';
+    wrapper.dataset.fileName = f;
+    const container = document.createElement('div');
+    container.className = 'pierre-diff-body';
+    wrapper.appendChild(container);
+    document.body.appendChild(wrapper);
+    annotationsByFile.set(f, []);
+    fileMap.set(f, { container });
+  }
+
+  return {
+    files: fileMap,
+    registerAnnotationRenderer: vi.fn((type, fn) => renderers.set(type, fn)),
+    addAnnotation: vi.fn((file, ann) => {
+      annotationsByFile.get(file).push(ann);
+      reslot(file);
+    }),
+    removeAnnotation: vi.fn((file, id) => {
+      annotationsByFile.set(file, annotationsByFile.get(file).filter((a) => a.id !== id));
+      reslot(file);
+    }),
+    removeAnnotationsByType: vi.fn((file, type) => {
+      annotationsByFile.set(file, annotationsByFile.get(file).filter((a) => a.type !== type));
+      reslot(file);
+    }),
+    getAnnotations: vi.fn((file, type) =>
+      annotationsByFile.get(file).filter((a) => !type || a.type === type)),
+  };
+}
+
+describe('ExternalCommentManager pierre annotation path', async () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    delete window.prManager;
+  });
+  afterEach(() => {
+    document.body.innerHTML = '';
+    delete window.prManager;
+    vi.restoreAllMocks();
+  });
+
+  it('mounts a thread as an external-comment annotation and slots a <div> row', async () => {
+    const bridge = makePierreBridge({ files: ['src/app.js'] });
+    window.prManager = { pierreBridge: bridge, ensureLinesVisible: vi.fn(async () => {}) };
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [makeComment({ id: 7, body: 'pierre body' })]);
+    await mgr.render();
+
+    // Legacy <tr> path was NOT taken — the anchor is a pierre file.
+    expect(bridge.addAnnotation).toHaveBeenCalledTimes(1);
+    const [file, ann] = bridge.addAnnotation.mock.calls[0];
+    expect(file).toBe('src/app.js');
+    expect(ann.type).toBe('external-comment');
+    expect(ann.side).toBe('RIGHT');
+    expect(ann.lineNumber).toBe(10);
+    expect(ann.data.id).toBe(7);
+
+    // The slotted element is a <div> (not a <tr>) carrying the shared class
+    // + data attributes, inside the file's light-DOM container.
+    const row = document.querySelector('.external-comment-row');
+    expect(row).not.toBeNull();
+    expect(row.tagName).toBe('DIV');
+    expect(row.dataset.threadId).toBe('7');
+    expect(row.dataset.source).toBe('github');
+    expect(row.querySelectorAll('.external-comment').length).toBe(1);
+    expect(row.querySelector('.external-comment-body').textContent).toBe('pierre body');
+  });
+
+  it('expands collapsed gaps (ensureLinesVisible) BEFORE adding the annotation', async () => {
+    const bridge = makePierreBridge({ files: ['src/app.js'] });
+    const order = [];
+    const ensureLinesVisible = vi.fn(async () => { order.push('ensure'); });
+    bridge.addAnnotation.mockImplementation(() => { order.push('add'); });
+    window.prManager = { pierreBridge: bridge, ensureLinesVisible };
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [makeComment({ id: 1 })]);
+    await mgr.render();
+
+    expect(ensureLinesVisible).toHaveBeenCalledWith([
+      { file: 'src/app.js', line_start: 10, line_end: 10, side: 'RIGHT' },
+    ]);
+    expect(order).toEqual(['ensure', 'add']);
+  });
+
+  it('registers the external-comment renderer exactly once across renders', async () => {
+    const bridge = makePierreBridge({ files: ['src/app.js'] });
+    window.prManager = { pierreBridge: bridge, ensureLinesVisible: vi.fn(async () => {}) };
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [makeComment({ id: 1 })]);
+    await mgr.render();
+    await mgr.render();
+
+    expect(bridge.registerAnnotationRenderer).toHaveBeenCalledTimes(1);
+    expect(bridge.registerAnnotationRenderer.mock.calls[0][0]).toBe('external-comment');
+  });
+
+  it('clear() drops pierre annotations via removeAnnotationsByType (no direct DOM removal leak)', async () => {
+    const bridge = makePierreBridge({ files: ['src/app.js'] });
+    window.prManager = { pierreBridge: bridge, ensureLinesVisible: vi.fn(async () => {}) };
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [makeComment({ id: 1 })]);
+    await mgr.render();
+    expect(document.querySelectorAll('.external-comment-row').length).toBe(1);
+
+    mgr.clear();
+    expect(bridge.removeAnnotationsByType).toHaveBeenCalledWith('src/app.js', 'external-comment');
+    // Un-slotted by the bridge's rerender — nothing left in the DOM.
+    expect(document.querySelectorAll('.external-comment-row').length).toBe(0);
+  });
+
+  it('re-render replaces rather than duplicates (clear + re-add yields one row)', async () => {
+    const bridge = makePierreBridge({ files: ['src/app.js'] });
+    window.prManager = { pierreBridge: bridge, ensureLinesVisible: vi.fn(async () => {}) };
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [makeComment({ id: 1 })]);
+    await mgr.render();
+    await mgr.render();
+
+    expect(document.querySelectorAll('.external-comment-row').length).toBe(1);
+  });
+
+  it('falls back to a file-level div when the annotation never slots', async () => {
+    // slots:false → addAnnotation stores the annotation but never renders a
+    // row, simulating an anchor line absent from the diff. The manager should
+    // roll the annotation back and append a file-level fallback card.
+    const bridge = makePierreBridge({ files: ['src/app.js'], slots: false });
+    window.prManager = { pierreBridge: bridge, ensureLinesVisible: vi.fn(async () => {}) };
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [makeComment({ id: 3 })]);
+    await mgr.render();
+
+    expect(bridge.removeAnnotation).toHaveBeenCalledTimes(1);
+    const wrapper = document.querySelector('.d2h-file-wrapper[data-file-name="src/app.js"]');
+    const fallback = wrapper.querySelector('.external-comment-row.external-comment-row--file-fallback');
+    expect(fallback).not.toBeNull();
+    expect(fallback.dataset.threadId).toBe('3');
+  });
+
+  it('routes to the legacy <tr> path for files NOT rendered by pierre', async () => {
+    // Bridge exists but only knows about a different file; the thread's file
+    // is legacy-rendered, so it must take the <tr> injection path.
+    const bridge = makePierreBridge({ files: ['other/file.js'] });
+    window.prManager = { pierreBridge: bridge, ensureLinesVisible: vi.fn(async () => {}) };
+    const { rowsByKey } = buildDiffTable({ file: 'src/app.js', lines: [{ line: 10, side: 'RIGHT' }] });
+    const target = rowsByKey.get('src/app.js:10:RIGHT');
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [makeComment({ id: 1, file: 'src/app.js' })]);
+    await mgr.render();
+
+    expect(bridge.addAnnotation).not.toHaveBeenCalled();
+    const row = document.querySelector('.external-comment-row');
+    expect(row.tagName).toBe('TR');
+    expect(target.nextSibling).toBe(row);
+  });
+});
+
+// =======================================================================
+// File-level threads (GitHub subject_type='file')
+//
+// File-level comments have no line anchor. They render into the per-file
+// `.file-comments-zone` above the diff (shared light DOM for both engines),
+// NOT as a line-1 annotation. Unanchorable line threads (outdated / dropped
+// line) fall back into the SAME zone when one exists.
+// =======================================================================
+describe('ExternalCommentManager file-level threads', async () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    delete window.prManager;
+  });
+  afterEach(() => {
+    document.body.innerHTML = '';
+    delete window.prManager;
+    vi.restoreAllMocks();
+  });
+
+  // Mirror FileCommentManager.createFileCommentsZone: a per-file zone with an
+  // inner container, inserted at the top of the file wrapper.
+  function addZone(file = 'src/app.js') {
+    const wrapper = document.querySelector(`.d2h-file-wrapper[data-file-name="${file}"]`);
+    const zone = document.createElement('div');
+    zone.className = 'file-comments-zone';
+    zone.dataset.fileName = file;
+    const container = document.createElement('div');
+    container.className = 'file-comments-container';
+    zone.appendChild(container);
+    wrapper.insertBefore(zone, wrapper.firstChild);
+    return { zone, container };
+  }
+
+  function fileLevelComment(overrides = {}) {
+    return makeComment({
+      is_file_level: 1,
+      line_start: null,
+      line_end: null,
+      diff_position: null,
+      original_line_start: null,
+      original_line_end: null,
+      ...overrides,
+    });
+  }
+
+  it('renders a file-level thread into the zone, not as a diff-line row', async () => {
+    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    const { container } = addZone('src/app.js');
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [fileLevelComment({ id: 8, body: 'whole file comment' })]);
+    await mgr.render();
+
+    const rows = document.querySelectorAll('.external-comment-row');
+    expect(rows.length).toBe(1);
+    const card = rows[0];
+    expect(card.tagName).toBe('DIV');
+    expect(container.contains(card)).toBe(true);
+    expect(card.classList.contains('external-comment-row--file-level')).toBe(true);
+    expect(card.dataset.threadId).toBe('8');
+    expect(card.dataset.source).toBe('github');
+    expect(card.querySelector('.external-comment-body').textContent).toBe('whole file comment');
+
+    // The diff line must NOT have gained a sibling comment row.
+    const diffRow = document.querySelector('tr[data-line-number="10"]');
+    expect(diffRow.nextSibling).toBeNull();
+  });
+
+  it('renders a file-level thread with replies as one zone card', async () => {
+    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    const { container } = addZone('src/app.js');
+    const root = fileLevelComment({
+      id: 1,
+      body: 'root',
+      replies: [fileLevelComment({ id: 2, body: 'reply', parent_id: 1, in_reply_to_id: 'gh-1' })],
+    });
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [root]);
+    await mgr.render();
+
+    const cards = container.querySelectorAll('.external-comment-row');
+    expect(cards.length).toBe(1);
+    expect(cards[0].querySelectorAll('.external-comment').length).toBe(2);
+  });
+
+  it('routes file-level threads to the zone even when the file is pierre-rendered (no bridge)', async () => {
+    const bridge = makePierreBridge({ files: ['src/app.js'] });
+    window.prManager = { pierreBridge: bridge, ensureLinesVisible: vi.fn(async () => {}) };
+    const { container } = addZone('src/app.js');
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [fileLevelComment({ id: 5 })]);
+    await mgr.render();
+
+    // File-level never mounts as an annotation — straight to the light-DOM zone.
+    expect(bridge.addAnnotation).not.toHaveBeenCalled();
+    expect(container.querySelector('.external-comment-row--file-level')).not.toBeNull();
+  });
+
+  it('resolves the zone via prManager.fileCommentManager.findZoneForFile when present', async () => {
+    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    const { zone, container } = addZone('src/app.js');
+    const findZoneForFile = vi.fn(() => zone);
+    window.prManager = { fileCommentManager: { findZoneForFile } };
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [fileLevelComment({ id: 8 })]);
+    await mgr.render();
+
+    expect(findZoneForFile).toHaveBeenCalledWith('src/app.js');
+    expect(container.querySelector('.external-comment-row--file-level')).not.toBeNull();
+  });
+
+  it('unanchorable line thread falls back into the zone (not a faked line-1 row)', async () => {
+    buildDiffTable({ lines: [{ line: 999, side: 'RIGHT' }] });
+    const { container } = addZone('src/app.js');
+    window.prManager = { ensureLinesVisible: vi.fn(async () => {}) };
+
+    const outdated = makeComment({
+      id: 77,
+      is_outdated: 1,
+      line_start: null,
+      line_end: null,
+      original_line_start: 20,
+      original_line_end: 20,
+    });
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [outdated]);
+    await mgr.render();
+
+    const card = container.querySelector('.external-comment-row--file-fallback');
+    expect(card).not.toBeNull();
+    expect(card.dataset.threadId).toBe('77');
+    // It landed in the zone, so the outdated badge is preserved.
+    expect(card.querySelector('.external-comment-outdated-badge')).not.toBeNull();
+  });
+
+  it('clear() removes file-level zone cards (shared .external-comment-row class)', async () => {
+    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    addZone('src/app.js');
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [fileLevelComment({ id: 8 })]);
+    await mgr.render();
+    expect(document.querySelectorAll('.external-comment-row').length).toBe(1);
+
+    mgr.clear();
+    expect(document.querySelectorAll('.external-comment-row').length).toBe(0);
+  });
+
+  it('last-resort wrapper append when the zone is missing', async () => {
+    // No zone in the wrapper — a file-level thread still renders (discoverable),
+    // appended to the wrapper rather than dropped.
+    const { wrapper } = buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [fileLevelComment({ id: 8 })]);
+    await mgr.render();
+
+    const card = wrapper.querySelector('.external-comment-row--file-level');
+    expect(card).not.toBeNull();
+  });
+});
+
 describe('ExternalCommentManager URL safety (isSafeUrl)', async () => {
   beforeEach(() => {
     document.body.innerHTML = '';
@@ -938,6 +1304,20 @@ describe('ExternalCommentManager._resolveAnchor fallback (forward-compat)', asyn
     const mgr = makeManager();
     const a = mgr._resolveAnchor({ file: 'a.js', line_end: 5 });
     expect(a.side).toBe('RIGHT');
+  });
+
+  it('file-level comment returns a fileLevel anchor (no line/side), even with leftover line:1', () => {
+    // GitHub reports line:1 for file-level comments; is_file_level must win so
+    // the row routes to the zone instead of anchoring at line 1.
+    const mgr = makeManager();
+    const a = mgr._resolveAnchor({ file: 'a.js', is_file_level: 1, side: 'RIGHT', line_end: 1, original_line_end: 1 });
+    expect(a).toEqual({ file: 'a.js', fileLevel: true });
+  });
+
+  it('file-level accepts boolean true as well as 1', () => {
+    const mgr = makeManager();
+    const a = mgr._resolveAnchor({ file: 'a.js', is_file_level: true });
+    expect(a).toEqual({ file: 'a.js', fileLevel: true });
   });
 });
 

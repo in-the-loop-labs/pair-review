@@ -281,6 +281,7 @@ describe('github-adapter', () => {
         diff_position: 5,
         commit_sha: 'abc123',
         is_outdated: 0,
+        is_file_level: 0,
         original_line_start: 17,
         original_line_end: 17,
         original_commit_sha: 'def456',
@@ -590,6 +591,79 @@ describe('github-adapter', () => {
       expect(mapped.is_outdated).toBe(0);
       expect(mapped.line_end).toBe(41);
       expect(mapped.diff_position).toBe(7);
+    });
+  });
+
+  // --- File-level mapComment (subject_type='file') ---
+  describe('mapComment (file-level)', () => {
+    function fileRow(overrides = {}) {
+      return {
+        id: 500,
+        in_reply_to_id: null,
+        html_url: 'https://github.com/octocat/hello-world/pull/42#discussion_r500',
+        user: { login: 'octocat', html_url: 'https://github.com/octocat' },
+        path: 'src/file.js',
+        subject_type: 'file',
+        side: 'RIGHT',
+        // GitHub still reports these for file-level comments even though they
+        // are meaningless — the adapter must ignore them.
+        start_line: null,
+        line: 1,
+        position: 1,
+        commit_id: 'abc123',
+        original_start_line: null,
+        original_line: 1,
+        original_commit_id: 'def456',
+        body: 'This whole file needs a rewrite.',
+        created_at: '2026-01-02T03:04:05Z',
+        ...overrides,
+      };
+    }
+
+    it('subject_type "file" → is_file_level 1, ALL line anchors nulled, is_outdated 0', () => {
+      const mapped = githubAdapter.mapComment(fileRow());
+
+      expect(mapped.is_file_level).toBe(1);
+      expect(mapped.line_start).toBeNull();
+      expect(mapped.line_end).toBeNull();
+      expect(mapped.diff_position).toBeNull();
+      expect(mapped.original_line_start).toBeNull();
+      expect(mapped.original_line_end).toBeNull();
+      // No line anchor exists to have gone stale — must NOT be flagged outdated
+      // via the position-null derivation.
+      expect(mapped.is_outdated).toBe(0);
+      // Identity/body preserved.
+      expect(mapped.external_id).toBe('500');
+      expect(mapped.file).toBe('src/file.js');
+      expect(mapped.body).toBe('This whole file needs a rewrite.');
+    });
+
+    it('file-level takes precedence over the alt-host branch', () => {
+      // subject_type='file' must win regardless of isAltHost — a file-level
+      // comment has no line on any host.
+      const mapped = githubAdapter.mapComment(fileRow({ line: 5, position: null }), { isAltHost: true });
+
+      expect(mapped.is_file_level).toBe(1);
+      expect(mapped.line_end).toBeNull();
+      expect(mapped.is_outdated).toBe(0);
+    });
+
+    it('absent subject_type: unchanged line-anchored behavior, is_file_level 0', () => {
+      // The common case (line comment) and alt hosts that omit subject_type
+      // must be untouched.
+      const mapped = githubAdapter.mapComment(fileRow({ subject_type: undefined, line: 1, position: 5 }));
+
+      expect(mapped.is_file_level).toBe(0);
+      expect(mapped.line_end).toBe(1);
+      expect(mapped.diff_position).toBe(5);
+    });
+
+    it('subject_type "line" is treated as line-anchored (is_file_level 0)', () => {
+      const mapped = githubAdapter.mapComment(fileRow({ subject_type: 'line', line: 12, position: 3, start_line: 10 }));
+
+      expect(mapped.is_file_level).toBe(0);
+      expect(mapped.line_start).toBe(10);
+      expect(mapped.line_end).toBe(12);
     });
   });
 });

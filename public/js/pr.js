@@ -57,6 +57,20 @@ class PRManager {
     return window.HunkParser?.AUTO_EXPAND_THRESHOLD || 6;
   }
 
+  static PIERRE_HIGHLIGHT_MAX_PATCH_CHARS = 300 * 1024;
+  static PIERRE_HIGHLIGHT_MAX_PATCH_LINES = 3000;
+  static PIERRE_HIGHLIGHT_TOTAL_CHARS = 900 * 1024;
+  static PIERRE_HIGHLIGHT_TOTAL_LINES = 18000;
+  static PIERRE_AUTO_RENDER_MAX_PATCH_CHARS = 500 * 1024;
+  static PIERRE_AUTO_RENDER_MAX_PATCH_LINES = 20000;
+  static PIERRE_UPGRADE_MAX_PATCH_CHARS = 120 * 1024;
+  static PIERRE_UPGRADE_MAX_PATCH_LINES = 3000;
+  static PIERRE_UPGRADE_MAX_CONTENT_CHARS = 400 * 1024;
+  static PIERRE_UPGRADE_MAX_CONTENT_LINES = 12000;
+  static PIERRE_UPGRADE_CONCURRENCY = 4;
+  static PIERRE_BACKGROUND_UPGRADE_DELAY_MS = 1000;
+  static PIERRE_POINTER_UPGRADE_DELAY_MS = 10000;
+
   // Logo icon - infinity loop rotated for "in-the-loop" branding
   static LOGO_ICON = `
     <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="24" height="24">
@@ -123,6 +137,12 @@ class PRManager {
     this.canonicalFileOrder = new Map();
     // Raw per-file patch text for chat context enrichment
     this.filePatches = new Map();
+    // Current rendered changed files keyed by path. Used to materialize
+    // deferred diffs and lazily fetch full-file metadata for line anchors.
+    this.changedFilesByPath = new Map();
+    this._fileContentsUpgradeState = null;
+    this._pierreContentUpgradePromises = new Map();
+    this._deferredDiffRenderPromises = new Map();
     // Analysis history manager - for switching between analysis runs
     this.analysisHistoryManager = null;
     // Currently selected analysis run ID (null = latest)
@@ -270,6 +290,68 @@ class PRManager {
     this.commentManager = new window.CommentManager(this);
     this.suggestionManager = new window.SuggestionManager(this);
     this.fileCommentManager = window.FileCommentManager ? new window.FileCommentManager(this) : null;
+
+    // Initialize PierreBridge for @pierre/diffs rendering
+    this.pierreBridge = window.PierreBridge ? new window.PierreBridge({
+      theme: this.currentTheme,
+      onCommentClick: (fileName, lineNumber, side, target) => {
+        // target.isRange is true when the user selected multiple lines
+        const diffPosition = this.pierreBridge.getDiffPosition(fileName, target.start, target.side);
+        if (target.isRange) {
+          this.showCommentForm(null, target.start, fileName, diffPosition, target.end, target.side);
+        } else {
+          this.showCommentForm(null, lineNumber, fileName, diffPosition, null, side);
+        }
+      },
+      onChatClick: (fileName, lineNumber, side, target) => {
+        if (!window.chatPanel) return;
+        window.chatPanel.open({
+          commentContext: {
+            type: 'line',
+            body: null,
+            file: fileName || '',
+            line_start: target.start,
+            line_end: target.end,
+            side: target.side || side || 'RIGHT',
+            source: 'user'
+          }
+        });
+      },
+      onHunkExpand: (fileName, hunkIndex, direction, lineCount) => {
+        // @pierre/diffs handles expansion natively
+      },
+      onCommentEdit: (comment) => {
+        if (this.commentManager) {
+          this.commentManager.editComment(comment.id);
+        }
+      },
+      onCommentDelete: (comment) => {
+        if (this.commentManager) {
+          this.commentManager.deleteComment(comment.id);
+        }
+      },
+      onSuggestionAdopt: (suggestion) => {
+        if (this.suggestionManager) {
+          this.suggestionManager.adoptSuggestion(suggestion.id);
+        }
+      },
+      onSuggestionDismiss: (suggestion) => {
+        if (this.suggestionManager) {
+          this.suggestionManager.dismissSuggestion(suggestion.id);
+        }
+      },
+      onCommentFormSubmit: (fileName, annotationId, data, body) => {
+        this._handleCommentFormSubmit(fileName, annotationId, data, body);
+      },
+      onCommentFormCancel: (fileName, annotationId, data) => {
+        this.pierreBridge.removeAnnotation(fileName, annotationId);
+      },
+      onSuggestionInsert: (textarea, button) => {
+        if (this.commentManager) {
+          this.commentManager.insertSuggestionBlock(textarea, button);
+        }
+      },
+    }) : null;
 
     // Line range selection state - delegate to lineTracker
     Object.defineProperty(this, 'rangeSelectionStart', {
@@ -1288,6 +1370,128 @@ class PRManager {
   }
 
   /**
+   * Compute per-hunk summary anchor positions for a Pierre-rendered file.
+   *
+   * Legacy rendering (`renderPatch`) captures the first `<tr>` of each hunk as
+   * the anchor. Pierre renders into a shadow DOM we don't own, so instead we
+   * derive each hunk's first rendered line from the patch text and let
+   * PierreBridge slot the summary card below it. Positions come purely from the
+   * patch — the canonical content hashes still come from the backend.
+   *
+   * Anchor rules (mirrors renderPatch's first-rendered-row):
+   *   - first line is an addition (`+`) or context (` `) → side 'RIGHT', at the
+   *     hunk's NEW start line (the line exists in the new file);
+   *   - first line is a deletion (`-`), e.g. a pure-deletion hunk → side
+   *     'LEFT', at the hunk's OLD start line.
+   *
+   * Fails closed on hash/hunk count drift (the same `?w=1` divergence
+   * renderPatch guards against): returns an empty map so summaries simply don't
+   * anchor rather than anchor to the wrong hunk.
+   *
+   * @param {string} patch - Unified diff patch text
+   * @param {string[]|null} hunkHashes - Canonical per-hunk hashes, parallel to
+   *   the blocks `parseDiffIntoBlocks` returns
+   * @returns {Map<string, {lineNumber: number, side: string}>}
+   */
+  _computePierreHunkAnchors(patch, hunkHashes) {
+    const anchors = new Map();
+    if (!patch || !Array.isArray(hunkHashes) || hunkHashes.length === 0) return anchors;
+    if (!window.HunkParser?.parseDiffIntoBlocks) return anchors;
+
+    const blocks = window.HunkParser.parseDiffIntoBlocks(patch);
+    // Fail closed on length drift — a misaligned hash would anchor the summary
+    // to the wrong hunk. Symmetric with renderPatch's guard.
+    if (hunkHashes.length !== blocks.length) {
+      if (!this._warnedHunkHashLengthMismatch) {
+        this._warnedHunkHashLengthMismatch = true;
+        console.warn(
+          `[HunkSummary] hunk_hashes length mismatch (pierre): ${hunkHashes.length} ` +
+          `canonical hashes, ${blocks.length} rendered blocks. Dropping hashes for this file.`
+        );
+      }
+      return anchors;
+    }
+
+    blocks.forEach((block, blockIndex) => {
+      const hash = hunkHashes[blockIndex];
+      if (!hash) return; // no canonical hash for this hunk → can't anchor
+      // First rendered line of the hunk (renderPatch skips undefined/null but
+      // treats '' as a blank context line).
+      const firstLine = block.lines.find(line => line || line === '');
+      if (firstLine == null) return; // empty hunk — nothing to anchor to
+      let side, lineNumber;
+      if (firstLine.startsWith('-')) {
+        side = 'LEFT';
+        lineNumber = block.oldStart;
+      } else {
+        // Addition or context — present on the NEW side.
+        side = 'RIGHT';
+        lineNumber = block.newStart;
+      }
+      anchors.set(hash, { lineNumber, side });
+    });
+
+    return anchors;
+  }
+
+  /**
+   * Wire a Pierre-rendered file's hunk anchors to their canonical content
+   * hashes, then mount any summary that already arrived for those hunks. The
+   * Pierre analogue of _registerHunkAnchorsForFile: it stores position-based
+   * anchor records (`{pierre, fileName, lineNumber, side}`) instead of `<tr>`
+   * rows, and mounts via PierreBridge annotations.
+   *
+   * Called once per file from renderFileDiff's Pierre branch (the file is in
+   * `pierreBridge.files` by then). Idempotent — re-running re-sets the same
+   * map entries and re-drains an already-empty pending queue.
+   * @param {Object} file - A changed_files entry with `.file`, `.patch`, `.hunk_hashes`
+   */
+  _registerPierreHunkAnchorsForFile(file) {
+    if (!file || !file.patch) return;
+    const fileName = file.file;
+    // Only meaningful for files actually Pierre-rendered — addAnnotation needs
+    // a live fileState, and legacy files use _registerHunkAnchorsForFile.
+    if (!this.pierreBridge?.files?.has(fileName)) return;
+
+    const positions = this._computePierreHunkAnchors(file.patch, file.hunk_hashes);
+    if (positions.size === 0) return;
+
+    let anchors = this._summaryAnchorsByHash.get(fileName);
+    if (!anchors) {
+      anchors = new Map();
+      this._summaryAnchorsByHash.set(fileName, anchors);
+    }
+    let bucket = this._summaryHashesByFile.get(fileName);
+    if (!bucket) {
+      bucket = new Set();
+      this._summaryHashesByFile.set(fileName, bucket);
+    }
+
+    const filesWithMounts = new Set();
+    for (const [hash, pos] of positions) {
+      // Scope by file so a hash shared across files can't cross-wire anchors,
+      // mirroring the legacy path.
+      anchors.set(hash, { pierre: true, fileName, lineNumber: pos.lineNumber, side: pos.side });
+      bucket.add(hash);
+
+      const pending = this._takePendingSummary(fileName, hash);
+      if (pending) {
+        const mounted = this._renderOneSummary(pending, fileName);
+        if (mounted) {
+          this._summariesGenerated = true;
+          this._summariesAvailable = true;
+          filesWithMounts.add(fileName);
+        }
+        // If it couldn't mount, _renderOneSummary re-queued it scoped to
+        // fileName for a later pass.
+      }
+    }
+
+    if (this._summariesGenerated) this._syncSummaryToolbarButton();
+    for (const filePath of filesWithMounts) this._refreshFileSummaryToggle(filePath);
+  }
+
+  /**
    * Load the review's hunk summaries from the server and apply them to the
    * anchors that exist so far (gated by `summaries.enabled` in `/api/config`).
    *
@@ -1562,13 +1766,34 @@ class PRManager {
     if (!summary.summary_text) return null; // trivial / opt-out — nothing to show
     const hash = summary.content_hash;
     const anchor = this._findSummaryAnchor(filePath, hash);
-    if (!anchor || !anchor.isConnected) {
-      // Anchor missing or detached (stale render) → defer; the next render
-      // pass that re-establishes the hash will drain this map.
+    if (!anchor) {
+      // Anchor not registered yet (lazy body / deferred render) → defer; the
+      // next render pass that re-establishes the hash will drain this map.
       this._queuePendingSummary(filePath, summary);
       return null;
     }
     if (!this.hunkSummaryRenderer) return null;
+
+    // Pierre-rendered files anchor by position and mount via a bridge
+    // annotation rather than a DOM `<tr>`. `anchor.pierre` distinguishes the
+    // two flavors of record populated by _registerPierreHunkAnchorsForFile
+    // (position object) vs _registerHunkAnchorsForFile (a `<tr>`).
+    if (anchor.pierre) {
+      // The file may have been destroyed/re-deferred since its anchor was
+      // registered; addAnnotation is a no-op without a live fileState, so
+      // requeue rather than silently drop.
+      if (!this.pierreBridge?.files?.has(anchor.fileName)) {
+        this._queuePendingSummary(filePath, summary);
+        return null;
+      }
+      return this.hunkSummaryRenderer.renderPierre(anchor.fileName, anchor, summary);
+    }
+
+    if (!anchor.isConnected) {
+      // Legacy DOM anchor detached (stale render) → defer.
+      this._queuePendingSummary(filePath, summary);
+      return null;
+    }
     return this.hunkSummaryRenderer.renderInline(anchor, summary);
   }
 
@@ -2509,6 +2734,9 @@ class PRManager {
         // Render diff using the existing renderDiff method
         this.renderDiff({ changed_files: sortedFiles });
 
+        // Progressively fetch full file contents for hunk expansion
+        this._upgradeFilesWithContents(sortedFiles);
+
       } else {
         const diffContainer = document.getElementById('diff-container');
         if (diffContainer) {
@@ -2600,10 +2828,14 @@ class PRManager {
     this.loadingState = loading;
     const container = document.getElementById('pr-container');
     if (container) {
+      // State flag only — must not be `loading`, which is the visual
+      // placeholder class (padding + centered text). The diff paints inside
+      // this container before loading finishes, so placeholder styles here
+      // cause a visible centered-then-left layout shift.
       if (loading) {
-        container.classList.add('loading');
+        container.classList.add('is-loading');
       } else {
-        container.classList.remove('loading');
+        container.classList.remove('is-loading');
       }
     }
   }
@@ -3303,10 +3535,313 @@ class PRManager {
   }
 
   /**
+   * Count logical lines without allocating a large split array.
+   * @param {string} text
+   * @returns {number}
+   */
+  _countLines(text) {
+    if (!text) return 0;
+    let lines = 1;
+    for (let i = 0; i < text.length; i++) {
+      if (text.charCodeAt(i) === 10) lines++;
+    }
+    return lines;
+  }
+
+  /**
+   * Return cached size metrics for a patch.
+   * @param {Object} file
+   * @returns {{chars: number, lines: number}}
+   */
+  _getPatchMetrics(file) {
+    if (!file) return { chars: 0, lines: 0 };
+    if (file._patchMetrics) return file._patchMetrics;
+    const patch = file.patch || '';
+    file._patchMetrics = {
+      chars: patch.length,
+      lines: this._countLines(patch),
+    };
+    return file._patchMetrics;
+  }
+
+  _createPierreRenderBudget() {
+    return {
+      remainingChars: PRManager.PIERRE_HIGHLIGHT_TOTAL_CHARS,
+      remainingLines: PRManager.PIERRE_HIGHLIGHT_TOTAL_LINES,
+    };
+  }
+
+  /**
+   * Decide how to render a file with @pierre/diffs.
+   *
+   * Normal-sized files get syntax highlighting. Larger files still use the
+   * Pierre layout, but are forced to plain text so worker highlighting cannot
+   * swamp the UI. Extremely large patches are deferred until the user opts in.
+   *
+   * @param {Object} file
+   * @param {Object} [options]
+   * @param {boolean} [options.forceRender] - Render even when above the automatic render budget
+   * @returns {{usePierre: boolean, forcePlainText: boolean, deferDiff: boolean}}
+   */
+  _getPierreRenderDecision(file, options = {}) {
+    if (!this.pierreBridge || this.pierreBridge._disabled || !file?.patch || file.binary) {
+      return { usePierre: false, forcePlainText: false, deferDiff: false };
+    }
+
+    const metrics = this._getPatchMetrics(file);
+    if (
+      !options.forceRender &&
+      (
+        metrics.chars > PRManager.PIERRE_AUTO_RENDER_MAX_PATCH_CHARS ||
+        metrics.lines > PRManager.PIERRE_AUTO_RENDER_MAX_PATCH_LINES
+      )
+    ) {
+      return { usePierre: false, forcePlainText: true, deferDiff: true };
+    }
+
+    const exceedsFileHighlightBudget =
+      metrics.chars > PRManager.PIERRE_HIGHLIGHT_MAX_PATCH_CHARS ||
+      metrics.lines > PRManager.PIERRE_HIGHLIGHT_MAX_PATCH_LINES;
+
+    let exceedsTotalHighlightBudget = false;
+    const budget = this._pierreRenderBudget;
+    if (!exceedsFileHighlightBudget && budget) {
+      if (metrics.chars > budget.remainingChars || metrics.lines > budget.remainingLines) {
+        exceedsTotalHighlightBudget = true;
+      } else {
+        budget.remainingChars -= metrics.chars;
+        budget.remainingLines -= metrics.lines;
+      }
+    }
+
+    const forcePlainText = !!options.forceRender || exceedsFileHighlightBudget || exceedsTotalHighlightBudget;
+    return { usePierre: true, forcePlainText, deferDiff: false };
+  }
+
+  _isPatchEligibleForContentUpgrade(file) {
+    const metrics = this._getPatchMetrics(file);
+    return (
+      metrics.chars <= PRManager.PIERRE_UPGRADE_MAX_PATCH_CHARS &&
+      metrics.lines <= PRManager.PIERRE_UPGRADE_MAX_PATCH_LINES
+    );
+  }
+
+  _isContentEligibleForPierreUpgrade(oldContents, newContents) {
+    const values = [oldContents, newContents].filter(v => v != null);
+    return values.every(value =>
+      value.length <= PRManager.PIERRE_UPGRADE_MAX_CONTENT_CHARS &&
+      this._countLines(value) <= PRManager.PIERRE_UPGRADE_MAX_CONTENT_LINES
+    );
+  }
+
+  _getPierreContentUpgradeFiles(files, options = {}) {
+    if (!this.pierreBridge?.files) return [];
+    const forceFiles = options.forceFiles || new Set();
+    return files.filter(f => {
+      if (!f.patch || f.binary || !this.pierreBridge.files.has(f.file)) return false;
+      return forceFiles.has(f.file) || this._isPatchEligibleForContentUpgrade(f);
+    });
+  }
+
+  _getChangedFile(filePath) {
+    return this.changedFilesByPath?.get(filePath) || null;
+  }
+
+  async _fetchAndUpgradePierreFileContents(file, signal, options = {}) {
+    if (signal?.aborted) return false;
+
+    const reviewId = this.currentPR?.id;
+    if (!reviewId || !file?.patch || file.binary) return false;
+    if (this.pierreBridge?.files?.get(file.file)?.baseMetadata) return true;
+
+    // Use diff header metadata (not insertion/deletion counts) to determine
+    // true file status. Only check before the first @@ hunk marker to avoid
+    // matching code content that happens to contain these strings. If the
+    // patch has no @@ marker (empty added/deleted files, mode-only changes)
+    // the whole patch is header.
+    const atIdx = file.patch.indexOf('@@');
+    const diffHeader = atIdx === -1 ? file.patch : file.patch.substring(0, atIdx);
+    const status = diffHeader.includes('new file mode') ? 'added'
+      : diffHeader.includes('deleted file mode') ? 'deleted'
+      : 'modified';
+    let url = `/api/reviews/${reviewId}/file-contents/${encodeURIComponent(file.file)}?status=${encodeURIComponent(status)}`;
+    if (file.renamedFrom) {
+      url += `&oldPath=${encodeURIComponent(file.renamedFrom)}`;
+    }
+
+    try {
+      const fetchOptions = signal ? { signal } : undefined;
+      const resp = await fetch(url, fetchOptions);
+      if (!resp.ok || signal?.aborted) return false;
+      const data = await resp.json();
+      if (data.tooLarge || data.binary || signal?.aborted) return false;
+      if (!this._isContentEligibleForPierreUpgrade(data.oldContents, data.newContents)) return false;
+
+      const oldFile = data.oldContents != null
+        ? { name: data.oldPath || file.renamedFrom || file.file, contents: data.oldContents }
+        : null;
+      const newFile = data.newContents != null
+        ? { name: file.file, contents: data.newContents }
+        : null;
+
+      if (!oldFile && !newFile) return false;
+      await this._yieldForDiffWork(signal);
+      if (signal?.aborted) return false;
+      if (options.waitForPointerIdle !== false) {
+        await this._waitForPierrePointerIdle(file.file, signal);
+      }
+      if (signal?.aborted) return false;
+      if (this.pierreBridge?.files?.get(file.file)?.baseMetadata) return true;
+      return this.pierreBridge.upgradeFileContents(file.file, oldFile, newFile);
+    } catch (err) {
+      if (err.name === 'AbortError') return false;
+      console.error(`Failed to fetch file contents for ${file.file}:`, err);
+      return false;
+    }
+  }
+
+  async _waitForPierrePointerIdle(filePath, signal) {
+    if (!this.pierreBridge?.isPointerOverFile?.(filePath)) return;
+
+    const start = Date.now();
+    while (
+      !signal?.aborted &&
+      this.pierreBridge?.isPointerOverFile?.(filePath) &&
+      Date.now() - start < PRManager.PIERRE_POINTER_UPGRADE_DELAY_MS
+    ) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
+
+  _getOrStartPierreContentUpgrade(file, signal, options = {}) {
+    if (!file?.file) return Promise.resolve(false);
+    if (!this._pierreContentUpgradePromises) {
+      this._pierreContentUpgradePromises = new Map();
+    }
+    // The immediate (user-driven) and background paths are keyed separately ON
+    // PURPOSE. Do NOT merge them into one key: sharing the background promise
+    // would make an immediate, user-driven upgrade inherit that promise's
+    // pointer-idle wait (_waitForPierrePointerIdle), stalling it behind idle
+    // throttling. The known cost of the split is a duplicate fetch + JSON parse
+    // when navigation races an in-flight background upgrade for the same file
+    // (cheap once metadata lands, thanks to the baseMetadata early-return). A
+    // future improvement could piggyback on the in-flight background fetch while
+    // still skipping the pointer-idle wait for the immediate path.
+    const cacheKey = options.waitForPointerIdle === false
+      ? `${file.file}\0immediate`
+      : file.file;
+    const existing = this._pierreContentUpgradePromises.get(cacheKey);
+    if (existing) return existing;
+
+    let promise;
+    promise = this._fetchAndUpgradePierreFileContents(file, signal, options)
+      .finally(() => {
+        if (this._pierreContentUpgradePromises.get(cacheKey) === promise) {
+          this._pierreContentUpgradePromises.delete(cacheKey);
+        }
+      });
+    this._pierreContentUpgradePromises.set(cacheKey, promise);
+    return promise;
+  }
+
+  async _ensurePierreContentUpgrade(filePath) {
+    const fileState = this.pierreBridge?.files?.get(filePath);
+    if (!fileState) return false;
+    if (fileState.baseMetadata) return true;
+
+    const file = this._getChangedFile(filePath);
+    if (!file?.patch || file.binary) return false;
+
+    this._prioritizePierreContentUpgrade(filePath);
+    await this._getOrStartPierreContentUpgrade(file, this._fileContentsAbort?.signal || null, {
+      waitForPointerIdle: false,
+    });
+    return !!this.pierreBridge?.files?.get(filePath)?.baseMetadata;
+  }
+
+  _yieldForDiffWork(signal) {
+    if (signal?.aborted) return Promise.resolve();
+    return new Promise(resolve => {
+      const done = () => resolve();
+      if (typeof window !== 'undefined' && window.requestIdleCallback) {
+        window.requestIdleCallback(done, { timeout: 200 });
+      } else {
+        setTimeout(done, 16);
+      }
+    });
+  }
+
+  _startFileContentUpgradeQueue(files, worker, signal) {
+    if (signal.aborted || this._fileContentsAbort?.signal !== signal) return;
+    const state = {
+      pending: [...files],
+      inFlight: new Set(),
+      completed: new Set(),
+      active: 0,
+      worker,
+      signal,
+    };
+    this._fileContentsUpgradeState = state;
+    this._drainFileContentUpgradeQueue(state);
+  }
+
+  _drainFileContentUpgradeQueue(state) {
+    if (!state || state !== this._fileContentsUpgradeState || state.signal.aborted) return;
+
+    const concurrency = Math.max(1, PRManager.PIERRE_UPGRADE_CONCURRENCY);
+    while (!state.signal.aborted && state.active < concurrency && state.pending.length > 0) {
+      const file = state.pending.shift();
+      if (!file || state.completed.has(file.file) || state.inFlight.has(file.file)) continue;
+
+      state.active++;
+      state.inFlight.add(file.file);
+      Promise.resolve()
+        .then(() => state.worker(file))
+        .catch(err => {
+          console.error(`Failed to upgrade file contents for ${file.file}:`, err);
+        })
+        .finally(async () => {
+          state.inFlight.delete(file.file);
+          state.completed.add(file.file);
+          state.active--;
+          await this._yieldForDiffWork(state.signal);
+          this._drainFileContentUpgradeQueue(state);
+        });
+    }
+
+    if (state.active === 0 && state.pending.length === 0 && this._fileContentsUpgradeState === state) {
+      this._fileContentsUpgradeState = null;
+    }
+  }
+
+  _prioritizePierreContentUpgrade(filePath) {
+    const state = this._fileContentsUpgradeState;
+    if (!state || state.signal.aborted || state.completed.has(filePath) || state.inFlight.has(filePath)) {
+      return false;
+    }
+
+    const index = state.pending.findIndex(file => file.file === filePath);
+    if (index === -1) return false;
+    if (index > 0) {
+      const [file] = state.pending.splice(index, 1);
+      state.pending.unshift(file);
+    }
+    this._drainFileContentUpgradeQueue(state);
+    return true;
+  }
+
+  /**
    * Render diff for the PR
    * @param {Object} pr - PR data with files
    */
   renderDiff(pr) {
+    // Abort any in-flight file content fetches from progressive loading
+    this._fileContentsAbort?.abort();
+    this._fileContentsAbort = null;
+    this._fileContentsUpgradeState = null;
+    this._pierreContentUpgradePromises = new Map();
+    this._deferredDiffRenderPromises = new Map();
+
     const diffContainer = document.getElementById('diff-container');
     if (!diffContainer) return;
 
@@ -3319,6 +3854,11 @@ class PRManager {
     // survive a re-render.)
     if (this._tourIsActive && this._tourIsActive()) {
       this._exitTour();
+    }
+
+    // Clean up existing @pierre/diffs instances before clearing the container
+    if (this.pierreBridge) {
+      this.pierreBridge.destroyAll();
     }
 
     diffContainer.innerHTML = '';
@@ -3358,57 +3898,256 @@ class PRManager {
 
     // Use changed_files array from API
     const files = pr.changed_files || pr.files || [];
+    this.changedFilesByPath = new Map(files.map(file => [file.file, file]));
+    this._pierreRenderBudget = this._createPierreRenderBudget();
 
-    // Collect generated files info before rendering
-    if (files.length > 0) {
-      files.forEach(file => {
-        if (file.generated) {
-          this.generatedFiles.set(file.file, {
-            insertions: file.insertions,
-            deletions: file.deletions
-          });
+    try {
+      // Collect generated files info before rendering
+      if (files.length > 0) {
+        files.forEach(file => {
+          if (file.generated) {
+            this.generatedFiles.set(file.file, {
+              insertions: file.insertions,
+              deletions: file.deletions
+            });
+          }
+        });
+      }
+
+      // Parse each file's diff
+      if (files.length > 0) {
+        files.forEach(file => {
+          const fileWrapper = this.renderFileDiff(file);
+          if (fileWrapper) {
+            diffContainer.appendChild(fileWrapper);
+          }
+        });
+
+        // NOTE: end-of-file gap validation runs per-file inside _renderFileBodyNow
+        // now (legacy bodies render lazily), not once globally here.
+
+        // Measure the now-rendered sticky file header so navigation can offset
+        // targets below it (scroll-margin-top in pr.css).
+        this._measureFileHeaderHeight();
+      } else {
+        diffContainer.innerHTML = '<div class="no-diff">No files changed</div>';
+      }
+
+      // Load context files after diff is rendered
+      this.contextFiles = [];
+      this.loadContextFiles();
+
+      // Fetch hunk summaries (Phase 5). Fire-and-forget — the diff is fully
+      // usable while summaries arrive asynchronously. Anchors are wired lazily
+      // as each file body renders (_registerHunkAnchorsForFile); this just loads
+      // the server's summary map and applies it to whatever has rendered so far.
+      if (this.hunkSummaryRenderer) {
+        this._fetchHunkSummaryMap().catch((err) => {
+          console.warn('[HunkSummary] summary fetch failed:', err);
+        });
+      }
+
+      // Probe tour endpoint after diff is rendered. `currentPR.id` is now
+      // set (init()/LocalManager populates it before calling renderDiff),
+      // so the toolbar button can reflect the right state.
+      if (this._toursEnabled === true) {
+        this._loadAndStashTour().catch(() => {});
+      }
+    } finally {
+      this._pierreRenderBudget = null;
+    }
+  }
+
+  /**
+   * Progressively fetch full file contents and upgrade Pierre-rendered files
+   * to enable hunk expansion. Eligible files flow through one bounded idle
+   * queue, and sidebar navigation can move a file to the front of the queue.
+   * @param {Array} files - The sorted changed_files array
+   */
+  _upgradeFilesWithContents(files) {
+    if (!this.pierreBridge || this.pierreBridge._disabled) return;
+
+    const reviewId = this.currentPR?.id;
+    if (!reviewId) return;
+
+    const controller = new AbortController();
+    this._fileContentsAbort = controller;
+    const signal = controller.signal;
+
+    const eligible = this._getPierreContentUpgradeFiles(files);
+    if (!eligible.length) return;
+
+    const scheduleUpgrade = window.requestIdleCallback || ((cb) => setTimeout(cb, 50));
+    setTimeout(() => scheduleUpgrade(async () => {
+      if (signal.aborted || this._fileContentsAbort?.signal !== signal) return;
+      this._startFileContentUpgradeQueue(
+        eligible,
+        (file) => this._getOrStartPierreContentUpgrade(file, signal),
+        signal
+      );
+    }), PRManager.PIERRE_BACKGROUND_UPGRADE_DELAY_MS);
+  }
+
+  async _reanchorInlineFeedbackAfterDeferredRender() {
+    try {
+      const includeDismissed = window.aiPanel?.showDismissedComments || false;
+      await this.loadUserComments(includeDismissed);
+      await this.loadAISuggestions(null, this.selectedRunId);
+    } catch (err) {
+      console.error('Failed to re-anchor inline feedback after deferred diff render:', err);
+    }
+  }
+
+  _formatDiffSize(bytes) {
+    if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    return `${Math.ceil(bytes / 1024)} KB`;
+  }
+
+  _renderLegacyFileDiffBody(file) {
+    const table = document.createElement('table');
+    table.className = 'd2h-diff-table';
+
+    const tbody = document.createElement('tbody');
+    if (file.patch) {
+      this.renderPatch(tbody, file.patch, file.file, file.hunk_hashes || null);
+    } else if (file.binary) {
+      const row = document.createElement('tr');
+      row.innerHTML = '<td colspan="2" class="binary-file">Binary file</td>';
+      tbody.appendChild(row);
+    }
+    table.appendChild(tbody);
+
+    const fileBody = document.createElement('div');
+    fileBody.className = 'd2h-file-body';
+    fileBody.appendChild(table);
+    return fileBody;
+  }
+
+  _createDeferredDiffPlaceholder(file, wrapper) {
+    const metrics = this._getPatchMetrics(file);
+    const placeholder = document.createElement('div');
+    placeholder.className = 'no-diff large-diff-placeholder';
+
+    const message = document.createElement('span');
+    message.textContent = `Large diff (${this._formatDiffSize(metrics.chars)}, ${metrics.lines.toLocaleString()} lines)`;
+
+    const loadButton = document.createElement('button');
+    loadButton.type = 'button';
+    loadButton.className = 'btn btn-sm btn-secondary large-diff-load-btn';
+    loadButton.textContent = 'Load diff';
+    loadButton.addEventListener('click', async () => {
+      loadButton.disabled = true;
+      loadButton.textContent = 'Loading...';
+      // Route through _materializeDeferredDiff so the manual click shares the
+      // _deferredDiffRenderPromises cache and de-dupes with the auto-materialize
+      // path (ensureLinesVisible/expandForSuggestion). Rendering directly here
+      // could race a concurrent auto-materialize and run two _renderDeferredDiff
+      // calls on the same file. Request reanchor:true because a manual click is
+      // NOT inside a loadUserComments/loadAISuggestions reanchor flow, so inline
+      // comments/suggestions must be re-anchored to the freshly rendered diff.
+      await this._materializeDeferredDiff(file.file, { reanchor: true });
+    });
+
+    placeholder.appendChild(message);
+    placeholder.appendChild(loadButton);
+    return placeholder;
+  }
+
+  async _materializeDeferredDiff(filePath, options = {}) {
+    // reanchor defaults to false to preserve the auto-materialize callers
+    // (ensureLinesVisible/expandForSuggestion), which perform reanchoring at a
+    // higher level. The manual "Load diff" click passes reanchor:true. Shared-
+    // cache dedup: whichever call populates _deferredDiffRenderPromises first
+    // wins its reanchor setting — acceptable, because if auto-materialize
+    // (reanchor:false) wins, its caller reanchors anyway.
+    const { reanchor = false } = options;
+    if (!filePath) return false;
+    if (this.pierreBridge?.files?.has(filePath)) return true;
+    if (!this._deferredDiffRenderPromises) {
+      this._deferredDiffRenderPromises = new Map();
+    }
+
+    const existing = this._deferredDiffRenderPromises.get(filePath);
+    if (existing) return existing;
+
+    const wrapper = this.findFileElement(filePath);
+    const placeholder = wrapper?.querySelector('.large-diff-placeholder');
+    const file = this._getChangedFile(filePath);
+    if (!wrapper || !placeholder || !file) return false;
+
+    let promise;
+    promise = (async () => {
+      const signal = this._fileContentsAbort?.signal || null;
+      await this._yieldForDiffWork(signal);
+      // If renderDiff() re-ran during the idle yield, the review was torn down and
+      // rebuilt: the placeholder/wrapper we captured are now detached from the
+      // document (renderDiff clears the container), and the abort signal is flipped.
+      // Bail in that case so we don't clobber the freshly rendered file state.
+      if (signal?.aborted || !wrapper.isConnected || !placeholder.isConnected) {
+        return false;
+      }
+      await this._renderDeferredDiff(file, wrapper, placeholder, { reanchor });
+      return true;
+    })().finally(() => {
+      if (this._deferredDiffRenderPromises.get(filePath) === promise) {
+        this._deferredDiffRenderPromises.delete(filePath);
+      }
+    });
+    this._deferredDiffRenderPromises.set(filePath, promise);
+    return promise;
+  }
+
+  async _renderDeferredDiff(file, wrapper, placeholder, options = {}) {
+    const { reanchor = true } = options;
+    const isCollapsed = wrapper.classList.contains('collapsed');
+    const pierreDecision = this._getPierreRenderDecision(file, { forceRender: true });
+
+    if (pierreDecision.usePierre) {
+      const diffBody = document.createElement('div');
+      diffBody.className = 'pierre-diff-body';
+      placeholder.replaceWith(diffBody);
+      try {
+        this.pierreBridge.renderFile(file.file, diffBody, file.patch, {
+          collapsed: isCollapsed,
+          forcePlainText: true,
+        });
+        // The file is only now in pierreBridge.files — wire its hunk-summary
+        // anchors so summaries mount on materialized large diffs too (the
+        // eager render path does this in renderFileDiff's Pierre branch).
+        this._registerPierreHunkAnchorsForFile(file);
+        if (reanchor) {
+          await this._reanchorInlineFeedbackAfterDeferredRender();
         }
-      });
+      } catch (err) {
+        console.error(`Failed to render large diff for ${file.file}:`, err);
+        const retryPlaceholder = this._createDeferredDiffPlaceholder(file, wrapper);
+        const message = retryPlaceholder.querySelector('span');
+        if (message) message.textContent = 'Failed to render large diff';
+        diffBody.replaceWith(retryPlaceholder);
+      }
+      return;
     }
 
-    // Parse each file's diff
-    if (files.length > 0) {
-      files.forEach(file => {
-        const fileWrapper = this.renderFileDiff(file);
-        if (fileWrapper) {
-          diffContainer.appendChild(fileWrapper);
-        }
-      });
-
-      // NOTE: end-of-file gap validation runs per-file inside _renderFileBodyNow
-      // now (bodies render lazily), not once globally here.
-
-      // Measure the now-rendered sticky file header so navigation can offset
-      // targets below it (scroll-margin-top in pr.css).
-      this._measureFileHeaderHeight();
-    } else {
-      diffContainer.innerHTML = '<div class="no-diff">No files changed</div>';
+    // Legacy fallback (bridge unavailable). Swap the pending-record buffer so
+    // this eager render's hunk anchors register for this file only, mirroring
+    // _renderFileBodyNow — and register only after the body is attached, so
+    // anchor rows are connected when queued summaries try to mount.
+    const prevPending = this._pendingHunkRecords;
+    this._pendingHunkRecords = [];
+    let legacyBody;
+    let hunkRecords;
+    try {
+      legacyBody = this._renderLegacyFileDiffBody(file);
+    } finally {
+      hunkRecords = this._pendingHunkRecords;
+      this._pendingHunkRecords = prevPending;
     }
-
-    // Load context files after diff is rendered
-    this.contextFiles = [];
-    this.loadContextFiles();
-
-    // Fetch hunk summaries (Phase 5). Fire-and-forget — the diff is fully
-    // usable while summaries arrive asynchronously. Anchors are wired lazily
-    // as each file body renders (_registerHunkAnchorsForFile); this just loads
-    // the server's summary map and applies it to whatever has rendered so far.
-    if (this.hunkSummaryRenderer) {
-      this._fetchHunkSummaryMap().catch((err) => {
-        console.warn('[HunkSummary] summary fetch failed:', err);
-      });
+    placeholder.replaceWith(legacyBody);
+    if (hunkRecords.length > 0) {
+      this._registerHunkAnchorsForFile(hunkRecords);
     }
-
-    // Probe tour endpoint after diff is rendered. `currentPR.id` is now
-    // set (init()/LocalManager populates it before calling renderDiff),
-    // so the toolbar button can reflect the right state.
-    if (this._toursEnabled === true) {
-      this._loadAndStashTour().catch(() => {});
+    if (reanchor) {
+      await this._reanchorInlineFeedbackAfterDeferredRender();
     }
   }
 
@@ -3545,10 +4284,40 @@ class PRManager {
       }
     }
 
-    // Create diff table with an EMPTY tbody. The rows are NOT rendered here —
-    // see the lazy-body machinery below. This is the core large-PR perf fix:
-    // building + syntax-highlighting every line of every (often collapsed)
-    // file up front froze the browser on big diffs.
+    const pierreDecision = this._getPierreRenderDecision(file);
+
+    if (pierreDecision.deferDiff) {
+      wrapper.appendChild(this._createDeferredDiffPlaceholder(file, wrapper));
+      return wrapper;
+    }
+
+    // Create container for @pierre/diffs rendering
+    if (pierreDecision.usePierre) {
+      const diffBody = document.createElement('div');
+      diffBody.className = 'pierre-diff-body';
+
+      if (file.patch) {
+        this.pierreBridge.renderFile(file.file, diffBody, file.patch, {
+          collapsed: isCollapsed,
+          forcePlainText: pierreDecision.forcePlainText,
+        });
+      } else if (file.binary) {
+        this.pierreBridge.renderBinaryFile(diffBody);
+      }
+
+      wrapper.appendChild(diffBody);
+      // Wire hunk-summary anchors now that the file is in pierreBridge.files —
+      // the Pierre analogue of _registerHunkAnchorsForFile (legacy bodies wire
+      // theirs lazily in _renderFileBodyNow).
+      this._registerPierreHunkAnchorsForFile(file);
+      return wrapper;
+    }
+
+    // Fallback: old table-based rendering (used when PierreBridge is not
+    // available). Created with an EMPTY tbody — the rows are NOT rendered
+    // here; see the lazy-body machinery below. This is the core large-PR
+    // perf fix: building + syntax-highlighting every line of every (often
+    // collapsed) file up front froze the browser on big diffs.
     const table = document.createElement('table');
     table.className = 'd2h-diff-table';
     const tbody = document.createElement('tbody');
@@ -4116,6 +4885,11 @@ class PRManager {
     if (header) {
       window.DiffRenderer.updateFileHeaderState(header, !wrapper.classList.contains('collapsed'));
     }
+
+    // Sync collapsed state with @pierre/diffs instance
+    if (this.pierreBridge && this.pierreBridge.files.has(filePath)) {
+      this.pierreBridge.setCollapsed(filePath, wrapper.classList.contains('collapsed'));
+    }
   }
 
   /**
@@ -4136,6 +4910,10 @@ class PRManager {
         if (header) {
           window.DiffRenderer.updateFileHeaderState(header, false);
         }
+        // Sync with @pierre/diffs
+        if (this.pierreBridge && this.pierreBridge.files.has(filePath)) {
+          this.pierreBridge.setCollapsed(filePath, true);
+        }
       }
     } else {
       this.viewedFiles.delete(filePath);
@@ -4148,6 +4926,10 @@ class PRManager {
         const header = wrapper.querySelector('.d2h-file-header');
         if (header) {
           window.DiffRenderer.updateFileHeaderState(header, true);
+        }
+        // Sync with @pierre/diffs
+        if (this.pierreBridge && this.pierreBridge.files.has(filePath)) {
+          this.pierreBridge.setCollapsed(filePath, false);
         }
       }
     }
@@ -4697,6 +5479,31 @@ class PRManager {
       await this.toggleGeneratedFile(file);
     }
 
+    await this._materializeDeferredDiff(file);
+
+    // For @pierre/diffs rendered files, use context ranges to reveal collapsed lines
+    if (this.pierreBridge && this.pierreBridge.files.has(file)) {
+      await this._ensurePierreContentUpgrade(file);
+      let rangeStart = lineStart;
+      let rangeEnd = lineEnd;
+
+      // addContextRanges expects NEW-file coordinates.
+      // LEFT-side suggestions use OLD-file numbers — convert first.
+      if (side === 'LEFT') {
+        const converted = this.pierreBridge.convertOldToNew(file, lineStart, lineEnd);
+        if (!converted) return false;
+        rangeStart = converted.startLine;
+        rangeEnd = converted.endLine;
+      }
+
+      const padding = 3;
+      const range = {
+        startLine: Math.max(1, rangeStart - padding),
+        endLine: rangeEnd + padding,
+      };
+      return this.pierreBridge.addContextRanges(file, [range]);
+    }
+
     // Find the gap section containing the target lines using the shared module
     // Pass the side parameter so findMatchingGap uses the correct coordinate system:
     // - 'RIGHT' = NEW coordinates (modified file, most common for AI suggestions)
@@ -4773,7 +5580,45 @@ class PRManager {
   async ensureLinesVisible(items) {
     for (const item of items) {
       const { file, line_start, line_end, side } = item;
+      if (!file || !line_start) continue;
       const resolvedSide = (side || 'right').toUpperCase();
+
+      await this._materializeDeferredDiff(file);
+
+      // @pierre/diffs files: use context ranges to reveal collapsed lines
+      if (this.pierreBridge && this.pierreBridge.files.has(file)) {
+        // Check the WHOLE range, not just line_start. Callers pass multi-line
+        // ranges (comments, suggestions, chat citations); if line_start is on
+        // screen but line_end is still inside a collapsed gap, we must still
+        // expand. Preserve the skip-when-fully-visible optimization: only expand
+        // when at least one endpoint is hidden.
+        const endLine = line_end || line_start;
+        const startVisible = this.pierreBridge.isLineVisible(file, line_start, resolvedSide);
+        const endVisible = this.pierreBridge.isLineVisible(file, endLine, resolvedSide);
+        if (!startVisible || !endVisible) {
+          await this._ensurePierreContentUpgrade(file);
+          let rangeStart = line_start;
+          let rangeEnd = line_end || line_start;
+
+          // addContextRanges expects NEW-file coordinates.
+          // LEFT-side items use OLD-file numbers — convert first.
+          if (resolvedSide === 'LEFT') {
+            const converted = this.pierreBridge.convertOldToNew(file, rangeStart, rangeEnd);
+            if (converted) {
+              rangeStart = converted.startLine;
+              rangeEnd = converted.endLine;
+            } else {
+              continue;
+            }
+          }
+
+          this.pierreBridge.addContextRanges(file, [{
+            startLine: rangeStart,
+            endLine: rangeEnd,
+          }]);
+        }
+        continue;
+      }
 
       const fileElement = this.findFileElement(file);
       if (!fileElement) continue;
@@ -4841,7 +5686,100 @@ class PRManager {
    * Comment form methods - delegate to CommentManager
    */
   showCommentForm(targetRow, lineNumber, fileName, diffPosition, endLineNumber, side = 'RIGHT') {
+    // Use PierreBridge annotation for files rendered by @pierre/diffs
+    if (this.pierreBridge && this.pierreBridge.files.has(fileName)) {
+      const formId = `form-${fileName}-${lineNumber}-${side}`;
+      this.pierreBridge.addAnnotation(fileName, {
+        lineNumber: endLineNumber || lineNumber,
+        side: side,
+        type: 'comment-form',
+        id: formId,
+        data: {
+          lineStart: lineNumber,
+          lineEnd: endLineNumber || lineNumber,
+          fileName: fileName,
+          diffPosition: diffPosition,
+          side: side,
+          showSuggestionBtn: true,
+        },
+      });
+      return;
+    }
+    // Fallback: old table-based comment form (context files)
     this.commentManager.showCommentForm(targetRow, lineNumber, fileName, diffPosition, endLineNumber, side);
+  }
+
+  /**
+   * Handle comment form submission from PierreBridge annotation.
+   * Saves the comment via API, removes the form annotation, and reloads comments.
+   * @param {string} fileName - File the comment belongs to
+   * @param {string} annotationId - PierreBridge annotation ID for the form
+   * @param {Object} data - Form data (lineStart, lineEnd, fileName, diffPosition, side)
+   * @param {string} body - Comment body text
+   */
+  async _handleCommentFormSubmit(fileName, annotationId, data, body) {
+    if (!body || !body.trim()) return;
+
+    // Custom submit flow (e.g. edit-and-adopt suggestion): let the caller
+    // decide how to save and how to re-render the result. The handler owns
+    // removing the form annotation.
+    if (typeof data.customSubmit === 'function') {
+      try {
+        await data.customSubmit(body.trim(), fileName, annotationId);
+      } catch (error) {
+        console.error('Error running custom comment form submit:', error);
+        alert(`Failed to save: ${error.message}`);
+      }
+      return;
+    }
+
+    try {
+      const commentData = {
+        file: data.fileName,
+        line_start: data.lineStart,
+        line_end: data.lineEnd,
+        body: body.trim(),
+        side: data.side || 'RIGHT',
+        diff_position: data.diffPosition,
+        // Anchor to the PR head commit so repositioning works if the PR is
+        // updated later. Parity with CommentManager.saveComment.
+        commit_sha: this.currentPR?.head_sha,
+      };
+
+      const response = await fetch(`/api/reviews/${this.currentPR.id}/comments`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Client-Id': this._clientId,
+        },
+        body: JSON.stringify(commentData),
+      });
+
+      if (response.ok) {
+        const result = await response.json().catch(() => ({}));
+        // Remove form annotation
+        this.pierreBridge.removeAnnotation(fileName, annotationId);
+        // Reload comments to show the new one
+        const includeDismissed = window.aiPanel?.showDismissedComments || false;
+        await this.loadUserComments(includeDismissed);
+
+        // Legacy-path side-effects: clear the dragged range, auto-expand in
+        // minimize mode, and notify the AI chat context. Parity with
+        // CommentManager.saveComment.
+        this.lineTracker?.clearRangeSelection();
+        if (result.commentId != null && this.commentMinimizer) {
+          const newRow = document.querySelector(
+            `[data-comment-id="${result.commentId}"]`
+          );
+          if (newRow) this.commentMinimizer.expandForElement(newRow);
+        }
+        window.chatPanel?.queueUserActionHint(
+          `[User Action: created comment on ${data.fileName} lines ${data.lineStart}-${data.lineEnd}]`
+        );
+      }
+    } catch (error) {
+      console.error('Error saving comment:', error);
+    }
   }
 
   hideCommentForm() {
@@ -5301,38 +6239,67 @@ class PRManager {
       // Clear existing comment rows before re-rendering
       document.querySelectorAll('.user-comment-row:not(.suggestion-edit-pending)').forEach(row => row.remove());
 
-      // Before rendering, ensure all comment target lines are visible
-      // (expand hidden hunks so the line rows exist in the DOM)
-      const lineItems = lineLevelComments.map(c => ({
-        file: c.file,
-        line_start: c.line_start,
-        line_end: c.line_start,
-        side: c.side || 'RIGHT'
-      }));
-      await this.ensureLinesVisible(lineItems);
+      // Clear existing PierreBridge comment annotations
+      if (this.pierreBridge) {
+        for (const [file] of this.pierreBridge.files) {
+          this.pierreBridge.removeAnnotationsByType(file, 'comment');
+        }
+      }
 
-      // Display line-level comments inline with diff (only active comments reach here)
+      // Ensure every comment's target line is reachable in the DOM before
+      // rendering. `ensureLinesVisible` handles both engines — for Pierre
+      // files it expands collapsed gaps via `addContextRanges` so the
+      // annotation row exists; for legacy files it expands hidden hunks.
+      // Without this, comments on lines outside the default hunks render
+      // nowhere on reload and "jump to comment" silently fails.
+      if (lineLevelComments.length > 0) {
+        await this.ensureLinesVisible(lineLevelComments.map(c => ({
+          file: c.file,
+          line_start: c.line_start,
+          line_end: c.line_end || c.line_start,
+          side: c.side || 'RIGHT',
+        })));
+      }
+
+      // Partition line-level comments by rendering engine
+      const pierreComments = [];
+      const legacyComments = [];
       lineLevelComments.forEach(comment => {
-        const fileElement = this.findFileElement(comment.file);
-        if (!fileElement) return;
-
-        // Use the comment's side to determine which coordinate system to search in
-        // LEFT side = OLD coordinates (deleted lines or context lines in OLD coords)
-        // RIGHT side = NEW coordinates (added lines or context lines in NEW coords)
-        const side = comment.side || 'RIGHT';
-
-        const lineRows = fileElement.querySelectorAll('tr');
-        for (const row of lineRows) {
-          // Pass side to getLineNumber() to get the correct coordinate system
-          // This allows context lines (which have BOTH old and new line numbers) to be found
-          // when the comment was placed on a LEFT-side line (old coordinate)
-          const lineNum = this.getLineNumber(row, side);
-          if (lineNum === comment.line_start) {
-            this.displayUserComment(comment, row);
-            break;
-          }
+        if (this.pierreBridge && this.pierreBridge.files.has(comment.file)) {
+          pierreComments.push(comment);
+        } else {
+          legacyComments.push(comment);
         }
       });
+
+      // Display comments via PierreBridge annotations
+      pierreComments.forEach(comment => {
+        const side = comment.side || 'RIGHT';
+        this.pierreBridge.addAnnotation(comment.file, {
+          lineNumber: comment.line_start,
+          side: side,
+          type: 'comment',
+          id: `comment-${comment.id}`,
+          data: comment,
+        });
+      });
+
+      if (legacyComments.length > 0) {
+        legacyComments.forEach(comment => {
+          const fileElement = this.findFileElement(comment.file);
+          if (!fileElement) return;
+
+          const side = comment.side || 'RIGHT';
+          const lineRows = fileElement.querySelectorAll('tr');
+          for (const row of lineRows) {
+            const lineNum = this.getLineNumber(row, side);
+            if (lineNum === comment.line_start) {
+              this.displayUserComment(comment, row);
+              break;
+            }
+          }
+        });
+      }
 
       // Load file-level comments into their zones (only active comments reach here)
       if (this.fileCommentManager && fileLevelComments.length > 0) {
@@ -5461,12 +6428,18 @@ class PRManager {
    * Collapse a suggestion div in the UI after adoption.
    * Handles adding collapsed class, updating text to 'Suggestion adopted',
    * updating the restore button, and setting hiddenForAdoption flag.
-   * @param {HTMLElement} suggestionRow - The suggestion row element
+   *
+   * With legacy rendering, `suggestionRow` is the `<tr>` containing the
+   * suggestion. With @pierre/diffs there is no `<tr>`, so callers pass null
+   * and this method falls back to a document-wide lookup by id.
+   *
+   * @param {HTMLElement|null} suggestionRow - The suggestion row element (legacy only)
    * @param {number|string} suggestionId - Suggestion ID
    */
   collapseSuggestionForAdoption(suggestionRow, suggestionId) {
-    if (!suggestionRow) return;
-    const targetDiv = suggestionRow.querySelector(`[data-suggestion-id="${suggestionId}"]`);
+    const targetDiv = suggestionRow
+      ? suggestionRow.querySelector(`[data-suggestion-id="${suggestionId}"]`)
+      : document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
     if (!targetDiv) return;
     targetDiv.classList.add('collapsed');
     const collapsedContent = targetDiv.querySelector('.collapsed-text');
@@ -5481,15 +6454,53 @@ class PRManager {
   }
 
   /**
+   * Render an adopted user comment in the appropriate rendering engine.
+   *
+   * For files rendered by @pierre/diffs, `suggestionRow` is null (suggestions
+   * are annotations, not table rows). Add the comment as a Pierre annotation
+   * so it slots into the shadow DOM alongside the collapsed suggestion.
+   *
+   * For legacy (table-based) rendering, delegate to the existing
+   * `displayUserComment(comment, suggestionRow)` which inserts a `<tr>`.
+   *
+   * @param {Object} comment - The newly-adopted comment
+   * @param {HTMLElement|null} suggestionRow - Legacy table row, or null for Pierre
+   * @private
+   */
+  async _renderAdoptedUserComment(comment, suggestionRow) {
+    if (this.pierreBridge && comment.file && this.pierreBridge.files.has(comment.file)) {
+      // Reveal the target line if it sits inside a collapsed gap — otherwise
+      // the annotation has no DOM row to attach to and never renders.
+      await this.ensureLinesVisible([{
+        file: comment.file,
+        line_start: comment.line_start,
+        line_end: comment.line_end || comment.line_start,
+        side: comment.side || 'RIGHT',
+      }]);
+      this.pierreBridge.addAnnotation(comment.file, {
+        lineNumber: comment.line_start,
+        side: comment.side || 'RIGHT',
+        type: 'comment',
+        id: `comment-${comment.id}`,
+        data: comment,
+      });
+      return;
+    }
+    // Legacy path: displayUserComment inserts a <tr> after suggestionRow
+    this.displayUserComment(comment, suggestionRow);
+  }
+
+  /**
    * Build a user comment object from adoption/edit response data.
    * Single source of truth for comment shape — used by both adopt-as-is
    * and edit-then-adopt flows.
    */
-  _buildCommentObject({ userCommentId, formattedBody, fileName, lineNumber, suggestionType, suggestionTitle, suggestionId, diffPosition, side }) {
+  _buildCommentObject({ userCommentId, formattedBody, fileName, lineNumber, lineEnd, suggestionType, suggestionTitle, suggestionId, diffPosition, side }) {
     return {
       id: userCommentId,
       file: fileName,
       line_start: parseInt(lineNumber),
+      line_end: lineEnd ? parseInt(lineEnd) : null,
       body: formattedBody,
       type: suggestionType,
       title: suggestionTitle,
@@ -5508,7 +6519,7 @@ class PRManager {
    */
   async _adoptAndBuildComment(suggestionId, suggestionDiv) {
     const { suggestionText, suggestionType, suggestionTitle } = this.extractSuggestionData(suggestionDiv);
-    const { suggestionRow, lineNumber, fileName, diffPosition, side, isFileLevel } = this.getFileAndLineInfo(suggestionDiv);
+    const { suggestionRow, lineNumber, lineEnd, fileName, diffPosition, side, isFileLevel } = this.getFileAndLineInfo(suggestionDiv);
 
     // File-level suggestions are handled by FileCommentManager; signal the caller
     if (isFileLevel) {
@@ -5533,7 +6544,7 @@ class PRManager {
     const newComment = this._buildCommentObject({
       userCommentId: adoptResult.userCommentId,
       formattedBody: adoptResult.formattedBody,
-      fileName, lineNumber, suggestionType, suggestionTitle,
+      fileName, lineNumber, lineEnd, suggestionType, suggestionTitle,
       suggestionId, diffPosition, side
     });
 
@@ -5610,6 +6621,58 @@ class PRManager {
         side
       };
 
+      // Pierre-rendered files: suggestions live as annotations (no <tr>),
+      // so `displaySuggestionEditForm` — which inserts a table row after
+      // `suggestionRow` — cannot run. Open the edit form as a comment-form
+      // annotation on the same line, pre-filled with the suggestion body,
+      // and wire a custom submit that runs the adopt-edited flow.
+      if (this.pierreBridge && this.pierreBridge.files.has(fileName)) {
+        const formId = `edit-suggestion-${suggestionId}`;
+        const onAdoptEdited = async (editedText, _fileName, annotationId) => {
+          const reviewId = this.currentPR?.id;
+          const editResponse = await fetch(`/api/reviews/${reviewId}/suggestions/${suggestionId}/edit`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'adopt_edited', editedText })
+          });
+          if (!editResponse.ok) throw new Error('Failed to adopt suggestion with edits');
+          const editResult = await editResponse.json();
+
+          // Collapse the suggestion annotation and render the new comment.
+          this.collapseSuggestionForAdoption(null, suggestionId);
+          const newComment = this._buildCommentObject({
+            userCommentId: editResult.userCommentId,
+            formattedBody: editResult.formattedBody,
+            fileName, lineNumber, lineEnd, suggestionType, suggestionTitle,
+            suggestionId, diffPosition, side
+          });
+
+          // Remove the edit form annotation and add the comment annotation.
+          this.pierreBridge.removeAnnotation(fileName, annotationId);
+          await this._renderAdoptedUserComment(newComment, null);
+          this._notifyAdoption(suggestionId, newComment);
+        };
+
+        this.pierreBridge.addAnnotation(fileName, {
+          lineNumber: lineEnd || lineNumber,
+          side: side || 'RIGHT',
+          type: 'comment-form',
+          id: formId,
+          data: {
+            headerTitle: 'Edit suggestion',
+            lineStart: lineNumber,
+            lineEnd: lineEnd || lineNumber,
+            fileName: fileName,
+            diffPosition: diffPosition,
+            side: side || 'RIGHT',
+            showSuggestionBtn: true,
+            initialValue: formattedBody || suggestionText,
+            customSubmit: onAdoptEdited,
+          },
+        });
+        return;
+      }
+
       this.commentManager.displaySuggestionEditForm(
         suggestion,
         suggestionRow,
@@ -5632,10 +6695,10 @@ class PRManager {
             const newComment = this._buildCommentObject({
               userCommentId: editResult.userCommentId,
               formattedBody: editResult.formattedBody,
-              fileName, lineNumber, suggestionType, suggestionTitle,
+              fileName, lineNumber, lineEnd, suggestionType, suggestionTitle,
               suggestionId, diffPosition, side
             });
-            this.displayUserComment(newComment, suggestionRow);
+            await this._renderAdoptedUserComment(newComment, suggestionRow);
             this._notifyAdoption(suggestionId, newComment);
             window.chatPanel?.queueUserActionHint(`[User Action: adopted suggestion ${suggestionId}]`);
           } catch (error) {
@@ -5681,7 +6744,7 @@ class PRManager {
         return;
       }
 
-      this.displayUserComment(result.newComment, result.suggestionRow);
+      await this._renderAdoptedUserComment(result.newComment, result.suggestionRow);
       this._notifyAdoption(suggestionId, result.newComment);
       window.chatPanel?.queueUserActionHint(`[User Action: adopted suggestion ${suggestionId}]`);
     } catch (error) {
@@ -6459,6 +7522,9 @@ class PRManager {
   }
 
   async scrollToFile(filePath) {
+    // Move this file to the front of the Pierre content-upgrade queue so
+    // hunk expansion becomes available soonest for the file in view.
+    this._prioritizePierreContentUpgrade(filePath);
     const fileWrapper = this.findFileElement(filePath);
     if (fileWrapper) {
       // Render the body so the scroll target has its real height (an empty
@@ -6505,6 +7571,10 @@ class PRManager {
     localStorage.setItem('theme', this.currentTheme);
     document.documentElement.setAttribute('data-theme', this.currentTheme);
     this.updateThemeIcon();
+    // Sync theme with @pierre/diffs instances
+    if (this.pierreBridge) {
+      this.pierreBridge.setTheme(this.currentTheme);
+    }
   }
 
   updateThemeIcon() {
@@ -7415,31 +8485,6 @@ class PRManager {
       effectiveStart = Math.max(1, effectiveStart - (intendedSize - actualSize));
     }
     tbody.dataset.lineStart = effectiveStart;
-
-    // Chunk header row with range label and per-chunk dismiss button
-    const headerRow = document.createElement('tr');
-    headerRow.className = 'context-chunk-header';
-    const lineNumTd = document.createElement('td');
-    lineNumTd.className = 'd2h-code-linenumber';
-    headerRow.appendChild(lineNumTd);
-    const contentTd = document.createElement('td');
-    contentTd.className = 'd2h-code-side-line';
-    contentTd.colSpan = 3;
-    const rangeLabel = document.createElement('span');
-    rangeLabel.className = 'context-range-label';
-    rangeLabel.textContent = `Lines ${effectiveStart}\u2013${clampedEnd}`;
-    contentTd.appendChild(rangeLabel);
-    const chunkDismiss = document.createElement('button');
-    chunkDismiss.className = 'context-chunk-dismiss';
-    chunkDismiss.title = 'Remove this range';
-    chunkDismiss.innerHTML = '\u00d7';
-    chunkDismiss.addEventListener('click', (e) => {
-      e.stopPropagation();
-      this.removeContextFile(contextFile.id);
-    });
-    contentTd.appendChild(chunkDismiss);
-    headerRow.appendChild(contentTd);
-    tbody.appendChild(headerRow);
 
     // Add expand-up gap row if there are lines above the context range
     if (effectiveStart > 1) {

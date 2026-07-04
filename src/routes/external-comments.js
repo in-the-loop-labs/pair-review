@@ -175,7 +175,11 @@ async function executeSync({ db, config, review, source, _deps }) {
       continue;
     }
 
-    if (mapped.line_end == null && mapped.original_line_end == null) {
+    // File-level comments legitimately have NO line anchor (both current and
+    // original line fields null) — they render in the per-file comments zone,
+    // not on a diff line. Only treat a NON-file-level row with both anchors
+    // null as a lost anchor.
+    if (!mapped.is_file_level && mapped.line_end == null && mapped.original_line_end == null) {
       lostAnchors++;
       continue;
     }

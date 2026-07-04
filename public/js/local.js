@@ -1544,8 +1544,14 @@ class LocalManager {
           // Pass through the server-computed canonical hunk hashes; renderPatch
           // requires these to anchor persisted summaries (no client-side fallback).
           hunk_hashes: hunkHashesByFile[fileName] || null,
-          status: patch.includes('new file mode') ? 'added' :
-                  patch.includes('deleted file mode') ? 'removed' : 'modified'
+          // Inspect only the header (before the first @@) so file contents
+          // containing "new file mode" / "deleted file mode" can't spoof status.
+          status: (() => {
+            const atIdx = patch.indexOf('@@');
+            const hdr = atIdx === -1 ? patch : patch.substring(0, atIdx);
+            return hdr.includes('new file mode') ? 'added' :
+                   hdr.includes('deleted file mode') ? 'removed' : 'modified';
+          })()
         });
 
         totalAdditions += additions;
@@ -1593,6 +1599,9 @@ class LocalManager {
 
       // Render diff
       manager.renderDiff({ changed_files: sortedFiles });
+
+      // Progressively fetch full file contents for hunk expansion
+      manager._upgradeFilesWithContents(sortedFiles);
 
     } catch (error) {
       console.error('Error loading local diff:', error);

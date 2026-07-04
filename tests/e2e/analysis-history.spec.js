@@ -490,6 +490,13 @@ test.describe('Analysis History - Dropdown', () => {
 
     // Run analysis
     await seedAnalysis(page);
+
+    // Clear previous selection so loadAnalysisRuns selects the latest
+    await page.evaluate(() => {
+      const mgr = window.prManager?.analysisHistoryManager;
+      if (mgr) mgr.selectedRunId = null;
+    });
+
     await reloadAnalysisHistory(page);
 
     // Open dropdown

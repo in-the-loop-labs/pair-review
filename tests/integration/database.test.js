@@ -178,6 +178,7 @@ describe('Database Initialization', () => {
     expect(columnNames).toContain('diff_position');
     expect(columnNames).toContain('commit_sha');
     expect(columnNames).toContain('is_outdated');
+    expect(columnNames).toContain('is_file_level');
     // Anchor (original — at creation time)
     expect(columnNames).toContain('original_line_start');
     expect(columnNames).toContain('original_line_end');
@@ -194,10 +195,14 @@ describe('Database Initialization', () => {
     expect(notNullCols).toContain('external_id');
     expect(notNullCols).toContain('file');
     expect(notNullCols).toContain('is_outdated');
+    expect(notNullCols).toContain('is_file_level');
 
     // is_outdated should default to 0
     const isOutdatedCol = columns.find(c => c.name === 'is_outdated');
     expect(isOutdatedCol.dflt_value).toBe('0');
+    // is_file_level should default to 0
+    const isFileLevelCol = columns.find(c => c.name === 'is_file_level');
+    expect(isFileLevelCol.dflt_value).toBe('0');
   });
 
   it('should create external_comments indexes with the expected names', async () => {
@@ -3461,5 +3466,89 @@ describe('Migration 47 - hunk_summaries table', () => {
   it('CURRENT_SCHEMA_VERSION reaches 47 via runVersionedMigrations', () => {
     const { CURRENT_SCHEMA_VERSION } = require('../../src/database');
     expect(CURRENT_SCHEMA_VERSION).toBeGreaterThanOrEqual(47);
+  });
+});
+
+describe('Migration 49 - is_file_level on external_comments', () => {
+  let db;
+  const Database = require('better-sqlite3');
+
+  // Pre-49 external_comments: the version-45 shape WITHOUT is_file_level.
+  function createPreMigration49Database() {
+    const testDb = new Database(':memory:');
+    testDb.pragma('foreign_keys = ON');
+    testDb.exec(`
+      CREATE TABLE reviews (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pr_number INTEGER,
+        repository TEXT NOT NULL
+      )
+    `);
+    testDb.exec(`
+      CREATE TABLE external_comments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        review_id INTEGER NOT NULL,
+        source TEXT NOT NULL,
+        external_id TEXT NOT NULL,
+        file TEXT NOT NULL,
+        line_end INTEGER,
+        is_outdated INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE
+      )
+    `);
+    testDb.pragma('user_version = 48');
+    return testDb;
+  }
+
+  function columnNames(testDb) {
+    return testDb.prepare('PRAGMA table_info(external_comments)').all().map(c => c.name);
+  }
+
+  afterEach(() => {
+    if (db) { db.close(); db = null; }
+  });
+
+  it('adds the is_file_level column with default 0', () => {
+    db = createPreMigration49Database();
+    expect(columnNames(db)).not.toContain('is_file_level');
+
+    MIGRATIONS[49](db);
+
+    const cols = db.prepare('PRAGMA table_info(external_comments)').all();
+    const col = cols.find(c => c.name === 'is_file_level');
+    expect(col).toBeTruthy();
+    expect(col.notnull).toBe(1);
+    expect(col.dflt_value).toBe('0');
+  });
+
+  it('backfills existing rows to is_file_level = 0', () => {
+    db = createPreMigration49Database();
+    db.prepare("INSERT INTO reviews (id, pr_number, repository) VALUES (1, 1, 'o/r')").run();
+    db.prepare("INSERT INTO external_comments (review_id, source, external_id, file, line_end) VALUES (1, 'github', 'e1', 'a.js', 5)").run();
+
+    MIGRATIONS[49](db);
+
+    const row = db.prepare('SELECT is_file_level FROM external_comments WHERE external_id = ?').get('e1');
+    expect(row.is_file_level).toBe(0);
+  });
+
+  it('is idempotent — running twice does not throw or duplicate the column', () => {
+    db = createPreMigration49Database();
+    MIGRATIONS[49](db);
+    expect(() => MIGRATIONS[49](db)).not.toThrow();
+    const count = columnNames(db).filter(n => n === 'is_file_level').length;
+    expect(count).toBe(1);
+  });
+
+  it('does not throw when external_comments is absent (below version 45)', () => {
+    const testDb = new Database(':memory:');
+    testDb.pragma('user_version = 44');
+    expect(() => MIGRATIONS[49](testDb)).not.toThrow();
+    testDb.close();
+  });
+
+  it('CURRENT_SCHEMA_VERSION reaches 49', () => {
+    const { CURRENT_SCHEMA_VERSION } = require('../../src/database');
+    expect(CURRENT_SCHEMA_VERSION).toBeGreaterThanOrEqual(49);
   });
 });

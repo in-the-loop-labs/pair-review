@@ -53,23 +53,33 @@ async function enableSummariesConfig(page) {
 }
 
 /**
- * Read the data-hunk-start attribute from the first hunk's anchor row,
- * waiting until async hashing has finished populating it.
+ * Read the canonical content hash of a file's FIRST hunk, waiting until the
+ * Pierre hunk anchors have been wired for that file.
+ *
+ * With @pierre/diffs there is no legacy `tr[data-hunk-start]` anchor row to
+ * read the hash from — the file renders into a shadow-DOM `<diffs-container>`.
+ * Instead the hash comes from the server-computed `hunk_hashes` (canonical,
+ * whitespace-stable), which `_registerPierreHunkAnchorsForFile` records in
+ * `prManager._summaryAnchorsByHash` in hunk order. The first key is the first
+ * hunk's hash — the value a `review:hunk_summaries_ready` event carries as
+ * `content_hash` to mount a summary against that hunk.
  * @param {import('@playwright/test').Page} page
  * @param {string} fileName
  */
 async function readFirstHunkHash(page, fileName) {
   await page.waitForFunction(
     (file) => {
-      const wrapper = document.querySelector(`.d2h-file-wrapper[data-file-name="${file}"]`);
-      return wrapper && wrapper.querySelector('tr[data-hunk-start]') !== null;
+      const pm = window.prManager;
+      if (!pm || !pm.pierreBridge || !pm.pierreBridge.files.has(file)) return false;
+      const anchors = pm._summaryAnchorsByHash && pm._summaryAnchorsByHash.get(file);
+      return !!(anchors && anchors.size > 0);
     },
     fileName,
     { timeout: 5000 }
   );
   return page.evaluate((file) => {
-    const wrapper = document.querySelector(`.d2h-file-wrapper[data-file-name="${file}"]`);
-    return wrapper.querySelector('tr[data-hunk-start]').getAttribute('data-hunk-start');
+    const anchors = window.prManager._summaryAnchorsByHash.get(file);
+    return anchors.keys().next().value;
   }, fileName);
 }
 
@@ -146,7 +156,7 @@ for (const mode of MODES) {
         ]
       });
 
-      const annotation = page.locator(`tr.hunk-summary-row[data-content-hash="${hash}"]`);
+      const annotation = page.locator(`.hunk-summary-row[data-content-hash="${hash}"]`);
       await expect(annotation).toBeVisible();
       await expect(annotation.locator('.hunk-summary-text'))
         .toHaveText('Adds whitespace and inlines computeValue helper.');
@@ -201,7 +211,7 @@ for (const mode of MODES) {
         ]
       });
 
-      const annotation = page.locator(`tr.hunk-summary-row[data-content-hash="${hash}"]`);
+      const annotation = page.locator(`.hunk-summary-row[data-content-hash="${hash}"]`);
       await expect(annotation).toBeVisible();
 
       const fileWrapper = page.locator('.d2h-file-wrapper[data-file-name="src/utils.js"]');
@@ -281,7 +291,7 @@ for (const mode of MODES) {
       await page.reload();
       await waitForDiffToRender(page);
 
-      const annotation = page.locator(`tr.hunk-summary-row[data-content-hash="${hash}"]`);
+      const annotation = page.locator(`.hunk-summary-row[data-content-hash="${hash}"]`);
       await expect(annotation).toBeVisible();
       await expect(annotation.locator('.hunk-summary-text'))
         .toHaveText('Refactors helper to return computeValue.');

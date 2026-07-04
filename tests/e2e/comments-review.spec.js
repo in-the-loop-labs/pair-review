@@ -7,7 +7,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender } from './helpers.js';
+import { waitForDiffToRender, hoverDiffLine } from './helpers.js';
 
 test.describe('Comment Creation', () => {
   test('should show comment form when add comment button is clicked', async ({ page }) => {
@@ -15,11 +15,10 @@ test.describe('Comment Creation', () => {
     await waitForDiffToRender(page);
 
     // Hover over a line number to show the add comment button
-    const lineNumberCell = page.locator('.d2h-code-linenumber').first();
-    await lineNumberCell.hover();
+    await hoverDiffLine(page, 0);
 
     // Click the add comment button
-    const addCommentBtn = page.locator('.add-comment-btn').first();
+    const addCommentBtn = page.locator('.pierre-comment-btn').first();
     await addCommentBtn.click();
 
     // The comment form should appear (.user-comment-form is the actual class)
@@ -32,9 +31,8 @@ test.describe('Comment Creation', () => {
     await waitForDiffToRender(page);
 
     // Hover and click add comment
-    const lineNumberCell = page.locator('.d2h-code-linenumber').first();
-    await lineNumberCell.hover();
-    await page.locator('.add-comment-btn').first().click();
+    await hoverDiffLine(page, 0);
+    await page.locator('.pierre-comment-btn').first().click();
 
     // Should have a textarea for comment input
     const textarea = page.locator('.user-comment-form textarea, .comment-textarea');
@@ -46,9 +44,8 @@ test.describe('Comment Creation', () => {
     await waitForDiffToRender(page);
 
     // Hover and click add comment
-    const lineNumberCell = page.locator('.d2h-code-linenumber').first();
-    await lineNumberCell.hover();
-    await page.locator('.add-comment-btn').first().click();
+    await hoverDiffLine(page, 0);
+    await page.locator('.pierre-comment-btn').first().click();
 
     // Wait for form to appear
     await page.waitForSelector('.user-comment-form', { timeout: 5000 });
@@ -67,9 +64,8 @@ test.describe('Comment Creation', () => {
     await waitForDiffToRender(page);
 
     // Hover and click add comment
-    const lineNumberCell = page.locator('.d2h-code-linenumber').first();
-    await lineNumberCell.hover();
-    await page.locator('.add-comment-btn').first().click();
+    await hoverDiffLine(page, 0);
+    await page.locator('.pierre-comment-btn').first().click();
 
     // Wait for form
     const form = page.locator('.user-comment-form');

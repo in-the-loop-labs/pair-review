@@ -1195,7 +1195,15 @@ class AIPanel {
             try { await window.prManager.ensureFileBodyRendered(file); } catch { /* best effort */ }
         }
 
-        const doScroll = () => {
+        const doScroll = async () => {
+            // Reveal the target line first — for Pierre-rendered files this
+            // materializes deferred diffs and expands collapsed gaps.
+            if (file && line && window.prManager?.ensureLinesVisible) {
+                await window.prManager.ensureLinesVisible([
+                    { file, line_start: parseInt(line, 10), line_end: parseInt(line, 10), side: 'RIGHT' }
+                ]);
+            }
+
             let targetSuggestion = null;
 
             // First, try to find by exact ID match (most reliable)
@@ -1278,7 +1286,13 @@ class AIPanel {
             try { await window.prManager.ensureFileBodyRendered(file); } catch { /* best effort */ }
         }
 
-        const doScroll = () => {
+        const doScroll = async () => {
+            if (file && line && window.prManager?.ensureLinesVisible) {
+                await window.prManager.ensureLinesVisible([
+                    { file, line_start: parseInt(line, 10), line_end: parseInt(line, 10), side: 'RIGHT' }
+                ]);
+            }
+
             let targetElement = null;
             let isFileLevel = false;
 
@@ -1301,14 +1315,17 @@ class AIPanel {
                 }
             }
 
-            // For line-level comments, try to find by exact comment ID
+            // For line-level comments, try to find by exact comment ID.
+            // Legacy path uses .user-comment-row (table rows), annotation path
+            // uses [data-comment-id] on light-DOM divs slotted into @pierre/diffs.
             if (!targetElement && commentId) {
-                targetElement = document.querySelector(`.user-comment-row[data-comment-id="${commentId}"]`);
+                targetElement = document.querySelector(`.user-comment-row[data-comment-id="${commentId}"]`)
+                    || document.querySelector(`[data-comment-id="${commentId}"]`);
             }
 
             // Fallback: find by file and line if no direct match
             if (!targetElement && file && line) {
-                const commentRows = document.querySelectorAll('.user-comment-row');
+                const commentRows = document.querySelectorAll('.user-comment-row, [data-comment-id]');
                 for (const row of commentRows) {
                     if (row.dataset.file === file && row.dataset.lineStart === line) {
                         targetElement = row;
@@ -1326,8 +1343,9 @@ class AIPanel {
                     scrollTarget = diffRow || targetElement;
                 }
                 this._scrollDiffTarget(scrollTarget);
-                // Add highlight effect
-                const commentDiv = isFileLevel ? targetElement : targetElement.querySelector('.user-comment');
+                // Add highlight effect — find .user-comment inside (works for both
+                // legacy rows and @pierre/diffs annotation divs)
+                const commentDiv = isFileLevel ? targetElement : (targetElement.querySelector('.user-comment') || targetElement);
                 if (commentDiv) {
                     commentDiv.classList.add('highlight-flash');
                     setTimeout(() => commentDiv.classList.remove('highlight-flash'), 2000);
@@ -1741,7 +1759,11 @@ class AIPanel {
 
         const fileName = thread.file ? thread.file.split('/').pop() : null;
         const lineNum = thread.line_start;
-        const fullLocation = fileName ? `${fileName}${lineNum ? ':' + lineNum : ''}` : '';
+        // File-level threads (GitHub subject_type='file') have no line — label
+        // them "(file)" like native file-level comments instead of a line no.
+        const isFileLevel = thread.is_file_level === 1 || thread.is_file_level === true;
+        const locationSuffix = lineNum ? ':' + lineNum : (isFileLevel ? ' (file)' : '');
+        const fullLocation = fileName ? `${fileName}${locationSuffix}` : '';
 
         const replies = Array.isArray(thread.replies) ? thread.replies : [];
         // Strict count of comments in the thread (root + replies). Always
@@ -1788,7 +1810,7 @@ class AIPanel {
                     <div class="finding-content">
                         <span class="finding-title"><span class="external-list-author">${this.escapeHtml(author)}</span><span class="external-list-snippet">${snippet ? ' — ' + this.escapeHtml(snippet) : ''}</span></span>
                         ${thread.is_outdated ? '<span class="finding-meta"><span class="external-list-outdated-badge">outdated</span></span>' : ''}
-                        ${fileName ? `<span class="finding-location">${this.escapeHtml(fileName)}${lineNum ? ':' + lineNum : ''}</span>` : ''}
+                        ${fileName ? `<span class="finding-location">${this.escapeHtml(fileName)}${locationSuffix}</span>` : ''}
                     </div>
                 </button>
                 ${chatAction}

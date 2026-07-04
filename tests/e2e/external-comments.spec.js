@@ -128,6 +128,38 @@ const OUTDATED_THREAD = {
   replies: [],
 };
 
+/**
+ * File-level thread fixture: GitHub subject_type='file'. The adapter stores
+ * these with `is_file_level: 1` and every line anchor null. The renderer must
+ * place them in the file's comments zone above the diff, NOT as a line
+ * annotation. Anchored to src/utils.js (a file present in the diff fixture).
+ */
+const FILE_LEVEL_THREAD = {
+  id: 301,
+  source: 'github',
+  external_id: '900201',
+  in_reply_to_id: null,
+  parent_id: null,
+  external_url: 'https://github.com/test-owner/test-repo/pull/1#discussion_r900201',
+  author: 'reviewer-file',
+  author_url: 'https://github.com/reviewer-file',
+  file: 'src/utils.js',
+  side: 'RIGHT',
+  line_start: null,
+  line_end: null,
+  diff_position: null,
+  commit_sha: 'def456head',
+  is_outdated: 0,
+  is_file_level: 1,
+  original_line_start: null,
+  original_line_end: null,
+  original_commit_sha: 'def456head',
+  body: 'This whole file could use a header docstring.',
+  external_created_at: '2025-10-01T14:00:00Z',
+  synced_at: '2025-10-01T14:05:00Z',
+  replies: [],
+};
+
 // ---------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------
@@ -475,56 +507,64 @@ test.describe('External comments: coexistence with user + AI rows', () => {
     // Wait for user-comment rows too (loadUserComments fires async).
     await page.waitForSelector('.user-comment-row', { timeout: 10000 });
 
-    // All three row types should be present
-    expect(await page.locator('.ai-suggestion-row').count()).toBeGreaterThan(0);
+    // All three row types should be present. On the @pierre/diffs branch AI
+    // suggestions slot as a light-DOM `.ai-suggestion` card (the legacy
+    // `.ai-suggestion-row` <tr> wrapper is gone — PierreBridge extracts and
+    // slots the inner `.ai-suggestion` div), while user comments and external
+    // threads keep their `.user-comment-row` / `.external-comment-row` wrappers.
+    expect(await page.locator('.ai-suggestion').count()).toBeGreaterThan(0);
     expect(await page.locator('.user-comment-row').count()).toBeGreaterThan(0);
     expect(await page.locator('.external-comment-row').count()).toBe(1);
 
     // Scope to the utils.js file wrapper and verify ordering on line 3:
-    //   AI suggestion row  ->  user comment row  ->  external comment row
+    //   AI suggestion  ->  user comment  ->  external comment
     // (CLAUDE.md hazard rule: AI -> user -> external.)
-    // The d2h diff renderer uses `[data-file-name]` on multiple elements
-    // (wrapper, comments-zone, every `<tr>`); the `.d2h-file-wrapper` is the
-    // outer container that owns the actual diff table.
+    // On the @pierre/diffs branch all three overlays render as light-DOM
+    // annotations slotted below the anchor line (not `<tr>` rows), and
+    // PierreBridge's typeOrder sorts them suggestion -> comment -> external.
+    // The three managers (suggestions, comments, external) load and render
+    // independently and asynchronously, and each addAnnotation/clear triggers a
+    // FileDiff rerender that transiently rebuilds the slotted set — so a
+    // one-shot scan can catch an intermediate state where one overlay is
+    // momentarily absent. Poll the scan until the contract holds; once all
+    // three managers have settled the ordering is stable.
     const utilsFile = page.locator('.d2h-file-wrapper[data-file-name="src/utils.js"]');
 
-    const orderedClasses = await utilsFile.evaluate((root) => {
-      // Walk every tr in document order; record any of the three row types
-      // we find. Filter the result down to the three types and check that
-      // their relative order matches the contract.
-      const rows = Array.from(root.querySelectorAll('tr'));
-      return rows
-        .filter((tr) =>
-          tr.classList.contains('ai-suggestion-row') ||
-          tr.classList.contains('user-comment-row') ||
-          tr.classList.contains('external-comment-row')
-        )
-        .map((tr) => {
-          if (tr.classList.contains('ai-suggestion-row')) return 'ai';
-          if (tr.classList.contains('user-comment-row')) return 'user';
-          return 'external';
-        });
+    const scanOrder = () => utilsFile.evaluate((root) => {
+      // Walk every overlay in document order; record its type.
+      const rows = Array.from(root.querySelectorAll(
+        '.ai-suggestion, .user-comment-row, .external-comment-row'
+      ));
+      return rows.map((el) => {
+        if (el.classList.contains('ai-suggestion')) return 'ai';
+        if (el.classList.contains('user-comment-row')) return 'user';
+        return 'external';
+      });
     });
 
-    // The external row should appear after BOTH any preceding AI row and any
-    // preceding user-comment row that targets the same line.
-    const externalIdx = orderedClasses.indexOf('external');
-    expect(externalIdx).toBeGreaterThan(-1);
+    // Poll until AI + user rows both precede the (single) external row.
+    await expect.poll(async () => {
+      const order = await scanOrder();
+      const extIdx = order.indexOf('external');
+      if (extIdx < 0) return 'no-external';
+      const preceding = order.slice(0, extIdx);
+      if (preceding.includes('external')) return 'external-before-external';
+      return preceding.includes('ai') && preceding.includes('user') ? 'ok' : 'not-settled';
+    }, { timeout: 10000 }).toBe('ok');
 
-    // Slice up to the external row — every AI/user row that comes before it
-    // must be ai or user, never external (we've already checked there's only
-    // one external row).
+    // Final stable snapshot for the remaining structural assertions.
+    const orderedClasses = await scanOrder();
+    const externalIdx = orderedClasses.indexOf('external');
     const precedingTypes = orderedClasses.slice(0, externalIdx);
+    // External sits below both AI and user overlays, and no external row
+    // precedes it (there is only one).
     expect(precedingTypes).toContain('ai');
     expect(precedingTypes).toContain('user');
-
-    // Last preceding row of either type should not be 'external' (sanity).
     expect(precedingTypes.includes('external')).toBe(false);
 
-    // External rendering did NOT remove the other rows — counts already
-    // asserted above. Belt-and-suspenders: confirm the user + AI rows still
-    // sit in this same file section.
-    expect(await utilsFile.locator('.ai-suggestion-row').count()).toBeGreaterThan(0);
+    // External rendering did NOT remove the other rows — confirm the user + AI
+    // overlays still sit in this same file section.
+    expect(await utilsFile.locator('.ai-suggestion').count()).toBeGreaterThan(0);
     expect(await utilsFile.locator('.user-comment-row').count()).toBeGreaterThan(0);
   });
 });
@@ -695,6 +735,65 @@ test.describe('External segment in Review panel', () => {
 
     // Wait for the panel to reflect the new count
     await expect(externalCount).toHaveText('(2)', { timeout: 5000 });
+  });
+});
+
+// ---------------------------------------------------------------------
+// 7b. File-level external comments render in the per-file comments zone
+//
+// A file-level thread (subject_type='file' upstream → is_file_level=1) has no
+// line anchor. It must render into the file's `.file-comments-zone` above the
+// diff, NOT as a faked line-1 annotation, and the External segment must label
+// it "(file)" instead of a line number.
+// ---------------------------------------------------------------------
+
+test.describe('External comments: file-level rendering', () => {
+  test('renders a file-level thread in the file comments zone, not as a line annotation', async ({ page }) => {
+    await installExternalCommentMocks(page, { threads: [FILE_LEVEL_THREAD] });
+
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+    await waitForExternalRowsRendered(page);
+
+    const rows = page.locator('.external-comment-row');
+    await expect(rows).toHaveCount(1);
+    const card = rows.first();
+    await expect(card).toHaveClass(/external-comment-row--file-level/);
+    await expect(card).toContainText('This whole file could use a header docstring');
+
+    // The card lives inside the file's comments zone container.
+    const zoneCard = page.locator(
+      '.file-comments-zone[data-file-name="src/utils.js"] .file-comments-container .external-comment-row'
+    );
+    await expect(zoneCard).toHaveCount(1);
+
+    // And it is NOT a line annotation: no diff <table> ancestor.
+    const insideTable = await card.evaluate((el) => !!el.closest('table'));
+    expect(insideTable).toBe(false);
+  });
+
+  test('External segment labels a file-level thread "(file)" and scrolls to the zone card', async ({ page }) => {
+    await installExternalCommentMocks(page, { threads: [FILE_LEVEL_THREAD] });
+
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+    await waitForExternalRowsRendered(page);
+
+    await page.evaluate(() => window.aiPanel?.expand());
+
+    const externalBtn = page.locator('.segment-btn[data-segment="external"]');
+    await externalBtn.click();
+
+    const item = page.locator('.ai-panel__list-item--external[data-thread-id="301"]');
+    await expect(item).toBeVisible();
+    // Location shows "(file)" rather than ":<line>".
+    await expect(item.locator('.finding-location')).toContainText('(file)');
+    await expect(item.locator('.finding-location')).not.toContainText(':');
+
+    // Clicking scrolls the inline zone card into view and flashes it.
+    await item.click();
+    const focusedRow = page.locator('.external-comment-row--focused');
+    await expect(focusedRow).toHaveCount(1, { timeout: 1500 });
   });
 });
 
