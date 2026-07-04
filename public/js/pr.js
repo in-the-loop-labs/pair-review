@@ -2828,10 +2828,14 @@ class PRManager {
     this.loadingState = loading;
     const container = document.getElementById('pr-container');
     if (container) {
+      // State flag only — must not be `loading`, which is the visual
+      // placeholder class (padding + centered text). The diff paints inside
+      // this container before loading finishes, so placeholder styles here
+      // cause a visible centered-then-left layout shift.
       if (loading) {
-        container.classList.add('loading');
+        container.classList.add('is-loading');
       } else {
-        container.classList.remove('loading');
+        container.classList.remove('is-loading');
       }
     }
   }

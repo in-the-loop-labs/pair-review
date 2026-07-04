@@ -13569,9 +13569,12 @@ body.tour-active .d2h-file-header {
   border-radius: 0 0 6px 6px;
 }
 
-/* Custom elements default to display:inline — force block layout */
+/* Custom elements default to display:inline — force block layout.
+   text-align: start guards against inherited centering (text-align crosses
+   the shadow boundary; the vendor styles never set it on code lines). */
 diffs-container {
   display: block;
+  text-align: start;
   --diffs-font-size: 12px;
   --diffs-line-height: 1.45;
 }
