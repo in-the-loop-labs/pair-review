@@ -155,7 +155,7 @@ for (const mode of MODES) {
       await expect(bar.locator('.tour-bar__progress')).toHaveText('Stop 1 of 3');
 
       // First stop annotation is mounted in the right file.
-      const stopRow = page.locator('tr.tour-annotation-row[data-stop-index="0"]');
+      const stopRow = page.locator('.tour-annotation-row[data-stop-index="0"]');
       await expect(stopRow).toBeVisible();
       await expect(stopRow.locator('.tour-annotation-title'))
         .toHaveText(FIXED_STOPS[0].title);
@@ -179,7 +179,7 @@ for (const mode of MODES) {
       await bar.locator('.tour-bar__next').click();
       await expect(bar.locator('.tour-bar__progress')).toHaveText('Stop 2 of 3');
 
-      const stop2 = page.locator('tr.tour-annotation-row[data-stop-index="1"]');
+      const stop2 = page.locator('.tour-annotation-row[data-stop-index="1"]');
       await expect(stop2).toBeVisible();
       await expect(stop2).toHaveClass(/active-stop/);
     });
@@ -249,7 +249,7 @@ for (const mode of MODES) {
       await waitForDiffToRender(page);
       await page.locator('#tour-toggle-btn').click();
 
-      const stopRow = page.locator('tr.tour-annotation-row[data-stop-index="0"]');
+      const stopRow = page.locator('.tour-annotation-row[data-stop-index="0"]');
       await expect(stopRow).toBeVisible();
 
       const wrap = stopRow.locator('.tour-annotation-description-wrap');
@@ -288,7 +288,7 @@ for (const mode of MODES) {
       await page.keyboard.press('Escape');
 
       await expect(page.locator('.tour-bar')).toHaveCount(0);
-      await expect(page.locator('tr.tour-annotation-row')).toHaveCount(0);
+      await expect(page.locator('.tour-annotation-row')).toHaveCount(0);
       await expect(page.locator('body')).not.toHaveClass(/tour-active/);
     });
   });

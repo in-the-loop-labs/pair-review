@@ -1370,6 +1370,128 @@ class PRManager {
   }
 
   /**
+   * Compute per-hunk summary anchor positions for a Pierre-rendered file.
+   *
+   * Legacy rendering (`renderPatch`) captures the first `<tr>` of each hunk as
+   * the anchor. Pierre renders into a shadow DOM we don't own, so instead we
+   * derive each hunk's first rendered line from the patch text and let
+   * PierreBridge slot the summary card below it. Positions come purely from the
+   * patch — the canonical content hashes still come from the backend.
+   *
+   * Anchor rules (mirrors renderPatch's first-rendered-row):
+   *   - first line is an addition (`+`) or context (` `) → side 'RIGHT', at the
+   *     hunk's NEW start line (the line exists in the new file);
+   *   - first line is a deletion (`-`), e.g. a pure-deletion hunk → side
+   *     'LEFT', at the hunk's OLD start line.
+   *
+   * Fails closed on hash/hunk count drift (the same `?w=1` divergence
+   * renderPatch guards against): returns an empty map so summaries simply don't
+   * anchor rather than anchor to the wrong hunk.
+   *
+   * @param {string} patch - Unified diff patch text
+   * @param {string[]|null} hunkHashes - Canonical per-hunk hashes, parallel to
+   *   the blocks `parseDiffIntoBlocks` returns
+   * @returns {Map<string, {lineNumber: number, side: string}>}
+   */
+  _computePierreHunkAnchors(patch, hunkHashes) {
+    const anchors = new Map();
+    if (!patch || !Array.isArray(hunkHashes) || hunkHashes.length === 0) return anchors;
+    if (!window.HunkParser?.parseDiffIntoBlocks) return anchors;
+
+    const blocks = window.HunkParser.parseDiffIntoBlocks(patch);
+    // Fail closed on length drift — a misaligned hash would anchor the summary
+    // to the wrong hunk. Symmetric with renderPatch's guard.
+    if (hunkHashes.length !== blocks.length) {
+      if (!this._warnedHunkHashLengthMismatch) {
+        this._warnedHunkHashLengthMismatch = true;
+        console.warn(
+          `[HunkSummary] hunk_hashes length mismatch (pierre): ${hunkHashes.length} ` +
+          `canonical hashes, ${blocks.length} rendered blocks. Dropping hashes for this file.`
+        );
+      }
+      return anchors;
+    }
+
+    blocks.forEach((block, blockIndex) => {
+      const hash = hunkHashes[blockIndex];
+      if (!hash) return; // no canonical hash for this hunk → can't anchor
+      // First rendered line of the hunk (renderPatch skips undefined/null but
+      // treats '' as a blank context line).
+      const firstLine = block.lines.find(line => line || line === '');
+      if (firstLine == null) return; // empty hunk — nothing to anchor to
+      let side, lineNumber;
+      if (firstLine.startsWith('-')) {
+        side = 'LEFT';
+        lineNumber = block.oldStart;
+      } else {
+        // Addition or context — present on the NEW side.
+        side = 'RIGHT';
+        lineNumber = block.newStart;
+      }
+      anchors.set(hash, { lineNumber, side });
+    });
+
+    return anchors;
+  }
+
+  /**
+   * Wire a Pierre-rendered file's hunk anchors to their canonical content
+   * hashes, then mount any summary that already arrived for those hunks. The
+   * Pierre analogue of _registerHunkAnchorsForFile: it stores position-based
+   * anchor records (`{pierre, fileName, lineNumber, side}`) instead of `<tr>`
+   * rows, and mounts via PierreBridge annotations.
+   *
+   * Called once per file from renderFileDiff's Pierre branch (the file is in
+   * `pierreBridge.files` by then). Idempotent — re-running re-sets the same
+   * map entries and re-drains an already-empty pending queue.
+   * @param {Object} file - A changed_files entry with `.file`, `.patch`, `.hunk_hashes`
+   */
+  _registerPierreHunkAnchorsForFile(file) {
+    if (!file || !file.patch) return;
+    const fileName = file.file;
+    // Only meaningful for files actually Pierre-rendered — addAnnotation needs
+    // a live fileState, and legacy files use _registerHunkAnchorsForFile.
+    if (!this.pierreBridge?.files?.has(fileName)) return;
+
+    const positions = this._computePierreHunkAnchors(file.patch, file.hunk_hashes);
+    if (positions.size === 0) return;
+
+    let anchors = this._summaryAnchorsByHash.get(fileName);
+    if (!anchors) {
+      anchors = new Map();
+      this._summaryAnchorsByHash.set(fileName, anchors);
+    }
+    let bucket = this._summaryHashesByFile.get(fileName);
+    if (!bucket) {
+      bucket = new Set();
+      this._summaryHashesByFile.set(fileName, bucket);
+    }
+
+    const filesWithMounts = new Set();
+    for (const [hash, pos] of positions) {
+      // Scope by file so a hash shared across files can't cross-wire anchors,
+      // mirroring the legacy path.
+      anchors.set(hash, { pierre: true, fileName, lineNumber: pos.lineNumber, side: pos.side });
+      bucket.add(hash);
+
+      const pending = this._takePendingSummary(fileName, hash);
+      if (pending) {
+        const mounted = this._renderOneSummary(pending, fileName);
+        if (mounted) {
+          this._summariesGenerated = true;
+          this._summariesAvailable = true;
+          filesWithMounts.add(fileName);
+        }
+        // If it couldn't mount, _renderOneSummary re-queued it scoped to
+        // fileName for a later pass.
+      }
+    }
+
+    if (this._summariesGenerated) this._syncSummaryToolbarButton();
+    for (const filePath of filesWithMounts) this._refreshFileSummaryToggle(filePath);
+  }
+
+  /**
    * Load the review's hunk summaries from the server and apply them to the
    * anchors that exist so far (gated by `summaries.enabled` in `/api/config`).
    *
@@ -1644,13 +1766,34 @@ class PRManager {
     if (!summary.summary_text) return null; // trivial / opt-out — nothing to show
     const hash = summary.content_hash;
     const anchor = this._findSummaryAnchor(filePath, hash);
-    if (!anchor || !anchor.isConnected) {
-      // Anchor missing or detached (stale render) → defer; the next render
-      // pass that re-establishes the hash will drain this map.
+    if (!anchor) {
+      // Anchor not registered yet (lazy body / deferred render) → defer; the
+      // next render pass that re-establishes the hash will drain this map.
       this._queuePendingSummary(filePath, summary);
       return null;
     }
     if (!this.hunkSummaryRenderer) return null;
+
+    // Pierre-rendered files anchor by position and mount via a bridge
+    // annotation rather than a DOM `<tr>`. `anchor.pierre` distinguishes the
+    // two flavors of record populated by _registerPierreHunkAnchorsForFile
+    // (position object) vs _registerHunkAnchorsForFile (a `<tr>`).
+    if (anchor.pierre) {
+      // The file may have been destroyed/re-deferred since its anchor was
+      // registered; addAnnotation is a no-op without a live fileState, so
+      // requeue rather than silently drop.
+      if (!this.pierreBridge?.files?.has(anchor.fileName)) {
+        this._queuePendingSummary(filePath, summary);
+        return null;
+      }
+      return this.hunkSummaryRenderer.renderPierre(anchor.fileName, anchor, summary);
+    }
+
+    if (!anchor.isConnected) {
+      // Legacy DOM anchor detached (stale render) → defer.
+      this._queuePendingSummary(filePath, summary);
+      return null;
+    }
     return this.hunkSummaryRenderer.renderInline(anchor, summary);
   }
 
@@ -3862,7 +4005,7 @@ class PRManager {
 
     const tbody = document.createElement('tbody');
     if (file.patch) {
-      this.renderPatch(tbody, file.patch, file.file);
+      this.renderPatch(tbody, file.patch, file.file, file.hunk_hashes || null);
     } else if (file.binary) {
       const row = document.createElement('tr');
       row.innerHTML = '<td colspan="2" class="binary-file">Binary file</td>';
@@ -3964,6 +4107,10 @@ class PRManager {
           collapsed: isCollapsed,
           forcePlainText: true,
         });
+        // The file is only now in pierreBridge.files — wire its hunk-summary
+        // anchors so summaries mount on materialized large diffs too (the
+        // eager render path does this in renderFileDiff's Pierre branch).
+        this._registerPierreHunkAnchorsForFile(file);
         if (reanchor) {
           await this._reanchorInlineFeedbackAfterDeferredRender();
         }
@@ -3977,7 +4124,24 @@ class PRManager {
       return;
     }
 
-    placeholder.replaceWith(this._renderLegacyFileDiffBody(file));
+    // Legacy fallback (bridge unavailable). Swap the pending-record buffer so
+    // this eager render's hunk anchors register for this file only, mirroring
+    // _renderFileBodyNow — and register only after the body is attached, so
+    // anchor rows are connected when queued summaries try to mount.
+    const prevPending = this._pendingHunkRecords;
+    this._pendingHunkRecords = [];
+    let legacyBody;
+    let hunkRecords;
+    try {
+      legacyBody = this._renderLegacyFileDiffBody(file);
+    } finally {
+      hunkRecords = this._pendingHunkRecords;
+      this._pendingHunkRecords = prevPending;
+    }
+    placeholder.replaceWith(legacyBody);
+    if (hunkRecords.length > 0) {
+      this._registerHunkAnchorsForFile(hunkRecords);
+    }
     if (reanchor) {
       await this._reanchorInlineFeedbackAfterDeferredRender();
     }
@@ -4138,6 +4302,10 @@ class PRManager {
       }
 
       wrapper.appendChild(diffBody);
+      // Wire hunk-summary anchors now that the file is in pierreBridge.files —
+      // the Pierre analogue of _registerHunkAnchorsForFile (legacy bodies wire
+      // theirs lazily in _renderFileBodyNow).
+      this._registerPierreHunkAnchorsForFile(file);
       return wrapper;
     }
 

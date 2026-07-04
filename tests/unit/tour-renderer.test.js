@@ -1052,3 +1052,233 @@ describe('TourRenderer', () => {
     });
   });
 });
+
+// ----------------------------------------------------------------------
+// Pierre-rendered files (@pierre/diffs). These files have NO light-DOM
+// <tr> rows — lines live in a shadow-DOM <diffs-container>. Tour stops
+// mount as a custom 'tour-stop' annotation via PierreBridge, which slots
+// a <div class="tour-annotation-row"> BELOW the anchor line into the
+// file's light-DOM container. The fake bridge below models that: it fires
+// the registered renderer on add/remove and RE-CREATES the slotted
+// elements on every rerender (mirroring how the real bridge rebuilds
+// annotation DOM), so the "re-resolve stale references" logic is exercised.
+// ----------------------------------------------------------------------
+describe('TourRenderer — pierre-rendered files (annotation path)', () => {
+  /**
+   * Build a fake PierreBridge + a `.pierre-diff-body` container registered
+   * for `filePath`. `visibleLines` are 'SIDE:line' strings the bridge treats
+   * as present in the diff (isLineVisible === true).
+   */
+  function makePierreEnv({ visibleLines = [], filePath = 'src/pierre.js', collapsed = false } = {}) {
+    document.body.innerHTML = '';
+    const wrapper = document.createElement('div');
+    wrapper.className = 'd2h-file-wrapper';
+    wrapper.dataset.fileName = filePath;
+    if (collapsed) wrapper.classList.add('collapsed');
+    const container = document.createElement('div');
+    container.className = 'pierre-diff-body';
+    wrapper.appendChild(container);
+    document.body.appendChild(wrapper);
+
+    const renderers = new Map();
+    const files = new Map();
+    const visible = new Set(visibleLines);
+
+    const bridge = {
+      files,
+      rerenderCount: 0,
+      registerAnnotationRenderer(type, fn) { renderers.set(type, fn); },
+      isLineVisible(f, line, side) { return visible.has(`${side}:${line}`); },
+      addAnnotation(f, ann) {
+        const fs = files.get(f);
+        if (!fs) return;
+        fs.annotations.push({
+          id: ann.id, type: ann.type, data: ann.data,
+          lineNumber: ann.lineNumber, side: ann.side,
+        });
+        this._render(f);
+      },
+      removeAnnotation(f, id) {
+        const fs = files.get(f);
+        if (!fs) return;
+        fs.annotations = fs.annotations.filter(a => a.id !== id);
+        this._render(f);
+      },
+      // Simulate a FileDiff rerender: tear down the slotted annotation DOM
+      // and rebuild it from the current annotation list, re-invoking the
+      // registered renderer (so cached element references go stale).
+      _render(f) {
+        this.rerenderCount++;
+        const fs = files.get(f);
+        fs.container.querySelectorAll('.tour-annotation-row').forEach(el => el.remove());
+        for (const a of fs.annotations) {
+          if (!visible.has(`${a.side}:${a.lineNumber}`)) continue;
+          const fn = renderers.get(a.type);
+          const el = fn ? fn(a.data, a.id, f) : null;
+          if (el) fs.container.appendChild(el);
+        }
+      },
+    };
+
+    files.set(filePath, { container, annotations: [] });
+    return { bridge, wrapper, container, filePath, visible };
+  }
+
+  it('routes to the pierre path and slots a <div> tour-annotation-row', async () => {
+    const { bridge, container } = makePierreEnv({ visibleLines: ['RIGHT:11'] });
+    const r = new TourRenderer({ pierreBridge: bridge, _tourGen: 1 });
+    r.setStops([makeStop({ file_path: 'src/pierre.js', line_start: 11, line_end: 11 })]);
+
+    const row = await r.mountStop(0);
+    expect(row).toBeTruthy();
+    expect(row.tagName).toBe('DIV');
+    expect(row.classList.contains('tour-annotation-row')).toBe(true);
+    expect(row.dataset.stopIndex).toBe('0');
+    // Slotted into the file's light-DOM container.
+    expect(container.querySelector('.tour-annotation-row[data-stop-index="0"]')).toBe(row);
+    // Same inner card as the legacy variant.
+    expect(row.querySelector('.tour-annotation-title').textContent).toBe('Stop title');
+    expect(row.querySelector('.tour-annotation-chat-btn')).toBeTruthy();
+    // Tracked as a pierre mount, not a legacy one.
+    expect(r._pierreMounts.has(0)).toBe(true);
+    expect(r._pierreMounts.get(0).id).toBe('tour-stop-0');
+  });
+
+  it('anchors at line_end, scanning back through the range to the first visible line', async () => {
+    // Only line 13 renders; range is [11, 13]. Anchor should land on 13.
+    const { bridge } = makePierreEnv({ visibleLines: ['RIGHT:13'] });
+    const r = new TourRenderer({ pierreBridge: bridge, _tourGen: 1 });
+    r.setStops([makeStop({ file_path: 'src/pierre.js', line_start: 11, line_end: 13 })]);
+    await r.mountStop(0);
+    expect(r._pierreMounts.get(0).anchorLine).toBe(13);
+  });
+
+  it('returns null when no line in the range is visible', async () => {
+    const { bridge, container } = makePierreEnv({ visibleLines: ['RIGHT:100'] });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const r = new TourRenderer({ pierreBridge: bridge, _tourGen: 1 });
+      r.setStops([makeStop({ file_path: 'src/pierre.js', line_start: 11, line_end: 13 })]);
+      const row = await r.mountStop(0);
+      expect(row).toBeNull();
+      expect(r._pierreMounts.has(0)).toBe(false);
+      expect(container.querySelector('.tour-annotation-row')).toBeNull();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('unmountStop removes the annotation via the bridge (not direct DOM removal)', async () => {
+    const { bridge, container } = makePierreEnv({ visibleLines: ['RIGHT:11'] });
+    const r = new TourRenderer({ pierreBridge: bridge, _tourGen: 1 });
+    r.setStops([makeStop({ file_path: 'src/pierre.js', line_start: 11 })]);
+    await r.mountStop(0);
+    const removeSpy = vi.spyOn(bridge, 'removeAnnotation');
+
+    expect(r.unmountStop(0)).toBe(true);
+    expect(removeSpy).toHaveBeenCalledWith('src/pierre.js', 'tour-stop-0');
+    expect(container.querySelector('.tour-annotation-row')).toBeNull();
+    expect(r._pierreMounts.has(0)).toBe(false);
+    // Second call is a no-op now.
+    expect(r.unmountStop(0)).toBe(false);
+  });
+
+  it('unmountAll clears every pierre annotation and its tracking', async () => {
+    const { bridge, container } = makePierreEnv({ visibleLines: ['RIGHT:11', 'RIGHT:12'] });
+    const r = new TourRenderer({ pierreBridge: bridge, _tourGen: 1 });
+    r.setStops([
+      makeStop({ file_path: 'src/pierre.js', line_start: 11 }),
+      makeStop({ file_path: 'src/pierre.js', line_start: 12 }),
+    ]);
+    await r.mountStop(0);
+    await r.mountStop(1);
+    expect(container.querySelectorAll('.tour-annotation-row')).toHaveLength(2);
+
+    r.unmountAll();
+    expect(container.querySelectorAll('.tour-annotation-row')).toHaveLength(0);
+    expect(r._pierreMounts.size).toBe(0);
+    expect(r._activeIndex).toBe(-1);
+  });
+
+  it('highlightActive re-resolves the live element after a rerender recreates it', async () => {
+    const { bridge, container } = makePierreEnv({ visibleLines: ['RIGHT:11', 'RIGHT:12'] });
+    const r = new TourRenderer({ pierreBridge: bridge, _tourGen: 1 });
+    r.setStops([
+      makeStop({ file_path: 'src/pierre.js', line_start: 11 }),
+      makeStop({ file_path: 'src/pierre.js', line_start: 12 }),
+    ]);
+    const row0 = await r.mountStop(0);
+    // Mounting stop 1 on the same file rerenders it, recreating stop 0's DOM.
+    await r.mountStop(1);
+    expect(row0.isConnected).toBe(false); // stale reference
+
+    r.highlightActive(0);
+    const live0 = container.querySelector('.tour-annotation-row[data-stop-index="0"]');
+    const live1 = container.querySelector('.tour-annotation-row[data-stop-index="1"]');
+    expect(live0.classList.contains('active-stop')).toBe(true);
+    expect(live1.classList.contains('active-stop')).toBe(false);
+
+    // A subsequent rerender (unmounting stop 1) must preserve the active
+    // highlight on stop 0 — the renderer re-applies it from `_activeIndex`.
+    r.unmountStop(1);
+    const live0b = container.querySelector('.tour-annotation-row[data-stop-index="0"]');
+    expect(live0b.classList.contains('active-stop')).toBe(true);
+  });
+
+  it('expands a collapsed pierre wrapper via toggleFileCollapse and records it', async () => {
+    const { bridge, wrapper } = makePierreEnv({ visibleLines: ['RIGHT:11'], collapsed: true });
+    const pm = {
+      pierreBridge: bridge,
+      _tourGen: 1,
+      toggleFileCollapse(p) { if (p === 'src/pierre.js') wrapper.classList.remove('collapsed'); },
+    };
+    const r = new TourRenderer(pm);
+    r.setStops([makeStop({ file_path: 'src/pierre.js', line_start: 11 })]);
+    await r.mountStop(0);
+    expect(wrapper.classList.contains('collapsed')).toBe(false);
+    expect(r._autoExpanded.has('src/pierre.js')).toBe(true);
+    expect(r._pierreMounts.has(0)).toBe(true);
+  });
+
+  it('bails without leaking state when the tour exits during the collapse-expand await', async () => {
+    const { bridge, wrapper, container } = makePierreEnv({ visibleLines: ['RIGHT:11'], collapsed: true });
+    let resolveToggle;
+    const pm = {
+      pierreBridge: bridge,
+      _tourGen: 1,
+      toggleFileCollapse() {
+        return new Promise((res) => {
+          resolveToggle = () => { wrapper.classList.remove('collapsed'); res(); };
+        });
+      },
+    };
+    const r = new TourRenderer(pm);
+    r.setStops([makeStop({ file_path: 'src/pierre.js', line_start: 11 })]);
+
+    const mountPromise = r.mountStop(0);
+    // Tour exits mid-await: bump the generation.
+    pm._tourGen += 1;
+    resolveToggle();
+    const row = await mountPromise;
+
+    expect(row).toBeNull();
+    // No annotation added, nothing tracked, no auto-expand recorded.
+    expect(container.querySelector('.tour-annotation-row')).toBeNull();
+    expect(r._pierreMounts.has(0)).toBe(false);
+    expect(r._autoExpanded.has('src/pierre.js')).toBe(false);
+  });
+
+  it('falls back to the legacy <tr> path for files not rendered by pierre', async () => {
+    // Legacy table for src/foo.js, and a pierreBridge whose files map does
+    // NOT include it — the dispatcher must route to the legacy path.
+    buildDiff('src/foo.js');
+    const r = new TourRenderer({ pierreBridge: { files: new Map() } });
+    r.setStops([makeStop({ line_start: 11 })]);
+    const row = await r.mountStop(0);
+    expect(row).toBeTruthy();
+    expect(row.tagName).toBe('TR');
+    expect(r._pierreMounts.has(0)).toBe(false);
+    const anchor = document.querySelector('tr[data-line-number="11"][data-side="RIGHT"]');
+    expect(anchor.previousElementSibling).toBe(row);
+  });
+});
