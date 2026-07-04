@@ -2203,6 +2203,18 @@ tr.newly-expanded .d2h-code-line-ctn {
   overflow-wrap: break-word;
 }
 
+/* Readable measure on wide displays: cards span the full diff width (both
+   unified and split full-width layouts), but flowing prose becomes hard to
+   read past ~80 characters per line. Cap the TEXT blocks, not the card —
+   the card's background/border keeps spanning the row so it still reads as
+   anchored to the diff. ch resolves against each element's own font, so the
+   cap self-adjusts. Override via --annotation-prose-max if needed. */
+.user-comment-body,
+.ai-suggestion-body,
+.external-comment-body {
+  max-width: min(100%, var(--annotation-prose-max, 80ch));
+}
+
 /* Markdown content styles for AI suggestions and user comments */
 .ai-suggestion-body p,
 .user-comment-body p {
@@ -13015,7 +13027,9 @@ body.resizing * {
   border: 1px solid rgba(9, 105, 218, 0.18);
   border-left: 3px solid #0969da;
   border-radius: var(--radius-md, 6px);
-  max-width: calc(100vw - var(--sidebar-width, 0px) - var(--right-panel-group-width, 0px) - 64px);
+  /* Viewport overflow guard + readable prose measure on wide displays
+     (centered banner, so the cap keeps it near the code it describes). */
+  max-width: min(calc(100vw - var(--sidebar-width, 0px) - var(--right-panel-group-width, 0px) - 64px), var(--annotation-prose-max, 80ch));
   box-sizing: border-box;
   word-break: break-word;
 }
@@ -13166,7 +13180,9 @@ body.summaries-hidden .hunk-summary-row,
   border: 1px solid rgba(212, 167, 44, 0.55);
   border-left: 3px solid #d4a72c;
   border-radius: var(--radius-md, 6px);
-  max-width: calc(100vw - var(--sidebar-width, 0px) - var(--right-panel-group-width, 0px) - 64px);
+  /* Viewport overflow guard + readable prose measure on wide displays
+     (centered banner, matching .hunk-summary-annotation). */
+  max-width: min(calc(100vw - var(--sidebar-width, 0px) - var(--right-panel-group-width, 0px) - 64px), var(--annotation-prose-max, 80ch));
   box-sizing: border-box;
   word-break: break-word;
   transition: box-shadow var(--transition-fast, 0.1s ease),

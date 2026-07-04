@@ -279,6 +279,56 @@ test.describe('Split diff view — full-width annotation cards (PR mode)', () =>
 });
 
 /**
+ * Readable prose measure on wide displays: annotation CARDS span the full
+ * diff width (unified and split full-width layouts), but the prose blocks
+ * inside them are capped at --annotation-prose-max (~80ch) so comment text
+ * doesn't become one enormous line on wide monitors. PR-mode only: the CSS
+ * is mode-independent (same classes in Local mode).
+ */
+test.describe('Annotation prose measure on wide displays (PR mode)', () => {
+  const PR_PATH = '/pr/test-owner/test-repo/1';
+
+  test.afterEach(async ({ page }) => {
+    await cleanupComments(page, 1);
+  });
+
+  test('caps comment prose width while the card spans the row (unified and split)', async ({ page }) => {
+    await page.setViewportSize({ width: 1920, height: 1000 });
+    await page.goto(PR_PATH);
+    await waitForDiffToRender(page);
+
+    const longBody = 'Wide display readability check. ' +
+      'This sentence repeats to guarantee the rendered markdown is long enough to hit the measure cap. '.repeat(4);
+    await seedComment(page, 1, { line: 3, side: 'RIGHT', body: longBody });
+    await page.reload();
+    await waitForDiffToRender(page);
+
+    const measure = () => page.evaluate(() => {
+      const body = document.querySelector('.user-comment-body');
+      const card = body?.closest('.user-comment');
+      if (!body || !card) return null;
+      return {
+        bodyWidth: body.getBoundingClientRect().width,
+        cardWidth: card.getBoundingClientRect().width
+      };
+    });
+
+    // Unified: card rides the wide row, prose stays at a readable measure.
+    const unified = await measure();
+    expect(unified.cardWidth).toBeGreaterThan(1000);
+    expect(unified.bodyWidth).toBeGreaterThan(300);
+    expect(unified.bodyWidth).toBeLessThan(800);
+
+    // Split (full-width card): same cap applies.
+    await setDiffView(page, 'split');
+    await expect(page.locator('.user-comment-body')).toBeVisible();
+    const split = await measure();
+    expect(split.bodyWidth).toBeGreaterThan(300);
+    expect(split.bodyWidth).toBeLessThan(800);
+  });
+});
+
+/**
  * AI suggestions in split. PR-mode only: the harness mocks
  * POST /api/pr/:owner/:repo/:number/analyses to insert mock suggestions into
  * the DB. There is no equivalent mock for the Local analyses route (it would
