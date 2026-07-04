@@ -1263,7 +1263,15 @@ class PierreBridge {
     // Sort so that at the same line, suggestions appear before comments.
     // This matches the legacy rendering order where the suggestion row is
     // inserted first, then the adopted comment row appears below it.
-    const typeOrder = { 'suggestion': 0, 'comment-form': 1, 'comment': 2 };
+    // Hunk summaries and tour stops describe the surrounding code, so they
+    // stack above suggestion/comment feedback anchored to the same line.
+    const typeOrder = {
+      'hunk-summary': -2,
+      'tour-stop': -1,
+      'suggestion': 0,
+      'comment-form': 1,
+      'comment': 2,
+    };
     const sorted = [...fileState.annotations].sort((a, b) => {
       if (a.lineNumber !== b.lineNumber) return a.lineNumber - b.lineNumber;
       if (a.side !== b.side) return a.side < b.side ? -1 : 1;
@@ -1409,9 +1417,43 @@ class PierreBridge {
       return this._renderSuggestionAnnotation(data, id);
     case 'comment-form':
       return this._renderFormAnnotation(data, id, formElements, fileName);
-    default:
+    default: {
+      // Custom annotation types (e.g. 'tour-stop', 'hunk-summary') are
+      // rendered by externally registered renderers so feature modules can
+      // plug in without modifying the bridge.
+      const customRenderer = this._annotationRenderers?.get(type);
+      if (customRenderer) {
+        try {
+          return customRenderer(data, id, fileName) || undefined;
+        } catch (err) {
+          console.error(`[PierreBridge] custom annotation renderer for "${type}" failed:`, err);
+          return undefined;
+        }
+      }
       return undefined;
     }
+    }
+  }
+
+  /**
+   * Register a renderer for a custom annotation type. The callback receives
+   * (data, id, fileName) and must return a DOM element (or null to skip).
+   * Elements are slotted into the light DOM below their anchor line, so page
+   * CSS and inline event handlers work as they do for comments/suggestions.
+   * @param {string} type - Annotation type (e.g. 'tour-stop', 'hunk-summary')
+   * @param {Function} renderFn - (data, id, fileName) => Element|null
+   */
+  registerAnnotationRenderer(type, renderFn) {
+    if (!this._annotationRenderers) this._annotationRenderers = new Map();
+    this._annotationRenderers.set(type, renderFn);
+  }
+
+  /**
+   * Remove a previously registered custom annotation renderer.
+   * @param {string} type
+   */
+  unregisterAnnotationRenderer(type) {
+    this._annotationRenderers?.delete(type);
   }
 
   /**
