@@ -39,9 +39,45 @@ class PierreBridge {
     // Stored here instead of on fileState because renderGutterUtility fires
     // during instance.render(), before fileState is set on this.files.
     this._gutterContainers = new Map();
+    this._gutterRowGetters = new Map();
+    this._hoveredRows = new Map();
 
     // Shared options for all FileDiff instances
     this._sharedOptions = null;
+
+    // Shared @pierre/diffs worker pool. Without this, FileDiff falls back to
+    // Shiki highlighting on the main thread, which can freeze large reviews.
+    this.workerManager = this._createWorkerManager();
+    this._workerReady = !this.workerManager;
+    this._workersFailed = false;
+    this._workerInitTimer = null;
+    this._workerStatsUnsubscribe = null;
+    this._lastPointerPosition = null;
+    this._trackPointerPosition = (event) => {
+      if (event.isPrimary === false) return;
+      this._lastPointerPosition = {
+        clientX: event.clientX,
+        clientY: event.clientY,
+        screenX: event.screenX,
+        screenY: event.screenY,
+        pointerId: event.pointerId || 1,
+        pointerType: event.pointerType || 'mouse',
+      };
+    };
+    document.addEventListener('pointermove', this._trackPointerPosition, { passive: true });
+    document.addEventListener('mousemove', this._trackPointerPosition, { passive: true });
+    if (this.workerManager?.subscribeToStatChanges) {
+      this._workerStatsUnsubscribe = this.workerManager.subscribeToStatChanges((stats) => {
+        this._handleWorkerStats(stats);
+      });
+      this._startWorkerInitTimeout();
+      const init = this.workerManager.initialize?.();
+      if (init?.catch) {
+        init.catch((err) => {
+          this._fallbackToMainThreadRendering('worker startup failed', err);
+        });
+      }
+    }
   }
 
   // ─── Theme ────────────────────────────────────────────────────────
@@ -57,8 +93,26 @@ class PierreBridge {
     };
   }
 
+  _getWorkerRenderOptions() {
+    return {
+      theme: this.getThemeConfig(),
+      useTokenTransformer: false,
+      lineDiffType: 'word',
+      maxLineDiffLength: 1000,
+      tokenizeMaxLineLength: 1000,
+    };
+  }
+
   setTheme(theme) {
     this.theme = theme;
+    if (this.workerManager?.setRenderOptions) {
+      const update = this.workerManager.setRenderOptions(this._getWorkerRenderOptions());
+      if (update?.catch) {
+        update.catch(err => {
+          console.warn('[PierreBridge] Failed to update @pierre/diffs worker theme.', err);
+        });
+      }
+    }
     for (const [, fileState] of this.files) {
       if (fileState.instance) {
         fileState.instance.setThemeType(theme);
@@ -76,6 +130,44 @@ class PierreBridge {
     if (this._unsafeCSS !== null) return this._unsafeCSS;
     this._unsafeCSS = PierreBridge.ANNOTATION_CSS;
     return this._unsafeCSS;
+  }
+
+  /**
+   * Create the shared worker pool used by @pierre/diffs for syntax highlighting.
+   * The main thread still produces the initial plain-text AST, while expensive
+   * language highlighting happens off-thread and streams back through rerender().
+   * @returns {Object|null}
+   * @private
+   */
+  _createWorkerManager() {
+    if (!window.PierreDiffs?.WorkerPoolManager || typeof Worker === 'undefined') {
+      return null;
+    }
+
+    try {
+      const hardwareConcurrency = window.navigator?.hardwareConcurrency || 2;
+      const poolSize = Math.max(1, Math.min(2, Math.floor(hardwareConcurrency / 2) || 1));
+      return new window.PierreDiffs.WorkerPoolManager({
+        workerFactory: () => {
+          const worker = new Worker('/js/vendor/pierre-diffs-worker.js');
+          worker.addEventListener('error', (event) => {
+            if (!this._workerReady) {
+              this._fallbackToMainThreadRendering('worker failed to load', event.error || event.message || event);
+            }
+          }, { once: true });
+          return worker;
+        },
+        poolSize,
+        totalASTLRUCacheSize: 50,
+      }, {
+        langs: ['text'],
+        ...this._getWorkerRenderOptions(),
+        preferredHighlighter: 'shiki-js',
+      });
+    } catch (err) {
+      console.warn('[PierreBridge] Failed to initialize @pierre/diffs worker pool; falling back to main-thread rendering.', err);
+      return null;
+    }
   }
 
   // ─── Patch Parsing & diffPosition Computation ─────────────────────
@@ -165,34 +257,91 @@ class PierreBridge {
     return fileState.diffPositions.get(`${normalizedSide}:${lineNumber}`) || null;
   }
 
-  // ─── File Rendering ───────────────────────────────────────────────
+  _handleWorkerStats(stats) {
+    if (!stats) return;
 
-  /**
-   * Create and render a FileDiff instance for a file.
-   * @param {string} fileName - File path
-   * @param {HTMLElement} container - DOM container to render into
-   * @param {string} patch - Unified diff patch text
-   * @param {Object} [renderOptions] - Additional render options
-   * @param {boolean} [renderOptions.collapsed] - Start collapsed
-   * @returns {Object} The file state object
-   */
-  renderFile(fileName, container, patch, renderOptions = {}) {
-    if (this._disabled) return null;
-
-    // Clean up existing instance
-    this.destroyFile(fileName);
-
-    const metadata = this.parsePatch(patch);
-    // Override the file name in metadata to match pair-review's name
-    if (metadata) {
-      metadata.name = fileName;
+    if (stats.workersFailed || /fail|error/i.test(stats.managerState || '')) {
+      this._fallbackToMainThreadRendering('worker startup failed', stats);
+      return;
     }
 
-    const diffPositions = this.computeDiffPositions(patch);
-    const annotations = [];
-    const formElements = new Map();
+    if (stats.managerState !== 'initialized' || this._workerReady) return;
+    this._workerReady = true;
+    this._clearWorkerInitTimeout();
+    const schedule = typeof requestAnimationFrame === 'function'
+      ? requestAnimationFrame
+      : (callback) => setTimeout(callback, 0);
+    schedule(() => {
+      // A fallback (timeout / worker error) can land between scheduling this
+      // callback and running it, nulling the worker manager. If so, there is
+      // nothing to attach — bail out rather than rebuild with a dead pool.
+      if (this._workersFailed || !this.workerManager) return;
+      for (const [fileName, fileState] of [...this.files]) {
+        if (fileState.usesWorkerManager) {
+          // Already worker-backed — a bare rerender picks up the highlighter.
+          fileState.instance?.rerender?.();
+        } else if (!fileState.forcePlainText) {
+          // Rendered before the pool was ready, so its FileDiff was built with
+          // an undefined manager and can never gain worker highlighting from a
+          // bare rerender(). Reconstruct it through the worker path. Skip
+          // forcePlainText (large/plain) files — they are deliberately plain.
+          this._rebuildFileInstance(fileName, fileState, { useWorkerManager: true });
+        }
+      }
+    });
+  }
 
-    const instance = new window.PierreDiffs.FileDiff({
+  _startWorkerInitTimeout() {
+    this._clearWorkerInitTimeout();
+    if (!this.workerManager || this._workerReady) return;
+    this._workerInitTimer = setTimeout(() => {
+      if (!this._workerReady) {
+        this._fallbackToMainThreadRendering('worker startup timed out');
+      }
+    }, PierreBridge.WORKER_INIT_TIMEOUT_MS);
+  }
+
+  _clearWorkerInitTimeout() {
+    if (this._workerInitTimer) {
+      clearTimeout(this._workerInitTimer);
+      this._workerInitTimer = null;
+    }
+  }
+
+  _fallbackToMainThreadRendering(reason, detail) {
+    if (!this.workerManager) return false;
+
+    console.warn(`[PierreBridge] @pierre/diffs ${reason}; falling back to main-thread rendering.`, detail || '');
+    this._workersFailed = true;
+    this._workerReady = true;
+    this._clearWorkerInitTimeout();
+    if (this._workerStatsUnsubscribe) {
+      this._workerStatsUnsubscribe();
+      this._workerStatsUnsubscribe = null;
+    }
+
+    const failedManager = this.workerManager;
+    this.workerManager = null;
+    if (failedManager?.terminate) {
+      try {
+        failedManager.terminate();
+      } catch (err) {
+        console.warn('[PierreBridge] Failed to terminate @pierre/diffs worker pool.', err);
+      }
+    }
+
+    for (const [fileName, fileState] of [...this.files]) {
+      if (!fileState.usesWorkerManager) continue;
+      this._rebuildFileInstance(fileName, fileState, { useWorkerManager: false });
+    }
+    return true;
+  }
+
+  _createFileDiffInstance(fileName, formElements, renderOptions = {}) {
+    const workerManager = renderOptions.useWorkerManager === false
+      ? undefined
+      : this.workerManager || undefined;
+    return new window.PierreDiffs.FileDiff({
       theme: this.getThemeConfig(),
       themeType: this.theme,
       disableFileHeader: true,
@@ -255,6 +404,271 @@ class PierreBridge {
           fileState.shadowHost = node;
         }
       },
+    }, workerManager);
+  }
+
+  /**
+   * Tear down a file's FileDiff instance and rebuild it from scratch, selecting
+   * whether the new instance is worker-backed via `useWorkerManager`.
+   *
+   * This is the shared multi-step sequence used in BOTH directions:
+   *   - Fallback: rebuild WITHOUT workers (`useWorkerManager: false`) when the
+   *     worker pool fails/times out (see `_fallbackToMainThreadRendering`).
+   *   - Init success: rebuild WITH workers (`useWorkerManager: true`) for files
+   *     that rendered before the worker pool finished initializing (see
+   *     `_handleWorkerStats`).
+   *
+   * Both paths need identical cleanup, re-parse, payload reconstruction (including
+   * the upgraded oldFile/newFile + contextRanges case), and hover restoration —
+   * only the manager differs, so the logic lives here once.
+   *
+   * @param {string} fileName
+   * @param {Object} fileState
+   * @param {Object} opts
+   * @param {boolean} opts.useWorkerManager - true to attach the worker pool,
+   *   false to rebuild on the main thread.
+   * @returns {boolean} true if a render occurred
+   * @private
+   */
+  _rebuildFileInstance(fileName, fileState, { useWorkerManager } = {}) {
+    if (!fileState?.container || !fileState.patch) return false;
+
+    try {
+      fileState.instance?.cleanUp();
+    } catch (err) {
+      console.warn(`[PierreBridge] Failed to clean up existing diff instance for ${fileName}.`, err);
+    }
+
+    this._gutterContainers.delete(fileName);
+    fileState.container.innerHTML = '';
+    const renderOptions = {
+      collapsed: fileState.collapsed,
+      forcePlainText: fileState.forcePlainText,
+      useWorkerManager,
+    };
+    const metadata = this.parsePatch(fileState.patch);
+    if (metadata) {
+      metadata.name = fileName;
+      if (renderOptions.forcePlainText) {
+        metadata.lang = 'text';
+      }
+    }
+    const instance = this._createFileDiffInstance(fileName, fileState.formElements, renderOptions);
+    fileState.instance = instance;
+    fileState.metadata = metadata;
+    fileState.shadowHost = null;
+    fileState.usesWorkerManager = useWorkerManager === true && !!this.workerManager;
+
+    const payload = fileState.oldFile || fileState.newFile
+      ? {
+        oldFile: fileState.oldFile,
+        newFile: fileState.newFile,
+        fileDiff: fileState.contextRanges?.length && fileState.baseMetadata
+          ? window.PierreContext?.mergeContextRanges?.(fileState.baseMetadata, fileState.contextRanges) || fileState.baseMetadata
+          : fileState.baseMetadata || metadata,
+        lineAnnotations: fileState.annotations,
+        containerWrapper: fileState.container,
+      }
+      : {
+        fileDiff: metadata,
+        containerWrapper: fileState.container,
+        lineAnnotations: fileState.annotations,
+      };
+    const rendered = instance.render(payload);
+    fileState.shadowHost = fileState.container.querySelector('diffs-container') || fileState.container.firstElementChild;
+    if (rendered) this._installFallbackHoverTracking(fileName, fileState);
+    if (rendered) this._restoreHoverAfterRender(fileState);
+    return rendered;
+  }
+
+  _isPointerInsideFile(fileState) {
+    const pos = this._lastPointerPosition;
+    if (!pos || !fileState?.container?.isConnected) return false;
+
+    const rect = fileState.container.getBoundingClientRect();
+    return (
+      pos.clientX >= rect.left &&
+      pos.clientX <= rect.right &&
+      pos.clientY >= rect.top &&
+      pos.clientY <= rect.bottom
+    );
+  }
+
+  isPointerOverFile(fileName) {
+    return this._isPointerInsideFile(this.files.get(fileName));
+  }
+
+  _restoreHoverAfterRender(fileState) {
+    const pos = this._lastPointerPosition;
+    if (!pos || !this._isPointerInsideFile(fileState)) return;
+
+    const schedule = typeof requestAnimationFrame === 'function'
+      ? requestAnimationFrame
+      : (callback) => setTimeout(callback, 0);
+    schedule(() => {
+      if (!this._isPointerInsideFile(fileState)) return;
+
+      const shadowRoot = fileState.shadowHost?.shadowRoot
+        || fileState.container.querySelector('diffs-container')?.shadowRoot;
+      const target = shadowRoot?.elementFromPoint?.(pos.clientX, pos.clientY)
+        || document.elementFromPoint(pos.clientX, pos.clientY);
+      if (!target) return;
+
+      const eventInit = {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        clientX: pos.clientX,
+        clientY: pos.clientY,
+        screenX: pos.screenX || 0,
+        screenY: pos.screenY || 0,
+        pointerId: pos.pointerId || 1,
+        pointerType: pos.pointerType || 'mouse',
+        isPrimary: true,
+      };
+      if (typeof window.PointerEvent === 'function') {
+        target.dispatchEvent(new window.PointerEvent('pointermove', eventInit));
+      }
+      target.dispatchEvent(new MouseEvent('mousemove', eventInit));
+    });
+  }
+
+  _getHoveredRow(fileName) {
+    const getter = this._gutterRowGetters.get(fileName);
+    if (getter) {
+      try {
+        const hovered = getter();
+        if (hovered) return hovered;
+      } catch (_err) {
+        // The cached gutter buttons can outlive a FileDiff instance during a
+        // rerender. Fall through to the bridge-tracked hover row.
+      }
+    }
+    return this._hoveredRows.get(fileName) || null;
+  }
+
+  _installFallbackHoverTracking(fileName, fileState) {
+    fileState._fallbackHoverCleanup?.();
+
+    const shadowRoot = fileState.shadowHost?.shadowRoot
+      || fileState.container?.querySelector('diffs-container')?.shadowRoot;
+    if (!shadowRoot) return;
+
+    const onPointerMove = (event) => {
+      const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+      const lineCell = path.find(node =>
+        node?.nodeType === 1 &&
+        node.dataset?.columnNumber != null &&
+        node.dataset?.lineType != null
+      );
+      if (!lineCell) return;
+
+      const lineNumber = parseInt(lineCell.dataset.columnNumber, 10);
+      if (!Number.isFinite(lineNumber)) return;
+
+      const lineType = lineCell.dataset.lineType || '';
+      this._hoveredRows.set(fileName, {
+        lineNumber,
+        side: lineType.includes('deletion') ? 'deletions' : 'additions',
+      });
+      this._positionFallbackGutter(fileName, lineCell);
+    };
+
+    const onPointerLeave = () => {
+      this._hoveredRows.delete(fileName);
+      this._clearFallbackGutterPosition(fileName);
+    };
+
+    shadowRoot.addEventListener('pointermove', onPointerMove);
+    shadowRoot.addEventListener('mousemove', onPointerMove);
+    shadowRoot.addEventListener('pointerleave', onPointerLeave);
+    fileState._fallbackHoverCleanup = () => {
+      shadowRoot.removeEventListener('pointermove', onPointerMove);
+      shadowRoot.removeEventListener('mousemove', onPointerMove);
+      shadowRoot.removeEventListener('pointerleave', onPointerLeave);
+    };
+  }
+
+  _positionFallbackGutter(fileName, lineCell) {
+    const container = this._gutterContainers.get(fileName);
+    if (!container) return;
+
+    for (const [otherFileName, otherContainer] of this._gutterContainers) {
+      if (otherFileName === fileName || !otherContainer.parentElement) continue;
+      otherContainer._pierreFallbackParent = otherContainer._pierreFallbackParent || otherContainer.parentElement;
+      otherContainer.remove();
+    }
+
+    const rect = lineCell.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+
+    const fileState = this.files.get(fileName);
+    const fallbackParent = fileState?.container?.closest?.('[data-file-name]') || fileState?.container;
+    container.dataset.fallbackPositioned = '';
+    if (fallbackParent && container.parentElement !== fallbackParent) {
+      container._pierreFallbackParent = container._pierreFallbackParent || container.parentElement;
+      fallbackParent.prepend(container);
+    }
+    container.style.position = 'fixed';
+    container.style.left = `${rect.right - 12}px`;
+    container.style.right = 'auto';
+    container.style.top = `${rect.top + (rect.height / 2)}px`;
+    container.style.transform = 'translateY(-50%)';
+    container.style.zIndex = '1000';
+  }
+
+  _clearFallbackGutterPosition(fileName) {
+    const container = this._gutterContainers.get(fileName);
+    if (!container?.dataset?.fallbackPositioned) return;
+
+    delete container.dataset.fallbackPositioned;
+    const fallbackParent = container._pierreFallbackParent;
+    if (fallbackParent?.isConnected && container.parentElement !== fallbackParent) {
+      fallbackParent.appendChild(container);
+    }
+    container._pierreFallbackParent = null;
+    container.style.removeProperty('position');
+    container.style.removeProperty('left');
+    container.style.removeProperty('right');
+    container.style.removeProperty('top');
+    container.style.removeProperty('transform');
+    container.style.removeProperty('z-index');
+  }
+
+  // ─── File Rendering ───────────────────────────────────────────────
+
+  /**
+   * Create and render a FileDiff instance for a file.
+   * @param {string} fileName - File path
+   * @param {HTMLElement} container - DOM container to render into
+   * @param {string} patch - Unified diff patch text
+   * @param {Object} [renderOptions] - Additional render options
+   * @param {boolean} [renderOptions.collapsed] - Start collapsed
+   * @returns {Object} The file state object
+   */
+  renderFile(fileName, container, patch, renderOptions = {}) {
+    if (this._disabled) return null;
+
+    // Clean up existing instance
+    this.destroyFile(fileName);
+
+    const metadata = this.parsePatch(patch);
+    // Override the file name in metadata to match pair-review's name
+    if (metadata) {
+      metadata.name = fileName;
+      if (renderOptions.forcePlainText) {
+        metadata.lang = 'text';
+      }
+    }
+
+    const diffPositions = this.computeDiffPositions(patch);
+    const annotations = [];
+    const formElements = new Map();
+
+    const useWorkerManager = !!(this.workerManager && this._workerReady);
+    const instance = this._createFileDiffInstance(fileName, formElements, {
+      ...renderOptions,
+      useWorkerManager,
     });
 
     const rendered = instance.render({
@@ -265,6 +679,7 @@ class PierreBridge {
 
     const fileState = {
       instance,
+      fileName,
       metadata,
       container,
       patch,
@@ -277,9 +692,14 @@ class PierreBridge {
       newFile: null,
       baseMetadata: null,   // metadata before context range merging
       contextRanges: [],     // [{startLine, endLine}] in NEW file coords
+      forcePlainText: !!renderOptions.forcePlainText,
+      collapsed: !!renderOptions.collapsed,
+      usesWorkerManager: useWorkerManager,
     };
 
     this.files.set(fileName, fileState);
+    fileState.shadowHost = fileState.container.querySelector('diffs-container') || fileState.container.firstElementChild;
+    if (rendered) this._installFallbackHoverTracking(fileName, fileState);
     return fileState;
   }
 
@@ -295,21 +715,30 @@ class PierreBridge {
   upgradeFileContents(fileName, oldFile, newFile) {
     const fileState = this.files.get(fileName);
     if (!fileState || !fileState.instance) return false;
+    const nextOldFile = fileState.forcePlainText && oldFile
+      ? { ...oldFile, lang: 'text' }
+      : oldFile;
+    const nextNewFile = fileState.forcePlainText && newFile
+      ? { ...newFile, lang: 'text' }
+      : newFile;
+
     const rendered = fileState.instance.render({
-      oldFile,
-      newFile,
+      oldFile: nextOldFile,
+      newFile: nextNewFile,
       lineAnnotations: fileState.annotations,
       containerWrapper: fileState.container,
     });
     // Cache full-file contents for re-render calls (context ranges, etc.)
-    fileState.oldFile = oldFile;
-    fileState.newFile = newFile;
+    fileState.oldFile = nextOldFile;
+    fileState.newFile = nextNewFile;
     // Snapshot metadata whenever the instance has a fileDiff,
     // even if render() returned false (e.g. files-equal early exit)
     if (fileState.instance.fileDiff) {
       fileState.baseMetadata = fileState.instance.fileDiff;
       if (fileState.contextRanges?.length) this._applyContextRanges(fileName);
     }
+    if (rendered) this._installFallbackHoverTracking(fileName, fileState);
+    if (rendered) this._restoreHoverAfterRender(fileState);
     return rendered;
   }
 
@@ -330,6 +759,7 @@ class PierreBridge {
   setCollapsed(fileName, collapsed) {
     const fileState = this.files.get(fileName);
     if (!fileState) return;
+    fileState.collapsed = collapsed;
     fileState.instance.setOptions({ collapsed });
   }
 
@@ -340,11 +770,17 @@ class PierreBridge {
   destroyFile(fileName) {
     const fileState = this.files.get(fileName);
     if (!fileState) return;
+    const gutterContainer = this._gutterContainers.get(fileName);
     if (fileState.instance) {
       fileState.instance.cleanUp();
     }
+    fileState._fallbackHoverCleanup?.();
+    this._clearFallbackGutterPosition(fileName);
+    gutterContainer?.remove();
     fileState.formElements.clear();
     this._gutterContainers.delete(fileName);
+    this._gutterRowGetters.delete(fileName);
+    this._hoveredRows.delete(fileName);
     this.files.delete(fileName);
   }
 
@@ -397,13 +833,16 @@ class PierreBridge {
    */
   _renderWithFileDiff(fileState, fileDiff) {
     fileState.instance.hunksRenderer?.expandedHunks?.clear();
-    return fileState.instance.render({
+    const rendered = fileState.instance.render({
       oldFile: fileState.oldFile,
       newFile: fileState.newFile,
       fileDiff,
       lineAnnotations: fileState.annotations,
       containerWrapper: fileState.container,
     });
+    if (rendered) this._installFallbackHoverTracking(fileState.fileName, fileState);
+    if (rendered) this._restoreHoverAfterRender(fileState);
+    return rendered;
   }
 
   _applyContextRanges(fileName) {
@@ -578,6 +1017,7 @@ class PierreBridge {
   }
 
   _createGutterButtons(fileName, getHoveredRow) {
+    this._gutterRowGetters.set(fileName, getHoveredRow);
     // Reuse existing container if already created for this file
     if (this._gutterContainers.has(fileName)) return this._gutterContainers.get(fileName);
 
@@ -599,7 +1039,7 @@ class PierreBridge {
      *  - Otherwise, apply the action to the single hovered line.
      */
     const resolveClickTarget = () => {
-      const hovered = getHoveredRow();
+      const hovered = this._getHoveredRow(fileName);
       const hoveredSide = hovered
         ? (hovered.side === 'deletions' ? 'LEFT' : 'RIGHT')
         : null;
@@ -647,7 +1087,7 @@ class PierreBridge {
 
       btn.addEventListener('pointerdown', (e) => {
         e.stopPropagation(); // library can't handle buttons; avoid interference
-        const hovered = getHoveredRow();
+        const hovered = this._getHoveredRow(fileName);
         if (!hovered) return;
         dragInfo = {
           startLine: hovered.lineNumber,
@@ -658,7 +1098,7 @@ class PierreBridge {
 
         const onMove = (me) => {
           if (!dragInfo || me.pointerId !== dragInfo.pointerId) return;
-          const cur = getHoveredRow();
+          const cur = this._getHoveredRow(fileName);
           if (!cur || cur.lineNumber === dragInfo.startLine) return;
           dragInfo.dragged = true;
           const fileState = this.files.get(fileName);
@@ -1449,6 +1889,8 @@ class PierreBridge {
       }
     }
   `;
+
+  static WORKER_INIT_TIMEOUT_MS = 15000;
 }
 
 // Export as global

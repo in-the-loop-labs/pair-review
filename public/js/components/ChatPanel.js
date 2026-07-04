@@ -4630,6 +4630,18 @@ class ChatPanel {
       await window.prManager.ensureLinesVisible([
         { file, line_start: lineStart, line_end: end, side: 'RIGHT' }
       ]);
+      const updatedBridge = window.prManager?.pierreBridge;
+      if (updatedBridge?.files?.has(file)) {
+        let scrolled = false;
+        for (let ln = lineStart; ln <= end; ln++) {
+          const ok = updatedBridge.scrollToLine(file, ln, 'RIGHT', ln === lineStart);
+          scrolled = scrolled || ok;
+        }
+        if (!scrolled && window.prManager?.scrollToFile) {
+          window.prManager.scrollToFile(file);
+        }
+        return;
+      }
       targetRows = this._findLineRows(fileWrapper, lineStart, end);
     }
     if (targetRows.length === 0) return;

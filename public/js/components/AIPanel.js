@@ -1195,7 +1195,15 @@ class AIPanel {
             try { await window.prManager.ensureFileBodyRendered(file); } catch { /* best effort */ }
         }
 
-        const doScroll = () => {
+        const doScroll = async () => {
+            // Reveal the target line first — for Pierre-rendered files this
+            // materializes deferred diffs and expands collapsed gaps.
+            if (file && line && window.prManager?.ensureLinesVisible) {
+                await window.prManager.ensureLinesVisible([
+                    { file, line_start: parseInt(line, 10), line_end: parseInt(line, 10), side: 'RIGHT' }
+                ]);
+            }
+
             let targetSuggestion = null;
 
             // First, try to find by exact ID match (most reliable)
@@ -1278,7 +1286,13 @@ class AIPanel {
             try { await window.prManager.ensureFileBodyRendered(file); } catch { /* best effort */ }
         }
 
-        const doScroll = () => {
+        const doScroll = async () => {
+            if (file && line && window.prManager?.ensureLinesVisible) {
+                await window.prManager.ensureLinesVisible([
+                    { file, line_start: parseInt(line, 10), line_end: parseInt(line, 10), side: 'RIGHT' }
+                ]);
+            }
+
             let targetElement = null;
             let isFileLevel = false;
 

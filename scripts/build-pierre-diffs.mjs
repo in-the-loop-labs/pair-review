@@ -7,6 +7,7 @@
 import { build } from 'esbuild';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { copyFile, mkdir } from 'fs/promises';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, '..');
@@ -31,7 +32,15 @@ try {
     logLevel: 'info',
   });
 
+  const vendorDir = resolve(root, 'public/js/vendor');
+  await mkdir(vendorDir, { recursive: true });
+  await copyFile(
+    resolve(root, 'node_modules/@pierre/diffs/dist/worker/worker-portable.js'),
+    resolve(vendorDir, 'pierre-diffs-worker.js')
+  );
+
   console.log('✓ @pierre/diffs bundled to public/js/vendor/pierre-diffs.js');
+  console.log('✓ @pierre/diffs worker copied to public/js/vendor/pierre-diffs-worker.js');
 } catch (err) {
   console.error('✗ Failed to bundle @pierre/diffs:', err.message);
   process.exit(1);

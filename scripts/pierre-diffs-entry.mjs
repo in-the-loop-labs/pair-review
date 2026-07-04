@@ -27,3 +27,7 @@ export {
   // Line annotation helpers
   getLineAnnotationName,
 } from '@pierre/diffs';
+
+export {
+  WorkerPoolManager,
+} from '@pierre/diffs/worker';

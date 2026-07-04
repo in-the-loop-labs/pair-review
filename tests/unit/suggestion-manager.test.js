@@ -634,6 +634,44 @@ describe('SuggestionManager.findFileElement()', () => {
   });
 });
 
+describe('SuggestionManager._isFileLevel()', () => {
+  // Regression: the `is_file_level` flag arrives as boolean `true` from the
+  // analyses merge path (src/routes/analyses.js) and integer `1` from the
+  // SQLite-backed paths (src/routes/pr.js, src/routes/chat.js). Both shapes
+  // must be treated as file-level so that file-level suggestions are excluded
+  // from the `lineTargets` list fed to ensureLinesVisible in displayAISuggestions.
+  const suggestionManager = createTestSuggestionManager();
+
+  it('treats integer 1 as file-level', () => {
+    expect(suggestionManager._isFileLevel({ is_file_level: 1 })).toBe(true);
+  });
+
+  it('treats boolean true as file-level (analyses merge path)', () => {
+    expect(suggestionManager._isFileLevel({ is_file_level: true })).toBe(true);
+  });
+
+  it('treats integer 0 as line-level', () => {
+    expect(suggestionManager._isFileLevel({ is_file_level: 0 })).toBe(false);
+  });
+
+  it('treats boolean false as line-level', () => {
+    expect(suggestionManager._isFileLevel({ is_file_level: false })).toBe(false);
+  });
+
+  it('treats a missing flag as line-level', () => {
+    expect(suggestionManager._isFileLevel({})).toBe(false);
+  });
+
+  it('excludes a boolean-true file-level suggestion from lineTargets even with a stray line number', () => {
+    // A file-level suggestion from the analyses path carrying a stray line_start
+    // must NOT be routed to ensureLinesVisible. The lineTargets filter excludes
+    // any suggestion where _isFileLevel() is true, so verify that predicate here.
+    const analysesFileLevel = { file: 'src/utils/helpers.js', is_file_level: true, line_start: 42 };
+    expect(suggestionManager._isFileLevel(analysesFileLevel)).toBe(true);
+>>>>>>> 715405da (feat: off-thread highlighting and large-diff budgeting for @pierre/diffs)
+  });
+});
+
 describe('SuggestionManager chat button event delegation', () => {
   let suggestionManager;
   let clickHandlers;

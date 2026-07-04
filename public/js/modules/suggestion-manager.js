@@ -244,6 +244,19 @@ class SuggestionManager {
   }
 
   /**
+   * Normalize the `is_file_level` flag to a boolean.
+   * This field arrives in two shapes across the codebase: boolean `true` from
+   * the analyses merge path (src/routes/analyses.js) and integer `1` from the
+   * SQLite-backed paths (src/routes/pr.js, src/routes/chat.js). Matches the
+   * normalization used in AIPanel.js.
+   * @param {Object} suggestion
+   * @returns {boolean} true if the suggestion is file-level
+   */
+  _isFileLevel(suggestion) {
+    return suggestion?.is_file_level === 1 || suggestion?.is_file_level === true;
+  }
+
+  /**
    * Display AI suggestions inline with diff
    * Uses a concurrency guard to prevent multiple simultaneous executions
    * @param {Array} suggestions - Array of suggestions to display
@@ -282,7 +295,8 @@ class SuggestionManager {
       // without this findHiddenSuggestions() would flag every line as "hidden"
       // and we'd gap-expand against bodies that aren't even built yet.
       // ensureFileBodyRendered is a cheap no-op for files already rendered or
-      // not in the diff.
+      // not in the diff. Pierre-rendered files are not in _lazyFileBodies, so
+      // this only affects legacy-rendered files.
       if (this.prManager?.ensureFileBodyRendered) {
         const targetFiles = new Set(inlineSuggestions.map(s => s.file));
         for (const file of targetFiles) {
@@ -290,14 +304,34 @@ class SuggestionManager {
         }
       }
 
-      // For files rendered by @pierre/diffs, use annotation-based display
+      // Clear stale Pierre annotations/ranges before expanding for the new set.
       if (this.prManager.pierreBridge) {
-        // Clear existing suggestion annotations and context ranges for all files
         for (const [fileName] of this.prManager.pierreBridge.files) {
           this.prManager.pierreBridge.removeAnnotationsByType(fileName, 'suggestion');
           this.prManager.pierreBridge.clearContextRanges(fileName);
         }
+      }
 
+      const lineTargets = suggestions
+        .filter(suggestion =>
+          suggestion.file
+          && !this._isFileLevel(suggestion)
+          && (suggestion.line_start != null || suggestion.line_end != null)
+        )
+        .map(suggestion => ({
+          file: suggestion.file,
+          line_start: suggestion.line_start || suggestion.line_end,
+          line_end: suggestion.line_end || suggestion.line_start,
+          side: suggestion.side || 'RIGHT',
+        }));
+      if (lineTargets.length > 0 && this.prManager?.ensureLinesVisible) {
+        await this.prManager.ensureLinesVisible(lineTargets);
+      }
+
+      // For files rendered by @pierre/diffs, use annotation-based display.
+      // Deferred files may have been materialized by ensureLinesVisible() above,
+      // so group after that step.
+      if (this.prManager.pierreBridge) {
         // Group suggestions by file
         const suggestionsByFile = new Map();
         for (const suggestion of suggestions) {
@@ -413,7 +447,7 @@ class SuggestionManager {
       const lineLevelSuggestions = [];
 
       suggestions.forEach(suggestion => {
-        if (suggestion.is_file_level === 1 || suggestion.line_start === null) {
+        if (this._isFileLevel(suggestion) || suggestion.line_start === null) {
           fileLevelSuggestions.push(suggestion);
         } else {
           lineLevelSuggestions.push(suggestion);
