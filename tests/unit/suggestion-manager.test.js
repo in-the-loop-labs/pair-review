@@ -668,7 +668,6 @@ describe('SuggestionManager._isFileLevel()', () => {
     // any suggestion where _isFileLevel() is true, so verify that predicate here.
     const analysesFileLevel = { file: 'src/utils/helpers.js', is_file_level: true, line_start: 42 };
     expect(suggestionManager._isFileLevel(analysesFileLevel)).toBe(true);
->>>>>>> 715405da (feat: off-thread highlighting and large-diff budgeting for @pierre/diffs)
   });
 });
 
