@@ -3,3 +3,4 @@
 # strictDepBuilds defaults to true in v11, so native modules must be explicitly allowed.
 allowBuilds:
   better-sqlite3: true
+  esbuild: true
