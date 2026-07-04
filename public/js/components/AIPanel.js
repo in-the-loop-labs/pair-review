@@ -1759,7 +1759,11 @@ class AIPanel {
 
         const fileName = thread.file ? thread.file.split('/').pop() : null;
         const lineNum = thread.line_start;
-        const fullLocation = fileName ? `${fileName}${lineNum ? ':' + lineNum : ''}` : '';
+        // File-level threads (GitHub subject_type='file') have no line — label
+        // them "(file)" like native file-level comments instead of a line no.
+        const isFileLevel = thread.is_file_level === 1 || thread.is_file_level === true;
+        const locationSuffix = lineNum ? ':' + lineNum : (isFileLevel ? ' (file)' : '');
+        const fullLocation = fileName ? `${fileName}${locationSuffix}` : '';
 
         const replies = Array.isArray(thread.replies) ? thread.replies : [];
         // Strict count of comments in the thread (root + replies). Always
@@ -1806,7 +1810,7 @@ class AIPanel {
                     <div class="finding-content">
                         <span class="finding-title"><span class="external-list-author">${this.escapeHtml(author)}</span><span class="external-list-snippet">${snippet ? ' — ' + this.escapeHtml(snippet) : ''}</span></span>
                         ${thread.is_outdated ? '<span class="finding-meta"><span class="external-list-outdated-badge">outdated</span></span>' : ''}
-                        ${fileName ? `<span class="finding-location">${this.escapeHtml(fileName)}${lineNum ? ':' + lineNum : ''}</span>` : ''}
+                        ${fileName ? `<span class="finding-location">${this.escapeHtml(fileName)}${locationSuffix}</span>` : ''}
                     </div>
                 </button>
                 ${chatAction}

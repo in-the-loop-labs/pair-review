@@ -7637,6 +7637,16 @@ body.resizing * {
   display: table-row;
 }
 
+/* File-level external comments live in the always-visible file-comments-zone,
+   not on a diff line. They have no per-line indicator to reveal them (the
+   minimizer's line scan skips zone cards, and its file-header indicator counts
+   only .file-comment-card), so the blanket .external-comment-row hide above
+   must not apply to cards inside a zone — keep them visible when minimized.
+   Higher specificity (three classes) wins over the two-class hide rule. */
+.comments-minimized .file-comments-zone .external-comment-row {
+  display: block;
+}
+
 /* When minimize mode is active, hide file-level comment cards */
 .comments-minimized .file-comment-card {
   display: none;
@@ -9761,7 +9771,8 @@ body.resizing * {
 
 /* Conditional styling - only show background/border when zone has actual content */
 .file-comments-zone:has(.file-comment-card),
-.file-comments-zone:has(.file-comment-form) {
+.file-comments-zone:has(.file-comment-form),
+.file-comments-zone:has(.external-comment-row) {
   background: var(--file-comment-bg);
   border-bottom: 1px solid var(--file-comment-border);
 }
@@ -9775,7 +9786,8 @@ body.resizing * {
 
 /* Only add padding when container has visible content */
 .file-comments-container:has(.file-comment-card),
-.file-comments-container:has(.file-comment-form) {
+.file-comments-container:has(.file-comment-form),
+.file-comments-container:has(.external-comment-row) {
   padding: 12px 16px;
 }
 

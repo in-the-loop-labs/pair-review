@@ -21,7 +21,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 48;
+const CURRENT_SCHEMA_VERSION = 49;
 
 /**
  * Database schema SQL statements
@@ -349,6 +349,7 @@ const SCHEMA_SQL = {
       diff_position INTEGER,
       commit_sha TEXT,
       is_outdated INTEGER NOT NULL DEFAULT 0,
+      is_file_level INTEGER NOT NULL DEFAULT 0,
       original_line_start INTEGER,
       original_line_end INTEGER,
       original_commit_sha TEXT,
@@ -2159,6 +2160,26 @@ const MIGRATIONS = {
       console.log('  Table tours already exists');
     }
     console.log('Migration to schema version 48 complete');
+  },
+
+  // Migration to version 49: Add is_file_level flag to external_comments so
+  // file-level review comments (GitHub subject_type='file') can be rendered in
+  // the per-file comments zone instead of as a bogus line-1 annotation.
+  // Idempotent single-column ALTER guarded by columnExists — safe to re-run.
+  // A single DDL statement needs no transaction wrapper.
+  49: (db) => {
+    console.log('Running migration to schema version 49: Add is_file_level to external_comments...');
+    if (!tableExists(db, 'external_comments')) {
+      // Table not created yet (older instance below version 45). Migration 45
+      // creates it with the current base schema; nothing to alter here.
+      console.log('  external_comments table not present; nothing to alter');
+    } else if (!columnExists(db, 'external_comments', 'is_file_level')) {
+      db.exec('ALTER TABLE external_comments ADD COLUMN is_file_level INTEGER NOT NULL DEFAULT 0');
+      console.log('  Added is_file_level column to external_comments');
+    } else {
+      console.log('  Column is_file_level already exists');
+    }
+    console.log('Migration to schema version 49 complete');
   }
 };
 
@@ -3859,6 +3880,7 @@ class ExternalCommentRepository {
    * @param {number} [mappedRow.diff_position]
    * @param {string} [mappedRow.commit_sha]
    * @param {boolean|number} [mappedRow.is_outdated]
+   * @param {boolean|number} [mappedRow.is_file_level] - 1 for file-level (no line anchor)
    * @param {number} [mappedRow.original_line_start]
    * @param {number} [mappedRow.original_line_end]
    * @param {string} [mappedRow.original_commit_sha]
@@ -3886,6 +3908,7 @@ class ExternalCommentRepository {
       ? String(mappedRow.in_reply_to_id)
       : null;
     const isOutdated = mappedRow.is_outdated ? 1 : 0;
+    const isFileLevel = mappedRow.is_file_level ? 1 : 0;
     const side = mappedRow.side === 'LEFT' ? 'LEFT' : (mappedRow.side === 'RIGHT' ? 'RIGHT' : null);
 
     // SQLite UPSERT. Update every column except id and parent_id; parent_id is
@@ -3896,9 +3919,9 @@ class ExternalCommentRepository {
         review_id, source, external_id, in_reply_to_id,
         external_url, author, author_url,
         file, side, line_start, line_end, diff_position, commit_sha,
-        is_outdated, original_line_start, original_line_end, original_commit_sha,
+        is_outdated, is_file_level, original_line_start, original_line_end, original_commit_sha,
         body, external_created_at, synced_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(review_id, source, external_id) DO UPDATE SET
         in_reply_to_id = excluded.in_reply_to_id,
         external_url = excluded.external_url,
@@ -3911,6 +3934,7 @@ class ExternalCommentRepository {
         diff_position = excluded.diff_position,
         commit_sha = excluded.commit_sha,
         is_outdated = excluded.is_outdated,
+        is_file_level = excluded.is_file_level,
         original_line_start = excluded.original_line_start,
         original_line_end = excluded.original_line_end,
         original_commit_sha = excluded.original_commit_sha,
@@ -3933,6 +3957,7 @@ class ExternalCommentRepository {
       mappedRow.diff_position ?? null,
       mappedRow.commit_sha ?? null,
       isOutdated,
+      isFileLevel,
       mappedRow.original_line_start ?? null,
       mappedRow.original_line_end ?? null,
       mappedRow.original_commit_sha ?? null,

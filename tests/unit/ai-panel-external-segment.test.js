@@ -541,6 +541,36 @@ describe('AIPanel.renderExternalThreadItem', () => {
     expect(html).not.toContain('<script>');
     expect(html).not.toContain('<img src=x');
   });
+
+  it('labels a file-level thread "(file)" instead of a line number', () => {
+    const panel = createTestPanel();
+    const html = panel.renderExternalThreadItem(
+      panel._normalizeExternalThread(makeThread({
+        is_file_level: 1,
+        line_start: null,
+        line_end: null,
+        original_line_start: null,
+        original_line_end: null,
+        file: 'src/utils.js',
+      })),
+      0
+    );
+    // Location shows the basename + "(file)" marker, no ":<line>".
+    expect(html).toContain('utils.js (file)');
+    expect(html).not.toMatch(/utils\.js:\d/);
+    // No line anchor to write to data-line.
+    expect(html).toContain('data-line=""');
+  });
+
+  it('still shows a line number for ordinary line-level threads', () => {
+    const panel = createTestPanel();
+    const html = panel.renderExternalThreadItem(
+      panel._normalizeExternalThread(makeThread({ file: 'src/utils.js', line_start: 9, line_end: 9 })),
+      0
+    );
+    expect(html).toContain('utils.js:9');
+    expect(html).not.toContain('(file)');
+  });
 });
 
 // -----------------------------------------------------------------------

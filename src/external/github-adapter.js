@@ -129,7 +129,23 @@ async function fetchComments({ client, owner, repo, pull_number }) {
 /**
  * Map a raw GitHub review-comment API row to an `external_comments` row.
  *
- * Host-aware anchoring (the `options.isAltHost` switch):
+ * File-level comments (`subject_type === 'file'`): GitHub's REST "list review
+ * comments" returns comments attached to a whole file (not a line) with
+ * `subject_type: 'file'` but STILL anchored at `line: 1, position: 1`. Taking
+ * those coordinates at face value renders them as ordinary line-1 annotations
+ * (the bug this handles). So when `subject_type === 'file'` we flag the row
+ * `is_file_level = 1` and null EVERY line anchor (`line_start`, `line_end`,
+ * `diff_position`, `original_line_start`, `original_line_end`) — a file-level
+ * comment has no line to anchor to. `is_outdated` stays 0: with no line anchor
+ * there is nothing to outdate, and this deliberately bypasses the position/line
+ * `is_outdated` derivation below (whose null-position branch would otherwise
+ * mark it outdated). The frontend renders `is_file_level` rows in the per-file
+ * comments zone above the diff. Alt hosts may omit `subject_type` entirely —
+ * then `isFileLevel` is false and behaviour is unchanged (acceptable; those
+ * hosts don't distinguish file-level comments in this response shape).
+ *
+ * Host-aware anchoring (the `options.isAltHost` switch), applied only to
+ * NON-file-level rows:
  *   - **github.com (default, `isAltHost` falsy)**: `position` is the signal
  *     for "outdated". A null `position` means the comment no longer maps to
  *     the current diff, so the current-anchor fields are nulled and
@@ -177,13 +193,31 @@ function mapComment(apiRow, options = {}) {
 
   const user = apiRow.user || null;
   const isAltHost = options.isAltHost === true;
+  // A file-level comment (GitHub sets subject_type='file') has no line anchor,
+  // even though GitHub still reports line:1/position:1. Alt hosts may omit
+  // subject_type — then this is false and the row is treated line-anchored,
+  // exactly as before.
+  const isFileLevel = apiRow.subject_type === 'file';
 
   let line_start;
   let line_end;
   let diff_position;
   let is_outdated;
+  // Preferred original anchor; nulled for file-level rows (no line at all).
+  let original_line_start = apiRow.original_start_line ?? apiRow.original_line ?? null;
+  let original_line_end = apiRow.original_line ?? null;
 
-  if (isAltHost) {
+  if (isFileLevel) {
+    // No line anchor of any kind: strip current AND original coordinates so
+    // the frontend routes the row to the per-file comments zone instead of a
+    // diff line. is_outdated stays 0 — there is no line to have gone stale.
+    line_start = null;
+    line_end = null;
+    diff_position = null;
+    is_outdated = 0;
+    original_line_start = null;
+    original_line_end = null;
+  } else if (isAltHost) {
     // Alt-host: `line` is the authoritative signal. `position` is unreliable
     // (alt-hosts leave it null even for current comments), so we never null
     // out a good `line` based on it. `diff_position` is carried through —
@@ -223,9 +257,9 @@ function mapComment(apiRow, options = {}) {
     diff_position,
     commit_sha: apiRow.commit_id ?? null,
     is_outdated,
-    original_line_start:
-      apiRow.original_start_line ?? apiRow.original_line ?? null,
-    original_line_end: apiRow.original_line ?? null,
+    is_file_level: isFileLevel ? 1 : 0,
+    original_line_start,
+    original_line_end,
     original_commit_sha: apiRow.original_commit_id ?? null,
     body: apiRow.body ?? '',
     external_created_at: apiRow.created_at ?? null,

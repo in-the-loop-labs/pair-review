@@ -6,6 +6,16 @@
  * renders thread-grouped comments as `.external-comment-row` rows anchored
  * after the appropriate diff line.
  *
+ * FILE-LEVEL PATH — a thread with `is_file_level` (GitHub subject_type='file')
+ * has no line anchor. It renders into the file's `.file-comments-zone` above
+ * the diff (the same light-DOM zone FileCommentManager uses for native
+ * file-level comments), carrying `external-comment-row--file-level`. Threads
+ * whose line anchor can't be found (outdated / force-pushed) fall back into the
+ * SAME zone with `external-comment-row--file-fallback`. Both keep the base
+ * `.external-comment-row` class so `clear()`'s DOM sweep, the comment-minimizer,
+ * and AIPanel.scrollToExternalThread stay agnostic to placement. A bare
+ * file-wrapper append is the last resort only when the zone is missing.
+ *
  * DUAL RENDERING PATH — a thread's file is rendered by ONE of two engines:
  *   - PIERRE (@pierre/diffs): the file lives in a shadow-DOM
  *     `<diffs-container>` with NO light-DOM `<tr>` rows. The thread mounts as
@@ -367,6 +377,15 @@ class ExternalCommentManager {
    */
   _resolveAnchor(comment) {
     if (!comment || !comment.file) return null;
+
+    // File-level comments (GitHub subject_type='file') have no line anchor —
+    // they belong in the per-file comments zone above the diff, not on any
+    // line. Signal that with `fileLevel: true` so `_renderThread` routes them
+    // to the zone regardless of which diff engine rendered the file.
+    if (comment.is_file_level === 1 || comment.is_file_level === true) {
+      return { file: comment.file, fileLevel: true };
+    }
+
     const side = comment.side || 'RIGHT';
     const outdated = comment.is_outdated === 1 || comment.is_outdated === true;
 
@@ -412,6 +431,13 @@ class ExternalCommentManager {
       return;
     }
 
+    // File-level comments render in the per-file comments zone above the diff
+    // (light DOM, shared by both diff engines) — no line anchor, no bridge.
+    if (anchor.fileLevel) {
+      this._renderThreadFileLevel(thread, anchor.file);
+      return;
+    }
+
     // Route by rendering engine. Pierre-rendered files have no light-DOM
     // <tr> rows to anchor against, so they mount via the annotation bridge.
     if (this._isPierreFile(anchor.file)) {
@@ -445,18 +471,11 @@ class ExternalCommentManager {
     }
 
     if (!targetRow) {
-      // File-level fallback: outdated discussions that we can't anchor
-      // precisely still need to be discoverable. Render them at the top of
-      // the file wrapper so the reviewer can find them via the file panel.
-      const fallbackTarget = this._resolveFileFallbackTarget(anchor.file);
-      if (fallbackTarget) {
-        const externalRow = this._buildThreadRow(thread, fallbackTarget);
-        if (externalRow) {
-          externalRow.classList.add('external-comment-row--file-fallback');
-          this._insertAtOrderedPosition(fallbackTarget, externalRow);
-          return;
-        }
-      }
+      // Unanchorable discussion (outdated / force-pushed line no longer in the
+      // diff). Render into the per-file comments zone above the diff rather
+      // than faking a line-1 annotation at the top of the table. Falls back to
+      // a bare wrapper append only when the zone itself is missing.
+      if (this._renderFileFallback(thread, anchor.file)) return;
 
       if (typeof console !== 'undefined') {
         console.warn(`[ExternalCommentManager] Could not find diff row for ${anchor.file}:${anchor.line} (${anchor.side})`);
@@ -627,24 +646,107 @@ class ExternalCommentManager {
   }
 
   /**
-   * File-level fallback for a pierre file: append the thread card as a
-   * `.external-comment-row--file-fallback` `<div>` to the file wrapper (light
-   * DOM, OUTSIDE the pierre shadow container so a bare rerender doesn't wipe
-   * it). `clear()`'s DOM sweep removes it on the next render cycle.
+   * File-level fallback for a pierre file: same zone-first strategy as the
+   * legacy path. Shares `_renderFileFallback`.
    * @private
    */
   _renderPierreFileFallback(thread, file) {
-    const wrapper = this._findFileWrapper(file);
-    if (!wrapper) {
-      if (typeof console !== 'undefined') {
-        console.warn(`[ExternalCommentManager] Could not anchor pierre thread ${thread?.id} in ${file}`);
-      }
-      return;
+    if (!this._renderFileFallback(thread, file) && typeof console !== 'undefined') {
+      console.warn(`[ExternalCommentManager] Could not anchor pierre thread ${thread?.id} in ${file}`);
     }
+  }
+
+  /**
+   * Render a genuine file-level thread (root + replies) into the file's
+   * comments zone above the diff. Carries `external-comment-row--file-level`.
+   * @private
+   */
+  _renderThreadFileLevel(thread, file) {
+    if (this._appendThreadToZone(thread, file, 'external-comment-row--file-level')) return;
+    // Zone missing (rare — created per file in renderFileDiff). Fall back to a
+    // bare wrapper append so the discussion stays discoverable.
+    if (!this._appendThreadToWrapper(thread, file, 'external-comment-row--file-level')
+        && typeof console !== 'undefined') {
+      console.warn(`[ExternalCommentManager] Could not anchor file-level thread ${thread?.id} in ${file}`);
+    }
+  }
+
+  /**
+   * Render an unanchorable line thread (outdated / line dropped from the diff)
+   * into the file's comments zone, carrying `external-comment-row--file-fallback`
+   * so the outdated badge + fallback styling are preserved. Returns true when
+   * the card was placed (zone OR wrapper). Bare wrapper append is the last
+   * resort when the zone is absent.
+   * @private
+   */
+  _renderFileFallback(thread, file) {
+    if (this._appendThreadToZone(thread, file, 'external-comment-row--file-fallback')) return true;
+    return this._appendThreadToWrapper(thread, file, 'external-comment-row--file-fallback');
+  }
+
+  /**
+   * Build the thread card `<div class="external-comment-row">`, tag it with
+   * `extraClass`, and append it to the file's `.file-comments-container`.
+   * Returns true on success, false when the zone is missing. The zone is light
+   * DOM created per file by FileCommentManager.createFileCommentsZone, so it
+   * works for BOTH the legacy table and pierre engines.
+   * @private
+   */
+  _appendThreadToZone(thread, file, extraClass) {
+    const zone = this._resolveFileCommentsZone(file);
+    if (!zone) return false;
+    const container = zone.querySelector('.file-comments-container') || zone;
     const div = this._buildThreadDiv(thread);
-    if (!div) return;
-    div.classList.add('external-comment-row--file-fallback');
+    if (!div) return false;
+    if (extraClass) div.classList.add(extraClass);
+    container.appendChild(div);
+    return true;
+  }
+
+  /**
+   * Last-resort placement when the comments zone is missing: append the card
+   * directly to the file wrapper (light DOM). `clear()`'s DOM sweep removes it
+   * on the next render cycle. Returns true on success.
+   * @private
+   */
+  _appendThreadToWrapper(thread, file, extraClass) {
+    const wrapper = this._findFileWrapper(file);
+    if (!wrapper) return false;
+    const div = this._buildThreadDiv(thread);
+    if (!div) return false;
+    if (extraClass) div.classList.add(extraClass);
     wrapper.appendChild(div);
+    return true;
+  }
+
+  /**
+   * Resolve a file's `.file-comments-zone` element. Prefers
+   * FileCommentManager's own resolver (DiffRenderer-aware) when present, then
+   * falls back to the file wrapper lookup and a direct attribute selector.
+   * @param {string} file
+   * @returns {HTMLElement|null}
+   * @private
+   */
+  _resolveFileCommentsZone(file) {
+    if (typeof document === 'undefined' || !file) return null;
+    const fcm = (typeof window !== 'undefined' && window.prManager && window.prManager.fileCommentManager) || null;
+    if (fcm && typeof fcm.findZoneForFile === 'function') {
+      const zone = fcm.findZoneForFile(file);
+      if (zone) return zone;
+    }
+    const wrapper = this._findFileWrapper(file);
+    if (wrapper) {
+      const zone = wrapper.querySelector('.file-comments-zone');
+      if (zone) return zone;
+    }
+    try {
+      const esc = (typeof globalThis !== 'undefined' && globalThis.CSS?.escape)
+        ? globalThis.CSS.escape(file)
+        : file;
+      return document.querySelector(`.file-comments-zone[data-file-name="${esc}"]`);
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -667,34 +769,6 @@ class ExternalCommentManager {
     } catch {
       return null;
     }
-  }
-
-  /**
-   * Find a fallback insertion target for a file when no diff row matches
-   * the comment's anchor (e.g. outdated comment whose original line is no
-   * longer in the diff at all). Returns the first <tr> in the file
-   * wrapper's table so the thread renders at file-level. Returns null when
-   * the file wrapper itself isn't in the DOM.
-   * @private
-   */
-  _resolveFileFallbackTarget(file) {
-    if (typeof document === 'undefined' || !file) return null;
-    let fileElement = null;
-    if (typeof window !== 'undefined' && window.DiffRenderer && typeof window.DiffRenderer.findFileElement === 'function') {
-      fileElement = window.DiffRenderer.findFileElement(file);
-    }
-    if (!fileElement) {
-      try {
-        const escaped = (typeof globalThis !== 'undefined' && globalThis.CSS?.escape)
-          ? globalThis.CSS.escape(file)
-          : file;
-        fileElement = document.querySelector(`[data-file-name="${escaped}"]`);
-      } catch {
-        fileElement = null;
-      }
-    }
-    if (!fileElement) return null;
-    return fileElement.querySelector('tr');
   }
 
   /**

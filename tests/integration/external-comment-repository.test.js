@@ -103,6 +103,31 @@ describe('ExternalCommentRepository', () => {
       expect(row.line_end).toBeNull();
       expect(row.original_line_start).toBe(5);
     });
+
+    it('persists is_file_level = 1 with all line anchors null for file-level rows', async () => {
+      const id = await repo.upsert(reviewId, 'github', makeRow({
+        external_id: '300',
+        is_file_level: 1,
+        line_start: null,
+        line_end: null,
+        diff_position: null,
+        original_line_start: null,
+        original_line_end: null
+      }));
+      const row = db.prepare('SELECT * FROM external_comments WHERE id = ?').get(id);
+      expect(row.is_file_level).toBe(1);
+      expect(row.line_start).toBeNull();
+      expect(row.line_end).toBeNull();
+      expect(row.diff_position).toBeNull();
+      // A file-level comment is never outdated.
+      expect(row.is_outdated).toBe(0);
+    });
+
+    it('defaults is_file_level to 0 when the adapter omits it', async () => {
+      const id = await repo.upsert(reviewId, 'github', makeRow({ external_id: '301' }));
+      const row = db.prepare('SELECT is_file_level FROM external_comments WHERE id = ?').get(id);
+      expect(row.is_file_level).toBe(0);
+    });
   });
 
   // ----- upsert: update path -----
@@ -134,6 +159,40 @@ describe('ExternalCommentRepository', () => {
         'SELECT COUNT(*) AS c FROM external_comments WHERE review_id = ? AND source = ?'
       ).get(reviewId, 'github').c;
       expect(total).toBe(1);
+    });
+
+    it('repairs a mis-synced line-anchored row into a file-level row on refresh', async () => {
+      // Regression: a file-level comment was previously stored as a line-1
+      // annotation (is_file_level=0, line_start/line_end/diff_position=1). A
+      // manual refresh must overwrite BOTH the flag AND the stale line fields
+      // so the row moves to the zone — the ON CONFLICT UPDATE set includes
+      // is_file_level and all line columns.
+      const id1 = await repo.upsert(reviewId, 'github', makeRow({
+        external_id: '700',
+        is_file_level: 0,
+        line_start: 1,
+        line_end: 1,
+        diff_position: 1,
+        original_line_start: 1,
+        original_line_end: 1
+      }));
+
+      const id2 = await repo.upsert(reviewId, 'github', makeRow({
+        external_id: '700',
+        is_file_level: 1,
+        line_start: null,
+        line_end: null,
+        diff_position: null,
+        original_line_start: null,
+        original_line_end: null
+      }));
+
+      expect(id2).toBe(id1);
+      const row = db.prepare('SELECT * FROM external_comments WHERE id = ?').get(id1);
+      expect(row.is_file_level).toBe(1);
+      expect(row.line_start).toBeNull();
+      expect(row.line_end).toBeNull();
+      expect(row.diff_position).toBeNull();
     });
 
     it('does not overwrite parent_id during update', async () => {

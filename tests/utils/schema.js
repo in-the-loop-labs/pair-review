@@ -317,6 +317,7 @@ const SCHEMA_SQL = {
       diff_position INTEGER,
       commit_sha TEXT,
       is_outdated INTEGER NOT NULL DEFAULT 0,
+      is_file_level INTEGER NOT NULL DEFAULT 0,
       original_line_start INTEGER,
       original_line_end INTEGER,
       original_commit_sha TEXT,

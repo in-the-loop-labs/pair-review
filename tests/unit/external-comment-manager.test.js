@@ -880,6 +880,171 @@ describe('ExternalCommentManager pierre annotation path', async () => {
   });
 });
 
+// =======================================================================
+// File-level threads (GitHub subject_type='file')
+//
+// File-level comments have no line anchor. They render into the per-file
+// `.file-comments-zone` above the diff (shared light DOM for both engines),
+// NOT as a line-1 annotation. Unanchorable line threads (outdated / dropped
+// line) fall back into the SAME zone when one exists.
+// =======================================================================
+describe('ExternalCommentManager file-level threads', async () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    delete window.prManager;
+  });
+  afterEach(() => {
+    document.body.innerHTML = '';
+    delete window.prManager;
+    vi.restoreAllMocks();
+  });
+
+  // Mirror FileCommentManager.createFileCommentsZone: a per-file zone with an
+  // inner container, inserted at the top of the file wrapper.
+  function addZone(file = 'src/app.js') {
+    const wrapper = document.querySelector(`.d2h-file-wrapper[data-file-name="${file}"]`);
+    const zone = document.createElement('div');
+    zone.className = 'file-comments-zone';
+    zone.dataset.fileName = file;
+    const container = document.createElement('div');
+    container.className = 'file-comments-container';
+    zone.appendChild(container);
+    wrapper.insertBefore(zone, wrapper.firstChild);
+    return { zone, container };
+  }
+
+  function fileLevelComment(overrides = {}) {
+    return makeComment({
+      is_file_level: 1,
+      line_start: null,
+      line_end: null,
+      diff_position: null,
+      original_line_start: null,
+      original_line_end: null,
+      ...overrides,
+    });
+  }
+
+  it('renders a file-level thread into the zone, not as a diff-line row', async () => {
+    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    const { container } = addZone('src/app.js');
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [fileLevelComment({ id: 8, body: 'whole file comment' })]);
+    await mgr.render();
+
+    const rows = document.querySelectorAll('.external-comment-row');
+    expect(rows.length).toBe(1);
+    const card = rows[0];
+    expect(card.tagName).toBe('DIV');
+    expect(container.contains(card)).toBe(true);
+    expect(card.classList.contains('external-comment-row--file-level')).toBe(true);
+    expect(card.dataset.threadId).toBe('8');
+    expect(card.dataset.source).toBe('github');
+    expect(card.querySelector('.external-comment-body').textContent).toBe('whole file comment');
+
+    // The diff line must NOT have gained a sibling comment row.
+    const diffRow = document.querySelector('tr[data-line-number="10"]');
+    expect(diffRow.nextSibling).toBeNull();
+  });
+
+  it('renders a file-level thread with replies as one zone card', async () => {
+    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    const { container } = addZone('src/app.js');
+    const root = fileLevelComment({
+      id: 1,
+      body: 'root',
+      replies: [fileLevelComment({ id: 2, body: 'reply', parent_id: 1, in_reply_to_id: 'gh-1' })],
+    });
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [root]);
+    await mgr.render();
+
+    const cards = container.querySelectorAll('.external-comment-row');
+    expect(cards.length).toBe(1);
+    expect(cards[0].querySelectorAll('.external-comment').length).toBe(2);
+  });
+
+  it('routes file-level threads to the zone even when the file is pierre-rendered (no bridge)', async () => {
+    const bridge = makePierreBridge({ files: ['src/app.js'] });
+    window.prManager = { pierreBridge: bridge, ensureLinesVisible: vi.fn(async () => {}) };
+    const { container } = addZone('src/app.js');
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [fileLevelComment({ id: 5 })]);
+    await mgr.render();
+
+    // File-level never mounts as an annotation — straight to the light-DOM zone.
+    expect(bridge.addAnnotation).not.toHaveBeenCalled();
+    expect(container.querySelector('.external-comment-row--file-level')).not.toBeNull();
+  });
+
+  it('resolves the zone via prManager.fileCommentManager.findZoneForFile when present', async () => {
+    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    const { zone, container } = addZone('src/app.js');
+    const findZoneForFile = vi.fn(() => zone);
+    window.prManager = { fileCommentManager: { findZoneForFile } };
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [fileLevelComment({ id: 8 })]);
+    await mgr.render();
+
+    expect(findZoneForFile).toHaveBeenCalledWith('src/app.js');
+    expect(container.querySelector('.external-comment-row--file-level')).not.toBeNull();
+  });
+
+  it('unanchorable line thread falls back into the zone (not a faked line-1 row)', async () => {
+    buildDiffTable({ lines: [{ line: 999, side: 'RIGHT' }] });
+    const { container } = addZone('src/app.js');
+    window.prManager = { ensureLinesVisible: vi.fn(async () => {}) };
+
+    const outdated = makeComment({
+      id: 77,
+      is_outdated: 1,
+      line_start: null,
+      line_end: null,
+      original_line_start: 20,
+      original_line_end: 20,
+    });
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [outdated]);
+    await mgr.render();
+
+    const card = container.querySelector('.external-comment-row--file-fallback');
+    expect(card).not.toBeNull();
+    expect(card.dataset.threadId).toBe('77');
+    // It landed in the zone, so the outdated badge is preserved.
+    expect(card.querySelector('.external-comment-outdated-badge')).not.toBeNull();
+  });
+
+  it('clear() removes file-level zone cards (shared .external-comment-row class)', async () => {
+    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    addZone('src/app.js');
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [fileLevelComment({ id: 8 })]);
+    await mgr.render();
+    expect(document.querySelectorAll('.external-comment-row').length).toBe(1);
+
+    mgr.clear();
+    expect(document.querySelectorAll('.external-comment-row').length).toBe(0);
+  });
+
+  it('last-resort wrapper append when the zone is missing', async () => {
+    // No zone in the wrapper — a file-level thread still renders (discoverable),
+    // appended to the wrapper rather than dropped.
+    const { wrapper } = buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [fileLevelComment({ id: 8 })]);
+    await mgr.render();
+
+    const card = wrapper.querySelector('.external-comment-row--file-level');
+    expect(card).not.toBeNull();
+  });
+});
+
 describe('ExternalCommentManager URL safety (isSafeUrl)', async () => {
   beforeEach(() => {
     document.body.innerHTML = '';
@@ -1139,6 +1304,20 @@ describe('ExternalCommentManager._resolveAnchor fallback (forward-compat)', asyn
     const mgr = makeManager();
     const a = mgr._resolveAnchor({ file: 'a.js', line_end: 5 });
     expect(a.side).toBe('RIGHT');
+  });
+
+  it('file-level comment returns a fileLevel anchor (no line/side), even with leftover line:1', () => {
+    // GitHub reports line:1 for file-level comments; is_file_level must win so
+    // the row routes to the zone instead of anchoring at line 1.
+    const mgr = makeManager();
+    const a = mgr._resolveAnchor({ file: 'a.js', is_file_level: 1, side: 'RIGHT', line_end: 1, original_line_end: 1 });
+    expect(a).toEqual({ file: 'a.js', fileLevel: true });
+  });
+
+  it('file-level accepts boolean true as well as 1', () => {
+    const mgr = makeManager();
+    const a = mgr._resolveAnchor({ file: 'a.js', is_file_level: true });
+    expect(a).toEqual({ file: 'a.js', fileLevel: true });
   });
 });
 

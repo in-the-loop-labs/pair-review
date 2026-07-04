@@ -32,6 +32,7 @@ function makeApiRow({
   original_commit_id = 'abc1234',
   user = { login: 'octocat', html_url: 'https://github.com/octocat' },
   html_url = null,
+  subject_type = null,
   created_at = '2026-01-01T00:00:00Z'
 }) {
   return {
@@ -50,6 +51,7 @@ function makeApiRow({
     original_commit_id,
     user,
     html_url: html_url || `https://github.com/owner/repo/pull/1#discussion_r${id}`,
+    subject_type,
     created_at
   };
 }
@@ -285,6 +287,42 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
 
     const stored = db.prepare('SELECT external_id FROM external_comments WHERE review_id = ?').all(reviewId);
     expect(stored.map(r => r.external_id)).toEqual(['401']);
+  });
+
+  it('file-level comment (subject_type=file): upserted with is_file_level=1, NOT counted as a lost anchor', async () => {
+    // GitHub reports file-level comments at line:1/position:1 with
+    // subject_type='file'. They have no real line anchor, so the lost-anchor
+    // filter must NOT drop them — they belong in the per-file comments zone.
+    const rows = [
+      makeApiRow({ id: 501, body: 'line comment' }),
+      makeApiRow({
+        id: 502,
+        body: 'whole-file comment',
+        subject_type: 'file',
+        line: 1,
+        position: 1,
+        original_line: 1
+      })
+    ];
+    const { FakeGitHubClient } = makeFakeClient(rows);
+
+    const app = createTestApp(db, { GitHubClient: FakeGitHubClient });
+    const server = await startServer(app);
+    const res = await request(server)
+      .post(`/api/reviews/${reviewId}/external-comments/sync`)
+      .query({ source: 'github' });
+
+    expect(res.status).toBe(200);
+    // Both rows persisted; the file-level one is NOT a lost anchor.
+    expect(res.body.count).toBe(2);
+    expect(res.body.lostAnchors).toBe(0);
+
+    const fileRow = db.prepare('SELECT * FROM external_comments WHERE external_id = ?').get('502');
+    expect(fileRow.is_file_level).toBe(1);
+    expect(fileRow.line_start).toBeNull();
+    expect(fileRow.line_end).toBeNull();
+    expect(fileRow.diff_position).toBeNull();
+    expect(fileRow.is_outdated).toBe(0);
   });
 
   it('threaded reply: parent later in API response — parent resolution still works', async () => {
