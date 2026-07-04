@@ -35,7 +35,7 @@ const advancedConfig = {
 const voiceConfig = {
   voices: [
     { provider: 'claude', model: 'sonnet', tier: 'balanced' },
-    { provider: 'gemini', model: 'gemini-2.5-pro' }
+    { provider: 'antigravity', model: 'gemini-3.1-pro-low' }
   ],
   levels: { '1': true, '2': false, '3': false }
 };
@@ -97,7 +97,7 @@ describe('resolveReviewConfig', () => {
     it('takes precedence over an explicit model and over repo defaults', async () => {
       const councilId = uuidv4();
       await new CouncilRepository(db).create({ id: councilId, name: 'Wins', config: advancedConfig, type: 'advanced' });
-      seedRepoSettings(db, { default_provider: 'gemini', default_model: 'gemini-2.5-pro', default_council_id: uuidv4() });
+      seedRepoSettings(db, { default_provider: 'antigravity', default_model: 'gemini-3.1-pro-low', default_council_id: uuidv4() });
 
       const result = await resolveReviewConfig(
         db, REPOSITORY,
@@ -120,21 +120,21 @@ describe('resolveReviewConfig', () => {
     it('returns single with the explicit provider and model', async () => {
       const result = await resolveReviewConfig(
         db, REPOSITORY,
-        { provider: 'gemini', model: 'gemini-2.5-pro' },
+        { provider: 'antigravity', model: 'gemini-3.1-pro-low' },
         { default_provider: 'claude', default_model: 'opus' }
       );
-      expect(result).toEqual({ type: 'single', provider: 'gemini', model: 'gemini-2.5-pro' });
+      expect(result).toEqual({ type: 'single', provider: 'antigravity', model: 'gemini-3.1-pro-low' });
     });
 
     it('when only model is given, resolves provider from repo defaults', async () => {
-      seedRepoSettings(db, { default_provider: 'gemini' });
+      seedRepoSettings(db, { default_provider: 'antigravity' });
 
       const result = await resolveReviewConfig(
         db, REPOSITORY,
-        { model: 'gemini-2.5-pro' },
+        { model: 'gemini-3.1-pro-low' },
         { default_provider: 'claude' }
       );
-      expect(result).toEqual({ type: 'single', provider: 'gemini', model: 'gemini-2.5-pro' });
+      expect(result).toEqual({ type: 'single', provider: 'antigravity', model: 'gemini-3.1-pro-low' });
     });
 
     it('when only model is given and no repo default, resolves provider from config', async () => {
@@ -164,10 +164,10 @@ describe('resolveReviewConfig', () => {
 
       const result = await resolveReviewConfig(
         db, REPOSITORY,
-        { provider: 'gemini', model: 'gemini-2.5-pro' },
+        { provider: 'antigravity', model: 'gemini-3.1-pro-low' },
         {}
       );
-      expect(result).toEqual({ type: 'single', provider: 'gemini', model: 'gemini-2.5-pro' });
+      expect(result).toEqual({ type: 'single', provider: 'antigravity', model: 'gemini-3.1-pro-low' });
     });
   });
 
@@ -215,14 +215,14 @@ describe('resolveReviewConfig', () => {
 
   describe('4. repo_settings.default_provider/default_model', () => {
     it('uses the repo default provider and model when no explicit pick or council', async () => {
-      seedRepoSettings(db, { default_provider: 'gemini', default_model: 'gemini-2.5-pro' });
+      seedRepoSettings(db, { default_provider: 'antigravity', default_model: 'gemini-3.1-pro-low' });
 
       const result = await resolveReviewConfig(
         db, REPOSITORY,
         {},
         { default_provider: 'claude', default_model: 'opus' }
       );
-      expect(result).toEqual({ type: 'single', provider: 'gemini', model: 'gemini-2.5-pro' });
+      expect(result).toEqual({ type: 'single', provider: 'antigravity', model: 'gemini-3.1-pro-low' });
     });
 
     // PAIR_REVIEW_MODEL is a deliberate one-shot override (CI/agent), so it must
@@ -245,7 +245,7 @@ describe('resolveReviewConfig', () => {
     // default_provider for the same one-shot-override reason.
     it('prefers PAIR_REVIEW_PROVIDER over a repo default_provider', async () => {
       process.env.PAIR_REVIEW_PROVIDER = 'codex';
-      seedRepoSettings(db, { default_provider: 'gemini', default_model: 'sonnet' });
+      seedRepoSettings(db, { default_provider: 'antigravity', default_model: 'sonnet' });
 
       const result = await resolveReviewConfig(
         db, REPOSITORY,
@@ -262,10 +262,10 @@ describe('resolveReviewConfig', () => {
 
       const result = await resolveReviewConfig(
         db, REPOSITORY,
-        { provider: 'gemini', model: 'gemini-2.5-pro' },
+        { provider: 'antigravity', model: 'gemini-3.1-pro-low' },
         {}
       );
-      expect(result).toEqual({ type: 'single', provider: 'gemini', model: 'gemini-2.5-pro' });
+      expect(result).toEqual({ type: 'single', provider: 'antigravity', model: 'gemini-3.1-pro-low' });
     });
   });
 
@@ -274,9 +274,9 @@ describe('resolveReviewConfig', () => {
       const result = await resolveReviewConfig(
         db, REPOSITORY,
         {},
-        { default_provider: 'gemini', default_model: 'gemini-2.5-pro' }
+        { default_provider: 'antigravity', default_model: 'gemini-3.1-pro-low' }
       );
-      expect(result).toEqual({ type: 'single', provider: 'gemini', model: 'gemini-2.5-pro' });
+      expect(result).toEqual({ type: 'single', provider: 'antigravity', model: 'gemini-3.1-pro-low' });
     });
 
     it('honors the legacy config.provider / config.model keys', async () => {
@@ -309,9 +309,9 @@ describe('resolveReviewConfig', () => {
       const result = await resolveReviewConfig(
         db, null,
         {},
-        { default_provider: 'gemini', default_model: 'gemini-2.5-pro' }
+        { default_provider: 'antigravity', default_model: 'gemini-3.1-pro-low' }
       );
-      expect(result).toEqual({ type: 'single', provider: 'gemini', model: 'gemini-2.5-pro' });
+      expect(result).toEqual({ type: 'single', provider: 'antigravity', model: 'gemini-3.1-pro-low' });
     });
 
     it('defaults explicit and config args to empty objects', async () => {

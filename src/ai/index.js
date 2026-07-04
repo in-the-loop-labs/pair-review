@@ -49,7 +49,7 @@ const { createExecutableProviderClass } = require('./executable-provider');
 // Load and register all providers
 // Each provider self-registers when loaded
 require('./claude-provider');
-require('./gemini-provider');
+require('./antigravity-provider');
 require('./codex-provider');
 require('./copilot-provider');
 require('./opencode-provider');

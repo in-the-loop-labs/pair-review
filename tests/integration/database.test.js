@@ -2711,15 +2711,15 @@ describe('AnalysisRunRepository', () => {
       await analysisRunRepo.create({
         id: runId,
         reviewId: testReview.id,
-        provider: 'gemini',
-        model: 'gemini-2.5-pro'
+        provider: 'antigravity',
+        model: 'gemini-3.1-pro-low'
       });
 
       const retrieved = await analysisRunRepo.getById(runId);
       expect(retrieved).not.toBeNull();
       expect(retrieved.id).toBe(runId);
-      expect(retrieved.provider).toBe('gemini');
-      expect(retrieved.model).toBe('gemini-2.5-pro');
+      expect(retrieved.provider).toBe('antigravity');
+      expect(retrieved.model).toBe('gemini-3.1-pro-low');
     });
 
     it('should return null for non-existent ID', async () => {
@@ -3296,7 +3296,7 @@ describe('Migration 42 - COLLATE NOCASE auto-merge', () => {
       'org/project', 'keep-these-instructions', 'claude', '2026-04-01T00:00:00Z'
     );
     db.prepare(`INSERT INTO repo_settings (repository, default_instructions, default_provider, updated_at) VALUES (?, ?, ?, ?)`).run(
-      'ORG/PROJECT', 'stale-instructions', 'gemini', '2026-01-01T00:00:00Z'
+      'ORG/PROJECT', 'stale-instructions', 'antigravity', '2026-01-01T00:00:00Z'
     );
 
     let capturedBackup;
@@ -3308,7 +3308,7 @@ describe('Migration 42 - COLLATE NOCASE auto-merge', () => {
 
     expect(capturedBackup).toHaveLength(1);
     expect(capturedBackup[0].default_instructions).toBe('stale-instructions');
-    expect(capturedBackup[0].default_provider).toBe('gemini');
+    expect(capturedBackup[0].default_provider).toBe('antigravity');
     expect(capturedBackup[0].repository).toBe('ORG/PROJECT');
   });
 

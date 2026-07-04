@@ -976,7 +976,7 @@ describe('config.js', () => {
     it('should let project local config override project config', async () => {
       mockReadFile({
         global: { port: 7247 },
-        project: { default_provider: 'gemini' },
+        project: { default_provider: 'antigravity' },
         projectLocal: { default_provider: 'claude' },
       });
 
@@ -1035,20 +1035,20 @@ describe('config.js', () => {
 
     it('should apply managed config values between defaults and global config', async () => {
       mockReadFile({
-        managed: { default_provider: 'gemini', theme: 'dark' },
+        managed: { default_provider: 'antigravity', theme: 'dark' },
         global: { port: 7247 },
       });
 
       const { config } = await loadConfig();
 
-      expect(config.default_provider).toBe('gemini');
+      expect(config.default_provider).toBe('antigravity');
       expect(config.theme).toBe('dark');
       expect(config.port).toBe(7247);
     });
 
     it('should let global config override managed config', async () => {
       mockReadFile({
-        managed: { default_provider: 'gemini' },
+        managed: { default_provider: 'antigravity' },
         global: { default_provider: 'claude', port: 7247 },
       });
 
@@ -1098,7 +1098,7 @@ describe('config.js', () => {
 
     it('should skip creating global config when managed config has keys', async () => {
       mockReadFile({
-        managed: { default_provider: 'gemini', theme: 'dark' },
+        managed: { default_provider: 'antigravity', theme: 'dark' },
         global: null,  // ENOENT — would normally trigger creation
       });
 
@@ -1106,7 +1106,7 @@ describe('config.js', () => {
 
       expect(writeFileSpy).not.toHaveBeenCalled();
       expect(isFirstRun).toBe(false);
-      expect(config.default_provider).toBe('gemini');
+      expect(config.default_provider).toBe('antigravity');
       expect(config.theme).toBe('dark');
     });
 
@@ -1959,8 +1959,8 @@ describe('config.js', () => {
 
   describe('getSummaryProvider', () => {
     it('returns summaries.provider when set', () => {
-      const config = { summaries: { provider: 'gemini' }, default_provider: 'claude' };
-      expect(getSummaryProvider(config)).toBe('gemini');
+      const config = { summaries: { provider: 'antigravity' }, default_provider: 'claude' };
+      expect(getSummaryProvider(config)).toBe('antigravity');
     });
 
     it('falls back to default_provider when summaries.provider is empty string', () => {
@@ -2022,13 +2022,13 @@ describe('config.js', () => {
 
   describe('getTourProvider', () => {
     it('returns tours.provider when set', () => {
-      const config = { tours: { provider: 'codex' }, summaries: { provider: 'gemini' }, default_provider: 'claude' };
+      const config = { tours: { provider: 'codex' }, summaries: { provider: 'antigravity' }, default_provider: 'claude' };
       expect(getTourProvider(config)).toBe('codex');
     });
 
     it('falls back to summaries.provider when tours.provider empty', () => {
-      const config = { tours: { provider: '' }, summaries: { provider: 'gemini' }, default_provider: 'claude' };
-      expect(getTourProvider(config)).toBe('gemini');
+      const config = { tours: { provider: '' }, summaries: { provider: 'antigravity' }, default_provider: 'claude' };
+      expect(getTourProvider(config)).toBe('antigravity');
     });
 
     it('falls back through summaries.provider chain to default_provider', () => {

@@ -427,7 +427,7 @@ describe('POST /api/analyses/results', () => {
       .send({
         repo: 'owner/repo',
         prNumber: 42,
-        provider: 'gemini',
+        provider: 'antigravity',
         model: 'pro',
         summary: 'Looks good overall',
         suggestions: [

@@ -2,7 +2,7 @@
 /**
  * AI Provider Abstraction Layer
  *
- * Defines a common interface for AI providers (Claude, Gemini, etc.)
+ * Defines a common interface for AI providers (Claude, Antigravity, etc.)
  * and provides a factory function to create provider instances.
  */
 
@@ -688,7 +688,7 @@ function getProviderConfigOverrides(providerId) {
 
 /**
  * Register a provider class
- * @param {string} id - Provider ID (e.g., 'claude', 'gemini')
+ * @param {string} id - Provider ID (e.g., 'claude', 'antigravity')
  * @param {typeof AIProvider} providerClass - The provider class
  */
 function registerProvider(id, providerClass) {
@@ -908,7 +908,7 @@ function getAllProvidersInfo() {
 
 /**
  * Create a provider instance
- * @param {string} providerId - Provider ID (e.g., 'claude', 'gemini')
+ * @param {string} providerId - Provider ID (e.g., 'claude', 'antigravity')
  * @param {string} model - Model to use (optional, uses default if not specified)
  * @param {Object} overrides - Per-call config overrides that supersede global providerConfigOverrides (optional)
  * @returns {AIProvider}
@@ -1011,8 +1011,8 @@ async function testProviderAvailability(providerId, timeoutMs) {
  * Matches against both the canonical model `id` and any `aliases` so legacy
  * model IDs (e.g. `gpt-5.4` before reasoning-effort variants were introduced)
  * still resolve their tier for historical analysis runs.
- * @param {string} providerId - Provider ID (e.g., 'claude', 'gemini')
- * @param {string} modelId - Model ID (e.g., 'sonnet', 'gemini-2.5-pro')
+ * @param {string} providerId - Provider ID (e.g., 'claude', 'antigravity')
+ * @param {string} modelId - Model ID (e.g., 'sonnet', 'gemini-3.1-pro-low')
  * @returns {string|null} Tier name or null if provider or model not found
  */
 function getTierForModel(providerId, modelId) {

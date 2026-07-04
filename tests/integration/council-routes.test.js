@@ -35,7 +35,7 @@ const sampleConfig = {
 const sampleCouncilConfig = {
   voices: [
     { provider: 'claude', model: 'opus', tier: 'thorough' },
-    { provider: 'gemini', model: 'pro', tier: 'balanced' }
+    { provider: 'antigravity', model: 'pro', tier: 'balanced' }
   ],
   levels: { '1': true, '2': true, '3': false },
   consolidation: { provider: 'claude', model: 'opus', tier: 'balanced' }
@@ -250,7 +250,7 @@ describe('Council Routes', () => {
         ...sampleConfig,
         levels: {
           ...sampleConfig.levels,
-          '2': { enabled: true, voices: [{ provider: 'gemini', model: 'pro' }] }
+          '2': { enabled: true, voices: [{ provider: 'antigravity', model: 'pro' }] }
         }
       };
 
@@ -359,7 +359,7 @@ describe('Council Routes', () => {
 
       // Update config only (no type) -- should validate against existing type 'council'
       const updatedConfig = {
-        voices: [{ provider: 'gemini', model: 'flash', tier: 'fast' }],
+        voices: [{ provider: 'antigravity', model: 'flash', tier: 'fast' }],
         levels: { '1': true, '2': false, '3': false }
       };
       const res = await request(server)

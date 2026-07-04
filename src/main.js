@@ -199,7 +199,7 @@ OPTIONS:
                                   opus-4.6-high, opus-4.6-1m, sonnet-5-xhigh,
                                   sonnet-5-high, sonnet-4.6
                             (opus is Opus 4.8 XHigh, the default)
-                            or use provider-specific models with Gemini/Codex
+                            or use provider-specific models with Antigravity/Codex
     --council <handle>      Run analysis with a saved council (multi-voice). Handle is a
                             council name, name-slug, or id (prefix). See --list-councils.
     --list-councils         List saved councils (handles to use with --council) and exit
@@ -229,7 +229,7 @@ EXAMPLES:
 ENVIRONMENT VARIABLES:
     GITHUB_TOKEN            GitHub Personal Access Token (takes precedence over config file)
     PAIR_REVIEW_CLAUDE_CMD  Custom command to invoke Claude CLI (default: claude)
-    PAIR_REVIEW_GEMINI_CMD  Custom command to invoke Gemini CLI (default: gemini)
+    PAIR_REVIEW_ANTIGRAVITY_CMD  Custom command to invoke Antigravity CLI (default: agy)
     PAIR_REVIEW_CODEX_CMD   Custom command to invoke Codex CLI (default: codex)
     PAIR_REVIEW_MODEL       Override the AI model (same as --model flag, default: opus)
 
@@ -583,7 +583,7 @@ GITHUB TOKEN:
 ENVIRONMENT VARIABLES:
     GITHUB_TOKEN            GitHub Personal Access Token (takes precedence over config file)
     PAIR_REVIEW_CLAUDE_CMD  Custom Claude CLI command (default: claude)
-    PAIR_REVIEW_GEMINI_CMD  Custom Gemini CLI command (default: gemini)
+    PAIR_REVIEW_ANTIGRAVITY_CMD  Custom Antigravity CLI command (default: agy)
     PAIR_REVIEW_CODEX_CMD   Custom Codex CLI command (default: codex)
     PAIR_REVIEW_MODEL       Default AI model (e.g., opus, sonnet, haiku)
     PAIR_REVIEW_DB_NAME     Custom database filename (overrides config)
@@ -594,7 +594,7 @@ LOCAL CONFIG:
 
 AI PROVIDERS:
     Claude (default): Requires 'claude' CLI installed
-    Gemini: Requires 'gemini' CLI installed
+    Antigravity: Requires 'agy' CLI installed
     Codex: Requires 'codex' CLI installed
 
     Select provider per-repository in the web UI settings.

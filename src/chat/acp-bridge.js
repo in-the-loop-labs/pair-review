@@ -82,7 +82,7 @@ class AcpBridge extends EventEmitter {
     const args = [...this.acpArgs];
     const useShell = this.useShell;
 
-    // For multi-word commands (e.g. "devx gemini"), use shell mode
+    // For multi-word commands (e.g. "devx claude"), use shell mode
     const spawnCmd = useShell ? `${command} ${args.join(' ')}` : command;
     const spawnArgs = useShell ? [] : args;
 

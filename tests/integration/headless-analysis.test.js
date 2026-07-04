@@ -217,7 +217,7 @@ describe('runHeadlessAnalysis (DB-backed)', () => {
           repoInstructions: null,
           requestInstructions: 'focus on auth bugs'
         },
-        reviewConfig: { type: 'single', provider: 'gemini', model: 'gemini-2.5-pro' },
+        reviewConfig: { type: 'single', provider: 'antigravity', model: 'gemini-3.1-pro-low' },
         providerOverrides: {},
         githubClient: undefined
       });
@@ -225,8 +225,8 @@ describe('runHeadlessAnalysis (DB-backed)', () => {
       const row = await db.prepare(
         'SELECT provider, model, request_instructions FROM analysis_runs WHERE id = ?'
       ).get(runId);
-      expect(row.provider).toBe('gemini');
-      expect(row.model).toBe('gemini-2.5-pro');
+      expect(row.provider).toBe('antigravity');
+      expect(row.model).toBe('gemini-3.1-pro-low');
       expect(row.request_instructions).toBe('focus on auth bugs');
     });
 

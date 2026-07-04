@@ -84,7 +84,7 @@ describe('HunkSummaryRepository', () => {
           file_path: 'src/a-renamed.js',
           content_hash: 'hash-a',
           summary_text: 'Updated summary',
-          provider: 'gemini',
+          provider: 'antigravity',
           model: 'flash',
         },
       ]);
@@ -94,7 +94,7 @@ describe('HunkSummaryRepository', () => {
       expect(persisted).toHaveLength(1);
       expect(persisted[0].summary_text).toBe('Updated summary');
       expect(persisted[0].file_path).toBe('src/a-renamed.js');
-      expect(persisted[0].provider).toBe('gemini');
+      expect(persisted[0].provider).toBe('antigravity');
       expect(persisted[0].model).toBe('flash');
     });
 

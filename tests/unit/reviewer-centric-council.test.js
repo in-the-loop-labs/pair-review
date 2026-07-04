@@ -173,7 +173,7 @@ describe('runReviewerCentricCouncil', () => {
       const { reviewContext, options } = buildTestContext();
       const councilConfig = {
         voices: [
-          { provider: 'gemini', model: 'pro', tier: 'thorough', timeout: 300000, customInstructions: 'Be strict' }
+          { provider: 'antigravity', model: 'pro', tier: 'thorough', timeout: 300000, customInstructions: 'Be strict' }
         ],
         levels: { '1': true, '2': true, '3': false },
         consolidation: { provider: 'claude', model: 'opus', tier: 'balanced' }
@@ -282,7 +282,7 @@ describe('runReviewerCentricCouncil', () => {
       // Use two voices so we don't hit the single-voice path,
       // but keep total suggestions below 8 (the old threshold)
       const { reviewContext, councilConfig, options } = buildTestContext({
-        extraVoices: [{ provider: 'gemini', model: 'pro', tier: 'balanced' }]
+        extraVoices: [{ provider: 'antigravity', model: 'pro', tier: 'balanced' }]
       });
 
       const voice1Suggestions = buildMockSuggestions(3);
@@ -318,7 +318,7 @@ describe('runReviewerCentricCouncil', () => {
 
     it('should use consolidated result (not raw voice concatenation) for storage', async () => {
       const { reviewContext, councilConfig, options } = buildTestContext({
-        extraVoices: [{ provider: 'gemini', model: 'pro', tier: 'balanced' }]
+        extraVoices: [{ provider: 'antigravity', model: 'pro', tier: 'balanced' }]
       });
 
       const voice1Suggestions = buildMockSuggestions(2);
@@ -359,7 +359,7 @@ describe('runReviewerCentricCouncil', () => {
 
     it('should pass validated consolidated suggestions through to result', async () => {
       const { reviewContext, councilConfig, options } = buildTestContext({
-        extraVoices: [{ provider: 'gemini', model: 'pro', tier: 'balanced' }]
+        extraVoices: [{ provider: 'antigravity', model: 'pro', tier: 'balanced' }]
       });
 
       const voice1Suggestions = buildMockSuggestions(3);
@@ -480,7 +480,7 @@ describe('runReviewerCentricCouncil', () => {
       const councilConfig = {
         voices: [
           { provider: 'claude', model: 'sonnet', tier: 'balanced' },
-          { provider: 'gemini', model: 'pro', tier: 'balanced' }
+          { provider: 'antigravity', model: 'pro', tier: 'balanced' }
         ],
         levels: { '1': true, '2': true, '3': false },
         consolidation: { provider: 'claude', model: 'opus', tier: 'balanced' }
@@ -526,7 +526,7 @@ describe('runReviewerCentricCouncil', () => {
       const councilConfig = {
         voices: [
           { provider: 'claude', model: 'sonnet', tier: 'balanced' },
-          { provider: 'gemini', model: 'pro', tier: 'balanced' }
+          { provider: 'antigravity', model: 'pro', tier: 'balanced' }
         ],
         levels: { '1': true, '2': true, '3': false },
         consolidation: { provider: 'claude', model: 'opus', tier: 'balanced' }
@@ -572,7 +572,7 @@ describe('runReviewerCentricCouncil', () => {
       const councilConfig = {
         voices: [
           { provider: 'claude', model: 'sonnet', tier: 'balanced' },
-          { provider: 'gemini', model: 'pro', tier: 'balanced' }
+          { provider: 'antigravity', model: 'pro', tier: 'balanced' }
         ],
         levels: { '1': true, '2': true, '3': false },
         consolidation: { provider: 'claude', model: 'opus', tier: 'balanced' }

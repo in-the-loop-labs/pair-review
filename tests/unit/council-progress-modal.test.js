@@ -133,7 +133,7 @@ describe('CouncilProgressModal', () => {
       const levelStatus = {
         voices: {
           'L1-claude-sonnet': { status: 'completed' },
-          'L1-gemini-pro': { status: 'running' }
+          'L1-antigravity-pro': { status: 'running' }
         }
       };
 
@@ -142,7 +142,7 @@ describe('CouncilProgressModal', () => {
       // Verify _setVoiceState was called for each voice
       expect(setVoiceStateSpy).toHaveBeenCalledTimes(2);
       expect(setVoiceStateSpy).toHaveBeenCalledWith('L1-claude-sonnet', 'completed', { status: 'completed' });
-      expect(setVoiceStateSpy).toHaveBeenCalledWith('L1-gemini-pro', 'running', { status: 'running' });
+      expect(setVoiceStateSpy).toHaveBeenCalledWith('L1-antigravity-pro', 'running', { status: 'running' });
     });
 
     it('with voices map: returns early, does not call bulk completion', () => {
@@ -798,8 +798,8 @@ describe('CouncilProgressModal', () => {
       // Advanced format with .enabled and .voices per level
       const config = {
         levels: {
-          '1': { enabled: true, voices: [{ provider: 'gemini', model: 'pro', tier: 'balanced' }] },
-          '2': { enabled: true, voices: [{ provider: 'gemini', model: 'pro', tier: 'balanced' }] },
+          '1': { enabled: true, voices: [{ provider: 'antigravity', model: 'pro', tier: 'balanced' }] },
+          '2': { enabled: true, voices: [{ provider: 'antigravity', model: 'pro', tier: 'balanced' }] },
           '3': { enabled: false }
         }
       };
@@ -807,7 +807,7 @@ describe('CouncilProgressModal', () => {
       modal._rebuildBodyVoiceCentric(config);
 
       // Should still render — falls back to per-level voices
-      expect(capturedHTML).toContain('data-voice-key="gemini-pro"');
+      expect(capturedHTML).toContain('data-voice-key="antigravity-pro"');
       expect(capturedHTML).toContain('data-vc-level="1"');
       expect(capturedHTML).toContain('data-vc-level="2"');
       expect(capturedHTML).not.toContain('data-vc-level="3"');
@@ -990,7 +990,7 @@ describe('CouncilProgressModal', () => {
             status: 'running',
             voices: {
               'claude-opus': { status: 'running', progress: 'Consolidating...' },
-              'gemini-pro-1': { status: 'running', progress: 'Consolidating...' }
+              'antigravity-pro-1': { status: 'running', progress: 'Consolidating...' }
             }
           }
         }
@@ -1003,7 +1003,7 @@ describe('CouncilProgressModal', () => {
         'claude-opus', 4, 'running', { status: 'running', progress: 'Consolidating...' }
       );
       expect(setVoiceCentricLevelStateSpy).toHaveBeenCalledWith(
-        'gemini-pro-1', 4, 'running', { status: 'running', progress: 'Consolidating...' }
+        'antigravity-pro-1', 4, 'running', { status: 'running', progress: 'Consolidating...' }
       );
 
       // Should also update the cross-reviewer consolidation section
@@ -1095,9 +1095,9 @@ describe('CouncilProgressModal', () => {
                 status: 'completed',
                 // No streamEvent — voice is done
               },
-              'gemini-pro-1': {
+              'antigravity-pro-1': {
                 status: 'running',
-                streamEvent: { text: 'Gemini still orchestrating...' }
+                streamEvent: { text: 'Antigravity still orchestrating...' }
               }
             }
           }
@@ -1110,9 +1110,9 @@ describe('CouncilProgressModal', () => {
       // not by a separate _setVoiceCentricStreamText call
       expect(setStreamTextSpy).not.toHaveBeenCalled();
       // Per-voice states are passed through to _setVoiceCentricLevelState with their full vStatus
-      expect(setLevelStateSpy).toHaveBeenCalledWith('gemini-pro-1', 4, 'running', {
+      expect(setLevelStateSpy).toHaveBeenCalledWith('antigravity-pro-1', 4, 'running', {
         status: 'running',
-        streamEvent: { text: 'Gemini still orchestrating...' }
+        streamEvent: { text: 'Antigravity still orchestrating...' }
       });
       // Completed voice should NOT carry stale stream text
       expect(setLevelStateSpy).toHaveBeenCalledWith('claude-opus', 4, 'completed', {
@@ -1510,8 +1510,8 @@ describe('CouncilProgressModal', () => {
 
     it('defaults tier to Balanced when not specified', () => {
       const { modal } = createTestCouncilProgressModal();
-      const voice = { provider: 'gemini', model: 'gemini-2-5-pro' };
-      expect(modal._formatVoiceLabel(voice)).toBe('Gemini gemini-2-5-pro (Balanced)');
+      const voice = { provider: 'antigravity', model: 'gemini-2-5-pro' };
+      expect(modal._formatVoiceLabel(voice)).toBe('Antigravity gemini-2-5-pro (Balanced)');
     });
 
     it('omits tier suffix for executable providers', () => {

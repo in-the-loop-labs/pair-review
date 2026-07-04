@@ -13,16 +13,16 @@
  * to ensure it tests the real configurations, not duplicated/potentially stale ones.
  *
  * KNOWN LIMITATIONS:
- * - Gemini CLI: Does not support restricting tool availability (only auto-approval).
- *   Write operations may succeed because the model can still request write_file.
- *   Gemini security relies on prompt engineering and worktree isolation.
+ * - Antigravity CLI: Does not support restricting tool availability (only auto-approval
+ *   via --dangerously-skip-permissions). Write operations may succeed because the model
+ *   can still request write_file. Security relies on prompt engineering and worktree isolation.
  * - Codex CLI: Uses sandbox boundaries (workspace-write) rather than tool restrictions.
  *   Writes within the worktree are allowed by design.
  *
  * Usage: node scripts/verify-ai-permissions.js [--provider <name>]
  *
  * Options:
- *   --provider <name>  Test only a specific provider (claude, copilot, codex, gemini)
+ *   --provider <name>  Test only a specific provider (claude, copilot, codex, antigravity)
  *   --help, -h         Show this help message
  */
 
@@ -104,7 +104,7 @@ function loadProviders() {
     require('../src/ai/claude-provider');
     require('../src/ai/copilot-provider');
     require('../src/ai/codex-provider');
-    require('../src/ai/gemini-provider');
+    require('../src/ai/antigravity-provider');
     require('../src/ai/cursor-agent-provider');
 
     // Get the provider registry
@@ -191,19 +191,22 @@ const providerTestConfigs = {
     },
   },
 
-  gemini: {
-    name: 'Gemini',
-    envVar: 'PAIR_REVIEW_GEMINI_CMD',
-    defaultCmd: 'gemini',
+  antigravity: {
+    name: 'Antigravity',
+    envVar: 'PAIR_REVIEW_ANTIGRAVITY_CMD',
+    defaultCmd: 'agy',
     checkArgs: ['--version'],
-    // Known limitation: Gemini CLI has no --available-tools flag to restrict tool visibility
-    // Only --allowed-tools which auto-approves but doesn't prevent use of other tools
-    writeBlockKnownLimitation: 'Gemini CLI cannot restrict tool availability (only auto-approval). Write operations rely on prompt engineering.',
+    // Known limitation: agy has no fine-grained tool allowlist; it auto-approves
+    // via --dangerously-skip-permissions rather than preventing use of other tools.
+    writeBlockKnownLimitation: 'Antigravity CLI cannot restrict tool availability (only auto-approval). Write operations rely on prompt engineering.',
     buildTestCommands: (provider, testPrompt) => {
-      // Gemini uses stdin for prompts
+      // Reproduce the real analysis invocation (ANALYSIS_DIRECTIVE on -p,
+      // --dangerously-skip-permissions, shell-wrapping handled) so the security
+      // test exercises exactly what production spawns. The prompt goes via stdin.
+      const { command, args } = provider.getAnalysisSpawnConfig();
       return {
-        command: provider.command,
-        args: provider.args,
+        command,
+        args,
         stdin: testPrompt,
         useShell: provider.useShell,
       };
@@ -267,8 +270,19 @@ async function checkAvailability(providerId, testConfig) {
  * Run a test and capture the result
  */
 async function runTest(testConfig, timeout = 60000) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const { command, args, stdin, useShell } = testConfig;
+
+    // Guard the provider contract: buildTestCommands must yield a spawnable
+    // command string. Reject (do NOT resolve) — resolving a failure here would
+    // be read as "write blocked" and mask a broken provider as a PASS.
+    if (typeof command !== 'string' || command.trim() === '') {
+      reject(new Error(
+        `Invalid spawn command from buildTestCommands: expected a non-empty string, got ${JSON.stringify(command)}. `
+        + `The provider likely does not expose command/args — verify its buildTestCommands / spawn-config helper.`
+      ));
+      return;
+    }
 
     const proc = spawn(command, args, {
       shell: useShell,
@@ -785,7 +799,7 @@ Usage: node scripts/verify-ai-permissions.js [options]
 
 Options:
   --provider <name>  Test only a specific provider
-                     Valid values: claude, copilot, codex, gemini
+                     Valid values: claude, copilot, codex, antigravity
   --help, -h         Show this help message
 
 Examples:

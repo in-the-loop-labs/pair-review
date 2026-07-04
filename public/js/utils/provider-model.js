@@ -6,7 +6,7 @@
  * settings, then app config) and historically each half was resolved
  * independently with `repo || app || hardcoded`. When a scope overrides only
  * ONE half, the halves can come from different scopes and produce an invalid
- * pair such as `gemini` + `opus` (an Anthropic model). The modal then shows no
+ * pair such as `antigravity` + `opus` (an Anthropic model). The modal then shows no
  * selected model, and the non-modal auto-analyze path posts the broken pair
  * straight to the backend.
  *

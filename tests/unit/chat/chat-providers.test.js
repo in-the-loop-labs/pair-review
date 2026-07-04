@@ -65,18 +65,6 @@ describe('chat-providers', () => {
       });
     });
 
-    it('should return gemini-acp provider with correct defaults', () => {
-      const gemini = getChatProvider('gemini-acp');
-      expect(gemini).toEqual({
-        id: 'gemini-acp',
-        name: 'Gemini (ACP)',
-        type: 'acp',
-        command: 'gemini',
-        args: ['--experimental-acp'],
-        env: {},
-      });
-    });
-
     it('should return opencode-acp provider with correct defaults', () => {
       const opencode = getChatProvider('opencode-acp');
       expect(opencode).toEqual({
@@ -128,10 +116,10 @@ describe('chat-providers', () => {
 
     it('should merge config overrides for args', () => {
       applyConfigOverrides({
-        'gemini-acp': { args: ['--experimental-acp', '--verbose'] },
+        'opencode-acp': { args: ['acp', '--verbose'] },
       });
-      const provider = getChatProvider('gemini-acp');
-      expect(provider.args).toEqual(['--experimental-acp', '--verbose']);
+      const provider = getChatProvider('opencode-acp');
+      expect(provider.args).toEqual(['acp', '--verbose']);
     });
 
     it('should append extra_args to existing args', () => {
@@ -172,8 +160,8 @@ describe('chat-providers', () => {
       applyConfigOverrides({
         'copilot-acp': { command: '/custom/copilot' },
       });
-      const gemini = getChatProvider('gemini-acp');
-      expect(gemini.command).toBe('gemini');
+      const opencode = getChatProvider('opencode-acp');
+      expect(opencode.command).toBe('opencode');
     });
 
     it('should set useShell true for multi-word commands', () => {
@@ -303,13 +291,12 @@ describe('chat-providers', () => {
   });
 
   describe('getAllChatProviders', () => {
-    it('should return all seven providers', () => {
+    it('should return all six providers', () => {
       const providers = getAllChatProviders();
-      expect(providers).toHaveLength(7);
+      expect(providers).toHaveLength(6);
       const ids = providers.map(p => p.id);
       expect(ids).toContain('pi');
       expect(ids).toContain('copilot-acp');
-      expect(ids).toContain('gemini-acp');
       expect(ids).toContain('opencode-acp');
       expect(ids).toContain('cursor-acp');
       expect(ids).toContain('claude');
@@ -333,10 +320,6 @@ describe('chat-providers', () => {
 
     it('should return true for copilot-acp', () => {
       expect(isAcpProvider('copilot-acp')).toBe(true);
-    });
-
-    it('should return true for gemini-acp', () => {
-      expect(isAcpProvider('gemini-acp')).toBe(true);
     });
 
     it('should return true for opencode-acp', () => {
@@ -371,7 +354,7 @@ describe('chat-providers', () => {
 
     it('should return false for ACP providers', () => {
       expect(isClaudeCodeProvider('copilot-acp')).toBe(false);
-      expect(isClaudeCodeProvider('gemini-acp')).toBe(false);
+      expect(isClaudeCodeProvider('opencode-acp')).toBe(false);
     });
 
     it('should return false for unknown provider', () => {
@@ -475,7 +458,7 @@ describe('chat-providers', () => {
       const fakeProc = new EventEmitter();
       const mockSpawn = vi.fn().mockReturnValue(fakeProc);
 
-      const promise = checkChatProviderAvailability('gemini-acp', { spawn: mockSpawn });
+      const promise = checkChatProviderAvailability('cursor-acp', { spawn: mockSpawn });
       fakeProc.emit('close', 1);
 
       const result = await promise;
@@ -784,7 +767,6 @@ describe('chat-providers', () => {
       const cache = getAllCachedChatAvailability();
       expect(cache.pi).toEqual({ available: true, error: undefined });
       expect(cache['copilot-acp']).toEqual({ available: true });
-      expect(cache['gemini-acp']).toEqual({ available: true });
       expect(cache['opencode-acp']).toEqual({ available: true });
       expect(cache['cursor-acp']).toEqual({ available: true });
       expect(cache['claude']).toEqual({ available: true });

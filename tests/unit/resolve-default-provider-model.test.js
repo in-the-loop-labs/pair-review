@@ -4,7 +4,7 @@
  *
  * The endpoint must return a *coherent* provider/model pair. Because
  * DEFAULT_CONFIG.default_model is always populated (e.g. 'opus'), a provider-only
- * override such as `default_provider: 'gemini'` previously inherited the Anthropic
+ * override such as `default_provider: 'antigravity'` previously inherited the Anthropic
  * 'opus' model and produced a mismatched pair. The fix only honours an explicit
  * model when it belongs to the selected provider's own model list.
  */

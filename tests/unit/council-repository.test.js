@@ -155,12 +155,12 @@ describe('CouncilRepository', () => {
 
     it('should update config', async () => {
       await repo.create({ id: 'upd-2', name: 'Config Test', config: sampleConfig });
-      const newConfig = { ...sampleConfig, levels: { ...sampleConfig.levels, '2': { enabled: true, voices: [{ provider: 'gemini', model: 'pro', tier: 'fast' }] } } };
+      const newConfig = { ...sampleConfig, levels: { ...sampleConfig.levels, '2': { enabled: true, voices: [{ provider: 'antigravity', model: 'pro', tier: 'fast' }] } } };
 
       await repo.update('upd-2', { config: newConfig });
       const council = await repo.getById('upd-2');
       expect(council.config.levels['2'].enabled).toBe(true);
-      expect(council.config.levels['2'].voices[0].provider).toBe('gemini');
+      expect(council.config.levels['2'].voices[0].provider).toBe('antigravity');
     });
 
     it('should update type', async () => {

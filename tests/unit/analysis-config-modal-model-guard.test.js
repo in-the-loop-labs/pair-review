@@ -3,7 +3,7 @@
  * Unit tests for AnalysisConfigModal.selectModel()'s guard against foreign
  * model ids. The modal is seeded with provider/model defaults resolved from
  * different scopes, so it can be asked to select a model that does not belong
- * to the current provider (e.g. 'opus' while the provider is 'gemini'). The
+ * to the current provider (e.g. 'opus' while the provider is 'antigravity'). The
  * guard must fall back to the provider's default rather than storing the
  * invalid id (which would leave no model card selected and submit a bad pair).
  */
@@ -31,22 +31,22 @@ function makeContext(models) {
   };
 }
 
-const GEMINI_MODELS = [
-  { id: 'gemini-2.5-pro', default: true, tier: 'thorough' },
-  { id: 'gemini-2.5-flash', tier: 'fast' }
+const ANTIGRAVITY_MODELS = [
+  { id: 'gemini-3.1-pro-low', default: true, tier: 'thorough' },
+  { id: 'gemini-3.5-flash-low', tier: 'fast' }
 ];
 
 describe('AnalysisConfigModal.selectModel guard', () => {
   it('keeps a model that belongs to the current provider', () => {
-    const ctx = makeContext(GEMINI_MODELS);
-    AnalysisConfigModal.prototype.selectModel.call(ctx, 'gemini-2.5-flash');
-    expect(ctx.selectedModel).toBe('gemini-2.5-flash');
+    const ctx = makeContext(ANTIGRAVITY_MODELS);
+    AnalysisConfigModal.prototype.selectModel.call(ctx, 'gemini-3.5-flash-low');
+    expect(ctx.selectedModel).toBe('gemini-3.5-flash-low');
   });
 
   it('falls back to the provider default when given a foreign model', () => {
-    const ctx = makeContext(GEMINI_MODELS);
+    const ctx = makeContext(ANTIGRAVITY_MODELS);
     AnalysisConfigModal.prototype.selectModel.call(ctx, 'opus');
-    expect(ctx.selectedModel).toBe('gemini-2.5-pro');
+    expect(ctx.selectedModel).toBe('gemini-3.1-pro-low');
   });
 
   it('falls back to the first model when no model is flagged default', () => {

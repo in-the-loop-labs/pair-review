@@ -1029,9 +1029,9 @@ describe('createExecutableProviderClass', () => {
     });
 
     it('uses user configured default provider for mapping', async () => {
-      mockConfigDefault('gemini');
+      mockConfigDefault('antigravity');
       actualMockGetProviderClass.mockImplementation((pid) => {
-        if (pid === 'gemini') return { isExecutable: false };
+        if (pid === 'antigravity') return { isExecutable: false };
         throw new Error('not found');
       });
       actualMockCreateProvider.mockReturnValue({
@@ -1039,7 +1039,7 @@ describe('createExecutableProviderClass', () => {
       });
 
       const result = await new (createExecutableProviderClass('t', { command: 't' }))().mapOutputToSchema('{}');
-      expect(actualMockCreateProvider).toHaveBeenCalledWith('gemini');
+      expect(actualMockCreateProvider).toHaveBeenCalledWith('antigravity');
       expect(result.suggestions).toEqual([{ title: 'Mapped' }]);
       expect(result.summary).toBe('Sum');
     });
@@ -1064,20 +1064,20 @@ describe('createExecutableProviderClass', () => {
     it('falls back to non-executable provider when config unavailable', async () => {
       actualMockLoadConfig.mockRejectedValue(new Error('no config'));
       actualMockGetProviderClass.mockImplementation((pid) => {
-        if (pid === 'gemini') return { isExecutable: false };
+        if (pid === 'antigravity') return { isExecutable: false };
         if (pid === 'my-exec') return { isExecutable: true };
         throw new Error('not found');
       });
-      actualMockGetRegisteredProviderIds.mockReturnValue(['my-exec', 'gemini']);
+      actualMockGetRegisteredProviderIds.mockReturnValue(['my-exec', 'antigravity']);
       actualMockCreateProvider.mockReturnValue({
         execute: vi.fn().mockResolvedValue({
-          data: { suggestions: [{ title: 'Gemini' }], summary: 'ok' }
+          data: { suggestions: [{ title: 'Antigravity' }], summary: 'ok' }
         })
       });
 
       const result = await new (createExecutableProviderClass('t', { command: 't' }))().mapOutputToSchema('{}');
-      expect(actualMockCreateProvider).toHaveBeenCalledWith('gemini');
-      expect(result.suggestions).toEqual([{ title: 'Gemini' }]);
+      expect(actualMockCreateProvider).toHaveBeenCalledWith('antigravity');
+      expect(result.suggestions).toEqual([{ title: 'Antigravity' }]);
     });
 
     it('handles result with data property', async () => {

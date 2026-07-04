@@ -440,7 +440,7 @@ describe('CLI help and version', () => {
     expect(output).toContain('ENVIRONMENT VARIABLES:');
     expect(output).toContain('GITHUB_TOKEN');
     expect(output).toContain('PAIR_REVIEW_CLAUDE_CMD');
-    expect(output).toContain('PAIR_REVIEW_GEMINI_CMD');
+    expect(output).toContain('PAIR_REVIEW_ANTIGRAVITY_CMD');
     expect(output).toContain('PAIR_REVIEW_CODEX_CMD');
     expect(output).toContain('PAIR_REVIEW_MODEL');
   });

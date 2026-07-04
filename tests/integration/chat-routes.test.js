@@ -1411,7 +1411,7 @@ describe('Chat Routes', () => {
       // Insert a resumable session
       db.prepare(`
         INSERT INTO chat_sessions (id, review_id, provider, model, agent_session_id, status)
-        VALUES (1, 1, 'gemini', 'pro', 'agent-sess-2', 'active')
+        VALUES (1, 1, 'antigravity', 'pro', 'agent-sess-2', 'active')
       `).run();
 
       // Session is NOT active in memory → triggers auto-resume path
@@ -1428,7 +1428,7 @@ describe('Chat Routes', () => {
       expect(eventName).toBe('chat.resumed');
       expect(payload.event).toBe('chat.resumed');
       expect(payload.sessionId).toBe(1);
-      expect(payload.provider).toBe('gemini');
+      expect(payload.provider).toBe('antigravity');
       expect(payload.model).toBe('pro');
     });
 

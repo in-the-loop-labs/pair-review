@@ -192,9 +192,9 @@ const TEST_PROVIDERS = {
     ],
     defaultModel: 'sonnet'
   },
-  gemini: {
-    id: 'gemini',
-    name: 'Gemini',
+  antigravity: {
+    id: 'antigravity',
+    name: 'Antigravity',
     models: [
       { id: 'flash', name: 'Flash', tier: 'fast' },
       { id: 'pro', name: 'Pro', tier: 'balanced', default: true }
@@ -233,7 +233,7 @@ describe('RepoSettingsPage', () => {
       // Scenario: User had 'deletedProvider' selected, but it's no longer available
       // When switching to 'claude', the old provider lookup fails
       const instance = createRepoSettingsInstance({
-        providers: { claude: TEST_PROVIDERS.claude, gemini: TEST_PROVIDERS.gemini },
+        providers: { claude: TEST_PROVIDERS.claude, antigravity: TEST_PROVIDERS.antigravity },
         currentSettings: {
           default_provider: 'deletedProvider',
           default_model: 'some-model',
@@ -321,7 +321,7 @@ describe('RepoSettingsPage', () => {
   describe('updateUI - missing saved provider scenario', () => {
     it('should fall back to first available provider when saved provider does not exist', () => {
       const instance = createRepoSettingsInstance({
-        providers: { claude: TEST_PROVIDERS.claude, gemini: TEST_PROVIDERS.gemini },
+        providers: { claude: TEST_PROVIDERS.claude, antigravity: TEST_PROVIDERS.antigravity },
         currentSettings: {
           default_provider: 'nonexistent',
           default_model: 'some-model',
@@ -345,7 +345,7 @@ describe('RepoSettingsPage', () => {
 
     it('should update currentSettings.default_provider when falling back', () => {
       const instance = createRepoSettingsInstance({
-        providers: { gemini: TEST_PROVIDERS.gemini },
+        providers: { antigravity: TEST_PROVIDERS.antigravity },
         currentSettings: {
           default_provider: null, // No provider saved
           default_model: null,
@@ -362,8 +362,8 @@ describe('RepoSettingsPage', () => {
       instance.updateUI();
 
       // Should have set both selectedProvider and currentSettings
-      expect(instance.selectedProvider).toBe('gemini');
-      expect(instance.currentSettings.default_provider).toBe('gemini');
+      expect(instance.selectedProvider).toBe('antigravity');
+      expect(instance.currentSettings.default_provider).toBe('antigravity');
     });
 
     it('should not mark as changed when falling back to default provider', () => {
@@ -440,7 +440,7 @@ describe('RepoSettingsPage', () => {
   describe('selectProvider - normal provider switching', () => {
     it('should map model tier when switching providers', () => {
       const instance = createRepoSettingsInstance({
-        providers: { claude: TEST_PROVIDERS.claude, gemini: TEST_PROVIDERS.gemini },
+        providers: { claude: TEST_PROVIDERS.claude, antigravity: TEST_PROVIDERS.antigravity },
         currentSettings: {
           default_provider: 'claude',
           default_model: 'haiku', // fast tier
@@ -454,18 +454,18 @@ describe('RepoSettingsPage', () => {
         selectedProvider: 'claude'
       });
 
-      instance.selectProvider('gemini', true);
+      instance.selectProvider('antigravity', true);
 
-      // Should map to gemini's fast tier model
+      // Should map to antigravity's fast tier model
       expect(instance.currentSettings.default_model).toBe('flash');
     });
 
     it('should fall back to default when tier not found', () => {
       const instance = createRepoSettingsInstance({
-        providers: { claude: TEST_PROVIDERS.claude, gemini: TEST_PROVIDERS.gemini },
+        providers: { claude: TEST_PROVIDERS.claude, antigravity: TEST_PROVIDERS.antigravity },
         currentSettings: {
           default_provider: 'claude',
-          default_model: 'opus', // thorough tier - gemini doesn't have this
+          default_model: 'opus', // thorough tier - antigravity doesn't have this
           default_instructions: ''
         },
         originalSettings: {
@@ -476,15 +476,15 @@ describe('RepoSettingsPage', () => {
         selectedProvider: 'claude'
       });
 
-      instance.selectProvider('gemini', true);
+      instance.selectProvider('antigravity', true);
 
-      // Gemini has no thorough tier, should fall back to default (pro)
+      // Antigravity has no thorough tier, should fall back to default (pro)
       expect(instance.currentSettings.default_model).toBe('pro');
     });
 
     it('should not change model when markAsChanged is false', () => {
       const instance = createRepoSettingsInstance({
-        providers: { claude: TEST_PROVIDERS.claude, gemini: TEST_PROVIDERS.gemini },
+        providers: { claude: TEST_PROVIDERS.claude, antigravity: TEST_PROVIDERS.antigravity },
         currentSettings: {
           default_provider: 'claude',
           default_model: 'haiku',
@@ -498,14 +498,14 @@ describe('RepoSettingsPage', () => {
         selectedProvider: 'claude'
       });
 
-      instance.selectProvider('gemini', false);
+      instance.selectProvider('antigravity', false);
 
       // Model should not be remapped when markAsChanged is false
       expect(instance.currentSettings.default_model).toBe('haiku');
       // Provider should not be updated in currentSettings
       expect(instance.currentSettings.default_provider).toBe('claude');
       // But selectedProvider UI state should be updated
-      expect(instance.selectedProvider).toBe('gemini');
+      expect(instance.selectedProvider).toBe('antigravity');
     });
 
     it('should reject invalid provider', () => {
@@ -532,7 +532,7 @@ describe('RepoSettingsPage', () => {
       const instance = createRepoSettingsInstance({
         providers: TEST_PROVIDERS,
         currentSettings: {
-          default_provider: 'gemini',
+          default_provider: 'antigravity',
           default_model: 'pro',
           default_instructions: ''
         },

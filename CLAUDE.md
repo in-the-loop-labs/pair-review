@@ -13,7 +13,7 @@ Pair-Review is a local web application that assists human reviewers with GitHub 
 - **Backend**: Node.js with Express server
 - **Frontend**: Vanilla JavaScript (no framework) - familiar GitHub-like UI
 - **Database**: SQLite for local storage of reviews and drafts
-- **AI Integration**: Claude CLI in SDK mode (`claude -p` for programmatic output), Gemini CLI, Codex
+- **AI Integration**: Claude CLI in SDK mode (`claude -p` for programmatic output), Antigravity CLI (`agy`), Codex
 - **Distribution**: npm package executable via `npx pair-review`
 
 ## Key Design Principles
@@ -190,7 +190,7 @@ Test structure:
 - Always use `logger` (from `src/utils/logger.js`) instead of `console.log/error/warn` in server-side code. The logger provides consistent formatting and can be configured for different output levels. This applies to all route handlers, middleware, and utility code.
 
 ### Research Before Implementation
-- **Look for official documentation before guessing at technical specs**. When integrating with external tools or APIs (Claude CLI, Gemini CLI, etc.), search for and consult official documentation rather than inferring behavior from trial and error. This prevents bugs from incorrect assumptions about data formats, message types, or API contracts.
+- **Look for official documentation before guessing at technical specs**. When integrating with external tools or APIs (Claude CLI, Antigravity CLI, etc.), search for and consult official documentation rather than inferring behavior from trial and error. This prevents bugs from incorrect assumptions about data formats, message types, or API contracts.
 - Key documentation sources for AI provider CLIs:
   - Claude Code: https://code.claude.com/docs/en/cli-reference and https://platform.claude.com/docs/en/agent-sdk/typescript
   - The Agent SDK TypeScript docs define all message types (`SDKAssistantMessage`, `SDKUserMessage`, `SDKResultMessage`, `SDKSystemMessage`, etc.) and their exact field structures
@@ -213,7 +213,7 @@ Test structure:
 
 ### ACP Chat Provider Configuration
 - For ACP (Agent Client Protocol) providers, use protocol-level methods for configuration, not CLI arguments.
-- CLI arguments like `--model` are for interactive mode; ACP server mode (`opencode acp`, `gemini --experimental-acp`, etc.) ignores them.
+- CLI arguments like `--model` are for interactive mode; ACP server mode (`opencode acp`, `agent acp`, etc.) ignores them.
 - Use `unstable_setSessionModel({ sessionId, modelId })` after session creation to set the model.
 - Configuration via protocol is more reliable and consistent across different ACP implementations.
 

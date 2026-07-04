@@ -3326,22 +3326,22 @@ describe('Config Endpoints', () => {
     });
 
     it('derives default_model from the provider when only the provider is overridden', async () => {
-      // Provider overridden to gemini but NO model configured. The model must
-      // come from gemini's own default, not the provider-agnostic global default
-      // (which would publish an impossible gemini/opus pair).
+      // Provider overridden to antigravity but NO model configured. The model
+      // must come from antigravity's own default, not the provider-agnostic
+      // global default (which would publish an impossible antigravity/opus pair).
       app.set('config', {
         github_token: 'test-token',
         theme: 'light',
-        default_provider: 'gemini',
+        default_provider: 'antigravity',
         external_comments: false
       });
 
       const response = await request(server)
         .get('/api/config');
 
-      expect(response.body.default_provider).toBe('gemini');
+      expect(response.body.default_provider).toBe('antigravity');
       expect(response.body.default_model).not.toBe('opus');
-      // gemini's default model belongs to the gemini provider
+      // antigravity's default model (gemini-3.1-pro-low) belongs to the provider
       expect(response.body.default_model).toMatch(/^gemini-/);
     });
 
@@ -7530,7 +7530,7 @@ describe('Share Endpoint', () => {
 
       await run(db, `
         INSERT INTO analysis_runs (id, review_id, provider, model, tier, status, summary, started_at, completed_at)
-        VALUES (?, ?, 'gemini', 'gemini-2.0', 'fast', 'completed', 'Older run', datetime('now', '-10 minutes'), datetime('now', '-9 minutes'))
+        VALUES (?, ?, 'antigravity', 'gemini-3.1-pro-low', 'fast', 'completed', 'Older run', datetime('now', '-10 minutes'), datetime('now', '-9 minutes'))
       `, [olderRunId, reviewId]);
 
       await run(db, `
@@ -7545,8 +7545,8 @@ describe('Share Endpoint', () => {
       expect(response.status).toBe(200);
       expect(response.body.run).toMatchObject({
         id: olderRunId,
-        provider: 'gemini',
-        model: 'gemini-2.0',
+        provider: 'antigravity',
+        model: 'gemini-3.1-pro-low',
         summary: 'Older run'
       });
     });
@@ -7587,7 +7587,7 @@ describe('Share Endpoint', () => {
 
       await run(db, `
         INSERT INTO analysis_runs (id, review_id, provider, model, status, summary, started_at, completed_at)
-        VALUES (?, ?, 'gemini', 'gemini-2.0', 'completed', 'Completed run', datetime('now', '-5 minutes'), datetime('now', '-4 minutes'))
+        VALUES (?, ?, 'antigravity', 'gemini-3.1-pro-low', 'completed', 'Completed run', datetime('now', '-5 minutes'), datetime('now', '-4 minutes'))
       `, [completedRunId, reviewId]);
 
       // Request the running run specifically
@@ -7614,7 +7614,7 @@ describe('Share Endpoint', () => {
 
       await run(db, `
         INSERT INTO analysis_runs (id, review_id, provider, model, status, started_at)
-        VALUES ('latest-running', ?, 'gemini', 'gemini-2.0', 'running', datetime('now'))
+        VALUES ('latest-running', ?, 'antigravity', 'gemini-3.1-pro-low', 'running', datetime('now'))
       `, [reviewId]);
 
       const response = await request(server)

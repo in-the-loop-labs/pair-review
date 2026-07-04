@@ -65,7 +65,7 @@ pair-review is a local web application for keeping humans in the loop with AI co
 - **Local-First**: All data and processing happens on your machine - no cloud dependencies
 - **GitHub-Familiar UI**: Interface feels instantly familiar to GitHub users
 - **Human-in-the-Loop**: AI suggests, you decide
-- **Multiple AI Providers**: Support for Claude, Gemini, Codex, Copilot, OpenCode, Cursor, and Pi. Use your existing subscription!
+- **Multiple AI Providers**: Support for Claude, Antigravity, Codex, Copilot, OpenCode, Cursor, and Pi. Use your existing subscription!
 - **Progressive**: Start simple with manual review, add AI analysis when you need it
 
 ## Workflows
@@ -437,7 +437,7 @@ pair-review supports several environment variables for customizing behavior:
 |----------|-------------|---------|
 | `GITHUB_TOKEN` | GitHub Personal Access Token (takes precedence over config file) | - |
 | `PAIR_REVIEW_CLAUDE_CMD` | Custom command to invoke Claude CLI | `claude` |
-| `PAIR_REVIEW_GEMINI_CMD` | Custom command to invoke Gemini CLI | `gemini` |
+| `PAIR_REVIEW_ANTIGRAVITY_CMD` | Custom command to invoke Antigravity CLI | `agy` |
 | `PAIR_REVIEW_CODEX_CMD` | Custom command to invoke Codex CLI | `codex` |
 | `PAIR_REVIEW_COPILOT_CMD` | Custom command to invoke Copilot CLI | `copilot` |
 | `PAIR_REVIEW_OPENCODE_CMD` | Custom command to invoke OpenCode CLI | `opencode` |
@@ -466,8 +466,8 @@ PAIR_REVIEW_CLAUDE_CMD="/usr/local/bin/claude" pair-review 123
 # Use a wrapper command (supports multi-word commands)
 PAIR_REVIEW_CLAUDE_CMD="devx claude" pair-review 123
 
-# Use Gemini with npx
-PAIR_REVIEW_GEMINI_CMD="npx gemini" pair-review --local
+# Use a custom path for the Antigravity CLI
+PAIR_REVIEW_ANTIGRAVITY_CMD="/usr/local/bin/agy" pair-review --local
 
 # Force a specific model for this review
 PAIR_REVIEW_MODEL="opus" pair-review 123
@@ -491,7 +491,7 @@ Create a Personal Access Token (PAT) with these scopes:
 pair-review integrates with AI providers via their CLI tools:
 
 - **Claude**: Uses Claude Code CLI
-- **Gemini**: Uses Gemini CLI
+- **Antigravity**: Uses the Antigravity CLI (`agy`), the successor to the Gemini CLI. Install it with `curl -fsSL https://antigravity.google/cli/install.sh | bash` (macOS/Linux; it is not an npm package) — see the [Antigravity docs](https://antigravity.google/docs). Antigravity is an analysis-only provider: it runs as an agentic reviewer in non-interactive print mode and has **no chat/ACP mode**.
 - **Codex**: Uses Codex CLI
 - **GitHub Copilot**: Uses Copilot CLI
 - **OpenCode**: Uses OpenCode CLI (requires model configuration)
@@ -502,7 +502,7 @@ You can select your preferred provider and model in the repository settings UI.
 
 #### Built-in vs. Configurable Providers
 
-Most providers (Claude, Gemini, Codex, Copilot) come with built-in model definitions. **OpenCode and Pi are different** - they have no built-in models and require you to configure which models to use.
+Most providers (Claude, Antigravity, Codex, Copilot) come with built-in model definitions. **OpenCode and Pi are different** - they have no built-in models and require you to configure which models to use.
 
 #### Configuring Custom Models
 
@@ -648,7 +648,7 @@ The key difference from Review Council is consolidation order: Advanced consolid
 
 - **Large changesets with Opus 4.6**: Use review council instructions to tell the model to use a Team — it will spawn sub-agents to divide the work
 - **Multi-model parallel review**: Give each model a specific focus area (security, performance, correctness) via per-model instructions and get combined results
-- **Cross-model perspectives**: Run the same analysis across different providers (e.g., Claude, Gemini, GPT) — where models agree signals high-confidence findings, but unique outliers from a single model can be equally valuable, catching issue types that only that model excels at spotting
+- **Cross-model perspectives**: Run the same analysis across different providers (e.g., Claude, Antigravity, GPT) — where models agree signals high-confidence findings, but unique outliers from a single model can be equally valuable, catching issue types that only that model excels at spotting
 
 ### Chat
 
@@ -683,7 +683,7 @@ Configure your preferred models in `providers.pi.models` — see [AI Provider Co
 }
 ```
 
-Available chat provider IDs: `pi`, `claude`, `codex`, `copilot-acp`, `gemini-acp`, `opencode-acp`, `cursor-acp`. Each supports `command`, `args` (replaces defaults), `extra_args` (appends), and `env` overrides. Codex chat also supports `sandbox`: use `workspace-write` by default, or `read-only` for discussion-only sessions.
+Available chat provider IDs: `pi`, `claude`, `codex`, `copilot-acp`, `opencode-acp`, `cursor-acp`. Each supports `command`, `args` (replaces defaults), `extra_args` (appends), and `env` overrides. Codex chat also supports `sandbox`: use `workspace-write` by default, or `read-only` for discussion-only sessions. (Antigravity is an analysis-only provider — it has no ACP mode, so there is no Antigravity chat provider.)
 
 **Keyboard shortcut:** Press `p` then `c` to toggle the chat panel.
 

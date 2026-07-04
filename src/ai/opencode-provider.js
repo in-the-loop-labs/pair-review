@@ -68,7 +68,7 @@ class OpenCodeProvider extends AIProvider {
     this.useShell = opencodeCmd.includes(' ');
 
     // SECURITY: OpenCode runs in a worktree with prompt engineering for read-only ops
-    // Similar to Gemini's security model - relies on:
+    // Similar to the Antigravity provider's security model - relies on:
     // 1. Prompt engineering: Analysis prompts instruct AI to only read, never modify
     // 2. Worktree isolation: Analysis runs in a git worktree, limiting blast radius
     //

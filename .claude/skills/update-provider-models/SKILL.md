@@ -12,7 +12,7 @@ for any of the supported AI providers. Skip providers that were recently updated
 ## Providers to Update
 
 The providers are defined in `src/ai/` with these files:
-- `gemini-provider.js` - Google Gemini CLI models
+- `antigravity-provider.js` - Antigravity CLI (`agy`) models
 - `codex-provider.js` - OpenAI Codex CLI models
 - `copilot-provider.js` - GitHub Copilot CLI models
 - `cursor-agent-provider.js` - Cursor Agent CLI models
@@ -45,7 +45,7 @@ Using the command from config if overridden. Skip providers whose CLI is not ins
 ### 3. List Available Models
 
 Each CLI has different model listing commands:
-- **Gemini**: No native list command; use web search or ask Gemini in text mode: `gemini -m gemini-2.5-flash -o text 'What models are available?'`
+- **Antigravity**: `agy models` — lists the available Antigravity models (e.g. `gemini-3.1-pro-low`, `gemini-3.1-pro-high`, `gemini-3.5-flash-low`, `gemini-3.5-flash-high`)
 - **Codex**: No `--list-models` flag. Check docs at developers.openai.com/codex/models/ or use web search
 - **Copilot**: No native list command. Use `copilot -p 'list available models'` (non-interactive) or check docs.github.com/en/copilot/reference/ai-models/supported-models
 - **Cursor Agent**: `agent --list-models` — works great, comprehensive output
@@ -106,4 +106,4 @@ Leave changes uncommitted for the user to review.
   modes (default, multi-model, review-roulette) rather than specific models
 - Copilot CLI may have limited model availability depending on subscription tier
 - Some CLIs may need authentication before they can list models or respond to queries
-- Check the Gemini CLI `/settings` for preview features that unlock newer models
+- Run `agy models` to see which Antigravity models are currently available; the list can change as new models roll out

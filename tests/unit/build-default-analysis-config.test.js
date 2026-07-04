@@ -19,7 +19,7 @@ const { URLSearchParams: NativeURLSearchParams } = require('url');
 // shape of /api/providers (id, models, defaultModel).
 const PROVIDERS = [
   { id: 'claude', defaultModel: 'opus', models: [{ id: 'opus' }, { id: 'sonnet-4.6' }, { id: 'haiku' }] },
-  { id: 'gemini', defaultModel: 'gemini-2.5-pro', models: [{ id: 'gemini-2.5-pro' }, { id: 'pro' }, { id: 'gemini-2.5-flash' }] },
+  { id: 'antigravity', defaultModel: 'gemini-3.1-pro-low', models: [{ id: 'gemini-3.1-pro-low' }, { id: 'pro' }, { id: 'gemini-3.5-flash-low' }] },
   { id: 'pi', defaultModel: 'multi-model', models: [{ id: 'multi-model' }] }
 ];
 
@@ -124,13 +124,13 @@ describe('PRManager._buildDefaultAnalysisConfig', () => {
   });
 
   it('uses repo default_provider and default_model', async () => {
-    const repoSettings = { default_provider: 'gemini', default_model: 'pro' };
+    const repoSettings = { default_provider: 'antigravity', default_model: 'pro' };
     const config = await manager._buildDefaultAnalysisConfig(repoSettings, {}, {
       default_provider: 'pi',
       default_model: 'multi-model',
     });
     expect(config).toEqual({
-      provider: 'gemini',
+      provider: 'antigravity',
       model: 'pro',
       customInstructions: null,
     });
@@ -139,21 +139,21 @@ describe('PRManager._buildDefaultAnalysisConfig', () => {
   it('derives the model from the provider when the repo overrides only the provider', async () => {
     // Repo overrides the provider but not the model; the app default model
     // ('opus') belongs to a different provider. The pair must NOT be mixed —
-    // the model is derived from gemini's own default.
-    const repoSettings = { default_provider: 'gemini' };
+    // the model is derived from antigravity's own default.
+    const repoSettings = { default_provider: 'antigravity' };
     const config = await manager._buildDefaultAnalysisConfig(repoSettings, {}, {
       default_provider: 'claude',
       default_model: 'opus',
     });
-    expect(config.provider).toBe('gemini');
-    expect(config.model).toBe('gemini-2.5-pro');
+    expect(config.provider).toBe('antigravity');
+    expect(config.model).toBe('gemini-3.1-pro-low');
     expect(config.model).not.toBe('opus');
   });
 
   it('passes through an explicitly provided providersInfo without fetching', async () => {
-    const repoSettings = { default_provider: 'gemini', default_model: 'pro' };
+    const repoSettings = { default_provider: 'antigravity', default_model: 'pro' };
     const config = await manager._buildDefaultAnalysisConfig(repoSettings, {}, {}, PROVIDERS);
-    expect(config).toEqual({ provider: 'gemini', model: 'pro', customInstructions: null });
+    expect(config).toEqual({ provider: 'antigravity', model: 'pro', customInstructions: null });
     expect(manager._getProvidersInfo).not.toHaveBeenCalled();
   });
 
@@ -305,7 +305,7 @@ describe('PRManager._buildDefaultAnalysisConfig', () => {
     }));
 
     // Repo defaults point at a single-model config; the URL param must still win.
-    const repoSettings = { default_tab: 'single', default_provider: 'gemini', default_model: 'pro' };
+    const repoSettings = { default_tab: 'single', default_provider: 'antigravity', default_model: 'pro' };
     const config = await manager._buildDefaultAnalysisConfig(repoSettings, {});
 
     expect(config.isCouncil).toBe(true);
