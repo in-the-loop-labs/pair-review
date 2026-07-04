@@ -213,56 +213,6 @@ function parseCodexLine(line, options = {}) {
 }
 
 /**
- * Parse a single Gemini stream-json JSONL line into a normalized event.
- * Returns null if the line should not be emitted.
- *
- * Gemini stream-json event types:
- * - message (role: "assistant") → assistant_text
- * - tool_use (tool_name, parameters) → tool_use
- * - init, message (role: "user"), tool_result, result → filtered out
- *
- * @param {string} line - A single JSONL line from Gemini stdout
- * @param {Object} [options] - Parse options
- * @param {string} [options.cwd] - Working directory to strip from file paths
- * @returns {{ type: string, text: string, timestamp: number } | null}
- */
-function parseGeminiLine(line, options = {}) {
-  if (!line || !line.trim()) return null;
-
-  const { cwd } = options;
-
-  try {
-    const event = JSON.parse(line);
-    const eventType = event.type;
-
-    if (eventType === 'message' && event.role === 'assistant' && event.content && event.content.trim()) {
-      return {
-        type: 'assistant_text',
-        text: truncateSnippet(event.content),
-        timestamp: Date.now()
-      };
-    }
-
-    if (eventType === 'tool_use') {
-      const toolName = event.tool_name || 'unknown';
-      const detail = extractToolDetail(event.parameters, cwd);
-      const text = detail ? `${toolName}: ${detail}` : toolName;
-      return {
-        type: 'tool_use',
-        text: truncateSnippet(text),
-        timestamp: Date.now()
-      };
-    }
-
-    // init, user messages, tool_result, result — never emit
-    return null;
-  } catch {
-    // Best-effort side channel — silently ignore non-JSON or malformed lines.
-    return null;
-  }
-}
-
-/**
  * Parse a single OpenCode JSONL line into a normalized event.
  * Returns null if the line should not be emitted.
  *
@@ -323,7 +273,7 @@ function parseOpenCodeLine(line, options = {}) {
  */
 class StreamParser {
   /**
-   * @param {Function} parseLine - Provider-specific line parser (e.g. parseClaudeLine, parseGeminiLine)
+   * @param {Function} parseLine - Provider-specific line parser (e.g. parseClaudeLine, parseCodexLine)
    * @param {Function} onEvent - Callback receiving normalized events { type, text, timestamp }
    * @param {Object} [options] - Options passed through to parseLine (e.g. { cwd })
    */
@@ -636,7 +586,6 @@ module.exports = {
   extractToolDetail,
   parseClaudeLine,
   parseCodexLine,
-  parseGeminiLine,
   parseOpenCodeLine,
   parseCursorAgentLine,
   parsePiLine,

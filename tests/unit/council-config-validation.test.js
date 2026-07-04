@@ -31,7 +31,7 @@ describe('validateCouncilConfig', () => {
     const config = {
       levels: {
         '1': { enabled: true, voices: [{ provider: 'claude', model: 'sonnet' }] },
-        '2': { enabled: true, voices: [{ provider: 'gemini', model: 'pro' }] },
+        '2': { enabled: true, voices: [{ provider: 'antigravity', model: 'pro' }] },
         '3': { enabled: true, voices: [{ provider: 'claude', model: 'opus' }] }
       }
     };
@@ -53,7 +53,7 @@ describe('validateCouncilConfig', () => {
           enabled: true,
           voices: [
             { provider: 'claude', model: 'sonnet' },
-            { provider: 'gemini', model: 'pro' }
+            { provider: 'antigravity', model: 'pro' }
           ]
         },
         '2': { enabled: false, voices: [] },
@@ -89,7 +89,7 @@ describe('validateCouncilConfig', () => {
       const config = {
         voices: [
           { provider: 'claude', model: 'opus', tier: 'thorough' },
-          { provider: 'gemini', model: 'pro', tier: 'balanced' }
+          { provider: 'antigravity', model: 'pro', tier: 'balanced' }
         ],
         levels: { '1': true, '2': true, '3': false }
       };
@@ -142,7 +142,7 @@ describe('validateCouncilConfig', () => {
       const config = {
         voices: [
           { provider: 'claude', model: 'opus' },
-          { provider: 'gemini' } // Missing model at index 1
+          { provider: 'antigravity' } // Missing model at index 1
         ],
         levels: { '1': true }
       };
@@ -327,7 +327,7 @@ describe('validateCouncilConfig', () => {
             enabled: true,
             voices: [
               { provider: 'claude', model: 'sonnet' },
-              { provider: 'gemini' } // Missing model at index 1
+              { provider: 'antigravity' } // Missing model at index 1
             ]
           }
         }
@@ -410,7 +410,7 @@ describe('normalizeCouncilConfig', () => {
     const advancedConfig = {
       levels: {
         '1': { enabled: true, voices: [{ provider: 'claude', model: 'sonnet' }] },
-        '2': { enabled: true, voices: [{ provider: 'gemini', model: 'pro' }] },
+        '2': { enabled: true, voices: [{ provider: 'antigravity', model: 'pro' }] },
         '3': { enabled: false, voices: [] }
       }
     };
@@ -419,7 +419,7 @@ describe('normalizeCouncilConfig', () => {
 
     expect(result.voices).toEqual([
       { provider: 'claude', model: 'sonnet' },
-      { provider: 'gemini', model: 'pro' }
+      { provider: 'antigravity', model: 'pro' }
     ]);
     expect(result.levels).toEqual({ '1': true, '2': true, '3': false });
   });
@@ -432,7 +432,7 @@ describe('normalizeCouncilConfig', () => {
         ]},
         '2': { enabled: true, voices: [
           { provider: 'claude', model: 'sonnet', tier: 'balanced' },
-          { provider: 'gemini', model: 'pro', tier: 'balanced' }
+          { provider: 'antigravity', model: 'pro', tier: 'balanced' }
         ]}
       }
     };
@@ -441,7 +441,7 @@ describe('normalizeCouncilConfig', () => {
 
     expect(result.voices).toHaveLength(2);
     expect(result.voices[0]).toEqual({ provider: 'claude', model: 'sonnet', tier: 'balanced' });
-    expect(result.voices[1]).toEqual({ provider: 'gemini', model: 'pro', tier: 'balanced' });
+    expect(result.voices[1]).toEqual({ provider: 'antigravity', model: 'pro', tier: 'balanced' });
   });
 
   it('should preserve orchestration as consolidation', () => {
@@ -462,12 +462,12 @@ describe('normalizeCouncilConfig', () => {
       levels: {
         '1': { enabled: true, voices: [{ provider: 'claude', model: 'sonnet' }] }
       },
-      consolidation: { provider: 'gemini', model: 'pro' }
+      consolidation: { provider: 'antigravity', model: 'pro' }
     };
 
     const result = normalizeCouncilConfig(advancedConfig, 'council');
 
-    expect(result.consolidation).toEqual({ provider: 'gemini', model: 'pro' });
+    expect(result.consolidation).toEqual({ provider: 'antigravity', model: 'pro' });
   });
 
   it('should handle config with empty voices array and advanced levels', () => {
@@ -510,7 +510,7 @@ describe('normalizeCouncilConfig', () => {
     const legacyConfig = {
       levels: {
         '1': { enabled: true, voices: [{ provider: 'claude', model: 'opus', tier: 'thorough' }] },
-        '2': { enabled: true, voices: [{ provider: 'gemini', model: 'pro', tier: 'balanced' }] },
+        '2': { enabled: true, voices: [{ provider: 'antigravity', model: 'pro', tier: 'balanced' }] },
         '3': { enabled: false, voices: [] }
       },
       orchestration: { provider: 'claude', model: 'opus' }

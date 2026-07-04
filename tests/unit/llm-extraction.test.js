@@ -14,7 +14,7 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 
 // Import providers directly for synchronous tests
 import ClaudeProvider from '../../src/ai/claude-provider.js';
-import GeminiProvider from '../../src/ai/gemini-provider.js';
+import AntigravityProvider from '../../src/ai/antigravity-provider.js';
 import CodexProvider from '../../src/ai/codex-provider.js';
 import CopilotProvider from '../../src/ai/copilot-provider.js';
 
@@ -23,7 +23,7 @@ describe('LLM-based JSON extraction fallback', () => {
 
   beforeEach(() => {
     delete process.env.PAIR_REVIEW_CLAUDE_CMD;
-    delete process.env.PAIR_REVIEW_GEMINI_CMD;
+    delete process.env.PAIR_REVIEW_ANTIGRAVITY_CMD;
     delete process.env.PAIR_REVIEW_CODEX_CMD;
     delete process.env.PAIR_REVIEW_COPILOT_CMD;
   });
@@ -38,9 +38,9 @@ describe('LLM-based JSON extraction fallback', () => {
       expect(provider.getFastTierModel()).toBe('haiku');
     });
 
-    it('should return fast-tier model for Gemini (gemini-3.1-flash-lite-preview)', () => {
-      const provider = new GeminiProvider('gemini-2.5-pro');
-      expect(provider.getFastTierModel()).toBe('gemini-3.1-flash-lite-preview');
+    it('should return fast-tier model for Antigravity (gemini-3.5-flash-low)', () => {
+      const provider = new AntigravityProvider('gemini-3.1-pro-low');
+      expect(provider.getFastTierModel()).toBe('gemini-3.5-flash-low');
     });
 
     it('should return fast-tier model for Codex (gpt-5.4-nano)', () => {
@@ -101,29 +101,32 @@ describe('LLM-based JSON extraction fallback', () => {
       });
     });
 
-    describe('GeminiProvider', () => {
+    describe('AntigravityProvider', () => {
       it('should return valid config', () => {
-        const provider = new GeminiProvider();
-        const config = provider.getExtractionConfig('gemini-3-flash-preview');
+        const provider = new AntigravityProvider();
+        const config = provider.getExtractionConfig('gemini-3.5-flash-low');
 
         expect(config).toHaveProperty('command');
         expect(config).toHaveProperty('args');
         expect(config.promptViaStdin).toBe(true);
       });
 
-      it('should use text output format for extraction', () => {
-        const provider = new GeminiProvider();
-        const config = provider.getExtractionConfig('gemini-3-flash-preview');
+      it('should deliver the extraction prompt via stdin without enabling tools', () => {
+        const provider = new AntigravityProvider();
+        const config = provider.getExtractionConfig('gemini-3.5-flash-low');
 
-        // For extraction, we use -o text to get raw JSON without wrapper
-        expect(config.args).toContain('text');
+        // agy reads the prompt from stdin (plain text); extraction is a pure
+        // text->JSON reformat, so it must NOT enable the agentic tool loop.
+        expect(config.promptViaStdin).toBe(true);
+        expect(config.args).not.toContain('--dangerously-skip-permissions');
       });
 
-      it('should include model in args', () => {
-        const provider = new GeminiProvider();
-        const config = provider.getExtractionConfig('gemini-3-flash-preview');
+      it('should include the resolved cliName in args', () => {
+        const provider = new AntigravityProvider();
+        const config = provider.getExtractionConfig('gemini-3.5-flash-low');
 
-        expect(config.args).toContain('gemini-3-flash-preview');
+        // The clean id resolves to the exact `agy --model` display string.
+        expect(config.args).toContain('Gemini 3.5 Flash (Low)');
       });
     });
 
@@ -191,7 +194,7 @@ describe('LLM-based JSON extraction fallback', () => {
     it('all providers should have fast-tier models defined', () => {
       const providers = [
         { Class: ClaudeProvider, expectedFast: 'haiku' },
-        { Class: GeminiProvider, expectedFast: 'gemini-3.1-flash-lite-preview' },
+        { Class: AntigravityProvider, expectedFast: 'gemini-3.5-flash-low' },
         { Class: CodexProvider, expectedFast: 'gpt-5.4-nano' },
         { Class: CopilotProvider, expectedFast: 'claude-haiku-4.6' },
       ];
@@ -208,7 +211,7 @@ describe('LLM-based JSON extraction fallback', () => {
     it('all providers should support extraction', () => {
       const providers = [
         ClaudeProvider,
-        GeminiProvider,
+        AntigravityProvider,
         CodexProvider,
         CopilotProvider,
       ];
@@ -226,7 +229,7 @@ describe('LLM-based JSON extraction fallback', () => {
 
   describe('Extraction prompt handling', () => {
     it('all providers should use stdin for extraction', () => {
-      const providers = [ClaudeProvider, GeminiProvider, CodexProvider, CopilotProvider];
+      const providers = [ClaudeProvider, AntigravityProvider, CodexProvider, CopilotProvider];
 
       for (const ProviderClass of providers) {
         const provider = new ProviderClass();

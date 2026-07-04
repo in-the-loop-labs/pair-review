@@ -19,8 +19,8 @@ const { VoiceCentricConfigTab } = require('../../public/js/components/VoiceCentr
 describe('AdvancedConfigTab._defaultConfig', () => {
   function makeCtx(overrides = {}) {
     return {
-      _defaultProvider: 'gemini',
-      _defaultModel: 'gemini-2.5-pro',
+      _defaultProvider: 'antigravity',
+      _defaultModel: 'gemini-3.1-pro-low',
       _getProviderDefaultTimeout: () => 123456,
       ...overrides
     };
@@ -34,8 +34,8 @@ describe('AdvancedConfigTab._defaultConfig', () => {
       expect(config.levels[level].enabled).toBe(true);
       expect(config.levels[level].voices).toHaveLength(1);
       expect(config.levels[level].voices[0]).toEqual({
-        provider: 'gemini',
-        model: 'gemini-2.5-pro',
+        provider: 'antigravity',
+        model: 'gemini-3.1-pro-low',
         tier: 'balanced',
         timeout: 123456
       });
@@ -46,8 +46,8 @@ describe('AdvancedConfigTab._defaultConfig', () => {
     const ctx = makeCtx();
     const config = AdvancedConfigTab.prototype._defaultConfig.call(ctx);
     expect(config.consolidation).toEqual({
-      provider: 'gemini',
-      model: 'gemini-2.5-pro',
+      provider: 'antigravity',
+      model: 'gemini-3.1-pro-low',
       tier: 'balanced',
       timeout: 123456
     });
@@ -60,7 +60,7 @@ describe('AdvancedConfigTab._defaultConfig', () => {
 
     // Mutating one level's voice must not bleed into another.
     config.levels['1'].voices[0].model = 'mutated';
-    expect(config.levels['2'].voices[0].model).toBe('gemini-2.5-pro');
+    expect(config.levels['2'].voices[0].model).toBe('gemini-3.1-pro-low');
   });
 
   it('falls back to claude/sonnet when no default provider/model is set', () => {

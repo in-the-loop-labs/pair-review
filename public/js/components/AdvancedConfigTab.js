@@ -170,7 +170,7 @@ class AdvancedConfigTab {
   /**
    * Set default orchestration provider/model for new councils.
    * Falls back to 'claude'/'sonnet' if not provided.
-   * @param {string} provider - Default provider ID (e.g., 'claude', 'gemini')
+   * @param {string} provider - Default provider ID (e.g., 'claude', 'antigravity')
    * @param {string} model - Default model ID (e.g., 'sonnet', 'opus')
    */
   setDefaultOrchestration(provider, model) {

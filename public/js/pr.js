@@ -704,7 +704,7 @@ class PRManager {
     // Resolve provider and model as a MATCHED pair. Resolving each half
     // independently (repo || app || hardcoded) can mix a provider from one
     // scope with a model from another, yielding an invalid pair (e.g.
-    // gemini/opus) that startAnalysis would forward to the backend as-is.
+    // antigravity/opus) that startAnalysis would forward to the backend as-is.
     const providers = providersInfo || await this._getProvidersInfo();
     const { provider, model } = window.resolveProviderModelPair([
       { provider: repoSettings?.default_provider, model: repoSettings?.default_model },
@@ -3053,7 +3053,7 @@ class PRManager {
       ]);
 
       // Resolve provider and model as a MATCHED pair so the council/advanced tabs
-      // are never seeded with a cross-provider model (e.g. gemini + opus), which
+      // are never seeded with a cross-provider model (e.g. antigravity + opus), which
       // would blank the model <select> and be rejected by the backend.
       const providersInfo = await this._getProvidersInfo();
       const { provider: currentProvider, model: currentModel } = window.resolveProviderModelPair([
@@ -6846,7 +6846,7 @@ class PRManager {
       const lastCouncilId = reviewSettings.last_council_id;
 
       // Resolve provider and model as a MATCHED pair so the council/advanced tabs
-      // are never seeded with a cross-provider model (e.g. gemini + opus), which
+      // are never seeded with a cross-provider model (e.g. antigravity + opus), which
       // would blank the model <select> and be rejected by the backend.
       const providersInfo = await this._getProvidersInfo();
       const { provider: currentProvider, model: currentModel } = window.resolveProviderModelPair([

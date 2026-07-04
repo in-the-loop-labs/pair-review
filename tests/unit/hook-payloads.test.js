@@ -153,7 +153,7 @@ describe('hook payloads', () => {
       const payload = buildAnalysisCompletedPayload({
         reviewId: 20,
         analysisId: 'run-456',
-        provider: 'gemini',
+        provider: 'antigravity',
         model: 'pro',
         status: 'success',
         totalSuggestions: 12,
@@ -166,7 +166,7 @@ describe('hook payloads', () => {
       expect(payload.timestamp).toMatch(ISO_8601_RE);
       expect(payload.reviewId).toBe(20);
       expect(payload.analysisId).toBe('run-456');
-      expect(payload.provider).toBe('gemini');
+      expect(payload.provider).toBe('antigravity');
       expect(payload.model).toBe('pro');
       expect(payload.status).toBe('success');
       expect(payload.totalSuggestions).toBe(12);
@@ -314,13 +314,13 @@ describe('hook payloads', () => {
   describe('buildChatResumedPayload', () => {
     it('sets event to chat.resumed', () => {
       const payload = buildChatResumedPayload({
-        reviewId: 1, sessionId: 3, provider: 'gemini', model: 'pro',
+        reviewId: 1, sessionId: 3, provider: 'antigravity', model: 'pro',
         mode: 'local', localContext: { path: '/code' },
       });
 
       expect(payload.event).toBe('chat.resumed');
       expect(payload.sessionId).toBe(3);
-      expect(payload.provider).toBe('gemini');
+      expect(payload.provider).toBe('antigravity');
     });
   });
 

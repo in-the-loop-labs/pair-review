@@ -184,7 +184,7 @@ const { AdvancedConfigTab, VoiceCentricConfigTab } = global.window;
 const PROVIDERS = {
   claude: { id: 'claude', name: 'Claude', models: [], defaultModel: 'sonnet' },
   pi: { id: 'pi', name: 'Pi', models: [], defaultModel: 'default', defaultTimeout: 900000 },
-  gemini: { id: 'gemini', name: 'Gemini', models: [], defaultModel: 'gemini-2.5-pro' },
+  antigravity: { id: 'antigravity', name: 'Antigravity', models: [], defaultModel: 'gemini-3.1-pro-low' },
 };
 
 // ---------------------------------------------------------------------------

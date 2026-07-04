@@ -486,7 +486,7 @@ describe('Consolidation helper methods (direct tests)', () => {
 describe('Per-voice provider overrides (providerOverridesMap)', () => {
   describe('Analyzer constructor stores providerOverridesMap', () => {
     it('should store providerOverridesMap when provided', () => {
-      const map = { pi: { load_skills: false }, gemini: { timeout: 300000 } };
+      const map = { pi: { load_skills: false }, antigravity: { timeout: 300000 } };
       const a = new Analyzer({}, 'council', 'council', { load_skills: true }, map);
       expect(a.providerOverridesMap).toBe(map);
     });

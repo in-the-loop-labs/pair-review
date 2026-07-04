@@ -66,8 +66,8 @@ const DEFAULT_CONFIG = {
   port: 7247,
   single_port: true,  // When true, reuse a single server on the configured port; new invocations delegate to the running server
   theme: "light",
-  default_provider: "claude",  // AI provider: 'claude', 'gemini', 'codex', 'copilot', 'opencode', 'cursor-agent', 'pi'
-  default_model: "opus",       // Model within the provider (e.g., 'opus' for Claude, 'gemini-2.5-pro' for Gemini)
+  default_provider: "claude",  // AI provider: 'claude', 'antigravity', 'codex', 'copilot', 'opencode', 'cursor-agent', 'pi'
+  default_model: "opus",       // Model within the provider (e.g., 'opus' for Claude, 'gemini-3.1-pro-low' for Antigravity)
   tours: {
     enabled: false,            // When true, the guided-tour feature is available (toolbar button visible, etc.)
     auto_generate: true,       // When true, a tour generation job is kicked off automatically on review load
@@ -89,7 +89,7 @@ const DEFAULT_CONFIG = {
   db_name: "",  // Custom database filename (default: database.db). Useful for per-worktree isolation.
   yolo: false,  // When true, skips fine-grained AI provider permission setup (equivalent to --yolo CLI flag)
   enable_chat: true,  // When true, enables the chat panel feature (uses chat_provider)
-  chat_provider: "pi",  // Chat provider: 'pi', 'copilot-acp', 'gemini-acp', 'opencode-acp', 'cursor-acp', 'codex'
+  chat_provider: "pi",  // Chat provider: 'pi', 'copilot-acp', 'opencode-acp', 'cursor-acp', 'codex'
   comment_format: "legacy",  // Comment format preset or custom template for adopted suggestions
   chat: { enable_shortcuts: true, enter_to_send: true },  // Chat panel settings (enable_shortcuts: show action shortcut buttons, enter_to_send: Enter sends message instead of newline)
   providers: {},  // Custom AI analysis provider configurations (overrides built-in defaults)

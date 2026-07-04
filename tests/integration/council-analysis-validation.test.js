@@ -82,7 +82,7 @@ function createTestApp(db) {
 const voiceCentricConfig = {
   voices: [
     { provider: 'claude', model: 'opus', tier: 'thorough' },
-    { provider: 'gemini', model: 'pro', tier: 'balanced' }
+    { provider: 'antigravity', model: 'pro', tier: 'balanced' }
   ],
   levels: { '1': true, '2': true, '3': false },
   consolidation: { provider: 'claude', model: 'opus', tier: 'balanced' }

@@ -346,7 +346,7 @@ class LocalManager {
         const lastCouncilId = reviewSettings.last_council_id;
 
         // Resolve provider and model as a MATCHED pair so the council/advanced tabs
-        // are never seeded with a cross-provider model (e.g. gemini + opus), which
+        // are never seeded with a cross-provider model (e.g. antigravity + opus), which
         // would blank the model <select> and be rejected by the backend.
         const providersInfo = await manager._getProvidersInfo();
         const { provider: currentProvider, model: currentModel } = window.resolveProviderModelPair([

@@ -112,8 +112,8 @@ test.describe('Auto-Analyze Query Parameter', () => {
         body: JSON.stringify({
           success: true,
           analysisConfig: {
-            provider: 'gemini',
-            model: 'gemini-2.5-pro',
+            provider: 'antigravity',
+            model: 'gemini-3.1-pro-low',
             tier: 'thorough',
             customInstructions: 'Review all selected PRs for migration risk.',
             enabledLevels: [1, 2],
@@ -135,8 +135,8 @@ test.describe('Auto-Analyze Query Parameter', () => {
 
     const request = await analyzeRequest;
     expect(request.postDataJSON()).toMatchObject({
-      provider: 'gemini',
-      model: 'gemini-2.5-pro',
+      provider: 'antigravity',
+      model: 'gemini-3.1-pro-low',
       tier: 'thorough',
       customInstructions: 'Review all selected PRs for migration risk.',
       enabledLevels: [1, 2],
@@ -272,8 +272,8 @@ test.describe('Auto-Analyze Query Parameter - Local Mode', () => {
         body: JSON.stringify({
           success: true,
           analysisConfig: {
-            provider: 'gemini',
-            model: 'gemini-2.5-pro',
+            provider: 'antigravity',
+            model: 'gemini-3.1-pro-low',
             tier: 'thorough',
             customInstructions: 'Review the changes I just made for security issues.',
             enabledLevels: [1, 2],
@@ -306,8 +306,8 @@ test.describe('Auto-Analyze Query Parameter - Local Mode', () => {
 
     const request = await analyzeRequest;
     expect(request.postDataJSON()).toMatchObject({
-      provider: 'gemini',
-      model: 'gemini-2.5-pro',
+      provider: 'antigravity',
+      model: 'gemini-3.1-pro-low',
       tier: 'thorough',
       customInstructions: 'Review the changes I just made for security issues.',
       skipLevel3: true

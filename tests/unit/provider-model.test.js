@@ -1,7 +1,7 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 /**
  * Unit tests for resolveProviderModelPair() — the shared resolver that prevents
- * mismatched provider/model pairs (e.g. gemini + opus) from being produced when
+ * mismatched provider/model pairs (e.g. antigravity + opus) from being produced when
  * different scopes override only one half of the pair.
  */
 import { describe, it, expect } from 'vitest';
@@ -16,9 +16,9 @@ const PROVIDERS = [
     models: [{ id: 'opus' }, { id: 'sonnet-4.6', aliases: ['sonnet'] }, { id: 'haiku' }]
   },
   {
-    id: 'gemini',
-    defaultModel: 'gemini-2.5-pro',
-    models: [{ id: 'gemini-2.5-pro' }, { id: 'gemini-2.5-flash' }]
+    id: 'antigravity',
+    defaultModel: 'gemini-3.1-pro-low',
+    models: [{ id: 'gemini-3.1-pro-low' }, { id: 'gemini-3.5-flash-low' }]
   }
 ];
 
@@ -29,29 +29,29 @@ describe('resolveProviderModelPair', () => {
   });
 
   it('derives the model from the provider when the scope omits the model', () => {
-    expect(resolveProviderModelPair([{ provider: 'gemini', model: null }], PROVIDERS))
-      .toEqual({ provider: 'gemini', model: 'gemini-2.5-pro' });
+    expect(resolveProviderModelPair([{ provider: 'antigravity', model: null }], PROVIDERS))
+      .toEqual({ provider: 'antigravity', model: 'gemini-3.1-pro-low' });
   });
 
   it('replaces a foreign model with the provider default instead of mixing halves', () => {
-    // gemini provider paired with an Anthropic model — must not be returned as-is.
-    expect(resolveProviderModelPair([{ provider: 'gemini', model: 'opus' }], PROVIDERS))
-      .toEqual({ provider: 'gemini', model: 'gemini-2.5-pro' });
+    // antigravity provider paired with an Anthropic model — must not be returned as-is.
+    expect(resolveProviderModelPair([{ provider: 'antigravity', model: 'opus' }], PROVIDERS))
+      .toEqual({ provider: 'antigravity', model: 'gemini-3.1-pro-low' });
   });
 
   it('does not mix a provider from one scope with a model from another', () => {
     // Repo overrides provider only; app config supplies a (foreign) model.
     const scopes = [
-      { provider: 'gemini', model: null },
+      { provider: 'antigravity', model: null },
       { provider: 'claude', model: 'opus' }
     ];
     expect(resolveProviderModelPair(scopes, PROVIDERS))
-      .toEqual({ provider: 'gemini', model: 'gemini-2.5-pro' });
+      .toEqual({ provider: 'antigravity', model: 'gemini-3.1-pro-low' });
   });
 
   it('attributes a model-only scope to whichever provider owns the model', () => {
-    expect(resolveProviderModelPair([{ provider: null, model: 'gemini-2.5-flash' }], PROVIDERS))
-      .toEqual({ provider: 'gemini', model: 'gemini-2.5-flash' });
+    expect(resolveProviderModelPair([{ provider: null, model: 'gemini-3.5-flash-low' }], PROVIDERS))
+      .toEqual({ provider: 'antigravity', model: 'gemini-3.5-flash-low' });
   });
 
   it('keeps a model named by an alias rather than falling back to the default', () => {
@@ -91,8 +91,8 @@ describe('resolveProviderModelPair', () => {
   });
 
   it('returns a null model when no provider metadata is available', () => {
-    expect(resolveProviderModelPair([{ provider: 'gemini', model: null }], []))
-      .toEqual({ provider: 'gemini', model: null });
+    expect(resolveProviderModelPair([{ provider: 'antigravity', model: null }], []))
+      .toEqual({ provider: 'antigravity', model: null });
     expect(resolveProviderModelPair([], []))
       .toEqual({ provider: 'claude', model: null });
   });

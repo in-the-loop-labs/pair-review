@@ -2,7 +2,7 @@
 /**
  * Chat Provider Registry
  *
- * Defines named chat providers (Pi, Copilot, Gemini, OpenCode, Claude, Codex, Cursor) with their
+ * Defines named chat providers (Pi, Copilot, OpenCode, Claude, Codex, Cursor) with their
  * default commands/args, config overrides, and availability checks.
  */
 
@@ -30,14 +30,6 @@ const CHAT_PROVIDERS = {
     type: 'acp',
     command: 'copilot',
     args: ['--acp', '--stdio'],
-    env: {},
-  },
-  'gemini-acp': {
-    id: 'gemini-acp',
-    name: 'Gemini (ACP)',
-    type: 'acp',
-    command: 'gemini',
-    args: ['--experimental-acp'],
     env: {},
   },
   'opencode-acp': {

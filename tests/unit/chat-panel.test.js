@@ -3553,7 +3553,7 @@ describe('ChatPanel', () => {
       global.window.prManager = {
         analysisHistoryManager: {
           runs: [
-            { id: 7, status: 'completed', provider: 'gemini', model: 'flash' }
+            { id: 7, status: 'completed', provider: 'antigravity', model: 'flash' }
           ]
         }
       };
@@ -3563,7 +3563,7 @@ describe('ChatPanel', () => {
       expect(result).toEqual({
         type: 'analysis',
         suggestionCount: 2,
-        provider: 'gemini',
+        provider: 'antigravity',
         model: 'flash',
         aiRunId: '7'
       });
@@ -5268,12 +5268,12 @@ describe('ChatPanel', () => {
         chatPanel._chatProviders = [];
 
         chatPanel._renderSessionDropdown([
-          { id: 1, first_message: 'Hello', updated_at: new Date().toISOString(), provider: 'gemini' },
+          { id: 1, first_message: 'Hello', updated_at: new Date().toISOString(), provider: 'antigravity' },
         ]);
 
         const html = chatPanel.sessionDropdown.innerHTML;
         expect(html).toContain('chat-panel__session-provider');
-        expect(html).toContain('Gemini');
+        expect(html).toContain('Antigravity');
       });
 
       it('should not show provider badge when session has no provider', () => {
@@ -6228,9 +6228,9 @@ describe('ChatPanel', () => {
   describe('ACP status flash', () => {
     describe('_isAcpProvider', () => {
       it('should return true when active provider has type acp', () => {
-        chatPanel._activeProvider = 'gemini-acp';
+        chatPanel._activeProvider = 'opencode-acp';
         chatPanel._chatProviders = [
-          { id: 'gemini-acp', name: 'Gemini', type: 'acp', available: true },
+          { id: 'opencode-acp', name: 'OpenCode', type: 'acp', available: true },
           { id: 'pi', name: 'Pi', type: 'pi', available: true },
         ];
         expect(chatPanel._isAcpProvider()).toBe(true);

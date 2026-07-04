@@ -5007,7 +5007,7 @@ class AnalysisRunRepository {
    * @param {Object} runInfo - Run information
    * @param {string} runInfo.id - Unique run ID (UUID)
    * @param {number} runInfo.reviewId - Review ID (references reviews.id, works for both PR and local modes)
-   * @param {string} [runInfo.provider] - AI provider (claude, gemini, etc.)
+   * @param {string} [runInfo.provider] - AI provider (claude, antigravity, etc.)
    * @param {string} [runInfo.model] - AI model name
    * @param {string} [runInfo.customInstructions] - Merged custom instructions (kept for backward compatibility)
    * @param {string} [runInfo.globalInstructions] - Global instructions from ~/.pair-review/global-instructions.md

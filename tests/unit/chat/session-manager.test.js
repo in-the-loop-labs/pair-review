@@ -123,7 +123,7 @@ const mockChatProviders = {
     const providers = {
       pi: { id: 'pi', name: 'Pi (RPC)', type: 'pi' },
       'copilot-acp': { id: 'copilot-acp', name: 'Copilot (ACP)', type: 'acp', command: 'copilot', args: ['--acp', '--stdio'], env: {} },
-      'gemini-acp': { id: 'gemini-acp', name: 'Gemini (ACP)', type: 'acp', command: 'gemini', args: ['--experimental-acp'], env: {} },
+      'cursor-acp': { id: 'cursor-acp', name: 'Cursor (ACP)', type: 'acp', command: 'agent', args: ['acp'], env: {} },
       'opencode-acp': { id: 'opencode-acp', name: 'OpenCode (ACP)', type: 'acp', command: 'opencode', args: ['acp'], env: {} },
       claude: { id: 'claude', name: 'Claude (NDJSON)', type: 'claude', command: 'claude', args: [], env: {} },
       codex: { id: 'codex', name: 'Codex', type: 'codex', command: 'codex', args: ['app-server'], env: {} },
@@ -131,7 +131,7 @@ const mockChatProviders = {
     return providers[id] || null;
   }),
   isAcpProvider: vi.fn((id) => {
-    return ['copilot-acp', 'gemini-acp', 'opencode-acp'].includes(id);
+    return ['copilot-acp', 'cursor-acp', 'opencode-acp'].includes(id);
   }),
   isClaudeCodeProvider: vi.fn((id) => id === 'claude'),
   isCodexProvider: vi.fn((id) => {
@@ -957,11 +957,11 @@ describe('ChatSessionManager', () => {
       expect(bridge._constructorOptions.acpArgs).toEqual(['--acp', '--stdio']);
     });
 
-    it('should pass gemini-acp command and args to AcpBridge', async () => {
-      await manager.createSession({ provider: 'gemini-acp', reviewId: 1 });
+    it('should pass cursor-acp command and args to AcpBridge', async () => {
+      await manager.createSession({ provider: 'cursor-acp', reviewId: 1 });
       const bridge = _createdAcpBridges[0];
-      expect(bridge._constructorOptions.acpCommand).toBe('gemini');
-      expect(bridge._constructorOptions.acpArgs).toEqual(['--experimental-acp']);
+      expect(bridge._constructorOptions.acpCommand).toBe('agent');
+      expect(bridge._constructorOptions.acpArgs).toEqual(['acp']);
     });
 
     it('should pass opencode-acp command and args to AcpBridge', async () => {

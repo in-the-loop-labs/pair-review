@@ -627,7 +627,7 @@ class AnalysisConfigModal {
   selectModel(modelId) {
     // Guard: never store a model that doesn't belong to the current provider.
     // Callers can pass a model resolved from a different scope (e.g. 'opus'
-    // while the provider is 'gemini'); fall back to the provider's default so
+    // while the provider is 'antigravity'); fall back to the provider's default so
     // the UI always shows a selected card and submissions carry a valid pair.
     if (modelId && this.models.length && !this.models.some(m => m.id === modelId)) {
       const fallback = this.models.find(m => m.default) || this.models[0];
@@ -952,7 +952,7 @@ class AnalysisConfigModal {
     }
     // Only honour currentModel when it belongs to the selected provider.
     // selectProvider() has already chosen a valid model for the provider (via
-    // tier matching); applying a foreign model here (e.g. 'opus' under 'gemini')
+    // tier matching); applying a foreign model here (e.g. 'opus' under 'antigravity')
     // would leave no model card selected and submit an invalid pair.
     if (options.currentModel && this.models.some(m => m.id === options.currentModel)) {
       this.selectModel(options.currentModel);

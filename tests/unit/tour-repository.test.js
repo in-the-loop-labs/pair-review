@@ -97,7 +97,7 @@ describe('TourRepository', () => {
         review_id: reviewId,
         stops: newStops,
         diff_hash: newDiffHash,
-        provider: 'gemini',
+        provider: 'antigravity',
         model: 'flash',
       });
 
@@ -107,7 +107,7 @@ describe('TourRepository', () => {
       expect(persisted).toHaveLength(1);
       expect(persisted[0].stops).toBe(newStops);
       expect(persisted[0].diff_hash).toBe(newDiffHash);
-      expect(persisted[0].provider).toBe('gemini');
+      expect(persisted[0].provider).toBe('antigravity');
       expect(persisted[0].model).toBe('flash');
       expect(persisted[0].id).toBe(originalId);
       // SQLite CURRENT_TIMESTAMP has 1-second resolution; assert >= rather than strictly >.
@@ -165,7 +165,7 @@ describe('TourRepository', () => {
         review_id: otherReviewId,
         stops: stops2,
         diff_hash: 'hash2',
-        provider: 'gemini',
+        provider: 'antigravity',
         model: 'flash',
       });
 

@@ -140,12 +140,12 @@ const mockProviders = {
       { id: 'haiku', name: 'Claude Haiku', tier: 'fast' }
     ]
   },
-  gemini: {
-    id: 'gemini',
-    name: 'Gemini',
+  antigravity: {
+    id: 'antigravity',
+    name: 'Antigravity',
     models: [
-      { id: 'flash', name: 'Gemini Flash', tier: 'fast', default: true },
-      { id: 'pro', name: 'Gemini Pro', tier: 'thorough' }
+      { id: 'flash', name: 'Antigravity Flash', tier: 'fast', default: true },
+      { id: 'pro', name: 'Antigravity Pro', tier: 'thorough' }
     ]
   }
 };
@@ -157,7 +157,7 @@ const mockStandardCouncil = {
   config: {
     voices: [
       { provider: 'claude', model: 'sonnet', tier: 'balanced' },
-      { provider: 'gemini', model: 'flash', tier: 'fast' }
+      { provider: 'antigravity', model: 'flash', tier: 'fast' }
     ],
     levels: { '1': true, '2': true, '3': false },
     consolidation: { provider: 'claude', model: 'sonnet', tier: 'balanced' }
@@ -171,7 +171,7 @@ const mockAdvancedCouncil = {
   config: {
     levels: {
       '1': { enabled: true, voices: [{ provider: 'claude', model: 'haiku', tier: 'fast' }] },
-      '2': { enabled: true, voices: [{ provider: 'claude', model: 'sonnet', tier: 'balanced' }, { provider: 'gemini', model: 'pro', tier: 'thorough' }] },
+      '2': { enabled: true, voices: [{ provider: 'claude', model: 'sonnet', tier: 'balanced' }, { provider: 'antigravity', model: 'pro', tier: 'thorough' }] },
       '3': { enabled: false, voices: [] }
     },
     consolidation: { provider: 'claude', model: 'opus', tier: 'thorough' }
@@ -310,9 +310,9 @@ describe('RepoSettingsPage - Council Card', () => {
 
     it('should return display names for a different known provider', () => {
       const instance = createInstance();
-      const result = instance.resolveModelDisplay('gemini', 'pro');
-      expect(result.providerName).toBe('Gemini');
-      expect(result.modelName).toBe('Gemini Pro');
+      const result = instance.resolveModelDisplay('antigravity', 'pro');
+      expect(result.providerName).toBe('Antigravity');
+      expect(result.modelName).toBe('Antigravity Pro');
     });
 
     it('should fall back to raw IDs when provider is not found', () => {
@@ -487,8 +487,8 @@ describe('RepoSettingsPage - Council Card', () => {
       // Check provider/model names appear
       expect(container.innerHTML).toContain('Claude');
       expect(container.innerHTML).toContain('Claude Sonnet');
-      expect(container.innerHTML).toContain('Gemini');
-      expect(container.innerHTML).toContain('Gemini Flash');
+      expect(container.innerHTML).toContain('Antigravity');
+      expect(container.innerHTML).toContain('Antigravity Flash');
 
       // Check tier labels appear as text
       expect(container.innerHTML).toContain('council-card-tier');
@@ -689,9 +689,9 @@ describe('RepoSettingsPage - Council Card', () => {
 
       // Level 1 has Claude Haiku
       expect(container.innerHTML).toContain('Claude Haiku');
-      // Level 2 has Claude Sonnet and Gemini Pro
+      // Level 2 has Claude Sonnet and Antigravity Pro
       expect(container.innerHTML).toContain('Claude Sonnet');
-      expect(container.innerHTML).toContain('Gemini Pro');
+      expect(container.innerHTML).toContain('Antigravity Pro');
     });
 
     it('should render tier text for each voice', () => {

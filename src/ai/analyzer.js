@@ -342,8 +342,8 @@ A suggestion is a duplicate if it targets the same file and overlapping lines an
 class Analyzer {
   /**
    * @param {Object} database - Database instance
-   * @param {string} model - Model to use (e.g., 'opus', 'gemini-2.5-pro')
-   * @param {string} provider - Provider ID (e.g., 'claude', 'gemini'). Defaults to 'claude'.
+   * @param {string} model - Model to use (e.g., 'opus', 'gemini-3.1-pro-low')
+   * @param {string} provider - Provider ID (e.g., 'claude', 'antigravity'). Defaults to 'claude'.
    * @param {Object} providerOverrides - Per-call config overrides passed to createProvider (optional)
    * @param {Object|null} providerOverridesMap - Per-provider overrides map for council mode (provider ID → overrides)
    */
@@ -860,8 +860,8 @@ class Analyzer {
    *
    * Uses the bare command name since BIN_DIR is added to PATH in all
    * providers.  Using the absolute path causes issues with AI providers
-   * that pattern-match allowed tools (e.g., Gemini only matches
-   * 'git-diff-lines', not the full path).
+   * that pattern-match allowed shell commands by their bare command name
+   * (matching 'git-diff-lines', not the full path).
    *
    * @param {string|null} worktreePath - Path to the git worktree
    * @returns {string} e.g. `git-diff-lines` or `git-diff-lines --cwd "/path"`

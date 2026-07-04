@@ -841,7 +841,7 @@ describe('createProgressCallback', () => {
         level: 'orchestration',
         status: 'running',
         progress: 'Running...',
-        voiceId: 'gemini-pro-1'
+        voiceId: 'antigravity-pro-1'
       });
 
       callback({
@@ -856,7 +856,7 @@ describe('createProgressCallback', () => {
         status: 'completed',
         progress: 'Done'
       });
-      expect(status.levels[4].voices['gemini-pro-1']).toEqual({
+      expect(status.levels[4].voices['antigravity-pro-1']).toEqual({
         status: 'running',
         progress: 'Running...'
       });
@@ -933,7 +933,7 @@ describe('createProgressCallback', () => {
         level: 'orchestration',
         status: 'running',
         progress: 'R2 orchestrating...',
-        voiceId: 'gemini-pro-1'
+        voiceId: 'antigravity-pro-1'
       });
 
       // Both voices complete
@@ -947,7 +947,7 @@ describe('createProgressCallback', () => {
         level: 'orchestration',
         status: 'completed',
         progress: 'R2 done',
-        voiceId: 'gemini-pro-1'
+        voiceId: 'antigravity-pro-1'
       });
 
       // Now shared cross-voice consolidation starts (no voiceId)
@@ -961,7 +961,7 @@ describe('createProgressCallback', () => {
 
       // Per-voice state should reflect completed
       expect(status.levels[4].voices['claude-opus'].status).toBe('completed');
-      expect(status.levels[4].voices['gemini-pro-1'].status).toBe('completed');
+      expect(status.levels[4].voices['antigravity-pro-1'].status).toBe('completed');
 
       // Shared consolidation should be running with its own steps map
       expect(status.levels[4].status).toBe('running');

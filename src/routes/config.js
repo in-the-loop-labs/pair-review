@@ -100,7 +100,7 @@ router.get('/runtime-config.js', (req, res) => {
  * An explicitly configured model wins (the user opted into it). When no model is
  * configured, derive it from the selected provider's own default rather than the
  * provider-agnostic global default — otherwise a provider-only override (e.g.
- * `default_provider: 'gemini'`) would pair with an Anthropic model like 'opus'.
+ * `default_provider: 'antigravity'`) would pair with an Anthropic model like 'opus'.
  *
  * @param {Object} config - Configuration object
  * @returns {{ provider: string, model: string }}
@@ -111,7 +111,7 @@ function resolveDefaultProviderModel(config) {
   const explicitModel = config.default_model || config.model;
   // Only honour an explicit model if it actually belongs to the selected provider.
   // `DEFAULT_CONFIG.default_model` is always populated (e.g. 'opus'), so a
-  // provider-only override like `default_provider: 'gemini'` would otherwise inherit
+  // provider-only override like `default_provider: 'antigravity'` would otherwise inherit
   // a foreign Anthropic model and return a mismatched pair. When the model does not
   // belong to the provider, derive a coherent default from the provider itself.
   // Match by canonical id OR alias so a config naming an alias (e.g. 'opus') is

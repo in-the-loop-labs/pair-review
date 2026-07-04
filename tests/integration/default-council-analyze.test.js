@@ -200,14 +200,14 @@ describe('Repo default-council parity in plain Analyze routes', () => {
 
       const response = await request(server)
         .post(`/api/pr/${owner}/${repo}/${prNumber}/analyses`)
-        .send({ provider: 'gemini', model: 'pro' });
+        .send({ provider: 'antigravity', model: 'pro' });
 
       expect(response.status).toBe(200);
       expect(response.body.isCouncil).toBeUndefined();
       // Explicit single-model pick wins: Analyzer used with the explicit pair.
       expect(launchSpy).not.toHaveBeenCalled();
       expect(analyzerCalls.single.length).toBe(1);
-      expect(analyzerCalls.single[0].provider).toBe('gemini');
+      expect(analyzerCalls.single[0].provider).toBe('antigravity');
       expect(analyzerCalls.single[0].model).toBe('pro');
     });
   });
@@ -264,13 +264,13 @@ describe('Repo default-council parity in plain Analyze routes', () => {
 
       const response = await request(server)
         .post(`/api/local/${reviewId}/analyses`)
-        .send({ provider: 'gemini', model: 'pro' });
+        .send({ provider: 'antigravity', model: 'pro' });
 
       expect(response.status).toBe(200);
       expect(response.body.isCouncil).toBeUndefined();
       expect(launchSpy).not.toHaveBeenCalled();
       expect(analyzerCalls.single.length).toBe(1);
-      expect(analyzerCalls.single[0].provider).toBe('gemini');
+      expect(analyzerCalls.single[0].provider).toBe('antigravity');
       expect(analyzerCalls.single[0].model).toBe('pro');
     });
   });

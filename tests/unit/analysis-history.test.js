@@ -640,15 +640,15 @@ describe('AnalysisHistoryManager', () => {
       const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
       manager.selectedRun = {
         id: 1,
-        provider: 'gemini',
-        model: 'gemini-pro',
+        provider: 'antigravity',
+        model: 'gemini-3.1-pro-low',
         started_at: threeHoursAgo
       };
 
       manager.updateSelectedLabel();
 
       // Provider is lowercase per formatProviderName()
-      expect(manager.historyLabel.textContent).toMatch(/3 hours ago · gemini · gemini-pro/);
+      expect(manager.historyLabel.textContent).toMatch(/3 hours ago · antigravity · gemini-3.1-pro-low/);
     });
 
     it('should handle unknown provider and model', () => {
@@ -685,7 +685,7 @@ describe('AnalysisHistoryManager', () => {
       // Set up runs and a selected run
       manager.runs = [
         { id: 1, provider: 'claude', model: 'opus', completed_at: new Date().toISOString() },
-        { id: 2, provider: 'gemini', model: 'pro', completed_at: new Date().toISOString() }
+        { id: 2, provider: 'antigravity', model: 'pro', completed_at: new Date().toISOString() }
       ];
       manager.selectedRun = manager.runs[0];
       manager.selectedRunId = 1;
