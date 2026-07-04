@@ -71,9 +71,33 @@ class PierreBridge {
         pointerId: event.pointerId || 1,
         pointerType: event.pointerType || 'mouse',
       };
+      this._sweepStaleFallbackGutters();
     };
     document.addEventListener('pointermove', this._trackPointerPosition, { passive: true });
     document.addEventListener('mousemove', this._trackPointerPosition, { passive: true });
+    // Fallback-positioned gutter buttons are position:fixed (viewport
+    // coordinates), so any scroll detaches them from their line. Clear on
+    // scroll and re-derive from the live pointer position (capture: true
+    // catches scrolls of inner containers too).
+    this._onAnyScroll = () => {
+      if (this._scrollSweepScheduled) return;
+      this._scrollSweepScheduled = true;
+      const schedule = typeof requestAnimationFrame === 'function'
+        ? requestAnimationFrame
+        : (callback) => setTimeout(callback, 0);
+      schedule(() => {
+        this._scrollSweepScheduled = false;
+        for (const [fileName, container] of this._gutterContainers) {
+          if (container?.dataset?.fallbackPositioned === undefined) continue;
+          this._clearFallbackGutterPosition(fileName);
+          const fileState = this.files.get(fileName);
+          if (fileState) this._restoreHoverAfterRender(fileState);
+        }
+      });
+    };
+    if (typeof window.addEventListener === 'function') {
+      window.addEventListener('scroll', this._onAnyScroll, { capture: true, passive: true });
+    }
     if (this.workerManager?.subscribeToStatChanges) {
       this._workerStatsUnsubscribe = this.workerManager.subscribeToStatChanges((stats) => {
         this._handleWorkerStats(stats);
@@ -182,6 +206,38 @@ class PierreBridge {
       }
       instance.rerender?.();
       this._syncSplitAnnotationLayout(fileName);
+      // The layout swap moves every line; a fallback-positioned gutter
+      // container would keep floating at its old viewport coordinates.
+      this._clearFallbackGutterPosition(fileName);
+      this._restoreHoverAfterRender(fileState);
+    }
+  }
+
+  /**
+   * Clear any fallback-positioned gutter buttons the pointer has abandoned.
+   *
+   * The fallback positioner pins the buttons with position:fixed, and the
+   * only teardown used to be a pointerleave listener on the shadow ROOT —
+   * a non-element that never receives pointerleave — so buttons hovered in
+   * one spot could float there forever (over unrelated content after a
+   * scroll or a layout toggle). Runs from the document-level pointer
+   * tracker: keep the buttons while the pointer is over the file or the
+   * buttons themselves; clear otherwise.
+   * @private
+   */
+  _sweepStaleFallbackGutters() {
+    for (const [fileName, container] of this._gutterContainers) {
+      if (container?.dataset?.fallbackPositioned === undefined) continue;
+      if (this._isPointerInsideFile(this.files.get(fileName))) continue;
+      const pos = this._lastPointerPosition;
+      const rect = container.getBoundingClientRect?.();
+      if (pos && rect &&
+          pos.clientX >= rect.left && pos.clientX <= rect.right &&
+          pos.clientY >= rect.top && pos.clientY <= rect.bottom) {
+        continue;
+      }
+      this._clearFallbackGutterPosition(fileName);
+      this._hoveredRows.delete(fileName);
     }
   }
 
@@ -713,7 +769,8 @@ class PierreBridge {
 
   _clearFallbackGutterPosition(fileName) {
     const container = this._gutterContainers.get(fileName);
-    if (!container?.dataset?.fallbackPositioned) return;
+    // The marker is set as an empty string (falsy!) — presence-check it.
+    if (container?.dataset?.fallbackPositioned === undefined) return;
 
     delete container.dataset.fallbackPositioned;
     const fallbackParent = container._pierreFallbackParent;

@@ -388,6 +388,87 @@ describe('PierreBridge._queryLineElement — split columns', () => {
   });
 });
 
+describe('PierreBridge fallback gutter staleness', () => {
+  let PierreBridge;
+  let dom;
+
+  beforeEach(() => {
+    dom = new JSDOM('<!doctype html><body></body>', { url: 'http://localhost/' });
+    PierreBridge = loadDisabledBridge({ document: dom.window.document });
+  });
+
+  afterEach(() => {
+    delete global.window;
+    delete global.document;
+    vi.restoreAllMocks();
+  });
+
+  // A gutter container in the fallback-positioned state, plus a file whose
+  // container rect is a known box so _isPointerInsideFile is controllable.
+  function armFallback(bridge, { fileRect = { left: 0, top: 0, right: 500, bottom: 400 } } = {}) {
+    const doc = dom.window.document;
+    const container = doc.createElement('div');
+    container.dataset.fallbackPositioned = '';
+    container.style.position = 'fixed';
+    container.style.left = '300px';
+    container.style.top = '100px';
+    container.getBoundingClientRect = () => ({ left: 300, top: 100, right: 322, bottom: 122 });
+    doc.body.appendChild(container);
+
+    const fileContainer = doc.createElement('div');
+    fileContainer.getBoundingClientRect = () => fileRect;
+    doc.body.appendChild(fileContainer);
+
+    bridge._gutterContainers.set('a.js', container);
+    bridge.files.set('a.js', { container, instance: { rerender: vi.fn(), setOptions: vi.fn(), options: {} } });
+    bridge.files.get('a.js').container = fileContainer;
+    return container;
+  }
+
+  it('sweep clears the fixed position when the pointer abandons file and buttons', () => {
+    const bridge = new PierreBridge({});
+    const container = armFallback(bridge);
+    bridge._lastPointerPosition = { clientX: 900, clientY: 50 };
+
+    bridge._sweepStaleFallbackGutters();
+
+    expect(container.dataset.fallbackPositioned).toBeUndefined();
+    expect(container.style.position).toBe('');
+  });
+
+  it('sweep keeps the buttons while the pointer is over the file', () => {
+    const bridge = new PierreBridge({});
+    const container = armFallback(bridge);
+    bridge._lastPointerPosition = { clientX: 250, clientY: 200 }; // inside file rect
+
+    bridge._sweepStaleFallbackGutters();
+
+    expect(container.dataset.fallbackPositioned).toBe('');
+    expect(container.style.position).toBe('fixed');
+  });
+
+  it('sweep keeps the buttons while the pointer is over the buttons themselves', () => {
+    const bridge = new PierreBridge({});
+    const container = armFallback(bridge, { fileRect: { left: 0, top: 0, right: 200, bottom: 90 } });
+    bridge._lastPointerPosition = { clientX: 310, clientY: 110 }; // inside button rect only
+
+    bridge._sweepStaleFallbackGutters();
+
+    expect(container.dataset.fallbackPositioned).toBe('');
+  });
+
+  it('setDiffStyle clears fallback positioning on every file it re-renders', () => {
+    const bridge = new PierreBridge({});
+    const container = armFallback(bridge);
+    bridge._lastPointerPosition = null; // restore-hover is a no-op
+
+    bridge.setDiffStyle('split');
+
+    expect(container.dataset.fallbackPositioned).toBeUndefined();
+    expect(container.style.position).toBe('');
+  });
+});
+
 describe('PierreBridge split full-width annotation layout', () => {
   let PierreBridge;
   let dom;
