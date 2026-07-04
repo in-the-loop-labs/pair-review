@@ -475,56 +475,64 @@ test.describe('External comments: coexistence with user + AI rows', () => {
     // Wait for user-comment rows too (loadUserComments fires async).
     await page.waitForSelector('.user-comment-row', { timeout: 10000 });
 
-    // All three row types should be present
-    expect(await page.locator('.ai-suggestion-row').count()).toBeGreaterThan(0);
+    // All three row types should be present. On the @pierre/diffs branch AI
+    // suggestions slot as a light-DOM `.ai-suggestion` card (the legacy
+    // `.ai-suggestion-row` <tr> wrapper is gone — PierreBridge extracts and
+    // slots the inner `.ai-suggestion` div), while user comments and external
+    // threads keep their `.user-comment-row` / `.external-comment-row` wrappers.
+    expect(await page.locator('.ai-suggestion').count()).toBeGreaterThan(0);
     expect(await page.locator('.user-comment-row').count()).toBeGreaterThan(0);
     expect(await page.locator('.external-comment-row').count()).toBe(1);
 
     // Scope to the utils.js file wrapper and verify ordering on line 3:
-    //   AI suggestion row  ->  user comment row  ->  external comment row
+    //   AI suggestion  ->  user comment  ->  external comment
     // (CLAUDE.md hazard rule: AI -> user -> external.)
-    // The d2h diff renderer uses `[data-file-name]` on multiple elements
-    // (wrapper, comments-zone, every `<tr>`); the `.d2h-file-wrapper` is the
-    // outer container that owns the actual diff table.
+    // On the @pierre/diffs branch all three overlays render as light-DOM
+    // annotations slotted below the anchor line (not `<tr>` rows), and
+    // PierreBridge's typeOrder sorts them suggestion -> comment -> external.
+    // The three managers (suggestions, comments, external) load and render
+    // independently and asynchronously, and each addAnnotation/clear triggers a
+    // FileDiff rerender that transiently rebuilds the slotted set — so a
+    // one-shot scan can catch an intermediate state where one overlay is
+    // momentarily absent. Poll the scan until the contract holds; once all
+    // three managers have settled the ordering is stable.
     const utilsFile = page.locator('.d2h-file-wrapper[data-file-name="src/utils.js"]');
 
-    const orderedClasses = await utilsFile.evaluate((root) => {
-      // Walk every tr in document order; record any of the three row types
-      // we find. Filter the result down to the three types and check that
-      // their relative order matches the contract.
-      const rows = Array.from(root.querySelectorAll('tr'));
-      return rows
-        .filter((tr) =>
-          tr.classList.contains('ai-suggestion-row') ||
-          tr.classList.contains('user-comment-row') ||
-          tr.classList.contains('external-comment-row')
-        )
-        .map((tr) => {
-          if (tr.classList.contains('ai-suggestion-row')) return 'ai';
-          if (tr.classList.contains('user-comment-row')) return 'user';
-          return 'external';
-        });
+    const scanOrder = () => utilsFile.evaluate((root) => {
+      // Walk every overlay in document order; record its type.
+      const rows = Array.from(root.querySelectorAll(
+        '.ai-suggestion, .user-comment-row, .external-comment-row'
+      ));
+      return rows.map((el) => {
+        if (el.classList.contains('ai-suggestion')) return 'ai';
+        if (el.classList.contains('user-comment-row')) return 'user';
+        return 'external';
+      });
     });
 
-    // The external row should appear after BOTH any preceding AI row and any
-    // preceding user-comment row that targets the same line.
-    const externalIdx = orderedClasses.indexOf('external');
-    expect(externalIdx).toBeGreaterThan(-1);
+    // Poll until AI + user rows both precede the (single) external row.
+    await expect.poll(async () => {
+      const order = await scanOrder();
+      const extIdx = order.indexOf('external');
+      if (extIdx < 0) return 'no-external';
+      const preceding = order.slice(0, extIdx);
+      if (preceding.includes('external')) return 'external-before-external';
+      return preceding.includes('ai') && preceding.includes('user') ? 'ok' : 'not-settled';
+    }, { timeout: 10000 }).toBe('ok');
 
-    // Slice up to the external row — every AI/user row that comes before it
-    // must be ai or user, never external (we've already checked there's only
-    // one external row).
+    // Final stable snapshot for the remaining structural assertions.
+    const orderedClasses = await scanOrder();
+    const externalIdx = orderedClasses.indexOf('external');
     const precedingTypes = orderedClasses.slice(0, externalIdx);
+    // External sits below both AI and user overlays, and no external row
+    // precedes it (there is only one).
     expect(precedingTypes).toContain('ai');
     expect(precedingTypes).toContain('user');
-
-    // Last preceding row of either type should not be 'external' (sanity).
     expect(precedingTypes.includes('external')).toBe(false);
 
-    // External rendering did NOT remove the other rows — counts already
-    // asserted above. Belt-and-suspenders: confirm the user + AI rows still
-    // sit in this same file section.
-    expect(await utilsFile.locator('.ai-suggestion-row').count()).toBeGreaterThan(0);
+    // External rendering did NOT remove the other rows — confirm the user + AI
+    // overlays still sit in this same file section.
+    expect(await utilsFile.locator('.ai-suggestion').count()).toBeGreaterThan(0);
     expect(await utilsFile.locator('.user-comment-row').count()).toBeGreaterThan(0);
   });
 });

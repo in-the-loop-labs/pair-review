@@ -4582,6 +4582,13 @@ tr.line-range-start .d2h-code-line-ctn {
   background: transparent;
 }
 
+/* Pierre (@pierre/diffs) path: the thread card is slotted as a light-DOM
+   `<div class="external-comment-row">` (no `<td class="external-comment-cell">`
+   wrapper), so apply the same vertical padding directly to the div variant. */
+div.external-comment-row {
+  padding: 4px 0;
+}
+
 /* Source-agnostic defaults. .source-<name> rules below override these
    indirection variables, and every internal rule references --ec-* so
    adding a new source is just a new variable block + .source-<name>. */
