@@ -11,49 +11,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender } from './helpers.js';
-
-// Helper to seed AI suggestions and ensure summary is available
-async function seedAISuggestionsWithSummary(page) {
-  // Make a direct POST request to trigger analysis
-  const result = await page.evaluate(async () => {
-    const response = await fetch('/api/pr/test-owner/test-repo/1/analyses', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({})
-    });
-    if (!response.ok) {
-      throw new Error(`Analysis API failed: ${response.status}`);
-    }
-    return response.json();
-  });
-
-  if (!result.analysisId) {
-    throw new Error('Analysis failed to start: no analysisId returned');
-  }
-
-  // Wait for analysis to complete
-  await page.waitForFunction(
-    async () => {
-      const reviewId = window.prManager?.currentPR?.id;
-      if (!reviewId) return false;
-      const response = await fetch(`/api/reviews/${reviewId}/analyses/status`);
-      const status = await response.json();
-      return !status.running;
-    },
-    { timeout: 10000 }
-  );
-
-  // Reload suggestions
-  await page.evaluate(async () => {
-    if (window.prManager?.loadAISuggestions) {
-      await window.prManager.loadAISuggestions();
-    }
-  });
-
-  // Wait for suggestions to appear
-  await page.waitForSelector('.ai-suggestion, [data-suggestion-id]', { timeout: 5000 });
-}
+import { waitForDiffToRender, seedAISuggestions } from './helpers.js';
 
 test.describe('AI Summary Modal', () => {
   test('should have AI summary button in panel header', async ({ page }) => {
@@ -197,8 +155,9 @@ test.describe('AI Summary Modal', () => {
     // Panel starts collapsed by default; expand it so summary button is clickable
     await page.evaluate(() => window.aiPanel?.expand());
 
-    // Run analysis to get summary
-    await seedAISuggestionsWithSummary(page);
+    // Run analysis to get summary. The original inline copy never dismissed the
+    // council progress modal, so opt out to preserve that behavior.
+    await seedAISuggestions(page, { dismissProgressModal: false });
 
     // Reload AI summary data
     await page.evaluate(async () => {

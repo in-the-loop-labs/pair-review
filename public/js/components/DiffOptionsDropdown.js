@@ -28,6 +28,7 @@
  *       onScopeChange: (start, end) => { … },
  *       onDiffViewChange: (mode) => { … },   // 'unified' | 'split'
  *       diffView: 'unified',
+ *       diffViewAvailable: true,             // false hides the Unified/Split control
  *       initialScope: { start: 'unstaged', end: 'untracked' },
  *       branchAvailable: false
  *     }
@@ -39,6 +40,27 @@ const MINIMIZE_STORAGE_KEY = 'pair-review-minimize-comments';
 const DIFF_VIEW_STORAGE_KEY = 'pair-review-diff-view';
 const DIFF_VIEW_VALUES = ['unified', 'split'];
 
+/**
+ * Read the persisted diff-view preference, validated against the allowed
+ * values. Returns 'unified' when the key is unset, invalid, or unreadable.
+ *
+ * Single source of truth for the `pair-review-diff-view` storage key and its
+ * validation. pr.js (PierreBridge seed) and local.js (dropdown re-init) call
+ * this instead of re-implementing divergent inline parsing.
+ * @returns {('unified'|'split')}
+ */
+function readPersistedDiffView() {
+  let stored = null;
+  try {
+    stored = typeof localStorage !== 'undefined'
+      ? localStorage.getItem(DIFF_VIEW_STORAGE_KEY)
+      : null;
+  } catch (_e) {
+    stored = null;
+  }
+  return DIFF_VIEW_VALUES.includes(stored) ? stored : 'unified';
+}
+
 class DiffOptionsDropdown {
   /**
    * @param {HTMLElement} buttonElement - The gear icon button already in the DOM
@@ -48,10 +70,14 @@ class DiffOptionsDropdown {
    * @param {function(string,string):void} [callbacks.onScopeChange]
    * @param {function(string):void} [callbacks.onDiffViewChange] - Called with 'unified'|'split'
    * @param {('unified'|'split')} [callbacks.diffView] - Initial diff view (fallback; localStorage wins)
+   * @param {boolean} [callbacks.diffViewAvailable] - Whether the current render
+   *        path can apply a unified/split swap. When false, the Unified/Split
+   *        control is not rendered so the user cannot select (and persist) a
+   *        mode that would silently no-op. Defaults to true.
    * @param {{start:string,end:string}} [callbacks.initialScope]
    * @param {boolean} [callbacks.branchAvailable]
    */
-  constructor(buttonElement, { onToggleWhitespace, onToggleMinimize, onScopeChange, onDiffViewChange, diffView, initialScope, branchAvailable, worktreePath }) {
+  constructor(buttonElement, { onToggleWhitespace, onToggleMinimize, onScopeChange, onDiffViewChange, diffView, diffViewAvailable, initialScope, branchAvailable, worktreePath }) {
     this._btn = buttonElement;
     this._onToggleWhitespace = onToggleWhitespace;
     this._onToggleMinimize = onToggleMinimize || (() => {});
@@ -98,6 +124,12 @@ class DiffOptionsDropdown {
     // Read persisted state
     this._hideWhitespace = localStorage.getItem(STORAGE_KEY) === 'true';
     this._minimizeComments = localStorage.getItem(MINIMIZE_STORAGE_KEY) === 'true';
+
+    // Whether the active render path can apply a unified/split swap. When
+    // false we omit the segmented control entirely so the user can't select
+    // (and persist) a mode the renderer would silently ignore. Defaults to
+    // true so callers that don't opt in keep the control.
+    this._diffViewAvailable = diffViewAvailable === undefined ? true : Boolean(diffViewAvailable);
 
     // Diff view (unified | split). localStorage is the source of truth so this
     // stays in sync with the PierreBridge instance, which pr.js constructs from
@@ -175,14 +207,26 @@ class DiffOptionsDropdown {
   /**
    * Programmatically set the diff view mode (updates UI + storage + callback).
    * Ignores invalid values and no-ops when unchanged.
+   *
+   * The callback is invoked BEFORE persisting so a renderer that can't honor
+   * the mode can veto it by returning `false`. On veto we roll `_diffView`
+   * back to the previous value and skip persistence + UI restyle, so
+   * localStorage and the segmented control never claim a mode the diff isn't
+   * actually showing. Callbacks that return `undefined` (the common case)
+   * count as success.
    */
   set diffView(value) {
     if (!DIFF_VIEW_VALUES.includes(value)) return;
     if (value === this._diffView) return;
+    const prev = this._diffView;
     this._diffView = value;
+    // Apply BEFORE persisting; roll back if the renderer can't honor it.
+    if (this._onDiffViewChange(value) === false) {
+      this._diffView = prev;
+      return;
+    }
     this._persist();
     this._updateDiffViewUI();
-    this._onDiffViewChange(value);
   }
 
   /** Update branch availability (e.g. after base branch is set). */
@@ -281,7 +325,11 @@ class DiffOptionsDropdown {
     popover.appendChild(minLabel);
 
     // --- Diff view segmented control (Unified / Split) ---
-    this._renderDiffViewControl(popover);
+    // Only when the render path can actually apply the swap; otherwise the
+    // control is omitted so a selection can't desync the UI from the diff.
+    if (this._diffViewAvailable) {
+      this._renderDiffViewControl(popover);
+    }
 
     // Worktree path row (placeholder — populated by _updateWorktreeRow)
     this._worktreeRowEl = null;
@@ -868,3 +916,9 @@ class DiffOptionsDropdown {
 }
 
 window.DiffOptionsDropdown = DiffOptionsDropdown;
+window.readPersistedDiffView = readPersistedDiffView;
+
+// Node/test export (browser code uses the window globals above).
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { DiffOptionsDropdown, readPersistedDiffView };
+}

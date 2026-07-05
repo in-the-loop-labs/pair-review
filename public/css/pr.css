@@ -13617,9 +13617,11 @@ diffs-container {
    Split (side-by-side) layout: the two code columns live in the shadow DOM's
    <pre data-diff-type="split"> grid; .pierre-diff-body keeps overflow-x:auto so
    a wide split view scrolls instead of breaking the grid. @pierre/diffs slots
-   each annotation into a SINGLE column (deletions=left, additions=right), so
-   these cards occupy their side's (~half) width in split — they cannot span
-   both columns (subgrid cell). See PierreBridge.ANNOTATION_CSS. */
+   each annotation into a SINGLE column (deletions=left, additions=right).
+   PierreBridge then stretches a LONE annotation across both columns by marking
+   it .pr-annotation-fullwidth (injected shadow CSS repositions the subgrid
+   cell); rows with annotations on BOTH sides stay side-by-side at ~half width.
+   See PierreBridge.ANNOTATION_CSS and _syncSplitAnnotationLayout. */
 
 /* Dual gutter buttons (chat + comment) inside @pierre/diffs */
 .pierre-gutter-buttons {

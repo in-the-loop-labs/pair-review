@@ -28,7 +28,8 @@ import {
   waitForDiffType,
   setDiffView,
   openSplitCommentForm,
-  expectAnnotationInSplitColumn
+  expectAnnotationInSplitColumn,
+  seedAISuggestions
 } from './helpers.js';
 
 const DIFF_VIEW_STORAGE_KEY = 'pair-review-diff-view';
@@ -65,6 +66,20 @@ async function cleanupComments(page, reviewId) {
         await fetch(`/api/reviews/${rid}/comments/${c.id}`, { method: 'DELETE' });
       }
     } catch { /* best-effort */ }
+  }, reviewId);
+}
+
+/**
+ * Delete AI-seeded suggestions on a review so the shared worker DB stays clean.
+ * The comment DELETE routes only touch user comments; AI rows (source='ai') need
+ * the dedicated E2E cleanup hook served by tests/e2e/test-server.js.
+ */
+async function cleanupAISuggestions(page, reviewId) {
+  await page.evaluate(async (rid) => {
+    // fetch does NOT throw on 404 — only on network errors — so we must
+    // inspect resp.ok ourselves, otherwise a missing route silently no-ops.
+    const resp = await fetch(`/api/reviews/${rid}/ai-suggestions`, { method: 'DELETE' });
+    if (!resp.ok) throw new Error(`AI cleanup failed: ${resp.status}`);
   }, reviewId);
 }
 
@@ -172,11 +187,13 @@ for (const mode of MODES) {
       await expect(page.locator('.user-comment-body', { hasText: body })).toBeVisible({ timeout: 5000 });
       await expectAnnotationInSplitColumn(page, { text: body, column: 'additions' });
 
-      // The persisted comment is anchored on the RIGHT side.
+      // The persisted comment is anchored on the RIGHT side. Match by the
+      // unique body prefix (not line_start) so a leaked comment from a prior
+      // spec in the same worker can't bind here.
       const side = await page.evaluate(async (rid) => {
         const resp = await fetch(`/api/reviews/${rid}/comments`);
         const data = await resp.json();
-        const c = (data.comments || []).find((x) => x.line_start === 4);
+        const c = (data.comments || []).find((x) => x.body && x.body.startsWith('Split additions comment'));
         return c?.side;
       }, mode.reviewId);
       expect(side).toBe('RIGHT');
@@ -303,6 +320,11 @@ test.describe('Annotation prose measure on wide displays (PR mode)', () => {
     await page.reload();
     await waitForDiffToRender(page);
 
+    // Comments are slotted into the shadow DOM in a separate async pass after
+    // the diff renders, so measure() can read null if we don't wait for the
+    // seeded comment to actually appear first (mirrors the split path below).
+    await expect(page.locator('.user-comment-body', { hasText: longBody })).toBeVisible();
+
     const measure = () => page.evaluate(() => {
       const body = document.querySelector('.user-comment-body');
       const card = body?.closest('.user-comment');
@@ -340,41 +362,17 @@ test.describe('Annotation prose measure on wide displays (PR mode)', () => {
 test.describe('Split diff view — AI suggestions (PR mode)', () => {
   const PR_PATH = '/pr/test-owner/test-repo/1';
 
-  async function seedAISuggestions(page) {
-    const result = await page.evaluate(async () => {
-      const resp = await fetch('/api/pr/test-owner/test-repo/1/analyses', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({})
-      });
-      if (!resp.ok) throw new Error(`Analysis API failed: ${resp.status}`);
-      return resp.json();
-    });
-    if (!result.analysisId) throw new Error('Analysis failed to start');
-
-    await page.waitForFunction(async () => {
-      const reviewId = window.prManager?.currentPR?.id;
-      if (!reviewId) return false;
-      const resp = await fetch(`/api/reviews/${reviewId}/analyses/status`);
-      return !(await resp.json()).running;
-    }, null, { timeout: 5000 });
-
-    await page.evaluate(async () => {
-      if (window.prManager?.loadAISuggestions) await window.prManager.loadAISuggestions();
-    });
-    await page.waitForSelector('.ai-suggestion', { timeout: 5000 });
-
-    // The POST re-shows the progress modal; hide it so it can't intercept clicks.
-    await page.evaluate(() => {
-      const modal = document.getElementById('council-progress-modal');
-      if (modal) modal.style.display = 'none';
-    });
-  }
+  // Symmetric teardown: this block seeds AI rows into review 1 via the analyses
+  // route. Without cleanup they leak into later tests that revisit review 1.
+  test.afterEach(async ({ page }) => {
+    await cleanupAISuggestions(page, 1);
+  });
 
   test('renders an AI suggestion in the additions column in split', async ({ page }) => {
     await page.goto(PR_PATH);
     await waitForDiffToRender(page);
-    await seedAISuggestions(page);
+    // Original inline copy waited on '.ai-suggestion' only; keep that selector.
+    await seedAISuggestions(page, { suggestionSelector: '.ai-suggestion' });
 
     // Mock suggestion 1001 ("Consider using const for immutable values") is a
     // final (ai_level null) suggestion on utils.js line 3 — a RIGHT-side line.

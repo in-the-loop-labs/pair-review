@@ -92,28 +92,42 @@ async function dragResizeHandle(page, handleLocator, deltaX) {
 }
 
 /**
- * Wait until at least one @pierre/diffs `<pre>` in the document reports the
- * given layout via its `data-diff-type` attribute.
+ * Wait until EVERY rendered @pierre/diffs `<pre>` reports the given layout via
+ * its `data-diff-type` attribute (or, when `fileName` is supplied, only the
+ * host inside that file wrapper).
  *
  * The vendor stamps the shadow `<pre>` with `data-diff-type="single"` for the
  * unified (single-column) layout and `data-diff-type="split"` for the
  * side-by-side layout. These are the authoritative vendor attribute values —
  * there is no `"unified"` value.
  *
+ * WHY "every host": multi-file pages mount one `diffs-container` per file and
+ * they rerender independently on a layout toggle. Resolving as soon as ONE host
+ * reports the new layout races the others, so `setDiffView()`'s completion gate
+ * can fire while a second file is still mid-rerender. Requiring all hosts (and
+ * that each has actually rendered its `<pre>`) makes the gate reliable.
+ *
  * @param {import('@playwright/test').Page} page
  * @param {('single'|'split')} diffType - Vendor value: 'single' = unified.
  * @param {number} [timeout=5000]
+ * @param {Object} [opts]
+ * @param {string} [opts.fileName] - Scope the wait to a single file wrapper.
  */
-async function waitForDiffType(page, diffType, timeout = 5000) {
-  await page.waitForFunction((type) => {
-    const hosts = document.querySelectorAll('diffs-container');
+async function waitForDiffType(page, diffType, timeout = 5000, { fileName } = {}) {
+  await page.waitForFunction(({ type, file }) => {
+    const scope = file
+      ? document.querySelector(`.d2h-file-wrapper[data-file-name="${file}"]`)
+      : document;
+    if (!scope) return false;
+    const hosts = scope.querySelectorAll('diffs-container');
+    if (hosts.length === 0) return false;
     for (const host of hosts) {
-      if (host.shadowRoot && host.shadowRoot.querySelector(`pre[data-diff-type="${type}"]`)) {
-        return true;
-      }
+      const pre = host.shadowRoot && host.shadowRoot.querySelector('pre[data-diff-type]');
+      // Host has not rendered its <pre> yet, or still reports the old layout.
+      if (!pre || pre.getAttribute('data-diff-type') !== type) return false;
     }
-    return false;
-  }, diffType, { timeout });
+    return true;
+  }, { type: diffType, file: fileName || null }, { timeout });
 }
 
 /**
@@ -172,7 +186,33 @@ async function hoverSplitDiffLine(page, { fileName, line, side = 'additions' }) 
  * @param {Object} opts - Same shape as {@link hoverSplitDiffLine}
  */
 async function openSplitCommentForm(page, { fileName, line, side = 'additions' }) {
+  const isDeletions = side === 'deletions' || side === 'LEFT';
   await hoverSplitDiffLine(page, { fileName, line, side });
+
+  // In split, PierreBridge's fallback positioner pins the single per-file gutter
+  // container over the hovered line with position:fixed (viewport coordinates),
+  // moving it out of the vendor slot — so it is neither a DOM descendant of the
+  // shadow `code[data-<side>]` column (a CSS selector can't scope by column)
+  // nor slot-assigned (`assignedSlot` is null). Instead, gate on the button
+  // being horizontally on the REQUESTED side of the split `<pre>` (additions =
+  // RIGHT, deletions = LEFT) before clicking, so a button still positioned over
+  // the OTHER column from a prior hover can't be the one we act on. The columns
+  // themselves are `display:contents` (zero-size rects), hence the pre midpoint.
+  await page.waitForFunction(({ file, wantLeft }) => {
+    const wrapper = document.querySelector(`.d2h-file-wrapper[data-file-name="${file}"]`);
+    const btn = wrapper && wrapper.querySelector('.pierre-comment-btn');
+    if (!btn) return false;
+    const r = btn.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return false;
+    const pre = wrapper.querySelector('diffs-container')?.shadowRoot
+      ?.querySelector('pre[data-diff-type="split"]');
+    if (!pre) return false;
+    const pr = pre.getBoundingClientRect();
+    const mid = pr.left + pr.width / 2;
+    const center = r.left + r.width / 2;
+    return wantLeft ? center < mid : center > mid;
+  }, { file: fileName, wantLeft: isDeletions }, { timeout: 5000 });
+
   const addCommentBtn = page
     .locator(`.d2h-file-wrapper[data-file-name="${fileName}"] .pierre-comment-btn`)
     .first();
@@ -212,6 +252,112 @@ async function expectAnnotationInSplitColumn(page, { text, column, timeout = 500
   }, { text, column }, { timeout });
 }
 
+/**
+ * Dismiss the council progress modal if it is currently blocking interactions.
+ * This can happen when a previous test triggered an analysis that is still
+ * running (or completed but the modal wasn't closed), causing the page to
+ * auto-show it — or when {@link seedAISuggestions}'s POST re-shows it.
+ *
+ * Prefers the "Run in Background" button (hides without cancelling); falls back
+ * to hiding via JS if the button isn't present, then waits for the hidden state.
+ *
+ * @param {import('@playwright/test').Page} page
+ */
+async function dismissProgressModalIfVisible(page) {
+  const progressModal = page.locator('#council-progress-modal');
+  const isVisible = await progressModal.isVisible();
+  if (isVisible) {
+    // Click the "Run in Background" button to hide the modal without cancelling
+    const bgBtn = progressModal.locator('.council-bg-btn, button:has-text("Background")').first();
+    const bgBtnVisible = await bgBtn.isVisible().catch(() => false);
+    if (bgBtnVisible) {
+      await bgBtn.click();
+    } else {
+      // Fallback: directly hide via JS
+      await page.evaluate(() => {
+        const modal = document.getElementById('council-progress-modal');
+        if (modal) modal.style.display = 'none';
+      });
+    }
+    await progressModal.waitFor({ state: 'hidden', timeout: 3000 });
+  }
+}
+
+/**
+ * Pre-seed AI suggestions by POSTing to the PR analyses endpoint (which the E2E
+ * harness mocks to insert deterministic suggestions into the DB), waiting for
+ * the run to finish, reloading suggestions into the DOM, and waiting for them to
+ * render. All five original inline copies targeted the same hardcoded PR
+ * endpoint (test-owner/test-repo/1); their divergences are exposed as options.
+ *
+ * @param {import('@playwright/test').Page} page
+ * @param {Object} [opts]
+ * @param {number} [opts.statusTimeout=30000] - Deadline for the analysis-status
+ *   poll. NOTE: four of the five original copies wrote this timeout as
+ *   `waitForFunction(fn, { timeout })`, where Playwright treats the object as the
+ *   function *arg*, not options — so they actually polled with the default 30s.
+ *   30000 preserves that dominant effective behavior. Only the split-view copy
+ *   placed options correctly (5s); it becomes more generous here, which only
+ *   affects the failure path (success resolves as soon as the run completes).
+ * @param {string} [opts.suggestionSelector='.ai-suggestion, [data-suggestion-id]']
+ *   - Selector awaited to confirm suggestions rendered.
+ * @param {boolean} [opts.dismissProgressModal=true] - Dismiss the council
+ *   progress modal the POST re-shows so it can't intercept later clicks. The
+ *   ai-summary-modal spec opts out (its original copy never dismissed).
+ */
+async function seedAISuggestions(page, {
+  statusTimeout = 30000,
+  suggestionSelector = '.ai-suggestion, [data-suggestion-id]',
+  dismissProgressModal = true
+} = {}) {
+  // Make a direct POST request to trigger analysis and verify success
+  const result = await page.evaluate(async () => {
+    const response = await fetch('/api/pr/test-owner/test-repo/1/analyses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    if (!response.ok) {
+      throw new Error(`Analysis API failed: ${response.status}`);
+    }
+    return response.json();
+  });
+
+  if (!result.analysisId) {
+    throw new Error('Analysis failed to start: no analysisId returned');
+  }
+
+  // Wait for analysis to complete by polling the status endpoint
+  await page.waitForFunction(
+    async () => {
+      const reviewId = window.prManager?.currentPR?.id;
+      if (!reviewId) return false;
+      const response = await fetch(`/api/reviews/${reviewId}/analyses/status`);
+      const status = await response.json();
+      return !status.running;
+    },
+    null,
+    { timeout: statusTimeout }
+  );
+
+  // Reload suggestions and wait for them to appear in the DOM
+  await page.evaluate(async () => {
+    if (window.prManager?.loadAISuggestions) {
+      await window.prManager.loadAISuggestions();
+    }
+  });
+
+  // Wait for at least one AI suggestion to render
+  await page.waitForSelector(suggestionSelector, { timeout: 5000 });
+
+  // Dismiss the progress modal if it appeared (the POST triggers the modal via
+  // the running-analysis check on the frontend, and it can linger long enough to
+  // intercept pointer events on suggestion action buttons).
+  if (dismissProgressModal) {
+    await dismissProgressModalIfVisible(page);
+  }
+}
+
 module.exports = {
   waitForDiffToRender,
   hoverDiffLine,
@@ -221,5 +367,7 @@ module.exports = {
   setDiffView,
   hoverSplitDiffLine,
   openSplitCommentForm,
-  expectAnnotationInSplitColumn
+  expectAnnotationInSplitColumn,
+  dismissProgressModalIfVisible,
+  seedAISuggestions
 };

@@ -947,6 +947,114 @@ describe('AIPanel.openQuickActionChat for external threads', () => {
   });
 });
 
+describe('AIPanel.openQuickActionChat for comments', () => {
+  it('preserves the LEFT (deletion) side from the comment model', () => {
+    const open = vi.fn();
+    global.window = { ...global.window, chatPanel: { open }, prManager: { currentPR: { id: 3 } } };
+
+    const panel = createTestPanel({
+      comments: [
+        { id: 12, body: 'On the removed line', file: 'src/a.js', line_start: 4, line_end: 4, side: 'LEFT' },
+      ],
+    });
+
+    panel.openQuickActionChat({
+      dataset: { commentId: '12' },
+    });
+
+    expect(open).toHaveBeenCalledTimes(1);
+    const arg = open.mock.calls[0][0];
+    expect(arg.reviewId).toBe(3);
+    expect(arg.commentContext).toMatchObject({
+      commentId: '12',
+      file: 'src/a.js',
+      line_start: 4,
+      line_end: 4,
+      side: 'LEFT',
+      source: 'user',
+    });
+  });
+
+  it('defaults a missing comment side to RIGHT', () => {
+    const open = vi.fn();
+    global.window = { ...global.window, chatPanel: { open }, prManager: { currentPR: { id: 1 } } };
+
+    const panel = createTestPanel({
+      comments: [
+        { id: 8, body: 'No side here', file: 'src/b.js', line_start: 2, line_end: 2 },
+      ],
+    });
+
+    panel.openQuickActionChat({ dataset: { commentId: '8' } });
+
+    const arg = open.mock.calls[0][0];
+    expect(arg.commentContext.side).toBe('RIGHT');
+  });
+
+  it('falls back to data-comment-side when the comment is not in state', () => {
+    const open = vi.fn();
+    global.window = { ...global.window, chatPanel: { open }, prManager: { currentPR: { id: 2 } } };
+
+    // No matching comment in state, so buildCommentContext relies on the
+    // dataset carried on the button (the fallback path).
+    const panel = createTestPanel({ comments: [] });
+
+    panel.openQuickActionChat({
+      dataset: {
+        commentId: '99',
+        commentFile: 'src/c.js',
+        commentLineStart: '10',
+        commentLineEnd: '10',
+        commentSide: 'LEFT',
+      },
+    });
+
+    const arg = open.mock.calls[0][0];
+    expect(arg.commentContext).toMatchObject({
+      commentId: '99',
+      file: 'src/c.js',
+      line_start: 10,
+      line_end: 10,
+      side: 'LEFT',
+    });
+  });
+});
+
+describe('AIPanel comment chat button rendering', () => {
+  let originalDocumentElement;
+
+  beforeEach(() => {
+    originalDocumentElement = global.document.documentElement;
+    global.document.documentElement = {
+      style: { setProperty: vi.fn() },
+      getAttribute: vi.fn((name) => (name === 'data-chat' ? 'available' : null)),
+    };
+  });
+
+  afterEach(() => {
+    global.document.documentElement = originalDocumentElement;
+  });
+
+  it('emits data-comment-side on the quick-action chat button', () => {
+    const panel = createTestPanel();
+    const html = panel.renderCommentItem(
+      { id: 5, body: 'hi', file: 'src/a.js', line_start: 4, line_end: 4, side: 'LEFT' },
+      0
+    );
+    expect(html).toContain('quick-action-chat');
+    expect(html).toContain('data-comment-side="LEFT"');
+  });
+
+  it('defaults data-comment-side to RIGHT when the comment has no side', () => {
+    const panel = createTestPanel();
+    const html = panel.renderCommentItem(
+      { id: 6, body: 'hi', file: 'src/a.js', line_start: 4, line_end: 4 },
+      0
+    );
+    expect(html).toContain('data-comment-side="RIGHT"');
+  });
+});
+
 describe('AIPanel.getItemKey', () => {
   it('produces distinct keys for two external threads on the same (file, line)', () => {
     const panel = createTestPanel();

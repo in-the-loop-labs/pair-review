@@ -168,6 +168,25 @@ describe('PierreBridge.setDiffStyle', () => {
     }
   });
 
+  it('re-slots the split annotation layout once per file after the switch', () => {
+    // setDiffStyle re-renders every file, which rebuilds each shadow DOM and
+    // wipes the .pr-annotation-fullwidth class + --pr-split-gutter-width var.
+    // It must re-publish them by calling _syncSplitAnnotationLayout for EACH
+    // file (a regression that dropped the call would silently break the
+    // full-width split cards).
+    const bridge = new PierreBridge({});
+    const synced = [];
+    bridge._syncSplitAnnotationLayout = vi.fn((fileName) => synced.push(fileName));
+
+    bridge.files.set('a.js', { instance: makeInstance() });
+    bridge.files.set('b.js', { instance: makeInstance() });
+
+    bridge.setDiffStyle('split');
+
+    expect(bridge._syncSplitAnnotationLayout).toHaveBeenCalledTimes(2);
+    expect(synced).toEqual(['a.js', 'b.js']);
+  });
+
   it('preserves stored annotations across the switch (rerender re-slots them)', () => {
     const bridge = new PierreBridge({});
     const a = makeInstance();
@@ -590,6 +609,39 @@ describe('PierreBridge split full-width annotation layout', () => {
     // After the pass runs, a new sync can be scheduled again.
     bridge._syncSplitAnnotationLayout('a.js');
     expect(scheduled).toHaveLength(2);
+  });
+
+  it('schedules an independent rAF per file (debounce guard is per-file)', () => {
+    // The guard lives on fileState._splitLayoutRaf, so each file coalesces its
+    // OWN repeats without suppressing sibling files. A regression that hoisted
+    // the guard onto the bridge (globalizing the debounce) would drop every
+    // file after the first — this test pins the per-file contract.
+    const scheduled = [];
+    global.requestAnimationFrame = (fn) => {
+      scheduled.push(fn);
+      return scheduled.length;
+    };
+    const a = makeSplitShadow();
+    const b = makeSplitShadow();
+    const bridge = new PierreBridge({ diffStyle: 'split' });
+    bridge.files.set('a.js', { shadowHost: { shadowRoot: a.root }, annotations: [] });
+    bridge.files.set('b.js', { shadowHost: { shadowRoot: b.root }, annotations: [] });
+
+    // Two distinct files → two independent rAF callbacks.
+    bridge._syncSplitAnnotationLayout('a.js');
+    bridge._syncSplitAnnotationLayout('b.js');
+    expect(scheduled).toHaveLength(2);
+
+    // A repeat of each file coalesces into its own pending pass — no new rAF.
+    bridge._syncSplitAnnotationLayout('a.js');
+    bridge._syncSplitAnnotationLayout('b.js');
+    expect(scheduled).toHaveLength(2);
+
+    // Each callback applies its own file's layout independently.
+    scheduled[0]();
+    scheduled[1]();
+    expect(a.additionCell.classList.contains('pr-annotation-fullwidth')).toBe(true);
+    expect(b.additionCell.classList.contains('pr-annotation-fullwidth')).toBe(true);
   });
 });
 

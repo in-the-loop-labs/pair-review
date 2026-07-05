@@ -118,6 +118,15 @@ function getDiffOptionsDropdown() {
 }
 
 /**
+ * Load the module and return the browser-facing readPersistedDiffView global
+ * (the same reference pr.js and local.js call).
+ */
+function getReadPersistedDiffView() {
+  getDiffOptionsDropdown();
+  return global.window.readPersistedDiffView;
+}
+
+/**
  * Helper: create a dropdown instance with sensible defaults.
  * Merges caller overrides into the callbacks object.
  */
@@ -359,5 +368,124 @@ describe('DiffOptionsDropdown', () => {
       expect(onDiffViewChange).toHaveBeenCalledWith('split');
       expect(global.localStorage._store['pair-review-diff-view']).toBe('split');
     });
+
+    it('rolls back and does NOT persist when the callback returns false', () => {
+      // Renderer can't honor the mode (e.g. no Pierre bridge on a fallback
+      // page): the callback vetoes with `false`. The dropdown must revert to
+      // the previous mode, leave localStorage untouched, and keep the
+      // segmented control showing the old (correct) selection.
+      const onDiffViewChange = vi.fn(() => false);
+      const dropdown = createDropdown({ onDiffViewChange });
+
+      dropdown.diffView = 'split';
+
+      expect(onDiffViewChange).toHaveBeenCalledWith('split');
+      expect(dropdown.diffView).toBe('unified');
+      expect(global.localStorage._store['pair-review-diff-view']).toBeUndefined();
+      expect(dropdown._diffViewButtons.unified.getAttribute('aria-pressed')).toBe('true');
+      expect(dropdown._diffViewButtons.split.getAttribute('aria-pressed')).toBe('false');
+    });
+
+    it('rolls back when the Split button click is vetoed by the callback', () => {
+      const onDiffViewChange = vi.fn(() => false);
+      const dropdown = createDropdown({ onDiffViewChange });
+
+      fireClick(dropdown._diffViewButtons.split);
+
+      expect(dropdown.diffView).toBe('unified');
+      expect(global.localStorage._store['pair-review-diff-view']).toBeUndefined();
+      expect(dropdown._diffViewButtons.split.getAttribute('aria-pressed')).toBe('false');
+      expect(dropdown._diffViewButtons.unified.getAttribute('aria-pressed')).toBe('true');
+    });
+
+    it('treats an undefined callback return as success (back-compat)', () => {
+      // Callbacks that return nothing must still persist and update the UI.
+      const onDiffViewChange = vi.fn(() => undefined);
+      const dropdown = createDropdown({ onDiffViewChange });
+
+      dropdown.diffView = 'split';
+
+      expect(dropdown.diffView).toBe('split');
+      expect(global.localStorage._store['pair-review-diff-view']).toBe('split');
+      expect(dropdown._diffViewButtons.split.getAttribute('aria-pressed')).toBe('true');
+    });
+
+    it('treats an explicit true callback return as success', () => {
+      const onDiffViewChange = vi.fn(() => true);
+      const dropdown = createDropdown({ onDiffViewChange });
+
+      dropdown.diffView = 'split';
+
+      expect(dropdown.diffView).toBe('split');
+      expect(global.localStorage._store['pair-review-diff-view']).toBe('split');
+      expect(dropdown._diffViewButtons.split.getAttribute('aria-pressed')).toBe('true');
+    });
+  });
+
+  describe('diffViewAvailable capability flag', () => {
+    it('renders the control by default (flag omitted)', () => {
+      const dropdown = createDropdown();
+      expect(dropdown._diffViewButtons).toBeTruthy();
+    });
+
+    it('renders the control when diffViewAvailable is true', () => {
+      const dropdown = createDropdown({ diffViewAvailable: true });
+      expect(dropdown._diffViewButtons).toBeTruthy();
+    });
+
+    it('omits the control when diffViewAvailable is false', () => {
+      const dropdown = createDropdown({ diffViewAvailable: false });
+      expect(dropdown._diffViewButtons).toBeNull();
+    });
+
+    it('does not render a diff-view-row when unavailable', () => {
+      const dropdown = createDropdown({ diffViewAvailable: false });
+      const row = dropdown._popoverEl._children.find((c) => c.className === 'diff-view-row');
+      expect(row).toBeUndefined();
+    });
+
+    it('still exposes the persisted diffView getter when the control is hidden', () => {
+      global.localStorage._store['pair-review-diff-view'] = 'split';
+      const dropdown = createDropdown({ diffViewAvailable: false });
+      // The stored value is still read; only the toggle UI is suppressed.
+      expect(dropdown.diffView).toBe('split');
+    });
+
+    it('the setter is a safe no-op on UI when the control is hidden', () => {
+      const dropdown = createDropdown({ diffViewAvailable: false });
+      expect(() => { dropdown.diffView = 'split'; }).not.toThrow();
+      expect(dropdown.diffView).toBe('split');
+    });
+  });
+});
+
+describe('readPersistedDiffView', () => {
+  it('returns the stored value when it is a valid mode (split)', () => {
+    global.localStorage._store['pair-review-diff-view'] = 'split';
+    const readPersistedDiffView = getReadPersistedDiffView();
+    expect(readPersistedDiffView()).toBe('split');
+  });
+
+  it('returns the stored value when it is a valid mode (unified)', () => {
+    global.localStorage._store['pair-review-diff-view'] = 'unified';
+    const readPersistedDiffView = getReadPersistedDiffView();
+    expect(readPersistedDiffView()).toBe('unified');
+  });
+
+  it('returns unified when the key is missing', () => {
+    const readPersistedDiffView = getReadPersistedDiffView();
+    expect(readPersistedDiffView()).toBe('unified');
+  });
+
+  it('returns unified for a garbage stored value', () => {
+    global.localStorage._store['pair-review-diff-view'] = 'sideways';
+    const readPersistedDiffView = getReadPersistedDiffView();
+    expect(readPersistedDiffView()).toBe('unified');
+  });
+
+  it('returns unified when localStorage.getItem throws', () => {
+    const readPersistedDiffView = getReadPersistedDiffView();
+    global.localStorage.getItem = vi.fn(() => { throw new Error('denied'); });
+    expect(readPersistedDiffView()).toBe('unified');
   });
 });

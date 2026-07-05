@@ -2068,6 +2068,7 @@ class PierreBridge {
           file: fileName || '',
           line_start: parseInt(textarea.dataset.line) || null,
           line_end: parseInt(textarea.dataset.lineEnd) || parseInt(textarea.dataset.line) || null,
+          side: textarea.dataset.side || 'RIGHT',
           source: 'user'
         }
       });
