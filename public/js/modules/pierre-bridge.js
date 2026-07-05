@@ -319,12 +319,94 @@ class PierreBridge {
   }
 
   /**
-   * Compute GitHub diffPosition mapping from a patch.
+   * Compute GitHub diffPosition mapping for a patch.
    * diffPosition is a 1-indexed consecutive counter: each hunk header and each line counts.
+   *
+   * renderFile already parses the patch once (parsePatch → Pierre metadata), so
+   * when that metadata is supplied we derive positions from its ordered
+   * `hunkContent` segments instead of parsing the patch a SECOND time. The
+   * derivation is identical to the raw-patch walk because git's unified diff
+   * always emits a change region's deletions before its additions, which is the
+   * order Pierre's `hunkContent` records (verified equal across mixed /
+   * add-only / del-only / multi-hunk / no-trailing-newline patches). Metadata
+   * without `hunkContent` (older bundle, getSingularPatch fallback, null) falls
+   * back to parsing the raw patch.
+   *
    * @param {string} patch - Unified diff patch text
+   * @param {Object} [metadata] - Pre-parsed Pierre FileDiffMetadata (optional)
    * @returns {Map<string, number>} Map of "side:lineNumber" → diffPosition
    */
-  computeDiffPositions(patch) {
+  computeDiffPositions(patch, metadata) {
+    if (metadata) {
+      const fromMeta = this._diffPositionsFromMetadata(metadata);
+      if (fromMeta) return fromMeta;
+    }
+    return this._diffPositionsFromPatch(patch);
+  }
+
+  /**
+   * Derive the diffPosition map from pre-parsed Pierre metadata's ordered
+   * `hunkContent` segments. Returns null (signalling "fall back to parsing the
+   * raw patch") when any hunk lacks `hunkContent` or carries a segment type we
+   * do not recognize, so an unexpected bundle shape can never yield a partial
+   * / wrong map.
+   * @param {Object} metadata - Pierre FileDiffMetadata
+   * @returns {Map<string, number>|null}
+   * @private
+   */
+  _diffPositionsFromMetadata(metadata) {
+    if (!metadata || !Array.isArray(metadata.hunks)) return null;
+
+    const positions = new Map();
+    let diffPosition = 0;
+
+    for (const hunk of metadata.hunks) {
+      if (!Array.isArray(hunk.hunkContent)) return null;
+      diffPosition++; // Hunk header counts as a position
+
+      let oldLineNum = hunk.deletionStart;
+      let newLineNum = hunk.additionStart;
+
+      for (const segment of hunk.hunkContent) {
+        if (segment.type === 'context') {
+          for (let i = 0; i < segment.lines; i++) {
+            diffPosition++;
+            positions.set(`RIGHT:${newLineNum}`, diffPosition);
+            positions.set(`LEFT:${oldLineNum}`, diffPosition);
+            oldLineNum++;
+            newLineNum++;
+          }
+        } else if (segment.type === 'change') {
+          // git emits all deletions before all additions within a change.
+          for (let i = 0; i < (segment.deletions || 0); i++) {
+            diffPosition++;
+            positions.set(`LEFT:${oldLineNum}`, diffPosition);
+            oldLineNum++;
+          }
+          for (let i = 0; i < (segment.additions || 0); i++) {
+            diffPosition++;
+            positions.set(`RIGHT:${newLineNum}`, diffPosition);
+            newLineNum++;
+          }
+        } else {
+          // Unknown segment type — bail to the raw-patch parser rather than
+          // emit a map that silently skips lines.
+          return null;
+        }
+      }
+    }
+
+    return positions;
+  }
+
+  /**
+   * Compute the diffPosition map by parsing the raw patch string. Fallback for
+   * computeDiffPositions when no usable metadata is available.
+   * @param {string} patch - Unified diff patch text
+   * @returns {Map<string, number>}
+   * @private
+   */
+  _diffPositionsFromPatch(patch) {
     const positions = new Map();
     if (!patch) return positions;
 
@@ -812,7 +894,9 @@ class PierreBridge {
       }
     }
 
-    const diffPositions = this.computeDiffPositions(patch);
+    // Reuse the metadata parsed just above — computeDiffPositions derives the
+    // diffPosition map from it instead of parsing the same patch a second time.
+    const diffPositions = this.computeDiffPositions(patch, metadata);
     const annotations = [];
     const formElements = new Map();
 
@@ -1378,6 +1462,47 @@ class PierreBridge {
     const fileState = this.files.get(fileName);
     if (!fileState) return;
 
+    this._pushAnnotation(fileState, annotation);
+    this._updateAnnotations(fileName);
+  }
+
+  /**
+   * Add many annotations to a file with a SINGLE rerender + split-layout sync.
+   *
+   * Functionally equivalent to calling addAnnotation() once per item, but the
+   * expensive part — setLineAnnotations + a full instance.rerender() (a shadow
+   * DOM rebuild) + _syncSplitAnnotationLayout — runs once for the whole batch
+   * instead of K times. Loop callers that anchor many comments/suggestions to
+   * one file (see loadUserComments in pr.js and SuggestionManager) should use
+   * this; single-item callers keep using addAnnotation.
+   *
+   * Not-yet-rendered / missing file: mirrors addAnnotation exactly — a no-op
+   * (no fileState → return). The lazy-render path stores nothing here, so no
+   * annotations are lost or duplicated.
+   *
+   * @param {string} fileName
+   * @param {Array<Object>} annotations - each { lineNumber, side, type, data, id? }
+   */
+  addAnnotations(fileName, annotations) {
+    const fileState = this.files.get(fileName);
+    if (!fileState) return;
+    if (!Array.isArray(annotations) || annotations.length === 0) return;
+
+    for (const annotation of annotations) {
+      this._pushAnnotation(fileState, annotation);
+    }
+    this._updateAnnotations(fileName);
+  }
+
+  /**
+   * Push a single annotation onto a file's annotation list WITHOUT triggering a
+   * rerender. Shared by addAnnotation (one item) and addAnnotations (batch) so
+   * the annotation shape / id-generation lives in exactly one place.
+   * @param {Object} fileState
+   * @param {Object} annotation - { lineNumber, side, type, data, id? }
+   * @private
+   */
+  _pushAnnotation(fileState, annotation) {
     const pierreSide = PierreBridge.toPierreSide(annotation.side);
     fileState.annotations.push({
       side: pierreSide,
@@ -1388,8 +1513,6 @@ class PierreBridge {
         id: annotation.id || `${annotation.type}-${annotation.lineNumber}-${pierreSide}-${++this._annotationCounter}`,
       },
     });
-
-    this._updateAnnotations(fileName);
   }
 
   /**

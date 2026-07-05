@@ -516,15 +516,24 @@ class ExternalCommentManager {
   }
 
   /**
-   * Whether `file` is rendered by @pierre/diffs (vs the legacy table). Pierre
-   * files have no light-DOM `<tr>` rows, so their threads mount as annotations.
+   * Whether `file` is (or will be) rendered by @pierre/diffs vs the legacy
+   * table. Pierre files have no light-DOM `<tr>` rows, so their threads mount
+   * as annotations. Lazily-registered Pierre files are absent from
+   * `bridge.files` until their body renders, so also consult the PR manager's
+   * lazy registry — `_renderThreadPierre` materializes the body itself.
    * @param {string} file
    * @returns {boolean}
    * @private
    */
   _isPierreFile(file) {
     const bridge = this._pierreBridge();
-    return !!(bridge && bridge.files && typeof bridge.files.has === 'function' && bridge.files.has(file));
+    if (!bridge || !bridge.files || typeof bridge.files.has !== 'function') return false;
+    if (bridge.files.has(file)) return true;
+    const lazyBodies = window.prManager && window.prManager._lazyFileBodies;
+    const lazyEntry = lazyBodies && typeof lazyBodies.get === 'function'
+      ? lazyBodies.get(file)
+      : null;
+    return !!(lazyEntry && lazyEntry.pierre);
   }
 
   /**

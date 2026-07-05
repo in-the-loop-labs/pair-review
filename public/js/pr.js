@@ -142,6 +142,10 @@ class PRManager {
     this.changedFilesByPath = new Map();
     this._fileContentsUpgradeState = null;
     this._pierreContentUpgradePromises = new Map();
+    // Eligible-by-size files that should get background content upgrade as their
+    // lazy Pierre bodies render (set in _upgradeFilesWithContents, reset in
+    // renderDiff). Null when no upgrade session is active.
+    this._pierreUpgradeCandidates = null;
     this._deferredDiffRenderPromises = new Map();
     // Analysis history manager - for switching between analysis runs
     this.analysisHistoryManager = null;
@@ -3899,6 +3903,7 @@ class PRManager {
     this._fileContentsAbort = null;
     this._fileContentsUpgradeState = null;
     this._pierreContentUpgradePromises = new Map();
+    this._pierreUpgradeCandidates = null;
     this._deferredDiffRenderPromises = new Map();
 
     const diffContainer = document.getElementById('diff-container');
@@ -4021,6 +4026,15 @@ class PRManager {
    * Progressively fetch full file contents and upgrade Pierre-rendered files
    * to enable hunk expansion. Eligible files flow through one bounded idle
    * queue, and sidebar navigation can move a file to the front of the queue.
+   *
+   * With lazy Pierre rendering, files enter pierreBridge.files only as their
+   * bodies render (on scroll/expand) — so the queue cannot be seeded from
+   * pierreBridge.files up front. Instead we record the eligible-by-size
+   * candidate set + the abort signal here, and each Pierre body enqueues itself
+   * as it renders (_renderPierreFileBodyNow → _enqueuePierreContentUpgrade). A
+   * delayed catch-up sweep also enqueues anything that rendered in the meantime
+   * (e.g. the initially-visible files, once the observer has fired), so both
+   * routes funnel through the de-duping _enqueuePierreContentUpgrade.
    * @param {Array} files - The sorted changed_files array
    */
   _upgradeFilesWithContents(files) {
@@ -4033,18 +4047,49 @@ class PRManager {
     this._fileContentsAbort = controller;
     const signal = controller.signal;
 
-    const eligible = this._getPierreContentUpgradeFiles(files);
-    if (!eligible.length) return;
+    this._pierreUpgradeCandidates = new Set(
+      files
+        .filter(f => f.patch && !f.binary && this._isPatchEligibleForContentUpgrade(f))
+        .map(f => f.file)
+    );
+    if (this._pierreUpgradeCandidates.size === 0) return;
 
     const scheduleUpgrade = window.requestIdleCallback || ((cb) => setTimeout(cb, 50));
-    setTimeout(() => scheduleUpgrade(async () => {
+    setTimeout(() => scheduleUpgrade(() => {
       if (signal.aborted || this._fileContentsAbort?.signal !== signal) return;
-      this._startFileContentUpgradeQueue(
-        eligible,
-        (file) => this._getOrStartPierreContentUpgrade(file, signal),
-        signal
-      );
+      // Catch-up: enqueue any candidate whose body already rendered by now.
+      // Later-rendering files are enqueued from _renderPierreFileBodyNow.
+      for (const file of this._getPierreContentUpgradeFiles(files)) {
+        this._enqueuePierreContentUpgrade(file);
+      }
     }), PRManager.PIERRE_BACKGROUND_UPGRADE_DELAY_MS);
+  }
+
+  /**
+   * Enqueue a single (now-rendered) Pierre file for background content upgrade,
+   * reusing the in-flight bounded queue when one exists so the concurrency cap
+   * is honored and nothing is double-scheduled. Called both from the delayed
+   * catch-up sweep and from _renderPierreFileBodyNow as bodies render.
+   * @param {Object} file - A changed_files entry
+   */
+  _enqueuePierreContentUpgrade(file) {
+    if (!file?.patch || file.binary) return;
+    if (!this._pierreUpgradeCandidates?.has(file.file)) return;
+    const signal = this._fileContentsAbort?.signal;
+    if (!signal || signal.aborted) return;
+
+    const worker = (f) => this._getOrStartPierreContentUpgrade(f, signal);
+    const state = this._fileContentsUpgradeState;
+    if (state && state.signal === signal && !signal.aborted) {
+      if (state.completed.has(file.file) || state.inFlight.has(file.file)) return;
+      if (state.pending.some(f => f.file === file.file)) return;
+      state.pending.push(file);
+      this._drainFileContentUpgradeQueue(state);
+      return;
+    }
+    // No live queue (initial enqueue, or the previous one drained empty). Start
+    // a fresh one seeded with this file; subsequent enqueues reuse it above.
+    this._startFileContentUpgradeQueue([file], worker, signal);
   }
 
   async _reanchorInlineFeedbackAfterDeferredRender() {
@@ -4350,25 +4395,54 @@ class PRManager {
       return wrapper;
     }
 
-    // Create container for @pierre/diffs rendering
+    // Create container for @pierre/diffs rendering. Built EMPTY here — the
+    // actual `pierreBridge.renderFile()` (patch parse + FileDiff instance +
+    // shadow-DOM build) is deferred to _renderPierreFileBodyNow, driven by the
+    // same IntersectionObserver + ensureFileBodyRendered machinery as legacy
+    // bodies. Rendering every (often collapsed/generated) file's Pierre body up
+    // front froze the browser on large PRs; now collapsed bodies (display:none)
+    // never intersect and stay unrendered until expanded, and expanded-offscreen
+    // bodies render only as they near the viewport.
     if (pierreDecision.usePierre) {
       const diffBody = document.createElement('div');
       diffBody.className = 'pierre-diff-body';
+      wrapper.appendChild(diffBody);
 
-      if (file.patch) {
-        this.pierreBridge.renderFile(file.file, diffBody, file.patch, {
-          collapsed: isCollapsed,
-          forcePlainText: pierreDecision.forcePlainText,
-        });
-      } else if (file.binary) {
-        this.pierreBridge.renderBinaryFile(diffBody);
+      // Reserve approximate height for EXPANDED-but-unrendered bodies so the
+      // scrollbar stays roughly stable as bodies fill in. Collapsed bodies are
+      // `display:none` (see pr.css .collapsed .pierre-diff-body) so contribute
+      // no height and need no placeholder. Cleared when the body renders.
+      if (!isCollapsed && file.patch) {
+        const approxLines = file.patch.split('\n').length;
+        diffBody.style.minHeight = (approxLines * PRManager.APPROX_DIFF_LINE_PX) + 'px';
       }
 
-      wrapper.appendChild(diffBody);
-      // Wire hunk-summary anchors now that the file is in pierreBridge.files —
-      // the Pierre analogue of _registerHunkAnchorsForFile (legacy bodies wire
-      // theirs lazily in _renderFileBodyNow).
-      this._registerPierreHunkAnchorsForFile(file);
+      // Register the lazy entry. `pierre:true` routes _renderFileBodyNow to the
+      // Pierre render path; `forcePlainText` is captured here so the highlight
+      // budget decision (consumed above in _getPierreRenderDecision, at
+      // registration time) is honored at actual render. `file` is the full
+      // changed_files entry, needed for renderFile + hunk-anchor wiring.
+      this._lazyFileBodies.set(file.file, {
+        fileName: file.file,
+        file,
+        pierre: true,
+        forcePlainText: pierreDecision.forcePlainText,
+        patch: file.patch || null,
+        binary: !!file.binary,
+        hunkHashes: file.hunk_hashes || null,
+        fileBody: diffBody,
+        wrapper,
+        rendered: false,
+        renderPromise: null,
+        gen: this._renderGen
+      });
+
+      // Observe the body so it renders as it nears the viewport. Collapsed
+      // bodies (display:none) never intersect → stay unrendered until expanded.
+      if ((file.patch || file.binary) && this._fileBodyObserver) {
+        this._fileBodyObserver.observe(diffBody);
+      }
+
       return wrapper;
     }
 
@@ -4533,6 +4607,11 @@ class PRManager {
     if (entry.rendered) return entry.fileBody;
     if (this._fileBodyObserver) this._fileBodyObserver.unobserve(entry.fileBody);
 
+    // Pierre-rendered files build a FileDiff into a shadow DOM rather than a
+    // <tbody>; they have their own render path (no renderPatch / hunk records /
+    // EOF-gap machinery, which are legacy-table concepts).
+    if (entry.pierre) return this._renderPierreFileBodyNow(entry);
+
     const tbody = entry.fileBody.querySelector('tbody');
 
     // Capture only THIS file's hunk anchor records (renderPatch appends to
@@ -4584,6 +4663,63 @@ class PRManager {
     }
 
     return entry.fileBody;
+  }
+
+  /**
+   * Synchronously build a Pierre-rendered file's body: run
+   * `pierreBridge.renderFile()` (or the binary placeholder), clear the height
+   * placeholder, wire hunk-summary anchors, and enqueue background content
+   * upgrade. The Pierre analogue of the legacy branch in _renderFileBodyNow.
+   * Idempotent (caller guards on entry.rendered).
+   *
+   * The `collapsed` option reflects the LIVE wrapper state, not the value at
+   * registration: a file expanded via toggleFileCollapse materializes here
+   * BEFORE `.collapsed` is removed, so it renders collapsed (zero shadow lines)
+   * and setCollapsed(false) then rerenders to fill lines in — exactly the
+   * pre-lazy eager-render-then-expand sequence.
+   * @param {object} entry - a _lazyFileBodies value with pierre:true
+   * @returns {HTMLElement} the file body element
+   */
+  _renderPierreFileBodyNow(entry) {
+    const diffBody = entry.fileBody;
+
+    // Superseded render: renderDiff already ran pierreBridge.destroyAll() and
+    // detached this body via innerHTML=''. Rendering now would re-insert a dead
+    // file into pierreBridge.files (leaking it, and polluting later lookups).
+    // Mark done and skip — matches the legacy path's stale-gen wiring skip.
+    if (entry.gen !== this._renderGen) {
+      diffBody.style.minHeight = '';
+      entry.rendered = true;
+      entry.renderPromise = null;
+      return diffBody;
+    }
+
+    const collapsed = entry.wrapper?.classList?.contains('collapsed') || false;
+    if (entry.patch) {
+      this.pierreBridge.renderFile(entry.fileName, diffBody, entry.patch, {
+        collapsed,
+        forcePlainText: entry.forcePlainText,
+      });
+    } else if (entry.binary) {
+      this.pierreBridge.renderBinaryFile(diffBody);
+    }
+
+    diffBody.style.minHeight = '';
+    entry.rendered = true;
+    entry.renderPromise = null;
+
+    if (entry.patch) {
+      // Wire hunk-summary anchors now that the file is in pierreBridge.files —
+      // any summary that arrived (WS/fetch) before this body rendered was queued
+      // in _pendingSummariesByHash and is drained here.
+      this._registerPierreHunkAnchorsForFile(entry.file);
+      // Enqueue background content upgrade (enables hunk expansion). With lazy
+      // rendering the upgrade queue can't be seeded up front (the file wasn't in
+      // pierreBridge.files yet), so files are fed to it as they render.
+      this._enqueuePierreContentUpgrade(entry.file);
+    }
+
+    return diffBody;
   }
 
   /**
@@ -5644,6 +5780,14 @@ class PRManager {
 
       await this._materializeDeferredDiff(file);
 
+      // Materialize the lazy body BEFORE branching on the rendering engine. A
+      // Pierre file whose body hasn't rendered yet is NOT in pierreBridge.files,
+      // so it would wrongly fall through to the legacy <tr> path below (which
+      // scans zero rows for a Pierre file); and an unrendered legacy body has no
+      // rows either. Rendering here lands the file in pierreBridge.files so the
+      // Pierre branch is taken correctly.
+      await this.ensureFileBodyRendered(file);
+
       // @pierre/diffs files: use context ranges to reveal collapsed lines
       if (this.pierreBridge && this.pierreBridge.files.has(file)) {
         // Check the WHOLE range, not just line_start. Callers pass multi-line
@@ -6331,17 +6475,24 @@ class PRManager {
         }
       });
 
-      // Display comments via PierreBridge annotations
+      // Display comments via PierreBridge annotations. Group by file so each
+      // file rerenders ONCE for its whole set of comments, not once per comment.
+      const commentAnnotationsByFile = new Map();
       pierreComments.forEach(comment => {
-        const side = comment.side || 'RIGHT';
-        this.pierreBridge.addAnnotation(comment.file, {
+        if (!commentAnnotationsByFile.has(comment.file)) {
+          commentAnnotationsByFile.set(comment.file, []);
+        }
+        commentAnnotationsByFile.get(comment.file).push({
           lineNumber: comment.line_start,
-          side: side,
+          side: comment.side || 'RIGHT',
           type: 'comment',
           id: `comment-${comment.id}`,
           data: comment,
         });
       });
+      for (const [file, annotations] of commentAnnotationsByFile) {
+        this.pierreBridge.addAnnotations(file, annotations);
+      }
 
       if (legacyComments.length > 0) {
         legacyComments.forEach(comment => {
@@ -7581,9 +7732,6 @@ class PRManager {
   }
 
   async scrollToFile(filePath) {
-    // Move this file to the front of the Pierre content-upgrade queue so
-    // hunk expansion becomes available soonest for the file in view.
-    this._prioritizePierreContentUpgrade(filePath);
     const fileWrapper = this.findFileElement(filePath);
     if (fileWrapper) {
       // Render the body so the scroll target has its real height (an empty
@@ -7596,6 +7744,15 @@ class PRManager {
       // later still renders on demand via toggleFileCollapse.
       if (!fileWrapper.classList.contains('collapsed')) {
         await this.ensureFileBodyRendered(filePath);
+        // Only now can this file be moved to the front of the Pierre
+        // content-upgrade queue: rendering its body is what enqueues it
+        // (_renderPierreFileBodyNow → _enqueuePierreContentUpgrade), so
+        // state.pending contains it and the reorder actually takes effect.
+        // Hoisting this before the render would be a silent no-op — findIndex
+        // misses the not-yet-enqueued file and the later render appends it to
+        // the queue tail. Collapsed files stay hidden and never upgrade, so
+        // they intentionally get no priority hint.
+        this._prioritizePierreContentUpgrade(filePath);
       }
       // Stable variant: lazy bodies between here and the target render as
       // the smooth scroll passes them, shifting layout mid-flight. The

@@ -349,6 +349,9 @@ class SuggestionManager {
         for (const [file, fileSuggestions] of suggestionsByFile) {
           if (!this.prManager.pierreBridge.files.has(file)) continue;
 
+          // Collect this file's line-level annotations and apply them in one
+          // batch so the file rerenders ONCE, not once per suggestion.
+          const annotations = [];
           for (const suggestion of fileSuggestions) {
             // File-level suggestions go to file comment manager (handled below)
             if (!suggestion.line_start && !suggestion.line_end) {
@@ -358,7 +361,7 @@ class SuggestionManager {
             const side = suggestion.side || 'RIGHT';
             const lineNumber = suggestion.line_end || suggestion.line_start;
 
-            this.prManager.pierreBridge.addAnnotation(file, {
+            annotations.push({
               lineNumber: lineNumber,
               side: side,
               type: 'suggestion',
@@ -366,6 +369,7 @@ class SuggestionManager {
               data: suggestion,
             });
           }
+          this.prManager.pierreBridge.addAnnotations(file, annotations);
         }
       }
 

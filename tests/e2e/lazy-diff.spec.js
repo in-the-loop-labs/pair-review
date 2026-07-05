@@ -216,17 +216,18 @@ test.describe('Lazy / budgeted diff rendering (PR mode)', () => {
     );
     // The file starts collapsed (viewed) ...
     await expect(collapsedWrapper).toHaveClass(/collapsed/);
-    // ... it IS a Pierre file (has a diff body + container) ...
+    // ... it registered a lazy Pierre body placeholder ...
+    await expect(collapsedWrapper.locator('.pierre-diff-body')).toHaveCount(1);
+    // ... but nothing rendered into it: no diffs-container, no bridge
+    // instance, zero shadow code-line rows. Collapsed files skip render
+    // entirely until expanded.
     await expect(
       collapsedWrapper.locator('.pierre-diff-body diffs-container')
-    ).toHaveCount(1);
-    // ... the Pierre instance is collapsed ...
+    ).toHaveCount(0);
     expect(await page.evaluate(
-      (f) => window.prManager.pierreBridge.files.get(f)?.collapsed === true,
+      (f) => window.prManager.pierreBridge.files.has(f),
       COLLAPSED_FILE
-    )).toBe(true);
-    // ... and NOTHING was rendered into its shadow DOM: zero code-line rows
-    // (the Pierre analogue of the old empty-<tbody> assertion).
+    )).toBe(false);
     expect(await pierreShadowLineCount(page, COLLAPSED_FILE)).toBe(0);
 
     // Expand the collapsed file by clicking its header.

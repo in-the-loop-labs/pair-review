@@ -803,6 +803,55 @@ describe('ExternalCommentManager pierre annotation path', async () => {
     expect(order).toEqual(['ensure', 'add']);
   });
 
+  it('routes a lazily-registered (not yet rendered) pierre file to the pierre path', async () => {
+    const bridge = makePierreBridge({ files: ['src/app.js'] });
+    // Simulate lazy rendering: the body has not rendered yet, so the file is
+    // absent from bridge.files — only the PR manager's lazy registry knows
+    // it will render via pierre.
+    const entry = bridge.files.get('src/app.js');
+    bridge.files.delete('src/app.js');
+    // ensureLinesVisible materializes the body (re-inserting the bridge
+    // entry), mirroring PRManager.ensureLinesVisible → ensureFileBodyRendered.
+    const ensureLinesVisible = vi.fn(async () => {
+      bridge.files.set('src/app.js', entry);
+    });
+    window.prManager = {
+      pierreBridge: bridge,
+      ensureLinesVisible,
+      _lazyFileBodies: new Map([['src/app.js', { pierre: true, rendered: false }]]),
+    };
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [makeComment({ id: 42, body: 'lazy body' })]);
+    await mgr.render();
+
+    // Routed to the pierre path (materialize first, then annotate) — not the
+    // legacy <tr> lookup, and no rollback into the file-level fallback.
+    expect(ensureLinesVisible).toHaveBeenCalledTimes(1);
+    expect(bridge.addAnnotation).toHaveBeenCalledTimes(1);
+    expect(bridge.addAnnotation.mock.calls[0][0]).toBe('src/app.js');
+    expect(bridge.removeAnnotation).not.toHaveBeenCalled();
+    const row = document.querySelector('.external-comment-row');
+    expect(row).not.toBeNull();
+    expect(row.dataset.threadId).toBe('42');
+  });
+
+  it('_isPierreFile: rendered and lazy pierre files are pierre; others are not', () => {
+    const bridge = makePierreBridge({ files: ['src/app.js'] });
+    window.prManager = {
+      pierreBridge: bridge,
+      _lazyFileBodies: new Map([
+        ['src/lazy.js', { pierre: true, rendered: false }],
+        ['src/legacy.js', { pierre: false }],
+      ]),
+    };
+    const mgr = makeManager();
+    expect(mgr._isPierreFile('src/app.js')).toBe(true); // in bridge.files
+    expect(mgr._isPierreFile('src/lazy.js')).toBe(true); // lazy registry, pierre:true
+    expect(mgr._isPierreFile('src/legacy.js')).toBe(false);
+    expect(mgr._isPierreFile('src/unknown.js')).toBe(false);
+  });
+
   it('registers the external-comment renderer exactly once across renders', async () => {
     const bridge = makePierreBridge({ files: ['src/app.js'] });
     window.prManager = { pierreBridge: bridge, ensureLinesVisible: vi.fn(async () => {}) };
