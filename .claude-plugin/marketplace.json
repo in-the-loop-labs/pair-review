@@ -10,9 +10,35 @@
   },
   "plugins": [
     {
+      "name": "pair-loop",
+      "source": "./plugin-pair-loop",
+      "description": "Agent-orchestrated review loop — implement, review with pair-review multi-model councils via the headless CLI, triage, fix, and repeat until a final review returns no blockers. Writes triage back to a running pair-review server so the web UI stays current. No MCP required.",
+      "version": "4.0.0",
+      "author": {
+        "name": "in-the-loop-labs",
+        "email": "tjwp@inthelooplabs.com"
+      },
+      "homepage": "https://github.com/in-the-loop-labs/pair-review",
+      "repository": "https://github.com/in-the-loop-labs/pair-review",
+      "license": "Apache-2.0",
+      "keywords": [
+        "code-review",
+        "ai",
+        "review-loop",
+        "council",
+        "feedback-loop"
+      ],
+      "category": "development-workflows",
+      "tags": [
+        "code-review",
+        "ai-analysis",
+        "review-loop"
+      ]
+    },
+    {
       "name": "code-critic",
       "source": "./plugin-code-critic",
-      "description": "AI-powered code review analysis — Run three-level AI analysis and implement-review-fix loops directly in your coding agent. Works standalone, no server required.",
+      "description": "AI-powered code review analysis — Run three-level AI analysis directly in your coding agent. Works standalone, no server required.",
       "version": "4.0.0",
       "author": {
         "name": "in-the-loop-labs",
@@ -25,8 +51,7 @@
         "code-review",
         "ai",
         "analysis",
-        "code-critic",
-        "critic-loop"
+        "code-critic"
       ],
       "category": "development-workflows",
       "tags": [
