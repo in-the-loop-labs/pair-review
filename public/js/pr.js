@@ -291,9 +291,17 @@ class PRManager {
     this.suggestionManager = new window.SuggestionManager(this);
     this.fileCommentManager = window.FileCommentManager ? new window.FileCommentManager(this) : null;
 
-    // Initialize PierreBridge for @pierre/diffs rendering
+    // Initialize PierreBridge for @pierre/diffs rendering.
+    // Read the persisted diff-view preference so the first render uses the
+    // saved style (no flash, no double render). localStorage is the single
+    // source of truth shared with DiffOptionsDropdown; readPersistedDiffView
+    // (from DiffOptionsDropdown.js, loaded first) owns the key + validation.
+    const initialDiffStyle = window.readPersistedDiffView
+      ? window.readPersistedDiffView()
+      : (localStorage.getItem('pair-review-diff-view') === 'split' ? 'split' : 'unified');
     this.pierreBridge = window.PierreBridge ? new window.PierreBridge({
       theme: this.currentTheme,
+      diffStyle: initialDiffStyle,
       onCommentClick: (fileName, lineNumber, side, target) => {
         // target.isRange is true when the user selected multiple lines
         const diffPosition = this.pierreBridge.getDiffPosition(fileName, target.start, target.side);
@@ -405,6 +413,12 @@ class PRManager {
       this.diffOptionsDropdown = new window.DiffOptionsDropdown(diffOptionsBtn, {
         onToggleWhitespace: (hide) => this.handleWhitespaceToggle(hide),
         onToggleMinimize: (minimized) => this.handleMinimizeToggle(minimized),
+        onDiffViewChange: (mode) => this.handleDiffViewChange(mode),
+        diffView: initialDiffStyle,
+        // Only offer the Unified/Split control when a Pierre render path can
+        // apply it. Without the bridge, handleDiffViewChange no-ops and the
+        // legacy renderer stays unified, so a selection would desync.
+        diffViewAvailable: Boolean(this.pierreBridge && !this.pierreBridge._disabled),
       });
     }
 
@@ -2792,6 +2806,51 @@ class PRManager {
     if (this.commentMinimizer) {
       this.commentMinimizer.setMinimized(minimized);
     }
+  }
+
+  /**
+   * Handle the diff-view toggle (Unified / Split) from DiffOptionsDropdown.
+   *
+   * Unlike handleWhitespaceToggle, this does NOT re-fetch the diff — it asks
+   * PierreBridge to re-render the existing file instances in the new style.
+   * Per the bridge contract, setDiffStyle preserves annotations (user
+   * comments, AI suggestions, external comments) across the re-render, so
+   * there is no need to invoke _rerenderAllOverlays here — doing so would
+   * duplicate work the bridge already handles. Scroll position can shift when
+   * rows change height between unified/split, so we save and restore it.
+   * Shared by both PR mode and local mode (local.js patches PRManager).
+   *
+   * The diff pane scrolls inside `.diff-view` (overflow-y: auto), the same
+   * scroll root `_createFileBodyObserver` uses — not the window — so
+   * `window.scrollY` is ~0 here and restoring it is a no-op. Capture and
+   * restore that container's `scrollTop`, falling back to the window only when
+   * the container can't be resolved.
+   *
+   * Note: split mode collapses N+M unified rows into max(N,M) rows, so content
+   * above the viewport can change height and the restored offset may drift.
+   * A precise fix would re-anchor on the topmost visible file+line, but there
+   * is no existing helper to resolve that through the Pierre shadow DOM, so we
+   * restore the raw scrollTop and accept minor drift.
+   * @param {('unified'|'split')} mode
+   */
+  handleDiffViewChange(mode) {
+    // No bridge means no renderer can apply the swap. Report failure so the
+    // dropdown rolls back its selection instead of persisting a mode the diff
+    // won't reflect. (The dropdown also hides the control via
+    // diffViewAvailable, so this is defense in depth.)
+    if (!this.pierreBridge) return false;
+    const scrollContainer = document.querySelector?.('.diff-view') || null;
+    const scrollTop = scrollContainer ? scrollContainer.scrollTop : window.scrollY;
+    this.pierreBridge.setDiffStyle(mode);
+    // Restore scroll position after the DOM settles
+    requestAnimationFrame(() => {
+      if (scrollContainer) {
+        scrollContainer.scrollTop = scrollTop;
+      } else {
+        window.scrollTo(0, scrollTop);
+      }
+    });
+    return true;
   }
 
   /**

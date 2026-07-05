@@ -1085,6 +1085,15 @@ class LocalManager {
           onToggleWhitespace: (hide) => manager.handleWhitespaceToggle(hide),
           onToggleMinimize: (minimized) => manager.handleMinimizeToggle(minimized),
           onScopeChange: (start, end) => this._handleScopeChange(start, end),
+          // Diff view (Unified / Split) — the handler lives on PRManager and is
+          // shared with PR mode (no re-fetch, so local mode needs no override).
+          onDiffViewChange: (mode) => manager.handleDiffViewChange(mode),
+          diffView: window.readPersistedDiffView
+            ? window.readPersistedDiffView()
+            : (localStorage.getItem('pair-review-diff-view') === 'split' ? 'split' : 'unified'),
+          // Match PR mode: only offer the control when the Pierre render path
+          // can apply the swap (see pr.js construction site).
+          diffViewAvailable: Boolean(manager.pierreBridge && !manager.pierreBridge._disabled),
           initialScope: { start: scopeStart, end: scopeEnd },
           branchAvailable
         });

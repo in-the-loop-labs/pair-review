@@ -552,6 +552,24 @@ async function startTestServer(port) {
     }
   });
 
+  // E2E-only cleanup hook: delete AI-seeded suggestion + analysis-run rows for
+  // a review. The mock analyses POST above inserts AI rows straight into the
+  // `comments` table (source='ai') plus an `analysis_runs` row; production has
+  // no route that deletes those (the user-comment DELETE routes are scoped to
+  // source='user'). A describe block that seeds AI suggestions uses this so it
+  // can tear down symmetrically and not leak AI rows into later tests that
+  // revisit the same review on the shared per-worker DB.
+  app.delete('/api/reviews/:reviewId/ai-suggestions', (req, res) => {
+    const reviewId = parseInt(req.params.reviewId, 10);
+    try {
+      const info = db.prepare("DELETE FROM comments WHERE review_id = ? AND source = 'ai'").run(reviewId);
+      db.prepare('DELETE FROM analysis_runs WHERE review_id = ?').run(reviewId);
+      res.json({ success: true, deleted: info.changes });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // Mock check-stale endpoint (PR is never stale in tests)
   app.get('/api/pr/:owner/:repo/:number/check-stale', (req, res) => {
     res.json({

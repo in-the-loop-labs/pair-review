@@ -15,7 +15,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender } from './helpers.js';
+import { waitForDiffToRender, seedAISuggestions, dismissProgressModalIfVisible } from './helpers.js';
 
 // Helper to handle modals when triggering analysis
 async function handleAnalysisModals(page) {
@@ -66,76 +66,6 @@ async function waitForProgressModalReady(page, timeout = 5000) {
   // Wait for the modal body to be populated with at least one level header
   await progressModal.locator('.council-level-header').first().waitFor({ state: 'attached', timeout });
   return progressModal;
-}
-
-// Helper to dismiss the progress modal if it's currently blocking interactions.
-// This can happen when a previous test triggered an analysis that is still running
-// (or completed but the modal wasn't closed), causing the page to auto-show it.
-async function dismissProgressModalIfVisible(page) {
-  const progressModal = page.locator('#council-progress-modal');
-  const isVisible = await progressModal.isVisible();
-  if (isVisible) {
-    // Click the "Run in Background" button to hide the modal without cancelling
-    const bgBtn = progressModal.locator('.council-bg-btn, button:has-text("Background")').first();
-    const bgBtnVisible = await bgBtn.isVisible().catch(() => false);
-    if (bgBtnVisible) {
-      await bgBtn.click();
-    } else {
-      // Fallback: directly hide via JS
-      await page.evaluate(() => {
-        const modal = document.getElementById('council-progress-modal');
-        if (modal) modal.style.display = 'none';
-      });
-    }
-    await progressModal.waitFor({ state: 'hidden', timeout: 3000 });
-  }
-}
-
-// Helper to pre-seed AI suggestions by calling the analyze endpoint directly
-async function seedAISuggestions(page) {
-  // Make a direct POST request to trigger analysis and verify success
-  const result = await page.evaluate(async () => {
-    const response = await fetch('/api/pr/test-owner/test-repo/1/analyses', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({})
-    });
-    if (!response.ok) {
-      throw new Error(`Analysis API failed: ${response.status}`);
-    }
-    return response.json();
-  });
-
-  if (!result.analysisId) {
-    throw new Error('Analysis failed to start: no analysisId returned');
-  }
-
-  // Wait for analysis to complete by polling the status endpoint
-  await page.waitForFunction(
-    async () => {
-      const reviewId = window.prManager?.currentPR?.id;
-      if (!reviewId) return false;
-      const response = await fetch(`/api/reviews/${reviewId}/analyses/status`);
-      const status = await response.json();
-      return !status.running;
-    },
-    { timeout: 5000 }
-  );
-
-  // Reload suggestions and wait for them to appear in the DOM
-  await page.evaluate(async () => {
-    if (window.prManager?.loadAISuggestions) {
-      await window.prManager.loadAISuggestions();
-    }
-  });
-
-  // Wait for at least one AI suggestion to render
-  await page.waitForSelector('.ai-suggestion, [data-suggestion-id]', { timeout: 5000 });
-
-  // Dismiss the progress modal if it appeared (the POST triggers the modal via
-  // the running-analysis check on the frontend, and it can linger long enough to
-  // intercept pointer events on suggestion action buttons).
-  await dismissProgressModalIfVisible(page);
 }
 
 test.describe('AI Analysis Button', () => {

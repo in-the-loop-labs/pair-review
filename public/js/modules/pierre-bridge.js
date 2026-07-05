@@ -25,6 +25,14 @@ class PierreBridge {
     this.options = options;
     this.theme = options.theme || PierreBridge.detectTheme();
 
+    // Diff layout: 'unified' (single column) or 'split' (side-by-side).
+    // Stored as instance state so every FileDiff instance (including lazily
+    // created / rebuilt ones) inherits the current style. Toggled at runtime
+    // via setDiffStyle(). Invalid values fall back to 'unified'.
+    this.diffStyle = PierreBridge.isValidDiffStyle(options.diffStyle)
+      ? options.diffStyle
+      : 'unified';
+
     // Per-file state: { instance: FileDiff, metadata: FileDiffMetadata, container: HTMLElement,
     //                   annotations: DiffLineAnnotation[], diffPositions: Map, formElements: Map }
     this.files = new Map();
@@ -63,9 +71,33 @@ class PierreBridge {
         pointerId: event.pointerId || 1,
         pointerType: event.pointerType || 'mouse',
       };
+      this._sweepStaleFallbackGutters();
     };
     document.addEventListener('pointermove', this._trackPointerPosition, { passive: true });
     document.addEventListener('mousemove', this._trackPointerPosition, { passive: true });
+    // Fallback-positioned gutter buttons are position:fixed (viewport
+    // coordinates), so any scroll detaches them from their line. Clear on
+    // scroll and re-derive from the live pointer position (capture: true
+    // catches scrolls of inner containers too).
+    this._onAnyScroll = () => {
+      if (this._scrollSweepScheduled) return;
+      this._scrollSweepScheduled = true;
+      const schedule = typeof requestAnimationFrame === 'function'
+        ? requestAnimationFrame
+        : (callback) => setTimeout(callback, 0);
+      schedule(() => {
+        this._scrollSweepScheduled = false;
+        for (const [fileName, container] of this._gutterContainers) {
+          if (container?.dataset?.fallbackPositioned === undefined) continue;
+          this._clearFallbackGutterPosition(fileName);
+          const fileState = this.files.get(fileName);
+          if (fileState) this._restoreHoverAfterRender(fileState);
+        }
+      });
+    };
+    if (typeof window.addEventListener === 'function') {
+      window.addEventListener('scroll', this._onAnyScroll, { capture: true, passive: true });
+    }
     if (this.workerManager?.subscribeToStatChanges) {
       this._workerStatsUnsubscribe = this.workerManager.subscribeToStatChanges((stats) => {
         this._handleWorkerStats(stats);
@@ -117,6 +149,95 @@ class PierreBridge {
       if (fileState.instance) {
         fileState.instance.setThemeType(theme);
       }
+    }
+  }
+
+  // ─── Diff Style (unified / split) ─────────────────────────────────
+
+  /**
+   * @param {*} style
+   * @returns {boolean} true when `style` is a supported diff layout.
+   */
+  static isValidDiffStyle(style) {
+    return style === 'unified' || style === 'split';
+  }
+
+  /**
+   * Current diff layout.
+   * @returns {'unified'|'split'}
+   */
+  getDiffStyle() {
+    return this.diffStyle;
+  }
+
+  /**
+   * Switch every rendered file between unified and split (side-by-side) layout.
+   *
+   * Mirrors setTheme: validate, no-op when unchanged, update instance state,
+   * then re-render every FileDiff instance. Unlike theme, diffStyle is NOT a
+   * worker render option (it controls layout, not highlighting), so the worker
+   * pool is untouched here — only the per-instance FileDiff options change.
+   *
+   * `setOptions` replaces the instance's whole options object AND re-derives
+   * the hunks/interaction sub-managers, so we spread the instance's current
+   * options to preserve everything else (theme, gutter, selection, etc.). The
+   * instance keeps its stored lineAnnotations across setOptions, and rerender()
+   * re-runs the renderAnnotation callback, so user comments, AI suggestions,
+   * forms, and external threads survive the switch (they also live in
+   * fileState.annotations as the source of truth).
+   *
+   * @param {'unified'|'split'} style
+   */
+  setDiffStyle(style) {
+    if (!PierreBridge.isValidDiffStyle(style)) {
+      console.warn(`[PierreBridge] Ignoring invalid diffStyle "${style}"; expected 'unified' or 'split'.`);
+      return;
+    }
+    if (style === this.diffStyle) return;
+    this.diffStyle = style;
+
+    for (const [fileName, fileState] of this.files) {
+      const instance = fileState?.instance;
+      if (!instance) continue;
+      if (typeof instance.setOptions === 'function') {
+        instance.setOptions({ ...(instance.options || {}), diffStyle: style });
+      } else if (typeof instance.mergeOptions === 'function') {
+        instance.mergeOptions({ diffStyle: style });
+      }
+      instance.rerender?.();
+      this._syncSplitAnnotationLayout(fileName);
+      // The layout swap moves every line; a fallback-positioned gutter
+      // container would keep floating at its old viewport coordinates.
+      this._clearFallbackGutterPosition(fileName);
+      this._restoreHoverAfterRender(fileState);
+    }
+  }
+
+  /**
+   * Clear any fallback-positioned gutter buttons the pointer has abandoned.
+   *
+   * The fallback positioner pins the buttons with position:fixed, and the
+   * only teardown used to be a pointerleave listener on the shadow ROOT —
+   * a non-element that never receives pointerleave — so buttons hovered in
+   * one spot could float there forever (over unrelated content after a
+   * scroll or a layout toggle). Runs from the document-level pointer
+   * tracker: keep the buttons while the pointer is over the file or the
+   * buttons themselves; clear otherwise.
+   * @private
+   */
+  _sweepStaleFallbackGutters() {
+    for (const [fileName, container] of this._gutterContainers) {
+      if (container?.dataset?.fallbackPositioned === undefined) continue;
+      if (this._isPointerInsideFile(this.files.get(fileName))) continue;
+      const pos = this._lastPointerPosition;
+      const rect = container.getBoundingClientRect?.();
+      if (pos && rect &&
+          pos.clientX >= rect.left && pos.clientX <= rect.right &&
+          pos.clientY >= rect.top && pos.clientY <= rect.bottom) {
+        continue;
+      }
+      this._clearFallbackGutterPosition(fileName);
+      this._hoveredRows.delete(fileName);
     }
   }
 
@@ -345,7 +466,7 @@ class PierreBridge {
       theme: this.getThemeConfig(),
       themeType: this.theme,
       disableFileHeader: true,
-      diffStyle: 'unified',
+      diffStyle: this.diffStyle,
       diffIndicators: 'bars',
       overflow: 'wrap',
       lineHoverHighlight: 'line',
@@ -391,6 +512,9 @@ class PierreBridge {
         if (this.options.onHunkExpand) {
           this.options.onHunkExpand(fileName, hunkIndex, direction, lineCount);
         }
+        // Expansion can widen the line-number gutter (digit growth) and
+        // rebuilds shadow rows — re-sync split card stretching.
+        this._syncSplitAnnotationLayout(fileName);
       },
 
       renderAnnotation: (annotation) => {
@@ -403,6 +527,7 @@ class PierreBridge {
         if (fileState) {
           fileState.shadowHost = node;
         }
+        this._syncSplitAnnotationLayout(fileName);
       },
     }, workerManager);
   }
@@ -547,6 +672,32 @@ class PierreBridge {
     return this._hoveredRows.get(fileName) || null;
   }
 
+  /**
+   * Derive the annotation side ('deletions'|'additions') for a hovered gutter
+   * line cell.
+   *
+   * Unified view stamps only one column, so the line-type string
+   * (change-deletion vs change-addition) is authoritative; context lines are
+   * addressable from the right (additions) side by convention.
+   *
+   * Split view renders two independent code columns and a context line's
+   * gutter carries a neutral 'context' line-type in BOTH columns — the string
+   * can no longer disambiguate. Derive the side from the enclosing
+   * `code[data-deletions]` / `code[data-additions]` column instead, falling
+   * back to the line-type string if (defensively) neither ancestor is found.
+   * @param {Element} lineCell - hovered gutter cell (has data-column-number)
+   * @returns {'deletions'|'additions'}
+   * @private
+   */
+  _deriveHoverSide(lineCell) {
+    if (this.diffStyle === 'split') {
+      if (lineCell.closest?.('code[data-deletions]')) return 'deletions';
+      if (lineCell.closest?.('code[data-additions]')) return 'additions';
+    }
+    const lineType = lineCell.dataset?.lineType || '';
+    return lineType.includes('deletion') ? 'deletions' : 'additions';
+  }
+
   _installFallbackHoverTracking(fileName, fileState) {
     fileState._fallbackHoverCleanup?.();
 
@@ -566,10 +717,9 @@ class PierreBridge {
       const lineNumber = parseInt(lineCell.dataset.columnNumber, 10);
       if (!Number.isFinite(lineNumber)) return;
 
-      const lineType = lineCell.dataset.lineType || '';
       this._hoveredRows.set(fileName, {
         lineNumber,
-        side: lineType.includes('deletion') ? 'deletions' : 'additions',
+        side: this._deriveHoverSide(lineCell),
       });
       this._positionFallbackGutter(fileName, lineCell);
     };
@@ -619,7 +769,8 @@ class PierreBridge {
 
   _clearFallbackGutterPosition(fileName) {
     const container = this._gutterContainers.get(fileName);
-    if (!container?.dataset?.fallbackPositioned) return;
+    // The marker is set as an empty string (falsy!) — presence-check it.
+    if (container?.dataset?.fallbackPositioned === undefined) return;
 
     delete container.dataset.fallbackPositioned;
     const fallbackParent = container._pierreFallbackParent;
@@ -781,7 +932,10 @@ class PierreBridge {
     if (!fileState) return;
     const wasCollapsed = fileState.collapsed;
     fileState.collapsed = collapsed;
-    fileState.instance.setOptions({ collapsed });
+    // Vendor setOptions REPLACES the whole options object (it does not
+    // merge), so a bare { collapsed } would silently drop diffStyle, theme,
+    // renderAnnotation, and every other option — spread the live options in.
+    fileState.instance.setOptions({ ...(fileState.instance.options || {}), collapsed });
     // A file rendered while collapsed has zero shadow-DOM lines (the vendor
     // skips line rendering for collapsed instances). Flipping the option
     // alone leaves the body empty on expand — force a rerender so the lines
@@ -1029,7 +1183,7 @@ class PierreBridge {
     const indices = typeof instance.getLineIndex === 'function'
       ? instance.getLineIndex(lineNumber, pierreSide)
       : undefined;
-    const lineEl = PierreBridge._queryLineElement(instance, indices);
+    const lineEl = PierreBridge._queryLineElement(instance, indices, pierreSide);
     if (!lineEl) return false;
 
     // Use scrollIntoView on the shadow DOM element — it still scrolls the
@@ -1323,6 +1477,75 @@ class PierreBridge {
     // trigger the renderAnnotation callback and slot elements into the
     // light DOM of the <diffs-container> host.
     fileState.instance.rerender();
+    this._syncSplitAnnotationLayout(fileName);
+  }
+
+  /**
+   * Split view: stretch annotation cards across both columns.
+   *
+   * The vendor renders each annotation into ONE side's column plus an empty
+   * paired cell in the other column on the same shared grid row (split+wrap
+   * is a single four-track grid with display:contents columns), so a lone
+   * card only gets half the width. This pass:
+   *   1. Measures the middle (additions) gutter track — it is min-content
+   *      sized, so pure CSS cannot know its width — and publishes it on the
+   *      <pre> as --pr-split-gutter-width for ANNOTATION_CSS calc()s.
+   *   2. Marks cards whose opposite cell is empty with
+   *      .pr-annotation-fullwidth. When BOTH sides of a row hold cards
+   *      (LEFT + RIGHT annotation on the same row pair), neither is marked
+   *      and they stay half-width side by side.
+   *
+   * Vendor renders wipe shadow-DOM classes/inline vars, so this is invoked
+   * (rAF-debounced per file) after every pass that can rebuild the shadow
+   * DOM: initial render (onPostRender), annotation updates, diffStyle
+   * switches, and hunk expansion. In unified mode it no-ops (no split pre).
+   * @private
+   */
+  _syncSplitAnnotationLayout(fileName) {
+    const fileState = this.files.get(fileName);
+    if (!fileState || fileState._splitLayoutRaf != null) return;
+    const raf = typeof requestAnimationFrame === 'function'
+      ? requestAnimationFrame
+      : (fn) => setTimeout(fn, 16);
+    fileState._splitLayoutRaf = raf(() => {
+      fileState._splitLayoutRaf = null;
+      this._applySplitAnnotationLayout(fileName);
+    });
+  }
+
+  /**
+   * Synchronous body of _syncSplitAnnotationLayout — see its doc comment.
+   * @private
+   */
+  _applySplitAnnotationLayout(fileName) {
+    const fileState = this.files.get(fileName);
+    const shadowRoot = fileState?.shadowHost?.shadowRoot;
+    if (!shadowRoot) return;
+    const pre = shadowRoot.querySelector('pre[data-diff-type="split"]');
+    if (!pre) return;
+
+    const gutter = pre.querySelector('[data-additions] [data-gutter]');
+    const gutterWidth = gutter?.getBoundingClientRect?.().width || 0;
+    if (gutterWidth > 0) {
+      pre.style.setProperty('--pr-split-gutter-width', `${gutterWidth}px`);
+    }
+
+    // Paired cells share the same "hunkIndex,lineIndex" attribute value.
+    const byRow = new Map();
+    for (const cell of pre.querySelectorAll('[data-line-annotation]')) {
+      const key = cell.getAttribute('data-line-annotation');
+      if (!byRow.has(key)) byRow.set(key, []);
+      byRow.get(key).push(cell);
+    }
+    for (const cells of byRow.values()) {
+      const withContent = cells.filter((cell) => cell.querySelector('slot'));
+      for (const cell of cells) {
+        cell.classList.toggle(
+          'pr-annotation-fullwidth',
+          withContent.length === 1 && cell === withContent[0]
+        );
+      }
+    }
   }
 
   // ─── Gap Expansion ────────────────────────────────────────────────
@@ -1382,26 +1605,59 @@ class PierreBridge {
   /**
    * Resolve the rendered shadow-DOM element for a line from the indices
    * returned by instance.getLineIndex(). The vendor stamps data-line-index
-   * as a composite "unifiedIndex,splitIndex" key; fall back to the bare
-   * unified index for bundle versions that stamped a single number.
+   * as a composite "unifiedIndex,splitIndex" key on content lines in BOTH
+   * unified and split layouts (see @pierre/diffs renderDiffWithHighlighter);
+   * fall back to the bare unified index for bundle versions that stamped a
+   * single number.
+   *
+   * Column scoping avoids matching ghost lines from other files rendered in
+   * the same document, and — in split view — targets the requested side:
+   *   - unified: the single `code[data-unified]` column.
+   *   - split:   `code[data-deletions]` (LEFT) or `code[data-additions]`
+   *     (RIGHT). A context line exists in BOTH columns with the SAME composite
+   *     key, so we search the requested side first and fall back to the other.
    * @param {Object} instance - FileDiff instance
    * @param {Array<number>|undefined} indices - [unifiedIndex, splitIndex]
+   * @param {'deletions'|'additions'} [side] - preferred split column
    * @returns {Element|null}
    * @private
    */
-  static _queryLineElement(instance, indices) {
+  static _queryLineElement(instance, indices, side) {
     if (!indices) return null;
     const [unifiedIndex] = indices;
     if (unifiedIndex == null) return null;
     const pre = instance.pre;
     if (!pre) return null;
-    // In unified view, the unified code element holds all lines. Scope the
-    // selector to this instance's code element so we don't find ghost lines
-    // from other files rendered in the same document.
-    const codeEl = instance.codeUnified || pre.querySelector('code[data-unified]') || pre;
     const compositeKey = Array.isArray(indices) ? indices.join(',') : String(unifiedIndex);
-    return codeEl.querySelector(`[data-line][data-line-index="${compositeKey}"]`)
-      || codeEl.querySelector(`[data-line][data-line-index="${unifiedIndex}"]`);
+    for (const codeEl of PierreBridge._codeColumnsForSide(instance, pre, side)) {
+      if (!codeEl) continue;
+      const el = codeEl.querySelector(`[data-line][data-line-index="${compositeKey}"]`)
+        || codeEl.querySelector(`[data-line][data-line-index="${unifiedIndex}"]`);
+      if (el) return el;
+    }
+    return null;
+  }
+
+  /**
+   * Ordered list of code-column elements to search for a line, scoped to a
+   * single FileDiff instance. Unified returns the one unified column; split
+   * returns both columns with the requested `side` first. Falls back to the
+   * whole `pre` when no column element is resolvable.
+   * @param {Object} instance
+   * @param {Element} pre
+   * @param {'deletions'|'additions'} [side]
+   * @returns {Array<Element|null>}
+   * @private
+   */
+  static _codeColumnsForSide(instance, pre, side) {
+    const unified = instance.codeUnified || pre.querySelector('code[data-unified]');
+    if (unified) return [unified];
+    const deletions = instance.codeDeletions || pre.querySelector('code[data-deletions]');
+    const additions = instance.codeAdditions || pre.querySelector('code[data-additions]');
+    if (deletions || additions) {
+      return side === 'deletions' ? [deletions, additions] : [additions, deletions];
+    }
+    return [pre];
   }
 
   /**
@@ -1812,6 +2068,7 @@ class PierreBridge {
           file: fileName || '',
           line_start: parseInt(textarea.dataset.line) || null,
           line_end: parseInt(textarea.dataset.lineEnd) || parseInt(textarea.dataset.line) || null,
+          side: textarea.dataset.side || 'RIGHT',
           source: 'user'
         }
       });
@@ -1984,6 +2241,18 @@ class PierreBridge {
   // Suggestions and comments use legacy classes (.ai-suggestion, .user-comment)
   // styled by the page stylesheet. Only the comment form annotation lives
   // entirely within the shadow DOM and needs styles here.
+  //
+  // Split layout: @pierre/diffs anchors each annotation to ONE code column —
+  // a 'deletions' annotation renders in the LEFT column, an 'additions'
+  // annotation in the RIGHT column — and emits an EMPTY paired cell in the
+  // opposite column on the same shared grid row (see getAnnotations()/
+  // pushLineWithAnnotation in DiffHunksRenderer). A lone card would only get
+  // half the width, so _syncSplitAnnotationLayout marks such cards with
+  // .pr-annotation-fullwidth and the rules below stretch them across both
+  // content tracks (the tracks are equal 1fr shares, so 200% + the measured
+  // middle-gutter width spans exactly to the far edge). min-width:0 lets
+  // unstretched cards (both sides annotated on one row) wrap inside their
+  // half-width cell rather than force horizontal overflow.
   static ANNOTATION_CSS = `
     .pierre-annotation {
       padding: 8px 12px;
@@ -1993,7 +2262,27 @@ class PierreBridge {
       font-size: 13px;
       line-height: 1.5;
     }
-    /* Brief flash applied by PierreBridge.scrollToLine */
+    /* Let annotation cards wrap within a split column instead of overflowing. */
+    [data-line-annotation] { min-width: 0; }
+    [data-annotation-content] { min-width: 0; }
+    /* Split view: stretch a lone card across both columns. The class and
+       --pr-split-gutter-width are maintained by _syncSplitAnnotationLayout
+       (the middle gutter track is min-content sized — unknowable in pure
+       CSS). Without the var the card degrades to stopping at the seam.
+       z-index clears the middle gutter, which the vendor paints at 3. */
+    [data-diff-type='split'] .pr-annotation-fullwidth {
+      position: relative;
+      z-index: 4;
+      width: calc(200% + var(--pr-split-gutter-width, 0px));
+    }
+    /* Right-column cards anchor at the additions track; pull them back to
+       the left content track's start edge. */
+    [data-diff-type='split'] [data-additions] .pr-annotation-fullwidth {
+      margin-left: calc(-100% - var(--pr-split-gutter-width, 0px));
+    }
+    /* Brief flash applied by PierreBridge.scrollToLine. Generic [data-line]
+       match so it flashes whichever column (unified/deletions/additions) the
+       target line resolves to. */
     [data-line].pierre-line-highlight {
       animation: pierre-line-highlight-flash 3.5s ease-out forwards;
     }
