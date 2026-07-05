@@ -445,8 +445,14 @@
       ? ''
       : '<td class="col-author">' + authorDisplay + '</td>';
 
+    // `data-host` carries the alt-host api_host string for PRs that live on an
+    // alternate host; github.com rows have no host and render an empty
+    // attribute. The click handler threads it into the setup call so a dual
+    // repo's alt-host PR opens against the right system without re-probing.
+    var hostAttr = pr.host ? ' data-host="' + escapeHtml(pr.host) + '"' : '';
+
     return '' +
-      '<tr class="collection-pr-row" data-pr-url="' + escapeHtml(prUrl) + '" data-owner="' + escapeHtml(pr.owner) + '" data-repo="' + escapeHtml(pr.repo) + '" data-number="' + pr.number + '">' +
+      '<tr class="collection-pr-row" data-pr-url="' + escapeHtml(prUrl) + '" data-owner="' + escapeHtml(pr.owner) + '" data-repo="' + escapeHtml(pr.repo) + '" data-number="' + pr.number + '"' + hostAttr + '>' +
         '<td class="col-repo">' + escapeHtml(repoFull) + '</td>' +
         '<td class="col-pr"><span class="collection-pr-number">#' + pr.number + '</span></td>' +
         '<td class="col-title" title="' + escapeHtml(pr.title || '') + '">' + escapeHtml(pr.title || '') + '</td>' +
@@ -1293,7 +1299,14 @@
         return {
           owner: data.owner,
           repo: data.repo,
-          prNumber: data.prNumber
+          prNumber: data.prNumber,
+          // `host` tells setup which system the PR lives on: an api_host URL
+          // string = alt host, null = github.com, undefined = unknown.
+          host: data.host,
+          bindingRepository: data.bindingRepository,
+          // Whether the repo is dual (github + alt-host). Only dual repos probe,
+          // so only they need an explicit github pick when the URL is a github URL.
+          isDualHost: data.isDualHost
         };
       }
 
@@ -1343,7 +1356,22 @@
     // Navigate to the PR route which serves setup.html (with step-by-step progress)
     // for new PRs, or pr.html directly for PRs already in the database
     let href = '/pr/' + encodeURIComponent(parsed.owner) + '/' + encodeURIComponent(parsed.repo) + '/' + encodeURIComponent(parsed.prNumber);
-    if (analyze) href += '?analyze=true';
+    var params = new URLSearchParams();
+    if (analyze) params.set('analyze', 'true');
+    // Forward the parsed host so setup binds directly instead of probing:
+    //  - alt-host URL string → the api_host (setup binds that alt host)
+    //  - github URL (host === null) on a DUAL repo → the "github" sentinel, so
+    //    setup binds github.com instead of probing alt-first (which would fail
+    //    loudly if the alt host is down for a PR we KNOW is on github)
+    //  - anything else (plain/exclusive repo, unknown host) → omit; no probe
+    //    happens for those and omitting avoids the exclusive-null throw.
+    if (typeof parsed.host === 'string' && parsed.host) {
+      params.set('host', parsed.host);
+    } else if (parsed.host === null && parsed.isDualHost) {
+      params.set('host', 'github');
+    }
+    var qs = params.toString();
+    if (qs) href += '?' + qs;
     window.location.href = href;
   }
 
@@ -1891,7 +1919,7 @@
    * Read selected collection rows as PR descriptors.
    * @param {Set} selectedIds - PR URLs (data-pr-url values)
    * @param {string} tbodyId - tbody element ID
-   * @returns {Array<{owner: string, repo: string, number: string, prUrl: string}>}
+   * @returns {Array<{owner: string, repo: string, number: string, prUrl: string, host: string|undefined}>}
    */
   function getSelectedCollectionRows(selectedIds, tbodyId) {
     var tbody = document.getElementById(tbodyId);
@@ -1908,7 +1936,11 @@
           owner: tr.dataset.owner,
           repo: tr.dataset.repo,
           number: tr.dataset.number,
-          prUrl: prUrl
+          prUrl: prUrl,
+          // Alt-host rows carry a host; github.com rows leave it undefined. The
+          // single-row click path threads this the same way (see the collection
+          // row click handler) so bulk-open binds to the right system too.
+          host: tr.dataset.host
         });
       }
     }
@@ -1917,7 +1949,14 @@
 
   function buildReviewUrlsFromRows(rows, query) {
     return rows.map(function (row) {
-      return '/pr/' + encodeURIComponent(row.owner) + '/' + encodeURIComponent(row.repo) + '/' + row.number + (query || '');
+      // Preserve any existing params (analyze / analysisConfigId) and append the
+      // alt host so setup opens the PR against the system it lives on instead of
+      // re-probing. github.com rows (no host) keep the URL unchanged.
+      var qs = query || '';
+      if (row.host) {
+        qs += (qs ? '&' : '?') + 'host=' + encodeURIComponent(row.host);
+      }
+      return '/pr/' + encodeURIComponent(row.owner) + '/' + encodeURIComponent(row.repo) + '/' + row.number + qs;
     });
   }
 
@@ -2160,6 +2199,21 @@
           cb.checked = !cb.checked;
           cb.dispatchEvent(new Event('change'));
         }
+        return;
+      }
+
+      // Alt-host PR: we already know owner/repo/number and the host it lives
+      // on, so navigate straight to the PR route with the host as a query
+      // param (setup.html forwards it into the setup POST body). This bypasses
+      // the URL-parse round trip, which can't reliably recover the host from a
+      // pasted alt-host html_url. github.com rows (no host) keep the existing
+      // parse-and-submit flow below, byte-identical.
+      var rowHost = collectionRow.dataset.host;
+      if (rowHost) {
+        var o = encodeURIComponent(collectionRow.dataset.owner);
+        var r = encodeURIComponent(collectionRow.dataset.repo);
+        var n = encodeURIComponent(collectionRow.dataset.number);
+        window.location.href = '/pr/' + o + '/' + r + '/' + n + '?host=' + encodeURIComponent(rowHost);
         return;
       }
 
@@ -2541,5 +2595,15 @@
   // Expose for use after data loads (loadRecentReviews / loadLocalReviews)
   window.__pairReview = window.__pairReview || {};
   window.__pairReview.refreshAnalysisSpinners = fetchAndApplyActiveAnalyses;
+
+  // Test-only exports. In the browser `module` is undefined, so this is a
+  // no-op; under Vitest (CommonJS) it exposes the internal bulk-open helpers
+  // for direct unit testing rather than duplicating their logic in a test.
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+      buildReviewUrlsFromRows: buildReviewUrlsFromRows,
+      getSelectedCollectionRows: getSelectedCollectionRows
+    };
+  }
 
 })();

@@ -90,9 +90,14 @@ async function setupStackPR({ db, owner, repo, prNumber, githubToken, binding, b
   // 5. Get changed files with stats
   const changedFiles = await worktreeManager.getChangedFiles(worktreePath, prData);
 
-  // 6. Store via storePRData (creates/updates pr_metadata, reviews, worktrees records)
+  // 6. Store via storePRData (creates/updates pr_metadata, reviews, worktrees records).
+  // Stamp the host of the binding used to fetch this stack PR (null for
+  // github.com, the api_host string for an alt host) so per-PR host resolution
+  // self-heals across the stack. Omitted when only a bare token was supplied.
   const prInfo = { owner, repo, number: prNumber };
-  const { isNewReview, reviewId } = await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath);
+  const { isNewReview, reviewId } = await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath, {
+    host: binding ? binding.host : undefined
+  });
 
   logger.info(`Stack PR #${prNumber} setup complete (reviewId: ${reviewId}, new: ${isNewReview})`);
 

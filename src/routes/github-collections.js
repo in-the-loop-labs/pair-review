@@ -16,12 +16,15 @@
 const express = require('express');
 const { query, run, withTransaction } = require('../database');
 const { GitHubClient } = require('../github/client');
-const { getGitHubToken } = require('../config');
+const { getGitHubToken, resolveHostBinding } = require('../config');
 const logger = require('../utils/logger');
 
 const router = express.Router();
 
-const SELECT_COLUMNS = 'owner, repo, number, title, author, updated_at, html_url, state, fetched_at';
+// `host` is additive: NULL for github.com rows, the repo's `api_host` URL for
+// alt-host rows. Both GET and the refresh re-read echo it so the frontend can
+// open a PR against the system it actually lives on without re-probing.
+const SELECT_COLUMNS = 'owner, repo, number, title, author, updated_at, html_url, state, fetched_at, host';
 
 // Valid `org/team` slug: two non-empty segments of GitHub-allowed characters.
 // Used to guard against query injection when interpolating the team into the
@@ -40,11 +43,18 @@ const TEAM_SLUG_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
  * namespaced cache entry for a query whose results are identical to the
  * unfiltered view.
  */
+// Each definition also carries a `classifyAlt(pr, login, team)` predicate that
+// buckets a REST-listed alt-host PR into this collection. Alt-hosts generally
+// have no Search API, so the collection semantics that `buildQuery` expresses
+// as a github.com search string are re-expressed here as a local predicate
+// over the fields `client.listOpenPullRequests` returns. `pr.requested_teams`
+// holds team *slugs*; `team`, when set, is a validated `org/team` slug.
 const COLLECTIONS = [
   {
     name: 'review-requests',
     label: 'review requests',
-    buildQuery: (login) => `is:pr is:open archived:false user-review-requested:${login}`
+    buildQuery: (login) => `is:pr is:open archived:false user-review-requested:${login}`,
+    classifyAlt: (pr, login) => pr.requested_reviewers.includes(login)
   },
   {
     name: 'team-reviews',
@@ -63,14 +73,127 @@ const COLLECTIONS = [
         return `is:pr is:open archived:false team-review-requested:${team}`;
       }
       return `is:pr is:open archived:false review-requested:${login} -user-review-requested:${login}`;
+    },
+    // A specific `team` filters to PRs requesting that team's slug (the part
+    // after the slash, since REST `requested_teams` carries bare slugs, not
+    // `org/team`); the all-teams view keeps the same "exclude direct requests"
+    // rule as the github.com search so a directly-requested PR shows under
+    // review-requests, not here.
+    classifyAlt: (pr, login, team) => {
+      if (pr.requested_teams.length === 0) return false;
+      if (team) {
+        const slug = team.slice(team.indexOf('/') + 1);
+        return pr.requested_teams.includes(slug);
+      }
+      return !pr.requested_reviewers.includes(login);
     }
   },
   {
     name: 'my-prs',
     label: 'your pull requests',
-    buildQuery: (login) => `is:pr is:open archived:false author:${login}`
+    buildQuery: (login) => `is:pr is:open archived:false author:${login}`,
+    classifyAlt: (pr, login) => pr.author === login
   }
 ];
+
+/**
+ * Derive an `owner/repo` pair from a `config.repos` key. Alt-host config
+ * entries are keyed by the canonical `owner/repo`; monorepo-style entries can
+ * be keyed by something else and matched to PRs via `url_pattern`, but the
+ * collections sweep needs a concrete owner/repo to call `pulls.list`, so those
+ * keys are skipped rather than guessed at.
+ * @param {string} repoKey - A `config.repos` key.
+ * @returns {{ owner: string, repo: string }|null} Null when not owner/repo shaped.
+ */
+function ownerRepoFromKey(repoKey) {
+  if (typeof repoKey !== 'string') return null;
+  const parts = repoKey.split('/');
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+  return { owner: parts[0], repo: parts[1] };
+}
+
+/**
+ * Sweep every alt-host repo in config for open PRs belonging to `collection`,
+ * classifying each with `def.classifyAlt`. Best-effort per host: a failure for
+ * one repo is captured in the returned `hosts` array and never thrown, so the
+ * github.com results already gathered by the caller are never lost. Rows are
+ * stamped with the repo's `api_host` string for the `host` column.
+ *
+ * `credentialedRepoCount` counts alt-host repos that resolved a non-empty
+ * token (i.e. could authenticate), regardless of whether the subsequent fetch
+ * then succeeded. The refresh route uses it to decide whether ANY source can
+ * authenticate before returning 401 on an install with no github.com token.
+ *
+ * @param {Object} config - Server config (from loadConfig()).
+ * @param {Object} def - The collection definition (needs `classifyAlt`).
+ * @param {string|null} team - Validated `org/team` filter, or null.
+ * @returns {Promise<{ rows: Array<Object>, hosts: Array<{host: string, repo: string, ok: boolean, error?: string}>, credentialedRepoCount: number }>}
+ */
+async function sweepAltHosts(config, def, team) {
+  const rows = [];
+  const hosts = [];
+  let credentialedRepoCount = 0;
+  const repos = (config && config.repos) || {};
+  if (typeof def.classifyAlt !== 'function') {
+    return { rows, hosts, credentialedRepoCount };
+  }
+
+  // One `GET /user` per (host, token) per refresh — multiple repos can share a
+  // host, and a login lookup per repo would be wasteful. Keyed by token too so
+  // distinct credentials on the same host resolve their own identity.
+  const loginCache = new Map();
+
+  for (const [repoKey, repoEntry] of Object.entries(repos)) {
+    if (!repoEntry || typeof repoEntry !== 'object') continue;
+    const apiHost = (typeof repoEntry.api_host === 'string' && repoEntry.api_host) ? repoEntry.api_host : null;
+    if (!apiHost) continue;
+
+    const ownerRepo = ownerRepoFromKey(repoKey);
+    if (!ownerRepo) {
+      logger.warn(`Collections: skipping alt-host repo "${repoKey}" (${apiHost}) — key is not an owner/repo pair, cannot derive a repo for pulls.list`);
+      hosts.push({ host: apiHost, repo: repoKey, ok: false, error: 'config key is not an owner/repo pair' });
+      continue;
+    }
+
+    try {
+      const binding = resolveHostBinding(repoKey, config, { host: apiHost });
+
+      // A repo with `api_host` but no repo-scoped token yields an empty-token
+      // binding. Probing anyway would 401 once per collection per refresh and
+      // spam error logs; surface it as a per-host status instead (debug, not
+      // error — it's a config gap, not a runtime failure).
+      if (!binding.token) {
+        logger.debug(`Collections: skipping alt-host repo "${repoKey}" (${apiHost}) — no repo-scoped credentials configured`);
+        hosts.push({ host: apiHost, repo: repoKey, ok: false, error: 'no credentials configured' });
+        continue;
+      }
+      credentialedRepoCount++;
+
+      const client = new GitHubClient(binding);
+
+      const loginKey = `${apiHost}\u0000${binding.token}`;
+      let login = loginCache.get(loginKey);
+      if (login === undefined) {
+        const user = await client.getAuthenticatedUser();
+        login = user.login;
+        loginCache.set(loginKey, login);
+      }
+
+      const prs = await client.listOpenPullRequests(ownerRepo.owner, ownerRepo.repo);
+      for (const pr of prs) {
+        if (def.classifyAlt(pr, login, team)) {
+          rows.push({ ...pr, host: apiHost });
+        }
+      }
+      hosts.push({ host: apiHost, repo: repoKey, ok: true });
+    } catch (error) {
+      logger.error(`Collections: alt-host refresh failed for ${repoKey} (${apiHost}): ${error.message}`);
+      hosts.push({ host: apiHost, repo: repoKey, ok: false, error: error.message });
+    }
+  }
+
+  return { rows, hosts, credentialedRepoCount };
+}
 
 /**
  * Derive the cache storage key for a collection, namespacing by team so a
@@ -161,17 +284,40 @@ function registerCollection(def) {
       }
 
       const config = req.app.get('config');
+      const db = req.app.get('db');
+
+      // The dashboard has two independent PR sources: the github.com search
+      // (top-level token) and the per-repo alt-host sweep. Treat them
+      // independently so an alt-host-only install (repo-scoped alt credentials,
+      // NO global github token) can still refresh. A missing github token skips
+      // ONLY the github branch; a per-source status is recorded instead.
       // Cross-repo search on github.com — no per-repo binding applies here.
       // Explicit `undefined` repository selects the no-repo (top-level) path.
       const githubToken = getGitHubToken(config, undefined);
-      if (!githubToken) {
-        return res.status(401).json({ success: false, error: 'GitHub token not configured' });
+      const sourceStatuses = [];
+      let prs = [];
+      if (githubToken) {
+        const client = new GitHubClient(githubToken);
+        const user = await client.getAuthenticatedUser();
+        prs = await client.searchPullRequests(buildQuery(user.login, { team }));
+      } else {
+        // host:null, repo:null identifies the github.com cross-repo source
+        // (mirrors the NULL-host = github.com convention used for cache rows).
+        sourceStatuses.push({ host: null, repo: null, ok: false, error: 'no github.com token configured' });
       }
 
-      const db = req.app.get('db');
-      const client = new GitHubClient(githubToken);
-      const user = await client.getAuthenticatedUser();
-      const prs = await client.searchPullRequests(buildQuery(user.login, { team }));
+      // Alt-host repos (both exclusive and dual) have no Search API, so sweep
+      // them via REST and classify locally. Best-effort: a failing host is
+      // reported in `hosts` and never aborts the github.com rows below. Done
+      // BEFORE the transaction so a slow alt host doesn't hold a write lock.
+      const { rows: altRows, hosts, credentialedRepoCount } = await sweepAltHosts(config, def, team);
+
+      // Only 401 when NO source can authenticate at all: no github token AND no
+      // alt-host repo with credentials. If either can authenticate, proceed and
+      // report the unavailable source in the response.
+      if (!githubToken && credentialedRepoCount === 0) {
+        return res.status(401).json({ success: false, error: 'GitHub token not configured' });
+      }
 
       // Namespace the cache so a filtered view never clobbers the all-teams
       // cache. Every distinct team string the user tries creates its own cached
@@ -179,18 +325,34 @@ function registerCollection(def) {
       // home-page feature.
       const key = cacheKey(name, team);
       await withTransaction(db, async () => {
+        // DELETE-then-INSERT clears prior github AND alt rows for this key, so a
+        // retry re-derives the whole view rather than duplicating. github rows
+        // stamp host NULL; alt rows carry their api_host string.
         await run(db, 'DELETE FROM github_pr_cache WHERE collection = ?', [key]);
         for (const pr of prs) {
           await run(db,
-            'INSERT INTO github_pr_cache (owner, repo, number, title, author, updated_at, html_url, state, collection) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            [pr.owner, pr.repo, pr.number, pr.title, pr.author, pr.updated_at, pr.html_url, pr.state, key]
+            'INSERT INTO github_pr_cache (owner, repo, number, title, author, updated_at, html_url, state, collection, host) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [pr.owner, pr.repo, pr.number, pr.title, pr.author, pr.updated_at, pr.html_url, pr.state, key, null]
+          );
+        }
+        for (const pr of altRows) {
+          await run(db,
+            'INSERT INTO github_pr_cache (owner, repo, number, title, author, updated_at, html_url, state, collection, host) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [pr.owner, pr.repo, pr.number, pr.title, pr.author, pr.updated_at, pr.html_url, pr.state, key, pr.host]
           );
         }
       });
 
       const rows = await getCachedRows(db, key);
       const fetchedAt = rows.length > 0 ? rows[0].fetched_at : null;
-      res.json({ success: true, prs: rows, fetched_at: fetchedAt });
+      // `hosts` is additive; omit it entirely when every source is healthy (no
+      // alt-host repos and a working github token) so the github-only happy-path
+      // response shape is byte-identical to before. A skipped github source or
+      // any alt-host status makes it appear.
+      const allStatuses = sourceStatuses.concat(hosts);
+      const payload = { success: true, prs: rows, fetched_at: fetchedAt };
+      if (allStatuses.length > 0) payload.hosts = allStatuses;
+      res.json(payload);
     } catch (error) {
       if (error.status === 401 || error.status === 403) {
         return res.status(401).json({ success: false, error: 'GitHub token is invalid or expired' });

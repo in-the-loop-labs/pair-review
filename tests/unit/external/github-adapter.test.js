@@ -195,11 +195,59 @@ describe('github-adapter', () => {
       );
 
       expect(resolveBindingRepositoryFromPR).toHaveBeenCalledWith('OctoCat', 'Hello-World', { repos: {} });
-      expect(resolveHostBinding).toHaveBeenCalledWith('monorepo/key', { repos: {} });
+      // Third arg is the resolved host option; with no storedHost it is {} (ambiguity).
+      expect(resolveHostBinding).toHaveBeenCalledWith('monorepo/key', { repos: {} }, {});
       expect(FakeGitHubClient).toHaveBeenCalledWith(fakeBinding);
       expect(result.client.binding).toBe(fakeBinding);
       // fakeBinding.apiHost is set → alt-host.
       expect(result.isAltHost).toBe(true);
+    });
+
+    it('dual repo: a stored alt host pins the alt binding (options.storedHost = api_host)', () => {
+      // Dual repo (api_host + exclusive:false). A stored alt host must resolve
+      // the ALT binding (and isAltHost=true → line-based anchoring), not the
+      // two-arg github ambiguity binding.
+      const FakeGitHubClient = vi.fn(function (binding) { this.binding = binding; });
+      const config = {
+        github_token: 'gh-tok',
+        repos: {
+          'acme/widgets': { api_host: 'https://alt.example/api/v3', exclusive: false, token: 'alt-tok' }
+        }
+      };
+
+      const result = githubAdapter.resolveCredentials(
+        config,
+        'acme/widgets',
+        { GitHubClient: FakeGitHubClient },
+        { storedHost: 'https://alt.example/api/v3' }
+      );
+
+      const binding = FakeGitHubClient.mock.calls[0][0];
+      expect(binding.apiHost).toBe('https://alt.example/api/v3');
+      expect(binding.token).toBe('alt-tok');
+      expect(result.isAltHost).toBe(true);
+    });
+
+    it('dual repo: a stored NULL host binds github.com (options.storedHost = null)', () => {
+      const FakeGitHubClient = vi.fn(function (binding) { this.binding = binding; });
+      const config = {
+        github_token: 'gh-tok',
+        repos: {
+          'acme/widgets': { api_host: 'https://alt.example/api/v3', exclusive: false, token: 'alt-tok' }
+        }
+      };
+
+      const result = githubAdapter.resolveCredentials(
+        config,
+        'acme/widgets',
+        { GitHubClient: FakeGitHubClient },
+        { storedHost: null }
+      );
+
+      const binding = FakeGitHubClient.mock.calls[0][0];
+      expect(binding.apiHost).toBe(null);
+      expect(binding.token).toBe('gh-tok');
+      expect(result.isAltHost).toBe(false);
     });
 
     it('binding-aware: alt-host repo with no token throws GitHubApiError(status=401) mentioning repo-scoped token', () => {

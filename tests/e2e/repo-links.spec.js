@@ -11,7 +11,9 @@
  *
  * The /api/repos/:owner/:repo/links endpoint is intercepted at the
  * Playwright network layer so the test does not depend on the test
- * server having `repos` configured.
+ * server having `repos` configured. The route glob ends in `links**`
+ * (not just `links`) because PR mode appends a `?number=<n>` query so the
+ * server can resolve the link set against the PR's host for dual-host repos.
  */
 
 import { test, expect } from './fixtures.js';
@@ -23,7 +25,7 @@ test.describe('Repo Links UI', () => {
     // owner/repo match what the page is showing.
     let fetchedUrl = null;
 
-    await page.route('**/api/repos/*/*/links', (route) => {
+    await page.route('**/api/repos/*/*/links**', (route) => {
       fetchedUrl = route.request().url();
       route.fulfill({
         status: 200,
@@ -74,7 +76,7 @@ test.describe('Repo Links UI', () => {
   });
 
   test('hides the github link without removing other header buttons', async ({ page }) => {
-    await page.route('**/api/repos/*/*/links', (route) => {
+    await page.route('**/api/repos/*/*/links**', (route) => {
       route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -97,7 +99,7 @@ test.describe('Repo Links UI', () => {
   });
 
   test('preserves default behaviour when the API returns the empty config', async ({ page }) => {
-    await page.route('**/api/repos/*/*/links', (route) => {
+    await page.route('**/api/repos/*/*/links**', (route) => {
       route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -118,7 +120,7 @@ test.describe('Repo Links UI', () => {
   });
 
   test('drops the external link when the URL template lacks a required placeholder', async ({ page }) => {
-    await page.route('**/api/repos/*/*/links', (route) => {
+    await page.route('**/api/repos/*/*/links**', (route) => {
       route.fulfill({
         status: 200,
         contentType: 'application/json',

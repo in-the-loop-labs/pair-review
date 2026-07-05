@@ -63,6 +63,7 @@ vi.spyOn(databaseModule.PRMetadataRepository.prototype, 'getByPR').mockResolvedV
   description: ''
 });
 vi.spyOn(databaseModule.PRMetadataRepository.prototype, 'updateLastAiRunId').mockResolvedValue(undefined);
+  vi.spyOn(databaseModule.PRMetadataRepository.prototype, 'getPRHost').mockResolvedValue(undefined);
 vi.spyOn(databaseModule.ReviewRepository.prototype, 'getOrCreate').mockResolvedValue({ review: { id: 1 } });
 vi.spyOn(databaseModule.ReviewRepository.prototype, 'upsertSummary').mockResolvedValue(undefined);
 vi.spyOn(databaseModule.RepoSettingsRepository.prototype, 'getRepoSettings').mockResolvedValue(null);
@@ -239,6 +240,7 @@ describe('executeStackAnalysis — bindingRepository resolution', () => {
       description: ''
     });
     vi.spyOn(databaseModule.PRMetadataRepository.prototype, 'updateLastAiRunId').mockResolvedValue(undefined);
+  vi.spyOn(databaseModule.PRMetadataRepository.prototype, 'getPRHost').mockResolvedValue(undefined);
     vi.spyOn(databaseModule.ReviewRepository.prototype, 'getOrCreate').mockResolvedValue({ review: { id: 1 } });
     vi.spyOn(databaseModule.RepoSettingsRepository.prototype, 'getRepoSettings').mockResolvedValue(null);
     vi.spyOn(databaseModule.AnalysisRunRepository.prototype, 'create').mockResolvedValue(undefined);
@@ -279,8 +281,9 @@ describe('executeStackAnalysis — bindingRepository resolution', () => {
 
     // The binding lookup MUST use the resolved config key, not the PR identity.
     expect(deps.resolveBindingRepositoryFromPR).toHaveBeenCalledWith('acme', 'widget-a', config);
-    expect(resolveHostBinding).toHaveBeenCalledWith('acme-monorepo', config);
-    expect(resolveHostBinding).not.toHaveBeenCalledWith('acme/widget-a', config);
+    // Third arg is the main PR's host option; no stored host → {} (ambiguity).
+    expect(resolveHostBinding).toHaveBeenCalledWith('acme-monorepo', config, {});
+    expect(resolveHostBinding).not.toHaveBeenCalledWith('acme/widget-a', config, {});
 
     // The monorepo token should reach the GitHubClient via the binding.
     const ghClientArgs = deps.GitHubClient.mock.calls.map(c => c[0]);
@@ -313,8 +316,39 @@ describe('executeStackAnalysis — bindingRepository resolution', () => {
 
     expect(deps.resolveBindingRepositoryFromPR).toHaveBeenCalledWith('acme', 'widget-a', config);
     // The real resolver lowercases the fallback, so the key passed to
-    // resolveHostBinding is the lowercased PR identity.
-    expect(resolveHostBinding).toHaveBeenCalledWith('acme/widget-a', config);
+    // resolveHostBinding is the lowercased PR identity (third arg = {} ambiguity).
+    expect(resolveHostBinding).toHaveBeenCalledWith('acme/widget-a', config, {});
+  });
+
+  it('stack binding follows the MAIN PR stored host (dual repo alt-hosted stack)', async () => {
+    // Dual repo whose trigger PR lives on the alt host. The stack binding must
+    // resolve with { host: <alt> } so siblings are fetched from and stamped
+    // with the alt host, not the two-arg github ambiguity binding.
+    const config = {
+      github_token: 'gh-tok',
+      repos: {
+        'acme/widget-a': { api_host: 'https://alt.example/api/v3', exclusive: false, token: 'alt-tok' }
+      }
+    };
+    // Trigger PR (#10) is stored on the alt host.
+    vi.spyOn(databaseModule.PRMetadataRepository.prototype, 'getPRHost')
+      .mockResolvedValue('https://alt.example/api/v3');
+
+    const resolveHostBinding = vi.fn().mockReturnValue({
+      apiHost: 'https://alt.example/api/v3', host: 'https://alt.example/api/v3',
+      token: 'alt-tok', features: {}, source: 'config:repos[acme/widget-a].token',
+    });
+    const deps = createMockDeps({ resolveHostBinding });
+    const params = createDefaultParams(deps, { config });
+    initActiveState(params.stackAnalysisId, params.prNumbers);
+
+    await executeStackAnalysis(params);
+
+    // Binding resolved with the main PR's stored alt host.
+    expect(resolveHostBinding).toHaveBeenCalledWith('acme/widget-a', config, { host: 'https://alt.example/api/v3' });
+    // setupStackPR receives that binding, so stack-setup stamps binding.host (alt).
+    const setupArgs = deps.setupStackPR.mock.calls[0][0];
+    expect(setupArgs.binding.host).toBe('https://alt.example/api/v3');
   });
 
   it('setupStackPR plumbing: invoked with bindingRepository set to the resolved binding key', async () => {

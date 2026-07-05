@@ -36,7 +36,9 @@ describe('main.js — handlePullRequest token-resolution ordering', () => {
     const body = src.slice(fnStart, nextFnStart === -1 ? undefined : nextFnStart);
 
     const parsePosition = body.indexOf('parser.parsePRArguments');
-    const bindingPosition = body.indexOf('resolveHostBinding(');
+    // Token/binding resolution now goes through the shared preflight helper,
+    // which tolerates dual repos whose host is unknown (alt-only token).
+    const bindingPosition = body.indexOf('resolvePreflightBinding(');
     expect(parsePosition).toBeGreaterThan(-1);
     expect(bindingPosition).toBeGreaterThan(-1);
 

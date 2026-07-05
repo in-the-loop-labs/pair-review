@@ -2262,6 +2262,85 @@ describe('GitHubClient', () => {
     });
   });
 
+  describe('listOpenPullRequests', () => {
+    it('should paginate rest.pulls.list for open PRs with owner/repo', async () => {
+      const client = new GitHubClient('test-token');
+      const mockPaginate = vi.fn().mockResolvedValue([]);
+      client.octokit.paginate = mockPaginate;
+
+      await client.listOpenPullRequests('acme', 'widget');
+
+      expect(mockPaginate).toHaveBeenCalledWith(
+        client.octokit.rest.pulls.list,
+        { owner: 'acme', repo: 'widget', state: 'open', per_page: 100 }
+      );
+    });
+
+    it('should map PR items to display + classification fields', async () => {
+      const client = new GitHubClient('test-token');
+      client.octokit.paginate = vi.fn().mockResolvedValue([
+        {
+          number: 12,
+          title: 'Add feature',
+          user: { login: 'alice' },
+          updated_at: '2025-04-01T10:00:00Z',
+          html_url: 'https://althost.example/acme/widget/pull/12',
+          state: 'open',
+          requested_reviewers: [{ login: 'bob' }, { login: 'carol' }],
+          requested_teams: [{ slug: 'platform' }, { slug: 'infra' }]
+        }
+      ]);
+
+      const result = await client.listOpenPullRequests('acme', 'widget');
+
+      expect(result).toEqual([
+        {
+          owner: 'acme',
+          repo: 'widget',
+          number: 12,
+          title: 'Add feature',
+          author: 'alice',
+          updated_at: '2025-04-01T10:00:00Z',
+          html_url: 'https://althost.example/acme/widget/pull/12',
+          state: 'open',
+          requested_reviewers: ['bob', 'carol'],
+          requested_teams: ['platform', 'infra']
+        }
+      ]);
+    });
+
+    it('should tolerate null user and missing reviewer/team arrays', async () => {
+      const client = new GitHubClient('test-token');
+      client.octokit.paginate = vi.fn().mockResolvedValue([
+        {
+          number: 3,
+          title: 'Ghost PR',
+          user: null,
+          updated_at: '2025-01-01T00:00:00Z',
+          html_url: 'https://althost.example/acme/widget/pull/3',
+          state: 'open'
+          // requested_reviewers / requested_teams absent
+        }
+      ]);
+
+      const result = await client.listOpenPullRequests('acme', 'widget');
+
+      expect(result[0].author).toBeNull();
+      expect(result[0].requested_reviewers).toEqual([]);
+      expect(result[0].requested_teams).toEqual([]);
+    });
+
+    it('should propagate API errors', async () => {
+      const client = new GitHubClient('test-token');
+      const apiError = new Error('Not Implemented');
+      apiError.status = 501;
+      client.octokit.paginate = vi.fn().mockRejectedValue(apiError);
+
+      await expect(client.listOpenPullRequests('acme', 'widget'))
+        .rejects.toThrow('Not Implemented');
+    });
+  });
+
   describe('getAuthenticatedUser', () => {
     it('should call octokit.rest.users.getAuthenticated() and return mapped data', async () => {
       const client = new GitHubClient('test-token');

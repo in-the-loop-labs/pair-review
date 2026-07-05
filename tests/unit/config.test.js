@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const childProcess = require('child_process');
-const { deepMerge, getGitHubToken, expandPath, resolveDbName, warnIfDevModeWithoutDbName, loadConfig, shouldSkipUpdateNotifier, _resetTokenCache, getRepoConfig, getRepoPath, getRepoCheckoutScript, getRepoWorktreeDirectory, getRepoWorktreeNameTemplate, getRepoCheckoutTimeout, resolveRepoOptions, getRepoResetScript, getRepoSkipBulkFetch, getRepoPoolSize, getRepoPoolFetchInterval, resolvePoolConfig, getWorktreeDisplayName, getConfigDir, getRepoLoadSkills, resolveLoadSkills, buildCouncilProviderOverrides, getSummaryProvider, getSummaryModel, getTourProvider, getTourModel, getSummaryEnabled, getSummaryAutoGenerate, getTourEnabled, getTourAutoGenerate, resolveHostBinding, invalidateTokenCache, validateRepoConfig, matchRepoByUrl, resolveBindingRepositoryFromPR } = require('../../src/config');
+const { deepMerge, getGitHubToken, expandPath, resolveDbName, warnIfDevModeWithoutDbName, loadConfig, shouldSkipUpdateNotifier, _resetTokenCache, getRepoConfig, getRepoPath, getRepoCheckoutScript, getRepoWorktreeDirectory, getRepoWorktreeNameTemplate, getRepoCheckoutTimeout, resolveRepoOptions, getRepoResetScript, getRepoSkipBulkFetch, getRepoPoolSize, getRepoPoolFetchInterval, resolvePoolConfig, getWorktreeDisplayName, getConfigDir, getRepoLoadSkills, resolveLoadSkills, buildCouncilProviderOverrides, getSummaryProvider, getSummaryModel, getTourProvider, getTourModel, getSummaryEnabled, getSummaryAutoGenerate, getTourEnabled, getTourAutoGenerate, resolveHostBinding, isExclusiveAltHost, invalidateTokenCache, validateRepoConfig, matchRepoByUrl, resolveBindingRepositoryFromPR } = require('../../src/config');
 
 describe('config.js', () => {
   describe('getGitHubToken', () => {
@@ -2614,6 +2614,285 @@ describe('config.js', () => {
     });
   });
 
+  describe('isExclusiveAltHost', () => {
+    it('returns false for null/undefined/non-object', () => {
+      expect(isExclusiveAltHost(null)).toBe(false);
+      expect(isExclusiveAltHost(undefined)).toBe(false);
+      expect(isExclusiveAltHost('nope')).toBe(false);
+    });
+
+    it('returns false for a repo with no api_host (plain github repo)', () => {
+      expect(isExclusiveAltHost({ path: '/x' })).toBe(false);
+      expect(isExclusiveAltHost({ api_host: '' })).toBe(false);
+      // exclusive is meaningless without api_host and must not flip the result
+      expect(isExclusiveAltHost({ exclusive: true })).toBe(false);
+    });
+
+    it('returns true for an api_host repo with exclusive omitted (default)', () => {
+      expect(isExclusiveAltHost({ api_host: 'https://althost.example/api/v3' })).toBe(true);
+    });
+
+    it('returns true for an api_host repo with exclusive: true', () => {
+      expect(isExclusiveAltHost({ api_host: 'https://althost.example/api/v3', exclusive: true })).toBe(true);
+    });
+
+    it('returns false for a dual repo (api_host + exclusive: false)', () => {
+      expect(isExclusiveAltHost({ api_host: 'https://althost.example/api/v3', exclusive: false })).toBe(false);
+    });
+  });
+
+  describe('resolveHostBinding per-PR host override', () => {
+    const ALT = 'https://althost.example/api/v3';
+    let originalEnv;
+    let execSyncSpy;
+    let warnSpy;
+    let debugSpy;
+
+    beforeEach(() => {
+      originalEnv = process.env.GITHUB_TOKEN;
+      delete process.env.GITHUB_TOKEN;
+      _resetTokenCache();
+      execSyncSpy = vi.spyOn(childProcess, 'execSync');
+      const logger = require('../../src/utils/logger');
+      warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      if (originalEnv !== undefined) {
+        process.env.GITHUB_TOKEN = originalEnv;
+      } else {
+        delete process.env.GITHUB_TOKEN;
+      }
+      _resetTokenCache();
+      execSyncSpy.mockRestore();
+      warnSpy.mockRestore();
+      debugSpy.mockRestore();
+    });
+
+    const plainConfig = () => ({
+      github_token: 'top-gh',
+      repos: { 'owner/plain': { path: '/x' } }
+    });
+    const exclusiveExplicitConfig = () => ({
+      github_token: 'top-gh',
+      repos: { 'owner/alt': { api_host: ALT, exclusive: true, token: 'alt-token' } }
+    });
+    const exclusiveOmittedConfig = () => ({
+      github_token: 'top-gh',
+      repos: { 'owner/alt': { api_host: ALT, token: 'alt-token' } }
+    });
+    const dualConfig = () => ({
+      github_token: 'top-gh',
+      repos: {
+        'owner/dual': {
+          api_host: ALT,
+          exclusive: false,
+          token: 'alt-token',
+          features: { pending_review_comments: 'host', stack_walker: 'rest' }
+        }
+      }
+    });
+
+    describe('options.host === undefined (legacy + ambiguity rule)', () => {
+      it('plain repo (two-arg) → github binding, unchanged behaviour', () => {
+        const binding = resolveHostBinding('owner/plain', plainConfig());
+        expect(binding.apiHost).toBeNull();
+        expect(binding.host).toBeNull();
+        expect(binding.token).toBe('top-gh');
+        expect(binding.source).toBe('config:github_token');
+        expect(binding.features.stack_walker).toBe('graphql');
+      });
+
+      it('exclusive alt repo (explicit true, two-arg) → alt binding', () => {
+        const binding = resolveHostBinding('owner/alt', exclusiveExplicitConfig());
+        expect(binding.apiHost).toBe(ALT);
+        expect(binding.host).toBe(ALT);
+        expect(binding.token).toBe('alt-token');
+        expect(binding.source).toBe('repo:token');
+        expect(binding.features.stack_walker).toBe('rest');
+      });
+
+      it('REGRESSION: api_host repo with no exclusive key (two-arg) behaves exactly as before → alt binding', () => {
+        const binding = resolveHostBinding('owner/alt', exclusiveOmittedConfig());
+        expect(binding.apiHost).toBe(ALT);
+        expect(binding.host).toBe(ALT);
+        expect(binding.token).toBe('alt-token');
+        expect(binding.source).toBe('repo:token');
+        expect(binding.features.pending_review_comments).toBe('host');
+      });
+
+      it('dual repo (two-arg) → github binding (top-level token, github features)', () => {
+        const binding = resolveHostBinding('owner/dual', dualConfig());
+        expect(binding.apiHost).toBeNull();
+        expect(binding.host).toBeNull();
+        // top-level github_token, NOT the repo-scoped alt token
+        expect(binding.token).toBe('top-gh');
+        expect(binding.source).toBe('config:github_token');
+        // repo's explicit features (host/rest) do NOT apply to the github binding
+        expect(binding.features.pending_review_comments).toBe('graphql');
+        expect(binding.features.stack_walker).toBe('graphql');
+      });
+
+      it('explicit host: undefined is treated the same as no options', () => {
+        const binding = resolveHostBinding('owner/dual', dualConfig(), { host: undefined });
+        expect(binding.apiHost).toBeNull();
+        expect(binding.token).toBe('top-gh');
+      });
+    });
+
+    describe('options.host === null (force github binding)', () => {
+      it('plain repo → github binding', () => {
+        const binding = resolveHostBinding('owner/plain', plainConfig(), { host: null });
+        expect(binding.apiHost).toBeNull();
+        expect(binding.host).toBeNull();
+        expect(binding.token).toBe('top-gh');
+      });
+
+      it('dual repo → github binding (top-level token, github features)', () => {
+        const binding = resolveHostBinding('owner/dual', dualConfig(), { host: null });
+        expect(binding.apiHost).toBeNull();
+        expect(binding.host).toBeNull();
+        expect(binding.token).toBe('top-gh');
+        expect(binding.features.pending_review_comments).toBe('graphql');
+      });
+
+      it('throws for an exclusive alt repo (explicit true)', () => {
+        expect(() => resolveHostBinding('owner/alt', exclusiveExplicitConfig(), { host: null }))
+          .toThrow(/exclusive alt-host repo .* has no github\.com presence.*host=null.*caller bug/);
+      });
+
+      it('throws for an exclusive alt repo (exclusive omitted)', () => {
+        expect(() => resolveHostBinding('owner/alt', exclusiveOmittedConfig(), { host: null }))
+          .toThrow(/exclusive alt-host repo/);
+      });
+    });
+
+    describe('options.host === matching url (force alt binding)', () => {
+      it('exclusive alt repo → alt binding', () => {
+        const binding = resolveHostBinding('owner/alt', exclusiveExplicitConfig(), { host: ALT });
+        expect(binding.apiHost).toBe(ALT);
+        expect(binding.host).toBe(ALT);
+        expect(binding.token).toBe('alt-token');
+        expect(binding.source).toBe('repo:token');
+      });
+
+      it('dual repo → alt binding (repo token + repo features)', () => {
+        const binding = resolveHostBinding('owner/dual', dualConfig(), { host: ALT });
+        expect(binding.apiHost).toBe(ALT);
+        expect(binding.host).toBe(ALT);
+        expect(binding.token).toBe('alt-token');
+        expect(binding.source).toBe('repo:token');
+        expect(binding.features.pending_review_comments).toBe('host');
+        expect(binding.features.stack_walker).toBe('rest');
+      });
+    });
+
+    describe('options.host === stale url (throws)', () => {
+      it('throws for a dual repo when the requested host no longer matches config', () => {
+        expect(() => resolveHostBinding('owner/dual', dualConfig(), { host: 'https://old.example/api/v3' }))
+          .toThrow(/does not match its configured api_host \("https:\/\/althost\.example\/api\/v3"\).*re-open the PR from a URL/);
+      });
+
+      it('throws for a plain repo asked for any alt host (config has no api_host)', () => {
+        expect(() => resolveHostBinding('owner/plain', plainConfig(), { host: ALT }))
+          .toThrow(/does not match its configured api_host \(none\)/);
+      });
+
+      it('throws for an exclusive alt repo when the requested host is stale', () => {
+        expect(() => resolveHostBinding('owner/alt', exclusiveExplicitConfig(), { host: 'https://old.example/api/v3' }))
+          .toThrow(/does not match its configured api_host/);
+      });
+    });
+
+    describe('token selection per binding for dual repos', () => {
+      it('github binding does NOT fall back to the repo-scoped alt token', () => {
+        // Dual repo with ONLY a repo token and no github credentials at all.
+        const config = {
+          repos: { 'owner/dual': { api_host: ALT, exclusive: false, token: 'alt-token' } }
+        };
+        const binding = resolveHostBinding('owner/dual', config, { host: null });
+        expect(binding.token).toBe('');
+        expect(binding.source).toBe('none');
+      });
+
+      it('github binding uses the top-level github chain (env → github_token → github_token_command)', () => {
+        // env wins
+        process.env.GITHUB_TOKEN = 'env-token';
+        let binding = resolveHostBinding('owner/dual', dualConfig(), { host: null });
+        expect(binding.token).toBe('env-token');
+        expect(binding.source).toBe('env:GITHUB_TOKEN');
+        delete process.env.GITHUB_TOKEN;
+
+        // github_token next
+        binding = resolveHostBinding('owner/dual', dualConfig(), { host: null });
+        expect(binding.token).toBe('top-gh');
+        expect(binding.source).toBe('config:github_token');
+
+        // github_token_command last
+        _resetTokenCache();
+        execSyncSpy.mockReturnValueOnce('top-cmd\n');
+        binding = resolveHostBinding('owner/dual', {
+          github_token_command: 'gh auth token',
+          repos: { 'owner/dual': { api_host: ALT, exclusive: false, token: 'alt-token' } }
+        }, { host: null });
+        expect(binding.token).toBe('top-cmd');
+        expect(binding.source).toBe('config:github_token_command');
+      });
+
+      it('alt binding uses the repo-scoped token, never the github chain', () => {
+        process.env.GITHUB_TOKEN = 'env-token';
+        const binding = resolveHostBinding('owner/dual', dualConfig(), { host: ALT });
+        expect(binding.token).toBe('alt-token');
+        expect(binding.source).toBe('repo:token');
+      });
+    });
+
+    describe('features per binding for dual repos', () => {
+      it('github binding resolves plain github defaults, ignoring the repo features block', () => {
+        const binding = resolveHostBinding('owner/dual', dualConfig(), { host: null });
+        expect(binding.features.pending_review_check).toBe('graphql');
+        expect(binding.features.stack_walker).toBe('graphql');
+        expect(binding.features.review_lifecycle).toBe('graphql');
+        expect(binding.features.pending_review_comments).toBe('graphql');
+      });
+
+      it('alt binding applies the repo features block on top of alt-host defaults', () => {
+        const binding = resolveHostBinding('owner/dual', dualConfig(), { host: ALT });
+        expect(binding.features.pending_review_check).toBe('rest');
+        expect(binding.features.stack_walker).toBe('rest');
+        expect(binding.features.review_lifecycle).toBe('rest');
+        expect(binding.features.pending_review_comments).toBe('host');
+      });
+    });
+
+    describe('refresh preserves the binding flavor', () => {
+      it('an alt binding refresh re-resolves the alt host, not the github chain', () => {
+        // Dual repo: alt uses repo token_command, github would use the top-level
+        // command. A two-arg re-resolve would pick github (ambiguity rule); the
+        // refresh must re-resolve the SAME alt flavor.
+        const config = {
+          github_token_command: 'echo GITHUB',
+          repos: {
+            'owner/dual': { api_host: ALT, exclusive: false, token_command: 'echo ALT' }
+          }
+        };
+        execSyncSpy.mockReturnValueOnce('alt-first\n');
+        const binding = resolveHostBinding('owner/dual', config, { host: ALT });
+        expect(binding.token).toBe('alt-first');
+        expect(binding.source).toBe('repo:token_command');
+
+        execSyncSpy.mockReturnValueOnce('alt-second\n');
+        const fresh = binding.refresh();
+        expect(fresh).toBe('alt-second');
+        // The alt command was re-run (2 calls total); the github command was
+        // never invoked.
+        expect(execSyncSpy).toHaveBeenCalledTimes(2);
+        expect(execSyncSpy).not.toHaveBeenCalledWith('echo GITHUB', expect.anything());
+      });
+    });
+  });
+
   describe('validateRepoConfig', () => {
     it('does not throw on the happy path (no repos, or repos without alt-host config)', () => {
       expect(() => validateRepoConfig({})).not.toThrow();
@@ -2629,6 +2908,76 @@ describe('config.js', () => {
           }
         }
       })).not.toThrow();
+    });
+
+    describe('exclusive flag', () => {
+      it('accepts a boolean exclusive alongside api_host', () => {
+        expect(() => validateRepoConfig({
+          repos: { 'owner/alt': { api_host: 'https://althost.example/api/v3', exclusive: true } }
+        })).not.toThrow();
+        expect(() => validateRepoConfig({
+          repos: { 'owner/alt': { api_host: 'https://althost.example/api/v3', exclusive: false } }
+        })).not.toThrow();
+      });
+
+      it('throws when exclusive is not a boolean', () => {
+        expect(() => validateRepoConfig({
+          repos: { 'owner/alt': { api_host: 'https://althost.example/api/v3', exclusive: 'yes' } }
+        })).toThrow(/repos\["owner\/alt"\]\.exclusive must be a boolean/);
+      });
+
+      it('throws when exclusive is present without api_host', () => {
+        expect(() => validateRepoConfig({
+          repos: { 'owner/repo': { exclusive: false } }
+        })).toThrow(/repos\["owner\/repo"\]\.exclusive is only valid when api_host is set/);
+        expect(() => validateRepoConfig({
+          repos: { 'owner/repo': { exclusive: true } }
+        })).toThrow(/repos\["owner\/repo"\]\.exclusive is only valid when api_host is set/);
+      });
+    });
+
+    describe('over-broad url_pattern warning (FINDING B)', () => {
+      let warnSpy;
+      beforeEach(() => {
+        const logger = require('../../src/utils/logger');
+        warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      });
+      afterEach(() => warnSpy.mockRestore());
+
+      it('warns when an api_host url_pattern also matches canonical github.com/Graphite URLs', () => {
+        validateRepoConfig({
+          repos: {
+            'owner/alt': {
+              api_host: 'https://althost.example/api/v3',
+              url_pattern: '/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>[0-9]+)'
+            }
+          }
+        });
+        expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/also matches canonical github\.com \/ Graphite URLs/));
+      });
+
+      it('does not warn for an anchored alt-host url_pattern', () => {
+        validateRepoConfig({
+          repos: {
+            'owner/alt': {
+              api_host: 'https://althost.example/api/v3',
+              url_pattern: '^https://althost\\.example/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>[0-9]+)'
+            }
+          }
+        });
+        expect(warnSpy).not.toHaveBeenCalled();
+      });
+
+      it('does not warn for a url_pattern on a repo without api_host', () => {
+        validateRepoConfig({
+          repos: {
+            'owner/repo': {
+              url_pattern: '/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>[0-9]+)'
+            }
+          }
+        });
+        expect(warnSpy).not.toHaveBeenCalled();
+      });
     });
 
     it('throws when api_host is set and a feature requests graphql', () => {

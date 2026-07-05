@@ -24,6 +24,7 @@ const {
   resolveHostBinding,
   resolveBindingRepositoryFromPR
 } = require('../config');
+const { storedHostToOption } = require('../utils/host-resolution');
 
 const name = 'github';
 
@@ -63,14 +64,26 @@ const credentialEnvVar = 'GITHUB_TOKEN';
  * diff-relative `position` field, so `mapComment` must anchor by `line`
  * instead — see its docstring.
  *
+ * Per-PR host: for a DUAL repo (github + alt-host) the binding depends on which
+ * system the PR actually lives on. The caller passes the PR's stored
+ * `pr_metadata.host` via `options.storedHost` (undefined | null | api_host URL);
+ * this method applies the legacy-NULL convention (`storedHostToOption`) and
+ * threads the resulting `{ host }` into `resolveHostBinding`, so a dual repo's
+ * alt-hosted PR resolves to the alt binding (and the line-based anchoring path)
+ * instead of always hitting api.github.com two-arg. When `options.storedHost`
+ * is omitted the two-arg ambiguity rule applies, unchanged.
+ *
  * @param {Object} config - Server config (see `loadConfig()`)
  * @param {string} [repository] - "owner/repo" identifier for binding-aware resolution
  * @param {Object} [_deps] - Test overrides for
  *   { GitHubClient, getGitHubToken, resolveHostBinding, resolveBindingRepositoryFromPR }
+ * @param {Object} [options] - Runtime resolution inputs
+ * @param {string|null|undefined} [options.storedHost] - The PR's stored
+ *   pr_metadata.host (undefined = no row / unknown, null = github.com, URL = alt host)
  * @returns {{ client: Object, isAltHost: boolean }}
  * @throws {GitHubApiError} with status 401 when no token is configured
  */
-function resolveCredentials(config, repository, _deps) {
+function resolveCredentials(config, repository, _deps, options = {}) {
   const deps = {
     GitHubClient,
     getGitHubToken,
@@ -82,10 +95,12 @@ function resolveCredentials(config, repository, _deps) {
 
   if (repository) {
     // Binding-aware path. Mirrors resolveBindingForRequest in routes/pr.js:
-    // resolve the PR identity to a binding key, then to a host binding.
+    // resolve the PR identity to a binding key, then to a host binding —
+    // pinned to the PR's stored host for dual repos.
     const [owner, repo] = String(repository).split('/');
     const bindingRepository = deps.resolveBindingRepositoryFromPR(owner, repo, safeConfig);
-    const binding = deps.resolveHostBinding(bindingRepository, safeConfig);
+    const hostOption = storedHostToOption(safeConfig, bindingRepository, options.storedHost);
+    const binding = deps.resolveHostBinding(bindingRepository, safeConfig, hostOption || {});
     if (!binding || !binding.token) {
       throw new GitHubApiError(
         `GitHub token not configured for ${repository}. Set ${credentialEnvVar}, add github_token to ~/.pair-review/config.json, or configure repos["${bindingRepository}"].token / token_command (required for alt-host repos)`,

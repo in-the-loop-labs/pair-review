@@ -752,6 +752,19 @@
                     if (mode === 'local') {
                         fetchOptions.headers = { 'Content-Type': 'application/json' };
                         fetchOptions.body = JSON.stringify({ path: context.path });
+                    } else if (mode === 'pr') {
+                        // A `host` query param (set when opening a PR from a dashboard
+                        // collection row or a pasted URL) tells setup which system the
+                        // PR lives on, so the fetch binds there directly instead of
+                        // probing. Sentinel: the literal "github" means github.com and
+                        // maps to body host null; any other value is an api_host URL
+                        // string (alt host) — an api_host is always a URL, so "github"
+                        // is unambiguous. Absent = unknown; the server derives the host.
+                        var setupHost = new URLSearchParams(window.location.search).get('host');
+                        if (setupHost) {
+                            fetchOptions.headers = { 'Content-Type': 'application/json' };
+                            fetchOptions.body = JSON.stringify({ host: setupHost === 'github' ? null : setupHost });
+                        }
                     }
 
                     var response = await fetch(postUrl, fetchOptions);

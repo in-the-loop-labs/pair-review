@@ -221,6 +221,8 @@ function setupGlobals() {
 // ---------------------------------------------------------------------------
 
 describe('Index page Open/Analyze buttons', () => {
+  let indexModule;
+
   beforeEach(async () => {
     setupGlobals();
 
@@ -229,8 +231,10 @@ describe('Index page Open/Analyze buttons', () => {
     delete require.cache[modulePath];
 
     // Load the actual production IIFE — this registers the document click
-    // handler and the DOMContentLoaded listener (but does NOT trigger it)
-    require('../../public/js/index.js');
+    // handler and the DOMContentLoaded listener (but does NOT trigger it).
+    // The IIFE also exposes its internal bulk-open helpers on module.exports
+    // under Vitest so they can be tested directly.
+    indexModule = require('../../public/js/index.js');
 
     // Trigger DOMContentLoaded so that form submit and analyze-button click
     // handlers are registered on the elements.
@@ -293,6 +297,55 @@ describe('Index page Open/Analyze buttons', () => {
     expect(global.window.location.href).toBe('/pr/testowner/testrepo/42');
   });
 
+  // Helper: mock parse-pr-url with custom host / isDualHost fields.
+  function mockFetchParsePR(extra) {
+    global.fetch = vi.fn((url) => {
+      if (typeof url === 'string' && url.includes('/api/parse-pr-url')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            valid: true, owner: 'testowner', repo: 'testrepo', prNumber: 42, ...extra,
+          }),
+        });
+      }
+      return Promise.resolve({ ok: false });
+    });
+  }
+
+  // ─── FIX 2: host sentinel forwarding on the paste flow ───────────────────
+
+  it('paste of an alt-host URL forwards the api_host as ?host=', async () => {
+    const form = elementsById['start-review-form'];
+    elementsById['pr-url-input'].value = 'https://althost.example/testowner/testrepo/pull/42';
+    mockFetchParsePR({ host: 'https://althost.example/api/v3', isDualHost: false });
+
+    await form._listeners.submit[0]({ preventDefault: vi.fn() });
+
+    expect(global.window.location.href).toBe(
+      '/pr/testowner/testrepo/42?host=' + encodeURIComponent('https://althost.example/api/v3')
+    );
+  });
+
+  it('paste of a github URL for a DUAL repo forwards the "github" sentinel', async () => {
+    const form = elementsById['start-review-form'];
+    elementsById['pr-url-input'].value = 'https://github.com/testowner/testrepo/pull/42';
+    mockFetchParsePR({ host: null, isDualHost: true });
+
+    await form._listeners.submit[0]({ preventDefault: vi.fn() });
+
+    expect(global.window.location.href).toBe('/pr/testowner/testrepo/42?host=github');
+  });
+
+  it('paste of a github URL for a plain repo omits the host param', async () => {
+    const form = elementsById['start-review-form'];
+    elementsById['pr-url-input'].value = 'https://github.com/testowner/testrepo/pull/42';
+    mockFetchParsePR({ host: null, isDualHost: false });
+
+    await form._listeners.submit[0]({ preventDefault: vi.fn() });
+
+    expect(global.window.location.href).toBe('/pr/testowner/testrepo/42');
+  });
+
   // ─── Test 2: PR Analyze button navigates with analyze param ──────────────
 
   it('PR Analyze button navigates with analyze param', async () => {
@@ -323,6 +376,112 @@ describe('Index page Open/Analyze buttons', () => {
     await submitHandler({ preventDefault: vi.fn() });
 
     expect(global.window.location.href).toBe('/local?path=%2Ftmp%2Fmyproject');
+  });
+
+  // ─── Collection row click: alt-host PR threads host into the PR route ─────
+
+  it('alt-host collection row click navigates to the PR route with a host query param', () => {
+    const clickHandlers = documentListeners['click'] || [];
+    expect(clickHandlers.length).toBeGreaterThan(0);
+
+    const apiHost = 'https://althost.example/api/v3';
+    const row = {
+      dataset: {
+        host: apiHost,
+        owner: 'altorg',
+        repo: 'altrepo',
+        number: '77',
+        prUrl: 'https://althost.example/altorg/altrepo/pull/77',
+      },
+      // Not in selection mode.
+      closest: vi.fn(() => null),
+    };
+    const target = {
+      // Row matches only the collection-pr-row selector; not a link/select cell.
+      closest: vi.fn((sel) => (sel === '.collection-pr-row' ? row : null)),
+    };
+
+    clickHandlers.forEach((fn) => fn({ target, preventDefault: vi.fn() }));
+
+    expect(global.window.location.href).toBe(
+      '/pr/altorg/altrepo/77?host=' + encodeURIComponent(apiHost)
+    );
+  });
+
+  it('github collection row click does NOT navigate directly (falls back to the parse flow)', () => {
+    const clickHandlers = documentListeners['click'] || [];
+
+    const row = {
+      // No `host` — a github.com row.
+      dataset: {
+        owner: 'gh-org',
+        repo: 'gh-repo',
+        number: '5',
+        prUrl: 'https://github.com/gh-org/gh-repo/pull/5',
+      },
+      closest: vi.fn(() => null),
+    };
+    const target = {
+      closest: vi.fn((sel) => (sel === '.collection-pr-row' ? row : null)),
+    };
+
+    clickHandlers.forEach((fn) => fn({ target, preventDefault: vi.fn() }));
+
+    // The direct host-carrying navigation must not fire for github rows; the
+    // existing parse-and-submit path owns them and does not set href here.
+    expect(global.window.location.href).not.toContain('?host=');
+  });
+
+  // ─── Bulk open/analyze: alt host threaded into every built PR URL ─────────
+
+  it('buildReviewUrlsFromRows appends encoded host for alt-host rows', () => {
+    const apiHost = 'https://althost.example/api/v3';
+    const urls = indexModule.buildReviewUrlsFromRows(
+      [{ owner: 'altorg', repo: 'altrepo', number: '77', host: apiHost }],
+      ''
+    );
+    expect(urls).toEqual(['/pr/altorg/altrepo/77?host=' + encodeURIComponent(apiHost)]);
+  });
+
+  it('buildReviewUrlsFromRows preserves analyze params and adds host with &', () => {
+    const apiHost = 'https://althost.example/api/v3';
+    const urls = indexModule.buildReviewUrlsFromRows(
+      [{ owner: 'altorg', repo: 'altrepo', number: '77', host: apiHost }],
+      '?analyze=true&analysisConfigId=cfg1'
+    );
+    expect(urls).toEqual([
+      '/pr/altorg/altrepo/77?analyze=true&analysisConfigId=cfg1&host=' + encodeURIComponent(apiHost)
+    ]);
+  });
+
+  it('buildReviewUrlsFromRows adds no host param for github.com rows', () => {
+    const urls = indexModule.buildReviewUrlsFromRows(
+      [{ owner: 'gh-org', repo: 'gh-repo', number: '5' }], // no host
+      '?analyze=true'
+    );
+    expect(urls).toEqual(['/pr/gh-org/gh-repo/5?analyze=true']);
+    expect(urls[0]).not.toContain('host=');
+  });
+
+  it('getSelectedCollectionRows carries data-host from selected rows', () => {
+    const apiHost = 'https://althost.example/api/v3';
+    const fakeTbody = {
+      querySelectorAll: vi.fn(() => [
+        { dataset: { prUrl: 'u-alt', owner: 'altorg', repo: 'altrepo', number: '77', host: apiHost } },
+        { dataset: { prUrl: 'u-gh', owner: 'gh-org', repo: 'gh-repo', number: '5' } }
+      ])
+    };
+    const origGet = global.document.getElementById;
+    global.document.getElementById = vi.fn(() => fakeTbody);
+    try {
+      const rows = indexModule.getSelectedCollectionRows(new Set(['u-alt', 'u-gh']), 'my-prs-tbody');
+      expect(rows).toEqual([
+        { owner: 'altorg', repo: 'altrepo', number: '77', prUrl: 'u-alt', host: apiHost },
+        { owner: 'gh-org', repo: 'gh-repo', number: '5', prUrl: 'u-gh', host: undefined }
+      ]);
+    } finally {
+      global.document.getElementById = origGet;
+    }
   });
 
   it('Local Open button rejects URL input without navigating', async () => {

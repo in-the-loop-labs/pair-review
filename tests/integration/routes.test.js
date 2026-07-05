@@ -288,6 +288,68 @@ describe('PR Management Endpoints', () => {
     applyDefaultMocks();
   });
 
+  describe('POST /api/parse-pr-url', () => {
+    it('returns host: null for a github.com URL', async () => {
+      const response = await request(server)
+        .post('/api/parse-pr-url')
+        .send({ url: 'https://github.com/owner/repo/pull/123' });
+
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({
+        valid: true, owner: 'owner', repo: 'repo', prNumber: 123, host: null,
+        isDualHost: false
+      });
+    });
+
+    it('returns the matched api_host and bindingRepository for a url_pattern match (exclusive → not dual)', async () => {
+      app.set('config', {
+        repos: {
+          'acme/widgets': {
+            api_host: 'https://althost.example/api/v3',
+            url_pattern: '^https://althost\\.example/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>[0-9]+)'
+          }
+        }
+      });
+
+      const response = await request(server)
+        .post('/api/parse-pr-url')
+        .send({ url: 'https://althost.example/acme/widgets/pull/42' });
+
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({
+        valid: true, owner: 'acme', repo: 'widgets', prNumber: 42,
+        host: 'https://althost.example/api/v3', bindingRepository: 'acme/widgets',
+        // api_host with no `exclusive` key → exclusive:true → NOT dual.
+        isDualHost: false
+      });
+    });
+
+    it('flags isDualHost:true for a github URL that resolves to a DUAL repo', async () => {
+      app.set('config', {
+        github_token: 'gh-tok',
+        repos: {
+          'acme/widgets': {
+            api_host: 'https://althost.example/api/v3',
+            exclusive: false,
+            token: 'alt-tok'
+          }
+        }
+      });
+
+      const response = await request(server)
+        .post('/api/parse-pr-url')
+        .send({ url: 'https://github.com/acme/widgets/pull/42' });
+
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({
+        valid: true, owner: 'acme', repo: 'widgets', prNumber: 42,
+        // github URL → host null, but the repo is dual so the client sends the
+        // "github" sentinel to avoid an alt-first probe.
+        host: null, isDualHost: true
+      });
+    });
+  });
+
   describe('GET /api/pr/:owner/:repo/:number', () => {
     it('should return 400 for invalid PR number', async () => {
       const response = await request(server)
@@ -3553,6 +3615,41 @@ describe('Config Endpoints', () => {
         expect(response.body.has_github_token).toBe(false);
       });
 
+      it('returns has_github_token=true for a DUAL repo whose only credential is the alt-host token (FINDING 4)', async () => {
+        // github ambiguity binding has no token, but the alt binding does. The
+        // flag must report "any usable binding", so this is authenticated.
+        app.set('config', {
+          theme: 'light',
+          // No global github_token; dual repo with alt-only token.
+          repos: {
+            'foo/bar': { api_host: 'https://alt.example/api/v3', exclusive: false, token: 'alt-only-token' }
+          }
+        });
+
+        const response = await request(server)
+          .get('/api/config')
+          .query({ owner: 'foo', repo: 'bar' });
+
+        expect(response.status).toBe(200);
+        expect(response.body.has_global_github_token).toBe(false);
+        expect(response.body.has_github_token).toBe(true);
+      });
+
+      it('returns has_github_token=false for a DUAL repo with no token on either host', async () => {
+        app.set('config', {
+          theme: 'light',
+          repos: {
+            'foo/bar': { api_host: 'https://alt.example/api/v3', exclusive: false }
+          }
+        });
+
+        const response = await request(server)
+          .get('/api/config')
+          .query({ owner: 'foo', repo: 'bar' });
+
+        expect(response.body.has_github_token).toBe(false);
+      });
+
       it('treats missing repo param (only owner supplied) as the no-repo case', async () => {
         app.set('config', {
           theme: 'light',
@@ -4030,6 +4127,78 @@ describe('Repo Links Endpoint', () => {
       expect(res.status).toBe(200);
       expect(res.body.links.external).not.toBeNull();
       expect(res.body.links.external.icon).toBeNull();
+    });
+  });
+
+  describe('GET /api/repos/:owner/:repo/links?number= (dual-host per-PR host)', () => {
+    const ALT_HOST = 'https://alt.example/api/v3';
+
+    // A dual-host repo: api_host + exclusive:false, with an external link but
+    // no explicit github/graphite:false so the per-host default is observable.
+    function configureDualRepo() {
+      app.set('config', {
+        ...app.get('config'),
+        repos: {
+          'dual/repo': {
+            api_host: ALT_HOST,
+            exclusive: false,
+            links: {
+              external: {
+                name: 'Meteorite',
+                label: 'Open on Meteorite',
+                url_template: 'https://meteorite.example/{owner}/{repo}/pull/{number}',
+              },
+            },
+          },
+        },
+      });
+    }
+
+    async function seedPR(prNumber, host) {
+      await run(db, `
+        INSERT INTO pr_metadata (pr_number, repository, title, host)
+        VALUES (?, 'dual/repo', 'Dual PR', ?)
+      `, [prNumber, host]);
+    }
+
+    it('github-hosted PR (stored host NULL) hides external, keeps github', async () => {
+      configureDualRepo();
+      await seedPR(7, null);
+      const res = await request(server).get('/api/repos/dual/repo/links?number=7');
+      expect(res.status).toBe(200);
+      expect(res.body.links.external).toBeNull();
+      expect(res.body.links.github).toBe(true);
+      expect(res.body.links.graphite).toBe(true);
+    });
+
+    it('alt-hosted PR (stored host = api_host) shows external, hides github/graphite', async () => {
+      configureDualRepo();
+      await seedPR(8, ALT_HOST);
+      const res = await request(server).get('/api/repos/dual/repo/links?number=8');
+      expect(res.status).toBe(200);
+      expect(res.body.links.external).not.toBeNull();
+      expect(res.body.links.external.name).toBe('Meteorite');
+      expect(res.body.links.github).toBe(false);
+      expect(res.body.links.graphite).toBe(false);
+    });
+
+    it('no number query falls back to repo-level defaults', async () => {
+      configureDualRepo();
+      const res = await request(server).get('/api/repos/dual/repo/links');
+      expect(res.status).toBe(200);
+      // Unknown host → today's behaviour: external present, github/graphite kept.
+      expect(res.body.links.external).not.toBeNull();
+      expect(res.body.links.github).toBe(true);
+      expect(res.body.links.graphite).toBe(true);
+    });
+
+    it('unknown PR number (no row) falls back to repo-level defaults', async () => {
+      configureDualRepo();
+      const res = await request(server).get('/api/repos/dual/repo/links?number=999');
+      expect(res.status).toBe(200);
+      expect(res.body.links.external).not.toBeNull();
+      expect(res.body.links.github).toBe(true);
+      expect(res.body.links.graphite).toBe(true);
     });
   });
 });
