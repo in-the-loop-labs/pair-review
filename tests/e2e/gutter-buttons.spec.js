@@ -98,28 +98,62 @@ for (const mode of MODES) {
     test('clear when the page scrolls under a parked pointer', async ({ page }) => {
       await armFallbackButtons(page);
 
-      // Park the pointer over the additions CONTENT column (still inside the
-      // file, so the pointer-move sweep keeps the buttons armed, but content
-      // can never re-arm the fallback positioner after the scroll clears it —
-      // only gutter cells can. Parking over the gutter would make the outcome
-      // depend on which row lands under the pointer post-scroll: legitimate
-      // re-anchoring, but nondeterministic).
-      const content = await page.evaluate((file) => {
-        const wrapper = document.querySelector(`.d2h-file-wrapper[data-file-name="${file}"]`);
-        const sr = wrapper?.querySelector('diffs-container')?.shadowRoot;
-        const r = sr?.querySelector('code[data-additions] [data-content]')?.getBoundingClientRect();
-        return r ? { x: r.x + r.width / 2, y: r.y + Math.min(40, r.height / 2) } : null;
+      // Park the pointer deep in the additions CONTENT track — X to the RIGHT of
+      // the gutter (between the line-number cell's right edge and the pre's right
+      // edge), any row. This matters for determinism: the fallback positioner
+      // re-arms ONLY when a synthetic pointermove (dispatched by the bridge's
+      // post-scroll hover re-derive) lands on a line-NUMBER cell. A point in the
+      // content track never resolves to a number cell regardless of how far the
+      // diff scrolls or what annotations are present, so no fixed button can
+      // re-arm. (Using the FIRST content cell's centre — as an earlier version
+      // did — is unsafe: the first added line is blank, so its cell is near-zero
+      // width and its centre sits over the gutter, which re-armed under some
+      // layouts and made this test flaky in the full suite.)
+      const park = await page.evaluate((file) => {
+        const sr = document
+          .querySelector(`.d2h-file-wrapper[data-file-name="${file}"]`)
+          ?.querySelector('diffs-container')?.shadowRoot;
+        const pre = sr?.querySelector('pre[data-diff-type="split"]');
+        const numCell = sr?.querySelector('code[data-additions] [data-column-number]');
+        const contentCell = sr?.querySelector('code[data-additions] [data-content]');
+        if (!pre || !numCell || !contentCell) return null;
+        const preR = pre.getBoundingClientRect();
+        const numR = numCell.getBoundingClientRect();
+        const cR = contentCell.getBoundingClientRect();
+        return { x: (numR.right + preR.right) / 2, y: cR.y + Math.min(40, cR.height / 2) };
       }, FILE);
-      expect(content, 'additions content cell should be resolvable in split').not.toBeNull();
-      await page.mouse.move(content.x, content.y);
-      // Buttons survive the move (pointer still over the file).
+      expect(park, 'additions content track should be resolvable in split').not.toBeNull();
+      await page.mouse.move(park.x, park.y);
+      // Buttons survive the move (pointer still over the file, over content).
       expect((await fallbackGutterState(page)).some((s) => s.fallbackPositioned)).toBe(true);
 
-      // Wheel-scroll without moving the pointer: fixed-position buttons would
-      // otherwise stay glued to the viewport while the diff moves under them.
-      // The scroll must detach every fixed button; a normal button re-hovered
-      // on the line now under the pointer is fine (see expectNoFallbackButtons).
-      await page.mouse.wheel(0, 400);
+      // Scroll the diff's own scroll container WITHOUT moving the pointer. Driving
+      // the container directly (rather than a wheel gesture, whose delivery
+      // depends on what element is under the pointer being scrollable) fires the
+      // same window-level scroll event the bridge listens for, deterministically.
+      // Fixed-position buttons would otherwise stay glued to the viewport while
+      // the diff moves under them; the scroll must detach every fixed button.
+      // Scroll toward whichever direction has room — in the shared-DB full suite
+      // the container may already sit at the bottom (other specs' state makes the
+      // diff taller / pre-scrolled), so a fixed downward delta would be a no-op.
+      const scrolled = await page.evaluate((file) => {
+        let el = document.querySelector(`.d2h-file-wrapper[data-file-name="${file}"]`);
+        while (el) {
+          const oy = getComputedStyle(el).overflowY;
+          if ((oy === 'auto' || oy === 'scroll') && el.scrollHeight > el.clientHeight + 4) break;
+          el = el.parentElement;
+        }
+        if (!el) return false;
+        const maxScroll = el.scrollHeight - el.clientHeight;
+        const before = el.scrollTop;
+        el.scrollTop = before < maxScroll ? maxScroll : 0;
+        return el.scrollTop !== before;
+      }, FILE);
+      expect(scrolled, 'the diff container should have a scrollable ancestor that moved').toBe(true);
+
+      // A normal button re-hovered on the line still under the pointer is fine;
+      // the regression is a FIXED (fallback-positioned) button surviving the
+      // scroll (see expectNoFallbackButtons).
       await expectNoFallbackButtons(page);
     });
 
