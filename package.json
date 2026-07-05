@@ -14,6 +14,7 @@
     "public/",
     "plugin/",
     "plugin-code-critic/",
+    "plugin-pair-loop/",
     "config.managed.json",
     "README.md",
     "LICENSE"

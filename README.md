@@ -806,11 +806,28 @@ Perfect for:
 
 ## Claude Code Plugins
 
-pair-review provides two [Claude Code plugins](https://code.claude.com/docs/en/plugins) that bring AI-powered code review directly into Claude Code.
+pair-review provides three [Claude Code plugins](https://code.claude.com/docs/en/plugins) that bring AI-powered code review directly into Claude Code.
+
+### pair-loop — Agent-Orchestrated Review Loop
+
+An implement→review→fix loop with pair-review as the review oracle. The agent runs multi-model council reviews through the headless CLI, triages the findings (fixing, dismissing with reasons, or asking you), applies fixes, and repeats with narrowing instructions until a final review returns no blockers. Every round persists to pair-review, and when the server is running the agent writes its triage back — so you can open the web UI, inspect every round, and see exactly what was fixed or dismissed and why. No MCP required.
+
+**Install via Marketplace:**
+
+```
+/plugin marketplace add in-the-loop-labs/pair-review
+/plugin install pair-review@pair-loop
+```
+
+**Available Skills:**
+
+| Skill | Description |
+|-------|-------------|
+| `/pair-loop:loop` | Implement, review with pair-review councils, triage, fix, and repeat until clean |
 
 ### code-critic — Standalone Analysis
 
-AI-powered code review analysis that works without any server or MCP dependency. Install this plugin for three-level AI analysis and implement-review-fix loops directly in your coding agent.
+AI-powered code review analysis that works without any server or MCP dependency. Install this plugin for three-level AI analysis directly in your coding agent.
 
 **Install via Marketplace:**
 
@@ -824,7 +841,8 @@ AI-powered code review analysis that works without any server or MCP dependency.
 | Skill | Description |
 |-------|-------------|
 | `/code-critic:analyze` | Run three-level AI analysis using Task agents directly (standalone, no server needed) |
-| `/code-critic:loop` | Implement code, review with AI, fix issues, and repeat until clean |
+
+Looking for an implement-review-fix loop? That's the [pair-loop plugin](#pair-loop--agent-orchestrated-review-loop) above, which replaced the former `/code-critic:loop` skill.
 
 These skills work standalone. If the pair-review MCP server happens to be available (from the pair-review plugin), `code-critic:analyze` will use it for prompts and push results to the web UI — but it's entirely optional.
 
@@ -857,10 +875,12 @@ If you prefer not to use the marketplace, load plugins directly from an npm-inst
 
 ```bash
 # From a local clone
+claude --plugin-dir ./path/to/pair-review/plugin-pair-loop
 claude --plugin-dir ./path/to/pair-review/plugin-code-critic
 claude --plugin-dir ./path/to/pair-review/plugin
 
 # From a globally installed npm package
+claude --plugin-dir "$(npm root -g)/@in-the-loop-labs/pair-review/plugin-pair-loop"
 claude --plugin-dir "$(npm root -g)/@in-the-loop-labs/pair-review/plugin-code-critic"
 claude --plugin-dir "$(npm root -g)/@in-the-loop-labs/pair-review/plugin"
 ```
@@ -880,6 +900,7 @@ To pre-configure plugins for all contributors on a repository, add this to your 
     }
   },
   "enabledPlugins": {
+    "pair-review@pair-loop": true,
     "pair-review@code-critic": true,
     "pair-review@pair-review": true
   }
