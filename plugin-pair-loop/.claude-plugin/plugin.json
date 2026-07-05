@@ -1,7 +1,7 @@
 {
-  "name": "code-critic",
+  "name": "pair-loop",
   "version": "4.0.0",
-  "description": "AI-powered code review analysis — Run three-level AI analysis directly in your coding agent. Works standalone, no server required.",
+  "description": "Agent-orchestrated review loop — implement, review with pair-review multi-model councils via the headless CLI, triage, fix, and repeat until a final review returns no blockers. MCP-independent.",
   "author": {
     "name": "in-the-loop-labs",
     "email": "tjwp@inthelooplabs.com"
@@ -12,7 +12,8 @@
   "keywords": [
     "code-review",
     "ai",
-    "analysis",
-    "code-critic"
+    "review-loop",
+    "council",
+    "feedback-loop"
   ]
 }

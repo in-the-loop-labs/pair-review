@@ -6,6 +6,7 @@
  *   - .claude-plugin/marketplace.json  (metadata.version + all plugins[].version)
  *   - plugin/.claude-plugin/plugin.json (version)
  *   - plugin-code-critic/.claude-plugin/plugin.json (version)
+ *   - plugin-pair-loop/.claude-plugin/plugin.json (version)
  *
  * Run automatically as part of `npm run version` (after changeset version).
  */
@@ -40,6 +41,13 @@ const files = [
   },
   {
     path: join(root, 'plugin-code-critic', '.claude-plugin', 'plugin.json'),
+    update(obj) {
+      obj.version = version;
+      return obj;
+    },
+  },
+  {
+    path: join(root, 'plugin-pair-loop', '.claude-plugin', 'plugin.json'),
     update(obj) {
       obj.version = version;
       return obj;
