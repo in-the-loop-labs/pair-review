@@ -535,24 +535,59 @@ function _resolveFeatures(apiHost, explicit) {
 }
 
 /**
+ * Whether a repo config describes an *exclusive* alt-host repo — one whose
+ * every PR lives on the configured `api_host` and which has no github.com
+ * presence. True iff `api_host` is a non-empty string AND `exclusive` is not
+ * explicitly `false`. Omitting `exclusive` therefore preserves today's
+ * behaviour (an `api_host` repo is alt-host-only). Setting `exclusive: false`
+ * marks a *dual* repo whose PRs may live on github.com OR the alt host.
+ *
+ * @param {Object|null|undefined} repoConfig - A single `repos[...]` entry
+ * @returns {boolean}
+ */
+function isExclusiveAltHost(repoConfig) {
+  if (!repoConfig || typeof repoConfig !== 'object') return false;
+  const apiHost = typeof repoConfig.api_host === 'string' && repoConfig.api_host;
+  if (!apiHost) return false;
+  return repoConfig.exclusive !== false;
+}
+
+/**
  * Resolves the host binding for a given repository. The binding describes
  * which API host pair-review should talk to, the token to authenticate
  * with, and per-area dispatch flags.
  *
- * Token resolution priority for a repo with no `api_host` (github.com):
+ * The optional `options.host` selects the binding *flavor* for repos that can
+ * live on more than one host (dual repos, `exclusive: false`):
+ *   - `undefined` (or no options) — legacy + ambiguity rule: an EXCLUSIVE
+ *     alt-host repo binds to its alt host (today's behaviour); a DUAL repo or
+ *     a plain github.com repo binds to github.com.
+ *   - `null` — force a github.com binding. For an EXCLUSIVE alt-host repo this
+ *     is a caller bug (that repo has no github.com presence) and throws.
+ *   - `'<url>'` — force an alt-host binding; the string must equal the repo's
+ *     configured `api_host`, otherwise the stored host no longer matches
+ *     config and this throws.
+ *
+ * Token resolution priority for a github.com (github-flavored) binding of a
+ * plain repo:
  *   1. GITHUB_TOKEN environment variable
  *   2. repo-level `token`
  *   3. repo-level `token_command` (cached per (repo, command))
  *   4. top-level `github_token`
  *   5. top-level `github_token_command` (cached per (repo, command))
  *
- * For a repo with an `api_host` (alt-host), the github.com top-level
- * credentials are NOT used — `GITHUB_TOKEN`, `config.github_token`, and
- * `config.github_token_command` are all github.com-only and would be
- * the wrong token for an alt-host endpoint. Only the repo-scoped
- * `token` / `token_command` keys are consulted; missing those, the
- * lookup returns an empty token so the caller can surface a clear
+ * For an alt-host binding, the github.com top-level credentials are NOT used —
+ * `GITHUB_TOKEN`, `config.github_token`, and `config.github_token_command` are
+ * all github.com-only and would be the wrong token for an alt-host endpoint.
+ * Only the repo-scoped `token` / `token_command` keys are consulted; missing
+ * those, the lookup returns an empty token so the caller can surface a clear
  * "missing credential" error.
+ *
+ * For the github.com binding of a DUAL repo, the reverse holds: the repo-scoped
+ * `token` / `token_command` are alt-host credentials and are NOT used — only
+ * the top-level github.com chain (env → `github_token` → `github_token_command`)
+ * is consulted. The repo's explicit `features` block (written for the alt host)
+ * also does not apply to its github.com binding.
  *
  * Refreshable sources (`repo:token_command`, `config:github_token_command`)
  * additionally carry a `refresh` closure on the returned binding. Calling
@@ -564,58 +599,101 @@ function _resolveFeatures(apiHost, explicit) {
  *
  * @param {string|null|undefined} repository - "owner/repo" identifier, or null/undefined for no-repo fallback
  * @param {Object} config - Configuration object from loadConfig()
- * @returns {{ apiHost: string|null, token: string, features: Object, source: string, refresh: (function(): string)|null }}
+ * @param {{ host?: string|null }} [options] - Per-PR host override (see above)
+ * @returns {{ apiHost: string|null, host: string|null, token: string, features: Object, source: string, refresh: (function(): string)|null }}
  */
-function resolveHostBinding(repository, config) {
+function resolveHostBinding(repository, config, options = {}) {
   const safeConfig = config || {};
   const repoConfig = repository ? getRepoConfig(safeConfig, repository) : null;
-  const apiHost = (repoConfig && typeof repoConfig.api_host === 'string' && repoConfig.api_host)
+  const configuredApiHost = (repoConfig && typeof repoConfig.api_host === 'string' && repoConfig.api_host)
     ? repoConfig.api_host
     : null;
-  const features = _resolveFeatures(apiHost, repoConfig?.features);
+  const requestedHost = options ? options.host : undefined;
+  const exclusive = isExclusiveAltHost(repoConfig);
+
+  // Decide the binding flavor from the requested host + repo config.
+  // `apiHost` null → github.com binding; non-null → alt-host binding.
+  let apiHost;
+  if (requestedHost === undefined) {
+    // Ambiguity rule: exclusive alt-host repo → alt binding (legacy);
+    // dual repo and plain github repo → github binding.
+    apiHost = exclusive ? configuredApiHost : null;
+  } else if (requestedHost === null) {
+    if (exclusive) {
+      throw new Error(
+        `resolveHostBinding: repository "${repository}" is an exclusive alt-host repo (api_host "${configuredApiHost}") and has no github.com presence, but a github.com binding was requested (host=null). This is a caller bug; pass the api_host string, or set "exclusive": false on the repo config.`
+      );
+    }
+    apiHost = null;
+  } else {
+    // A specific alt host was requested; it must match this repo's config.
+    if (requestedHost !== configuredApiHost) {
+      throw new Error(
+        `resolveHostBinding: requested host "${requestedHost}" for repository "${repository}" does not match its configured api_host (${configuredApiHost === null ? 'none' : `"${configuredApiHost}"`}). The stored host no longer matches config — re-open the PR from a URL to re-resolve its host.`
+      );
+    }
+    apiHost = configuredApiHost;
+  }
+
+  // Binding flavor booleans:
+  //  - alt binding uses ONLY repo-scoped credentials + the repo's features.
+  //  - github binding uses ONLY the top-level github.com chain.
+  //  - the github binding of a DUAL repo must skip the repo-scoped
+  //    credentials/features (they belong to the alt host).
+  const isAltBinding = apiHost !== null;
+  const isDualGithubBinding = !isAltBinding && configuredApiHost !== null;
+  const useRepoScopedToken = !isDualGithubBinding;
+  const useGithubChain = !isAltBinding;
+
+  // A dual repo's explicit `features` block was authored for its alt host, so
+  // it does not apply to the github.com binding; use plain github defaults.
+  const explicitFeatures = isDualGithubBinding ? undefined : repoConfig?.features;
+  const features = _resolveFeatures(apiHost, explicitFeatures);
 
   // Token resolution
   let token = '';
   let source = 'none';
 
-  // 1. GITHUB_TOKEN env var, only for github.com (no api_host)
-  if (apiHost === null && process.env.GITHUB_TOKEN) {
+  // 1. GITHUB_TOKEN env var, only for a github.com binding
+  if (useGithubChain && process.env.GITHUB_TOKEN) {
     token = process.env.GITHUB_TOKEN;
     source = 'env:GITHUB_TOKEN';
     logger.debug('Using GitHub token from GITHUB_TOKEN environment variable');
-    return { apiHost, token, features, source, refresh: null };
+    return { apiHost, host: apiHost, token, features, source, refresh: null };
   }
 
-  // 2. Repo-level literal token
-  if (repoConfig && typeof repoConfig.token === 'string' && repoConfig.token) {
+  // 2. Repo-level literal token (alt-host credential; not used for a dual
+  // repo's github.com binding)
+  if (useRepoScopedToken && repoConfig && typeof repoConfig.token === 'string' && repoConfig.token) {
     token = repoConfig.token;
     source = 'repo:token';
     logger.debug(`Using token from repos[${repository}].token`);
-    return { apiHost, token, features, source, refresh: null };
+    return { apiHost, host: apiHost, token, features, source, refresh: null };
   }
 
   // 3. Repo-level token_command
-  if (repoConfig && typeof repoConfig.token_command === 'string' && repoConfig.token_command) {
+  if (useRepoScopedToken && repoConfig && typeof repoConfig.token_command === 'string' && repoConfig.token_command) {
     const result = _runTokenCommand(repoConfig.token_command, repository, 'repo:token_command');
     if (result) {
       return {
         apiHost,
+        host: apiHost,
         token: result,
         features,
         source: 'repo:token_command',
-        refresh: _makeRefresh(repository, safeConfig, 'repo:token_command')
+        refresh: _makeRefresh(repository, safeConfig, 'repo:token_command', options)
       };
     }
   }
 
-  // 4. Top-level github_token. Only consulted for github.com bindings —
+  // 4. Top-level github_token. Only consulted for a github.com binding —
   // the top-level token is a github.com credential and would fail
   // authentication when sent to an alt-host.
-  if (apiHost === null && typeof safeConfig.github_token === 'string' && safeConfig.github_token) {
+  if (useGithubChain && typeof safeConfig.github_token === 'string' && safeConfig.github_token) {
     token = safeConfig.github_token;
     source = 'config:github_token';
     logger.debug('Using GitHub token from config.github_token');
-    return { apiHost, token, features, source, refresh: null };
+    return { apiHost, host: apiHost, token, features, source, refresh: null };
   }
 
   // 5. Top-level github_token_command. Like step 4, github.com-only.
@@ -623,25 +701,26 @@ function resolveHostBinding(repository, config) {
   // command only — keying on repository would re-invoke the (often
   // slow) command per repo per session. Repo-level `token_command`
   // above keeps its per-(repo, command) cache key.
-  if (apiHost === null && typeof safeConfig.github_token_command === 'string' && safeConfig.github_token_command) {
+  if (useGithubChain && typeof safeConfig.github_token_command === 'string' && safeConfig.github_token_command) {
     const result = _runTokenCommand(safeConfig.github_token_command, null, 'config:github_token_command');
     if (result) {
       return {
         apiHost,
+        host: apiHost,
         token: result,
         features,
         source: 'config:github_token_command',
-        refresh: _makeRefresh(repository, safeConfig, 'config:github_token_command')
+        refresh: _makeRefresh(repository, safeConfig, 'config:github_token_command', options)
       };
     }
   }
 
-  if (apiHost !== null && repository) {
+  if (isAltBinding && repository) {
     logger.debug(`No repo-scoped token resolved for alt-host repo ${repository} (${apiHost}); github.com top-level credentials are not used for alt-hosts`);
   } else {
     logger.debug('No token resolved for host binding');
   }
-  return { apiHost, token: '', features, source: 'none', refresh: null };
+  return { apiHost, host: apiHost, token: '', features, source: 'none', refresh: null };
 }
 
 /**
@@ -656,14 +735,15 @@ function resolveHostBinding(repository, config) {
  * @param {string|null|undefined} repository - "owner/repo" identifier as supplied to resolveHostBinding
  * @param {Object} config - Configuration object from loadConfig()
  * @param {('repo:token_command'|'config:github_token_command')} source - The refreshable source backing the binding
+ * @param {{ host?: string|null }} [options] - The same host override the binding was resolved with, so the refresh re-resolves the SAME flavor (a two-arg re-resolve would apply the ambiguity rule and could pick the wrong host for a dual repo)
  * @returns {function(): string} - Closure resolving to the fresh token (empty string on failure)
  */
-function _makeRefresh(repository, config, source) {
+function _makeRefresh(repository, config, source, options = {}) {
   return function refresh() {
     invalidateTokenCache(repository, config, source);
     // Re-resolve after invalidation so _runTokenCommand re-executes the
     // command. Returns '' if the command now fails or yields nothing.
-    return resolveHostBinding(repository, config).token;
+    return resolveHostBinding(repository, config, options).token;
   };
 }
 
@@ -795,6 +875,22 @@ function validateRepoConfig(config) {
     const apiHost = (typeof repoEntry.api_host === 'string' && repoEntry.api_host) ? repoEntry.api_host : null;
     const features = (repoEntry.features && typeof repoEntry.features === 'object') ? repoEntry.features : {};
 
+    // `exclusive` marks whether an alt-host repo's PRs live ONLY on its
+    // `api_host` (default) or may also live on github.com (`exclusive: false`,
+    // a dual repo). It is meaningless without `api_host`.
+    if (repoEntry.exclusive !== undefined && repoEntry.exclusive !== null) {
+      if (typeof repoEntry.exclusive !== 'boolean') {
+        throw new Error(
+          `Invalid pair-review config: repos["${repoKey}"].exclusive must be a boolean.`
+        );
+      }
+      if (!apiHost) {
+        throw new Error(
+          `Invalid pair-review config: repos["${repoKey}"].exclusive is only valid when api_host is set.`
+        );
+      }
+    }
+
     for (const [area, value] of Object.entries(features)) {
       // Endpoint-override sub-keys (e.g. `pending_review_comments_endpoint`)
       // are validated separately below. Reject anything that ends in
@@ -909,6 +1005,31 @@ function validateRepoConfig(config) {
         throw new Error(
           `Invalid pair-review config: repos["${repoKey}"].url_pattern is not a valid regular expression: ${err.message}`
         );
+      }
+
+      // An `api_host`-bearing pattern must never match a canonical github.com /
+      // Graphite URL — doing so pre-pins a github PR to the alt host and bypasses
+      // the setup probe (a silent, durable wrong binding). Warn (do NOT throw —
+      // we must not break existing configs; parsePRUrl also guards this at
+      // runtime by discarding such matches) when the pattern is over-broad.
+      if (typeof repoEntry.api_host === 'string' && repoEntry.api_host) {
+        try {
+          const rx = new RegExp(repoEntry.url_pattern);
+          const canaries = [
+            'https://github.com/o/r/pull/1',
+            'https://app.graphite.dev/github/pr/o/r/1',
+            'https://app.graphite.com/github/o/r/pull/1'
+          ];
+          if (canaries.some((u) => rx.test(u))) {
+            logger.warn(
+              `repos["${repoKey}"].url_pattern also matches canonical github.com / Graphite URLs; ` +
+              `anchor it (e.g. start with "^https://<your-alt-host>/") so it never pre-pins a github.com ` +
+              `PR to the alt host. pair-review will still route such URLs to github.com.`
+            );
+          }
+        } catch {
+          // Invalid regex already reported above; nothing more to check.
+        }
       }
     }
 
@@ -1512,6 +1633,7 @@ module.exports = {
   validatePort,
   getGitHubToken,
   resolveHostBinding,
+  isExclusiveAltHost,
   invalidateTokenCache,
   validateRepoConfig,
   matchRepoByUrl,

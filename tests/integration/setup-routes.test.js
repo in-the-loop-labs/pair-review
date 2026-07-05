@@ -228,10 +228,110 @@ describe('POST /api/setup/pr/:owner/:repo/:number', () => {
     expect(callArgs.restoreMetadata).toBeNull();
   });
 
-  it('resolves binding key for monorepo url_pattern config and feeds it to getGitHubToken', async () => {
+  it('passes a body host through to setupPRReview', async () => {
+    // The repo must actually declare this api_host — the credential gate now
+    // resolves the token against the body host, which validates it against config.
+    const app = createApp(db, {
+      repos: { 'owner/repo': { api_host: 'https://althost.example/api/v3', exclusive: false, token: 'alt-tok' } }
+    });
+    server = await listenOnLoopback(app);
+    const res = await request(server)
+      .post('/api/setup/pr/owner/repo/42')
+      .send({ host: 'https://althost.example/api/v3' });
+
+    expect(res.status).toBe(200);
+    expect(prSetupModule.setupPRReview).toHaveBeenCalledOnce();
+    expect(prSetupModule.setupPRReview.mock.calls[0][0].host).toBe('https://althost.example/api/v3');
+  });
+
+  it('passes an explicit body host of null through to setupPRReview', async () => {
+    const app = createApp(db);
+    server = await listenOnLoopback(app);
+    const res = await request(server)
+      .post('/api/setup/pr/owner/repo/42')
+      .send({ host: null });
+
+    expect(res.status).toBe(200);
+    expect(prSetupModule.setupPRReview.mock.calls[0][0].host).toBe(null);
+  });
+
+  it('leaves host undefined when no body host is supplied', async () => {
+    const app = createApp(db);
+    server = await listenOnLoopback(app);
+    const res = await request(server).post('/api/setup/pr/owner/repo/42');
+
+    expect(res.status).toBe(200);
+    expect(prSetupModule.setupPRReview.mock.calls[0][0].host).toBeUndefined();
+  });
+
+  it('rejects an invalid host shape with 400 and does not start setup', async () => {
+    const app = createApp(db);
+    server = await listenOnLoopback(app);
+    const res = await request(server)
+      .post('/api/setup/pr/owner/repo/42')
+      .send({ host: 123 });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Invalid host/);
+    expect(prSetupModule.setupPRReview).not.toHaveBeenCalled();
+  });
+
+  // FINDING 3: the credential gate must not falsely 401 a dual repo whose only
+  // credential is the alt-host token. getGitHubToken (no host) returns empty for
+  // such a repo; the route re-resolves via resolvePreflightBinding before 401ing.
+  describe('dual-repo alt-only credential gate', () => {
+    let savedEnvToken;
+    const dualAltOnly = {
+      repos: { 'owner/repo': { api_host: 'https://alt.example/api/v3', exclusive: false, token: 'alt-tok' } }
+    };
+
+    beforeEach(() => {
+      // getGitHubToken (no host) resolves the github ambiguity binding → empty
+      // for an alt-only dual repo. Force that so the extended path is exercised.
+      configModule.getGitHubToken.mockReturnValue('');
+      savedEnvToken = process.env.GITHUB_TOKEN;
+      delete process.env.GITHUB_TOKEN; // else the github chain short-circuits
+    });
+    afterEach(() => {
+      if (savedEnvToken !== undefined) process.env.GITHUB_TOKEN = savedEnvToken;
+    });
+
+    it('alt bodyHost + alt-only token → passes the gate (no 401)', async () => {
+      const app = createApp(db, dualAltOnly);
+      server = await listenOnLoopback(app);
+      const res = await request(server)
+        .post('/api/setup/pr/owner/repo/42')
+        .send({ host: 'https://alt.example/api/v3' });
+
+      expect(res.status).toBe(200);
+      expect(prSetupModule.setupPRReview).toHaveBeenCalledOnce();
+    });
+
+    it('no host + dual repo + alt-only token → passes the gate to the probe (no 401)', async () => {
+      const app = createApp(db, dualAltOnly);
+      server = await listenOnLoopback(app);
+      const res = await request(server).post('/api/setup/pr/owner/repo/42');
+
+      expect(res.status).toBe(200);
+      expect(prSetupModule.setupPRReview).toHaveBeenCalledOnce();
+    });
+
+    it('no host + dual repo + NO token → still 401s', async () => {
+      const app = createApp(db, {
+        repos: { 'owner/repo': { api_host: 'https://alt.example/api/v3', exclusive: false } }
+      });
+      server = await listenOnLoopback(app);
+      const res = await request(server).post('/api/setup/pr/owner/repo/42');
+
+      expect(res.status).toBe(401);
+      expect(prSetupModule.setupPRReview).not.toHaveBeenCalled();
+    });
+  });
+
+  it('resolves the binding key for a monorepo url_pattern config and feeds it downstream', async () => {
     // Config has one `repos[...]` entry whose url_pattern captures
-    // many owner/repo pairs. The route must call getGitHubToken with
-    // the BINDING KEY ("acme-monorepo"), not the captured "acme/widget-a".
+    // many owner/repo pairs. The route must resolve the token against the
+    // BINDING KEY ("acme-monorepo"), not the captured "acme/widget-a".
     const monorepoConfig = {
       repos: {
         'acme-monorepo': {
@@ -247,11 +347,11 @@ describe('POST /api/setup/pr/:owner/:repo/:number', () => {
     server = await listenOnLoopback(app);
     const res = await request(server).post('/api/setup/pr/acme/widget-a/7');
 
+    // The gate resolves the alt token for the binding key (not 401), and the
+    // binding key is threaded to setupPRReview for downstream config lookups
+    // (path, pool, reset_script). bindingRepository being the key (not the
+    // captured PR identity) is the invariant this test protects.
     expect(res.status).toBe(200);
-    expect(configModule.getGitHubToken).toHaveBeenCalledWith(monorepoConfig, 'acme-monorepo');
-
-    // setupPRReview also receives the binding key so downstream config
-    // lookups (path, pool, reset_script) hit the right entry.
     expect(prSetupModule.setupPRReview).toHaveBeenCalledOnce();
     const callArgs = prSetupModule.setupPRReview.mock.calls[0][0];
     expect(callArgs.bindingRepository).toBe('acme-monorepo');
@@ -265,7 +365,6 @@ describe('POST /api/setup/pr/:owner/:repo/:number', () => {
 
     expect(res.status).toBe(200);
     // Binding key = "alice/tool" (the PR identity) when nothing matched.
-    expect(configModule.getGitHubToken).toHaveBeenCalledWith(plainConfig, 'alice/tool');
     const callArgs = prSetupModule.setupPRReview.mock.calls[0][0];
     expect(callArgs.bindingRepository).toBe('alice/tool');
   });

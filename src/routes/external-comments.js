@@ -20,6 +20,7 @@ const express = require('express');
 const {
   ExternalCommentRepository,
   ReviewRepository,
+  PRMetadataRepository,
   withTransaction
 } = require('../database');
 const { getAdapter } = require('../external');
@@ -135,6 +136,17 @@ async function executeSync({ db, config, review, source, _deps }) {
     );
   }
 
+  // Look up the PR's stored host so a DUAL repo's alt-hosted PR binds to the
+  // alt host (and its line-based anchoring path) rather than api.github.com.
+  // Pass the raw stored value through to the adapter, which applies the
+  // legacy-NULL convention against its resolved binding key. `undefined`
+  // (no row / unknown) preserves the two-arg ambiguity behaviour.
+  let storedHost;
+  if (Number.isInteger(review.pr_number)) {
+    const prMetadataRepo = new PRMetadataRepository(db);
+    storedHost = await prMetadataRepo.getPRHost(review.repository, review.pr_number);
+  }
+
   // Delegate credential resolution to the adapter so the route stays
   // source-agnostic and each adapter can name its own env var in errors.
   // Thread `review.repository` through so the adapter resolves the
@@ -145,7 +157,7 @@ async function executeSync({ db, config, review, source, _deps }) {
   // `isAltHost` reflects whether the resolved binding targets an alternate
   // Git host. Alt-hosts don't implement GitHub's deprecated `position`
   // field, so it drives line-based anchoring in `mapComment` below.
-  const { client, isAltHost } = adapter.resolveCredentials(config || {}, review.repository, _deps);
+  const { client, isAltHost } = adapter.resolveCredentials(config || {}, review.repository, _deps, { storedHost });
 
   const apiRows = await adapter.fetchComments({
     client,

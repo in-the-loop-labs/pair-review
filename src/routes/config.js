@@ -10,7 +10,7 @@
  */
 
 const express = require('express');
-const { RepoSettingsRepository, ReviewRepository, queryOne } = require('../database');
+const { RepoSettingsRepository, ReviewRepository, PRMetadataRepository, queryOne } = require('../database');
 const {
   getAllProvidersInfo,
   testProviderAvailability,
@@ -21,12 +21,12 @@ const {
   modelMatches
 } = require('../ai');
 const { normalizeRepository } = require('../utils/paths');
+const { resolvePreflightBinding } = require('../utils/host-resolution');
 const {
   isRunningViaNpx,
   getGitHubToken,
   getDefaultProvider,
   getDefaultModel,
-  resolveHostBinding,
   resolveBindingRepositoryFromPR,
   getSummaryEnabled,
   getSummaryAutoGenerate,
@@ -82,10 +82,11 @@ router.get('/runtime-config.js', (req, res) => {
  *   - has_global_github_token: always present. True iff `getGitHubToken(config)`
  *     resolves a token from the top-level config / env (no repo context).
  *   - has_github_token: present ONLY when both ?owner and ?repo query
- *     parameters are supplied. True iff a token can be resolved for that
- *     specific repository via `resolveHostBinding(repo, config)` — this
- *     covers repo-scoped `token`, `token_command`, alt-host bindings, AND
- *     falls through to the global lookup. Callers that know which repo
+ *     parameters are supplied. True iff ANY usable binding for that specific
+ *     repository resolves a token (`resolvePreflightBinding`) — this covers
+ *     repo-scoped `token`, `token_command`, alt-host bindings, a DUAL repo whose
+ *     only credential is the alt-host token, AND falls through to the global
+ *     lookup. Callers that know which repo
  *     they're rendering should pass these params so that repo-scoped
  *     authentication is reflected accurately (e.g. for deciding whether
  *     to enable GitHub-comment dedup). When the params are absent, the
@@ -146,10 +147,14 @@ router.get('/api/config', (req, res) => {
   let hasRepoGithubToken = null;
   if (hasRepoContext) {
     const repository = `${owner}/${repo}`;
-    // resolveHostBinding already falls through to top-level config when
-    // no repo-scoped token is configured, so this is a true union of
-    // "repo-scoped binding works" OR "global token works".
-    hasRepoGithubToken = Boolean(resolveHostBinding(repository, config).token);
+    // "Has any usable binding" semantics. resolveHostBinding already falls
+    // through to top-level config when no repo-scoped token is configured, so
+    // the no-host lookup unions "repo-scoped binding works" OR "global token
+    // works". But for a DUAL repo the no-host lookup uses the github ambiguity
+    // binding, which misses a repo whose only credential is the alt-host token —
+    // resolvePreflightBinding additionally tries the alt candidate, so an
+    // alt-only dual repo reports true (matching what setup/probe will do).
+    hasRepoGithubToken = Boolean(resolvePreflightBinding(repository, config, undefined).token);
   }
 
   // Only return safe configuration values (not secrets like github_token)
@@ -301,8 +306,14 @@ router.get('/api/repos/:owner/:repo/settings', async (req, res) => {
  * `javascript:` URLs stripped). The url_template is NOT substituted here —
  * the frontend has the live PR/branch context, so it performs the
  * whitelisted substitution at render time.
+ *
+ * Optional `?number=<n>` query: the PR number the header is being rendered
+ * for. For a dual-host repo (`api_host` + `exclusive: false`) the link set
+ * depends on which system the PR lives on, so we look up the PR's stored host
+ * and resolve links against it. Omitted (Local mode, plain/exclusive repos)
+ * or an unknown PR → repo-level defaults, byte-identical to before.
  */
-router.get('/api/repos/:owner/:repo/links', (req, res) => {
+router.get('/api/repos/:owner/:repo/links', async (req, res) => {
   try {
     const { owner, repo } = req.params;
     const repository = normalizeRepository(owner, repo);
@@ -311,7 +322,21 @@ router.get('/api/repos/:owner/:repo/links', (req, res) => {
     // `repos[...]` entry serving many captured owner/repo via
     // url_pattern) surface the right link config.
     const bindingRepository = resolveBindingRepositoryFromPR(owner, repo, config);
-    const links = resolveRepoLinks(config, bindingRepository);
+
+    // Per-PR host awareness: when the caller names a PR, look up its stored
+    // host so a dual-host repo shows the correct link set (github links for a
+    // github-hosted PR, the external link for an alt-hosted one). A missing
+    // row leaves `host` undefined, which resolveRepoLinks treats as the
+    // repo-level default — so non-dual repos are unaffected regardless.
+    let host;
+    const prNumber = parseInt(req.query.number, 10);
+    if (Number.isInteger(prNumber) && prNumber > 0) {
+      const prMetadataRepo = new PRMetadataRepository(req.app.get('db'));
+      const storedHost = await prMetadataRepo.getPRHost(repository, prNumber);
+      if (storedHost !== undefined) host = storedHost;
+    }
+
+    const links = resolveRepoLinks(config, bindingRepository, host);
     res.json({ repository, links });
   } catch (error) {
     logger.error('Error resolving repo links:', error);

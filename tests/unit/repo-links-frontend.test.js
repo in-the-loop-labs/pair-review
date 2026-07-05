@@ -147,4 +147,20 @@ describe('frontend host accessors (hostName / externalUrl / externalIcon)', () =
     expect(RepoLinks.hostName()).toBe('Meteorite');   // name still works
     expect(RepoLinks.externalUrl()).toBeNull();        // url substitution fails
   });
+
+  it('passes the PR number as a query param so the server resolves per-PR host', async () => {
+    mockLinks({ external: null, github: true, graphite: true });
+    await RepoLinks.fetchAndApplyRepoLinks('acme', 'widget', {
+      owner: 'acme', repo: 'widget', number: 42
+    });
+    expect(global.fetch).toHaveBeenCalledWith('/api/repos/acme/widget/links?number=42');
+  });
+
+  it('omits the number query when no PR number is known (Local mode)', async () => {
+    mockLinks({ external: null, github: true, graphite: true });
+    await RepoLinks.fetchAndApplyRepoLinks('acme', 'widget', {
+      owner: 'acme', repo: 'widget'
+    });
+    expect(global.fetch).toHaveBeenCalledWith('/api/repos/acme/widget/links');
+  });
 });

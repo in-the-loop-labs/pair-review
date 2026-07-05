@@ -90,11 +90,20 @@ class PRArgumentParser {
     if (!owner || !repo || typeof number !== 'number' || isNaN(number) || number <= 0) {
       return null;
     }
+    // Carry the matched repo's `api_host` so downstream setup binds the PR to
+    // the alternate host without probing. A `url_pattern` match on a repo with
+    // no `api_host` (a plain github.com entry) resolves to `host: null`.
+    const matchedApiHost = (match.repoConfig
+      && typeof match.repoConfig.api_host === 'string'
+      && match.repoConfig.api_host)
+      ? match.repoConfig.api_host
+      : null;
     return {
       owner,
       repo,
       number,
-      bindingRepository: match.bindingRepository
+      bindingRepository: match.bindingRepository,
+      host: matchedApiHost
     };
   }
 
@@ -114,16 +123,30 @@ class PRArgumentParser {
       return null;
     }
 
+    // Clean up the URL - trim whitespace
+    const trimmedUrl = url.trim();
+
     // Try config-driven URL pattern matching first. This handles
     // alternate-host URLs and lets host-specific repos override the
     // built-in github.com path if they choose.
-    const configMatch = this._matchUrlPatternFromConfig(url.trim());
+    const configMatch = this._matchUrlPatternFromConfig(trimmedUrl);
     if (configMatch) {
-      return configMatch;
+      // INVARIANT: an `api_host`-bearing `url_pattern` must NEVER bind a
+      // canonical github.com / Graphite URL. An over-broad or unanchored pattern
+      // can match one and pre-pin it to the alt host (an explicit host bypasses
+      // the setup probe → a silent, durable wrong binding). When the config
+      // match carries an alt host but the URL is a canonical github/graphite URL,
+      // discard the match and fall through to the built-in parsers (host: null).
+      const sansProtocol = trimmedUrl.replace(/^https?:\/\//i, '');
+      const isCanonicalHostUrl = sansProtocol.startsWith('github.com/')
+        || sansProtocol.startsWith('app.graphite.dev/')
+        || sansProtocol.startsWith('app.graphite.com/');
+      if (!(configMatch.host && isCanonicalHostUrl)) {
+        return configMatch;
+      }
     }
 
-    // Clean up the URL - trim whitespace
-    let normalizedUrl = url.trim();
+    let normalizedUrl = trimmedUrl;
 
     // Add https:// if no protocol is present
     if (normalizedUrl.startsWith('github.com')) {
@@ -222,7 +245,9 @@ class PRArgumentParser {
    * @param {string} repo - Repository name
    * @param {string} numberStr - PR number as string
    * @param {string} source - Source name for error messages ('GitHub' or 'Graphite')
-   * @returns {Object} Validated PR info { owner, repo, number }
+   * @returns {Object} Validated PR info `{ owner, repo, number, host? }`. `host`
+   *   is `null` for github.com/Graphite URLs (definitively github); it is OMITTED
+   *   (undefined) for the pair-review:// scheme, which carries no host in its path.
    * @private
    */
   _createPRInfo(owner, repo, numberStr, source) {
@@ -237,7 +262,16 @@ class PRArgumentParser {
       throw new Error(`Invalid ${source} URL format. Expected: ${exampleUrl}`);
     }
 
-    return { owner, repo, number };
+    // A github.com or Graphite URL unambiguously identifies a github.com PR, so
+    // the host is explicitly null (not "unknown"). The pair-review:// scheme
+    // carries NO host in its path and is not github-only, so leave `host`
+    // undefined — it flows into the probe/derive path like a bare number,
+    // instead of self-healing (dual repo) or throwing (exclusive alt) on github.
+    const result = { owner, repo, number };
+    if (source !== 'pair-review://') {
+      result.host = null;
+    }
+    return result;
   }
 
   /**

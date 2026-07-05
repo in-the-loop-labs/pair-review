@@ -1,8 +1,8 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 const express = require('express');
 const path = require('path');
-const { loadConfig, getGitHubToken, resolveDbName, warnIfDevModeWithoutDbName } = require('./config');
-const { initializeDatabase, getDatabaseStatus, queryOne, run } = require('./database');
+const { loadConfig, getGitHubToken, resolveDbName, warnIfDevModeWithoutDbName, getRepoConfig, resolveBindingRepositoryFromPR, isExclusiveAltHost } = require('./config');
+const { initializeDatabase, getDatabaseStatus, queryOne, run, PRMetadataRepository } = require('./database');
 const { normalizeRepository } = require('./utils/paths');
 const { applyConfigOverrides, checkAllProviders } = require('./ai');
 const { checkAllChatProviders } = require('./chat/chat-providers');
@@ -25,6 +25,69 @@ function applyEnvOverrides(config) {
     config.single_port = false;
   }
   return config;
+}
+
+/**
+ * Apply an explicit `?host` correction from the /pr fast path.
+ *
+ * Dashboard clicks and pasted URLs can carry `?host` to say which system a PR
+ * lives on. When the PR already has metadata + a worktree, the route serves
+ * pr.html directly (no setup), so this is the only place that consumes the
+ * hint on the fast path. It is a LABEL correction only — the no-collision
+ * assumption means a same-numbered PR is the same logical PR, so no re-fetch.
+ *
+ * Sentinel mapping mirrors setup.html: `'github'` → null (github.com), any
+ * other non-empty string → an alt `api_host` URL, absent/empty → no-op. The
+ * target is validated against config so a stale link can't stamp a host the
+ * repo isn't configured for (which `resolveHostBinding` would later reject);
+ * on any mismatch we warn and ignore rather than break the page load.
+ *
+ * @param {Object} db - Database handle
+ * @param {Object} config - Loaded config
+ * @param {string} owner - URL owner segment
+ * @param {string} repo - URL repo segment
+ * @param {string} repository - Normalized `owner/repo` used as the pr_metadata key
+ * @param {number} prNumber - PR number
+ * @param {*} rawHost - `req.query.host` (already URL-decoded by Express)
+ * @returns {Promise<void>}
+ */
+async function applyHostQueryCorrection(db, config, owner, repo, repository, prNumber, rawHost) {
+  if (rawHost === undefined || rawHost === null || rawHost === '') return;
+  if (typeof rawHost !== 'string') return;
+
+  const targetHost = rawHost === 'github' ? null : rawHost;
+
+  // Resolve the repo's config entry (handles monorepo-style keys matched via
+  // url_pattern) to learn its configured api_host.
+  const bindingRepo = resolveBindingRepositoryFromPR(owner, repo, config);
+  const repoConfig = getRepoConfig(config, bindingRepo);
+  const configuredApiHost = (repoConfig && typeof repoConfig.api_host === 'string' && repoConfig.api_host)
+    ? repoConfig.api_host
+    : null;
+
+  if (targetHost !== null) {
+    // A string host must match this repo's configured api_host exactly.
+    if (targetHost !== configuredApiHost) {
+      logger.warn(`Ignoring ?host correction for ${repository} #${prNumber}: "${targetHost}" does not match configured api_host (${configuredApiHost || 'none'})`);
+      return;
+    }
+  } else if (isExclusiveAltHost(repoConfig)) {
+    // The github sentinel is meaningless for an exclusive alt-host repo (it has
+    // no github.com presence); stamping null would break binding resolution.
+    logger.warn(`Ignoring ?host=github correction for ${repository} #${prNumber}: repo is an exclusive alt-host repo with no github.com presence`);
+    return;
+  }
+
+  const prMetadataRepo = new PRMetadataRepository(db);
+  const stored = await prMetadataRepo.getPRHost(repository, prNumber);
+  // Fast path only runs when a row exists, so `stored` is null or a string.
+  // Skip the write when it already matches (avoids a needless updated_at bump).
+  if (stored === targetHost) return;
+
+  const changed = await prMetadataRepo.updatePRHost(repository, prNumber, targetHost);
+  if (changed) {
+    logger.info(`Corrected stored host for ${repository} #${prNumber} to ${targetHost === null ? 'github.com' : targetHost} via ?host`);
+  }
 }
 
 /**
@@ -276,6 +339,14 @@ async function startServer(sharedDb = null, sharedPoolLifecycle = null) {
           if (worktree) {
             // Update last_accessed_at so the recent reviews list reflects actual access
             run(db, 'UPDATE pr_metadata SET last_accessed_at = ? WHERE id = ?', [new Date().toISOString(), existing.id]).catch(err => logger.warn(`Failed to update last_accessed_at: ${err.message}`));
+            // Persist an explicit ?host correction BEFORE serving so pr.html's
+            // first data fetch resolves the binding against the corrected host.
+            // Never let a bad hint break the page — the helper swallows and warns.
+            try {
+              await applyHostQueryCorrection(db, config, owner, repo, repository, prNumber, req.query.host);
+            } catch (err) {
+              logger.warn(`Failed to apply ?host correction for ${repository} #${prNumber}: ${err.message}`);
+            }
             res.sendFile(path.join(__dirname, '..', 'public', 'pr.html'));
           } else {
             logger.info(`PR metadata exists but no worktree for ${repository} #${prNumber}, serving setup page`);
@@ -521,4 +592,4 @@ if (require.main === module) {
   startServer();
 }
 
-module.exports = { startServer, applyEnvOverrides };
+module.exports = { startServer, applyEnvOverrides, applyHostQueryCorrection };

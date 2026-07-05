@@ -6,6 +6,7 @@ const { PRArgumentParser } = require('./github/parser');
 const logger = require('./utils/logger');
 const { rejectUrlLikeLocalReviewPath } = require('./utils/local-path-input');
 const { normalizeRepository } = require('./utils/paths');
+const { isDualHostRepo, hostSetupParamValue } = require('./utils/host-resolution');
 const { buildInteractiveAnalysisConfig } = require('./interactive-analysis-config');
 const { version: packageVersion } = require('../package.json');
 
@@ -169,6 +170,9 @@ function storeAnalysisConfigRemote(port, analysisConfig, _deps) {
  *   the resolved provider/model or council snapshot PLUS custom instructions). When
  *   present it supersedes `councilId` — the id already carries the council selection,
  *   mirroring the cold-start precedence in handlePullRequest/handleLocalReview.
+ * @param {string} [context.host] - Setup `?host=` value (alt api_host string or the
+ *   'github' sentinel) so a pasted alt URL binds directly instead of re-probing.
+ *   Already resolved by the caller via `hostSetupParamValue`; omitted when null.
  * @returns {string} Full URL
  */
 function buildDelegationUrl(port, mode, context = {}) {
@@ -182,6 +186,8 @@ function buildDelegationUrl(port, mode, context = {}) {
     } else if (context.councilId) {
       query.push(`council=${encodeURIComponent(context.councilId)}`);
     }
+    // Thread the pasted URL's host so setup binds it directly (cold-start parity).
+    if (context.host) query.push(`host=${encodeURIComponent(context.host)}`);
     if (query.length) url += `?${query.join('&')}`;
     return url;
   }
@@ -292,7 +298,12 @@ async function attemptDelegation(config, flags, prArgs, _deps, options = {}) {
     const prInfo = await parsePRArgsForDelegation(prArgs, config, _deps);
     const repository = normalizeRepository(prInfo.owner, prInfo.repo);
     const analysisConfigId = await handoffAnalysisConfigId(repository);
-    url = buildDelegationUrl(port, 'pr', { ...prInfo, analyze, councilId, analysisConfigId });
+    // Thread the parsed host so a pasted alt URL binds directly (no re-probe) —
+    // same mapping as the cold-start handlePullRequest path. bindingRepository
+    // (from a url_pattern match) is the config key that determines dual-ness.
+    const bindingRepository = prInfo.bindingRepository || repository;
+    const host = hostSetupParamValue(prInfo.host, isDualHostRepo(config, bindingRepository));
+    url = buildDelegationUrl(port, 'pr', { ...prInfo, analyze, councilId, analysisConfigId, host });
   } else {
     url = buildDelegationUrl(port, 'server');
   }

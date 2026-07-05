@@ -91,6 +91,7 @@ const SCHEMA_SQL = {
       pr_data TEXT,
       last_ai_run_id TEXT,
       last_accessed_at TEXT,
+      host TEXT,
       UNIQUE(pr_number, repository)
     )
   `,
@@ -280,6 +281,7 @@ const SCHEMA_SQL = {
       html_url TEXT,
       state TEXT DEFAULT 'open',
       collection TEXT NOT NULL,
+      host TEXT,
       fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `,
@@ -317,6 +319,7 @@ const SCHEMA_SQL = {
       diff_position INTEGER,
       commit_sha TEXT,
       is_outdated INTEGER NOT NULL DEFAULT 0,
+      is_file_level INTEGER NOT NULL DEFAULT 0,
       original_line_start INTEGER,
       original_line_end INTEGER,
       original_commit_sha TEXT,
@@ -367,8 +370,11 @@ const INDEX_SQL = [
   'CREATE INDEX IF NOT EXISTS idx_context_files_review ON context_files(review_id)',
   // Hunk summaries indexes
   'CREATE INDEX IF NOT EXISTS idx_hunk_summaries_review ON hunk_summaries(review_id)',
-  // GitHub PR cache indexes
-  'CREATE UNIQUE INDEX IF NOT EXISTS idx_github_pr_cache_unique ON github_pr_cache(collection, owner, repo, number)',
+  // GitHub PR cache indexes. `host` is part of the unique key so a dual-host
+  // repo can cache the same (collection, owner, repo, number) from github.com
+  // (host NULL) and its alt host without colliding. Must match production
+  // src/database.js (widened by migration 51).
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_github_pr_cache_unique ON github_pr_cache(collection, owner, repo, number, host)',
   // Worktree pool indexes
   'CREATE INDEX IF NOT EXISTS idx_worktree_pool_repo ON worktree_pool(repository)',
   'CREATE INDEX IF NOT EXISTS idx_worktree_pool_status ON worktree_pool(repository, status)',

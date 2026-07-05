@@ -1,7 +1,7 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
-const { loadConfig, getConfigDir, getGitHubToken, resolveHostBinding, showWelcomeMessage, resolveDbName, resolveRepoOptions, resolvePoolConfig, getRepoResetScript, resolveLoadSkills, buildCouncilProviderOverrides } = require('./config');
+const { loadConfig, getConfigDir, showWelcomeMessage, resolveDbName, resolveRepoOptions, resolvePoolConfig, getRepoResetScript, resolveLoadSkills, buildCouncilProviderOverrides } = require('./config');
 const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository, ReviewRepository, RepoSettingsRepository, GitHubReviewRepository, WorktreePoolRepository, CouncilRepository, CommentRepository, AnalysisRunRepository } = require('./database');
 const { PRArgumentParser } = require('./github/parser');
 const { GitHubClient } = require('./github/client');
@@ -21,7 +21,8 @@ const { redirectConsoleToStderr } = require('./mcp-stdio');
 const { getChangedFiles } = require('./routes/executable-analysis');
 const { safeParseJson } = require('./utils/safe-parse-json');
 const { includesBranch } = require('./local-scope');
-const { storePRData, registerRepositoryLocation, findRepositoryPath } = require('./setup/pr-setup');
+const { storePRData, resolvePrHostBinding, registerRepositoryLocation, findRepositoryPath } = require('./setup/pr-setup');
+const { isDualHostRepo, resolvePreflightBinding, hostSetupParamValue } = require('./utils/host-resolution');
 const { fireReviewStartedHook } = require('./hooks/payloads');
 const { normalizeRepository, resolveRenamedFile, resolveRenamedFileOld } = require('./utils/paths');
 const { rejectUrlLikeLocalReviewPath } = require('./utils/local-path-input');
@@ -954,7 +955,12 @@ async function handlePullRequest(args, config, db, flags = {}, poolLifecycle = n
     // captured `${owner}/${repo}` for monorepo-style patterns.
     const repositoryForBinding = prInfo.bindingRepository
       || normalizeRepository(prInfo.owner, prInfo.repo);
-    const binding = resolveHostBinding(repositoryForBinding, config);
+    // A pasted URL tells us the host up front (alt-host `url_pattern` match →
+    // api_host string; github/graphite URL → null), so preflight the token
+    // against that host. A bare number leaves host undefined → ambiguity rule,
+    // but a dual repo with only an alt token is still usable (the setup probe
+    // tries the alt host first) — resolvePreflightBinding tolerates that.
+    const binding = resolvePreflightBinding(repositoryForBinding, config, prInfo.host);
     if (!binding.token) {
       throw new Error(buildMissingTokenError({
         owner: prInfo.owner,
@@ -1009,6 +1015,15 @@ async function handlePullRequest(args, config, db, flags = {}, poolLifecycle = n
       url += `&analysisConfigId=${analysisConfigId}`;
     } else if (councilSelection) {
       url += `&council=${councilSelection.id}`;
+    }
+
+    // Thread the pasted URL's host to setup so it binds directly instead of
+    // probing (shared mapping — see hostSetupParamValue): an alt-host string
+    // forwards the api_host; a github URL on a DUAL repo forwards the 'github'
+    // sentinel; bare numbers / plain / exclusive repos omit it.
+    const hostParam = hostSetupParamValue(prInfo.host, isDualHostRepo(config, repositoryForBinding));
+    if (hostParam) {
+      url += (url.includes('?') ? '&' : '?') + `host=${encodeURIComponent(hostParam)}`;
     }
 
     console.log(`Opening browser to: ${url}`);
@@ -1107,29 +1122,34 @@ async function performHeadlessReview(args, config, db, flags, options, externalP
     // serves many monorepo-shaped URLs.
     const repositoryForBinding = prInfo.bindingRepository
       || normalizeRepository(prInfo.owner, prInfo.repo);
-    const headlessBinding = resolveHostBinding(repositoryForBinding, config);
-    if (!headlessBinding.token) {
+    // Preflight the token so a missing credential fails fast before any network
+    // work. Tolerates a dual repo with only an alt token when the host is
+    // unknown (the setup probe tries the alt host first).
+    const preflightBinding = resolvePreflightBinding(repositoryForBinding, config, prInfo.host);
+    if (!preflightBinding.token) {
       throw new Error(buildMissingTokenError({
         owner: prInfo.owner,
         repo: prInfo.repo,
         bindingRepository: repositoryForBinding,
-        apiHost: headlessBinding.apiHost
+        apiHost: preflightBinding.apiHost
       }));
     }
-    const githubToken = headlessBinding.token;
 
     console.log(`Processing pull request #${prInfo.number} from ${prInfo.owner}/${prInfo.repo} in ${options.modeLabel}`);
 
-    // Create GitHub client and verify repository access
-    const githubClient = new GitHubClient(headlessBinding);
-    const repoExists = await githubClient.repositoryExists(prInfo.owner, prInfo.repo);
-    if (!repoExists) {
-      throw new Error(`Repository ${prInfo.owner}/${prInfo.repo} not found or not accessible`);
-    }
-
-    // Fetch PR data from GitHub
+    // Resolve the per-PR host binding and fetch the PR. Applies host precedence
+    // (URL-paste host → stored host → ambiguity/probe for dual repos) and
+    // returns the chosen binding so its host is stamped by storePRData below.
     console.log('Fetching pull request data from GitHub...');
-    const prData = await githubClient.fetchPullRequest(prInfo.owner, prInfo.repo, prInfo.number);
+    const { binding: headlessBinding, prData, githubClient } = await resolvePrHostBinding({
+      db, config, bindingRepository: repositoryForBinding,
+      owner: prInfo.owner, repo: prInfo.repo, prNumber: prInfo.number,
+      // Only forward a github.com token as the github fallback; if the preflight
+      // resolved an ALT binding (dual repo, alt-only token), there is no github
+      // fallback token, so pass '' rather than sending the alt token to github.com.
+      host: prInfo.host, githubToken: preflightBinding.apiHost === null ? preflightBinding.token : ''
+    });
+    const githubToken = headlessBinding.token || preflightBinding.token;
 
     let worktreePath;
     let diff;
@@ -1290,7 +1310,8 @@ async function performHeadlessReview(args, config, db, flags, options, externalP
     // Store PR data in database
     console.log('Storing pull request data...');
     const { isNewReview, reviewId: storedReviewId } = await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath, {
-      skipWorktreeRecord: !!flags.useCheckout
+      skipWorktreeRecord: !!flags.useCheckout,
+      host: headlessBinding.host
     });
 
     // Persist review→worktree mapping in DB for pool usage tracking
@@ -1736,26 +1757,30 @@ async function preparePrHeadless(db, config, flags, prArgs, externalPoolLifecycl
 
   const repositoryForBinding = prInfo.bindingRepository
     || normalizeRepository(prInfo.owner, prInfo.repo);
-  const headlessBinding = resolveHostBinding(repositoryForBinding, config);
-  if (!headlessBinding.token) {
+  // Preflight the token so a missing credential fails fast before any network
+  // work. Tolerates a dual repo with only an alt token when the host is unknown
+  // (the setup probe tries the alt host first).
+  const preflightBinding = resolvePreflightBinding(repositoryForBinding, config, prInfo.host);
+  if (!preflightBinding.token) {
     throw new Error(buildMissingTokenError({
       owner: prInfo.owner,
       repo: prInfo.repo,
       bindingRepository: repositoryForBinding,
-      apiHost: headlessBinding.apiHost
+      apiHost: preflightBinding.apiHost
     }));
   }
 
   console.log(`Processing pull request #${prInfo.number} from ${prInfo.owner}/${prInfo.repo} in headless mode`);
 
-  const githubClient = new GitHubClient(headlessBinding);
-  const repoExists = await githubClient.repositoryExists(prInfo.owner, prInfo.repo);
-  if (!repoExists) {
-    throw new Error(`Repository ${prInfo.owner}/${prInfo.repo} not found or not accessible`);
-  }
-
+  // Resolve the per-PR host binding and fetch (host precedence: URL-paste host
+  // → stored host → ambiguity/probe for dual repos).
   console.log('Fetching pull request data from GitHub...');
-  const prData = await githubClient.fetchPullRequest(prInfo.owner, prInfo.repo, prInfo.number);
+  const { binding: headlessBinding, prData, githubClient } = await resolvePrHostBinding({
+    db, config, bindingRepository: repositoryForBinding,
+    owner: prInfo.owner, repo: prInfo.repo, prNumber: prInfo.number,
+    // Only forward a github.com token as the github fallback (see performHeadlessReview).
+    host: prInfo.host, githubToken: preflightBinding.apiHost === null ? preflightBinding.token : ''
+  });
 
   let worktreePath;
   let diff;
@@ -1903,7 +1928,8 @@ async function preparePrHeadless(db, config, flags, prArgs, externalPoolLifecycl
 
   console.log('Storing pull request data...');
   const { isNewReview, reviewId: storedReviewId } = await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath, {
-    skipWorktreeRecord: !!flags.useCheckout
+    skipWorktreeRecord: !!flags.useCheckout,
+    host: headlessBinding.host
   });
 
   if (poolWorktreeId && poolLifecycle) {

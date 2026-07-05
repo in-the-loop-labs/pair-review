@@ -21,7 +21,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 48;
+const CURRENT_SCHEMA_VERSION = 51;
 
 /**
  * Database schema SQL statements
@@ -123,6 +123,7 @@ const SCHEMA_SQL = {
       pr_data TEXT,
       last_ai_run_id TEXT,
       last_accessed_at TEXT,
+      host TEXT,
       UNIQUE(pr_number, repository)
     )
   `,
@@ -312,6 +313,7 @@ const SCHEMA_SQL = {
       html_url TEXT,
       state TEXT DEFAULT 'open',
       collection TEXT NOT NULL,
+      host TEXT,
       fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `,
@@ -349,6 +351,7 @@ const SCHEMA_SQL = {
       diff_position INTEGER,
       commit_sha TEXT,
       is_outdated INTEGER NOT NULL DEFAULT 0,
+      is_file_level INTEGER NOT NULL DEFAULT 0,
       original_line_start INTEGER,
       original_line_end INTEGER,
       original_commit_sha TEXT,
@@ -397,8 +400,14 @@ const INDEX_SQL = [
   'CREATE INDEX IF NOT EXISTS idx_context_files_review ON context_files(review_id)',
   // Hunk summaries indexes
   'CREATE INDEX IF NOT EXISTS idx_hunk_summaries_review ON hunk_summaries(review_id)',
-  // GitHub PR cache indexes
-  'CREATE UNIQUE INDEX IF NOT EXISTS idx_github_pr_cache_unique ON github_pr_cache(collection, owner, repo, number)',
+  // GitHub PR cache indexes. `host` is part of the unique key so a dual-host
+  // repo can cache the same (collection, owner, repo, number) from github.com
+  // (host NULL) AND its alt host (host = api_host URL) without colliding —
+  // independently-numbered PRs across systems overlap on small numbers. SQLite
+  // treats NULLs as distinct in unique indexes, so two NULL-host rows would not
+  // collide, but the collections refresh DELETEs the collection before
+  // re-inserting, so duplicate NULL-host rows can't accumulate. See migration 51.
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_github_pr_cache_unique ON github_pr_cache(collection, owner, repo, number, host)',
   // Worktree pool indexes
   'CREATE INDEX IF NOT EXISTS idx_worktree_pool_repo ON worktree_pool(repository)',
   'CREATE INDEX IF NOT EXISTS idx_worktree_pool_status ON worktree_pool(repository, status)',
@@ -1305,6 +1314,9 @@ const MIGRATIONS = {
           fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
       `);
+      // Historical shape: no `host` column exists at v26 (added in migration
+      // 50). Migration 51 widens this index to include `host`. Do NOT add
+      // `host` here — it would reference a column that doesn't exist yet.
       db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_github_pr_cache_unique ON github_pr_cache(collection, owner, repo, number)');
       console.log('  Created github_pr_cache table');
     } else {
@@ -2159,6 +2171,72 @@ const MIGRATIONS = {
       console.log('  Table tours already exists');
     }
     console.log('Migration to schema version 48 complete');
+  },
+
+  // Migration to version 49: Add is_file_level flag to external_comments so
+  // file-level review comments (GitHub subject_type='file') can be rendered in
+  // the per-file comments zone instead of as a bogus line-1 annotation.
+  // Idempotent single-column ALTER guarded by columnExists — safe to re-run.
+  // A single DDL statement needs no transaction wrapper.
+  49: (db) => {
+    console.log('Running migration to schema version 49: Add is_file_level to external_comments...');
+    if (!tableExists(db, 'external_comments')) {
+      // Table not created yet (older instance below version 45). Migration 45
+      // creates it with the current base schema; nothing to alter here.
+      console.log('  external_comments table not present; nothing to alter');
+    } else if (!columnExists(db, 'external_comments', 'is_file_level')) {
+      db.exec('ALTER TABLE external_comments ADD COLUMN is_file_level INTEGER NOT NULL DEFAULT 0');
+      console.log('  Added is_file_level column to external_comments');
+    } else {
+      console.log('  Column is_file_level already exists');
+    }
+    console.log('Migration to schema version 49 complete');
+  },
+
+  // Migration to version 50: Add host column to pr_metadata and github_pr_cache
+  // for per-PR host resolution (dual GitHub + alt-host repos). NULL means
+  // github.com; otherwise the configured api_host URL string. No backfill — the
+  // NULL-means-github fallback makes existing rows resolve identically, and rows
+  // are re-stamped on next fetch. Each ALTER is guarded by columnExists so the
+  // migration is idempotent; single DDL statements need no transaction wrapper.
+  50: (db) => {
+    console.log('Running migration to schema version 50: Add host to pr_metadata and github_pr_cache...');
+    if (tableExists(db, 'pr_metadata') && !columnExists(db, 'pr_metadata', 'host')) {
+      db.exec('ALTER TABLE pr_metadata ADD COLUMN host TEXT');
+      console.log('  Added host column to pr_metadata');
+    } else {
+      console.log('  Column host already exists on pr_metadata (or table absent)');
+    }
+    if (tableExists(db, 'github_pr_cache') && !columnExists(db, 'github_pr_cache', 'host')) {
+      db.exec('ALTER TABLE github_pr_cache ADD COLUMN host TEXT');
+      console.log('  Added host column to github_pr_cache');
+    } else {
+      console.log('  Column host already exists on github_pr_cache (or table absent)');
+    }
+    console.log('Migration to schema version 50 complete');
+  },
+
+  // Migration to version 51: widen idx_github_pr_cache_unique to include host.
+  // The collections refresh inserts github rows (host NULL) and alt-host rows
+  // (host = api_host URL) under the same collection in one transaction. For a
+  // dual-host repo whose PRs are numbered independently per system, a shared
+  // (collection, owner, repo, number) would violate the old 4-column unique
+  // index — and the single throw rolls back the DELETE plus BOTH insert loops,
+  // so the user sees zero PRs for that collection. Adding host to the key lets
+  // the two systems' same-numbered PRs coexist. The new index is strictly wider
+  // than the old one, so existing data can never violate it. Idempotent:
+  // DROP IF EXISTS then CREATE IF NOT EXISTS yields the same shape on re-run and
+  // is safe on both a v50 DB (old 4-column index) and a fresh DB.
+  51: (db) => {
+    console.log('Running migration to schema version 51: widen idx_github_pr_cache_unique to include host...');
+    if (tableExists(db, 'github_pr_cache')) {
+      db.exec('DROP INDEX IF EXISTS idx_github_pr_cache_unique');
+      db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_github_pr_cache_unique ON github_pr_cache(collection, owner, repo, number, host)');
+      console.log('  Rebuilt idx_github_pr_cache_unique with host in the key');
+    } else {
+      console.log('  Table github_pr_cache absent; nothing to reindex');
+    }
+    console.log('Migration to schema version 51 complete');
   }
 };
 
@@ -4972,6 +5050,52 @@ class PRMetadataRepository {
       head_sha: prData.head_sha,
       pr_data_parsed: prData
     };
+  }
+
+  /**
+   * Get the stored host binding for a PR.
+   *
+   * Distinguishes "no row" from "row says github". Used by per-PR host
+   * resolution (dual GitHub + alt-host repos) to decide which system a PR
+   * lives on before building a binding.
+   *
+   * @param {string} repository - Repository in owner/repo format
+   * @param {number} prNumber - Pull request number
+   * @returns {Promise<string|null|undefined>} The stored api_host URL string,
+   *   `null` when the row exists but host is unset (github.com), or `undefined`
+   *   when no pr_metadata row exists for the PR.
+   */
+  async getPRHost(repository, prNumber) {
+    const row = await queryOne(this.db, `
+      SELECT host FROM pr_metadata
+      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
+    `, [prNumber, repository]);
+
+    if (!row) return undefined;
+    return row.host;
+  }
+
+  /**
+   * Update ONLY the host binding for a PR's metadata row.
+   *
+   * Used to persist an explicit host correction (e.g. a `?host` query param on
+   * the /pr fast path) without re-running full setup. Leaves every other column
+   * untouched.
+   *
+   * @param {string} repository - Repository in owner/repo format
+   * @param {number} prNumber - Pull request number
+   * @param {string|null} host - api_host URL string, or null for github.com
+   * @returns {Promise<boolean>} True if a matching row was updated, false when
+   *   no pr_metadata row exists for the PR.
+   */
+  async updatePRHost(repository, prNumber, host) {
+    const result = await run(this.db, `
+      UPDATE pr_metadata
+      SET host = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
+    `, [host, prNumber, repository]);
+
+    return result.changes > 0;
   }
 
   /**

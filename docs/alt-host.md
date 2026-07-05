@@ -29,9 +29,15 @@ All alt-host settings live under a per-repository entry in
     "owner/repo": {
       // Existing keys (path, worktree_directory, ...) still apply
 
-      // REST API base URL for this host. When set, pair-review routes all
-      // API traffic for this repo to this host instead of api.github.com.
+      // REST API base URL for this host. When set, pair-review routes API
+      // traffic for this repo to this host instead of api.github.com.
       "api_host": "https://althost.example/api/v3",
+
+      // Whether every PR for this repo lives on the alt host (default true).
+      // Set false for a "dual-host" repo whose PRs live on github.com OR the
+      // alt host; pair-review then resolves the host per PR. Only meaningful
+      // alongside api_host. See "Dual-Host Repositories" below.
+      "exclusive": false,
 
       // Token resolution for this repo. Use exactly one of these.
       "token": "...",            // literal token
@@ -67,10 +73,29 @@ All alt-host settings live under a per-repository entry in
 
 The REST API base URL for the host, e.g. `https://althost.example/api/v3`.
 When this key is present, pair-review treats the repository as an alt-host
-repo and dispatches API calls accordingly.
+repo and dispatches API calls accordingly. By default this applies to every
+PR of the repo; set `exclusive: false` (below) to make the host resolve per
+PR instead.
 
 When `api_host` is unset, the repo uses the default `github.com` behaviour
 and all other alt-host keys are ignored.
+
+### `exclusive`
+
+Whether **every** PR for this repo lives on the alt host. Only meaningful
+alongside `api_host` — setting it without `api_host` is a startup error, and
+its value must be a boolean.
+
+- **`exclusive: true`** (the default when the key is omitted) — the repo lives
+  exclusively on the alt host. Every PR is resolved against `api_host`, exactly
+  as before this key existed.
+- **`exclusive: false`** — the repo is **dual-host**: some PRs live on
+  `github.com` (or Graphite) and others on the alt host. pair-review resolves
+  the host on a per-PR basis. See "Dual-Host Repositories" below for how the
+  host is detected, stored, and used.
+
+A repo configured with `api_host` and no `exclusive` key behaves identically
+to earlier versions of pair-review — this feature is opt-in.
 
 ### `token` / `token_command`
 
@@ -212,6 +237,111 @@ Note that the host's web URL frequently cannot be derived from `api_host`
 be three different domains), which is why `url_template` exists and is used
 for every host-facing link.
 
+## Dual-Host Repositories
+
+A repo with `api_host` and `exclusive: false` is **dual-host**: its PRs live on
+`github.com` (or Graphite) OR on the alt host, and pair-review resolves the
+host per PR rather than per repo. This matches real migration scenarios, where
+older PRs still live on GitHub while newer ones exist only on the alternate
+host.
+
+The no-collision assumption still holds: a given `(owner/repo, number)`
+identifies exactly one PR, on whichever host it lives. The
+`/pr/:owner/:repo/:number` URL scheme is unchanged.
+
+### Per-PR host storage
+
+Each PR's host is remembered locally (in the pair-review database) once it has
+been determined. The stored value is the `api_host` URL string for an
+alt-hosted PR, or empty (github.com) for a GitHub-hosted PR. Storing the URL
+string — rather than a config key — means the token and features are
+re-resolved from config at runtime by matching that string.
+
+The host is learned, in decreasing order of confidence, from:
+
+1. **The URL that opened the PR.** When you paste a PR URL, the pattern it
+   matches decides the host: a `url_pattern` match records the alt host; a
+   `github.com` or Graphite URL records github.com.
+2. **The dashboard listing it appeared in.** A collections refresh (below)
+   lists open PRs from github.com *and* every configured alt host, stamping
+   each row with the host it was found on. Opening a PR from a dashboard row
+   carries that host through.
+3. **Setup-time probing** for a bare PR number, when neither of the above is
+   available (see "Probing" below).
+
+Once learned, the host is stored and reused, and re-stamped on every
+subsequent fetch — so a stale or not-yet-known row self-heals the next time the
+PR is opened.
+
+### Ambiguity rule
+
+When a dual-host repo needs a host and none is stored, known from a URL, or
+probeable:
+
+- **Dual-host repo → github.com.** The repo also exists on github.com and
+  top-level credentials exist there, so github is the safe default. (An
+  `exclusive` alt-host repo in the same situation resolves to the alt host, as
+  it always has.)
+
+### Probing (bare PR numbers)
+
+When you open a dual-host PR by bare number (no URL to reveal the host, no
+stored row), pair-review probes to find it:
+
+1. Try the **alt host** first (`GET /repos/{owner}/{repo}/pulls/{number}`). A
+   repo configured with `api_host` is actively using it, so alt-first is the
+   common case.
+2. On a **404**, fall back to **github.com** and fetch there.
+3. On an **auth or network error** (e.g. `401`/`403`, timeout), **fail loudly
+   — no fallback.** A `401` on the alt host must not silently fall through to
+   github.com and fetch a same-numbered but entirely different PR.
+
+The host that answers is stored, so the probe happens at most once per PR.
+
+### Per-binding credentials and features
+
+A dual-host repo has two bindings, and they use different credentials and
+feature defaults:
+
+- **Alt-host binding** (alt-hosted PRs) — uses the repo's `token` /
+  `token_command` and the repo's explicit `features` block, with alt-host
+  defaults (`rest` / `host`), exactly as an exclusive alt-host repo does.
+- **GitHub binding** (github-hosted PRs) — uses the standard github.com
+  credential chain only (`GITHUB_TOKEN` → top-level `github_token` /
+  `github_token_command`) and the standard GitHub feature defaults
+  (GraphQL-preferred). The repo-scoped `token` / `token_command` are alt-host
+  credentials and are **not** sent to github.com, and the repo's explicit
+  `features` block (written for the alt host) does **not** apply to the github
+  binding.
+
+In other words, the repo's alt-host settings describe only the alt-host side
+of a dual repo; the github side behaves like any ordinary github.com repo.
+
+### Collections (dashboard listings)
+
+With dual-host repos configured, a dashboard collections refresh lists open
+PRs from github.com and from every configured `api_host` (both exclusive and
+dual repos), classifying each into your collections (your PRs, review
+requests, team reviews) and stamping the host it came from.
+
+Alt hosts expose only a REST subset, so this uses
+`GET /repos/{owner}/{repo}/pulls?state=open` rather than GitHub's Search API,
+and classifies results locally.
+
+Alt-host listing is **best-effort per host**: if one alt host times out,
+errors, or does not implement the required endpoint, that failure is logged
+and the refresh still returns github.com results plus whatever other hosts
+succeeded. The refresh reports per-host status so the dashboard can show
+partial results honestly rather than failing the whole refresh.
+
+### Recovering from a stale stored host
+
+If you later change or remove a repo's `api_host`, a previously stored host may
+no longer match the configuration. Rather than binding to a dead host,
+pair-review fails with a clear error explaining that the stored host no longer
+matches config. Re-open the PR from its URL to re-stamp it with the correct
+host.
+
 ## Host Extensions
 
 Some operations cannot be expressed in GitHub's REST surface (most notably,
@@ -311,6 +441,20 @@ the default.
 
 Host extensions only make sense against a configured `api_host`. Either
 set `api_host` for this repo or remove the `"host"` value.
+
+### `exclusive` set but `api_host` unset
+
+The `exclusive` flag only makes sense for an alt-host repo. Either add
+`api_host` for this repo or remove `exclusive`. (Its value must also be a
+boolean.)
+
+### Stored host no longer matches config
+
+You changed or removed a repo's `api_host` after opening one of its PRs, so
+the host recorded for that PR points at a host that is no longer configured.
+pair-review refuses to bind to it rather than silently querying the wrong (or
+a dead) host. Re-open the PR from its URL to re-stamp it with the current
+host.
 
 ### `Invalid regex in repos["<repo>"].url_pattern`
 

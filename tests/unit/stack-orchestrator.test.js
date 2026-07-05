@@ -56,6 +56,7 @@ vi.spyOn(databaseModule.PRMetadataRepository.prototype, 'getByPR').mockResolvedV
   description: ''
 });
 vi.spyOn(databaseModule.PRMetadataRepository.prototype, 'updateLastAiRunId').mockResolvedValue(undefined);
+  vi.spyOn(databaseModule.PRMetadataRepository.prototype, 'getPRHost').mockResolvedValue(undefined);
 vi.spyOn(databaseModule.ReviewRepository.prototype, 'getOrCreate').mockResolvedValue({ review: { id: 1 } });
 vi.spyOn(databaseModule.ReviewRepository.prototype, 'upsertSummary').mockResolvedValue(undefined);
 vi.spyOn(databaseModule.RepoSettingsRepository.prototype, 'getRepoSettings').mockResolvedValue(null);
@@ -196,6 +197,7 @@ describe('executeStackAnalysis', () => {
       description: ''
     });
     vi.spyOn(databaseModule.PRMetadataRepository.prototype, 'updateLastAiRunId').mockResolvedValue(undefined);
+  vi.spyOn(databaseModule.PRMetadataRepository.prototype, 'getPRHost').mockResolvedValue(undefined);
     vi.spyOn(databaseModule.ReviewRepository.prototype, 'getOrCreate').mockResolvedValue({ review: { id: 1 } });
     vi.spyOn(databaseModule.RepoSettingsRepository.prototype, 'getRepoSettings').mockResolvedValue(null);
     vi.spyOn(databaseModule.AnalysisRunRepository.prototype, 'create').mockResolvedValue(undefined);

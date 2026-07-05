@@ -228,6 +228,72 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
     expect(stored[0].body).toBe('after edit');
   });
 
+  // --- Dual-repo (github + alt-host) per-PR host binding ---
+
+  // Build an app whose config marks owner/repo as a DUAL repo (api_host +
+  // exclusive:false). The real resolveHostBinding runs; only the client is faked.
+  function createDualApp(db, FakeGitHubClient) {
+    const app = express();
+    app.use(express.json());
+    app.set('db', db);
+    app.set('config', {
+      github_token: 'gh-tok',
+      repos: {
+        'owner/repo': { api_host: 'https://alt.example/api/v3', exclusive: false, token: 'alt-tok' }
+      }
+    });
+    app.set('externalCommentsDeps', { GitHubClient: FakeGitHubClient });
+    app.use('/', externalCommentsRoutes);
+    return app;
+  }
+
+  it('dual repo with stored alt host: binds the alt host and uses line-based anchoring', async () => {
+    // A stored alt host must resolve the alt binding. Proof is behavioural:
+    // the alt path keeps a valid `line` even when `position` is null, whereas
+    // github.com would null it and mark the row outdated.
+    db.prepare('INSERT INTO pr_metadata (pr_number, repository, host) VALUES (?, ?, ?)')
+      .run(42, 'owner/repo', 'https://alt.example/api/v3');
+
+    const { FakeGitHubClient, calls } = makeFakeClient([
+      makeApiRow({ id: 501, position: null, line: 10, original_line: 10 })
+    ]);
+
+    const server = await startServer(createDualApp(db, FakeGitHubClient));
+    const res = await request(server)
+      .post(`/api/reviews/${reviewId}/external-comments/sync`)
+      .query({ source: 'github' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.count).toBe(1);
+    // Client was built from the alt binding (apiHost carried on the binding object).
+    expect(calls).toHaveLength(1);
+
+    const row = db.prepare('SELECT * FROM external_comments WHERE review_id = ? AND external_id = ?').get(reviewId, '501');
+    // Alt-host line-based anchoring: line kept, not marked outdated.
+    expect(row.is_outdated).toBe(0);
+    expect(row.line_end).toBe(10);
+  });
+
+  it('dual repo with stored NULL host: binds github.com and uses position-based anchoring', async () => {
+    db.prepare('INSERT INTO pr_metadata (pr_number, repository, host) VALUES (?, ?, ?)')
+      .run(42, 'owner/repo', null);
+
+    const { FakeGitHubClient } = makeFakeClient([
+      makeApiRow({ id: 502, position: null, line: 10, original_line: 10 })
+    ]);
+
+    const server = await startServer(createDualApp(db, FakeGitHubClient));
+    const res = await request(server)
+      .post(`/api/reviews/${reviewId}/external-comments/sync`)
+      .query({ source: 'github' });
+
+    expect(res.status).toBe(200);
+    const row = db.prepare('SELECT * FROM external_comments WHERE review_id = ? AND external_id = ?').get(reviewId, '502');
+    // github.com position-based anchoring: null position → outdated, line nulled.
+    expect(row.is_outdated).toBe(1);
+    expect(row.line_end).toBe(null);
+  });
+
   it('outdated comment: position=null but original_position set → upserted with is_outdated=1', async () => {
     const rows = [
       makeApiRow({
