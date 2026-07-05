@@ -581,6 +581,102 @@ describe('storePRData returns isNewReview flag', () => {
 });
 
 // ============================================================================
+// storePRData - host column stamping (per-PR host resolution)
+// ============================================================================
+// The host column records which system a PR lives on (NULL = github.com,
+// otherwise the configured api_host URL). storePRData self-heals the stored
+// host when the caller knows it, but must not disturb it on a plain re-fetch.
+
+describe('storePRData host stamping', () => {
+  let db;
+
+  const prInfo = { owner: 'owner', repo: 'repo', number: 77 };
+  const prData = {
+    title: 'Host PR',
+    body: 'Description',
+    author: 'octocat',
+    base_branch: 'main',
+    head_branch: 'feature',
+  };
+  const diff = '--- a/file.js\n+++ b/file.js\n@@ -1 +1 @@\n-old\n+new';
+  const changedFiles = [{ file: 'file.js', insertions: 1, deletions: 1, changes: 2 }];
+  const worktreePath = '/tmp/wt/pr-77';
+
+  async function readHost() {
+    const row = await queryOne(
+      db,
+      'SELECT host FROM pr_metadata WHERE pr_number = ? AND repository = ? COLLATE NOCASE',
+      [prInfo.number, 'owner/repo']
+    );
+    return row ? row.host : undefined;
+  }
+
+  beforeEach(async () => {
+    db = await createTestDatabase();
+    vi.clearAllMocks();
+    hookRunnerModule.fireHooks.mockImplementation(() => {});
+  });
+
+  afterEach(async () => {
+    if (db) {
+      await closeTestDatabase(db);
+    }
+  });
+
+  it('writes NULL host on INSERT when host is omitted', async () => {
+    await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath, {
+      skipWorktreeRecord: true
+    });
+    expect(await readHost()).toBeNull();
+  });
+
+  it('writes an api_host URL string on INSERT when host is provided', async () => {
+    await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath, {
+      skipWorktreeRecord: true,
+      host: 'https://ghe.example.com/api/v3'
+    });
+    expect(await readHost()).toBe('https://ghe.example.com/api/v3');
+  });
+
+  it('writes explicit null host (github.com) on INSERT', async () => {
+    await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath, {
+      skipWorktreeRecord: true,
+      host: null
+    });
+    expect(await readHost()).toBeNull();
+  });
+
+  it('stamps host on UPDATE when a host is provided', async () => {
+    // First insert with NULL host, then re-fetch with a known alt host.
+    await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath, {
+      skipWorktreeRecord: true
+    });
+    expect(await readHost()).toBeNull();
+
+    await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath, {
+      skipWorktreeRecord: true,
+      host: 'https://ghe.example.com/api/v3'
+    });
+    expect(await readHost()).toBe('https://ghe.example.com/api/v3');
+  });
+
+  it('leaves a previously stamped host untouched on UPDATE when host is omitted', async () => {
+    // Seed a stamped host, then re-fetch without a host (host undefined).
+    await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath, {
+      skipWorktreeRecord: true,
+      host: 'https://ghe.example.com/api/v3'
+    });
+    expect(await readHost()).toBe('https://ghe.example.com/api/v3');
+
+    await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath, {
+      skipWorktreeRecord: true
+    });
+    // The stored host must survive an ordinary re-fetch that doesn't know it.
+    expect(await readHost()).toBe('https://ghe.example.com/api/v3');
+  });
+});
+
+// ============================================================================
 // Pool-enabled PR setup (setupPRReview with poolSize > 0)
 // ============================================================================
 // These tests exercise the pool code path inside setupPRReview, verifying that
@@ -1069,6 +1165,52 @@ describe('restore mode (setupPRReview with restoreMetadata)', () => {
     expect(GitHubClient.prototype.fetchPullRequest).toHaveBeenCalledOnce();
 
     expect(result.reviewUrl).toBe('/pr/owner/repo/42');
+  });
+
+  it('SHA-miss restore fallback forwards the explicit host to the fresh retry (FINDING E)', async () => {
+    const ALT = 'https://alt.example/api/v3';
+    // DUAL repo: with host forwarded (null = github) the fresh fetch binds
+    // github and stamps host=null. If the recursion DROPPED host, the dual repo
+    // would probe alt-first (mocked fetch succeeds) and stamp ALT instead — so
+    // the stamped host proves the explicit host survived the retry.
+    const dualConfig = {
+      github_token: githubToken,
+      monorepos: {},
+      repos: { 'owner/repo': { api_host: ALT, exclusive: false, token: 'alt-tok' } }
+    };
+    worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.acquireForPR
+      .mockRejectedValueOnce(new Error('pathspec \'head111\' did not match any file(s) known to git'))
+      .mockResolvedValueOnce({ worktreePath: poolWorktreePath, worktreeId: poolWorktreeId });
+
+    await setupPRReview({
+      db, owner, repo, prNumber, githubToken, config: dualConfig,
+      restoreMetadata: mockRestoreMetadata,
+      host: null,
+    });
+
+    const row = await queryOne(db, 'SELECT host FROM pr_metadata WHERE pr_number = ? AND repository = ? COLLATE NOCASE', [prNumber, repository]);
+    expect(row.host).toBe(null);
+  });
+
+  it('SHA-miss restore fallback forwards bindingRepository to the fresh retry (FINDING E)', async () => {
+    // Pass an explicit bindingRepository that differs from the PR identity. The
+    // retry must reuse it (not re-derive owner/repo), so every resolvePoolConfig
+    // call — including the retry's — receives the forwarded key.
+    worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.acquireForPR
+      .mockRejectedValueOnce(new Error('pathspec \'head111\' did not match any file(s) known to git'))
+      .mockResolvedValueOnce({ worktreePath: poolWorktreePath, worktreeId: poolWorktreeId });
+
+    await setupPRReview({
+      db, owner, repo, prNumber, githubToken, config: testConfig,
+      bindingRepository: 'custom-binding-key',
+      restoreMetadata: mockRestoreMetadata,
+    });
+
+    const poolConfigCalls = configModule.resolvePoolConfig.mock.calls;
+    expect(poolConfigCalls.length).toBeGreaterThanOrEqual(2); // restore attempt + retry
+    for (const call of poolConfigCalls) {
+      expect(call[1]).toBe('custom-binding-key');
+    }
   });
 
   it('should NOT fall back for non-SHA errors in restore mode', async () => {

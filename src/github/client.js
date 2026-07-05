@@ -1138,6 +1138,43 @@ class GitHubClient {
   }
 
   /**
+   * List open pull requests for a single repository via the REST API.
+   *
+   * Used by the dashboard collections sweep against alt-hosts, which speak a
+   * REST subset and generally have no Search API. The returned rows carry the
+   * classification fields (`author`, `requested_reviewers`, `requested_teams`)
+   * so the caller can bucket each PR into a collection locally, plus the same
+   * display fields `searchPullRequests` returns so both paths cache uniformly.
+   *
+   * @param {string} owner - Repository owner
+   * @param {string} repo - Repository name
+   * @returns {Promise<Array<{owner: string, repo: string, number: number, title: string, author: string|null, updated_at: string, html_url: string, state: string, requested_reviewers: string[], requested_teams: string[]}>>}
+   */
+  async listOpenPullRequests(owner, repo) {
+    const pulls = await this.octokit.paginate(
+      this.octokit.rest.pulls.list,
+      { owner, repo, state: 'open', per_page: 100 }
+    );
+
+    return pulls.map(pr => ({
+      owner,
+      repo,
+      number: pr.number,
+      title: pr.title,
+      author: pr.user?.login || null,
+      updated_at: pr.updated_at,
+      html_url: pr.html_url,
+      state: pr.state,
+      requested_reviewers: Array.isArray(pr.requested_reviewers)
+        ? pr.requested_reviewers.map(r => r && r.login).filter(Boolean)
+        : [],
+      requested_teams: Array.isArray(pr.requested_teams)
+        ? pr.requested_teams.map(t => t && t.slug).filter(Boolean)
+        : []
+    }));
+  }
+
+  /**
    * Get the authenticated user's information.
    * @returns {Promise<{login: string, name: string, avatar_url: string}>}
    */

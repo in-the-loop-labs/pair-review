@@ -263,6 +263,25 @@ describe('buildDelegationUrl', () => {
     expect(url).toBe('http://localhost:7247/pr/acme/widgets/42?analyze=true&analysisConfigId=a%20b%2Fc');
   });
 
+  it('appends an alt-host value as an encoded host param (FINDING C)', () => {
+    const url = buildDelegationUrl(7247, 'pr', {
+      owner: 'acme', repo: 'widgets', number: 42, host: 'https://althost.example/api/v3'
+    });
+    expect(url).toBe('http://localhost:7247/pr/acme/widgets/42?host=https%3A%2F%2Falthost.example%2Fapi%2Fv3');
+  });
+
+  it('appends the github sentinel host param', () => {
+    const url = buildDelegationUrl(7247, 'pr', {
+      owner: 'acme', repo: 'widgets', number: 42, host: 'github'
+    });
+    expect(url).toBe('http://localhost:7247/pr/acme/widgets/42?host=github');
+  });
+
+  it('omits the host param when context.host is absent', () => {
+    const url = buildDelegationUrl(7247, 'pr', { owner: 'acme', repo: 'widgets', number: 42 });
+    expect(url).toBe('http://localhost:7247/pr/acme/widgets/42');
+  });
+
   it('builds server landing URL', () => {
     const url = buildDelegationUrl(7247, 'server');
     expect(url).toBe('http://localhost:7247/');
@@ -420,6 +439,38 @@ describe('attemptDelegation', () => {
     const result = await attemptDelegation(baseConfig, {}, [], deps);
     expect(result).toBe(true);
     expect(deps.open).toHaveBeenCalledWith('http://localhost:7247/');
+  });
+
+  it('threads an alt host into the delegated PR URL (FINDING C)', async () => {
+    class AltParser {
+      async parsePRArguments() {
+        return { owner: 'acme', repo: 'widgets', number: 42, host: 'https://alt.example/api/v3', bindingRepository: 'acme/widgets' };
+      }
+    }
+    const deps = createMockDeps({ PRArgumentParser: AltParser });
+    const config = { port: 7247, single_port: true, repos: { 'acme/widgets': { api_host: 'https://alt.example/api/v3', exclusive: false, token: 't' } } };
+    await attemptDelegation(config, {}, ['https://alt.example/acme/widgets/pull/42'], deps);
+    expect(deps.open).toHaveBeenCalledWith(expect.stringContaining('host=https%3A%2F%2Falt.example%2Fapi%2Fv3'));
+  });
+
+  it('threads the github sentinel for a dual repo opened via a github URL', async () => {
+    class GithubDualParser {
+      async parsePRArguments() { return { owner: 'acme', repo: 'widgets', number: 42, host: null }; }
+    }
+    const deps = createMockDeps({ PRArgumentParser: GithubDualParser });
+    const config = { port: 7247, single_port: true, repos: { 'acme/widgets': { api_host: 'https://alt.example/api/v3', exclusive: false, token: 't' } } };
+    await attemptDelegation(config, {}, ['https://github.com/acme/widgets/pull/42'], deps);
+    expect(deps.open).toHaveBeenCalledWith(expect.stringContaining('host=github'));
+  });
+
+  it('omits the host param for a plain github repo', async () => {
+    class PlainParser {
+      async parsePRArguments() { return { owner: 'a', repo: 'b', number: 1, host: null }; }
+    }
+    const deps = createMockDeps({ PRArgumentParser: PlainParser });
+    const config = { port: 7247, single_port: true, repos: {} };
+    await attemptDelegation(config, {}, ['https://github.com/a/b/pull/1'], deps);
+    expect(deps.open.mock.calls[0][0]).not.toContain('host=');
   });
 
   it('appends ?analyze=true when flags.ai is set for PR mode', async () => {

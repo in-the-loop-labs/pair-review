@@ -246,9 +246,17 @@
     _currentLinks = null;
     _currentContext = context || null;
     try {
-      const response = await fetch(
-        '/api/repos/' + encodeURIComponent(owner) + '/' + encodeURIComponent(repo) + '/links'
-      );
+      // Pass the PR number (when known) so the server can resolve the link set
+      // against this PR's host for a dual-host repo (github links for a
+      // github-hosted PR, the external link for an alt-hosted one). Local mode
+      // has no PR number, so the query is omitted and the server returns the
+      // repo-level default.
+      let url = '/api/repos/' + encodeURIComponent(owner) + '/' + encodeURIComponent(repo) + '/links';
+      const number = context && context.number;
+      if (number !== undefined && number !== null && number !== '') {
+        url += '?number=' + encodeURIComponent(String(number));
+      }
+      const response = await fetch(url);
       if (!response.ok) {
         console.warn('[repo-links] Failed to fetch repo links:', response.status);
         return;

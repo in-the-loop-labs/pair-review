@@ -40,10 +40,12 @@ describe('src/routes/setup.js — token preflight uses binding key', () => {
     expect(src).toMatch(/resolveBindingRepositoryFromPR/);
   });
 
-  it('resolves the binding key before calling getGitHubToken', () => {
+  it('resolves the binding key before resolving the preflight token', () => {
     const src = readSource('src/routes/setup.js');
     const bindingPos = src.indexOf('resolveBindingRepositoryFromPR(owner, repo, config)');
-    const tokenPos = src.indexOf('getGitHubToken(config, repositoryForToken)');
+    // Token resolution now goes through resolvePreflightBinding (which tolerates
+    // a dual repo's alt-only token) keyed on the resolved binding repository.
+    const tokenPos = src.indexOf('resolvePreflightBinding(repositoryForToken, config, bodyHost)');
     expect(bindingPos).toBeGreaterThan(-1);
     expect(tokenPos).toBeGreaterThan(-1);
     expect(bindingPos).toBeLessThan(tokenPos);

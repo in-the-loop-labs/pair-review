@@ -20,6 +20,7 @@ const { mergeInstructions } = require('../utils/instructions');
 const { GitWorktreeManager } = require('../git/worktree');
 const { GitHubClient } = require('../github/client');
 const { getGitHubToken, resolveHostBinding, resolveBindingRepositoryFromPR, resolveRepoOptions, resolveLoadSkills, buildCouncilProviderOverrides } = require('../config');
+const { storedHostToOption } = require('../utils/host-resolution');
 const { setupStackPR } = require('../setup/stack-setup');
 const Analyzer = require('../ai/analyzer');
 const { getProviderClass, createProvider } = require('../ai/provider');
@@ -253,7 +254,14 @@ async function executeStackAnalysis(params) {
     // monorepo-style `url_pattern` configs (one `repos[...]` entry serves many
     // captured owner/repo pairs). The PR identity is still used for DB rows and
     // worktree identity.
-    const stackBinding = deps.resolveHostBinding(bindingRepository, config);
+    // Resolve the stack binding from the MAIN (trigger) PR's stored host so every
+    // sibling is fetched from — and later stamped with — the same host. Stacks
+    // don't span systems, so a dual repo's alt-hosted stack must not fall back to
+    // github via the two-arg ambiguity rule. `storedHostToOption` applies the
+    // legacy-NULL convention; `undefined` (no row) preserves the ambiguity rule.
+    const mainStoredHost = await new PRMetadataRepository(db).getPRHost(repository, triggerPRNumber);
+    const stackHostOption = storedHostToOption(config, bindingRepository, mainStoredHost);
+    const stackBinding = deps.resolveHostBinding(bindingRepository, config, stackHostOption || {});
     const githubToken = stackBinding.token;
     const prDataMap = new Map();
     if (githubToken) {

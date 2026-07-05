@@ -11,13 +11,14 @@
  *   - setupPRReview: full orchestrator that wires the above together
  */
 
-const { run, queryOne, WorktreeRepository, RepoSettingsRepository, ReviewRepository } = require('../database');
+const { run, queryOne, WorktreeRepository, RepoSettingsRepository, ReviewRepository, PRMetadataRepository } = require('../database');
 const { GitWorktreeManager, MISSING_COMMIT_ERROR_CODE } = require('../git/worktree');
 const { WorktreePoolLifecycle } = require('../git/worktree-pool-lifecycle');
 const { GitHubClient } = require('../github/client');
 const { normalizeRepository } = require('../utils/paths');
 const { findMainGitRoot } = require('../local-review');
-const { getConfigDir, getRepoPath, resolveRepoOptions, resolvePoolConfig, getRepoResetScript, resolveHostBinding, resolveBindingRepositoryFromPR, DEFAULT_CHECKOUT_TIMEOUT_MS } = require('../config');
+const { getConfigDir, getRepoPath, resolveRepoOptions, resolvePoolConfig, getRepoResetScript, resolveHostBinding, resolveBindingRepositoryFromPR, getRepoConfig, DEFAULT_CHECKOUT_TIMEOUT_MS } = require('../config');
+const { storedHostToOption, isDualHostRepoConfig } = require('../utils/host-resolution');
 const logger = require('../utils/logger');
 const { fireReviewStartedHook } = require('../hooks/payloads');
 const simpleGit = require('simple-git');
@@ -38,14 +39,74 @@ const path = require('path');
  * @param {string} worktreePath - Worktree (or checkout) path
  * @param {Object} [options] - Optional settings
  * @param {boolean} [options.skipWorktreeRecord] - Skip creating a worktree DB record
+ * @param {string|null} [options.host] - Per-PR host binding to stamp. When
+ *   omitted (`undefined`), the host column is left untouched on UPDATE and
+ *   written as NULL on INSERT. `null` (github.com) or an api_host URL string is
+ *   written on both the UPDATE and INSERT arms — this is the self-healing step
+ *   that stamps the host actually used to fetch the PR.
  */
 async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath, options = {}) {
   const repository = normalizeRepository(prInfo.owner, prInfo.repo);
+  // `undefined` means "caller doesn't know the host" — don't disturb any stored
+  // value on UPDATE and default to NULL (github.com) on INSERT. `null` or a URL
+  // string is an explicit host the caller wants persisted on both arms.
+  const writeHost = options.host !== undefined;
+  const hostValue = options.host;
 
   // Begin transaction for atomic database operations
   await run(db, 'BEGIN TRANSACTION');
 
   try {
+    // Look up any existing row FIRST — before any mutation — so the cross-host
+    // collision guard below can reject cleanly (no partial write to roll back).
+    const existingPR = await queryOne(db, `
+      SELECT id, host, pr_data FROM pr_metadata WHERE pr_number = ? AND repository = ? COLLATE NOCASE
+    `, [prInfo.number, repository]);
+
+    // Cross-host collision guard.
+    //
+    // INVARIANT: a given (repository, pr_number) identifies exactly ONE pull
+    // request across ALL hosts. This is the confirmed plan assumption
+    // (plans/per-pr-host-resolution.md, "Assumption (confirmed)") — PR numbers do
+    // NOT collide between github.com and an alt host for the same repo — and it
+    // is why durable identity stays keyed UNIQUE(pr_number, repository) with no
+    // host column and the /pr/:owner/:repo/:number URL scheme is unchanged.
+    //
+    // If that assumption is ever violated (two DIFFERENT PRs share a number on
+    // two hosts), the UPDATE arm below would silently overwrite the first PR's
+    // pr_data and re-point its reviews/worktrees at the second. Detect it: when
+    // this fetch's host differs from the stored row's host, the API id must
+    // match. Same id → same logical PR, the host difference is the intended
+    // self-heal relabel → proceed. Different id → genuine cross-host duplicate →
+    // refuse rather than corrupt the wrong PR. Unparseable stored id → proceed
+    // but warn (can't prove either way; nothing to compare against).
+    if (existingPR && writeHost && existingPR.host !== hostValue) {
+      const incomingId = prData.id ?? prData.node_id ?? null;
+      let storedId = null;
+      try {
+        const storedData = existingPR.pr_data ? JSON.parse(existingPR.pr_data) : null;
+        if (storedData) storedId = storedData.id ?? storedData.node_id ?? null;
+      } catch {
+        storedId = null; // unparseable → treated as "unknown" below
+      }
+      const storedHostLabel = existingPR.host === null ? 'github.com' : existingPR.host;
+      const incomingHostLabel = hostValue === null ? 'github.com' : hostValue;
+      if (storedId === null) {
+        logger.warn(
+          `storePRData: stored pr_metadata for ${repository} #${prInfo.number} has no parseable API id; ` +
+          `proceeding with host relabel (${storedHostLabel} -> ${incomingHostLabel})`
+        );
+      } else if (incomingId !== null && String(storedId) !== String(incomingId)) {
+        throw new Error(
+          `Cross-host PR conflict for ${repository} #${prInfo.number}: a DIFFERENT pull request with this ` +
+          `number is already stored on ${storedHostLabel}, but this fetch came from ${incomingHostLabel}. ` +
+          `pair-review assumes pull request numbers do not collide across hosts for a repository ` +
+          `(see plans/per-pr-host-resolution.md); reviewing two different PRs that share number ` +
+          `#${prInfo.number} on different hosts is not supported.`
+        );
+      }
+    }
+
     // Store or update worktree record (skip when using --use-checkout,
     // since the path is the user's working directory, not a managed worktree)
     if (!options.skipWorktreeRecord) {
@@ -67,19 +128,16 @@ async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath,
       fetched_at: new Date().toISOString()
     };
 
-    // First check if PR metadata exists
-    const existingPR = await queryOne(db, `
-      SELECT id FROM pr_metadata WHERE pr_number = ? AND repository = ? COLLATE NOCASE
-    `, [prInfo.number, repository]);
-
     const now = new Date().toISOString();
 
     if (existingPR) {
-      // Update existing PR metadata (preserves ID)
+      // Update existing PR metadata (preserves ID). The host column is only
+      // touched when the caller supplies one, so a plain re-fetch that doesn't
+      // know the host leaves any previously stamped value intact.
       await run(db, `
         UPDATE pr_metadata
         SET title = ?, description = ?, author = ?,
-            base_branch = ?, head_branch = ?, pr_data = ?,
+            base_branch = ?, head_branch = ?, pr_data = ?${writeHost ? ', host = ?' : ''},
             updated_at = CURRENT_TIMESTAMP, last_accessed_at = ?
         WHERE id = ?
       `, [
@@ -89,16 +147,18 @@ async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath,
         prData.base_branch,
         prData.head_branch,
         JSON.stringify(extendedPRData),
+        ...(writeHost ? [hostValue] : []),
         now,
         existingPR.id
       ]);
       logger.info(`Updated existing PR metadata (ID: ${existingPR.id})`);
     } else {
-      // Insert new PR metadata
+      // Insert new PR metadata. When no host is supplied the column is omitted
+      // and defaults to NULL (github.com).
       const result = await run(db, `
         INSERT INTO pr_metadata
-        (pr_number, repository, title, description, author, base_branch, head_branch, pr_data, last_accessed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (pr_number, repository, title, description, author, base_branch, head_branch, pr_data${writeHost ? ', host' : ''}, last_accessed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?${writeHost ? ', ?' : ''}, ?)
       `, [
         prInfo.number,
         repository,
@@ -108,6 +168,7 @@ async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath,
         prData.base_branch,
         prData.head_branch,
         JSON.stringify(extendedPRData),
+        ...(writeHost ? [hostValue] : []),
         now
       ]);
       logger.info(`Created new PR metadata (ID: ${result.lastID})`);
@@ -170,6 +231,122 @@ async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath,
     await run(db, 'ROLLBACK');
     logger.error('Error storing PR data:', error);
     throw new Error(`Failed to store PR data: ${error.message}`);
+  }
+}
+
+/**
+ * Resolve the per-PR host binding and fetch the PR, applying the host
+ * precedence used by every PR-setup entry point (web setup route + CLI):
+ *
+ *   1. explicit `host` (URL paste / request body): `undefined` = unknown,
+ *      `null` = github.com, `'<url>'` = an alt host. When defined,
+ *      `resolveHostBinding` validates it and throws on a stale/mismatched host.
+ *   2. stored `pr_metadata.host` (a row exists → `getPRHost !== undefined`).
+ *   3. ambiguity rule. For a DUAL repo (`api_host` + `exclusive: false`) whose
+ *      host is still unknown, PROBE: fetch from the alt host first and, ONLY on
+ *      a 404, fall back to github.com. Any non-404 error (auth, network, 5xx)
+ *      fails loudly WITHOUT falling back — a silent fallback could fetch a
+ *      same-numbered PR from the wrong system and stamp the wrong host.
+ *      Exclusive alt-host and plain github repos resolve to a single binding
+ *      with no probe (byte-identical to pre-dual behaviour).
+ *
+ * The chosen binding carries a `host` echo field (null for github.com, the
+ * api_host string for an alt host) that callers persist via `storePRData` — the
+ * self-healing step that stamps the host actually used.
+ *
+ * @param {Object} params
+ * @param {Object} params.db - Database instance (for the stored-host lookup)
+ * @param {Object} params.config - Application config
+ * @param {string} params.bindingRepository - `repos[...]` config-lookup key
+ * @param {string} params.owner
+ * @param {string} params.repo
+ * @param {number} params.prNumber
+ * @param {string|null|undefined} params.host - explicit host override (see above)
+ * @param {string} [params.githubToken] - fallback token when the chosen binding
+ *   resolves none (legacy github.com behaviour)
+ * @param {Object} [params.deps] - `{ GitHubClient }` override for tests
+ * @returns {Promise<{ binding: Object, prData: Object, githubClient: Object }>}
+ */
+async function resolvePrHostBinding({ db, config, bindingRepository, owner, repo, prNumber, host, githubToken, deps = {} }) {
+  const Client = deps.GitHubClient || GitHubClient;
+  const repository = normalizeRepository(owner, repo);
+  const repoConfig = getRepoConfig(config, bindingRepository);
+  const configuredApiHost = (repoConfig && typeof repoConfig.api_host === 'string' && repoConfig.api_host)
+    ? repoConfig.api_host
+    : null;
+  // A dual repo has an api_host but is not exclusive — its PRs may live on
+  // github.com OR the alt host, so an unknown host must be probed.
+  const isDual = isDualHostRepoConfig(repoConfig);
+
+  // Build the argument for `new Client(...)` from a resolved binding. A binding
+  // with a token is used as-is. A github-flavored binding (apiHost === null) with
+  // no token may fall back to the caller's github.com token (legacy behaviour).
+  // An ALT-flavored binding with no token must NOT fall back to `githubToken` —
+  // that would point Octokit at api.github.com while the caller records the
+  // result as the alt host (stamping a same-numbered github PR as alt). Guard on
+  // host flavor, not token truthiness: surface a clear missing-credential error.
+  const clientArgFor = (binding) => {
+    if (binding.token) return binding;
+    if (binding.apiHost === null) return githubToken;
+    throw new Error(
+      `No token configured for alt host ${binding.apiHost} (repo ${bindingRepository}). ` +
+      `Configure repos["${bindingRepository}"].token or token_command.`
+    );
+  };
+
+  // Apply host precedence to decide whether we know the host up front.
+  let effectiveHost;
+  let hostKnown = false;
+  if (host !== undefined) {
+    effectiveHost = host;
+    hostKnown = true;
+  } else {
+    const prMetadataRepo = new PRMetadataRepository(db);
+    const storedHost = await prMetadataRepo.getPRHost(repository, prNumber);
+    // storedHostToOption applies the legacy-NULL convention: `undefined` means
+    // "host unknown" (leave hostKnown false → ambiguity/probe path), while a
+    // returned option object pins the host.
+    const storedOption = storedHostToOption(config, bindingRepository, storedHost);
+    if (storedOption !== undefined) {
+      effectiveHost = storedOption.host;
+      hostKnown = true;
+    }
+  }
+
+  // Fixed-binding path: host is known, OR the repo can only live on one host
+  // (plain github / exclusive alt) so the ambiguity rule is unambiguous.
+  if (hostKnown || !isDual) {
+    const binding = resolveHostBinding(bindingRepository, config, hostKnown ? { host: effectiveHost } : {});
+    const client = new Client(clientArgFor(binding));
+    const repoExists = await client.repositoryExists(owner, repo);
+    if (!repoExists) {
+      throw new Error(`Repository ${owner}/${repo} not found`);
+    }
+    const prData = await client.fetchPullRequest(owner, repo, prNumber);
+    return { binding, prData, githubClient: client };
+  }
+
+  // Probe path: dual repo, host unknown. Try the alt host first. `clientArgFor`
+  // errors clearly if the alt binding has no token rather than silently probing
+  // github.com disguised as the alt host.
+  const altBinding = resolveHostBinding(bindingRepository, config, { host: configuredApiHost });
+  const altClient = new Client(clientArgFor(altBinding));
+  try {
+    const prData = await altClient.fetchPullRequest(owner, repo, prNumber);
+    logger.info(`PR #${prNumber} (${repository}) resolved to alt host ${configuredApiHost}`);
+    return { binding: altBinding, prData, githubClient: altClient };
+  } catch (altErr) {
+    if (altErr && altErr.status === 404) {
+      logger.info(`PR #${prNumber} (${repository}) not found on alt host ${configuredApiHost}; falling back to github.com`);
+      const githubBinding = resolveHostBinding(bindingRepository, config, { host: null });
+      const githubClient = new Client(clientArgFor(githubBinding));
+      const prData = await githubClient.fetchPullRequest(owner, repo, prNumber);
+      return { binding: githubBinding, prData, githubClient };
+    }
+    // Auth/network/5xx on the alt host — do NOT fall back to github.com.
+    throw new Error(
+      `Failed to fetch PR #${prNumber} from alt host ${configuredApiHost}: ${altErr.message}`
+    );
   }
 }
 
@@ -419,30 +596,30 @@ function isShaNotFoundError(err) {
  * @param {Object} [params.config] - Application config (for monorepo path lookup)
  * @param {import('../git/worktree-pool-lifecycle').WorktreePoolLifecycle} [params.poolLifecycle] - Shared pool lifecycle instance (avoids creating a fresh singleton)
  * @param {Object} [params.restoreMetadata] - Stored PR data for restore mode (skips GitHub fetch + diff)
+ * @param {string|null} [params.host] - Explicit per-PR host override (URL paste /
+ *   dashboard row): `null` = github.com, an api_host URL string = that alt host,
+ *   omitted (`undefined`) = unknown (derive from stored host / probe).
  * @param {Function} [params.onProgress] - Optional progress callback
  * @returns {Promise<{ reviewUrl: string, title: string }>}
  */
-async function setupPRReview({ db, owner, repo, prNumber, githubToken, bindingRepository: externalBindingRepository, config, onProgress, poolLifecycle: externalPoolLifecycle, restoreMetadata }) {
+async function setupPRReview({ db, owner, repo, prNumber, githubToken, bindingRepository: externalBindingRepository, config, host, onProgress, poolLifecycle: externalPoolLifecycle, restoreMetadata }) {
   const repository = normalizeRepository(owner, repo);
   const progress = onProgress || (() => {});
 
-  // Resolve the per-repo host binding so alt-host setups talk to the
-  // configured `api_host`. Use `resolveBindingRepositoryFromPR` so
-  // monorepo-style configs (one `repos[...]` entry serving many
-  // captured owner/repo) find the right binding. Fall back to the bare
-  // token shape if no config is available (legacy invocation path) or
-  // the binding resolved no token (callers in this case already
-  // pre-resolved it).
+  // Resolve the config-lookup key. Use `resolveBindingRepositoryFromPR` so
+  // monorepo-style configs (one `repos[...]` entry serving many captured
+  // owner/repo) find the right binding. Fall back to the PR identity when no
+  // config is available (legacy invocation path).
   const bindingRepository = externalBindingRepository
     || (config ? resolveBindingRepositoryFromPR(owner, repo, config) : repository);
-  const setupBinding = config ? resolveHostBinding(bindingRepository, config) : null;
-  const clientArg = (setupBinding && setupBinding.token)
-    ? setupBinding
-    : githubToken;
 
   const isRestore = !!(restoreMetadata && restoreMetadata.head_sha);
   let prData;
   let githubClient = null;
+  // Host actually used to fetch — persisted by storePRData (self-healing). Left
+  // undefined for restore mode and the legacy (no-config) path so those flows
+  // leave any previously-stamped host untouched.
+  let stampHost;
 
   if (isRestore) {
     prData = restoreMetadata;
@@ -450,21 +627,33 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, bindingRe
     progress({ step: 'fetch', status: 'completed', message: 'Using stored PR data.' });
   } else {
     // ------------------------------------------------------------------
-    // Step: verify - Verify repository access
+    // Step: verify + fetch - Resolve the per-PR host binding, verify access,
+    // and fetch PR data. `resolvePrHostBinding` applies host precedence
+    // (explicit host → stored host → ambiguity/probe) and, for a dual repo
+    // whose host is unknown, probes the alt host first (404 → github.com).
     // ------------------------------------------------------------------
     progress({ step: 'verify', status: 'running', message: 'Verifying repository access...' });
-    githubClient = new GitHubClient(clientArg);
-    const repoExists = await githubClient.repositoryExists(owner, repo);
-    if (!repoExists) {
-      throw new Error(`Repository ${owner}/${repo} not found`);
+    // Pair the 'fetch' step's completed event (below) with a running event and
+    // restore the spinner message; resolvePrHostBinding does the actual fetch.
+    progress({ step: 'fetch', status: 'running', message: 'Fetching pull request data from GitHub...' });
+    if (config) {
+      const resolved = await resolvePrHostBinding({
+        db, config, bindingRepository, owner, repo, prNumber, host, githubToken
+      });
+      githubClient = resolved.githubClient;
+      prData = resolved.prData;
+      stampHost = resolved.binding.host;
+    } else {
+      // Legacy path: no config, so bind directly with the supplied token and
+      // do not track a host.
+      githubClient = new GitHubClient(githubToken);
+      const repoExists = await githubClient.repositoryExists(owner, repo);
+      if (!repoExists) {
+        throw new Error(`Repository ${owner}/${repo} not found`);
+      }
+      prData = await githubClient.fetchPullRequest(owner, repo, prNumber);
     }
     progress({ step: 'verify', status: 'completed', message: 'Repository access verified.' });
-
-    // ------------------------------------------------------------------
-    // Step: fetch - Fetch PR data from GitHub
-    // ------------------------------------------------------------------
-    progress({ step: 'fetch', status: 'running', message: 'Fetching pull request data from GitHub...' });
-    prData = await githubClient.fetchPullRequest(owner, repo, prNumber);
     progress({ step: 'fetch', status: 'completed', message: 'Pull request data fetched.' });
   }
 
@@ -624,7 +813,9 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, bindingRe
   // Step: store - Persist PR data and register repository location
   // ------------------------------------------------------------------
   progress({ step: 'store', status: 'running', message: 'Storing pull request data...' });
-  const { isNewReview, reviewId } = await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath);
+  const { isNewReview, reviewId } = await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath, {
+    host: stampHost
+  });
 
   // Persist review→worktree mapping in DB for pool usage tracking
   if (poolWorktreeId) {
@@ -662,8 +853,15 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, bindingRe
     // fall back to a full fresh setup.
     if (isRestore && isShaNotFoundError(err)) {
       logger.warn(`Restore to stored SHA failed, falling back to fresh setup: ${err.message}`);
-      // Retry without restoreMetadata.
-      return setupPRReview({ db, owner, repo, prNumber, githubToken, config, onProgress, poolLifecycle: externalPoolLifecycle });
+      // Retry without restoreMetadata. Forward the explicit `host` and
+      // `bindingRepository` so the fresh fetch binds the SAME host the caller
+      // requested — re-deriving them here could bind a different host (probe a
+      // dual repo, or pick the wrong monorepo binding key).
+      return setupPRReview({
+        db, owner, repo, prNumber, githubToken,
+        bindingRepository: externalBindingRepository,
+        config, host, onProgress, poolLifecycle: externalPoolLifecycle
+      });
     }
 
     // Release the pool worktree so it doesn't stay permanently in_use.
@@ -684,4 +882,4 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, bindingRe
   }
 }
 
-module.exports = { setupPRReview, storePRData, registerRepositoryLocation, findRepositoryPath, isShaNotFoundError };
+module.exports = { setupPRReview, storePRData, resolvePrHostBinding, registerRepositoryLocation, findRepositoryPath, isShaNotFoundError };

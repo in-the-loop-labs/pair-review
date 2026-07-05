@@ -27,6 +27,7 @@ const { v4: uuidv4 } = require('uuid');
 const fs = require('fs').promises;
 const path = require('path');
 const { resolveHostBinding, resolveBindingRepositoryFromPR, getWorktreeDisplayName, resolveLoadSkills, buildCouncilProviderOverrides, getRepoSkipBulkFetch, getSummaryEnabled, getTourEnabled } = require('../config');
+const { storedHostToOption, isDualHostRepo } = require('../utils/host-resolution');
 const { resolveHostName } = require('../links/repo-links');
 const { backgroundQueue } = require('../ai/background-queue');
 const logger = require('../utils/logger');
@@ -130,12 +131,12 @@ module.exports._attachHunkHashes = attachHunkHashes;
  *
  * @param {import('express').Request} req
  * @param {string} repository - "owner/repo" identifier
- * @returns {{ binding: {apiHost: string|null, token: string, features: Object, source: string}, token: string }|null}
+ * @returns {Promise<{ binding: {apiHost: string|null, host: string|null, token: string, features: Object, source: string}, token: string, bindingRepository: string }|null>}
  *   `null` when no token can be resolved AND the repo is github.com (so
  *   callers can fall through to optional behaviour). Throws for alt-host
- *   misconfiguration.
+ *   misconfiguration and for a stale stored host that no longer matches config.
  */
-function resolveBindingForRequest(req, repository) {
+async function resolveBindingForRequest(req, repository) {
   const config = req.app.get('config') || {};
   // `repository` here is the PR-identity `${owner}/${repo}`. For
   // monorepo-style configs the binding-key in `config.repos` can differ;
@@ -143,7 +144,23 @@ function resolveBindingForRequest(req, repository) {
   // the host binding so per-repo tokens/api_host/features apply.
   const [owner, repo] = String(repository).split('/');
   const bindingRepository = resolveBindingRepositoryFromPR(owner, repo, config);
-  const binding = resolveHostBinding(bindingRepository, config);
+
+  // PR-aware host resolution. Every caller is an `/:owner/:repo/:number` route,
+  // so a per-PR host may already be stored. When a pr_metadata row exists, bind
+  // to its stored host (github for NULL, the api_host string for an alt host);
+  // when no row exists, fall back to the ambiguity rule (two-arg resolve). A
+  // stale stored host (config changed) makes resolveHostBinding throw — that
+  // surfaces to the route's error handler as a clear failure rather than a
+  // silent bind to a dead host.
+  const prNumber = parseInt(req.params && req.params.number, 10);
+  let hostOptions;
+  if (Number.isInteger(prNumber) && prNumber > 0) {
+    const prMetadataRepo = new PRMetadataRepository(req.app.get('db'));
+    const storedHost = await prMetadataRepo.getPRHost(repository, prNumber);
+    // Apply the legacy-NULL back-compat convention (see storedHostToOption).
+    hostOptions = storedHostToOption(config, bindingRepository, storedHost);
+  }
+  const binding = resolveHostBinding(bindingRepository, config, hostOptions || {});
   if (binding.token) {
     return { binding, token: binding.token, bindingRepository };
   }
@@ -343,7 +360,7 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
     {
       let resolved = null;
       try {
-        resolved = resolveBindingForRequest(req, repository);
+        resolved = await resolveBindingForRequest(req, repository);
       } catch (configErr) {
         // Alt-host repo with no token configured — surface the message
         // but don't fail the GET (draft info is supplementary).
@@ -383,7 +400,7 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
     {
       let resolved = null;
       try {
-        resolved = resolveBindingForRequest(req, repository);
+        resolved = await resolveBindingForRequest(req, repository);
       } catch (configErr) {
         logger.warn(configErr.message);
       }
@@ -542,7 +559,7 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
     // Resolve host binding for this repo (validates alt-host token presence).
     let binding;
     try {
-      const resolved = resolveBindingForRequest(req, repository);
+      const resolved = await resolveBindingForRequest(req, repository);
       if (!resolved) {
         return res.status(401).json({ error: 'GitHub token not configured' });
       }
@@ -653,7 +670,7 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
     {
       let resolved = null;
       try {
-        resolved = resolveBindingForRequest(req, repository);
+        resolved = await resolveBindingForRequest(req, repository);
       } catch (configErr) {
         logger.warn(configErr.message);
       }
@@ -915,7 +932,7 @@ router.get('/api/pr/:owner/:repo/:number/check-stale', async (req, res) => {
     // Fetch current PR from GitHub
     let binding;
     try {
-      const resolved = resolveBindingForRequest(req, repository);
+      const resolved = await resolveBindingForRequest(req, repository);
       if (!resolved) {
         return res.json({ isStale: null, error: 'GitHub token not configured' });
       }
@@ -987,7 +1004,7 @@ router.get('/api/pr/:owner/:repo/:number/github-drafts', async (req, res) => {
     // Initialize GitHub client and check for pending drafts on GitHub
     let binding;
     try {
-      const resolved = resolveBindingForRequest(req, repository);
+      const resolved = await resolveBindingForRequest(req, repository);
       if (!resolved) {
         return res.status(500).json({
           error: 'GitHub token not configured. Please check your ~/.pair-review/config.json'
@@ -1467,7 +1484,7 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
     // Resolve host binding (repo-aware: alt-host repos require their own token).
     let binding;
     try {
-      const resolved = resolveBindingForRequest(req, repository);
+      const resolved = await resolveBindingForRequest(req, repository);
       if (!resolved) {
         return res.status(500).json({
           error: 'GitHub token not configured. Please check your ~/.pair-review/config.json'
@@ -1747,9 +1764,12 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
       // Send success response after all database operations complete.
       // Use the configured remote-host display name (e.g. "Meteorite")
       // instead of the literal "GitHub". Resolve via the binding repository
-      // so monorepo url_pattern configs map to the right repos[...] entry.
+      // so monorepo url_pattern configs map to the right repos[...] entry, and
+      // pass the PR's resolved host (`binding.host`: null=github, api_host
+      // string=alt) so a dual-host repo names the system this PR was submitted
+      // to rather than its repo-level default.
       const cfg = req.app.get('config') || {};
-      const hostName = resolveHostName(cfg, resolveBindingRepositoryFromPR(owner, repo, cfg));
+      const hostName = resolveHostName(cfg, resolveBindingRepositoryFromPR(owner, repo, cfg), binding.host);
       res.json({
         success: true,
         message: `${event === 'DRAFT' ? 'Draft review created' : 'Review submitted'} successfully ${event === 'DRAFT' ? 'on' : 'to'} ${hostName}`,
@@ -1946,11 +1966,28 @@ router.post('/api/parse-pr-url', (req, res) => {
   const result = parser.parsePRUrl(url);
 
   if (result) {
+    // Report whether the resolved repo is DUAL (github + alt-host). A github URL
+    // (host === null) for a dual repo must be forwarded to setup as an explicit
+    // github pick (the "github" sentinel) so it does not probe alt-first; for a
+    // plain or exclusive repo the client omits host (no probe / avoids the
+    // exclusive-null throw). Resolve the binding key first (url_pattern match
+    // supplies it; otherwise derive from owner/repo).
+    const safeConfig = config || {};
+    const bindingRepository = result.bindingRepository
+      || resolveBindingRepositoryFromPR(result.owner, result.repo, safeConfig);
     return res.json({
       valid: true,
       owner: result.owner,
       repo: result.repo,
-      prNumber: result.number
+      prNumber: result.number,
+      // `host` tells the setup call which system the PR lives on: `null` =
+      // github.com (a github/graphite URL), an api_host URL string = that alt
+      // host (a `url_pattern` match), or absent when the parser could not tell.
+      // `bindingRepository` is the matched `repos[...]` config key (may differ
+      // from owner/repo for monorepo-style url_pattern configs).
+      host: result.host,
+      bindingRepository: result.bindingRepository,
+      isDualHost: isDualHostRepo(safeConfig, bindingRepository)
     });
   }
 
@@ -2067,7 +2104,7 @@ async function launchPrCouncilAnalysis(req, {
   // Build a GitHubClient for analyzer-side dedup pre-fetch (PR mode only).
   let councilGithubClient;
   try {
-    const resolved = resolveBindingForRequest(req, repository);
+    const resolved = await resolveBindingForRequest(req, repository);
     councilGithubClient = resolved ? new GitHubClient(resolved.binding) : undefined;
   } catch (configErr) {
     logger.warn(`Skipping GitHub dedup pre-fetch (council): ${configErr.message}`);
@@ -2190,7 +2227,7 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
     // for github.com repos we fall back to the server-startup cached token.
     let analyzerGithubClient;
     try {
-      const resolved = resolveBindingForRequest(req, repository);
+      const resolved = await resolveBindingForRequest(req, repository);
       analyzerGithubClient = resolved ? new GitHubClient(resolved.binding) : undefined;
     } catch (configErr) {
       // Alt-host misconfiguration — skip dedup pre-fetch with a clear log.
@@ -2709,7 +2746,7 @@ router.get('/api/pr/:owner/:repo/:number/share', async (req, res) => {
     // an alt-host's `getAuthenticatedUser` resolves the user on that host.
     let sharedBy = null;
     try {
-      const resolved = resolveBindingForRequest(req, repository);
+      const resolved = await resolveBindingForRequest(req, repository);
       if (resolved) {
         const githubClient = new GitHubClient(resolved.binding);
         const user = await githubClient.getAuthenticatedUser();
@@ -2843,7 +2880,7 @@ router.get('/api/pr/:owner/:repo/:number/stack-info', async (req, res) => {
 
     let binding;
     try {
-      const resolved = resolveBindingForRequest(req, repository);
+      const resolved = await resolveBindingForRequest(req, repository);
       if (!resolved) {
         return res.json({ stack: [] });
       }

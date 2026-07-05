@@ -148,8 +148,20 @@ describe('setupStackPR', () => {
       fakePRData,
       diff,
       changedFiles,
-      '/tmp/worktree/test-repo'
+      '/tmp/worktree/test-repo',
+      // No binding is passed in these params, so no host is stamped.
+      { host: undefined }
     );
+  });
+
+  it('stamps the binding host on storePRData when a binding is supplied', async () => {
+    await setupStackPR({
+      ...defaultParams(),
+      binding: { apiHost: 'https://alt.example/api/v3', host: 'https://alt.example/api/v3', token: 'alt-tok', features: {} }
+    });
+
+    const call = mockStorePRData.mock.calls[0];
+    expect(call[6]).toEqual({ host: 'https://alt.example/api/v3' });
   });
 
   it('handles already-existing PR records (isNew is false)', async () => {

@@ -3552,3 +3552,327 @@ describe('Migration 49 - is_file_level on external_comments', () => {
     expect(CURRENT_SCHEMA_VERSION).toBeGreaterThanOrEqual(49);
   });
 });
+
+describe('Migration 50 - host column on pr_metadata and github_pr_cache', () => {
+  let db;
+  const Database = require('better-sqlite3');
+
+  // Pre-50 shape: pr_metadata and github_pr_cache WITHOUT the host column.
+  function createPreMigration50Database() {
+    const testDb = new Database(':memory:');
+    testDb.exec(`
+      CREATE TABLE pr_metadata (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pr_number INTEGER NOT NULL,
+        repository TEXT NOT NULL,
+        title TEXT,
+        pr_data TEXT,
+        last_ai_run_id TEXT,
+        last_accessed_at TEXT,
+        UNIQUE(pr_number, repository)
+      )
+    `);
+    testDb.exec(`
+      CREATE TABLE github_pr_cache (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        owner TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        number INTEGER NOT NULL,
+        collection TEXT NOT NULL,
+        fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    testDb.pragma('user_version = 49');
+    return testDb;
+  }
+
+  function columnNames(testDb, table) {
+    return testDb.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
+  }
+
+  afterEach(() => {
+    if (db) { db.close(); db = null; }
+  });
+
+  it('adds the host column to both tables', () => {
+    db = createPreMigration50Database();
+    expect(columnNames(db, 'pr_metadata')).not.toContain('host');
+    expect(columnNames(db, 'github_pr_cache')).not.toContain('host');
+
+    MIGRATIONS[50](db);
+
+    expect(columnNames(db, 'pr_metadata')).toContain('host');
+    expect(columnNames(db, 'github_pr_cache')).toContain('host');
+  });
+
+  it('leaves existing rows with NULL host (no backfill)', () => {
+    db = createPreMigration50Database();
+    db.prepare("INSERT INTO pr_metadata (pr_number, repository, title) VALUES (1, 'o/r', 't')").run();
+
+    MIGRATIONS[50](db);
+
+    const row = db.prepare('SELECT host FROM pr_metadata WHERE pr_number = 1').get();
+    expect(row.host).toBeNull();
+  });
+
+  it('is idempotent — running twice does not throw or duplicate the column', () => {
+    db = createPreMigration50Database();
+    MIGRATIONS[50](db);
+    expect(() => MIGRATIONS[50](db)).not.toThrow();
+    expect(columnNames(db, 'pr_metadata').filter(n => n === 'host')).toHaveLength(1);
+    expect(columnNames(db, 'github_pr_cache').filter(n => n === 'host')).toHaveLength(1);
+  });
+
+  it('does not throw when a target table is absent', () => {
+    const testDb = new Database(':memory:');
+    testDb.pragma('user_version = 49');
+    expect(() => MIGRATIONS[50](testDb)).not.toThrow();
+    testDb.close();
+  });
+
+  it('a fresh database (full schema) already has the host columns', async () => {
+    db = await createTestDatabase();
+    expect((await query(db, 'PRAGMA table_info(pr_metadata)')).map(c => c.name)).toContain('host');
+    expect((await query(db, 'PRAGMA table_info(github_pr_cache)')).map(c => c.name)).toContain('host');
+  });
+
+  it('CURRENT_SCHEMA_VERSION reaches 50', () => {
+    const { CURRENT_SCHEMA_VERSION } = require('../../src/database');
+    expect(CURRENT_SCHEMA_VERSION).toBeGreaterThanOrEqual(50);
+  });
+});
+
+// ============================================================================
+// PRMetadataRepository.getPRHost Tests
+// ============================================================================
+
+describe('PRMetadataRepository.getPRHost', () => {
+  let db;
+  let prMetadataRepo;
+  const { PRMetadataRepository } = database;
+
+  beforeEach(async () => {
+    db = await createTestDatabase();
+    prMetadataRepo = new PRMetadataRepository(db);
+  });
+
+  afterEach(async () => {
+    if (db) {
+      await closeTestDatabase(db);
+    }
+  });
+
+  it('returns undefined when no pr_metadata row exists', async () => {
+    const host = await prMetadataRepo.getPRHost('owner/repo', 123);
+    expect(host).toBeUndefined();
+  });
+
+  it('returns null when the row exists but host is unset (github.com)', async () => {
+    await run(db, `INSERT INTO pr_metadata (pr_number, repository, title) VALUES (?, ?, ?)`, [123, 'owner/repo', 't']);
+    const host = await prMetadataRepo.getPRHost('owner/repo', 123);
+    expect(host).toBeNull();
+  });
+
+  it('returns the stored api_host URL string when set', async () => {
+    await run(db, `INSERT INTO pr_metadata (pr_number, repository, title, host) VALUES (?, ?, ?, ?)`,
+      [123, 'owner/repo', 't', 'https://ghe.example.com/api/v3']);
+    const host = await prMetadataRepo.getPRHost('owner/repo', 123);
+    expect(host).toBe('https://ghe.example.com/api/v3');
+  });
+
+  it('matches the repository case-insensitively (COLLATE NOCASE)', async () => {
+    await run(db, `INSERT INTO pr_metadata (pr_number, repository, title, host) VALUES (?, ?, ?, ?)`,
+      [123, 'Owner/Repo', 't', 'https://ghe.example.com/api/v3']);
+    const host = await prMetadataRepo.getPRHost('owner/repo', 123);
+    expect(host).toBe('https://ghe.example.com/api/v3');
+  });
+
+  it('distinguishes PRs by number within the same repository', async () => {
+    await run(db, `INSERT INTO pr_metadata (pr_number, repository, title, host) VALUES (?, ?, ?, ?)`,
+      [1, 'owner/repo', 't', 'https://ghe.example.com/api/v3']);
+    await run(db, `INSERT INTO pr_metadata (pr_number, repository, title) VALUES (?, ?, ?)`,
+      [2, 'owner/repo', 't']);
+
+    expect(await prMetadataRepo.getPRHost('owner/repo', 1)).toBe('https://ghe.example.com/api/v3');
+    expect(await prMetadataRepo.getPRHost('owner/repo', 2)).toBeNull();
+    expect(await prMetadataRepo.getPRHost('owner/repo', 3)).toBeUndefined();
+  });
+});
+
+// ============================================================================
+// PRMetadataRepository.updatePRHost Tests
+// ============================================================================
+
+describe('PRMetadataRepository.updatePRHost', () => {
+  let db;
+  let prMetadataRepo;
+  const { PRMetadataRepository } = database;
+
+  beforeEach(async () => {
+    db = await createTestDatabase();
+    prMetadataRepo = new PRMetadataRepository(db);
+  });
+
+  afterEach(async () => {
+    if (db) {
+      await closeTestDatabase(db);
+    }
+  });
+
+  it('updates host from a URL string to null (github.com)', async () => {
+    await run(db, `INSERT INTO pr_metadata (pr_number, repository, title, host) VALUES (?, ?, ?, ?)`,
+      [123, 'owner/repo', 't', 'https://ghe.example.com/api/v3']);
+
+    const changed = await prMetadataRepo.updatePRHost('owner/repo', 123, null);
+    expect(changed).toBe(true);
+    expect(await prMetadataRepo.getPRHost('owner/repo', 123)).toBeNull();
+  });
+
+  it('updates host from null to a URL string', async () => {
+    await run(db, `INSERT INTO pr_metadata (pr_number, repository, title) VALUES (?, ?, ?)`,
+      [123, 'owner/repo', 't']);
+    expect(await prMetadataRepo.getPRHost('owner/repo', 123)).toBeNull();
+
+    const changed = await prMetadataRepo.updatePRHost('owner/repo', 123, 'https://ghe.example.com/api/v3');
+    expect(changed).toBe(true);
+    expect(await prMetadataRepo.getPRHost('owner/repo', 123)).toBe('https://ghe.example.com/api/v3');
+  });
+
+  it('matches the repository case-insensitively (COLLATE NOCASE)', async () => {
+    await run(db, `INSERT INTO pr_metadata (pr_number, repository, title) VALUES (?, ?, ?)`,
+      [123, 'Owner/Repo', 't']);
+
+    const changed = await prMetadataRepo.updatePRHost('owner/repo', 123, 'https://ghe.example.com/api/v3');
+    expect(changed).toBe(true);
+    expect(await prMetadataRepo.getPRHost('Owner/Repo', 123)).toBe('https://ghe.example.com/api/v3');
+  });
+
+  it('is a no-op (returns false) when no matching row exists', async () => {
+    const changed = await prMetadataRepo.updatePRHost('owner/repo', 999, 'https://ghe.example.com/api/v3');
+    expect(changed).toBe(false);
+  });
+
+  it('leaves other columns untouched', async () => {
+    await run(db, `INSERT INTO pr_metadata (pr_number, repository, title, pr_data) VALUES (?, ?, ?, ?)`,
+      [123, 'owner/repo', 'Original title', '{"key":"value"}']);
+
+    await prMetadataRepo.updatePRHost('owner/repo', 123, 'https://ghe.example.com/api/v3');
+
+    const row = await queryOne(db,
+      'SELECT title, pr_data, host FROM pr_metadata WHERE pr_number = ? AND repository = ? COLLATE NOCASE',
+      [123, 'owner/repo']);
+    expect(row.title).toBe('Original title');
+    expect(row.pr_data).toBe('{"key":"value"}');
+    expect(row.host).toBe('https://ghe.example.com/api/v3');
+  });
+});
+
+describe('Migration 51 - widen idx_github_pr_cache_unique with host', () => {
+  let db;
+  const Database = require('better-sqlite3');
+
+  // Pre-51 shape: github_pr_cache WITH the host column (migration 50 already
+  // ran) but the OLD 4-column unique index.
+  function createPreMigration51Database() {
+    const testDb = new Database(':memory:');
+    testDb.exec(`
+      CREATE TABLE github_pr_cache (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        owner TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        number INTEGER NOT NULL,
+        collection TEXT NOT NULL,
+        host TEXT,
+        fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    testDb.exec('CREATE UNIQUE INDEX idx_github_pr_cache_unique ON github_pr_cache(collection, owner, repo, number)');
+    testDb.pragma('user_version = 50');
+    return testDb;
+  }
+
+  // Columns participating in the named index, in order.
+  function indexColumns(testDb, indexName) {
+    return testDb.prepare(`PRAGMA index_info(${indexName})`).all().map(r => r.name);
+  }
+
+  afterEach(() => {
+    if (db) { db.close(); db = null; }
+  });
+
+  it('rebuilds the unique index to include host', () => {
+    db = createPreMigration51Database();
+    expect(indexColumns(db, 'idx_github_pr_cache_unique')).toEqual(['collection', 'owner', 'repo', 'number']);
+
+    MIGRATIONS[51](db);
+
+    expect(indexColumns(db, 'idx_github_pr_cache_unique')).toEqual(['collection', 'owner', 'repo', 'number', 'host']);
+  });
+
+  it('is idempotent — running twice keeps the same index shape', () => {
+    db = createPreMigration51Database();
+    MIGRATIONS[51](db);
+    expect(() => MIGRATIONS[51](db)).not.toThrow();
+    expect(indexColumns(db, 'idx_github_pr_cache_unique')).toEqual(['collection', 'owner', 'repo', 'number', 'host']);
+  });
+
+  it('does not throw when github_pr_cache is absent', () => {
+    const testDb = new Database(':memory:');
+    testDb.pragma('user_version = 50');
+    expect(() => MIGRATIONS[51](testDb)).not.toThrow();
+    testDb.close();
+  });
+
+  it('a fresh database (full schema) already has host in the unique index', async () => {
+    db = await createTestDatabase();
+    const cols = (await query(db, 'PRAGMA index_info(idx_github_pr_cache_unique)')).map(r => r.name);
+    expect(cols).toEqual(['collection', 'owner', 'repo', 'number', 'host']);
+  });
+
+  it('CURRENT_SCHEMA_VERSION reaches 51', () => {
+    const { CURRENT_SCHEMA_VERSION } = require('../../src/database');
+    expect(CURRENT_SCHEMA_VERSION).toBeGreaterThanOrEqual(51);
+  });
+
+  // Regression for the actual failure: a github row (host NULL) and an alt-host
+  // row (host = api_host URL) sharing the same (collection, owner, repo, number)
+  // must coexist. Under the old 4-column index the second insert threw and the
+  // collections refresh rolled back the whole transaction, showing zero PRs.
+  it('lets github (host NULL) and alt-host rows with the same collection/owner/repo/number coexist', async () => {
+    db = await createTestDatabase();
+
+    await run(db, `
+      INSERT INTO github_pr_cache (owner, repo, number, collection, host)
+      VALUES ('owner', 'repo', 5, 'my-prs', NULL)
+    `);
+
+    // Same (collection, owner, repo, number), different host — must NOT throw.
+    await run(db, `
+      INSERT INTO github_pr_cache (owner, repo, number, collection, host)
+      VALUES ('owner', 'repo', 5, 'my-prs', 'https://alt.example/api/v3')
+    `);
+
+    const rows = await query(db, `
+      SELECT host FROM github_pr_cache
+      WHERE collection = 'my-prs' AND owner = 'owner' AND repo = 'repo' AND number = 5
+      ORDER BY host
+    `);
+    expect(rows.map(r => r.host)).toEqual([null, 'https://alt.example/api/v3']);
+  });
+
+  it('still rejects a duplicate row with the same host (same collection/owner/repo/number/host)', async () => {
+    db = await createTestDatabase();
+
+    await run(db, `
+      INSERT INTO github_pr_cache (owner, repo, number, collection, host)
+      VALUES ('owner', 'repo', 7, 'my-prs', 'https://alt.example/api/v3')
+    `);
+
+    await expect(
+      run(db, `
+        INSERT INTO github_pr_cache (owner, repo, number, collection, host)
+        VALUES ('owner', 'repo', 7, 'my-prs', 'https://alt.example/api/v3')
+      `)
+    ).rejects.toThrow(/UNIQUE/i);
+  });
+});

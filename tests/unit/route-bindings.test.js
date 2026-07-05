@@ -56,10 +56,15 @@ describe('PR-mode route call sites use host bindings (alt-host safety)', () => {
     expect(directReads).toBeLessThanOrEqual(1); // only inside resolveBindingForRequest
   });
 
-  it('src/main.js — performHeadlessReview resolves a binding before client construction', () => {
+  it('src/main.js — headless PR paths resolve a per-PR host binding before fetching', () => {
     const src = readSource('src/main.js');
-    expect(src).toMatch(/resolveHostBinding\(/);
-    expect(src).toMatch(/new GitHubClient\(headlessBinding\)/);
+    // Preflight resolves a binding (tolerating dual repos with an alt-only token)
+    // for the fail-fast credential check...
+    expect(src).toMatch(/resolvePreflightBinding\(/);
+    // ...and the fetch routes through the shared host-aware helper (which
+    // constructs the GitHubClient from the chosen binding, never a bare token).
+    expect(src).toMatch(/resolvePrHostBinding\(/);
+    expect(src).not.toMatch(/new GitHubClient\(githubToken\)/);
   });
 
   it('src/setup/pr-setup.js — setupPRReview routes through a host binding', () => {
@@ -79,7 +84,8 @@ describe('PR-mode route call sites use host bindings (alt-host safety)', () => {
     // configs where the config key differs from `${owner}/${repo}`), then
     // pass that key into `resolveHostBinding`.
     expect(src).toMatch(/resolveBindingRepositoryFromPR\(owner, repo, config\)/);
-    expect(src).toMatch(/resolveHostBinding\(bindingRepository, config\)/);
+    // Now host-aware: the third arg pins the main PR's stored host for the stack.
+    expect(src).toMatch(/resolveHostBinding\(bindingRepository, config, stackHostOption \|\| \{\}\)/);
     expect(src).toMatch(/new deps\.GitHubClient\(stackBinding\)/);
   });
 

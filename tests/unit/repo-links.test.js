@@ -405,3 +405,165 @@ describe('resolveHostName', () => {
     expect(resolveHostName({ repos: {} }, 'acme/widget')).toBe('GitHub');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Per-PR host awareness (dual-host repos). The `host` arg is: null = github,
+// an api_host URL string = the alt host, undefined = unknown / not applicable.
+// Only dual repos (`api_host` + `exclusive: false`) react to it; plain and
+// exclusive repos render byte-identically regardless of the arg.
+// ---------------------------------------------------------------------------
+describe('resolveRepoLinks host-awareness', () => {
+  const ALT_HOST = 'https://alt.example/api/v3';
+
+  // A full links block (external + explicit github/graphite hidden) as a
+  // dual-host repo would realistically configure it.
+  const LINKS = {
+    external: {
+      name: 'Meteorite',
+      label: 'Open on Meteorite',
+      url_template: 'https://meteorite.example/{owner}/{repo}/pull/{number}',
+    },
+    github: false,
+    graphite: false,
+  };
+
+  const plainConfig = { repos: { 'acme/widget': { links: LINKS } } };
+  const exclusiveConfig = {
+    repos: { 'acme/widget': { api_host: ALT_HOST, links: LINKS } },
+  };
+  const dualConfig = {
+    repos: { 'acme/widget': { api_host: ALT_HOST, exclusive: false, links: LINKS } },
+  };
+
+  describe('back-compat: non-dual repos ignore the host arg', () => {
+    it('plain repo renders identically for null / alt / omitted host', () => {
+      const base = resolveRepoLinks(plainConfig, 'acme/widget');
+      expect(resolveRepoLinks(plainConfig, 'acme/widget', null)).toEqual(base);
+      expect(resolveRepoLinks(plainConfig, 'acme/widget', ALT_HOST)).toEqual(base);
+    });
+
+    it('exclusive alt-host repo renders identically for null / alt / omitted host', () => {
+      const base = resolveRepoLinks(exclusiveConfig, 'acme/widget');
+      // Exclusive repo: external shown, github/graphite hidden by explicit config.
+      expect(base.external).not.toBeNull();
+      expect(base.github).toBe(false);
+      expect(base.graphite).toBe(false);
+      // The host arg must not change anything — including host=null, which
+      // would THROW in resolveHostBinding but must be inert for links.
+      expect(resolveRepoLinks(exclusiveConfig, 'acme/widget', null)).toEqual(base);
+      expect(resolveRepoLinks(exclusiveConfig, 'acme/widget', ALT_HOST)).toEqual(base);
+    });
+  });
+
+  describe('dual repo: github-hosted PR (host = null)', () => {
+    it('hides the external link and keeps the github link', () => {
+      const result = resolveRepoLinks(dualConfig, 'acme/widget', null);
+      expect(result.external).toBeNull();
+      // Explicit links.github:false is an alt-host override authored for the
+      // alt side; on a github PR the default github link is kept... but an
+      // EXPLICIT false still hides. Here LINKS sets github:false, so it hides.
+      expect(result.github).toBe(false);
+      expect(result.graphite).toBe(false);
+    });
+
+    it('keeps github/graphite when no explicit override hides them', () => {
+      const cfg = {
+        repos: {
+          'acme/widget': {
+            api_host: ALT_HOST,
+            exclusive: false,
+            links: {
+              external: {
+                name: 'Meteorite',
+                label: 'Open on Meteorite',
+                url_template: 'https://meteorite.example/{owner}/{repo}/pull/{number}',
+              },
+            },
+          },
+        },
+      };
+      const result = resolveRepoLinks(cfg, 'acme/widget', null);
+      expect(result.external).toBeNull();
+      expect(result.github).toBe(true);
+      expect(result.graphite).toBe(true);
+    });
+  });
+
+  describe('dual repo: alt-hosted PR (host = api_host string)', () => {
+    it('shows the external link and hides github/graphite', () => {
+      const result = resolveRepoLinks(dualConfig, 'acme/widget', ALT_HOST);
+      expect(result.external).not.toBeNull();
+      expect(result.external.name).toBe('Meteorite');
+      expect(result.github).toBe(false);
+      expect(result.graphite).toBe(false);
+    });
+
+    it('hides github/graphite even without explicit links.github/graphite:false', () => {
+      const cfg = {
+        repos: {
+          'acme/widget': {
+            api_host: ALT_HOST,
+            exclusive: false,
+            links: {
+              external: {
+                name: 'Meteorite',
+                label: 'Open on Meteorite',
+                url_template: 'https://meteorite.example/{owner}/{repo}/pull/{number}',
+              },
+            },
+          },
+        },
+      };
+      const result = resolveRepoLinks(cfg, 'acme/widget', ALT_HOST);
+      expect(result.external).not.toBeNull();
+      expect(result.github).toBe(false);
+      expect(result.graphite).toBe(false);
+    });
+  });
+
+  describe('dual repo: unknown host (omitted arg)', () => {
+    it('falls back to repo-level defaults (today\'s behaviour)', () => {
+      const result = resolveRepoLinks(dualConfig, 'acme/widget');
+      // No host known → no per-host flip; external present, explicit
+      // github/graphite:false honoured.
+      expect(result.external).not.toBeNull();
+      expect(result.github).toBe(false);
+      expect(result.graphite).toBe(false);
+    });
+  });
+});
+
+describe('resolveHostName host-awareness', () => {
+  const ALT_HOST = 'https://alt.example/api/v3';
+  const LINKS = {
+    external: {
+      name: 'Meteorite',
+      label: 'Open on Meteorite',
+      url_template: 'https://meteorite.example/{owner}/{repo}/pull/{number}',
+    },
+  };
+  const dualConfig = {
+    repos: { 'acme/widget': { api_host: ALT_HOST, exclusive: false, links: LINKS } },
+  };
+  const exclusiveConfig = {
+    repos: { 'acme/widget': { api_host: ALT_HOST, links: LINKS } },
+  };
+
+  it('dual repo + github-hosted PR reports "GitHub"', () => {
+    expect(resolveHostName(dualConfig, 'acme/widget', null)).toBe('GitHub');
+  });
+
+  it('dual repo + alt-hosted PR reports the external name', () => {
+    expect(resolveHostName(dualConfig, 'acme/widget', ALT_HOST)).toBe('Meteorite');
+  });
+
+  it('dual repo + unknown host reports the external name (repo default)', () => {
+    expect(resolveHostName(dualConfig, 'acme/widget')).toBe('Meteorite');
+  });
+
+  it('exclusive repo ignores the host arg (always the external name)', () => {
+    expect(resolveHostName(exclusiveConfig, 'acme/widget', null)).toBe('Meteorite');
+    expect(resolveHostName(exclusiveConfig, 'acme/widget', ALT_HOST)).toBe('Meteorite');
+    expect(resolveHostName(exclusiveConfig, 'acme/widget')).toBe('Meteorite');
+  });
+});

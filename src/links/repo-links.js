@@ -31,6 +31,7 @@
  */
 
 const { getRepoConfig } = require('../config');
+const { isDualHostRepoConfig } = require('../utils/host-resolution');
 const logger = require('../utils/logger');
 
 // Whitelist of allowed `{placeholder}` names. Anything else in the template
@@ -158,13 +159,28 @@ function sanitizeSvgIcon(svg) {
  * malformed), a warning is logged and `icon` becomes `null` — the link
  * is still rendered, just without a custom icon.
  *
+ * **Per-PR host awareness (dual-host repos only).** `host` is the PR's
+ * resolved host: `null` = github.com, an `api_host` URL string = the alt
+ * host, `undefined` = unknown / not applicable. It only affects a
+ * *dual-host* repo (`api_host` + `exclusive: false`):
+ *   - `host === null` (github-hosted PR) → keep the GitHub/Graphite links
+ *     (subject to any explicit `links.github/graphite: false`) and hide the
+ *     alt-host external link.
+ *   - `host === '<url>'` (alt-hosted PR) → keep the external link and hide
+ *     the GitHub/Graphite links.
+ * Exclusive alt-host repos and plain github repos ignore `host` entirely, so
+ * existing two-arg callers (and `host === undefined`) render byte-identically
+ * to before this parameter existed.
+ *
  * @param {Object} config
  * @param {string} repository  Canonical `owner/repo` identifier
+ * @param {string|null} [host]  PR's resolved host: null=github, url=alt,
+ *                              undefined=unknown/not applicable
  * @returns {{ external: { label: string, url_template: string, icon: string|null }|null,
  *             github: boolean,
  *             graphite: boolean }}
  */
-function resolveRepoLinks(config, repository) {
+function resolveRepoLinks(config, repository, host = undefined) {
   const result = { external: null, github: true, graphite: true };
   if (!config || !repository) return result;
 
@@ -172,33 +188,47 @@ function resolveRepoLinks(config, repository) {
   if (!repoConfig || typeof repoConfig !== 'object') return result;
 
   const links = repoConfig.links;
-  if (!links || typeof links !== 'object') return result;
+  if (links && typeof links === 'object') {
+    if (links.github === false) result.github = false;
+    if (links.graphite === false) result.graphite = false;
 
-  if (links.github === false) result.github = false;
-  if (links.graphite === false) result.graphite = false;
-
-  const ext = links.external;
-  if (ext && typeof ext === 'object'
-      && typeof ext.label === 'string' && ext.label
-      && typeof ext.url_template === 'string'
-      && ext.url_template.startsWith('https://')) {
-    let icon = null;
-    if (ext.icon !== undefined && ext.icon !== null && ext.icon !== '') {
-      icon = sanitizeSvgIcon(ext.icon);
-      if (icon === null) {
-        logger.warn(
-          `Dropping links.external.icon for "${repository}" — failed sanitisation.`
-        );
+    const ext = links.external;
+    if (ext && typeof ext === 'object'
+        && typeof ext.label === 'string' && ext.label
+        && typeof ext.url_template === 'string'
+        && ext.url_template.startsWith('https://')) {
+      let icon = null;
+      if (ext.icon !== undefined && ext.icon !== null && ext.icon !== '') {
+        icon = sanitizeSvgIcon(ext.icon);
+        if (icon === null) {
+          logger.warn(
+            `Dropping links.external.icon for "${repository}" — failed sanitisation.`
+          );
+        }
       }
+      result.external = {
+        // Optional host display name (e.g. "Meteorite"). When absent, the
+        // field is null and consumers fall back to "GitHub" via resolveHostName.
+        name: (typeof ext.name === 'string' && ext.name) ? ext.name : null,
+        label: ext.label,
+        url_template: ext.url_template,
+        icon
+      };
     }
-    result.external = {
-      // Optional host display name (e.g. "Meteorite"). When absent, the
-      // field is null and consumers fall back to "GitHub" via resolveHostName.
-      name: (typeof ext.name === 'string' && ext.name) ? ext.name : null,
-      label: ext.label,
-      url_template: ext.url_template,
-      icon
-    };
+  }
+
+  // Per-PR host awareness for dual-host repos. A `host` of `undefined`
+  // (omitted arg, unknown host) leaves the repo-level result untouched, so
+  // non-dual repos and legacy two-arg callers are unaffected.
+  if (host !== undefined && isDualHostRepoConfig(repoConfig)) {
+    if (host === null) {
+      // github-hosted PR: the alt-host external link does not apply.
+      result.external = null;
+    } else {
+      // alt-hosted PR: hide the GitHub/Graphite links, keep the external one.
+      result.github = false;
+      result.graphite = false;
+    }
   }
 
   return result;
@@ -212,12 +242,20 @@ function resolveRepoLinks(config, repository) {
  * `"GitHub"`. This is the server-side counterpart to the frontend
  * `window.RepoLinks.hostName()` accessor.
  *
+ * Host-aware for dual-host repos: a github-hosted PR (`host === null`)
+ * reports "GitHub" even when an external name is configured, because
+ * `resolveRepoLinks` clears the external link for that host. See
+ * `resolveRepoLinks` for the `host` semantics. Non-dual repos and two-arg
+ * callers behave exactly as before.
+ *
  * @param {Object} config
  * @param {string} repository  Canonical `owner/repo` identifier
+ * @param {string|null} [host]  PR's resolved host: null=github, url=alt,
+ *                              undefined=unknown/not applicable
  * @returns {string} The configured host name, or "GitHub" by default
  */
-function resolveHostName(config, repository) {
-  const links = resolveRepoLinks(config, repository);
+function resolveHostName(config, repository, host = undefined) {
+  const links = resolveRepoLinks(config, repository, host);
   return (links.external && links.external.name) ? links.external.name : 'GitHub';
 }
 

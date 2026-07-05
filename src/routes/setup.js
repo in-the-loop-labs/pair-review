@@ -15,7 +15,8 @@ const crypto = require('crypto');
 const { activeSetups, broadcastSetupProgress } = require('./shared');
 const { setupPRReview } = require('../setup/pr-setup');
 const { setupLocalReview } = require('../setup/local-setup');
-const { getGitHubToken, expandPath, resolveBindingRepositoryFromPR } = require('../config');
+const { expandPath, resolveBindingRepositoryFromPR } = require('../config');
+const { resolvePreflightBinding } = require('../utils/host-resolution');
 const { queryOne, ReviewRepository } = require('../database');
 const { normalizeRepository } = require('../utils/paths');
 const { rejectUrlLikeLocalReviewPath } = require('../utils/local-path-input');
@@ -60,18 +61,38 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
       return res.status(400).json({ error: 'Invalid owner, repo, or PR number' });
     }
 
+    // Optional per-PR host override. Contract: `null` = github.com, an api_host
+    // URL string = that alt host, absent/undefined = unknown (server derives via
+    // stored host or a probe). A dashboard row (alt-host PR) and a URL paste both
+    // send this so setup binds to the right system without probing. Reject other
+    // shapes; the "must match the repo's api_host" check is enforced downstream
+    // by resolveHostBinding (a mismatch surfaces as a setup error).
+    const bodyHost = req.body ? req.body.host : undefined;
+    if (bodyHost !== undefined && bodyHost !== null && typeof bodyHost !== 'string') {
+      return res.status(400).json({ error: 'Invalid host: expected null or an api_host URL string' });
+    }
+
     const db = req.app.get('db');
     const config = req.app.get('config');
 
-    // GitHub token is required for PR setup. Resolve the binding key
-    // first so monorepo-style `repos[...]` entries (matched via
-    // `url_pattern` named captures) supply their per-repo token even when
-    // the captured owner/repo differs from the config key.
+    // GitHub token is required for PR setup. Resolve the binding key first so
+    // monorepo-style `repos[...]` entries (matched via `url_pattern` named
+    // captures) supply their per-repo token even when the captured owner/repo
+    // differs from the config key.
     const repositoryForToken = resolveBindingRepositoryFromPR(owner, repo, config);
-    const githubToken = getGitHubToken(config, repositoryForToken);
-    if (!githubToken) {
+    // Preflight the credential. resolvePreflightBinding gates on ANY usable
+    // binding — including a dual repo's alt-only token or a token pinned by an
+    // explicit body host — so an alt-host setup isn't falsely 401'd.
+    const preflightBinding = resolvePreflightBinding(repositoryForToken, config, bodyHost);
+    if (!preflightBinding.token) {
       return res.status(401).json({ error: 'GitHub token not configured' });
     }
+    // Split the two roles: the gate above accepts an alt token, but only a
+    // github.com token may be forwarded downstream as the github FALLBACK.
+    // resolvePrHostBinding can drop `githubToken` into a github.com client on the
+    // 404 probe fallback (clientArgFor's github-flavored branch), so an alt token
+    // must NEVER reach it — the CLI (main.js) applies the identical guard.
+    const githubToken = preflightBinding.apiHost === null ? preflightBinding.token : '';
 
     // Concurrency guard: if a setup is already running for this PR, return its ID
     const setupKey = `pr:${owner}/${repo}/${prNumber}`;
@@ -149,6 +170,7 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
           githubToken,
           bindingRepository: repositoryForToken,
           config,
+          host: bodyHost,
           poolLifecycle: req.app.get('poolLifecycle'),
           restoreMetadata,
           onProgress: (progress) => {

@@ -19,17 +19,17 @@ describe('PRArgumentParser', () => {
   describe('parseGitHubURL', () => {
     it('should parse standard GitHub PR URL', () => {
       const result = parser.parseGitHubURL('https://github.com/owner/repo/pull/123');
-      expect(result).toEqual({ owner: 'owner', repo: 'repo', number: 123 });
+      expect(result).toEqual({ owner: 'owner', repo: 'repo', number: 123, host: null });
     });
 
     it('should parse GitHub PR URL with trailing segments', () => {
       const result = parser.parseGitHubURL('https://github.com/owner/repo/pull/456/files');
-      expect(result).toEqual({ owner: 'owner', repo: 'repo', number: 456 });
+      expect(result).toEqual({ owner: 'owner', repo: 'repo', number: 456, host: null });
     });
 
     it('should parse GitHub PR URL with commits tab', () => {
       const result = parser.parseGitHubURL('https://github.com/owner/repo/pull/789/commits');
-      expect(result).toEqual({ owner: 'owner', repo: 'repo', number: 789 });
+      expect(result).toEqual({ owner: 'owner', repo: 'repo', number: 789, host: null });
     });
 
     it('should throw error for invalid GitHub URL', () => {
@@ -44,47 +44,47 @@ describe('PRArgumentParser', () => {
   describe('parsePRUrl', () => {
     it('should parse GitHub URL with protocol', () => {
       const result = parser.parsePRUrl('https://github.com/owner/repo/pull/123');
-      expect(result).toEqual({ owner: 'owner', repo: 'repo', number: 123 });
+      expect(result).toEqual({ owner: 'owner', repo: 'repo', number: 123, host: null });
     });
 
     it('should parse GitHub URL without protocol', () => {
       const result = parser.parsePRUrl('github.com/owner/repo/pull/456');
-      expect(result).toEqual({ owner: 'owner', repo: 'repo', number: 456 });
+      expect(result).toEqual({ owner: 'owner', repo: 'repo', number: 456, host: null });
     });
 
     it('should parse Graphite .dev URL with protocol', () => {
       const result = parser.parsePRUrl('https://app.graphite.dev/github/pr/shop/world/337891');
-      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 337891 });
+      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 337891, host: null });
     });
 
     it('should parse Graphite .com URL with protocol', () => {
       const result = parser.parsePRUrl('https://app.graphite.com/github/pr/shop/world/337891');
-      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 337891 });
+      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 337891, host: null });
     });
 
     it('should parse Graphite /pull/ URL with protocol', () => {
       const result = parser.parsePRUrl('https://app.graphite.com/github/shop/world/pull/540063');
-      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 540063 });
+      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 540063, host: null });
     });
 
     it('should parse Graphite /pull/ URL without protocol', () => {
       const result = parser.parsePRUrl('app.graphite.com/github/shop/world/pull/540063');
-      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 540063 });
+      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 540063, host: null });
     });
 
     it('should parse Graphite .dev URL without protocol', () => {
       const result = parser.parsePRUrl('app.graphite.dev/github/pr/shop/world/337891');
-      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 337891 });
+      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 337891, host: null });
     });
 
     it('should parse Graphite .com URL without protocol', () => {
       const result = parser.parsePRUrl('app.graphite.com/github/pr/shop/world/337891');
-      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 337891 });
+      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 337891, host: null });
     });
 
     it('should handle whitespace around URL', () => {
       const result = parser.parsePRUrl('  https://github.com/owner/repo/pull/789  ');
-      expect(result).toEqual({ owner: 'owner', repo: 'repo', number: 789 });
+      expect(result).toEqual({ owner: 'owner', repo: 'repo', number: 789, host: null });
     });
 
     it('should return null for invalid URL', () => {
@@ -107,9 +107,11 @@ describe('PRArgumentParser', () => {
       expect(parser.parsePRUrl(123)).toBeNull();
     });
 
-    it('should parse pair-review:// protocol URL', () => {
+    it('should parse pair-review:// protocol URL (host undefined — no host in the scheme)', () => {
       const result = parser.parsePRUrl('pair-review://pr/owner/repo/123');
       expect(result).toEqual({ owner: 'owner', repo: 'repo', number: 123 });
+      // Not github-only and no host in the path → undefined so it probes/derives.
+      expect(result.host).toBeUndefined();
     });
 
     it('should return null for invalid pair-review:// protocol URL', () => {
@@ -120,32 +122,32 @@ describe('PRArgumentParser', () => {
   describe('parseGraphiteURL', () => {
     it('should parse Graphite URL with .dev domain', () => {
       const result = parser.parseGraphiteURL('https://app.graphite.dev/github/pr/shop/world/337891');
-      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 337891 });
+      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 337891, host: null });
     });
 
     it('should parse Graphite URL with .com domain', () => {
       const result = parser.parseGraphiteURL('https://app.graphite.com/github/pr/shop/world/337891');
-      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 337891 });
+      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 337891, host: null });
     });
 
     it('should parse Graphite URL with encoded title segment', () => {
       const result = parser.parseGraphiteURL('https://app.graphite.com/github/pr/shop/world/338808/%5BConveyor%5D-Minor-update-to-audit-release-cycle-help');
-      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 338808 });
+      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 338808, host: null });
     });
 
     it('should parse Graphite URL with plain title segment', () => {
       const result = parser.parseGraphiteURL('https://app.graphite.dev/github/pr/my-org/my-repo/12345/fix-bug-in-parser');
-      expect(result).toEqual({ owner: 'my-org', repo: 'my-repo', number: 12345 });
+      expect(result).toEqual({ owner: 'my-org', repo: 'my-repo', number: 12345, host: null });
     });
 
     it('should parse Graphite URL with query parameters', () => {
       const result = parser.parseGraphiteURL('https://app.graphite.com/github/pr/my-org/my-repo/123?ref=gt-pasteable-stack');
-      expect(result).toEqual({ owner: 'my-org', repo: 'my-repo', number: 123 });
+      expect(result).toEqual({ owner: 'my-org', repo: 'my-repo', number: 123, host: null });
     });
 
     it('should handle org/repo with hyphens', () => {
       const result = parser.parseGraphiteURL('https://app.graphite.dev/github/pr/my-cool-org/my-cool-repo/999');
-      expect(result).toEqual({ owner: 'my-cool-org', repo: 'my-cool-repo', number: 999 });
+      expect(result).toEqual({ owner: 'my-cool-org', repo: 'my-cool-repo', number: 999, host: null });
     });
 
     it('should throw error for invalid Graphite URL missing PR number', () => {
@@ -166,29 +168,30 @@ describe('PRArgumentParser', () => {
 
     it('should parse Graphite /pull/ URL with .com domain', () => {
       const result = parser.parseGraphiteURL('https://app.graphite.com/github/shop/world/pull/540063');
-      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 540063 });
+      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 540063, host: null });
     });
 
     it('should parse Graphite /pull/ URL with .dev domain', () => {
       const result = parser.parseGraphiteURL('https://app.graphite.dev/github/shop/world/pull/540063');
-      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 540063 });
+      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 540063, host: null });
     });
 
     it('should parse Graphite /pull/ URL with title segment', () => {
       const result = parser.parseGraphiteURL('https://app.graphite.com/github/shop/world/pull/540063/fix-something');
-      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 540063 });
+      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 540063, host: null });
     });
 
     it('should parse Graphite /pull/ URL with query parameters', () => {
       const result = parser.parseGraphiteURL('https://app.graphite.com/github/shop/world/pull/540063?ref=gt-pasteable-stack');
-      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 540063 });
+      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 540063, host: null });
     });
   });
 
   describe('parseProtocolURL', () => {
-    it('should parse valid pair-review:// PR URL', () => {
+    it('should parse valid pair-review:// PR URL (host undefined)', () => {
       const result = parser.parseProtocolURL('pair-review://pr/owner/repo/123');
       expect(result).toEqual({ owner: 'owner', repo: 'repo', number: 123 });
+      expect(result.host).toBeUndefined();
     });
 
     it('should parse protocol URL with trailing path', () => {
@@ -217,27 +220,27 @@ describe('PRArgumentParser', () => {
   describe('parsePRArguments', () => {
     it('should parse GitHub URL', async () => {
       const result = await parser.parsePRArguments(['https://github.com/owner/repo/pull/123']);
-      expect(result).toEqual({ owner: 'owner', repo: 'repo', number: 123 });
+      expect(result).toEqual({ owner: 'owner', repo: 'repo', number: 123, host: null });
     });
 
     it('should parse Graphite .dev URL', async () => {
       const result = await parser.parsePRArguments(['https://app.graphite.dev/github/pr/shop/world/337891']);
-      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 337891 });
+      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 337891, host: null });
     });
 
     it('should parse Graphite .com URL', async () => {
       const result = await parser.parsePRArguments(['https://app.graphite.com/github/pr/shop/world/337891']);
-      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 337891 });
+      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 337891, host: null });
     });
 
     it('should parse Graphite URL with title', async () => {
       const result = await parser.parsePRArguments(['https://app.graphite.com/github/pr/shop/world/338808/%5BConveyor%5D-Minor-update-to-audit-release-cycle-help']);
-      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 338808 });
+      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 338808, host: null });
     });
 
     it('should parse Graphite /pull/ URL', async () => {
       const result = await parser.parsePRArguments(['https://app.graphite.com/github/shop/world/pull/540063']);
-      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 540063 });
+      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 540063, host: null });
     });
 
     it('should parse PR number and fetch repo from git remote', async () => {
@@ -261,6 +264,7 @@ describe('PRArgumentParser', () => {
     it('should parse pair-review:// protocol URL', async () => {
       const result = await parser.parsePRArguments(['pair-review://pr/facebook/react/12345']);
       expect(result).toEqual({ owner: 'facebook', repo: 'react', number: 12345 });
+      expect(result.host).toBeUndefined();
     });
   });
 
@@ -277,7 +281,7 @@ describe('PRArgumentParser', () => {
       const result = await configuredParser.parsePRArguments([
         'https://althost.example/acme/widgets/pull/42'
       ]);
-      expect(result).toEqual({ owner: 'acme', repo: 'widgets', number: 42, bindingRepository: 'acme/widgets' });
+      expect(result).toEqual({ owner: 'acme', repo: 'widgets', number: 42, bindingRepository: 'acme/widgets', host: null });
     });
 
     it('should still resolve github.com URLs via parseGitHubURL when config has no matching pattern', async () => {
@@ -292,7 +296,7 @@ describe('PRArgumentParser', () => {
       const result = await configuredParser.parsePRArguments([
         'https://github.com/octocat/Hello-World/pull/7'
       ]);
-      expect(result).toEqual({ owner: 'octocat', repo: 'Hello-World', number: 7 });
+      expect(result).toEqual({ owner: 'octocat', repo: 'Hello-World', number: 7, host: null });
     });
 
     it('should prefer matchRepoByUrl over parseGitHubURL when both could match', async () => {
@@ -310,7 +314,7 @@ describe('PRArgumentParser', () => {
       const result = await configuredParser.parsePRArguments([
         'https://github.com/some-other/repo/pull/9'
       ]);
-      expect(result).toEqual({ owner: 'acme', repo: 'widgets', number: 9, bindingRepository: 'acme/widgets' });
+      expect(result).toEqual({ owner: 'acme', repo: 'widgets', number: 9, bindingRepository: 'acme/widgets', host: null });
     });
 
     it('should fall back to GitHub parsing when url_pattern lacks a number', async () => {
@@ -327,7 +331,7 @@ describe('PRArgumentParser', () => {
       const result = await configuredParser.parsePRArguments([
         'https://github.com/octocat/Hello-World/pull/11'
       ]);
-      expect(result).toEqual({ owner: 'octocat', repo: 'Hello-World', number: 11 });
+      expect(result).toEqual({ owner: 'octocat', repo: 'Hello-World', number: 11, host: null });
     });
 
     it('parsePRUrl should respect url_pattern when called directly', () => {
@@ -342,7 +346,77 @@ describe('PRArgumentParser', () => {
       const result = configuredParser.parsePRUrl(
         'https://althost.example/acme/widgets/pull/123'
       );
-      expect(result).toEqual({ owner: 'acme', repo: 'widgets', number: 123, bindingRepository: 'acme/widgets' });
+      expect(result).toEqual({ owner: 'acme', repo: 'widgets', number: 123, bindingRepository: 'acme/widgets', host: null });
+    });
+
+    it('should carry the matched repo api_host as host on a url_pattern match', () => {
+      const config = {
+        repos: {
+          'acme/widgets': {
+            api_host: 'https://althost.example/api/v3',
+            url_pattern: '^https://althost\\.example/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>[0-9]+)'
+          }
+        }
+      };
+      const configuredParser = new PRArgumentParser(config);
+      const result = configuredParser.parsePRUrl('https://althost.example/acme/widgets/pull/42');
+      expect(result).toEqual({
+        owner: 'acme', repo: 'widgets', number: 42,
+        bindingRepository: 'acme/widgets',
+        host: 'https://althost.example/api/v3'
+      });
+    });
+
+    it('does NOT let an over-broad api_host url_pattern hijack a canonical github.com URL (FINDING B)', () => {
+      const config = {
+        repos: {
+          'acme/widgets': {
+            api_host: 'https://althost.example/api/v3',
+            // Over-broad / unanchored — also matches github.com URLs.
+            url_pattern: '/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>[0-9]+)'
+          }
+        }
+      };
+      const p = new PRArgumentParser(config);
+      const result = p.parsePRUrl('https://github.com/real-owner/real-repo/pull/9');
+      // Discarded the alt match; fell through to the real github parser.
+      expect(result.host).toBe(null);
+      expect(result.owner).toBe('real-owner');
+      expect(result.repo).toBe('real-repo');
+      expect(result.number).toBe(9);
+      expect(result.bindingRepository).toBeUndefined();
+    });
+
+    it('does NOT let an over-broad api_host url_pattern hijack a canonical Graphite URL', () => {
+      const config = {
+        repos: {
+          'acme/widgets': {
+            api_host: 'https://althost.example/api/v3',
+            url_pattern: '/(?<owner>[^/]+)/(?<repo>[^/]+)/(?<number>[0-9]+)'
+          }
+        }
+      };
+      const p = new PRArgumentParser(config);
+      const result = p.parsePRUrl('https://app.graphite.dev/github/pr/gorg/grepo/55');
+      expect(result.host).toBe(null);
+      expect(result.owner).toBe('gorg');
+      expect(result.repo).toBe('grepo');
+      expect(result.number).toBe(55);
+    });
+
+    it('an anchored alt-host url_pattern is unaffected by the guard (still binds the alt host)', () => {
+      const config = {
+        repos: {
+          'acme/widgets': {
+            api_host: 'https://althost.example/api/v3',
+            url_pattern: '^https://althost\\.example/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>[0-9]+)'
+          }
+        }
+      };
+      const p = new PRArgumentParser(config);
+      const result = p.parsePRUrl('https://althost.example/acme/widgets/pull/42');
+      expect(result.host).toBe('https://althost.example/api/v3');
+      expect(result.bindingRepository).toBe('acme/widgets');
     });
 
     it('should ignore url_pattern when constructed without a config', () => {
@@ -367,7 +441,7 @@ describe('PRArgumentParser', () => {
       // Named groups (teamA/projB) win over the repo key (default/repo)
       // for the PR identity, but bindingRepository still points at the
       // matched config entry so host bindings resolve correctly.
-      expect(result).toEqual({ owner: 'teamA', repo: 'projB', number: 5, bindingRepository: 'default/repo' });
+      expect(result).toEqual({ owner: 'teamA', repo: 'projB', number: 5, bindingRepository: 'default/repo', host: null });
     });
   });
 
@@ -574,6 +648,7 @@ describe('PRArgumentParser', () => {
       };
 
       const result = await configuredParser.parsePRArguments(['42']);
+      // Bare number via git remote leaves host undefined (probe/derive later).
       expect(result).toEqual({ owner: 'team', repo: 'widget', number: 42 });
     });
 

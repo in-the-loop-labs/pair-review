@@ -427,7 +427,7 @@ Nested objects (like `chat`, `providers`, `chat_providers`, `monorepos`) are dee
 
 ### Alternate Git Hosts
 
-pair-review can review pull requests on self-hosted Git platforms that expose a GitHub-compatible REST API, configured per-repository via `repos["owner/repo"].api_host` and related keys. See [docs/alt-host.md](docs/alt-host.md) for the full configuration guide.
+pair-review can review pull requests on self-hosted Git platforms that expose a GitHub-compatible REST API, configured per-repository via `repos["owner/repo"].api_host` and related keys. By default an `api_host` repo is treated as living exclusively on the alt host; set `exclusive: false` on the repo entry to mark it as **dual-host**, where some PRs live on `github.com` and others on the alt host and pair-review resolves the host per PR. See [docs/alt-host.md](docs/alt-host.md) for the full configuration guide.
 
 ### Environment Variables
 
