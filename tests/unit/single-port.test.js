@@ -634,7 +634,7 @@ describe('attemptDelegation', () => {
       const deps = handoffDeps({ capture });
       await attemptDelegation(
         baseConfig,
-        { ai: true, instructions: 'be terse' },
+        { ai: true, provider: 'codex', instructions: 'be terse' },
         ['42'],
         deps,
         { db: {}, councilId: 'abc-123' }
@@ -645,6 +645,11 @@ describe('attemptDelegation', () => {
       const buildArgs = deps.buildInteractiveAnalysisConfig.mock.calls[0][0];
       expect(buildArgs.repository).toBe('test-owner/test-repo');
       expect(buildArgs.db).toEqual({});
+      // Regression: the full flags object (including --provider) must reach the
+      // builder so buildInteractiveAnalysisConfig can thread it into the resolver.
+      // Without this forwarding, the delegated --ai --provider --instructions run
+      // silently drops the provider override.
+      expect(buildArgs.flags.provider).toBe('codex');
 
       // The config was POSTed.
       expect(capture.opts.path).toBe('/api/bulk-analysis-configs');

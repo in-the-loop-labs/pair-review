@@ -2018,10 +2018,17 @@ async function preparePrHeadless(db, config, flags, prArgs, externalPoolLifecycl
   const repoSettingsRepo = new RepoSettingsRepository(db);
   const repoSettings = await repoSettingsRepo.getRepoSettings(repository);
 
+  // Thread --provider (flags.provider) through as an explicit single-model pick,
+  // exactly as the PR-submit path at the top of the file and the local headless
+  // path do. handleHeadlessAnalysis dispatches BEFORE the local/PR split (and thus
+  // before handlePullRequest's PAIR_REVIEW_PROVIDER env mirror), so omitting it
+  // here would let `pair-review <pr> --headless --provider <p>` silently fall
+  // through to the default provider (or, with a repo default council, switch to
+  // council mode) — while --model in the same invocation was honored.
   const reviewConfig = await resolveReviewConfig(
     db,
     repository,
-    { council: flags.council, model: flags.model },
+    { council: flags.council, provider: flags.provider, model: flags.model },
     config
   );
 
@@ -2197,7 +2204,7 @@ async function handleHeadlessAnalysis(prArgs, config, db, flags, poolLifecycle) 
     const reviewConfig = await resolveReviewConfig(
       db,
       repository,
-      { council: flags.council, model: flags.model },
+      { council: flags.council, provider: flags.provider, model: flags.model },
       config
     );
     const cliProvider = reviewConfig.type === 'single' ? reviewConfig.provider : null;
@@ -2587,4 +2594,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { main, parseArgs, normalizeProviderModelFlags, detectPRFromGitHubEnvironment, printCouncilList, runHeadlessAnalysis, recordEmptyScopeRun, buildHeadlessJson, buildHeadlessErrorJson, resolveCliInstructions };
+module.exports = { main, parseArgs, normalizeProviderModelFlags, detectPRFromGitHubEnvironment, printCouncilList, handleHeadlessAnalysis, runHeadlessAnalysis, recordEmptyScopeRun, buildHeadlessJson, buildHeadlessErrorJson, resolveCliInstructions };
