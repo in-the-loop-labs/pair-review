@@ -291,6 +291,34 @@ describe('buildDelegationUrl', () => {
     const url = buildDelegationUrl(8080, 'unknown');
     expect(url).toBe('http://localhost:8080/');
   });
+
+  it('carries provider/model on a PR URL alongside analyze', () => {
+    const url = buildDelegationUrl(7247, 'pr', {
+      owner: 'acme', repo: 'widgets', number: 42, analyze: true, provider: 'codex', model: 'gpt-5.5'
+    });
+    expect(url).toBe('http://localhost:7247/pr/acme/widgets/42?analyze=true&provider=codex&model=gpt-5.5');
+  });
+
+  it('carries a provider-only override on a PR URL', () => {
+    const url = buildDelegationUrl(7247, 'pr', {
+      owner: 'acme', repo: 'widgets', number: 42, analyze: true, provider: 'codex'
+    });
+    expect(url).toBe('http://localhost:7247/pr/acme/widgets/42?analyze=true&provider=codex');
+  });
+
+  it('carries provider/model on a local URL after the path param', () => {
+    const url = buildDelegationUrl(7247, 'local', {
+      localPath: '/home/user/project', analyze: true, provider: 'codex', model: 'gpt-5.5'
+    });
+    expect(url).toBe('http://localhost:7247/local?path=%2Fhome%2Fuser%2Fproject&analyze=true&provider=codex&model=gpt-5.5');
+  });
+
+  it('does NOT carry provider/model when analyze is not set', () => {
+    const prUrl = buildDelegationUrl(7247, 'pr', { owner: 'acme', repo: 'widgets', number: 42, provider: 'codex', model: 'gpt-5.5' });
+    expect(prUrl).toBe('http://localhost:7247/pr/acme/widgets/42');
+    const localUrl = buildDelegationUrl(7247, 'local', { localPath: '/p', provider: 'codex', model: 'gpt-5.5' });
+    expect(localUrl).toBe('http://localhost:7247/local?path=%2Fp');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -526,6 +554,36 @@ describe('attemptDelegation', () => {
     const deps = createMockDeps();
     await attemptDelegation(baseConfig, { ai: true }, ['42'], deps);
     expect(deps.open).toHaveBeenCalledWith(expect.not.stringContaining('council='));
+  });
+
+  it('threads flags.provider/flags.model into the PR delegation URL', async () => {
+    const deps = createMockDeps();
+    await attemptDelegation(baseConfig, { ai: true, provider: 'codex', model: 'gpt-5.5' }, ['42'], deps);
+    const url = deps.open.mock.calls[0][0];
+    expect(url).toContain('analyze=true');
+    expect(url).toContain('provider=codex');
+    expect(url).toContain('model=gpt-5.5');
+  });
+
+  it('threads flags.provider/flags.model into the local delegation URL', async () => {
+    const deps = createMockDeps();
+    await attemptDelegation(
+      baseConfig,
+      { local: true, localPath: '/tmp/project', ai: true, provider: 'codex', model: 'gpt-5.5' },
+      [],
+      deps
+    );
+    const url = deps.open.mock.calls[0][0];
+    expect(url).toContain('provider=codex');
+    expect(url).toContain('model=gpt-5.5');
+  });
+
+  it('drops provider/model from the delegation URL when flags.ai is not set', async () => {
+    const deps = createMockDeps();
+    await attemptDelegation(baseConfig, { provider: 'codex', model: 'gpt-5.5' }, ['42'], deps);
+    const url = deps.open.mock.calls[0][0];
+    expect(url).not.toContain('provider=');
+    expect(url).not.toContain('model=');
   });
 
   it('notifies version when current is newer than running server', async () => {

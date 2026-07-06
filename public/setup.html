@@ -530,6 +530,7 @@
     <script src="/js/ws-client.js"></script>
     <script src="/js/components/UpdateBanner.js"></script>
     <script src="/js/utils/notification-sounds.js"></script>
+    <script src="/js/utils/analyze-params.js"></script>
 
     <script>
         // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
@@ -777,16 +778,13 @@
 
                     var data = await response.json();
 
-                    // If the review already exists, redirect immediately
+                    // If the review already exists, redirect immediately.
+                    // Relay the full auto-analyze intent bundle (analyze /
+                    // analysisConfigId / council / provider / model) so a delegated
+                    // override or CLI council survives this hop to the review page.
                     if (data.existing && data.reviewUrl) {
                         var targetUrl = new URL(data.reviewUrl, window.location.origin);
-                        var qs = new URLSearchParams(window.location.search);
-                        if (qs.get('analyze') === 'true') targetUrl.searchParams.set('analyze', qs.get('analyze'));
-                        if (qs.get('analysisConfigId')) targetUrl.searchParams.set('analysisConfigId', qs.get('analysisConfigId'));
-                        // Forward the CLI-supplied council selection (PR & local cold-start
-                        // and delegated paths route through here); the review page keys
-                        // council auto-analysis on this param.
-                        if (qs.get('council')) targetUrl.searchParams.set('council', qs.get('council'));
+                        window.carryAnalyzeParams(window.location.search, targetUrl);
                         window.location.href = targetUrl.toString();
                         return;
                     }
@@ -845,13 +843,10 @@
                             setTimeout(function() {
                                 if (msg.reviewUrl) {
                                     var targetUrl = new URL(msg.reviewUrl, window.location.origin);
-                                    var qs = new URLSearchParams(window.location.search);
-                                    if (qs.get('analyze') === 'true') targetUrl.searchParams.set('analyze', qs.get('analyze'));
-                                    if (qs.get('analysisConfigId')) targetUrl.searchParams.set('analysisConfigId', qs.get('analysisConfigId'));
-                                    // Forward the CLI-supplied council selection (PR & local cold-start
-                                    // and delegated paths route through here); the review page keys
-                                    // council auto-analysis on this param.
-                                    if (qs.get('council')) targetUrl.searchParams.set('council', qs.get('council'));
+                                    // Relay the full auto-analyze intent bundle (analyze /
+                                    // analysisConfigId / council / provider / model) so a
+                                    // delegated override or CLI council survives the hop.
+                                    window.carryAnalyzeParams(window.location.search, targetUrl);
                                     window.location.href = targetUrl.toString();
                                 }
                             }, 400);

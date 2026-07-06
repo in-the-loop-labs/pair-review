@@ -534,6 +534,32 @@ function parseArgs(args) {
 }
 
 /**
+ * Fold the PAIR_REVIEW_PROVIDER / PAIR_REVIEW_MODEL env vars into parsed flags.
+ *
+ * `--provider`/`--model` and their env-var twins are two channels for the same
+ * override, but only the flags are threaded through single-port delegation
+ * (`buildDelegationUrl` forwards `flags.provider`/`flags.model`). Without this
+ * fold, an env-only invocation (`PAIR_REVIEW_PROVIDER=codex pair-review 123
+ * --ai`) delegates with an empty `flags.provider` and the override is silently
+ * dropped at the process boundary. Normalizing env→flags once here gives every
+ * downstream reader — delegation, the flags→env mirror, headless resolvers — a
+ * single effective value. Explicit flags always win over env.
+ *
+ * @param {object} flags - Parsed CLI flags (mutated in place)
+ * @param {object} [env] - Environment source (defaults to process.env; injectable for tests)
+ * @returns {object} the same `flags`, for chaining
+ */
+function normalizeProviderModelFlags(flags, env = process.env) {
+  if (!flags.provider && env.PAIR_REVIEW_PROVIDER) {
+    flags.provider = env.PAIR_REVIEW_PROVIDER;
+  }
+  if (!flags.model && env.PAIR_REVIEW_MODEL) {
+    flags.model = env.PAIR_REVIEW_MODEL;
+  }
+  return flags;
+}
+
+/**
  * Main application entry point
  */
 async function main() {
@@ -604,6 +630,7 @@ ENVIRONMENT VARIABLES:
     PAIR_REVIEW_ANTIGRAVITY_CMD  Custom Antigravity CLI command (default: agy)
     PAIR_REVIEW_CODEX_CMD   Custom Codex CLI command (default: codex)
     PAIR_REVIEW_MODEL       Default AI model (e.g., opus, sonnet, haiku)
+    PAIR_REVIEW_PROVIDER    Default AI provider (e.g., claude, antigravity, codex)
     PAIR_REVIEW_DB_NAME     Custom database filename (overrides config)
 
 LOCAL CONFIG:
@@ -673,6 +700,10 @@ AI PROVIDERS:
     // Parse command line arguments including flags (before DB init so
     // single-port delegation can skip DB entirely)
     const { prArgs, flags } = parseArgs(args);
+
+    // Normalize env→flags before delegation so an env-only provider/model
+    // override rides the single-port delegation URL to the running server.
+    normalizeProviderModelFlags(flags);
 
     // Headless-mode flag validation (fail fast, before any DB/server work).
     // --instructions and --instructions-file are mutually exclusive.
@@ -2556,4 +2587,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { main, parseArgs, detectPRFromGitHubEnvironment, printCouncilList, runHeadlessAnalysis, recordEmptyScopeRun, buildHeadlessJson, buildHeadlessErrorJson, resolveCliInstructions };
+module.exports = { main, parseArgs, normalizeProviderModelFlags, detectPRFromGitHubEnvironment, printCouncilList, runHeadlessAnalysis, recordEmptyScopeRun, buildHeadlessJson, buildHeadlessErrorJson, resolveCliInstructions };

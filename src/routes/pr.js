@@ -43,8 +43,7 @@ const tourGenerator = require('../ai/tour-generator');
 const {
   activeAnalyses,
   reviewToAnalysisId,
-  getModel,
-  getProvider,
+  resolveProviderModel,
   determineCompletionInfo,
   broadcastProgress,
   createProgressCallback,
@@ -2243,23 +2242,13 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
       const repoSettingsRepo = new RepoSettingsRepository(db);
       const fetchedRepoSettings = await repoSettingsRepo.getRepoSettings(repository);
 
-      let selectedProvider;
-      if (requestProvider) {
-        selectedProvider = requestProvider;
-      } else if (fetchedRepoSettings && fetchedRepoSettings.default_provider) {
-        selectedProvider = fetchedRepoSettings.default_provider;
-      } else {
-        selectedProvider = getProvider(req);
-      }
-
-      let selectedModel;
-      if (requestModel) {
-        selectedModel = requestModel;
-      } else if (fetchedRepoSettings && fetchedRepoSettings.default_model) {
-        selectedModel = fetchedRepoSettings.default_model;
-      } else {
-        selectedModel = getModel(req);
-      }
+      // Resolve provider/model: request body > env/CLI > repo settings > config/legacy > default.
+      // Shared with the local route (src/routes/local.js) so both paths resolve identically.
+      const { provider: selectedProvider, model: selectedModel } = resolveProviderModel(req, {
+        requestProvider,
+        requestModel,
+        repoSettings: fetchedRepoSettings
+      });
 
       const fetchedRepoInstructions = fetchedRepoSettings?.default_instructions || null;
       const mergedInstructions = mergeInstructions({ globalInstructions, repoInstructions: fetchedRepoInstructions, requestInstructions });
