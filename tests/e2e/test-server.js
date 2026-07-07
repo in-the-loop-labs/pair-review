@@ -325,6 +325,12 @@ async function startTestServer(port) {
   app.get('/', (req, res) => res.sendFile(path.join(publicDir, 'index.html')));
   app.get('/pr/:owner/:repo/:number', (req, res) => res.sendFile(path.join(publicDir, 'pr.html')));
   app.get('/settings/:owner/:repo', (req, res) => res.sendFile(path.join(publicDir, 'repo-settings.html')));
+  // Local review SETUP page (query-param form), mirrors production server.js. Serves
+  // setup.html so E2E can exercise the delegated /local?path=...&scope=... flow.
+  app.get('/local', (req, res) => {
+    if (!req.query.path) return res.redirect('/');
+    res.sendFile(path.join(publicDir, 'setup.html'));
+  });
   app.get('/local/:reviewId', (req, res) => res.sendFile(path.join(publicDir, 'local.html')));
   app.get('/health', (req, res) => res.json({ status: 'ok' }));
 

@@ -20,7 +20,7 @@ const { resolveReviewConfig } = require('./review-config');
 const { redirectConsoleToStderr } = require('./mcp-stdio');
 const { getChangedFiles } = require('./routes/executable-analysis');
 const { safeParseJson } = require('./utils/safe-parse-json');
-const { includesBranch } = require('./local-scope');
+const { includesBranch, parseScopeArg, VALID_SCOPE_RANGES } = require('./local-scope');
 const { storePRData, resolvePrHostBinding, registerRepositoryLocation, findRepositoryPath } = require('./setup/pr-setup');
 const { isDualHostRepo, resolvePreflightBinding, hostSetupParamValue } = require('./utils/host-resolution');
 const { fireReviewStartedHook } = require('./hooks/payloads');
@@ -191,6 +191,21 @@ OPTIONS:
     -h, --help              Show this help message and exit
     -l, --local [path]      Review local uncommitted changes
                             Optional path defaults to current directory
+    --scope <start>..<end>  (Local mode only) Set the diff scope for the review.
+                            Stops, in order: branch, staged, unstaged, untracked.
+                            The range must include 'unstaged'. Valid ranges:
+                              branch..unstaged     committed+staged+unstaged vs merge-base
+                              branch..untracked    everything vs merge-base (incl. untracked)
+                              staged..unstaged     staged + unstaged vs HEAD
+                              staged..untracked    staged + unstaged + untracked vs HEAD
+                              unstaged..unstaged   only unstaged working-tree changes
+                              unstaged..untracked  unstaged + untracked (the default)
+                            Requires --local; cannot be used with a PR. The chosen
+                            scope is persisted so the web UI opens with it too.
+    --base <branch>         (Local mode only) Override base-branch detection for a
+                            branch-relative scope. Requires --scope starting at
+                            'branch' (e.g. --scope branch..untracked). Defaults to
+                            the persisted, then auto-detected, base branch.
     --mcp                   Start as an MCP stdio server for AI coding agents.
                             The web UI also starts for the human reviewer.
     --model <name>          Override the AI model. Claude Code is the default provider.
@@ -224,6 +239,9 @@ EXAMPLES:
     pair-review 123                    # Review PR #123 in current repo
     pair-review https://github.com/owner/repo/pull/456
     pair-review --local                # Review uncommitted local changes
+    pair-review --local --scope branch..untracked   # Review whole branch vs merge-base
+    pair-review --local --scope staged..unstaged    # Review staged + unstaged changes
+    pair-review --local --scope branch..untracked --base develop   # Branch scope vs develop
     pair-review 123 --ai               # Auto-run AI analysis
     pair-review --ai-review            # CI mode: auto-detect PR, submit review
     pair-review 123 --ai-draft --council security-review  # Headless council draft
@@ -495,6 +513,25 @@ function parseArgs(args) {
       } else {
         throw new Error('--council flag requires a council handle (e.g., --council my-council)');
       }
+    } else if (arg === '--scope') {
+      // Next argument is a scope range like `unstaged..untracked`. A range
+      // won't legitimately start with '-', so apply the same missing-value
+      // guard as --model. Range validity is checked later in main().
+      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+        flags.scope = args[i + 1];
+        i++; // Skip next argument since we consumed it
+      } else {
+        throw new Error('--scope flag requires a range value (e.g., --scope unstaged..untracked)');
+      }
+    } else if (arg === '--base') {
+      // Next argument is a base branch name. A branch name won't legitimately
+      // start with '-', so apply the same guard as --model.
+      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+        flags.base = args[i + 1];
+        i++; // Skip next argument since we consumed it
+      } else {
+        throw new Error('--base flag requires a branch name (e.g., --base main)');
+      }
     } else if (arg === '--list-councils') {
       flags.listCouncils = true;
     } else if (arg === '-l' || arg === '--local') {
@@ -718,6 +755,39 @@ AI PROVIDERS:
     if (flags.headless && prArgs.length === 0 && !flags.local) {
       throw new Error('--headless flag requires a pull request number/URL or --local to run analysis.');
     }
+    // --scope and --base are local-review diff controls. They require --local
+    // and cannot be combined with a PR positional. They do NOT imply --local
+    // (explicit flags only — no magic mode switching).
+    if (flags.scope || flags.base) {
+      if (prArgs.length > 0) {
+        throw new Error('--scope/--base apply to local reviews only; they cannot be combined with a pull request number/URL.');
+      }
+      if (!flags.local) {
+        throw new Error('--scope/--base require --local (they set the diff scope for a local review).');
+      }
+    }
+    // Validate the --scope range against the six accepted local-review scopes.
+    let parsedScopeFlag = null;
+    if (flags.scope) {
+      parsedScopeFlag = parseScopeArg(flags.scope);
+      if (!parsedScopeFlag) {
+        throw new Error(
+          `Invalid --scope value "${flags.scope}". Valid ranges are: ${VALID_SCOPE_RANGES.join(', ')}. ` +
+          "The range must be two stops joined by '..' and must include 'unstaged'."
+        );
+      }
+    }
+    // --base overrides base-branch detection and only applies to a
+    // branch-relative scope (one that starts at 'branch').
+    if (flags.base) {
+      if (!parsedScopeFlag || parsedScopeFlag.start !== 'branch') {
+        throw new Error("--base requires --scope with a branch-relative range (starting at 'branch', e.g. --scope branch..untracked).");
+      }
+      // Same validation the set-scope route uses to prevent shell injection.
+      if (!/^[\w.\-/]+$/.test(flags.base)) {
+        throw new Error(`Invalid --base branch name "${flags.base}".`);
+      }
+    }
     // --instructions[-file] only takes effect in a mode that actually runs
     // analysis. Plain interactive mode never auto-analyzes, so reject the
     // orphaned case with a clear message rather than silently dropping the text
@@ -816,6 +886,11 @@ AI PROVIDERS:
     // Skipped for: headless modes (no browser), single_port: false (dev mode).
     // --headless never delegates/opens a browser — it runs analysis locally and
     // reports to stdout/stderr.
+    //
+    // --scope/--base ARE delegated: attemptDelegation carries them on the local
+    // URL (buildDelegationUrl), the setup page relays them, and the setup route
+    // re-validates and applies them — so a scoped --local while a server is
+    // running lands at the requested scope instead of crashing on the busy port.
     if (config.single_port !== false && !flags.aiReview && !flags.aiDraft && !flags.headless) {
       // Carry --instructions across delegation. When an analyzing mode
       // (--ai/--council) ALSO supplies per-run instructions and a server is

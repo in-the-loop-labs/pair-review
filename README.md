@@ -20,6 +20,7 @@
   - [AI-Guided Review](#3-ai-guided-review-when-youre-accountable)
 - [Quick Start](#quick-start)
 - [Command Line Interface](#command-line-interface)
+  - [Local review scope](#local-review-scope)
   - [Headless analysis mode](#headless-analysis-mode)
 - [Configuration](#configuration)
   - [Environment Variables](#environment-variables)
@@ -89,7 +90,8 @@ Compared to giving feedback in chat, this feels like moving from a machete to a 
 
 **Tips:**
 - Stage previous changes in git, then only review new modifications in the next round
-- Local mode only shows unstaged changes and untracked files (opinionated by design)
+- By default local mode reviews unstaged changes and untracked files; adjust the range with `--scope` (or the web UI scope selector) — e.g. `branch..untracked` to cover the whole branch (see [Local review scope](#local-review-scope))
+
 ### 2. Meta-Review: Judging AI Suggestions
 
 **When to use:** You're not going to read every line of code. Let AI be your reader.
@@ -203,6 +205,8 @@ pair-review --local [path]
 | `-d`, `--debug` | Enable verbose debug logging for troubleshooting |
 | `-h`, `--help` | Show help message with full CLI documentation |
 | `-l`, `--local [path]` | Review local uncommitted changes. Optional path defaults to current directory |
+| `--scope <start>..<end>` | **Local mode only.** Set the diff range a local review covers. Stops (in order): `branch`, `staged`, `unstaged`, `untracked`. Six valid ranges (contiguous, must include `unstaged`); default `unstaged..untracked`. `branch..*` diffs from the merge-base with the base branch. See [Local review scope](#local-review-scope). |
+| `--base <branch>` | **Local mode only.** With a `branch..*` scope, override base-branch auto-detection. Errors if used without a branch-start scope. |
 | `--model <name>` | Override the AI model for any provider. Model availability depends on provider configuration. |
 | `--provider <name>` | Override the AI provider. Applies to headless modes (`--ai-draft` / `--ai-review`) **and** to browser-driven auto-analysis (`--ai`), where it overrides the repo/app default the browser would otherwise use — including across single-port delegation to an already-running server. Defaults to the repo/app default provider (`claude`). Pair with `--model` when the model belongs to a non-default provider (e.g. `--provider codex --model gpt-5.5`). |
 | `--register` | Register `pair-review://` URL scheme handler (macOS only) |
@@ -242,6 +246,44 @@ pair-review --register --command "node bin/pair-review.js"  # Custom command
 > global config default. This applies to `--headless`, the submit modes, and the
 > web UI's default **Analyze** action, so `--council`/`--model` are optional when
 > a repo default is configured.
+
+### Local review scope
+
+`--scope <start>..<end>` sets which changes a **local** review covers (it has
+no effect on PR reviews). The scope walks four ordered stops — `branch` →
+`staged` → `unstaged` → `untracked` — and a range must be contiguous and always
+include `unstaged`, since the AI models read files from the working tree and the
+diff must cover that state. That leaves six valid ranges:
+
+| Scope | Covers |
+|-------|--------|
+| `branch..unstaged` | All tracked changes since the base branch (committed + staged + unstaged); no new files |
+| `branch..untracked` | Everything since the base branch, including new files |
+| `staged..unstaged` | Staged changes plus working-tree edits vs `HEAD`; no new files |
+| `staged..untracked` | Staged changes, working-tree edits, and new files |
+| `unstaged..unstaged` | Only unstaged working-tree edits (staged changes treated as already reviewed) |
+| `unstaged..untracked` | Unstaged working-tree edits plus new files (**default**) |
+
+A scope ending at `untracked` includes new (untracked) files automatically — no
+`git add -N` needed. `branch..*` diffs from the merge-base with the base branch.
+
+`--base <branch>` overrides base-branch auto-detection for a `branch..*` scope.
+Detection order when `--base` is omitted: Graphite stack state (only when
+`enable_graphite: true` is set in `~/.pair-review/config.json`) → GitHub PR base →
+`origin`'s default branch → `main`/`master`. `--base` errors if used without a
+branch-start scope.
+
+Both flags are **local-mode only**: they error when given a PR argument and do
+**not** imply `--local`. An explicit `--scope` is persisted on the review
+session, so opening the web UI for that review later shows the same scope.
+
+```bash
+# Review everything on this branch since it diverged from the trunk, plus new files
+pair-review --local --scope branch..untracked
+
+# Same, but against an explicit base branch (stacked branches / non-default trunk)
+pair-review --local --scope branch..untracked --base develop
+```
 
 ### Headless analysis mode
 
@@ -800,7 +842,10 @@ Templates typically include `{description}` to render the suggestion body.
 
 ### Local Mode
 
-Review **unstaged**, uncommitted changes before creating a PR:
+Review your uncommitted changes before creating a PR — by default the unstaged
+working-tree edits plus untracked files, with the range adjustable via `--scope`
+(or the web UI scope selector), e.g. `branch..untracked` to cover the whole
+branch (see [Local review scope](#local-review-scope)):
 
 ```bash
 pair-review --local

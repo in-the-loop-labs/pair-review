@@ -15,6 +15,42 @@ function isValidScope(start, end) {
   return si !== -1 && ei !== -1 && si <= ei && si <= UNSTAGED_INDEX && ei >= UNSTAGED_INDEX;
 }
 
+/**
+ * The full set of valid scope ranges, formatted as `start..end` strings.
+ * Computed from STOPS + isValidScope so it stays the single source of truth.
+ * Ordered by STOPS position (branch-first).
+ * @type {string[]}
+ */
+const VALID_SCOPE_RANGES = (() => {
+  const ranges = [];
+  for (const start of STOPS) {
+    for (const end of STOPS) {
+      if (isValidScope(start, end)) ranges.push(`${start}..${end}`);
+    }
+  }
+  return ranges;
+})();
+
+/**
+ * Parse a `--scope` CLI argument of the form `<start>..<end>` into a scope
+ * object. Splits on `..`, trims each side, and delegates validation to
+ * isValidScope (the single source of truth). Single tokens, missing `..`,
+ * unknown stops, non-contiguous ranges, ranges excluding 'unstaged', and
+ * reversed ranges all return null.
+ *
+ * @param {string} value - Raw CLI value (e.g. 'branch..untracked')
+ * @returns {{ start: string, end: string }|null} Parsed scope, or null if invalid
+ */
+function parseScopeArg(value) {
+  if (typeof value !== 'string') return null;
+  const parts = value.split('..');
+  if (parts.length !== 2) return null;
+  const start = parts[0].trim();
+  const end = parts[1].trim();
+  if (!isValidScope(start, end)) return null;
+  return { start, end };
+}
+
 function normalizeScope(start, end) {
   if (isValidScope(start, end)) return { start, end };
   const si = STOPS.indexOf(start);
@@ -130,7 +166,9 @@ function scopeGitHints(start, end, baseBranch) {
 const LocalScope = {
   STOPS,
   DEFAULT_SCOPE,
+  VALID_SCOPE_RANGES,
   isValidScope,
+  parseScopeArg,
   normalizeScope,
   reviewScope,
   scopeIncludes,

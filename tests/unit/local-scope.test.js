@@ -2,7 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import LocalScope from '../../src/local-scope.js';
 
-const { STOPS, DEFAULT_SCOPE, isValidScope, normalizeScope, reviewScope, scopeIncludes, includesBranch, fromLegacyMode, scopeLabel, scopeGitHints } = LocalScope;
+const { STOPS, DEFAULT_SCOPE, VALID_SCOPE_RANGES, isValidScope, parseScopeArg, normalizeScope, reviewScope, scopeIncludes, includesBranch, fromLegacyMode, scopeLabel, scopeGitHints } = LocalScope;
 
 describe('LocalScope', () => {
   describe('STOPS', () => {
@@ -70,6 +70,89 @@ describe('LocalScope', () => {
     it('rejects null inputs', () => {
       expect(isValidScope(null, 'branch')).toBe(false);
       expect(isValidScope('branch', null)).toBe(false);
+    });
+  });
+
+  describe('VALID_SCOPE_RANGES', () => {
+    it('lists exactly the six accepted ranges, branch-first', () => {
+      expect(VALID_SCOPE_RANGES).toEqual([
+        'branch..unstaged',
+        'branch..untracked',
+        'staged..unstaged',
+        'staged..untracked',
+        'unstaged..unstaged',
+        'unstaged..untracked',
+      ]);
+    });
+
+    it('contains exactly the ranges isValidScope accepts', () => {
+      const derived = [];
+      for (const start of STOPS) {
+        for (const end of STOPS) {
+          if (isValidScope(start, end)) derived.push(`${start}..${end}`);
+        }
+      }
+      expect(VALID_SCOPE_RANGES).toEqual(derived);
+    });
+  });
+
+  describe('parseScopeArg', () => {
+    const validRanges = [
+      ['branch..unstaged', { start: 'branch', end: 'unstaged' }],
+      ['branch..untracked', { start: 'branch', end: 'untracked' }],
+      ['staged..unstaged', { start: 'staged', end: 'unstaged' }],
+      ['staged..untracked', { start: 'staged', end: 'untracked' }],
+      ['unstaged..unstaged', { start: 'unstaged', end: 'unstaged' }],
+      ['unstaged..untracked', { start: 'unstaged', end: 'untracked' }],
+    ];
+
+    it.each(validRanges)('parses valid range %s', (input, expected) => {
+      expect(parseScopeArg(input)).toEqual(expected);
+    });
+
+    it('trims surrounding whitespace on each stop', () => {
+      expect(parseScopeArg('  branch  ..  untracked  ')).toEqual({ start: 'branch', end: 'untracked' });
+    });
+
+    it('returns null for a single token (no "..")', () => {
+      expect(parseScopeArg('branch')).toBeNull();
+      expect(parseScopeArg('unstaged')).toBeNull();
+    });
+
+    it('returns null when the ".." separator is missing but stops are present', () => {
+      expect(parseScopeArg('branch untracked')).toBeNull();
+    });
+
+    it('returns null for three-part input (extra dots)', () => {
+      expect(parseScopeArg('branch...untracked')).toBeNull();
+      expect(parseScopeArg('branch..staged..untracked')).toBeNull();
+    });
+
+    it('returns null for a range that excludes unstaged', () => {
+      expect(parseScopeArg('branch..staged')).toBeNull();
+      expect(parseScopeArg('staged..staged')).toBeNull();
+    });
+
+    it('returns null for reversed order (start after end)', () => {
+      expect(parseScopeArg('untracked..unstaged')).toBeNull();
+      expect(parseScopeArg('unstaged..staged')).toBeNull();
+    });
+
+    it('returns null for unknown stop names', () => {
+      expect(parseScopeArg('bogus..untracked')).toBeNull();
+      expect(parseScopeArg('branch..bogus')).toBeNull();
+      expect(parseScopeArg('foo..bar')).toBeNull();
+    });
+
+    it('returns null for empty string', () => {
+      expect(parseScopeArg('')).toBeNull();
+    });
+
+    it('returns null for non-string input', () => {
+      expect(parseScopeArg(null)).toBeNull();
+      expect(parseScopeArg(undefined)).toBeNull();
+      expect(parseScopeArg(42)).toBeNull();
+      expect(parseScopeArg({ start: 'branch', end: 'untracked' })).toBeNull();
     });
   });
 
