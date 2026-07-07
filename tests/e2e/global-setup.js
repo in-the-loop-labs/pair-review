@@ -725,10 +725,17 @@ async function globalSetup() {
       // refresh button render for the assertions in external-comments.spec.js.
       const { GlobalSettingsService } = require('../../src/settings/global-settings-service');
       const e2eBaseConfig = { github_token: 'test-token-e2e', port, theme: 'light', model: 'sonnet-4.6', external_comments: true };
+      // Production-shaped layers: the raw `config` layer carries the SAME values
+      // as e2eBaseConfig so /api/settings source attribution (which walks the raw
+      // layers) agrees with /api/config (the merged effective config). Keys left
+      // out (e.g. summaries.enabled) intentionally stay at their registry default.
       const e2eGlobalSettings = new GlobalSettingsService({
         db,
         baseConfig: e2eBaseConfig,
-        layers: [{ name: 'default', data: { theme: 'light' } }]
+        layers: [
+          { name: 'default', data: {} },
+          { name: 'config', data: { github_token: 'test-token-e2e', port, theme: 'light', model: 'sonnet-4.6', external_comments: true } }
+        ]
       });
       app.set('config', e2eGlobalSettings.buildEffectiveConfig());
       app.set('globalSettings', e2eGlobalSettings);

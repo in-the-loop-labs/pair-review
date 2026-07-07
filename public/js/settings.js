@@ -24,12 +24,18 @@ const SETTINGS_GROUPS = [
   ['readonly', 'From config files & environment', 'Read-only here. Set these via config files, CLI flags, or environment variables.']
 ];
 
-// Keys whose string value should be picked from a provider dropdown rather
-// than a free-text input.
+// Keys whose string value should be picked from an ANALYSIS provider dropdown
+// (from GET /api/providers) rather than a free-text input.
 const PROVIDER_KEYS = new Set([
   'default_provider',
   'tours.provider',
-  'summaries.provider',
+  'summaries.provider'
+]);
+
+// Keys whose string value should be picked from a CHAT provider dropdown. Chat
+// providers are a separate namespace (GET /api/config → chat_providers) from
+// analysis providers, so they must not be sourced from PROVIDER_KEYS.
+const CHAT_PROVIDER_KEYS = new Set([
   'chat_provider'
 ]);
 
@@ -53,8 +59,13 @@ class SettingsPage {
   constructor() {
     // Map of key -> descriptor from the API (kept in sync after PUT/DELETE).
     this.settingsByKey = {};
-    // Array of provider definitions from /api/providers.
+    // Array of analysis provider definitions from /api/providers.
     this.providers = [];
+    // Array of chat provider definitions from /api/config (chat_providers).
+    this.chatProviders = [];
+    // Per-key monotonic sequence for serializing in-flight mutations (PUT/DELETE)
+    // so a stale response can never overwrite a newer one. See updateSetting.
+    this._seq = {};
     // Ordered section metadata from GET /api/settings (id/title/description/
     // badge). Null until loaded; computeSections falls back to SETTINGS_GROUPS.
     this.apiSections = null;
@@ -73,8 +84,10 @@ class SettingsPage {
     this.setupEventDelegation();
 
     // Providers are needed to render provider dropdowns; load first but do not
-    // block settings rendering fatally if it fails.
-    await this.loadProviders();
+    // block settings rendering fatally if it fails. Analysis providers and chat
+    // providers come from different endpoints and are independent — load both
+    // before settings so every dropdown can render against the right list.
+    await Promise.all([this.loadProviders(), this.loadChatProviders()]);
     await this.loadSettings();
     await this.loadRepos();
 
@@ -111,6 +124,20 @@ class SettingsPage {
     } catch (error) {
       console.error('Error loading providers:', error);
       this.providers = [];
+    }
+  }
+
+  async loadChatProviders() {
+    try {
+      const response = await fetch('/api/config');
+      if (!response.ok) throw new Error('Failed to fetch config');
+      const data = await response.json();
+      // chat_providers: [{ id, name, type, available }]. Kept as-is; the select
+      // renderer only needs id + name and preserves an unknown current value.
+      this.chatProviders = Array.isArray(data.chat_providers) ? data.chat_providers : [];
+    } catch (error) {
+      console.error('Error loading chat providers:', error);
+      this.chatProviders = [];
     }
   }
 
@@ -331,7 +358,10 @@ class SettingsPage {
 
     // String types.
     if (PROVIDER_KEYS.has(setting.key)) {
-      return this.providerSelectHtml(setting);
+      return this.providerSelectHtml(setting, this.providers);
+    }
+    if (CHAT_PROVIDER_KEYS.has(setting.key)) {
+      return this.providerSelectHtml(setting, this.chatProviders);
     }
 
     const val = setting.value == null ? '' : String(setting.value);
@@ -342,8 +372,13 @@ class SettingsPage {
    * A provider dropdown for provider-valued string settings. Includes a blank
    * "inherit" option when the setting's default is empty. Ensures the current
    * value is always selectable even if that provider is unavailable.
+   *
+   * @param {Object} setting - The setting descriptor.
+   * @param {Array} [providers] - Provider list to build options from. Defaults
+   *   to the analysis providers; chat-provider keys pass this.chatProviders so
+   *   they render from the chat namespace instead.
    */
-  providerSelectHtml(setting) {
+  providerSelectHtml(setting, providers = this.providers) {
     const current = setting.value == null ? '' : String(setting.value);
     const allowEmpty = setting.default === '' || setting.default == null;
     const disabled = setting.final === true ? ' disabled' : '';
@@ -354,7 +389,7 @@ class SettingsPage {
     }
 
     const known = new Set();
-    for (const p of this.providers) {
+    for (const p of (providers || [])) {
       known.add(p.id);
       options += `<option value="${this.escapeHtml(p.id)}"${p.id === current ? ' selected' : ''}>${this.escapeHtml(p.name || p.id)}</option>`;
     }
@@ -621,6 +656,13 @@ class SettingsPage {
   }
 
   async updateSetting(key, value) {
+    // Per-key sequence guard: a change event and a Reset (or two rapid changes)
+    // on the same key can be in flight at once. Both updateSetting and
+    // resetSetting bump the SAME counter, so whichever mutation was issued last
+    // owns the final state — an earlier response that lands afterwards is stale
+    // and must not overwrite it (or revert on its own error).
+    if (!this._seq) this._seq = {};
+    const seq = this._seq[key] = (this._seq[key] || 0) + 1;
     try {
       const response = await fetch(`/api/settings/${encodeURIComponent(key)}`, {
         method: 'PUT',
@@ -634,11 +676,13 @@ class SettingsPage {
       }
 
       const data = await response.json();
+      if (this._seq[key] !== seq) return; // superseded by a newer mutation
       const setting = data.setting;
       this.settingsByKey[key] = setting;
       this.rerenderRow(setting);
       this.showToast('success', `${setting.label} saved`);
     } catch (error) {
+      if (this._seq[key] !== seq) return; // superseded — leave newer state intact
       console.error('Error saving setting:', error);
       this.showToast('error', `Failed to save: ${error.message}`);
       // Revert the control to the last known-good descriptor.
@@ -648,6 +692,10 @@ class SettingsPage {
   }
 
   async resetSetting(key) {
+    // Shares the sequence counter with updateSetting so the two serialize
+    // against each other (e.g. Reset clicked while a PUT is in flight).
+    if (!this._seq) this._seq = {};
+    const seq = this._seq[key] = (this._seq[key] || 0) + 1;
     try {
       const response = await fetch(`/api/settings/${encodeURIComponent(key)}`, {
         method: 'DELETE'
@@ -659,11 +707,13 @@ class SettingsPage {
       }
 
       const data = await response.json();
+      if (this._seq[key] !== seq) return; // superseded by a newer mutation
       const setting = data.setting;
       this.settingsByKey[key] = setting;
       this.rerenderRow(setting);
       this.showToast('success', `${setting.label} reset`);
     } catch (error) {
+      if (this._seq[key] !== seq) return; // superseded — leave newer state intact
       console.error('Error resetting setting:', error);
       this.showToast('error', `Failed to reset: ${error.message}`);
     }
@@ -695,9 +745,12 @@ class SettingsPage {
 
   escapeHtml(str) {
     if (str === null || str === undefined) return '';
-    const div = document.createElement('div');
-    div.textContent = String(str);
-    return div.innerHTML;
+    // Output is injected into double-quoted attribute contexts (data-key, title,
+    // value, placeholder, href) as well as text nodes, so quotes MUST be escaped
+    // too — a textContent→innerHTML pass only covers & < >.
+    return String(str).replace(/[&<>"']/g, (c) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
   }
 
   showToast(type, message) {
@@ -743,5 +796,5 @@ if (typeof document !== 'undefined' && document.addEventListener) {
 
 // Export for unit tests (jsdom/vm sandbox), following the repo pattern.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { SettingsPage, SETTINGS_GROUPS, PROVIDER_KEYS, SOURCE_DISPLAY };
+  module.exports = { SettingsPage, SETTINGS_GROUPS, PROVIDER_KEYS, CHAT_PROVIDER_KEYS, SOURCE_DISPLAY };
 }

@@ -326,16 +326,6 @@ const REGISTRY = [
     restartRequired: true
   },
   {
-    key: 'skip_update_notifier',
-    label: 'Skip update notifier',
-    description: 'Suppress the "update available" notification on exit.',
-    group: 'advanced',
-    type: 'boolean',
-    default: false,
-    editable: true,
-    restartRequired: true
-  },
-  {
     key: 'yolo',
     label: 'YOLO mode',
     description: 'Skip fine-grained AI provider permission setup (equivalent to --yolo).',
@@ -348,6 +338,16 @@ const REGISTRY = [
   },
 
   // ---- Read-only (bootstrap / sensitive / complex) ----------------------
+  {
+    key: 'skip_update_notifier',
+    label: 'Skip update notifier',
+    description: 'Suppress the "update available" notification on exit. Read from config files at startup by the CLI wrapper (bin/pair-review.js) BEFORE the database opens, so an in-app override can never take effect — set it in a config file.',
+    group: 'readonly',
+    type: 'boolean',
+    default: false,
+    editable: false,
+    restartRequired: true
+  },
   {
     key: 'port',
     label: 'Port',

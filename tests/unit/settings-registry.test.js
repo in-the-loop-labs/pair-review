@@ -93,6 +93,19 @@ describe('settings registry integrity', () => {
     expect(typeof config.loadConfig).toBe('function');
   });
 
+  it('skip_update_notifier is read-only and file-only (its gate runs in bin/ before the DB opens)', () => {
+    // Regression: the entry was editable, but shouldSkipUpdateNotifier() in
+    // src/config.js reads config files synchronously in bin/pair-review.js BEFORE
+    // the async startup opens the DB / instantiates GlobalSettingsService, so an
+    // in-app override is a permanent no-op. The UI must not offer a dead control.
+    const entry = getEntry('skip_update_notifier');
+    expect(entry).not.toBeNull();
+    expect(entry.editable).toBe(false);
+    expect(entry.group).toBe('readonly');
+    // Description must point the user at the config file.
+    expect(entry.description).toMatch(/config file/i);
+  });
+
   it('every entry.badge, when present, is a valid badge value', () => {
     for (const entry of registry) {
       if (entry.badge === undefined || entry.badge === null) continue;

@@ -9,9 +9,9 @@
  * data-loading side effects never fire.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 
-const { SettingsPage, SOURCE_DISPLAY, PROVIDER_KEYS } = require('../../public/js/settings.js');
+const { SettingsPage, SOURCE_DISPLAY, PROVIDER_KEYS, CHAT_PROVIDER_KEYS } = require('../../public/js/settings.js');
 
 /**
  * Build a SettingsPage instance without invoking the constructor/init.
@@ -20,8 +20,15 @@ const { SettingsPage, SOURCE_DISPLAY, PROVIDER_KEYS } = require('../../public/js
 function createPage(providers = []) {
   const page = Object.create(SettingsPage.prototype);
   page.providers = providers;
+  page.chatProviders = [];
   page.settingsByKey = {};
+  page._seq = {};
   return page;
+}
+
+/** Minimal fetch Response stand-in with an async json() body. */
+function makeResponse(body, { ok = true, status = 200 } = {}) {
+  return { ok, status, json: async () => body };
 }
 
 function baseSetting(overrides = {}) {
@@ -60,12 +67,16 @@ describe('SOURCE_DISPLAY map', () => {
 });
 
 describe('PROVIDER_KEYS', () => {
-  it('includes the provider-valued string settings', () => {
+  it('includes the analysis-provider-valued string settings', () => {
     expect(PROVIDER_KEYS.has('default_provider')).toBe(true);
     expect(PROVIDER_KEYS.has('tours.provider')).toBe(true);
     expect(PROVIDER_KEYS.has('summaries.provider')).toBe(true);
-    expect(PROVIDER_KEYS.has('chat_provider')).toBe(true);
     expect(PROVIDER_KEYS.has('default_model')).toBe(false);
+  });
+
+  it('does NOT include chat_provider — chat is a separate provider namespace', () => {
+    expect(PROVIDER_KEYS.has('chat_provider')).toBe(false);
+    expect(CHAT_PROVIDER_KEYS.has('chat_provider')).toBe(true);
   });
 });
 
@@ -529,5 +540,185 @@ describe('controlHtml — final disables the control', () => {
     const page = createPage();
     expect(page.controlHtml(baseSetting({ type: 'boolean' }))).not.toContain('disabled');
     expect(page.controlHtml(baseSetting({ type: 'string', key: 'assisted_by_url' }))).not.toContain('disabled');
+  });
+});
+
+// ─── Bug fixes: escapeHtml quotes, chat_provider list, mutation race guard ────
+
+describe('escapeHtml — attribute-safe escaping', () => {
+  it('escapes ampersands, angle brackets, AND both quote types', () => {
+    const page = createPage();
+    // Output lands in double-quoted attributes, so " and ' must be escaped too.
+    expect(page.escapeHtml(`a & b < c > d " e ' f`))
+      .toBe('a &amp; b &lt; c &gt; d &quot; e &#39; f');
+  });
+
+  it('cannot break out of a double-quoted attribute context', () => {
+    const page = createPage();
+    const html = `<input value="${page.escapeHtml('x" onx="alert(1)')}">`;
+    // The injected closing quote is neutralised — only the real attribute quotes remain.
+    expect(html).toBe('<input value="x&quot; onx=&quot;alert(1)">');
+    expect(html).not.toContain('onx="');
+  });
+
+  it('returns empty string for null and undefined (unchanged behavior)', () => {
+    const page = createPage();
+    expect(page.escapeHtml(null)).toBe('');
+    expect(page.escapeHtml(undefined)).toBe('');
+  });
+
+  it('stringifies non-string input', () => {
+    const page = createPage();
+    expect(page.escapeHtml(42)).toBe('42');
+    expect(page.escapeHtml(false)).toBe('false');
+  });
+});
+
+describe('chat_provider dropdown — sourced from chat providers, not analysis providers', () => {
+  const analysisProviders = [
+    { id: 'claude', name: 'Claude', models: [{ id: 'opus' }] },
+    { id: 'codex', name: 'Codex', models: [{ id: 'gpt' }] }
+  ];
+  const chatProviders = [
+    { id: 'pi', name: 'Pi', type: 'builtin', available: true },
+    { id: 'copilot-acp', name: 'Copilot (ACP)', type: 'acp', available: false }
+  ];
+
+  function chatSetting(overrides = {}) {
+    return baseSetting({
+      key: 'chat_provider', group: 'chat', type: 'string', default: 'pi', value: 'pi', ...overrides
+    });
+  }
+
+  it('renders the chat provider list, never the analysis provider list', () => {
+    const page = createPage(analysisProviders);
+    page.chatProviders = chatProviders;
+    const html = page.controlHtml(chatSetting());
+    expect(html).toContain('>Pi<');
+    expect(html).toContain('>Copilot (ACP)<');
+    // Analysis providers must NOT leak into the chat dropdown.
+    expect(html).not.toContain('>Claude<');
+    expect(html).not.toContain('>Codex<');
+  });
+
+  it('omits the inherit option (default is a concrete provider) and selects the current', () => {
+    const page = createPage(analysisProviders);
+    page.chatProviders = chatProviders;
+    const html = page.controlHtml(chatSetting({ value: 'pi' }));
+    expect(html).not.toContain('Default (inherit)');
+    expect(html).toMatch(/<option value="pi"\s+selected>Pi<\/option>/);
+  });
+
+  it('preserves a configured-but-unknown chat provider as an "(unavailable)" option', () => {
+    const page = createPage(analysisProviders);
+    page.chatProviders = chatProviders;
+    const html = page.controlHtml(chatSetting({ value: 'ghost' }));
+    expect(html).toMatch(/<option value="ghost"\s+selected>ghost \(unavailable\)<\/option>/);
+  });
+
+  it('loadChatProviders populates chatProviders from GET /api/config', async () => {
+    const page = createPage();
+    global.fetch = vi.fn(async () => makeResponse({ chat_providers: chatProviders }));
+    await page.loadChatProviders();
+    expect(page.chatProviders).toEqual(chatProviders);
+    expect(global.fetch).toHaveBeenCalledWith('/api/config');
+  });
+
+  it('loadChatProviders defaults to an empty list on failure', async () => {
+    const page = createPage();
+    page.chatProviders = [{ id: 'stale' }];
+    global.fetch = vi.fn(async () => makeResponse({}, { ok: false, status: 500 }));
+    await page.loadChatProviders();
+    expect(page.chatProviders).toEqual([]);
+  });
+});
+
+describe('mutation race guard — updateSetting / resetSetting serialize per key', () => {
+  // A controllable fetch: each call returns a promise resolved manually via the
+  // returned deferred, so we can land responses out of order deterministically.
+  function deferred() {
+    let resolve;
+    const promise = new Promise((r) => { resolve = r; });
+    return { promise, resolve };
+  }
+
+  function instrument(page) {
+    const applied = [];
+    page.rerenderRow = (s) => applied.push(s.value);
+    page.showToast = () => {};
+    return applied;
+  }
+
+  it('applies only the latest updateSetting when responses resolve out of order', async () => {
+    const page = createPage();
+    page.settingsByKey = { theme: baseSetting({ key: 'theme', value: 'light' }) };
+    const applied = instrument(page);
+
+    const d1 = deferred();
+    const d2 = deferred();
+    const calls = [d1.promise, d2.promise];
+    let i = 0;
+    global.fetch = vi.fn(() => calls[i++]);
+
+    const p1 = page.updateSetting('theme', 'dark');   // seq 1 (stale)
+    const p2 = page.updateSetting('theme', 'light');  // seq 2 (winner)
+
+    // Latest response lands FIRST, stale one SECOND.
+    d2.resolve(makeResponse({ setting: baseSetting({ key: 'theme', label: 'Theme', value: 'light' }) }));
+    await p2;
+    d1.resolve(makeResponse({ setting: baseSetting({ key: 'theme', label: 'Theme', value: 'dark' }) }));
+    await p1;
+
+    // Only the winning mutation applied; the stale 'dark' response was ignored.
+    expect(applied).toEqual(['light']);
+    expect(page.settingsByKey.theme.value).toBe('light');
+  });
+
+  it('a Reset issued while a PUT is in flight wins; the stale PUT response is ignored', async () => {
+    const page = createPage();
+    page.settingsByKey = { theme: baseSetting({ key: 'theme', source: 'app', value: 'dark' }) };
+    const applied = instrument(page);
+
+    const dPut = deferred();
+    const dDel = deferred();
+    const calls = [dPut.promise, dDel.promise];
+    let i = 0;
+    global.fetch = vi.fn(() => calls[i++]);
+
+    const put = page.updateSetting('theme', 'light');  // seq 1 (stale)
+    const del = page.resetSetting('theme');            // seq 2 (winner)
+
+    dDel.resolve(makeResponse({ setting: baseSetting({ key: 'theme', label: 'Theme', source: 'default', value: 'light' }) }));
+    await del;
+    dPut.resolve(makeResponse({ setting: baseSetting({ key: 'theme', label: 'Theme', source: 'app', value: 'light' }) }));
+    await put;
+
+    // Reset's descriptor (source 'default') is the final state, not the PUT's.
+    expect(applied).toEqual(['light']);
+    expect(page.settingsByKey.theme.source).toBe('default');
+  });
+
+  it('a superseded PUT error does not revert state set by a newer mutation', async () => {
+    const page = createPage();
+    page.settingsByKey = { theme: baseSetting({ key: 'theme', value: 'light' }) };
+    const applied = instrument(page);
+
+    const dFail = deferred();
+    const dOk = deferred();
+    const calls = [dFail.promise, dOk.promise];
+    let i = 0;
+    global.fetch = vi.fn(() => calls[i++]);
+
+    const failing = page.updateSetting('theme', 'dark');   // seq 1 — will error
+    const winner = page.updateSetting('theme', 'blue');    // seq 2 — succeeds
+
+    dOk.resolve(makeResponse({ setting: baseSetting({ key: 'theme', label: 'Theme', value: 'blue' }) }));
+    await winner;
+    // The stale request fails (e.g. 500). Its catch must NOT revert to known-good.
+    dFail.resolve(makeResponse({ error: 'boom' }, { ok: false, status: 500 }));
+    await failing;
+
+    expect(applied).toEqual(['blue']);
+    expect(page.settingsByKey.theme.value).toBe('blue');
   });
 });

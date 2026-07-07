@@ -776,31 +776,18 @@ AI PROVIDERS:
     // No redirect is repeated here: it would be too late to matter and is
     // redundant given the early call.
 
-    // Apply debug_stream from config if not already enabled by CLI flag
-    if (!flags.debugStream && config.debug_stream) {
-      flags.debugStream = true;
-      logger.setStreamDebugEnabled(true);
-    }
-
-    // Apply yolo mode from CLI flag or config
-    if (flags.yolo || config.yolo) {
-      // config.yolo: used by applyConfigOverrides() for this process
-      config.yolo = true;
-      // Env var: bridges to server.js which reloads config from disk independently
-      process.env.PAIR_REVIEW_YOLO = 'true';
-    }
+    // NOTE: debug_stream handling, the yolo env bridge, and applyConfigOverrides
+    // are deliberately deferred until AFTER the global-settings overlay is folded
+    // into `config` (below, right after DB init). Each latches a config value that
+    // an in-app /settings override can change (debug_stream, yolo → the
+    // provider-runtime yoloMode), so running them here — on the pre-overlay file
+    // config — would ignore a restart-required override.
 
     // --model is ignored when --council is set: council voices use their own
     // per-voice models, so a top-level --model has no effect on the analysis.
     if (flags.council && flags.model) {
       console.warn('Warning: --model is ignored when --council is set; council voices use their own per-voice models.');
     }
-
-    // Apply provider config overrides (including yolo) for all code paths
-    // (interactive, headless, local). server.js calls this independently on
-    // startup, but headless paths (--ai-draft, --ai-review) never start the
-    // server, so we must also apply here.
-    applyConfigOverrides(config);
 
     // --list-councils: print the saved councils and exit. Needs the database
     // but no server, no PR/local context, and no single-port delegation.
@@ -903,12 +890,42 @@ AI PROVIDERS:
     // provider/model defaults honor DB values on this launch — the server that
     // startServer() spins up applies its own overlay independently. Guarded so a
     // DB read failure leaves the file config intact rather than aborting startup.
+    //
+    // Paths that exit BEFORE this point run on the pre-overlay file config and
+    // therefore cannot see in-app overrides — this is intentional: `--list-councils`
+    // only reads DB rows (no config-driven behavior), and a single-port delegated
+    // launch hands off to an already-running server that applies its own overlay.
     try {
       const overlay = new GlobalSettingsService({ db, baseConfig: config, layers });
       Object.assign(config, overlay.buildEffectiveConfig());
     } catch (overlayError) {
       logger.warn(`Could not apply global-settings overrides: ${overlayError.message}`);
     }
+
+    // Config consumers that latch an overlay-affected value — deferred to here so
+    // an in-app /settings override takes effect on this launch (they were NOT run
+    // earlier on the pre-overlay file config). Ordered before headless analysis
+    // and startServer, both of which depend on them.
+
+    // Apply debug_stream from config if not already enabled by CLI flag.
+    if (!flags.debugStream && config.debug_stream) {
+      flags.debugStream = true;
+      logger.setStreamDebugEnabled(true);
+    }
+
+    // Apply yolo mode from CLI flag or config.
+    if (flags.yolo || config.yolo) {
+      // config.yolo: used by applyConfigOverrides() for this process
+      config.yolo = true;
+      // Env var: bridges to server.js which reloads config from disk independently
+      process.env.PAIR_REVIEW_YOLO = 'true';
+    }
+
+    // Apply provider config overrides (including yolo) for all code paths
+    // (interactive, headless, local). server.js calls this independently on
+    // startup, but headless paths (--ai-draft, --ai-review) never start the
+    // server, so we must also apply here.
+    applyConfigOverrides(config);
 
     // Migrate existing worktrees to database (if any)
     const path = require('path');

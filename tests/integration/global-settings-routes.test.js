@@ -27,6 +27,11 @@ function baseConfig(overrides = {}) {
     github_token_command: '',
     providers: {},
     repos: {},
+    // Restart-required keys, present so the boot snapshot in settings.js can
+    // capture them (their consumers latch at launch and are never recomputed).
+    dev_mode: false,
+    worktree_retention_days: 7,
+    external_comments: false,
     ...overrides
   };
 }
@@ -161,6 +166,16 @@ describe('global settings routes', () => {
       db.prepare(
         `INSERT INTO repo_settings (repository, pool_fetch_started_at) VALUES ('acme/lease', '2020-01-01')`
       ).run();
+      // A branch-review-only repo: the user saved ONLY the auto_branch_review
+      // preference ("always" = 1), no other settings and no local_path.
+      db.prepare(
+        `INSERT INTO repo_settings (repository, auto_branch_review) VALUES ('acme/branchonly', 1)`
+      ).run();
+      // A row holding ONLY the auto_branch_review default (0 = "ask"): the default
+      // is not a deliberate choice, so with no local_path this must NOT appear.
+      db.prepare(
+        `INSERT INTO repo_settings (repository, auto_branch_review) VALUES ('acme/defaultbranch', 0)`
+      ).run();
     });
 
     it('unions DB and file-config repos and flags each correctly', async () => {
@@ -179,6 +194,16 @@ describe('global settings routes', () => {
       // Sorted by repository.
       const names = res.body.repos.map((r) => r.repository);
       expect(names).toEqual([...names].sort());
+    });
+
+    it('keeps a branch-review-only repo but drops a repo holding only the auto_branch_review default', async () => {
+      const res = await request(server).get('/api/settings/repos').expect(200);
+      const byRepo = Object.fromEntries(res.body.repos.map((r) => [r.repository, r]));
+      // Regression: auto_branch_review was omitted from the SELECT, so a repo
+      // configured solely via the branch-review preference was dropped.
+      expect(byRepo['acme/branchonly']).toMatchObject({ hasDbSettings: true, hasFileConfig: false });
+      // The default (0) is indistinguishable from unset, so it doesn't configure.
+      expect(byRepo['acme/defaultbranch']).toBeUndefined();
     });
   });
 
@@ -289,5 +314,86 @@ describe('global settings routes — hidden & final', () => {
       // The ignored DB row is now gone.
       expect(new GlobalSettingsRepository(db).get('default_model')).toBeUndefined();
     });
+  });
+});
+
+// Restart-required keys (route mounting, middleware, static cache, retention
+// sweeps) latch at process startup. A post-boot write must persist the override
+// and advertise "restart required", but the LIVE app config must keep the boot
+// value — advertising the new value while behavior is unchanged is a lie. Each
+// test boots its own server (seeding a pre-existing override where the scenario
+// requires the running process to have latched it at launch).
+describe('global settings routes — restart-required keys', () => {
+  let db;
+  let app;
+  let server;
+
+  async function boot({ seedOverrides = {}, config = baseConfig() } = {}) {
+    db = createTestDatabase();
+    const repo = new GlobalSettingsRepository(db);
+    for (const [k, v] of Object.entries(seedOverrides)) repo.set(k, v);
+    const service = new GlobalSettingsService({ db, baseConfig: config, layers: makeLayers() });
+    const liveConfig = { ...config };
+    Object.assign(liveConfig, service.buildEffectiveConfig());
+
+    app = express();
+    app.use(express.json({ limit: '200kb' }));
+    app.set('db', db);
+    app.set('config', liveConfig);
+    app.set('globalSettings', service);
+    app.get('/__config', (req, res) => res.json(req.app.get('config')));
+    app.use('/', settingsRoutes);
+    server = await listenOnLoopback(app);
+  }
+
+  afterEach(async () => {
+    await closeServer(server);
+    closeTestDatabase(db);
+  });
+
+  it('persists + flags a restart-required write but never folds it into the live config', async () => {
+    await boot();
+    const res = await request(server)
+      .put('/api/settings/dev_mode')
+      .send({ value: true })
+      .expect(200);
+    // Descriptor shows the NEW value and the restart flag...
+    expect(res.body.setting).toMatchObject({
+      key: 'dev_mode', value: true, source: 'app', restartRequired: true
+    });
+    // ...but the running server's config keeps the boot value.
+    const live = await request(server).get('/__config').expect(200);
+    expect(live.body.dev_mode).toBe(false);
+    // The override is persisted and shown as the new value on a fresh GET.
+    const list = await request(server).get('/api/settings').expect(200);
+    expect(list.body.settings.find((s) => s.key === 'dev_mode').value).toBe(true);
+  });
+
+  it('a later DYNAMIC write does not re-fold a pending restart-required override into live config', async () => {
+    await boot();
+    await request(server).put('/api/settings/dev_mode').send({ value: true }).expect(200);
+    await request(server).put('/api/settings/worktree_retention_days').send({ value: 30 }).expect(200);
+    // Now write a DYNAMIC key — buildEffectiveConfig re-folds ALL overrides.
+    await request(server).put('/api/settings/theme').send({ value: 'dark' }).expect(200);
+
+    const live = await request(server).get('/__config').expect(200);
+    expect(live.body.theme).toBe('dark');                 // dynamic write applied
+    expect(live.body.dev_mode).toBe(false);               // restart-required boot value STILL live
+    expect(live.body.worktree_retention_days).toBe(7);    // ...for every restart-required key
+  });
+
+  it('DELETE of a boot-latched restart-required override keeps the boot value live until restart', async () => {
+    // Booted WITH the override, so the running process latched dev_mode=true.
+    await boot({ seedOverrides: { dev_mode: true } });
+    const before = await request(server).get('/__config').expect(200);
+    expect(before.body.dev_mode).toBe(true);
+
+    const del = await request(server).delete('/api/settings/dev_mode').expect(200);
+    // Descriptor recomputes to the default (override cleared) with the restart flag.
+    expect(del.body.setting).toMatchObject({ value: false, source: 'default', restartRequired: true });
+
+    // Live config keeps the boot value — the process is still running with it.
+    const after = await request(server).get('/__config').expect(200);
+    expect(after.body.dev_mode).toBe(true);
   });
 });

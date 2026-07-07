@@ -179,12 +179,6 @@ async function startServer(sharedDb = null, sharedPoolLifecycle = null, options 
     const { config, layers } = await loadConfig();
     applyEnvOverrides(config);
 
-    // Apply provider configuration overrides (custom models, commands, etc.)
-    applyConfigOverrides(config);
-
-    // Warn if dev mode is on without a custom database name
-    warnIfDevModeWithoutDbName(config);
-
     // Get GitHub token (env var takes precedence over config)
     const githubToken = getGitHubToken(config);
 
@@ -192,8 +186,9 @@ async function startServer(sharedDb = null, sharedPoolLifecycle = null, options 
     if (!githubToken) {
       console.warn('Warning: No GitHub token configured. Set GITHUB_TOKEN environment variable or add github_token to ~/.pair-review/config.json');
     }
-    
-    // Use shared database or initialize new one
+
+    // Use shared database or initialize new one. The DB must be open before the
+    // global-settings overlay below, which reads the in-app overrides table.
     if (sharedDb) {
       console.log('Using shared database instance...');
       db = sharedDb;
@@ -201,7 +196,32 @@ async function startServer(sharedDb = null, sharedPoolLifecycle = null, options 
       console.log('Connecting to database...');
       db = await initializeDatabase(resolveDbName(config));
     }
-    
+
+    // Build the global-settings service and overlay in-app DB overrides onto the
+    // loaded file config. This MUST run BEFORE any consumer that latches a config
+    // value, or an in-app override never takes effect even after a restart
+    // (contradicting the restartRequired badge): applyConfigOverrides() below
+    // snapshots config.yolo into the provider-runtime `yoloMode`,
+    // warnIfDevModeWithoutDbName() reads dev_mode, and the `devMode` const further
+    // down is captured by the static-file setHeaders closure.
+    //
+    // `baseConfig` is captured pre-overlay (the service clones it) so future
+    // PUT/DELETE recompute from the file layers, not from an already-overlaid
+    // object. We mutate `config` in place with Object.assign so downstream
+    // closures (pool lifecycle, chat manager, /pr host correction) share the same
+    // effective object every per-request `req.app.get('config')` reader sees.
+    // Write endpoints later replace app.get('config') with a fresh effective
+    // object; only editable settings change, so the closures (which read only
+    // read-only settings) stay correct.
+    const globalSettings = new GlobalSettingsService({ db, baseConfig: config, layers });
+    Object.assign(config, globalSettings.buildEffectiveConfig());
+
+    // Apply provider configuration overrides (custom models, commands, etc.)
+    applyConfigOverrides(config);
+
+    // Warn if dev mode is on without a custom database name
+    warnIfDevModeWithoutDbName(config);
+
     // Log database status
     try {
       const dbStatus = await getDatabaseStatus(db);
@@ -404,19 +424,9 @@ async function startServer(sharedDb = null, sharedPoolLifecycle = null, options 
       });
     });
     
-    // Build the global-settings service and overlay in-app DB overrides onto
-    // the loaded file config. `baseConfig` is captured pre-overlay (the service
-    // clones it) so future PUT/DELETE recompute from the file layers, not from
-    // an already-overlaid object. We mutate `config` in place with Object.assign
-    // so downstream closures (pool lifecycle, chat manager, /pr host correction)
-    // share the same effective object every per-request `req.app.get('config')`
-    // reader sees. Write endpoints later replace app.get('config') with a fresh
-    // effective object; only editable settings change, so the closures (which
-    // read only read-only settings) stay correct.
-    const globalSettings = new GlobalSettingsService({ db, baseConfig: config, layers });
-    Object.assign(config, globalSettings.buildEffectiveConfig());
-
     // Store database instance, GitHub token, and config for routes
+    // (`globalSettings` was built and overlaid onto `config` above, right after
+    // DB init, so latching consumers see the effective values.)
     app.set('db', db);
     app.set('githubToken', githubToken);
     app.set('config', config);

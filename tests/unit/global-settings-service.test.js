@@ -11,6 +11,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const { GlobalSettingsService } = require('../../src/settings/global-settings-service.js');
 const { GlobalSettingsRepository } = require('../../src/database.js');
+const { resolveSingleProviderModel } = require('../../src/review-config.js');
 const { createTestDatabase, closeTestDatabase } = require('../utils/schema.js');
 const logger = require('../../src/utils/logger.js');
 
@@ -51,7 +52,13 @@ describe('GlobalSettingsService', () => {
 
   beforeEach(() => {
     db = createTestDatabase();
-    for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
+    // Capture AND clear each key: tests assert default/file-layer sources, which
+    // an inherited value in the developer/CI env would silently override into an
+    // "env" attribution. afterEach restores the captured values.
+    for (const k of ENV_KEYS) {
+      savedEnv[k] = process.env[k];
+      delete process.env[k];
+    }
   });
 
   afterEach(() => {
@@ -156,6 +163,51 @@ describe('GlobalSettingsService', () => {
       expect(overrides).toEqual({});
       const eff = svc.buildEffectiveConfig();
       expect(eff.summaries.max_files).toBe(50);
+    });
+  });
+
+  // The startup entry points (src/server.js, src/main.js, src/mcp-stdio.js) fold
+  // this overlay into config BEFORE the consumers that latch a config value
+  // (applyConfigOverrides → yoloMode, logger stream-debug, the dev_mode static
+  // closure, and the MCP provider ladder). These tests lock the values those
+  // reordered consumers must observe — a regression here means an in-app override
+  // silently never takes effect even after the restart its badge promises.
+  describe('overlay carries values that latching consumers read', () => {
+    it('folds boolean advanced settings (yolo, dev_mode, debug_stream) onto the effective config', () => {
+      const repo = new GlobalSettingsRepository(db);
+      repo.set('yolo', true);
+      repo.set('dev_mode', true);
+      repo.set('debug_stream', true);
+      const eff = makeService().buildEffectiveConfig();
+      // These are exactly the fields applyConfigOverrides()/warnIfDevModeWithoutDbName()/
+      // logger.setStreamDebugEnabled() read AFTER the overlay in the reordered startup.
+      expect(eff.yolo).toBe(true);
+      expect(eff.dev_mode).toBe(true);
+      expect(eff.debug_stream).toBe(true);
+    });
+
+    it('lets the MCP single-provider ladder honor a default_provider/model in-app override', () => {
+      // Regression for the mcp-stdio path: it used to hand createMCPServer a
+      // plain loadConfig() result with no `_globalOverrides`, so start_analysis
+      // ignored a /settings default_provider/default_model override. The overlay
+      // populates `_globalOverrides`, which resolveSingleProviderModel ranks above
+      // the config file.
+      const repo = new GlobalSettingsRepository(db);
+      repo.set('default_provider', 'codex');
+      repo.set('default_model', 'gpt-5.1-codex');
+
+      // Base file config points elsewhere; without the overlay this is what wins.
+      const base = baseConfig({ default_provider: 'claude', default_model: 'opus' });
+      const svc = new GlobalSettingsService({ db, baseConfig: base, layers: makeLayers() });
+
+      // Pre-overlay (the old mcp-stdio bug): file defaults win, override ignored.
+      const preOverlay = resolveSingleProviderModel({}, null, base);
+      expect(preOverlay).toMatchObject({ provider: 'claude', model: 'opus' });
+
+      // Post-overlay: the in-app override wins via `_globalOverrides`.
+      const eff = svc.buildEffectiveConfig();
+      const postOverlay = resolveSingleProviderModel({}, null, eff);
+      expect(postOverlay).toMatchObject({ provider: 'codex', model: 'gpt-5.1-codex' });
     });
   });
 

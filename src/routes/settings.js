@@ -13,13 +13,16 @@
 const express = require('express');
 const { query } = require('../database');
 const logger = require('../utils/logger');
+const { getRegistry, getPath, hasPath, setPath } = require('../settings/registry');
 
 const router = express.Router();
 
 // Repo_settings columns that count as a user having *configured* a repo. Rows
 // created solely by local_path auto-register or pool leases (local_path /
 // pool_fetch_* timestamps) do NOT count — matching the plan's "known vs
-// configured" distinction.
+// configured" distinction. auto_branch_review is handled separately below: its
+// schema default is 0 ("ask"), so mere presence of a value is NOT configuration
+// — only an explicit 1 ("always") or -1 ("never") counts.
 const CONFIGURED_REPO_COLUMNS = [
   'default_instructions',
   'default_provider',
@@ -31,6 +34,70 @@ const CONFIGURED_REPO_COLUMNS = [
   'pool_fetch_interval_minutes',
   'load_skills'
 ];
+
+// auto_branch_review values that represent a deliberate user choice (vs. the
+// schema default of 0 = "ask each time", which is indistinguishable from unset).
+const CONFIGURED_AUTO_BRANCH_REVIEW_VALUES = new Set([1, -1]);
+
+// Registry keys whose consumers latch their value at process startup (route
+// mounting, middleware, static-file caching, retention sweeps). These are
+// flagged restartRequired in the registry. A post-boot write persists the
+// override and advertises "restart required" in the UI, but the value MUST NOT
+// be folded into the live app config — the running process cannot honor it, so
+// app.get('config') advertising the new value while behavior is unchanged is a
+// lie. We snapshot the boot values once and re-apply them over every rebuilt
+// effective config before app.set('config', ...).
+const RESTART_REQUIRED_KEYS = getRegistry()
+  .filter((entry) => entry.restartRequired)
+  .map((entry) => entry.key);
+
+/** JSON deep clone so snapshotted object values (providers/repos/hooks) can't alias the live config. */
+function cloneValue(value) {
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+}
+
+/**
+ * Snapshot the boot-time value of every restart-required key, memoized on the
+ * app. Captured lazily on the first write: no prior write can have mutated the
+ * config (a write is the only thing that re-sets it), so app.get('config') still
+ * holds the values the process actually latched at launch — including any DB
+ * override that was present at boot and folded in then.
+ * @param {import('express').Application} app
+ * @returns {Object} map of restart-required key -> boot value (present keys only)
+ */
+function bootRestartValues(app) {
+  let snapshot = app.get('restartRequiredBootConfig');
+  if (!snapshot) {
+    const config = app.get('config') || {};
+    snapshot = {};
+    for (const key of RESTART_REQUIRED_KEYS) {
+      if (hasPath(config, key)) {
+        snapshot[key] = cloneValue(getPath(config, key));
+      }
+    }
+    app.set('restartRequiredBootConfig', snapshot);
+  }
+  return snapshot;
+}
+
+/**
+ * Overlay boot-time restart-required values onto a freshly rebuilt effective
+ * config so the live config never advertises a post-boot value the running
+ * process cannot honor. Also strips a same-request restart-required override
+ * (setOverride folds ALL persisted overrides, so a later write to a DYNAMIC key
+ * would otherwise re-fold a pending restart-required override). Mutates and
+ * returns `effectiveConfig`.
+ * @param {import('express').Application} app
+ * @param {Object} effectiveConfig
+ * @returns {Object}
+ */
+function preserveBootRestartValues(app, effectiveConfig) {
+  const snapshot = bootRestartValues(app);
+  for (const key of Object.keys(snapshot)) {
+    setPath(effectiveConfig, key, cloneValue(snapshot[key]));
+  }
+  return effectiveConfig;
+}
 
 /**
  * GET /api/settings — `{ sections, settings }`. `settings` is the descriptor
@@ -74,7 +141,10 @@ router.put('/api/settings/:key', async (req, res) => {
     if (!result.ok) {
       return res.status(result.status || 400).json({ error: result.error });
     }
-    req.app.set('config', result.effectiveConfig);
+    // The returned descriptor (result.setting) already reflects the NEW value +
+    // restartRequired flag; only the LIVE config keeps boot values for
+    // restart-required keys (see preserveBootRestartValues).
+    req.app.set('config', preserveBootRestartValues(req.app, result.effectiveConfig));
     logger.info(`Global setting "${key}" set via /settings`);
     res.json({ setting: result.setting });
   } catch (error) {
@@ -99,7 +169,10 @@ router.delete('/api/settings/:key', async (req, res) => {
     if (!result.ok) {
       return res.status(result.status || 400).json({ error: result.error });
     }
-    req.app.set('config', result.effectiveConfig);
+    // Clearing a restart-required override doesn't un-latch the running process,
+    // so the live config keeps the boot value until restart (the descriptor
+    // shows the recomputed value + restartRequired flag).
+    req.app.set('config', preserveBootRestartValues(req.app, result.effectiveConfig));
     logger.info(`Global setting "${key}" cleared via /settings`);
     res.json({ setting: result.setting });
   } catch (error) {
@@ -123,16 +196,20 @@ router.get('/api/settings/repos', async (req, res) => {
       SELECT repository, default_instructions, default_provider, default_model,
              default_council_id, default_tab, default_chat_instructions,
              pool_size, pool_fetch_interval_minutes, load_skills,
-             local_path, updated_at
+             auto_branch_review, local_path, updated_at
       FROM repo_settings
     `);
 
     const byRepo = new Map();
 
     for (const row of rows) {
-      const hasDbSettings = CONFIGURED_REPO_COLUMNS.some(
-        (col) => row[col] !== null && row[col] !== undefined
-      );
+      const hasDbSettings =
+        CONFIGURED_REPO_COLUMNS.some(
+          (col) => row[col] !== null && row[col] !== undefined
+        ) ||
+        // auto_branch_review defaults to 0 ("ask"); only an explicit always/never
+        // choice counts, so a row holding just the default doesn't look configured.
+        CONFIGURED_AUTO_BRANCH_REVIEW_VALUES.has(row.auto_branch_review);
       byRepo.set(row.repository.toLowerCase(), {
         repository: row.repository,
         hasDbSettings,

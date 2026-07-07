@@ -211,6 +211,26 @@ class GlobalSettingsService {
    * default_provider/default_model override above env vars (see
    * src/review-config.js). `_globalOverrides` is read by key, never serialized
    * wholesale by any route.
+   *
+   * ORDERING CONTRACT — read before adding a new call site.
+   * Every entry point (src/server.js, src/main.js, src/mcp-stdio.js) MUST fold
+   * this overlay into its config object IMMEDIATELY after opening the database
+   * and BEFORE any consumer that latches a config value into module-level or
+   * closure-captured state. Applying it late means an in-app override silently
+   * never takes effect, even after the restart its `restartRequired` badge
+   * promises. Known latching consumers:
+   *   - `applyConfigOverrides(config)` (src/ai) snapshots `config.yolo` into the
+   *     module-level `yoloMode` in the provider runtime (src/ai/provider.js).
+   *   - `logger.setStreamDebugEnabled(config.debug_stream)` flips a logger flag.
+   *   - The `devMode = config.dev_mode === true` const in src/server.js is
+   *     captured by the static-file `setHeaders` closure.
+   *   - `warnIfDevModeWithoutDbName(config)` reads `config.dev_mode`.
+   *   - The MCP `start_analysis` tool reads `config._globalOverrides` for its
+   *     provider/model ladder (src/routes/mcp.js) — a config passed without this
+   *     overlay resolves as if no in-app override existed.
+   * `buildEffectiveConfig` deep-clones its base internally, so reordering a
+   * caller to fold it earlier is always safe.
+   *
    * @param {Object} [overrides] - Pre-read overrides (avoids a second DB read)
    * @returns {Object}
    */

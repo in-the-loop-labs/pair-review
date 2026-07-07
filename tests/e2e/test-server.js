@@ -340,10 +340,20 @@ async function startTestServer(port) {
   // production wiring (src/server.js).
   const { GlobalSettingsService } = require('../../src/settings/global-settings-service');
   const e2eBaseConfig = { github_token: 'test-token-e2e', port, theme: 'light', model: 'sonnet' };
+  // Production-shaped layers: the raw `config` layer must carry the SAME values
+  // as e2eBaseConfig so /api/settings source attribution (which walks the raw
+  // layers) agrees with /api/config (the merged effective config). A bare
+  // `default`-only layer would attribute port/theme/etc. to "default" while the
+  // effective config reports the E2E values — a disagreement the settings page
+  // would surface. Keys left out (e.g. summaries.enabled) intentionally stay at
+  // their registry default.
   const e2eGlobalSettings = new GlobalSettingsService({
     db,
     baseConfig: e2eBaseConfig,
-    layers: [{ name: 'default', data: { theme: 'light' } }]
+    layers: [
+      { name: 'default', data: {} },
+      { name: 'config', data: { github_token: 'test-token-e2e', port, theme: 'light', model: 'sonnet' } }
+    ]
   });
   app.set('db', db);
   app.set('githubToken', 'test-token-e2e');
