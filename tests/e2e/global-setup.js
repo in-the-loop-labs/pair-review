@@ -325,6 +325,7 @@ async function globalSetup() {
   // HTML routes
   app.get('/', (req, res) => res.sendFile(path.join(publicDir, 'index.html')));
   app.get('/pr/:owner/:repo/:number', (req, res) => res.sendFile(path.join(publicDir, 'pr.html')));
+  app.get('/settings', (req, res) => res.sendFile(path.join(publicDir, 'settings.html')));
   app.get('/settings/:owner/:repo', (req, res) => res.sendFile(path.join(publicDir, 'repo-settings.html')));
   app.get('/local/:reviewId', (req, res) => res.sendFile(path.join(publicDir, 'local.html')));
   app.get('/health', (req, res) => res.json({ status: 'ok' }));
@@ -650,6 +651,7 @@ async function globalSetup() {
   const localRoutes = require('../../src/routes/local');
   const contextFilesRoutes = require('../../src/routes/context-files');
   const bulkAnalysisConfigsRoutes = require('../../src/routes/bulk-analysis-configs');
+  const settingsRoutes = require('../../src/routes/settings');
 
   // Mock chat session manager for E2E (reads from DB, no real bridge)
   app.chatSessionManager = {
@@ -693,6 +695,7 @@ async function globalSetup() {
   app.use('/', localRoutes);
   app.use('/', contextFilesRoutes);
   app.use('/', bulkAnalysisConfigsRoutes);
+  app.use('/', settingsRoutes);
 
   // Error handling
   app.use((error, req, res, next) => {
@@ -720,7 +723,15 @@ async function globalSetup() {
       // e2e specs assume the feature is enabled — explicitly opt in here so
       // /runtime-config.js emits the enabled flag and the External segment +
       // refresh button render for the assertions in external-comments.spec.js.
-      app.set('config', { github_token: 'test-token-e2e', port, theme: 'light', model: 'sonnet-4.6', external_comments: true });
+      const { GlobalSettingsService } = require('../../src/settings/global-settings-service');
+      const e2eBaseConfig = { github_token: 'test-token-e2e', port, theme: 'light', model: 'sonnet-4.6', external_comments: true };
+      const e2eGlobalSettings = new GlobalSettingsService({
+        db,
+        baseConfig: e2eBaseConfig,
+        layers: [{ name: 'default', data: { theme: 'light' } }]
+      });
+      app.set('config', e2eGlobalSettings.buildEffectiveConfig());
+      app.set('globalSettings', e2eGlobalSettings);
       console.log(`E2E test server running on http://localhost:${port}`);
       return;
     } catch (err) {

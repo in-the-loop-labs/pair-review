@@ -274,4 +274,83 @@ describe('Repo default-council parity in plain Analyze routes', () => {
       expect(analyzerCalls.single[0].model).toBe('pro');
     });
   });
+
+  // ============ IN-APP OVERRIDE vs PAIR_REVIEW_MODEL (model field) ============
+  // A global in-app override (/settings, carried on config._globalOverrides and
+  // folded into config.default_model) must rank ABOVE PAIR_REVIEW_MODEL, matching
+  // the canonical ladder in review-config.js. getModel() checks the env var before
+  // config.default_model, so without the _globalOverrides read the override would
+  // be silently beaten by env on the web Analyze routes. Covers BOTH modes.
+  describe('in-app global override outranks PAIR_REVIEW_MODEL (model field)', () => {
+    // The effective config the /settings service produces: the override is folded
+    // into default_model AND mirrored on _globalOverrides.
+    const overrideConfig = {
+      github_token: 'test-token', port: 7247, theme: 'light',
+      default_provider: 'claude',
+      default_model: 'app-model',
+      _globalOverrides: { default_model: 'app-model' }
+    };
+
+    afterEach(() => {
+      delete process.env.PAIR_REVIEW_MODEL;
+    });
+
+    it('PR mode: the in-app override wins over PAIR_REVIEW_MODEL', async () => {
+      process.env.PAIR_REVIEW_MODEL = 'env-model';
+      app.set('config', overrideConfig);
+      await run(db,
+        `INSERT INTO pr_metadata (pr_number, repository, title) VALUES (?, ?, ?)`,
+        [77, 'ov-owner/ov-repo', 'Override PR']);
+
+      const response = await request(server)
+        .post('/api/pr/ov-owner/ov-repo/77/analyses')
+        .send({});
+
+      expect(response.status).toBe(200);
+      expect(response.body.isCouncil).toBeUndefined();
+      expect(analyzerCalls.single.length).toBe(1);
+      // Override beats env; without the fix this would be 'env-model'.
+      expect(analyzerCalls.single[0].model).toBe('app-model');
+    });
+
+    it('PR mode: falls back to PAIR_REVIEW_MODEL when no in-app override is set', async () => {
+      process.env.PAIR_REVIEW_MODEL = 'env-model';
+      app.set('config', {
+        github_token: 'test-token', port: 7247, theme: 'light', default_provider: 'claude'
+      });
+      await run(db,
+        `INSERT INTO pr_metadata (pr_number, repository, title) VALUES (?, ?, ?)`,
+        [78, 'env-owner/env-repo', 'Env PR']);
+
+      const response = await request(server)
+        .post('/api/pr/env-owner/env-repo/78/analyses')
+        .send({});
+
+      expect(response.status).toBe(200);
+      expect(analyzerCalls.single.length).toBe(1);
+      // No override → env still wins over the config-file default (via getModel).
+      expect(analyzerCalls.single[0].model).toBe('env-model');
+    });
+
+    it('Local mode: the in-app override wins over PAIR_REVIEW_MODEL', async () => {
+      process.env.PAIR_REVIEW_MODEL = 'env-model';
+      app.set('config', overrideConfig);
+      await run(db,
+        `INSERT INTO reviews (pr_number, repository, review_type, local_path, local_head_sha)
+         VALUES (NULL, ?, 'local', '/tmp/ov-project', 'ovsha')`,
+        ['ov-local-repo']);
+      const row = db.prepare(
+        'SELECT id FROM reviews WHERE review_type = ? ORDER BY id DESC LIMIT 1'
+      ).get('local');
+
+      const response = await request(server)
+        .post(`/api/local/${row.id}/analyses`)
+        .send({});
+
+      expect(response.status).toBe(200);
+      expect(response.body.isCouncil).toBeUndefined();
+      expect(analyzerCalls.single.length).toBe(1);
+      expect(analyzerCalls.single[0].model).toBe('app-model');
+    });
+  });
 });

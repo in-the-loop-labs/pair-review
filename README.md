@@ -23,6 +23,7 @@
   - [Local review scope](#local-review-scope)
   - [Headless analysis mode](#headless-analysis-mode)
 - [Configuration](#configuration)
+  - [Global Settings Page](#global-settings-page)
   - [Environment Variables](#environment-variables)
   - [GitHub Token](#github-token)
   - [AI Provider Configuration](#ai-provider-configuration)
@@ -469,6 +470,30 @@ pair-review loads configuration from multiple files, merged in order of increasi
 Nested objects (like `chat`, `providers`, `chat_providers`, `monorepos`) are deep-merged across layers — you only need to specify the keys you want to override.
 
 **`config.local.json`** files are intended for personal overrides that should not be committed to version control. Add `config.local.json` to your `.gitignore`.
+
+### Global Settings Page
+
+Most global settings can also be viewed and edited in the app: open the gear icon on the landing page or navigate to `/settings`. Repo-specific settings remain on each repository's settings page, and the global settings page lists every configured repository with a link to its settings.
+
+- **Effective value + source**: every setting shows its current effective value and where it came from — `in-app`, `env`, one of the config files, or `default`. A `default` badge means the setting was never explicitly set anywhere.
+- **Persistence**: in-app edits are stored in pair-review's local database (`~/.pair-review/database.db`), never written back to your config files.
+- **Precedence**: in-app settings > environment variables > `.pair-review/config.local.json` (project) > `.pair-review/config.json` (project) > `~/.pair-review/config.local.json` > `~/.pair-review/config.json` > built-in defaults. Repo-scoped settings and explicit per-run CLI flags still take precedence over global settings.
+- **Reset**: a per-setting Reset button removes the in-app override, falling back to whatever the config files or defaults provide.
+- **Immediate vs. restart**: most settings take effect immediately; a few (marked in the UI, e.g. retention windows and debug flags) apply on next start. Bootstrap values such as `port`, `db_name`, and tokens are shown read-only with their source.
+
+Two config keys control the settings page itself:
+
+- **Hiding settings** — `settings_ui.hidden`: an array of section ids (e.g. `"summaries"`, `"tours"`) and/or setting keys (e.g. `"tours.model"`) to hide from the page. Hiding is a display preference: it does not disable the feature (hiding the Summaries section does not turn summaries off). Because `settings_ui` merges like any other config key, a higher-precedence file can un-hide with `"settings_ui": { "hidden": [] }`.
+
+  ```json
+  { "settings_ui": { "hidden": ["summaries", "tours.model"] } }
+  ```
+
+- **Final settings** — `final`: an array of setting keys and/or section ids whose values are locked to what the config files declare. A final setting ignores in-app overrides *and* environment variables; the settings page shows it locked with a "final" badge. Unlike `hidden`, `final` declarations are unioned across all config files — a higher-precedence file cannot un-final a key; remove the declaration where it lives.
+
+  ```json
+  { "final": ["default_provider", "summaries.enabled"] }
+  ```
 
 ### Alternate Git Hosts
 

@@ -17,6 +17,7 @@ const { resolveCouncilHandle, getCouncilLastUsedRepos, shortId } = require('./co
 const { runHeadlessCouncilAnalysis } = require('./councils/headless-council');
 const { normalizeCouncilConfig, validateCouncilConfig } = require('./routes/councils');
 const { resolveReviewConfig } = require('./review-config');
+const { GlobalSettingsService } = require('./settings/global-settings-service');
 const { redirectConsoleToStderr } = require('./mcp-stdio');
 const { getChangedFiles } = require('./routes/executable-analysis');
 const { safeParseJson } = require('./utils/safe-parse-json');
@@ -725,7 +726,7 @@ AI PROVIDERS:
     }
 
     // Load configuration
-    const { config, isFirstRun } = await loadConfig();
+    const { config, isFirstRun, layers } = await loadConfig();
 
     // Show welcome message on first run (after early-exit flags are handled
     // above). Suppressed in headless --json mode so nothing reaches stdout but
@@ -929,6 +930,18 @@ AI PROVIDERS:
     if (!db) {
       console.log('Initializing database...');
       db = await initializeDatabase(resolveDbName(config));
+    }
+
+    // Overlay in-app global-settings overrides onto the CLI's config object so
+    // restart-required settings (worktree/review retention, dev_mode, etc.) and
+    // provider/model defaults honor DB values on this launch — the server that
+    // startServer() spins up applies its own overlay independently. Guarded so a
+    // DB read failure leaves the file config intact rather than aborting startup.
+    try {
+      const overlay = new GlobalSettingsService({ db, baseConfig: config, layers });
+      Object.assign(config, overlay.buildEffectiveConfig());
+    } catch (overlayError) {
+      logger.warn(`Could not apply global-settings overrides: ${overlayError.message}`);
     }
 
     // Migrate existing worktrees to database (if any)

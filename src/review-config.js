@@ -49,41 +49,67 @@ function _buildCouncilSelection(council) {
 /**
  * Resolve the single-provider/model pair from the per-field precedence ladders.
  *
- * Mirrors the canonical (pre-refactor) headless derivation in
- * `performHeadlessReview` and the MCP ladder (`src/routes/mcp.js`), which both
- * let a deliberate per-invocation environment override win over a sticky,
- * persisted repo default:
- *   provider: explicit › PAIR_REVIEW_PROVIDER › repo default › config.default_provider › config.provider › 'claude'
- *   model:    explicit › PAIR_REVIEW_MODEL › repo default › config.default_model › config.model › 'opus'
+ * Precedence (highest first), per the global-settings design ("specificity
+ * first, then in-app > env > files"):
+ *   provider: explicit › repo default › global in-app override › PAIR_REVIEW_PROVIDER › config.default_provider › config.provider › 'claude'
+ *   model:    explicit › repo default › global in-app override › PAIR_REVIEW_MODEL    › config.default_model    › config.model    › 'opus'
  *
- * The environment variables sit ABOVE the repo defaults on purpose: `--ai-draft`
- * / `--ai-review` (which route through this resolver via `performHeadlessReview`)
- * historically resolved env-first, and CI/agent callers set `PAIR_REVIEW_MODEL` /
- * `PAIR_REVIEW_PROVIDER` as one-shot overrides that should beat a repo's saved
- * `default_model` / `default_provider`. (The interactive web "Analyze" route keeps
- * its own repo-before-env single ladder in `src/routes/{pr,local}.js`; this
- * resolver is consulted there only to detect council mode, not to pick the model.)
+ * Two deliberate orderings:
+ *   - The repo default now sits ABOVE the env var. Previously env deliberately
+ *     beat the repo default; the /settings work reversed this so that a
+ *     repo-scoped choice (the more specific setting) wins over a process-wide
+ *     env var. `--ai-draft` / `--ai-review` route through here, so CI callers
+ *     that relied on `PAIR_REVIEW_MODEL` beating a repo default must now pass
+ *     an explicit `--model` (still supreme) instead.
+ *   - The global in-app override (from the /settings page, carried on
+ *     `config._globalOverrides`) sits ABOVE the env var but BELOW the repo
+ *     default. The effective config also folds the override into
+ *     `config.default_provider`; reading it from `_globalOverrides` here lets us
+ *     rank it above env without conflating it with the config-file value that
+ *     still sits below env.
+ *
+ * The interactive web "Analyze" route keeps its own repo-before-env single
+ * ladder in `src/routes/{pr,local}.js` (it consults this resolver only to detect
+ * council mode, not to pick the model) and picks up in-app overrides via the
+ * folded `config.default_provider`.
+ *
+ * When `default_provider`/`default_model` is locked as final by configuration
+ * (listed in `config._finalKeys`), both the in-app override tier (already empty
+ * — the effective config excludes final keys from `_globalOverrides`) AND the
+ * env tier are skipped, so the value resolves from the config-file default
+ * (`cfg.default_*`) or the hardcoded fallback. A repo-scoped default and an
+ * explicit per-run flag are more specific and still win.
  *
  * Each field falls through independently, so supplying only `explicit.model`
- * still resolves the provider from env/repo/config defaults (and vice versa).
+ * still resolves the provider from repo/override/env/config defaults (and vice
+ * versa).
  *
  * @param {Object} explicit - { provider, model } (either may be undefined)
  * @param {Object|null} repoSettings - Row from RepoSettingsRepository.getRepoSettings
- * @param {Object} config - Global config object
+ * @param {Object} config - Global config object (may carry `_globalOverrides`)
  * @returns {{ type: 'single', provider: string, model: string }}
  * @private
  */
 function _buildSingleSelection(explicit, repoSettings, config) {
   const cfg = config || {};
+  const overrides = cfg._globalOverrides || {};
+  // When a key is locked as final by configuration, the effective config
+  // already excludes it from `_globalOverrides`, and the env tier must be
+  // skipped too so the file-layer value (folded into cfg.default_*) wins.
+  const finalKeys = Array.isArray(cfg._finalKeys) ? cfg._finalKeys : [];
+  const providerFinal = finalKeys.includes('default_provider');
+  const modelFinal = finalKeys.includes('default_model');
   const provider = explicit.provider
-    || process.env.PAIR_REVIEW_PROVIDER
     || repoSettings?.default_provider
+    || overrides.default_provider
+    || (providerFinal ? undefined : process.env.PAIR_REVIEW_PROVIDER)
     || cfg.default_provider
     || cfg.provider
     || 'claude';
   const model = explicit.model
-    || process.env.PAIR_REVIEW_MODEL
     || repoSettings?.default_model
+    || overrides.default_model
+    || (modelFinal ? undefined : process.env.PAIR_REVIEW_MODEL)
     || cfg.default_model
     || cfg.model
     || 'opus';
@@ -103,11 +129,11 @@ function _buildSingleSelection(explicit, repoSettings, config) {
  *      `CouncilRepository.getById` (we already hold the UUID, so no handle
  *      matching is needed). If the id points to a council that no longer exists,
  *      a warning is logged and resolution falls through to the single default.
- *   4. `PAIR_REVIEW_PROVIDER` / `PAIR_REVIEW_MODEL` — one-shot env overrides
- *      (deliberately above repo defaults — see `_buildSingleSelection`).
- *   5. `repo_settings.default_provider` / `default_model` — single selection.
- *   6. Global `config` defaults — single selection (final hardcoded fallbacks
- *      'claude' / 'opus').
+ *   4. `repo_settings.default_provider` / `default_model` — single selection
+ *      (now above the env vars — see `_buildSingleSelection`).
+ *   5. Global in-app override (`config._globalOverrides`) › `PAIR_REVIEW_PROVIDER`
+ *      / `PAIR_REVIEW_MODEL` env › global `config` defaults — single selection
+ *      (final hardcoded fallbacks 'claude' / 'opus').
  *
  * @param {Object} db - Database instance.
  * @param {string} repository - Repository in `owner/repo` form (may be null/undefined
@@ -161,4 +187,25 @@ async function resolveReviewConfig(db, repository, explicit = {}, config = {}) {
   return _buildSingleSelection({}, repoSettings, config);
 }
 
-module.exports = { resolveReviewConfig };
+/**
+ * Resolve a single provider/model pair from the canonical per-field precedence
+ * ladders, WITHOUT any council dispatch.
+ *
+ * This is the same ladder `resolveReviewConfig` applies for the single-selection
+ * case (explicit › repo default › global in-app override › env › config-file ›
+ * legacy keys › hardcoded). It is exported for callers that intentionally run a
+ * single provider/model only and must NOT consult a repo's default council — the
+ * MCP `start_analysis` tool (src/routes/mcp.js) documents this divergence. Those
+ * callers reuse this helper so they inherit the in-app-override tier and the
+ * repo-above-env ordering instead of maintaining a parallel inline ladder.
+ *
+ * @param {Object} [explicit] - { provider, model } (either may be undefined)
+ * @param {Object|null} [repoSettings] - Row from RepoSettingsRepository.getRepoSettings
+ * @param {Object} [config] - Global config object (may carry `_globalOverrides`)
+ * @returns {{ type: 'single', provider: string, model: string }}
+ */
+function resolveSingleProviderModel(explicit = {}, repoSettings = null, config = {}) {
+  return _buildSingleSelection(explicit, repoSettings, config);
+}
+
+module.exports = { resolveReviewConfig, resolveSingleProviderModel };

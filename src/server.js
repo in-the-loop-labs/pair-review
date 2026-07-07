@@ -4,6 +4,7 @@ const path = require('path');
 const { loadConfig, getGitHubToken, resolveDbName, warnIfDevModeWithoutDbName, getRepoConfig, resolveBindingRepositoryFromPR, isExclusiveAltHost } = require('./config');
 const { initializeDatabase, getDatabaseStatus, queryOne, run, PRMetadataRepository } = require('./database');
 const { normalizeRepository } = require('./utils/paths');
+const { GlobalSettingsService } = require('./settings/global-settings-service');
 const { applyConfigOverrides, checkAllProviders } = require('./ai');
 const { checkAllChatProviders } = require('./chat/chat-providers');
 const logger = require('./utils/logger');
@@ -168,7 +169,7 @@ function findAvailablePort(app, startPort, maxAttempts = 20) {
 async function startServer(sharedDb = null, sharedPoolLifecycle = null) {
   try {
     // Load configuration
-    const { config } = await loadConfig();
+    const { config, layers } = await loadConfig();
     applyEnvOverrides(config);
 
     // Apply provider configuration overrides (custom models, commands, etc.)
@@ -361,6 +362,13 @@ async function startServer(sharedDb = null, sharedPoolLifecycle = null) {
       }
     });
 
+    // Global settings route - serves settings.html. MUST be registered before
+    // the two-segment `/settings/:owner/:repo` repo-settings route so the bare
+    // `/settings` path is not swallowed by param matching.
+    app.get('/settings', (req, res) => {
+      res.sendFile(path.join(__dirname, '..', 'public', 'settings.html'));
+    });
+
     // Repository settings route - serves repo-settings.html
     app.get('/settings/:owner/:repo', (req, res) => {
       res.sendFile(path.join(__dirname, '..', 'public', 'repo-settings.html'));
@@ -389,10 +397,23 @@ async function startServer(sharedDb = null, sharedPoolLifecycle = null) {
       });
     });
     
+    // Build the global-settings service and overlay in-app DB overrides onto
+    // the loaded file config. `baseConfig` is captured pre-overlay (the service
+    // clones it) so future PUT/DELETE recompute from the file layers, not from
+    // an already-overlaid object. We mutate `config` in place with Object.assign
+    // so downstream closures (pool lifecycle, chat manager, /pr host correction)
+    // share the same effective object every per-request `req.app.get('config')`
+    // reader sees. Write endpoints later replace app.get('config') with a fresh
+    // effective object; only editable settings change, so the closures (which
+    // read only read-only settings) stay correct.
+    const globalSettings = new GlobalSettingsService({ db, baseConfig: config, layers });
+    Object.assign(config, globalSettings.buildEffectiveConfig());
+
     // Store database instance, GitHub token, and config for routes
     app.set('db', db);
     app.set('githubToken', githubToken);
     app.set('config', config);
+    app.set('globalSettings', globalSettings);
 
     // Create or reuse the worktree pool lifecycle instance.
     // When called from main.js, the shared instance (already rehydrated) is
@@ -422,6 +443,7 @@ async function startServer(sharedDb = null, sharedPoolLifecycle = null) {
     const bulkAnalysisConfigsRoutes = require('./routes/bulk-analysis-configs');
     const stackAnalysisRoutes = require('./routes/stack-analysis');
     const externalCommentsRoutes = require('./routes/external-comments');
+    const settingsRoutes = require('./routes/settings');
     const { createSoundRouter } = require('./routes/sound');
 
     // Initialize chat session manager
@@ -443,6 +465,7 @@ async function startServer(sharedDb = null, sharedPoolLifecycle = null) {
     app.use('/', githubCollectionsRoutes);
     app.use('/', bulkAnalysisConfigsRoutes);
     app.use('/', stackAnalysisRoutes);
+    app.use('/', settingsRoutes);
     // External-comments routes (GitHub PR review-comment sync + fetch) are
     // gated by the `external_comments` config flag. When disabled, the
     // router is not mounted so any GET/POST against `/api/reviews/*/

@@ -43,17 +43,27 @@ const activeSetups = new Map();
 /**
  * Get the model to use for AI analysis
  * Priority: CLI flag (PAIR_REVIEW_MODEL env var) > config.default_model > 'opus' default
+ *
+ * Exception: when `default_model` is locked as final by configuration (listed
+ * in `config._finalKeys`), the env var is skipped so the config-file value
+ * (folded into `config.default_model`) wins — mirroring the review-config
+ * ladder. Callers layer an in-app override above this via
+ * `config._globalOverrides?.default_model || getModel(req)`; that override is
+ * already absent for a final key, so this env-defeat completes the lock.
  * @param {Object} req - Express request object
  * @returns {string} Model name to use
  */
 function getModel(req) {
-  // CLI flag takes priority (passed via environment variable)
-  if (process.env.PAIR_REVIEW_MODEL) {
+  const config = req.app.get('config');
+  const modelFinal = Array.isArray(config?._finalKeys) && config._finalKeys.includes('default_model');
+
+  // CLI flag takes priority (passed via environment variable) unless the key is
+  // locked as final by configuration.
+  if (!modelFinal && process.env.PAIR_REVIEW_MODEL) {
     return process.env.PAIR_REVIEW_MODEL;
   }
 
   // Config file setting (default_model preferred, model for backwards compatibility)
-  const config = req.app.get('config');
   if (config) {
     if (config.default_model) {
       return config.default_model;

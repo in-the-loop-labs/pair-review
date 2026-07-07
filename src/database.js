@@ -21,7 +21,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 52;
+const CURRENT_SCHEMA_VERSION = 53;
 
 /**
  * Database schema SQL statements
@@ -362,6 +362,16 @@ const SCHEMA_SQL = {
       FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE,
       FOREIGN KEY (parent_id) REFERENCES external_comments(id) ON DELETE SET NULL
     )
+  `,
+
+  global_settings: `
+    CREATE TABLE IF NOT EXISTS global_settings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      key TEXT NOT NULL UNIQUE,
+      value TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
   `
 };
 
@@ -416,7 +426,10 @@ const INDEX_SQL = [
   // External comments indexes (read-only mirror of GitHub/etc. PR review comments)
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_external_comments_unique ON external_comments(review_id, source, external_id)',
   'CREATE INDEX IF NOT EXISTS idx_external_comments_anchor ON external_comments(review_id, file, line_end)',
-  'CREATE INDEX IF NOT EXISTS idx_external_comments_parent_lookup ON external_comments(review_id, source, in_reply_to_id)'
+  'CREATE INDEX IF NOT EXISTS idx_external_comments_parent_lookup ON external_comments(review_id, source, in_reply_to_id)',
+  // Global settings (in-app overrides). key is already UNIQUE in the table, but
+  // the explicit index keeps parity with the test schema and lookup by key fast.
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_global_settings_key ON global_settings(key)'
 ];
 
 /**
@@ -2258,6 +2271,23 @@ const MIGRATIONS = {
       console.log('  status_reason column already present; nothing to do');
     }
     console.log('Migration to schema version 52 complete');
+  },
+
+  // Migration to version 53: add the global_settings table backing the
+  // /settings page's in-app overrides. A single CREATE TABLE needs no
+  // transaction; the tableExists guard keeps it idempotent if the migration
+  // re-runs after a crash. The unique index is created separately (also
+  // idempotent) so the schema matches SCHEMA_SQL + INDEX_SQL exactly.
+  53: (db) => {
+    console.log('Running migration to schema version 53: Add global_settings table...');
+    if (!tableExists(db, 'global_settings')) {
+      db.exec(SCHEMA_SQL.global_settings);
+      console.log('  Created global_settings table');
+    } else {
+      console.log('  Table global_settings already exists');
+    }
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_global_settings_key ON global_settings(key)');
+    console.log('Migration to schema version 53 complete');
   }
 };
 
@@ -3177,6 +3207,83 @@ class WorktreePoolRepository {
 /**
  * RepoSettingsRepository class for managing per-repository AI settings
  */
+/**
+ * Repository for global (non-repo) in-app setting overrides.
+ *
+ * Backs the /settings page. Values are JSON-encoded per row so booleans,
+ * integers, and strings round-trip with their original type. Methods are
+ * synchronous (better-sqlite3) because the GlobalSettingsService resolves
+ * effective config synchronously at startup and per request.
+ */
+class GlobalSettingsRepository {
+  /**
+   * @param {Database} db - Database instance
+   */
+  constructor(db) {
+    this.db = db;
+  }
+
+  /**
+   * Get all overrides as a plain map of key -> parsed value. Rows whose value
+   * is not valid JSON are skipped (defensive against manual DB edits).
+   * @returns {Object}
+   */
+  getAll() {
+    const rows = this.db.prepare('SELECT key, value FROM global_settings').all();
+    const out = {};
+    for (const row of rows) {
+      try {
+        out[row.key] = JSON.parse(row.value);
+      } catch {
+        // Skip malformed row rather than throw — resolution must not break.
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Get a single override's parsed value, or undefined if unset/malformed.
+   * @param {string} key
+   * @returns {*}
+   */
+  get(key) {
+    const row = this.db.prepare('SELECT value FROM global_settings WHERE key = ?').get(key);
+    if (!row) return undefined;
+    try {
+      return JSON.parse(row.value);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Upsert an override. Value is JSON-encoded.
+   * @param {string} key
+   * @param {*} value
+   */
+  set(key, value) {
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO global_settings (key, value, created_at, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `).run(key, JSON.stringify(value), now, now);
+  }
+
+  /**
+   * Delete a single override (no-op if absent).
+   * @param {string} key
+   */
+  delete(key) {
+    this.db.prepare('DELETE FROM global_settings WHERE key = ?').run(key);
+  }
+
+  /** Delete all overrides. */
+  deleteAll() {
+    this.db.prepare('DELETE FROM global_settings').run();
+  }
+}
+
 class RepoSettingsRepository {
   /**
    * Create a new RepoSettingsRepository instance
@@ -6060,6 +6167,7 @@ module.exports = {
   WorktreeRepository,
   WorktreePoolRepository,
   RepoSettingsRepository,
+  GlobalSettingsRepository,
   ReviewRepository,
   CommentRepository,
   ExternalCommentRepository,

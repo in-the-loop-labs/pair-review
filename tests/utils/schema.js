@@ -330,6 +330,16 @@ const SCHEMA_SQL = {
       FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE,
       FOREIGN KEY (parent_id) REFERENCES external_comments(id) ON DELETE SET NULL
     )
+  `,
+
+  global_settings: `
+    CREATE TABLE IF NOT EXISTS global_settings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      key TEXT NOT NULL UNIQUE,
+      value TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
   `
 };
 
@@ -383,7 +393,9 @@ const INDEX_SQL = [
   // External comments indexes (read-only mirror of GitHub/etc. PR review comments)
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_external_comments_unique ON external_comments(review_id, source, external_id)',
   'CREATE INDEX IF NOT EXISTS idx_external_comments_anchor ON external_comments(review_id, file, line_end)',
-  'CREATE INDEX IF NOT EXISTS idx_external_comments_parent_lookup ON external_comments(review_id, source, in_reply_to_id)'
+  'CREATE INDEX IF NOT EXISTS idx_external_comments_parent_lookup ON external_comments(review_id, source, in_reply_to_id)',
+  // Global settings (in-app overrides). Must match production src/database.js.
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_global_settings_key ON global_settings(key)'
 ];
 
 /**
