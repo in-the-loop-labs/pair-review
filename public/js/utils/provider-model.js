@@ -86,10 +86,75 @@ function resolveProviderModelPair(scopes, providersInfo) {
   return { provider: 'claude', model: providerDefaultModel(claude) };
 }
 
+/**
+ * Build the ordered scope list for resolveProviderModelPair, injecting the
+ * CLI/env override AHEAD of saved repo settings.
+ *
+ * The override must outrank repo settings to honor the documented
+ * `CLI/env > repo settings` contract. Folding the override into appConfig's
+ * default_provider/default_model alone is NOT enough: every seed site passes
+ * repoSettings first, so an env-aware appConfig would still lose to a repo's
+ * saved default. Prepending the override scope is the only correct fix.
+ *
+ * Two override channels, highest precedence first:
+ *   1. `extraOverride` — a per-invocation override carried on the auto-analyze
+ *      URL (single-port delegation: the flag can only reach the already-running
+ *      server through the URL).
+ *   2. `appConfig.provider_override` / `appConfig.model_override` — the
+ *      PAIR_REVIEW_PROVIDER / PAIR_REVIEW_MODEL env override surfaced by
+ *      /api/config, for the process that actually received the CLI flag.
+ *
+ * A provider-only override (`{ provider: 'codex', model: null }`) resolves via
+ * resolveProviderModelPair to codex + codex's own default model, matching CLI
+ * semantics where `--provider codex` alone pins the provider.
+ *
+ * @param {Object} repoSettings - saved repo settings row (may be null)
+ * @param {Object} [appConfig] - /api/config response (or __pairReview-shaped equivalent)
+ * @param {{provider?: string, model?: string}} [extraOverride] - per-invocation override (URL params)
+ * @returns {Array<{provider?: string, model?: string}>} ordered scopes for resolveProviderModelPair
+ */
+function buildProviderModelScopes(repoSettings, appConfig = {}, extraOverride = null) {
+  const cfg = appConfig || {};
+  const scopes = [];
+  // 1. Per-invocation override (delegation URL params) — highest precedence.
+  if (extraOverride && (extraOverride.provider || extraOverride.model)) {
+    scopes.push({ provider: extraOverride.provider || null, model: extraOverride.model || null });
+  }
+  // 2. CLI/env override surfaced by /api/config (non-delegated invocations).
+  if (cfg.provider_override || cfg.model_override) {
+    scopes.push({ provider: cfg.provider_override || null, model: cfg.model_override || null });
+  }
+  // 3. Saved repo settings.
+  scopes.push({ provider: repoSettings?.default_provider, model: repoSettings?.default_model });
+  // 4. App/config defaults.
+  scopes.push({ provider: cfg.default_provider, model: cfg.default_model });
+  return scopes;
+}
+
+/**
+ * Whether a CLI/env provider-or-model override is active (from either channel).
+ * Used to decide whether auto-analyze should bypass a council default and force
+ * the single-provider path (a single-provider override is incompatible with a
+ * multi-voice council).
+ *
+ * @param {Object} [appConfig] - /api/config response (or __pairReview-shaped equivalent)
+ * @param {{provider?: string, model?: string}} [extraOverride] - per-invocation override (URL params)
+ * @returns {boolean}
+ */
+function hasProviderModelOverride(appConfig = {}, extraOverride = null) {
+  const cfg = appConfig || {};
+  return !!(
+    (extraOverride && (extraOverride.provider || extraOverride.model)) ||
+    cfg.provider_override || cfg.model_override
+  );
+}
+
 if (typeof window !== 'undefined') {
   window.resolveProviderModelPair = resolveProviderModelPair;
+  window.buildProviderModelScopes = buildProviderModelScopes;
+  window.hasProviderModelOverride = hasProviderModelOverride;
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { resolveProviderModelPair };
+  module.exports = { resolveProviderModelPair, buildProviderModelScopes, hasProviderModelOverride };
 }

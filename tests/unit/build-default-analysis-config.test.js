@@ -12,7 +12,15 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // Import the actual PRManager class from production code
 const { PRManager } = require('../../public/js/pr.js');
-const { resolveProviderModelPair } = require('../../public/js/utils/provider-model.js');
+const {
+  resolveProviderModelPair,
+  buildProviderModelScopes,
+  hasProviderModelOverride
+} = require('../../public/js/utils/provider-model.js');
+const {
+  carryAnalyzeParams,
+  stripAnalyzeParams
+} = require('../../public/js/utils/analyze-params.js');
 const { URLSearchParams: NativeURLSearchParams } = require('url');
 
 // Provider metadata used to resolve a matched provider/model pair. Mirrors the
@@ -43,6 +51,10 @@ beforeEach(() => {
 
   globalThis.window = globalThis;
   globalThis.resolveProviderModelPair = resolveProviderModelPair;
+  globalThis.buildProviderModelScopes = buildProviderModelScopes;
+  globalThis.hasProviderModelOverride = hasProviderModelOverride;
+  globalThis.carryAnalyzeParams = carryAnalyzeParams;
+  globalThis.stripAnalyzeParams = stripAnalyzeParams;
   globalThis.document = {
     getElementById: () => null,
     querySelector: () => null,
@@ -82,6 +94,10 @@ afterEach(() => {
   globalThis.URLSearchParams = saved.URLSearchParams;
   globalThis.location = saved.location;
   delete globalThis.resolveProviderModelPair;
+  delete globalThis.buildProviderModelScopes;
+  delete globalThis.hasProviderModelOverride;
+  delete globalThis.carryAnalyzeParams;
+  delete globalThis.stripAnalyzeParams;
 
   vi.restoreAllMocks();
 });
@@ -326,6 +342,83 @@ describe('PRManager._buildDefaultAnalysisConfig', () => {
     expect(config.provider).toBe('claude');
     expect(config.model).toBe('opus');
   });
+
+  // ------------------------------------------------------------------
+  // CLI/env override (PAIR_REVIEW_PROVIDER via /api/config provider_override,
+  // or the single-port delegation URL). These drive the REAL auto-analyze
+  // request shape: the pair is default-filled from an env-aware source, not
+  // explicitly chosen — the path that carried the original bug.
+  // ------------------------------------------------------------------
+  it('lets an env override (appConfig.provider_override) outrank saved repo settings', async () => {
+    const repoSettings = { default_provider: 'antigravity', default_model: 'pro' };
+    const appConfig = {
+      default_provider: 'claude',
+      default_model: 'opus',
+      provider_override: 'pi',
+      model_override: 'multi-model'
+    };
+    const config = await manager._buildDefaultAnalysisConfig(repoSettings, {}, appConfig, PROVIDERS);
+    expect(config).toEqual({ provider: 'pi', model: 'multi-model', customInstructions: null });
+  });
+
+  it('derives the model from a provider-only env override', async () => {
+    const repoSettings = { default_provider: 'claude', default_model: 'opus' };
+    const appConfig = { default_provider: 'claude', default_model: 'opus', provider_override: 'antigravity' };
+    const config = await manager._buildDefaultAnalysisConfig(repoSettings, {}, appConfig, PROVIDERS);
+    expect(config.provider).toBe('antigravity');
+    expect(config.model).toBe('gemini-3.1-pro-low');
+  });
+
+  it('lets a per-invocation (delegation URL) override outrank both repo settings and env override', async () => {
+    const repoSettings = { default_provider: 'antigravity', default_model: 'pro' };
+    const appConfig = { default_provider: 'claude', default_model: 'opus', provider_override: 'claude', model_override: 'opus' };
+    const urlOverride = { provider: 'pi', model: 'multi-model' };
+    const config = await manager._buildDefaultAnalysisConfig(repoSettings, {}, appConfig, PROVIDERS, urlOverride);
+    expect(config).toEqual({ provider: 'pi', model: 'multi-model', customInstructions: null });
+  });
+
+  it('bypasses a council default and forces single-provider when an env override is active', async () => {
+    // Repo default is a council, but --provider names a single provider — the
+    // override must win (council is incompatible with a single provider).
+    const councilFetch = vi.fn(() => Promise.resolve({
+      ok: true, json: () => Promise.resolve({ council: { config: {}, name: 'C' } }),
+    }));
+    globalThis.fetch = councilFetch;
+
+    const repoSettings = { default_tab: 'council', default_council_id: 'abc-123' };
+    const appConfig = { provider_override: 'antigravity' };
+    const config = await manager._buildDefaultAnalysisConfig(repoSettings, {}, appConfig, PROVIDERS);
+    expect(config.isCouncil).toBeUndefined();
+    expect(config.provider).toBe('antigravity');
+    expect(config.model).toBe('gemini-3.1-pro-low');
+    // Must NOT fetch council config when the override forces single-provider.
+    expect(councilFetch).not.toHaveBeenCalled();
+  });
+
+  it('bypasses a council default when a delegation-URL override is active', async () => {
+    const councilFetch = vi.fn(() => Promise.resolve({
+      ok: true, json: () => Promise.resolve({ council: { config: {}, name: 'C' } }),
+    }));
+    globalThis.fetch = councilFetch;
+
+    const repoSettings = { default_tab: 'advanced', default_council_id: 'xyz-789' };
+    const config = await manager._buildDefaultAnalysisConfig(
+      repoSettings, {}, {}, PROVIDERS, { provider: 'pi', model: 'multi-model' }
+    );
+    expect(config).toEqual({ provider: 'pi', model: 'multi-model', customInstructions: null });
+    expect(councilFetch).not.toHaveBeenCalled();
+  });
+
+  it('still runs the council default when NO override is active', async () => {
+    const councilData = { config: { voices: ['a'] }, name: 'My Council' };
+    globalThis.fetch = vi.fn(() => Promise.resolve({
+      ok: true, json: () => Promise.resolve({ council: councilData }),
+    }));
+    const repoSettings = { default_tab: 'council', default_council_id: 'abc-123' };
+    const config = await manager._buildDefaultAnalysisConfig(repoSettings, {}, {}, PROVIDERS);
+    expect(config.isCouncil).toBe(true);
+    expect(config.councilId).toBe('abc-123');
+  });
 });
 
 describe('PRManager.showWorktreeNotFoundError', () => {
@@ -344,5 +437,39 @@ describe('PRManager.showWorktreeNotFoundError', () => {
 
     expect(container.innerHTML).toContain('/pr/owner/repo/123?analyze=true&analysisConfigId=bulk-config-id');
     expect(manager.resetButton).toHaveBeenCalled();
+  });
+
+  it('preserves a delegated provider/model override in the reload link', () => {
+    const container = { innerHTML: '', style: {} };
+    globalThis.document.getElementById = vi.fn((id) => id === 'pr-container' ? container : null);
+    globalThis.URLSearchParams = NativeURLSearchParams;
+    globalThis.window.location = { search: '?analyze=true&provider=codex&model=gpt-5.5' };
+
+    const manager = Object.create(PRManager.prototype);
+    manager._autoAnalyzeRequested = true;
+    manager.escapeHtml = (value) => value;
+    manager.resetButton = vi.fn();
+
+    manager.showWorktreeNotFoundError('owner', 'repo', 123);
+
+    expect(container.innerHTML).toContain('provider=codex');
+    expect(container.innerHTML).toContain('model=gpt-5.5');
+  });
+
+  it('does not add analyze params when not arriving via auto-analyze', () => {
+    const container = { innerHTML: '', style: {} };
+    globalThis.document.getElementById = vi.fn((id) => id === 'pr-container' ? container : null);
+    globalThis.URLSearchParams = NativeURLSearchParams;
+    globalThis.window.location = { search: '?analyze=true&provider=codex' };
+
+    const manager = Object.create(PRManager.prototype);
+    manager._autoAnalyzeRequested = false;
+    manager.escapeHtml = (value) => value;
+    manager.resetButton = vi.fn();
+
+    manager.showWorktreeNotFoundError('owner', 'repo', 123);
+
+    expect(container.innerHTML).toContain('/pr/owner/repo/123"');
+    expect(container.innerHTML).not.toContain('provider=codex');
   });
 });

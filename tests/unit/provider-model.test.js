@@ -6,7 +6,11 @@
  */
 import { describe, it, expect } from 'vitest';
 
-const { resolveProviderModelPair } = require('../../public/js/utils/provider-model.js');
+const {
+  resolveProviderModelPair,
+  buildProviderModelScopes,
+  hasProviderModelOverride
+} = require('../../public/js/utils/provider-model.js');
 
 const PROVIDERS = [
   {
@@ -100,5 +104,87 @@ describe('resolveProviderModelPair', () => {
   it('handles non-array inputs defensively', () => {
     expect(resolveProviderModelPair(undefined, undefined))
       .toEqual({ provider: 'claude', model: null });
+  });
+});
+
+describe('buildProviderModelScopes', () => {
+  it('returns [repo, app] order when no override is present', () => {
+    const scopes = buildProviderModelScopes(
+      { default_provider: 'antigravity', default_model: 'gemini-3.1-pro-low' },
+      { default_provider: 'claude', default_model: 'opus' }
+    );
+    expect(scopes).toEqual([
+      { provider: 'antigravity', model: 'gemini-3.1-pro-low' },
+      { provider: 'claude', model: 'opus' }
+    ]);
+  });
+
+  it('prepends the env override (appConfig.provider_override) ahead of repo settings', () => {
+    const scopes = buildProviderModelScopes(
+      { default_provider: 'antigravity', default_model: 'gemini-3.1-pro-low' },
+      { default_provider: 'claude', default_model: 'opus', provider_override: 'codex', model_override: 'gpt-5.5' }
+    );
+    expect(scopes[0]).toEqual({ provider: 'codex', model: 'gpt-5.5' });
+    // The env override must outrank repo settings.
+    expect(resolveProviderModelPair(scopes, PROVIDERS).provider).toBe('codex');
+  });
+
+  it('prepends a provider-only env override with a null model', () => {
+    const scopes = buildProviderModelScopes(
+      { default_provider: 'antigravity', default_model: 'gemini-3.1-pro-low' },
+      { provider_override: 'codex' }
+    );
+    expect(scopes[0]).toEqual({ provider: 'codex', model: null });
+  });
+
+  it('ranks the per-invocation (URL) override above the env override', () => {
+    const scopes = buildProviderModelScopes(
+      { default_provider: 'antigravity', default_model: 'gemini-3.1-pro-low' },
+      { provider_override: 'codex', model_override: 'gpt-5.5' },
+      { provider: 'pi', model: 'multi-model' }
+    );
+    expect(scopes[0]).toEqual({ provider: 'pi', model: 'multi-model' });
+    expect(scopes[1]).toEqual({ provider: 'codex', model: 'gpt-5.5' });
+  });
+
+  it('ignores an empty extraOverride', () => {
+    const scopes = buildProviderModelScopes(
+      { default_provider: 'antigravity' },
+      {},
+      { provider: null, model: null }
+    );
+    expect(scopes).toEqual([
+      { provider: 'antigravity', model: undefined },
+      { provider: undefined, model: undefined }
+    ]);
+  });
+
+  it('handles null appConfig defensively', () => {
+    const scopes = buildProviderModelScopes({ default_provider: 'claude' }, null);
+    expect(scopes).toEqual([
+      { provider: 'claude', model: undefined },
+      { provider: undefined, model: undefined }
+    ]);
+  });
+});
+
+describe('hasProviderModelOverride', () => {
+  it('is false with no override', () => {
+    expect(hasProviderModelOverride({})).toBe(false);
+    expect(hasProviderModelOverride(null, null)).toBe(false);
+  });
+
+  it('is true when appConfig carries an env override', () => {
+    expect(hasProviderModelOverride({ provider_override: 'codex' })).toBe(true);
+    expect(hasProviderModelOverride({ model_override: 'gpt-5.5' })).toBe(true);
+  });
+
+  it('is true when a per-invocation override is present', () => {
+    expect(hasProviderModelOverride({}, { provider: 'codex' })).toBe(true);
+    expect(hasProviderModelOverride({}, { model: 'gpt-5.5' })).toBe(true);
+  });
+
+  it('is false when the per-invocation override has only null halves', () => {
+    expect(hasProviderModelOverride({}, { provider: null, model: null })).toBe(false);
   });
 });

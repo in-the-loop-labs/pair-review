@@ -932,6 +932,11 @@ async function handleLocalReview(targetPath, flags = {}) {
     if (flags.model && !flags.council) {
       process.env.PAIR_REVIEW_MODEL = flags.model;
     }
+    // Mirror --provider too so the local web/UI routes (which read
+    // PAIR_REVIEW_PROVIDER via getProvider(req)) honor it, matching --model above.
+    if (flags.provider) {
+      process.env.PAIR_REVIEW_PROVIDER = flags.provider;
+    }
 
     console.log('Starting server...');
     const port = await startServer(db);

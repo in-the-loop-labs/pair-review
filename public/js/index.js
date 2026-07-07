@@ -1413,6 +1413,11 @@
         window.__pairReview.chatProviders = chatProviders;
         window.__pairReview.defaultProvider = config.default_provider || 'claude';
         window.__pairReview.defaultModel = config.default_model || 'opus';
+        // CLI/env override (PAIR_REVIEW_PROVIDER / PAIR_REVIEW_MODEL) surfaced
+        // by /api/config. The bulk-analysis seed prepends these ahead of repo
+        // settings so a `--provider` override outranks a repo's saved default.
+        window.__pairReview.providerOverride = config.provider_override || null;
+        window.__pairReview.modelOverride = config.model_override || null;
         window.__pairReview.hasGithubToken = Boolean(config.has_github_token);
         window.__pairReview.enableGraphite = config.enable_graphite === true;
         window.__pairReview.chatSpinner = config.chat_spinner || 'dots';
@@ -2039,10 +2044,18 @@
     };
 
     var providersInfo = await getBulkProvidersInfo();
-    var resolvedPair = window.resolveProviderModelPair([
-      { provider: repoSettings?.default_provider, model: repoSettings?.default_model },
-      { provider: window.__pairReview?.defaultProvider, model: window.__pairReview?.defaultModel }
-    ], providersInfo);
+    // Shape __pairReview into the appConfig fields buildProviderModelScopes reads
+    // so a CLI/env `--provider` override is prepended ahead of repo settings.
+    var bulkAppConfig = {
+      default_provider: window.__pairReview?.defaultProvider,
+      default_model: window.__pairReview?.defaultModel,
+      provider_override: window.__pairReview?.providerOverride || null,
+      model_override: window.__pairReview?.modelOverride || null
+    };
+    var resolvedPair = window.resolveProviderModelPair(
+      window.buildProviderModelScopes(repoSettings, bulkAppConfig),
+      providersInfo
+    );
 
     var config = await bulkAnalysisConfigModal.show({
       currentModel: resolvedPair.model,

@@ -49,7 +49,7 @@ const {
   activeAnalyses,
   localReviewDiffs,
   reviewToAnalysisId,
-  getModel,
+  resolveProviderModel,
   determineCompletionInfo,
   broadcastProgress,
   CancellationError,
@@ -1412,6 +1412,9 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
     // wins and falls through to the single-provider path unchanged below.
     // For repos with no default_council_id the resolver returns type:'single' and
     // we fall through, so single-provider behavior is byte-identical to before.
+    // (A CLI --provider override arrives here as a populated requestProvider —
+    // the frontend forces the single-provider path when an override is active —
+    // so this council branch is correctly skipped for delegated overrides.)
     if (!requestProvider && !requestModel) {
       const reviewConfig = await resolveReviewConfig(
         db,
@@ -1439,25 +1442,13 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
       }
     }
 
-    // Determine provider: request body > repo settings > config > default ('claude')
-    let selectedProvider;
-    if (requestProvider) {
-      selectedProvider = requestProvider;
-    } else if (repoSettings && repoSettings.default_provider) {
-      selectedProvider = repoSettings.default_provider;
-    } else {
-      selectedProvider = appConfig.default_provider || appConfig.provider || 'claude';
-    }
-
-    // Determine model: request body > repo settings > config/CLI > default
-    let selectedModel;
-    if (requestModel) {
-      selectedModel = requestModel;
-    } else if (repoSettings && repoSettings.default_model) {
-      selectedModel = repoSettings.default_model;
-    } else {
-      selectedModel = getModel(req);
-    }
+    // Resolve provider/model: request body > env/CLI > repo settings > config/legacy > default.
+    // Shared with the PR route (src/routes/pr.js) so both paths resolve identically.
+    const { provider: selectedProvider, model: selectedModel } = resolveProviderModel(req, {
+      requestProvider,
+      requestModel,
+      repoSettings
+    });
 
     // Get repo instructions from settings
     const repoInstructions = repoSettings?.default_instructions || null;
