@@ -612,6 +612,14 @@
                     context.path = params.get('path');
                 }
             }
+            // Forward a delegated --scope/--base selection (the CLI carries them
+            // on the /local?path=... URL when delegating to a running server).
+            // The server re-validates; this only relays the request.
+            if (mode === 'local') {
+                const scopeParams = new URLSearchParams(window.location.search);
+                if (scopeParams.get('scope')) context.scope = scopeParams.get('scope');
+                if (scopeParams.get('base')) context.base = scopeParams.get('base');
+            }
 
             const steps = mode === 'local' ? LOCAL_STEPS : PR_STEPS;
             const stepStates = {};
@@ -752,7 +760,10 @@
                     var fetchOptions = { method: 'POST' };
                     if (mode === 'local') {
                         fetchOptions.headers = { 'Content-Type': 'application/json' };
-                        fetchOptions.body = JSON.stringify({ path: context.path });
+                        var localBody = { path: context.path };
+                        if (context.scope) localBody.scope = context.scope;
+                        if (context.base) localBody.base = context.base;
+                        fetchOptions.body = JSON.stringify(localBody);
                     } else if (mode === 'pr') {
                         // A `host` query param (set when opening a PR from a dashboard
                         // collection row or a pasted URL) tells setup which system the

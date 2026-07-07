@@ -20,6 +20,7 @@ const { resolvePreflightBinding } = require('../utils/host-resolution');
 const { queryOne, ReviewRepository } = require('../database');
 const { normalizeRepository } = require('../utils/paths');
 const { rejectUrlLikeLocalReviewPath } = require('../utils/local-path-input');
+const { parseScopeArg, VALID_SCOPE_RANGES } = require('../local-scope');
 const logger = require('../utils/logger');
 
 const router = express.Router();
@@ -208,7 +209,7 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
  */
 router.post('/api/setup/local', async (req, res) => {
   try {
-    const { path: rawPath } = req.body;
+    const { path: rawPath, scope: rawScope, base: rawBase } = req.body;
 
     if (!rawPath) {
       return res.status(400).json({ error: 'Missing required field: path' });
@@ -218,6 +219,37 @@ router.post('/api/setup/local', async (req, res) => {
       rejectUrlLikeLocalReviewPath(rawPath);
     } catch (err) {
       return res.status(400).json({ error: err.message });
+    }
+
+    // Re-validate scope/base server-side — NEVER trust the delegated URL. Mirrors
+    // the CLI checks in main() so a delegated launch is held to the same contract.
+    let flags = {};
+    if (rawScope !== undefined && rawScope !== null && rawScope !== '') {
+      const parsed = parseScopeArg(rawScope);
+      if (!parsed) {
+        return res.status(400).json({
+          error: `Invalid scope value "${rawScope}". Valid ranges are: ${VALID_SCOPE_RANGES.join(', ')}. ` +
+            "The range must be two stops joined by '..' and must include 'unstaged'."
+        });
+      }
+      flags.scope = rawScope;
+      if (rawBase !== undefined && rawBase !== null && rawBase !== '') {
+        // --base only applies to a branch-relative scope, and must be a safe branch name.
+        if (parsed.start !== 'branch') {
+          return res.status(400).json({
+            error: "base requires a branch-relative scope (starting at 'branch', e.g. branch..untracked)."
+          });
+        }
+        if (!/^[\w.\-/]+$/.test(rawBase)) {
+          return res.status(400).json({ error: `Invalid base branch name "${rawBase}".` });
+        }
+        flags.base = rawBase;
+      }
+    } else if (rawBase !== undefined && rawBase !== null && rawBase !== '') {
+      // base without scope is meaningless (mirrors main()'s "base requires branch scope").
+      return res.status(400).json({
+        error: "base requires a branch-relative scope (starting at 'branch', e.g. branch..untracked)."
+      });
     }
 
     const targetPath = expandPath(rawPath);
@@ -238,6 +270,7 @@ router.post('/api/setup/local', async (req, res) => {
           db,
           targetPath,
           config: req.app.get('config') || {},
+          flags,
           onProgress: (progress) => {
             sendSetupEvent(setupId, 'step', progress);
           }
