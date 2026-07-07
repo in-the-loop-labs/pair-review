@@ -1,5 +1,69 @@
 # Changelog
 
+## 4.1.0
+
+### Minor Changes
+
+- 54be4c3: Add a `--provider` CLI flag (and matching `PAIR_REVIEW_PROVIDER` env var) to select the AI provider for headless reviews.
+
+  Previously, headless modes (`--ai-draft` / `--ai-review`) only let you set the model via `--model`, while the provider was always taken from repo/app config (defaulting to `claude`). Passing a non-default provider's model (e.g. `--model gpt-5.5`) would run it through the default provider and fail or misbehave. You can now pin both, e.g. `pair-review 123 --ai-draft --provider codex --model gpt-5.5`. The flag mirrors `--model`: it sets `PAIR_REVIEW_PROVIDER`, which the web/UI analysis paths also honor (the MCP path already did).
+
+  The override now also reaches **browser-driven** analyses. `pair-review <target> --ai --provider codex` changes the provider used by auto-analysis (and seeds the manual, stack, and bulk analysis modals) instead of being silently ignored — the browser previously sourced its default from a channel blind to the CLI flag. `/api/config` now surfaces the override as a dedicated signal that the frontend ranks ahead of saved repo settings (`CLI/env > repo settings`), and the override is carried across single-port delegation to an already-running server via the auto-analysis URL. When the repo default is a Review Council, an active `--provider`/`--model` override forces the single-provider path.
+
+  The override now travels reliably across the full delegation path. Env-only invocations (`PAIR_REVIEW_PROVIDER=codex pair-review <target> --ai`, no `--provider` flag) are normalized into the effective flags at startup, so they ride the single-port delegation URL just like the flag does. And the auto-analyze intent (`analyze`/`analysisConfigId`/`council`/`provider`/`model`) now travels as one bundle through every browser hop — the setup-page redirects and the "Reload PR" retry — so neither the override nor a CLI `--council` selection is dropped when a review has to be set up or re-set-up before analysis runs.
+
+  Two remaining silent-drop paths are also fixed: `pair-review --local --headless --provider <p>` no longer ignores the flag (the local headless analyzer now threads `--provider` into config resolution, so it can't fall through to the default provider — or, when the repo has a default council, silently switch to council mode); and a delegated run that also supplies `--instructions` (`pair-review 123 --ai --provider <p> --instructions "..."`) now carries the provider through the stored-analysis-config handoff instead of dropping it while `--model` was honored.
+
+- 9e00708: Add `--scope` and `--base` CLI options for local reviews. `--scope <start>..<end>`
+  sets which changes a local review covers, using the same scope model as the web
+  UI — the ordered stops `branch`, `staged`, `unstaged`, `untracked`, restricted to
+  the six contiguous ranges that include `unstaged` (default `unstaged..untracked`).
+  `branch..*` scopes diff from the merge-base with the base branch, and `--base
+<branch>` overrides base-branch auto-detection (Graphite state → GitHub PR base →
+  origin default branch → main/master). Both flags are local-mode only. An explicit
+  `--scope` is persisted on the review session, so reopening the review in the web UI
+  shows the same scope.
+
+  The `pair-loop` skill is updated to use `--scope branch..untracked` when the loop
+  commits work between rounds (or the reviewed work already spans commits on a
+  branch), so each review round covers the whole branch instead of an empty working
+  tree.
+
+- 80a0548: Add the `pair-loop` Claude Code plugin: an agent-orchestrated review loop that
+  uses pair-review as the review oracle. The `/pair-loop:loop` skill runs
+  multi-model council reviews through the headless CLI
+  (`pair-review --headless --json --council <handle>`), triages the findings,
+  applies fixes, and repeats with narrowing instructions until a final review
+  returns no blockers. When the pair-review server is running, triage is
+  written back over HTTP so the web UI reflects the loop's decisions.
+  MCP-independent; works in local and PR mode.
+- a0f0336: feat: dual-host repositories with per-PR host resolution
+
+  A repo configured with `api_host` can now set `exclusive: false` to indicate
+  that its pull requests live on both `github.com` and the configured alternate
+  host, rather than exclusively on the alt host. pair-review resolves the host
+  per PR instead of per repo.
+
+  - New per-repo config boolean `exclusive` (only valid alongside `api_host`).
+    Omitted or `true` keeps today's behavior (the repo lives exclusively on the
+    alt host); `false` marks the repo as dual-host.
+  - Each PR's host is stored locally and detected from the URL pattern that
+    matched a pasted URL, the host a PR was found on during a dashboard
+    collections refresh, and setup-time probing for bare PR numbers (alt host
+    first, falling back to github.com only on a 404 — auth/network errors fail
+    loudly with no fallback).
+  - Dashboard collections now also list open PRs from every configured alt host,
+    best-effort per host with partial results when a host is unavailable.
+  - Links and host-named text render per PR: a dual repo's github-hosted PR shows
+    GitHub/Graphite links; its alt-hosted PR shows the configured external link.
+
+  Repos with `api_host` and no `exclusive` key behave exactly as before.
+
+- 80a0548: Remove the `/code-critic:loop` skill from the code-critic plugin. The new
+  `pair-loop` plugin's `/pair-loop:loop` skill replaces it, running reviews
+  through real pair-review councils instead of a standalone Task-agent
+  pipeline. `/code-critic:analyze` is unchanged.
+
 ## 4.0.0
 
 ### Major Changes
