@@ -3407,6 +3407,54 @@ describe('Config Endpoints', () => {
       expect(response.body.default_model).toMatch(/^gemini-/);
     });
 
+    // --------------------------------------------------------------------
+    // CLI/env provider override signal (PAIR_REVIEW_PROVIDER / PAIR_REVIEW_MODEL)
+    //
+    // Exposed as a DEDICATED signal (not folded into default_provider/default_model)
+    // so the frontend can prepend it ahead of repo settings, honoring the
+    // documented `CLI/env > repo settings` contract.
+    // --------------------------------------------------------------------
+    describe('provider_override / model_override', () => {
+      let savedProvider;
+      let savedModel;
+
+      beforeEach(() => {
+        savedProvider = process.env.PAIR_REVIEW_PROVIDER;
+        savedModel = process.env.PAIR_REVIEW_MODEL;
+        delete process.env.PAIR_REVIEW_PROVIDER;
+        delete process.env.PAIR_REVIEW_MODEL;
+      });
+
+      afterEach(() => {
+        if (savedProvider === undefined) delete process.env.PAIR_REVIEW_PROVIDER;
+        else process.env.PAIR_REVIEW_PROVIDER = savedProvider;
+        if (savedModel === undefined) delete process.env.PAIR_REVIEW_MODEL;
+        else process.env.PAIR_REVIEW_MODEL = savedModel;
+      });
+
+      it('are null when no env override is set', async () => {
+        const response = await request(app).get('/api/config');
+        expect(response.status).toBe(200);
+        expect(response.body.provider_override).toBeNull();
+        expect(response.body.model_override).toBeNull();
+      });
+
+      it('surface PAIR_REVIEW_PROVIDER / PAIR_REVIEW_MODEL from the env', async () => {
+        process.env.PAIR_REVIEW_PROVIDER = 'codex';
+        process.env.PAIR_REVIEW_MODEL = 'gpt-5.5';
+        const response = await request(app).get('/api/config');
+        expect(response.body.provider_override).toBe('codex');
+        expect(response.body.model_override).toBe('gpt-5.5');
+      });
+
+      it('surface a provider-only override with a null model_override', async () => {
+        process.env.PAIR_REVIEW_PROVIDER = 'codex';
+        const response = await request(app).get('/api/config');
+        expect(response.body.provider_override).toBe('codex');
+        expect(response.body.model_override).toBeNull();
+      });
+    });
+
     it('should return enable_chat and pi_available fields', async () => {
       const response = await request(server)
         .get('/api/config');

@@ -634,7 +634,7 @@ class PRManager {
    * @param {Object} reviewSettings - Review settings from fetchLastReviewSettings()
    * @returns {Promise<Object>} Config object suitable for startAnalysis / startLocalAnalysis
    */
-  async _buildDefaultAnalysisConfig(repoSettings, reviewSettings, appConfig = {}, providersInfo = null) {
+  async _buildDefaultAnalysisConfig(repoSettings, reviewSettings, appConfig = {}, providersInfo = null, urlOverride = null) {
     const defaultTab = repoSettings?.default_tab || 'single';
     const councilId = repoSettings?.default_council_id || reviewSettings?.last_council_id || null;
 
@@ -642,6 +642,8 @@ class PRManager {
     // highest priority for council selection. When present we force the council
     // branch regardless of default_tab/settings, and derive configType from the
     // council's own type ('council' or 'advanced') rather than the repo default.
+    // An explicit council outranks a provider/model override here, matching the
+    // backend precedence in resolveReviewConfig where --council beats --provider.
     const urlSearch = (typeof window !== 'undefined' && window.location && window.location.search) || '';
     const urlCouncilId = new URLSearchParams(urlSearch).get('council');
     if (urlCouncilId) {
@@ -676,7 +678,14 @@ class PRManager {
       }
     }
 
-    if ((defaultTab === 'council' || defaultTab === 'advanced') && councilId) {
+    // A CLI/env or delegation-URL provider/model override names a single
+    // provider, which is incompatible with a multi-voice council. When an
+    // override is active we bypass the repo's *default* council and force the
+    // single-provider path so `--provider` is always honored. (An explicit
+    // `?council=` above still wins, matching the backend precedence.)
+    const overrideActive = window.hasProviderModelOverride(appConfig, urlOverride);
+
+    if (!overrideActive && (defaultTab === 'council' || defaultTab === 'advanced') && councilId) {
       // Fetch the full council config so the progress modal can render correctly
       let councilConfig = null;
       let councilName = null;
@@ -705,11 +714,13 @@ class PRManager {
     // independently (repo || app || hardcoded) can mix a provider from one
     // scope with a model from another, yielding an invalid pair (e.g.
     // antigravity/opus) that startAnalysis would forward to the backend as-is.
+    // buildProviderModelScopes prepends any CLI/env or delegation-URL override
+    // ahead of repo settings so `--provider` outranks a repo's saved default.
     const providers = providersInfo || await this._getProvidersInfo();
-    const { provider, model } = window.resolveProviderModelPair([
-      { provider: repoSettings?.default_provider, model: repoSettings?.default_model },
-      { provider: appConfig.default_provider, model: appConfig.default_model }
-    ], providers);
+    const { provider, model } = window.resolveProviderModelPair(
+      window.buildProviderModelScopes(repoSettings, appConfig, urlOverride),
+      providers
+    );
 
     return {
       provider,
@@ -750,10 +761,18 @@ class PRManager {
    * @param {number} prNumber - PR number
    */
   async _maybeAutoAnalyze(owner, repo, prNumber) {
-    const autoAnalyze = new URLSearchParams(window.location.search).get('analyze');
+    const searchParams = new URLSearchParams(window.location.search);
+    const autoAnalyze = searchParams.get('analyze');
     if (autoAnalyze === 'true' && !this.isAnalyzing) {
       this._autoAnalyzeRequested = true;
       let shouldCleanUrl = true;
+      // Provider/model override carried on the URL by single-port delegation
+      // (the delegated-to server is a different process whose env never saw the
+      // CLI flag). Prepended ahead of repo settings in _buildDefaultAnalysisConfig.
+      const urlOverride = {
+        provider: searchParams.get('provider'),
+        model: searchParams.get('model')
+      };
       try {
         // Skip refresh if we just loaded fresh data (loadPR sets _justLoaded = true).
         // Otherwise, refresh to ensure we have the latest PR data in case the worktree
@@ -791,7 +810,7 @@ class PRManager {
             this.fetchLastReviewSettings().catch(() => ({ custom_instructions: '', last_council_id: null })),
             this._getAppConfig()
           ]);
-          config = await this._buildDefaultAnalysisConfig(repoSettings, reviewSettings, appConfig);
+          config = await this._buildDefaultAnalysisConfig(repoSettings, reviewSettings, appConfig, null, urlOverride);
         }
 
         await this.startAnalysis(owner, repo, prNumber, null, config);
@@ -799,9 +818,9 @@ class PRManager {
         this._autoAnalyzeRequested = false;
         if (shouldCleanUrl) {
           const cleanUrl = new URL(window.location);
-          cleanUrl.searchParams.delete('analyze');
-          cleanUrl.searchParams.delete('analysisConfigId');
-          cleanUrl.searchParams.delete('council');
+          // Strip the whole auto-analyze intent bundle (analyze/analysisConfigId/
+          // council/provider/model) so a manual refresh does not replay the intent.
+          window.stripAnalyzeParams(cleanUrl);
           history.replaceState(null, '', cleanUrl);
         }
       }
@@ -3055,11 +3074,13 @@ class PRManager {
       // Resolve provider and model as a MATCHED pair so the council/advanced tabs
       // are never seeded with a cross-provider model (e.g. antigravity + opus), which
       // would blank the model <select> and be rejected by the backend.
+      // buildProviderModelScopes prepends any CLI/env override ahead of repo
+      // settings so `--provider` seeds the modal as the default selection.
       const providersInfo = await this._getProvidersInfo();
-      const { provider: currentProvider, model: currentModel } = window.resolveProviderModelPair([
-        { provider: repoSettings?.default_provider, model: repoSettings?.default_model },
-        { provider: appConfig.default_provider, model: appConfig.default_model }
-      ], providersInfo);
+      const { provider: currentProvider, model: currentModel } = window.resolveProviderModelPair(
+        window.buildProviderModelScopes(repoSettings, appConfig),
+        providersInfo
+      );
       const tabStorageKey = PRManager.getRepoStorageKey('pair-review-tab', owner, repo);
       const rememberedTab = localStorage.getItem(tabStorageKey);
       const defaultTab = rememberedTab || repoSettings?.default_tab || 'single';
@@ -6848,11 +6869,13 @@ class PRManager {
       // Resolve provider and model as a MATCHED pair so the council/advanced tabs
       // are never seeded with a cross-provider model (e.g. antigravity + opus), which
       // would blank the model <select> and be rejected by the backend.
+      // buildProviderModelScopes prepends any CLI/env override ahead of repo
+      // settings so `--provider` seeds the modal as the default selection.
       const providersInfo = await this._getProvidersInfo();
-      const { provider: currentProvider, model: currentModel } = window.resolveProviderModelPair([
-        { provider: repoSettings?.default_provider, model: repoSettings?.default_model },
-        { provider: appConfig.default_provider, model: appConfig.default_model }
-      ], providersInfo);
+      const { provider: currentProvider, model: currentModel } = window.resolveProviderModelPair(
+        window.buildProviderModelScopes(repoSettings, appConfig),
+        providersInfo
+      );
 
       // Determine default tab (priority: localStorage > repo settings > 'single')
       const tabStorageKey = PRManager.getRepoStorageKey('pair-review-tab', owner, repo);
@@ -7021,29 +7044,34 @@ class PRManager {
 
   /**
    * Build the worktree-not-found recovery URL. When the user arrived via
-   * auto-analyze (?analyze=true), the reload link preserves the auto-analyze
-   * state so analysis re-triggers after worktree setup. Both the
-   * `analysisConfigId` and `council` params are carried through, since
-   * `_buildDefaultAnalysisConfig()` treats `?council=<id>` as the
-   * highest-priority analysis source — dropping it would silently fall back to
-   * the repo/default analysis configuration on retry.
+   * auto-analyze (?analyze=true), the reload link preserves the whole
+   * auto-analyze intent bundle (analyze/analysisConfigId/council/provider/model)
+   * so analysis re-triggers with the same selection after worktree setup.
+   * Carrying is delegated to the shared `carryAnalyzeParams` relay so this
+   * hop stays in lockstep with the other three (see analyze-params.js);
+   * dropping `council` would silently fall back to the repo/default analysis
+   * config, and dropping `provider`/`model` would lose a `--provider` override.
    * @param {string} owner - Repository owner
    * @param {string} repo - Repository name
    * @param {number} number - PR number
    * @returns {string} The recovery URL (unescaped)
    */
   _buildWorktreeRecoveryUrl(owner, repo, number) {
-    let setupUrl = `/pr/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${encodeURIComponent(number)}`;
+    // A fixed base is fine — only pathname + search are used for the link, so
+    // the origin is irrelevant (and this avoids depending on window.location).
+    const setupUrl = new URL(
+      `/pr/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${encodeURIComponent(number)}`,
+      'http://localhost'
+    );
     if (this._autoAnalyzeRequested) {
-      const currentParams = new URLSearchParams(window.location.search);
-      const params = new URLSearchParams({ analyze: 'true' });
-      const analysisConfigId = currentParams.get('analysisConfigId');
-      const councilId = currentParams.get('council');
-      if (analysisConfigId) params.set('analysisConfigId', analysisConfigId);
-      if (councilId) params.set('council', councilId);
-      setupUrl += `?${params.toString()}`;
+      // The current search still carries the bundle here — it isn't stripped
+      // until _maybeAutoAnalyze's finally block, which runs after this handler.
+      // Force analyze=true so the retry still auto-triggers even if the source
+      // somehow lost it, then carry the rest of the bundle via the shared relay.
+      setupUrl.searchParams.set('analyze', 'true');
+      window.carryAnalyzeParams(window.location.search, setupUrl);
     }
-    return setupUrl;
+    return setupUrl.pathname + setupUrl.search;
   }
 
   /**
@@ -7055,14 +7083,14 @@ class PRManager {
    * @param {number} number - PR number
    */
   showWorktreeNotFoundError(owner, repo, number) {
-    const setupUrl = this._buildWorktreeRecoveryUrl(owner, repo, number);
+    const href = this._buildWorktreeRecoveryUrl(owner, repo, number);
     const container = document.getElementById('pr-container');
     if (container) {
       container.innerHTML = `
         <div class="error-container">
           <div class="error-icon">Warning</div>
           <div class="error-message">Worktree not found. Please reload the PR to set up the worktree before running analysis.</div>
-          <a class="btn btn-primary" href="${this.escapeHtml(setupUrl)}">Reload PR</a>
+          <a class="btn btn-primary" href="${this.escapeHtml(href)}">Reload PR</a>
         </div>
       `;
       container.style.display = 'block';

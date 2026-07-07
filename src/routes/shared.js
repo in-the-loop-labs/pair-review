@@ -69,6 +69,89 @@ function getModel(req) {
 }
 
 /**
+ * Get the provider to use for AI analysis
+ * Priority: CLI flag (PAIR_REVIEW_PROVIDER env var) > config.default_provider
+ *           > config.provider (legacy) > 'claude' default
+ * Mirrors getModel() so the --provider CLI flag / PAIR_REVIEW_PROVIDER env var
+ * is honored by the web/UI analysis paths the same way --model is.
+ * @param {Object} req - Express request object
+ * @returns {string} Provider id to use
+ */
+function getProvider(req) {
+  // CLI flag takes priority (passed via environment variable)
+  if (process.env.PAIR_REVIEW_PROVIDER) {
+    return process.env.PAIR_REVIEW_PROVIDER;
+  }
+
+  // Config file setting (default_provider preferred, provider for backwards compatibility)
+  const config = req.app.get('config');
+  if (config) {
+    if (config.default_provider) {
+      return config.default_provider;
+    }
+    // Backwards compatibility with old config key
+    if (config.provider) {
+      return config.provider;
+    }
+  }
+
+  // Default fallback
+  return 'claude';
+}
+
+/**
+ * Resolve the provider/model pair for a web/UI-triggered analysis.
+ *
+ * Precedence (highest first):
+ *   1. request body (requestProvider / requestModel)
+ *   2. env/CLI override (PAIR_REVIEW_PROVIDER / PAIR_REVIEW_MODEL, via getProvider/getModel)
+ *   3. saved repo settings (default_provider / default_model)
+ *   4. config/legacy defaults (via getProvider/getModel, ending at 'claude'/'opus')
+ *
+ * The env/CLI override intentionally outranks saved repo settings to match the
+ * documented `CLI/env > repo settings` contract already honored by the
+ * headless/stack/MCP paths. Because getProvider()/getModel() read the env var
+ * first, calling them in the env branch returns the override; the final branch
+ * (reached only when the env var is unset) returns config/legacy/default.
+ *
+ * Both the PR route (src/routes/pr.js) and the local route (src/routes/local.js)
+ * MUST use this helper so the two paths resolve the same pair — keeping the
+ * resolution logic in one place prevents the paths from silently diverging.
+ *
+ * @param {Object} req - Express request (source of config + env-backed helpers)
+ * @param {Object} [opts]
+ * @param {string} [opts.requestProvider] - provider from the request body
+ * @param {string} [opts.requestModel] - model from the request body
+ * @param {Object} [opts.repoSettings] - saved repo settings row (may be null)
+ * @returns {{ provider: string, model: string }}
+ */
+function resolveProviderModel(req, { requestProvider, requestModel, repoSettings } = {}) {
+  let provider;
+  if (requestProvider) {
+    provider = requestProvider;
+  } else if (process.env.PAIR_REVIEW_PROVIDER) {
+    provider = getProvider(req); // env/CLI override
+  } else if (repoSettings && repoSettings.default_provider) {
+    provider = repoSettings.default_provider;
+  } else {
+    provider = getProvider(req); // config/legacy/'claude'
+  }
+
+  let model;
+  if (requestModel) {
+    model = requestModel;
+  } else if (process.env.PAIR_REVIEW_MODEL) {
+    model = getModel(req); // env/CLI override
+  } else if (repoSettings && repoSettings.default_model) {
+    model = repoSettings.default_model;
+  } else {
+    model = getModel(req); // config/legacy/'opus'
+  }
+
+  return { provider, model };
+}
+
+/**
  * Determine completion level and suggestion counts from analysis result
  * @param {Object} result - Analysis result object
  * @returns {Object} Completion information with level, counts, and progress message
@@ -474,6 +557,8 @@ module.exports = {
   activeProcesses,
   activeSetups,
   getModel,
+  getProvider,
+  resolveProviderModel,
   determineCompletionInfo,
   broadcastProgress,
   broadcastIndexAnalysisEvent,

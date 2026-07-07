@@ -93,7 +93,7 @@ async function resolveCliInstructions(flags) {
  * @param {Object} params
  * @param {Object} params.db - Database instance
  * @param {Object} params.config - Loaded global config
- * @param {Object} params.flags - Parsed CLI flags (council/model/instructions)
+ * @param {Object} params.flags - Parsed CLI flags (council/provider/model/instructions)
  * @param {string} params.repository - owner/repo (for repo-default resolution)
  * @returns {Promise<Object|null>} The analysisConfig object, or null when no instructions.
  */
@@ -104,7 +104,7 @@ async function buildInteractiveAnalysisConfig({ db, config, flags, repository })
   const reviewConfig = await resolveReviewConfig(
     db,
     repository,
-    { council: flags.council, model: flags.model },
+    { council: flags.council, provider: flags.provider, model: flags.model },
     config
   );
 

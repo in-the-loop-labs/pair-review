@@ -173,33 +173,57 @@ function storeAnalysisConfigRemote(port, analysisConfig, _deps) {
  * @param {string} [context.host] - Setup `?host=` value (alt api_host string or the
  *   'github' sentinel) so a pasted alt URL binds directly instead of re-probing.
  *   Already resolved by the caller via `hostSetupParamValue`; omitted when null.
+ * @param {string} [context.provider] - CLI provider override to carry to the running server
+ * @param {string} [context.model] - CLI model override to carry to the running server
  * @returns {string} Full URL
  */
 function buildDelegationUrl(port, mode, context = {}) {
   const base = `http://localhost:${port}`;
+
+  // The analyze + provider/model override params are built with URLSearchParams
+  // so they join and URL-encode safely. The provider/model override rides the
+  // URL ONLY alongside analyze=true: the browser auto-analyze path is the sole
+  // consumer that reads and then strips them, so carrying them without analyze
+  // would leave a stuck ?provider= param that a refresh would replay.
+  const extra = new URLSearchParams();
+  if (context.analyze) {
+    extra.set('analyze', 'true');
+    if (context.provider) extra.set('provider', context.provider);
+    if (context.model) extra.set('model', context.model);
+  }
+
+  // analysisConfigId supersedes councilId — the stored id already encodes the
+  // council selection (plus provider/model + custom instructions), mirroring
+  // the cold-start precedence in handlePullRequest/handleLocalReview. These keep
+  // encodeURIComponent (percent-encoding, %20 for spaces) rather than the
+  // URLSearchParams form-encoding above, to preserve the exact wire format the
+  // running server already parses — matching the `path` param, which does the
+  // same for the same reason.
+  let configParam = '';
+  if (context.analysisConfigId) {
+    configParam = `analysisConfigId=${encodeURIComponent(context.analysisConfigId)}`;
+  } else if (context.councilId) {
+    configParam = `council=${encodeURIComponent(context.councilId)}`;
+  }
+
+  // Join the URLSearchParams bundle with the percent-encoded config param.
+  const query = [extra.toString(), configParam].filter(Boolean).join('&');
+
   if (mode === 'pr') {
     let url = `${base}/pr/${context.owner}/${context.repo}/${context.number}`;
-    const query = [];
-    if (context.analyze) query.push('analyze=true');
-    if (context.analysisConfigId) {
-      query.push(`analysisConfigId=${encodeURIComponent(context.analysisConfigId)}`);
-    } else if (context.councilId) {
-      query.push(`council=${encodeURIComponent(context.councilId)}`);
-    }
     // Thread the pasted URL's host so setup binds it directly (cold-start parity).
-    if (context.host) query.push(`host=${encodeURIComponent(context.host)}`);
-    if (query.length) url += `?${query.join('&')}`;
+    // Host keeps encodeURIComponent (matching analysisConfigId/path) and appends
+    // after the shared analyze/provider/model + config bundle, so it rides
+    // alongside the provider/model override rather than replacing it.
+    const hostParam = context.host ? `host=${encodeURIComponent(context.host)}` : '';
+    const prQuery = [query, hostParam].filter(Boolean).join('&');
+    if (prQuery) url += `?${prQuery}`;
     return url;
   }
   if (mode === 'local') {
-    // The `?path=` segment is always present, so analyze/config append with `&`.
+    // The `?path=` segment is always present, so the intent bundle appends with `&`.
     let url = `${base}/local?path=${encodeURIComponent(context.localPath)}`;
-    if (context.analyze) url += '&analyze=true';
-    if (context.analysisConfigId) {
-      url += `&analysisConfigId=${encodeURIComponent(context.analysisConfigId)}`;
-    } else if (context.councilId) {
-      url += `&council=${encodeURIComponent(context.councilId)}`;
-    }
+    if (query) url += `&${query}`;
     return url;
   }
   return `${base}/`;
@@ -287,13 +311,20 @@ async function attemptDelegation(config, flags, prArgs, _deps, options = {}) {
     return storeAnalysisConfigRemote(port, analysisConfig, _deps);
   };
 
-  // Determine mode and build URL
+  // Determine mode and build URL. Also carry any --provider/--model override on
+  // the URL: under single_port the delegated-to server is a DIFFERENT process
+  // whose env never received the flag, so the URL is the only channel that
+  // reaches it. buildDelegationUrl only emits provider/model alongside
+  // analyze=true (and analysisConfigId supersedes both when present).
   let url;
   if (flags.local) {
     rejectUrlLikeLocalReviewPath(flags.localPath);
     const targetPath = path.resolve(flags.localPath || process.cwd());
     const analysisConfigId = await handoffAnalysisConfigId(options.localRepository || null);
-    url = buildDelegationUrl(port, 'local', { localPath: targetPath, analyze, councilId, analysisConfigId });
+    url = buildDelegationUrl(port, 'local', {
+      localPath: targetPath, analyze, councilId, analysisConfigId,
+      provider: flags.provider, model: flags.model
+    });
   } else if (prArgs.length > 0) {
     const prInfo = await parsePRArgsForDelegation(prArgs, config, _deps);
     const repository = normalizeRepository(prInfo.owner, prInfo.repo);
@@ -303,7 +334,10 @@ async function attemptDelegation(config, flags, prArgs, _deps, options = {}) {
     // (from a url_pattern match) is the config key that determines dual-ness.
     const bindingRepository = prInfo.bindingRepository || repository;
     const host = hostSetupParamValue(prInfo.host, isDualHostRepo(config, bindingRepository));
-    url = buildDelegationUrl(port, 'pr', { ...prInfo, analyze, councilId, analysisConfigId, host });
+    url = buildDelegationUrl(port, 'pr', {
+      ...prInfo, analyze, councilId, analysisConfigId, host,
+      provider: flags.provider, model: flags.model
+    });
   } else {
     url = buildDelegationUrl(port, 'server');
   }

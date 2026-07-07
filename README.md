@@ -204,6 +204,7 @@ pair-review --local [path]
 | `-h`, `--help` | Show help message with full CLI documentation |
 | `-l`, `--local [path]` | Review local uncommitted changes. Optional path defaults to current directory |
 | `--model <name>` | Override the AI model for any provider. Model availability depends on provider configuration. |
+| `--provider <name>` | Override the AI provider. Applies to headless modes (`--ai-draft` / `--ai-review`) **and** to browser-driven auto-analysis (`--ai`), where it overrides the repo/app default the browser would otherwise use — including across single-port delegation to an already-running server. Defaults to the repo/app default provider (`claude`). Pair with `--model` when the model belongs to a non-default provider (e.g. `--provider codex --model gpt-5.5`). |
 | `--register` | Register `pair-review://` URL scheme handler (macOS only) |
 | `--unregister` | Unregister `pair-review://` URL scheme handler (macOS only) |
 | `--command <cmd>` | Custom CLI command for `--register` (default: `npx @in-the-loop-labs/pair-review`) |
@@ -216,8 +217,10 @@ pair-review 123                        # Review PR #123 in current repo
 pair-review https://github.com/owner/repo/pull/456
 pair-review --local                    # Review uncommitted local changes
 pair-review 123 --ai                   # Auto-run AI analysis
+pair-review 123 --ai --provider codex  # Auto-run analysis in the browser with a specific provider
 pair-review --list-councils            # List saved councils and their handles
 pair-review 123 --ai-draft --council security-review  # Headless draft with a council
+pair-review 123 --ai-draft --provider codex --model gpt-5.5  # Headless draft with a specific provider + model
 pair-review --local --ai --council security-review    # Local review with a council
 pair-review --local --headless         # Analyze local changes, print a summary, exit
 pair-review --local --headless --json  # Analyze local changes, emit JSON, exit
@@ -444,10 +447,13 @@ pair-review supports several environment variables for customizing behavior:
 | `PAIR_REVIEW_CURSOR_AGENT_CMD` | Custom command to invoke Cursor Agent CLI | `agent` |
 | `PAIR_REVIEW_PI_CMD` | Custom command to invoke Pi CLI | `pi` |
 | `PAIR_REVIEW_MODEL` | Override the AI model to use (same as `--model` flag) | Provider default |
+| `PAIR_REVIEW_PROVIDER` | Override the AI provider to use (same as `--provider` flag) | `claude` |
 
 **Note:** `GITHUB_TOKEN` is the standard environment variable used by many GitHub tools (gh CLI, GitHub Actions, etc.). When set, it takes precedence over the `github_token` field in the config file.
 
-**Note:** The `--model` CLI flag is shorthand for setting `PAIR_REVIEW_MODEL`. If both are specified, the CLI flag takes precedence.
+**Note:** The `--model` CLI flag is shorthand for setting `PAIR_REVIEW_MODEL`, and `--provider` is shorthand for `PAIR_REVIEW_PROVIDER`. If both the flag and env var are specified, the CLI flag takes precedence. The `--provider` flag selects which provider runs the analysis; `--model` selects the model within that provider, so set both when the model belongs to a non-default provider (e.g. `--provider codex --model gpt-5.5`). The override outranks saved repository settings (`CLI/env > repo settings`); if the repo's default is a Review Council, an active `--provider`/`--model` override forces the single-provider path instead.
+
+**Delegation caveat:** With single-port mode (the default `single_port: true`), a new invocation delegates to an already-running server. On that path the `--provider`/`--model` override is carried to the running server only alongside browser auto-analysis (`--ai`). Delegating without `--ai` (just opening the review) does not seed the override into the other process's manual analysis dialog — use `--ai`, or a headless mode, to pin the provider on the delegated path.
 
 These variables are useful when:
 - Your CLI tools are installed in a non-standard location
@@ -471,6 +477,9 @@ PAIR_REVIEW_ANTIGRAVITY_CMD="/usr/local/bin/agy" pair-review --local
 
 # Force a specific model for this review
 PAIR_REVIEW_MODEL="opus" pair-review 123
+
+# Force a specific provider + model for a headless review
+PAIR_REVIEW_PROVIDER="codex" PAIR_REVIEW_MODEL="gpt-5.5" pair-review 123 --ai-draft
 
 # Combine multiple settings
 PAIR_REVIEW_CLAUDE_CMD="/opt/claude/bin/claude" PAIR_REVIEW_MODEL="haiku" pair-review 123

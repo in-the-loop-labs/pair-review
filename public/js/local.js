@@ -70,9 +70,17 @@ class LocalManager {
     await this.loadLocalReview();
 
     // Auto-trigger analysis if ?analyze=true is present
-    const autoAnalyze = new URLSearchParams(window.location.search).get('analyze');
+    const searchParams = new URLSearchParams(window.location.search);
+    const autoAnalyze = searchParams.get('analyze');
     if (autoAnalyze === 'true' && !window.prManager.isAnalyzing) {
       const manager = window.prManager;
+      // Provider/model override carried on the URL by single-port delegation
+      // (the delegated-to server is a different process whose env never saw the
+      // CLI flag). Prepended ahead of repo settings in _buildDefaultAnalysisConfig.
+      const urlOverride = {
+        provider: searchParams.get('provider'),
+        model: searchParams.get('model')
+      };
       try {
         // Prefer a stashed bulk-analysis config (threaded via analysisConfigId).
         // The CLI uses it to carry --instructions plus the resolved
@@ -97,15 +105,15 @@ class LocalManager {
             manager.fetchLastReviewSettings().catch(() => ({ custom_instructions: '', last_council_id: null })),
             manager._getAppConfig()
           ]);
-          config = await manager._buildDefaultAnalysisConfig(repoSettings, reviewSettings, appConfig);
+          config = await manager._buildDefaultAnalysisConfig(repoSettings, reviewSettings, appConfig, null, urlOverride);
         }
 
         await this.startLocalAnalysis(null, config);
       } finally {
         const cleanUrl = new URL(window.location);
-        cleanUrl.searchParams.delete('analyze');
-        cleanUrl.searchParams.delete('analysisConfigId');
-        cleanUrl.searchParams.delete('council');
+        // Strip the whole auto-analyze intent bundle (analyze/analysisConfigId/
+        // council/provider/model) so a manual refresh does not replay the intent.
+        window.stripAnalyzeParams(cleanUrl);
         history.replaceState(null, '', cleanUrl);
       }
     }
@@ -348,11 +356,13 @@ class LocalManager {
         // Resolve provider and model as a MATCHED pair so the council/advanced tabs
         // are never seeded with a cross-provider model (e.g. antigravity + opus), which
         // would blank the model <select> and be rejected by the backend.
+        // buildProviderModelScopes prepends any CLI/env override ahead of repo
+        // settings so `--provider` seeds the modal as the default selection.
         const providersInfo = await manager._getProvidersInfo();
-        const { provider: currentProvider, model: currentModel } = window.resolveProviderModelPair([
-          { provider: repoSettings?.default_provider, model: repoSettings?.default_model },
-          { provider: appConfig.default_provider, model: appConfig.default_model }
-        ], providersInfo);
+        const { provider: currentProvider, model: currentModel } = window.resolveProviderModelPair(
+          window.buildProviderModelScopes(repoSettings, appConfig),
+          providersInfo
+        );
 
         // Determine default tab (priority: localStorage > repo settings > 'single')
         const tabStorageKey = `pair-review-tab:local-${reviewId}`;

@@ -374,6 +374,32 @@ async function executeStackAnalysis(params) {
 }
 
 /**
+ * Resolve the provider/model pair for a single/executable stack analysis.
+ *
+ * Precedence (highest first): request body > env/CLI override
+ * (PAIR_REVIEW_PROVIDER / PAIR_REVIEW_MODEL) > saved repo settings >
+ * config default > legacy config key > hard default ('claude' / 'opus').
+ *
+ * Both env vars are read together so a CLI invocation like
+ * `pair-review 123 --provider codex --model gpt-5.5` (which mirrors BOTH flags
+ * into the environment) resolves the requested pair, rather than pairing a
+ * non-default provider with a default Claude model.
+ *
+ * @param {Object} [args]
+ * @param {string} [args.reqProvider] - provider from the analysis request body
+ * @param {string} [args.reqModel] - model from the analysis request body
+ * @param {Object} [args.repoSettings] - saved repo settings row (may be null)
+ * @param {Object} [args.config] - loaded app config
+ * @returns {{ provider: string, model: string }}
+ */
+function _resolveStackProviderModel({ reqProvider, reqModel, repoSettings, config } = {}) {
+  const cfg = config || {};
+  const provider = reqProvider || process.env.PAIR_REVIEW_PROVIDER || repoSettings?.default_provider || cfg.default_provider || cfg.provider || 'claude';
+  const model = reqModel || process.env.PAIR_REVIEW_MODEL || repoSettings?.default_model || cfg.default_model || cfg.model || 'opus';
+  return { provider, model };
+}
+
+/**
  * Run setup + analysis for a single PR in the stack.
  * Called in parallel for all PRs.
  */
@@ -445,8 +471,9 @@ async function analyzeStackPR(deps, db, config, {
       providerOverridesMap: councilProviderOverridesMap
     });
   } else {
-    let selectedProvider = reqProvider || repoSettings?.default_provider || config.default_provider || config.provider || 'claude';
-    let selectedModel = reqModel || repoSettings?.default_model || config.default_model || config.model || 'opus';
+    const { provider: selectedProvider, model: selectedModel } = _resolveStackProviderModel({
+      reqProvider, reqModel, repoSettings, config
+    });
 
     // Resolve load_skills across all config tiers
     const providerLoadSkills = config.providers?.[selectedProvider]?.load_skills;
@@ -967,3 +994,4 @@ module.exports.activeStackAnalyses = activeStackAnalyses;
 module.exports.executeStackAnalysis = executeStackAnalysis;
 module.exports.waitForAnalysisCompletion = waitForAnalysisCompletion;
 module.exports.estimateCouncilTimeout = estimateCouncilTimeout;
+module.exports._resolveStackProviderModel = _resolveStackProviderModel;

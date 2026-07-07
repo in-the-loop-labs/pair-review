@@ -107,6 +107,45 @@ describe('buildInteractiveAnalysisConfig (pure builder, no storage)', () => {
     expect(cfg.isCouncil).toBeUndefined();
   });
 
+  it('honors an explicit --provider (regression: provider must not be dropped)', async () => {
+    // Regression for the delegated `--ai --provider --instructions` path: this
+    // builder used to omit flags.provider from the resolveReviewConfig picks, so
+    // the explicit provider silently fell through to the config default. With
+    // config.default_provider = 'claude' and flags.provider = 'codex', the
+    // explicit pick must win. Model is unspecified, so it resolves from config.
+    const cfg = await buildInteractiveAnalysisConfig({
+      db,
+      config: { default_provider: 'claude', default_model: 'opus' },
+      flags: { ai: true, provider: 'codex', instructions: 'be terse' },
+      repository: REPOSITORY
+    });
+
+    expect(cfg).toEqual({ provider: 'codex', model: 'opus', customInstructions: 'be terse' });
+  });
+
+  it('an explicit --provider overrides a repo default council (regression: no silent council switch)', async () => {
+    // The nastier aggravating factor: when the repo has a default council, a
+    // dropped --provider fell through to the COUNCIL branch — silently switching
+    // the delegated run to council mode. An explicit provider pick must yield a
+    // single selection, never the repo default council.
+    const councilId = uuidv4();
+    await new CouncilRepository(db).create({ id: councilId, name: 'Security', config: advancedConfig, type: 'advanced' });
+    await db.prepare(
+      'INSERT INTO repo_settings (repository, default_council_id) VALUES (?, ?)'
+    ).run(REPOSITORY, councilId);
+
+    const cfg = await buildInteractiveAnalysisConfig({
+      db,
+      config: {},
+      flags: { ai: true, provider: 'codex', instructions: 'be terse' },
+      repository: REPOSITORY
+    });
+
+    expect(cfg.isCouncil).toBeUndefined();
+    expect(cfg.provider).toBe('codex');
+    expect(cfg.customInstructions).toBe('be terse');
+  });
+
   it('returns a council snapshot object (with instructions) when --council is given', async () => {
     const councilId = uuidv4();
     await new CouncilRepository(db).create({ id: councilId, name: 'Security', config: advancedConfig, type: 'advanced' });

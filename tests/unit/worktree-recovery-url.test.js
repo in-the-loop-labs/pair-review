@@ -3,16 +3,21 @@
  * Unit tests for PRManager._buildWorktreeRecoveryUrl().
  *
  * The worktree-not-found recovery link must preserve auto-analyze state so a
- * retry re-triggers the SAME analysis. In particular it must carry the
- * `council` query param through, since _buildDefaultAnalysisConfig() treats
+ * retry re-triggers the SAME analysis. The helper delegates carrying to the
+ * shared `carryAnalyzeParams` relay, so it preserves the whole auto-analyze
+ * intent bundle: `council` (since _buildDefaultAnalysisConfig() treats
  * `?council=<id>` as the highest-priority analysis source — dropping it would
- * silently fall back to the repo/default analysis configuration on retry.
+ * silently fall back to the repo/default config on retry) as well as a
+ * `--provider`/`--model` override carried on the URL by single-port delegation.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { URLSearchParams as NativeURLSearchParams } from 'url';
 
 const { PRManager } = require('../../public/js/pr.js');
+// Import the REAL relay so the test exercises the actual carrying logic rather
+// than a stub — _buildWorktreeRecoveryUrl calls window.carryAnalyzeParams.
+const { carryAnalyzeParams, stripAnalyzeParams } = require('../../public/js/utils/analyze-params.js');
 
 let saved;
 
@@ -24,7 +29,7 @@ beforeEach(() => {
   // Use the real URLSearchParams so query parsing/serialization behaves as in
   // the browser.
   globalThis.URLSearchParams = NativeURLSearchParams;
-  globalThis.window = { location: { search: '' } };
+  globalThis.window = { location: { search: '' }, carryAnalyzeParams, stripAnalyzeParams };
 });
 
 afterEach(() => {
@@ -78,6 +83,17 @@ describe('PRManager._buildWorktreeRecoveryUrl', () => {
     expect(url).toContain('analyze=true');
     expect(url).toContain('analysisConfigId=cfg-7');
     expect(url).toContain('council=abc-123');
+  });
+
+  it('preserves a provider/model override carried on the URL', () => {
+    manager._autoAnalyzeRequested = true;
+    globalThis.window.location.search = '?analyze=true&provider=codex&model=gpt-5.5';
+
+    const url = manager._buildWorktreeRecoveryUrl('acme', 'widgets', 42);
+
+    expect(url).toContain('analyze=true');
+    expect(url).toContain('provider=codex');
+    expect(url).toContain('model=gpt-5.5');
   });
 
   it('only includes analyze=true when no extra params are present', () => {
