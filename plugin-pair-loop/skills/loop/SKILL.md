@@ -49,8 +49,10 @@ These are not judgment calls:
 3. **Sequence strictly: fix → write triage back → then run the next round.**
 4. **One review at a time.** Never run two reviews concurrently for the same
    repo.
-5. **Do not commit or push.** Leave changes in the working tree. `git add -N`
-   (intent-to-add) any new files so they appear in diffs.
+5. **Do not commit or push.** Leave changes in the working tree. New
+   (untracked) files are included automatically whenever the review scope ends
+   at `untracked` — which the default scope (`unstaged..untracked`) does — so
+   no `git add -N` (intent-to-add) is needed.
 6. **Report failures faithfully.** A failed run (`"ok": false`, non-zero
    exit) is reported as what it is — never papered over as "no findings".
 
@@ -73,11 +75,20 @@ These are not judgment calls:
 ## Running a review round
 
 ```bash
-pair-review --local --headless --json --council <handle> --instructions "<round instructions>"
+pair-review --local --headless --json --council <handle> [--scope <range>] --instructions "<round instructions>"
 ```
 
 - Run from `REPO_ROOT`. `--local` with no path uses the current directory.
 - Omit `--council` to use the repo's default council.
+- **Scope (`--scope`).** By default a local review covers only uncommitted
+  working-tree changes plus new files (`unstaged..untracked`). That is right
+  only while all the work under review stays uncommitted. If the work under
+  review already spans commits on a branch, a clean working tree would review as
+  **empty** — pass
+  `--scope branch..untracked` so every round covers the whole branch
+  (everything since the base branch) plus the working tree and new files. Add
+  `--base <branch>` when the base branch is not auto-detected (a non-default
+  trunk, or a stacked branch). `--scope`/`--base` are local-mode only.
 - **Be patient — council reviews routinely take 15–40 minutes.** Individual
   council voices have their own internal timeouts; trust the CLI to finish.
   Run the command in the background (or with a timeout of at least 45
@@ -203,6 +214,8 @@ and requires a GitHub token in `~/.pair-review/config.json`. The review's
 checkout lives in a pair-review worktree — your fixes belong in whatever
 checkout the user asked you to work in; do not edit the pool worktree.
 Write-back and the review URL work the same way via `run.review_id`.
+`--scope`/`--base` do not apply here — they are local-mode only; a PR review
+always covers the PR's full diff.
 
 ## Reporting
 

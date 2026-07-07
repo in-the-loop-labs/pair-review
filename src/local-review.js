@@ -11,7 +11,7 @@ const { fireHooks, hasHooks } = require('./hooks/hook-runner');
 const { buildReviewStartedPayload, buildReviewLoadedPayload, getCachedUser } = require('./hooks/payloads');
 
 const execAsync = promisify(exec);
-const { STOPS, scopeIncludes, includesBranch, DEFAULT_SCOPE, scopeLabel, reviewScope } = require('./local-scope');
+const { STOPS, scopeIncludes, includesBranch, DEFAULT_SCOPE, scopeLabel, reviewScope, parseScopeArg } = require('./local-scope');
 const { initializeDatabase, ReviewRepository, RepoSettingsRepository } = require('./database');
 const { resolveCouncilHandle } = require('./councils/resolve-council');
 const { prepareInteractiveAnalysisConfig } = require('./interactive-analysis-config');
@@ -21,6 +21,10 @@ const summaryGenerator = require('./ai/summary-generator');
 const tourGenerator = require('./ai/tour-generator');
 const { getShaAbbrevLength } = require('./git/sha-abbrev');
 const { GIT_DIFF_FLAGS, GIT_DIFF_FLAGS_ARRAY } = require('./git/diff-flags');
+// Namespace import (not destructured) so detectBaseBranch is resolved off the
+// module object at call time — this keeps it interceptable by vi.spyOn on the
+// base-branch module in tests, unlike a destructured binding captured at load.
+const baseBranchModule = require('./git/base-branch');
 const open = (...args) => process.env.PAIR_REVIEW_NO_OPEN ? Promise.resolve() : import('open').then(({ default: open }) => open(...args));
 
 // Design note: This module uses execSync for git commands despite async function signatures.
@@ -695,6 +699,112 @@ async function generateLocalDiff(repoPath, options = {}) {
 }
 
 /**
+ * Resolve the effective scope and base branch for a local review session,
+ * applying an explicit `--scope`/`--base` (or delegated query) override on top
+ * of the persisted/default scope.
+ *
+ * Shared by the CLI seam (setupLocalReviewSession) and the web setup seam
+ * (src/setup/local-setup.js) so a scoped launch behaves identically whether it
+ * cold-starts a server or is delegated to a running one. Callers MUST have
+ * validated flags.scope/flags.base first (parseScopeArg + branch-name regex +
+ * "base requires branch scope"); an invalid flags.scope is treated as "no
+ * override" here rather than throwing.
+ *
+ * Precedence — scope: explicit override > persisted review scope > DEFAULT_SCOPE.
+ * Precedence — base: explicit --base > persisted local_base_branch >
+ * detectBaseBranch. The base is nulled for any non-branch scope so a stale value
+ * from a previously branch-scoped session never leaks into the diff/persist/return.
+ *
+ * @param {Object} params
+ * @param {Object|null} params.existingReview - Persisted review row, or null for a fresh session
+ * @param {Object} [params.flags] - { scope?, base? }
+ * @param {string} params.repoPath
+ * @param {string} params.branch - Current branch name
+ * @param {string} params.repository - owner/repo (for host binding / PR base lookup)
+ * @param {Object} params.config
+ * @returns {Promise<{scopeStart: string, scopeEnd: string, baseBranch: string|null, scopeOverridden: boolean}>}
+ */
+async function resolveScopeAndBase({ existingReview, flags = {}, repoPath, branch, repository, config }) {
+  const scopeOverride = flags.scope ? parseScopeArg(flags.scope) : null;
+  let scopeStart, scopeEnd;
+  if (scopeOverride) {
+    ({ start: scopeStart, end: scopeEnd } = scopeOverride);
+  } else if (existingReview) {
+    ({ start: scopeStart, end: scopeEnd } = reviewScope(existingReview));
+  } else {
+    ({ start: scopeStart, end: scopeEnd } = DEFAULT_SCOPE);
+  }
+
+  let baseBranch = existingReview?.local_base_branch || null;
+  if (scopeOverride && includesBranch(scopeStart)) {
+    if (flags.base) {
+      baseBranch = flags.base;
+    } else if (!baseBranch) {
+      const branchBinding = repository ? resolveHostBinding(repository, config) : null;
+      const token = branchBinding?.token || getGitHubToken(config);
+      const detection = await baseBranchModule.detectBaseBranch(repoPath, branch, {
+        repository,
+        enableGraphite: config?.enable_graphite === true,
+        _deps: (token || branchBinding) ? {
+          getGitHubToken: () => token || '',
+          getHostBinding: () => branchBinding || null
+        } : undefined
+      });
+      if (!detection) {
+        throw new Error(
+          `Could not detect a base branch for scope '${scopeStart}..${scopeEnd}'. ` +
+          'Pass --base <branch> to specify one explicitly.'
+        );
+      }
+      baseBranch = detection.baseBranch;
+    }
+  }
+
+  // A non-branch scope has no base branch. Drop any value seeded from a
+  // previously branch-scoped session so the stale base never reaches the diff,
+  // the persisted row, or the returned session — matching the web set-scope
+  // route, which persists null when leaving branch scope.
+  if (!includesBranch(scopeStart)) {
+    baseBranch = null;
+  }
+
+  return { scopeStart, scopeEnd, baseBranch, scopeOverridden: !!scopeOverride };
+}
+
+/**
+ * Persist an explicitly-overridden scope (and its resolved base) and auto-name
+ * the review when a branch scope is newly applied to an unnamed review. Call
+ * ONLY after generateScopedDiff succeeds, so a scope whose diff fails (e.g. a
+ * bad --base) never sticks. Shared by the CLI and web setup seams. Caller gates
+ * this on `scopeOverridden` — it always writes when invoked.
+ *
+ * @param {Object} params
+ * @param {Object} params.reviewRepo - ReviewRepository instance
+ * @param {number} params.sessionId
+ * @param {Object|null} params.existingReview
+ * @param {string} params.scopeStart
+ * @param {string} params.scopeEnd
+ * @param {string|null} params.baseBranch
+ * @param {string} params.branch - Current branch (stored as head branch for branch scopes)
+ * @param {string} params.repoPath
+ */
+async function persistScopeSelection({ reviewRepo, sessionId, existingReview, scopeStart, scopeEnd, baseBranch, branch, repoPath }) {
+  await reviewRepo.updateLocalScope(sessionId, scopeStart, scopeEnd, baseBranch, branch);
+
+  // Keep CLI and web set-scope in sync: when a branch scope is newly applied to
+  // an as-yet-unnamed review, auto-name it from the first commit subject.
+  // Mirrors routes/local.js set-scope. A fresh session has no existing review,
+  // which counts as both unnamed and previously non-branch.
+  const oldScopeStart = existingReview ? reviewScope(existingReview).start : DEFAULT_SCOPE.start;
+  if (!existingReview?.name && includesBranch(scopeStart) && !includesBranch(oldScopeStart) && baseBranch) {
+    const firstSubject = await module.exports.getFirstCommitSubject(repoPath, baseBranch);
+    if (firstSubject) {
+      await reviewRepo.updateReview(sessionId, { name: firstSubject.slice(0, 200) });
+    }
+  }
+}
+
+/**
  * Set up a local review session: resolve git state, persist the diff,
  * and enqueue the background summary job. Caller is responsible for
  * starting the server and opening the browser.
@@ -777,7 +887,11 @@ async function setupLocalReviewSession({ db, config, repoPath, flags = {}, start
     console.log(`Created new review session (ID: ${sessionId})`);
   }
 
-  const { start: scopeStart, end: scopeEnd } = existingReview ? reviewScope(existingReview) : DEFAULT_SCOPE;
+  // Resolve scope + base (explicit --scope/--base override > persisted > default)
+  // via the shared helper so the CLI and delegated web-setup seam stay identical.
+  const { scopeStart, scopeEnd, baseBranch, scopeOverridden } = await resolveScopeAndBase({
+    existingReview, flags, repoPath, branch, repository, config
+  });
 
   const hookEvent = existingReview ? 'review.loaded' : 'review.started';
   if (hasHooks(hookEvent, config)) {
@@ -790,10 +904,19 @@ async function setupLocalReviewSession({ db, config, repoPath, flags = {}, start
       fireHooks(hookEvent, payload, config);
     }).catch(err => { logger.warn(`Review hook failed: ${err.message}`); });
   }
-  const baseBranch = existingReview?.local_base_branch || null;
 
   console.log(`Generating diff for scope: ${scopeLabel(scopeStart, scopeEnd)}...`);
   const { diff, stats } = await module.exports.generateScopedDiff(repoPath, scopeStart, scopeEnd, baseBranch);
+
+  // Persist an explicitly-requested scope (and its resolved base) so the web UI
+  // later opens with the same scope. Only after generateScopedDiff succeeds, so a
+  // scope whose diff fails (e.g. a bad --base) never sticks. Never touch persisted
+  // scope when no override was supplied.
+  if (scopeOverridden) {
+    await persistScopeSelection({
+      reviewRepo, sessionId, existingReview, scopeStart, scopeEnd, baseBranch, branch, repoPath
+    });
+  }
 
   let branchInfo = null;
   if (!includesBranch(scopeStart)) {
@@ -1090,14 +1213,13 @@ async function detectAndBuildBranchInfo(repoPath, branch, options = {}) {
   if (untrackedFiles && untrackedFiles.length > 0) return null;
 
   try {
-    const { detectBaseBranch } = require('./git/base-branch');
     const depsOverride = githubToken || hostBinding
       ? {
           getGitHubToken: () => githubToken || '',
           getHostBinding: () => hostBinding || null
         }
       : undefined;
-    const detection = await detectBaseBranch(repoPath, branch, {
+    const detection = await baseBranchModule.detectBaseBranch(repoPath, branch, {
       repository,
       enableGraphite,
       _deps: depsOverride
@@ -1122,6 +1244,8 @@ async function detectAndBuildBranchInfo(repoPath, branch, options = {}) {
 module.exports = {
   handleLocalReview,
   setupLocalReviewSession,
+  resolveScopeAndBase,
+  persistScopeSelection,
   findGitRoot,
   findMainGitRoot,
   getHeadSha,

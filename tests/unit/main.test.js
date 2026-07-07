@@ -386,6 +386,45 @@ describe('main.js parseArgs', () => {
       expect(() => parseArgs(['123', '--instructions-file', '--headless'])).toThrow('--instructions-file flag requires a file path');
     });
 
+    it('should parse --scope flag with a range value', () => {
+      const result = parseArgs(['--local', '--scope', 'branch..untracked']);
+      expect(result.flags.local).toBe(true);
+      expect(result.flags.scope).toBe('branch..untracked');
+      expect(result.prArgs).toEqual([]);
+    });
+
+    it('should throw error when --scope has no value', () => {
+      expect(() => parseArgs(['--local', '--scope'])).toThrow('--scope flag requires a range value');
+    });
+
+    it('should throw error when --scope is followed by another flag', () => {
+      expect(() => parseArgs(['--local', '--scope', '--headless'])).toThrow('--scope flag requires a range value');
+    });
+
+    it('should parse --base flag with a branch name', () => {
+      const result = parseArgs(['--local', '--scope', 'branch..untracked', '--base', 'develop']);
+      expect(result.flags.base).toBe('develop');
+      expect(result.flags.scope).toBe('branch..untracked');
+    });
+
+    it('should throw error when --base has no value', () => {
+      expect(() => parseArgs(['--local', '--base'])).toThrow('--base flag requires a branch name');
+    });
+
+    it('should throw error when --base is followed by another flag', () => {
+      expect(() => parseArgs(['--local', '--base', '--scope'])).toThrow('--base flag requires a branch name');
+    });
+
+    // parseArgs itself does not know that --scope requires --local or that
+    // --base requires a branch-relative --scope — those cross-flag rules live in
+    // main() and are covered by the "headless CLI smoke" spawn tests below. At
+    // the parseArgs layer the flags simply parse into the flags object.
+    it('parses --scope alongside a PR arg without erroring (main() rejects it)', () => {
+      const result = parseArgs(['123', '--scope', 'branch..untracked']);
+      expect(result.flags.scope).toBe('branch..untracked');
+      expect(result.prArgs).toEqual(['123']);
+    });
+
     it('should parse a full headless council invocation', () => {
       const result = parseArgs(['--local', '--headless', '--json', '--council', 'security', '--instructions', 'focus on auth']);
       expect(result.flags.local).toBe(true);
@@ -699,6 +738,45 @@ describe('headless CLI smoke (main()-level validations)', () => {
     const result = run(['123', '--instructions', 'focus on auth']);
     expect(result.status).not.toBe(0);
     expect(result.stderr + result.stdout).toMatch(/require a mode that runs analysis/);
+  });
+
+  it('--scope without --local exits non-zero with a clear message', () => {
+    const result = run(['--scope', 'branch..untracked']);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr + result.stdout).toMatch(/--scope\/--base require --local/);
+  });
+
+  it('--scope with a PR positional exits non-zero with a clear message', () => {
+    const result = run(['123', '--scope', 'branch..untracked']);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr + result.stdout).toMatch(/cannot be combined with a pull request/);
+  });
+
+  it('--scope with an invalid range lists the valid ranges', () => {
+    const result = run(['--local', '--scope', 'branch..staged']);
+    expect(result.status).not.toBe(0);
+    const out = result.stderr + result.stdout;
+    expect(out).toMatch(/Invalid --scope value "branch\.\.staged"/);
+    expect(out).toMatch(/branch\.\.untracked/);
+    expect(out).toMatch(/must include 'unstaged'/);
+  });
+
+  it('--base without a branch-relative --scope exits non-zero with a clear message', () => {
+    const result = run(['--local', '--scope', 'unstaged..untracked', '--base', 'main']);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr + result.stdout).toMatch(/--base requires --scope with a branch-relative range/);
+  });
+
+  it('--base without any --scope exits non-zero (requires branch-relative scope)', () => {
+    const result = run(['--local', '--base', 'main']);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr + result.stdout).toMatch(/--base requires --scope with a branch-relative range/);
+  });
+
+  it('--base with an invalid branch name is rejected', () => {
+    const result = run(['--local', '--scope', 'branch..untracked', '--base', 'bad;rm -rf']);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr + result.stdout).toMatch(/Invalid --base branch name/);
   });
 
   // COVERAGE GAP (intentional): the full happy-path smoke — `--local --headless

@@ -1,10 +1,10 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
-const { findGitRoot, getHeadSha, getCurrentBranch, getRepositoryName, generateScopedDiff, generateLocalReviewId, computeScopedDigest, findMainGitRoot } = require('../local-review');
+const { findGitRoot, getHeadSha, getCurrentBranch, getRepositoryName, generateScopedDiff, generateLocalReviewId, computeScopedDigest, findMainGitRoot, resolveScopeAndBase, persistScopeSelection } = require('../local-review');
 const { ReviewRepository, RepoSettingsRepository } = require('../database');
 const { localReviewDiffs } = require('../routes/shared');
 const { fireHooks, hasHooks } = require('../hooks/hook-runner');
 const { buildReviewStartedPayload, buildReviewLoadedPayload, getCachedUser } = require('../hooks/payloads');
-const { STOPS, DEFAULT_SCOPE, reviewScope } = require('../local-scope');
+const { STOPS } = require('../local-scope');
 const logger = require('../utils/logger');
 const { LOCAL_REVIEW_PATH_URL_ERROR, rejectUrlLikeLocalReviewPath } = require('../utils/local-path-input');
 const path = require('path');
@@ -21,9 +21,12 @@ const fs = require('fs').promises;
  * @param {string} options.targetPath - Path to review (file or directory)
  * @param {Function} [options.onProgress] - Progress callback ({ step, status, message })
  * @param {Object} [options.config] - App config (for hooks)
+ * @param {Object} [options.flags] - Scope override { scope?, base? } forwarded from
+ *   a delegated `--scope`/`--base` launch. The route MUST have validated these
+ *   first. Absent flags leave scope resolution at persisted/default (unchanged).
  * @returns {Promise<Object>} Review session info
  */
-async function setupLocalReview({ db, targetPath, onProgress, config }) {
+async function setupLocalReview({ db, targetPath, onProgress, config, flags = {} }) {
   const progress = typeof onProgress === 'function'
     ? onProgress
     : () => {};
@@ -104,10 +107,14 @@ async function setupLocalReview({ db, targetPath, onProgress, config }) {
   }
 
   // ── Step: diff ──────────────────────────────────────────────────────
-  let diff, stats, digest;
+  // Resolve scope + base via the shared helper so a delegated --scope/--base
+  // launch is honored identically to the cold-start CLI path. With no override
+  // (flags absent) this yields the persisted/default scope — unchanged behavior.
+  let diff, stats, digest, scopeStart, scopeEnd, baseBranch, scopeOverridden;
   try {
-    const { start: scopeStart, end: scopeEnd } = existingReview ? reviewScope(existingReview) : DEFAULT_SCOPE;
-    const baseBranch = existingReview?.local_base_branch || null;
+    ({ scopeStart, scopeEnd, baseBranch, scopeOverridden } = await resolveScopeAndBase({
+      existingReview, flags, repoPath, branch, repository, config
+    }));
 
     progress({ step: 'diff', status: 'running', message: 'Generating diff for local changes...' });
 
@@ -146,6 +153,15 @@ async function setupLocalReview({ db, targetPath, onProgress, config }) {
       });
     }
 
+    // Persist an explicitly-overridden scope (and its resolved base) so the web
+    // UI opens this delegated session at the requested scope — only after the
+    // diff above succeeded. No-op when no override was supplied.
+    if (scopeOverridden) {
+      await persistScopeSelection({
+        reviewRepo: storeRepo, sessionId, existingReview, scopeStart, scopeEnd, baseBranch, branch, repoPath
+      });
+    }
+
     localReviewDiffs.set(sessionId, { diff, stats, digest });
 
     progress({ step: 'store', status: 'completed', message: `Review session ${sessionId} stored` });
@@ -159,7 +175,7 @@ async function setupLocalReview({ db, targetPath, onProgress, config }) {
   if (config && hasHooks(hookEvent, config)) {
     getCachedUser(config).then(user => {
       const builder = existingReview ? buildReviewLoadedPayload : buildReviewStartedPayload;
-      const { start: scopeStart, end: scopeEnd } = existingReview ? reviewScope(existingReview) : DEFAULT_SCOPE;
+      // Reflect the resolved (possibly overridden) scope, not just the persisted one.
       const si = STOPS.indexOf(scopeStart);
       const ei = STOPS.indexOf(scopeEnd);
       const scope = STOPS.slice(si, ei + 1);

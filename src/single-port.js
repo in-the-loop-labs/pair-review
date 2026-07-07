@@ -175,6 +175,9 @@ function storeAnalysisConfigRemote(port, analysisConfig, _deps) {
  *   Already resolved by the caller via `hostSetupParamValue`; omitted when null.
  * @param {string} [context.provider] - CLI provider override to carry to the running server
  * @param {string} [context.model] - CLI model override to carry to the running server
+ * @param {string} [context.scope] - Local-mode only: the `--scope` range to carry
+ *   to the delegated session (e.g. 'branch..untracked').
+ * @param {string} [context.base] - Local-mode only: the `--base` branch override.
  * @returns {string} Full URL
  */
 function buildDelegationUrl(port, mode, context = {}) {
@@ -224,6 +227,12 @@ function buildDelegationUrl(port, mode, context = {}) {
     // The `?path=` segment is always present, so the intent bundle appends with `&`.
     let url = `${base}/local?path=${encodeURIComponent(context.localPath)}`;
     if (query) url += `&${query}`;
+    // Carry the diff-scope selection so a delegated `--local --scope/--base` run
+    // lands at the requested scope instead of the server's default. The receiving
+    // setup page relays these and the server re-validates them. These keep
+    // encodeURIComponent to match the `path` param's wire format.
+    if (context.scope) url += `&scope=${encodeURIComponent(context.scope)}`;
+    if (context.base) url += `&base=${encodeURIComponent(context.base)}`;
     return url;
   }
   return `${base}/`;
@@ -323,7 +332,8 @@ async function attemptDelegation(config, flags, prArgs, _deps, options = {}) {
     const analysisConfigId = await handoffAnalysisConfigId(options.localRepository || null);
     url = buildDelegationUrl(port, 'local', {
       localPath: targetPath, analyze, councilId, analysisConfigId,
-      provider: flags.provider, model: flags.model
+      provider: flags.provider, model: flags.model,
+      scope: flags.scope || null, base: flags.base || null
     });
   } else if (prArgs.length > 0) {
     const prInfo = await parsePRArgsForDelegation(prArgs, config, _deps);

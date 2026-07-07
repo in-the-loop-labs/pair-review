@@ -282,6 +282,47 @@ describe('buildDelegationUrl', () => {
     expect(url).toBe('http://localhost:7247/pr/acme/widgets/42');
   });
 
+  it('appends scope to local URL', () => {
+    const url = buildDelegationUrl(7247, 'local', { localPath: '/tmp/project', scope: 'branch..untracked' });
+    expect(url).toBe('http://localhost:7247/local?path=%2Ftmp%2Fproject&scope=branch..untracked');
+  });
+
+  it('appends scope and base to local URL', () => {
+    const url = buildDelegationUrl(7247, 'local', {
+      localPath: '/tmp/project', scope: 'branch..untracked', base: 'develop'
+    });
+    expect(url).toBe('http://localhost:7247/local?path=%2Ftmp%2Fproject&scope=branch..untracked&base=develop');
+  });
+
+  it('appends scope/base after analyze and analysisConfigId', () => {
+    const url = buildDelegationUrl(7247, 'local', {
+      localPath: '/tmp/project', analyze: true, analysisConfigId: 'cfg-9',
+      scope: 'staged..untracked', base: null
+    });
+    expect(url).toBe('http://localhost:7247/local?path=%2Ftmp%2Fproject&analyze=true&analysisConfigId=cfg-9&scope=staged..untracked');
+  });
+
+  it('url-encodes scope and base values', () => {
+    const url = buildDelegationUrl(7247, 'local', {
+      localPath: '/tmp/project', scope: 'branch..untracked', base: 'feature/x y'
+    });
+    expect(url).toBe('http://localhost:7247/local?path=%2Ftmp%2Fproject&scope=branch..untracked&base=feature%2Fx%20y');
+  });
+
+  it('omits scope/base when absent', () => {
+    const url = buildDelegationUrl(7247, 'local', { localPath: '/tmp/project' });
+    expect(url).toBe('http://localhost:7247/local?path=%2Ftmp%2Fproject');
+    expect(url).not.toContain('scope=');
+    expect(url).not.toContain('base=');
+  });
+
+  it('does not append scope/base to PR URLs', () => {
+    const url = buildDelegationUrl(7247, 'pr', {
+      owner: 'acme', repo: 'widgets', number: 42, scope: 'branch..untracked', base: 'develop'
+    });
+    expect(url).toBe('http://localhost:7247/pr/acme/widgets/42');
+  });
+
   it('builds server landing URL', () => {
     const url = buildDelegationUrl(7247, 'server');
     expect(url).toBe('http://localhost:7247/');
@@ -449,6 +490,29 @@ describe('attemptDelegation', () => {
     expect(deps.open).toHaveBeenCalledWith(
       expect.stringContaining('/local?path=')
     );
+  });
+
+  it('carries --scope and --base into the delegated local URL', async () => {
+    const deps = createMockDeps();
+    const result = await attemptDelegation(
+      baseConfig,
+      { local: true, localPath: '/tmp/project', scope: 'branch..untracked', base: 'develop' },
+      [],
+      deps
+    );
+    expect(result).toBe(true);
+    const openedUrl = deps.open.mock.calls[0][0];
+    expect(openedUrl).toContain('/local?path=');
+    expect(openedUrl).toContain('scope=branch..untracked');
+    expect(openedUrl).toContain('base=develop');
+  });
+
+  it('does not add scope/base to the delegated URL when absent', async () => {
+    const deps = createMockDeps();
+    await attemptDelegation(baseConfig, { local: true, localPath: '/tmp/project' }, [], deps);
+    const openedUrl = deps.open.mock.calls[0][0];
+    expect(openedUrl).not.toContain('scope=');
+    expect(openedUrl).not.toContain('base=');
   });
 
   it('rejects URL input for local mode before opening browser', async () => {
