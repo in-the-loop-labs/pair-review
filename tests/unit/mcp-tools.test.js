@@ -602,9 +602,6 @@ describe('start_analysis tool', () => {
     // Clean up any active analyses and tracking maps left by tests
     activeAnalyses.clear();
     reviewToAnalysisId.clear();
-    // Ensure provider/model env overrides never leak between tests.
-    delete process.env.PAIR_REVIEW_PROVIDER;
-    delete process.env.PAIR_REVIEW_MODEL;
     vi.restoreAllMocks();
   });
 
@@ -643,13 +640,12 @@ describe('start_analysis tool', () => {
 
   // Provider/model precedence: start_analysis must resolve a single
   // provider/model through the canonical ladder (review-config.js's
-  // resolveSingleProviderModel), NOT a bespoke env-first inline ladder. The
-  // resolved pair is recorded on the analysis_runs row, so we assert against it.
+  // resolveSingleProviderModel). The MCP path is server-triggered (no CLI
+  // flags), so it resolves repo default > in-app override > config default.
+  // The resolved pair is recorded on the analysis_runs row, so we assert
+  // against it.
   describe('provider/model precedence (canonical ladder)', () => {
-    it('prefers a repo default over PAIR_REVIEW_* env (local mode)', async () => {
-      process.env.PAIR_REVIEW_PROVIDER = 'codex';
-      process.env.PAIR_REVIEW_MODEL = 'env-model';
-
+    it('prefers a repo default over the config default (local mode)', async () => {
       const reviewRepo = new ReviewRepository(db);
       await reviewRepo.upsertLocalReview({
         localPath: '/tmp/prec-repo',
@@ -672,7 +668,7 @@ describe('start_analysis tool', () => {
       expect(run.model).toBe('gemini-3.1-pro-low');
     });
 
-    it('prefers a global in-app override (config._globalOverrides) over PAIR_REVIEW_* env (local mode)', async () => {
+    it('prefers a global in-app override (config._globalOverrides) over the config-file default (local mode)', async () => {
       // Rebuild the server with an effective config that carries an in-app
       // override, the same shape the /settings service folds onto app config.
       await client.close();
@@ -688,9 +684,6 @@ describe('start_analysis tool', () => {
       const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
       await mcpServer.connect(serverTransport);
       await client.connect(clientTransport);
-
-      process.env.PAIR_REVIEW_PROVIDER = 'codex';
-      process.env.PAIR_REVIEW_MODEL = 'env-model';
 
       const reviewRepo = new ReviewRepository(db);
       await reviewRepo.upsertLocalReview({
@@ -710,10 +703,7 @@ describe('start_analysis tool', () => {
       expect(run.model).toBe('gemini-3.1-pro-low');
     });
 
-    it('prefers a repo default over PAIR_REVIEW_* env (PR mode)', async () => {
-      process.env.PAIR_REVIEW_PROVIDER = 'codex';
-      process.env.PAIR_REVIEW_MODEL = 'env-model';
-
+    it('prefers a repo default over the config default (PR mode)', async () => {
       const reviewRepo = new ReviewRepository(db);
       await reviewRepo.createReview({ prNumber: 77, repository: 'octo/prec' });
       await run(db, `
@@ -736,10 +726,7 @@ describe('start_analysis tool', () => {
       expect(analysisRun.model).toBe('gemini-3.1-pro-low');
     });
 
-    it('falls back to PAIR_REVIEW_* env over the config-file default when no repo/override set', async () => {
-      process.env.PAIR_REVIEW_PROVIDER = 'codex';
-      process.env.PAIR_REVIEW_MODEL = 'env-model';
-
+    it('falls back to the config-file default when no repo/override set', async () => {
       const reviewRepo = new ReviewRepository(db);
       await reviewRepo.upsertLocalReview({
         localPath: '/tmp/env-repo',
@@ -754,9 +741,9 @@ describe('start_analysis tool', () => {
       const content = JSON.parse(result.content[0].text);
 
       const run = await new AnalysisRunRepository(db).getById(content.runId);
-      // config-file default was claude/sonnet; env must win over it.
-      expect(run.provider).toBe('codex');
-      expect(run.model).toBe('env-model');
+      // No repo default and no in-app override → the config-file default wins.
+      expect(run.provider).toBe('claude');
+      expect(run.model).toBe('sonnet');
     });
   });
 

@@ -100,9 +100,9 @@ function resolveProviderModelPair(scopes, providersInfo) {
  *   1. `extraOverride` — a per-invocation override carried on the auto-analyze
  *      URL (single-port delegation: the flag can only reach the already-running
  *      server through the URL).
- *   2. `appConfig.provider_override` / `appConfig.model_override` — the
- *      PAIR_REVIEW_PROVIDER / PAIR_REVIEW_MODEL env override surfaced by
- *      /api/config, for the process that actually received the CLI flag.
+ *   2. `appConfig.provider_override` / `appConfig.model_override` — the per-run
+ *      `--provider` / `--model` override surfaced by /api/config, for the
+ *      process that actually received the CLI flag.
  *
  * A provider-only override (`{ provider: 'codex', model: null }`) resolves via
  * resolveProviderModelPair to codex + codex's own default model, matching CLI

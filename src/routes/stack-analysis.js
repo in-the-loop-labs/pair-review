@@ -198,7 +198,7 @@ async function executeStackAnalysis(params) {
   const {
     db, config, owner, repo, repository, triggerPRNumber,
     worktreePath: triggerWorktreePath, prNumbers, analysisConfig,
-    stackAnalysisId, _deps
+    stackAnalysisId, cliOverrides, _deps
   } = params;
 
   const deps = { ...defaults, ..._deps };
@@ -340,7 +340,7 @@ async function executeStackAnalysis(params) {
           worktreePath: worktreePathMap.get(prNum),
           analysisConfig, stackAnalysisId, state,
           githubToken, binding: stackBinding, prData: prDataMap.get(prNum),
-          worktreeConfig, checkoutScript,
+          worktreeConfig, checkoutScript, cliOverrides,
           onAnalysisIdReady
         }).then(result => {
           state.prStatuses.set(prNum, {
@@ -376,26 +376,28 @@ async function executeStackAnalysis(params) {
 /**
  * Resolve the provider/model pair for a single/executable stack analysis.
  *
- * Precedence (highest first): request body > env/CLI override
- * (PAIR_REVIEW_PROVIDER / PAIR_REVIEW_MODEL) > saved repo settings >
+ * Precedence (highest first): request body > CLI override
+ * (`--provider`/`--model`, threaded via `cliOverrides`) > saved repo settings >
  * config default > legacy config key > hard default ('claude' / 'opus').
  *
- * Both env vars are read together so a CLI invocation like
- * `pair-review 123 --provider codex --model gpt-5.5` (which mirrors BOTH flags
- * into the environment) resolves the requested pair, rather than pairing a
- * non-default provider with a default Claude model.
+ * The CLI override is threaded explicitly from the request handler
+ * (`app.get('cliOverrides')`) — there is no env-var side channel. Both fields
+ * fall through independently so a provider-only override does not force a
+ * default Claude model onto it.
  *
  * @param {Object} [args]
  * @param {string} [args.reqProvider] - provider from the analysis request body
  * @param {string} [args.reqModel] - model from the analysis request body
  * @param {Object} [args.repoSettings] - saved repo settings row (may be null)
  * @param {Object} [args.config] - loaded app config
+ * @param {{ provider?: string, model?: string }} [args.cliOverrides] - per-run CLI flags
  * @returns {{ provider: string, model: string }}
  */
-function _resolveStackProviderModel({ reqProvider, reqModel, repoSettings, config } = {}) {
+function _resolveStackProviderModel({ reqProvider, reqModel, repoSettings, config, cliOverrides } = {}) {
   const cfg = config || {};
-  const provider = reqProvider || process.env.PAIR_REVIEW_PROVIDER || repoSettings?.default_provider || cfg.default_provider || cfg.provider || 'claude';
-  const model = reqModel || process.env.PAIR_REVIEW_MODEL || repoSettings?.default_model || cfg.default_model || cfg.model || 'opus';
+  const overrides = cliOverrides || {};
+  const provider = reqProvider || overrides.provider || repoSettings?.default_provider || cfg.default_provider || cfg.provider || 'claude';
+  const model = reqModel || overrides.model || repoSettings?.default_model || cfg.default_model || cfg.model || 'opus';
   return { provider, model };
 }
 
@@ -406,7 +408,7 @@ function _resolveStackProviderModel({ reqProvider, reqModel, repoSettings, confi
 async function analyzeStackPR(deps, db, config, {
   owner, repo, repository, bindingRepository, prNum, worktreePath,
   analysisConfig, stackAnalysisId, state, githubToken, binding, prData,
-  worktreeConfig, checkoutScript,
+  worktreeConfig, checkoutScript, cliOverrides,
   onAnalysisIdReady
 }) {
   // Build a GitHubClient for analyzer-side dedup pre-fetch. The stack
@@ -472,7 +474,7 @@ async function analyzeStackPR(deps, db, config, {
     });
   } else {
     const { provider: selectedProvider, model: selectedModel } = _resolveStackProviderModel({
-      reqProvider, reqModel, repoSettings, config
+      reqProvider, reqModel, repoSettings, config, cliOverrides
     });
 
     // Resolve load_skills across all config tiers
@@ -867,6 +869,7 @@ router.post('/api/pr/:owner/:repo/:number/analyses/stack', async (req, res) => {
     const repository = normalizeRepository(owner, repo);
     const db = req.app.get('db');
     const config = req.app.get('config') || {};
+    const cliOverrides = req.app.get('cliOverrides') || {};
 
     // Find worktree path from the triggering PR
     const worktreeManager = new GitWorktreeManager(db);
@@ -901,7 +904,7 @@ router.post('/api/pr/:owner/:repo/:number/analyses/stack', async (req, res) => {
     executeStackAnalysis({
       db, config, owner, repo, repository,
       triggerPRNumber: prNumber,
-      worktreePath, prNumbers, analysisConfig, stackAnalysisId
+      worktreePath, prNumbers, analysisConfig, stackAnalysisId, cliOverrides
     }).catch(error => {
       logger.error(`Stack analysis ${stackAnalysisId} uncaught error: ${error.message}`);
     });

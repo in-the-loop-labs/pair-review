@@ -47,7 +47,7 @@ function makeLayers({ managed = {}, cfg = {}, cfgLocal = {}, project = {}, proje
 describe('GlobalSettingsService', () => {
   let db;
   const savedEnv = {};
-  const ENV_KEYS = ['PAIR_REVIEW_PROVIDER', 'PAIR_REVIEW_MODEL', 'GITHUB_TOKEN', 'PAIR_REVIEW_YOLO', 'PORT'];
+  const ENV_KEYS = ['GITHUB_TOKEN', 'PAIR_REVIEW_YOLO', 'PORT'];
 
   beforeEach(() => {
     db = createTestDatabase();
@@ -99,18 +99,20 @@ describe('GlobalSettingsService', () => {
     });
 
     it('ranks env above every file layer', () => {
-      process.env.PAIR_REVIEW_PROVIDER = 'codex';
-      const layers = makeLayers({ projectLocal: { default_provider: 'antigravity' } });
+      // Uses an env-backed registry setting (yolo → PAIR_REVIEW_YOLO); the
+      // provider/model settings no longer declare an envVar.
+      process.env.PAIR_REVIEW_YOLO = 'true';
+      const layers = makeLayers({ projectLocal: { yolo: false } });
       const svc = makeService({ layers });
-      expect(svc.resolve('default_provider')).toEqual({ value: 'codex', source: 'env' });
+      expect(svc.resolve('yolo')).toEqual({ value: true, source: 'env' });
     });
 
     it('ranks an in-app override above env and files', () => {
-      process.env.PAIR_REVIEW_PROVIDER = 'codex';
-      new GlobalSettingsRepository(db).set('default_provider', 'opencode');
-      const layers = makeLayers({ cfg: { default_provider: 'antigravity' } });
+      process.env.PAIR_REVIEW_YOLO = 'true';
+      new GlobalSettingsRepository(db).set('yolo', false);
+      const layers = makeLayers({ cfg: { yolo: true } });
       const svc = makeService({ layers });
-      expect(svc.resolve('default_provider')).toEqual({ value: 'opencode', source: 'app' });
+      expect(svc.resolve('yolo')).toEqual({ value: false, source: 'app' });
     });
 
     it('coerces env values for display by type', () => {
@@ -311,16 +313,23 @@ describe('GlobalSettingsService', () => {
   });
 
   describe('config-driven locking (final)', () => {
-    it('resolve on a final key skips app + env, using the highest file layer', () => {
-      process.env.PAIR_REVIEW_MODEL = 'env-model';
+    it('resolve on a final key skips the app override, using the highest file layer', () => {
       new GlobalSettingsRepository(db).set('default_model', 'app-model');
       const layers = makeLayers({ cfg: { final: ['default_model'], default_model: 'file-model' } });
       const svc = makeService({ layers });
       expect(svc.resolve('default_model')).toEqual({ value: 'file-model', source: 'config' });
     });
 
+    it('resolve on a final env-backed key skips both the app and env tiers', () => {
+      // yolo declares an envVar; finalizing it must defeat the env tier too.
+      process.env.PAIR_REVIEW_YOLO = 'true';
+      new GlobalSettingsRepository(db).set('yolo', true);
+      const layers = makeLayers({ cfg: { final: ['yolo'], yolo: false } });
+      const svc = makeService({ layers });
+      expect(svc.resolve('yolo')).toEqual({ value: false, source: 'config' });
+    });
+
     it('resolve on a final key with no file layer falls to the default', () => {
-      process.env.PAIR_REVIEW_MODEL = 'env-model';
       const layers = makeLayers({ cfg: { final: ['default_model'] } });
       const svc = makeService({ layers });
       expect(svc.resolve('default_model')).toEqual({ value: 'opus', source: 'default' });

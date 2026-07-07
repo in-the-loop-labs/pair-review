@@ -584,8 +584,8 @@ function createMCPServer(db, options = {}) {
           // oversight. The single-provider ladder itself, however, must match the
           // canonical precedence, so we reuse resolveSingleProviderModel rather
           // than hand-rolling the ternaries: explicit (none here) › repo default
-          // › global in-app override (config._globalOverrides) › PAIR_REVIEW_*
-          // env › config file › legacy keys › hardcoded claude/opus.
+          // › global in-app override (config._globalOverrides) › config file ›
+          // legacy keys › hardcoded claude/opus.
           const repoSettings = repository ? await repoSettingsRepo.getRepoSettings(repository) : null;
           const { provider, model } = resolveSingleProviderModel({}, repoSettings, config);
 

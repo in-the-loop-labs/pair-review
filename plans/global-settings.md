@@ -415,3 +415,35 @@ from `computeSections()` in public/js/settings.js.
   rules in CLAUDE.md; single CREATE TABLE needs no transaction.
 - Both CLI (`src/main.js`) and server (`src/server.js`) entry points load
   config independently — overlay must be applied in BOTH.
+
+## Phase 3 — env var removal (shipped 2026-07-07)
+
+Completes the TRANSITIONAL notes from the origin/main merge (1d8d807e). The
+`PAIR_REVIEW_PROVIDER` / `PAIR_REVIEW_MODEL` env vars are hard-removed (major
+breaking change). The `--provider` / `--model` CLI flags stay; their env-var
+transport is gone. Per-run overrides are now threaded explicitly:
+`startServer(db, poolLifecycle, { cliOverrides })` → `app.set('cliOverrides')`,
+read per request by the analyze routes. `main.js` / `local-review.js` drop the
+`process.env.PAIR_REVIEW_* = flags.*` bridges and the env→flags fold
+(`normalizeProviderModelFlags`, deleted). The `default_provider` /
+`default_model` registry entries drop their `envVar` attribution.
+
+Final ladders (no env tier anywhere):
+
+- `resolveProviderModel` (web analyze, `src/routes/shared.js`): request body >
+  `cliOverrides` (per-run flags) > repo settings > config defaults (effective
+  config already folds the in-app /settings override; final keys locked to file
+  value) > legacy keys > `claude`/`opus`. The request/flag tiers deliberately
+  beat repo settings AND `final` — they are per-invocation intent.
+- `_buildSingleSelection` (headless/MCP, `src/review-config.js`): explicit
+  (flags) > repo default > `config._globalOverrides` (in-app) > config files >
+  legacy > hardcoded. Final keys need no special-casing: the effective config
+  excludes them from `_globalOverrides` and folds the file value into
+  `cfg.default_*`, so removing the env tier lets the file value win naturally.
+- `_resolveStackProviderModel` (stack, `src/routes/stack-analysis.js`): request
+  > `cliOverrides` > repo > config > legacy > hardcoded.
+
+`getModel` / `getProvider` and both resolvers drop their `_finalKeys` env-defeat
+guards (dead once env is gone). The headless CLI paths already pass
+`flags.provider` / `flags.model` as `explicit`, and delegation forwards the real
+flags on the auto-analyze URL, so no headless/delegation path depended on env.

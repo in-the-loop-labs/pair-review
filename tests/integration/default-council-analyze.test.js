@@ -275,13 +275,15 @@ describe('Repo default-council parity in plain Analyze routes', () => {
     });
   });
 
-  // ============ IN-APP OVERRIDE vs PAIR_REVIEW_MODEL (model field) ============
-  // A global in-app override (/settings, carried on config._globalOverrides and
-  // folded into config.default_model) must rank ABOVE PAIR_REVIEW_MODEL, matching
-  // the canonical ladder in review-config.js. getModel() checks the env var before
-  // config.default_model, so without the _globalOverrides read the override would
-  // be silently beaten by env on the web Analyze routes. Covers BOTH modes.
-  describe('in-app global override outranks PAIR_REVIEW_MODEL (model field)', () => {
+  // ============ CLI FLAG OVERRIDE vs IN-APP OVERRIDE (model field) ============
+  // Two per-run channels reach the web Analyze routes through
+  // resolveProviderModel(req): the --model CLI flag (threaded explicitly via
+  // app.get('cliOverrides')) and the global in-app override (/settings, folded
+  // into config.default_model and mirrored on config._globalOverrides). The CLI
+  // flag is per-invocation intent and ranks ABOVE the stored in-app override;
+  // with no flag the in-app override wins. There is no env-var side channel any
+  // more. Covers BOTH modes.
+  describe('CLI flag override vs in-app override (model field)', () => {
     // The effective config the /settings service produces: the override is folded
     // into default_model AND mirrored on _globalOverrides.
     const overrideConfig = {
@@ -292,12 +294,12 @@ describe('Repo default-council parity in plain Analyze routes', () => {
     };
 
     afterEach(() => {
-      delete process.env.PAIR_REVIEW_MODEL;
+      app.set('cliOverrides', {});
     });
 
-    it('PR mode: the in-app override wins over PAIR_REVIEW_MODEL', async () => {
-      process.env.PAIR_REVIEW_MODEL = 'env-model';
+    it('PR mode: the --model CLI flag wins over the in-app override', async () => {
       app.set('config', overrideConfig);
+      app.set('cliOverrides', { model: 'flag-model' });
       await run(db,
         `INSERT INTO pr_metadata (pr_number, repository, title) VALUES (?, ?, ?)`,
         [77, 'ov-owner/ov-repo', 'Override PR']);
@@ -309,32 +311,48 @@ describe('Repo default-council parity in plain Analyze routes', () => {
       expect(response.status).toBe(200);
       expect(response.body.isCouncil).toBeUndefined();
       expect(analyzerCalls.single.length).toBe(1);
-      // Override beats env; without the fix this would be 'env-model'.
-      expect(analyzerCalls.single[0].model).toBe('app-model');
+      // The per-run CLI flag outranks the stored in-app override.
+      expect(analyzerCalls.single[0].model).toBe('flag-model');
     });
 
-    it('PR mode: falls back to PAIR_REVIEW_MODEL when no in-app override is set', async () => {
-      process.env.PAIR_REVIEW_MODEL = 'env-model';
-      app.set('config', {
-        github_token: 'test-token', port: 7247, theme: 'light', default_provider: 'claude'
-      });
+    it('PR mode: the in-app override wins when no CLI flag is set', async () => {
+      app.set('config', overrideConfig);
       await run(db,
         `INSERT INTO pr_metadata (pr_number, repository, title) VALUES (?, ?, ?)`,
-        [78, 'env-owner/env-repo', 'Env PR']);
+        [79, 'ov2-owner/ov2-repo', 'Override PR 2']);
 
       const response = await request(server)
-        .post('/api/pr/env-owner/env-repo/78/analyses')
+        .post('/api/pr/ov2-owner/ov2-repo/79/analyses')
         .send({});
 
       expect(response.status).toBe(200);
       expect(analyzerCalls.single.length).toBe(1);
-      // No override → env still wins over the config-file default (via getModel).
-      expect(analyzerCalls.single[0].model).toBe('env-model');
+      // The override is folded into config.default_model and wins over files.
+      expect(analyzerCalls.single[0].model).toBe('app-model');
     });
 
-    it('Local mode: the in-app override wins over PAIR_REVIEW_MODEL', async () => {
-      process.env.PAIR_REVIEW_MODEL = 'env-model';
+    it('PR mode: falls back to the CLI flag when no in-app override is set', async () => {
+      app.set('config', {
+        github_token: 'test-token', port: 7247, theme: 'light', default_provider: 'claude'
+      });
+      app.set('cliOverrides', { model: 'flag-model' });
+      await run(db,
+        `INSERT INTO pr_metadata (pr_number, repository, title) VALUES (?, ?, ?)`,
+        [78, 'flag-owner/flag-repo', 'Flag PR']);
+
+      const response = await request(server)
+        .post('/api/pr/flag-owner/flag-repo/78/analyses')
+        .send({});
+
+      expect(response.status).toBe(200);
+      expect(analyzerCalls.single.length).toBe(1);
+      // No in-app override → the CLI flag wins over the config-file default.
+      expect(analyzerCalls.single[0].model).toBe('flag-model');
+    });
+
+    it('Local mode: the --model CLI flag wins over the in-app override', async () => {
       app.set('config', overrideConfig);
+      app.set('cliOverrides', { model: 'flag-model' });
       await run(db,
         `INSERT INTO reviews (pr_number, repository, review_type, local_path, local_head_sha)
          VALUES (NULL, ?, 'local', '/tmp/ov-project', 'ovsha')`,
@@ -350,7 +368,7 @@ describe('Repo default-council parity in plain Analyze routes', () => {
       expect(response.status).toBe(200);
       expect(response.body.isCouncil).toBeUndefined();
       expect(analyzerCalls.single.length).toBe(1);
-      expect(analyzerCalls.single[0].model).toBe('app-model');
+      expect(analyzerCalls.single[0].model).toBe('flag-model');
     });
   });
 });

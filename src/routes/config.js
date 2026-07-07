@@ -128,6 +128,7 @@ function resolveDefaultProviderModel(config) {
 
 router.get('/api/config', (req, res) => {
   const config = req.app.get('config') || {};
+  const cliOverrides = req.app.get('cliOverrides') || {};
   const defaultPair = resolveDefaultProviderModel(config);
 
   // Build chat_providers array with availability
@@ -168,16 +169,17 @@ router.get('/api/config', (req, res) => {
     comment_format: config.comment_format || 'legacy',
     default_provider: defaultPair.provider,
     default_model: defaultPair.model,
-    // CLI/env override (PAIR_REVIEW_PROVIDER / PAIR_REVIEW_MODEL, set by
-    // `--provider` / `--model`). Surfaced as a DEDICATED signal — not folded
-    // into default_provider/default_model above — because every frontend seed
-    // site resolves `resolveProviderModelPair([repoSettings, appConfig])` with
-    // repo settings FIRST. Folding the override into appConfig would still lose
-    // to a repo's saved default, violating the documented `CLI/env > repo
-    // settings` contract. The frontend prepends this override ahead of
-    // repoSettings via buildProviderModelScopes(). null when unset.
-    provider_override: process.env.PAIR_REVIEW_PROVIDER || null,
-    model_override: process.env.PAIR_REVIEW_MODEL || null,
+    // Per-run CLI override from `--provider` / `--model`, threaded explicitly
+    // from the CLI entry point via app.get('cliOverrides'). Surfaced as a
+    // DEDICATED signal — not folded into default_provider/default_model above —
+    // because every frontend seed site resolves
+    // `resolveProviderModelPair([repoSettings, appConfig])` with repo settings
+    // FIRST. Folding the override into appConfig would still lose to a repo's
+    // saved default, violating the documented `CLI flag > repo settings`
+    // contract. The frontend prepends this override ahead of repoSettings via
+    // buildProviderModelScopes(). null when unset.
+    provider_override: cliOverrides.provider || null,
+    model_override: cliOverrides.model || null,
     // Include npx detection for frontend command examples
     is_running_via_npx: isRunningViaNpx(),
     enable_chat: config.enable_chat !== false,

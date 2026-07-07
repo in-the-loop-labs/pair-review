@@ -63,9 +63,6 @@ describe('resolveReviewConfig', () => {
   });
 
   afterEach(() => {
-    // Ensure the env overrides never leak between tests.
-    delete process.env.PAIR_REVIEW_MODEL;
-    delete process.env.PAIR_REVIEW_PROVIDER;
     vi.restoreAllMocks();
     closeTestDatabase(db);
   });
@@ -225,12 +222,9 @@ describe('resolveReviewConfig', () => {
       expect(result).toEqual({ type: 'single', provider: 'antigravity', model: 'gemini-3.1-pro-low' });
     });
 
-    // A repo's saved default is now MORE specific than a process-wide env var,
-    // so the repo default_model wins over PAIR_REVIEW_MODEL. The /settings work
-    // deliberately reversed the prior env-above-repo ordering; CI callers that
-    // need to beat a repo default must pass an explicit --model (still supreme).
-    it('prefers a repo default_model over PAIR_REVIEW_MODEL', async () => {
-      process.env.PAIR_REVIEW_MODEL = 'env-model';
+    // A repo's saved default is more specific than the config-file default, so
+    // the repo default_model wins over config.default_model.
+    it('prefers a repo default_model over the config default', async () => {
       seedRepoSettings(db, { default_model: 'repo-model' });
 
       const result = await resolveReviewConfig(
@@ -241,9 +235,8 @@ describe('resolveReviewConfig', () => {
       expect(result).toEqual({ type: 'single', provider: 'claude', model: 'repo-model' });
     });
 
-    // Symmetric: the repo default_provider beats PAIR_REVIEW_PROVIDER.
-    it('prefers a repo default_provider over PAIR_REVIEW_PROVIDER', async () => {
-      process.env.PAIR_REVIEW_PROVIDER = 'codex';
+    // Symmetric: the repo default_provider beats the config default.
+    it('prefers a repo default_provider over the config default', async () => {
       seedRepoSettings(db, { default_provider: 'antigravity', default_model: 'sonnet' });
 
       const result = await resolveReviewConfig(
@@ -254,15 +247,14 @@ describe('resolveReviewConfig', () => {
       expect(result).toEqual({ type: 'single', provider: 'antigravity', model: 'sonnet' });
     });
 
-    // The env override is still below an explicit per-request pick.
-    it('lets an explicit --model/--provider win over the env overrides', async () => {
-      process.env.PAIR_REVIEW_MODEL = 'env-model';
-      process.env.PAIR_REVIEW_PROVIDER = 'codex';
+    // An explicit per-run flag (--provider/--model) is still supreme.
+    it('lets an explicit --model/--provider win over repo/config defaults', async () => {
+      seedRepoSettings(db, { default_provider: 'codex', default_model: 'gpt-5.5' });
 
       const result = await resolveReviewConfig(
         db, REPOSITORY,
         { provider: 'antigravity', model: 'gemini-3.1-pro-low' },
-        {}
+        { default_provider: 'claude', default_model: 'opus' }
       );
       expect(result).toEqual({ type: 'single', provider: 'antigravity', model: 'gemini-3.1-pro-low' });
     });
@@ -291,25 +283,13 @@ describe('resolveReviewConfig', () => {
       const result = await resolveReviewConfig(db, REPOSITORY, {}, {});
       expect(result).toEqual({ type: 'single', provider: 'claude', model: 'opus' });
     });
-
-    it('honors PAIR_REVIEW_MODEL over config defaults for the model field', async () => {
-      process.env.PAIR_REVIEW_MODEL = 'env-model';
-      const result = await resolveReviewConfig(
-        db, REPOSITORY,
-        {},
-        { default_provider: 'claude', default_model: 'opus' }
-      );
-      expect(result).toEqual({ type: 'single', provider: 'claude', model: 'env-model' });
-    });
   });
 
   // The /settings page persists global provider/model overrides. The effective
   // config carries them on `config._globalOverrides` so the resolver can rank an
-  // in-app override ABOVE env vars but BELOW a repo default — the config-file
-  // value (folded into config.default_*) still sits below env.
+  // in-app override ABOVE the config-file default but BELOW a repo default.
   describe('6. global in-app override (config._globalOverrides)', () => {
-    it('ranks an in-app override above PAIR_REVIEW_MODEL', async () => {
-      process.env.PAIR_REVIEW_MODEL = 'env-model';
+    it('ranks an in-app override above the config-file default', async () => {
       const result = await resolveReviewConfig(
         db, REPOSITORY,
         {},
@@ -327,26 +307,15 @@ describe('resolveReviewConfig', () => {
       );
       expect(result).toEqual({ type: 'single', provider: 'claude', model: 'repo-model' });
     });
-
-    it('ranks env above the config-file default when no override is set', async () => {
-      process.env.PAIR_REVIEW_PROVIDER = 'codex';
-      const result = await resolveReviewConfig(
-        db, REPOSITORY,
-        {},
-        { default_provider: 'claude', default_model: 'opus' }
-      );
-      expect(result).toEqual({ type: 'single', provider: 'codex', model: 'opus' });
-    });
   });
 
-  // When default_provider/default_model is locked as final by configuration
-  // (listed in config._finalKeys), the effective config already excludes it from
-  // _globalOverrides AND the env tier must be skipped, so the config-file value
-  // (folded into cfg.default_*) wins. A repo-scoped default and an explicit flag
-  // are more specific and still win.
-  describe('7. final config env-defeat (config._finalKeys)', () => {
-    it('a finalized default_model beats PAIR_REVIEW_MODEL (config value wins)', async () => {
-      process.env.PAIR_REVIEW_MODEL = 'env-model';
+  // When default_provider/default_model is locked as final by configuration, the
+  // effective config (built upstream) already excludes the key from
+  // _globalOverrides and folds its config-file value into cfg.default_*, so the
+  // config value wins here without the resolver special-casing _finalKeys. A
+  // repo-scoped default and an explicit flag are more specific and still win.
+  describe('7. finalized config value resolves from the config file', () => {
+    it('a finalized default_model resolves to the config-file value', async () => {
       const result = await resolveReviewConfig(
         db, REPOSITORY,
         {},
@@ -355,8 +324,7 @@ describe('resolveReviewConfig', () => {
       expect(result).toEqual({ type: 'single', provider: 'claude', model: 'file-model' });
     });
 
-    it('a finalized default_provider beats PAIR_REVIEW_PROVIDER (config value wins)', async () => {
-      process.env.PAIR_REVIEW_PROVIDER = 'codex';
+    it('a finalized default_provider resolves to the config-file value', async () => {
       const result = await resolveReviewConfig(
         db, REPOSITORY,
         {},
@@ -366,7 +334,6 @@ describe('resolveReviewConfig', () => {
     });
 
     it('a repo default still beats a finalized config value (repo is more specific)', async () => {
-      process.env.PAIR_REVIEW_MODEL = 'env-model';
       seedRepoSettings(db, { default_model: 'repo-model' });
       const result = await resolveReviewConfig(
         db, REPOSITORY,
@@ -383,18 +350,6 @@ describe('resolveReviewConfig', () => {
         { default_provider: 'claude', default_model: 'file-model', _finalKeys: ['default_model'] }
       );
       expect(result).toEqual({ type: 'single', provider: 'claude', model: 'flag-model' });
-    });
-
-    it('leaves the non-final field on its normal env-above-config ladder', async () => {
-      // Only default_model is final; default_provider still honors env.
-      process.env.PAIR_REVIEW_PROVIDER = 'codex';
-      process.env.PAIR_REVIEW_MODEL = 'env-model';
-      const result = await resolveReviewConfig(
-        db, REPOSITORY,
-        {},
-        { default_provider: 'claude', default_model: 'file-model', _finalKeys: ['default_model'] }
-      );
-      expect(result).toEqual({ type: 'single', provider: 'codex', model: 'file-model' });
     });
   });
 

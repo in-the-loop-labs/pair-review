@@ -165,8 +165,15 @@ function findAvailablePort(app, startPort, maxAttempts = 20) {
  * Start the Express server
  * @param {sqlite3.Database} [sharedDb] - Optional shared database instance
  * @param {import('./git/worktree-pool-lifecycle').WorktreePoolLifecycle} [sharedPoolLifecycle] - Optional shared pool lifecycle instance
+ * @param {Object} [options] - Startup options
+ * @param {{ provider?: string, model?: string }} [options.cliOverrides] - Per-run
+ *   provider/model overrides from the `--provider`/`--model` CLI flags. Threaded
+ *   in explicitly (there is no env-var side channel) and exposed via
+ *   `app.get('cliOverrides')` so the web analyze routes can rank them above repo
+ *   settings without a process-global. Empty object when no flags were given.
  */
-async function startServer(sharedDb = null, sharedPoolLifecycle = null) {
+async function startServer(sharedDb = null, sharedPoolLifecycle = null, options = {}) {
+  const cliOverrides = options.cliOverrides || {};
   try {
     // Load configuration
     const { config, layers } = await loadConfig();
@@ -414,6 +421,10 @@ async function startServer(sharedDb = null, sharedPoolLifecycle = null) {
     app.set('githubToken', githubToken);
     app.set('config', config);
     app.set('globalSettings', globalSettings);
+    // Per-run --provider/--model overrides, threaded explicitly from the CLI
+    // entry points (main.js / local-review.js). Read per request by the analyze
+    // routes; ranks above repo settings but below an explicit request body.
+    app.set('cliOverrides', cliOverrides);
 
     // Create or reuse the worktree pool lifecycle instance.
     // When called from main.js, the shared instance (already rehydrated) is

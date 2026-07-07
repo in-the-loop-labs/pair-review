@@ -1627,66 +1627,44 @@ describe('broadcastProgress index:analyses integration', () => {
 });
 
 describe('getProvider', () => {
-  const ORIGINAL_PROVIDER = process.env.PAIR_REVIEW_PROVIDER;
-
   function makeReq(config) {
     return { app: { get: (key) => (key === 'config' ? config : undefined) } };
   }
 
-  afterEach(() => {
-    if (ORIGINAL_PROVIDER === undefined) {
-      delete process.env.PAIR_REVIEW_PROVIDER;
-    } else {
-      process.env.PAIR_REVIEW_PROVIDER = ORIGINAL_PROVIDER;
-    }
-  });
-
-  it('prefers PAIR_REVIEW_PROVIDER env var (set by the --provider CLI flag)', () => {
-    process.env.PAIR_REVIEW_PROVIDER = 'codex';
-    expect(getProvider(makeReq({ default_provider: 'antigravity' }))).toBe('codex');
-  });
-
-  it('falls back to config.default_provider when env var is unset', () => {
-    delete process.env.PAIR_REVIEW_PROVIDER;
+  it('uses config.default_provider', () => {
     expect(getProvider(makeReq({ default_provider: 'antigravity' }))).toBe('antigravity');
   });
 
   it('falls back to legacy config.provider key', () => {
-    delete process.env.PAIR_REVIEW_PROVIDER;
     expect(getProvider(makeReq({ provider: 'copilot' }))).toBe('copilot');
   });
 
   it('defaults to claude when nothing is configured', () => {
-    delete process.env.PAIR_REVIEW_PROVIDER;
     expect(getProvider(makeReq({}))).toBe('claude');
     expect(getProvider(makeReq(null))).toBe('claude');
   });
 });
 
 describe('resolveProviderModel', () => {
-  const ORIGINAL_PROVIDER = process.env.PAIR_REVIEW_PROVIDER;
-  const ORIGINAL_MODEL = process.env.PAIR_REVIEW_MODEL;
-
-  function makeReq(config) {
-    return { app: { get: (key) => (key === 'config' ? config : undefined) } };
+  // The --provider/--model CLI flags reach the analyze routes via
+  // app.get('cliOverrides') — there is no PAIR_REVIEW_* env side channel.
+  function makeReq(config, cliOverrides = {}) {
+    return {
+      app: {
+        get: (key) => {
+          if (key === 'config') return config;
+          if (key === 'cliOverrides') return cliOverrides;
+          return undefined;
+        }
+      }
+    };
   }
 
-  beforeEach(() => {
-    delete process.env.PAIR_REVIEW_PROVIDER;
-    delete process.env.PAIR_REVIEW_MODEL;
-  });
-
-  afterEach(() => {
-    if (ORIGINAL_PROVIDER === undefined) delete process.env.PAIR_REVIEW_PROVIDER;
-    else process.env.PAIR_REVIEW_PROVIDER = ORIGINAL_PROVIDER;
-    if (ORIGINAL_MODEL === undefined) delete process.env.PAIR_REVIEW_MODEL;
-    else process.env.PAIR_REVIEW_MODEL = ORIGINAL_MODEL;
-  });
-
-  it('request body wins over env override, repo settings, and config', () => {
-    process.env.PAIR_REVIEW_PROVIDER = 'antigravity';
-    process.env.PAIR_REVIEW_MODEL = 'gemini-3.5-flash-low';
-    const req = makeReq({ default_provider: 'copilot', default_model: 'gpt-5' });
+  it('request body wins over CLI override, repo settings, and config', () => {
+    const req = makeReq(
+      { default_provider: 'copilot', default_model: 'gpt-5' },
+      { provider: 'antigravity', model: 'gemini-3.5-flash-low' }
+    );
     const repoSettings = { default_provider: 'codex', default_model: 'gpt-5.5' };
     const result = resolveProviderModel(req, {
       requestProvider: 'claude',
@@ -1696,23 +1674,24 @@ describe('resolveProviderModel', () => {
     expect(result).toEqual({ provider: 'claude', model: 'opus' });
   });
 
-  it('env/CLI override outranks saved repo settings (regression: repo defaults must not win)', () => {
-    process.env.PAIR_REVIEW_PROVIDER = 'codex';
-    process.env.PAIR_REVIEW_MODEL = 'gpt-5.5';
-    const req = makeReq({ default_provider: 'antigravity', default_model: 'gemini-3.5-flash-low' });
+  it('CLI flag override outranks saved repo settings (per-run intent wins)', () => {
+    const req = makeReq(
+      { default_provider: 'antigravity', default_model: 'gemini-3.5-flash-low' },
+      { provider: 'codex', model: 'gpt-5.5' }
+    );
     const repoSettings = { default_provider: 'claude', default_model: 'opus' };
     const result = resolveProviderModel(req, { repoSettings });
     expect(result).toEqual({ provider: 'codex', model: 'gpt-5.5' });
   });
 
-  it('falls back to repo settings when there is no request body and no env override', () => {
+  it('falls back to repo settings when there is no request body and no CLI override', () => {
     const req = makeReq({ default_provider: 'antigravity', default_model: 'gemini-3.5-flash-low' });
     const repoSettings = { default_provider: 'claude', default_model: 'opus' };
     const result = resolveProviderModel(req, { repoSettings });
     expect(result).toEqual({ provider: 'claude', model: 'opus' });
   });
 
-  it('falls back to config/legacy defaults when no request body, env, or repo settings', () => {
+  it('falls back to config/legacy defaults when no request body, CLI override, or repo settings', () => {
     const req = makeReq({ default_provider: 'antigravity', default_model: 'gemini-3.5-flash-low' });
     const result = resolveProviderModel(req, { repoSettings: null });
     expect(result).toEqual({ provider: 'antigravity', model: 'gemini-3.5-flash-low' });
@@ -1724,13 +1703,12 @@ describe('resolveProviderModel', () => {
     expect(resolveProviderModel(req)).toEqual({ provider: 'claude', model: 'opus' });
   });
 
-  it('resolves provider and model independently (env model + repo-settings provider)', () => {
-    process.env.PAIR_REVIEW_MODEL = 'gpt-5.5';
-    const req = makeReq({});
+  it('resolves provider and model independently (CLI-override model + repo-settings provider)', () => {
+    const req = makeReq({}, { model: 'gpt-5.5' });
     const repoSettings = { default_provider: 'codex', default_model: 'opus' };
     const result = resolveProviderModel(req, { repoSettings });
-    // provider: no request, no env → repo settings ('codex')
-    // model: env override wins over repo settings ('gpt-5.5')
+    // provider: no request, no CLI override → repo settings ('codex')
+    // model: CLI override wins over repo settings ('gpt-5.5')
     expect(result).toEqual({ provider: 'codex', model: 'gpt-5.5' });
   });
 });

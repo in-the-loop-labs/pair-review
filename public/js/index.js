@@ -1413,9 +1413,9 @@
         window.__pairReview.chatProviders = chatProviders;
         window.__pairReview.defaultProvider = config.default_provider || 'claude';
         window.__pairReview.defaultModel = config.default_model || 'opus';
-        // CLI/env override (PAIR_REVIEW_PROVIDER / PAIR_REVIEW_MODEL) surfaced
-        // by /api/config. The bulk-analysis seed prepends these ahead of repo
-        // settings so a `--provider` override outranks a repo's saved default.
+        // Per-run --provider/--model override surfaced by /api/config. The
+        // bulk-analysis seed prepends these ahead of repo settings so a
+        // `--provider` override outranks a repo's saved default.
         window.__pairReview.providerOverride = config.provider_override || null;
         window.__pairReview.modelOverride = config.model_override || null;
         window.__pairReview.hasGithubToken = Boolean(config.has_github_token);

@@ -344,12 +344,13 @@ describe('PRManager._buildDefaultAnalysisConfig', () => {
   });
 
   // ------------------------------------------------------------------
-  // CLI/env override (PAIR_REVIEW_PROVIDER via /api/config provider_override,
-  // or the single-port delegation URL). These drive the REAL auto-analyze
-  // request shape: the pair is default-filled from an env-aware source, not
-  // explicitly chosen — the path that carried the original bug.
+  // Per-run CLI override (the --provider/--model flags surfaced by /api/config
+  // as provider_override/model_override, or the single-port delegation URL).
+  // These drive the REAL auto-analyze request shape: the pair is default-filled
+  // from the override signal, not explicitly chosen — the path that carried the
+  // original bug.
   // ------------------------------------------------------------------
-  it('lets an env override (appConfig.provider_override) outrank saved repo settings', async () => {
+  it('lets a CLI flag override (appConfig.provider_override) outrank saved repo settings', async () => {
     const repoSettings = { default_provider: 'antigravity', default_model: 'pro' };
     const appConfig = {
       default_provider: 'claude',
@@ -361,7 +362,7 @@ describe('PRManager._buildDefaultAnalysisConfig', () => {
     expect(config).toEqual({ provider: 'pi', model: 'multi-model', customInstructions: null });
   });
 
-  it('derives the model from a provider-only env override', async () => {
+  it('derives the model from a provider-only CLI flag override', async () => {
     const repoSettings = { default_provider: 'claude', default_model: 'opus' };
     const appConfig = { default_provider: 'claude', default_model: 'opus', provider_override: 'antigravity' };
     const config = await manager._buildDefaultAnalysisConfig(repoSettings, {}, appConfig, PROVIDERS);
@@ -369,7 +370,7 @@ describe('PRManager._buildDefaultAnalysisConfig', () => {
     expect(config.model).toBe('gemini-3.1-pro-low');
   });
 
-  it('lets a per-invocation (delegation URL) override outrank both repo settings and env override', async () => {
+  it('lets a per-invocation (delegation URL) override outrank both repo settings and the CLI flag override', async () => {
     const repoSettings = { default_provider: 'antigravity', default_model: 'pro' };
     const appConfig = { default_provider: 'claude', default_model: 'opus', provider_override: 'claude', model_override: 'opus' };
     const urlOverride = { provider: 'pi', model: 'multi-model' };
@@ -377,7 +378,7 @@ describe('PRManager._buildDefaultAnalysisConfig', () => {
     expect(config).toEqual({ provider: 'pi', model: 'multi-model', customInstructions: null });
   });
 
-  it('bypasses a council default and forces single-provider when an env override is active', async () => {
+  it('bypasses a council default and forces single-provider when a CLI flag override is active', async () => {
     // Repo default is a council, but --provider names a single provider — the
     // override must win (council is incompatible with a single provider).
     const councilFetch = vi.fn(() => Promise.resolve({

@@ -1051,18 +1051,18 @@ async function handleLocalReview(targetPath, flags = {}) {
     const session = await setupLocalReviewSession({ db, config, repoPath, flags });
     setupComplete = true;
 
-    // Skipped when --council is set: council voices carry their own per-voice models.
-    if (flags.model && !flags.council) {
-      process.env.PAIR_REVIEW_MODEL = flags.model;
-    }
-    // Mirror --provider too so the local web/UI routes (which read
-    // PAIR_REVIEW_PROVIDER via getProvider(req)) honor it, matching --model above.
-    if (flags.provider) {
-      process.env.PAIR_REVIEW_PROVIDER = flags.provider;
-    }
+    // Per-run provider/model overrides from --provider/--model, threaded
+    // explicitly into the server (no env side channel) so the local web/UI
+    // analyze routes honor them via app.get('cliOverrides'). The model override
+    // is skipped when --council is set: council voices carry their own per-voice
+    // models. (--provider is not council-gated, matching the PR path.)
+    const cliOverrides = {
+      provider: flags.provider || undefined,
+      model: (flags.model && !flags.council) ? flags.model : undefined
+    };
 
     console.log('Starting server...');
-    const port = await startServer(db);
+    const port = await startServer(db, null, { cliOverrides });
 
     let url = `http://localhost:${port}/local/${session.sessionId}`;
     const shouldAnalyze = flags.ai || flags.council;

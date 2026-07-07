@@ -29,10 +29,9 @@
  * afterEach); no real network (the repo has an uncommitted change, so
  * detectAndBuildBranchInfo short-circuits before any GitHub lookup, and the
  * headless path never spawns a provider CLI because analyzeAllLevels is spied);
- * no fixed sleeps. PAIR_REVIEW_PROVIDER / PAIR_REVIEW_MODEL are cleared for the
- * duration of the test so the without-fix fallthrough deterministically lands on
- * the config default ('claude') rather than an ambient env override — otherwise a
- * stray `PAIR_REVIEW_PROVIDER=codex` in the runner env would mask the regression.
+ * no fixed sleeps. The headless resolver reads only the explicit `--provider` /
+ * `--model` flags (there is no env-var side channel), so the without-fix
+ * fallthrough deterministically lands on the config default ('claude').
  *
  * The council methods are spied and asserted NOT-called: this proves the
  * single-provider path was exercised (not a council), so `this.provider` is a
@@ -118,20 +117,11 @@ describe('handleHeadlessAnalysis (local mode, --provider)', () => {
   let councilVoiceSpy;
   let councilLevelSpy;
   let stdoutSpy;
-  let savedProvider;
-  let savedModel;
 
   beforeEach(() => {
     db = createTestDatabase();
     tempRepo = createTempRepoWithChanges();
     calls = [];
-
-    // Clear one-shot env overrides so the without-fix fallthrough lands on the
-    // config default ('claude'), not an ambient PAIR_REVIEW_PROVIDER value.
-    savedProvider = process.env.PAIR_REVIEW_PROVIDER;
-    savedModel = process.env.PAIR_REVIEW_MODEL;
-    delete process.env.PAIR_REVIEW_PROVIDER;
-    delete process.env.PAIR_REVIEW_MODEL;
 
     // Spy on the REAL prototype (vi.mock does not intercept CommonJS require()
     // in this project). Records this.provider and persists the run row.
@@ -151,10 +141,6 @@ describe('handleHeadlessAnalysis (local mode, --provider)', () => {
     vi.restoreAllMocks();
     closeTestDatabase(db);
     nodeFs.rmSync(tempRepo, { recursive: true, force: true });
-    if (savedProvider === undefined) delete process.env.PAIR_REVIEW_PROVIDER;
-    else process.env.PAIR_REVIEW_PROVIDER = savedProvider;
-    if (savedModel === undefined) delete process.env.PAIR_REVIEW_MODEL;
-    else process.env.PAIR_REVIEW_MODEL = savedModel;
   });
 
   it('honors --provider in local headless mode (constructs the Analyzer with the requested provider, not the default)', async () => {

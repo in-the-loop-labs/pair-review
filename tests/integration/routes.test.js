@@ -3516,48 +3516,42 @@ describe('Config Endpoints', () => {
     });
 
     // --------------------------------------------------------------------
-    // CLI/env provider override signal (PAIR_REVIEW_PROVIDER / PAIR_REVIEW_MODEL)
+    // Per-run CLI provider/model override signal (--provider / --model)
     //
-    // Exposed as a DEDICATED signal (not folded into default_provider/default_model)
-    // so the frontend can prepend it ahead of repo settings, honoring the
-    // documented `CLI/env > repo settings` contract.
+    // Threaded explicitly from the CLI entry point via app.get('cliOverrides')
+    // and exposed by /api/config as a DEDICATED signal (not folded into
+    // default_provider/default_model) so the frontend can prepend it ahead of
+    // repo settings, honoring the documented `CLI flag > repo settings` contract.
     // --------------------------------------------------------------------
     describe('provider_override / model_override', () => {
-      let savedProvider;
-      let savedModel;
+      let savedOverrides;
 
       beforeEach(() => {
-        savedProvider = process.env.PAIR_REVIEW_PROVIDER;
-        savedModel = process.env.PAIR_REVIEW_MODEL;
-        delete process.env.PAIR_REVIEW_PROVIDER;
-        delete process.env.PAIR_REVIEW_MODEL;
+        savedOverrides = app.get('cliOverrides');
+        app.set('cliOverrides', {});
       });
 
       afterEach(() => {
-        if (savedProvider === undefined) delete process.env.PAIR_REVIEW_PROVIDER;
-        else process.env.PAIR_REVIEW_PROVIDER = savedProvider;
-        if (savedModel === undefined) delete process.env.PAIR_REVIEW_MODEL;
-        else process.env.PAIR_REVIEW_MODEL = savedModel;
+        app.set('cliOverrides', savedOverrides);
       });
 
-      it('are null when no env override is set', async () => {
-        const response = await request(app).get('/api/config');
+      it('are null when no CLI override is set', async () => {
+        const response = await request(server).get('/api/config');
         expect(response.status).toBe(200);
         expect(response.body.provider_override).toBeNull();
         expect(response.body.model_override).toBeNull();
       });
 
-      it('surface PAIR_REVIEW_PROVIDER / PAIR_REVIEW_MODEL from the env', async () => {
-        process.env.PAIR_REVIEW_PROVIDER = 'codex';
-        process.env.PAIR_REVIEW_MODEL = 'gpt-5.5';
-        const response = await request(app).get('/api/config');
+      it('surface the --provider / --model override from cliOverrides', async () => {
+        app.set('cliOverrides', { provider: 'codex', model: 'gpt-5.5' });
+        const response = await request(server).get('/api/config');
         expect(response.body.provider_override).toBe('codex');
         expect(response.body.model_override).toBe('gpt-5.5');
       });
 
       it('surface a provider-only override with a null model_override', async () => {
-        process.env.PAIR_REVIEW_PROVIDER = 'codex';
-        const response = await request(app).get('/api/config');
+        app.set('cliOverrides', { provider: 'codex' });
+        const response = await request(server).get('/api/config');
         expect(response.body.provider_override).toBe('codex');
         expect(response.body.model_override).toBeNull();
       });

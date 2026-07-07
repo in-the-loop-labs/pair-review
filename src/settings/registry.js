@@ -114,8 +114,7 @@ const REGISTRY = [
     type: 'string',
     default: 'claude',
     editable: true,
-    restartRequired: false,
-    envVar: 'PAIR_REVIEW_PROVIDER'
+    restartRequired: false
   },
   {
     key: 'default_model',
@@ -125,8 +124,7 @@ const REGISTRY = [
     type: 'string',
     default: 'opus',
     editable: true,
-    restartRequired: false,
-    envVar: 'PAIR_REVIEW_MODEL'
+    restartRequired: false
   },
 
   // ---- Summaries ---------------------------------------------------------

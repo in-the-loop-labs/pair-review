@@ -513,19 +513,16 @@ pair-review supports several environment variables for customizing behavior:
 | `PAIR_REVIEW_OPENCODE_CMD` | Custom command to invoke OpenCode CLI | `opencode` |
 | `PAIR_REVIEW_CURSOR_AGENT_CMD` | Custom command to invoke Cursor Agent CLI | `agent` |
 | `PAIR_REVIEW_PI_CMD` | Custom command to invoke Pi CLI | `pi` |
-| `PAIR_REVIEW_MODEL` | Override the AI model to use (same as `--model` flag) | Provider default |
-| `PAIR_REVIEW_PROVIDER` | Override the AI provider to use (same as `--provider` flag) | `claude` |
 
 **Note:** `GITHUB_TOKEN` is the standard environment variable used by many GitHub tools (gh CLI, GitHub Actions, etc.). When set, it takes precedence over the `github_token` field in the config file.
 
-**Note:** The `--model` CLI flag is shorthand for setting `PAIR_REVIEW_MODEL`, and `--provider` is shorthand for `PAIR_REVIEW_PROVIDER`. If both the flag and env var are specified, the CLI flag takes precedence. The `--provider` flag selects which provider runs the analysis; `--model` selects the model within that provider, so set both when the model belongs to a non-default provider (e.g. `--provider codex --model gpt-5.5`). The override outranks saved repository settings (`CLI/env > repo settings`); if the repo's default is a Review Council, an active `--provider`/`--model` override forces the single-provider path instead.
+**Note:** Choose the AI provider and model with the `--provider` and `--model` CLI flags. There is no environment-variable equivalent (the provider/model env vars were removed in v5 — see the changeset for migration). The `--provider` flag selects which provider runs the analysis; `--model` selects the model within that provider, so set both when the model belongs to a non-default provider (e.g. `--provider codex --model gpt-5.5`). The flag override outranks saved repository settings (`CLI flag > repo settings`); if the repo's default is a Review Council, an active `--provider`/`--model` override forces the single-provider path instead. To set a persistent default without passing a flag every time, use the `default_provider` / `default_model` config keys or the repo/global [settings pages](#global-settings-page).
 
 **Delegation caveat:** With single-port mode (the default `single_port: true`), a new invocation delegates to an already-running server. On that path the `--provider`/`--model` override is carried to the running server only alongside browser auto-analysis (`--ai`). Delegating without `--ai` (just opening the review) does not seed the override into the other process's manual analysis dialog — use `--ai`, or a headless mode, to pin the provider on the delegated path.
 
 These variables are useful when:
 - Your CLI tools are installed in a non-standard location
 - You need to use a wrapper script or custom binary
-- You want to force a specific model for all reviews
 
 **Examples:**
 
@@ -542,14 +539,14 @@ PAIR_REVIEW_CLAUDE_CMD="devx claude" pair-review 123
 # Use a custom path for the Antigravity CLI
 PAIR_REVIEW_ANTIGRAVITY_CMD="/usr/local/bin/agy" pair-review --local
 
-# Force a specific model for this review
-PAIR_REVIEW_MODEL="opus" pair-review 123
+# Force a specific model for this review (use the --model flag)
+pair-review 123 --model opus
 
 # Force a specific provider + model for a headless review
-PAIR_REVIEW_PROVIDER="codex" PAIR_REVIEW_MODEL="gpt-5.5" pair-review 123 --ai-draft
+pair-review 123 --ai-draft --provider codex --model gpt-5.5
 
-# Combine multiple settings
-PAIR_REVIEW_CLAUDE_CMD="/opt/claude/bin/claude" PAIR_REVIEW_MODEL="haiku" pair-review 123
+# Combine a custom CLI path with a model flag
+PAIR_REVIEW_CLAUDE_CMD="/opt/claude/bin/claude" pair-review 123 --model haiku
 ```
 
 **Note:** Multi-word commands (containing spaces) are supported. The application automatically handles these by using shell mode for execution.
