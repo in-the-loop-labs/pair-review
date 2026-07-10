@@ -21,14 +21,18 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
 /**
  * Codex model definitions with tier mappings
  *
- * Based on OpenAI Codex Models guide (developers.openai.com/codex/models)
+ * Based on OpenAI's GPT-5.6 launch and Models guide
+ * (openai.com/index/gpt-5-6 and developers.openai.com/api/docs/models)
+ * - gpt-5.6-sol: Flagship frontier model for complex professional work
+ * - gpt-5.6-terra: Balances intelligence and cost for everyday work
+ * - gpt-5.6-luna: Fast, affordable model for cost-sensitive, high-volume work
  * - gpt-5.4-nano: Cheapest model ($0.20/$1.25 per MTok), good for surface scans
  * - gpt-5.4-mini: Fast with 400k context ($0.75/$4.50 per MTok)
  * - gpt-5.3-codex: Industry-leading coding model for complex engineering tasks
- * - gpt-5.4 / gpt-5.5: Exposed only via -high / -xhigh reasoning variants so the
- *   selected effort level is always explicit.
+ * - GPT-5.6, gpt-5.4, and gpt-5.5 models are exposed only through the requested
+ *   explicit reasoning-effort variants.
  *
- * Reasoning-effort variants (-high / -xhigh) use `cli_model` to pass the base
+ * Reasoning-effort variants (-high / -xhigh / -max) use `cli_model` to pass the base
  * model ID to `codex exec -m` and add `-c model_reasoning_effort="..."` via
  * extra_args so Codex picks up the effort level through its config override.
  *
@@ -36,16 +40,60 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
  */
 const CODEX_MODELS = [
   {
+    id: 'gpt-5.6-sol-high',
+    cli_model: 'gpt-5.6-sol',
+    extra_args: ['-c', 'model_reasoning_effort="high"'],
+    name: 'GPT-5.6 Sol High',
+    tier: 'thorough',
+    tagline: 'Frontier Review',
+    description: 'OpenAI flagship and best coding model yet, with high reasoning effort for demanding PR reviews, complex professional work, and cross-file analysis.',
+    badge: 'Recommended',
+    badgeClass: 'badge-recommended',
+    default: true
+  },
+  {
+    id: 'gpt-5.6-sol-xhigh',
+    cli_model: 'gpt-5.6-sol',
+    extra_args: ['-c', 'model_reasoning_effort="xhigh"'],
+    name: 'GPT-5.6 Sol XHigh',
+    tier: 'thorough',
+    tagline: 'Frontier Depth',
+    description: 'GPT-5.6 Sol with extra-high reasoning effort for difficult architectural reviews, subtle regressions, and security-sensitive changes.',
+    badge: 'Extra High',
+    badgeClass: 'badge-power'
+  },
+  {
+    id: 'gpt-5.6-terra-xhigh',
+    cli_model: 'gpt-5.6-terra',
+    extra_args: ['-c', 'model_reasoning_effort="xhigh"'],
+    name: 'GPT-5.6 Terra XHigh',
+    tier: 'balanced',
+    tagline: 'Intelligence & Value',
+    description: 'GPT-5.6 balanced model with extra-high reasoning effort, combining strong intelligence and lower cost for careful everyday PR reviews.',
+    badge: 'Best Balance',
+    badgeClass: 'badge-balanced'
+  },
+  {
+    id: 'gpt-5.6-luna-max',
+    cli_model: 'gpt-5.6-luna',
+    extra_args: ['-c', 'model_reasoning_effort="max"'],
+    name: 'GPT-5.6 Luna Max',
+    tier: 'balanced',
+    tagline: 'High-Volume Value',
+    description: 'GPT-5.6 fastest, most cost-efficient model with max reasoning effort for high-volume reviews and broad codebase scans.',
+    badge: 'Lowest Cost',
+    badgeClass: 'badge-speed'
+  },
+  {
     id: 'gpt-5.5-high',
     cli_model: 'gpt-5.5',
     extra_args: ['-c', 'model_reasoning_effort="high"'],
     name: 'GPT-5.5 High',
     tier: 'thorough',
-    tagline: 'Latest Deep',
-    description: 'Latest-generation GPT model with high reasoning effort for demanding PR reviews, strong code understanding, and careful cross-file analysis.',
-    badge: 'Recommended',
-    badgeClass: 'badge-recommended',
-    default: true
+    tagline: 'Previous Flagship',
+    description: 'Previous-generation GPT model with high reasoning effort for demanding PR reviews, strong code understanding, and careful cross-file analysis.',
+    badge: 'Previous Gen',
+    badgeClass: 'badge-power'
   },
   {
     id: 'gpt-5.5-xhigh',
@@ -122,7 +170,7 @@ class CodexProvider extends AIProvider {
    * @param {Object} configOverrides.env - Additional environment variables
    * @param {Object[]} configOverrides.models - Custom model definitions
    */
-  constructor(model = 'gpt-5.5-high', configOverrides = {}) {
+  constructor(model = 'gpt-5.6-sol-high', configOverrides = {}) {
     super(model);
 
     // Command precedence: ENV > config > default
@@ -845,7 +893,7 @@ class CodexProvider extends AIProvider {
   }
 
   static getDefaultModel() {
-    return 'gpt-5.5-high';
+    return 'gpt-5.6-sol-high';
   }
 
   static getInstallInstructions() {
