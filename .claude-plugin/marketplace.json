@@ -6,14 +6,14 @@
   },
   "metadata": {
     "description": "AI-powered code review partner - Close the feedback loop with AI coding agents",
-    "version": "4.1.0"
+    "version": "4.1.1"
   },
   "plugins": [
     {
       "name": "pair-loop",
       "source": "./plugin-pair-loop",
       "description": "Agent-orchestrated review loop — implement, review with pair-review multi-model councils via the headless CLI, triage, fix, and repeat until a final review returns no blockers. Writes triage back to a running pair-review server so the web UI stays current. No MCP required.",
-      "version": "4.1.0",
+      "version": "4.1.1",
       "author": {
         "name": "in-the-loop-labs",
         "email": "tjwp@inthelooplabs.com"
@@ -39,7 +39,7 @@
       "name": "code-critic",
       "source": "./plugin-code-critic",
       "description": "AI-powered code review analysis — Run three-level AI analysis directly in your coding agent. Works standalone, no server required.",
-      "version": "4.1.0",
+      "version": "4.1.1",
       "author": {
         "name": "in-the-loop-labs",
         "email": "tjwp@inthelooplabs.com"
@@ -64,7 +64,7 @@
       "name": "pair-review",
       "source": "./plugin",
       "description": "pair-review app integration — Open PRs and local changes in the pair-review web UI, run server-side AI analysis, and address review feedback. Includes MCP server.",
-      "version": "4.1.0",
+      "version": "4.1.1",
       "author": {
         "name": "in-the-loop-labs",
         "email": "tjwp@inthelooplabs.com"
