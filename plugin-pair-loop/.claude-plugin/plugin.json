@@ -1,6 +1,6 @@
 {
   "name": "pair-loop",
-  "version": "4.0.0",
+  "version": "4.1.1",
   "description": "Agent-orchestrated review loop — implement, review with pair-review multi-model councils via the headless CLI, triage, fix, and repeat until a final review returns no blockers. MCP-independent.",
   "author": {
     "name": "in-the-loop-labs",
