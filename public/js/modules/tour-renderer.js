@@ -13,10 +13,10 @@
  *     still render as an HTML table. The stop mounts as a
  *     `<tr class="tour-annotation-row">` inserted immediately ABOVE the
  *     anchor row.
- * Both variants carry the SAME inner `.tour-annotation` card (title,
- * description, Prev/Next lives on the TourBar, Chat-about + Show-more here)
- * and the same `data-stop-index`, so page CSS and the navigator code are
- * agnostic to which path mounted them.
+ * Both variants carry the SAME inner `.tour-annotation` card (title, full
+ * description, Chat-about button; Prev/Next lives on the TourBar) and the
+ * same `data-stop-index`, so page CSS and the navigator code are agnostic to
+ * which path mounted them.
  *
  * Responsibilities:
  *   - Resolve a stop's anchor line by (file_path, side, [line_start, line_end])
@@ -109,12 +109,6 @@ class TourRenderer {
     // PR diff. Removed in unmountAll so the user's persistent context-files
     // list isn't polluted by transient tour state.
     this._autoAddedContextFileIds = new Set();
-    // Set<number> — stop indices whose description the user has expanded
-    // via "Show more". Survives unmount/remount within the same tour
-    // session (e.g. when the user scrolls past, then back to, the stop)
-    // so the description doesn't snap back to its clamped form. Cleared
-    // when setStops replaces the tour entirely.
-    this._expandedDescriptions = new Set();
     // Cache the user's motion preference at construction so scrollIntoView
     // honors it on every navigation. Reading matchMedia each call would
     // still work; caching just avoids the lookup.
@@ -139,10 +133,6 @@ class TourRenderer {
   setStops(stops) {
     this.unmountAll();
     this._stops = Array.isArray(stops) ? stops : [];
-    // A new stops list silently remaps indices; previously-expanded entries
-    // would point at the wrong descriptions. Reset rather than carry stale
-    // state across.
-    this._expandedDescriptions.clear();
     this._activeIndex = -1;
   }
 
@@ -425,7 +415,7 @@ class TourRenderer {
     this._ensureTourStopRendererRegistered();
     const id = this._pierreAnnotationId(index);
     // Record BEFORE adding so the renderer callback (fired synchronously by
-    // addAnnotation) can resolve active-stop / expanded state for this index.
+    // addAnnotation) can resolve the active-stop state for this index.
     this._pierreMounts.set(index, { filePath, side, id, anchorLine });
     if (typeof bridge.addAnnotation === 'function') {
       bridge.addAnnotation(filePath, {
@@ -562,13 +552,6 @@ class TourRenderer {
     const row = this._buildAnnotationRow(index, stop, anchorRow);
     anchorRow.parentNode.insertBefore(row, anchorRow);
     this._mounted.set(index, row);
-
-    // Now that the row is in the live DOM, measure the description and
-    // append a "Show more" toggle if it actually overflows the clamp.
-    // Defer one frame (rAF when available, microtask in jsdom) so the
-    // browser has time to apply layout to the just-inserted node before
-    // we read `scrollHeight`. The helper is idempotent against re-mounts.
-    this._scheduleOverflowCheck(index);
     return row;
   }
 
@@ -645,8 +628,7 @@ class TourRenderer {
    * PierreBridge (once). The callback receives (data, id, fileName) and
    * returns the annotation card element the bridge slots below the anchor
    * line. It is re-invoked on every file rerender, so it rebuilds the card
-   * from CURRENT state (active-stop + expanded-description) each time and
-   * re-schedules the overflow probe.
+   * from CURRENT state (active-stop) each time.
    */
   _ensureTourStopRendererRegistered() {
     if (this._tourStopRendererRegistered) return;
@@ -657,9 +639,6 @@ class TourRenderer {
       const stop = this._stops[index];
       if (!stop) return null;
       const row = this._buildAnnotationDiv(index, stop);
-      // The element isn't in the DOM yet (the bridge slots it after this
-      // returns); defer the overflow measurement to the next frame.
-      this._scheduleOverflowCheck(index);
       return row;
     });
     this._tourStopRendererRegistered = true;
@@ -891,8 +870,8 @@ class TourRenderer {
 
   /**
    * Build the shared `.tour-annotation` card (marker + Chat button, title,
-   * clamped description, Show-more footer) used by both the legacy `<tr>` and
-   * the pierre `<div>` wrappers.
+   * full description) used by both the legacy `<tr>` and the pierre `<div>`
+   * wrappers.
    * @param {number} index
    * @param {Object} stop
    * @returns {HTMLDivElement}
@@ -939,145 +918,19 @@ class TourRenderer {
     title.className = 'tour-annotation-title';
     title.textContent = stop.title || '';
 
-    // The wrapper carries the CSS line-clamp so we can measure overflow
-    // (scrollHeight > clientHeight) on the SAME element that hosts the clamp.
-    // The inner <p> stays so existing selectors (.tour-annotation-description)
-    // — including tests and the e2e spec — keep working.
-    const descriptionWrap = document.createElement('div');
-    descriptionWrap.className = 'tour-annotation-description-wrap';
-    if (this._expandedDescriptions.has(index)) {
-      descriptionWrap.classList.add('expanded');
-    }
-
+    // Descriptions are always shown in full — they are short by design, so
+    // there is no truncation or "Show more" toggle. The prose width is capped
+    // to a readable measure in CSS (.tour-annotation-description), matching
+    // full-width comment/suggestion bodies.
     const description = document.createElement('p');
     description.className = 'tour-annotation-description';
     description.textContent = stop.description || '';
-    descriptionWrap.appendChild(description);
 
     annotation.appendChild(header);
     annotation.appendChild(title);
-    annotation.appendChild(descriptionWrap);
-
-    // Footer is reserved for the "Show more"/"Show less" toggle that the
-    // overflow check appends when the description is clamped. Empty when
-    // the description fits inline.
-    const footer = document.createElement('div');
-    footer.className = 'tour-annotation-footer';
-    annotation.appendChild(footer);
+    annotation.appendChild(description);
 
     return annotation;
-  }
-
-  /**
-   * Defer one frame, then evaluate description overflow for `index`. Real
-   * browsers need a layout pass before `scrollHeight` is meaningful on a
-   * just-inserted node; jsdom returns 0 either way, which is fine — there
-   * is no real overflow to detect.
-   *
-   * Uses `requestAnimationFrame` when present (real browsers), otherwise
-   * falls back to a 0ms timer (jsdom). Tests that want to force the
-   * overflow path can stub `scrollHeight` / `clientHeight` on the wrapper
-   * and call `_evaluateDescriptionOverflow(index)` directly without
-   * waiting for the timer.
-   *
-   * @param {number} index
-   */
-  _scheduleOverflowCheck(index) {
-    const run = () => this._evaluateDescriptionOverflow(index);
-    if (typeof requestAnimationFrame === 'function') {
-      requestAnimationFrame(run);
-    } else if (typeof setTimeout === 'function') {
-      setTimeout(run, 0);
-    } else {
-      run();
-    }
-  }
-
-  /**
-   * Synchronously read the description wrapper's overflow state and, if
-   * it overflows the line-clamp, append a "Show more" toggle to the stop's
-   * footer. Idempotent — calling it twice on the same row does NOT add
-   * two buttons.
-   *
-   * Overflow check: `scrollHeight > clientHeight + 1`. The 1px fudge
-   * dampens sub-pixel rounding noise on retina displays.
-   *
-   * Exported (as a regular method) so tests can stub scrollHeight /
-   * clientHeight on the wrapper before triggering the check, sidestepping
-   * jsdom's zero-layout default.
-   *
-   * @param {number} index
-   */
-  _evaluateDescriptionOverflow(index) {
-    const row = this._resolveRow(index);
-    if (!row || !row.isConnected) return;
-    const wrap = row.querySelector('.tour-annotation-description-wrap');
-    if (!wrap) return;
-    const footer = row.querySelector('.tour-annotation-footer');
-    if (!footer) return;
-    // Idempotency guard — re-running after a remount must not add a
-    // second button.
-    if (footer.querySelector('.tour-annotation-show-more-btn')) return;
-    // Don't show the toggle when the user already expanded this stop;
-    // the wrapper has no overflow to detect in that state.
-    if (this._expandedDescriptions.has(index)) {
-      this._appendShowMoreButton(index, row, /* expanded */ true);
-      return;
-    }
-    const overflows = wrap.scrollHeight > wrap.clientHeight + 1;
-    if (!overflows) return;
-    this._appendShowMoreButton(index, row, /* expanded */ false);
-  }
-
-  /**
-   * Build and insert the "Show more"/"Show less" button into the stop's
-   * footer. The Chat about button now lives in the header, so the footer
-   * is dedicated to the show-more toggle.
-   *
-   * @param {number} index
-   * @param {HTMLElement} row
-   * @param {boolean} expanded
-   */
-  _appendShowMoreButton(index, row, expanded) {
-    const footer = row.querySelector('.tour-annotation-footer');
-    if (!footer) return;
-    const wrap = row.querySelector('.tour-annotation-description-wrap');
-    if (!wrap) return;
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'tour-annotation-show-more-btn';
-    btn.dataset.stopIndex = String(index);
-    btn.textContent = expanded ? 'Show less' : 'Show more';
-    btn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      this._toggleDescriptionExpansion(index);
-    });
-    footer.appendChild(btn);
-  }
-
-  /**
-   * Flip the expanded state for stop `index`: toggles the wrapper's
-   * `.expanded` class and the button label. Persists the index into
-   * `_expandedDescriptions` so a remount restores the expanded state.
-   *
-   * @param {number} index
-   */
-  _toggleDescriptionExpansion(index) {
-    const row = this._resolveRow(index);
-    if (!row) return;
-    const wrap = row.querySelector('.tour-annotation-description-wrap');
-    const btn = row.querySelector('.tour-annotation-show-more-btn');
-    if (!wrap || !btn) return;
-    const willExpand = !wrap.classList.contains('expanded');
-    wrap.classList.toggle('expanded', willExpand);
-    btn.textContent = willExpand ? 'Show less' : 'Show more';
-    btn.setAttribute('aria-expanded', willExpand ? 'true' : 'false');
-    if (willExpand) {
-      this._expandedDescriptions.add(index);
-    } else {
-      this._expandedDescriptions.delete(index);
-    }
   }
 
   /**

@@ -225,16 +225,15 @@ for (const mode of MODES) {
       await expect(bar.locator('.tour-bar__progress')).toContainText('complete');
     });
 
-    test('long description shows a Show more toggle that expands and collapses', async ({ page }) => {
+    test('long description is shown in full with no Show more toggle', async ({ page }) => {
       await enableToursConfig(page);
-      // Build a stop with a deliberately long description so the
-      // line-clamp triggers the overflow probe. ~700 chars is well past
-      // what fits in the 3-line clamp at the annotation's font size.
+      // A deliberately long description: it must render in full — no
+      // truncation, line-clamp, or "Show more" toggle.
       const LONG_DESC =
         'This stop deserves a longer explanation because the surrounding code carries a lot of subtle invariants that only become visible when you read through every branch carefully and consider what would happen if a caller passes unexpected inputs. ' +
         'The reviewer should pay particular attention to the error-handling path, where a silent swallow could mask a real upstream bug. ' +
         'The change touches both the happy path and the rollback path, so make sure each is exercised by a test before approving. ' +
-        'Extra context follows so the description actually overflows the three-line clamp regardless of viewport width.';
+        'Extra context follows so the description is unmistakably longer than three lines at any viewport width.';
       const longStops = [
         {
           ...FIXED_STOPS[0],
@@ -245,6 +244,10 @@ for (const mode of MODES) {
       ];
       await mockTourEndpoint(page, longStops);
 
+      // A wide viewport so the diff column is comfortably wider than the
+      // capped prose measure — that gap is what the width assertions below
+      // discriminate on.
+      await page.setViewportSize({ width: 1600, height: 900 });
       await page.goto(mode.path);
       await waitForDiffToRender(page);
       await page.locator('#tour-toggle-btn').click();
@@ -252,24 +255,36 @@ for (const mode of MODES) {
       const stopRow = page.locator('.tour-annotation-row[data-stop-index="0"]');
       await expect(stopRow).toBeVisible();
 
-      const wrap = stopRow.locator('.tour-annotation-description-wrap');
-      const btn = stopRow.locator('.tour-annotation-show-more-btn');
+      const card = stopRow.locator('.tour-annotation');
+      const description = stopRow.locator('.tour-annotation-description');
+      await expect(description).toBeVisible();
+      // Full text is present verbatim.
+      await expect(description).toHaveText(LONG_DESC);
 
-      // The overflow probe runs on the next rAF after mount; allow Playwright's
-      // auto-waiting to find the button once it appears.
-      await expect(btn).toBeVisible();
-      await expect(btn).toHaveText('Show more');
-      await expect(wrap).not.toHaveClass(/expanded/);
+      // None of the old truncation machinery exists.
+      await expect(stopRow.locator('.tour-annotation-show-more-btn')).toHaveCount(0);
+      await expect(stopRow.locator('.tour-annotation-description-wrap')).toHaveCount(0);
 
-      // Expand.
-      await btn.click();
-      await expect(wrap).toHaveClass(/expanded/);
-      await expect(btn).toHaveText('Show less');
+      // The description is not clamped: its rendered height must exceed a
+      // single line, proving the full multi-line text is laid out.
+      const scrollH = await description.evaluate((el) => el.scrollHeight);
+      const clientH = await description.evaluate((el) => el.clientHeight);
+      expect(clientH).toBeGreaterThan(40); // several lines tall
+      expect(scrollH).toBeLessThanOrEqual(clientH + 1); // nothing hidden by overflow
 
-      // Collapse again.
-      await btn.click();
-      await expect(wrap).not.toHaveClass(/expanded/);
-      await expect(btn).toHaveText('Show more');
+      // Primary objective: the CARD spans the diff width while only the PROSE
+      // stays capped. Measure both. A regression that re-caps the whole card
+      // to the prose measure (the pre-change behavior) would collapse the
+      // card down to ~description width and fail these.
+      const cardW = await card.evaluate((el) => el.getBoundingClientRect().width);
+      const rowW = await stopRow.evaluate((el) => el.getBoundingClientRect().width);
+      const descW = await description.evaluate((el) => el.getBoundingClientRect().width);
+      // Card fills (most of) its row — it is NOT narrowed to a prose measure.
+      expect(cardW).toBeGreaterThan(rowW * 0.8);
+      // And the capped prose is meaningfully narrower than the wide card
+      // (padding alone is ~28px; require a real gap so an 80ch-wide card
+      // regression, where card ≈ prose, cannot pass).
+      expect(cardW - descW).toBeGreaterThan(120);
     });
 
     test('Escape exits the tour and restores normal view', async ({ page }) => {

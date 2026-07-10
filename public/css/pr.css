@@ -13180,9 +13180,10 @@ body.summaries-hidden .hunk-summary-row,
   border: 1px solid rgba(212, 167, 44, 0.55);
   border-left: 3px solid #d4a72c;
   border-radius: var(--radius-md, 6px);
-  /* Viewport overflow guard + readable prose measure on wide displays
-     (centered banner, matching .hunk-summary-annotation). */
-  max-width: min(calc(100vw - var(--sidebar-width, 0px) - var(--right-panel-group-width, 0px) - 64px), var(--annotation-prose-max, 80ch));
+  /* Span the available diff width, matching full-width comments/suggestions;
+     only the description prose below is capped to a readable measure. The
+     viewport guard keeps the card from overrunning the sidebar/right panel. */
+  max-width: calc(100vw - var(--sidebar-width, 0px) - var(--right-panel-group-width, 0px) - 64px);
   box-sizing: border-box;
   word-break: break-word;
   transition: box-shadow var(--transition-fast, 0.1s ease),
@@ -13229,84 +13230,17 @@ body.summaries-hidden .hunk-summary-row,
   line-height: 1.3;
 }
 
+/* The description is always shown in full — stops are short by design, so
+   there is no line-clamp or "Show more" toggle. The card spans the diff
+   width; capping the prose here (not the card) keeps it at a readable
+   measure, matching full-width comment/suggestion bodies. */
 .tour-annotation-description {
   margin: 0;
+  max-width: min(100%, var(--annotation-prose-max, 80ch));
   font-size: 13px;
   font-weight: 400;
   line-height: 1.45;
   opacity: 0.95;
-}
-
-/* Wrap around the description <p>. Collapsed state uses the WebKit
-   line-clamp triplet to cap visible content at ~3 lines; expanded state
-   removes the clamp so the full description shows. The wrapper (not the
-   inner <p>) carries the clamp so the JS overflow check has a stable
-   element to measure (`scrollHeight > clientHeight`). */
-.tour-annotation-description-wrap {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
-  line-clamp: 3;
-  overflow: hidden;
-}
-
-.tour-annotation-description-wrap.expanded {
-  display: block;
-  -webkit-line-clamp: unset;
-  line-clamp: unset;
-  overflow: visible;
-}
-
-/* Footer holds only the "Show more"/"Show less" toggle when the
-   description overflows the line-clamp; otherwise it's an empty stub.
-   Chat about lives in the header now. */
-.tour-annotation-footer {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 4px;
-}
-
-.tour-annotation-footer:empty {
-  display: none;
-}
-
-/* "Show more" / "Show less" toggle. Styled as a borderless amber link
-   button so it reads as part of the tour annotation but doesn't compete
-   with the primary Chat about action. */
-.tour-annotation-show-more-btn {
-  appearance: none;
-  background: none;
-  border: 0;
-  padding: 2px 4px;
-  margin: 0;
-  font: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  color: #7d5700;
-  cursor: pointer;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  border-radius: var(--radius-sm, 3px);
-}
-
-.tour-annotation-show-more-btn:hover {
-  color: #5b3f00;
-  background: rgba(255, 255, 255, 0.45);
-}
-
-.tour-annotation-show-more-btn:focus-visible {
-  outline: 2px solid #d4a72c;
-  outline-offset: 1px;
-}
-
-[data-theme="dark"] .tour-annotation-show-more-btn {
-  color: #e3b341;
-}
-
-[data-theme="dark"] .tour-annotation-show-more-btn:hover {
-  color: #f3c861;
-  background: rgba(187, 128, 9, 0.18);
 }
 
 /* The chat button on a tour-stop annotation reuses .ai-action / .ai-action-chat
