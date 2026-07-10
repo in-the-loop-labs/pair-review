@@ -1,5 +1,11 @@
 # Changelog
 
+## 4.1.1
+
+### Patch Changes
+
+- e74a3c0: Add GPT-5.6 Sol, Terra, and Luna reasoning-effort variants to the Codex provider model picker.
+
 ## 4.1.0
 
 ### Minor Changes
