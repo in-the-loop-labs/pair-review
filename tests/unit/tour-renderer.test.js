@@ -888,118 +888,48 @@ describe('TourRenderer', () => {
   // removed so the user can toggle each independently.
   // ----------------------------------------------------------------------
   // ----------------------------------------------------------------------
-  // "Show more" / "Show less" toggle for long descriptions.
-  //
-  // jsdom returns 0 for both scrollHeight and clientHeight (no layout
-  // engine), so the overflow check always returns false there. To force
-  // the overflow path in tests we stub `scrollHeight` / `clientHeight`
-  // on the wrapper element via `Object.defineProperty`, then call
-  // `_evaluateDescriptionOverflow` directly (bypassing the rAF defer
-  // that mountStop normally uses to wait for browser layout).
+  // Descriptions are always shown in full. There is no truncation, no
+  // line-clamp wrapper, and no "Show more" toggle — stops are short by
+  // design, so the full text renders inline. (The prose width is capped in
+  // CSS to a readable measure; that is not observable in jsdom.)
   // ----------------------------------------------------------------------
-  describe('show more / show less toggle', () => {
-    async function mountWithOverflow({ overflow, expanded } = { overflow: true }) {
-      buildDiff();
-      renderer.setStops([makeStop({ line_start: 11, description: 'long desc' })]);
-      if (expanded) {
-        renderer._expandedDescriptions.add(0);
-      }
-      const row = await renderer.mountStop(0);
-      const wrap = row.querySelector('.tour-annotation-description-wrap');
-      // Stub overflow geometry. jsdom returns 0 for both by default —
-      // defineProperty is the standard escape hatch for this exact case.
-      Object.defineProperty(wrap, 'scrollHeight', {
-        configurable: true,
-        value: overflow ? 200 : 30,
-      });
-      Object.defineProperty(wrap, 'clientHeight', {
-        configurable: true,
-        value: 60,
-      });
-      // Evaluate synchronously so we don't have to wait for the rAF
-      // scheduled inside mountStop.
-      renderer._evaluateDescriptionOverflow(0);
-      return { row, wrap };
-    }
+  describe('description always shows in full', () => {
+    const LONG_DESC =
+      'This stop deserves a longer explanation because the surrounding code ' +
+      'carries a lot of subtle invariants that only become visible when you ' +
+      'read through every branch carefully and consider unexpected inputs. ' +
+      'The reviewer should pay particular attention to the error-handling ' +
+      'path, where a silent swallow could mask a real upstream bug.';
 
-    it('wraps the description in a clamp container', async () => {
+    it('renders the full description text with no clamp wrapper', async () => {
       buildDiff();
-      renderer.setStops([makeStop({ line_start: 11 })]);
+      renderer.setStops([makeStop({ line_start: 11, description: LONG_DESC })]);
       const row = await renderer.mountStop(0);
-      const wrap = row.querySelector('.tour-annotation-description-wrap');
-      expect(wrap).toBeTruthy();
-      // Description <p> still exists inside the wrap for backwards
-      // compatibility with existing selectors.
-      const p = wrap.querySelector('.tour-annotation-description');
+      const p = row.querySelector('.tour-annotation-description');
       expect(p).toBeTruthy();
+      // Full text, verbatim — no truncation.
+      expect(p.textContent).toBe(LONG_DESC);
+      // The old clamp wrapper is gone; the <p> is a direct child of the card.
+      expect(row.querySelector('.tour-annotation-description-wrap')).toBeNull();
+      expect(p.parentElement.classList.contains('tour-annotation')).toBe(true);
     });
 
-    it('does NOT render a Show more button when the description fits', async () => {
-      const { row } = await mountWithOverflow({ overflow: false });
+    it('never renders a Show more button, even for a long description', async () => {
+      buildDiff();
+      renderer.setStops([makeStop({ line_start: 11, description: LONG_DESC })]);
+      const row = await renderer.mountStop(0);
       expect(row.querySelector('.tour-annotation-show-more-btn')).toBeNull();
+      // No leftover footer stub either.
+      expect(row.querySelector('.tour-annotation-footer')).toBeNull();
     });
 
-    it('renders a Show more button when the description overflows', async () => {
-      const { row } = await mountWithOverflow({ overflow: true });
-      const btn = row.querySelector('.tour-annotation-show-more-btn');
-      expect(btn).toBeTruthy();
-      expect(btn.textContent).toBe('Show more');
-      expect(btn.getAttribute('aria-expanded')).toBe('false');
-    });
-
-    it('clicking Show more flips to Show less and adds .expanded', async () => {
-      const { row, wrap } = await mountWithOverflow({ overflow: true });
-      const btn = row.querySelector('.tour-annotation-show-more-btn');
-      btn.click();
-      expect(wrap.classList.contains('expanded')).toBe(true);
-      expect(btn.textContent).toBe('Show less');
-      expect(btn.getAttribute('aria-expanded')).toBe('true');
-    });
-
-    it('clicking Show less reverses the expansion', async () => {
-      const { row, wrap } = await mountWithOverflow({ overflow: true });
-      const btn = row.querySelector('.tour-annotation-show-more-btn');
-      btn.click();
-      btn.click();
-      expect(wrap.classList.contains('expanded')).toBe(false);
-      expect(btn.textContent).toBe('Show more');
-      expect(btn.getAttribute('aria-expanded')).toBe('false');
-    });
-
-    it('a remount preserves the expanded state for the same stop index', async () => {
-      // First mount: expand.
-      const first = await mountWithOverflow({ overflow: true });
-      first.row.querySelector('.tour-annotation-show-more-btn').click();
-      expect(renderer._expandedDescriptions.has(0)).toBe(true);
-
-      // Unmount and re-mount the same index.
-      renderer.unmountStop(0);
-      const row2 = await renderer.mountStop(0);
-      const wrap2 = row2.querySelector('.tour-annotation-description-wrap');
-      // The wrap should be in expanded state immediately on re-mount
-      // (no need to wait for the overflow probe to fire).
-      expect(wrap2.classList.contains('expanded')).toBe(true);
-      // And calling the evaluator should append the toggle in its
-      // "Show less" form, not Show more.
-      renderer._evaluateDescriptionOverflow(0);
-      const btn2 = row2.querySelector('.tour-annotation-show-more-btn');
-      expect(btn2).toBeTruthy();
-      expect(btn2.textContent).toBe('Show less');
-    });
-
-    it('setStops resets _expandedDescriptions (indices remap to new stops)', async () => {
-      await mountWithOverflow({ overflow: true });
-      renderer._toggleDescriptionExpansion(0);
-      expect(renderer._expandedDescriptions.size).toBe(1);
-      renderer.setStops([makeStop({ line_start: 12 })]);
-      expect(renderer._expandedDescriptions.size).toBe(0);
-    });
-
-    it('overflow evaluation is idempotent (no duplicate buttons on re-call)', async () => {
-      const { row } = await mountWithOverflow({ overflow: true });
-      renderer._evaluateDescriptionOverflow(0);
-      renderer._evaluateDescriptionOverflow(0);
-      expect(row.querySelectorAll('.tour-annotation-show-more-btn')).toHaveLength(1);
+    it('drops the overflow/expansion machinery entirely', () => {
+      // These methods and state were removed with the Show-more feature.
+      expect(renderer._expandedDescriptions).toBeUndefined();
+      expect(renderer._evaluateDescriptionOverflow).toBeUndefined();
+      expect(renderer._appendShowMoreButton).toBeUndefined();
+      expect(renderer._toggleDescriptionExpansion).toBeUndefined();
+      expect(renderer._scheduleOverflowCheck).toBeUndefined();
     });
   });
 
@@ -1142,6 +1072,34 @@ describe('TourRenderer — pierre-rendered files (annotation path)', () => {
     // Tracked as a pierre mount, not a legacy one.
     expect(r._pierreMounts.has(0)).toBe(true);
     expect(r._pierreMounts.get(0).id).toBe('tour-stop-0');
+  });
+
+  it('renders the full description with no clamp/footer/Show-more on the pierre path', async () => {
+    // Parity insurance: `_buildAnnotationInner` is shared, but assert the
+    // pierre-slotted card directly so a future pierre-specific divergence
+    // (or a regression of the removed truncation DOM) is caught here too.
+    const LONG_DESC =
+      'A deliberately long description that would once have been clamped to ' +
+      'three lines and hidden behind a Show more toggle; it must now render ' +
+      'in full inside the pierre-slotted annotation card, verbatim.';
+    const { bridge, container } = makePierreEnv({ visibleLines: ['RIGHT:11'] });
+    const r = new TourRenderer({ pierreBridge: bridge, _tourGen: 1 });
+    r.setStops([
+      makeStop({ file_path: 'src/pierre.js', line_start: 11, line_end: 11, description: LONG_DESC }),
+    ]);
+
+    const row = await r.mountStop(0);
+    const p = row.querySelector('.tour-annotation-description');
+    expect(p).toBeTruthy();
+    expect(p.textContent).toBe(LONG_DESC);
+    // The <p> is a direct child of the card — no clamp wrapper in between.
+    expect(p.parentElement.classList.contains('tour-annotation')).toBe(true);
+    // None of the removed truncation DOM exists on the pierre card.
+    expect(row.querySelector('.tour-annotation-description-wrap')).toBeNull();
+    expect(row.querySelector('.tour-annotation-footer')).toBeNull();
+    expect(row.querySelector('.tour-annotation-show-more-btn')).toBeNull();
+    // The slotted element in the container is the same, fully-expanded card.
+    expect(container.querySelector('.tour-annotation-show-more-btn')).toBeNull();
   });
 
   it('anchors at line_end, scanning back through the range to the first visible line', async () => {
