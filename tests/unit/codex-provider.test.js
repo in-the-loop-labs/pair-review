@@ -53,23 +53,27 @@ describe('CodexProvider', () => {
       expect(CodexProvider.getProviderId()).toBe('codex');
     });
 
-    it('should return gpt-5.5-high as default model', () => {
-      expect(CodexProvider.getDefaultModel()).toBe('gpt-5.5-high');
+    it('should return gpt-5.6-sol-high as default model', () => {
+      expect(CodexProvider.getDefaultModel()).toBe('gpt-5.6-sol-high');
     });
 
     it('should return array of models with expected structure', () => {
       const models = CodexProvider.getModels();
       expect(Array.isArray(models)).toBe(true);
-      expect(models.length).toBe(7);
+      expect(models.length).toBe(11);
 
       // Check that we have the expected model IDs
       const modelIds = models.map(m => m.id);
       expect(modelIds.slice(0, 4)).toEqual([
-        'gpt-5.5-high',
-        'gpt-5.5-xhigh',
-        'gpt-5.4-high',
-        'gpt-5.4-xhigh',
+        'gpt-5.6-sol-high',
+        'gpt-5.6-sol-xhigh',
+        'gpt-5.6-terra-xhigh',
+        'gpt-5.6-luna-max'
       ]);
+      expect(modelIds).toContain('gpt-5.6-sol-high');
+      expect(modelIds).toContain('gpt-5.6-sol-xhigh');
+      expect(modelIds).toContain('gpt-5.6-terra-xhigh');
+      expect(modelIds).toContain('gpt-5.6-luna-max');
       expect(modelIds).toContain('gpt-5.4-nano');
       expect(modelIds).toContain('gpt-5.4-mini');
       expect(modelIds).toContain('gpt-5.3-codex');
@@ -77,22 +81,25 @@ describe('CodexProvider', () => {
       expect(modelIds).toContain('gpt-5.4-xhigh');
       expect(modelIds).toContain('gpt-5.5-high');
       expect(modelIds).toContain('gpt-5.5-xhigh');
-      // Bare gpt-5.4 / gpt-5.5 (unspecified reasoning effort) are not
-      // exposed as picker entries — users pick an explicit -high / -xhigh
-      // variant. `gpt-5.4` is kept as an alias of gpt-5.4-high so previously
+      // Bare GPT-5.6 / gpt-5.4 / gpt-5.5 (unspecified reasoning effort) are not
+      // exposed as picker entries — users pick an explicit reasoning variant
+      // instead. `gpt-5.4` is kept as an alias of gpt-5.4-high so previously
       // saved results/councils still resolve.
       expect(modelIds).not.toContain('gpt-5.4');
       expect(modelIds).not.toContain('gpt-5.5');
+      expect(modelIds).not.toContain('gpt-5.6-sol');
+      expect(modelIds).not.toContain('gpt-5.6-terra');
+      expect(modelIds).not.toContain('gpt-5.6-luna');
 
       const high54 = models.find(m => m.id === 'gpt-5.4-high');
       expect(high54.aliases).toContain('gpt-5.4');
       expect(high54.badge).toBe('Previous Gen');
 
-      // Check model structure — default is now gpt-5.5-high (explicit reasoning)
+      // Check model structure — default is GPT-5.6 Sol with explicit high reasoning
       const defaultModel = models.find(m => m.default === true);
       expect(defaultModel).toMatchObject({
-        id: 'gpt-5.5-high',
-        name: 'GPT-5.5 High',
+        id: 'gpt-5.6-sol-high',
+        name: 'GPT-5.6 Sol High',
         tier: 'thorough',
         default: true
       });
@@ -103,17 +110,21 @@ describe('CodexProvider', () => {
     it('reasoning-effort variants should declare cli_model and -c reasoning effort', () => {
       const models = CodexProvider.getModels();
       const variants = [
-        { id: 'gpt-5.4-high', cliModel: 'gpt-5.4', effort: 'high' },
-        { id: 'gpt-5.4-xhigh', cliModel: 'gpt-5.4', effort: 'xhigh' },
-        { id: 'gpt-5.5-high', cliModel: 'gpt-5.5', effort: 'high' },
-        { id: 'gpt-5.5-xhigh', cliModel: 'gpt-5.5', effort: 'xhigh' }
+        { id: 'gpt-5.6-sol-high', cliModel: 'gpt-5.6-sol', effort: 'high', tier: 'thorough' },
+        { id: 'gpt-5.6-sol-xhigh', cliModel: 'gpt-5.6-sol', effort: 'xhigh', tier: 'thorough' },
+        { id: 'gpt-5.6-terra-xhigh', cliModel: 'gpt-5.6-terra', effort: 'xhigh', tier: 'balanced' },
+        { id: 'gpt-5.6-luna-max', cliModel: 'gpt-5.6-luna', effort: 'max', tier: 'balanced' },
+        { id: 'gpt-5.4-high', cliModel: 'gpt-5.4', effort: 'high', tier: 'thorough' },
+        { id: 'gpt-5.4-xhigh', cliModel: 'gpt-5.4', effort: 'xhigh', tier: 'thorough' },
+        { id: 'gpt-5.5-high', cliModel: 'gpt-5.5', effort: 'high', tier: 'thorough' },
+        { id: 'gpt-5.5-xhigh', cliModel: 'gpt-5.5', effort: 'xhigh', tier: 'thorough' }
       ];
       for (const v of variants) {
         const model = models.find(m => m.id === v.id);
         expect(model, `missing model ${v.id}`).toBeDefined();
         expect(model.cli_model).toBe(v.cliModel);
         expect(model.extra_args).toEqual(['-c', `model_reasoning_effort="${v.effort}"`]);
-        expect(model.tier).toBe('thorough');
+        expect(model.tier).toBe(v.tier);
       }
     });
 
@@ -127,7 +138,7 @@ describe('CodexProvider', () => {
   describe('constructor', () => {
     it('should create instance with default model', () => {
       const provider = new CodexProvider();
-      expect(provider.model).toBe('gpt-5.5-high');
+      expect(provider.model).toBe('gpt-5.6-sol-high');
     });
 
     it('should create instance with specified model', () => {
@@ -230,6 +241,19 @@ describe('CodexProvider', () => {
         const mIdx = provider.args.indexOf('-m');
         expect(provider.args[mIdx + 1]).toBe('gpt-5.5');
         expect(provider.args).toContain('model_reasoning_effort="xhigh"');
+      });
+
+      it.each([
+        ['gpt-5.6-sol-high', 'gpt-5.6-sol', 'high'],
+        ['gpt-5.6-sol-xhigh', 'gpt-5.6-sol', 'xhigh'],
+        ['gpt-5.6-terra-xhigh', 'gpt-5.6-terra', 'xhigh'],
+        ['gpt-5.6-luna-max', 'gpt-5.6-luna', 'max']
+      ])('should resolve %s to base model %s with %s reasoning effort', (modelId, cliModel, effort) => {
+        const provider = new CodexProvider(modelId);
+        const mIdx = provider.args.indexOf('-m');
+        expect(provider.args[mIdx + 1]).toBe(cliModel);
+        expect(provider.args).not.toContain(modelId);
+        expect(provider.args).toContain(`model_reasoning_effort="${effort}"`);
       });
 
       it('should place stdin marker `-` AFTER reasoning extra_args in non-shell mode', () => {
