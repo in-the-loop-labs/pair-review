@@ -46,6 +46,7 @@ function buildChatPrompt({ review, prData, chatInstructions, commentFormatTempla
     '- **Suggestions** are AI-generated findings from analysis runs.',
     '- **Workflow**: AI generates suggestions → reviewer triages (adopt, edit, or dismiss) → adopted suggestions become comments.',
     '- **IMPORTANT**: Do NOT adopt, dismiss, or modify suggestions or comments unless the user explicitly asks you to. Your role is to discuss and explain — the reviewer decides what action to take.',
+    '- When you DO dismiss a suggestion (only after the user asks), include a `reason` field on the status request with a one-sentence summary of why, grounded in the discussion (e.g. reason: "User confirmed the behavior is intentional").',
     '- **Analysis runs** are the process that produces suggestions. Each run has a provider, model, tier, and status.',
     '- **Review ID** is a stable integer identifying this review session, used in all API calls.',
     '- **IMPORTANT**: Never mention internal IDs (comment IDs, suggestion IDs, run IDs) in your responses to the user. These are meaningless to the user and not shown in the UI. Refer to comments and suggestions by their content, title, file location, or line number instead.'
@@ -206,7 +207,7 @@ function parseReasoning(reasoning) {
  * @returns {Object} Formatted suggestion
  */
 function formatSuggestionForContext(s) {
-  return {
+  const formatted = {
     id: s.id,
     file: s.file,
     line_start: s.line_start,
@@ -219,6 +220,12 @@ function formatSuggestionForContext(s) {
     ai_confidence: s.ai_confidence,
     is_file_level: s.is_file_level
   };
+  // Include the dismissal reason when present so the agent sees WHY a
+  // suggestion was already dismissed (e.g. by a prior pair-loop write-back).
+  if (s.status_reason) {
+    formatted.status_reason = s.status_reason;
+  }
+  return formatted;
 }
 
 /**

@@ -6657,7 +6657,7 @@ class PRManager {
 
   /**
    * Collapse a suggestion div in the UI after adoption.
-   * Handles adding collapsed class, updating text to 'Suggestion adopted',
+   * Handles adding collapsed class, setting the 'Adopted' state tooltip,
    * updating the restore button, and setting hiddenForAdoption flag.
    *
    * With legacy rendering, `suggestionRow` is the `<tr>` containing the
@@ -6673,8 +6673,7 @@ class PRManager {
       : document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
     if (!targetDiv) return;
     targetDiv.classList.add('collapsed');
-    const collapsedContent = targetDiv.querySelector('.collapsed-text');
-    if (collapsedContent) collapsedContent.textContent = 'Suggestion adopted';
+    window.SuggestionUI?.setCollapsedStateTooltip?.(targetDiv, 'Adopted');
     const restoreButton = targetDiv.querySelector('.btn-restore');
     if (restoreButton) {
       restoreButton.title = 'Show suggestion';
@@ -6996,8 +6995,11 @@ class PRManager {
       // If this suggestion was adopted, only toggle visibility - don't change status
       // The adoption still exists (there's a user comment linked to this suggestion)
       if (suggestionDiv?.dataset?.hiddenForAdoption === 'true') {
-        // suggestionDiv is guaranteed to exist since we just queried for it
+        // suggestionDiv is guaranteed to exist since we just queried for it.
+        // The suggestion stays adopted here; we only re-hide it, so the
+        // collapsed-bar tooltip keeps reading 'Adopted'.
         suggestionDiv.classList.add('collapsed');
+        window.SuggestionUI?.setCollapsedStateTooltip?.(suggestionDiv, 'Adopted');
 
         const button = suggestionDiv.querySelector('.btn-restore');
         if (button) {
@@ -7018,6 +7020,7 @@ class PRManager {
 
       if (suggestionDiv) {
         suggestionDiv.classList.add('collapsed');
+        window.SuggestionUI?.setCollapsedStateTooltip?.(suggestionDiv, 'Dismissed');
         const restoreButton = suggestionDiv.querySelector('.btn-restore');
         if (restoreButton) {
           restoreButton.title = 'Show suggestion';
@@ -7063,11 +7066,13 @@ class PRManager {
 
         // Find the button within this specific suggestion div, not the first one in the row
         const button = suggestionDiv.querySelector('.btn-restore');
+        const isNowCollapsed = suggestionDiv.classList.contains('collapsed');
         if (button) {
-          const isNowCollapsed = suggestionDiv.classList.contains('collapsed');
           button.title = isNowCollapsed ? 'Show suggestion' : 'Hide suggestion';
           button.querySelector('.btn-text').textContent = isNowCollapsed ? 'Show' : 'Hide';
         }
+        // Still adopted; keep the 'Adopted' tooltip only while re-hidden.
+        window.SuggestionUI?.setCollapsedStateTooltip?.(suggestionDiv, isNowCollapsed ? 'Adopted' : '');
         return;
       }
 
@@ -7081,6 +7086,12 @@ class PRManager {
 
       if (suggestionDiv) {
         suggestionDiv.classList.remove('collapsed');
+        // Restored to active — clear the collapsed-bar state tooltip.
+        window.SuggestionUI?.setCollapsedStateTooltip?.(suggestionDiv, '');
+        // Strip stale dismissal-reason markup (note + popover attr/brain button)
+        // baked in while dismissed; same-tab broadcasts are suppressed so no
+        // refetch rescues this card.
+        window.SuggestionUI?.clearDismissalReasonUI?.(suggestionDiv);
       }
 
       if (this.suggestionNavigator?.suggestions) {

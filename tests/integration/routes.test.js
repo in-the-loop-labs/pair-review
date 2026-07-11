@@ -1887,6 +1887,20 @@ describe('AI Suggestion Endpoints', () => {
       expect(response.body.suggestions[0].type).toBe('improvement');
     });
 
+    it('should include status_reason in the response', async () => {
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, type, title, body, status, status_reason, ai_run_id)
+        VALUES (?, 'ai', 'file.js', 10, 'improvement', 'Dismissed one', 'body', 'dismissed', 'Out of scope', 'test-run-reason')
+      `, [prId]);
+
+      const response = await request(server)
+        .get(`/api/reviews/${prId}/suggestions`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.suggestions.length).toBe(1);
+      expect(response.body.suggestions[0]).toHaveProperty('status_reason', 'Out of scope');
+    });
+
     it('should return formattedBody for each suggestion', async () => {
       await run(db, `
         INSERT INTO comments (review_id, source, file, line_start, type, title, body, suggestion_text, status, ai_run_id)
@@ -2326,6 +2340,100 @@ describe('AI Suggestion Endpoints', () => {
       const suggestion = await queryOne(db, 'SELECT status, adopted_as_id FROM comments WHERE id = ?', [suggestionId]);
       expect(suggestion.status).toBe('active');
       expect(suggestion.adopted_as_id).toBeNull();
+    });
+
+    it('should dismiss with a reason and persist status_reason', async () => {
+      const { lastID } = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, 'ai', 'file.js', 10, 'Suggestion', 'active')
+      `, [prId]);
+
+      const response = await request(server)
+        .post(`/api/reviews/${prId}/suggestions/${lastID}/status`)
+        .send({ status: 'dismissed', reason: '  Not applicable to this file  ' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.status).toBe('dismissed');
+      // Response echoes the trimmed reason
+      expect(response.body.status_reason).toBe('Not applicable to this file');
+
+      const suggestion = await queryOne(db, 'SELECT status, status_reason FROM comments WHERE id = ?', [lastID]);
+      expect(suggestion.status).toBe('dismissed');
+      expect(suggestion.status_reason).toBe('Not applicable to this file');
+    });
+
+    it('should return 400 when a reason is provided with status active', async () => {
+      const { lastID } = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, 'ai', 'file.js', 10, 'Suggestion', 'dismissed')
+      `, [prId]);
+
+      const response = await request(server)
+        .post(`/api/reviews/${prId}/suggestions/${lastID}/status`)
+        .send({ status: 'active', reason: 'should not be allowed' });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('reason');
+
+      // Status unchanged
+      const suggestion = await queryOne(db, 'SELECT status FROM comments WHERE id = ?', [lastID]);
+      expect(suggestion.status).toBe('dismissed');
+    });
+
+    it('should return 400 when reason exceeds the max length', async () => {
+      const { lastID } = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, 'ai', 'file.js', 10, 'Suggestion', 'active')
+      `, [prId]);
+
+      const response = await request(server)
+        .post(`/api/reviews/${prId}/suggestions/${lastID}/status`)
+        .send({ status: 'dismissed', reason: 'x'.repeat(2001) });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('2000');
+
+      // Status unchanged (validation rejected before the update)
+      const suggestion = await queryOne(db, 'SELECT status, status_reason FROM comments WHERE id = ?', [lastID]);
+      expect(suggestion.status).toBe('active');
+      expect(suggestion.status_reason).toBeNull();
+    });
+
+    it('should store null when the reason is empty after trimming', async () => {
+      const { lastID } = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, 'ai', 'file.js', 10, 'Suggestion', 'active')
+      `, [prId]);
+
+      const response = await request(server)
+        .post(`/api/reviews/${prId}/suggestions/${lastID}/status`)
+        .send({ status: 'dismissed', reason: '   ' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.status_reason).toBeNull();
+
+      const suggestion = await queryOne(db, 'SELECT status, status_reason FROM comments WHERE id = ?', [lastID]);
+      expect(suggestion.status).toBe('dismissed');
+      expect(suggestion.status_reason).toBeNull();
+    });
+
+    it('should clear a previously stored reason when restoring to active', async () => {
+      const { lastID } = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status, status_reason)
+        VALUES (?, 'ai', 'file.js', 10, 'Suggestion', 'dismissed', 'Was dismissed earlier')
+      `, [prId]);
+
+      const response = await request(server)
+        .post(`/api/reviews/${prId}/suggestions/${lastID}/status`)
+        .send({ status: 'active' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.status_reason).toBeNull();
+
+      const suggestion = await queryOne(db, 'SELECT status, status_reason FROM comments WHERE id = ?', [lastID]);
+      expect(suggestion.status).toBe('active');
+      expect(suggestion.status_reason).toBeNull();
     });
   });
 
