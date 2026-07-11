@@ -162,11 +162,12 @@ curl -s -X POST http://localhost:<port>/api/reviews/<run.review_id>/suggestions/
 
 - Only `"dismissed"` and `"active"` are accepted; `"adopted"` is reserved
   for the human's adopt flow — never send it.
-- Newer servers accept a `reason` field on this endpoint (check
-  `http://localhost:<port>/api.md?reviewId=<reviewId>` if unsure); when
-  supported, include it: `"Fixed in loop round <n>: ..."` or
-  `"Dismissed: <why>"`. Otherwise the fixed-vs-rejected distinction lives in
-  your round log and final report.
+- Current servers accept a `reason` field on this endpoint — include it:
+  `"Fixed in loop round <n>: ..."` or `"Dismissed: <why>"`. Older servers
+  (still in the wild) ignore it; if you need to confirm support, check that
+  `http://localhost:<port>/api.md?reviewId=<reviewId>` documents `reason`.
+  When unsupported, the fixed-vs-rejected distinction lives in your round log
+  and final report.
 - The human may be triaging in the same UI: before fixing, you may re-check
   `GET /api/reviews/<reviewId>/suggestions` and skip findings whose status
   is no longer `active` — the human got there first. Do not resurrect

@@ -127,7 +127,7 @@ curl -s -X PUT http://localhost:{{PORT}}/api/reviews/{{REVIEW_ID}}/comments/COMM
 
 > **Terminology note:** The UI refers to this operation as "dismiss." When a user asks to "dismiss a comment," use this DELETE endpoint.
 
-Soft-deletes the comment. If the comment was adopted from an AI suggestion, the parent suggestion is automatically transitioned to "dismissed" status.
+Soft-deletes the comment. If the comment was adopted from an AI suggestion, the parent suggestion is automatically transitioned to "dismissed" status with an auto-generated \`status_reason\` noting the adopted comment was deleted.
 
 \`\`\`bash
 curl -s -X DELETE http://localhost:{{PORT}}/api/reviews/{{REVIEW_ID}}/comments/COMMENT_ID
@@ -169,7 +169,9 @@ Optional query params:
 - \`levels\` — comma-separated list of levels: \`"final"\`, \`"1"\`, \`"2"\`, \`"3"\`. Default: \`"final"\` (orchestrated suggestions only).
 - \`runId\` — specific analysis run UUID. Default: latest run.
 
-**Response:** \`{ "suggestions": [{ "id": 1, "file": "...", "line_start": 10, "type": "bug", "title": "...", "body": "...", "status": "active", ... }] }\`
+**Response:** \`{ "suggestions": [{ "id": 1, "file": "...", "line_start": 10, "type": "bug", "title": "...", "body": "...", "status": "active", "status_reason": null, ... }] }\`
+
+Each suggestion carries \`status_reason\` (string|null) — the explanation stored when it was dismissed (see "Update AI suggestion status"), or \`null\`.
 
 ### Check if suggestions exist
 
@@ -186,14 +188,16 @@ Optional query param: \`runId\` (specific analysis run UUID).
 \`\`\`bash
 curl -s -X POST http://localhost:{{PORT}}/api/reviews/{{REVIEW_ID}}/suggestions/SUGGESTION_ID/status \\
   -H 'Content-Type: application/json' \\
-  -d '{ "status": "dismissed" }'
+  -d '{ "status": "dismissed", "reason": "Confirmed intentional behavior; no change needed." }'
 \`\`\`
 
 Valid statuses: \`"dismissed"\`, \`"active"\` (restore).
 
+Optional field: \`reason\` (string, ≤2000 chars) — a concise, one-sentence explanation of why the suggestion is being dismissed. Valid **only** with status \`"dismissed"\`; sending it with \`"active"\` returns 400. Restoring to \`"active"\` clears any stored reason. You SHOULD include a \`reason\` whenever you dismiss a suggestion — it is surfaced in the UI as a reply-styled note under the suggestion. The stored reason is returned as \`status_reason\` (string|null) on suggestion objects in GET responses.
+
 > **Note:** Setting status to \`"adopted"\` directly is not allowed. Adoption must create a linked user comment via \`parent_id\`, which is why raw status-setting cannot do it. Use \`POST /suggestions/:id/adopt\` for adopt-as-is or \`POST /suggestions/:id/edit\` for adopt-with-edits.
 
-**Response:** \`{ "success": true, "status": "dismissed" }\`
+**Response:** \`{ "success": true, "status": "dismissed", "status_reason": "Confirmed intentional behavior; no change needed." }\` (\`status_reason\` is the stored trimmed reason, or \`null\`)
 
 ### Adopt an AI suggestion as-is
 
@@ -503,7 +507,7 @@ Base: \`http://localhost:{{PORT}}\` | Review: \`{{REVIEW_ID}}\`
 ## Suggestions — /api/reviews/{{REVIEW_ID}}/suggestions
 - \`GET\` — List (?levels=final,1,2,3 &runId=UUID)
 - \`GET /check\` — Exists? (?runId=UUID)
-- \`POST /:id/status\` — Dismiss/restore {status}
+- \`POST /:id/status\` — Dismiss/restore {status, ?reason} (reason: dismissed-only, ≤2000 chars, include when dismissing)
 - \`POST /:id/adopt\` — Adopt as-is (no body)
 - \`POST /:id/edit\` — Adopt edited {action:"adopt_edited", editedText:"..."}
 

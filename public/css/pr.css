@@ -2405,6 +2405,32 @@ tr.newly-expanded .d2h-code-line-ctn {
   background: none;
 }
 
+/* Dismissal reason section appended below the reasoning bullets in the popover.
+   Uses the same themeable variables as the rest of the popover, so it adapts to
+   both light and dark. Rendered on its own when a suggestion has a dismissal
+   reason but no reasoning steps. */
+.reasoning-popover-dismissal {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--color-border-secondary, rgba(255, 255, 255, 0.06));
+}
+
+.reasoning-popover-content > .reasoning-popover-dismissal:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+.reasoning-popover-dismissal-heading {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-tertiary, #6e7681);
+}
+
 /* Compact reasoning button in collapsed suggestion rows */
 .ai-suggestion.collapsed .ai-suggestion-header-right {
   margin-left: auto;
@@ -2589,20 +2615,58 @@ tr.newly-expanded .d2h-code-line-ctn {
   position: relative;
 }
 
-.collapsed-text {
-  color: var(--color-text-tertiary);
-  font-style: italic;
-  font-size: 12px;
-}
-
 .collapsed-title {
-  flex: 1;
+  flex: 0 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--color-text-secondary);
   min-width: 0;
   font-size: 13px;
+}
+
+/* Expanded reply-styled dismissal note. Mirrors the external-comment
+   `is-reply` treatment: indented, muted, with a small label. Sits under the
+   suggestion body of a dismissed suggestion. Hidden while the card is
+   collapsed (the body is hidden then too). */
+.ai-dismissal-note {
+  margin: 4px 16px 12px 32px;
+  padding: 8px 12px;
+  border-left: 3px solid var(--color-border-secondary, #d0d7de);
+  border-radius: 4px;
+  background: var(--color-bg-secondary, #f6f8fa);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-text-secondary, #57606a);
+  max-width: min(100%, var(--annotation-prose-max, 80ch));
+  box-sizing: border-box;
+}
+
+.ai-dismissal-note-label {
+  display: block;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-tertiary, #6e7681);
+  margin-bottom: 2px;
+}
+
+.ai-dismissal-note-body {
+  display: block;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+.ai-suggestion.collapsed .ai-dismissal-note {
+  display: none;
+}
+
+[data-theme="dark"] .ai-dismissal-note {
+  background: var(--color-bg-tertiary, #161b22);
+  border-left-color: var(--color-border-secondary, #30363d);
+  color: var(--color-text-secondary, #8b949e);
 }
 
 .ai-suggestion.collapsed .ai-suggestion-header {
@@ -9232,6 +9296,20 @@ body.resizing * {
 
 .finding-item.finding-dismissed .finding-dot {
   opacity: 0.5;
+}
+
+/* Muted second line under a dismissed finding's title carrying the reason it
+   was dismissed. Truncation is done in JS; ellipsis guards long single words.
+   Not struck through (the reason is meta about the dismissal, not the title). */
+.finding-dismissal-reason {
+  font-size: 11px;
+  font-style: italic;
+  color: var(--color-text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  text-decoration: none;
 }
 
 /* Status indicator icon in lower right corner for dismissed - no-entry symbol (circle with diagonal line) */

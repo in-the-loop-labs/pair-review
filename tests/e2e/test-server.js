@@ -435,6 +435,57 @@ async function startTestServer(port) {
     }, MOCK_ANALYSIS_DURATION_MS);
   });
 
+  // Test-only endpoint: seed a dismissed AI suggestion carrying a status_reason.
+  // The loop/chat agent sets status_reason when it dismisses a finding; there is
+  // no UI affordance for it (human dismissals are reason-less), so tests inject
+  // one directly rather than perturbing the shared mock suggestion fixtures.
+  app.post('/test/seed-dismissed-suggestion', (req, res) => {
+    const {
+      owner = 'test-owner',
+      repo = 'test-repo',
+      number = 1,
+      status_reason = 'Dismissed by the agent: already handled upstream.',
+      file = 'src/utils.js',
+      line_start = 3,
+      title = 'Seeded dismissed finding',
+      type = 'bug'
+    } = req.body || {};
+
+    const repository = `${owner}/${repo}`;
+    const review = db.prepare('SELECT id FROM reviews WHERE pr_number = ? AND repository = ?')
+      .get(parseInt(number), repository);
+    if (!review) {
+      return res.status(404).json({ error: 'review not found' });
+    }
+
+    // Attach to the most recent analysis run so it appears in the default view.
+    const latestRun = db.prepare(
+      'SELECT id FROM analysis_runs WHERE review_id = ? ORDER BY started_at DESC LIMIT 1'
+    ).get(review.id);
+
+    const now = new Date().toISOString();
+    const info = db.prepare(`
+      INSERT INTO comments (
+        review_id, source, ai_run_id, ai_level, file, line_start, line_end,
+        type, title, body, reasoning, status, status_reason, created_at, updated_at
+      ) VALUES (?, 'ai', ?, NULL, ?, ?, ?, ?, ?, ?, NULL, 'dismissed', ?, ?, ?)
+    `).run(
+      review.id,
+      latestRun ? latestRun.id : null,
+      file,
+      line_start,
+      line_start,
+      type,
+      title,
+      'Body of the seeded dismissed finding.',
+      status_reason,
+      now,
+      now
+    );
+
+    res.json({ id: Number(info.lastInsertRowid), reviewId: review.id });
+  });
+
   // Mock SSE endpoint for analysis progress
   app.get('/api/analyses/:id/progress', (req, res) => {
     res.writeHead(200, {
@@ -521,7 +572,7 @@ async function startTestServer(port) {
       const rows = db.prepare(`
         SELECT id, source, author, ai_run_id, ai_level, ai_confidence,
                file, line_start, line_end, side, type, title, body,
-               reasoning, status, is_file_level, created_at, updated_at
+               reasoning, status, status_reason, is_file_level, created_at, updated_at
         FROM comments
         WHERE review_id = ? AND source = 'ai'
           AND (ai_level IS NULL)
@@ -551,7 +602,14 @@ async function startTestServer(port) {
     }
 
     try {
-      db.prepare('UPDATE comments SET status = ? WHERE id = ?').run(status, parseInt(id));
+      // Mirror production (updateSuggestionStatus): a status_reason may only
+      // live on a dismissed row. Set it when dismissing; clear it (NULL) when
+      // restoring to active or adopting. `req.body.reason` may be undefined for
+      // human/adopt/restore actions, so default it to null.
+      const { reason = null } = req.body;
+      const statusReason = status === 'dismissed' ? reason : null;
+      db.prepare('UPDATE comments SET status = ?, status_reason = ? WHERE id = ?')
+        .run(status, statusReason, parseInt(id));
       res.json({ success: true, status });
     } catch (e) {
       res.status(500).json({ error: 'Failed to update status' });

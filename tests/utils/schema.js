@@ -62,6 +62,7 @@ const SCHEMA_SQL = {
       suggestion_text TEXT,
       reasoning TEXT,
       status TEXT DEFAULT 'active' CHECK(status IN ('active', 'dismissed', 'adopted', 'submitted', 'draft', 'inactive')),
+      status_reason TEXT,
       adopted_as_id INTEGER,
       parent_id INTEGER,
       is_file_level INTEGER DEFAULT 0,

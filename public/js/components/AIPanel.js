@@ -1583,6 +1583,14 @@ class AIPanel {
         const category = finding.category || finding.type || '';
         const isActive = finding.status !== 'dismissed' && finding.status !== 'adopted';
 
+        // Dismissal reason: only shown for dismissed findings that carry one.
+        // Full text goes in the item tooltip; a truncated muted line renders
+        // under the title.
+        const dismissalReason = finding.status === 'dismissed' ? (finding.status_reason || '') : '';
+        const itemTitle = dismissalReason
+            ? (fullLocation ? `${fullLocation} — ${dismissalReason}` : dismissalReason)
+            : fullLocation;
+
         // Use star icon for praise, dot for other types
         const indicator = type === 'praise'
             ? `<span class="finding-star">${this.getTypeIcon('praise')}</span>`
@@ -1627,12 +1635,13 @@ class AIPanel {
 
         return `
             <div class="finding-item-wrapper">
-                <button class="finding-item finding-${type} ${statusClass}" data-index="${index}" data-id="${finding.id || ''}" data-file="${finding.file || ''}" data-line="${lineNum || ''}" data-item-type="finding" title="${fullLocation}">
+                <button class="finding-item finding-${type} ${statusClass}" data-index="${index}" data-id="${finding.id || ''}" data-file="${finding.file || ''}" data-line="${lineNum || ''}" data-item-type="finding" title="${window.escapeHtmlAttribute(itemTitle)}">
                     ${indicator}
                     <div class="finding-content">
                         <span class="finding-title">${this.escapeHtml(title)}</span>
                         ${category || finding.severity ? `<span class="finding-meta">${category ? `<span class="finding-category">${this.escapeHtml(category)}</span>` : ''}${finding.severity ? `<span class="severity-badge severity-${finding.severity}">${this.escapeHtml(finding.severity.toUpperCase())}</span>` : ''}</span>` : ''}
                         ${fileName ? `<span class="finding-location">${this.escapeHtml(fileName)}</span>` : ''}
+                        ${dismissalReason ? `<span class="finding-dismissal-reason">${this.escapeHtml(this.truncateText(dismissalReason, 60))}</span>` : ''}
                     </div>
                 </button>
                 ${quickActions}
@@ -1862,6 +1871,19 @@ class AIPanel {
                 findingEl.classList.add('finding-adopted');
             } else {
                 findingEl.classList.add('finding-active');
+            }
+
+            // Leaving the dismissed state: strip the stale dismissal-reason line
+            // and reset the tooltip to the plain location. renderFindingItem only
+            // adds these for dismissed findings, so an in-place status swap must
+            // undo them here (the finding may keep a status_reason in the array).
+            if (status !== 'dismissed') {
+                const reasonSpan = findingEl.querySelector('.finding-dismissal-reason');
+                if (reasonSpan) reasonSpan.remove();
+                const filePath = finding?.file || findingEl.dataset.file || '';
+                const fileName = filePath ? filePath.split('/').pop() : null;
+                const lineNum = finding?.line_start || findingEl.dataset.line || '';
+                findingEl.title = fileName ? `${fileName}${lineNum ? ':' + lineNum : ''}` : '';
             }
 
             const wrapper = findingEl.closest('.finding-item-wrapper');

@@ -421,6 +421,7 @@ function createMCPServer(db, options = {}) {
               ai_confidence: s.ai_confidence,
               severity: s.severity,
               status: s.status,
+              status_reason: s.status_reason,
               reasoning: safeParseJson(s.reasoning),
             }))
           }, null, 2)

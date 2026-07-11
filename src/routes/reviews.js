@@ -530,6 +530,7 @@ router.get('/api/reviews/:reviewId/suggestions', validateReviewId, async (req, r
         suggestion_text,
         reasoning,
         status,
+        status_reason,
         is_file_level,
         severity,
         created_at,
@@ -592,7 +593,7 @@ router.get('/api/reviews/:reviewId/suggestions', validateReviewId, async (req, r
 router.post('/api/reviews/:reviewId/suggestions/:id/status', validateReviewId, async (req, res) => {
   try {
     const { id } = req.params;
-    const { status } = req.body;
+    const { status, reason } = req.body;
 
     if (!['dismissed', 'active'].includes(status)) {
       if (status === 'adopted') {
@@ -603,6 +604,30 @@ router.post('/api/reviews/:reviewId/suggestions/:id/status', validateReviewId, a
       return res.status(400).json({
         error: 'Invalid status. Must be "dismissed" or "active"'
       });
+    }
+
+    // A dismissal reason is only meaningful when dismissing. Reject it on restore
+    // so callers can't silently attach a reason that would immediately be cleared.
+    if (reason !== undefined && reason !== null && status !== 'dismissed') {
+      return res.status(400).json({
+        error: 'A reason may only be provided when status is "dismissed"'
+      });
+    }
+
+    // Normalize the reason: coerce to string, trim, enforce max length, empty → null.
+    const MAX_REASON_LENGTH = 2000;
+    let normalizedReason = null;
+    if (reason !== undefined && reason !== null) {
+      if (typeof reason !== 'string') {
+        return res.status(400).json({ error: 'Reason must be a string' });
+      }
+      const trimmed = reason.trim();
+      if (trimmed.length > MAX_REASON_LENGTH) {
+        return res.status(400).json({
+          error: `Reason must be ${MAX_REASON_LENGTH} characters or fewer`
+        });
+      }
+      normalizedReason = trimmed || null;
     }
 
     const db = req.app.get('db');
@@ -624,12 +649,14 @@ router.post('/api/reviews/:reviewId/suggestions/:id/status', validateReviewId, a
       });
     }
 
-    // Update suggestion status using repository
-    await commentRepo.updateSuggestionStatus(id, status);
+    // Update suggestion status using repository. Restoring to 'active' clears any
+    // stored reason inside updateSuggestionStatus, so status_reason is always null then.
+    await commentRepo.updateSuggestionStatus(id, status, null, normalizedReason);
 
     res.json({
       success: true,
-      status
+      status,
+      status_reason: status === 'dismissed' ? normalizedReason : null
     });
     broadcastReviewEvent(req.reviewId, { type: 'review:suggestions_changed' }, { sourceClientId: req.get('X-Client-Id') });
 
