@@ -590,6 +590,127 @@ describe('PierreBridge split full-width annotation layout', () => {
     expect(() => bridge._applySplitAnnotationLayout('bare.js')).not.toThrow();
   });
 
+  // Entirely added/removed file: the vendor emits ONE code column stamped
+  // data-diff-type="single" (no paired column, no paired empty cells).
+  // ANNOTATION_CSS boxes it into one half of the split grid; the layout pass
+  // must measure the file's OWN gutter and mark every slotted card lone.
+  function makeSingleShadow({ side = 'additions', hasSlot = true, key = '0,3' } = {}) {
+    const doc = dom.window.document;
+    const root = doc.createElement('div');
+    const pre = doc.createElement('pre');
+    pre.setAttribute('data-diff-type', 'single');
+    root.appendChild(pre);
+
+    const code = doc.createElement('code');
+    code.setAttribute('data-code', '');
+    code.setAttribute(`data-${side}`, '');
+    const gutter = doc.createElement('div');
+    gutter.setAttribute('data-gutter', '');
+    gutter.getBoundingClientRect = () => ({ width: 48 });
+    code.appendChild(gutter);
+    const content = doc.createElement('div');
+    content.setAttribute('data-content', '');
+    const cell = doc.createElement('div');
+    cell.setAttribute('data-line-annotation', key);
+    const inner = doc.createElement('div');
+    inner.setAttribute('data-annotation-content', '');
+    if (hasSlot) inner.appendChild(doc.createElement('slot'));
+    cell.appendChild(inner);
+    content.appendChild(cell);
+    code.appendChild(content);
+    pre.appendChild(code);
+    return { root, pre, cell };
+  }
+
+  it('publishes the lone gutter width for an entirely-added file', () => {
+    const { root, pre } = makeSingleShadow({ side: 'additions' });
+    const bridge = makeBridgeWithShadow(root);
+    bridge._applySplitAnnotationLayout('a.js');
+    expect(pre.style.getPropertyValue('--pr-split-gutter-width')).toBe('48px');
+  });
+
+  it('marks a card in an entirely-added file full-width', () => {
+    const { root, cell } = makeSingleShadow({ side: 'additions' });
+    const bridge = makeBridgeWithShadow(root);
+    bridge._applySplitAnnotationLayout('a.js');
+    expect(cell.classList.contains('pr-annotation-fullwidth')).toBe(true);
+  });
+
+  it('marks a card in an entirely-removed file full-width', () => {
+    const { root, cell } = makeSingleShadow({ side: 'deletions' });
+    const bridge = makeBridgeWithShadow(root);
+    bridge._applySplitAnnotationLayout('a.js');
+    expect(cell.classList.contains('pr-annotation-fullwidth')).toBe(true);
+  });
+
+  it('leaves an empty annotation cell unmarked in a one-sided file', () => {
+    const { root, cell } = makeSingleShadow({ side: 'additions', hasSlot: false });
+    const bridge = makeBridgeWithShadow(root);
+    bridge._applySplitAnnotationLayout('a.js');
+    expect(cell.classList.contains('pr-annotation-fullwidth')).toBe(false);
+  });
+
+  it('ignores single-type pres while the bridge is in unified mode', () => {
+    // In unified mode EVERY file renders as data-diff-type="single" (one
+    // unified column) — the pass must gate on the bridge's diffStyle, not
+    // the attribute, or unified cards would get split-stretch styling.
+    const doc = dom.window.document;
+    const root = doc.createElement('div');
+    const pre = doc.createElement('pre');
+    pre.setAttribute('data-diff-type', 'single');
+    const code = doc.createElement('code');
+    code.setAttribute('data-code', '');
+    code.setAttribute('data-unified', '');
+    const gutter = doc.createElement('div');
+    gutter.setAttribute('data-gutter', '');
+    gutter.getBoundingClientRect = () => ({ width: 48 });
+    code.appendChild(gutter);
+    const cell = doc.createElement('div');
+    cell.setAttribute('data-line-annotation', '0,3');
+    const inner = doc.createElement('div');
+    inner.setAttribute('data-annotation-content', '');
+    inner.appendChild(doc.createElement('slot'));
+    cell.appendChild(inner);
+    code.appendChild(cell);
+    pre.appendChild(code);
+    root.appendChild(pre);
+
+    const bridge = new PierreBridge({}); // unified
+    bridge.files.set('a.js', { shadowHost: { shadowRoot: root }, annotations: [] });
+    bridge._applySplitAnnotationLayout('a.js');
+
+    expect(cell.classList.contains('pr-annotation-fullwidth')).toBe(false);
+    expect(pre.style.getPropertyValue('--pr-split-gutter-width')).toBe('');
+  });
+
+  it('still measures the middle (additions) gutter on a two-sided pre', () => {
+    // Regression guard for the widened gutter query: a split pre must keep
+    // measuring the ADDITIONS gutter (the seam-adjacent track), not fall
+    // back to the first gutter in document order (deletions).
+    const { root, pre } = makeSplitShadow();
+    const delGutter = pre.querySelector('[data-deletions] [data-gutter]');
+    delGutter.getBoundingClientRect = () => ({ width: 999 });
+    const bridge = makeBridgeWithShadow(root);
+    bridge._applySplitAnnotationLayout('a.js');
+    expect(pre.style.getPropertyValue('--pr-split-gutter-width')).toBe('64px');
+  });
+
+  it('ships the one-sided half-width and card-stretch CSS', () => {
+    // The layout itself is pure CSS in the shadow root (jsdom does no
+    // layout), so pin the load-bearing selectors instead.
+    const css = PierreBridge.ANNOTATION_CSS;
+    expect(css).toContain(
+      "[data-diff-type='single']:has(> [data-additions], > [data-deletions])"
+    );
+    expect(css).toContain('grid-template-columns: 1fr 1fr;');
+    expect(css).toContain(
+      "[data-diff-type='single'] [data-deletions] .pr-annotation-fullwidth"
+    );
+    expect(css).toContain(
+      "[data-diff-type='single'] [data-additions] .pr-annotation-fullwidth"
+    );
+  });
+
   it('debounces repeated sync requests into one rAF pass', () => {
     const scheduled = [];
     global.requestAnimationFrame = (fn) => {

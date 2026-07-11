@@ -351,6 +351,299 @@ test.describe('Annotation prose measure on wide displays (PR mode)', () => {
 });
 
 /**
+ * One-sided files (entirely added / entirely removed) in split view.
+ *
+ * @pierre/diffs renders a whole-file add or whole-file delete as a single
+ * `<code>` column inside `<pre data-diff-type="single">` (two-sided files get
+ * `data-diff-type="split"`). PierreBridge.ANNOTATION_CSS boxes that lone column
+ * into one half of a 1fr/1fr grid — additions (a new file) in the RIGHT half,
+ * deletions (a deleted file) in the LEFT half — and _applySplitAnnotationLayout
+ * stretches lone annotation cards across both halves via .pr-annotation-fullwidth.
+ *
+ * PR-mode only: this exercises the shared PierreBridge render path + injected
+ * shadow CSS, which is byte-for-byte identical in Local mode (the bridge does
+ * not know or care which route supplied the diff). The two-sided comment/toggle
+ * behaviour that DOES differ per mode is already covered by the MODES loop above.
+ *
+ * The default seeded diff has no whole-file add/delete, so these tests install a
+ * per-page route override adding `src/added.js` (all additions) and
+ * `src/removed.js` (all deletions) alongside a two-sided `src/utils.js`
+ * reference. file-contents upgrades are stubbed out so the pure add/delete
+ * patches are never re-diffed into two-sided modifications.
+ */
+test.describe('Split diff view — one-sided files (PR mode)', () => {
+  const PR_PATH = '/pr/test-owner/test-repo/1';
+  const ADDED_FILE = 'src/added.js';
+  const REMOVED_FILE = 'src/removed.js';
+  // Two-sided file used only as the "split layout applied" gate (one-sided
+  // files stay data-diff-type="single" in split, so setDiffView()'s all-hosts
+  // wait can never settle with them present).
+  const REF_FILE = 'src/utils.js';
+  const TOL = 2; // px tolerance for sub-pixel box edges
+
+  const ONE_SIDED_DIFF = [
+    // Two-sided reference (has both - and + on one hunk → renders split).
+    'diff --git a/src/utils.js b/src/utils.js',
+    '--- a/src/utils.js',
+    '+++ b/src/utils.js',
+    '@@ -1,3 +1,3 @@',
+    ' // Utility functions',
+    '-const old = 1;',
+    '+const updated = 2;',
+    ' module.exports = {};',
+    // Entirely-added file.
+    'diff --git a/src/added.js b/src/added.js',
+    'new file mode 100644',
+    'index 0000000..abcdef1',
+    '--- /dev/null',
+    '+++ b/src/added.js',
+    '@@ -0,0 +1,4 @@',
+    '+// Brand new module',
+    '+function created() {',
+    '+  return 42;',
+    '+}',
+    // Entirely-removed file.
+    'diff --git a/src/removed.js b/src/removed.js',
+    'deleted file mode 100644',
+    'index abcdef1..0000000',
+    '--- a/src/removed.js',
+    '+++ /dev/null',
+    '@@ -1,4 +0,0 @@',
+    '-// Old obsolete module',
+    '-function gone() {',
+    '-  return 0;',
+    '-}',
+    ''
+  ].join('\n');
+
+  const CHANGED_FILES = [
+    { file: 'src/utils.js', additions: 1, deletions: 1 },
+    { file: 'src/added.js', additions: 4, deletions: 0 },
+    { file: 'src/removed.js', additions: 0, deletions: 4 }
+  ];
+
+  async function mockOneSidedDiff(page) {
+    await page.route('**/api/pr/*/*/*/diff', (route) =>
+      route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ diff: ONE_SIDED_DIFF, changed_files: CHANGED_FILES })
+      })
+    );
+    // Suppress the full-contents Pierre upgrade for every file: the harness'
+    // generic file-contents fallback returns a near-identical old/new pair,
+    // which would re-diff a pure add/delete into a two-sided modification and
+    // defeat the one-sided render under test. `tooLarge` short-circuits the
+    // upgrade in pr.js, leaving the patch-only render intact.
+    await page.route('**/api/reviews/*/file-contents/**', (route) =>
+      route.fulfill({ contentType: 'application/json', body: JSON.stringify({ tooLarge: true }) })
+    );
+  }
+
+  /**
+   * Toggle to split WITHOUT setDiffView()'s all-hosts gate (which never settles
+   * while one-sided "single" pres are on the page). Gate on the two-sided
+   * reference file flipping to the split layout instead — setDiffStyle()
+   * re-renders every file synchronously, so once REF_FILE reports split the
+   * one-sided files have re-rendered too.
+   */
+  async function switchToSplit(page) {
+    await page.locator('#diff-options-btn').click();
+    const option = page.locator('.diff-view-option[data-diff-view="split"]');
+    await option.waitFor({ state: 'visible', timeout: 5000 });
+    await option.click();
+    await page.keyboard.press('Escape');
+    await waitForDiffType(page, 'split', 5000, { fileName: REF_FILE });
+  }
+
+  /** Bounding boxes of a one-sided file's pre, code columns, and gutters. */
+  async function oneSidedGeometry(page, file) {
+    return page.evaluate((f) => {
+      const pre = document
+        .querySelector(`.d2h-file-wrapper[data-file-name="${f}"] diffs-container`)
+        ?.shadowRoot?.querySelector('pre[data-diff-type="single"]');
+      if (!pre) return null;
+      const box = (el) => {
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { left: r.left, right: r.right, width: r.width };
+      };
+      const additions = pre.querySelector('code[data-additions]');
+      const deletions = pre.querySelector('code[data-deletions]');
+      const pr = pre.getBoundingClientRect();
+      return {
+        diffType: pre.getAttribute('data-diff-type'),
+        pre: { left: pr.left, right: pr.right, width: pr.width, mid: pr.left + pr.width / 2 },
+        additions: box(additions),
+        deletions: box(deletions),
+        addGutter: box(additions?.querySelector('[data-gutter]')),
+        delGutter: box(deletions?.querySelector('[data-gutter]'))
+      };
+    }, file);
+  }
+
+  /** Full-width-card metrics for a lone card inside a one-sided (single) pre. */
+  async function singleCardMetrics(page, file, text) {
+    return page.evaluate(({ f, t }) => {
+      const host = document.querySelector(`.d2h-file-wrapper[data-file-name="${f}"] diffs-container`);
+      const pre = host?.shadowRoot?.querySelector('pre[data-diff-type="single"]');
+      if (!host || !pre) return null;
+      const wrapper = [...host.querySelectorAll('[data-annotation-slot]')]
+        .find((w) => (w.textContent || '').includes(t));
+      const cell = wrapper?.assignedSlot?.closest('[data-line-annotation]');
+      if (!cell) return null;
+      return {
+        hasFullwidthClass: cell.classList.contains('pr-annotation-fullwidth'),
+        cellWidth: cell.getBoundingClientRect().width,
+        preWidth: pre.getBoundingClientRect().width,
+        gutterVar: pre.style.getPropertyValue('--pr-split-gutter-width')
+      };
+    }, { f: file, t: text });
+  }
+
+  test.afterEach(async ({ page }) => {
+    await cleanupComments(page, 1);
+  });
+
+  test('renders an entirely-added file in the RIGHT half in split', async ({ page }) => {
+    await mockOneSidedDiff(page);
+    await page.goto(PR_PATH);
+    await waitForDiffToRender(page);
+    await page.waitForSelector(`.d2h-file-wrapper[data-file-name="${ADDED_FILE}"]`);
+
+    await switchToSplit(page);
+
+    await expect.poll(async () => {
+      const g = await oneSidedGeometry(page, ADDED_FILE);
+      if (!g) return 'no-pre';
+      if (g.diffType !== 'single') return `diffType=${g.diffType}`;
+      if (!g.additions) return 'no-additions-column';
+      const leftOk = g.additions.left >= g.pre.mid - TOL;
+      const rightOk = g.additions.right <= g.pre.right + TOL;
+      return leftOk && rightOk ? 'right-half' : 'wrong-place';
+    }, { timeout: 5000 }).toBe('right-half');
+  });
+
+  test('renders an entirely-removed file in the LEFT half in split', async ({ page }) => {
+    await mockOneSidedDiff(page);
+    await page.goto(PR_PATH);
+    await waitForDiffToRender(page);
+    await page.waitForSelector(`.d2h-file-wrapper[data-file-name="${REMOVED_FILE}"]`);
+
+    await switchToSplit(page);
+
+    await expect.poll(async () => {
+      const g = await oneSidedGeometry(page, REMOVED_FILE);
+      if (!g) return 'no-pre';
+      if (g.diffType !== 'single') return `diffType=${g.diffType}`;
+      if (!g.deletions) return 'no-deletions-column';
+      const leftOk = g.deletions.left >= g.pre.left - TOL;
+      const rightOk = g.deletions.right <= g.pre.mid + TOL;
+      return leftOk && rightOk ? 'left-half' : 'wrong-place';
+    }, { timeout: 5000 }).toBe('left-half');
+  });
+
+  test('keeps one-sided line-number gutters inside their own half', async ({ page }) => {
+    await mockOneSidedDiff(page);
+    await page.goto(PR_PATH);
+    await waitForDiffToRender(page);
+    await page.waitForSelector(`.d2h-file-wrapper[data-file-name="${ADDED_FILE}"]`);
+    await page.waitForSelector(`.d2h-file-wrapper[data-file-name="${REMOVED_FILE}"]`);
+
+    await switchToSplit(page);
+
+    // Added (right-half) file: its gutter must not cross into the left half.
+    await expect.poll(async () => {
+      const g = await oneSidedGeometry(page, ADDED_FILE);
+      if (!g?.addGutter) return 'no-gutter';
+      return g.addGutter.left >= g.pre.mid - TOL ? 'in-right-half' : 'crossed-midpoint';
+    }, { timeout: 5000 }).toBe('in-right-half');
+
+    // Removed (left-half) file: its gutter must not cross into the right half.
+    await expect.poll(async () => {
+      const g = await oneSidedGeometry(page, REMOVED_FILE);
+      if (!g?.delGutter) return 'no-gutter';
+      return g.delGutter.right <= g.pre.mid + TOL ? 'in-left-half' : 'crossed-midpoint';
+    }, { timeout: 5000 }).toBe('in-left-half');
+  });
+
+  test('stretches a lone card across the full width of a one-sided file', async ({ page }) => {
+    await mockOneSidedDiff(page);
+    await page.goto(PR_PATH);
+    await waitForDiffToRender(page);
+    await page.waitForSelector(`.d2h-file-wrapper[data-file-name="${ADDED_FILE}"]`);
+
+    const body = `One-sided full width ${Date.now()}`;
+    // Line 2 of the added file is an addition (RIGHT side).
+    await seedComment(page, 1, { file: ADDED_FILE, line: 2, side: 'RIGHT', body });
+    await page.reload();
+    await waitForDiffToRender(page);
+    await expect(page.locator('.user-comment-body', { hasText: body })).toBeVisible();
+
+    await switchToSplit(page);
+    // The lone card slots into the added file's single additions column.
+    await expectAnnotationInSplitColumn(page, { text: body, column: 'additions' });
+
+    // .pr-annotation-fullwidth is applied on a rAF after render — poll for it.
+    await expect.poll(async () => (await singleCardMetrics(page, ADDED_FILE, body))?.hasFullwidthClass, {
+      timeout: 5000
+    }).toBe(true);
+
+    const m = await singleCardMetrics(page, ADDED_FILE, body);
+    // The measured gutter width was published for the stretch calc().
+    expect(m.gutterVar).toMatch(/^\d+(\.\d+)?px$/);
+    // Card spans (approximately) the full pre width, never overflowing it.
+    expect(m.cellWidth / m.preWidth).toBeGreaterThan(0.9);
+    expect(m.cellWidth).toBeLessThanOrEqual(m.preWidth + TOL);
+  });
+
+  test('restores a one-sided file to full width when toggled back to unified', async ({ page }) => {
+    await mockOneSidedDiff(page);
+    await page.goto(PR_PATH);
+    await waitForDiffToRender(page);
+    await page.waitForSelector(`.d2h-file-wrapper[data-file-name="${ADDED_FILE}"]`);
+
+    await switchToSplit(page);
+    // Sanity: it is boxed into the right half while split.
+    await expect.poll(async () => {
+      const g = await oneSidedGeometry(page, ADDED_FILE);
+      return g?.additions ? g.additions.left >= g.pre.mid - TOL : null;
+    }, { timeout: 5000 }).toBe(true);
+
+    // Back to unified — every host reports "single", so setDiffView's gate is
+    // safe here. The file must render one full-width `code[data-unified]`
+    // column with no half-width split leak.
+    await setDiffView(page, 'unified');
+
+    await expect.poll(async () => {
+      return page.evaluate((f) => {
+        const pre = document
+          .querySelector(`.d2h-file-wrapper[data-file-name="${f}"] diffs-container`)
+          ?.shadowRoot?.querySelector('pre[data-diff-type="single"]');
+        if (!pre) return null;
+        const code = pre.querySelector('code[data-unified]');
+        if (!code) return null;
+        const cr = code.getBoundingClientRect();
+        const pr = pre.getBoundingClientRect();
+        return {
+          ratio: pr.width ? cr.width / pr.width : 0,
+          // No side-specific columns → no half-width grid boxing leaked in.
+          hasSideColumns: !!pre.querySelector('code[data-additions], code[data-deletions]')
+        };
+      }, ADDED_FILE);
+    }, { timeout: 5000 }).toEqual({ ratio: expect.any(Number), hasSideColumns: false });
+
+    const u = await page.evaluate((f) => {
+      const pre = document
+        .querySelector(`.d2h-file-wrapper[data-file-name="${f}"] diffs-container`)
+        ?.shadowRoot?.querySelector('pre[data-diff-type="single"]');
+      const code = pre?.querySelector('code[data-unified]');
+      return { ratio: code.getBoundingClientRect().width / pre.getBoundingClientRect().width };
+    }, ADDED_FILE);
+    expect(u.ratio).toBeGreaterThan(0.9);
+  });
+});
+
+/**
  * AI suggestions in split. PR-mode only: the harness mocks
  * POST /api/pr/:owner/:repo/:number/analyses to insert mock suggestions into
  * the DB. There is no equivalent mock for the Local analyses route (it would

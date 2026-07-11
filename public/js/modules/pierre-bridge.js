@@ -1618,10 +1618,18 @@ class PierreBridge {
    *      (LEFT + RIGHT annotation on the same row pair), neither is marked
    *      and they stay half-width side by side.
    *
+   * Entirely added/removed files get the same treatment: the vendor emits a
+   * lone code column stamped data-diff-type="single", which ANNOTATION_CSS
+   * boxes into one half of the split grid. Its own gutter is the measured
+   * track there, and every slotted card is lone by construction, so the same
+   * marking pass stretches them across both halves.
+   *
    * Vendor renders wipe shadow-DOM classes/inline vars, so this is invoked
    * (rAF-debounced per file) after every pass that can rebuild the shadow
    * DOM: initial render (onPostRender), annotation updates, diffStyle
-   * switches, and hunk expansion. In unified mode it no-ops (no split pre).
+   * switches, and hunk expansion. In unified mode it no-ops (every pre is
+   * "single" there too — one unified column — so the bridge's own diffStyle
+   * is the gate, not the attribute).
    * @private
    */
   _syncSplitAnnotationLayout(fileName) {
@@ -1641,13 +1649,20 @@ class PierreBridge {
    * @private
    */
   _applySplitAnnotationLayout(fileName) {
+    if (this.diffStyle !== 'split') return;
     const fileState = this.files.get(fileName);
     const shadowRoot = fileState?.shadowHost?.shadowRoot;
     if (!shadowRoot) return;
-    const pre = shadowRoot.querySelector('pre[data-diff-type="split"]');
+    const pre = shadowRoot.querySelector(
+      'pre[data-diff-type="split"], pre[data-diff-type="single"]'
+    );
     if (!pre) return;
 
-    const gutter = pre.querySelector('[data-additions] [data-gutter]');
+    // Two-sided pre: measure the MIDDLE (additions) gutter track — it sits
+    // against the seam. One-sided pre: only one gutter exists; measure it.
+    const gutter = pre.getAttribute('data-diff-type') === 'split'
+      ? pre.querySelector('[data-additions] [data-gutter]')
+      : pre.querySelector('[data-gutter]');
     const gutterWidth = gutter?.getBoundingClientRect?.().width || 0;
     if (gutterWidth > 0) {
       pre.style.setProperty('--pr-split-gutter-width', `${gutterWidth}px`);
@@ -2402,6 +2417,52 @@ class PierreBridge {
        the left content track's start edge. */
     [data-diff-type='split'] [data-additions] .pr-annotation-fullwidth {
       margin-left: calc(-100% - var(--pr-split-gutter-width, 0px));
+    }
+    /* Split view, entirely added/removed file: the vendor emits ONE code
+       column stamped data-diff-type='single' and ships no rule for it, so
+       it stretches full width. Box it into the split layout instead:
+       deletions in the left half, additions in the right, other half empty.
+       The lone <code> keeps its internal gutter+content grid, so gutter and
+       content both live inside their 1fr half and can never cross the
+       center seam. The :has() guard skips unified mode, where every pre is
+       'single' but its code column is data-unified. */
+    [data-diff-type='single']:has(> [data-additions], > [data-deletions]) {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+    }
+    [data-diff-type='single'] > [data-deletions] {
+      grid-column: 1;
+      border-right: 1px solid var(--diffs-bg);
+    }
+    [data-diff-type='single'] > [data-additions] {
+      grid-column: 2;
+      border-left: 1px solid var(--diffs-bg);
+    }
+    /* The vendor's [data-code] ships overflow: scroll clip. Unlike the
+       split layout (display:contents columns — no clipping box), this
+       one-sided code is a real box and would clip the stretched cards
+       below. Lines wrap in wrap mode, so visible is safe there. */
+    [data-diff-type='single'][data-overflow='wrap'] > [data-deletions],
+    [data-diff-type='single'][data-overflow='wrap'] > [data-additions] {
+      overflow: visible;
+    }
+    /* One-sided file: every card is lone, stretch across both halves.
+       Geometry (g = the file's own gutter, published by
+       _applySplitAnnotationLayout as --pr-split-gutter-width; 100% = the
+       content track = half minus g): a left-half card starts after its
+       gutter, so 200% + g reaches the far edge; a right-half card must
+       also cross the empty left half AND its own gutter — shift back by
+       100% + 2g and span 200% + 2g. */
+    [data-diff-type='single'] .pr-annotation-fullwidth {
+      position: relative;
+      z-index: 4;
+    }
+    [data-diff-type='single'] [data-deletions] .pr-annotation-fullwidth {
+      width: calc(200% + var(--pr-split-gutter-width, 0px));
+    }
+    [data-diff-type='single'] [data-additions] .pr-annotation-fullwidth {
+      width: calc(200% + 2 * var(--pr-split-gutter-width, 0px));
+      margin-left: calc(-100% - 2 * var(--pr-split-gutter-width, 0px));
     }
     /* Brief flash applied by PierreBridge.scrollToLine. Generic [data-line]
        match so it flashes whichever column (unified/deletions/additions) the
