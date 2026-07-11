@@ -2945,10 +2945,15 @@ class PRManager {
     const displayPRs = [...stackPRs].reverse();
     for (const stackPR of displayPRs) {
       const isCurrent = stackPR.prNumber === pr.number;
-      const item = document.createElement('div');
+      // Render as a real anchor so right-click / cmd-click / middle-click can
+      // open the PR in a new tab natively. The current PR gets no href (not a
+      // link to itself).
+      const item = document.createElement('a');
       item.className = 'stack-nav-item';
       if (isCurrent) {
         item.classList.add('current');
+      } else {
+        item.href = `/pr/${encodeURIComponent(pr.owner)}/${encodeURIComponent(pr.repo)}/${stackPR.prNumber}`;
       }
       item.dataset.pr = stackPR.prNumber;
 
@@ -2986,10 +2991,20 @@ class PRManager {
 
       item.appendChild(textCol);
 
-      // Navigate on click
-      item.addEventListener('click', () => {
-        if (stackPR.prNumber !== pr.number) {
-          window.location.href = `/pr/${encodeURIComponent(pr.owner)}/${encodeURIComponent(pr.repo)}/${stackPR.prNumber}`;
+      // Navigation is handled natively by the anchor's href (enabling
+      // open-in-new-tab). A plain left-click follows the link and unloads the
+      // page; for modified clicks (cmd/ctrl/middle → new tab) or the current
+      // PR, just close the menu without navigating the current tab.
+      item.addEventListener('click', (e) => {
+        // Modified clicks open a new tab — leave the current page as-is.
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) {
+          dropdown.classList.remove('open');
+          trigger.setAttribute('aria-expanded', 'false');
+          return;
+        }
+        // Current PR has no href; nothing to navigate to.
+        if (stackPR.prNumber === pr.number) {
+          e.preventDefault();
         }
         dropdown.classList.remove('open');
         trigger.setAttribute('aria-expanded', 'false');
