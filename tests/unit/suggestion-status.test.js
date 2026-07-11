@@ -13,6 +13,12 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 // Import the actual PRManager class from production code
 const { PRManager } = require('../../public/js/pr.js');
 
+// suggestion-ui.js is a browser IIFE that attaches window.SuggestionUI. Give it
+// a window at require time so collapseSuggestionForAdoption can drive the real
+// setCollapsedStateTooltip helper rather than a copied reimplementation.
+if (typeof global.window === 'undefined') global.window = {};
+const SuggestionUI = require('../../public/js/utils/suggestion-ui.js');
+
 // Mock global fetch
 const mockFetch = vi.fn();
 
@@ -1065,18 +1071,24 @@ describe('PRManager Suggestion Status', () => {
 
     beforeEach(() => {
       prManager = Object.create(PRManager.prototype);
+      // Expose the real SuggestionUI helper for this block only; the global
+      // beforeEach resets window before each test so this stays isolated.
+      global.window.SuggestionUI = SuggestionUI;
     });
 
     /**
      * Build a mock suggestion div with the DOM structure
      * collapseSuggestionForAdoption queries:
      *   - classList.add('collapsed')
-     *   - querySelector('.collapsed-text') -> { textContent }
+     *   - querySelector('.ai-suggestion-collapsed-content') -> { title } (state tooltip)
      *   - querySelector('.btn-restore') -> { title, querySelector('.btn-text') -> { textContent } }
      *   - dataset.hiddenForAdoption
      */
     function buildSuggestionDiv(id) {
-      const collapsedText = { textContent: '' };
+      const collapsedContent = {
+        title: '',
+        removeAttribute: vi.fn(function() { this.title = ''; })
+      };
       const btnText = { textContent: '' };
       const restoreBtn = { title: '', querySelector: vi.fn(() => btnText) };
 
@@ -1084,12 +1096,12 @@ describe('PRManager Suggestion Status', () => {
         dataset: { suggestionId: id },
         classList: { add: vi.fn() },
         querySelector: vi.fn((selector) => {
-          if (selector === '.collapsed-text') return collapsedText;
+          if (selector === '.ai-suggestion-collapsed-content') return collapsedContent;
           if (selector === '.btn-restore') return restoreBtn;
           return null;
         }),
         getAttribute: vi.fn((attr) => attr === 'data-suggestion-id' ? id : null),
-        _collapsedText: collapsedText,
+        _collapsedContent: collapsedContent,
         _restoreBtn: restoreBtn,
         _btnText: btnText
       };
@@ -1118,7 +1130,7 @@ describe('PRManager Suggestion Status', () => {
       prManager.collapseSuggestionForAdoption(row, 's1');
 
       expect(div.classList.add).toHaveBeenCalledWith('collapsed');
-      expect(div._collapsedText.textContent).toBe('Suggestion adopted');
+      expect(div._collapsedContent.title).toBe('Adopted');
       expect(div._restoreBtn.title).toBe('Show suggestion');
       expect(div._btnText.textContent).toBe('Show');
       expect(div.dataset.hiddenForAdoption).toBe('true');
@@ -1133,12 +1145,12 @@ describe('PRManager Suggestion Status', () => {
 
       // Target suggestion should be collapsed
       expect(divA.classList.add).toHaveBeenCalledWith('collapsed');
-      expect(divA._collapsedText.textContent).toBe('Suggestion adopted');
+      expect(divA._collapsedContent.title).toBe('Adopted');
       expect(divA.dataset.hiddenForAdoption).toBe('true');
 
       // Other suggestion on the same row should be completely unaffected
       expect(divB.classList.add).not.toHaveBeenCalled();
-      expect(divB._collapsedText.textContent).toBe('');
+      expect(divB._collapsedContent.title).toBe('');
       expect(divB.dataset.hiddenForAdoption).toBeUndefined();
     });
 
@@ -1155,7 +1167,7 @@ describe('PRManager Suggestion Status', () => {
       prManager.collapseSuggestionForAdoption(row, 's-missing');
 
       expect(divA.classList.add).not.toHaveBeenCalled();
-      expect(divA._collapsedText.textContent).toBe('');
+      expect(divA._collapsedContent.title).toBe('');
     });
   });
 });

@@ -298,6 +298,77 @@ describe('CommentRepository', () => {
     it('should throw error for invalid status', async () => {
       await expect(commentRepo.updateSuggestionStatus(1, 'invalid')).rejects.toThrow('Invalid status');
     });
+
+    it('should persist status_reason when dismissing with a reason', async () => {
+      const aiSuggestionId = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [1, 'ai', 'test.js', 10, 'AI suggestion', 'active']);
+
+      await commentRepo.updateSuggestionStatus(aiSuggestionId.lastID, 'dismissed', null, '  Duplicate finding  ');
+
+      const suggestion = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [aiSuggestionId.lastID]);
+      expect(suggestion.status).toBe('dismissed');
+      // Reason is trimmed before storage
+      expect(suggestion.status_reason).toBe('Duplicate finding');
+    });
+
+    it('should store null status_reason when dismissing with no reason', async () => {
+      const aiSuggestionId = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [1, 'ai', 'test.js', 10, 'AI suggestion', 'active']);
+
+      await commentRepo.updateSuggestionStatus(aiSuggestionId.lastID, 'dismissed');
+
+      const suggestion = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [aiSuggestionId.lastID]);
+      expect(suggestion.status).toBe('dismissed');
+      expect(suggestion.status_reason).toBeNull();
+    });
+
+    it('should store null when a dismissal reason is only whitespace', async () => {
+      const aiSuggestionId = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [1, 'ai', 'test.js', 10, 'AI suggestion', 'active']);
+
+      await commentRepo.updateSuggestionStatus(aiSuggestionId.lastID, 'dismissed', null, '   ');
+
+      const suggestion = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [aiSuggestionId.lastID]);
+      expect(suggestion.status_reason).toBeNull();
+    });
+
+    it('should clear status_reason when restoring to active', async () => {
+      const aiSuggestionId = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status, status_reason)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `, [1, 'ai', 'test.js', 10, 'AI suggestion', 'dismissed', 'Was dismissed']);
+
+      await commentRepo.updateSuggestionStatus(aiSuggestionId.lastID, 'active');
+
+      const suggestion = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [aiSuggestionId.lastID]);
+      expect(suggestion.status).toBe('active');
+      expect(suggestion.status_reason).toBeNull();
+    });
+
+    it('should clear status_reason when adopting a previously dismissed suggestion', async () => {
+      const userCommentId = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [1, 'user', 'test.js', 10, 'Adopted comment', 'active']);
+
+      const aiSuggestionId = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status, status_reason)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `, [1, 'ai', 'test.js', 10, 'AI suggestion', 'dismissed', 'Was dismissed']);
+
+      await commentRepo.updateSuggestionStatus(aiSuggestionId.lastID, 'adopted', userCommentId.lastID);
+
+      const suggestion = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [aiSuggestionId.lastID]);
+      expect(suggestion.status).toBe('adopted');
+      expect(suggestion.adopted_as_id).toBe(userCommentId.lastID);
+      expect(suggestion.status_reason).toBeNull();
+    });
   });
 
   describe('getComment', () => {
@@ -407,6 +478,24 @@ describe('CommentRepository', () => {
       const suggestion = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [aiSuggestionId.lastID]);
       expect(suggestion.status).toBe('dismissed');
     });
+
+    it('should set the canonical cascade reason on the dismissed parent suggestion', async () => {
+      const aiSuggestionId = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [1, 'ai', 'test.js', 10, 'AI suggestion', 'adopted']);
+
+      const userCommentId = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status, parent_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `, [1, 'user', 'test.js', 10, 'Adopted comment', 'active', aiSuggestionId.lastID]);
+
+      await commentRepo.deleteComment(userCommentId.lastID);
+
+      const suggestion = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [aiSuggestionId.lastID]);
+      expect(suggestion.status).toBe('dismissed');
+      expect(suggestion.status_reason).toBe('Adopted comment was deleted');
+    });
   });
 
   describe('bulkDeleteComments', () => {
@@ -468,6 +557,48 @@ describe('CommentRepository', () => {
       // Verify the AI suggestion was dismissed
       const suggestion = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [aiSuggestionId.lastID]);
       expect(suggestion.status).toBe('dismissed');
+    });
+
+    it('should set the canonical cascade reason on bulk-dismissed parent suggestions', async () => {
+      const aiSuggestionId = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [1, 'ai', 'test.js', 10, 'AI suggestion', 'adopted']);
+
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status, parent_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `, [1, 'user', 'test.js', 10, 'Adopted comment', 'active', aiSuggestionId.lastID]);
+
+      await commentRepo.bulkDeleteComments(1);
+
+      const suggestion = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [aiSuggestionId.lastID]);
+      expect(suggestion.status).toBe('dismissed');
+      expect(suggestion.status_reason).toBe('Adopted comment was deleted');
+    });
+
+    it('should clear adopted_as_id on bulk-dismissed parent suggestions', async () => {
+      // The adopted comment is soft-deleted by the bulk delete, so the parent
+      // suggestion must not keep pointing at it (parity with the single-delete
+      // path, which routes through updateSuggestionStatus and nulls it).
+      const userCommentId = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [1, 'user', 'test.js', 10, 'Adopted comment', 'active']);
+
+      const aiSuggestionId = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status, adopted_as_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `, [1, 'ai', 'test.js', 10, 'AI suggestion', 'adopted', userCommentId.lastID]);
+
+      // Point the user comment back at the suggestion so bulk delete cascades.
+      await run(db, 'UPDATE comments SET parent_id = ? WHERE id = ?', [aiSuggestionId.lastID, userCommentId.lastID]);
+
+      await commentRepo.bulkDeleteComments(1);
+
+      const suggestion = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [aiSuggestionId.lastID]);
+      expect(suggestion.status).toBe('dismissed');
+      expect(suggestion.adopted_as_id).toBeNull();
     });
   });
 

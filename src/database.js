@@ -21,7 +21,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 51;
+const CURRENT_SCHEMA_VERSION = 52;
 
 /**
  * Database schema SQL statements
@@ -90,6 +90,7 @@ const SCHEMA_SQL = {
       reasoning TEXT,
 
       status TEXT DEFAULT 'active' CHECK(status IN ('active', 'dismissed', 'adopted', 'submitted', 'draft', 'inactive')),
+      status_reason TEXT,
       adopted_as_id INTEGER,
       parent_id INTEGER,
       is_file_level INTEGER DEFAULT 0,
@@ -2237,6 +2238,26 @@ const MIGRATIONS = {
       console.log('  Table github_pr_cache absent; nothing to reindex');
     }
     console.log('Migration to schema version 51 complete');
+  },
+
+  // Migration to version 52: add status_reason column to comments table.
+  // Stores the human/agent-provided reason a suggestion was dismissed (and the
+  // canonical cascade reason when an adopted comment is deleted). Nullable; the
+  // invariant is that it is only ever populated on 'dismissed' suggestions.
+  52: (db) => {
+    console.log('Running migration to schema version 52: add status_reason to comments...');
+    if (!tableExists(db, 'comments')) {
+      console.log('  comments table does not exist, skipping');
+      console.log('Migration to schema version 52 complete');
+      return;
+    }
+    if (!columnExists(db, 'comments', 'status_reason')) {
+      db.prepare('ALTER TABLE comments ADD COLUMN status_reason TEXT').run();
+      console.log('  Added status_reason column to comments');
+    } else {
+      console.log('  status_reason column already present; nothing to do');
+    }
+    console.log('Migration to schema version 52 complete');
   }
 };
 
@@ -3562,33 +3583,48 @@ class CommentRepository {
 
   /**
    * Update AI suggestion status and link to adopted comment
+   *
+   * status_reason invariant: a reason only ever lives on a 'dismissed'
+   * suggestion. Restoring to 'active' and adopting both clear it.
    * @param {number} suggestionId - AI suggestion comment ID
    * @param {string} status - New status ('adopted', 'dismissed', 'active')
    * @param {number} [adoptedAsId] - ID of the user comment if adopted
+   * @param {string|null} [reason] - Dismissal reason (only meaningful for 'dismissed'); trimmed empty → null
    * @returns {Promise<boolean>} True if updated successfully
    */
-  async updateSuggestionStatus(suggestionId, status, adoptedAsId = null) {
+  async updateSuggestionStatus(suggestionId, status, adoptedAsId = null, reason = null) {
     const validStatuses = ['adopted', 'dismissed', 'active'];
     if (!validStatuses.includes(status)) {
       throw new Error('Invalid status. Must be "adopted", "dismissed", or "active"');
     }
 
-    // When restoring to active, clear adopted_as_id
+    // When restoring to active, clear adopted_as_id and status_reason
     if (status === 'active') {
       const result = await run(this.db, `
         UPDATE comments
-        SET status = ?, adopted_as_id = NULL, updated_at = CURRENT_TIMESTAMP
+        SET status = ?, adopted_as_id = NULL, status_reason = NULL, updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
       `, [status, suggestionId]);
       return result.changes > 0;
     }
 
-    // For adopted/dismissed, optionally set adopted_as_id
+    // Adopting clears any prior dismissal reason (invariant: reason only on 'dismissed').
+    if (status === 'adopted') {
+      const result = await run(this.db, `
+        UPDATE comments
+        SET status = ?, adopted_as_id = ?, status_reason = NULL, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `, [status, adoptedAsId, suggestionId]);
+      return result.changes > 0;
+    }
+
+    // Dismissing: persist the (already trimmed/normalized) reason, or null.
+    const normalizedReason = typeof reason === 'string' && reason.trim() ? reason.trim() : null;
     const result = await run(this.db, `
       UPDATE comments
-      SET status = ?, adopted_as_id = ?, updated_at = CURRENT_TIMESTAMP
+      SET status = ?, adopted_as_id = ?, status_reason = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
-    `, [status, adoptedAsId, suggestionId]);
+    `, [status, adoptedAsId, normalizedReason, suggestionId]);
 
     return result.changes > 0;
   }
@@ -3662,7 +3698,7 @@ class CommentRepository {
 
     // If this comment was adopted from an AI suggestion, dismiss the parent suggestion
     if (comment.parent_id) {
-      await this.updateSuggestionStatus(comment.parent_id, 'dismissed');
+      await this.updateSuggestionStatus(comment.parent_id, 'dismissed', null, 'Adopted comment was deleted');
       dismissedSuggestionId = comment.parent_id;
     }
 
@@ -3711,7 +3747,8 @@ class CommentRepository {
       const placeholders = dismissedSuggestionIds.map(() => '?').join(',');
       await run(this.db, `
         UPDATE comments
-        SET status = 'dismissed', updated_at = CURRENT_TIMESTAMP
+        SET status = 'dismissed', status_reason = 'Adopted comment was deleted',
+            adopted_as_id = NULL, updated_at = CURRENT_TIMESTAMP
         WHERE id IN (${placeholders})
       `, dismissedSuggestionIds);
     }
@@ -3802,7 +3839,7 @@ class CommentRepository {
       SELECT
         id, ai_run_id, ai_level, ai_confidence,
         file, line_start, line_end, type, title, body,
-        reasoning, status, is_file_level, severity, created_at
+        reasoning, status, status_reason, is_file_level, severity, created_at
       FROM comments
       WHERE ${conditions.join('\n          AND ')}
       ORDER BY file, line_start

@@ -34,6 +34,10 @@ global.localStorage = {
 };
 global.CustomEvent = class CustomEvent {};
 
+// Real attribute-escaping implementation from production markdown.js, used by
+// AIPanel's finding-item title tooltip (browser loads markdown.js before AIPanel.js).
+const { escapeHtmlAttribute } = require('../../public/js/utils/markdown.js');
+
 // Import the actual AIPanel class from production code
 const { AIPanel } = require('../../public/js/components/AIPanel.js');
 
@@ -96,6 +100,9 @@ beforeEach(() => {
     panelGroup: {
       _onReviewVisibilityChanged: vi.fn(),
     },
+    // renderFindingItem escapes the title tooltip for attribute context;
+    // provided by markdown.js in the browser (loaded before AIPanel.js).
+    escapeHtmlAttribute,
   };
 });
 

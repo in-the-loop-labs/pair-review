@@ -372,6 +372,52 @@ describe('buildInitialContext', () => {
       expect(context).toContain('src/utils.js');
     });
 
+    it('should include status_reason for a dismissed suggestion so the agent sees WHY', () => {
+      const suggestions = [
+        {
+          id: 1,
+          file: 'src/index.js',
+          line_start: 10,
+          line_end: 15,
+          type: 'bug',
+          title: 'Potential null pointer',
+          body: 'The variable may be null here',
+          reasoning: null,
+          status: 'dismissed',
+          status_reason: 'Guarded by an earlier assertion',
+          ai_confidence: 0.9,
+          is_file_level: 0
+        }
+      ];
+
+      const context = buildInitialContext({ suggestions });
+
+      expect(context).toContain('status_reason');
+      expect(context).toContain('Guarded by an earlier assertion');
+    });
+
+    it('should omit status_reason when absent to keep the context lean', () => {
+      const suggestions = [
+        {
+          id: 1,
+          file: 'src/index.js',
+          line_start: 10,
+          type: 'bug',
+          title: 'Active finding',
+          body: 'Body',
+          reasoning: null,
+          status: 'active',
+          status_reason: null,
+          ai_confidence: 0.9,
+          is_file_level: 0
+        }
+      ];
+
+      const context = buildInitialContext({ suggestions });
+
+      expect(context).not.toContain('status_reason');
+    });
+
     it('should parse reasoning from JSON string', () => {
       const suggestions = [
         {

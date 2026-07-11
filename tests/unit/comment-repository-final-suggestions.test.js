@@ -102,7 +102,7 @@ describe('CommentRepository.getFinalSuggestionsByRunId', () => {
     const expectedKeys = [
       'id', 'ai_run_id', 'ai_level', 'ai_confidence',
       'file', 'line_start', 'line_end', 'type', 'title', 'body',
-      'reasoning', 'status', 'is_file_level', 'severity', 'created_at',
+      'reasoning', 'status', 'status_reason', 'is_file_level', 'severity', 'created_at',
     ];
     expect(Object.keys(rows[0]).sort()).toEqual([...expectedKeys].sort());
   });
