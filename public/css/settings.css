@@ -1,0 +1,1147 @@
+/* ============================================
+   Global Settings Page Styles
+   (Mirrors repo-settings.css structure; inherits CSS variables from pr.css)
+   ============================================ */
+
+:root {
+  /* Two-column layout: sidebar + content. Content column stays ~760px. */
+  --settings-max-width: 1000px;
+  --settings-sidebar-width: 210px;
+  /* Approx. height of the sticky top nav (12+12 padding + ~36 content + 1 border). */
+  --settings-header-h: 61px;
+  /* Offset applied to section scroll targets so headings clear the sticky header. */
+  --settings-scroll-offset: 80px;
+}
+
+/* Override global html/body styles from pr.css for the settings page.
+   The page scrolls as a whole (unlike the app-like PR view), so the root is the
+   scroller. Clip horizontal overflow on the root only: overflow on <html>
+   propagates to the viewport and does NOT break position: sticky. */
+html {
+  height: auto;
+  min-height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  margin: 0;
+  padding: 0;
+  background: var(--color-bg-primary);
+}
+
+/* Body must stay overflow: visible. Any non-visible overflow makes the body a
+   scroll/clip container, which becomes the containing block for the sticky
+   sidebar — and since the body is as tall as the content and never scrolls
+   internally (the viewport does), the sidebar would just scroll away with the
+   page. This overrides pr.css `html, body { overflow: hidden }`. */
+body {
+  height: auto;
+  min-height: 100%;
+  overflow: visible;
+  margin: 0;
+  padding: 0;
+  background: var(--color-bg-primary);
+}
+
+.settings-page {
+  min-height: 100vh;
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  padding-bottom: 48px;
+}
+
+/* ============================================
+   Navigation Bar
+   ============================================ */
+
+.settings-nav {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: var(--color-bg-secondary);
+  border-bottom: 1px solid var(--color-border-primary);
+  backdrop-filter: blur(8px);
+}
+
+.nav-content {
+  margin: 0 auto;
+  padding: 12px 24px;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+
+.nav-logo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-text-primary);
+  text-decoration: none;
+  font-size: 16px;
+  transition: opacity 0.15s ease;
+}
+
+.nav-logo:hover {
+  opacity: 0.8;
+}
+
+.nav-logo svg {
+  color: #f59e0b;
+}
+
+.logo-text {
+  font-weight: 400;
+}
+
+.logo-text strong {
+  font-weight: 600;
+}
+
+.breadcrumb {
+  flex: 1;
+  max-width: none;
+  overflow: visible;
+}
+
+.breadcrumb ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.breadcrumb li {
+  display: flex;
+  align-items: center;
+}
+
+.breadcrumb a {
+  color: var(--color-text-secondary);
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+
+.breadcrumb a:hover {
+  color: var(--color-accent-primary);
+}
+
+.breadcrumb .separator {
+  color: var(--color-text-muted);
+}
+
+.breadcrumb .current {
+  color: var(--color-text-primary);
+  font-weight: 500;
+}
+
+.theme-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border-primary);
+  border-radius: 8px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.theme-toggle:hover {
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  border-color: var(--color-border-secondary);
+}
+
+/* ============================================
+   Main Content Area
+   ============================================ */
+
+.settings-main {
+  padding: 32px 24px;
+}
+
+.settings-container {
+  max-width: var(--settings-max-width);
+  margin: 0 auto;
+}
+
+/* ============================================
+   Two-column layout (section nav + content)
+   ============================================ */
+
+.settings-layout {
+  display: grid;
+  grid-template-columns: var(--settings-sidebar-width) minmax(0, 1fr);
+  gap: 32px;
+  align-items: start;
+}
+
+/* Content column: min-width 0 so long code/paths can't force page overflow. */
+.settings-content {
+  min-width: 0;
+}
+
+/* Sticky sidebar — usable from anywhere on the page. */
+.settings-sidebar {
+  position: sticky;
+  top: calc(var(--settings-header-h) + 16px);
+  align-self: start;
+  max-height: calc(100vh - var(--settings-header-h) - 32px);
+  overflow-y: auto;
+}
+
+.settings-nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-left: 1px solid var(--color-border-primary);
+}
+
+.settings-nav-item {
+  display: block;
+  padding: 6px 12px;
+  margin-left: -1px;
+  border-left: 2px solid transparent;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-radius: 0 6px 6px 0;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+
+.settings-nav-item:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-secondary);
+}
+
+.settings-nav-item.is-active {
+  color: #b45309;
+  border-left-color: #f59e0b;
+  background: rgba(245, 158, 11, 0.08);
+  font-weight: 600;
+}
+
+[data-theme="dark"] .settings-nav-item.is-active {
+  color: #fbbf24;
+  border-left-color: #fbbf24;
+  background: rgba(251, 191, 36, 0.1);
+}
+
+.settings-nav-item:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.4);
+  border-radius: 6px;
+}
+
+/* Page Header */
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 24px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--color-border-primary);
+}
+
+.page-header .header-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+  color: white;
+  box-shadow: 0 4px 12px rgba(245, 158, 11, 0.25);
+  flex-shrink: 0;
+}
+
+[data-theme="dark"] .page-header .header-icon {
+  background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);
+  box-shadow: 0 4px 16px rgba(251, 191, 36, 0.2);
+}
+
+.header-text h1 {
+  margin: 0 0 4px;
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.header-subtitle {
+  margin: 0;
+  font-size: 14px;
+  color: var(--color-text-secondary);
+  max-width: 60ch;
+}
+
+/* Precedence explainer */
+.settings-precedence-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 28px;
+  padding: 12px 16px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-primary);
+  border-radius: 10px;
+}
+
+.settings-precedence-note svg {
+  flex-shrink: 0;
+  margin-top: 3px;
+  color: var(--color-text-muted);
+}
+
+.settings-precedence-note strong {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.settings-precedence-note .source-badge {
+  vertical-align: middle;
+}
+
+/* Loading / error */
+.settings-loading,
+.settings-error {
+  padding: 24px 0;
+  font-size: 14px;
+  color: var(--color-text-muted);
+}
+
+.settings-error {
+  color: var(--color-danger);
+}
+
+/* ============================================
+   Settings Sections
+   ============================================ */
+
+.settings-section {
+  margin-bottom: 28px;
+  padding: 24px;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-primary);
+  border-radius: 12px;
+  /* Keep the heading clear of the sticky header when scrolled to. */
+  scroll-margin-top: var(--settings-scroll-offset);
+}
+
+.section-header {
+  margin-bottom: 8px;
+}
+
+.section-header h2 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 6px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.section-description {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
+
+.settings-rows {
+  margin-top: 8px;
+}
+
+/* ============================================
+   Setting Row
+   ============================================ */
+
+.setting-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 16px 0;
+  border-top: 1px solid var(--color-border-primary);
+}
+
+.setting-row:first-child {
+  border-top: none;
+}
+
+.setting-info {
+  min-width: 0;
+  flex: 1;
+}
+
+.setting-label-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.setting-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.setting-description {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+  max-width: 52ch;
+}
+
+.restart-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  border-radius: 8px;
+  background: var(--color-warning-bg, rgba(245, 158, 11, 0.1));
+  color: var(--color-warning-text, #b45309);
+}
+
+.restart-note[hidden] {
+  display: none;
+}
+
+.restart-note svg {
+  flex-shrink: 0;
+}
+
+[data-theme="dark"] .restart-note {
+  background: rgba(251, 191, 36, 0.12);
+  color: #fbbf24;
+}
+
+/* Control column */
+.setting-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  padding-top: 2px;
+}
+
+/* The "Default for Analysis" control stacks the dropdown over its composition
+   preview; top-align the reset button beside the (taller) stack. */
+.setting-control:has(.council-control-wrap) {
+  align-items: flex-start;
+}
+
+.council-control-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-start;
+  min-width: 240px;
+}
+
+.council-control-wrap .custom-dropdown {
+  width: 240px;
+}
+
+.council-preview {
+  width: 100%;
+}
+
+.council-preview-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+}
+
+/* ============================================
+   Source Badges
+   ============================================ */
+
+.source-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border-radius: 10px;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+
+/* default = "not explicitly set" — muted */
+.source-badge--default {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-muted);
+}
+
+/* in-app override — accent */
+.source-badge--app {
+  background: rgba(245, 158, 11, 0.12);
+  color: #b45309;
+  border-color: rgba(245, 158, 11, 0.25);
+}
+
+[data-theme="dark"] .source-badge--app {
+  background: rgba(251, 191, 36, 0.15);
+  color: #fbbf24;
+  border-color: rgba(251, 191, 36, 0.25);
+}
+
+/* environment variable */
+.source-badge--env {
+  background: rgba(139, 92, 246, 0.12);
+  color: #7c3aed;
+}
+
+[data-theme="dark"] .source-badge--env {
+  background: rgba(139, 92, 246, 0.18);
+  color: #a78bfa;
+}
+
+/* config files (global or project) */
+.source-badge--file {
+  background: rgba(14, 165, 233, 0.12);
+  color: #0284c7;
+}
+
+[data-theme="dark"] .source-badge--file {
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+}
+
+/* managed config */
+.source-badge--managed {
+  background: rgba(100, 116, 139, 0.14);
+  color: #475569;
+}
+
+[data-theme="dark"] .source-badge--managed {
+  background: rgba(148, 163, 184, 0.16);
+  color: #cbd5e1;
+}
+
+/* ============================================
+   Feature badges (new / beta) + final lock
+   ============================================ */
+
+/* Small status pill shown in section headers, sidebar nav items, and per-
+   setting rows. Unknown badge strings reuse the beta styling. */
+.feature-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border-radius: 8px;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+
+.feature-badge--new {
+  background: rgba(34, 197, 94, 0.14);
+  color: #16a34a;
+  border-color: rgba(34, 197, 94, 0.25);
+}
+
+[data-theme="dark"] .feature-badge--new {
+  background: rgba(34, 197, 94, 0.18);
+  color: #4ade80;
+  border-color: rgba(34, 197, 94, 0.3);
+}
+
+.feature-badge--beta {
+  background: rgba(139, 92, 246, 0.14);
+  color: #7c3aed;
+  border-color: rgba(139, 92, 246, 0.25);
+}
+
+[data-theme="dark"] .feature-badge--beta {
+  background: rgba(139, 92, 246, 0.2);
+  color: #a78bfa;
+  border-color: rgba(139, 92, 246, 0.3);
+}
+
+/* Spacing when a badge trails a nav-item label (the anchor is a block, so the
+   pill flows inline after the title). */
+.settings-nav-item .feature-badge {
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+/* Lock pill next to the source badge on a config-finalized setting. */
+.final-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border-radius: 10px;
+  white-space: nowrap;
+  background: rgba(100, 116, 139, 0.14);
+  color: #475569;
+  border: 1px solid rgba(100, 116, 139, 0.22);
+}
+
+[data-theme="dark"] .final-badge {
+  background: rgba(148, 163, 184, 0.16);
+  color: #cbd5e1;
+  border-color: rgba(148, 163, 184, 0.24);
+}
+
+.final-badge svg {
+  flex-shrink: 0;
+}
+
+/* ============================================
+   Controls
+   ============================================ */
+
+.settings-input {
+  padding: 8px 12px;
+  min-width: 200px;
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border-primary);
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--color-text-primary);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.settings-input--number {
+  min-width: 100px;
+  width: 100px;
+}
+
+.settings-input::placeholder {
+  color: var(--color-text-tertiary);
+}
+
+.settings-input:focus {
+  outline: none;
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.12);
+}
+
+[data-theme="dark"] .settings-input:focus {
+  border-color: #fbbf24;
+  box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.12);
+}
+
+.settings-select {
+  padding: 8px 12px;
+  min-width: 200px;
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border-primary);
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236b7280' d='M2.22 4.22a.75.75 0 011.06 0L6 6.94l2.72-2.72a.75.75 0 111.06 1.06l-3.25 3.25a.75.75 0 01-1.06 0L2.22 5.28a.75.75 0 010-1.06z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 34px;
+}
+
+.settings-select:focus {
+  outline: none;
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.12);
+}
+
+[data-theme="dark"] .settings-select:focus {
+  border-color: #fbbf24;
+  box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.12);
+}
+
+/* Toggle (boolean) */
+.toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 40px;
+  height: 22px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-slider {
+  position: absolute;
+  inset: 0;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border-primary);
+  border-radius: 22px;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.toggle-slider::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  background: var(--color-text-tertiary);
+  border-radius: 50%;
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.toggle input:checked + .toggle-slider {
+  background: #f59e0b;
+  border-color: #f59e0b;
+}
+
+.toggle input:checked + .toggle-slider::before {
+  transform: translateX(18px);
+  background: white;
+}
+
+.toggle input:focus-visible + .toggle-slider {
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.2);
+}
+
+[data-theme="dark"] .toggle input:checked + .toggle-slider {
+  background: #fbbf24;
+  border-color: #fbbf24;
+}
+
+/* Disabled controls — used by config-finalized settings. */
+.settings-input:disabled,
+.settings-select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.toggle input:disabled + .toggle-slider {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.toggle:has(input:disabled) {
+  cursor: not-allowed;
+}
+
+/* Read-only value display — deliberately styled as a plain code chip (no input
+   border, tinted background) so it never reads as an editable field like the
+   .settings-input / .settings-select controls in the other sections. */
+.readonly-value {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
+  font-size: 13px;
+  color: var(--color-text-tertiary);
+  background: var(--color-bg-tertiary);
+  border: none;
+  border-radius: 6px;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.readonly-value--set {
+  color: var(--color-text-secondary);
+}
+
+/* Object read-only (providers / chat_providers / hooks / repos): an inline
+   collapsible showing the full contents. The summary is a code chip matching
+   .readonly-value; the expanded body is a scroll-capped <pre>. */
+.readonly-object {
+  max-width: 360px;
+  font-size: 13px;
+}
+
+.readonly-object-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-tertiary);
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+
+.readonly-object-summary::-webkit-details-marker {
+  display: none;
+}
+
+.readonly-object-summary::before {
+  content: '▸';
+  color: var(--color-text-tertiary);
+  font-size: 11px;
+}
+
+.readonly-object[open] > .readonly-object-summary::before {
+  content: '▾';
+}
+
+.readonly-object[open] > .readonly-object-summary {
+  margin-bottom: 6px;
+}
+
+.readonly-object-json {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 240px;
+  overflow: auto;
+  font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-text-primary);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-primary);
+  border-radius: 8px;
+  white-space: pre;
+}
+
+/* Reset button */
+.reset-btn {
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: 1px solid var(--color-border-primary);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.reset-btn:hover {
+  color: var(--color-accent-primary);
+  border-color: var(--color-accent-primary);
+  background: rgba(245, 158, 11, 0.06);
+}
+
+.reset-btn[hidden] {
+  display: none;
+}
+
+/* ============================================
+   Repositories Section
+   ============================================ */
+
+.repo-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  margin-top: 8px;
+  text-decoration: none;
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border-primary);
+  border-radius: 8px;
+  transition: all 0.15s ease;
+}
+
+.repo-row:hover {
+  border-color: var(--color-accent-primary);
+  background: rgba(245, 158, 11, 0.04);
+}
+
+[data-theme="dark"] .repo-row:hover {
+  background: rgba(251, 191, 36, 0.06);
+}
+
+.repo-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.repo-row-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.repo-path {
+  font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
+  font-size: 11px;
+  color: var(--color-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 420px;
+}
+
+.repo-row-badges {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.repo-source-hint {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.repo-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+
+.repo-badge--configured {
+  background: rgba(34, 197, 94, 0.12);
+  color: #16a34a;
+}
+
+[data-theme="dark"] .repo-badge--configured {
+  background: rgba(34, 197, 94, 0.15);
+  color: #4ade80;
+}
+
+.repo-badge--known {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-muted);
+}
+
+.repos-empty {
+  padding: 20px 0 4px;
+  font-size: 14px;
+  color: var(--color-text-muted);
+}
+
+.repos-empty code {
+  background: var(--color-bg-tertiary);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
+  font-size: 12px;
+}
+
+/* ============================================
+   Toast Notifications
+   ============================================ */
+
+.toast-container {
+  position: fixed;
+  top: 24px;
+  right: 24px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  background: var(--color-bg-elevated, var(--color-bg-secondary));
+  border: 1px solid var(--color-border-primary);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+  transform: translateX(120%);
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  min-width: 260px;
+}
+
+.toast.show {
+  transform: translateX(0);
+}
+
+.toast-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.toast.success .toast-icon {
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+}
+
+.toast.error .toast-icon {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+
+.toast-message {
+  flex: 1;
+  font-size: 14px;
+  color: var(--color-text-primary);
+}
+
+.toast-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.toast-close:hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+}
+
+/* ============================================
+   Responsive
+   ============================================ */
+
+/* Below the two-column threshold, stack the section nav above the content as a
+   sticky, horizontally scrollable chip bar. */
+@media (max-width: 940px) {
+  .settings-layout {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+
+  .settings-sidebar {
+    position: sticky;
+    top: var(--settings-header-h);
+    z-index: 50;
+    align-self: stretch;
+    max-height: none;
+    /* Horizontal scroll for overflowing chips; never the page. */
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 8px 0;
+    background: var(--color-bg-primary);
+    border-bottom: 1px solid var(--color-border-primary);
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .settings-nav-list {
+    flex-direction: row;
+    gap: 6px;
+    border-left: none;
+    padding-bottom: 2px;
+  }
+
+  .settings-nav-item {
+    margin-left: 0;
+    padding: 6px 12px;
+    border-left: none;
+    border: 1px solid var(--color-border-primary);
+    border-radius: 999px;
+    background: var(--color-bg-secondary);
+    flex: 0 0 auto;
+  }
+
+  .settings-nav-item.is-active {
+    border-color: #f59e0b;
+    border-left-color: #f59e0b;
+  }
+
+  [data-theme="dark"] .settings-nav-item.is-active {
+    border-color: #fbbf24;
+    border-left-color: #fbbf24;
+  }
+
+  /* Section targets must clear both the header and the sticky chip bar. */
+  .settings-section {
+    scroll-margin-top: calc(var(--settings-header-h) + 64px);
+  }
+}
+
+@media (max-width: 768px) {
+  .nav-content {
+    padding: 12px 16px;
+  }
+
+  .breadcrumb {
+    display: none;
+  }
+
+  .settings-main {
+    padding: 24px 16px;
+  }
+
+  .page-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .settings-section {
+    padding: 20px 16px;
+  }
+
+  .setting-row {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .setting-control {
+    width: 100%;
+  }
+
+  .settings-input,
+  .settings-select {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .repo-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .repo-row-badges {
+    width: 100%;
+    justify-content: flex-start;
+  }
+}

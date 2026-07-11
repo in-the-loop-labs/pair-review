@@ -69,13 +69,17 @@ async function startMCPStdio() {
   const { startServer } = require('./server');
   const { loadConfig, resolveDbName } = require('./config');
   const { createMCPServer } = require('./routes/mcp');
+  const { GlobalSettingsService } = require('./settings/global-settings-service');
   const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 
-  // Load config BEFORE database so we can resolve db_name
+  // Load config BEFORE database so we can resolve db_name. `layers` is retained
+  // for the global-settings overlay applied after the DB opens (below).
   let config = {};
+  let layers = [];
   try {
     const loaded = await loadConfig();
     config = loaded.config || {};
+    layers = loaded.layers || [];
   } catch (err) {
     console.error(`[MCP] Warning: failed to load config, using defaults: ${err.message}`);
   }
@@ -88,6 +92,25 @@ async function startMCPStdio() {
   process.env.PAIR_REVIEW_SINGLE_PORT = 'false';
 
   const db = await initializeDatabase(resolveDbName(config));
+
+  // Fold in-app /settings overrides onto the config BEFORE it is handed to
+  // createMCPServer, so `start_analysis` over stdio honors default_provider /
+  // default_model (and other) overrides — matching the precedence documented in
+  // src/routes/mcp.js (which reads `config._globalOverrides`). Without this the
+  // stdio tool path resolves as if no in-app override existed. startServer(db)
+  // applies its own overlay independently for the web-UI routes.
+  //
+  // Boot-time overlay: overrides changed after this process starts require an
+  // MCP-server restart to take effect (the config is captured once when the
+  // tools are registered). Guarded so a DB read failure leaves the file config
+  // intact rather than aborting the transport.
+  try {
+    const globalSettings = new GlobalSettingsService({ db, baseConfig: config, layers });
+    config = globalSettings.buildEffectiveConfig();
+  } catch (overlayError) {
+    console.error(`[MCP] Warning: could not apply global-settings overrides: ${overlayError.message}`);
+  }
+
   const port = await startServer(db);
 
   const mcpServer = createMCPServer(db, { port, config });

@@ -17,6 +17,7 @@ const { resolveCouncilHandle, getCouncilLastUsedRepos, shortId } = require('./co
 const { runHeadlessCouncilAnalysis } = require('./councils/headless-council');
 const { normalizeCouncilConfig, validateCouncilConfig } = require('./routes/councils');
 const { resolveReviewConfig } = require('./review-config');
+const { GlobalSettingsService } = require('./settings/global-settings-service');
 const { redirectConsoleToStderr } = require('./mcp-stdio');
 const { getChangedFiles } = require('./routes/executable-analysis');
 const { safeParseJson } = require('./utils/safe-parse-json');
@@ -257,8 +258,6 @@ ENVIRONMENT VARIABLES:
     PAIR_REVIEW_CLAUDE_CMD  Custom command to invoke Claude CLI (default: claude)
     PAIR_REVIEW_ANTIGRAVITY_CMD  Custom command to invoke Antigravity CLI (default: agy)
     PAIR_REVIEW_CODEX_CMD   Custom command to invoke Codex CLI (default: codex)
-    PAIR_REVIEW_MODEL       Override the AI model (same as --model flag, default: opus)
-    PAIR_REVIEW_PROVIDER    Override the AI provider (same as --provider flag, default: claude)
 
 CONFIGURATION:
     Config file: ~/.pair-review/config.json
@@ -571,32 +570,6 @@ function parseArgs(args) {
 }
 
 /**
- * Fold the PAIR_REVIEW_PROVIDER / PAIR_REVIEW_MODEL env vars into parsed flags.
- *
- * `--provider`/`--model` and their env-var twins are two channels for the same
- * override, but only the flags are threaded through single-port delegation
- * (`buildDelegationUrl` forwards `flags.provider`/`flags.model`). Without this
- * fold, an env-only invocation (`PAIR_REVIEW_PROVIDER=codex pair-review 123
- * --ai`) delegates with an empty `flags.provider` and the override is silently
- * dropped at the process boundary. Normalizing env→flags once here gives every
- * downstream reader — delegation, the flags→env mirror, headless resolvers — a
- * single effective value. Explicit flags always win over env.
- *
- * @param {object} flags - Parsed CLI flags (mutated in place)
- * @param {object} [env] - Environment source (defaults to process.env; injectable for tests)
- * @returns {object} the same `flags`, for chaining
- */
-function normalizeProviderModelFlags(flags, env = process.env) {
-  if (!flags.provider && env.PAIR_REVIEW_PROVIDER) {
-    flags.provider = env.PAIR_REVIEW_PROVIDER;
-  }
-  if (!flags.model && env.PAIR_REVIEW_MODEL) {
-    flags.model = env.PAIR_REVIEW_MODEL;
-  }
-  return flags;
-}
-
-/**
  * Main application entry point
  */
 async function main() {
@@ -666,8 +639,6 @@ ENVIRONMENT VARIABLES:
     PAIR_REVIEW_CLAUDE_CMD  Custom Claude CLI command (default: claude)
     PAIR_REVIEW_ANTIGRAVITY_CMD  Custom Antigravity CLI command (default: agy)
     PAIR_REVIEW_CODEX_CMD   Custom Codex CLI command (default: codex)
-    PAIR_REVIEW_MODEL       Default AI model (e.g., opus, sonnet, haiku)
-    PAIR_REVIEW_PROVIDER    Default AI provider (e.g., claude, antigravity, codex)
     PAIR_REVIEW_DB_NAME     Custom database filename (overrides config)
 
 LOCAL CONFIG:
@@ -725,7 +696,7 @@ AI PROVIDERS:
     }
 
     // Load configuration
-    const { config, isFirstRun } = await loadConfig();
+    const { config, isFirstRun, layers } = await loadConfig();
 
     // Show welcome message on first run (after early-exit flags are handled
     // above). Suppressed in headless --json mode so nothing reaches stdout but
@@ -737,10 +708,6 @@ AI PROVIDERS:
     // Parse command line arguments including flags (before DB init so
     // single-port delegation can skip DB entirely)
     const { prArgs, flags } = parseArgs(args);
-
-    // Normalize env→flags before delegation so an env-only provider/model
-    // override rides the single-port delegation URL to the running server.
-    normalizeProviderModelFlags(flags);
 
     // Headless-mode flag validation (fail fast, before any DB/server work).
     // --instructions and --instructions-file are mutually exclusive.
@@ -809,31 +776,18 @@ AI PROVIDERS:
     // No redirect is repeated here: it would be too late to matter and is
     // redundant given the early call.
 
-    // Apply debug_stream from config if not already enabled by CLI flag
-    if (!flags.debugStream && config.debug_stream) {
-      flags.debugStream = true;
-      logger.setStreamDebugEnabled(true);
-    }
-
-    // Apply yolo mode from CLI flag or config
-    if (flags.yolo || config.yolo) {
-      // config.yolo: used by applyConfigOverrides() for this process
-      config.yolo = true;
-      // Env var: bridges to server.js which reloads config from disk independently
-      process.env.PAIR_REVIEW_YOLO = 'true';
-    }
+    // NOTE: debug_stream handling, the yolo env bridge, and applyConfigOverrides
+    // are deliberately deferred until AFTER the global-settings overlay is folded
+    // into `config` (below, right after DB init). Each latches a config value that
+    // an in-app /settings override can change (debug_stream, yolo → the
+    // provider-runtime yoloMode), so running them here — on the pre-overlay file
+    // config — would ignore a restart-required override.
 
     // --model is ignored when --council is set: council voices use their own
     // per-voice models, so a top-level --model has no effect on the analysis.
     if (flags.council && flags.model) {
       console.warn('Warning: --model is ignored when --council is set; council voices use their own per-voice models.');
     }
-
-    // Apply provider config overrides (including yolo) for all code paths
-    // (interactive, headless, local). server.js calls this independently on
-    // startup, but headless paths (--ai-draft, --ai-review) never start the
-    // server, so we must also apply here.
-    applyConfigOverrides(config);
 
     // --list-councils: print the saved councils and exit. Needs the database
     // but no server, no PR/local context, and no single-port delegation.
@@ -931,6 +885,48 @@ AI PROVIDERS:
       db = await initializeDatabase(resolveDbName(config));
     }
 
+    // Overlay in-app global-settings overrides onto the CLI's config object so
+    // restart-required settings (worktree/review retention, dev_mode, etc.) and
+    // provider/model defaults honor DB values on this launch — the server that
+    // startServer() spins up applies its own overlay independently. Guarded so a
+    // DB read failure leaves the file config intact rather than aborting startup.
+    //
+    // Paths that exit BEFORE this point run on the pre-overlay file config and
+    // therefore cannot see in-app overrides — this is intentional: `--list-councils`
+    // only reads DB rows (no config-driven behavior), and a single-port delegated
+    // launch hands off to an already-running server that applies its own overlay.
+    try {
+      const overlay = new GlobalSettingsService({ db, baseConfig: config, layers });
+      Object.assign(config, overlay.buildEffectiveConfig());
+    } catch (overlayError) {
+      logger.warn(`Could not apply global-settings overrides: ${overlayError.message}`);
+    }
+
+    // Config consumers that latch an overlay-affected value — deferred to here so
+    // an in-app /settings override takes effect on this launch (they were NOT run
+    // earlier on the pre-overlay file config). Ordered before headless analysis
+    // and startServer, both of which depend on them.
+
+    // Apply debug_stream from config if not already enabled by CLI flag.
+    if (!flags.debugStream && config.debug_stream) {
+      flags.debugStream = true;
+      logger.setStreamDebugEnabled(true);
+    }
+
+    // Apply yolo mode from CLI flag or config.
+    if (flags.yolo || config.yolo) {
+      // config.yolo: used by applyConfigOverrides() for this process
+      config.yolo = true;
+      // Env var: bridges to server.js which reloads config from disk independently
+      process.env.PAIR_REVIEW_YOLO = 'true';
+    }
+
+    // Apply provider config overrides (including yolo) for all code paths
+    // (interactive, headless, local). server.js calls this independently on
+    // startup, but headless paths (--ai-draft, --ai-review) never start the
+    // server, so we must also apply here.
+    applyConfigOverrides(config);
+
     // Migrate existing worktrees to database (if any)
     const path = require('path');
     const worktreeBaseDir = path.join(getConfigDir(), 'worktrees');
@@ -1017,7 +1013,7 @@ AI PROVIDERS:
 
       // No PR arguments - just start the server
       console.log('No pull request specified. Starting server...');
-      await startServerOnly(config, poolLifecycle);
+      await startServerOnly(config, poolLifecycle, flags);
     }
 
   } catch (error) {
@@ -1100,18 +1096,15 @@ async function handlePullRequest(args, config, db, flags = {}, poolLifecycle = n
       await registerRepositoryLocation(db, currentDir, prInfo.owner, prInfo.repo);
     }
 
-    // Set model override if provided via CLI flag. Skipped when --council is
-    // set: council voices carry their own per-voice models.
-    if (flags.model && !flags.council) {
-      process.env.PAIR_REVIEW_MODEL = flags.model;
-    }
-
-    // Set provider override if provided via CLI flag. Mirrored into the env
-    // var so the web/UI analysis paths (which read PAIR_REVIEW_PROVIDER via
-    // getProvider()) honor it too, matching how --model works.
-    if (flags.provider) {
-      process.env.PAIR_REVIEW_PROVIDER = flags.provider;
-    }
+    // Per-run provider/model overrides from --provider/--model, threaded
+    // explicitly into the server (no env side channel). The web/UI analyze
+    // routes read these via app.get('cliOverrides'). The model override is
+    // skipped when --council is set: council voices carry their own per-voice
+    // models. (--provider is not council-gated, matching prior behavior.)
+    const cliOverrides = {
+      provider: flags.provider || undefined,
+      model: (flags.model && !flags.council) ? flags.model : undefined
+    };
 
     // Resolve the council handle FAIL-FAST before starting the server, so a bad
     // handle surfaces as a clean error (caught below) instead of after the
@@ -1122,7 +1115,7 @@ async function handlePullRequest(args, config, db, flags = {}, poolLifecycle = n
     }
 
     // Start server and open browser to setup page
-    const port = await startServer(db, poolLifecycle);
+    const port = await startServer(db, poolLifecycle, { cliOverrides });
 
     // Async cleanup of stale worktrees and reviews (don't block startup)
     cleanupStaleWorktreesAsync(config);
@@ -1169,9 +1162,17 @@ async function handlePullRequest(args, config, db, flags = {}, poolLifecycle = n
  * Start server without PR context
  * @param {Object} config - Application configuration
  * @param {import('./git/worktree-pool-lifecycle').WorktreePoolLifecycle} [poolLifecycle] - Pool lifecycle instance
+ * @param {Object} [flags] - Parsed CLI flags (for --provider/--model overrides)
  */
-async function startServerOnly(config, poolLifecycle = null) {
-  const port = await startServer(db, poolLifecycle);
+async function startServerOnly(config, poolLifecycle = null, flags = {}) {
+  // Per-run provider/model overrides carry through to browser-triggered
+  // analyses even when no PR was named on the CLI. Model is council-gated to
+  // match handlePullRequest.
+  const cliOverrides = {
+    provider: flags.provider || undefined,
+    model: (flags.model && !flags.council) ? flags.model : undefined
+  };
+  const port = await startServer(db, poolLifecycle, { cliOverrides });
 
   // Async cleanup of stale worktrees and reviews (don't block startup)
   cleanupStaleWorktreesAsync(config);
@@ -1492,7 +1493,7 @@ async function performHeadlessReview(args, config, db, flags, options, externalP
     // --council; resolveReviewConfig re-resolves the same handle (cheap in-memory
     // match) and unifies single/council selection with the headless path.
     // --provider (flags.provider) rides in as an explicit single-model pick; the
-    // resolver's ladder (explicit › PAIR_REVIEW_PROVIDER › repo › config › 'claude')
+    // resolver's ladder (explicit › repo › in-app override › config › 'claude')
     // delivers the CLI override that commit 662e introduced.
     const reviewConfig = await resolveReviewConfig(
       db,
@@ -2095,11 +2096,11 @@ async function preparePrHeadless(db, config, flags, prArgs, externalPoolLifecycl
 
   // Thread --provider (flags.provider) through as an explicit single-model pick,
   // exactly as the PR-submit path at the top of the file and the local headless
-  // path do. handleHeadlessAnalysis dispatches BEFORE the local/PR split (and thus
-  // before handlePullRequest's PAIR_REVIEW_PROVIDER env mirror), so omitting it
-  // here would let `pair-review <pr> --headless --provider <p>` silently fall
-  // through to the default provider (or, with a repo default council, switch to
-  // council mode) — while --model in the same invocation was honored.
+  // path do. handleHeadlessAnalysis dispatches BEFORE the local/PR split, and the
+  // headless resolvers read only these explicit flags (no env side channel), so
+  // omitting it here would let `pair-review <pr> --headless --provider <p>`
+  // silently fall through to the default provider (or, with a repo default
+  // council, switch to council mode) — while --model was honored.
   const reviewConfig = await resolveReviewConfig(
     db,
     repository,
@@ -2669,4 +2670,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { main, parseArgs, normalizeProviderModelFlags, detectPRFromGitHubEnvironment, printCouncilList, handleHeadlessAnalysis, runHeadlessAnalysis, recordEmptyScopeRun, buildHeadlessJson, buildHeadlessErrorJson, resolveCliInstructions };
+module.exports = { main, parseArgs, detectPRFromGitHubEnvironment, printCouncilList, handleHeadlessAnalysis, runHeadlessAnalysis, recordEmptyScopeRun, buildHeadlessJson, buildHeadlessErrorJson, resolveCliInstructions };

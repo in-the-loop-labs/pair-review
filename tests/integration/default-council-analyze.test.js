@@ -274,4 +274,101 @@ describe('Repo default-council parity in plain Analyze routes', () => {
       expect(analyzerCalls.single[0].model).toBe('pro');
     });
   });
+
+  // ============ CLI FLAG OVERRIDE vs IN-APP OVERRIDE (model field) ============
+  // Two per-run channels reach the web Analyze routes through
+  // resolveProviderModel(req): the --model CLI flag (threaded explicitly via
+  // app.get('cliOverrides')) and the global in-app override (/settings, folded
+  // into config.default_model and mirrored on config._globalOverrides). The CLI
+  // flag is per-invocation intent and ranks ABOVE the stored in-app override;
+  // with no flag the in-app override wins. There is no env-var side channel any
+  // more. Covers BOTH modes.
+  describe('CLI flag override vs in-app override (model field)', () => {
+    // The effective config the /settings service produces: the override is folded
+    // into default_model AND mirrored on _globalOverrides.
+    const overrideConfig = {
+      github_token: 'test-token', port: 7247, theme: 'light',
+      default_provider: 'claude',
+      default_model: 'app-model',
+      _globalOverrides: { default_model: 'app-model' }
+    };
+
+    afterEach(() => {
+      app.set('cliOverrides', {});
+    });
+
+    it('PR mode: the --model CLI flag wins over the in-app override', async () => {
+      app.set('config', overrideConfig);
+      app.set('cliOverrides', { model: 'flag-model' });
+      await run(db,
+        `INSERT INTO pr_metadata (pr_number, repository, title) VALUES (?, ?, ?)`,
+        [77, 'ov-owner/ov-repo', 'Override PR']);
+
+      const response = await request(server)
+        .post('/api/pr/ov-owner/ov-repo/77/analyses')
+        .send({});
+
+      expect(response.status).toBe(200);
+      expect(response.body.isCouncil).toBeUndefined();
+      expect(analyzerCalls.single.length).toBe(1);
+      // The per-run CLI flag outranks the stored in-app override.
+      expect(analyzerCalls.single[0].model).toBe('flag-model');
+    });
+
+    it('PR mode: the in-app override wins when no CLI flag is set', async () => {
+      app.set('config', overrideConfig);
+      await run(db,
+        `INSERT INTO pr_metadata (pr_number, repository, title) VALUES (?, ?, ?)`,
+        [79, 'ov2-owner/ov2-repo', 'Override PR 2']);
+
+      const response = await request(server)
+        .post('/api/pr/ov2-owner/ov2-repo/79/analyses')
+        .send({});
+
+      expect(response.status).toBe(200);
+      expect(analyzerCalls.single.length).toBe(1);
+      // The override is folded into config.default_model and wins over files.
+      expect(analyzerCalls.single[0].model).toBe('app-model');
+    });
+
+    it('PR mode: falls back to the CLI flag when no in-app override is set', async () => {
+      app.set('config', {
+        github_token: 'test-token', port: 7247, theme: 'light', default_provider: 'claude'
+      });
+      app.set('cliOverrides', { model: 'flag-model' });
+      await run(db,
+        `INSERT INTO pr_metadata (pr_number, repository, title) VALUES (?, ?, ?)`,
+        [78, 'flag-owner/flag-repo', 'Flag PR']);
+
+      const response = await request(server)
+        .post('/api/pr/flag-owner/flag-repo/78/analyses')
+        .send({});
+
+      expect(response.status).toBe(200);
+      expect(analyzerCalls.single.length).toBe(1);
+      // No in-app override → the CLI flag wins over the config-file default.
+      expect(analyzerCalls.single[0].model).toBe('flag-model');
+    });
+
+    it('Local mode: the --model CLI flag wins over the in-app override', async () => {
+      app.set('config', overrideConfig);
+      app.set('cliOverrides', { model: 'flag-model' });
+      await run(db,
+        `INSERT INTO reviews (pr_number, repository, review_type, local_path, local_head_sha)
+         VALUES (NULL, ?, 'local', '/tmp/ov-project', 'ovsha')`,
+        ['ov-local-repo']);
+      const row = db.prepare(
+        'SELECT id FROM reviews WHERE review_type = ? ORDER BY id DESC LIMIT 1'
+      ).get('local');
+
+      const response = await request(server)
+        .post(`/api/local/${row.id}/analyses`)
+        .send({});
+
+      expect(response.status).toBe(200);
+      expect(response.body.isCouncil).toBeUndefined();
+      expect(analyzerCalls.single.length).toBe(1);
+      expect(analyzerCalls.single[0].model).toBe('flag-model');
+    });
+  });
 });

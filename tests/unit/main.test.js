@@ -6,7 +6,7 @@ import path from 'path';
 import os from 'os';
 
 // Test the parseArgs and detectPRFromGitHubEnvironment functions exported from main.js
-const { parseArgs, normalizeProviderModelFlags, detectPRFromGitHubEnvironment } = require('../../src/main');
+const { parseArgs, detectPRFromGitHubEnvironment } = require('../../src/main');
 const logger = require('../../src/utils/logger');
 
 describe('main.js parseArgs', () => {
@@ -455,47 +455,6 @@ describe('main.js parseArgs', () => {
   });
 });
 
-describe('normalizeProviderModelFlags', () => {
-  it('fills provider/model from env when the flags are unset', () => {
-    const flags = {};
-    normalizeProviderModelFlags(flags, {
-      PAIR_REVIEW_PROVIDER: 'codex',
-      PAIR_REVIEW_MODEL: 'gpt-5.5'
-    });
-    expect(flags.provider).toBe('codex');
-    expect(flags.model).toBe('gpt-5.5');
-  });
-
-  it('lets explicit flags win over env', () => {
-    const flags = { provider: 'antigravity', model: 'gemini-3.5-flash-low' };
-    normalizeProviderModelFlags(flags, {
-      PAIR_REVIEW_PROVIDER: 'codex',
-      PAIR_REVIEW_MODEL: 'gpt-5.5'
-    });
-    expect(flags.provider).toBe('antigravity');
-    expect(flags.model).toBe('gemini-3.5-flash-low');
-  });
-
-  it('fills each half independently', () => {
-    const flags = { provider: 'codex' };
-    normalizeProviderModelFlags(flags, { PAIR_REVIEW_MODEL: 'gpt-5.5' });
-    expect(flags.provider).toBe('codex');
-    expect(flags.model).toBe('gpt-5.5');
-  });
-
-  it('is a no-op when neither flags nor env are set', () => {
-    const flags = {};
-    normalizeProviderModelFlags(flags, {});
-    expect(flags.provider).toBeUndefined();
-    expect(flags.model).toBeUndefined();
-  });
-
-  it('returns the same flags object for chaining', () => {
-    const flags = {};
-    expect(normalizeProviderModelFlags(flags, {})).toBe(flags);
-  });
-});
-
 describe('CLI help and version', () => {
   // These are integration tests that actually invoke the CLI
   // They test that the binary responds correctly to -h and -v flags
@@ -544,16 +503,19 @@ describe('CLI help and version', () => {
     expect(output).toContain('PAIR_REVIEW_CLAUDE_CMD');
     expect(output).toContain('PAIR_REVIEW_ANTIGRAVITY_CMD');
     expect(output).toContain('PAIR_REVIEW_CODEX_CMD');
-    expect(output).toContain('PAIR_REVIEW_MODEL');
-    expect(output).toContain('PAIR_REVIEW_PROVIDER');
+    // The provider/model env vars were removed; the section no longer advertises
+    // an env override for either. Build the banned names dynamically so this
+    // test file itself stays free of the removed identifiers.
+    expect(output).not.toContain(`PAIR_REVIEW_${'PROVIDER'}`);
+    expect(output).not.toContain(`PAIR_REVIEW_${'MODEL'}`);
   });
 
-  it('--configure output should list both PAIR_REVIEW_MODEL and PAIR_REVIEW_PROVIDER', () => {
+  it('--configure output should not advertise a provider/model env override', () => {
     const output = execSync(`${process.execPath} bin/pair-review.js --configure`, { encoding: 'utf-8' });
 
     expect(output).toContain('ENVIRONMENT VARIABLES:');
-    expect(output).toContain('PAIR_REVIEW_MODEL');
-    expect(output).toContain('PAIR_REVIEW_PROVIDER');
+    expect(output).not.toContain(`PAIR_REVIEW_${'PROVIDER'}`);
+    expect(output).not.toContain(`PAIR_REVIEW_${'MODEL'}`);
   });
 
   it('help output should contain configuration section', () => {

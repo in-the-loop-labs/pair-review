@@ -236,6 +236,12 @@ const classSource = source.substring(
 // Evaluate in a function to capture the class
 RepoSettingsPage = new Function(`${classSource}\nreturn RepoSettingsPage;`)();
 
+// The council card is now rendered by the shared CouncilCard component; the
+// page's renderVoiceCouncilCard/renderAdvancedCouncilCard delegate to it. Expose
+// it as a global so the eval'd class methods can resolve it (they look up
+// window.CouncilCard || CouncilCard).
+global.CouncilCard = require('../../public/js/components/CouncilCard.js').CouncilCard;
+
 beforeEach(() => {
   vi.resetAllMocks();
 

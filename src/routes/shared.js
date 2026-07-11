@@ -42,18 +42,20 @@ const activeSetups = new Map();
 
 /**
  * Get the model to use for AI analysis
- * Priority: CLI flag (PAIR_REVIEW_MODEL env var) > config.default_model > 'opus' default
+ * Priority: config.default_model > config.model (legacy) > 'opus' default
+ *
+ * The effective config already folds any in-app (/settings) override into
+ * `default_model`, and a key locked as final by configuration resolves to its
+ * config-file value here (the effective config excludes final keys from the
+ * in-app override). Per-run `--model` intent is applied by the caller via
+ * `resolveProviderModel`, not here.
  * @param {Object} req - Express request object
  * @returns {string} Model name to use
  */
 function getModel(req) {
-  // CLI flag takes priority (passed via environment variable)
-  if (process.env.PAIR_REVIEW_MODEL) {
-    return process.env.PAIR_REVIEW_MODEL;
-  }
+  const config = req.app.get('config');
 
   // Config file setting (default_model preferred, model for backwards compatibility)
-  const config = req.app.get('config');
   if (config) {
     if (config.default_model) {
       return config.default_model;
@@ -70,21 +72,16 @@ function getModel(req) {
 
 /**
  * Get the provider to use for AI analysis
- * Priority: CLI flag (PAIR_REVIEW_PROVIDER env var) > config.default_provider
- *           > config.provider (legacy) > 'claude' default
- * Mirrors getModel() so the --provider CLI flag / PAIR_REVIEW_PROVIDER env var
- * is honored by the web/UI analysis paths the same way --model is.
+ * Priority: config.default_provider > config.provider (legacy) > 'claude' default
+ * Mirrors getModel(). Per-run `--provider` intent is applied by the caller via
+ * `resolveProviderModel`, not here.
  * @param {Object} req - Express request object
  * @returns {string} Provider id to use
  */
 function getProvider(req) {
-  // CLI flag takes priority (passed via environment variable)
-  if (process.env.PAIR_REVIEW_PROVIDER) {
-    return process.env.PAIR_REVIEW_PROVIDER;
-  }
+  const config = req.app.get('config');
 
   // Config file setting (default_provider preferred, provider for backwards compatibility)
-  const config = req.app.get('config');
   if (config) {
     if (config.default_provider) {
       return config.default_provider;
@@ -104,21 +101,24 @@ function getProvider(req) {
  *
  * Precedence (highest first):
  *   1. request body (requestProvider / requestModel)
- *   2. env/CLI override (PAIR_REVIEW_PROVIDER / PAIR_REVIEW_MODEL, via getProvider/getModel)
+ *   2. CLI override (`app.get('cliOverrides')`) — the per-run `--provider` /
+ *      `--model` flags, threaded explicitly from the CLI entry point
  *   3. saved repo settings (default_provider / default_model)
- *   4. config/legacy defaults (via getProvider/getModel, ending at 'claude'/'opus')
+ *   4. config defaults via getProvider/getModel — the effective config already
+ *      folds any in-app (/settings) override into default_provider/default_model,
+ *      and a final key resolves to its locked config-file value here
+ *   5. legacy provider/model keys, ending at 'claude'/'opus'
  *
- * The env/CLI override intentionally outranks saved repo settings to match the
- * documented `CLI/env > repo settings` contract already honored by the
- * headless/stack/MCP paths. Because getProvider()/getModel() read the env var
- * first, calling them in the env branch returns the override; the final branch
- * (reached only when the env var is unset) returns config/legacy/default.
+ * The request and CLI-flag tiers deliberately beat repo settings AND a `final`
+ * lock: they are per-run intent, not stored settings — matching review-config's
+ * explicit-first behavior. (A final key only locks the settings/config layers;
+ * it never blocks an explicit per-invocation flag.)
  *
  * Both the PR route (src/routes/pr.js) and the local route (src/routes/local.js)
  * MUST use this helper so the two paths resolve the same pair — keeping the
  * resolution logic in one place prevents the paths from silently diverging.
  *
- * @param {Object} req - Express request (source of config + env-backed helpers)
+ * @param {Object} req - Express request (source of config + cliOverrides)
  * @param {Object} [opts]
  * @param {string} [opts.requestProvider] - provider from the request body
  * @param {string} [opts.requestModel] - model from the request body
@@ -126,26 +126,28 @@ function getProvider(req) {
  * @returns {{ provider: string, model: string }}
  */
 function resolveProviderModel(req, { requestProvider, requestModel, repoSettings } = {}) {
+  const cliOverrides = req.app.get('cliOverrides') || {};
+
   let provider;
   if (requestProvider) {
     provider = requestProvider;
-  } else if (process.env.PAIR_REVIEW_PROVIDER) {
-    provider = getProvider(req); // env/CLI override
+  } else if (cliOverrides.provider) {
+    provider = cliOverrides.provider; // --provider flag (per-run intent)
   } else if (repoSettings && repoSettings.default_provider) {
     provider = repoSettings.default_provider;
   } else {
-    provider = getProvider(req); // config/legacy/'claude'
+    provider = getProvider(req); // in-app-folded config/legacy/'claude'
   }
 
   let model;
   if (requestModel) {
     model = requestModel;
-  } else if (process.env.PAIR_REVIEW_MODEL) {
-    model = getModel(req); // env/CLI override
+  } else if (cliOverrides.model) {
+    model = cliOverrides.model; // --model flag (per-run intent)
   } else if (repoSettings && repoSettings.default_model) {
     model = repoSettings.default_model;
   } else {
-    model = getModel(req); // config/legacy/'opus'
+    model = getModel(req); // in-app-folded config/legacy/'opus'
   }
 
   return { provider, model };

@@ -23,6 +23,7 @@
   - [Local review scope](#local-review-scope)
   - [Headless analysis mode](#headless-analysis-mode)
 - [Configuration](#configuration)
+  - [Global Settings Page](#global-settings-page)
   - [Environment Variables](#environment-variables)
   - [GitHub Token](#github-token)
   - [AI Provider Configuration](#ai-provider-configuration)
@@ -470,6 +471,31 @@ Nested objects (like `chat`, `providers`, `chat_providers`, `monorepos`) are dee
 
 **`config.local.json`** files are intended for personal overrides that should not be committed to version control. Add `config.local.json` to your `.gitignore`.
 
+### Global Settings Page
+
+Most global settings can also be viewed and edited in the app: open the gear icon on the landing page or navigate to `/settings`. Repo-specific settings remain on each repository's settings page, and the global settings page lists every configured repository with a link to its settings.
+
+- **Effective value + source**: every setting shows its current effective value and where it came from — `in-app`, `env`, one of the config files, or `default`. A `default` badge means the setting was never explicitly set anywhere.
+- **Persistence**: in-app edits are stored in pair-review's local database (`~/.pair-review/database.db`), never written back to your config files.
+- **Precedence**: in-app settings > environment variables > `.pair-review/config.local.json` (project) > `.pair-review/config.json` (project) > `~/.pair-review/config.local.json` > `~/.pair-review/config.json` > built-in defaults. Repo-scoped settings and explicit per-run CLI flags still take precedence over global settings.
+- **Reset**: a per-setting Reset button removes the in-app override, falling back to whatever the config files or defaults provide.
+- **Immediate vs. restart**: most settings take effect immediately; a few (marked in the UI, e.g. retention windows and debug flags) apply on next start. Bootstrap values such as `port`, `db_name`, and tokens are shown read-only with their source.
+- **Default for Analysis**: under **AI Defaults**, the **Default for Analysis** control is a single choice — either your Default Provider/Model pair (the rows below it) *or* a saved Review Council, picked from the same rich dropdown used on the repository settings page (it shows each council's name and Standard/Advanced type). When a council is selected, a composition preview beneath the dropdown shows its reviewers/models, levels, and consolidation — just like the repository settings page — while the base option shows a short hint that analysis uses the Provider/Model rows. A global default council is used wherever a repository has not chosen its own default council, and it outranks the global provider/model default. Precedence for analysis: explicit `--council`/`--provider`/`--model` per run › repo default council › **global default council** › repo default provider/model › global default provider/model. Note that single-model paths — hunk summaries, tours, and the MCP `start_analysis` tool — deliberately ignore councils, so a global default council does **not** change those (this matches how repo default councils behave).
+
+Two config keys control the settings page itself:
+
+- **Hiding settings** — `settings_ui.hidden`: an array of section ids (e.g. `"summaries"`, `"tours"`) and/or setting keys (e.g. `"tours.model"`) to hide from the page. Hiding is a display preference: it does not disable the feature (hiding the Summaries section does not turn summaries off). Because `settings_ui` merges like any other config key, a higher-precedence file can un-hide with `"settings_ui": { "hidden": [] }`.
+
+  ```json
+  { "settings_ui": { "hidden": ["summaries", "tours.model"] } }
+  ```
+
+- **Final settings** — `final`: an array of setting keys and/or section ids whose values are locked to what the config files declare. A final setting ignores in-app overrides *and* environment variables; the settings page shows it locked with a "final" badge. Unlike `hidden`, `final` declarations are unioned across all config files — a higher-precedence file cannot un-final a key; remove the declaration where it lives.
+
+  ```json
+  { "final": ["default_provider", "summaries.enabled"] }
+  ```
+
 ### Alternate Git Hosts
 
 pair-review can review pull requests on self-hosted Git platforms that expose a GitHub-compatible REST API, configured per-repository via `repos["owner/repo"].api_host` and related keys. By default an `api_host` repo is treated as living exclusively on the alt host; set `exclusive: false` on the repo entry to mark it as **dual-host**, where some PRs live on `github.com` and others on the alt host and pair-review resolves the host per PR. See [docs/alt-host.md](docs/alt-host.md) for the full configuration guide.
@@ -488,19 +514,16 @@ pair-review supports several environment variables for customizing behavior:
 | `PAIR_REVIEW_OPENCODE_CMD` | Custom command to invoke OpenCode CLI | `opencode` |
 | `PAIR_REVIEW_CURSOR_AGENT_CMD` | Custom command to invoke Cursor Agent CLI | `agent` |
 | `PAIR_REVIEW_PI_CMD` | Custom command to invoke Pi CLI | `pi` |
-| `PAIR_REVIEW_MODEL` | Override the AI model to use (same as `--model` flag) | Provider default |
-| `PAIR_REVIEW_PROVIDER` | Override the AI provider to use (same as `--provider` flag) | `claude` |
 
 **Note:** `GITHUB_TOKEN` is the standard environment variable used by many GitHub tools (gh CLI, GitHub Actions, etc.). When set, it takes precedence over the `github_token` field in the config file.
 
-**Note:** The `--model` CLI flag is shorthand for setting `PAIR_REVIEW_MODEL`, and `--provider` is shorthand for `PAIR_REVIEW_PROVIDER`. If both the flag and env var are specified, the CLI flag takes precedence. The `--provider` flag selects which provider runs the analysis; `--model` selects the model within that provider, so set both when the model belongs to a non-default provider (e.g. `--provider codex --model gpt-5.5`). The override outranks saved repository settings (`CLI/env > repo settings`); if the repo's default is a Review Council, an active `--provider`/`--model` override forces the single-provider path instead.
+**Note:** Choose the AI provider and model with the `--provider` and `--model` CLI flags. There is no environment-variable equivalent (the provider/model env vars were removed in v5 — see the changeset for migration). The `--provider` flag selects which provider runs the analysis; `--model` selects the model within that provider, so set both when the model belongs to a non-default provider (e.g. `--provider codex --model gpt-5.5`). The flag override outranks saved repository settings (`CLI flag > repo settings`); if the repo's default is a Review Council, an active `--provider`/`--model` override forces the single-provider path instead. To set a persistent default without passing a flag every time, use the `default_provider` / `default_model` config keys or the repo/global [settings pages](#global-settings-page).
 
 **Delegation caveat:** With single-port mode (the default `single_port: true`), a new invocation delegates to an already-running server. On that path the `--provider`/`--model` override is carried to the running server only alongside browser auto-analysis (`--ai`). Delegating without `--ai` (just opening the review) does not seed the override into the other process's manual analysis dialog — use `--ai`, or a headless mode, to pin the provider on the delegated path.
 
 These variables are useful when:
 - Your CLI tools are installed in a non-standard location
 - You need to use a wrapper script or custom binary
-- You want to force a specific model for all reviews
 
 **Examples:**
 
@@ -517,14 +540,14 @@ PAIR_REVIEW_CLAUDE_CMD="devx claude" pair-review 123
 # Use a custom path for the Antigravity CLI
 PAIR_REVIEW_ANTIGRAVITY_CMD="/usr/local/bin/agy" pair-review --local
 
-# Force a specific model for this review
-PAIR_REVIEW_MODEL="opus" pair-review 123
+# Force a specific model for this review (use the --model flag)
+pair-review 123 --model opus
 
 # Force a specific provider + model for a headless review
-PAIR_REVIEW_PROVIDER="codex" PAIR_REVIEW_MODEL="gpt-5.5" pair-review 123 --ai-draft
+pair-review 123 --ai-draft --provider codex --model gpt-5.5
 
-# Combine multiple settings
-PAIR_REVIEW_CLAUDE_CMD="/opt/claude/bin/claude" PAIR_REVIEW_MODEL="haiku" pair-review 123
+# Combine a custom CLI path with a model flag
+PAIR_REVIEW_CLAUDE_CMD="/opt/claude/bin/claude" pair-review 123 --model haiku
 ```
 
 **Note:** Multi-word commands (containing spaces) are supported. The application automatically handles these by using shell mode for execution.

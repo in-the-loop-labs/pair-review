@@ -63,9 +63,6 @@ describe('resolveReviewConfig', () => {
   });
 
   afterEach(() => {
-    // Ensure the env overrides never leak between tests.
-    delete process.env.PAIR_REVIEW_MODEL;
-    delete process.env.PAIR_REVIEW_PROVIDER;
     vi.restoreAllMocks();
     closeTestDatabase(db);
   });
@@ -225,12 +222,9 @@ describe('resolveReviewConfig', () => {
       expect(result).toEqual({ type: 'single', provider: 'antigravity', model: 'gemini-3.1-pro-low' });
     });
 
-    // PAIR_REVIEW_MODEL is a deliberate one-shot override (CI/agent), so it must
-    // win over a repo's sticky persisted default_model. This matches the
-    // pre-refactor performHeadlessReview ladder and the MCP ladder; --ai-draft /
-    // --ai-review resolve through this resolver and must not silently change.
-    it('prefers PAIR_REVIEW_MODEL over a repo default_model', async () => {
-      process.env.PAIR_REVIEW_MODEL = 'env-model';
+    // A repo's saved default is more specific than the config-file default, so
+    // the repo default_model wins over config.default_model.
+    it('prefers a repo default_model over the config default', async () => {
       seedRepoSettings(db, { default_model: 'repo-model' });
 
       const result = await resolveReviewConfig(
@@ -238,13 +232,11 @@ describe('resolveReviewConfig', () => {
         {},
         { default_provider: 'claude', default_model: 'opus' }
       );
-      expect(result).toEqual({ type: 'single', provider: 'claude', model: 'env-model' });
+      expect(result).toEqual({ type: 'single', provider: 'claude', model: 'repo-model' });
     });
 
-    // Symmetric provider override: PAIR_REVIEW_PROVIDER beats a repo
-    // default_provider for the same one-shot-override reason.
-    it('prefers PAIR_REVIEW_PROVIDER over a repo default_provider', async () => {
-      process.env.PAIR_REVIEW_PROVIDER = 'codex';
+    // Symmetric: the repo default_provider beats the config default.
+    it('prefers a repo default_provider over the config default', async () => {
       seedRepoSettings(db, { default_provider: 'antigravity', default_model: 'sonnet' });
 
       const result = await resolveReviewConfig(
@@ -252,18 +244,17 @@ describe('resolveReviewConfig', () => {
         {},
         { default_provider: 'claude' }
       );
-      expect(result).toEqual({ type: 'single', provider: 'codex', model: 'sonnet' });
+      expect(result).toEqual({ type: 'single', provider: 'antigravity', model: 'sonnet' });
     });
 
-    // The env override is still below an explicit per-request pick.
-    it('lets an explicit --model/--provider win over the env overrides', async () => {
-      process.env.PAIR_REVIEW_MODEL = 'env-model';
-      process.env.PAIR_REVIEW_PROVIDER = 'codex';
+    // An explicit per-run flag (--provider/--model) is still supreme.
+    it('lets an explicit --model/--provider win over repo/config defaults', async () => {
+      seedRepoSettings(db, { default_provider: 'codex', default_model: 'gpt-5.5' });
 
       const result = await resolveReviewConfig(
         db, REPOSITORY,
         { provider: 'antigravity', model: 'gemini-3.1-pro-low' },
-        {}
+        { default_provider: 'claude', default_model: 'opus' }
       );
       expect(result).toEqual({ type: 'single', provider: 'antigravity', model: 'gemini-3.1-pro-low' });
     });
@@ -292,15 +283,169 @@ describe('resolveReviewConfig', () => {
       const result = await resolveReviewConfig(db, REPOSITORY, {}, {});
       expect(result).toEqual({ type: 'single', provider: 'claude', model: 'opus' });
     });
+  });
 
-    it('honors PAIR_REVIEW_MODEL over config defaults for the model field', async () => {
-      process.env.PAIR_REVIEW_MODEL = 'env-model';
+  // The /settings page persists global provider/model overrides. The effective
+  // config carries them on `config._globalOverrides` so the resolver can rank an
+  // in-app override ABOVE the config-file default but BELOW a repo default.
+  describe('6. global in-app override (config._globalOverrides)', () => {
+    it('ranks an in-app override above the config-file default', async () => {
       const result = await resolveReviewConfig(
         db, REPOSITORY,
         {},
-        { default_provider: 'claude', default_model: 'opus' }
+        { default_provider: 'claude', default_model: 'opus', _globalOverrides: { default_model: 'app-model' } }
       );
-      expect(result).toEqual({ type: 'single', provider: 'claude', model: 'env-model' });
+      expect(result).toEqual({ type: 'single', provider: 'claude', model: 'app-model' });
+    });
+
+    it('ranks a repo default above an in-app override', async () => {
+      seedRepoSettings(db, { default_model: 'repo-model' });
+      const result = await resolveReviewConfig(
+        db, REPOSITORY,
+        {},
+        { default_provider: 'claude', default_model: 'opus', _globalOverrides: { default_model: 'app-model' } }
+      );
+      expect(result).toEqual({ type: 'single', provider: 'claude', model: 'repo-model' });
+    });
+  });
+
+  // When default_provider/default_model is locked as final by configuration, the
+  // effective config (built upstream) already excludes the key from
+  // _globalOverrides and folds its config-file value into cfg.default_*, so the
+  // config value wins here without the resolver special-casing _finalKeys. A
+  // repo-scoped default and an explicit flag are more specific and still win.
+  describe('7. finalized config value resolves from the config file', () => {
+    it('a finalized default_model resolves to the config-file value', async () => {
+      const result = await resolveReviewConfig(
+        db, REPOSITORY,
+        {},
+        { default_provider: 'claude', default_model: 'file-model', _finalKeys: ['default_model'] }
+      );
+      expect(result).toEqual({ type: 'single', provider: 'claude', model: 'file-model' });
+    });
+
+    it('a finalized default_provider resolves to the config-file value', async () => {
+      const result = await resolveReviewConfig(
+        db, REPOSITORY,
+        {},
+        { default_provider: 'file-provider', default_model: 'opus', _finalKeys: ['default_provider'] }
+      );
+      expect(result).toEqual({ type: 'single', provider: 'file-provider', model: 'opus' });
+    });
+
+    it('a repo default still beats a finalized config value (repo is more specific)', async () => {
+      seedRepoSettings(db, { default_model: 'repo-model' });
+      const result = await resolveReviewConfig(
+        db, REPOSITORY,
+        {},
+        { default_provider: 'claude', default_model: 'file-model', _finalKeys: ['default_model'] }
+      );
+      expect(result).toEqual({ type: 'single', provider: 'claude', model: 'repo-model' });
+    });
+
+    it('an explicit --model still beats a finalized config value', async () => {
+      const result = await resolveReviewConfig(
+        db, REPOSITORY,
+        { model: 'flag-model' },
+        { default_provider: 'claude', default_model: 'file-model', _finalKeys: ['default_model'] }
+      );
+      expect(result).toEqual({ type: 'single', provider: 'claude', model: 'flag-model' });
+    });
+  });
+
+  // The /settings page can store a GLOBAL default council id, carried on
+  // config._globalOverrides.default_council_id (or a config-file
+  // default_council_id). It sits below a repo council but above the single
+  // ladder — including a repo's single provider/model default.
+  describe('8. global default council', () => {
+    it('fires from an in-app override and outranks the single/config default', async () => {
+      const id = uuidv4();
+      await new CouncilRepository(db).create({ id, name: 'Global', config: advancedConfig, type: 'advanced' });
+
+      const result = await resolveReviewConfig(
+        db, REPOSITORY, {},
+        { default_provider: 'claude', default_model: 'opus', _globalOverrides: { default_council_id: id } }
+      );
+
+      expect(result.type).toBe('council');
+      expect(result.council.id).toBe(id);
+      expect(result.configType).toBe('advanced');
+    });
+
+    it('fires from a config-file default_council_id (no _globalOverrides)', async () => {
+      const id = uuidv4();
+      await new CouncilRepository(db).create({ id, name: 'FileGlobal', config: voiceConfig, type: 'council' });
+
+      const result = await resolveReviewConfig(db, REPOSITORY, {}, { default_council_id: id });
+
+      expect(result.type).toBe('council');
+      expect(result.council.id).toBe(id);
+      expect(result.configType).toBe('council');
+    });
+
+    it('a repo default council beats the global default council', async () => {
+      const globalId = uuidv4();
+      const repoId = uuidv4();
+      await new CouncilRepository(db).create({ id: globalId, name: 'Global', config: advancedConfig, type: 'advanced' });
+      await new CouncilRepository(db).create({ id: repoId, name: 'Repo', config: voiceConfig, type: 'council' });
+      seedRepoSettings(db, { default_council_id: repoId });
+
+      const result = await resolveReviewConfig(
+        db, REPOSITORY, {},
+        { _globalOverrides: { default_council_id: globalId } }
+      );
+
+      expect(result.type).toBe('council');
+      expect(result.council.id).toBe(repoId);
+    });
+
+    it('the global council outranks a repo single provider/model default', async () => {
+      const globalId = uuidv4();
+      await new CouncilRepository(db).create({ id: globalId, name: 'Global', config: advancedConfig, type: 'advanced' });
+      // Repo has only a single default (no repo council).
+      seedRepoSettings(db, { default_provider: 'antigravity', default_model: 'gemini-3.1-pro-low' });
+
+      const result = await resolveReviewConfig(
+        db, REPOSITORY, {},
+        { _globalOverrides: { default_council_id: globalId } }
+      );
+
+      expect(result.type).toBe('council');
+      expect(result.council.id).toBe(globalId);
+    });
+
+    it('an explicit --provider/--model still beats the global council', async () => {
+      const globalId = uuidv4();
+      await new CouncilRepository(db).create({ id: globalId, name: 'Global', config: advancedConfig, type: 'advanced' });
+
+      const result = await resolveReviewConfig(
+        db, REPOSITORY,
+        { provider: 'codex', model: 'gpt-5' },
+        { _globalOverrides: { default_council_id: globalId } }
+      );
+
+      expect(result).toEqual({ type: 'single', provider: 'codex', model: 'gpt-5' });
+    });
+
+    it('falls back to the single default (with a warning) when the global council id is missing', async () => {
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+      const result = await resolveReviewConfig(
+        db, REPOSITORY, {},
+        { default_provider: 'claude', default_model: 'opus', _globalOverrides: { default_council_id: uuidv4() } }
+      );
+
+      expect(result).toEqual({ type: 'single', provider: 'claude', model: 'opus' });
+      expect(warnSpy).toHaveBeenCalledOnce();
+      expect(warnSpy.mock.calls[0][0]).toMatch(/Global default council .* was not found/);
+    });
+
+    it('an empty default_council_id is inert (no council, single default resolves)', async () => {
+      const result = await resolveReviewConfig(
+        db, REPOSITORY, {},
+        { default_provider: 'claude', default_model: 'opus', _globalOverrides: { default_council_id: '' } }
+      );
+      expect(result).toEqual({ type: 'single', provider: 'claude', model: 'opus' });
     });
   });
 

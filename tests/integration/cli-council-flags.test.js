@@ -45,8 +45,13 @@ function runCli(args, testHomeDir, extraEnv = {}) {
   // Use process.execPath (not the literal 'node') so the child runs under the
   // SAME Node major as the test runner — better-sqlite3 is a native module and
   // only loads under the Node ABI its binary was built for.
-  return spawnSync(process.execPath, ['bin/pair-review.js', ...args], {
-    cwd: REPO_ROOT,
+  //
+  // cwd is the temp HOME, NOT the repo root: loadConfig reads a project-layer
+  // config from <cwd>/.pair-review/, so running from the repo would leak the
+  // developer's local .pair-review/config.local.json (e.g. a custom db_name)
+  // into the child and break DB isolation.
+  return spawnSync(process.execPath, [path.join(REPO_ROOT, 'bin/pair-review.js'), ...args], {
+    cwd: testHomeDir,
     env: {
       ...process.env,
       HOME: testHomeDir,

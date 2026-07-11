@@ -27,6 +27,7 @@ const {
 const { safeParseJson } = require('../utils/safe-parse-json');
 const { resolveLoadSkills, resolveHostBinding } = require('../config');
 const { GitHubClient } = require('../github/client');
+const { resolveSingleProviderModel } = require('../review-config');
 
 // All valid tier values: canonical tiers + aliases (for Zod enum validation)
 const ALL_TIER_VALUES = /** @type {[string, ...string[]]} */ ([...TIERS, ...Object.keys(TIER_ALIASES)]);
@@ -576,15 +577,17 @@ function createMCPServer(db, options = {}) {
           //
           // INTENTIONAL DIVERGENCE (documented in the tool description): MCP
           // resolves a single provider/model here and does NOT consult
-          // resolveReviewConfig()/repo_settings.default_council_id, so a repo's
-          // default council is ignored on this path (the CLI --headless and the
-          // web "Analyze" action DO honor it). This ladder is also env-first
-          // (PAIR_REVIEW_* over repo defaults), matching review-config.js's
-          // _buildSingleSelection. Routing this through resolveReviewConfig (and
-          // adding council dispatch) is a deliberate follow-up, not an oversight.
+          // repo_settings.default_council_id, so a repo's default council is
+          // ignored on this path (the CLI --headless and the web "Analyze"
+          // action DO honor it). Routing this through the full resolveReviewConfig
+          // (and adding council dispatch) is a deliberate follow-up, not an
+          // oversight. The single-provider ladder itself, however, must match the
+          // canonical precedence, so we reuse resolveSingleProviderModel rather
+          // than hand-rolling the ternaries: explicit (none here) › repo default
+          // › global in-app override (config._globalOverrides) › config file ›
+          // legacy keys › hardcoded claude/opus.
           const repoSettings = repository ? await repoSettingsRepo.getRepoSettings(repository) : null;
-          const provider = process.env.PAIR_REVIEW_PROVIDER || repoSettings?.default_provider || config.default_provider || config.provider || 'claude';
-          const model = process.env.PAIR_REVIEW_MODEL || repoSettings?.default_model || config.default_model || config.model || 'opus';
+          const { provider, model } = resolveSingleProviderModel({}, repoSettings, config);
 
           // Create unified run/analysis ID and DB record immediately
           const runId = uuidv4();
@@ -737,12 +740,13 @@ function createMCPServer(db, options = {}) {
           const { review } = await reviewRepo.getOrCreate({ prNumber, repository });
 
           // Resolve provider and model. INTENTIONAL DIVERGENCE: single
-          // provider/model only — no resolveReviewConfig / default-council
-          // dispatch (see the local branch above and the tool description). The
-          // env-first ladder matches review-config.js's _buildSingleSelection.
+          // provider/model only — no default-council dispatch (see the local
+          // branch above and the tool description). The single-provider ladder
+          // reuses the canonical resolveSingleProviderModel so it stays in step
+          // with review-config.js (repo default › global in-app override › env ›
+          // config file › legacy keys › hardcoded).
           const repoSettings = await repoSettingsRepo.getRepoSettings(repository);
-          const provider = process.env.PAIR_REVIEW_PROVIDER || repoSettings?.default_provider || config.default_provider || config.provider || 'claude';
-          const model = process.env.PAIR_REVIEW_MODEL || repoSettings?.default_model || config.default_model || config.model || 'opus';
+          const { provider, model } = resolveSingleProviderModel({}, repoSettings, config);
 
           // Create unified run/analysis ID and DB record immediately
           const runId = uuidv4();

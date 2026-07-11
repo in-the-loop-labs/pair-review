@@ -333,16 +333,23 @@ async function loadConfig() {
 
   const localDir = path.join(process.cwd(), '.pair-review');
   const sources = [
-    { path: MANAGED_CONFIG_FILE,                         label: 'managed config',       required: false },
-    { path: CONFIG_FILE,                                label: 'global config',        required: true  },
-    { path: CONFIG_LOCAL_FILE,                           label: 'global local config',  required: false },
-    { path: path.join(localDir, 'config.json'),         label: 'project config',       required: false },
-    { path: path.join(localDir, 'config.local.json'),   label: 'project local config', required: false },
+    { path: MANAGED_CONFIG_FILE,                         label: 'managed config',       layerName: 'managed',       required: false },
+    { path: CONFIG_FILE,                                label: 'global config',        layerName: 'config',        required: true  },
+    { path: CONFIG_LOCAL_FILE,                           label: 'global local config',  layerName: 'config.local',  required: false },
+    { path: path.join(localDir, 'config.json'),         label: 'project config',       layerName: 'project',       required: false },
+    { path: path.join(localDir, 'config.local.json'),   label: 'project local config', layerName: 'project.local', required: false },
   ];
 
   let mergedConfig = { ...DEFAULT_CONFIG };
   let isFirstRun = false;
   let hasManagedConfig = false;
+
+  // Per-layer raw data, ordered low->high precedence, for source attribution
+  // by the global-settings service. Each layer holds the raw parsed file (NOT
+  // the merged result) so a hasPath() walk can report the highest layer that
+  // actually defined a given dot-path. The built-in defaults are the lowest
+  // layer.
+  const layers = [{ name: 'default', data: { ...DEFAULT_CONFIG } }];
 
   for (const source of sources) {
     try {
@@ -351,6 +358,7 @@ async function loadConfig() {
       if (source.label === 'managed config' && Object.keys(parsed).length > 0) {
         hasManagedConfig = true;
       }
+      layers.push({ name: source.layerName, data: parsed });
       mergedConfig = deepMerge(mergedConfig, parsed);
     } catch (error) {
       if (error.code === 'ENOENT') {
@@ -422,7 +430,7 @@ async function loadConfig() {
     }
   }
 
-  return { config: mergedConfig, isFirstRun };
+  return { config: mergedConfig, isFirstRun, layers };
 }
 
 /**
@@ -1627,6 +1635,7 @@ function shouldSkipUpdateNotifier() {
 }
 
 module.exports = {
+  DEFAULT_CONFIG,
   deepMerge,
   loadConfig,
   getConfigDir,

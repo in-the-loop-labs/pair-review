@@ -324,6 +324,7 @@ async function startTestServer(port) {
   // HTML routes
   app.get('/', (req, res) => res.sendFile(path.join(publicDir, 'index.html')));
   app.get('/pr/:owner/:repo/:number', (req, res) => res.sendFile(path.join(publicDir, 'pr.html')));
+  app.get('/settings', (req, res) => res.sendFile(path.join(publicDir, 'settings.html')));
   app.get('/settings/:owner/:repo', (req, res) => res.sendFile(path.join(publicDir, 'repo-settings.html')));
   // Local review SETUP page (query-param form), mirrors production server.js. Serves
   // setup.html so E2E can exercise the delegated /local?path=...&scope=... flow.
@@ -334,10 +335,30 @@ async function startTestServer(port) {
   app.get('/local/:reviewId', (req, res) => res.sendFile(path.join(publicDir, 'local.html')));
   app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
-  // Store database and config
+  // Store database and config. Build the global-settings service and overlay
+  // in-app DB overrides so the effective config the routes read mirrors
+  // production wiring (src/server.js).
+  const { GlobalSettingsService } = require('../../src/settings/global-settings-service');
+  const e2eBaseConfig = { github_token: 'test-token-e2e', port, theme: 'light', model: 'sonnet' };
+  // Production-shaped layers: the raw `config` layer must carry the SAME values
+  // as e2eBaseConfig so /api/settings source attribution (which walks the raw
+  // layers) agrees with /api/config (the merged effective config). A bare
+  // `default`-only layer would attribute port/theme/etc. to "default" while the
+  // effective config reports the E2E values — a disagreement the settings page
+  // would surface. Keys left out (e.g. summaries.enabled) intentionally stay at
+  // their registry default.
+  const e2eGlobalSettings = new GlobalSettingsService({
+    db,
+    baseConfig: e2eBaseConfig,
+    layers: [
+      { name: 'default', data: {} },
+      { name: 'config', data: { github_token: 'test-token-e2e', port, theme: 'light', model: 'sonnet' } }
+    ]
+  });
   app.set('db', db);
   app.set('githubToken', 'test-token-e2e');
-  app.set('config', { github_token: 'test-token-e2e', port, theme: 'light', model: 'sonnet' });
+  app.set('config', e2eGlobalSettings.buildEffectiveConfig());
+  app.set('globalSettings', e2eGlobalSettings);
 
   // Track analysis state for mocking
   let analysisRunning = false;
@@ -807,6 +828,7 @@ async function startTestServer(port) {
   const localRoutes = require('../../src/routes/local');
   const contextFilesRoutes = require('../../src/routes/context-files');
   const bulkAnalysisConfigsRoutes = require('../../src/routes/bulk-analysis-configs');
+  const settingsRoutes = require('../../src/routes/settings');
 
   // Mock chat session manager for E2E (reads from DB, no real bridge).
   // createSession/sendMessage write to the DB so multi-tab tests that open
@@ -894,6 +916,7 @@ async function startTestServer(port) {
   app.use('/', localRoutes);
   app.use('/', contextFilesRoutes);
   app.use('/', bulkAnalysisConfigsRoutes);
+  app.use('/', settingsRoutes);
 
   // Error handling
   app.use((error, req, res, next) => {

@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <script>
+        // Initialize theme immediately to prevent flash
+        (function() {
+            const savedTheme = localStorage.getItem('theme') || 'light';
+            document.documentElement.setAttribute('data-theme', savedTheme);
+        })();
+    </script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Global Settings - Pair Review</title>
+    <link rel="icon" type="image/png" href="/favicon.png">
+    <link rel="stylesheet" href="/css/pr.css">
+    <link rel="stylesheet" href="/css/council-dropdown.css">
+    <link rel="stylesheet" href="/css/council-card.css">
+    <link rel="stylesheet" href="/css/settings.css">
+</head>
+<body>
+    <!-- Main Container -->
+    <div class="settings-page" id="settings-page">
+        <!-- Top Navigation Bar -->
+        <header class="settings-nav">
+            <div class="nav-content">
+                <a href="/" class="nav-logo">
+                    <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="24" height="24">
+                        <path transform="rotate(-50 12 12)" d="M18.178 8c5.096 0 5.096 8 0 8-5.095 0-7.133-8-12.356-8-5.096 0-5.096 8 0 8 5.223 0 7.26-8 12.356-8z"/>
+                    </svg>
+                    <span class="logo-text">pair<strong>review</strong></span>
+                </a>
+                <nav class="breadcrumb" aria-label="Breadcrumb">
+                    <ol>
+                        <li><a href="/">Repositories</a></li>
+                        <li class="separator">
+                            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                                <path d="M6.22 3.22a.75.75 0 011.06 0l4.25 4.25a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 010-1.06z"/>
+                            </svg>
+                        </li>
+                        <li class="current" aria-current="page">Global Settings</li>
+                    </ol>
+                </nav>
+                <button class="theme-toggle" id="theme-toggle" title="Toggle theme">
+                    <svg class="sun-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="5"/>
+                        <line x1="12" y1="1" x2="12" y2="3"/>
+                        <line x1="12" y1="21" x2="12" y2="23"/>
+                        <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+                        <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+                        <line x1="1" y1="12" x2="3" y2="12"/>
+                        <line x1="21" y1="12" x2="23" y2="12"/>
+                        <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+                        <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="settings-main">
+            <div class="settings-container">
+                <!-- Page Header -->
+                <div class="page-header">
+                    <div class="header-icon">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="3"/>
+                            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                        </svg>
+                    </div>
+                    <div class="header-text">
+                        <h1>Global Settings</h1>
+                        <p class="header-subtitle">
+                            Application-wide defaults. In-app changes are saved to the local database and never written to your config files.
+                        </p>
+                    </div>
+                </div>
+
+                <!-- Precedence explainer -->
+                <div class="settings-precedence-note">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                        <path d="M8 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zM0 8a8 8 0 1116 0A8 8 0 010 8zm6.5-.25A.75.75 0 017.25 7h1a.75.75 0 01.75.75v2.75h.25a.75.75 0 010 1.5h-2a.75.75 0 010-1.5h.25v-2h-.25a.75.75 0 01-.75-.75zM8 6a1 1 0 100-2 1 1 0 000 2z"/>
+                    </svg>
+                    <span>
+                        Each setting shows its effective value and where it comes from. Precedence, highest to lowest:
+                        <strong>in-app</strong> &rsaquo; environment &rsaquo; project config &rsaquo; global config &rsaquo; managed &rsaquo; built-in default.
+                        A <span class="source-badge source-badge--default">default</span> badge means the value is not explicitly set anywhere.
+                    </span>
+                </div>
+
+                <!-- Two-column layout: section nav + content -->
+                <div class="settings-layout">
+                    <!-- Section navigation (built dynamically from rendered sections) -->
+                    <nav class="settings-sidebar" aria-label="Settings sections">
+                        <div class="settings-nav-list" id="settings-nav-list"></div>
+                    </nav>
+
+                    <div class="settings-content">
+                        <!-- Loading / error state -->
+                        <div class="settings-loading" id="settings-loading">Loading settings&hellip;</div>
+                        <div class="settings-error" id="settings-error" style="display: none;"></div>
+
+                        <!-- Setting sections rendered dynamically -->
+                        <div id="settings-sections"></div>
+
+                        <!-- Repositories section -->
+                        <section class="settings-section" id="repos-section" style="display: none;">
+                            <div class="section-header">
+                                <h2>Repositories</h2>
+                                <p class="section-description">
+                                    Repositories with their own settings or a known local checkout. Click one to configure its defaults.
+                                </p>
+                            </div>
+                            <div id="repos-list"></div>
+                        </section>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Toast Container -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <!-- JavaScript -->
+    <script src="/js/components/CouncilDropdown.js"></script>
+    <script src="/js/components/CouncilCard.js"></script>
+    <script src="/js/settings.js"></script>
+</body>
+</html>

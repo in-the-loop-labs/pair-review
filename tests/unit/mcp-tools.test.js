@@ -4,7 +4,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createTestDatabase, closeTestDatabase } from '../utils/schema';
 
-const { ReviewRepository, CommentRepository, AnalysisRunRepository, run } = require('../../src/database.js');
+const { ReviewRepository, CommentRepository, AnalysisRunRepository, RepoSettingsRepository, run } = require('../../src/database.js');
 const { resolveReview, createMCPServer } = require('../../src/routes/mcp');
 const { activeAnalyses, reviewToAnalysisId } = require('../../src/routes/shared');
 const Analyzer = require('../../src/ai/analyzer');
@@ -636,6 +636,115 @@ describe('start_analysis tool', () => {
     expect(status).toBeDefined();
     // Status may already be 'completed' since mock resolves immediately
     expect(['running', 'completed']).toContain(status.status);
+  });
+
+  // Provider/model precedence: start_analysis must resolve a single
+  // provider/model through the canonical ladder (review-config.js's
+  // resolveSingleProviderModel). The MCP path is server-triggered (no CLI
+  // flags), so it resolves repo default > in-app override > config default.
+  // The resolved pair is recorded on the analysis_runs row, so we assert
+  // against it.
+  describe('provider/model precedence (canonical ladder)', () => {
+    it('prefers a repo default over the config default (local mode)', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      await reviewRepo.upsertLocalReview({
+        localPath: '/tmp/prec-repo',
+        localHeadSha: 'prec1',
+        repository: 'prec-repo',
+      });
+      await new RepoSettingsRepository(db).saveRepoSettings('prec-repo', {
+        default_provider: 'antigravity',
+        default_model: 'gemini-3.1-pro-low',
+      });
+
+      const result = await client.callTool({
+        name: 'start_analysis',
+        arguments: { path: '/tmp/prec-repo', headSha: 'prec1' },
+      });
+      const content = JSON.parse(result.content[0].text);
+
+      const run = await new AnalysisRunRepository(db).getById(content.runId);
+      expect(run.provider).toBe('antigravity');
+      expect(run.model).toBe('gemini-3.1-pro-low');
+    });
+
+    it('prefers a global in-app override (config._globalOverrides) over the config-file default (local mode)', async () => {
+      // Rebuild the server with an effective config that carries an in-app
+      // override, the same shape the /settings service folds onto app config.
+      await client.close();
+      await mcpServer.close();
+      mcpServer = createMCPServer(db, {
+        config: {
+          default_provider: 'claude',
+          default_model: 'sonnet',
+          _globalOverrides: { default_provider: 'antigravity', default_model: 'gemini-3.1-pro-low' },
+        },
+      });
+      client = new Client({ name: 'test-client', version: '1.0.0' });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await mcpServer.connect(serverTransport);
+      await client.connect(clientTransport);
+
+      const reviewRepo = new ReviewRepository(db);
+      await reviewRepo.upsertLocalReview({
+        localPath: '/tmp/override-repo',
+        localHeadSha: 'ovr1',
+        repository: 'override-repo',
+      });
+
+      const result = await client.callTool({
+        name: 'start_analysis',
+        arguments: { path: '/tmp/override-repo', headSha: 'ovr1' },
+      });
+      const content = JSON.parse(result.content[0].text);
+
+      const run = await new AnalysisRunRepository(db).getById(content.runId);
+      expect(run.provider).toBe('antigravity');
+      expect(run.model).toBe('gemini-3.1-pro-low');
+    });
+
+    it('prefers a repo default over the config default (PR mode)', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      await reviewRepo.createReview({ prNumber: 77, repository: 'octo/prec' });
+      await run(db, `
+        INSERT INTO pr_metadata (pr_number, repository, title, description, author, base_branch, head_branch)
+        VALUES (77, 'octo/prec', 'Prec PR', 'Desc', 'author', 'main', 'feature')
+      `);
+      await new RepoSettingsRepository(db).saveRepoSettings('octo/prec', {
+        default_provider: 'antigravity',
+        default_model: 'gemini-3.1-pro-low',
+      });
+
+      const result = await client.callTool({
+        name: 'start_analysis',
+        arguments: { repo: 'octo/prec', prNumber: 77 },
+      });
+      const content = JSON.parse(result.content[0].text);
+
+      const analysisRun = await new AnalysisRunRepository(db).getById(content.runId);
+      expect(analysisRun.provider).toBe('antigravity');
+      expect(analysisRun.model).toBe('gemini-3.1-pro-low');
+    });
+
+    it('falls back to the config-file default when no repo/override set', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      await reviewRepo.upsertLocalReview({
+        localPath: '/tmp/env-repo',
+        localHeadSha: 'env1',
+        repository: 'env-repo',
+      });
+
+      const result = await client.callTool({
+        name: 'start_analysis',
+        arguments: { path: '/tmp/env-repo', headSha: 'env1' },
+      });
+      const content = JSON.parse(result.content[0].text);
+
+      const run = await new AnalysisRunRepository(db).getById(content.runId);
+      // No repo default and no in-app override → the config-file default wins.
+      expect(run.provider).toBe('claude');
+      expect(run.model).toBe('sonnet');
+    });
   });
 
   it('should create DB analysis_runs record immediately on start', async () => {

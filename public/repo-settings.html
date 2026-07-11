@@ -14,6 +14,8 @@
     <link rel="icon" type="image/png" href="/favicon.png">
     <link rel="stylesheet" href="/css/pr.css">
     <link rel="stylesheet" href="/css/analysis-config.css">
+    <link rel="stylesheet" href="/css/council-dropdown.css">
+    <link rel="stylesheet" href="/css/council-card.css">
     <link rel="stylesheet" href="/css/repo-settings.css">
 </head>
 <body>
@@ -64,13 +66,24 @@
         <!-- Main Content -->
         <main class="settings-main">
             <div class="settings-container">
-                <!-- Back to PR link (shown when navigating from a PR page) -->
-                <a href="#" class="back-to-pr" id="back-to-pr" style="display: none;">
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                        <path fill-rule="evenodd" d="M7.78 12.53a.75.75 0 01-1.06 0L2.47 8.28a.75.75 0 010-1.06l4.25-4.25a.75.75 0 011.06 1.06L4.81 7h7.44a.75.75 0 010 1.5H4.81l2.97 2.97a.75.75 0 010 1.06z"/>
-                    </svg>
-                    <span id="back-to-pr-text">Return to PR</span>
-                </a>
+                <!-- Top nav links -->
+                <div class="settings-top-links" style="display: flex; gap: 12px; flex-wrap: wrap; align-items: center;">
+                    <!-- Back to PR link (shown when navigating from a PR page) -->
+                    <a href="#" class="back-to-pr" id="back-to-pr" style="display: none;">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                            <path fill-rule="evenodd" d="M7.78 12.53a.75.75 0 01-1.06 0L2.47 8.28a.75.75 0 010-1.06l4.25-4.25a.75.75 0 011.06 1.06L4.81 7h7.44a.75.75 0 010 1.5H4.81l2.97 2.97a.75.75 0 010 1.06z"/>
+                        </svg>
+                        <span id="back-to-pr-text">Return to PR</span>
+                    </a>
+                    <!-- Global settings link (always shown) -->
+                    <a href="/settings" class="back-to-pr" id="global-settings-link">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="3"/>
+                            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                        </svg>
+                        <span>Global settings</span>
+                    </a>
+                </div>
 
                 <!-- Page Header -->
                 <div class="page-header">
@@ -307,6 +320,8 @@ Examples:
 
     <!-- JavaScript -->
     <script src="/js/utils/tier-icons.js"></script>
+    <script src="/js/components/CouncilDropdown.js"></script>
+    <script src="/js/components/CouncilCard.js"></script>
     <script src="/js/repo-settings.js"></script>
 </body>
 </html>
