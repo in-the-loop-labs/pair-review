@@ -11,7 +11,7 @@
 
 import { describe, it, expect, vi } from 'vitest';
 
-const { SettingsPage, SOURCE_DISPLAY, PROVIDER_KEYS, CHAT_PROVIDER_KEYS } = require('../../public/js/settings.js');
+const { SettingsPage, SOURCE_DISPLAY, PROVIDER_KEYS, CHAT_PROVIDER_KEYS, MODEL_KEYS, COUNCIL_KEYS } = require('../../public/js/settings.js');
 
 /**
  * Build a SettingsPage instance without invoking the constructor/init.
@@ -21,8 +21,11 @@ function createPage(providers = []) {
   const page = Object.create(SettingsPage.prototype);
   page.providers = providers;
   page.chatProviders = [];
+  page.councils = [];
   page.settingsByKey = {};
   page._seq = {};
+  page._councilDropdowns = {};
+  page._councilCards = {};
   return page;
 }
 
@@ -202,10 +205,24 @@ describe('readonlyValueHtml', () => {
     expect(notSet).toContain('Not configured');
   });
 
-  it('object value: shows entry count with correct pluralization', () => {
+  it('object value: renders a collapsible with an entry count (from the object keys)', () => {
     const page = createPage();
-    expect(page.readonlyValueHtml(baseSetting({ value: { count: 3 } }))).toContain('3 entries');
-    expect(page.readonlyValueHtml(baseSetting({ value: { count: 1 } }))).toContain('1 entry');
+    const three = page.readonlyValueHtml(baseSetting({ value: { a: {}, b: {}, c: {} } }));
+    expect(three).toContain('<details');
+    expect(three).toContain('3 entries');
+    expect(three).toContain('data-role="object-json"');
+    // The <pre> is left empty in the HTML (filled later via textContent).
+    expect(three).toMatch(/<pre class="readonly-object-json" data-role="object-json"><\/pre>/);
+
+    const one = page.readonlyValueHtml(baseSetting({ value: { only: {} } }));
+    expect(one).toContain('1 entry');
+  });
+
+  it('empty object value: shows No entries (no collapsible)', () => {
+    const page = createPage();
+    const html = page.readonlyValueHtml(baseSetting({ value: {} }));
+    expect(html).toContain('No entries');
+    expect(html).not.toContain('<details');
   });
 
   it('empty/null value: shows Not set', () => {
@@ -217,6 +234,326 @@ describe('readonlyValueHtml', () => {
   it('plain value: shows the value', () => {
     const page = createPage();
     expect(page.readonlyValueHtml(baseSetting({ value: 7247 }))).toContain('7247');
+  });
+});
+
+describe('populateObjectValues', () => {
+  it('fills each object-json <pre> from its descriptor via textContent', () => {
+    const page = createPage();
+    page.settingsByKey = {
+      providers: baseSetting({ key: 'providers', group: 'readonly', type: 'object', editable: false, value: { a: { model: 'x' } } })
+    };
+    document.body.innerHTML = `
+      <div id="settings-sections">
+        <div class="setting-row" data-key="providers">
+          <pre class="readonly-object-json" data-role="object-json"></pre>
+        </div>
+      </div>`;
+    page.populateObjectValues(document.getElementById('settings-sections'));
+    const pre = document.querySelector('[data-role="object-json"]');
+    expect(pre.textContent).toBe(JSON.stringify({ a: { model: 'x' } }, null, 2));
+  });
+
+  it('leaves the <pre> empty when the descriptor value is not an object', () => {
+    const page = createPage();
+    page.settingsByKey = { x: baseSetting({ key: 'x', value: 'scalar' }) };
+    document.body.innerHTML = `
+      <div id="settings-sections">
+        <div class="setting-row" data-key="x">
+          <pre class="readonly-object-json" data-role="object-json"></pre>
+        </div>
+      </div>`;
+    page.populateObjectValues(document.getElementById('settings-sections'));
+    expect(document.querySelector('[data-role="object-json"]').textContent).toBe('');
+  });
+});
+
+describe('MODEL_KEYS + modelInputHtml (datalist-backed model field)', () => {
+  const providers = [
+    { id: 'claude', name: 'Claude', models: [{ id: 'opus' }, { id: 'sonnet' }] },
+    { id: 'codex', name: 'Codex', models: [{ id: 'gpt-5.5' }, { id: 'opus' }] } // 'opus' duplicated on purpose
+  ];
+
+  it('covers exactly the three model keys', () => {
+    expect(MODEL_KEYS.has('default_model')).toBe(true);
+    expect(MODEL_KEYS.has('summaries.model')).toBe(true);
+    expect(MODEL_KEYS.has('tours.model')).toBe(true);
+    expect(MODEL_KEYS.has('default_provider')).toBe(false);
+  });
+
+  it('controlHtml routes model keys to an input backed by a datalist', () => {
+    const page = createPage(providers);
+    const html = page.controlHtml(baseSetting({ key: 'default_model', type: 'string', value: 'opus', default: 'opus' }));
+    expect(html).toContain('type="text"');
+    // Non-alphanumerics in the key (incl. underscores) collapse to dashes in the id.
+    expect(html).toMatch(/list="models-default-model"/);
+    expect(html).toContain('<datalist id="models-default-model">');
+    expect(html).toContain('value="opus"');
+  });
+
+  it('datalist is the de-duplicated, sorted union of all providers\' models', () => {
+    const page = createPage(providers);
+    const html = page.modelInputHtml(baseSetting({ key: 'summaries.model', type: 'string', value: '', default: '' }));
+    // Union: gpt-5.5, opus, sonnet — 'opus' appears once despite two providers.
+    const optionValues = [...html.matchAll(/<option value="([^"]+)">/g)].map((m) => m[1]);
+    expect(optionValues).toEqual(['gpt-5.5', 'opus', 'sonnet']);
+    // Datalist id is derived from the dot-path key (dots → dashes).
+    expect(html).toContain('id="models-summaries-model"');
+  });
+
+  it('accepts a valid-but-unlisted model id (free text, not a strict select)', () => {
+    const page = createPage(providers);
+    const html = page.modelInputHtml(baseSetting({ key: 'tours.model', type: 'string', value: 'some-unlisted-model' }));
+    expect(html).toContain('type="text"');
+    expect(html).toContain('value="some-unlisted-model"');
+  });
+
+  it('renders disabled when final', () => {
+    const page = createPage(providers);
+    const html = page.modelInputHtml(baseSetting({ key: 'default_model', type: 'string', final: true, value: 'opus' }));
+    expect(html).toMatch(/data-role="control"[^>]*disabled/);
+  });
+});
+
+describe('COUNCIL_KEYS + "Default for Analysis" control (shared CouncilDropdown)', () => {
+  const { CouncilDropdown } = require('../../public/js/components/CouncilDropdown.js');
+  const councils = [
+    { id: 'c1', name: 'Security', type: 'advanced' },
+    { id: 'c2', name: 'Perf', type: 'council' }
+  ];
+
+  function councilSetting(overrides = {}) {
+    return baseSetting({ key: 'default_council_id', group: 'ai', type: 'string', default: '', value: '', ...overrides });
+  }
+
+  it('covers the default_council_id key', () => {
+    expect(COUNCIL_KEYS.has('default_council_id')).toBe(true);
+  });
+
+  it('controlHtml routes the council key to a mount point + preview (not a native select)', () => {
+    const page = createPage();
+    page.councils = councils;
+    const html = page.controlHtml(councilSetting());
+    expect(html).toContain('data-role="council-mount"');
+    expect(html).toContain('data-role="council-preview"');
+    expect(html).toContain('custom-dropdown');
+    // Not a native select and not a generic control (the generic change handler
+    // must ignore it — the component PUTs via its own callback).
+    expect(html).not.toContain('<select');
+    expect(html).not.toContain('data-role="control"');
+  });
+
+  it('mountCouncilDropdowns instantiates the shared component with a base "Default Provider / Model" option', () => {
+    const page = createPage();
+    page.councils = councils;
+    window.CouncilDropdown = CouncilDropdown;
+    page.settingsByKey = { default_council_id: councilSetting({ value: 'c2' }) };
+    document.body.innerHTML = `
+      <div id="settings-sections">
+        <div class="setting-row" data-key="default_council_id">
+          <div class="custom-dropdown council-dropdown-control" data-role="council-mount"></div>
+        </div>
+      </div>`;
+    page.mountCouncilDropdowns(document.getElementById('settings-sections'));
+
+    const mount = document.querySelector('[data-role="council-mount"]');
+    // The rich dropdown rendered: trigger shows the selected council + its type badge.
+    expect(mount.querySelector('.custom-dropdown-trigger')).toBeTruthy();
+    expect(mount.textContent).toContain('Perf');
+    expect(mount.querySelector('.council-type-badge')).toBeTruthy();
+    // The base option is present in the list.
+    const optionTexts = [...mount.querySelectorAll('.custom-dropdown-option')].map(o => o.textContent.trim());
+    expect(optionTexts.some(t => /Default Provider \/ Model/.test(t))).toBe(true);
+    // An instance is tracked for teardown.
+    expect(page._councilDropdowns.default_council_id).toBeInstanceOf(CouncilDropdown);
+  });
+
+  it('mountCouncilDropdowns tears down a prior instance before re-mounting (no listener leak)', () => {
+    const page = createPage();
+    page.councils = councils;
+    window.CouncilDropdown = CouncilDropdown;
+    page.settingsByKey = { default_council_id: councilSetting({ value: '' }) };
+    document.body.innerHTML = `
+      <div id="settings-sections">
+        <div class="setting-row" data-key="default_council_id">
+          <div class="custom-dropdown" data-role="council-mount"></div>
+        </div>
+      </div>`;
+    const container = document.getElementById('settings-sections');
+    page.mountCouncilDropdowns(container);
+    const first = page._councilDropdowns.default_council_id;
+    const destroySpy = vi.spyOn(first, 'destroy');
+    page.mountCouncilDropdowns(container);
+    expect(destroySpy).toHaveBeenCalled();
+    expect(page._councilDropdowns.default_council_id).not.toBe(first);
+  });
+
+  it('selecting a council PUTs via updateSetting with the council id', () => {
+    const page = createPage();
+    page.councils = councils;
+    window.CouncilDropdown = CouncilDropdown;
+    page.settingsByKey = { default_council_id: councilSetting({ value: '' }) };
+    page.updateSetting = vi.fn();
+    document.body.innerHTML = `
+      <div id="settings-sections">
+        <div class="setting-row" data-key="default_council_id">
+          <div class="custom-dropdown" data-role="council-mount"></div>
+        </div>
+      </div>`;
+    page.mountCouncilDropdowns(document.getElementById('settings-sections'));
+    // Simulate the component reporting a selection.
+    page._councilDropdowns.default_council_id.onSelect('c1');
+    expect(page.updateSetting).toHaveBeenCalledWith('default_council_id', 'c1');
+  });
+
+  it('a final council setting mounts a disabled dropdown', () => {
+    const page = createPage();
+    page.councils = councils;
+    window.CouncilDropdown = CouncilDropdown;
+    page.settingsByKey = { default_council_id: councilSetting({ final: true, value: 'c1' }) };
+    document.body.innerHTML = `
+      <div id="settings-sections">
+        <div class="setting-row" data-key="default_council_id">
+          <div class="custom-dropdown" data-role="council-mount"></div>
+        </div>
+      </div>`;
+    page.mountCouncilDropdowns(document.getElementById('settings-sections'));
+    expect(document.querySelector('.custom-dropdown-trigger').disabled).toBe(true);
+  });
+
+  it('mountCouncilDropdowns is a no-op when the component is unavailable', () => {
+    const page = createPage();
+    delete window.CouncilDropdown;
+    page.settingsByKey = { default_council_id: councilSetting() };
+    document.body.innerHTML = `
+      <div id="settings-sections">
+        <div class="setting-row" data-key="default_council_id">
+          <div class="custom-dropdown" data-role="council-mount"></div>
+        </div>
+      </div>`;
+    expect(() => page.mountCouncilDropdowns(document.getElementById('settings-sections'))).not.toThrow();
+    expect(page._councilDropdowns.default_council_id).toBeUndefined();
+  });
+
+  it('loadCouncils populates councils from GET /api/councils', async () => {
+    const page = createPage();
+    global.fetch = vi.fn(async () => makeResponse({ councils }));
+    await page.loadCouncils();
+    expect(page.councils).toEqual(councils);
+    expect(global.fetch).toHaveBeenCalledWith('/api/councils');
+  });
+
+  it('loadCouncils defaults to an empty list on failure', async () => {
+    const page = createPage();
+    page.councils = [{ id: 'stale' }];
+    global.fetch = vi.fn(async () => makeResponse({}, { ok: false, status: 500 }));
+    await page.loadCouncils();
+    expect(page.councils).toEqual([]);
+  });
+});
+
+describe('"Default for Analysis" composition preview', () => {
+  const { CouncilCard } = require('../../public/js/components/CouncilCard.js');
+  const { CouncilDropdown } = require('../../public/js/components/CouncilDropdown.js');
+  const previewCouncils = [
+    { id: 'c1', name: 'Security', type: 'advanced', config: { levels: { '1': { enabled: true, voices: [{ provider: 'claude', model: 'sonnet' }] } } } },
+    { id: 'c2', name: 'Perf', type: 'council', config: { voices: [{ provider: 'claude', model: 'sonnet' }], levels: { '1': true } } }
+  ];
+  const previewProviders = [{ id: 'claude', name: 'Claude', models: [{ id: 'sonnet', name: 'Sonnet' }] }];
+
+  function councilRow(value) {
+    document.body.innerHTML = `
+      <div class="setting-row" data-key="default_council_id">
+        <div class="council-control-wrap">
+          <div class="custom-dropdown" data-role="council-mount"></div>
+          <div class="council-preview" data-role="council-preview"></div>
+        </div>
+      </div>`;
+    return document.querySelector('.setting-row');
+  }
+
+  it('resolveModelDisplay maps provider/model ids to names from /api/providers', () => {
+    const page = createPage(previewProviders);
+    expect(page.resolveModelDisplay('claude', 'sonnet')).toEqual({ providerName: 'Claude', modelName: 'Sonnet' });
+    // Unknown provider/model fall back to the raw ids.
+    expect(page.resolveModelDisplay('nope', 'x')).toEqual({ providerName: 'nope', modelName: 'x' });
+  });
+
+  it('shows a hint (not a card) for the base "Default Provider / Model" option', () => {
+    const page = createPage(previewProviders);
+    page.councils = previewCouncils;
+    const row = councilRow('');
+    page.renderCouncilPreview(row, { key: 'default_council_id', value: '' });
+    const preview = row.querySelector('[data-role="council-preview"]');
+    expect(preview.querySelector('.council-preview-hint')).toBeTruthy();
+    expect(preview.textContent).toContain('Uses the Default Provider / Model rows below');
+    expect(preview.querySelector('.council-card')).toBeNull();
+  });
+
+  it('renders the CouncilCard composition when a council is selected', () => {
+    window.CouncilCard = CouncilCard;
+    const page = createPage(previewProviders);
+    page.councils = previewCouncils;
+    const row = councilRow('c2');
+    page.renderCouncilPreview(row, { key: 'default_council_id', value: 'c2' });
+    const preview = row.querySelector('[data-role="council-preview"]');
+    expect(preview.querySelector('.council-card')).toBeTruthy();
+    expect(preview.textContent).toContain('Perf');
+    // Model ids resolved to display names via /api/providers.
+    expect(preview.textContent).toContain('Claude / Sonnet');
+  });
+
+  it('shows a not-found note for a stale council id', () => {
+    const page = createPage(previewProviders);
+    page.councils = previewCouncils;
+    const row = councilRow('deleted');
+    page.renderCouncilPreview(row, { key: 'default_council_id', value: 'deleted' });
+    const preview = row.querySelector('[data-role="council-preview"]');
+    expect(preview.textContent).toContain('not found');
+    expect(preview.querySelector('.council-card')).toBeNull();
+  });
+
+  it('mountCouncilDropdowns renders both the dropdown and the composition preview', () => {
+    window.CouncilDropdown = CouncilDropdown;
+    window.CouncilCard = CouncilCard;
+    const page = createPage(previewProviders);
+    page.councils = previewCouncils;
+    page.settingsByKey = {
+      default_council_id: baseSetting({ key: 'default_council_id', group: 'ai', type: 'string', value: 'c1' })
+    };
+    document.body.innerHTML = `
+      <div id="settings-sections">
+        <div class="setting-row" data-key="default_council_id">
+          <div class="council-control-wrap">
+            <div class="custom-dropdown" data-role="council-mount"></div>
+            <div class="council-preview" data-role="council-preview"></div>
+          </div>
+        </div>
+      </div>`;
+    page.mountCouncilDropdowns(document.getElementById('settings-sections'));
+    const row = document.querySelector('.setting-row');
+    expect(row.querySelector('.custom-dropdown-trigger')).toBeTruthy();
+    // Selected council 'c1' is advanced → its preview card shows the Advanced badge.
+    expect(row.querySelector('.council-preview .council-card')).toBeTruthy();
+    expect(row.querySelector('.council-card-badge-advanced')).toBeTruthy();
+  });
+});
+
+describe('computeSections — hidden sections', () => {
+  it('omits a section flagged hidden on the API payload', () => {
+    const page = createPage();
+    const apiSections = [
+      { id: 'general', title: 'General', badge: null, hidden: false },
+      { id: 'summaries', title: 'Summaries', badge: null, hidden: true },
+      { id: 'tours', title: 'Tours', badge: 'new', hidden: false }
+    ];
+    const sections = page.computeSections([
+      baseSetting({ key: 'a', group: 'general' }),
+      baseSetting({ key: 'summaries.enabled', group: 'summaries' }),
+      baseSetting({ key: 'tours.enabled', group: 'tours' })
+    ], apiSections);
+    // Summaries is dropped even though it has settings.
+    expect(sections.map(s => s.groupKey)).toEqual(['general', 'tours']);
   });
 });
 

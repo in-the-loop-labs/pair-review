@@ -71,6 +71,47 @@ function toStringList(value, label) {
 }
 
 /**
+ * Property names whose values are secrets and must never be shipped to the
+ * client. Matched case-insensitively as a substring of the key, so `token`,
+ * `github_token`, `apiKey`, `api_key`, `client_secret`, `password`,
+ * `authorization`, and `passphrase` all redact. Read-only object settings
+ * (providers / chat_providers / hooks) can embed these under config files.
+ */
+const SECRET_KEY_PATTERN = /(token|secret|password|passphrase|api[-_]?key|apikey|auth|credential|bearer)/i;
+
+/** The literal used in place of a redacted secret value in API payloads. */
+const REDACTED = '***redacted***';
+
+/**
+ * Deep-clone a JSON-serializable value, replacing any property whose key looks
+ * like a secret (SECRET_KEY_PATTERN) with a fixed redaction marker. Used before
+ * shipping object-type read-only settings to the client so config-file secrets
+ * (tokens, API keys) never leave the server. Arrays are walked element-wise;
+ * primitives pass through unchanged.
+ * @param {*} value
+ * @returns {*}
+ */
+function redactSecrets(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => redactSecrets(item));
+  }
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      if (SECRET_KEY_PATTERN.test(k)) {
+        // Redact regardless of the value's shape — a nested secret object is
+        // just as sensitive as a string token.
+        out[k] = REDACTED;
+      } else {
+        out[k] = redactSecrets(v);
+      }
+    }
+    return out;
+  }
+  return value;
+}
+
+/**
  * Coerce a raw env-var string into the entry's type for display. Env vars are
  * always strings; this is best-effort for the settings page only.
  * @param {Object} entry
@@ -318,7 +359,11 @@ class GlobalSettingsService {
         id: section.id,
         title: section.title,
         description: section.description || null,
-        badge: section.badge || null
+        badge: section.badge || null,
+        // Build-time visibility default (registry SECTIONS `hidden: true`). The
+        // settings page renderer omits hidden sections; kept separate from the
+        // config-driven `settings_ui.hidden` preference.
+        hidden: Boolean(section.hidden)
       }));
   }
 
@@ -356,9 +401,13 @@ class GlobalSettingsService {
       descriptor.value = null;
       descriptor.configured = Boolean(envSet || literalSet || commandSet);
     } else if (entry.type === 'object') {
+      // Ship the FULL object (not just a count) so the page can render its
+      // contents inline — but redact any embedded secrets first. providers /
+      // chat_providers / hooks can carry tokens/API keys from config files;
+      // those must never reach the client.
       const obj = getPath(effective, entry.key);
-      const count = obj && typeof obj === 'object' && !Array.isArray(obj) ? Object.keys(obj).length : 0;
-      descriptor.value = { count };
+      const isPlainObject = obj && typeof obj === 'object' && !Array.isArray(obj);
+      descriptor.value = isPlainObject ? redactSecrets(obj) : {};
     } else {
       descriptor.value = resolved ? resolved.value : entry.default;
     }
@@ -420,4 +469,4 @@ class GlobalSettingsService {
   }
 }
 
-module.exports = { GlobalSettingsService, coerceEnvValue, FILE_LAYER_ORDER };
+module.exports = { GlobalSettingsService, coerceEnvValue, redactSecrets, FILE_LAYER_ORDER };

@@ -208,13 +208,16 @@ describe('global settings routes', () => {
   });
 
   describe('GET /api/settings — Phase 2 payload shape', () => {
-    it('returns a sections array (ordered, with the tours beta badge) plus badge/final on each descriptor', async () => {
+    it('returns a sections array (ordered, tours "new" badge, summaries hidden flag) plus badge/final on each descriptor', async () => {
       const res = await request(server).get('/api/settings').expect(200);
       expect(Array.isArray(res.body.sections)).toBe(true);
       const sectionIds = res.body.sections.map((s) => s.id);
-      // General precedes readonly; tours carries the beta badge.
+      // General precedes readonly; tours carries the "new" badge.
       expect(sectionIds.indexOf('general')).toBeLessThan(sectionIds.indexOf('readonly'));
-      expect(res.body.sections.find((s) => s.id === 'tours').badge).toBe('beta');
+      expect(res.body.sections.find((s) => s.id === 'tours').badge).toBe('new');
+      // Summaries ships with the build-time hidden flag (the frontend omits it).
+      expect(res.body.sections.find((s) => s.id === 'summaries').hidden).toBe(true);
+      expect(res.body.sections.find((s) => s.id === 'general').hidden).toBe(false);
       // Every described setting gains badge + final.
       const theme = res.body.settings.find((s) => s.key === 'theme');
       expect(theme).toHaveProperty('badge', null);

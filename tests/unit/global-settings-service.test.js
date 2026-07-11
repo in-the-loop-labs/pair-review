@@ -9,7 +9,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-const { GlobalSettingsService } = require('../../src/settings/global-settings-service.js');
+const { GlobalSettingsService, redactSecrets } = require('../../src/settings/global-settings-service.js');
 const { GlobalSettingsRepository } = require('../../src/database.js');
 const { resolveSingleProviderModel } = require('../../src/review-config.js');
 const { createTestDatabase, closeTestDatabase } = require('../utils/schema.js');
@@ -226,11 +226,37 @@ describe('GlobalSettingsService', () => {
       expect(gh.configured).toBe(true);
     });
 
-    it('summarizes object read-onlys as a count', () => {
-      const svc = makeService({ baseConfig: baseConfig({ providers: { a: {}, b: {} } }) });
+    it('ships the full object for object read-onlys (not just a count)', () => {
+      const svc = makeService({ baseConfig: baseConfig({ providers: { a: { model: 'x' }, b: {} } }) });
       const providers = svc.describe().find((d) => d.key === 'providers');
-      expect(providers.value).toEqual({ count: 2 });
+      expect(providers.value).toEqual({ a: { model: 'x' }, b: {} });
       expect(providers.editable).toBe(false);
+    });
+
+    it('redacts embedded secrets in object read-onlys before shipping', () => {
+      const svc = makeService({
+        baseConfig: baseConfig({
+          providers: {
+            custom: { command: 'my-cli', api_key: 'sk-live-123', nested: { token: 'ghp_zzz' } }
+          },
+          hooks: { 'pre-review': 'run --authorization deadbeef' }
+        })
+      });
+      const described = svc.describe();
+      const providers = described.find((d) => d.key === 'providers');
+      // Secret-looking keys are masked; benign keys pass through intact.
+      expect(providers.value.custom.command).toBe('my-cli');
+      expect(providers.value.custom.api_key).toBe('***redacted***');
+      expect(providers.value.custom.nested.token).toBe('***redacted***');
+      // The raw secret must not appear anywhere in the serialized payload.
+      expect(JSON.stringify(described)).not.toContain('sk-live-123');
+      expect(JSON.stringify(described)).not.toContain('ghp_zzz');
+    });
+
+    it('renders an empty object read-only as {}', () => {
+      const svc = makeService({ baseConfig: baseConfig({ providers: {} }) });
+      const providers = svc.describe().find((d) => d.key === 'providers');
+      expect(providers.value).toEqual({});
     });
 
     it('surfaces overrideValue only when an override is present', () => {
@@ -239,6 +265,36 @@ describe('GlobalSettingsService', () => {
       const described = svc.describe();
       expect(described.find((d) => d.key === 'theme').overrideValue).toBe('dark');
       expect(described.find((d) => d.key === 'default_model').overrideValue).toBeNull();
+    });
+  });
+
+  describe('redactSecrets', () => {
+    it('masks secret-looking keys at every depth, keeps benign keys', () => {
+      const out = redactSecrets({
+        command: 'cli',
+        api_key: 'sk-1',
+        apiKey: 'sk-2',
+        client_secret: 's',
+        password: 'p',
+        github_token: 't',
+        authorization: 'a',
+        nested: { token: 'x', label: 'ok' }
+      });
+      expect(out.command).toBe('cli');
+      expect(out.nested.label).toBe('ok');
+      for (const k of ['api_key', 'apiKey', 'client_secret', 'password', 'github_token', 'authorization']) {
+        expect(out[k]).toBe('***redacted***');
+      }
+      expect(out.nested.token).toBe('***redacted***');
+    });
+
+    it('walks arrays and passes primitives through', () => {
+      expect(redactSecrets([{ token: 'x' }, { name: 'y' }])).toEqual([
+        { token: '***redacted***' }, { name: 'y' }
+      ]);
+      expect(redactSecrets('plain')).toBe('plain');
+      expect(redactSecrets(42)).toBe(42);
+      expect(redactSecrets(null)).toBe(null);
     });
   });
 
@@ -317,9 +373,21 @@ describe('GlobalSettingsService', () => {
       const sections = svc.describeSections();
       const ids = sections.map((s) => s.id);
       expect(ids).not.toContain('summaries');
-      // Still includes populated sections, and carries the tours beta badge.
+      // Still includes populated sections, and carries the tours new badge.
       expect(ids).toContain('general');
-      expect(sections.find((s) => s.id === 'tours').badge).toBe('beta');
+      expect(sections.find((s) => s.id === 'tours').badge).toBe('new');
+    });
+
+    it('forwards the build-time hidden flag on the sections payload', () => {
+      const sections = makeService().describeSections();
+      // Summaries ships hidden by default (registry SECTIONS hidden:true); the
+      // frontend renderer omits it. It still appears in the payload with the flag.
+      const summaries = sections.find((s) => s.id === 'summaries');
+      expect(summaries).toBeTruthy();
+      expect(summaries.hidden).toBe(true);
+      // Visible sections carry hidden:false.
+      expect(sections.find((s) => s.id === 'general').hidden).toBe(false);
+      expect(sections.find((s) => s.id === 'tours').hidden).toBe(false);
     });
 
     it('describeSections preserves registry order', () => {

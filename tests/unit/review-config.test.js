@@ -353,6 +353,102 @@ describe('resolveReviewConfig', () => {
     });
   });
 
+  // The /settings page can store a GLOBAL default council id, carried on
+  // config._globalOverrides.default_council_id (or a config-file
+  // default_council_id). It sits below a repo council but above the single
+  // ladder — including a repo's single provider/model default.
+  describe('8. global default council', () => {
+    it('fires from an in-app override and outranks the single/config default', async () => {
+      const id = uuidv4();
+      await new CouncilRepository(db).create({ id, name: 'Global', config: advancedConfig, type: 'advanced' });
+
+      const result = await resolveReviewConfig(
+        db, REPOSITORY, {},
+        { default_provider: 'claude', default_model: 'opus', _globalOverrides: { default_council_id: id } }
+      );
+
+      expect(result.type).toBe('council');
+      expect(result.council.id).toBe(id);
+      expect(result.configType).toBe('advanced');
+    });
+
+    it('fires from a config-file default_council_id (no _globalOverrides)', async () => {
+      const id = uuidv4();
+      await new CouncilRepository(db).create({ id, name: 'FileGlobal', config: voiceConfig, type: 'council' });
+
+      const result = await resolveReviewConfig(db, REPOSITORY, {}, { default_council_id: id });
+
+      expect(result.type).toBe('council');
+      expect(result.council.id).toBe(id);
+      expect(result.configType).toBe('council');
+    });
+
+    it('a repo default council beats the global default council', async () => {
+      const globalId = uuidv4();
+      const repoId = uuidv4();
+      await new CouncilRepository(db).create({ id: globalId, name: 'Global', config: advancedConfig, type: 'advanced' });
+      await new CouncilRepository(db).create({ id: repoId, name: 'Repo', config: voiceConfig, type: 'council' });
+      seedRepoSettings(db, { default_council_id: repoId });
+
+      const result = await resolveReviewConfig(
+        db, REPOSITORY, {},
+        { _globalOverrides: { default_council_id: globalId } }
+      );
+
+      expect(result.type).toBe('council');
+      expect(result.council.id).toBe(repoId);
+    });
+
+    it('the global council outranks a repo single provider/model default', async () => {
+      const globalId = uuidv4();
+      await new CouncilRepository(db).create({ id: globalId, name: 'Global', config: advancedConfig, type: 'advanced' });
+      // Repo has only a single default (no repo council).
+      seedRepoSettings(db, { default_provider: 'antigravity', default_model: 'gemini-3.1-pro-low' });
+
+      const result = await resolveReviewConfig(
+        db, REPOSITORY, {},
+        { _globalOverrides: { default_council_id: globalId } }
+      );
+
+      expect(result.type).toBe('council');
+      expect(result.council.id).toBe(globalId);
+    });
+
+    it('an explicit --provider/--model still beats the global council', async () => {
+      const globalId = uuidv4();
+      await new CouncilRepository(db).create({ id: globalId, name: 'Global', config: advancedConfig, type: 'advanced' });
+
+      const result = await resolveReviewConfig(
+        db, REPOSITORY,
+        { provider: 'codex', model: 'gpt-5' },
+        { _globalOverrides: { default_council_id: globalId } }
+      );
+
+      expect(result).toEqual({ type: 'single', provider: 'codex', model: 'gpt-5' });
+    });
+
+    it('falls back to the single default (with a warning) when the global council id is missing', async () => {
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+      const result = await resolveReviewConfig(
+        db, REPOSITORY, {},
+        { default_provider: 'claude', default_model: 'opus', _globalOverrides: { default_council_id: uuidv4() } }
+      );
+
+      expect(result).toEqual({ type: 'single', provider: 'claude', model: 'opus' });
+      expect(warnSpy).toHaveBeenCalledOnce();
+      expect(warnSpy.mock.calls[0][0]).toMatch(/Global default council .* was not found/);
+    });
+
+    it('an empty default_council_id is inert (no council, single default resolves)', async () => {
+      const result = await resolveReviewConfig(
+        db, REPOSITORY, {},
+        { default_provider: 'claude', default_model: 'opus', _globalOverrides: { default_council_id: '' } }
+      );
+      expect(result).toEqual({ type: 'single', provider: 'claude', model: 'opus' });
+    });
+  });
+
   describe('edge cases', () => {
     it('treats a null/undefined repository as "no repo defaults"', async () => {
       const result = await resolveReviewConfig(

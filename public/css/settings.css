@@ -445,6 +445,34 @@ body {
   padding-top: 2px;
 }
 
+/* The "Default for Analysis" control stacks the dropdown over its composition
+   preview; top-align the reset button beside the (taller) stack. */
+.setting-control:has(.council-control-wrap) {
+  align-items: flex-start;
+}
+
+.council-control-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-start;
+  min-width: 240px;
+}
+
+.council-control-wrap .custom-dropdown {
+  width: 240px;
+}
+
+.council-preview {
+  width: 100%;
+}
+
+.council-preview-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+}
+
 /* ============================================
    Source Badges
    ============================================ */
@@ -728,17 +756,19 @@ body {
   cursor: not-allowed;
 }
 
-/* Read-only value display */
+/* Read-only value display — deliberately styled as a plain code chip (no input
+   border, tinted background) so it never reads as an editable field like the
+   .settings-input / .settings-select controls in the other sections. */
 .readonly-value {
   display: inline-flex;
   align-items: center;
-  padding: 6px 12px;
+  padding: 3px 8px;
   font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
   font-size: 13px;
   color: var(--color-text-tertiary);
-  background: var(--color-bg-primary);
-  border: 1px solid var(--color-border-primary);
-  border-radius: 8px;
+  background: var(--color-bg-tertiary);
+  border: none;
+  border-radius: 6px;
   max-width: 320px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -746,7 +776,62 @@ body {
 }
 
 .readonly-value--set {
+  color: var(--color-text-secondary);
+}
+
+/* Object read-only (providers / chat_providers / hooks / repos): an inline
+   collapsible showing the full contents. The summary is a code chip matching
+   .readonly-value; the expanded body is a scroll-capped <pre>. */
+.readonly-object {
+  max-width: 360px;
+  font-size: 13px;
+}
+
+.readonly-object-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-tertiary);
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+
+.readonly-object-summary::-webkit-details-marker {
+  display: none;
+}
+
+.readonly-object-summary::before {
+  content: '▸';
+  color: var(--color-text-tertiary);
+  font-size: 11px;
+}
+
+.readonly-object[open] > .readonly-object-summary::before {
+  content: '▾';
+}
+
+.readonly-object[open] > .readonly-object-summary {
+  margin-bottom: 6px;
+}
+
+.readonly-object-json {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 240px;
+  overflow: auto;
+  font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
+  font-size: 12px;
+  line-height: 1.5;
   color: var(--color-text-primary);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-primary);
+  border-radius: 8px;
+  white-space: pre;
 }
 
 /* Reset button */

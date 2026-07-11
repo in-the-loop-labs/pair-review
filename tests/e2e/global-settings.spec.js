@@ -19,8 +19,10 @@
 import { test, expect } from './fixtures.js';
 
 // A boolean setting that ships disabled by default (source = default) and is
-// dynamic/editable, so we can toggle it and reset it deterministically.
-const BOOLEAN_KEY = 'summaries.enabled';
+// dynamic/editable (no restart), so we can toggle it and reset it
+// deterministically. (The Summaries section is hidden by default, so its
+// booleans are not rendered — use a General-section boolean instead.)
+const BOOLEAN_KEY = 'enable_graphite';
 
 /**
  * Seed a repository with user-facing DB settings via the existing repo
@@ -133,8 +135,12 @@ test.describe('Global Settings - Section navigation', () => {
 
     // Known-present setting groups + the Repositories section.
     await expect(navList.locator('.settings-nav-item', { hasText: 'General' })).toBeVisible();
-    await expect(navList.locator('.settings-nav-item', { hasText: 'Summaries' })).toBeVisible();
+    await expect(navList.locator('.settings-nav-item', { hasText: 'AI Defaults' })).toBeVisible();
     await expect(navList.locator(`.settings-nav-item[data-target="repos-section"]`)).toBeVisible();
+
+    // Summaries ships hidden by default → no nav item and no section on the page.
+    await expect(navList.locator('.settings-nav-item', { hasText: 'Summaries' })).toHaveCount(0);
+    await expect(page.locator('#section-summaries')).toHaveCount(0);
 
     // Every nav item points at a section that exists on the page.
     const targets = await navList.locator('.settings-nav-item').evaluateAll(
@@ -237,20 +243,97 @@ test.describe('Global Settings - Sidebar stickiness', () => {
 });
 
 test.describe('Global Settings - Feature badges', () => {
-  test('tours section shows a Beta badge in its header and sidebar nav', async ({ page }) => {
+  test('tours section shows a New badge in its header and sidebar nav', async ({ page }) => {
     await page.goto('/settings');
 
     // Header badge on the Tours section.
     const headerBadge = page.locator('#section-tours .section-header h2 .feature-badge');
     await expect(headerBadge).toBeVisible({ timeout: 5000 });
-    await expect(headerBadge).toHaveText(/beta/i);
+    await expect(headerBadge).toHaveText(/new/i);
 
     // Matching badge on the Tours sidebar nav item.
     const navBadge = page.locator(
       '#settings-nav-list .settings-nav-item[data-target="section-tours"] .feature-badge'
     );
     await expect(navBadge).toBeVisible();
-    await expect(navBadge).toHaveText(/beta/i);
+    await expect(navBadge).toHaveText(/new/i);
+  });
+});
+
+test.describe('Global Settings - AI Defaults controls', () => {
+  test('default model is a datalist-backed input; "Default for Analysis" is the rich council dropdown', async ({ page }) => {
+    await page.goto('/settings');
+
+    // Model key → free-text input wired to a <datalist> (discoverable but not a
+    // strict select), so an unlisted model id is still accepted.
+    const modelRow = page.locator('.setting-row[data-key="default_model"]');
+    await expect(modelRow).toBeVisible({ timeout: 5000 });
+    const modelInput = modelRow.locator('input[data-role="control"]');
+    await expect(modelInput).toHaveAttribute('list', 'models-default-model');
+    await expect(modelRow.locator('datalist#models-default-model')).toHaveCount(1);
+
+    // "Default for Analysis" → the shared rich CouncilDropdown (custom control,
+    // NOT a native <select>), whose base option is "Default Provider / Model".
+    const councilRow = page.locator('.setting-row[data-key="default_council_id"]');
+    await expect(councilRow).toBeVisible();
+    const trigger = councilRow.locator('.custom-dropdown-trigger');
+    await expect(trigger).toHaveCount(1);
+    await expect(councilRow.locator('select')).toHaveCount(0);
+    // Base option present; nothing set yet → the trigger reads "Default Provider / Model".
+    await expect(trigger).toHaveText(/Default Provider \/ Model/);
+    await expect(
+      councilRow.locator('.custom-dropdown-option', { hasText: 'Default Provider / Model' })
+    ).toHaveCount(1);
+
+    // The dropdown opens on click (interactive).
+    await trigger.click();
+    await expect(councilRow.locator('.custom-dropdown')).toHaveClass(/open/);
+  });
+
+  test('selecting a council shows its composition preview; the base option shows a hint', async ({ page }) => {
+    // Seed a voice-centric council so it appears in the dropdown.
+    await page.goto('/');
+    const created = await page.evaluate(async () => {
+      const res = await fetch('/api/councils', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'E2E Composition Council',
+          type: 'council',
+          config: {
+            voices: [{ provider: 'claude', model: 'sonnet', tier: 'balanced' }],
+            levels: { '1': true }
+          }
+        })
+      });
+      return res.ok;
+    });
+    expect(created).toBe(true);
+
+    await page.goto('/settings');
+    const councilRow = page.locator('.setting-row[data-key="default_council_id"]');
+    await expect(councilRow).toBeVisible({ timeout: 5000 });
+
+    // Nothing selected yet → the preview is the base-option hint, no card.
+    await expect(councilRow.locator('.council-preview-hint')).toBeVisible();
+    await expect(councilRow.locator('.council-preview .council-card')).toHaveCount(0);
+
+    // Open the dropdown and pick the seeded council.
+    await councilRow.locator('.custom-dropdown-trigger').click();
+    await councilRow.locator('.custom-dropdown-option', { hasText: 'E2E Composition Council' }).click();
+
+    // The composition card appears with the council name (persisted via PUT +
+    // re-mounted preview).
+    const card = councilRow.locator('.council-preview .council-card');
+    await expect(card).toBeVisible({ timeout: 5000 });
+    await expect(card).toContainText('E2E Composition Council');
+    await expect(card.locator('.council-card-reviewer')).toHaveCount(1);
+
+    // Switch back to the base option → hint returns, card gone.
+    await councilRow.locator('.custom-dropdown-trigger').click();
+    await councilRow.locator('.custom-dropdown-option', { hasText: 'Default Provider / Model' }).click();
+    await expect(councilRow.locator('.council-preview-hint')).toBeVisible({ timeout: 5000 });
+    await expect(councilRow.locator('.council-preview .council-card')).toHaveCount(0);
   });
 });
 

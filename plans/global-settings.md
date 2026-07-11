@@ -33,7 +33,7 @@ layers) and env vars, and most are frozen at startup. Requirements:
 - Migrations: `src/database.js` — `CURRENT_SCHEMA_VERSION = 51` (:24), MIGRATIONS
   object (:461..~2241), SCHEMA_SQL (:29), INDEX_SQL (:370), helpers
   `tableExists` (:454) / `columnExists` (:442). New table => SCHEMA_SQL entry +
-  MIGRATIONS[52] + bump to 52. Repository-class pattern:
+  MIGRATIONS[53] + bump to 53. Repository-class pattern:
   `RepoSettingsRepository` (:3159); export at :6009+.
 - Test schema single source of truth: `tests/utils/schema.js` (SCHEMA_SQL :18,
   INDEX_SQL :339, `createTestDatabase()` :394). (CLAUDE.md's "update
@@ -55,7 +55,7 @@ layers) and env vars, and most are frozen at startup. Requirements:
 
 ## Architecture
 
-### 1. DB (migration 52)
+### 1. DB (migration 53)
 ```sql
 CREATE TABLE IF NOT EXISTS global_settings (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,8 +66,8 @@ CREATE TABLE IF NOT EXISTS global_settings (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_global_settings_key ON global_settings(key);
 ```
-Add to SCHEMA_SQL + MIGRATIONS[52] (idempotent, `tableExists` guard, console.log
-style per existing migrations) + INDEX_SQL, bump CURRENT_SCHEMA_VERSION to 52.
+Add to SCHEMA_SQL + MIGRATIONS[53] (idempotent, `tableExists` guard, console.log
+style per existing migrations) + INDEX_SQL, bump CURRENT_SCHEMA_VERSION to 53.
 Mirror byte-identically in `tests/utils/schema.js`.
 
 `GlobalSettingsRepository` class in `src/database.js` (follow

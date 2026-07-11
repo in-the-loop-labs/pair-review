@@ -107,9 +107,27 @@ const REGISTRY = [
 
   // ---- AI defaults -------------------------------------------------------
   {
+    // The "Default for Analysis" control: a single selection that is EITHER the
+    // Default Provider/Model pair (below) OR a saved Review Council. Its allowed
+    // values are the councils stored in the DB — a dynamic enum the registry's
+    // static `values: [...]` model can't express — so the settings page
+    // special-cases this key (COUNCIL_KEYS) into the shared rich council
+    // dropdown (CouncilDropdown), whose empty/base option is "Default Provider /
+    // Model". Empty string = use the provider/model pair (no council). See
+    // src/review-config.js for the resolver tier this feeds.
+    key: 'default_council_id',
+    label: 'Default for Analysis',
+    description: "The default analysis: your Default Provider/Model pair (below) or a saved Review Council. Explicit per-run picks and a repository's own default still take precedence. Single-model tasks — hunk summaries, tours, MCP start_analysis — always use the provider/model, never a council.",
+    group: 'ai',
+    type: 'string',
+    default: '',
+    editable: true,
+    restartRequired: false
+  },
+  {
     key: 'default_provider',
     label: 'Default provider',
-    description: 'AI provider used for analysis when none is picked explicitly.',
+    description: "AI provider for the Default Provider/Model analysis (used when 'Default for Analysis' is not a council) and for single-model tasks like summaries.",
     group: 'ai',
     type: 'string',
     default: 'claude',
@@ -119,7 +137,7 @@ const REGISTRY = [
   {
     key: 'default_model',
     label: 'Default model',
-    description: 'Model within the default provider used when none is picked explicitly.',
+    description: "Model within the default provider for the Default Provider/Model analysis and single-model tasks.",
     group: 'ai',
     type: 'string',
     default: 'opus',
@@ -455,14 +473,18 @@ const BADGE_VALUES = new Set(['new', 'beta']);
  * lifted verbatim from the frontend so /api/settings can drive the section nav
  * (order, titles, badges) instead of the page deriving them locally.
  *
- * Tours ships with a 'beta' badge (feature-gated, off by default) — a product
- * call, trivially changed here without touching the frontend.
+ * A section may carry a `badge` ('new' | 'beta' | null) and an optional
+ * `hidden: true` flag. `hidden` is a build-time visibility default (distinct
+ * from the config-driven `settings_ui.hidden` preference): the API forwards it
+ * on the sections payload and the settings-page renderer omits hidden sections
+ * (and their nav entries). Summaries is hidden for now while the feature is
+ * being finished — flip the flag to bring the section back.
  */
 const SECTIONS = [
   { id: 'general', title: 'General', description: 'Basic application preferences.', badge: null },
-  { id: 'ai', title: 'AI Defaults', description: 'Default provider and model used for analysis and chat.', badge: null },
-  { id: 'summaries', title: 'Summaries', description: 'Automatic PR summary generation.', badge: null },
-  { id: 'tours', title: 'Tours', description: 'Automatic code tour generation.', badge: 'beta' },
+  { id: 'ai', title: 'AI Defaults', description: 'The default for analysis — a provider/model pair or a Review Council — plus the provider/model used for single-model tasks.', badge: null },
+  { id: 'summaries', title: 'Summaries', description: 'Automatic PR summary generation.', badge: null, hidden: true },
+  { id: 'tours', title: 'Tours', description: 'Automatic code tour generation.', badge: 'new' },
   { id: 'chat', title: 'Chat', description: 'The AI chat assistant.', badge: null },
   { id: 'advanced', title: 'Advanced', description: 'These are captured at startup — changes take effect after you restart pair-review.', badge: null },
   { id: 'readonly', title: 'From config files & environment', description: 'Read-only here. Set these via config files, CLI flags, or environment variables.', badge: null }

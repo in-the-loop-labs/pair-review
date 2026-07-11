@@ -117,10 +117,14 @@ function _buildSingleSelection(explicit, repoSettings, config) {
  *      `CouncilRepository.getById` (we already hold the UUID, so no handle
  *      matching is needed). If the id points to a council that no longer exists,
  *      a warning is logged and resolution falls through to the single default.
- *   4. `repo_settings.default_provider` / `default_model` — single selection
- *      (see `_buildSingleSelection`).
- *   5. Global in-app override (`config._globalOverrides`) › global `config`
- *      defaults — single selection (final hardcoded fallbacks 'claude' / 'opus').
+ *   4. Global default council — `config._globalOverrides.default_council_id`
+ *      (an in-app /settings override) or a config-file `default_council_id`.
+ *      Resolved by id like the repo tier; a stale id logs a warning and falls
+ *      through. Sits ABOVE the single ladder, so it also outranks a repo's
+ *      single provider/model default.
+ *   5. `repo_settings.default_provider` / `default_model`, then global in-app
+ *      override (`config._globalOverrides`) › global `config` defaults — single
+ *      selection (final hardcoded fallbacks 'claude' / 'opus').
  *
  * @param {Object} db - Database instance.
  * @param {string} repository - Repository in `owner/repo` form (may be null/undefined
@@ -152,6 +156,7 @@ async function resolveReviewConfig(db, repository, explicit = {}, config = {}) {
   }
 
   // No explicit pick — consult the repo's saved defaults.
+  const cfg = config || {};
   const repoSettings = repository
     ? await new RepoSettingsRepository(db).getRepoSettings(repository)
     : null;
@@ -170,8 +175,34 @@ async function resolveReviewConfig(db, repository, explicit = {}, config = {}) {
     );
   }
 
-  // 4 & 5. Single selection from repo defaults, then global config, then hardcoded.
-  return _buildSingleSelection({}, repoSettings, config);
+  // 4. Global default council (from the /settings page, carried on
+  //    `config._globalOverrides.default_council_id`, or a config-file
+  //    `default_council_id`). Mirrors the repo-council tier but sits below it:
+  //    a repo's own council still wins, while a global council outranks the
+  //    single provider/model ladder — INCLUDING a repo's single default — so a
+  //    global council is the default analysis mode wherever a repo hasn't
+  //    chosen its own council. NOTE: single-model resolvers
+  //    (`resolveSingleProviderModel`, used by MCP `start_analysis`, hunk
+  //    summaries, and tours) intentionally never reach this tier, so a global
+  //    default council does not fire on those paths — consistent with repo
+  //    default councils.
+  const globalCouncilId = (cfg._globalOverrides && cfg._globalOverrides.default_council_id)
+    || cfg.default_council_id;
+  if (globalCouncilId) {
+    const council = await new CouncilRepository(db).getById(globalCouncilId);
+    if (council) {
+      return { type: 'council', ..._buildCouncilSelection(council) };
+    }
+    // Stale global council id (the council was deleted). Match the repo-council
+    // behavior: warn and fall through to the single-provider default.
+    logger.warn(
+      `Global default council "${globalCouncilId}" was not found; ` +
+      `falling back to default provider/model.`
+    );
+  }
+
+  // 5. Single selection from repo defaults, then global config, then hardcoded.
+  return _buildSingleSelection({}, repoSettings, cfg);
 }
 
 /**
@@ -181,10 +212,13 @@ async function resolveReviewConfig(db, repository, explicit = {}, config = {}) {
  * This is the same ladder `resolveReviewConfig` applies for the single-selection
  * case (explicit › repo default › global in-app override › config-file › legacy
  * keys › hardcoded). It is exported for callers that intentionally run a single
- * provider/model only and must NOT consult a repo's default council — the MCP
- * `start_analysis` tool (src/routes/mcp.js) documents this divergence. Those
- * callers reuse this helper so they inherit the in-app-override tier instead of
- * maintaining a parallel inline ladder.
+ * provider/model only and must NOT consult a council — the MCP `start_analysis`
+ * tool (src/routes/mcp.js) documents this divergence. This deliberately bypasses
+ * BOTH the repo default council AND the global default council
+ * (`config.default_council_id`): a global default council never fires on these
+ * single-model paths (hunk summaries, tours, MCP start_analysis), by design.
+ * Those callers reuse this helper so they inherit the in-app-override tier
+ * instead of maintaining a parallel inline ladder.
  *
  * @param {Object} [explicit] - { provider, model } (either may be undefined)
  * @param {Object|null} [repoSettings] - Row from RepoSettingsRepository.getRepoSettings

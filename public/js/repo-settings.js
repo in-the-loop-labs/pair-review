@@ -345,162 +345,38 @@ class RepoSettingsPage {
   }
 
   /**
-   * Get the display label for a council type
-   * @param {string} type - Council type ('council' or 'advanced')
-   * @returns {{ label: string, cssClass: string }}
-   */
-  getCouncilTypeBadge(type) {
-    if (type === 'advanced') {
-      return { label: 'Advanced', cssClass: 'badge-advanced' };
-    }
-    return { label: 'Standard', cssClass: 'badge-standard' };
-  }
-
-  /**
-   * Render the custom council dropdown
+   * Render (or refresh) the custom council dropdown via the shared
+   * CouncilDropdown component (public/js/components/CouncilDropdown.js). The
+   * component owns rendering + interaction; a selection routes back into
+   * selectCouncilOption, which updates the card preview and change tracking —
+   * preserving the original behavior. The instance is created once and reused so
+   * its document-level outside-click listener is not re-stacked on each refresh.
    */
   renderCouncilDropdown() {
     const container = document.getElementById('default-council-dropdown');
     if (!container) return;
 
+    // Resolve the component constructor without a bare reference (unit tests
+    // eval this class in a scope where the global may be absent).
+    const Dropdown = (typeof window !== 'undefined' && window.CouncilDropdown)
+      || (typeof CouncilDropdown !== 'undefined' ? CouncilDropdown : null);
+    if (!Dropdown) return;
+
     const selectedId = this.currentSettings.default_council_id || '';
-    const selectedCouncil = this.councils.find(c => c.id === selectedId);
-
-    // Build trigger display
-    let triggerHTML;
-    if (selectedCouncil) {
-      const badge = this.getCouncilTypeBadge(selectedCouncil.type);
-      triggerHTML = `<span class="trigger-text">${this.escapeHtml(selectedCouncil.name)}</span>
-        <span class="council-type-badge ${badge.cssClass}">${badge.label}</span>`;
-    } else if (this.councils.length > 0) {
-      triggerHTML = '<span class="trigger-text placeholder">Select a council...</span>';
+    if (!this._councilDropdown) {
+      this._councilDropdown = new Dropdown({
+        container,
+        councils: this.councils,
+        selectedId,
+        placeholder: 'Select a council...',
+        emptyText: 'No councils yet — create one from the analysis config',
+        onSelect: (value) => this.selectCouncilOption(container, value)
+      });
     } else {
-      triggerHTML = '<span class="trigger-text placeholder">No councils yet — create one from the analysis config</span>';
+      this._councilDropdown.councils = this.councils;
+      this._councilDropdown.selectedId = selectedId;
+      this._councilDropdown.render();
     }
-
-    // Build option list — sort alphabetically by name
-    const sortedCouncils = [...this.councils].sort((a, b) =>
-      (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' })
-    );
-    let optionsHTML = '';
-
-    for (const council of sortedCouncils) {
-      const badge = this.getCouncilTypeBadge(council.type);
-      const isSelected = council.id === selectedId;
-      optionsHTML += `<div class="custom-dropdown-option${isSelected ? ' selected' : ''}" data-value="${this.escapeHtml(council.id)}" role="option" aria-selected="${isSelected}">
-        <span class="option-name">${this.escapeHtml(council.name)}</span>
-        <span class="council-type-badge ${badge.cssClass}">${badge.label}</span>
-      </div>`;
-    }
-
-    container.innerHTML = `
-      <button type="button" class="custom-dropdown-trigger" aria-haspopup="listbox" aria-expanded="false">
-        ${triggerHTML}
-      </button>
-      <div class="custom-dropdown-list" role="listbox">
-        ${optionsHTML}
-      </div>
-    `;
-
-    // Attach event listeners for the dropdown
-    this.setupCouncilDropdownListeners(container);
-  }
-
-  /**
-   * Set up event listeners for the custom council dropdown
-   * @param {HTMLElement} container - The dropdown container element
-   */
-  setupCouncilDropdownListeners(container) {
-    const trigger = container.querySelector('.custom-dropdown-trigger');
-    const list = container.querySelector('.custom-dropdown-list');
-    if (!trigger || !list) return;
-
-    // Track focused option index for keyboard navigation
-    let focusedIndex = -1;
-    const getOptions = () => Array.from(list.querySelectorAll('.custom-dropdown-option'));
-
-    const updateFocus = (options, index) => {
-      options.forEach(opt => opt.classList.remove('focused'));
-      if (index >= 0 && index < options.length) {
-        options[index].classList.add('focused');
-        options[index].scrollIntoView({ block: 'nearest' });
-      }
-    };
-
-    // Toggle dropdown on trigger click
-    trigger.addEventListener('click', () => {
-      const isOpen = container.classList.contains('open');
-      if (isOpen) {
-        this.closeCouncilDropdown(container);
-      } else {
-        this.openCouncilDropdown(container);
-        focusedIndex = -1;
-      }
-    });
-
-    // Select option on click
-    list.addEventListener('click', (e) => {
-      const option = e.target.closest('.custom-dropdown-option');
-      if (!option) return;
-      this.selectCouncilOption(container, option.dataset.value);
-    });
-
-    // Keyboard navigation
-    trigger.addEventListener('keydown', (e) => {
-      const isOpen = container.classList.contains('open');
-
-      if (e.key === 'Escape' && isOpen) {
-        e.preventDefault();
-        this.closeCouncilDropdown(container);
-        trigger.focus();
-        return;
-      }
-
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
-        if (!isOpen) {
-          this.openCouncilDropdown(container);
-          focusedIndex = -1;
-        } else {
-          const options = getOptions();
-          if (focusedIndex >= 0 && focusedIndex < options.length) {
-            this.selectCouncilOption(container, options[focusedIndex].dataset.value);
-          }
-        }
-        return;
-      }
-
-      if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && isOpen) {
-        e.preventDefault();
-        const options = getOptions();
-        if (e.key === 'ArrowDown') {
-          focusedIndex = Math.min(focusedIndex + 1, options.length - 1);
-        } else {
-          focusedIndex = Math.max(focusedIndex - 1, 0);
-        }
-        updateFocus(options, focusedIndex);
-        return;
-      }
-
-      // Open on arrow down when closed
-      if (e.key === 'ArrowDown' && !isOpen) {
-        e.preventDefault();
-        this.openCouncilDropdown(container);
-        focusedIndex = 0;
-        updateFocus(getOptions(), focusedIndex);
-      }
-    });
-
-    // Close on click outside (remove previous handler to avoid accumulation on re-render)
-    if (this._councilDropdownOutsideClickHandler) {
-      document.removeEventListener('click', this._councilDropdownOutsideClickHandler);
-    }
-    this._councilDropdownOutsideClickHandler = (e) => {
-      if (!container.contains(e.target) && container.classList.contains('open')) {
-        this.closeCouncilDropdown(container);
-      }
-    };
-    document.addEventListener('click', this._councilDropdownOutsideClickHandler);
   }
 
   /**
@@ -541,27 +417,19 @@ class RepoSettingsPage {
   }
 
   /**
-   * Open the custom council dropdown
-   * @param {HTMLElement} container
+   * Open the custom council dropdown (delegates to the shared component).
+   * @param {HTMLElement} [container] - Unused; kept for signature compatibility.
    */
   openCouncilDropdown(container) {
-    container.classList.add('open');
-    const trigger = container.querySelector('.custom-dropdown-trigger');
-    if (trigger) trigger.setAttribute('aria-expanded', 'true');
+    if (this._councilDropdown) this._councilDropdown.open();
   }
 
   /**
-   * Close the custom council dropdown
-   * @param {HTMLElement} container
+   * Close the custom council dropdown (delegates to the shared component).
+   * @param {HTMLElement} [container] - Unused; kept for signature compatibility.
    */
   closeCouncilDropdown(container) {
-    container.classList.remove('open');
-    const trigger = container.querySelector('.custom-dropdown-trigger');
-    if (trigger) trigger.setAttribute('aria-expanded', 'false');
-    // Clear focus highlights
-    container.querySelectorAll('.custom-dropdown-option.focused').forEach(
-      opt => opt.classList.remove('focused')
-    );
+    if (this._councilDropdown) this._councilDropdown.close();
   }
 
   /**
@@ -733,127 +601,46 @@ class RepoSettingsPage {
   }
 
   /**
-   * Render a standard (voice) council card
+   * Lazily build (and cache) the shared CouncilCard bound to this page's
+   * container + alias-aware model-display resolver. Re-created if the target
+   * container changes (e.g. between test cases).
+   * @param {HTMLElement} container
+   * @returns {Object|null} A CouncilCard, or null if the component is unavailable.
+   * @private
+   */
+  _getCouncilCard(container) {
+    const Card = (typeof window !== 'undefined' && window.CouncilCard)
+      || (typeof CouncilCard !== 'undefined' ? CouncilCard : null);
+    if (!Card) return null;
+    if (!this._councilCard || this._councilCard.container !== container) {
+      this._councilCard = new Card({
+        container,
+        resolveModelDisplay: (providerId, modelId) => this.resolveModelDisplay(providerId, modelId)
+      });
+    }
+    return this._councilCard;
+  }
+
+  /**
+   * Render a standard (voice) council card via the shared CouncilCard component.
    * @param {object} council
    */
   renderVoiceCouncilCard(council) {
     const container = document.getElementById('model-card-preview');
     if (!container) return;
-
-    const config = council.config || {};
-    const voices = config.voices || [];
-    const levels = config.levels || {};
-
-    // Build summary: "Levels 1, 2" for enabled levels
-    const enabledLevels = Object.entries(levels)
-      .filter(([, enabled]) => enabled)
-      .map(([level]) => level);
-    const summaryText = enabledLevels.length > 0
-      ? `Levels ${enabledLevels.join(', ')}`
-      : 'No levels configured';
-
-    // Build reviewer list
-    const reviewerLines = voices.map(voice => {
-      const display = this.resolveModelDisplay(voice.provider, voice.model);
-      const tierLabel = voice.tier ? `<span class="council-card-tier">${this.escapeHtml(voice.tier)}</span>` : '';
-      return `<div class="council-card-reviewer">
-        <span class="council-card-reviewer-name">${this.escapeHtml(display.providerName)} / ${this.escapeHtml(display.modelName)}</span>
-        ${tierLabel}
-      </div>`;
-    }).join('');
-
-    // Build consolidation section
-    let consolidationHTML = '';
-    if (config.consolidation && config.consolidation.provider) {
-      const consolDisplay = this.resolveModelDisplay(config.consolidation.provider, config.consolidation.model);
-      const consolTier = config.consolidation.tier ? `<span class="council-card-tier">${this.escapeHtml(config.consolidation.tier)}</span>` : '';
-      consolidationHTML = `
-        <div class="council-card-divider"></div>
-        <div class="council-card-consolidation">
-          <div class="council-card-consolidation-label">Consolidation</div>
-          <div class="council-card-reviewer">
-            <span class="council-card-reviewer-name">${this.escapeHtml(consolDisplay.providerName)} / ${this.escapeHtml(consolDisplay.modelName)}</span>
-            ${consolTier}
-          </div>
-        </div>`;
-    }
-
-    container.innerHTML = `
-      <div class="council-card">
-        <div class="council-card-name">${this.escapeHtml(council.name)}</div>
-        <div class="council-card-summary">${summaryText}</div>
-        <div class="council-card-reviewers">
-          ${reviewerLines}
-        </div>
-        ${consolidationHTML}
-      </div>
-    `;
+    const card = this._getCouncilCard(container);
+    if (card) card.renderVoice(council);
   }
 
   /**
-   * Render an advanced council card with level-grouped reviewers
+   * Render an advanced council card via the shared CouncilCard component.
    * @param {object} council
    */
   renderAdvancedCouncilCard(council) {
     const container = document.getElementById('model-card-preview');
     if (!container) return;
-
-    const config = council.config || {};
-    const levels = config.levels || {};
-
-    const levelLabels = {
-      '1': 'Level 1 — Isolation',
-      '2': 'Level 2 — File Context',
-      '3': 'Level 3 — Codebase'
-    };
-
-    // Build level groups for enabled levels
-    let levelGroupsHTML = '';
-    for (const [levelNum, levelConfig] of Object.entries(levels)) {
-      if (!levelConfig || !levelConfig.enabled) continue;
-      const voices = levelConfig.voices || [];
-      const header = levelLabels[levelNum] || `Level ${levelNum}`;
-      const voiceLines = voices.map(voice => {
-        const display = this.resolveModelDisplay(voice.provider, voice.model);
-        const tierLabel = voice.tier ? `<span class="council-card-tier">${this.escapeHtml(voice.tier)}</span>` : '';
-        return `<div class="council-card-reviewer">
-          <span class="council-card-reviewer-name">${this.escapeHtml(display.providerName)} / ${this.escapeHtml(display.modelName)}</span>
-          ${tierLabel}
-        </div>`;
-      }).join('');
-      levelGroupsHTML += `
-        <div class="council-card-level-header">${this.escapeHtml(header)}</div>
-        ${voiceLines}`;
-    }
-
-    // Build consolidation/orchestration section
-    let consolidationHTML = '';
-    if (config.consolidation && config.consolidation.provider) {
-      const consolDisplay = this.resolveModelDisplay(config.consolidation.provider, config.consolidation.model);
-      const consolTier = config.consolidation.tier ? `<span class="council-card-tier">${this.escapeHtml(config.consolidation.tier)}</span>` : '';
-      consolidationHTML = `
-        <div class="council-card-divider"></div>
-        <div class="council-card-consolidation">
-          <div class="council-card-consolidation-label">Orchestration</div>
-          <div class="council-card-reviewer">
-            <span class="council-card-reviewer-name">${this.escapeHtml(consolDisplay.providerName)} / ${this.escapeHtml(consolDisplay.modelName)}</span>
-            ${consolTier}
-          </div>
-        </div>`;
-    }
-
-    container.innerHTML = `
-      <div class="council-card">
-        <div class="council-card-name">
-          ${this.escapeHtml(council.name)}
-          <span class="council-card-badge-advanced">Advanced</span>
-        </div>
-        <div class="council-card-reviewers">
-          ${levelGroupsHTML}
-        </div>
-        ${consolidationHTML}
-      </div>
-    `;
+    const card = this._getCouncilCard(container);
+    if (card) card.renderAdvanced(council);
   }
 
   async loadSettings() {

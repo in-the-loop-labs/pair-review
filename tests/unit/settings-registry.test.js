@@ -146,13 +146,40 @@ describe('settings sections', () => {
     for (const id of sectionIds) expect(usedGroups.has(id), `group for section ${id}`).toBe(true);
   });
 
-  it('ships the tours section with a beta badge', () => {
+  it('ships the tours section with a new badge', () => {
     const tours = sections.find((s) => s.id === 'tours');
-    expect(tours.badge).toBe('beta');
+    expect(tours.badge).toBe('new');
+  });
+
+  it('hides the summaries section by default (hidden flag)', () => {
+    const summaries = sections.find((s) => s.id === 'summaries');
+    expect(summaries.hidden).toBe(true);
+    // Other sections are not hidden.
+    expect(sections.find((s) => s.id === 'general').hidden).toBeFalsy();
+    expect(sections.find((s) => s.id === 'tours').hidden).toBeFalsy();
   });
 
   it('isSectionId rejects unknown ids', () => {
     expect(isSectionId('nope')).toBe(false);
+  });
+});
+
+describe('default_council_id registry entry (global default council)', () => {
+  it('is an editable string in the ai group with an empty default', () => {
+    const entry = getEntry('default_council_id');
+    expect(entry).not.toBeNull();
+    expect(entry.group).toBe('ai');
+    expect(entry.type).toBe('string');
+    expect(entry.editable).toBe(true);
+    expect(entry.default).toBe('');
+    expect(entry.restartRequired).toBe(false);
+  });
+
+  it('validates any string (dynamic enum — councils live in the DB, not values[])', () => {
+    const entry = getEntry('default_council_id');
+    expect(validateValue(entry, '').valid).toBe(true);
+    expect(validateValue(entry, 'some-council-uuid').valid).toBe(true);
+    expect(validateValue(entry, 5).valid).toBe(false);
   });
 });
 
