@@ -172,9 +172,17 @@ curl -s -X POST http://localhost:<port>/api/reviews/<run.review_id>/suggestions/
   `GET /api/reviews/<reviewId>/suggestions` and skip findings whose status
   is no longer `active` — the human got there first. Do not resurrect
   anything the human dismissed.
-- The review URL for your report: `http://localhost:<port>/local/<reviewId>`.
-  Note: the UI does not live-update during CLI runs; results appear on
-  refresh.
+- The review URL for your report is mode-dependent: local runs live at
+  `http://localhost:<port>/local/<reviewId>`; PR runs live at
+  `http://localhost:<port>/pr/<owner>/<repo>/<number>` (the PR you passed).
+  Use the one matching the current run — do not hard-code the `/local/` form
+  for a PR loop.
+  When a compatible pair-review server is already running (same version, same
+  database) on `<port>`, a `--headless` round delegates execution to it, so
+  that open UI shows the council dialog updating **live** as the round runs —
+  point the human there. The liveness gap remains only with no server, with
+  `--no-server`, or with an incompatible (version/database-mismatched) server;
+  in those cases results appear on refresh once the round finishes.
 
 No server → skip this entirely; triage lives in the round log and final
 report, and the persisted run history is visible whenever the user next

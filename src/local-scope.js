@@ -4,6 +4,14 @@ const STOPS = ['branch', 'staged', 'unstaged', 'untracked'];
 
 const DEFAULT_SCOPE = { start: 'unstaged', end: 'untracked' };
 
+// Canonical "the selected scope resolves to zero changed files" message, shared
+// so every entry point reports it identically: the web routes' 409 guard
+// (rejectIfEmptyScope) and the headless in-process guard, which now fails the
+// run (exit non-zero) instead of recording a zero-suggestion success. A
+// delegated headless run surfaces the same 409 body verbatim, so all three
+// paths match byte-for-byte.
+const EMPTY_SCOPE_MESSAGE = 'No changes found in the selected scope. Check that your scope includes files with modifications, or adjust the scope range.';
+
 const UNSTAGED_INDEX = STOPS.indexOf('unstaged');
 
 function isValidScope(start, end) {
@@ -166,6 +174,7 @@ function scopeGitHints(start, end, baseBranch) {
 const LocalScope = {
   STOPS,
   DEFAULT_SCOPE,
+  EMPTY_SCOPE_MESSAGE,
   VALID_SCOPE_RANGES,
   isValidScope,
   parseScopeArg,

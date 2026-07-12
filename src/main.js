@@ -21,7 +21,7 @@ const { GlobalSettingsService } = require('./settings/global-settings-service');
 const { redirectConsoleToStderr } = require('./mcp-stdio');
 const { getChangedFiles } = require('./routes/executable-analysis');
 const { safeParseJson } = require('./utils/safe-parse-json');
-const { includesBranch, parseScopeArg, VALID_SCOPE_RANGES } = require('./local-scope');
+const { includesBranch, parseScopeArg, VALID_SCOPE_RANGES, EMPTY_SCOPE_MESSAGE } = require('./local-scope');
 const { storePRData, resolvePrHostBinding, registerRepositoryLocation, findRepositoryPath } = require('./setup/pr-setup');
 const { isDualHostRepo, resolvePreflightBinding, hostSetupParamValue } = require('./utils/host-resolution');
 const { fireReviewStartedHook } = require('./hooks/payloads');
@@ -35,6 +35,7 @@ const { getEmoji: getCategoryEmoji } = require('./utils/category-emoji');
 const open = (...args) => process.env.PAIR_REVIEW_NO_OPEN ? Promise.resolve() : import('open').then(({default: open}) => open(...args));
 const { registerProtocolHandler, unregisterProtocolHandler } = require('./protocol-handler');
 const { attemptDelegation } = require('./single-port');
+const { probeServer, runDelegatedAnalysis } = require('./headless/delegate');
 
 let db = null;
 
@@ -163,8 +164,13 @@ OPTIONS:
                             Auto-detects PR in GitHub Actions environment
     --headless              Run AI analysis, store it in the local database, and
                             report the results to stdout/stderr, then exit. No
-                            server, no browser, no GitHub post. Works with a
-                            <pr> argument or --local.
+                            browser, no GitHub post. Works with a <pr> argument
+                            or --local. If a compatible pair-review server is
+                            already running on the configured port, the run is
+                            delegated to it so the web UI shows live progress
+                            (the CLI still waits and prints the same result);
+                            otherwise it runs in-process. See --no-server /
+                            --require-server.
     --json                  With --headless, emit the completed run plus its
                             consolidated final suggestions as a single JSON
                             document on a clean stdout. For any outcome of the
@@ -178,6 +184,16 @@ OPTIONS:
                             first. stderr is quiet by default (only
                             warnings/errors); add --debug for verbose progress
                             logs. Only valid together with --headless.
+    --no-server             (Headless mode) Always analyze in-process, even when
+                            a compatible pair-review server is running. Skips the
+                            delegation probe. Use when you want a fully isolated
+                            run with no live UI. (--use-checkout and --yolo also
+                            force in-process, since a delegated server cannot
+                            honor them.)
+    --require-server        (Headless mode) Require delegation to a compatible
+                            running server (so the UI shows live progress). If no
+                            such server is available, fail fast (exit 1) instead
+                            of falling back to an in-process run.
     --instructions <text>   Per-run custom instructions for the analysis.
                             Applies to any mode that runs analysis: --headless,
                             --ai, --ai-draft, --ai-review, or --council (with
@@ -463,6 +479,14 @@ function parseArgs(args) {
       flags.aiReview = true;
     } else if (arg === '--headless') {
       flags.headless = true;
+    } else if (arg === '--no-server') {
+      // Force in-process headless analysis even when a compatible server is
+      // running (skip the delegation probe). Headless-only; validated below.
+      flags.noServer = true;
+    } else if (arg === '--require-server') {
+      // Require delegation to a compatible running server; fail fast (exit 1)
+      // instead of falling back to in-process. Headless-only; validated below.
+      flags.requireServer = true;
     } else if (arg === '--json') {
       flags.json = true;
     } else if (arg === '--instructions') {
@@ -722,6 +746,21 @@ AI PROVIDERS:
     if (flags.headless && prArgs.length === 0 && !flags.local) {
       throw new Error('--headless flag requires a pull request number/URL or --local to run analysis.');
     }
+    // --no-server / --require-server tune headless server delegation and are
+    // meaningless without --headless. They are also mutually exclusive: one
+    // forbids delegation, the other requires it.
+    if ((flags.noServer || flags.requireServer) && !flags.headless) {
+      throw new Error('--no-server/--require-server only apply to --headless runs.');
+    }
+    if (flags.noServer && flags.requireServer) {
+      throw new Error('--no-server and --require-server are mutually exclusive.');
+    }
+    // --require-server demands delegation, but --use-checkout and --yolo force
+    // in-process execution (a delegated server can honor neither). The
+    // combination is contradictory — reject it rather than silently ignore one.
+    if (flags.requireServer && (flags.useCheckout || flags.yolo)) {
+      throw new Error('--require-server cannot be combined with --use-checkout or --yolo (those flags require in-process execution).');
+    }
     // --scope and --base are local-review diff controls. They require --local
     // and cannot be combined with a PR positional. They do NOT imply --local
     // (explicit flags only — no magic mode switching).
@@ -926,6 +965,49 @@ AI PROVIDERS:
     // startup, but headless paths (--ai-draft, --ai-review) never start the
     // server, so we must also apply here.
     applyConfigOverrides(config);
+
+    // Headless server delegation: when a compatible pair-review server is
+    // already running on the configured port, hand analysis EXECUTION to it so
+    // its web UI shows the live council view, then wait and emit the same JSON.
+    // Decided HERE — before the worktree/pool setup below — so a delegated run
+    // never disturbs the local worktree pool the server owns. --no-server forces
+    // the in-process path (skip the probe); --require-server fails fast (exit 1)
+    // when no compatible server is available instead of falling back. Anything
+    // that isn't a clean delegation falls through to the UNCHANGED in-process
+    // headless path (pool rehydrate + handleHeadlessAnalysis) below.
+    if (flags.headless) {
+      // Flags that force in-process execution and therefore SKIP the probe:
+      //   --no-server   — explicit opt-out.
+      //   --use-checkout — the analysis must run against THIS process's current
+      //                    checkout; a delegated server uses its own worktree,
+      //                    so delegating would silently ignore the flag.
+      //   --yolo        — permission relaxation applies to the provider spawned
+      //                    by THIS process; the server applies its own yolo/
+      //                    permission config, so delegating would not honor it.
+      // Skipping the probe (rather than delegating and dropping the flag) keeps
+      // the flag's semantics intact. `--require-server` with either flag is
+      // rejected at validation, so it cannot reach the skip branches here.
+      let probe;
+      if (flags.noServer) {
+        probe = { delegate: false, reason: '--no-server set' };
+      } else if (flags.useCheckout) {
+        probe = { delegate: false, reason: '--use-checkout requires the current checkout, which a delegated server cannot use' };
+      } else if (flags.yolo) {
+        probe = { delegate: false, reason: '--yolo permissions apply to this process, not a delegated server' };
+      } else {
+        probe = await probeServer(config);
+      }
+      if (probe.delegate) {
+        await handleHeadlessDelegated(prArgs, config, db, flags, probe);
+        return;
+      }
+      if (flags.requireServer) {
+        throw new Error(
+          `--require-server: no compatible pair-review server is available to delegate to (${probe.reason}).`
+        );
+      }
+      logger.info(`Running headless analysis in-process (${probe.reason}).`);
+    }
 
     // Migrate existing worktrees to database (if any)
     const path = require('path');
@@ -2143,48 +2225,6 @@ async function preparePrHeadless(db, config, flags, prArgs, externalPoolLifecycl
 }
 
 /**
- * Record a completed, zero-suggestion analysis run for an empty-scope headless
- * local review (the analyzer is never invoked). Mirrors the web routes'
- * empty-scope guard but, lacking an HTTP response, persists a normal-shaped run
- * so `buildHeadlessJson` emits the standard `{ run, suggestions: [], count: 0 }`
- * envelope and the command still exits 0 ("zero suggestions is still success").
- * The run is attributed to whatever `reviewConfig` resolved (single or council).
- *
- * @param {Object} db - Database instance
- * @param {Object} params
- * @param {number} params.reviewId - Review id the run belongs to
- * @param {Object} params.reviewConfig - resolveReviewConfig result (single|council)
- * @param {Object} params.instructions - { globalInstructions, repoInstructions, requestInstructions }
- * @param {string|null} params.headSha - Head SHA recorded on the run
- * @returns {Promise<string>} The created run id
- */
-async function recordEmptyScopeRun(db, { reviewId, reviewConfig, instructions, headSha }) {
-  const runId = uuidv4();
-  const runRepo = new AnalysisRunRepository(db);
-  const isCouncil = reviewConfig.type === 'council';
-  await runRepo.create({
-    id: runId,
-    reviewId,
-    provider: isCouncil ? 'council' : reviewConfig.provider,
-    model: isCouncil ? reviewConfig.council.id : reviewConfig.model,
-    tier: null,
-    globalInstructions: instructions?.globalInstructions || null,
-    repoInstructions: instructions?.repoInstructions || null,
-    requestInstructions: instructions?.requestInstructions || null,
-    headSha: headSha || null,
-    configType: isCouncil ? reviewConfig.configType : 'single',
-    levelsConfig: null
-  });
-  await runRepo.update(runId, {
-    status: 'completed',
-    summary: 'No changes found in the selected scope — analysis skipped.',
-    totalSuggestions: 0,
-    filesAnalyzed: 0
-  });
-  return runId;
-}
-
-/**
  * Headless analysis-only handler: run analysis (single or council), store it in
  * the DB, report the consolidated run to stdout/stderr, and exit. No server, no
  * browser, no GitHub post. Works with a PR arg or --local.
@@ -2198,6 +2238,88 @@ async function recordEmptyScopeRun(db, { reviewId, reviewConfig, instructions, h
  *   for PR-mode pool acquisition so the rehydrated in-memory tracker is used;
  *   local mode has no worktree/pool and ignores it.
  */
+/**
+ * Headless DELEGATED handler: hand analysis EXECUTION to a compatible running
+ * pair-review server (so its web UI shows the live council view) and wait for
+ * completion, then emit the same headless JSON/summary the in-process path
+ * produces — the result is read from the shared SQLite DB via
+ * `buildHeadlessJson`, so the `--json` document is byte-identical.
+ *
+ * The server owns setup (including the PR worktree-pool hold), so this path
+ * NEVER acquires a pool slot — releasing one the server is analyzing in would
+ * hand the worktree to another consumer mid-run. Config is resolved CLI-side
+ * exactly like the in-process path (`resolveReviewConfig` with the explicit
+ * `--council`/`--provider`/`--model` flags; the council handle is resolved to an
+ * id here) and passed to the server as resolved, explicit values — the server
+ * never re-resolves. `--instructions`/`--instructions-file` flow through as the
+ * launch endpoints' `customInstructions`; the server derives global + repo
+ * instructions from its own (shared) config/DB and merges them identically, so
+ * the effective prompt matches the in-process path.
+ *
+ * @param {Array<string>} prArgs - PR identifier args (empty for --local)
+ * @param {Object} config - Application configuration
+ * @param {Object} db - Database instance (shared with the server)
+ * @param {Object} flags - Parsed CLI flags
+ * @param {{baseUrl: string}} probe - probeServer result (delegate === true)
+ */
+async function handleHeadlessDelegated(prArgs, config, db, flags, probe) {
+  const requestInstructions = await resolveCliInstructions(flags);
+  const mode = flags.local ? 'local' : 'pr';
+
+  let repository;
+  let prInfo = null;
+  let localPath = null;
+  let host;
+  if (flags.local) {
+    localPath = require('path').resolve(flags.localPath || process.cwd());
+    const repoRoot = await findGitRoot(localPath);
+    repository = await getRepositoryName(repoRoot);
+  } else {
+    const parser = new PRArgumentParser(config);
+    prInfo = await parser.parsePRArguments(prArgs);
+    repository = normalizeRepository(prInfo.owner, prInfo.repo);
+    // Forward the parsed host verbatim to the setup body (null = github.com, a
+    // string = alt api_host); `undefined` is omitted so the server derives it.
+    host = prInfo.host;
+  }
+
+  // Resolve council/provider/model CLI-side (council handle → id). Throws on a
+  // bad handle or invalid council config — fail-fast parity with the in-process
+  // path, before any server round-trip.
+  const reviewConfig = await resolveReviewConfig(
+    db,
+    repository,
+    { council: flags.council, provider: flags.provider, model: flags.model },
+    config
+  );
+
+  // Take ownership of the interrupt signals for the delegated run. `require`ing
+  // ./server (main.js top) registered server.js's module-level gracefulShutdown
+  // on SIGINT/SIGTERM; in headless mode the server never started, so
+  // gracefulShutdown would hit `process.exit(0)` synchronously — preempting the
+  // delegate's best-effort cancel POST and exiting 0 instead of 130. Remove
+  // those handlers so runDelegatedAnalysis's installCancelHandlers owns the
+  // signals. Scoped to this delegated handler only: the in-process fallback
+  // (handleHeadlessAnalysis) is never reached from here and keeps its handlers.
+  process.removeAllListeners('SIGINT');
+  process.removeAllListeners('SIGTERM');
+
+  const { runId } = await runDelegatedAnalysis({
+    baseUrl: probe.baseUrl,
+    mode,
+    reviewConfig,
+    customInstructions: requestInstructions,
+    prInfo,
+    host,
+    localPath,
+    scope: flags.scope || null,
+    base: flags.base || null,
+    db
+  });
+
+  await emitHeadlessResult(db, { runId, mode, flags });
+}
+
 async function handleHeadlessAnalysis(prArgs, config, db, flags, poolLifecycle) {
   // NOTE: In --json mode, redirectConsoleToStderr() is already called in main()
   // BEFORE the DB-init/migration/pool-rehydrate block, so stdout is clean by the
@@ -2300,42 +2422,38 @@ async function handleHeadlessAnalysis(prArgs, config, db, flags, poolLifecycle) 
     const isEmptyScope = !session.diff || session.diff.trim().length === 0;
 
     if (isEmptyScope) {
-      // Empty-scope guard, mirroring the web routes' rejectIfEmptyScope (which
-      // returns 409). Headless has no HTTP response, so instead emit a normal-
-      // shaped, completed run with zero suggestions: emitHeadlessResult then
-      // produces the standard { mode, run, suggestions: [], count: 0 } envelope
-      // and exits 0 (zero suggestions is still success). Skipping the analyzer
-      // avoids spending provider tokens on a guaranteed-empty result.
-      runId = await recordEmptyScopeRun(db, {
-        reviewId: session.sessionId,
-        reviewConfig,
-        instructions,
-        headSha: session.headSha
-      });
-    } else {
-      // Scope is non-empty (diff present), so the analyzer needs the scope-aware
-      // changed-file list for suggestion validation. Use the throwing variant:
-      // since we KNOW the scope is non-empty, a [] from a swallowed git error
-      // would be a lie — surface it as a non-zero exit instead.
-      const changedFiles = await getChangedFiles(repoPath, {
-        scopeStart: session.scopeStart,
-        scopeEnd: session.scopeEnd,
-        baseBranch: session.baseBranch || null,
-      }, { throwOnError: true });
-
-      ({ runId } = await runHeadlessAnalysis(db, config, {
-        reviewId: session.sessionId,
-        worktreePath: repoPath,
-        prMetadata: localMetadata,
-        changedFiles,
-        repository,
-        repoSettings,
-        instructions,
-        reviewConfig,
-        providerOverrides,
-        githubClient: undefined
-      }));
+      // Empty-scope guard, matching the web routes' rejectIfEmptyScope (409) in
+      // BOTH outcome and message: an empty scope is a FAILURE, not a success.
+      // Recording a zero-suggestion "completed" run here (the prior behavior)
+      // let `pair-loop` read exit 0 / empty findings and declare convergence
+      // having reviewed nothing. Throwing the shared EMPTY_SCOPE_MESSAGE routes
+      // through main()'s catch → `{ ok:false, error }` on stdout + non-zero
+      // exit, identical to a delegated run (whose 409 body is surfaced verbatim).
+      throw new Error(EMPTY_SCOPE_MESSAGE);
     }
+
+    // Scope is non-empty (diff present), so the analyzer needs the scope-aware
+    // changed-file list for suggestion validation. Use the throwing variant:
+    // since we KNOW the scope is non-empty, a [] from a swallowed git error
+    // would be a lie — surface it as a non-zero exit instead.
+    const changedFiles = await getChangedFiles(repoPath, {
+      scopeStart: session.scopeStart,
+      scopeEnd: session.scopeEnd,
+      baseBranch: session.baseBranch || null,
+    }, { throwOnError: true });
+
+    ({ runId } = await runHeadlessAnalysis(db, config, {
+      reviewId: session.sessionId,
+      worktreePath: repoPath,
+      prMetadata: localMetadata,
+      changedFiles,
+      repository,
+      repoSettings,
+      instructions,
+      reviewConfig,
+      providerOverrides,
+      githubClient: undefined
+    }));
   } else {
     mode = 'pr';
     // Forward the session's rehydrated pool lifecycle so pool acquisition goes
@@ -2670,4 +2788,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { main, parseArgs, detectPRFromGitHubEnvironment, printCouncilList, handleHeadlessAnalysis, runHeadlessAnalysis, recordEmptyScopeRun, buildHeadlessJson, buildHeadlessErrorJson, resolveCliInstructions };
+module.exports = { main, parseArgs, detectPRFromGitHubEnvironment, printCouncilList, handleHeadlessAnalysis, handleHeadlessDelegated, runHeadlessAnalysis, buildHeadlessJson, buildHeadlessErrorJson, resolveCliInstructions };

@@ -30,7 +30,7 @@ import { createTestDatabase, closeTestDatabase, seedTestReview } from '../utils/
 
 const Analyzer = require('../../src/ai/analyzer');
 const { CommentRepository, AnalysisRunRepository } = require('../../src/database.js');
-const { runHeadlessAnalysis, recordEmptyScopeRun, buildHeadlessJson } = require('../../src/main.js');
+const { runHeadlessAnalysis, buildHeadlessJson } = require('../../src/main.js');
 
 const REPOSITORY = 'owner/repo';
 
@@ -269,59 +269,10 @@ describe('runHeadlessAnalysis (DB-backed)', () => {
     });
   });
 
-  // ===================== EMPTY-SCOPE SHORT-CIRCUIT =====================
-  describe('recordEmptyScopeRun (empty local scope)', () => {
-    it('persists a completed, zero-suggestion single run WITHOUT invoking the analyzer', async () => {
-      const analyzeSpy = vi.spyOn(Analyzer.prototype, 'analyzeAllLevels');
-
-      const runId = await recordEmptyScopeRun(db, {
-        reviewId,
-        reviewConfig: { type: 'single', provider: 'claude', model: 'opus' },
-        instructions: { globalInstructions: null, repoInstructions: null, requestInstructions: 'be terse' },
-        headSha: 'emptyhead'
-      });
-
-      // The analyzer must never run for a guaranteed-empty scope.
-      expect(analyzeSpy).not.toHaveBeenCalled();
-
-      const row = await db.prepare(
-        'SELECT provider, model, config_type, status, total_suggestions, request_instructions, head_sha FROM analysis_runs WHERE id = ?'
-      ).get(runId);
-      expect(row.status).toBe('completed');
-      expect(row.provider).toBe('claude');
-      expect(row.model).toBe('opus');
-      expect(row.config_type).toBe('single');
-      expect(row.total_suggestions).toBe(0);
-      expect(row.request_instructions).toBe('be terse');
-      expect(row.head_sha).toBe('emptyhead');
-
-      // buildHeadlessJson yields the standard empty envelope (exit-0 semantics).
-      const doc = await buildHeadlessJson(db, runId, 'local');
-      expect(doc.mode).toBe('local');
-      expect(doc.run.status).toBe('completed');
-      expect(doc.count).toBe(0);
-      expect(doc.suggestions).toEqual([]);
-    });
-
-    it('attributes the empty run to the council when reviewConfig is a council', async () => {
-      const council = { id: 'council-empty', name: 'Empty', type: 'council' };
-      const runId = await recordEmptyScopeRun(db, {
-        reviewId,
-        reviewConfig: { type: 'council', council, configType: 'advanced', councilConfig: {} },
-        instructions: { globalInstructions: null, repoInstructions: null, requestInstructions: null },
-        headSha: null
-      });
-
-      const row = await db.prepare(
-        'SELECT provider, model, config_type, status, total_suggestions FROM analysis_runs WHERE id = ?'
-      ).get(runId);
-      expect(row.provider).toBe('council');
-      expect(row.model).toBe('council-empty');
-      expect(row.config_type).toBe('advanced');
-      expect(row.status).toBe('completed');
-      expect(row.total_suggestions).toBe(0);
-    });
-  });
+  // NOTE: empty local scope no longer records a zero-suggestion "completed"
+  // run — it now FAILS (throws EMPTY_SCOPE_MESSAGE → exit non-zero), matching
+  // the web routes' 409. That behavior is covered end-to-end (real git repo,
+  // real setupLocalReviewSession) in tests/integration/headless-empty-scope.test.js.
 
   // ===================== COUNCIL PATH =====================
   describe('council path', () => {
