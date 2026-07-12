@@ -42,7 +42,7 @@
 
   function initTheme() {
     const savedTheme = localStorage.getItem('theme');
-    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const prefersDark = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-color-scheme: dark)').matches;
     const theme = resolveTheme(savedTheme, prefersDark);
     document.documentElement.setAttribute('data-theme', theme);
   }
@@ -50,7 +50,7 @@
   function toggleTheme() {
     const savedTheme = localStorage.getItem('theme') || 'system';
     const newPreference = nextTheme(savedTheme);
-    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const prefersDark = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-color-scheme: dark)').matches;
     const newTheme = resolveTheme(newPreference, prefersDark);
     document.documentElement.setAttribute('data-theme', newTheme);
     localStorage.setItem('theme', newPreference);
@@ -126,15 +126,17 @@
   });
 
   // Listen for system theme changes
-  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function (e) {
-    const savedTheme = localStorage.getItem('theme');
-    // Update if no preference set, or preference is 'system'
-    if (!savedTheme || savedTheme === 'system') {
-      const theme = resolveTheme(savedTheme, e.matches);
-      document.documentElement.setAttribute('data-theme', theme);
-      updateThemeIcon(savedTheme || 'system');
-    }
-  });
+  if (typeof window.matchMedia === 'function') {
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function (e) {
+      const savedTheme = localStorage.getItem('theme');
+      // Update if no preference set, or preference is 'system'
+      if (!savedTheme || savedTheme === 'system') {
+        const theme = resolveTheme(savedTheme, e.matches);
+        document.documentElement.setAttribute('data-theme', theme);
+        updateThemeIcon(savedTheme || 'system');
+      }
+    });
+  }
 
   // ─── Shared Utilities ───────────────────────────────────────────────────────
 

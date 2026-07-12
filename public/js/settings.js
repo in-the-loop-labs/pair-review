@@ -139,7 +139,7 @@ class SettingsPage {
 
   initTheme() {
     const savedTheme = localStorage.getItem('theme') || 'system';
-    const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const prefersDark = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-color-scheme: dark)').matches;
     const theme = savedTheme === 'system' ? (prefersDark ? 'dark' : 'light') : savedTheme;
     document.documentElement.setAttribute('data-theme', theme);
     this._updateThemeButtonIcon();
@@ -149,7 +149,7 @@ class SettingsPage {
       themeToggle.addEventListener('click', () => {
         const current = localStorage.getItem('theme') || 'system';
         const next = current === 'light' ? 'dark' : current === 'dark' ? 'system' : 'light';
-        const display = next === 'system' ? (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : next;
+        const display = next === 'system' ? (typeof window.matchMedia === 'function' && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : next;
         document.documentElement.setAttribute('data-theme', display);
         localStorage.setItem('theme', next);
         this._updateThemeButtonIcon();
@@ -157,7 +157,7 @@ class SettingsPage {
     }
 
     // Listen for system theme changes
-    if (window.matchMedia) {
+    if (typeof window.matchMedia === 'function') {
       window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
         if (localStorage.getItem('theme') === 'system') {
           document.documentElement.setAttribute('data-theme', e.matches ? 'dark' : 'light');

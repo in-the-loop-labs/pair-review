@@ -280,6 +280,38 @@ describe('Landing page theme toggle', () => {
   });
 
   describe('matchMedia listener', () => {
+    it('does not throw when window.matchMedia is unavailable', () => {
+      // Regression: the module-level matchMedia listener should be guarded
+      // so index.js doesn't crash in non-browser contexts or test envs.
+      const vm = require('vm');
+      const fs = require('fs');
+      const path = require('path');
+      const code = fs.readFileSync(path.resolve(__dirname, '../../public/js/index.js'), 'utf8');
+
+      const sandbox = {
+        window: { addEventListener() {}, dispatchEvent() {}, location: { href: '' } },
+        // no matchMedia — this is what we're testing
+        document: {
+          documentElement: { setAttribute() {}, getAttribute() { return 'light'; } },
+          getElementById: () => ({ addEventListener() {}, classList: { add() {}, remove() {} } }),
+          addEventListener() {},
+          querySelector: () => null,
+          querySelectorAll: () => [],
+          createElement: () => ({ classList: { add() {} } }),
+          body: { style: {}, appendChild() {} },
+        },
+        localStorage: { getItem() { return null; }, setItem() {} },
+        console,
+        module: { exports: {} },
+        URLSearchParams,
+        fetch: () => Promise.resolve({ ok: true, json: () => Promise.resolve({}) }),
+        navigator: { clipboard: {} },
+      };
+
+      // Should not throw — the matchMedia call must be guarded
+      expect(() => vm.runInNewContext(code, sandbox, { filename: 'index.js' })).not.toThrow();
+    });
+
     it('updates theme when system changes and preference is "system"', () => {
       const exp = setup('system');
       exp.initTheme();
