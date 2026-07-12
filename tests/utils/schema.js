@@ -340,6 +340,16 @@ const SCHEMA_SQL = {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
+  `,
+
+  chat_snippets: `
+    CREATE TABLE IF NOT EXISTS chat_snippets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      body TEXT NOT NULL,
+      last_used_at DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
   `
 };
 
@@ -395,7 +405,9 @@ const INDEX_SQL = [
   'CREATE INDEX IF NOT EXISTS idx_external_comments_anchor ON external_comments(review_id, file, line_end)',
   'CREATE INDEX IF NOT EXISTS idx_external_comments_parent_lookup ON external_comments(review_id, source, in_reply_to_id)',
   // Global settings (in-app overrides). Must match production src/database.js.
-  'CREATE UNIQUE INDEX IF NOT EXISTS idx_global_settings_key ON global_settings(key)'
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_global_settings_key ON global_settings(key)',
+  // Chat snippets MRU lookup. Must match production src/database.js.
+  'CREATE INDEX IF NOT EXISTS idx_chat_snippets_last_used ON chat_snippets(last_used_at DESC)'
 ];
 
 /**

@@ -736,6 +736,7 @@ Chat with a full coding agent while you review — it can read the codebase, ans
 - Create and edit review comments through chat
 - Trigger new analysis runs with custom instructions
 - Start conversations from context — an analysis run, an AI suggestion, a comment, any line or file
+- Save reusable **prompt snippets** and insert them from a button in the chat input (Cmd/Ctrl+click to insert and send); Alt-click one of your sent messages to save it as a snippet; manage them from the chat popup or the [global settings page](#global-settings-page)
 
 **Setup:**
 

@@ -15,6 +15,7 @@
     <link rel="stylesheet" href="/css/pr.css">
     <link rel="stylesheet" href="/css/council-dropdown.css">
     <link rel="stylesheet" href="/css/council-card.css">
+    <link rel="stylesheet" href="/css/snippet-manager.css">
     <link rel="stylesheet" href="/css/settings.css">
 </head>
 <body>
@@ -102,7 +103,19 @@
                         <!-- Setting sections rendered dynamically -->
                         <div id="settings-sections"></div>
 
-                        <!-- Repositories section -->
+                        <!-- Chat Snippets section -->
+                        <section class="settings-section" id="snippets-section">
+                            <div class="section-header">
+                                <h2>Chat Snippets</h2>
+                                <p class="section-description">
+                                    Reusable prompt snippets available from the chat input on any review.
+                                </p>
+                            </div>
+                            <div id="snippets-manager"></div>
+                        </section>
+
+                        <!-- Repositories section (kept last so scrollspy's bottom
+                             guard has a stable terminal section) -->
                         <section class="settings-section" id="repos-section" style="display: none;">
                             <div class="section-header">
                                 <h2>Repositories</h2>
@@ -124,6 +137,7 @@
     <!-- JavaScript -->
     <script src="/js/components/CouncilDropdown.js"></script>
     <script src="/js/components/CouncilCard.js"></script>
+    <script src="/js/components/SnippetManager.js"></script>
     <script src="/js/settings.js"></script>
 </body>
 </html>

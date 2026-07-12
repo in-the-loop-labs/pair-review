@@ -865,6 +865,14 @@ class ChatPanel {
           <div class="chat-panel__input-footer">
             <span class="chat-panel__input-hint" title="Configure with chat.enter_to_send">${this._enterToSend ? 'Enter to send, Shift+Enter for newline' : `${typeof navigator !== 'undefined' && navigator.platform?.includes('Mac') ? '\u2318' : 'Ctrl'}+Enter to send`}</span>
             <div class="chat-panel__input-actions">
+              <div class="chat-panel__snippet-picker">
+                <button class="chat-panel__snippet-picker-btn" title="Insert prompt snippet">
+                  <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
+                    <path d="M6.78 1.97a.75.75 0 0 1 0 1.06L3.81 6h6.44A4.75 4.75 0 0 1 15 10.75v2.5a.75.75 0 0 1-1.5 0v-2.5a3.25 3.25 0 0 0-3.25-3.25H3.81l2.97 2.97a.75.75 0 1 1-1.06 1.06L1.47 7.28a.75.75 0 0 1 0-1.06l4.25-4.25a.75.75 0 0 1 1.06 0Z"/>
+                  </svg>
+                </button>
+                <div class="chat-panel__snippet-dropdown" style="display: none;"></div>
+              </div>
               <button class="chat-panel__send-btn" title="Send" disabled>
                 <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
                   <path d="M.989 8 .064 2.68a1.342 1.342 0 0 1 1.85-1.462l13.402 5.744a1.13 1.13 0 0 1 0 2.076L1.913 14.782a1.343 1.343 0 0 1-1.85-1.463L.99 8Zm.603-4.776L2.296 7.25h5.954a.75.75 0 0 1 0 1.5H2.296l-.704 4.026L13.788 8Z"/>
@@ -888,6 +896,9 @@ class ChatPanel {
     this.tabStripItemsEl = this.container.querySelector('.chat-panel__tab-strip-items');
     this.tabNewBtn = this.container.querySelector('.chat-panel__tab-new-btn');
     this.inputEl = this.container.querySelector('.chat-panel__input');
+    this.snippetPickerEl = this.container.querySelector('.chat-panel__snippet-picker');
+    this.snippetPickerBtn = this.container.querySelector('.chat-panel__snippet-picker-btn');
+    this.snippetDropdown = this.container.querySelector('.chat-panel__snippet-dropdown');
     this.sendBtn = this.container.querySelector('.chat-panel__send-btn');
     this.stopBtn = this.container.querySelector('.chat-panel__stop-btn');
     this.closeBtn = this.container.querySelector('.chat-panel__close-btn');
@@ -928,6 +939,9 @@ class ChatPanel {
 
     // Session history button
     this.historyBtn.addEventListener('click', () => this._toggleSessionDropdown());
+
+    // Prompt-snippet picker button
+    this.snippetPickerBtn?.addEventListener('click', () => this._toggleSnippetDropdown());
 
     // Send button
     this.sendBtn.addEventListener('click', () => this.sendMessage());
@@ -983,10 +997,18 @@ class ChatPanel {
     // Escape: close dropdown if open, stop agent if streaming, blur textarea if focused, otherwise close panel
     this._onKeydown = (e) => {
       if (e.key === 'Escape' && this.isOpen) {
-        if (this._isProviderDropdownOpen()) {
+        // Escape ladder (first match wins): save-snippet pill → provider
+        // dropdown → session dropdown → snippet dropdown → stop streaming →
+        // blur input → close panel. The pill goes first so dismissing it
+        // never falls through to closing the panel.
+        if (this._saveSnippetPill) {
+          this._hideSaveSnippetPill();
+        } else if (this._isProviderDropdownOpen()) {
           this._hideProviderDropdown();
         } else if (this._isSessionDropdownOpen()) {
           this._hideSessionDropdown();
+        } else if (this._isSnippetDropdownOpen()) {
+          this._hideSnippetDropdown();
         } else if (this.isStreaming) {
           this._stopAgent();
         } else if (document.activeElement === this.inputEl) {
@@ -1005,6 +1027,18 @@ class ChatPanel {
         e.preventDefault();
         this._handleFileLinkClick(link);
       }
+    });
+
+    // Alt-click on a submitted USER message reveals a "Save as snippet" pill.
+    // Separate listener so plain clicks keep their exact prior behavior — we
+    // act only when e.altKey is set. Assistant/error messages are not savable.
+    this.messagesStackEl?.addEventListener('click', (e) => {
+      if (!e.altKey) return;
+      const msgEl = e.target.closest?.('.chat-panel__message--user');
+      if (!msgEl) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this._showSaveSnippetPill(msgEl, e);
     });
 
     // Re-read chat providers once the <head> config fetch resolves
@@ -1387,6 +1421,8 @@ class ChatPanel {
   close() {
     this._hideProviderDropdown();
     this._hideSessionDropdown();
+    this._hideSnippetDropdown();
+    this._hideSaveSnippetPill();
     // Reset UI streaming state (buttons) but keep isStreaming and _streamingContent
     // intact so the background WebSocket handler can continue accumulating events.
     this.sendBtn.style.display = '';
@@ -1433,6 +1469,7 @@ class ChatPanel {
   async _startNewConversation() {
     this._hideProviderDropdown();
     this._hideSessionDropdown();
+    this._hideSnippetDropdown();
     // Multi-chat replaces the legacy in-place reset with a fresh tab; the
     // per-tab restore path inside _appendTab handles context cards
     // (including thread cards introduced by external-comments) so the
@@ -1703,8 +1740,9 @@ class ChatPanel {
 
   _showProviderDropdown() {
     if (!this.providerDropdown) return;
-    // Close session dropdown if open
+    // Close session + snippet dropdowns if open
     this._hideSessionDropdown();
+    this._hideSnippetDropdown();
 
     this._renderProviderDropdown();
     this.providerDropdown.style.display = '';
@@ -1821,6 +1859,308 @@ class ChatPanel {
     this._renderTabStrip();
   }
 
+  // ── Prompt-snippet picker dropdown ─────────────────────────────────────
+  // NOTE: "snippet" here means a reusable *chat prompt* the user inserts from
+  // the library. This is distinct from the code-snippet enrichment (_fetch...
+  // Snippet / _stripMarkdownForSnippet) used to give the agent file context.
+
+  _isSnippetDropdownOpen() {
+    return this.snippetDropdown && this.snippetDropdown.style.display !== 'none';
+  }
+
+  _toggleSnippetDropdown() {
+    if (this._isSnippetDropdownOpen()) {
+      this._hideSnippetDropdown();
+    } else {
+      this._showSnippetDropdown();
+    }
+  }
+
+  async _showSnippetDropdown() {
+    if (!this.snippetDropdown) return;
+    // Close the sibling dropdowns — exclusion is pairwise/hand-maintained.
+    this._hideProviderDropdown();
+    this._hideSessionDropdown();
+
+    // In-flight guard so a double-click doesn't fire two overlapping fetches.
+    if (this._snippetDropdownLoading) return;
+    this._snippetDropdownLoading = true;
+
+    let snippets = [];
+    try {
+      const res = await fetch('/api/snippets');
+      if (res.ok) {
+        const data = await res.json();
+        snippets = Array.isArray(data?.snippets) ? data.snippets : [];
+      }
+    } catch {
+      snippets = [];
+    } finally {
+      this._snippetDropdownLoading = false;
+    }
+
+    // The panel may have closed, or the dropdown been dismissed, while the
+    // fetch was in flight. Bail rather than pop open a stale list.
+    if (this._snippetDropdownDismissed) {
+      this._snippetDropdownDismissed = false;
+      return;
+    }
+    if (!this.isOpen || !this.snippetDropdown) return;
+
+    this._renderSnippetDropdown(snippets);
+    this.snippetDropdown.style.display = '';
+    this.snippetPickerBtn?.classList.add('chat-panel__snippet-picker-btn--open');
+
+    // Bind outside-click-to-close (one-shot). Guard the timeout callback so a
+    // fast hide before the tick doesn't leak the document listener.
+    this._snippetOutsideClickHandler = (e) => {
+      if (this.snippetPickerEl && !this.snippetPickerEl.contains(e.target)) {
+        this._hideSnippetDropdown();
+      }
+    };
+    setTimeout(() => {
+      // Only attach if the dropdown is still open (ref not nulled by a hide
+      // that ran between scheduling and now).
+      if (this._snippetOutsideClickHandler && this._isSnippetDropdownOpen()) {
+        document.addEventListener('click', this._snippetOutsideClickHandler);
+      } else {
+        this._snippetOutsideClickHandler = null;
+      }
+    }, 0);
+  }
+
+  _hideSnippetDropdown() {
+    if (!this.snippetDropdown) return;
+    // If a fetch is in flight, mark it dismissed so its post-await show bails.
+    if (this._snippetDropdownLoading) this._snippetDropdownDismissed = true;
+    this.snippetDropdown.style.display = 'none';
+    this.snippetPickerBtn?.classList.remove('chat-panel__snippet-picker-btn--open');
+    if (this._snippetOutsideClickHandler) {
+      document.removeEventListener('click', this._snippetOutsideClickHandler);
+      this._snippetOutsideClickHandler = null;
+    }
+  }
+
+  _renderSnippetDropdown(snippets) {
+    if (!this.snippetDropdown) return;
+
+    // Full bodies live in a Map keyed by id — never in data-attributes (avoids
+    // re-escaping large multi-line bodies through the DOM).
+    this._promptSnippetsById = new Map();
+
+    const header = `
+      <div class="chat-panel__snippet-header">
+        <span class="chat-panel__snippet-header-title">Snippets</span>
+        <button class="chat-panel__snippet-manage-btn" type="button" title="Manage snippets" aria-label="Manage snippets">
+          <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
+            <path d="M8 0a8.2 8.2 0 0 1 .701.031C9.444.095 9.99.645 10.16 1.29l.288 1.107c.018.066.079.158.212.224.231.114.454.243.668.386.123.082.233.09.299.071l1.103-.303c.644-.176 1.392.021 1.813.63.183.264.352.539.506.822.294.542.188 1.219-.226 1.6l-.796.796c-.058.06-.079.161-.048.281.037.146.061.298.061.451s-.024.305-.061.451c-.031.12-.01.221.048.281l.796.796c.414.381.52 1.058.226 1.6a7.912 7.912 0 0 1-.506.822c-.421.609-1.169.806-1.813.63l-1.103-.303c-.066-.019-.176-.011-.299.071a4.759 4.759 0 0 1-.668.386c-.133.066-.194.158-.212.224l-.288 1.107c-.17.645-.716 1.195-1.459 1.259a8.174 8.174 0 0 1-1.402 0c-.743-.064-1.289-.614-1.459-1.259l-.288-1.107c-.018-.066-.079-.158-.212-.224a4.759 4.759 0 0 1-.668-.386c-.123-.082-.233-.09-.299-.071l-1.103.303c-.644.176-1.392-.021-1.813-.63a7.884 7.884 0 0 1-.506-.822c-.294-.542-.188-1.219.226-1.6l.796-.796c.058-.06.079-.161.048-.281A1.85 1.85 0 0 1 1.3 8c0-.153.024-.305.061-.451.031-.12.01-.221-.048-.281l-.796-.796c-.414-.381-.52-1.058-.226-1.6.154-.283.323-.558.506-.822.421-.609 1.169-.806 1.813-.63l1.103.303c.066.019.176.011.299-.071.214-.143.437-.272.668-.386.133-.066.194-.158.212-.224l.288-1.107C6.01.645 6.556.095 7.299.03 7.53.01 7.764 0 8 0Zm0 5a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z"/>
+          </svg>
+        </button>
+      </div>
+    `;
+
+    if (!snippets.length) {
+      this.snippetDropdown.innerHTML = `
+        ${header}
+        <div class="chat-panel__snippet-empty">
+          <span>No snippets yet</span>
+          <button class="chat-panel__snippet-manage-empty-btn" type="button">Manage snippets</button>
+        </div>
+      `;
+    } else {
+      const items = snippets.map(s => {
+        this._promptSnippetsById.set(String(s.id), s.body);
+        const firstLine = String(s.body || '').split('\n')[0];
+        const preview = firstLine.length > 60
+          ? firstLine.slice(0, 60) + '…'
+          : firstLine;
+        return `
+          <button class="chat-panel__snippet-item" type="button" data-snippet-id="${this._escapeHtml(String(s.id))}">
+            <span class="chat-panel__snippet-item-preview">${this._escapeHtml(preview)}</span>
+          </button>
+        `;
+      }).join('');
+      this.snippetDropdown.innerHTML = header + `<div class="chat-panel__snippet-list">${items}</div>`;
+    }
+
+    // Manage (gear + empty-state button): open the shared editor modal.
+    const openManager = () => {
+      this._hideSnippetDropdown();
+      if (typeof SnippetManager !== 'undefined') {
+        SnippetManager.openModal({ onClose: () => {} });
+      }
+    };
+    this.snippetDropdown.querySelector('.chat-panel__snippet-manage-btn')
+      ?.addEventListener('click', openManager);
+    this.snippetDropdown.querySelector('.chat-panel__snippet-manage-empty-btn')
+      ?.addEventListener('click', openManager);
+
+    // Item click: insert (cmd/ctrl-click also sends), then hide.
+    this.snippetDropdown.querySelectorAll('.chat-panel__snippet-item').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        this._insertPromptSnippet(btn.dataset.snippetId, { send: e.metaKey || e.ctrlKey });
+        this._hideSnippetDropdown();
+      });
+    });
+  }
+
+  /**
+   * Insert a prompt snippet's body into the input at the caret. A programmatic
+   * value change bypasses the `input` listener (952–955), so we replicate its
+   * effects: autosize + recompute sendBtn.disabled. MRU touch is fire-and-
+   * forget (never awaited). With `send`, hands off to sendMessage() whose own
+   * guards cover empty/streaming — we do not duplicate them.
+   * @param {string|number} id - Snippet id
+   * @param {{ send?: boolean }} [opts]
+   */
+  _insertPromptSnippet(id, { send = false } = {}) {
+    if (!this.inputEl) return;
+    // Respect the "Connecting to review…" disabled contract (_disableInput):
+    // don't mutate a disabled textarea, and don't let cmd-click reach
+    // sendMessage() (which has no disabled-input guard of its own).
+    if (this.inputEl.disabled) return;
+    const body = this._promptSnippetsById?.get(String(id));
+    if (body == null) return;
+
+    const el = this.inputEl;
+    const value = el.value || '';
+    let start = typeof el.selectionStart === 'number' ? el.selectionStart : value.length;
+    let end = typeof el.selectionEnd === 'number' ? el.selectionEnd : value.length;
+    if (start > value.length) start = value.length;
+    if (end > value.length) end = value.length;
+
+    // Prefix a newline when inserting directly after non-whitespace text so
+    // the snippet doesn't fuse onto the previous word.
+    const prevChar = start > 0 ? value[start - 1] : '';
+    const prefix = prevChar && !/\s/.test(prevChar) ? '\n' : '';
+    const insertText = prefix + body;
+
+    el.value = value.slice(0, start) + insertText + value.slice(end);
+    const caret = start + insertText.length;
+    if (typeof el.setSelectionRange === 'function') {
+      el.setSelectionRange(caret, caret);
+    } else {
+      el.selectionStart = el.selectionEnd = caret;
+    }
+    el.focus();
+
+    // Replicate the input-listener side effects the programmatic change skips.
+    this._autoResizeTextarea();
+    this.sendBtn.disabled = !el.value.trim() || this.isStreaming || el.disabled;
+
+    // MRU touch — fire-and-forget, NEVER awaited, must not block insert.
+    fetch(`/api/snippets/${id}/touch`, { method: 'POST' }).catch(() => {});
+
+    // Cmd/Ctrl-click: send. sendMessage() owns the empty/streaming guards.
+    if (send) this.sendMessage();
+  }
+
+  // ── Save-as-snippet pill (alt-click a user message) ────────────────────
+  // Distinct from the prompt-snippet *picker* above: this is the reverse
+  // direction — capturing a message the user already sent into the library.
+
+  /**
+   * Show the single "Save as snippet" pill anchored near the alt-click point.
+   * Only one pill exists at a time; alt-clicking another message moves it.
+   * @param {HTMLElement} msgEl - The `.chat-panel__message--user` element
+   * @param {MouseEvent} e - The originating alt-click (for positioning)
+   */
+  _showSaveSnippetPill(msgEl, e) {
+    this._hideSaveSnippetPill();
+
+    // Raw body stashed by addMessage — preserves newlines/formatting. Fall
+    // back to the bubble text only if the property is somehow missing.
+    const body = (msgEl && msgEl._chatRawContent != null)
+      ? msgEl._chatRawContent
+      : (msgEl?.querySelector?.('.chat-panel__bubble')?.textContent || '');
+    if (!body) return;
+    this._saveSnippetPillContent = body;
+
+    const pill = document.createElement('button');
+    pill.type = 'button';
+    pill.className = 'chat-panel__save-snippet-pill';
+    pill.textContent = 'Save as snippet';
+    // Fixed positioning at the click point sidesteps the scrolling messages
+    // container's overflow clipping; the pill is ephemeral (dismissed on any
+    // scroll-independent interaction) so it needn't track content.
+    pill.style.position = 'fixed';
+    pill.style.left = `${e.clientX}px`;
+    pill.style.top = `${e.clientY}px`;
+    pill.style.zIndex = '200';
+    pill.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      this._saveSnippetFromPill();
+    });
+    document.body.appendChild(pill);
+    this._saveSnippetPill = pill;
+
+    // Outside-click dismiss (one-shot). Guard the timeout callback so a fast
+    // dismiss before the tick doesn't leak the document listener.
+    this._saveSnippetOutsideClickHandler = (ev) => {
+      if (this._saveSnippetPill && ev.target !== this._saveSnippetPill) {
+        this._hideSaveSnippetPill();
+      }
+    };
+    setTimeout(() => {
+      if (this._saveSnippetOutsideClickHandler && this._saveSnippetPill) {
+        document.addEventListener('click', this._saveSnippetOutsideClickHandler);
+      } else {
+        this._saveSnippetOutsideClickHandler = null;
+      }
+    }, 0);
+  }
+
+  _hideSaveSnippetPill() {
+    if (this._saveSnippetOutsideClickHandler) {
+      document.removeEventListener('click', this._saveSnippetOutsideClickHandler);
+      this._saveSnippetOutsideClickHandler = null;
+    }
+    if (this._saveSnippetPill) {
+      if (this._saveSnippetPill.parentNode) {
+        this._saveSnippetPill.parentNode.removeChild(this._saveSnippetPill);
+      } else if (typeof this._saveSnippetPill.remove === 'function') {
+        this._saveSnippetPill.remove();
+      }
+      this._saveSnippetPill = null;
+    }
+    this._saveSnippetPillContent = null;
+  }
+
+  /**
+   * Persist the pilled message body as a snippet. Fire-and-forget from the
+   * click handler; never throws (POST failure degrades to a brief "Failed"
+   * label, then the pill dismisses).
+   */
+  async _saveSnippetFromPill() {
+    const pill = this._saveSnippetPill;
+    const body = this._saveSnippetPillContent;
+    if (!pill || body == null) return;
+    pill.disabled = true;
+    try {
+      const res = await fetch('/api/snippets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body }),
+      });
+      if (!res.ok) throw new Error(`save snippet failed: ${res.status}`);
+      this._hideSaveSnippetPill();
+      if (window.toast?.showSuccess) {
+        window.toast.showSuccess('Saved as snippet');
+      } else if (window.showToast) {
+        window.showToast('Saved as snippet', 'success');
+      }
+    } catch {
+      // Keep quiet but visible: label the pill, then dismiss it. Guard against
+      // a pill that was already replaced/dismissed while the POST was inflight.
+      if (this._saveSnippetPill === pill) {
+        pill.textContent = 'Failed';
+        setTimeout(() => {
+          if (this._saveSnippetPill === pill) this._hideSaveSnippetPill();
+        }, 1200);
+      }
+    }
+  }
+
   // ── Session picker dropdown ────────────────────────────────────────────
 
   _isSessionDropdownOpen() {
@@ -1837,8 +2177,9 @@ class ChatPanel {
 
   async _showSessionDropdown() {
     if (!this.sessionDropdown) return;
-    // Close provider dropdown if open
+    // Close provider + snippet dropdowns if open
     this._hideProviderDropdown();
+    this._hideSnippetDropdown();
 
     const sessions = await this._fetchSessions();
     this._renderSessionDropdown(sessions);
@@ -3963,6 +4304,11 @@ class ChatPanel {
     const msgEl = document.createElement('div');
     msgEl.className = `chat-panel__message chat-panel__message--${role}`;
     if (id) msgEl.dataset.messageId = id;
+    // Stash the raw content on the element (not an attribute) so the
+    // alt-click "Save as snippet" affordance can persist the exact body —
+    // newlines/formatting intact — rather than the rendered bubble's
+    // textContent. User messages only; assistant/error aren't savable.
+    if (role === 'user') msgEl._chatRawContent = content;
 
     const bubble = document.createElement('div');
     bubble.className = 'chat-panel__bubble';
@@ -4996,6 +5342,13 @@ class ChatPanel {
   destroy() {
     document.removeEventListener('keydown', this._onKeydown);
     window.removeEventListener('chat-state-changed', this._onChatStateChanged);
+    // Remove any lingering outside-click document listeners before the
+    // container is cleared (each open dropdown holds a one-shot handler;
+    // these hide methods safely no-op when their dropdown is already closed).
+    this._hideProviderDropdown();
+    this._hideSessionDropdown();
+    this._hideSnippetDropdown();
+    this._hideSaveSnippetPill();
     this._closeSubscriptions();
     this.tabs = [];
     this.activeTabKey = null;

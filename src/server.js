@@ -465,6 +465,7 @@ async function startServer(sharedDb = null, sharedPoolLifecycle = null, options 
     const stackAnalysisRoutes = require('./routes/stack-analysis');
     const externalCommentsRoutes = require('./routes/external-comments');
     const settingsRoutes = require('./routes/settings');
+    const snippetsRoutes = require('./routes/snippets');
     const { createSoundRouter } = require('./routes/sound');
 
     // Initialize chat session manager
@@ -487,6 +488,7 @@ async function startServer(sharedDb = null, sharedPoolLifecycle = null, options 
     app.use('/', bulkAnalysisConfigsRoutes);
     app.use('/', stackAnalysisRoutes);
     app.use('/', settingsRoutes);
+    app.use('/', snippetsRoutes);
     // External-comments routes (GitHub PR review-comment sync + fetch) are
     // gated by the `external_comments` config flag. When disabled, the
     // router is not mounted so any GET/POST against `/api/reviews/*/

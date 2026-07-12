@@ -77,6 +77,10 @@ const SOURCE_DISPLAY = {
 const REPOS_SECTION_ID = 'repos-section';
 const REPOS_NAV_TITLE = 'Repositories';
 
+// Stable DOM id for the (static) Chat Snippets section, and its nav title.
+const SNIPPETS_SECTION_ID = 'snippets-section';
+const SNIPPETS_NAV_TITLE = 'Chat Snippets';
+
 class SettingsPage {
   constructor() {
     // Map of key -> descriptor from the API (kept in sync after PUT/DELETE).
@@ -104,6 +108,10 @@ class SettingsPage {
     this.sections = [];
     // Whether the Repositories section is visible (loaded successfully).
     this.reposVisible = false;
+    // Whether the Chat Snippets section is visible (mounted successfully).
+    this.snippetsVisible = false;
+    // Mounted SnippetManager instance, if any.
+    this._snippetManager = null;
     // Current active nav target id (scrollspy).
     this.activeNavId = null;
 
@@ -121,6 +129,7 @@ class SettingsPage {
     await Promise.all([this.loadProviders(), this.loadChatProviders(), this.loadCouncils()]);
     await this.loadSettings();
     await this.loadRepos();
+    this.mountSnippets();
 
     // Build the side navigation once the sections it points at are in the DOM.
     this.buildNavigation();
@@ -230,6 +239,32 @@ class SettingsPage {
     } catch (error) {
       console.error('Error loading repositories:', error);
       // Leave the section hidden on error — it is supplementary.
+    }
+  }
+
+  /**
+   * Mount the shared SnippetManager into the (static) Chat Snippets section.
+   * The component fetches its own data and renders its own empty/error states,
+   * so the section stays visible as long as the component is available. Hidden
+   * if the component script failed to load.
+   */
+  mountSnippets() {
+    const section = document.getElementById(SNIPPETS_SECTION_ID);
+    const mount = document.getElementById('snippets-manager');
+    if (!section || !mount) return;
+
+    if (typeof SnippetManager === 'undefined') {
+      section.style.display = 'none';
+      return;
+    }
+
+    try {
+      this._snippetManager = new SnippetManager(mount);
+      section.style.display = '';
+      this.snippetsVisible = true;
+    } catch (error) {
+      console.error('Error mounting snippet manager:', error);
+      section.style.display = 'none';
     }
   }
 
@@ -716,9 +751,12 @@ class SettingsPage {
    * visible, the Repositories section. Derives entirely from `sections` (the
    * same data renderSections used) so it cannot drift from the page.
    *
+   * @param {Array} sections - rendered dynamic sections
+   * @param {boolean} includeRepos - append the Repositories nav item
+   * @param {boolean} [includeSnippets] - append the Chat Snippets nav item
    * @returns {Array<{id: string, title: string}>}
    */
-  navItems(sections, includeRepos) {
+  navItems(sections, includeRepos, includeSnippets) {
     const items = (sections || []).map(s => {
       // Only attach `badge` when the section actually has one, so callers that
       // build sections without badges keep a clean {id, title} shape.
@@ -726,6 +764,11 @@ class SettingsPage {
       if (s.badge) item.badge = s.badge;
       return item;
     });
+    // Chat Snippets precedes Repositories so Repositories stays the terminal
+    // section (both the static markup and the scrollspy depend on this order).
+    if (includeSnippets) {
+      items.push({ id: SNIPPETS_SECTION_ID, title: SNIPPETS_NAV_TITLE });
+    }
     if (includeRepos) {
       items.push({ id: REPOS_SECTION_ID, title: REPOS_NAV_TITLE });
     }
@@ -754,7 +797,7 @@ class SettingsPage {
    * once after settings + repos have loaded so every target section exists.
    */
   buildNavigation() {
-    const items = this.navItems(this.sections, this.reposVisible);
+    const items = this.navItems(this.sections, this.reposVisible, this.snippetsVisible);
     this.navItemsList = items;
     this.renderNav(items);
     this.setupNavClickHandler();

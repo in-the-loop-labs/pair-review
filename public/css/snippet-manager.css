@@ -1,0 +1,233 @@
+/* Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0 */
+
+/*
+ * Styles for the SnippetManager component (public/js/components/SnippetManager.js).
+ * Loaded on the settings page (inline mount) and on the PR/local pages (for the
+ * chat-picker modal). Colors reference the shared CSS custom properties defined
+ * by pr.css so light and dark themes both work.
+ */
+
+/* ─── Inline manager ──────────────────────────────────────────────────────── */
+
+.snippet-manager {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.snippet-manager__loading,
+.snippet-manager__empty {
+  color: var(--color-text-secondary, #57606a);
+  font-size: 13px;
+  padding: 8px 0;
+}
+
+.snippet-manager__error {
+  color: var(--color-danger, #cf222e);
+  font-size: 13px;
+  padding: 8px 12px;
+  border: 1px solid var(--color-danger, #cf222e);
+  border-radius: var(--radius-md, 6px);
+  background: var(--color-bg-secondary, #f6f8fa);
+}
+
+.snippet-manager__list-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.snippet-manager__list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-border-primary, #d1d9e0);
+  border-radius: var(--radius-md, 6px);
+  overflow: hidden;
+}
+
+.snippet-manager__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-border-primary, #d1d9e0);
+  background: var(--color-bg-primary, #ffffff);
+}
+
+.snippet-manager__row:last-child {
+  border-bottom: none;
+}
+
+.snippet-manager__preview {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  color: var(--color-text-primary, #1f2328);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+
+.snippet-manager__row-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+}
+
+.snippet-manager__row-btn,
+.snippet-manager__add-btn,
+.snippet-manager__save-btn,
+.snippet-manager__cancel-btn {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: var(--radius-md, 6px);
+  border: 1px solid var(--color-border-primary, #d1d9e0);
+  background: var(--color-bg-secondary, #f6f8fa);
+  color: var(--color-text-primary, #1f2328);
+  cursor: pointer;
+}
+
+.snippet-manager__row-btn:hover,
+.snippet-manager__add-btn:hover,
+.snippet-manager__cancel-btn:hover {
+  background: var(--color-bg-tertiary, #eaeef2);
+}
+
+.snippet-manager__delete-btn:hover {
+  border-color: var(--color-danger, #cf222e);
+  color: var(--color-danger, #cf222e);
+}
+
+.snippet-manager__add-btn {
+  align-self: flex-start;
+}
+
+.snippet-manager__save-btn {
+  background: var(--color-accent-primary, #0969da);
+  border-color: var(--color-accent-primary, #0969da);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.snippet-manager__save-btn:hover {
+  background: var(--color-accent-hover, var(--color-accent-primary, #0860ca));
+}
+
+.snippet-manager__save-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* ─── Add / edit form ─────────────────────────────────────────────────────── */
+
+.snippet-manager__form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.snippet-manager__form-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary, #1f2328);
+}
+
+.snippet-manager__textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 96px;
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  border-radius: var(--radius-md, 6px);
+  border: 1px solid var(--color-border-primary, #d1d9e0);
+  background: var(--color-bg-primary, #ffffff);
+  color: var(--color-text-primary, #1f2328);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+
+.snippet-manager__textarea:focus {
+  outline: none;
+  border-color: var(--color-accent-primary, #0969da);
+  box-shadow: 0 0 0 3px var(--color-accent-subtle, rgba(9, 105, 218, 0.1));
+}
+
+.snippet-manager__form-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* ─── Modal shell ─────────────────────────────────────────────────────────── */
+
+/*
+ * Self-contained modal styling so the picker modal works on any page, whether
+ * or not another stylesheet also defines `.modal-overlay`. Scoped to the
+ * snippet-manager-modal class to avoid overriding other modals.
+ */
+.snippet-manager-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.snippet-manager-modal .modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+}
+
+.snippet-manager-modal__container {
+  position: relative;
+  width: min(560px, 92vw);
+  max-height: 82vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--color-bg-primary, #ffffff);
+  border: 1px solid var(--color-border-primary, #d1d9e0);
+  border-radius: var(--radius-lg, 12px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+}
+
+.snippet-manager-modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--color-border-primary, #d1d9e0);
+}
+
+.snippet-manager-modal__header h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--color-text-primary, #1f2328);
+}
+
+.snippet-manager-modal__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: none;
+  background: none;
+  color: var(--color-text-secondary, #57606a);
+  cursor: pointer;
+  border-radius: var(--radius-md, 6px);
+}
+
+.snippet-manager-modal__close:hover {
+  background: var(--color-bg-tertiary, #eaeef2);
+  color: var(--color-text-primary, #1f2328);
+}
+
+.snippet-manager-modal__body {
+  padding: 16px 20px;
+  overflow-y: auto;
+}
