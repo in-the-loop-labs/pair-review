@@ -16,15 +16,11 @@
   background: var(--color-bg-primary);
   border: 1px solid var(--color-border-primary);
   border-radius: 10px;
-  box-shadow:
-    0 0 0 3px rgba(245, 158, 11, 0.15),
-    0 4px 12px rgba(245, 158, 11, 0.1);
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.15);
 }
 
 [data-theme="dark"] .council-card {
-  box-shadow:
-    0 0 0 3px rgba(251, 191, 36, 0.15),
-    0 4px 12px rgba(251, 191, 36, 0.08);
+  box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.15);
 }
 
 .council-card-name {
