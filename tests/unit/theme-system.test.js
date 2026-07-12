@@ -228,6 +228,45 @@ describe('Landing page theme toggle', () => {
       expect(sandbox.document.documentElement.getAttribute('data-theme')).toBe('light');
     });
 
+    it('produces visible change on first click with no stored preference and OS dark', () => {
+      // Bug #2: defaulting to 'light' causes invisible clicks for dark-mode users.
+      // With OS dark and no stored preference, the first click should visibly
+      // change the UI (dark → light), not be a no-op.
+      const exp = setup(undefined); // no stored preference
+      sandbox.window._osDark = true;
+      exp.initTheme();
+
+      // Display starts dark (OS is dark)
+      expect(sandbox.document.documentElement.getAttribute('data-theme')).toBe('dark');
+      expect(sandbox.localStorage.getItem('theme')).toBeNull();
+
+      // First click: should produce a visible change (dark → light)
+      exp.toggleTheme();
+      expect(sandbox.document.documentElement.getAttribute('data-theme')).toBe('light');
+      expect(sandbox.localStorage.getItem('theme')).toBe('light');
+    });
+
+    it('produces visible change on first click with no stored preference and OS light', () => {
+      // With OS light, system→light transition is invisible (both = light).
+      // This is the 1-invisible-click case — reduced from 2 with || 'light'.
+      // The first VISIBLE change happens on the second click: light → dark.
+      const exp = setup(undefined);
+      sandbox.window._osDark = false;
+      exp.initTheme();
+
+      expect(sandbox.document.documentElement.getAttribute('data-theme')).toBe('light');
+
+      // First click: saved = 'system' → next = 'light' → both resolve to light (invisible)
+      exp.toggleTheme();
+      expect(sandbox.document.documentElement.getAttribute('data-theme')).toBe('light');
+      expect(sandbox.localStorage.getItem('theme')).toBe('light');
+
+      // Second click: light → dark (visible change)
+      exp.toggleTheme();
+      expect(sandbox.document.documentElement.getAttribute('data-theme')).toBe('dark');
+      expect(sandbox.localStorage.getItem('theme')).toBe('dark');
+    });
+
     it('when OS is dark, "system" resolves to dark', () => {
       const exp = setup('light');
       sandbox.window._osDark = true;
@@ -348,6 +387,9 @@ describe('PR page toggleTheme with system support', () => {
     mgr.currentTheme = 'light';
     mgr.updateThemeIcon = vi.fn();
     mgr.pierreBridge = null;
+
+    // Start with an explicit 'light' preference so the cycle begins there
+    sandbox.localStorage.setItem('theme', 'light');
 
     // light → dark
     mgr.toggleTheme();

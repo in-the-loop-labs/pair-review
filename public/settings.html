@@ -4,7 +4,7 @@
     <script>
         // Initialize theme immediately to prevent flash
         (function() {
-            const savedTheme = localStorage.getItem('theme') || 'light';
+            const savedTheme = localStorage.getItem('theme') || 'system';
             const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
             const theme = savedTheme === 'system' ? (prefersDark ? 'dark' : 'light') : savedTheme;
             document.documentElement.setAttribute('data-theme', theme);

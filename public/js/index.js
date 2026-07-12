@@ -48,7 +48,7 @@
   }
 
   function toggleTheme() {
-    const savedTheme = localStorage.getItem('theme') || 'light';
+    const savedTheme = localStorage.getItem('theme') || 'system';
     const currentTheme = document.documentElement.getAttribute('data-theme') || 'light';
     // Map current display theme back to the preference (for 'system' case)
     const currentPreference = savedTheme;
@@ -63,7 +63,7 @@
   function updateThemeIcon(preference) {
     const btn = document.getElementById('theme-toggle');
     if (!btn) return;
-    const pref = preference || localStorage.getItem('theme') || 'light';
+    const pref = preference || localStorage.getItem('theme') || 'system';
     if (pref === 'system') {
       btn.innerHTML = '<svg class="theme-icon-system" viewBox="0 0 16 16" fill="currentColor" width="16" height="16"><path d="M0 2.75C0 1.784.784 1 1.75 1h12.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 14.25 12H9.5v1.5h1.75a.75.75 0 0 1 0 1.5h-6.5a.75.75 0 0 1 0-1.5H6.5V12H1.75A1.75 1.75 0 0 1 0 10.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h12.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/></svg>';
       btn.title = 'Theme: System (follows OS)';

@@ -112,7 +112,7 @@ class PRManager {
     this.loadingState = false;
     this.expandedFolders = new Set();
     this.expandedSections = new Set();
-    const savedTheme = localStorage.getItem('theme') || 'light';
+    const savedTheme = localStorage.getItem('theme') || 'system';
     if (savedTheme === 'system' && typeof window !== 'undefined' && window.matchMedia) {
       const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
       this.currentTheme = prefersDark ? 'dark' : 'light';
@@ -7854,7 +7854,7 @@ class PRManager {
   }
 
   toggleTheme() {
-    const savedPreference = localStorage.getItem('theme') || 'light';
+    const savedPreference = localStorage.getItem('theme') || 'system';
     const nextPreference = savedPreference === 'light' ? 'dark'
       : savedPreference === 'dark' ? 'system'
       : 'light';
@@ -7875,7 +7875,7 @@ class PRManager {
     const themeButton = document.getElementById('theme-toggle');
     if (!themeButton) return;
 
-    const savedPreference = localStorage.getItem('theme') || 'light';
+    const savedPreference = localStorage.getItem('theme') || 'system';
 
     if (savedPreference === 'system') {
       themeButton.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M0 2.75C0 1.784.784 1 1.75 1h12.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 14.25 12H9.5v1.5h1.75a.75.75 0 0 1 0 1.5h-6.5a.75.75 0 0 1 0-1.5H6.5V12H1.75A1.75 1.75 0 0 1 0 10.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h12.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/></svg>`;
