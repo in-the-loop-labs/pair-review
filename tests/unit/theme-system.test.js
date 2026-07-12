@@ -337,6 +337,30 @@ describe('Landing page theme toggle', () => {
       expect(sandbox.document.documentElement.getAttribute('data-theme')).toBe('dark');
     });
   });
+
+  describe('updateThemeIcon', () => {
+    it('renders 16x16 filled icons (not 24x24 stroke)', () => {
+      const exp = setup('light');
+      exp.initTheme();
+      const btn = { innerHTML: '', title: '' };
+      // Stub getElementById so updateThemeIcon writes to our mock button
+      const orig = sandbox.document.getElementById;
+      sandbox.document.getElementById = (id) => id === 'theme-toggle' ? btn : orig(id);
+
+      exp.updateThemeIcon('system');
+      expect(btn.innerHTML).toContain('width="16"');
+      expect(btn.innerHTML).toContain('height="16"');
+      expect(btn.innerHTML).not.toContain('stroke-width');
+
+      exp.updateThemeIcon('dark');
+      expect(btn.innerHTML).toContain('width="16"');
+      expect(btn.innerHTML).not.toContain('stroke-width');
+
+      exp.updateThemeIcon('light');
+      expect(btn.innerHTML).toContain('width="16"');
+      expect(btn.innerHTML).not.toContain('stroke-width');
+    });
+  });
 });
 
 // ────────────────────────────────────────────────────────────────────────────
