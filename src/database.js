@@ -21,7 +21,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 53;
+const CURRENT_SCHEMA_VERSION = 54;
 
 /**
  * Database schema SQL statements
@@ -372,6 +372,19 @@ const SCHEMA_SQL = {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
+  `,
+
+  // Global (user-level) reusable chat prompt snippets. No `repository` column
+  // now; repo-scoping later is a non-breaking ALTER TABLE ADD COLUMN + WHERE
+  // filter. MRU order comes from last_used_at (see ChatSnippetRepository).
+  chat_snippets: `
+    CREATE TABLE IF NOT EXISTS chat_snippets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      body TEXT NOT NULL,
+      last_used_at DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
   `
 };
 
@@ -429,7 +442,9 @@ const INDEX_SQL = [
   'CREATE INDEX IF NOT EXISTS idx_external_comments_parent_lookup ON external_comments(review_id, source, in_reply_to_id)',
   // Global settings (in-app overrides). key is already UNIQUE in the table, but
   // the explicit index keeps parity with the test schema and lookup by key fast.
-  'CREATE UNIQUE INDEX IF NOT EXISTS idx_global_settings_key ON global_settings(key)'
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_global_settings_key ON global_settings(key)',
+  // Chat snippets MRU lookup by last_used_at.
+  'CREATE INDEX IF NOT EXISTS idx_chat_snippets_last_used ON chat_snippets(last_used_at DESC)'
 ];
 
 /**
@@ -2288,6 +2303,23 @@ const MIGRATIONS = {
     }
     db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_global_settings_key ON global_settings(key)');
     console.log('Migration to schema version 53 complete');
+  },
+
+  // Migration to version 54: add the chat_snippets table backing the reusable
+  // chat prompt snippets library. Fresh installs already create the table via
+  // SCHEMA_SQL before migrations run, so the tableExists guard keeps this
+  // idempotent. The index is created separately (also idempotent) so the schema
+  // matches SCHEMA_SQL + INDEX_SQL exactly.
+  54: (db) => {
+    console.log('Running migration to schema version 54: Add chat_snippets table...');
+    if (!tableExists(db, 'chat_snippets')) {
+      db.exec(SCHEMA_SQL.chat_snippets);
+      console.log('  Created chat_snippets table');
+    } else {
+      console.log('  Table chat_snippets already exists');
+    }
+    db.exec('CREATE INDEX IF NOT EXISTS idx_chat_snippets_last_used ON chat_snippets(last_used_at DESC)');
+    console.log('Migration to schema version 54 complete');
   }
 };
 
@@ -5844,6 +5876,116 @@ class CouncilRepository {
 }
 
 /**
+ * ChatSnippetRepository class for managing reusable chat prompt snippets.
+ *
+ * Snippets are global (user-level) body-only prompts inserted into the chat
+ * input. Modeled on CouncilRepository: MRU ordering via last_used_at and a
+ * touchLastUsedAt() bump on every insert.
+ */
+class ChatSnippetRepository {
+  /**
+   * Create a new ChatSnippetRepository instance
+   * @param {Database} db - Database instance
+   */
+  constructor(db) {
+    this.db = db;
+  }
+
+  /**
+   * Create a new snippet
+   * @param {Object} snippetData - Snippet data
+   * @param {string} snippetData.body - Snippet body text (non-empty)
+   * @returns {Promise<Object>} Created snippet record
+   */
+  async create({ body }) {
+    if (typeof body !== 'string' || !body.trim()) {
+      throw new Error('body is required and must be a non-empty string');
+    }
+
+    const result = await run(this.db, `
+      INSERT INTO chat_snippets (body)
+      VALUES (?)
+    `, [body]);
+
+    return this.getById(result.lastID);
+  }
+
+  /**
+   * Get a snippet by ID
+   * @param {number} id - Snippet ID
+   * @returns {Promise<Object|null>} Snippet record or null
+   */
+  async getById(id) {
+    const row = await queryOne(this.db, `
+      SELECT id, body, last_used_at, created_at, updated_at
+      FROM chat_snippets
+      WHERE id = ?
+    `, [id]);
+
+    return row || null;
+  }
+
+  /**
+   * List all snippets in MRU order (most recently used first)
+   * @returns {Promise<Array<Object>>} Array of snippet records
+   */
+  async list() {
+    return query(this.db, `
+      SELECT id, body, last_used_at, created_at, updated_at
+      FROM chat_snippets
+      ORDER BY last_used_at DESC NULLS LAST, updated_at DESC
+    `);
+  }
+
+  /**
+   * Update a snippet's body
+   * @param {number} id - Snippet ID
+   * @param {Object} updates - Fields to update
+   * @param {string} updates.body - New body text (non-empty)
+   * @returns {Promise<boolean>} True if record was updated (snippet exists)
+   */
+  async update(id, { body }) {
+    if (typeof body !== 'string' || !body.trim()) {
+      throw new Error('body is required and must be a non-empty string');
+    }
+
+    const result = await run(this.db, `
+      UPDATE chat_snippets
+      SET body = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `, [body, id]);
+
+    return result.changes > 0;
+  }
+
+  /**
+   * Update the last_used_at timestamp for a snippet (for MRU tracking)
+   * @param {number} id - Snippet ID
+   * @returns {Promise<boolean>} True if record was updated (snippet exists)
+   */
+  async touchLastUsedAt(id) {
+    const result = await run(this.db, `
+      UPDATE chat_snippets SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?
+    `, [id]);
+
+    return result.changes > 0;
+  }
+
+  /**
+   * Delete a snippet
+   * @param {number} id - Snippet ID
+   * @returns {Promise<boolean>} True if record was deleted (snippet existed)
+   */
+  async delete(id) {
+    const result = await run(this.db, `
+      DELETE FROM chat_snippets WHERE id = ?
+    `, [id]);
+
+    return result.changes > 0;
+  }
+}
+
+/**
  * ContextFileRepository class for managing context file range records.
  * Context files allow pinning specific line ranges from non-diff files
  * into the diff panel for review.
@@ -6175,6 +6317,7 @@ module.exports = {
   AnalysisRunRepository,
   GitHubReviewRepository,
   CouncilRepository,
+  ChatSnippetRepository,
   ContextFileRepository,
   HunkSummaryRepository,
   TourRepository,

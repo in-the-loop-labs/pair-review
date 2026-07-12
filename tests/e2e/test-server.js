@@ -829,6 +829,7 @@ async function startTestServer(port) {
   const contextFilesRoutes = require('../../src/routes/context-files');
   const bulkAnalysisConfigsRoutes = require('../../src/routes/bulk-analysis-configs');
   const settingsRoutes = require('../../src/routes/settings');
+  const snippetsRoutes = require('../../src/routes/snippets');
 
   // Mock chat session manager for E2E (reads from DB, no real bridge).
   // createSession/sendMessage write to the DB so multi-tab tests that open
@@ -917,6 +918,7 @@ async function startTestServer(port) {
   app.use('/', contextFilesRoutes);
   app.use('/', bulkAnalysisConfigsRoutes);
   app.use('/', settingsRoutes);
+  app.use('/', snippetsRoutes);
 
   // Error handling
   app.use((error, req, res, next) => {

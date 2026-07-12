@@ -11832,6 +11832,7 @@ body.resizing * {
 
 /* Chat Input Area */
 .chat-panel__input-area {
+  position: relative; /* anchor for .chat-panel__snippet-dropdown */
   display: flex;
   flex-direction: column;
   margin: 0 12px 12px;
@@ -11908,6 +11909,192 @@ body.resizing * {
 .chat-panel__send-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/* ── Prompt-snippet picker (chat input) ─────────────────────────────────── */
+.chat-panel__snippet-picker {
+  /* NOT position:relative — the dropdown anchors to .chat-panel__input-area
+     so it spans the input box instead of growing leftward out of the panel. */
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.chat-panel__snippet-picker-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--color-border-default, rgba(0, 0, 0, 0.1));
+  background: transparent;
+  color: var(--color-text-secondary, #656d76);
+  border-radius: 6px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.chat-panel__snippet-picker-btn:hover,
+.chat-panel__snippet-picker-btn--open {
+  background: var(--color-bg-tertiary, rgba(128, 128, 128, 0.1));
+  color: var(--color-text-primary, #1f2328);
+}
+
+/* Dropdown opens UPWARD — the input sits at the panel bottom. Anchored to
+   .chat-panel__input-area (position:relative) so it spans the input box and
+   stays inside the chat panel at any panel width; previews ellipsize. */
+.chat-panel__snippet-dropdown {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--color-bg-primary, #fff);
+  border: 1px solid var(--color-border-primary, #d0d7de);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  z-index: 100;
+  padding: 4px;
+}
+
+.chat-panel__snippet-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--color-border-muted, rgba(128, 128, 128, 0.15));
+  margin-bottom: 4px;
+}
+
+.chat-panel__snippet-header-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-tertiary, #8b949e);
+}
+
+.chat-panel__snippet-manage-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-tertiary, #8b949e);
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.chat-panel__snippet-manage-btn:hover {
+  background: var(--color-bg-tertiary, rgba(128, 128, 128, 0.1));
+  color: var(--color-text-primary, #1f2328);
+}
+
+.chat-panel__snippet-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 12px;
+  text-align: center;
+  color: var(--color-text-tertiary, #8b949e);
+  font-size: 12px;
+}
+
+.chat-panel__snippet-manage-empty-btn {
+  border: 1px solid var(--color-border-primary, #d0d7de);
+  background: transparent;
+  color: var(--color-text-primary, #1f2328);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.chat-panel__snippet-manage-empty-btn:hover {
+  background: var(--color-bg-tertiary, rgba(128, 128, 128, 0.1));
+}
+
+.chat-panel__snippet-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-panel__snippet-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  background: transparent;
+  text-align: left;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+  font-size: 13px;
+  color: var(--color-text-primary, #1f2328);
+}
+
+.chat-panel__snippet-item:hover {
+  background: var(--color-bg-tertiary, rgba(128, 128, 128, 0.08));
+}
+
+.chat-panel__snippet-item-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+}
+
+[data-theme="dark"] .chat-panel__snippet-dropdown {
+  background: var(--color-bg-primary, #0d1117);
+  border-color: var(--color-border-primary, #30363d);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+[data-theme="dark"] .chat-panel__snippet-item {
+  color: var(--color-text-primary, #e6edf3);
+}
+
+[data-theme="dark"] .chat-panel__snippet-manage-empty-btn {
+  color: var(--color-text-primary, #e6edf3);
+  border-color: var(--color-border-primary, #30363d);
+}
+
+/* Save-as-snippet pill (alt-click a submitted user message) */
+.chat-panel__save-snippet-pill {
+  position: fixed;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  color: #ffffff;
+  background: var(--color-accent-primary);
+  border: none;
+  border-radius: 999px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.24);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, opacity 0.15s ease;
+}
+
+.chat-panel__save-snippet-pill:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+}
+
+.chat-panel__save-snippet-pill:disabled {
+  opacity: 0.7;
+  cursor: default;
 }
 
 .chat-panel__stop-btn {

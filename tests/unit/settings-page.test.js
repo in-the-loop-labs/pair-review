@@ -9,7 +9,7 @@
  * data-loading side effects never fire.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 
 const { SettingsPage, SOURCE_DISPLAY, PROVIDER_KEYS, CHAT_PROVIDER_KEYS, MODEL_KEYS, COUNCIL_KEYS } = require('../../public/js/settings.js');
 
@@ -662,6 +662,88 @@ describe('navItems', () => {
     const page = createPage();
     expect(page.navItems([], true)).toEqual([{ id: 'repos-section', title: 'Repositories' }]);
     expect(page.navItems([], false)).toEqual([]);
+  });
+
+  it('appends the Chat Snippets item only when includeSnippets is true', () => {
+    const page = createPage();
+    const withSnippets = page.navItems([{ id: 'section-general', title: 'General' }], false, true);
+    expect(withSnippets[withSnippets.length - 1]).toEqual({ id: 'snippets-section', title: 'Chat Snippets' });
+
+    const withoutSnippets = page.navItems([{ id: 'section-general', title: 'General' }], false, false);
+    expect(withoutSnippets.some(i => i.id === 'snippets-section')).toBe(false);
+  });
+
+  it('appends Chat Snippets then Repositories (repos stays terminal) when both are visible', () => {
+    const page = createPage();
+    const items = page.navItems([{ id: 'section-general', title: 'General' }], true, true);
+    expect(items).toEqual([
+      { id: 'section-general', title: 'General' },
+      { id: 'snippets-section', title: 'Chat Snippets' },
+      { id: 'repos-section', title: 'Repositories' }
+    ]);
+  });
+
+  it('omits the snippets item when includeSnippets is absent (back-compat arity)', () => {
+    const page = createPage();
+    // Existing two-argument callers must keep producing snippet-free nav.
+    const items = page.navItems([{ id: 'section-general', title: 'General' }], true);
+    expect(items.some(i => i.id === 'snippets-section')).toBe(false);
+  });
+});
+
+describe('mountSnippets', () => {
+  function setupDom() {
+    document.body.innerHTML = `
+      <section class="settings-section" id="snippets-section">
+        <div id="snippets-manager"></div>
+      </section>`;
+  }
+
+  afterEach(() => {
+    delete global.SnippetManager;
+    document.body.innerHTML = '';
+    vi.restoreAllMocks();
+  });
+
+  it('is a no-op when the mount node is missing (no throw, stays hidden)', () => {
+    document.body.innerHTML = ''; // neither section nor mount present
+    const page = createPage();
+    expect(() => page.mountSnippets()).not.toThrow();
+    expect(page.snippetsVisible).toBeFalsy();
+    expect(page._snippetManager).toBeFalsy();
+  });
+
+  it('hides the section when SnippetManager is undefined', () => {
+    setupDom();
+    delete global.SnippetManager;
+    const page = createPage();
+    page.mountSnippets();
+    expect(document.getElementById('snippets-section').style.display).toBe('none');
+    expect(page.snippetsVisible).toBeFalsy();
+  });
+
+  it('hides the section and logs when the constructor throws', () => {
+    setupDom();
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    global.SnippetManager = function () { throw new Error('boom'); };
+    const page = createPage();
+    page.mountSnippets();
+    expect(document.getElementById('snippets-section').style.display).toBe('none');
+    expect(page.snippetsVisible).toBeFalsy();
+    expect(errSpy).toHaveBeenCalled();
+  });
+
+  it('mounts the component and marks the section visible on success', () => {
+    setupDom();
+    const calls = [];
+    global.SnippetManager = function (container) { calls.push(container); this.container = container; };
+    const page = createPage();
+    page.mountSnippets();
+    expect(page.snippetsVisible).toBe(true);
+    expect(page._snippetManager).toBeInstanceOf(global.SnippetManager);
+    expect(calls[0]).toBe(document.getElementById('snippets-manager'));
+    // Visible = display cleared (not 'none').
+    expect(document.getElementById('snippets-section').style.display).not.toBe('none');
   });
 });
 
