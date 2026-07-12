@@ -44,10 +44,10 @@ const REGISTRY = [
   {
     key: 'theme',
     label: 'Default theme',
-    description: 'Initial theme for the UI. The header toggle still switches themes client-side per session.',
+    description: 'Initial theme for the UI. "system" follows your OS dark/light schedule. The header toggle still switches themes client-side per session.',
     group: 'general',
     type: 'enum',
-    values: ['light', 'dark'],
+    values: ['light', 'dark', 'system'],
     default: 'light',
     editable: true,
     restartRequired: false
