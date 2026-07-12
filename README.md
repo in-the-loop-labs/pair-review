@@ -196,8 +196,10 @@ pair-review --local [path]
 | `<PR-URL>` | Full GitHub PR URL (e.g., `https://github.com/owner/repo/pull/123`) |
 | `--ai` | Automatically run AI analysis when the review loads |
 | `--ai-draft` | Run AI analysis and save suggestions as a draft review on GitHub |
-| `--headless` | Run AI analysis, store it in the local database, report the results, then exit. No server, no browser, no GitHub post. Implies analysis (does not require `--ai`). Works with a `<PR-number-or-URL>` or with `--local`. See [Headless analysis mode](#headless-analysis-mode). |
+| `--headless` | Run AI analysis, store it in the local database, report the results, then exit. No browser, no GitHub post. Implies analysis (does not require `--ai`). Works with a `<PR-number-or-URL>` or with `--local`. If a compatible pair-review server is already running, the analysis is delegated to it so the web UI shows live progress (the CLI still waits and prints the same result). See [Headless analysis mode](#headless-analysis-mode). |
 | `--json` | With `--headless`, emit the completed run plus its consolidated suggestions as a single JSON document on a clean stdout. For any outcome of the headless run (success, zero findings, or an error raised while running it), stdout carries a JSON document with an `ok` field; failures emit an `{ "ok": false, "error": … }` envelope on stdout with a non-zero exit. (Pre-flight config/startup failures are the exception: they exit non-zero with a stderr message and no JSON envelope — branch on the exit code first.) stderr is quiet by default (only warnings/errors) — add `--debug` for verbose progress logs. Only valid together with `--headless`. |
+| `--no-server` | (Headless mode) Always run the analysis in-process, even when a compatible pair-review server is running — skips the delegation probe. Use for a fully isolated run with no live UI. Mutually exclusive with `--require-server`. |
+| `--require-server` | (Headless mode) Require delegation to a compatible running server (so the web UI shows live progress). If none is available, fail fast (exit `1`, `{ "ok": false }` under `--json`) instead of falling back to in-process. Mutually exclusive with `--no-server`. |
 | `--instructions <text>` | Per-run custom instructions for this analysis. Applies to any mode that runs analysis — `--headless`, `--ai-draft`, `--ai-review` (consumed directly), and `--ai`/`--council` (carried into the browser-triggered analysis). Rejected with a clear error if no analysis mode is selected, so it is never silently dropped. Default: none. |
 | `--instructions-file <path>` | Read per-run custom instructions from a file (5000-character cap). Mutually exclusive with `--instructions`. |
 | `--council <handle>` | Run analysis with a saved multi-voice council. Implies analysis. The handle resolves by council name, name-slug, id (prefix), or a partial name fragment (resolving when it matches a single council, otherwise listing the candidates). When set, `--model` is ignored (council voices use their own per-voice models). Works in headless PR (`--ai-draft`/`--ai-review`/`--headless`), interactive PR (`--ai`), and local (`--local --ai`) modes. |
@@ -290,8 +292,8 @@ pair-review --local --scope branch..untracked --base develop
 
 `--headless` runs an AI analysis (single provider or council), stores the results
 in the local SQLite database exactly as the web UI does, reports them, and exits.
-It never starts the server, opens a browser, or posts to GitHub — it is the
-analysis core without the interactive or submit steps.
+It never opens a browser or posts to GitHub — it is the analysis core without the
+interactive or submit steps.
 
 ```bash
 # Analyze uncommitted local changes, print a human-readable summary
@@ -304,6 +306,46 @@ pair-review 123 --headless
 pair-review --local --headless --council security-review \
   --instructions "Focus on auth and input validation."
 ```
+
+**Live progress when a server is running (delegation).** If a compatible
+pair-review server is already running on the configured port (same version, same
+database), `--headless` hands the analysis *execution* to that server instead of
+running it in-process. The server runs the exact same analysis, so its open web
+UI shows the live council dialog updating in real time — while the CLI waits for
+completion and then prints the identical result (same summary, byte-identical
+`--json` document read from the shared database). This is what lets a `pair-loop`
+run, or any `--headless` invocation, be watched live in the browser.
+
+"Compatible" is strict: the server must report the same package version and
+resolve the same SQLite database file as the CLI. Anything else — no server, a
+version mismatch, or a different database — runs in-process as before. Two flags
+tune the behavior:
+
+- `--no-server` — always run in-process, even when a compatible server is
+  running (skip the delegation probe). Use for a fully isolated run with no live
+  UI.
+- `--require-server` — require delegation to a compatible server. If none is
+  available, fail fast (exit `1`, with an `{ "ok": false, … }` envelope under
+  `--json`) instead of falling back to in-process.
+
+The two flags are mutually exclusive and apply only to `--headless`. Delegation
+is not available for MCP-stdio servers, which run on auto-selected ports with no
+discovery — only the server on the configured `port` is delegable. During a
+delegated run, `Ctrl-C` best-effort cancels the analysis on the server before the
+CLI exits.
+
+Delegation also skips (and the run stays in-process, with a stderr note) when
+`--use-checkout` or `--yolo` is set: those flags act on the CLI's own process
+(the current checkout, and this process's provider permissions), which a
+separate server cannot honor.
+
+One known limitation: configuration is loaded once at startup, so a delegated
+run uses the *server's* startup config for global instructions, while an
+in-process run reads the config fresh. Global instructions come from
+`~/.pair-review/global-instructions.md` (loaded into `config.globalInstructions`
+at startup), not a key in `config.json`. If you edit that file while a server is
+running, restart the server (or pass `--no-server`) for the change to take
+effect on delegated runs.
 
 **Exit codes:** a successful analysis exits `0` regardless of how many findings it
 surfaces (zero findings is still success, with an empty `suggestions` array).

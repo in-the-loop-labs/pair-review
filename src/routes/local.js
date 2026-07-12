@@ -28,7 +28,7 @@ const { getGitHubToken, resolveLoadSkills, buildCouncilProviderOverrides, getSum
 const { backgroundQueue } = require('../ai/background-queue');
 const localReview = require('../local-review');
 const { generateScopedDiff, computeScopedDigest, getBranchCommitCount, getFirstCommitSubject, detectAndBuildBranchInfo, findMergeBase, getCurrentBranch, getRepositoryName } = localReview;
-const { STOPS, isValidScope, normalizeScope, reviewScope, includesBranch, DEFAULT_SCOPE } = require('../local-scope');
+const { STOPS, isValidScope, normalizeScope, reviewScope, includesBranch, DEFAULT_SCOPE, EMPTY_SCOPE_MESSAGE } = require('../local-scope');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
 const { getShaAbbrevLength } = require('../git/sha-abbrev');
 const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
@@ -94,9 +94,7 @@ async function rejectIfEmptyScope(res, review, localPath) {
   };
   const changedFiles = await getChangedFiles(localPath, scopeContext);
   if (changedFiles.length === 0) {
-    res.status(409).json({
-      error: 'No changes found in the selected scope. Check that your scope includes files with modifications, or adjust the scope range.'
-    });
+    res.status(409).json({ error: EMPTY_SCOPE_MESSAGE });
     return true;
   }
   return false;

@@ -25,8 +25,47 @@ const logger = require('../utils/logger');
 
 const router = express.Router();
 
+// Terminal-state entries linger this long so a delegating CLI that finishes its
+// own work slightly after setup completes can still read the result. Mirrors the
+// activeAnalyses 30-minute auto-cleanup in src/routes/mcp.js.
+const SETUP_STATUS_TTL_MS = 30 * 60 * 1000;
+
+// Poll-friendly mirror of the `setup:{setupId}` WebSocket pushes. Keyed by
+// setupId (the same UUID handed back to the client), value is the latest
+// { status, reviewUrl?, reviewId?, error?, progress? } snapshot. The delegating
+// CLI polls GET /api/setup/:setupId/status instead of opening a WebSocket, which
+// sidesteps the missed-event race between "server returns setupId" and "CLI
+// subscribes". Not exported: it is process-local runtime state, never persisted.
+const setupStatuses = new Map();
+
 /**
- * Send a setup progress event via WebSocket.
+ * Record (or patch) the polling status for a setup operation. The first write
+ * establishes the entry as `running`; later writes shallow-merge onto it. On a
+ * terminal status (`complete`/`error`) an expiry timer is armed so the map does
+ * not grow without bound — matching the activeAnalyses cleanup pattern.
+ *
+ * @param {string} setupId - Setup operation ID
+ * @param {Object} patch - Partial status fields to merge (must include `status`
+ *   on the first call; typically `{ status, reviewUrl?, reviewId?, error?, progress? }`)
+ */
+function setSetupStatus(setupId, patch) {
+  const prev = setupStatuses.get(setupId) || {};
+  const next = { ...prev, ...patch };
+  setupStatuses.set(setupId, next);
+
+  if (next.status === 'complete' || next.status === 'error') {
+    // Do not let the cleanup timer keep the process alive; if the process is
+    // exiting the map dies with it anyway.
+    const timer = setTimeout(() => setupStatuses.delete(setupId), SETUP_STATUS_TTL_MS);
+    if (typeof timer.unref === 'function') timer.unref();
+  }
+}
+
+/**
+ * Send a setup progress event via WebSocket AND update the polling status map so
+ * both delivery channels stay in lock-step. Terminal events ('complete'/'error')
+ * map to the polling states 'complete'/'error'; 'step' events refresh the
+ * `progress` field but leave the status 'running'.
  *
  * Converts the named event pattern to a WebSocket message with a `type`
  * field so the client can dispatch on `msg.type` (e.g. 'step', 'complete', 'error').
@@ -37,6 +76,19 @@ const router = express.Router();
  */
 function sendSetupEvent(setupId, eventType, data) {
   broadcastSetupProgress(setupId, { type: eventType, ...data });
+
+  if (eventType === 'complete') {
+    setSetupStatus(setupId, {
+      status: 'complete',
+      reviewUrl: data.reviewUrl,
+      reviewId: data.reviewId
+    });
+  } else if (eventType === 'error') {
+    setSetupStatus(setupId, { status: 'error', error: data.message });
+  } else if (eventType === 'step') {
+    // Keep status 'running'; surface the human-readable step message as progress.
+    setSetupStatus(setupId, { status: 'running', progress: data.message });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -160,6 +212,9 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
 
     // Start the async setup
     const setupId = crypto.randomUUID();
+    // Seed the polling status so a CLI that polls immediately (before the first
+    // 'step' WS push) still observes 'running' rather than a spurious 404.
+    setSetupStatus(setupId, { status: 'running' });
 
     const promise = (async () => {
       try {
@@ -263,6 +318,9 @@ router.post('/api/setup/local', async (req, res) => {
     }
 
     const setupId = crypto.randomUUID();
+    // Seed the polling status so a CLI that polls immediately (before the first
+    // 'step' WS push) still observes 'running' rather than a spurious 404.
+    setSetupStatus(setupId, { status: 'running' });
 
     const promise = (async () => {
       try {
@@ -298,6 +356,27 @@ router.post('/api/setup/local', async (req, res) => {
     logger.error('Error in POST /api/setup/local:', err);
     return res.status(500).json({ error: err.message });
   }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/setup/:setupId/status
+// ---------------------------------------------------------------------------
+
+/**
+ * Poll the current status of a setup operation.
+ *
+ * The delegating CLI polls this instead of opening a WebSocket, avoiding the
+ * missed-event race between receiving the setupId and subscribing. Returns the
+ * latest snapshot recorded alongside the `setup:{setupId}` WS pushes. Unknown
+ * ids (never started, or expired after their terminal-state TTL) → 404.
+ */
+router.get('/api/setup/:setupId/status', (req, res) => {
+  const { setupId } = req.params;
+  const status = setupStatuses.get(setupId);
+  if (!status) {
+    return res.status(404).json({ error: 'Setup not found' });
+  }
+  return res.json(status);
 });
 
 module.exports = router;

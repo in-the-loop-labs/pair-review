@@ -10,10 +10,30 @@ const { checkAllChatProviders } = require('./chat/chat-providers');
 const logger = require('./utils/logger');
 const { attachWebSocket, closeAll: closeAllWS } = require('./ws');
 const { WorktreePoolLifecycle } = require('./git/worktree-pool-lifecycle');
+const { resolveDbPath, computeDbId } = require('./utils/db-identity');
 
 let db = null;
 let server = null;
 let chatSessionManager = null;
+
+/**
+ * Assemble the GET /health response body. Kept as a standalone factory so the
+ * exact payload the delegation handshake depends on can be unit-tested without
+ * booting the whole server. `dbId` is computed once at startup and threaded in
+ * (the resolved DB path cannot change without a restart).
+ *
+ * @param {string} dbId - computeDbId(resolveDbPath(config)) digest
+ * @returns {{status: string, service: string, version: string, dbId: string, timestamp: string}}
+ */
+function buildHealthPayload(dbId) {
+  return {
+    status: 'ok',
+    service: 'pair-review',
+    version: require('../package.json').version,
+    dbId,
+    timestamp: new Date().toISOString()
+  };
+}
 
 /**
  * Apply env var overrides to config after loadConfig().
@@ -414,14 +434,16 @@ async function startServer(sharedDb = null, sharedPoolLifecycle = null, options 
       res.sendFile(path.join(__dirname, '..', 'public', 'local.html'));
     });
 
+    // Database identity digest for the headless delegation handshake. Computed
+    // once at startup (the resolved DB path cannot change without a restart) so
+    // the /health route stays allocation-free per request. The delegating CLI
+    // compares this against its own computeDbId(resolveDbPath(config)) and only
+    // delegates when they match — see src/utils/db-identity.js.
+    const dbId = computeDbId(resolveDbPath(config));
+
     // Health check endpoint (also used by single-port detection)
     app.get('/health', (req, res) => {
-      res.json({
-        status: 'ok',
-        service: 'pair-review',
-        version: require('../package.json').version,
-        timestamp: new Date().toISOString()
-      });
+      res.json(buildHealthPayload(dbId));
     });
     
     // Store database instance, GitHub token, and config for routes
@@ -638,4 +660,4 @@ if (require.main === module) {
   startServer();
 }
 
-module.exports = { startServer, applyEnvOverrides, applyHostQueryCorrection };
+module.exports = { startServer, applyEnvOverrides, applyHostQueryCorrection, buildHealthPayload };
