@@ -5,6 +5,7 @@
   "github_token_command": "gh auth token",
   "github_token": "ghp_your_github_personal_access_token_here",
   "port": 7247,
+  "_theme_comment": "light, dark, or system (follows OS dark/light schedule)",
   "theme": "light",
   "default_provider": "claude",
   "default_model": "opus",

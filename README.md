@@ -474,6 +474,8 @@ On first run, pair-review will prompt you to configure the application.
 
 Configuration is stored in `~/.pair-review/config.json`:
 
+> `theme` can be `"light"`, `"dark"`, or `"system"` (follows OS dark/light schedule).
+
 ```json
 {
   "github_token": "ghp_your_token_here",
