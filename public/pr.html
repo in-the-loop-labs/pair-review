@@ -41,11 +41,6 @@
     <title>Pair Review - PR Review</title>
     <link rel="icon" type="image/png" href="/favicon.png">
 
-    <!-- Google Fonts: DM Sans and JetBrains Mono -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-
     <!-- PR Display Styles -->
     <link rel="stylesheet" href="/css/pr.css">
     <link rel="stylesheet" href="/css/ai-summary-modal.css">
@@ -65,7 +60,7 @@
         }
 
         body {
-            font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
             background-color: #f6f8fa;
             color: #24292f;
             line-height: 1.5;
@@ -233,9 +228,6 @@
                     <div class="diff-stats" id="diff-stats"></div>
                     <div class="toolbar-actions">
                         <button class="btn btn-sm btn-secondary" id="analyze-btn" title="Analyze with AI">
-                            <svg class="analyze-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                                <path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/>
-                            </svg>
                             <span class="btn-text">Analyze</span>
                         </button>
                         <button class="btn btn-sm btn-icon btn-summary-toggle" id="summary-toggle-btn" title="Hide hunk summaries" aria-label="Toggle hunk summaries" aria-pressed="true" style="display: none;">

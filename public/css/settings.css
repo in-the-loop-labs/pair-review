@@ -150,7 +150,7 @@ body {
   border-radius: 8px;
   color: var(--color-text-secondary);
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
 .theme-toggle:hover {
@@ -261,15 +261,9 @@ body {
   width: 56px;
   height: 56px;
   border-radius: 14px;
-  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+  background: var(--ai-accent-flat, #d97706);
   color: white;
-  box-shadow: 0 4px 12px rgba(245, 158, 11, 0.25);
   flex-shrink: 0;
-}
-
-[data-theme="dark"] .page-header .header-icon {
-  background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);
-  box-shadow: 0 4px 16px rgba(251, 191, 36, 0.2);
 }
 
 .header-text h1 {
@@ -844,7 +838,7 @@ body {
   border: 1px solid var(--color-border-primary);
   border-radius: 6px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: color 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
   white-space: nowrap;
 }
 
@@ -873,7 +867,7 @@ body {
   background: var(--color-bg-primary);
   border: 1px solid var(--color-border-primary);
   border-radius: 8px;
-  transition: all 0.15s ease;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
 }
 
 .repo-row:hover {
@@ -1029,7 +1023,7 @@ body {
   border-radius: 4px;
   color: var(--color-text-tertiary);
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
 .toast-close:hover {

@@ -131,7 +131,7 @@ html, body {
   border-radius: 8px;
   color: var(--color-text-secondary);
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
 .theme-toggle:hover {
@@ -167,7 +167,7 @@ html, body {
   background: var(--color-bg-secondary);
   border: 1px solid var(--color-border-primary);
   border-radius: 6px;
-  transition: all 0.15s ease;
+  transition: color 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
 }
 
 .back-to-pr:hover {
@@ -201,15 +201,9 @@ html, body {
   width: 56px;
   height: 56px;
   border-radius: 14px;
-  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+  background: var(--ai-accent-flat, #d97706);
   color: white;
-  box-shadow: 0 4px 12px rgba(245, 158, 11, 0.25);
   flex-shrink: 0;
-}
-
-[data-theme="dark"] .page-header .header-icon {
-  background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);
-  box-shadow: 0 4px 16px rgba(251, 191, 36, 0.2);
 }
 
 .header-text h1 {
@@ -358,15 +352,11 @@ html, body {
 
 .settings-model-card-static:hover {
   transform: none;
-  box-shadow:
-    0 0 0 3px rgba(245, 158, 11, 0.15),
-    0 4px 12px rgba(245, 158, 11, 0.1);
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.15);
 }
 
 [data-theme="dark"] .settings-model-card-static:hover {
-  box-shadow:
-    0 0 0 3px rgba(251, 191, 36, 0.15),
-    0 4px 12px rgba(251, 191, 36, 0.08);
+  box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.15);
 }
 
 /* Speech bubble arrow — points left toward the settings section */
@@ -438,7 +428,7 @@ html, body {
   font-weight: 500;
   color: var(--color-text-secondary);
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: background-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .mode-btn:hover:not(.selected) {
@@ -840,7 +830,7 @@ html, body {
   border-radius: 6px;
   color: var(--color-text-tertiary);
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 
 .worktree-delete-btn:hover {
@@ -881,7 +871,7 @@ html, body {
   font-weight: 500;
   color: var(--color-danger);
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
 .worktree-delete-all-btn:hover {
@@ -966,7 +956,7 @@ html, body {
   font-weight: 500;
   color: var(--color-danger);
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
 .btn-danger-outline:hover {
@@ -1045,7 +1035,7 @@ html, body {
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
   border: none;
 }
 
@@ -1062,15 +1052,13 @@ html, body {
 }
 
 .btn-primary.btn-save {
-  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+  background: var(--ai-accent-flat, #d97706);
   color: white;
-  box-shadow: 0 2px 8px rgba(245, 158, 11, 0.25);
 }
 
 .btn-primary.btn-save:hover {
-  background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);
+  background: #f59e0b;
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3);
 }
 
 .btn-primary.btn-save:disabled {
@@ -1079,10 +1067,10 @@ html, body {
   transform: none;
 }
 
+/* Dark theme resolves --ai-accent-flat to the lighter #f59e0b, which needs
+   dark text for contrast. Background comes from the token above. */
 [data-theme="dark"] .btn-primary.btn-save {
-  background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);
   color: #1a1a1a;
-  box-shadow: 0 2px 12px rgba(251, 191, 36, 0.2);
 }
 
 /* ============================================
@@ -1154,7 +1142,7 @@ html, body {
   border-radius: 4px;
   color: var(--color-text-tertiary);
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
 .toast-close:hover {

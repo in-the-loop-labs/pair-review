@@ -7917,9 +7917,16 @@ class PRManager {
 
     const btnText = btn.querySelector('.btn-text');
     if (btnText) {
+      // Insert the spinner before the label (guard against a double-call
+      // stacking two spinners), then switch the label.
+      if (!btn.querySelector('.btn-spinner')) {
+        const spinner = document.createElement('span');
+        spinner.className = 'btn-spinner';
+        btn.insertBefore(spinner, btnText);
+      }
       btnText.textContent = 'Analyzing...';
     } else {
-      btn.innerHTML = '<span class="analyzing-icon">✨</span> Analyzing...';
+      btn.innerHTML = '<span class="btn-spinner"></span> Analyzing...';
     }
   }
 
@@ -7939,6 +7946,8 @@ class PRManager {
 
     const btnText = btn.querySelector('.btn-text');
     if (btnText) {
+      const spinner = btn.querySelector('.btn-spinner');
+      if (spinner) spinner.remove();
       btnText.textContent = 'Complete';
     } else {
       btn.innerHTML = '✓ Analysis Complete';
@@ -7968,6 +7977,8 @@ class PRManager {
 
     const btnText = btn.querySelector('.btn-text');
     if (btnText) {
+      const spinner = btn.querySelector('.btn-spinner');
+      if (spinner) spinner.remove();
       btnText.textContent = 'Analyze';
     } else {
       btn.innerHTML = 'Analyze with AI';
