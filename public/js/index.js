@@ -49,10 +49,7 @@
 
   function toggleTheme() {
     const savedTheme = localStorage.getItem('theme') || 'system';
-    const currentTheme = document.documentElement.getAttribute('data-theme') || 'light';
-    // Map current display theme back to the preference (for 'system' case)
-    const currentPreference = savedTheme;
-    const newPreference = nextTheme(currentPreference);
+    const newPreference = nextTheme(savedTheme);
     const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
     const newTheme = resolveTheme(newPreference, prefersDark);
     document.documentElement.setAttribute('data-theme', newTheme);
