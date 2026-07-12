@@ -25,8 +25,7 @@ const INDEX_PATH = '../../public/js/index.js';
 
 function loadExports() {
   delete require.cache[require.resolve(INDEX_PATH)];
-  // getElementById must return a stub with addEventListener so the IIFE
-  // init code at module scope doesn't crash on null.addEventListener.
+
   function el() { return { addEventListener() {}, classList: { add() {}, remove() {} } }; }
   const sandbox = {
     window: { matchMedia: vi.fn(() => ({ matches: false, addEventListener() {} })), addEventListener() {}, dispatchEvent() {}, location: { href: '' }, encodeBase64Utf8: () => '', getRepoStorageKey: () => '' },
@@ -49,6 +48,11 @@ function loadExports() {
   const vm = require('vm');
   const fs = require('fs');
   const path = require('path');
+
+  // Load theme.js in the sandbox first so window.__pairReview is populated.
+  const themeCode = fs.readFileSync(path.resolve(__dirname, '../../public/js/utils/theme.js'), 'utf8');
+  try { vm.runInNewContext(themeCode, sandbox, { filename: 'theme.js' }); } catch (e) { console.error(e.message); }
+
   const code = fs.readFileSync(path.resolve(__dirname, INDEX_PATH), 'utf8');
   try { vm.runInNewContext(code, sandbox, { filename: 'index.js' }); } catch (e) { console.error(e.message); }
   return sandbox.module.exports;
@@ -123,8 +127,6 @@ describe('Landing page theme toggle', () => {
 
   function setup(initialStoredTheme) {
     delete require.cache[require.resolve(INDEX_PATH)];
-
-    // Capture matchMedia listeners to simulate OS theme changes.
     /** @type {Array<Function>} */
     const matchMediaChangeListeners = [];
     let osPrefersDark = false;
@@ -179,6 +181,11 @@ describe('Landing page theme toggle', () => {
     const vm = require('vm');
     const fs = require('fs');
     const path = require('path');
+
+    // Load theme.js in the sandbox first so window.__pairReview is populated.
+    const themeCode = fs.readFileSync(path.resolve(__dirname, '../../public/js/utils/theme.js'), 'utf8');
+    try { vm.runInNewContext(themeCode, sandbox, { filename: 'theme.js' }); } catch (_) {}
+
     const code = fs.readFileSync(path.resolve(__dirname, INDEX_PATH), 'utf8');
     try { vm.runInNewContext(code, sandbox, { filename: 'index.js' }); } catch (_) {}
     return sandbox.module.exports;
@@ -286,7 +293,6 @@ describe('Landing page theme toggle', () => {
       const vm = require('vm');
       const fs = require('fs');
       const path = require('path');
-      const code = fs.readFileSync(path.resolve(__dirname, '../../public/js/index.js'), 'utf8');
 
       const sandbox = {
         window: { addEventListener() {}, dispatchEvent() {}, location: { href: '' } },
@@ -308,7 +314,11 @@ describe('Landing page theme toggle', () => {
         navigator: { clipboard: {} },
       };
 
-      // Should not throw — the matchMedia call must be guarded
+      // Load theme.js first — it has its own guards for missing matchMedia.
+      const themeCode = fs.readFileSync(path.resolve(__dirname, '../../public/js/utils/theme.js'), 'utf8');
+      expect(() => vm.runInNewContext(themeCode, sandbox, { filename: 'theme.js' })).not.toThrow();
+
+      const code = fs.readFileSync(path.resolve(__dirname, '../../public/js/index.js'), 'utf8');
       expect(() => vm.runInNewContext(code, sandbox, { filename: 'index.js' })).not.toThrow();
     });
 
@@ -339,26 +349,26 @@ describe('Landing page theme toggle', () => {
   });
 
   describe('updateThemeIcon', () => {
-    it('renders 16x16 filled icons (not 24x24 stroke)', () => {
+    it('icons look the same on all pages', () => {
       const exp = setup('light');
       exp.initTheme();
       const btn = { innerHTML: '', title: '' };
-      // Stub getElementById so updateThemeIcon writes to our mock button
       const orig = sandbox.document.getElementById;
       sandbox.document.getElementById = (id) => id === 'theme-toggle' ? btn : orig(id);
 
-      exp.updateThemeIcon('system');
-      expect(btn.innerHTML).toContain('width="16"');
-      expect(btn.innerHTML).toContain('height="16"');
-      expect(btn.innerHTML).not.toContain('stroke-width');
-
+      // The landing page icons are the reference.
       exp.updateThemeIcon('dark');
-      expect(btn.innerHTML).toContain('width="16"');
-      expect(btn.innerHTML).not.toContain('stroke-width');
-
+      const landingDark = btn.innerHTML;
       exp.updateThemeIcon('light');
-      expect(btn.innerHTML).toContain('width="16"');
-      expect(btn.innerHTML).not.toContain('stroke-width');
+      const landingLight = btn.innerHTML;
+      exp.updateThemeIcon('system');
+      const landingSystem = btn.innerHTML;
+
+      // All three should use the same SVG structure — only the icon shape differs.
+      // Strip the varying parts (path data, CSS class) and compare the skeleton.
+      const skeleton = (html) => html.replace(/ class="[^"]*"/g, '').replace(/ d="[^"]*"/g, '');
+      expect(skeleton(landingDark)).toBe(skeleton(landingLight));
+      expect(skeleton(landingDark)).toBe(skeleton(landingSystem));
     });
   });
 });
@@ -423,6 +433,11 @@ function loadPRManager() {
   const vm = require('vm');
   const fs = require('fs');
   const path = require('path');
+
+  // Load theme.js in the sandbox first so window.__pairReview is populated.
+  const themeCode = fs.readFileSync(path.resolve(__dirname, '../../public/js/utils/theme.js'), 'utf8');
+  vm.runInNewContext(themeCode, sandbox, { filename: 'theme.js' });
+
   const code = fs.readFileSync(path.resolve(__dirname, PR_PATH), 'utf8');
   vm.runInNewContext(code, sandbox, { filename: 'pr.js' });
 

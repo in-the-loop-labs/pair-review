@@ -115,11 +115,11 @@ class PierreBridge {
   // ─── Theme ────────────────────────────────────────────────────────
 
   static detectTheme() {
-    const savedTheme = typeof localStorage !== 'undefined' ? localStorage.getItem('theme') : null;
+    var savedTheme = typeof localStorage !== 'undefined' ? localStorage.getItem('theme') : null;
     if (savedTheme === 'dark') return 'dark';
     if (savedTheme === 'light') return 'light';
     // 'system' or no preference → follow OS
-    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    return window.__pairReview && window.__pairReview.prefersDark ? window.__pairReview.prefersDark() ? 'dark' : 'light' : (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
   }
 
   getThemeConfig() {
