@@ -349,6 +349,42 @@ describe('Landing page theme toggle', () => {
   });
 
   describe('updateThemeIcon', () => {
+    it('shows the monitor icon and correct title for system mode', () => {
+      const exp = setup('system');
+      exp.initTheme();
+      const btn = { innerHTML: '', title: '' };
+      const orig = sandbox.document.getElementById;
+      sandbox.document.getElementById = (id) => id === 'theme-toggle' ? btn : orig(id);
+
+      exp.updateThemeIcon('system');
+      expect(btn.innerHTML).toContain('M0 2.75'); // monitor icon path
+      expect(btn.title).toBe('Theme: System (follows OS)');
+    });
+
+    it('shows the moon icon and correct title for dark mode', () => {
+      const exp = setup('dark');
+      exp.initTheme();
+      const btn = { innerHTML: '', title: '' };
+      const orig = sandbox.document.getElementById;
+      sandbox.document.getElementById = (id) => id === 'theme-toggle' ? btn : orig(id);
+
+      exp.updateThemeIcon('dark');
+      expect(btn.innerHTML).toContain('M9.598 1.591'); // moon icon path
+      expect(btn.title).toBe('Switch to system mode');
+    });
+
+    it('shows the sun icon and correct title for light mode', () => {
+      const exp = setup('light');
+      exp.initTheme();
+      const btn = { innerHTML: '', title: '' };
+      const orig = sandbox.document.getElementById;
+      sandbox.document.getElementById = (id) => id === 'theme-toggle' ? btn : orig(id);
+
+      exp.updateThemeIcon('light');
+      expect(btn.innerHTML).toContain('M8 12a4 4 0'); // sun icon path
+      expect(btn.title).toBe('Switch to dark mode');
+    });
+
     it('icons look the same on all pages', () => {
       const exp = setup('light');
       exp.initTheme();
