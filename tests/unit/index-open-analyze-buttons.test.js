@@ -196,6 +196,10 @@ function setupGlobals() {
     dispatchEvent: vi.fn(),
     location: { href: '', pathname: '/' },
   };
+  // index.js calls window.PairReviewTheme.setup() at module load. Use the real
+  // helper (loaded against these stubbed globals) rather than a hand-rolled
+  // stub — its setup() is null-safe when no #theme-toggle button is present.
+  global.window.PairReviewTheme = require('../../public/js/theme.js');
 
   global.fetch = vi.fn(() => Promise.resolve({ ok: false }));
   global.Event = class Event {

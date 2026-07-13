@@ -112,7 +112,9 @@ class PRManager {
     this.loadingState = false;
     this.expandedFolders = new Set();
     this.expandedSections = new Set();
-    this.currentTheme = localStorage.getItem('theme') || 'light';
+    // Resolved theme ('light'|'dark') — the diff renderer needs a concrete
+    // value, never the 'system' preference. Kept in sync by initTheme().
+    this.currentTheme = window.PairReviewTheme.resolvePreference();
     this.suggestionNavigator = null;
     // AI analysis state
     this.isAnalyzing = false;
@@ -522,11 +524,7 @@ class PRManager {
    * Set up event handlers
    */
   setupEventHandlers() {
-    // Theme toggle
-    const themeToggle = document.getElementById('theme-toggle');
-    if (themeToggle) {
-      themeToggle.addEventListener('click', () => this.toggleTheme());
-    }
+    // Theme toggle is wired by the shared helper in initTheme() (js/theme.js).
 
     // Analyze button
     const analyzeBtn = document.getElementById('analyze-btn');
@@ -7825,31 +7823,19 @@ class PRManager {
    * Theme methods
    */
   initTheme() {
-    document.documentElement.setAttribute('data-theme', this.currentTheme);
-    this.updateThemeIcon();
-  }
-
-  toggleTheme() {
-    this.currentTheme = this.currentTheme === 'light' ? 'dark' : 'light';
-    localStorage.setItem('theme', this.currentTheme);
-    document.documentElement.setAttribute('data-theme', this.currentTheme);
-    this.updateThemeIcon();
-    // Sync theme with @pierre/diffs instances
-    if (this.pierreBridge) {
-      this.pierreBridge.setTheme(this.currentTheme);
-    }
-  }
-
-  updateThemeIcon() {
-    const themeButton = document.getElementById('theme-toggle');
-    if (themeButton) {
-      // Sun icon for light mode (with hollow center), moon icon for dark mode
-      const icon = this.currentTheme === 'light' ?
-        `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm0-1.5a2.5 2.5 0 1 1 0-5 2.5 2.5 0 0 1 0 5Zm0-10.5a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0V.75A.75.75 0 0 1 8 0Zm0 13a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 8 13ZM2.343 2.343a.75.75 0 0 1 1.061 0l1.06 1.061a.75.75 0 0 1-1.06 1.06l-1.06-1.06a.75.75 0 0 1 0-1.06Zm9.193 9.193a.75.75 0 0 1 1.06 0l1.061 1.06a.75.75 0 0 1-1.06 1.061l-1.061-1.06a.75.75 0 0 1 0-1.061ZM16 8a.75.75 0 0 1-.75.75h-1.5a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 16 8ZM3 8a.75.75 0 0 1-.75.75H.75a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 3 8Zm10.657-5.657a.75.75 0 0 1 0 1.061l-1.061 1.06a.75.75 0 1 1-1.06-1.06l1.06-1.06a.75.75 0 0 1 1.06 0Zm-9.193 9.193a.75.75 0 0 1 0 1.06l-1.06 1.061a.75.75 0 0 1-1.061-1.06l1.06-1.061a.75.75 0 0 1 1.061 0Z"/></svg>` :
-        `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M9.598 1.591a.749.749 0 0 1 .785-.175 7.001 7.001 0 1 1-8.967 8.967.75.75 0 0 1 .961-.96 5.5 5.5 0 0 0 7.046-7.046.75.75 0 0 1 .175-.786Z"/></svg>`;
-      themeButton.innerHTML = icon;
-      themeButton.title = `Switch to ${this.currentTheme === 'light' ? 'dark' : 'light'} mode`;
-    }
+    // Shared helper (js/theme.js) owns preference storage, the
+    // light → dark → system toggle cycle, the button icon, and the live
+    // OS-change listener. We keep this.currentTheme as the *resolved* theme so
+    // the diff renderer (@pierre/diffs) always receives a concrete
+    // 'light'|'dark', never the 'system' preference.
+    this._themeDispose = window.PairReviewTheme.setup({
+      onChange: (resolved) => {
+        this.currentTheme = resolved;
+        if (this.pierreBridge) {
+          this.pierreBridge.setTheme(resolved);
+        }
+      },
+    });
   }
 
   savePanelStates() {

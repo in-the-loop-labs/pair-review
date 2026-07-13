@@ -122,20 +122,9 @@ class RepoSettingsPage {
   }
 
   initTheme() {
-    // Check for saved theme preference
-    const savedTheme = localStorage.getItem('theme') || 'light';
-    document.documentElement.setAttribute('data-theme', savedTheme);
-
-    // Theme toggle button
-    const themeToggle = document.getElementById('theme-toggle');
-    if (themeToggle) {
-      themeToggle.addEventListener('click', () => {
-        const currentTheme = document.documentElement.getAttribute('data-theme');
-        const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
-        document.documentElement.setAttribute('data-theme', newTheme);
-        localStorage.setItem('theme', newTheme);
-      });
-    }
+    // Shared helper owns preference storage, the light → dark → system toggle
+    // cycle, the button icon, and the live OS-change listener (js/theme.js).
+    window.PairReviewTheme.setup();
   }
 
   setupEventListeners() {

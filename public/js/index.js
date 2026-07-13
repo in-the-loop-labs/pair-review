@@ -15,26 +15,10 @@
   'use strict';
 
   // ─── Theme Management ───────────────────────────────────────────────────────
-
-  function initTheme() {
-    const savedTheme = localStorage.getItem('theme');
-    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    const theme = savedTheme || (prefersDark ? 'dark' : 'light');
-    document.documentElement.setAttribute('data-theme', theme);
-  }
-
-  function toggleTheme() {
-    const currentTheme = document.documentElement.getAttribute('data-theme');
-    const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
-    document.documentElement.setAttribute('data-theme', newTheme);
-    localStorage.setItem('theme', newTheme);
-  }
-
-  // Initialize theme on page load
-  initTheme();
-
-  // Set up theme toggle button
-  document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
+  // The shared helper (js/theme.js) owns preference storage, the
+  // light → dark → system toggle cycle, the button icon, and the live
+  // OS-change listener that keeps 'system' in sync with the OS setting.
+  window.PairReviewTheme.setup();
 
   // ─── Help Modal ─────────────────────────────────────────────────────────────
 
@@ -76,13 +60,6 @@
       if (overlay.classList.contains('visible')) {
         closeHelpModal();
       }
-    }
-  });
-
-  // Listen for system theme changes
-  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function (e) {
-    if (!localStorage.getItem('theme')) {
-      document.documentElement.setAttribute('data-theme', e.matches ? 'dark' : 'light');
     }
   });
 

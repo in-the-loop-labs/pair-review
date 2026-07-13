@@ -484,6 +484,8 @@ Configuration is stored in `~/.pair-review/config.json`:
 }
 ```
 
+The `theme` option accepts `"light"`, `"dark"`, or `"system"` (follow the OS light/dark setting). The header toggle button cycles through all three per session — the `"system"` choice keeps the UI in step with your OS appearance as it changes. Until you pick a theme with the toggle, the UI follows your OS light/dark setting by default.
+
 On first run, pair-review creates `~/.pair-review/config.example.json` with comprehensive examples of all available options, including custom provider and model configurations. Use this as a reference when customizing your setup.
 
 For advanced configuration with custom providers and models, see [AI Provider Configuration](#ai-provider-configuration) below.

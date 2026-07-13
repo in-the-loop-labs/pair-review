@@ -1,13 +1,7 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="light">
 <head>
-    <script>
-        // Initialize theme immediately to prevent flash
-        (function() {
-            const savedTheme = localStorage.getItem('theme') || 'light';
-            document.documentElement.setAttribute('data-theme', savedTheme);
-        })();
-    </script>
+    <script src="/js/theme-bootstrap.js"></script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Setting up review... - Pair Review</title>
@@ -528,6 +522,10 @@
     <script src="/js/components/UpdateBanner.js"></script>
     <script src="/js/utils/notification-sounds.js"></script>
     <script src="/js/utils/analyze-params.js"></script>
+    <!-- Theme helper: this page has no toggle button, but setup() still tracks
+         live OS light/dark changes when the preference is 'system'. -->
+    <script src="/js/theme.js"></script>
+    <script>window.PairReviewTheme.setup();</script>
 
     <script>
         // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0

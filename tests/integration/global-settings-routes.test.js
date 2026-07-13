@@ -20,6 +20,7 @@ const { createTestDatabase, closeTestDatabase } = require('../utils/schema');
 function baseConfig(overrides = {}) {
   return {
     theme: 'light',
+    comment_format: 'legacy',
     default_provider: 'claude',
     default_model: 'opus',
     summaries: { enabled: false, auto_generate: true, max_files: 50 },
@@ -77,9 +78,9 @@ describe('global settings routes', () => {
       const res = await request(server).get('/api/settings').expect(200);
       expect(Array.isArray(res.body.settings)).toBe(true);
       expect(res.body.settings.length).toBeGreaterThan(0);
-      const theme = res.body.settings.find((s) => s.key === 'theme');
-      expect(theme).toMatchObject({ key: 'theme', type: 'enum', source: 'default', editable: true });
-      expect(theme.values).toContain('dark');
+      const cf = res.body.settings.find((s) => s.key === 'comment_format');
+      expect(cf).toMatchObject({ key: 'comment_format', type: 'enum', source: 'default', editable: true });
+      expect(cf.values).toContain('minimal');
       const gh = res.body.settings.find((s) => s.key === 'github_token');
       expect(gh.value).toBeNull();
       expect(gh.sensitive).toBe(true);
@@ -89,18 +90,18 @@ describe('global settings routes', () => {
   describe('PUT /api/settings/:key', () => {
     it('sets a valid override, persists it, and re-sets the live config', async () => {
       const res = await request(server)
-        .put('/api/settings/theme')
-        .send({ value: 'dark' })
+        .put('/api/settings/comment_format')
+        .send({ value: 'minimal' })
         .expect(200);
-      expect(res.body.setting).toMatchObject({ key: 'theme', value: 'dark', source: 'app' });
+      expect(res.body.setting).toMatchObject({ key: 'comment_format', value: 'minimal', source: 'app' });
 
       // Persisted across a fresh GET.
       const list = await request(server).get('/api/settings').expect(200);
-      expect(list.body.settings.find((s) => s.key === 'theme').value).toBe('dark');
+      expect(list.body.settings.find((s) => s.key === 'comment_format').value).toBe('minimal');
 
       // The live config object the app serves now reflects the override.
       const live = await request(server).get('/__config').expect(200);
-      expect(live.body.theme).toBe('dark');
+      expect(live.body.comment_format).toBe('minimal');
     });
 
     it('folds a nested override into the live config', async () => {
@@ -114,7 +115,7 @@ describe('global settings routes', () => {
     });
 
     it('rejects a missing value field', async () => {
-      await request(server).put('/api/settings/theme').send({}).expect(400);
+      await request(server).put('/api/settings/comment_format').send({}).expect(400);
     });
 
     it('rejects an unknown key', async () => {
@@ -126,20 +127,20 @@ describe('global settings routes', () => {
     });
 
     it('rejects an invalid enum/type value', async () => {
-      await request(server).put('/api/settings/theme').send({ value: 'neon' }).expect(400);
+      await request(server).put('/api/settings/comment_format').send({ value: 'neon' }).expect(400);
       await request(server).put('/api/settings/summaries.max_files').send({ value: -1 }).expect(400);
     });
   });
 
   describe('DELETE /api/settings/:key', () => {
     it('clears an override and recomputes the source', async () => {
-      await request(server).put('/api/settings/theme').send({ value: 'dark' }).expect(200);
-      const del = await request(server).delete('/api/settings/theme').expect(200);
+      await request(server).put('/api/settings/comment_format').send({ value: 'minimal' }).expect(200);
+      const del = await request(server).delete('/api/settings/comment_format').expect(200);
       expect(del.body.setting.source).toBe('default');
-      expect(del.body.setting.value).toBe('light');
+      expect(del.body.setting.value).toBe('legacy');
 
       const live = await request(server).get('/__config').expect(200);
-      expect(live.body.theme).toBe('light');
+      expect(live.body.comment_format).toBe('legacy');
     });
 
     it('is idempotent when no override exists', async () => {
@@ -219,9 +220,9 @@ describe('global settings routes', () => {
       expect(res.body.sections.find((s) => s.id === 'summaries').hidden).toBe(true);
       expect(res.body.sections.find((s) => s.id === 'general').hidden).toBe(false);
       // Every described setting gains badge + final.
-      const theme = res.body.settings.find((s) => s.key === 'theme');
-      expect(theme).toHaveProperty('badge', null);
-      expect(theme).toHaveProperty('final', false);
+      const cf = res.body.settings.find((s) => s.key === 'comment_format');
+      expect(cf).toHaveProperty('badge', null);
+      expect(cf).toHaveProperty('final', false);
     });
   });
 });
@@ -259,18 +260,18 @@ describe('global settings routes — hidden & final', () => {
   describe('settings_ui.hidden', () => {
     it('omits hidden entries and their (now-empty) section, and 400s on PUT and DELETE', async () => {
       const { server } = await startServer({
-        config: baseConfig({ settings_ui: { hidden: ['summaries', 'theme'] } })
+        config: baseConfig({ settings_ui: { hidden: ['summaries', 'comment_format'] } })
       });
 
       const res = await request(server).get('/api/settings').expect(200);
       const keys = res.body.settings.map((s) => s.key);
-      expect(keys).not.toContain('theme');
+      expect(keys).not.toContain('comment_format');
       expect(keys.some((k) => k.startsWith('summaries'))).toBe(false);
       expect(res.body.sections.map((s) => s.id)).not.toContain('summaries');
 
-      const put = await request(server).put('/api/settings/theme').send({ value: 'dark' }).expect(400);
+      const put = await request(server).put('/api/settings/comment_format').send({ value: 'minimal' }).expect(400);
       expect(put.body.error).toMatch(/hidden by configuration/);
-      const del = await request(server).delete('/api/settings/theme').expect(400);
+      const del = await request(server).delete('/api/settings/comment_format').expect(400);
       expect(del.body.error).toMatch(/hidden by configuration/);
     });
   });
@@ -377,10 +378,10 @@ describe('global settings routes — restart-required keys', () => {
     await request(server).put('/api/settings/dev_mode').send({ value: true }).expect(200);
     await request(server).put('/api/settings/worktree_retention_days').send({ value: 30 }).expect(200);
     // Now write a DYNAMIC key — buildEffectiveConfig re-folds ALL overrides.
-    await request(server).put('/api/settings/theme').send({ value: 'dark' }).expect(200);
+    await request(server).put('/api/settings/comment_format').send({ value: 'minimal' }).expect(200);
 
     const live = await request(server).get('/__config').expect(200);
-    expect(live.body.theme).toBe('dark');                 // dynamic write applied
+    expect(live.body.comment_format).toBe('minimal');     // dynamic write applied
     expect(live.body.dev_mode).toBe(false);               // restart-required boot value STILL live
     expect(live.body.worktree_retention_days).toBe(7);    // ...for every restart-required key
   });

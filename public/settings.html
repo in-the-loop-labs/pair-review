@@ -1,13 +1,7 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="light">
 <head>
-    <script>
-        // Initialize theme immediately to prevent flash
-        (function() {
-            const savedTheme = localStorage.getItem('theme') || 'light';
-            document.documentElement.setAttribute('data-theme', savedTheme);
-        })();
-    </script>
+    <script src="/js/theme-bootstrap.js"></script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Global Settings - Pair Review</title>
@@ -138,6 +132,7 @@
     <script src="/js/components/CouncilDropdown.js"></script>
     <script src="/js/components/CouncilCard.js"></script>
     <script src="/js/components/SnippetManager.js"></script>
+    <script src="/js/theme.js"></script>
     <script src="/js/settings.js"></script>
 </body>
 </html>
