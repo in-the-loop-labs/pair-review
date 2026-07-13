@@ -1,5 +1,99 @@
 # Changelog
 
+## 5.0.0
+
+### Major Changes
+
+- d083d92: Headless analysis now delegates to a running server for live progress. When `pair-review --headless` (including `pair-loop` rounds) detects a compatible pair-review server already running on the configured port — same package version, same SQLite database — it hands the analysis _execution_ to that server instead of running it in-process. The server runs the identical analysis, so its open web UI shows the live council dialog updating in real time, while the CLI waits for completion and prints the byte-identical result (same summary and `--json` document, read from the shared database). With no server, a version mismatch, a different database, or the new `--no-server` flag, the run proceeds in-process exactly as before. New flags: `--no-server` (always run in-process, skip the probe) and `--require-server` (require delegation; fail fast with exit 1 / `{ "ok": false }` when no compatible server is available). During a delegated run, `Ctrl-C` best-effort cancels the analysis on the server before exiting. The delegating CLI never acquires a worktree-pool slot in PR mode — the server owns setup. `--use-checkout` and `--yolo` force in-process execution (a delegated server cannot honor them), and `--require-server` is rejected when combined with either.
+
+  Behavior change: a headless `--local` run whose scope resolves to **no changed files** now FAILS (non-zero exit; `{ "ok": false, "error": ... }` under `--json`) instead of recording a zero-suggestion "completed" run and exiting 0. This matches the web UI's 409 with the same message and prevents `pair-loop` from declaring convergence having reviewed nothing. Scripts that relied on the previous exit-0-on-empty-scope behavior must branch on the error envelope / exit code.
+
+- 5c67add: **Breaking:** Remove the `PAIR_REVIEW_PROVIDER` and `PAIR_REVIEW_MODEL` environment variables.
+
+  The AI provider and model are now selected exclusively through the `--provider` / `--model` CLI flags, saved repo settings, or the `default_provider` / `default_model` config keys (settable per-repo or globally on the settings pages). Setting `PAIR_REVIEW_PROVIDER` or `PAIR_REVIEW_MODEL` in the environment has no effect.
+
+  Previously these env vars doubled as the transport for the `--provider` / `--model` flags; that side channel is gone. The flags are now threaded explicitly from the CLI entry point into the server (`app.get('cliOverrides')`), so per-run intent still outranks repo settings and config defaults, and single-port delegation still carries the override to an already-running server via the auto-analysis URL.
+
+  **Migration:**
+
+  - Replace `PAIR_REVIEW_PROVIDER=codex pair-review 123 --ai-draft` with `pair-review 123 --ai-draft --provider codex`.
+  - Replace `PAIR_REVIEW_MODEL=gpt-5.5 …` with `--model gpt-5.5`.
+  - For a persistent default with no flag, set `default_provider` / `default_model` in `~/.pair-review/config.json`, in per-repo settings, or on the global settings page.
+
+### Minor Changes
+
+- 47781cc: Add chat prompt snippets: save reusable prompts, insert them from a new button in the chat input (Cmd/Ctrl+click to insert and send), Alt-click any of your previous chat messages to save it as a snippet, and manage snippets from the chat popup or the global settings page.
+- 93cab6d: Add a global settings page at `/settings`, reachable from a gear button on the landing page. Global settings can now be viewed and edited in-app: each setting shows its effective value and source (in-app, environment, config file, or default), so it is clear when a setting was never explicitly set. In-app edits persist to the local database — config files are never written — and take precedence over environment variables and config files (repo-scoped settings and explicit per-run CLI flags still win). Most changes apply immediately without a restart; startup-only settings are marked "restart required", and bootstrap values like `port` and tokens are shown read-only. The page also lists configured repositories with links to each repository's settings page, and the repo settings page links back to global settings. A sticky section sidebar provides jump navigation with scrollspy highlighting. Sections and settings can carry "New"/"Beta" badges, config files can hide sections or individual settings from the page via `settings_ui.hidden` (a display preference — hiding never disables a feature), and a `final` config array locks chosen settings to their config-file values, ignoring both in-app overrides and environment variables. Under AI Defaults, a "Default for Analysis" control lets the global default analysis be a saved Review Council instead of only a provider/model pair — chosen from the same rich council dropdown used on the repository settings page (showing each council's name and Standard/Advanced type), with a composition preview of the selected council's reviewers/models beneath it. A global default council applies wherever a repository has not set its own, ranking above the global provider/model default (single-model paths such as hunk summaries, tours, and MCP `start_analysis` still bypass councils). Model fields offer their provider's known models via a datalist while still accepting unlisted ids, read-only config objects (providers, chat providers, hooks, repositories) show their full contents inline with secrets redacted, and the Summaries section is hidden for now.
+- 8ae9b34: feat: migrate diff rendering to @pierre/diffs
+
+  Replace custom table-based diff rendering with @pierre/diffs library for:
+
+  - Shiki-powered syntax highlighting for diff content (highlight.js remains
+    for legacy/context-file rendering)
+  - Built-in hunk separator rendering with expandable context
+  - Shadow DOM isolation for diff content
+  - Annotation-based inline comments, AI suggestions, code-tour stops, and
+    hunk summaries
+
+  The migration is additive — legacy table rendering is preserved as a fallback
+  for context file chunks and environments where the @pierre/diffs bundle is
+  unavailable. File headers, file tree navigation, theme switching, tours,
+  hunk summaries, and all existing interactions continue to work unchanged.
+
+- 3dcafcf: Add split (side-by-side) diff view. A new "Diff view" toggle in the diff options menu switches between unified and split rendering, persists across sessions, and works in both PR and Local modes. Comments, AI suggestions, hunk summaries, external comments, and tour stops re-anchor into the correct column and stretch to full width across both columns (falling back to side-by-side half-width when both sides of a row are annotated), and gutter buttons, line selection, and scroll-to-line are side-aware in split mode. Annotation prose (comment bodies, AI suggestion text, hunk summaries, tour notes) is capped at a readable ~80-character measure on wide displays while cards keep spanning the diff.
+- c94f5c7: Add a "system" theme option that follows the OS light/dark setting. The header
+  theme toggle now cycles light → dark → system, the system choice tracks OS
+  appearance changes live, and a first-time visitor (no saved choice) follows the
+  OS by default. Theme logic is consolidated into a shared `public/js/theme.js`
+  helper plus a single `public/js/theme-bootstrap.js` pre-paint script, replacing
+  the previously duplicated per-page toggle code and six inline bootstraps.
+
+  The now-redundant "Default theme" row is removed from the global settings page —
+  the header toggle owns theme entirely. The `theme` config field is unchanged and
+  `/api/config` still returns it.
+
+### Patch Changes
+
+- e46c5c6: Render file-level external review comments (GitHub `subject_type: "file"`) in the per-file comments zone above the diff instead of as a bogus line-1 annotation. The GitHub sync adapter now flags these rows `is_file_level` and nulls their line anchors, the sync route no longer discards them as lost anchors, and the Review panel's External segment labels them "(file)" and scrolls to the zone card. A manual refresh repairs previously mis-synced rows. Adds schema migration 49 (`external_comments.is_file_level`).
+- fa4ea28: Fix layout shift on diff load: the diff briefly rendered centered with extra padding, then snapped left. The container's loading state flag shared the `.loading` placeholder class (48px padding + centered text, which inherits into the @pierre/diffs shadow DOM). The state flag is now `is-loading`, and the diff container explicitly sets `text-align: start`.
+- a96fc08: Fix: in split (side-by-side) view, comments on entirely added or entirely
+  removed files rendered as empty cards — the card border and action buttons
+  showed, but the header text and comment body were invisible.
+
+  Boxing a one-sided file's lone code column into the split grid made it a real
+  box, which activated the vendor's `contain: content` (paint containment). That
+  clipped the full-width-stretched annotation card's paint to the column's own
+  half, hiding the header and body (which stretch into the adjacent half) while
+  the right-aligned buttons stayed visible. The one-sided column CSS now drops
+  paint containment (`contain: layout style`) alongside the existing
+  `overflow: visible`, so the whole card paints.
+
+- f6224ab: Fix gutter comment/chat buttons floating over unrelated content. The fallback positioner pins the buttons with fixed viewport coordinates, but its clear routine was a no-op (falsy check against an empty-string marker), and nothing cleared the pinned position when the pointer left the diff, the page scrolled, or the diff layout was re-rendered. The buttons now clear when the pointer abandons them and re-anchor after scrolls and view toggles.
+- 8c4cf70: Fix in-app global settings (from the `/settings` page) not taking effect after a restart, despite their "restart required" badge.
+
+  The DB-backed settings overlay was folded into config too late at every entry point, so startup consumers had already latched the pre-overlay file values. Overriding `yolo`, `dev_mode`, or `debug_stream` via `/settings` had no effect even after restarting (`applyConfigOverrides` had already snapshotted `config.yolo`, `warnIfDevModeWithoutDbName` and the static-file cache closure had already read `dev_mode`, and the logger stream-debug flag was already set). The overlay now runs immediately after database initialization and before those consumers in both the web server (`src/server.js`) and the CLI (`src/main.js`).
+
+  The stdio MCP server (`src/mcp-stdio.js`) never applied the overlay at all, so `start_analysis` over stdio ignored `/settings` `default_provider`/`default_model` overrides. It now folds the overlay into the config it hands to the MCP tools.
+
+- 1c4d39f: Fix "Minimize comments" mode under the @pierre/diffs renderer. Line-level indicators and card hiding were dead after the diff migration: AI suggestion cards were never hidden at all, and no per-line indicator appeared for comments, suggestions, or external threads. The minimizer now groups annotation cards by the vendor's stable per-line slot and hides suggestion/comment/external cards, collapsing each annotation row to zero height and floating a single clickable indicator pill over the anchor line's right edge (so minimized comments no longer break up the diff). Expansion state is restored across the renderer's rerenders, and indicators are re-injected after diff-style switches, hunk expansion, and highlight streaming. Works in unified and split view, including one-sided (entirely-added/removed) files.
+- a28afae: Refresh UI styling to remove generic "AI-generated" visual tells while keeping the amber AI identity as flat color. The Analyze button is now text-only, gradient button/badge/card fills are flattened to solid colors, colored glow box-shadows and pulse-glow animations are removed (focus rings kept), `transition: all` is replaced with explicit properties, a `prefers-reduced-motion` guard is added, and the DM Sans / JetBrains Mono Google Fonts are dropped in favor of the system font stack. The sparkles icon remains the mark for AI suggestions (light-bulb already denotes the improvement category), minus its glow and float animations.
+- c03feac: Split view now renders entirely added or removed files at half width on their relevant side (additions right, deletions left) instead of stretching them across both columns. Annotation cards in these files still span the full width, and the line-number gutter stays inside its half so content never crosses the center seam.
+- e58b203: Fix UI jank in the @pierre/diffs renderer on large PRs. Diff file bodies now render lazily as they approach the viewport (restoring the lazy-render behavior of the legacy renderer), collapsed and viewed files skip rendering entirely until expanded, comments and AI suggestions apply in one batched rerender per file instead of one per annotation, and each file's patch is parsed once instead of twice.
+- bc5333d: fix: shrink install footprint and fix postinstall script for consumers
+
+  - Stop emitting a sourcemap for the bundled `@pierre/diffs` output. The
+    sourcemap is only useful for debugging minified pierre internals, which
+    end users never do. Cuts unpacked package size by ~13MB (49%).
+  - Switch the bundle-build lifecycle hook from `postinstall` to `prepare`.
+    `postinstall` ran on end-user installs and tried to invoke `esbuild`,
+    which is a devDep and is not present when the package is installed as
+    a dependency. `prepare` runs for developers on `pnpm install` in the
+    repo and before `npm publish`, but does not run for consumers.
+
+- 9ae7be3: The PR-stack quick-switcher in the header now renders each PR as a real link, so you can right-click, cmd/ctrl-click, or middle-click a stacked PR title to open it in a new tab.
+- 25ca513: Add dismissal reasons for AI suggestions. The suggestion status endpoint (`POST /api/reviews/:reviewId/suggestions/:id/status`) now accepts an optional `reason` string (≤2000 chars) that is stored and returned as `status_reason` on suggestion objects. The reason is valid only with status `"dismissed"` (400 if sent with `"active"`), and restoring a suggestion to active clears any stored reason. The loop (pair-loop plugin) and in-app chat agents write a one-sentence explanation when dismissing after discussion, and the UI renders it as a reply-styled note beneath the suggestion. Deleting a comment that was adopted from a suggestion now dismisses the parent suggestion with an auto-generated reason noting the adopted comment was removed. Documented in the chat API reference and cheat sheet (served via `GET /api.md`).
+- ca81411: Widen tour stop annotations and always show the full description. Tour stops now span the diff width (matching full-width comments/suggestions) with their prose capped to a readable measure, instead of being narrowed to that measure as a whole card. The description is always shown in full — the truncation and "Show more" toggle have been removed.
+
 ## 4.1.1
 
 ### Patch Changes
