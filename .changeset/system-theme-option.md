@@ -1,5 +1,5 @@
 ---
-"pair-review": minor
+"@in-the-loop-labs/pair-review": minor
 ---
 
 Add a "system" theme option that follows the OS light/dark setting. The header
