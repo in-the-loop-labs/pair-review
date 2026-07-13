@@ -19,6 +19,7 @@ const logger = require('../../src/utils/logger.js');
 function baseConfig(overrides = {}) {
   return {
     theme: 'light',
+    comment_format: 'legacy',
     default_provider: 'claude',
     default_model: 'opus',
     summaries: { enabled: false, auto_generate: true, max_files: 50 },
@@ -86,11 +87,11 @@ describe('GlobalSettingsService', () => {
 
     it('attributes to the highest file layer that defines the path', () => {
       const layers = makeLayers({
-        cfg: { theme: 'dark' },
-        projectLocal: { theme: 'light' }
+        cfg: { comment_format: 'minimal' },
+        projectLocal: { comment_format: 'plain' }
       });
       const svc = makeService({ layers });
-      expect(svc.resolve('theme')).toEqual({ value: 'light', source: 'project.local' });
+      expect(svc.resolve('comment_format')).toEqual({ value: 'plain', source: 'project.local' });
     });
 
     it('uses own-property presence so a false/0 value still attributes', () => {
@@ -100,9 +101,9 @@ describe('GlobalSettingsService', () => {
     });
 
     it('ranks managed below config', () => {
-      const layers = makeLayers({ managed: { theme: 'dark' }, cfg: { theme: 'light' } });
+      const layers = makeLayers({ managed: { comment_format: 'minimal' }, cfg: { comment_format: 'plain' } });
       const svc = makeService({ layers });
-      expect(svc.resolve('theme').source).toBe('config');
+      expect(svc.resolve('comment_format').source).toBe('config');
     });
 
     it('ranks env above every file layer', () => {
@@ -132,25 +133,25 @@ describe('GlobalSettingsService', () => {
   describe('buildEffectiveConfig', () => {
     it('folds overrides in by dot-path and carries _globalOverrides', () => {
       const repo = new GlobalSettingsRepository(db);
-      repo.set('theme', 'dark');
+      repo.set('comment_format', 'minimal');
       repo.set('summaries.enabled', true);
       repo.set('summaries.max_files', 10);
       const svc = makeService();
       const eff = svc.buildEffectiveConfig();
-      expect(eff.theme).toBe('dark');
+      expect(eff.comment_format).toBe('minimal');
       expect(eff.summaries.enabled).toBe(true);
       expect(eff.summaries.max_files).toBe(10);
       // Untouched nested sibling preserved.
       expect(eff.summaries.auto_generate).toBe(true);
-      expect(eff._globalOverrides).toMatchObject({ theme: 'dark', 'summaries.enabled': true, 'summaries.max_files': 10 });
+      expect(eff._globalOverrides).toMatchObject({ comment_format: 'minimal', 'summaries.enabled': true, 'summaries.max_files': 10 });
     });
 
     it('does not mutate the base config', () => {
-      new GlobalSettingsRepository(db).set('theme', 'dark');
+      new GlobalSettingsRepository(db).set('comment_format', 'minimal');
       const base = baseConfig();
       const svc = new GlobalSettingsService({ db, baseConfig: base, layers: makeLayers() });
       svc.buildEffectiveConfig();
-      expect(base.theme).toBe('light');
+      expect(base.comment_format).toBe('legacy');
     });
 
     it('ignores invalid or non-editable persisted rows', () => {
@@ -260,10 +261,10 @@ describe('GlobalSettingsService', () => {
     });
 
     it('surfaces overrideValue only when an override is present', () => {
-      new GlobalSettingsRepository(db).set('theme', 'dark');
+      new GlobalSettingsRepository(db).set('comment_format', 'minimal');
       const svc = makeService();
       const described = svc.describe();
-      expect(described.find((d) => d.key === 'theme').overrideValue).toBe('dark');
+      expect(described.find((d) => d.key === 'comment_format').overrideValue).toBe('minimal');
       expect(described.find((d) => d.key === 'default_model').overrideValue).toBeNull();
     });
   });
@@ -304,29 +305,29 @@ describe('GlobalSettingsService', () => {
       expect((await svc.setOverride('nope', 1)).status).toBe(400);
       expect((await svc.setOverride('port', 8080)).status).toBe(400);
       expect((await svc.setOverride('summaries.max_files', -1)).status).toBe(400);
-      expect((await svc.setOverride('theme', 'neon')).status).toBe(400);
+      expect((await svc.setOverride('comment_format', 'neon')).status).toBe(400);
     });
 
     it('persists a valid override and returns fresh effective config + descriptor', async () => {
       const svc = makeService();
-      const result = await svc.setOverride('theme', 'dark');
+      const result = await svc.setOverride('comment_format', 'minimal');
       expect(result.ok).toBe(true);
-      expect(result.setting.value).toBe('dark');
+      expect(result.setting.value).toBe('minimal');
       expect(result.setting.source).toBe('app');
-      expect(result.effectiveConfig.theme).toBe('dark');
+      expect(result.effectiveConfig.comment_format).toBe('minimal');
       // Persisted.
-      expect(new GlobalSettingsRepository(db).get('theme')).toBe('dark');
+      expect(new GlobalSettingsRepository(db).get('comment_format')).toBe('minimal');
     });
 
     it('clearOverride is idempotent and recomputes source', async () => {
-      const svc = makeService({ layers: makeLayers({ cfg: { theme: 'dark' } }) });
-      await svc.setOverride('theme', 'light');
-      const cleared = await svc.clearOverride('theme');
+      const svc = makeService({ layers: makeLayers({ cfg: { comment_format: 'plain' } }) });
+      await svc.setOverride('comment_format', 'minimal');
+      const cleared = await svc.clearOverride('comment_format');
       expect(cleared.ok).toBe(true);
       expect(cleared.setting.source).toBe('config');
-      expect(cleared.setting.value).toBe('dark');
+      expect(cleared.setting.value).toBe('plain');
       // Clearing again still succeeds.
-      const again = await svc.clearOverride('theme');
+      const again = await svc.clearOverride('comment_format');
       expect(again.ok).toBe(true);
     });
 
@@ -362,9 +363,9 @@ describe('GlobalSettingsService', () => {
     it('every descriptor carries badge (null default) and final:false', () => {
       const svc = makeService();
       const described = svc.describe();
-      const theme = described.find((d) => d.key === 'theme');
-      expect(theme.badge).toBeNull();
-      expect(theme.final).toBe(false);
+      const cf = described.find((d) => d.key === 'comment_format');
+      expect(cf.badge).toBeNull();
+      expect(cf.final).toBe(false);
     });
 
     it('describeSections omits sections with zero visible settings', () => {
@@ -415,11 +416,11 @@ describe('GlobalSettingsService', () => {
     });
 
     it('rejects PUT and DELETE on a hidden key with 400', async () => {
-      const svc = makeService({ baseConfig: baseConfig({ settings_ui: { hidden: ['theme'] } }) });
-      const put = await svc.setOverride('theme', 'dark');
+      const svc = makeService({ baseConfig: baseConfig({ settings_ui: { hidden: ['comment_format'] } }) });
+      const put = await svc.setOverride('comment_format', 'minimal');
       expect(put.status).toBe(400);
       expect(put.error).toMatch(/hidden by configuration/);
-      const del = await svc.clearOverride('theme');
+      const del = await svc.clearOverride('comment_format');
       expect(del.status).toBe(400);
       expect(del.error).toMatch(/hidden by configuration/);
     });

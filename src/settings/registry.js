@@ -42,17 +42,6 @@
 const REGISTRY = [
   // ---- General -----------------------------------------------------------
   {
-    key: 'theme',
-    label: 'Default theme',
-    description: 'Initial theme for the UI. The header toggle still switches themes client-side per session.',
-    group: 'general',
-    type: 'enum',
-    values: ['light', 'dark'],
-    default: 'light',
-    editable: true,
-    restartRequired: false
-  },
-  {
     key: 'comment_format',
     label: 'Comment format',
     description: 'Template preset used when adopting an AI suggestion into a review comment.',

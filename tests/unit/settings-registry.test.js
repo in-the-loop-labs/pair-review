@@ -235,8 +235,9 @@ describe('validateValue', () => {
   });
 
   it('enforces enum membership', () => {
-    const entry = getEntry('theme');
-    expect(validateValue(entry, 'dark').valid).toBe(true);
+    const entry = getEntry('comment_format');
+    expect(validateValue(entry, 'minimal').valid).toBe(true);
+    expect(validateValue(entry, 'maximal').valid).toBe(true);
     expect(validateValue(entry, 'solarized').valid).toBe(false);
   });
 
