@@ -641,6 +641,88 @@ test.describe('Split diff view — one-sided files (PR mode)', () => {
     }, ADDED_FILE);
     expect(u.ratio).toBeGreaterThan(0.9);
   });
+
+  /**
+   * PAINT-level regression for the "empty card" bug: a full-width-stretched
+   * annotation card on a one-sided file must actually PAINT its header text and
+   * body, not merely lay them out at the right coordinates.
+   *
+   * The boxing above makes the one-sided `code[data-<side>]` a real box, which
+   * activates the vendor's `code { contain: content }` — and `contain: content`
+   * implies `contain: PAINT`, which clips descendant paint to that box
+   * regardless of `overflow`. A `.pr-annotation-fullwidth` card reaches LEFT out
+   * of its box (margin-left: calc(-100% - 2g)), so paint containment hid its
+   * header text + body while the right-aligned action buttons (inside the box)
+   * still painted — the geometry stayed correct, so a getBoundingClientRect
+   * assertion could not see it. ANNOTATION_CSS drops paint containment
+   * (`contain: layout style`) on these columns; this test guards that.
+   *
+   * The probe is a shadow-piercing hit-test at the card's header + body text
+   * coordinates: `elementFromPoint` (recursed through shadow roots) resolves to
+   * the actual text element only when that region is painted/hit-testable. Under
+   * paint containment the point lies outside the code column's box and resolves
+   * elsewhere, so `insideComment` is false.
+   */
+  test('paints the header text and body of a stretched one-sided card (not just its box)', async ({ page }) => {
+    await mockOneSidedDiff(page);
+    await page.goto(PR_PATH);
+    await waitForDiffToRender(page);
+    await page.waitForSelector(`.d2h-file-wrapper[data-file-name="${ADDED_FILE}"]`);
+
+    const body = `Paint check ${Date.now()} — this header and body must be visible.`;
+    // Line 2 of the added file is an addition (RIGHT side).
+    await seedComment(page, 1, { file: ADDED_FILE, line: 2, side: 'RIGHT', body });
+    await page.reload();
+    await waitForDiffToRender(page);
+    await expect(page.locator('.user-comment-body', { hasText: body })).toBeVisible();
+
+    await switchToSplit(page);
+    await expectAnnotationInSplitColumn(page, { text: body, column: 'additions' });
+    // The stretch class lands on a rAF after render — gate on it before probing.
+    await expect.poll(async () => (await singleCardMetrics(page, ADDED_FILE, body))?.hasFullwidthClass, {
+      timeout: 5000
+    }).toBe(true);
+
+    // Shadow-piercing hit-test at the card's header-left and body text. Both sit
+    // in the LEFT portion of the stretched card — the region paint containment
+    // clipped — so a resolve to an element inside .user-comment proves paint.
+    const paint = await page.evaluate(async (file) => {
+      // Ensure a paint has occurred after the fullwidth class was applied.
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const pierce = (x, y) => {
+        let el = document.elementFromPoint(x, y);
+        while (el && el.shadowRoot) {
+          const inner = el.shadowRoot.elementFromPoint(x, y);
+          if (!inner || inner === el) break;
+          el = inner;
+        }
+        return el;
+      };
+      const scope = document.querySelector(`.d2h-file-wrapper[data-file-name="${file}"]`);
+      const headerLeft = scope.querySelector('.user-comment-header-left');
+      const bodyEl = scope.querySelector('.user-comment-body');
+      const probe = (el) => {
+        const r = el.getBoundingClientRect();
+        // A few px in from the element's left edge, at its vertical centre.
+        const hit = pierce(r.left + 4, r.top + r.height / 2);
+        return {
+          insideComment: !!(hit && hit.closest && hit.closest('.user-comment')),
+          left: Math.round(r.left)
+        };
+      };
+      return {
+        header: probe(headerLeft),
+        body: probe(bodyEl)
+      };
+    }, ADDED_FILE);
+
+    // Both the header text and the body must actually paint (be hit-testable),
+    // even though they lie in the stretched card's left half, outside the code
+    // column's own box. Under the paint-containment bug these points resolve to
+    // an element outside .user-comment (the clipped-away region), failing here.
+    expect(paint.header.insideComment).toBe(true);
+    expect(paint.body.insideComment).toBe(true);
+  });
 });
 
 /**

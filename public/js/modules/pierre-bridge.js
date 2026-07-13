@@ -2438,13 +2438,28 @@ class PierreBridge {
       grid-column: 2;
       border-left: 1px solid var(--diffs-bg);
     }
-    /* The vendor's [data-code] ships overflow: scroll clip. Unlike the
-       split layout (display:contents columns — no clipping box), this
-       one-sided code is a real box and would clip the stretched cards
-       below. Lines wrap in wrap mode, so visible is safe there. */
+    /* The vendor's [data-code] ships overflow: scroll clip AND
+       contain: content. Both must be neutralized here, for different reasons:
+         - overflow: scroll clip is a scroll/clip box that would clip the
+           stretched cards; reset to visible (lines wrap in wrap mode, so
+           there is nothing to scroll).
+         - contain: content implies contain: PAINT, which clips descendant
+           paint to the code column's own border box REGARDLESS of overflow.
+           The .pr-annotation-fullwidth cards below reach past this box (a
+           right-half card sits at margin-left: calc(-100% - 2g)), so paint
+           containment would hide their left portion — header text and body —
+           while the right-aligned action buttons, which fall inside the box,
+           still paint (the "empty card" bug). Drop paint containment; keep
+           layout+style containment (cheap, no visual effect) so the vendor's
+           perf intent is mostly preserved.
+       Two-sided split columns escape both: they are display: contents and
+       generate no box, so neither overflow nor contain has anything to clip —
+       which is why this only bites one-sided (single) files, whose columns
+       ARE real boxes (display: grid children, above). */
     [data-diff-type='single'][data-overflow='wrap'] > [data-deletions],
     [data-diff-type='single'][data-overflow='wrap'] > [data-additions] {
       overflow: visible;
+      contain: layout style;
     }
     /* One-sided file: every card is lone, stretch across both halves.
        Geometry (g = the file's own gutter, published by
