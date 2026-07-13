@@ -227,6 +227,10 @@ describe('Index page Open/Analyze buttons', () => {
     setupGlobals();
 
     // Clear module cache so the IIFE runs fresh each time
+    const themePath = require.resolve('../../public/js/utils/theme.js');
+    delete require.cache[themePath];
+    require('../../public/js/utils/theme.js'); // populates window.__pairReview
+
     const modulePath = require.resolve('../../public/js/index.js');
     delete require.cache[modulePath];
 
