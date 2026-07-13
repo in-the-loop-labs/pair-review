@@ -1686,7 +1686,11 @@ body:not(.tour-active) .d2h-file-wrapper tr,
 body:not(.tour-active) .ai-suggestion,
 body:not(.tour-active) .file-comment-card,
 body:not(.tour-active) .user-comment-row,
-body:not(.tour-active) .external-comment-row {
+body:not(.tour-active) .external-comment-row,
+/* Minimize mode: navigation scrolls to the vendor annotation wrapper
+   (CommentMinimizer.findDiffRowFor returns it), which is not one of the card
+   elements above — give it the same offset so it clears the sticky toolbar. */
+body:not(.tour-active) #diff-container [data-annotation-slot] {
   scroll-margin-top: var(--diff-scroll-offset);
 }
 
@@ -7649,29 +7653,32 @@ body.resizing * {
    Comment Minimize Mode
    -------------------------------------------------------------------------- */
 
-/* When minimize mode is active, hide all inline comment, suggestion, and
-   external-comment rows */
-.comments-minimized .user-comment-row,
-.comments-minimized .ai-suggestion-row,
-.comments-minimized .external-comment-row {
+/* When minimize mode is active, hide the inline comment, suggestion and
+   external-comment cards anchored to diff lines. Under @pierre/diffs each card
+   is slotted inside a vendor `[data-annotation-slot]` wrapper below its line;
+   scoping the hide to those wrappers leaves file-comments-zone cards and
+   AI-panel cards (which are NOT inside a slot wrapper) untouched. */
+#diff-container.comments-minimized [data-annotation-slot] > .user-comment-row,
+#diff-container.comments-minimized [data-annotation-slot] > .ai-suggestion,
+#diff-container.comments-minimized [data-annotation-slot] > .external-comment-row {
   display: none;
 }
 
-/* Per-line expansion override — clicking an indicator reveals that line's rows */
-.comments-minimized .user-comment-row.comment-expanded,
-.comments-minimized .ai-suggestion-row.comment-expanded,
-.comments-minimized .external-comment-row.comment-expanded {
-  display: table-row;
+/* Per-line expansion override — clicking an indicator reveals that line's cards */
+#diff-container.comments-minimized [data-annotation-slot] > .user-comment-row.comment-expanded,
+#diff-container.comments-minimized [data-annotation-slot] > .ai-suggestion.comment-expanded,
+#diff-container.comments-minimized [data-annotation-slot] > .external-comment-row.comment-expanded {
+  display: block;
 }
 
-/* File-level external comments live in the always-visible file-comments-zone,
-   not on a diff line. They have no per-line indicator to reveal them (the
-   minimizer's line scan skips zone cards, and its file-header indicator counts
-   only .file-comment-card), so the blanket .external-comment-row hide above
-   must not apply to cards inside a zone — keep them visible when minimized.
-   Higher specificity (three classes) wins over the two-class hide rule. */
-.comments-minimized .file-comments-zone .external-comment-row {
-  display: block;
+/* A collapsed annotation row must add ZERO vertical space so it doesn't read
+   as a "collapsed comment" breaking up the diff. The hidden card already gives
+   the wrapper 0 height; we only make it a positioning context so the indicator
+   pill can float OVER the anchor code line above (annotations render below
+   their anchor line). The vendor annotation cell defaults to min-height:0 with
+   no padding/row-gap, so the row genuinely collapses. */
+#diff-container.comments-minimized [data-annotation-slot]:has(> .comment-indicator) {
+  position: relative;
 }
 
 /* When minimize mode is active, hide file-level comment cards */
@@ -7758,12 +7765,17 @@ body.resizing * {
   border-width: 2px;
 }
 
-/* Indicator button on the right edge of diff code cells */
+/* Line-level indicator — a small pill floated over the right edge of the
+   anchor code line. It lives in the light-DOM `[data-annotation-slot]` wrapper
+   (a zero-height positioning context, see above) and is absolutely positioned
+   so it contributes no layout height: `bottom: 100%` lifts it out of the
+   zero-height row up onto the anchor line directly above. */
 .comment-indicator {
   position: absolute;
-  right: 4px;
-  top: 50%;
-  transform: translateY(-50%);
+  right: 8px;
+  bottom: 100%;
+  transform: translateY(50%); /* straddle the line's lower edge, matching legacy */
+  z-index: 3; /* above line content (annotation cell is z-index:2); below sticky headers (4) */
   display: inline-flex;
   align-items: center;
   gap: 3px;
@@ -7772,12 +7784,12 @@ body.resizing * {
   border-radius: 12px;
   background: var(--color-bg-secondary);
   cursor: pointer;
+  pointer-events: auto;
   font-size: 11px;
   line-height: 1;
   color: var(--color-text-secondary);
-  opacity: 1;
+  flex-shrink: 0;
   transition: background 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
-  z-index: 2; /* must be below sticky file headers (z-index: 4) */
 }
 
 .comment-indicator:hover {
