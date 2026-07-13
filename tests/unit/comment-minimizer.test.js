@@ -1,1514 +1,718 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
+// @vitest-environment jsdom
+
 /**
- * Unit tests for CommentMinimizer
+ * Unit tests for CommentMinimizer against the @pierre/diffs DOM.
  *
- * Tests the minimize-comments mode for the diff view, including:
- * - _findDiffRowFor: backward walk to find parent diff row
- * - _getCommentRowsFor: forward walk to collect comment/suggestion rows
- * - refreshIndicators: lineMap building with correct counts
- * - Toggle expand/collapse: _expandedLines Set and CSS classes
- * - findDiffRowFor (public): locates diff row from child element
- * - expandForElement: expands comments and updates indicator state
- * - File-level: _refreshFileIndicators, _toggleFileComments, expandForElement for file cards
+ * Under @pierre/diffs, diff lines are shadow-DOM elements and annotation cards
+ * live in the LIGHT DOM, each wrapped by the vendor in a
+ * `<div data-annotation-slot slot="annotation-{side}-{lineNumber}">` that is a
+ * child of the file's `<diffs-container>` host. Cards on the same line+side
+ * share a slot value; the minimizer groups by `{fileName}\0{slot}`.
  *
- * IMPORTANT: These tests import the actual CommentMinimizer class from
- * production code to ensure tests verify real behavior.
+ * These tests build that real structure in jsdom and import the actual
+ * CommentMinimizer class (never duplicating production code). They cover:
+ * - grouping/aggregation counts and per-type icons (user/adopted/AI/external)
+ * - suggestions hidden for adoption are not double-counted
+ * - per-file scoping (same slot name in two files → two independent lines)
+ * - toggle expand/collapse by clicking the indicator
+ * - expandForElement (line-level and file-level)
+ * - stable-key expansion surviving a simulated vendor rerender
+ * - minimize-off cleanup
+ * - file-level indicators (unchanged path)
+ * - findDiffRowFor contract
+ * - the mutation-driven re-injection debounce
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-// Ensure global.window exists before importing production code (which assigns to window.CommentMinimizer)
-global.window = global.window || {};
-
 const { CommentMinimizer } = require('../../public/js/modules/comment-minimizer.js');
 
 // ---------------------------------------------------------------------------
-// DOM Helpers
+// DOM builders — mirror the real light-DOM structure the vendor produces.
 // ---------------------------------------------------------------------------
 
+/** Create (or reuse) the #diff-container root. */
+function diffContainer() {
+  let el = document.getElementById('diff-container');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'diff-container';
+    document.body.appendChild(el);
+  }
+  return el;
+}
+
 /**
- * Build a linked list of table rows (simulating <tbody> children).
- * Each entry is { classes: [...], children: { '.selector': element } }.
- * Returns the array of row objects with previousElementSibling / nextElementSibling set.
+ * Create a `.d2h-file-wrapper` with a `<diffs-container>` host and (optionally)
+ * a file header + file-comments-zone, appended to #diff-container.
+ * @returns {{wrapper: Element, host: Element, header: Element, zone: Element}}
  */
-function buildRows(specs) {
-  const rows = specs.map((spec) => {
-    const classSet = new Set(spec.classes || []);
-    const childElements = spec.children || {};
-    const innerHTML = spec.innerHTML || '';
+function makeFile(fileName, { withZone = false } = {}) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'd2h-file-wrapper';
+  wrapper.dataset.fileName = fileName;
 
-    const row = {
-      _tag: 'tr',
-      _spec: spec,
-      classList: {
-        contains(cls) { return classSet.has(cls); },
-        add(cls) { classSet.add(cls); },
-        remove(cls) { classSet.delete(cls); },
-        _set: classSet,
-      },
-      querySelector(selector) {
-        if (childElements[selector]) return childElements[selector];
-        // Search children by class match (simple .class selector)
-        if (selector.startsWith('.')) {
-          const cls = selector.slice(1);
-          for (const child of Object.values(childElements)) {
-            if (child && child.classList && child.classList.contains(cls)) {
-              return child;
-            }
-          }
-        }
-        return null;
-      },
-      querySelectorAll(selector) {
-        const cls = selector.startsWith('.') ? selector.slice(1) : null;
-        if (!cls) return [];
-        const matches = [];
-        for (const child of Object.values(childElements)) {
-          if (child && child.classList && child.classList.contains(cls)) {
-            matches.push(child);
-          }
-        }
-        return matches;
-      },
-      innerHTML,
-      previousElementSibling: null,
-      nextElementSibling: null,
-      closest(selector) {
-        // CommentMinimizer uses closest('.user-comment-row, .ai-suggestion-row')
-        const selectors = selector.split(',').map(s => s.trim());
-        for (const s of selectors) {
-          if (s.startsWith('.') && classSet.has(s.slice(1))) {
-            return row;
-          }
-        }
-        return null;
-      },
-    };
-    return row;
-  });
+  const header = document.createElement('div');
+  header.className = 'd2h-file-header';
+  const commentBtn = document.createElement('button');
+  commentBtn.className = 'file-header-comment-btn';
+  header.appendChild(commentBtn);
+  wrapper.appendChild(header);
 
-  // Wire up sibling links
-  for (let i = 0; i < rows.length; i++) {
-    rows[i].previousElementSibling = i > 0 ? rows[i - 1] : null;
-    rows[i].nextElementSibling = i < rows.length - 1 ? rows[i + 1] : null;
+  let zone = null;
+  if (withZone) {
+    zone = document.createElement('div');
+    zone.className = 'file-comments-zone';
+    zone.dataset.fileName = fileName;
+    wrapper.appendChild(zone);
   }
 
-  return rows;
+  const host = document.createElement('diffs-container');
+  // Attach a shadow root so the structure matches production, even though the
+  // minimizer only reads the light DOM.
+  host.attachShadow({ mode: 'open' });
+  wrapper.appendChild(host);
+
+  diffContainer().appendChild(wrapper);
+  return { wrapper, host, header, zone };
 }
 
 /**
- * Build a simple mock element that can act as a code cell (.d2h-code-line-ctn).
+ * Slot an annotation card into a host, wrapped in the vendor
+ * `[data-annotation-slot]` div (as @pierre/diffs does).
+ * @param {Element} host - the <diffs-container>
+ * @param {string} side - 'additions' | 'deletions'
+ * @param {number} lineNumber
+ * @param {Element} card - the annotation card element
+ * @returns {Element} the vendor wrapper
  */
-function buildCodeCell() {
-  const children = [];
-  return {
-    style: {},
-    children,
-    classList: {
-      _set: new Set(['d2h-code-line-ctn']),
-      contains(cls) { return this._set.has(cls); },
-      add(cls) { this._set.add(cls); },
-      remove(cls) { this._set.delete(cls); },
-    },
-    appendChild(child) { children.push(child); },
-    querySelector(selector) {
-      if (selector === '.comment-indicator') {
-        return children.find(c => c.className === 'comment-indicator') || null;
-      }
-      return null;
-    },
-  };
+function slotCard(host, side, lineNumber, card) {
+  const wrapper = document.createElement('div');
+  wrapper.dataset.annotationSlot = '';
+  wrapper.setAttribute('slot', `annotation-${side}-${lineNumber}`);
+  wrapper.appendChild(card);
+  host.appendChild(wrapper);
+  return wrapper;
 }
 
-/**
- * Build a mock button element with classList support.
- */
-function buildMockButton(className = '') {
-  return {
-    className,
-    classList: {
-      _set: new Set(),
-      add(c) { this._set.add(c); },
-      remove(c) { this._set.delete(c); },
-      contains(c) { return this._set.has(c); },
-    },
-  };
+function userCommentCard({ adopted = false } = {}) {
+  const card = document.createElement('div');
+  card.className = 'user-comment-row';
+  card.dataset.commentId = String(Math.floor(Math.random() * 1e6));
+  const inner = document.createElement('div');
+  inner.className = adopted ? 'user-comment adopted-comment comment-ai-origin' : 'user-comment comment-user-origin';
+  inner.textContent = 'a comment';
+  card.appendChild(inner);
+  return card;
 }
 
-/**
- * Build a mock element that can act as a child inside a comment row.
- * Uses closest() to walk up to the provided parentRow.
- */
-function buildChildElement(parentRow) {
-  return {
-    closest(selector) {
-      const selectors = selector.split(',').map(s => s.trim());
-      for (const s of selectors) {
-        if (s.startsWith('.') && parentRow.classList.contains(s.slice(1))) {
-          return parentRow;
-        }
-      }
-      return null;
-    },
-    classList: {
-      _set: new Set(),
-      contains(cls) { return this._set.has(cls); },
-    },
-  };
+// `hiddenForAdoption` mirrors the real string dataset: undefined (load-time,
+// visible), 'true' (adopted → hidden), or 'false' (runtime-restored → visible,
+// written literally by suggestion-ui.js).
+function suggestionCard({ hiddenForAdoption } = {}) {
+  const card = document.createElement('div');
+  card.className = 'ai-suggestion ai-type-bug';
+  card.dataset.suggestionId = String(Math.floor(Math.random() * 1e6));
+  if (hiddenForAdoption !== undefined) card.dataset.hiddenForAdoption = String(hiddenForAdoption);
+  card.textContent = 'a suggestion';
+  return card;
 }
 
-// ---------------------------------------------------------------------------
-// Global DOM mock
-// ---------------------------------------------------------------------------
+function externalCard({ bubbles = 1 } = {}) {
+  const card = document.createElement('div');
+  card.className = 'external-comment-row';
+  card.dataset.threadId = String(Math.floor(Math.random() * 1e6));
+  const thread = document.createElement('div');
+  thread.className = 'external-comment-thread';
+  for (let i = 0; i < bubbles; i++) {
+    const bubble = document.createElement('div');
+    bubble.className = 'external-comment';
+    thread.appendChild(bubble);
+  }
+  card.appendChild(thread);
+  return card;
+}
 
-let diffContainer;
-let allIndicators;
+/** Add a file-level card to a zone. */
+function fileCommentCard(zone, type, { adopted = false, collapsed = false } = {}) {
+  const card = document.createElement('div');
+  card.className = 'file-comment-card ' + type;
+  if (adopted) card.classList.add('adopted-comment');
+  if (collapsed) card.classList.add('collapsed');
+  zone.appendChild(card);
+  return card;
+}
 
+/** All line-level indicators currently in the DOM. */
+function lineIndicators() {
+  return [...document.querySelectorAll('#diff-container .comment-indicator')];
+}
+
+// The real MutationObserver would fire async refreshes that leak across tests
+// (a prior test's minimizer mutating a later test's DOM). Stub it to a no-op —
+// the debounce/scheduling logic is covered directly via _onDomMutation below.
+let RealMutationObserver;
 beforeEach(() => {
-  global.window = global.window || {};
-  allIndicators = [];
-  diffContainer = {
-    classList: {
-      _set: new Set(),
-      add(cls) { this._set.add(cls); },
-      remove(cls) { this._set.delete(cls); },
-      contains(cls) { return this._set.has(cls); },
-    },
+  document.body.innerHTML = '';
+  window.prManager = undefined;
+  RealMutationObserver = global.MutationObserver;
+  global.MutationObserver = class {
+    observe() {}
+    disconnect() {}
+    takeRecords() { return []; }
   };
-
-  global.document = {
-    getElementById: vi.fn((id) => {
-      if (id === 'diff-container') return diffContainer;
-      return null;
-    }),
-    querySelectorAll: vi.fn((selector) => {
-      // Default: return empty arrays — tests override via vi.fn().mockReturnValue(...)
-      return [];
-    }),
-    createElement: vi.fn((tag) => {
-      const el = {
-        _tag: tag,
-        className: '',
-        type: '',
-        innerHTML: '',
-        title: '',
-        classList: {
-          _set: new Set(),
-          add(cls) { this._set.add(cls); },
-          remove(cls) { this._set.delete(cls); },
-          contains(cls) { return this._set.has(cls); },
-        },
-        addEventListener: vi.fn(),
-        style: {},
-      };
-      allIndicators.push(el);
-      return el;
-    }),
-  };
+  window.MutationObserver = global.MutationObserver;
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
-  delete global.document;
-  delete global.window;
+  document.body.innerHTML = '';
+  global.MutationObserver = RealMutationObserver;
+  window.MutationObserver = RealMutationObserver;
 });
 
 // ===========================================================================
-// Tests
+// Line-level grouping / aggregation
 // ===========================================================================
 
-describe('CommentMinimizer', () => {
-  // -------------------------------------------------------------------------
-  // _findDiffRowFor
-  // -------------------------------------------------------------------------
-  describe('_findDiffRowFor', () => {
-    it('should return the immediate previous sibling when it is a diff row', () => {
-      const rows = buildRows([
-        { classes: ['d2h-cntx'] },          // diff row
-        { classes: ['user-comment-row'] },   // comment row
-      ]);
+describe('CommentMinimizer — line-level grouping', () => {
+  it('injects one indicator per line with a person icon for a user comment', () => {
+    const { host } = makeFile('a.js');
+    slotCard(host, 'additions', 10, userCommentCard());
 
-      const cm = new CommentMinimizer();
-      const result = cm._findDiffRowFor(rows[1]);
-      expect(result).toBe(rows[0]);
-    });
+    const cm = new CommentMinimizer();
+    cm.setMinimized(true);
 
-    it('should skip comment rows to find the diff row', () => {
-      const rows = buildRows([
-        { classes: ['d2h-cntx'] },
-        { classes: ['user-comment-row'] },
-        { classes: ['user-comment-row'] },
-      ]);
-
-      const cm = new CommentMinimizer();
-      expect(cm._findDiffRowFor(rows[2])).toBe(rows[0]);
-    });
-
-    it('should skip suggestion rows to find the diff row', () => {
-      const rows = buildRows([
-        { classes: ['d2h-ins'] },
-        { classes: ['ai-suggestion-row'] },
-        { classes: ['ai-suggestion-row'] },
-        { classes: ['user-comment-row'] },
-      ]);
-
-      const cm = new CommentMinimizer();
-      expect(cm._findDiffRowFor(rows[3])).toBe(rows[0]);
-    });
-
-    it('should skip form rows to find the diff row', () => {
-      const rows = buildRows([
-        { classes: ['d2h-del'] },
-        { classes: ['comment-form-row'] },
-        { classes: ['ai-suggestion-row'] },
-      ]);
-
-      const cm = new CommentMinimizer();
-      expect(cm._findDiffRowFor(rows[2])).toBe(rows[0]);
-    });
-
-    it('should skip context-expand rows to find the diff row', () => {
-      const rows = buildRows([
-        { classes: ['d2h-cntx'] },
-        { classes: ['context-expand-row'] },
-        { classes: ['user-comment-row'] },
-      ]);
-
-      const cm = new CommentMinimizer();
-      expect(cm._findDiffRowFor(rows[2])).toBe(rows[0]);
-    });
-
-    it('should skip mixed intermediate rows (comment, form, expand, suggestion)', () => {
-      const rows = buildRows([
-        { classes: ['d2h-cntx'] },
-        { classes: ['user-comment-row'] },
-        { classes: ['comment-form-row'] },
-        { classes: ['context-expand-row'] },
-        { classes: ['ai-suggestion-row'] },
-        { classes: ['user-comment-row'] },
-      ]);
-
-      const cm = new CommentMinimizer();
-      expect(cm._findDiffRowFor(rows[5])).toBe(rows[0]);
-    });
-
-    it('should return null when no diff row is found', () => {
-      const rows = buildRows([
-        { classes: ['user-comment-row'] },
-        { classes: ['ai-suggestion-row'] },
-      ]);
-
-      const cm = new CommentMinimizer();
-      expect(cm._findDiffRowFor(rows[1])).toBeNull();
-    });
+    const indicators = lineIndicators();
+    expect(indicators).toHaveLength(1);
+    const btn = indicators[0];
+    expect(btn.innerHTML).toContain('indicator-user');
+    expect(btn.innerHTML).not.toContain('indicator-ai');
+    expect(btn.title).toBe('1 comment');
   });
 
-  // -------------------------------------------------------------------------
-  // _getCommentRowsFor
-  // -------------------------------------------------------------------------
-  describe('_getCommentRowsFor', () => {
-    it('should collect adjacent user-comment-row siblings', () => {
-      const rows = buildRows([
-        { classes: ['d2h-cntx'] },
-        { classes: ['user-comment-row'] },
-        { classes: ['user-comment-row'] },
-        { classes: ['d2h-cntx'] },
-      ]);
+  it('uses the adopted icon for an adopted comment card', () => {
+    const { host } = makeFile('a.js');
+    slotCard(host, 'additions', 10, userCommentCard({ adopted: true }));
 
-      const cm = new CommentMinimizer();
-      const result = cm._getCommentRowsFor(rows[0]);
-      expect(result).toHaveLength(2);
-      expect(result[0]).toBe(rows[1]);
-      expect(result[1]).toBe(rows[2]);
-    });
+    const cm = new CommentMinimizer();
+    cm.setMinimized(true);
 
-    it('should collect adjacent ai-suggestion-row siblings', () => {
-      const rows = buildRows([
-        { classes: ['d2h-cntx'] },
-        { classes: ['ai-suggestion-row'] },
-        { classes: ['ai-suggestion-row'] },
-        { classes: ['d2h-cntx'] },
-      ]);
-
-      const cm = new CommentMinimizer();
-      const result = cm._getCommentRowsFor(rows[0]);
-      expect(result).toHaveLength(2);
-      expect(result[0]).toBe(rows[1]);
-      expect(result[1]).toBe(rows[2]);
-    });
-
-    it('should collect mixed comment and suggestion rows', () => {
-      const rows = buildRows([
-        { classes: ['d2h-cntx'] },
-        { classes: ['user-comment-row'] },
-        { classes: ['ai-suggestion-row'] },
-        { classes: ['d2h-cntx'] },
-      ]);
-
-      const cm = new CommentMinimizer();
-      const result = cm._getCommentRowsFor(rows[0]);
-      expect(result).toHaveLength(2);
-      expect(result[0]).toBe(rows[1]);
-      expect(result[1]).toBe(rows[2]);
-    });
-
-    it('should skip comment-form-row but continue collecting', () => {
-      const rows = buildRows([
-        { classes: ['d2h-cntx'] },
-        { classes: ['user-comment-row'] },
-        { classes: ['comment-form-row'] },
-        { classes: ['ai-suggestion-row'] },
-        { classes: ['d2h-cntx'] },
-      ]);
-
-      const cm = new CommentMinimizer();
-      const result = cm._getCommentRowsFor(rows[0]);
-      expect(result).toHaveLength(2);
-      expect(result[0]).toBe(rows[1]);
-      expect(result[1]).toBe(rows[3]);
-    });
-
-    it('should skip context-expand-row but continue collecting', () => {
-      const rows = buildRows([
-        { classes: ['d2h-cntx'] },
-        { classes: ['ai-suggestion-row'] },
-        { classes: ['context-expand-row'] },
-        { classes: ['user-comment-row'] },
-        { classes: ['d2h-cntx'] },
-      ]);
-
-      const cm = new CommentMinimizer();
-      const result = cm._getCommentRowsFor(rows[0]);
-      expect(result).toHaveLength(2);
-      expect(result[0]).toBe(rows[1]);
-      expect(result[1]).toBe(rows[3]);
-    });
-
-    it('should stop at the next diff row', () => {
-      const rows = buildRows([
-        { classes: ['d2h-cntx'] },
-        { classes: ['user-comment-row'] },
-        { classes: ['d2h-ins'] },
-        { classes: ['user-comment-row'] },
-      ]);
-
-      const cm = new CommentMinimizer();
-      const result = cm._getCommentRowsFor(rows[0]);
-      expect(result).toHaveLength(1);
-      expect(result[0]).toBe(rows[1]);
-    });
-
-    it('should return empty array when no comment rows follow', () => {
-      const rows = buildRows([
-        { classes: ['d2h-cntx'] },
-        { classes: ['d2h-ins'] },
-      ]);
-
-      const cm = new CommentMinimizer();
-      const result = cm._getCommentRowsFor(rows[0]);
-      expect(result).toHaveLength(0);
-    });
-
-    it('should return empty array when diff row is the last row', () => {
-      const rows = buildRows([
-        { classes: ['d2h-cntx'] },
-      ]);
-
-      const cm = new CommentMinimizer();
-      const result = cm._getCommentRowsFor(rows[0]);
-      expect(result).toHaveLength(0);
-    });
+    const btn = lineIndicators()[0];
+    expect(btn.innerHTML).toContain('indicator-adopted');
+    expect(btn.innerHTML).not.toContain('indicator-user');
+    expect(btn.title).toBe('1 adopted comment');
   });
 
-  // -------------------------------------------------------------------------
-  // refreshIndicators - lineMap counts
-  // -------------------------------------------------------------------------
-  describe('refreshIndicators', () => {
-    /** Set up document.querySelectorAll to return the given rows by selector. */
-    function mockQuerySelectorAll(commentRows, suggestionRows, externalRows = []) {
-      global.document.querySelectorAll = vi.fn((selector) => {
-        if (selector === '.user-comment-row') return commentRows;
-        if (selector === '.ai-suggestion-row') return suggestionRows;
-        if (selector === '.external-comment-row') return externalRows;
-        if (selector === '.comment-indicator') return [];
-        if (selector === '.comment-expanded') return [];
-        return [];
-      });
+  it('uses the sparkles icon for an AI suggestion card', () => {
+    const { host } = makeFile('a.js');
+    slotCard(host, 'additions', 10, suggestionCard());
+
+    const cm = new CommentMinimizer();
+    cm.setMinimized(true);
+
+    const btn = lineIndicators()[0];
+    expect(btn.innerHTML).toContain('indicator-ai');
+    expect(btn.title).toBe('1 suggestion');
+  });
+
+  it('does not count a suggestion hidden for adoption', () => {
+    const { host } = makeFile('a.js');
+    // Adopted comment + its now-hidden originating suggestion, same line.
+    slotCard(host, 'additions', 10, suggestionCard({ hiddenForAdoption: true }));
+    slotCard(host, 'additions', 10, userCommentCard({ adopted: true }));
+
+    const cm = new CommentMinimizer();
+    cm.setMinimized(true);
+
+    const btn = lineIndicators()[0];
+    expect(btn.innerHTML).toContain('indicator-adopted');
+    expect(btn.innerHTML).not.toContain('indicator-ai');
+    expect(btn.title).toBe('1 adopted comment');
+  });
+
+  it('counts a runtime-restored suggestion whose flag is the string "false"', () => {
+    // Regression: `!dataset.hiddenForAdoption` treated the literal 'false'
+    // string as truthy and dropped a restored suggestion from the count.
+    const { host } = makeFile('a.js');
+    slotCard(host, 'additions', 10, suggestionCard({ hiddenForAdoption: 'false' }));
+
+    const cm = new CommentMinimizer();
+    cm.setMinimized(true);
+
+    const btn = lineIndicators()[0];
+    expect(btn.innerHTML).toContain('indicator-ai');
+    expect(btn.title).toBe('1 suggestion');
+  });
+
+  it('injects no indicator when a line\'s only card is hidden for adoption', () => {
+    // The suggestion is represented by its adopted comment elsewhere; with no
+    // other card on the line the group has zero counts and must not produce an
+    // empty (icon-less, title-less) button.
+    const { host } = makeFile('a.js');
+    slotCard(host, 'additions', 10, suggestionCard({ hiddenForAdoption: 'true' }));
+
+    const cm = new CommentMinimizer();
+    cm.setMinimized(true);
+
+    expect(lineIndicators()).toHaveLength(0);
+  });
+
+  it('uses the external chat icon and counts thread bubbles', () => {
+    const { host } = makeFile('a.js');
+    slotCard(host, 'deletions', 4, externalCard({ bubbles: 3 }));
+
+    const cm = new CommentMinimizer();
+    cm.setMinimized(true);
+
+    const btn = lineIndicators()[0];
+    expect(btn.innerHTML).toContain('indicator-external');
+    expect(btn.innerHTML).toContain('<span class="indicator-count">3</span>');
+    expect(btn.title).toBe('3 external comments');
+  });
+
+  it('aggregates mixed card types on the same line into one indicator', () => {
+    const { host } = makeFile('a.js');
+    slotCard(host, 'additions', 10, userCommentCard());
+    slotCard(host, 'additions', 10, userCommentCard({ adopted: true }));
+    slotCard(host, 'additions', 10, suggestionCard());
+    slotCard(host, 'additions', 10, externalCard({ bubbles: 1 }));
+
+    const cm = new CommentMinimizer();
+    cm.setMinimized(true);
+
+    const indicators = lineIndicators();
+    expect(indicators).toHaveLength(1);
+    const btn = indicators[0];
+    expect(btn.innerHTML).toContain('indicator-user');
+    expect(btn.innerHTML).toContain('indicator-adopted');
+    expect(btn.innerHTML).toContain('indicator-ai');
+    expect(btn.innerHTML).toContain('indicator-external');
+    // 1 user + 1 adopted + 1 AI + 1 external = 4
+    expect(btn.innerHTML).toContain('<span class="indicator-count">4</span>');
+    expect(btn.title).toBe('1 comment, 1 adopted comment, 1 suggestion, 1 external comment');
+  });
+
+  it('separates cards on different lines and different sides', () => {
+    const { host } = makeFile('a.js');
+    slotCard(host, 'additions', 10, userCommentCard());
+    slotCard(host, 'additions', 20, suggestionCard());
+    slotCard(host, 'deletions', 10, externalCard());
+
+    const cm = new CommentMinimizer();
+    cm.setMinimized(true);
+
+    // Three distinct line+side groups → three indicators.
+    expect(lineIndicators()).toHaveLength(3);
+  });
+
+  it('scopes grouping per file so identical slot names do not merge', () => {
+    const a = makeFile('a.js');
+    const b = makeFile('b.js');
+    slotCard(a.host, 'additions', 10, userCommentCard());
+    slotCard(b.host, 'additions', 10, suggestionCard());
+
+    const cm = new CommentMinimizer();
+    cm.setMinimized(true);
+
+    // Same slot string "annotation-additions-10" but different files.
+    expect(lineIndicators()).toHaveLength(2);
+  });
+
+  it('ignores comment forms / tour stops (non-minimized annotations)', () => {
+    const { host } = makeFile('a.js');
+    const form = document.createElement('div');
+    form.className = 'user-comment-form';
+    slotCard(host, 'additions', 10, form);
+
+    const cm = new CommentMinimizer();
+    cm.setMinimized(true);
+
+    expect(lineIndicators()).toHaveLength(0);
+  });
+});
+
+// ===========================================================================
+// Toggle expand / collapse
+// ===========================================================================
+
+describe('CommentMinimizer — expand/collapse', () => {
+  it('shows and hides a line group when the indicator is clicked', () => {
+    const { host } = makeFile('a.js');
+    const w1 = slotCard(host, 'additions', 10, userCommentCard());
+    const w2 = slotCard(host, 'additions', 10, suggestionCard());
+
+    const cm = new CommentMinimizer();
+    cm.setMinimized(true);
+
+    const card1 = w1.firstElementChild;
+    const card2 = w2.firstElementChild;
+    expect(card1.classList.contains('comment-expanded')).toBe(false);
+
+    const btn = lineIndicators()[0];
+    btn.click();
+    expect(btn.classList.contains('expanded')).toBe(true);
+    expect(card1.classList.contains('comment-expanded')).toBe(true);
+    expect(card2.classList.contains('comment-expanded')).toBe(true);
+
+    btn.click();
+    expect(btn.classList.contains('expanded')).toBe(false);
+    expect(card1.classList.contains('comment-expanded')).toBe(false);
+    expect(card2.classList.contains('comment-expanded')).toBe(false);
+  });
+
+  it('tracks expanded lines independently', () => {
+    const { host } = makeFile('a.js');
+    slotCard(host, 'additions', 10, userCommentCard());
+    slotCard(host, 'additions', 20, userCommentCard());
+
+    const cm = new CommentMinimizer();
+    cm.setMinimized(true);
+
+    const [b1, b2] = lineIndicators();
+    b1.click();
+    expect(cm._expandedLines.size).toBe(1);
+    b2.click();
+    expect(cm._expandedLines.size).toBe(2);
+    b1.click();
+    expect(cm._expandedLines.size).toBe(1);
+  });
+});
+
+// ===========================================================================
+// Stable-key expansion survives a vendor rerender
+// ===========================================================================
+
+describe('CommentMinimizer — rerender resilience', () => {
+  it('re-applies expansion after the vendor recreates the cards', () => {
+    const { host } = makeFile('a.js');
+    slotCard(host, 'additions', 10, userCommentCard());
+
+    const cm = new CommentMinimizer();
+    cm.setMinimized(true);
+
+    // User expands the line.
+    lineIndicators()[0].click();
+    expect(cm._expandedLines.size).toBe(1);
+
+    // Simulate a vendor rerender: every [data-annotation-slot] wrapper (and its
+    // card + our injected indicator) is destroyed and rebuilt fresh — no
+    // .comment-expanded, no indicator. Element identity does NOT survive.
+    host.innerHTML = '';
+    const rebuilt = slotCard(host, 'additions', 10, userCommentCard());
+    expect(rebuilt.firstElementChild.classList.contains('comment-expanded')).toBe(false);
+
+    // The minimizer's stable string key survives, so a refresh restores state.
+    cm.refreshIndicators();
+
+    const btn = lineIndicators()[0];
+    expect(btn.classList.contains('expanded')).toBe(true);
+    expect(rebuilt.firstElementChild.classList.contains('comment-expanded')).toBe(true);
+  });
+
+  it('does not duplicate indicators across refreshes', () => {
+    const { host } = makeFile('a.js');
+    slotCard(host, 'additions', 10, userCommentCard());
+
+    const cm = new CommentMinimizer();
+    cm.setMinimized(true);
+    cm.refreshIndicators();
+    cm.refreshIndicators();
+
+    expect(lineIndicators()).toHaveLength(1);
+  });
+});
+
+// ===========================================================================
+// findDiffRowFor
+// ===========================================================================
+
+describe('CommentMinimizer — findDiffRowFor', () => {
+  it('returns the vendor annotation wrapper for a slotted card', () => {
+    const { host } = makeFile('a.js');
+    const card = userCommentCard();
+    const wrapper = slotCard(host, 'additions', 10, card);
+
+    const cm = new CommentMinimizer();
+    expect(cm.findDiffRowFor(card)).toBe(wrapper);
+    // Also from a descendant of the card.
+    expect(cm.findDiffRowFor(card.firstElementChild)).toBe(wrapper);
+  });
+
+  it('returns null for an element not slotted onto a diff line', () => {
+    const loose = document.createElement('div');
+    document.body.appendChild(loose);
+
+    const cm = new CommentMinimizer();
+    expect(cm.findDiffRowFor(loose)).toBeNull();
+  });
+});
+
+// ===========================================================================
+// expandForElement
+// ===========================================================================
+
+describe('CommentMinimizer — expandForElement', () => {
+  it('expands the whole line group for a line-level card', () => {
+    const { host } = makeFile('a.js');
+    const w1 = slotCard(host, 'additions', 10, userCommentCard());
+    const w2 = slotCard(host, 'additions', 10, suggestionCard());
+
+    const cm = new CommentMinimizer();
+    cm.setMinimized(true);
+
+    cm.expandForElement(w2.firstElementChild);
+
+    expect(cm._expandedLines.size).toBe(1);
+    expect(w1.firstElementChild.classList.contains('comment-expanded')).toBe(true);
+    expect(w2.firstElementChild.classList.contains('comment-expanded')).toBe(true);
+    expect(lineIndicators()[0].classList.contains('expanded')).toBe(true);
+  });
+
+  it('is a no-op when not active', () => {
+    const { host } = makeFile('a.js');
+    const card = userCommentCard();
+    slotCard(host, 'additions', 10, card);
+
+    const cm = new CommentMinimizer();
+    cm.expandForElement(card);
+
+    expect(cm._expandedLines.size).toBe(0);
+    expect(card.classList.contains('comment-expanded')).toBe(false);
+  });
+
+  it('is a no-op for an element with no annotation wrapper', () => {
+    const loose = document.createElement('div');
+    const cm = new CommentMinimizer();
+    cm._active = true;
+    cm.expandForElement(loose);
+    expect(cm._expandedLines.size).toBe(0);
+  });
+
+  it('expands a file-comments-zone for a file-level element', () => {
+    const { zone } = makeFile('a.js', { withZone: true });
+    const card = fileCommentCard(zone, 'user-comment');
+
+    const cm = new CommentMinimizer();
+    cm.setMinimized(true);
+
+    cm.expandForElement(card);
+    expect(cm._expandedFiles.has(zone)).toBe(true);
+    expect(zone.classList.contains('file-comments-expanded')).toBe(true);
+    // File-header indicator is marked expanded.
+    const indicator = document.querySelector('.d2h-file-header .file-comment-indicator');
+    expect(indicator.classList.contains('expanded')).toBe(true);
+  });
+});
+
+// ===========================================================================
+// setMinimized cleanup
+// ===========================================================================
+
+describe('CommentMinimizer — setMinimized', () => {
+  it('adds the container class and injects indicators when enabled', () => {
+    const { host } = makeFile('a.js');
+    slotCard(host, 'additions', 10, userCommentCard());
+
+    const cm = new CommentMinimizer();
+    cm.setMinimized(true);
+
+    expect(cm.active).toBe(true);
+    expect(diffContainer().classList.contains('comments-minimized')).toBe(true);
+    expect(lineIndicators()).toHaveLength(1);
+  });
+
+  it('removes the class, indicators and expansion overrides when disabled', () => {
+    const { host } = makeFile('a.js');
+    const w = slotCard(host, 'additions', 10, userCommentCard());
+
+    const cm = new CommentMinimizer();
+    cm.setMinimized(true);
+    lineIndicators()[0].click();
+    expect(w.firstElementChild.classList.contains('comment-expanded')).toBe(true);
+
+    cm.setMinimized(false);
+
+    expect(cm.active).toBe(false);
+    expect(diffContainer().classList.contains('comments-minimized')).toBe(false);
+    expect(lineIndicators()).toHaveLength(0);
+    expect(w.firstElementChild.classList.contains('comment-expanded')).toBe(false);
+    expect(cm._expandedLines.size).toBe(0);
+  });
+});
+
+// ===========================================================================
+// File-level indicators (unchanged path)
+// ===========================================================================
+
+describe('CommentMinimizer — file-level indicators', () => {
+  function fileIndicator() {
+    return document.querySelector('.d2h-file-header .file-comment-indicator');
+  }
+
+  it('injects a file-header indicator for a zone with user comments', () => {
+    const { zone } = makeFile('a.js', { withZone: true });
+    fileCommentCard(zone, 'user-comment');
+
+    const cm = new CommentMinimizer();
+    cm.setMinimized(true);
+
+    const btn = fileIndicator();
+    expect(btn).toBeTruthy();
+    expect(btn.innerHTML).toContain('indicator-user');
+    expect(btn.title).toBe('1 file comment');
+  });
+
+  it('shows combined counts and skips collapsed cards', () => {
+    const { zone } = makeFile('a.js', { withZone: true });
+    fileCommentCard(zone, 'ai-suggestion', { collapsed: true }); // ignored
+    fileCommentCard(zone, 'user-comment', { adopted: true });
+    fileCommentCard(zone, 'ai-suggestion');
+    fileCommentCard(zone, 'user-comment');
+
+    const cm = new CommentMinimizer();
+    cm.setMinimized(true);
+
+    const btn = fileIndicator();
+    expect(btn.innerHTML).toContain('indicator-user');
+    expect(btn.innerHTML).toContain('indicator-adopted');
+    expect(btn.innerHTML).toContain('indicator-ai');
+    // 1 user + 1 adopted + 1 AI = 3 (collapsed AI not counted)
+    expect(btn.innerHTML).toContain('<span class="indicator-count">3</span>');
+  });
+
+  it('inserts the indicator before the file-header comment button', () => {
+    const { zone, header } = makeFile('a.js', { withZone: true });
+    fileCommentCard(zone, 'user-comment');
+
+    const cm = new CommentMinimizer();
+    cm.setMinimized(true);
+
+    const kids = [...header.children];
+    const indicatorIdx = kids.findIndex(c => c.classList.contains('file-comment-indicator'));
+    const btnIdx = kids.findIndex(c => c.classList.contains('file-header-comment-btn'));
+    expect(indicatorIdx).toBeGreaterThanOrEqual(0);
+    expect(indicatorIdx).toBeLessThan(btnIdx);
+  });
+
+  it('toggles file comments when the indicator is clicked', () => {
+    const { zone } = makeFile('a.js', { withZone: true });
+    fileCommentCard(zone, 'user-comment');
+
+    const cm = new CommentMinimizer();
+    cm.setMinimized(true);
+
+    const btn = fileIndicator();
+    btn.click();
+    expect(cm._expandedFiles.has(zone)).toBe(true);
+    expect(zone.classList.contains('file-comments-expanded')).toBe(true);
+    btn.click();
+    expect(cm._expandedFiles.has(zone)).toBe(false);
+    expect(zone.classList.contains('file-comments-expanded')).toBe(false);
+  });
+
+  it('does not inject an indicator for an empty zone', () => {
+    makeFile('a.js', { withZone: true });
+
+    const cm = new CommentMinimizer();
+    cm.setMinimized(true);
+
+    expect(fileIndicator()).toBeNull();
+  });
+
+  it('clears file-level expansion state and indicators when disabled', () => {
+    const { zone } = makeFile('a.js', { withZone: true });
+    fileCommentCard(zone, 'user-comment');
+
+    const cm = new CommentMinimizer();
+    cm.setMinimized(true);
+    fileIndicator().click();
+    expect(cm._expandedFiles.size).toBe(1);
+    expect(zone.classList.contains('file-comments-expanded')).toBe(true);
+
+    cm.setMinimized(false);
+
+    expect(cm._expandedFiles.size).toBe(0);
+    expect(document.querySelector('.file-comments-expanded')).toBeNull();
+    expect(document.querySelector('.file-comment-indicator')).toBeNull();
+  });
+});
+
+// ===========================================================================
+// Mutation-driven re-injection
+// ===========================================================================
+
+describe('CommentMinimizer — mutation observer', () => {
+  it('debounces a refresh in response to DOM mutations', () => {
+    const { host } = makeFile('a.js');
+    slotCard(host, 'additions', 10, userCommentCard());
+
+    const cm = new CommentMinimizer();
+    cm._active = true;
+    const refreshSpy = vi.spyOn(cm, 'refreshIndicators');
+
+    // Stub rAF so we control when the debounced refresh runs.
+    let queued = null;
+    const rafStub = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((fn) => {
+      queued = fn;
+      return 1;
+    });
+
+    // Two mutations before the frame fires → one scheduled refresh.
+    cm._onDomMutation();
+    cm._onDomMutation();
+    expect(refreshSpy).not.toHaveBeenCalled();
+    expect(rafStub).toHaveBeenCalledTimes(1);
+
+    queued();
+    expect(refreshSpy).toHaveBeenCalledTimes(1);
+
+    // After the frame, a new mutation schedules again.
+    cm._onDomMutation();
+    expect(rafStub).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not schedule when inactive', () => {
+    const cm = new CommentMinimizer();
+    cm._active = false;
+    const rafStub = vi.spyOn(window, 'requestAnimationFrame');
+    cm._onDomMutation();
+    expect(rafStub).not.toHaveBeenCalled();
+  });
+
+  it('_startObserving watches #diff-container and routes the callback to _onDomMutation', () => {
+    makeFile('a.js');
+
+    // A controlled MutationObserver that captures the constructor callback and
+    // observe() arguments (the beforeEach no-op stub can't assert either).
+    let capturedCb;
+    let observeArgs;
+    const prev = global.MutationObserver;
+    global.MutationObserver = class {
+      constructor(cb) { capturedCb = cb; }
+      observe(target, opts) { observeArgs = { target, opts }; }
+      disconnect() {}
+    };
+    window.MutationObserver = global.MutationObserver;
+
+    try {
+      const cm = new CommentMinimizer();
+      cm._active = true;
+      const onMutation = vi.spyOn(cm, '_onDomMutation').mockImplementation(() => {});
+
+      cm._startObserving();
+
+      expect(observeArgs.target).toBe(document.getElementById('diff-container'));
+      expect(observeArgs.opts).toEqual({ childList: true, subtree: true });
+
+      // The constructor callback must reach _onDomMutation with `this` intact —
+      // guards against a refactor to a bare `this._onDomMutation` method ref.
+      capturedCb([], {});
+      expect(onMutation).toHaveBeenCalledTimes(1);
+    } finally {
+      global.MutationObserver = prev;
+      window.MutationObserver = prev;
     }
-
-    it('should inject indicator for a user-comment-only line', () => {
-      const codeCell = buildCodeCell();
-      const rows = buildRows([
-        { classes: ['d2h-cntx'], children: { '.d2h-code-line-ctn': codeCell } },
-        { classes: ['user-comment-row'] },
-      ]);
-
-      mockQuerySelectorAll([rows[1]], []);
-
-      const cm = new CommentMinimizer();
-      cm._active = true;
-      cm.refreshIndicators();
-
-      // An indicator button should have been appended
-      expect(codeCell.children.length).toBe(1);
-      const btn = codeCell.children[0];
-      expect(btn.className).toBe('comment-indicator');
-      // Should contain person icon, not sparkles
-      expect(btn.innerHTML).toContain('indicator-user');
-      expect(btn.innerHTML).not.toContain('indicator-ai');
-      expect(btn.title).toBe('1 comment');
-    });
-
-    it('should inject indicator for an AI-suggestion-only line', () => {
-      // Build suggestion row with one .ai-suggestion child div
-      const suggestionDiv = {
-        classList: { _set: new Set(['ai-suggestion']), contains(c) { return this._set.has(c); } },
-      };
-      const codeCell = buildCodeCell();
-      const rows = buildRows([
-        { classes: ['d2h-cntx'], children: { '.d2h-code-line-ctn': codeCell } },
-        {
-          classes: ['ai-suggestion-row'],
-          children: { '.ai-suggestion': suggestionDiv },
-        },
-      ]);
-      // Override querySelectorAll on the suggestion row to return 1 item
-      rows[1].querySelectorAll = (selector) => {
-        if (selector === '.ai-suggestion') return [suggestionDiv];
-        return [];
-      };
-
-      mockQuerySelectorAll([], [rows[1]]);
-
-      const cm = new CommentMinimizer();
-      cm._active = true;
-      cm.refreshIndicators();
-
-      expect(codeCell.children.length).toBe(1);
-      const btn = codeCell.children[0];
-      expect(btn.innerHTML).toContain('indicator-ai');
-      expect(btn.innerHTML).not.toContain('indicator-user');
-      expect(btn.title).toBe('1 suggestion');
-    });
-
-    it('should inject indicator for an adopted-comment-only line', () => {
-      // Build user-comment-row that contains an .adopted-comment div
-      const adoptedDiv = {
-        classList: { _set: new Set(['adopted-comment']), contains(c) { return this._set.has(c); } },
-      };
-      const codeCell = buildCodeCell();
-      const rows = buildRows([
-        { classes: ['d2h-cntx'], children: { '.d2h-code-line-ctn': codeCell } },
-        {
-          classes: ['user-comment-row'],
-          children: { '.adopted-comment': adoptedDiv },
-        },
-      ]);
-
-      mockQuerySelectorAll([rows[1]], []);
-
-      const cm = new CommentMinimizer();
-      cm._active = true;
-      cm.refreshIndicators();
-
-      expect(codeCell.children.length).toBe(1);
-      const btn = codeCell.children[0];
-      expect(btn.innerHTML).toContain('indicator-adopted');
-      expect(btn.innerHTML).not.toContain('indicator-user');
-      expect(btn.title).toBe('1 adopted comment');
-    });
-
-    it('should combine counts for mixed comment types on the same diff line', () => {
-      const adoptedDiv = {
-        classList: { _set: new Set(['adopted-comment']), contains(c) { return this._set.has(c); } },
-      };
-      const suggestionDiv = {
-        classList: { _set: new Set(['ai-suggestion']), contains(c) { return this._set.has(c); } },
-      };
-      const codeCell = buildCodeCell();
-
-      const rows = buildRows([
-        { classes: ['d2h-cntx'], children: { '.d2h-code-line-ctn': codeCell } },
-        { classes: ['user-comment-row'] },                                       // plain user comment
-        { classes: ['user-comment-row'], children: { '.adopted-comment': adoptedDiv } },  // adopted
-        { classes: ['ai-suggestion-row'], children: { '.ai-suggestion': suggestionDiv } }, // AI
-      ]);
-      rows[3].querySelectorAll = (selector) => {
-        if (selector === '.ai-suggestion') return [suggestionDiv];
-        return [];
-      };
-
-      mockQuerySelectorAll([rows[1], rows[2]], [rows[3]]);
-
-      const cm = new CommentMinimizer();
-      cm._active = true;
-      cm.refreshIndicators();
-
-      expect(codeCell.children.length).toBe(1);
-      const btn = codeCell.children[0];
-      // All three types present
-      expect(btn.innerHTML).toContain('indicator-user');
-      expect(btn.innerHTML).toContain('indicator-adopted');
-      expect(btn.innerHTML).toContain('indicator-ai');
-      // Total = 1 user + 1 adopted + 1 AI = 3
-      expect(btn.innerHTML).toContain('<span class="indicator-count">3</span>');
-      expect(btn.title).toBe('1 comment, 1 adopted comment, 1 suggestion');
-    });
-
-    it('should count multiple AI suggestions within a single suggestion row', () => {
-      const s1 = {
-        classList: { _set: new Set(['ai-suggestion']), contains(c) { return this._set.has(c); } },
-      };
-      const s2 = {
-        classList: { _set: new Set(['ai-suggestion']), contains(c) { return this._set.has(c); } },
-      };
-      const codeCell = buildCodeCell();
-
-      const rows = buildRows([
-        { classes: ['d2h-cntx'], children: { '.d2h-code-line-ctn': codeCell } },
-        { classes: ['ai-suggestion-row'] },
-      ]);
-      rows[1].querySelectorAll = (selector) => {
-        if (selector === '.ai-suggestion') return [s1, s2];
-        return [];
-      };
-
-      mockQuerySelectorAll([], [rows[1]]);
-
-      const cm = new CommentMinimizer();
-      cm._active = true;
-      cm.refreshIndicators();
-
-      const btn = codeCell.children[0];
-      expect(btn.title).toBe('2 suggestions');
-    });
-
-    it('should be a no-op when not active', () => {
-      mockQuerySelectorAll([], []);
-
-      const cm = new CommentMinimizer();
-      cm._active = false;
-      cm.refreshIndicators();
-
-      // querySelectorAll should not have been called for comment rows
-      expect(global.document.querySelectorAll).not.toHaveBeenCalledWith('.user-comment-row');
-    });
-
-    it('should not inject indicators when comment row has no parent diff row', () => {
-      // Comment row is first — no previous sibling
-      const rows = buildRows([
-        { classes: ['user-comment-row'] },
-      ]);
-
-      mockQuerySelectorAll([rows[0]], []);
-
-      const cm = new CommentMinimizer();
-      cm._active = true;
-      cm.refreshIndicators();
-
-      // createElement should not have been called (no indicator injected)
-      expect(global.document.createElement).not.toHaveBeenCalled();
-    });
-
-    it('should not throw when diff row has no codeCell', () => {
-      // Diff row without .d2h-code-line-ctn child
-      const rows = buildRows([
-        { classes: ['d2h-cntx'] },
-        { classes: ['user-comment-row'] },
-      ]);
-
-      mockQuerySelectorAll([rows[1]], []);
-
-      const cm = new CommentMinimizer();
-      cm._active = true;
-
-      // Should not throw
-      expect(() => cm.refreshIndicators()).not.toThrow();
-      // No indicator created since there is no codeCell
-      expect(global.document.createElement).not.toHaveBeenCalled();
-    });
-
-    it('should not create duplicate indicators when called twice', () => {
-      const codeCell = buildCodeCell();
-      const rows = buildRows([
-        { classes: ['d2h-cntx'], children: { '.d2h-code-line-ctn': codeCell } },
-        { classes: ['user-comment-row'] },
-      ]);
-
-      mockQuerySelectorAll([rows[1]], []);
-
-      const cm = new CommentMinimizer();
-      cm._active = true;
-      cm.refreshIndicators();
-      cm.refreshIndicators();
-
-      // Only one indicator should exist — refreshIndicators removes old ones first
-      expect(codeCell.children.length).toBe(1);
-    });
-
-    it('should add expanded class to indicator when diff line is in _expandedLines', () => {
-      const codeCell = buildCodeCell();
-      const rows = buildRows([
-        { classes: ['d2h-cntx'], children: { '.d2h-code-line-ctn': codeCell } },
-        { classes: ['user-comment-row'] },
-      ]);
-
-      mockQuerySelectorAll([rows[1]], []);
-
-      const cm = new CommentMinimizer();
-      cm._active = true;
-      cm._expandedLines.add(rows[0]);
-      cm.refreshIndicators();
-
-      const btn = codeCell.children[0];
-      expect(btn.classList.contains('expanded')).toBe(true);
-    });
-
-    it('should re-apply .comment-expanded to rebuilt rows on refresh when the diff line is in _expandedLines', () => {
-      // Regression: external-comment refresh tears down and rebuilds
-      // `.external-comment-row` elements. The rebuilt rows have no
-      // expanded class. _injectIndicator was setting btn.expanded based
-      // on _expandedLines but never re-applying `.comment-expanded` to
-      // the new rows, leaving the indicator "open" while the rows stayed
-      // hidden by the `.comments-minimized .external-comment-row` rule.
-      const codeCell = buildCodeCell();
-      // Fresh external-comment-row after rebuild — has NO comment-expanded yet.
-      const rebuiltExternal = {
-        classList: {
-          _set: new Set(['external-comment-row']),
-          add(c) { this._set.add(c); },
-          remove(c) { this._set.delete(c); },
-          contains(c) { return this._set.has(c); },
-        },
-      };
-      // The thread bubble children so the indicator path still works.
-      const bubble = {
-        classList: { _set: new Set(['external-comment']), contains(c) { return this._set.has(c); } },
-      };
-      const rows = buildRows([
-        { classes: ['d2h-cntx'], children: { '.d2h-code-line-ctn': codeCell } },
-      ]);
-      // Wire rebuiltExternal as a sibling of rows[0] using the same shape buildRows uses.
-      rebuiltExternal.previousElementSibling = rows[0];
-      rebuiltExternal.nextElementSibling = null;
-      rows[0].nextElementSibling = rebuiltExternal;
-      rebuiltExternal.querySelectorAll = (selector) => {
-        if (selector === '.external-comment') return [bubble];
-        return [];
-      };
-
-      mockQuerySelectorAll([], [], [rebuiltExternal]);
-
-      const cm = new CommentMinimizer();
-      cm._active = true;
-      // User had previously expanded this line — the Set survives the rebuild,
-      // even though .comment-expanded has been wiped from the rebuilt rows.
-      cm._expandedLines.add(rows[0]);
-      cm.refreshIndicators();
-
-      // Indicator button reflects "expanded"
-      const btn = codeCell.children[0];
-      expect(btn.classList.contains('expanded')).toBe(true);
-      // Rebuilt row must regain .comment-expanded so it becomes visible
-      // again via the `.comments-minimized .external-comment-row.comment-expanded`
-      // display: table-row override.
-      expect(rebuiltExternal.classList.contains('comment-expanded')).toBe(true);
-    });
-
-    it('should inject an external-comment indicator and count the bubbles in the thread card', () => {
-      // Regression: external-comment-row was previously excluded from the
-      // minimizer. The row stayed visible while user/AI rows were hidden,
-      // and no indicator counted toward the per-line badge total.
-      const bubble1 = {
-        classList: { _set: new Set(['external-comment']), contains(c) { return this._set.has(c); } },
-      };
-      const bubble2 = {
-        classList: { _set: new Set(['external-comment']), contains(c) { return this._set.has(c); } },
-      };
-      const bubble3 = {
-        classList: { _set: new Set(['external-comment']), contains(c) { return this._set.has(c); } },
-      };
-      const codeCell = buildCodeCell();
-
-      const rows = buildRows([
-        { classes: ['d2h-cntx'], children: { '.d2h-code-line-ctn': codeCell } },
-        { classes: ['external-comment-row'] },
-      ]);
-      rows[1].querySelectorAll = (selector) => {
-        if (selector === '.external-comment') return [bubble1, bubble2, bubble3];
-        return [];
-      };
-
-      mockQuerySelectorAll([], [], [rows[1]]);
-
-      const cm = new CommentMinimizer();
-      cm._active = true;
-      cm.refreshIndicators();
-
-      expect(codeCell.children.length).toBe(1);
-      const btn = codeCell.children[0];
-      expect(btn.innerHTML).toContain('indicator-external');
-      // The thread card has 3 bubbles (root + 2 replies); the count reflects that.
-      expect(btn.innerHTML).toContain('<span class="indicator-count">3</span>');
-      expect(btn.title).toBe('3 external comments');
-    });
-
-    it('mixes external counts into the total alongside user/AI rows', () => {
-      const externalBubble = {
-        classList: { _set: new Set(['external-comment']), contains(c) { return this._set.has(c); } },
-      };
-      const codeCell = buildCodeCell();
-
-      const rows = buildRows([
-        { classes: ['d2h-cntx'], children: { '.d2h-code-line-ctn': codeCell } },
-        { classes: ['user-comment-row'] },
-        { classes: ['external-comment-row'] },
-      ]);
-      rows[2].querySelectorAll = (selector) => {
-        if (selector === '.external-comment') return [externalBubble];
-        return [];
-      };
-
-      mockQuerySelectorAll([rows[1]], [], [rows[2]]);
-
-      const cm = new CommentMinimizer();
-      cm._active = true;
-      cm.refreshIndicators();
-
-      const btn = codeCell.children[0];
-      expect(btn.innerHTML).toContain('indicator-user');
-      expect(btn.innerHTML).toContain('indicator-external');
-      // 1 user + 1 external = 2
-      expect(btn.innerHTML).toContain('<span class="indicator-count">2</span>');
-      expect(btn.title).toBe('1 comment, 1 external comment');
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // Toggle expand/collapse
-  // -------------------------------------------------------------------------
-  describe('toggle expand/collapse', () => {
-    it('should expand then collapse comment rows via _toggleLineComments', () => {
-      const codeCell = buildCodeCell();
-      const rows = buildRows([
-        { classes: ['d2h-cntx'], children: { '.d2h-code-line-ctn': codeCell } },
-        { classes: ['user-comment-row'] },
-        { classes: ['ai-suggestion-row'] },
-      ]);
-
-      const cm = new CommentMinimizer();
-      const btn = buildMockButton();
-
-      // Expand
-      cm._toggleLineComments(rows[0], btn);
-      expect(cm._expandedLines.has(rows[0])).toBe(true);
-      expect(btn.classList.contains('expanded')).toBe(true);
-      expect(rows[1].classList.contains('comment-expanded')).toBe(true);
-      expect(rows[2].classList.contains('comment-expanded')).toBe(true);
-
-      // Collapse
-      cm._toggleLineComments(rows[0], btn);
-      expect(cm._expandedLines.has(rows[0])).toBe(false);
-      expect(btn.classList.contains('expanded')).toBe(false);
-      expect(rows[1].classList.contains('comment-expanded')).toBe(false);
-      expect(rows[2].classList.contains('comment-expanded')).toBe(false);
-    });
-
-    it('should track multiple expanded lines independently', () => {
-      const cell1 = buildCodeCell();
-      const cell2 = buildCodeCell();
-      const rows = buildRows([
-        { classes: ['d2h-cntx'], children: { '.d2h-code-line-ctn': cell1 } },
-        { classes: ['user-comment-row'] },
-        { classes: ['d2h-ins'], children: { '.d2h-code-line-ctn': cell2 } },
-        { classes: ['ai-suggestion-row'] },
-      ]);
-
-      const cm = new CommentMinimizer();
-      const btn1 = buildMockButton();
-      const btn2 = buildMockButton();
-
-      cm._toggleLineComments(rows[0], btn1);
-      cm._toggleLineComments(rows[2], btn2);
-
-      expect(cm._expandedLines.size).toBe(2);
-
-      // Collapse only the first
-      cm._toggleLineComments(rows[0], btn1);
-      expect(cm._expandedLines.has(rows[0])).toBe(false);
-      expect(cm._expandedLines.has(rows[2])).toBe(true);
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // setMinimized
-  // -------------------------------------------------------------------------
-  describe('setMinimized', () => {
-    it('should add comments-minimized class and refresh when enabled', () => {
-      const codeCell = buildCodeCell();
-      const rows = buildRows([
-        { classes: ['d2h-cntx'], children: { '.d2h-code-line-ctn': codeCell } },
-        { classes: ['user-comment-row'] },
-      ]);
-
-      global.document.querySelectorAll = vi.fn((selector) => {
-        if (selector === '.user-comment-row') return [rows[1]];
-        if (selector === '.ai-suggestion-row') return [];
-        if (selector === '.comment-indicator') return [];
-        if (selector === '.comment-expanded') return [];
-        return [];
-      });
-
-      const cm = new CommentMinimizer();
-      cm.setMinimized(true);
-
-      expect(cm.active).toBe(true);
-      expect(diffContainer.classList.contains('comments-minimized')).toBe(true);
-      // Indicator should have been injected
-      expect(codeCell.children.length).toBe(1);
-    });
-
-    it('should remove comments-minimized class and indicators when disabled', () => {
-      const mockIndicator1 = { remove: vi.fn() };
-      const mockIndicator2 = { remove: vi.fn() };
-      global.document.querySelectorAll = vi.fn((selector) => {
-        if (selector === '.comment-indicator') return [mockIndicator1, mockIndicator2];
-        if (selector === '.comment-expanded') return [];
-        return [];
-      });
-
-      const cm = new CommentMinimizer();
-      cm._active = true;
-      diffContainer.classList.add('comments-minimized');
-
-      cm.setMinimized(false);
-
-      expect(cm.active).toBe(false);
-      expect(diffContainer.classList.contains('comments-minimized')).toBe(false);
-      expect(mockIndicator1.remove).toHaveBeenCalled();
-      expect(mockIndicator2.remove).toHaveBeenCalled();
-    });
-
-    it('should clear _expandedLines when toggling', () => {
-      global.document.querySelectorAll = vi.fn(() => []);
-
-      const cm = new CommentMinimizer();
-      cm._expandedLines.add('fake-row');
-
-      cm.setMinimized(true);
-      expect(cm._expandedLines.size).toBe(0);
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // findDiffRowFor (public)
-  // -------------------------------------------------------------------------
-  describe('findDiffRowFor', () => {
-    it('should locate the diff row from a child element inside a comment row', () => {
-      const rows = buildRows([
-        { classes: ['d2h-cntx'] },
-        { classes: ['user-comment-row'] },
-      ]);
-
-      // Build child element that closest() resolves to the comment row
-      const child = buildChildElement(rows[1]);
-
-      const cm = new CommentMinimizer();
-      expect(cm.findDiffRowFor(child)).toBe(rows[0]);
-    });
-
-    it('should locate the diff row from a child element inside a suggestion row', () => {
-      const rows = buildRows([
-        { classes: ['d2h-ins'] },
-        { classes: ['ai-suggestion-row'] },
-      ]);
-
-      const child = buildChildElement(rows[1]);
-
-      const cm = new CommentMinimizer();
-      expect(cm.findDiffRowFor(child)).toBe(rows[0]);
-    });
-
-    it('should return null if element is not inside a comment or suggestion row', () => {
-      const rows = buildRows([
-        { classes: ['d2h-cntx'] },
-      ]);
-
-      // A child that is not inside a comment/suggestion row
-      const unrelated = {
-        closest() { return null; },
-        classList: {
-          _set: new Set(),
-          contains(cls) { return this._set.has(cls); },
-        },
-      };
-
-      const cm = new CommentMinimizer();
-      expect(cm.findDiffRowFor(unrelated)).toBeNull();
-    });
-
-    it('should skip intermediate rows between the comment row and diff row', () => {
-      const rows = buildRows([
-        { classes: ['d2h-cntx'] },
-        { classes: ['comment-form-row'] },
-        { classes: ['ai-suggestion-row'] },
-        { classes: ['user-comment-row'] },
-      ]);
-
-      const child = buildChildElement(rows[3]);
-
-      const cm = new CommentMinimizer();
-      expect(cm.findDiffRowFor(child)).toBe(rows[0]);
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // expandForElement
-  // -------------------------------------------------------------------------
-  describe('expandForElement', () => {
-    it('should expand comments for a given element and update indicator button', () => {
-      const indicatorBtn = buildMockButton('comment-indicator');
-      const codeCell = buildCodeCell();
-      codeCell.children.push(indicatorBtn);
-
-      const rows = buildRows([
-        { classes: ['d2h-cntx'], children: { '.d2h-code-line-ctn': codeCell } },
-        { classes: ['user-comment-row'] },
-        { classes: ['ai-suggestion-row'] },
-      ]);
-
-      // Wire up the diff row's querySelector to find the indicator inside codeCell
-      rows[0].querySelector = (selector) => {
-        if (selector === '.d2h-code-line-ctn .comment-indicator') return indicatorBtn;
-        if (selector === '.d2h-code-line-ctn') return codeCell;
-        return null;
-      };
-
-      const child = buildChildElement(rows[1]);
-
-      const cm = new CommentMinimizer();
-      cm._active = true;
-      cm.expandForElement(child);
-
-      // Should have expanded
-      expect(cm._expandedLines.has(rows[0])).toBe(true);
-      expect(rows[1].classList.contains('comment-expanded')).toBe(true);
-      expect(rows[2].classList.contains('comment-expanded')).toBe(true);
-      expect(indicatorBtn.classList.contains('expanded')).toBe(true);
-    });
-
-    it('should be a no-op when not active', () => {
-      const rows = buildRows([
-        { classes: ['d2h-cntx'] },
-        { classes: ['user-comment-row'] },
-      ]);
-
-      const child = buildChildElement(rows[1]);
-
-      const cm = new CommentMinimizer();
-      cm._active = false;
-      cm.expandForElement(child);
-
-      expect(cm._expandedLines.size).toBe(0);
-      expect(rows[1].classList.contains('comment-expanded')).toBe(false);
-    });
-
-    it('should be a no-op if element is not inside a comment/suggestion row', () => {
-      const unrelated = {
-        closest() { return null; },
-        classList: {
-          _set: new Set(),
-          contains(cls) { return this._set.has(cls); },
-        },
-      };
-
-      const cm = new CommentMinimizer();
-      cm._active = true;
-      cm.expandForElement(unrelated);
-
-      expect(cm._expandedLines.size).toBe(0);
-    });
-
-    it('should not re-expand if already expanded', () => {
-      const rows = buildRows([
-        { classes: ['d2h-cntx'] },
-        { classes: ['user-comment-row'] },
-      ]);
-
-      const child = buildChildElement(rows[1]);
-
-      const cm = new CommentMinimizer();
-      cm._active = true;
-
-      // Pre-expand
-      cm._expandedLines.add(rows[0]);
-
-      // Should exit early — comment-expanded should NOT be added because the
-      // early return prevents the forEach call
-      cm.expandForElement(child);
-
-      expect(cm._expandedLines.has(rows[0])).toBe(true);
-      // The row's class was not modified (no add call)
-      expect(rows[1].classList.contains('comment-expanded')).toBe(false);
-    });
-
-    it('should handle missing indicator button gracefully', () => {
-      const codeCell = buildCodeCell();
-      const rows = buildRows([
-        { classes: ['d2h-cntx'], children: { '.d2h-code-line-ctn': codeCell } },
-        { classes: ['user-comment-row'] },
-      ]);
-
-      // No indicator button exists — querySelector returns null
-      rows[0].querySelector = (selector) => {
-        if (selector === '.d2h-code-line-ctn .comment-indicator') return null;
-        if (selector === '.d2h-code-line-ctn') return codeCell;
-        return null;
-      };
-
-      const child = buildChildElement(rows[1]);
-
-      const cm = new CommentMinimizer();
-      cm._active = true;
-
-      // Should not throw
-      cm.expandForElement(child);
-
-      expect(cm._expandedLines.has(rows[0])).toBe(true);
-      expect(rows[1].classList.contains('comment-expanded')).toBe(true);
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // File-level comment minimization
-  // -------------------------------------------------------------------------
-  describe('file-level comments', () => {
-    /**
-     * Build a mock file-comment-card element.
-     * @param {'user-comment'|'ai-suggestion'} type
-     * @param {Object} opts - { adopted: boolean }
-     */
-    function buildFileCommentCard(type, opts = {}) {
-      const classes = new Set(['file-comment-card', type]);
-      if (opts.adopted) classes.add('adopted-comment');
-      if (opts.collapsed) classes.add('collapsed');
-      return {
-        classList: {
-          _set: classes,
-          contains(cls) { return this._set.has(cls); },
-          add(cls) { this._set.add(cls); },
-          remove(cls) { this._set.delete(cls); },
-        },
-      };
-    }
-
-    /**
-     * Build a mock file-comments-zone with cards inside it, wrapped in a
-     * .d2h-file-wrapper with a .d2h-file-header.
-     * Returns { zone, header, wrapper, cards }.
-     */
-    function buildFileCommentsStructure(cardSpecs) {
-      const cards = cardSpecs.map(spec => buildFileCommentCard(spec.type, spec));
-
-      const zoneClasses = new Set(['file-comments-zone']);
-      const zone = {
-        classList: {
-          _set: zoneClasses,
-          contains(cls) { return this._set.has(cls); },
-          add(cls) { this._set.add(cls); },
-          remove(cls) { this._set.delete(cls); },
-        },
-        querySelectorAll(selector) {
-          if (selector === '.file-comment-card') return cards;
-          return [];
-        },
-        closest(selector) {
-          if (selector === '.d2h-file-wrapper') return wrapper;
-          if (selector === '.file-comments-zone') return zone;
-          return null;
-        },
-        dataset: { fileName: 'test.js' },
-      };
-
-      const headerChildren = [];
-      const headerClasses = new Set(['d2h-file-header']);
-      const commentBtn = { className: 'file-header-comment-btn' };
-      headerChildren.push(commentBtn);
-
-      const header = {
-        classList: {
-          _set: headerClasses,
-          contains(cls) { return this._set.has(cls); },
-        },
-        querySelector(selector) {
-          if (selector === '.file-comment-indicator') {
-            return headerChildren.find(c => c.className === 'file-comment-indicator') || null;
-          }
-          if (selector === '.file-header-comment-btn') return commentBtn;
-          if (selector === '.d2h-file-header .file-comment-indicator') {
-            return headerChildren.find(c => c.className === 'file-comment-indicator') || null;
-          }
-          return null;
-        },
-        appendChild(child) { headerChildren.push(child); },
-        insertBefore(child, ref) {
-          const idx = headerChildren.indexOf(ref);
-          if (idx >= 0) headerChildren.splice(idx, 0, child);
-          else headerChildren.push(child);
-        },
-        _children: headerChildren,
-      };
-
-      const wrapper = {
-        classList: {
-          _set: new Set(['d2h-file-wrapper']),
-          contains(cls) { return this._set.has(cls); },
-        },
-        querySelector(selector) {
-          if (selector === '.d2h-file-header') return header;
-          if (selector === '.d2h-file-header .file-comment-indicator') {
-            return headerChildren.find(c => c.className === 'file-comment-indicator') || null;
-          }
-          return null;
-        },
-      };
-
-      return { zone, header, wrapper, cards, commentBtn };
-    }
-
-    /**
-     * Build a child element that resolves closest() to a file-comments-zone.
-     */
-    function buildFileCommentChild(zone) {
-      return {
-        closest(selector) {
-          if (selector === '.file-comments-zone') return zone;
-          if (selector === '.d2h-file-wrapper') return zone.closest('.d2h-file-wrapper');
-          // Not a line-level comment/suggestion row
-          if (selector.includes('user-comment-row') || selector.includes('ai-suggestion-row')) return null;
-          return null;
-        },
-        classList: {
-          _set: new Set(),
-          contains(cls) { return this._set.has(cls); },
-        },
-      };
-    }
-
-    /**
-     * Set up document.querySelectorAll to return file-comments zones and empty
-     * line-level results. Accepts an array of zones.
-     */
-    function mockFileQuerySelectorAll(zones) {
-      global.document.querySelectorAll = vi.fn((selector) => {
-        if (selector === '.file-comments-zone') return zones;
-        if (selector === '.user-comment-row') return [];
-        if (selector === '.ai-suggestion-row') return [];
-        if (selector === '.comment-indicator') return [];
-        if (selector === '.file-comment-indicator') return [];
-        if (selector === '.comment-expanded') return [];
-        if (selector === '.file-comments-expanded') return [];
-        return [];
-      });
-    }
-
-    describe('_refreshFileIndicators', () => {
-      it('should inject file-header indicator for zone with user comments', () => {
-        const { zone, header } = buildFileCommentsStructure([
-          { type: 'user-comment' },
-        ]);
-
-        mockFileQuerySelectorAll([zone]);
-
-        const cm = new CommentMinimizer();
-        cm._active = true;
-        cm.refreshIndicators();
-
-        // Indicator should have been inserted before the comment button
-        const indicator = header._children.find(c => c.className === 'file-comment-indicator');
-        expect(indicator).toBeTruthy();
-        expect(indicator.innerHTML).toContain('indicator-user');
-        expect(indicator.title).toBe('1 file comment');
-      });
-
-      it('should inject file-header indicator for zone with AI suggestions', () => {
-        const { zone, header } = buildFileCommentsStructure([
-          { type: 'ai-suggestion' },
-          { type: 'ai-suggestion' },
-        ]);
-
-        mockFileQuerySelectorAll([zone]);
-
-        const cm = new CommentMinimizer();
-        cm._active = true;
-        cm.refreshIndicators();
-
-        const indicator = header._children.find(c => c.className === 'file-comment-indicator');
-        expect(indicator).toBeTruthy();
-        expect(indicator.innerHTML).toContain('indicator-ai');
-        expect(indicator.title).toBe('2 suggestions');
-      });
-
-      it('should inject file-header indicator for zone with adopted suggestions', () => {
-        const { zone, header } = buildFileCommentsStructure([
-          { type: 'user-comment', adopted: true },
-        ]);
-
-        mockFileQuerySelectorAll([zone]);
-
-        const cm = new CommentMinimizer();
-        cm._active = true;
-        cm.refreshIndicators();
-
-        const indicator = header._children.find(c => c.className === 'file-comment-indicator');
-        expect(indicator).toBeTruthy();
-        expect(indicator.innerHTML).toContain('indicator-adopted');
-        expect(indicator.title).toBe('1 adopted');
-      });
-
-      it('should show combined counts for mixed file comment types', () => {
-        const { zone, header } = buildFileCommentsStructure([
-          { type: 'user-comment' },
-          { type: 'user-comment' },
-          { type: 'ai-suggestion' },
-          { type: 'user-comment', adopted: true },
-        ]);
-
-        mockFileQuerySelectorAll([zone]);
-
-        const cm = new CommentMinimizer();
-        cm._active = true;
-        cm.refreshIndicators();
-
-        const indicator = header._children.find(c => c.className === 'file-comment-indicator');
-        expect(indicator).toBeTruthy();
-        expect(indicator.innerHTML).toContain('indicator-user');
-        expect(indicator.innerHTML).toContain('indicator-ai');
-        expect(indicator.innerHTML).toContain('indicator-adopted');
-        // Total = 2 user + 1 AI + 1 adopted = 4
-        expect(indicator.innerHTML).toContain('<span class="indicator-count">4</span>');
-        expect(indicator.title).toBe('2 file comments, 1 adopted, 1 suggestion');
-      });
-
-      it('should skip collapsed cards (adopted/dismissed originals)', () => {
-        const { zone, header } = buildFileCommentsStructure([
-          { type: 'ai-suggestion', collapsed: true },  // dismissed or adopted original
-          { type: 'user-comment', adopted: true },      // adopted comment card
-          { type: 'ai-suggestion' },                     // active suggestion
-        ]);
-
-        mockFileQuerySelectorAll([zone]);
-
-        const cm = new CommentMinimizer();
-        cm._active = true;
-        cm.refreshIndicators();
-
-        const indicator = header._children.find(c => c.className === 'file-comment-indicator');
-        expect(indicator).toBeTruthy();
-        // Collapsed AI suggestion should not be counted
-        expect(indicator.innerHTML).toContain('indicator-adopted');
-        expect(indicator.innerHTML).toContain('indicator-ai');
-        expect(indicator.innerHTML).not.toContain('indicator-user');
-        // Total = 1 adopted + 1 AI = 2 (not 3)
-        expect(indicator.innerHTML).toContain('<span class="indicator-count">2</span>');
-        expect(indicator.title).toBe('1 adopted, 1 suggestion');
-      });
-
-      it('should not inject indicator for empty zone', () => {
-        const { zone, header } = buildFileCommentsStructure([]);
-
-        mockFileQuerySelectorAll([zone]);
-
-        const cm = new CommentMinimizer();
-        cm._active = true;
-        cm.refreshIndicators();
-
-        const indicator = header._children.find(c => c.className === 'file-comment-indicator');
-        expect(indicator).toBeUndefined();
-      });
-
-      it('should not inject indicator when all cards are collapsed', () => {
-        const { zone, header } = buildFileCommentsStructure([
-          { type: 'ai-suggestion', collapsed: true },
-          { type: 'ai-suggestion', collapsed: true },
-        ]);
-
-        mockFileQuerySelectorAll([zone]);
-
-        const cm = new CommentMinimizer();
-        cm._active = true;
-        cm.refreshIndicators();
-
-        const indicator = header._children.find(c => c.className === 'file-comment-indicator');
-        expect(indicator).toBeUndefined();
-      });
-
-      it('should insert indicator before file-header-comment-btn', () => {
-        const { zone, header, commentBtn } = buildFileCommentsStructure([
-          { type: 'user-comment' },
-        ]);
-
-        mockFileQuerySelectorAll([zone]);
-
-        const cm = new CommentMinimizer();
-        cm._active = true;
-        cm.refreshIndicators();
-
-        // The indicator should come before the comment button in the children array
-        const indicatorIdx = header._children.findIndex(c => c.className === 'file-comment-indicator');
-        const commentBtnIdx = header._children.indexOf(commentBtn);
-        expect(indicatorIdx).toBeLessThan(commentBtnIdx);
-      });
-
-      it('should restore expanded class on indicator when zone is in _expandedFiles', () => {
-        const { zone, header } = buildFileCommentsStructure([
-          { type: 'user-comment' },
-        ]);
-
-        mockFileQuerySelectorAll([zone]);
-
-        const cm = new CommentMinimizer();
-        cm._active = true;
-        cm._expandedFiles.add(zone);
-        cm.refreshIndicators();
-
-        const indicator = header._children.find(c => c.className === 'file-comment-indicator');
-        expect(indicator.classList.contains('expanded')).toBe(true);
-      });
-    });
-
-    describe('_toggleFileComments', () => {
-      it('should expand then collapse file comments', () => {
-        const { zone } = buildFileCommentsStructure([
-          { type: 'user-comment' },
-        ]);
-
-        const cm = new CommentMinimizer();
-        const btn = buildMockButton();
-
-        // Expand
-        cm._toggleFileComments(zone, btn);
-        expect(cm._expandedFiles.has(zone)).toBe(true);
-        expect(btn.classList.contains('expanded')).toBe(true);
-        expect(zone.classList.contains('file-comments-expanded')).toBe(true);
-
-        // Collapse
-        cm._toggleFileComments(zone, btn);
-        expect(cm._expandedFiles.has(zone)).toBe(false);
-        expect(btn.classList.contains('expanded')).toBe(false);
-        expect(zone.classList.contains('file-comments-expanded')).toBe(false);
-      });
-    });
-
-    describe('expandForElement (file-level)', () => {
-      it('should expand file-comments-zone for element inside it', () => {
-        const { zone, wrapper } = buildFileCommentsStructure([
-          { type: 'user-comment' },
-        ]);
-
-        const child = buildFileCommentChild(zone);
-
-        const cm = new CommentMinimizer();
-        cm._active = true;
-        cm.expandForElement(child);
-
-        expect(cm._expandedFiles.has(zone)).toBe(true);
-        expect(zone.classList.contains('file-comments-expanded')).toBe(true);
-      });
-
-      it('should update file-header indicator button when expanding', () => {
-        const { zone, header, wrapper } = buildFileCommentsStructure([
-          { type: 'user-comment' },
-        ]);
-
-        // Simulate indicator already injected in the header
-        const indicatorBtn = buildMockButton('file-comment-indicator');
-        header._children.push(indicatorBtn);
-
-        const child = buildFileCommentChild(zone);
-
-        const cm = new CommentMinimizer();
-        cm._active = true;
-        cm.expandForElement(child);
-
-        expect(indicatorBtn.classList.contains('expanded')).toBe(true);
-      });
-
-      it('should not re-expand if zone is already expanded', () => {
-        const { zone } = buildFileCommentsStructure([
-          { type: 'user-comment' },
-        ]);
-
-        const child = buildFileCommentChild(zone);
-
-        const cm = new CommentMinimizer();
-        cm._active = true;
-        cm._expandedFiles.add(zone);
-
-        // Should exit early — class should NOT be added again
-        cm.expandForElement(child);
-
-        expect(cm._expandedFiles.has(zone)).toBe(true);
-        // Zone class was added during the pre-expand setup, not by expandForElement
-        expect(zone.classList.contains('file-comments-expanded')).toBe(false);
-      });
-    });
-
-    describe('setMinimized (file-level state)', () => {
-      it('should clear _expandedFiles when toggling', () => {
-        global.document.querySelectorAll = vi.fn(() => []);
-
-        const cm = new CommentMinimizer();
-        cm._expandedFiles.add('fake-zone');
-
-        cm.setMinimized(true);
-        expect(cm._expandedFiles.size).toBe(0);
-      });
-
-      it('should remove file-comments-expanded classes when disabling', () => {
-        const expandedZone = {
-          classList: {
-            _set: new Set(['file-comments-expanded']),
-            remove(cls) { this._set.delete(cls); },
-            contains(cls) { return this._set.has(cls); },
-          },
-        };
-
-        global.document.querySelectorAll = vi.fn((selector) => {
-          if (selector === '.comment-indicator') return [];
-          if (selector === '.file-comment-indicator') return [];
-          if (selector === '.comment-expanded') return [];
-          if (selector === '.file-comments-expanded') return [expandedZone];
-          return [];
-        });
-
-        const cm = new CommentMinimizer();
-        cm._active = true;
-        diffContainer.classList.add('comments-minimized');
-
-        cm.setMinimized(false);
-
-        expect(expandedZone.classList.contains('file-comments-expanded')).toBe(false);
-      });
-    });
-
-    describe('_removeAllIndicators (file-level)', () => {
-      it('should remove both line-level and file-level indicators', () => {
-        const lineIndicator = { remove: vi.fn() };
-        const fileIndicator = { remove: vi.fn() };
-
-        global.document.querySelectorAll = vi.fn((selector) => {
-          if (selector === '.comment-indicator') return [lineIndicator];
-          if (selector === '.file-comment-indicator') return [fileIndicator];
-          return [];
-        });
-
-        const cm = new CommentMinimizer();
-        cm._removeAllIndicators();
-
-        expect(lineIndicator.remove).toHaveBeenCalled();
-        expect(fileIndicator.remove).toHaveBeenCalled();
-      });
-    });
   });
 });

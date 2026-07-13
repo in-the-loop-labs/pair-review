@@ -2,16 +2,29 @@
 /**
  * CommentMinimizer - Manages "minimize comments" mode for the diff view.
  *
- * When active, all inline comment rows (.user-comment-row, .ai-suggestion-row,
- * and .external-comment-row) are hidden via CSS class. Small indicator
- * buttons are injected on the right edge of each diff line that has
- * comments, showing a person icon (user comments), sparkles icon (AI
- * suggestions), or chat-bubble icon (external review comments).
+ * When active, all inline comment cards (.user-comment-row), AI suggestion
+ * cards (.ai-suggestion) and external review threads (.external-comment-row)
+ * anchored to diff lines are hidden via CSS. A single small clickable
+ * indicator is injected for each diff line that has hidden cards, showing a
+ * person icon (user comments), AI-comment icon (adopted suggestions),
+ * sparkles icon (AI suggestions) or chat-bubble icon (external comments),
+ * with a count badge when a line holds more than one card.
  *
  * File-level comments (.file-comment-card inside .file-comments-zone) are also
  * hidden, with an indicator button injected into the file header bar.
  *
- * Clicking an indicator toggles visibility of that line's or file's comments.
+ * Clicking an indicator toggles visibility of that line's or file's cards.
+ *
+ * ── @pierre/diffs rendering ──────────────────────────────────────────────
+ * Diff lines are shadow-DOM elements owned by the vendor renderer; annotation
+ * cards live in the LIGHT DOM, each wrapped by the vendor in a
+ * `<div data-annotation-slot slot="annotation-{side}-{lineNumber}">` that is a
+ * child of the file's `<diffs-container>` host and projected into the matching
+ * shadow annotation cell. All cards anchored to the same line+side share the
+ * same `slot` value, so we group by `{fileName}\0{slot}` — a STABLE string key
+ * that survives the vendor's card-recreating rerenders (element identity does
+ * NOT survive them). The line-level indicator is injected into the first
+ * wrapper of each group (light DOM, so page CSS reaches it).
  */
 
 class CommentMinimizer {
@@ -29,10 +42,18 @@ class CommentMinimizer {
 
   constructor() {
     this._active = false;
-    // Track which diff lines have been expanded by the user (Set of diff row elements)
+    // Diff lines the user has expanded, keyed by the STABLE string
+    // `${fileName}\0${slot}` (see class doc). NOT element references — the
+    // vendor recreates annotation wrappers on every rerender.
     this._expandedLines = new Set();
-    // Track which file-comments-zones have been expanded (Set of zone elements)
+    // Files whose file-level zone has been expanded (Set of zone elements —
+    // zones are pr.js light DOM, not vendor-managed, so they persist).
     this._expandedFiles = new Set();
+    // MutationObserver that re-injects indicators after vendor rerenders
+    // (diffStyle switch, hunk expansion, worker-highlight streaming, lazy file
+    // render) that are NOT followed by an explicit refreshIndicators() call.
+    this._observer = null;
+    this._refreshScheduled = false;
   }
 
   /** @returns {boolean} Whether minimize mode is active */
@@ -55,7 +76,9 @@ class CommentMinimizer {
     if (minimized) {
       diffContainer.classList.add('comments-minimized');
       this.refreshIndicators();
+      this._startObserving();
     } else {
+      this._stopObserving();
       diffContainer.classList.remove('comments-minimized');
       this._removeAllIndicators();
       // Remove any per-line expansion overrides
@@ -66,118 +89,163 @@ class CommentMinimizer {
   }
 
   /**
-   * Rebuild all indicator buttons on diff lines.
+   * Rebuild all indicator buttons on diff lines and file headers.
    * Call this after comments or suggestions are added/removed/re-rendered.
+   * Idempotent: starts by removing every existing indicator.
    */
   refreshIndicators() {
     if (!this._active) return;
 
-    this._removeAllIndicators();
+    // The vendor recreates annotation wrappers as we inject indicators; pause
+    // the observer so our own DOM writes don't re-trigger a refresh loop.
+    this._stopObserving();
+    try {
+      this._removeAllIndicators();
 
-    // Find all comment, suggestion, and external-comment rows currently in the DOM
-    const commentRows = document.querySelectorAll('.user-comment-row');
-    const suggestionRows = document.querySelectorAll('.ai-suggestion-row');
-    const externalRows = document.querySelectorAll('.external-comment-row');
+      // Line-level: group the vendor annotation wrappers by file + slot.
+      for (const group of this._buildLineGroups().values()) {
+        this._injectLineIndicator(group);
+      }
 
-    // Build a map: diff row element → indicator info entry
-    const lineMap = new Map();
+      // File-level indicators (pr.js light DOM — unchanged path).
+      this._refreshFileIndicators();
+    } finally {
+      if (this._active) this._startObserving();
+    }
+  }
+
+  /**
+   * Build a map of line-level groups keyed by `${fileName}\0${slot}`.
+   * Each group aggregates the hidden cards anchored to one line+side and keeps
+   * references to their vendor wrappers (`[data-annotation-slot]`).
+   * @returns {Map<string, {key: string, wrappers: HTMLElement[], info: Object}>}
+   * @private
+   */
+  _buildLineGroups() {
+    const groups = new Map();
     const newEntry = () => ({
       hasUser: false, hasAI: false, hasAdopted: false, hasExternal: false,
       userCount: 0, aiCount: 0, adoptedCount: 0, externalCount: 0
     });
 
-    for (const row of commentRows) {
-      const diffRow = this._findDiffRowFor(row);
-      if (!diffRow) continue;
-      const entry = lineMap.get(diffRow) || newEntry();
-      if (row.querySelector('.adopted-comment')) {
-        entry.hasAdopted = true;
-        entry.adoptedCount++;
-      } else {
-        entry.hasUser = true;
-        entry.userCount++;
-      }
-      lineMap.set(diffRow, entry);
-    }
+    const wrappers = document.querySelectorAll('#diff-container [data-annotation-slot]');
+    for (const wrapper of wrappers) {
+      const card = this._cardOf(wrapper);
+      if (!card) continue;
 
-    for (const row of suggestionRows) {
-      const diffRow = this._findDiffRowFor(row);
-      if (!diffRow) continue;
-      const entry = lineMap.get(diffRow) || newEntry();
-      // Count non-adopted suggestion divs only — adopted ones are already
-      // represented by the adopted comment row (avoid double-counting)
-      const allSuggestions = row.querySelectorAll('.ai-suggestion');
-      let activeCount = 0;
-      for (const s of allSuggestions) {
-        if (!s.dataset?.hiddenForAdoption) {
-          activeCount++;
+      const isComment = card.classList.contains('user-comment-row');
+      const isSuggestion = card.classList.contains('ai-suggestion');
+      const isExternal = card.classList.contains('external-comment-row');
+      // Skip comment forms, tour stops, hunk summaries — those stay visible.
+      if (!isComment && !isSuggestion && !isExternal) continue;
+
+      const key = this._lineKeyFor(wrapper);
+      if (!key) continue;
+
+      let group = groups.get(key);
+      if (!group) {
+        group = { key, wrappers: [], info: newEntry() };
+        groups.set(key, group);
+      }
+      group.wrappers.push(wrapper);
+      const info = group.info;
+
+      if (isComment) {
+        // Adopted AI suggestions render with an inner `.adopted-comment` card.
+        if (card.querySelector('.adopted-comment')) {
+          info.hasAdopted = true;
+          info.adoptedCount++;
+        } else {
+          info.hasUser = true;
+          info.userCount++;
         }
+      } else if (isSuggestion) {
+        // A suggestion hidden for adoption is already represented by its
+        // adopted comment card — don't double-count it. The flag is a string:
+        // 'true' when adopted, and suggestion-ui.js writes the literal 'false'
+        // on runtime restore, so compare against 'true' (not truthiness) or a
+        // restored suggestion would be wrongly dropped from the count.
+        if (card.dataset?.hiddenForAdoption !== 'true') {
+          info.hasAI = true;
+          info.aiCount++;
+        }
+      } else {
+        // External thread: count root + replies so the badge matches the
+        // total the thread card itself shows.
+        const bubbles = card.querySelectorAll('.external-comment');
+        info.hasExternal = true;
+        info.externalCount += (bubbles.length || 1);
       }
-      if (activeCount > 0) {
-        entry.hasAI = true;
-        entry.aiCount += activeCount;
-      }
-      lineMap.set(diffRow, entry);
     }
 
-    for (const row of externalRows) {
-      const diffRow = this._findDiffRowFor(row);
-      if (!diffRow) continue;
-      const entry = lineMap.get(diffRow) || newEntry();
-      // Count root + replies — each .external-comment is one bubble in the
-      // thread card and the reviewer should see the same total here that
-      // the thread itself shows.
-      const bubbles = row.querySelectorAll('.external-comment');
-      const bubbleCount = bubbles.length || 1;
-      entry.hasExternal = true;
-      entry.externalCount += bubbleCount;
-      lineMap.set(diffRow, entry);
-    }
-
-    // Inject line-level indicators
-    for (const [diffRow, info] of lineMap) {
-      this._injectIndicator(diffRow, info);
-    }
-
-    // Scan file-comments-zones and inject file-header indicators
-    this._refreshFileIndicators();
+    return groups;
   }
 
   /**
-   * Walk backward from a comment/suggestion/external row to find its parent
-   * diff line. Skips other comment/suggestion/external rows and
-   * context-expand rows.
-   * @param {HTMLElement} row
+   * The annotation card element inside a vendor `[data-annotation-slot]`
+   * wrapper (the element returned by PierreBridge's renderAnnotation).
+   * @param {HTMLElement} wrapper
    * @returns {HTMLElement|null}
+   * @private
    */
-  _findDiffRowFor(row) {
-    let prev = row.previousElementSibling;
-    while (prev) {
-      if (
-        !prev.classList.contains('user-comment-row') &&
-        !prev.classList.contains('ai-suggestion-row') &&
-        !prev.classList.contains('external-comment-row') &&
-        !prev.classList.contains('comment-form-row') &&
-        !prev.classList.contains('context-expand-row')
-      ) {
-        return prev;
-      }
-      prev = prev.previousElementSibling;
-    }
-    return null;
+  _cardOf(wrapper) {
+    return wrapper.firstElementChild || null;
   }
 
   /**
-   * Inject an indicator button into a diff line's code cell.
-   * @param {HTMLElement} diffRow - The diff table row
-   * @param {Object} info - { hasUser, hasAI, hasAdopted, userCount, aiCount, adoptedCount }
+   * Stable grouping key for a vendor annotation wrapper: the owning file plus
+   * the vendor slot name (`annotation-{side}-{lineNumber}`). Wrappers on the
+   * same line+side share a slot, so they share a key.
+   * @param {HTMLElement} wrapper
+   * @returns {string|null}
+   * @private
    */
-  _injectIndicator(diffRow, info) {
-    const codeCell = diffRow.querySelector('.d2h-code-line-ctn');
-    if (!codeCell) return;
+  _lineKeyFor(wrapper) {
+    const slot = wrapper.getAttribute('slot');
+    if (!slot) return null;
+    const fileWrapper = wrapper.closest('.d2h-file-wrapper');
+    const file = fileWrapper?.dataset?.fileName || '';
+    return `${file}\0${slot}`;
+  }
 
-    // Don't double-inject
-    if (codeCell.querySelector('.comment-indicator')) return;
+  /**
+   * All vendor annotation wrappers that share a group key (a line+side).
+   * @param {string} key
+   * @returns {HTMLElement[]}
+   * @private
+   */
+  _wrappersForKey(key) {
+    const out = [];
+    for (const wrapper of document.querySelectorAll('#diff-container [data-annotation-slot]')) {
+      if (this._lineKeyFor(wrapper) === key) out.push(wrapper);
+    }
+    return out;
+  }
+
+  /**
+   * Inject a single indicator button for a line group into the first wrapper,
+   * and sync the group's expanded/collapsed card visibility.
+   * @param {{key: string, wrappers: HTMLElement[], info: Object}} group
+   * @private
+   */
+  _injectLineIndicator(group) {
+    const first = group.wrappers[0];
+    if (!first) return;
+
+    // Nothing to represent — e.g. the line's only card is a suggestion hidden
+    // for adoption (represented by its adopted comment elsewhere). Injecting
+    // here would produce an empty button with no icon, count, or title.
+    const info = group.info;
+    const total = info.userCount + info.adoptedCount + info.aiCount + info.externalCount;
+    if (total === 0) return;
+
+    // Sync card visibility to the persisted expanded state (survives rerenders
+    // because the state is keyed by the stable group key).
+    const expanded = this._expandedLines.has(group.key);
+    this._applyExpanded(group.wrappers, expanded);
+
+    // Don't double-inject.
+    if (first.querySelector(':scope > .comment-indicator')) return;
 
     const btn = document.createElement('button');
     btn.className = 'comment-indicator';
@@ -202,7 +270,6 @@ class CommentMinimizer {
       icons.push(`<span class="indicator-icon indicator-external" title="${info.externalCount} external comment${info.externalCount !== 1 ? 's' : ''}">${CommentMinimizer.EXTERNAL_ICON}</span>`);
     }
 
-    const total = info.userCount + info.adoptedCount + info.aiCount + info.externalCount;
     const countBadge = total > 1 ? `<span class="indicator-count">${total}</span>` : '';
 
     btn.innerHTML = icons.join('') + countBadge;
@@ -214,118 +281,81 @@ class CommentMinimizer {
     if (info.externalCount) totalLabel.push(`${info.externalCount} external comment${info.externalCount !== 1 ? 's' : ''}`);
     btn.title = totalLabel.join(', ');
 
-    // Check if this line was previously expanded. Re-applying
-    // `.comment-expanded` to the (possibly rebuilt) comment rows is
-    // important: when an external-comment refresh tears down and rebuilds
-    // `.external-comment-row` elements, the new rows have no expanded
-    // class even though the indicator button is still marked expanded.
-    // Without this step the indicator says "open" but the rows stay
-    // hidden via the `.comments-minimized` display: none rule.
-    if (this._expandedLines.has(diffRow)) {
+    if (expanded) {
       btn.classList.add('expanded');
-      this._getCommentRowsFor(diffRow).forEach(row => row.classList.add('comment-expanded'));
     }
 
-    // Click handler: toggle this line's comments
+    // Click handler toggles this line's cards. Closes over the current
+    // wrappers; a rerender replaces both wrappers and handler together.
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       e.preventDefault();
-      this._toggleLineComments(diffRow, btn);
+      this._toggleLineComments(group.key, btn);
     });
 
-    // Make the code cell position:relative for absolute positioning of the indicator
-    codeCell.style.position = 'relative';
-    codeCell.appendChild(btn);
+    first.appendChild(btn);
   }
 
   /**
-   * Toggle visibility of comment/suggestion rows for a specific diff line.
-   * @param {HTMLElement} diffRow
+   * Show or hide the cards of a line group by toggling `.comment-expanded` on
+   * each wrapper's card element.
+   * @param {HTMLElement[]} wrappers
+   * @param {boolean} expanded
+   * @private
+   */
+  _applyExpanded(wrappers, expanded) {
+    for (const wrapper of wrappers) {
+      const card = this._cardOf(wrapper);
+      if (card) card.classList.toggle('comment-expanded', expanded);
+    }
+  }
+
+  /**
+   * Toggle visibility of the cards for one line group.
+   * @param {string} key - The stable group key
    * @param {HTMLElement} btn - The indicator button
+   * @private
    */
-  _toggleLineComments(diffRow, btn) {
-    const isExpanded = this._expandedLines.has(diffRow);
-
-    if (isExpanded) {
-      // Collapse: remove .comment-expanded from this line's rows
-      this._expandedLines.delete(diffRow);
+  _toggleLineComments(key, btn) {
+    const wrappers = this._wrappersForKey(key);
+    if (this._expandedLines.has(key)) {
+      this._expandedLines.delete(key);
       btn.classList.remove('expanded');
-      this._getCommentRowsFor(diffRow).forEach(row => row.classList.remove('comment-expanded'));
+      this._applyExpanded(wrappers, false);
     } else {
-      // Expand: add .comment-expanded to this line's rows
-      this._expandedLines.add(diffRow);
+      this._expandedLines.add(key);
       btn.classList.add('expanded');
-      this._getCommentRowsFor(diffRow).forEach(row => row.classList.add('comment-expanded'));
+      this._applyExpanded(wrappers, true);
     }
   }
 
   /**
-   * Get all comment/suggestion rows that belong to a diff line.
-   * Walks forward from the diff row, collecting adjacent comment/suggestion rows.
-   * @param {HTMLElement} diffRow
-   * @returns {HTMLElement[]}
-   */
-  _getCommentRowsFor(diffRow) {
-    const rows = [];
-    let next = diffRow.nextElementSibling;
-    while (next) {
-      if (
-        next.classList.contains('user-comment-row') ||
-        next.classList.contains('ai-suggestion-row') ||
-        next.classList.contains('external-comment-row')
-      ) {
-        rows.push(next);
-      } else if (
-        next.classList.contains('comment-form-row') ||
-        next.classList.contains('context-expand-row')
-      ) {
-        // Skip these but keep looking
-        next = next.nextElementSibling;
-        continue;
-      } else {
-        // Hit another diff line — stop
-        break;
-      }
-      next = next.nextElementSibling;
-    }
-    return rows;
-  }
-
-  /**
-   * Find the parent diff row for a given comment/suggestion element.
-   * Public wrapper around _findDiffRowFor that first locates the containing
-   * comment/suggestion row from any child element.
-   * @param {HTMLElement} element - Any element inside (or equal to) a comment/suggestion row
-   * @returns {HTMLElement|null} The parent diff row, or null
+   * Find the vendor annotation wrapper (`[data-annotation-slot]`) that holds a
+   * given card element. Used by navigation callers as a stable scroll anchor;
+   * returns null for elements not slotted onto a diff line (callers fall back
+   * to the element itself).
+   * @param {HTMLElement} element - A card element (or a child of one)
+   * @returns {HTMLElement|null}
    */
   findDiffRowFor(element) {
-    const commentRow = element.closest('.user-comment-row, .ai-suggestion-row, .external-comment-row') || element;
-    if (
-      !commentRow.classList.contains('user-comment-row') &&
-      !commentRow.classList.contains('ai-suggestion-row') &&
-      !commentRow.classList.contains('external-comment-row')
-    ) {
-      return null;
-    }
-    return this._findDiffRowFor(commentRow);
+    return element?.closest?.('[data-annotation-slot]') || null;
   }
 
   // TODO: expose via API route so chat can programmatically expand findings when discussing them
   /**
-   * Expand comments for a given element so it becomes visible when minimized.
-   * Call this before scrolling to a comment/suggestion row that may be hidden.
-   * @param {HTMLElement} element - The target comment/suggestion element (or row)
+   * Expand the comments for a given element so it becomes visible when
+   * minimized. Call this before scrolling to a card that may be hidden.
+   * @param {HTMLElement} element - The target card element (or a child of one)
    */
   expandForElement(element) {
-    if (!this._active) return;
+    if (!this._active || !element) return;
 
-    // Check if this element is inside a file-comments-zone (file-level comment)
+    // File-level comment inside a file-comments-zone.
     const zone = element.closest('.file-comments-zone');
     if (zone) {
       if (this._expandedFiles.has(zone)) return; // already expanded
       this._expandedFiles.add(zone);
       zone.classList.add('file-comments-expanded');
-      // Update the file-header indicator button
       const wrapper = zone.closest('.d2h-file-wrapper');
       const btn = wrapper?.querySelector('.d2h-file-header .file-comment-indicator');
       if (btn) {
@@ -334,29 +364,18 @@ class CommentMinimizer {
       return;
     }
 
-    // Line-level: find the containing comment/suggestion row
-    const commentRow = element.closest('.user-comment-row, .ai-suggestion-row, .external-comment-row') || element;
-    if (
-      !commentRow.classList.contains('user-comment-row') &&
-      !commentRow.classList.contains('ai-suggestion-row') &&
-      !commentRow.classList.contains('external-comment-row')
-    ) {
-      return;
-    }
+    // Line-level: resolve the containing vendor annotation wrapper.
+    const annotationWrapper = element.closest('[data-annotation-slot]');
+    if (!annotationWrapper) return;
+    const key = this._lineKeyFor(annotationWrapper);
+    if (!key) return;
 
-    // Find the parent diff row for this comment row
-    const diffRow = this._findDiffRowFor(commentRow);
-    if (!diffRow) return;
+    this._expandedLines.add(key);
+    const wrappers = this._wrappersForKey(key);
+    this._applyExpanded(wrappers, true);
 
-    // Already expanded — nothing to do
-    if (this._expandedLines.has(diffRow)) return;
-
-    // Expand all comment rows for this diff line
-    this._expandedLines.add(diffRow);
-    this._getCommentRowsFor(diffRow).forEach(row => row.classList.add('comment-expanded'));
-
-    // Update the indicator button's expanded state
-    const btn = diffRow.querySelector('.d2h-code-line-ctn .comment-indicator');
+    // Mark the indicator (injected into the group's first wrapper) as expanded.
+    const btn = wrappers[0]?.querySelector(':scope > .comment-indicator');
     if (btn) {
       btn.classList.add('expanded');
     }
@@ -486,6 +505,46 @@ class CommentMinimizer {
   _removeAllIndicators() {
     document.querySelectorAll('.comment-indicator').forEach(btn => btn.remove());
     document.querySelectorAll('.file-comment-indicator').forEach(btn => btn.remove());
+  }
+
+  // ---------------------------------------------------------------------------
+  // Rerender resilience
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Observe the diff container for the vendor's card-recreating rerenders and
+   * re-inject indicators. Debounced via rAF and idempotent (refreshIndicators
+   * clears first). Paused during our own refresh so injecting indicators does
+   * not loop. No-op without a DOM (tests may run headless without MutationObserver).
+   * @private
+   */
+  _startObserving() {
+    if (this._observer || typeof MutationObserver === 'undefined') return;
+    const container = document.getElementById('diff-container');
+    if (!container) return;
+    this._observer = new MutationObserver(() => this._onDomMutation());
+    this._observer.observe(container, { childList: true, subtree: true });
+  }
+
+  /** Stop observing the diff container. @private */
+  _stopObserving() {
+    if (this._observer) {
+      this._observer.disconnect();
+      this._observer = null;
+    }
+  }
+
+  /** Debounced reaction to diff-container mutations. @private */
+  _onDomMutation() {
+    if (!this._active || this._refreshScheduled) return;
+    this._refreshScheduled = true;
+    const raf = (typeof requestAnimationFrame === 'function')
+      ? requestAnimationFrame
+      : (fn) => setTimeout(fn, 16);
+    raf(() => {
+      this._refreshScheduled = false;
+      if (this._active) this.refreshIndicators();
+    });
   }
 }
 
