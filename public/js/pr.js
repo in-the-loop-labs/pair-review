@@ -5171,6 +5171,98 @@ class PRManager {
   }
 
   /**
+   * Collapse/viewed state key for a context entry. Context entries share a
+   * file path with a possible diff entry for the same file, so their state
+   * is tracked under a namespaced key to keep the two independent.
+   * @param {string} filePath - Path of the file
+   * @returns {string}
+   */
+  _contextStateKey(filePath) {
+    return `context:${filePath}`;
+  }
+
+  /**
+   * Find the context-entry wrapper for a file path. Unlike findFileElement,
+   * this never resolves to the diff wrapper for the same file.
+   * @param {string} filePath - Path of the file
+   * @returns {Element|null}
+   */
+  findContextFileWrapper(filePath) {
+    return document.querySelector(
+      `.d2h-file-wrapper.context-file[data-file-name="${CSS.escape(filePath)}"]`
+    );
+  }
+
+  /**
+   * Toggle collapse state of a context entry.
+   *
+   * Context entries must not route through toggleFileCollapse: that resolves
+   * by file path, which finds the diff wrapper when the same file also has a
+   * diff entry — collapsing the context entry would expand the viewed diff
+   * instead (#540). Context bodies are built eagerly and are not managed by
+   * the pierre bridge, so no lazy render or bridge sync is needed here.
+   * @param {string} filePath - Path of the file
+   */
+  toggleContextFileCollapse(filePath) {
+    const wrapper = this.findContextFileWrapper(filePath);
+    if (!wrapper) return;
+
+    const key = this._contextStateKey(filePath);
+    const collapsed = wrapper.classList.toggle('collapsed');
+    if (collapsed) {
+      this.collapsedFiles.add(key);
+    } else {
+      this.collapsedFiles.delete(key);
+    }
+
+    const header = wrapper.querySelector('.d2h-file-header');
+    if (header) {
+      window.DiffRenderer.updateFileHeaderState(header, !collapsed);
+    }
+  }
+
+  /**
+   * Toggle viewed state of a context entry, independent of the diff entry
+   * for the same file. Persists through the same viewedFiles storage as
+   * diff entries, under the context-scoped key.
+   * @param {string} filePath - Path of the file
+   * @param {boolean} isViewed - Whether the context entry is now viewed
+   */
+  toggleContextFileViewed(filePath, isViewed) {
+    const wrapper = this.findContextFileWrapper(filePath);
+    const key = this._contextStateKey(filePath);
+    const header = wrapper ? wrapper.querySelector('.d2h-file-header') : null;
+
+    if (isViewed) {
+      this.viewedFiles.add(key);
+      // Auto-collapse when marking as viewed
+      if (wrapper && !wrapper.classList.contains('collapsed')) {
+        wrapper.classList.add('collapsed');
+        this.collapsedFiles.add(key);
+        if (header) {
+          window.DiffRenderer.updateFileHeaderState(header, false);
+        }
+      }
+    } else {
+      this.viewedFiles.delete(key);
+      // Auto-expand when unchecking viewed (match GitHub behavior)
+      if (wrapper && wrapper.classList.contains('collapsed')) {
+        wrapper.classList.remove('collapsed');
+        this.collapsedFiles.delete(key);
+        if (header) {
+          window.DiffRenderer.updateFileHeaderState(header, true);
+        }
+      }
+    }
+
+    // Context entries only get their own sidebar row when the file is not in
+    // the diff; scope to context items so a same-path diff row is untouched.
+    this.updateFileItemViewedState(filePath, isViewed, { contextItem: true });
+
+    this.saveViewedState();
+  }
+
+  /**
    * Build the eye-slash icon wrapper element used to mark a sidebar
    * file row as viewed. Shared by the initial render and in-place updates
    * so the markup and attributes stay in sync.
@@ -5191,12 +5283,16 @@ class PRManager {
    * without re-rendering the whole file list.
    * @param {string} filePath - Path of the file
    * @param {boolean} isViewed - Whether the file is now viewed
+   * @param {Object} [options]
+   * @param {boolean} [options.contextItem=false] - Match the context-entry
+   *   sidebar row instead of the diff row (they can share a file path)
    */
-  updateFileItemViewedState(filePath, isViewed) {
+  updateFileItemViewedState(filePath, isViewed, { contextItem = false } = {}) {
     const items = document.querySelectorAll('.file-item');
     let item = null;
     for (const candidate of items) {
-      if (candidate.dataset.path === filePath) {
+      if (candidate.dataset.path === filePath &&
+          candidate.classList.contains('context-file-item') === contextItem) {
         item = candidate;
         break;
       }
@@ -7664,7 +7760,10 @@ class PRManager {
 
     if (file.generated) item.classList.add('generated');
     if (file.contextFile) item.classList.add('context-file-item');
-    if (this.viewedFiles && this.viewedFiles.has(file.fullPath)) {
+    // Context entries track viewed state under a context-scoped key so they
+    // stay independent of a diff entry for the same file.
+    const viewedKey = file.contextFile ? this._contextStateKey(file.fullPath) : file.fullPath;
+    if (this.viewedFiles && this.viewedFiles.has(viewedKey)) {
       item.classList.add('viewed');
       const viewedIcon = this._createViewedIcon();
       item.insertBefore(viewedIcon, item.firstChild);
@@ -8652,6 +8751,10 @@ class PRManager {
     const reviewId = this.currentPR?.id;
     if (!reviewId) return;
 
+    // Capture before anything reassigns this.contextFiles — needed to scrub
+    // context-scoped state for rows deleted remotely (peer tab / WebSocket).
+    const previousFiles = this.contextFiles || [];
+
     try {
       const response = await fetch(`/api/reviews/${reviewId}/context-files`);
       if (!response.ok) return;
@@ -8690,9 +8793,18 @@ class PRManager {
         }
       }
 
-      // Add only new context files
+      // Add only new context files. "Diff wins": a stored context row whose
+      // file has since entered the diff (Local-mode scope change, new commits,
+      // PR refresh) is suppressed at the view layer — never rendered as a
+      // duplicate wrapper, never deleted from the DB. renderDiff is a full
+      // clear-and-rebuild that resets contextFiles and re-runs this method,
+      // so a file leaving the diff self-heals back to a context wrapper.
+      // Mirrors the add-time guards (ensureContextFile, the POST route) and
+      // the sidebar merge (mergeFileListWithContext).
+      const diffPaths = new Set((this.diffFiles || []).map(f => f.file));
       let newFilesRendered = false;
       for (const cf of newFiles) {
+        if (diffPaths.has(cf.file)) continue;
         if (!oldIds.has(cf.id)) {
           await this.renderContextFile(cf);
           newFilesRendered = true;
@@ -8700,6 +8812,13 @@ class PRManager {
       }
 
       this.contextFiles = newFiles;
+
+      // Scrub context-scoped viewed/collapsed keys for paths whose entries all
+      // disappeared in this refresh. Without this, a delete arriving via the
+      // WebSocket path leaves orphaned `context:` keys on peer tabs: re-adding
+      // the file renders it pre-viewed/pre-collapsed, and a later
+      // saveViewedState() writes the orphan back into shared storage.
+      this._scrubRemovedContextState(previousFiles);
 
       // Rebuild sidebar with context files interleaved in natural path order
       this.rebuildFileListWithContext();
@@ -8902,7 +9021,7 @@ class PRManager {
     chevronBtn.innerHTML = window.DiffRenderer.CHEVRON_DOWN_ICON;
     chevronBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      this.toggleFileCollapse(contextFile.file);
+      this.toggleContextFileCollapse(contextFile.file);
     });
     header.appendChild(chevronBtn);
 
@@ -8924,10 +9043,10 @@ class PRManager {
     const viewedCheckbox = document.createElement('input');
     viewedCheckbox.type = 'checkbox';
     viewedCheckbox.className = 'file-viewed-checkbox';
-    viewedCheckbox.checked = this.viewedFiles.has(contextFile.file);
+    viewedCheckbox.checked = this.viewedFiles.has(this._contextStateKey(contextFile.file));
     viewedCheckbox.addEventListener('change', (e) => {
       e.stopPropagation();
-      this.toggleFileViewed(contextFile.file, viewedCheckbox.checked);
+      this.toggleContextFileViewed(contextFile.file, viewedCheckbox.checked);
     });
     viewedLabel.appendChild(viewedCheckbox);
     viewedLabel.appendChild(document.createTextNode('Viewed'));
@@ -9006,7 +9125,7 @@ class PRManager {
           e.target.closest('.context-file-dismiss')) {
         return;
       }
-      this.toggleFileCollapse(contextFile.file);
+      this.toggleContextFileCollapse(contextFile.file);
     });
 
     wrapper.appendChild(header);
@@ -9027,6 +9146,14 @@ class PRManager {
     fileBody.appendChild(table);
     wrapper.appendChild(fileBody);
 
+    // Apply context-scoped collapse/viewed state (independent of any diff
+    // entry for the same file) — mirrors renderFileDiff's initial state.
+    const contextKey = this._contextStateKey(contextFile.file);
+    if (this.viewedFiles.has(contextKey) || this.collapsedFiles.has(contextKey)) {
+      wrapper.classList.add('collapsed');
+      window.DiffRenderer.updateFileHeaderState(header, false);
+    }
+
     // Insert in sorted path order among existing file wrappers
     const allWrappers = [...diffContainer.querySelectorAll('.d2h-file-wrapper')];
     const insertBefore = allWrappers.find(w => w.dataset.fileName > contextFile.file);
@@ -9038,12 +9165,50 @@ class PRManager {
   }
 
   /**
+   * Scrub context-scoped viewed/collapsed keys for context entries that no
+   * longer have any row for their path in the current this.contextFiles.
+   * Persists via saveViewedState() only when a viewed key was actually
+   * removed, so WebSocket-driven refreshes don't POST on every event.
+   * Idempotent: re-running with the same input is a no-op.
+   *
+   * Note: the "diff wins" guard in loadContextFiles only suppresses rendering;
+   * suppressed rows remain in this.contextFiles, so they are correctly treated
+   * as still present here and never scrubbed.
+   *
+   * @param {Array<{file: string}>} previousContextFiles - Context rows that
+   *   existed before the refresh/delete (candidates for scrubbing)
+   */
+  _scrubRemovedContextState(previousContextFiles) {
+    if (!previousContextFiles || previousContextFiles.length === 0) return;
+
+    const remainingPaths = new Set((this.contextFiles || []).map(cf => cf.file));
+    let viewedRemoved = false;
+    for (const prev of previousContextFiles) {
+      if (!prev || remainingPaths.has(prev.file)) continue;
+      const key = this._contextStateKey(prev.file);
+      this.collapsedFiles?.delete(key);
+      if (this.viewedFiles?.delete(key)) {
+        viewedRemoved = true;
+      }
+    }
+    if (viewedRemoved) {
+      this.saveViewedState();
+    }
+  }
+
+  /**
    * Remove a context file by ID.
    * @param {number} contextFileId
    */
   async removeContextFile(contextFileId) {
     const reviewId = this.currentPR?.id;
     if (!reviewId) return;
+
+    // Capture the row before loadContextFiles refreshes this.contextFiles —
+    // afterwards the deleted ID is gone and the file path with it.
+    const removed = (this.contextFiles || []).find(
+      cf => String(cf.id) === String(contextFileId)
+    );
 
     try {
       const resp = await fetch(`/api/reviews/${reviewId}/context-files/${contextFileId}`, {
@@ -9056,6 +9221,13 @@ class PRManager {
       }
       // Refresh immediately — WebSocket self-echo is suppressed by the client ID filter
       await this.loadContextFiles();
+
+      // Defense-in-depth: loadContextFiles already scrubs based on its own
+      // previous-files snapshot, but scrub the captured row explicitly too —
+      // the helper's remaining-paths check makes double-scrubbing harmless.
+      if (removed) {
+        this._scrubRemovedContextState([removed]);
+      }
     } catch (error) {
       console.error('Error removing context file:', error);
     }

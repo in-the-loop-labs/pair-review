@@ -70,12 +70,20 @@ describe('file-item viewed indicator', () => {
       expect(item.querySelector('.file-viewed-icon-wrapper')).toBeNull();
     });
 
-    it('marks context files as viewed when their path is in viewedFiles', () => {
-      const manager = createManager(['src/app.js']);
+    it('marks context files as viewed via their context-scoped key', () => {
+      const manager = createManager(['context:src/app.js']);
       const item = manager.renderFileItem(makeFile({ contextFile: true }));
 
       expect(item.classList.contains('viewed')).toBe(true);
       expect(item.querySelector('.file-viewed-icon-wrapper')).not.toBeNull();
+    });
+
+    it('does not mark a context file viewed from the diff entry key (#540)', () => {
+      const manager = createManager(['src/app.js']);
+      const item = manager.renderFileItem(makeFile({ contextFile: true }));
+
+      expect(item.classList.contains('viewed')).toBe(false);
+      expect(item.querySelector('.file-viewed-icon-wrapper')).toBeNull();
     });
 
     it('handles missing viewedFiles set without throwing', () => {
