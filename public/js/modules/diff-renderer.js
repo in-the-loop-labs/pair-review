@@ -273,7 +273,14 @@ class DiffRenderer {
       : filePath;
 
     try {
-      return document.querySelector(`[${attribute}="${escapedValue}"]`);
+      // Scope to `.d2h-file-wrapper` so a nested `.file-comments-zone` (which
+      // also carries data-file-name) can never be returned, and skip context
+      // entries — those are targeted explicitly via `.context-file` selectors
+      // (see PRManager.findContextFileWrapper). No unguarded fallback here:
+      // findFileElement's pathsMatch loop handles rename syntax and
+      // context-only files, and prefers the diff wrapper itself.
+      const selector = `.d2h-file-wrapper[${attribute}="${escapedValue}"]:not(.context-file)`;
+      return document.querySelector(selector);
     } catch {
       return null;
     }
@@ -798,17 +805,22 @@ class DiffRenderer {
     }
 
     // Fall back to normalized iteration so special characters, rename syntax,
-    // and formatted variants still resolve to the rendered wrapper.
+    // and formatted variants still resolve to the rendered wrapper. Prefer a
+    // diff wrapper over a context entry that shares the file path.
     const allFileWrappers = document.querySelectorAll('.d2h-file-wrapper');
+    let contextMatch = null;
     for (const wrapper of allFileWrappers) {
       const fileName = wrapper.dataset.fileName;
       const filePathAttr = wrapper.dataset.filePath;
       if (DiffRenderer.pathsMatch(fileName, filePath) || DiffRenderer.pathsMatch(filePathAttr, filePath)) {
-        return wrapper;
+        if (!wrapper.classList?.contains('context-file')) {
+          return wrapper;
+        }
+        if (!contextMatch) contextMatch = wrapper;
       }
     }
 
-    return null;
+    return contextMatch;
   }
 }
 
