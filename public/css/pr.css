@@ -13528,7 +13528,10 @@ body.tour-active .d2h-file-header {
 }
 
 [data-theme="dark"] .tour-bar {
-  background: rgba(187, 128, 9, 0.22);
+  /* The bar is sticky, so diff content scrolls beneath it — the amber wash
+     must be layered over an opaque base or that content bleeds through. */
+  background: linear-gradient(rgba(187, 128, 9, 0.22), rgba(187, 128, 9, 0.22)),
+              var(--color-bg-primary, #0d1117);
   border-bottom-color: #bb8009;
   color: #e3b341;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.40);
