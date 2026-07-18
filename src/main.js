@@ -1,7 +1,7 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
-const { loadConfig, getConfigDir, showWelcomeMessage, resolveDbName, resolveRepoOptions, resolvePoolConfig, getRepoResetScript, resolveLoadSkills, buildCouncilProviderOverrides } = require('./config');
+const { loadConfig, getConfigDir, showWelcomeMessage, resolveDbName, resolveRepoOptions, resolvePoolConfig, getRepoResetScript, getRepoSkipBulkFetch, resolveLoadSkills, buildCouncilProviderOverrides } = require('./config');
 const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository, ReviewRepository, RepoSettingsRepository, GitHubReviewRepository, WorktreePoolRepository, CouncilRepository, CommentRepository, AnalysisRunRepository } = require('./database');
 const { PRArgumentParser } = require('./github/parser');
 const { GitHubClient } = require('./github/client');
@@ -2652,10 +2652,14 @@ async function handleActionReview(args, config, db, flags = {}, poolLifecycle = 
  */
 const POOL_FETCH_TICK_MS = 60 * 1000; // Check every minute
 
-function startPoolBackgroundFetches(db, config) {
+function startPoolBackgroundFetches(
+  db,
+  config,
+  { createGit = simpleGit, schedule = setInterval } = {}
+) {
   let fetchInProgress = false;
 
-  const timer = setInterval(async () => {
+  const timer = schedule(async () => {
     if (fetchInProgress) return;
     fetchInProgress = true;
     try {
@@ -2676,6 +2680,13 @@ function startPoolBackgroundFetches(db, config) {
         const repoSettings = allRepoSettings.find(r => r.repository.toLowerCase() === repoName.toLowerCase()) || null;
         const { poolSize, poolFetchIntervalMinutes } = resolvePoolConfig(config, repoName, repoSettings);
         if (!poolSize || !poolFetchIntervalMinutes) continue;
+
+        if (getRepoSkipBulkFetch(config, repoName)) {
+          logger.debug(
+            `Background fetch disabled for ${repoName}: skip_bulk_fetch enabled`
+          );
+          continue;
+        }
 
         const intervalMs = poolFetchIntervalMinutes * 60 * 1000;
         const worktrees = await poolRepo.findAllForFetch(repoName);
@@ -2709,7 +2720,7 @@ function startPoolBackgroundFetches(db, config) {
 
             logger.info(`Background fetch starting for ${repoName} pool worktree ${entry.id}`);
             try {
-              const git = simpleGit(entry.path, { timeout: { block: 300000 } });
+              const git = createGit(entry.path, { timeout: { block: 300000 } });
               const remotes = await git.getRemotes();
               const remote = remotes.find(r => r.name === 'origin') || remotes[0];
               if (remote) await fetchNoTags(git, ['--prune', remote.name]);
@@ -2788,4 +2799,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { main, parseArgs, detectPRFromGitHubEnvironment, printCouncilList, handleHeadlessAnalysis, handleHeadlessDelegated, runHeadlessAnalysis, buildHeadlessJson, buildHeadlessErrorJson, resolveCliInstructions };
+module.exports = { main, parseArgs, detectPRFromGitHubEnvironment, printCouncilList, handleHeadlessAnalysis, handleHeadlessDelegated, runHeadlessAnalysis, buildHeadlessJson, buildHeadlessErrorJson, resolveCliInstructions, startPoolBackgroundFetches };

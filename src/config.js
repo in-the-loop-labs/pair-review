@@ -1412,10 +1412,11 @@ function getRepoResetScript(config, repository) {
 }
 
 /**
- * Gets whether updateWorktree should skip the bulk `git fetch <remote> --prune`
+ * Gets whether broad fetches should be skipped during worktree refresh and
+ * periodic pool background fetching. Targeted base-SHA and PR-head fetches continue.
  * @param {Object} config - Configuration object from loadConfig()
  * @param {string} repository - Repository in "owner/repo" format
- * @returns {boolean} - true if the bulk fetch should be skipped (default: false)
+ * @returns {boolean} - true if broad fetches should be skipped (default: false)
  */
 function getRepoSkipBulkFetch(config, repository) {
   const repoConfig = getRepoConfig(config, repository);
