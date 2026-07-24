@@ -26,8 +26,8 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
  * in the constructor's base args; individual models can override this via extra_args
  * (e.g., Haiku uses adaptive thinking for efficiency).
  *
- * Effort support by model (newest CLIs): Fable 5, Opus 4.8 / 4.7, and Sonnet 5
- * support low|medium|high|xhigh|max; Opus 4.6 & Sonnet 4.6 support
+ * Effort support by model (newest CLIs): Fable 5, Opus 5, Opus 4.8 / 4.7, and
+ * Sonnet 5 support low|medium|high|xhigh|max; Opus 4.6 & Sonnet 4.6 support
  * low|medium|high|max (no xhigh); Haiku has no effort levels.
  */
 const CLAUDE_MODELS = [
@@ -61,6 +61,28 @@ const CLAUDE_MODELS = [
     extra_args: ['--thinking', 'adaptive']
   },
   {
+    id: 'opus-5-xhigh',
+    cli_model: 'claude-opus-5',
+    env: { CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' },
+    name: 'Opus 5 XHigh',
+    tier: 'thorough',
+    tagline: 'Newest Opus',
+    description: 'Opus 5 (newest) with extra-high effort',
+    badge: 'Latest',
+    badgeClass: 'badge-power'
+  },
+  {
+    id: 'opus-5-high',
+    cli_model: 'claude-opus-5',
+    env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' },
+    name: 'Opus 5 High',
+    tier: 'thorough',
+    tagline: 'Newest Opus',
+    description: 'Opus 5 with high effort — quicker than XHigh',
+    badge: 'High Effort',
+    badgeClass: 'badge-power'
+  },
+  {
     id: 'opus-4.8-xhigh',
     aliases: ['opus'],
     cli_model: 'claude-opus-4-8',
@@ -68,7 +90,7 @@ const CLAUDE_MODELS = [
     name: 'Opus 4.8 XHigh',
     tier: 'thorough',
     tagline: 'Maximum Depth',
-    description: 'Opus 4.8 (newest) with extra-high effort — deepest analysis',
+    description: 'Opus 4.8 with extra-high effort — deepest analysis',
     badge: 'Most Thorough',
     badgeClass: 'badge-power',
     default: true
@@ -79,9 +101,9 @@ const CLAUDE_MODELS = [
     env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' },
     name: 'Opus 4.8 High',
     tier: 'thorough',
-    tagline: 'Newest',
-    description: 'Opus 4.8 (newest) with high effort',
-    badge: 'Latest',
+    tagline: 'High Effort',
+    description: 'Opus 4.8 with high effort — thorough, quicker than XHigh',
+    badge: 'Thorough',
     badgeClass: 'badge-power'
   },
   {
