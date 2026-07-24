@@ -63,7 +63,7 @@ describe('ClaudeProvider', () => {
     it('should return array of models with expected structure', () => {
       const models = ClaudeProvider.getModels();
       expect(Array.isArray(models)).toBe(true);
-      expect(models.length).toBe(12);
+      expect(models.length).toBe(14);
 
       // Check that we have haiku, sonnet, opus, and fable variants
       const modelIds = models.map(m => m.id);
@@ -73,6 +73,8 @@ describe('ClaudeProvider', () => {
       expect(modelIds).toContain('sonnet-5-xhigh');
       expect(modelIds).toContain('sonnet-5-high');
       expect(modelIds).toContain('sonnet-4.6');
+      expect(modelIds).toContain('opus-5-xhigh');
+      expect(modelIds).toContain('opus-5-high');
       expect(modelIds).toContain('opus-4.8-xhigh');
       expect(modelIds).toContain('opus-4.8-high');
       expect(modelIds).toContain('opus-4.7-high');
@@ -132,6 +134,37 @@ describe('ClaudeProvider', () => {
       expect(models.find(m => m.id === 'opus-4.7-high').env).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'high' });
       expect(models.find(m => m.id === 'opus-4.7-xhigh').env).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' });
       expect(models.find(m => m.id === 'opus-4.8-high').env).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'high' });
+
+      // Opus 5 variants mirror the 4.8 shape: thorough tier, pinned to claude-opus-5,
+      // effort carried on the env var. They are NOT the default and hold no aliases —
+      // the bare 'opus' alias intentionally stays on opus-4.8-xhigh.
+      const opus5XHigh = models.find(m => m.id === 'opus-5-xhigh');
+      expect(opus5XHigh).toMatchObject({
+        id: 'opus-5-xhigh',
+        name: 'Opus 5 XHigh',
+        tier: 'thorough',
+        cli_model: 'claude-opus-5'
+      });
+      expect(opus5XHigh.env).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' });
+      expect(opus5XHigh.default).toBeUndefined();
+      expect(opus5XHigh.aliases).toBeUndefined();
+      const opus5High = models.find(m => m.id === 'opus-5-high');
+      expect(opus5High).toMatchObject({
+        id: 'opus-5-high',
+        name: 'Opus 5 High',
+        tier: 'thorough',
+        cli_model: 'claude-opus-5'
+      });
+      expect(opus5High.env).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'high' });
+      expect(opus5High.default).toBeUndefined();
+
+      // Opus 4.8 is no longer the newest — its copy must not claim latest/newest.
+      for (const id of ['opus-4.8-xhigh', 'opus-4.8-high']) {
+        const model = models.find(m => m.id === id);
+        const copy = `${model.tagline} ${model.description} ${model.badge}`.toLowerCase();
+        expect(copy).not.toContain('newest');
+        expect(copy).not.toContain('latest');
+      }
 
       // Fable 5 variants are thorough, pinned to claude-fable-5, and adaptive-thinking-only.
       // 'fable-5-xhigh' is the canonical id, aliased by the convenience id 'fable'.
@@ -400,6 +433,17 @@ describe('ClaudeProvider', () => {
         const modelIdx = provider.args.indexOf('--model');
         expect(modelIdx).not.toBe(-1);
         expect(provider.args[modelIdx + 1]).toBe('claude-opus-4-8');
+      });
+
+      it.each([
+        ['opus-5-xhigh', 'xhigh'],
+        ['opus-5-high',  'high'],
+      ])('should resolve %s to the claude-opus-5 cli_model with %s effort', (id, effort) => {
+        const provider = new ClaudeProvider(id);
+        const modelIdx = provider.args.indexOf('--model');
+        expect(modelIdx).not.toBe(-1);
+        expect(provider.args[modelIdx + 1]).toBe('claude-opus-5');
+        expect(provider.extraEnv).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: effort });
       });
 
       it('should resolve opus-4.6-1m to claude-opus-4-6[1m] cli_model', () => {
