@@ -856,6 +856,12 @@ class ChatPanel {
             </svg>
             Create comment
           </button>
+          <button class="chat-panel__action-btn chat-panel__action-btn--use-summary" style="display: none;" title="Use the latest AI reply as your review summary">
+            <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
+              <path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/>
+            </svg>
+            Use as review summary
+          </button>
           <button class="chat-panel__action-bar-dismiss" title="Dismiss shortcuts">
             ${DISMISS_ICON}
           </button>
@@ -909,6 +915,7 @@ class ChatPanel {
     this.dismissSuggestionBtn = this.container.querySelector('.chat-panel__action-btn--dismiss-suggestion');
     this.dismissCommentBtn = this.container.querySelector('.chat-panel__action-btn--dismiss-comment');
     this.createCommentBtn = this.container.querySelector('.chat-panel__action-btn--create-comment');
+    this.useSummaryBtn = this.container.querySelector('.chat-panel__action-btn--use-summary');
     this.actionBarDismissBtn = this.container.querySelector('.chat-panel__action-bar-dismiss');
     this.providerPickerEl = this.container.querySelector('.chat-panel__provider-picker');
     this.providerPickerBtn = this.container.querySelector('.chat-panel__provider-picker-btn');
@@ -955,6 +962,7 @@ class ChatPanel {
     this.dismissSuggestionBtn.addEventListener('click', () => this._handleDismissSuggestionClick());
     this.dismissCommentBtn.addEventListener('click', () => this._handleDismissCommentClick());
     this.createCommentBtn.addEventListener('click', () => this._handleCreateCommentClick());
+    this.useSummaryBtn.addEventListener('click', () => this._handleUseSummaryClick());
     this.actionBarDismissBtn.addEventListener('click', () => this._handleActionBarDismiss());
 
     // New-content pill: click to scroll to bottom
@@ -4339,6 +4347,98 @@ class ChatPanel {
   }
 
   /**
+   * Return the raw markdown content of the most recent assistant message in
+   * the active tab, or null when there is none. Used by ReviewModal to pull a
+   * drafted review summary back into the Submit Review modal.
+   * @returns {string|null}
+   */
+  getLastAssistantMessage() {
+    const tab = this._getActiveTab();
+    if (!tab || !Array.isArray(tab.messages)) return null;
+    for (let i = tab.messages.length - 1; i >= 0; i--) {
+      const msg = tab.messages[i];
+      if (msg && msg.role === 'assistant' && msg.content) return msg.content;
+    }
+    return null;
+  }
+
+  /**
+   * Open the chat panel and ask the agent to draft a PR review summary,
+   * seeding it with the user's current summary text (if any) so it refines
+   * rather than starts over. Driven by the "Draft with AI" affordance in the
+   * Submit Review modal.
+   * @param {{currentSummary?: string}} [options]
+   */
+  async startSummaryDraft({ currentSummary = '' } = {}) {
+    await this.open();
+    // Draft in a dedicated fresh tab (like the "New conversation" button) so
+    // the summary session is isolated from whatever chat is currently active
+    // and repeated invocations don't stack duplicate prompts in one tab.
+    await this._openNewTab();
+    // Mark this tab as a review-summary drafting session so the action bar
+    // exposes "Use as review summary" (mirrors the suggestion/comment/line
+    // context sources). The button stays disabled until the reply finishes
+    // streaming, since _updateActionButtons re-runs on stream start/end.
+    this._contextSource = 'review-summary';
+    this._contextItemId = null;
+    this._updateActionButtons();
+    if (!this.inputEl) return;
+    this.inputEl.value = ChatPanel.buildSummaryDraftPrompt(currentSummary);
+    this.sendMessage();
+  }
+
+  /**
+   * Build the prompt sent to the agent when drafting a review summary. Pure so
+   * it can be unit-tested without a live panel.
+   * @param {string} [currentSummary]
+   * @returns {string}
+   */
+  static buildSummaryDraftPrompt(currentSummary = '') {
+    const trimmed = (currentSummary || '').trim();
+    const base = [
+      'Draft a short review summary for this pull request, written in my voice as the reviewer, for the review body.',
+      '',
+      'This is a code review, not a PR description. Follow these rules strictly:',
+      '- Do NOT describe what the PR does, summarize the diff, or mention file/line counts or a list of changes.',
+      '- Do NOT repeat anything already covered in my line-level comments — the author reads those inline. Synthesize the overall takeaway instead.',
+      '- Give my overall assessment and recommendation, plus at most one or two cross-cutting themes not already raised inline.',
+      '- Be terse and specific: a few sentences, or 2–3 tight bullets at most. No praise padding, no generic filler.',
+      '',
+      'Put the finished summary — and nothing else — inside a single fenced code block tagged `markdown`:',
+      '',
+      '```markdown',
+      '<your summary here>',
+      '```',
+      '',
+      'Only the contents of that block are used as my review summary, so keep any thinking, preamble, or narration outside it.',
+    ].join('\n');
+    if (trimmed) {
+      return `${base}\n\nHere is my current draft to refine (keep what works, tighten the rest):\n\n${trimmed}`;
+    }
+    return base;
+  }
+
+  /**
+   * Extract the drafted review summary from a raw assistant reply.
+   * `buildSummaryDraftPrompt` asks the agent to wrap the summary in a fenced
+   * ```markdown block; tool-using agents also emit process narration ("I'll
+   * review the diff…", "Now let me check…") outside it. Return only the block
+   * contents when present, otherwise the trimmed raw text so older replies (or
+   * an agent that ignores the fence) still fall back to the whole message.
+   * @param {string|null} raw
+   * @returns {string|null}
+   */
+  static extractDraftedSummary(raw) {
+    if (typeof raw !== 'string') return raw;
+    const fenceRe = /```(?:markdown|md)[^\n]*\n([\s\S]*?)```/gi;
+    let match;
+    let last = null;
+    while ((match = fenceRe.exec(raw)) !== null) last = match[1];
+    if (last !== null && last.trim()) return last.trim();
+    return raw.trim();
+  }
+
+  /**
    * Create a copy-to-clipboard button for an assistant message bubble.
    * @param {string} rawContent - Raw markdown to copy
    * @returns {HTMLButtonElement}
@@ -5163,9 +5263,10 @@ class ChatPanel {
     const hasSuggestion = this._contextSource === 'suggestion' && this._contextItemId;
     const hasComment = this._contextSource === 'user' && this._contextItemId;
     const hasLine = this._contextSource === 'line';
+    const hasSummaryDraft = this._contextSource === 'review-summary';
 
     // Show the bar only if at least one button is relevant
-    const showBar = hasSuggestion || hasComment || hasLine;
+    const showBar = hasSuggestion || hasComment || hasLine || hasSummaryDraft;
     this.actionBar.style.display = showBar ? '' : 'none';
     this.adoptBtn.style.display = hasSuggestion ? '' : 'none';
     this.dismissSuggestionBtn.style.display = hasSuggestion ? '' : 'none';
@@ -5173,6 +5274,11 @@ class ChatPanel {
     this.dismissCommentBtn.style.display = hasComment ? '' : 'none';
     this.createCommentBtn.style.display = hasLine ? '' : 'none';
     this.createCommentBtn.disabled = this.isStreaming;
+    this.useSummaryBtn.style.display = hasSummaryDraft ? '' : 'none';
+    // Enabled only once a reply exists AND streaming has finished. This keeps
+    // it disabled right after "Draft with AI" (nothing to use yet) and while
+    // the draft streams; it enables when the first reply lands.
+    this.useSummaryBtn.disabled = this.isStreaming || !this.getLastAssistantMessage();
 
     // Disable while streaming
     this.adoptBtn.disabled = this.isStreaming;
@@ -5261,6 +5367,26 @@ class ChatPanel {
     };
     this.inputEl.value = 'Based on our conversation, please create a review comment for this code.';
     this.sendMessage();
+  }
+
+  /**
+   * Handle click on "Use as review summary" button. Sends the latest assistant
+   * message back to the Submit Review modal (client-side, no agent round-trip)
+   * and clears the review-summary context so the button hides.
+   */
+  _handleUseSummaryClick() {
+    if (this.isStreaming) return;
+    const draft = ChatPanel.extractDraftedSummary(this.getLastAssistantMessage());
+    if (!draft) {
+      window.toast?.showWarning?.('No draft yet — wait for the AI to respond, then try again.');
+      return;
+    }
+    this._contextSource = null;
+    this._contextItemId = null;
+    this._updateActionButtons();
+    if (window.reviewModal && typeof window.reviewModal.applyDraftedSummary === 'function') {
+      window.reviewModal.applyDraftedSummary(draft);
+    }
   }
 
   /**
