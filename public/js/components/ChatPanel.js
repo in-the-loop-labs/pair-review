@@ -4404,12 +4404,38 @@ class ChatPanel {
       '- Give my overall assessment and recommendation, plus at most one or two cross-cutting themes not already raised inline.',
       '- Be terse and specific: a few sentences, or 2–3 tight bullets at most. No praise padding, no generic filler.',
       '',
-      'Return only the summary text (Markdown), with no preamble.',
+      'Put the finished summary — and nothing else — inside a single fenced code block tagged `markdown`:',
+      '',
+      '```markdown',
+      '<your summary here>',
+      '```',
+      '',
+      'Only the contents of that block are used as my review summary, so keep any thinking, preamble, or narration outside it.',
     ].join('\n');
     if (trimmed) {
       return `${base}\n\nHere is my current draft to refine (keep what works, tighten the rest):\n\n${trimmed}`;
     }
     return base;
+  }
+
+  /**
+   * Extract the drafted review summary from a raw assistant reply.
+   * `buildSummaryDraftPrompt` asks the agent to wrap the summary in a fenced
+   * ```markdown block; tool-using agents also emit process narration ("I'll
+   * review the diff…", "Now let me check…") outside it. Return only the block
+   * contents when present, otherwise the trimmed raw text so older replies (or
+   * an agent that ignores the fence) still fall back to the whole message.
+   * @param {string|null} raw
+   * @returns {string|null}
+   */
+  static extractDraftedSummary(raw) {
+    if (typeof raw !== 'string') return raw;
+    const fenceRe = /```(?:markdown|md)[^\n]*\n([\s\S]*?)```/gi;
+    let match;
+    let last = null;
+    while ((match = fenceRe.exec(raw)) !== null) last = match[1];
+    if (last !== null && last.trim()) return last.trim();
+    return raw.trim();
   }
 
   /**
@@ -5350,7 +5376,7 @@ class ChatPanel {
    */
   _handleUseSummaryClick() {
     if (this.isStreaming) return;
-    const draft = this.getLastAssistantMessage();
+    const draft = ChatPanel.extractDraftedSummary(this.getLastAssistantMessage());
     if (!draft) {
       window.toast?.showWarning?.('No draft yet — wait for the AI to respond, then try again.');
       return;

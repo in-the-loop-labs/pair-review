@@ -920,13 +920,31 @@ describe('ChatPanel', () => {
       expect(global.window.reviewModal.applyDraftedSummary).not.toHaveBeenCalled();
       expect(global.window.toast.showWarning).toHaveBeenCalled();
     });
+
+    it('extracts only the fenced markdown block from a narrated reply', () => {
+      const tab = attachActiveTab(chatPanel);
+      tab.messages.push({
+        role: 'assistant',
+        content: "I'll review the diff.\nNow let me check the lifecycle.\n\n```markdown\nApprove — one nit: guard the null path.\n```",
+      });
+      chatPanel._contextSource = 'review-summary';
+      chatPanel.isStreaming = false;
+      global.window.reviewModal = { applyDraftedSummary: vi.fn() };
+
+      chatPanel._handleUseSummaryClick();
+
+      // Only the block contents reach the modal — not the surrounding narration.
+      expect(global.window.reviewModal.applyDraftedSummary)
+        .toHaveBeenCalledWith('Approve — one nit: guard the null path.');
+    });
   });
 
   describe('buildSummaryDraftPrompt', () => {
-    it('returns a base prompt with no preamble instruction when no draft is given', () => {
+    it('asks for the summary inside a fenced markdown block and omits the refine section when no draft is given', () => {
       const prompt = ChatPanel.buildSummaryDraftPrompt('');
       expect(prompt).toContain('review summary');
-      expect(prompt).toContain('no preamble');
+      expect(prompt).toContain('```markdown');
+      expect(prompt.toLowerCase()).toContain('narration');
       expect(prompt).not.toContain('current draft');
     });
 
@@ -947,6 +965,35 @@ describe('ChatPanel', () => {
       expect(prompt).toContain('my existing text');
       // Whitespace is trimmed before embedding.
       expect(prompt).not.toContain('  my existing text  ');
+    });
+  });
+
+  describe('extractDraftedSummary', () => {
+    it('returns only the fenced markdown block, dropping process narration around it', () => {
+      const raw = [
+        "I'll review the PR changes and existing comments to synthesize a summary.",
+        'Now let me check the lifecycle concerns.',
+        '',
+        '```markdown',
+        'Clean, well-scoped change. One nit: guard the null path.',
+        '```',
+      ].join('\n');
+
+      expect(ChatPanel.extractDraftedSummary(raw))
+        .toBe('Clean, well-scoped change. One nit: guard the null path.');
+    });
+
+    it('takes the last markdown block when several are present', () => {
+      const raw = '```markdown\nfirst\n```\nmore narration\n```markdown\nfinal summary\n```';
+      expect(ChatPanel.extractDraftedSummary(raw)).toBe('final summary');
+    });
+
+    it('falls back to the trimmed raw text when no fenced block is present', () => {
+      expect(ChatPanel.extractDraftedSummary('  just a plain reply  ')).toBe('just a plain reply');
+    });
+
+    it('passes through a null reply', () => {
+      expect(ChatPanel.extractDraftedSummary(null)).toBeNull();
     });
   });
 
