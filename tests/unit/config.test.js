@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const childProcess = require('child_process');
-const { deepMerge, getGitHubToken, expandPath, resolveDbName, warnIfDevModeWithoutDbName, loadConfig, shouldSkipUpdateNotifier, _resetTokenCache, getRepoConfig, getRepoPath, getRepoCheckoutScript, getRepoWorktreeDirectory, getRepoWorktreeNameTemplate, getRepoCheckoutTimeout, resolveRepoOptions, getRepoResetScript, getRepoSkipBulkFetch, getRepoPoolSize, getRepoPoolFetchInterval, resolvePoolConfig, getWorktreeDisplayName, getConfigDir, getRepoLoadSkills, resolveLoadSkills, buildCouncilProviderOverrides, getSummaryProvider, getSummaryModel, getTourProvider, getTourModel, getSummaryEnabled, getSummaryAutoGenerate, getTourEnabled, getTourAutoGenerate, resolveHostBinding, isExclusiveAltHost, invalidateTokenCache, validateRepoConfig, matchRepoByUrl, resolveBindingRepositoryFromPR } = require('../../src/config');
+const { deepMerge, getGitHubToken, expandPath, resolveDbName, warnIfDevModeWithoutDbName, loadConfig, shouldSkipUpdateNotifier, _resetTokenCache, getRepoConfig, getRepoPath, getRepoCheckoutScript, getRepoWorktreeDirectory, getRepoWorktreeNameTemplate, getRepoCheckoutTimeout, getRepoFetchTimeout, resolveRepoOptions, getRepoResetScript, getRepoSkipBulkFetch, getRepoPoolSize, getRepoPoolFetchInterval, resolvePoolConfig, getWorktreeDisplayName, getConfigDir, getRepoLoadSkills, resolveLoadSkills, buildCouncilProviderOverrides, getSummaryProvider, getSummaryModel, getTourProvider, getTourModel, getSummaryEnabled, getSummaryAutoGenerate, getTourEnabled, getTourAutoGenerate, resolveHostBinding, isExclusiveAltHost, invalidateTokenCache, validateRepoConfig, matchRepoByUrl, resolveBindingRepositoryFromPR } = require('../../src/config');
 
 describe('config.js', () => {
   describe('getGitHubToken', () => {
@@ -1576,6 +1576,53 @@ describe('config.js', () => {
         repos: { 'owner/repo': { skip_bulk_fetch: 'yes' } }
       };
       expect(getRepoSkipBulkFetch(config, 'owner/repo')).toBe(false);
+    });
+  });
+
+  describe('getRepoFetchTimeout', () => {
+    it('returns the configured value converted to milliseconds', () => {
+      const config = {
+        repos: { 'owner/repo': { fetch_timeout_seconds: 1800 } }
+      };
+      expect(getRepoFetchTimeout(config, 'owner/repo')).toBe(1800000);
+    });
+
+    it('reads the value from the legacy monorepos key', () => {
+      const config = {
+        monorepos: { 'owner/repo': { fetch_timeout_seconds: 600 } }
+      };
+      expect(getRepoFetchTimeout(config, 'owner/repo')).toBe(600000);
+    });
+
+    it('returns the 300000 default when not configured', () => {
+      const config = { repos: { 'owner/repo': { path: '~/repo' } } };
+      expect(getRepoFetchTimeout(config, 'owner/repo')).toBe(300000);
+    });
+
+    it('returns the default for an unconfigured repository', () => {
+      const config = { repos: { 'other/repo': { fetch_timeout_seconds: 60 } } };
+      expect(getRepoFetchTimeout(config, 'owner/repo')).toBe(300000);
+    });
+
+    it('returns the default when config has no repos or monorepos', () => {
+      expect(getRepoFetchTimeout({}, 'owner/repo')).toBe(300000);
+    });
+
+    it('returns the default when fetch_timeout_seconds is 0', () => {
+      const config = { repos: { 'owner/repo': { fetch_timeout_seconds: 0 } } };
+      expect(getRepoFetchTimeout(config, 'owner/repo')).toBe(300000);
+    });
+
+    it('returns the default when fetch_timeout_seconds is negative', () => {
+      const config = { repos: { 'owner/repo': { fetch_timeout_seconds: -10 } } };
+      expect(getRepoFetchTimeout(config, 'owner/repo')).toBe(300000);
+    });
+
+    it('is independent of checkout_timeout_seconds', () => {
+      const config = {
+        repos: { 'owner/repo': { checkout_timeout_seconds: 60 } }
+      };
+      expect(getRepoFetchTimeout(config, 'owner/repo')).toBe(300000);
     });
   });
 

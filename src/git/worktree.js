@@ -8,7 +8,7 @@ const { WorktreeRepository, generateWorktreeId } = require('../database');
 const { getGeneratedFilePatterns } = require('./gitattributes');
 const { normalizeRepository, resolveRenamedFile, resolveRenamedFileOld } = require('../utils/paths');
 const { GIT_DIFF_FLAGS_ARRAY, GIT_DIFF_SUMMARY_FLAGS_ARRAY } = require('./diff-flags');
-const { fetchNoTags, rawFetchNoTags } = require('./fetch-helpers');
+const { fetchNoTags, rawFetchNoTags, fetchWithPruneRecovery } = require('./fetch-helpers');
 const { spawn, execSync } = require('child_process');
 
 const MISSING_COMMIT_ERROR_CODE = 'PAIR_REVIEW_MISSING_COMMIT';
@@ -595,20 +595,13 @@ class GitWorktreeManager {
       // Resolve which remote points to the PR's base repository (handles forks)
       const remote = await this.resolveRemoteForPR(git, prData, prInfo);
 
-      // Fetch only the specific base branch we need, with error handling for ref conflicts
+      // Fetch only the specific base branch we need, recovering from ref hierarchy conflicts
       console.log(`Fetching base branch ${prData.base_branch} from ${remote}...`);
       try {
-        await fetchNoTags(git, [remote, `+refs/heads/${prData.base_branch}:refs/remotes/${remote}/${prData.base_branch}`]);
+        await fetchWithPruneRecovery(git, remote, `+refs/heads/${prData.base_branch}:refs/remotes/${remote}/${prData.base_branch}`);
       } catch (fetchError) {
-        // If fetch fails due to ref conflicts, try alternative approaches
-        console.log(`Standard fetch failed, trying alternative: ${fetchError.message}`);
-        try {
-          // Try fetching with force flag to overwrite conflicting refs
-          await rawFetchNoTags(git, ['--force', remote, `+refs/heads/${prData.base_branch}:refs/remotes/${remote}/${prData.base_branch}`]);
-        } catch (altFetchError) {
-          console.warn(`Could not fetch base branch ${prData.base_branch}, will try to use existing ref`);
-          // Continue anyway - the branch might already be available locally
-        }
+        // Continue anyway - the branch might already be available locally
+        console.warn(`Could not fetch base branch ${prData.base_branch} (${fetchError.message}), will try to use existing ref`);
       }
       
       // Create worktree — strategy depends on whether a checkout script is configured
@@ -740,11 +733,9 @@ class GitWorktreeManager {
    * @param {string} repo - Repository name
    * @param {number} number - PR number
    * @param {Object} prData - PR data from GitHub API (for remote resolution)
-   * @param {Object} [options]
-   * @param {boolean} [options.skipBulkFetch=false] - Skip the bulk `git fetch <remote> --prune`; targeted base-SHA and PR-head fetches still run
    * @returns {Promise<string>} Path to updated worktree
    */
-  async updateWorktree(owner, repo, number, prData, options = {}) {
+  async updateWorktree(owner, repo, number, prData) {
     const prInfo = { owner, repo, number };
     const headSha = this.getPRHeadSha(prData);
     const worktreePath = await this.getWorktreePath(prInfo);
@@ -764,26 +755,20 @@ class GitWorktreeManager {
       // Resolve which remote points to the PR's base repository (handles forks)
       const remote = await this.resolveRemoteForPR(worktreeGit, prData, prInfo);
 
-      // Fetch the latest from the resolved remote (--prune removes stale
-      // tracking refs that would otherwise block fetch on ref hierarchy conflicts).
-      // Opt out via skip_bulk_fetch on very large monorepos where this is too slow;
-      // the targeted base-SHA and PR-head ref fetches below still run.
-      if (options.skipBulkFetch) {
-        console.log(`Skipping bulk fetch from ${remote} (skip_bulk_fetch enabled)`);
-        // Still fetch only the PR's base branch so ensureBaseShaAvailable does not
-        // have to fall back to `git fetch <remote> <sha>`, which some Git servers
-        // and mirrors reject (they require uploadpack.allowReachableSHA1InWant).
-        // This mirrors the targeted fetch used in createWorktreeForPR.
-        if (prData?.base_branch) {
-          try {
-            await fetchNoTags(worktreeGit, [remote, `+refs/heads/${prData.base_branch}:refs/remotes/${remote}/${prData.base_branch}`]);
-          } catch (fetchError) {
-            console.warn(`Targeted base-branch fetch failed, will rely on existing refs: ${fetchError.message}`);
-          }
+      // Fetch only the PR's base branch so ensureBaseShaAvailable does not have to
+      // fall back to `git fetch <remote> <sha>`, which some Git servers and mirrors
+      // reject (they require uploadpack.allowReachableSHA1InWant). This mirrors the
+      // targeted fetch used in createWorktreeForPR; ensureBaseShaAvailable below is
+      // the correctness backstop if the ref cannot be updated.
+      if (prData?.base_branch) {
+        console.log(`Fetching base branch ${prData.base_branch} from ${remote}...`);
+        try {
+          await fetchWithPruneRecovery(worktreeGit, remote, `+refs/heads/${prData.base_branch}:refs/remotes/${remote}/${prData.base_branch}`);
+        } catch (fetchError) {
+          console.warn(`Targeted base-branch fetch failed, will rely on existing refs: ${fetchError.message}`);
         }
       } else {
-        console.log(`Fetching latest changes from ${remote}...`);
-        await fetchNoTags(worktreeGit, ['--prune', remote]);
+        console.warn(`No base branch recorded for PR #${number}; skipping targeted base fetch (ensureBaseShaAvailable may fall back to a direct SHA fetch)`);
       }
 
       await this.ensureBaseShaAvailable(worktreeGit, prData, remote);

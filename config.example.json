@@ -291,12 +291,13 @@
   },
 
   "repos": {
-    "_comment": "Repository configurations (renamed from 'monorepos'; the old key still works). 'path' points to an existing local clone. 'checkout_script' runs after worktree creation. 'reset_script' runs when switching a pool worktree to a new PR. 'load_skills' controls whether AI providers load environment-level skills (default: true). 'skip_bulk_fetch' opts out of the unconditional `git fetch <remote> --prune` during refresh (default: false); the targeted base-SHA and PR-head ref fetches still run. Useful for very large monorepos where bulk fetching all refs/tags is prohibitively slow.",
+    "_comment": "Repository configurations (renamed from 'monorepos'; the old key still works). 'path' points to an existing local clone. 'checkout_script' runs after worktree creation. 'reset_script' runs when switching a pool worktree to a new PR. 'load_skills' controls whether AI providers load environment-level skills (default: true). 'skip_bulk_fetch' disables the periodic background fetch over pool worktrees (default: false); foreground worktree creation and refresh always use targeted ref fetches, so they are unaffected. Useful for very large monorepos where bulk fetching all refs is prohibitively slow. 'fetch_timeout_seconds' is the idle timeout for `git fetch` — git is killed after this long with no output (default: 300). Raise it for monorepos whose delta resolution is silent for minutes.",
     "owner/repo": {
       "path": "~/path/to/monorepo",
       "checkout_script": "my-repo-checkout $BASE_SHA $HEAD_BRANCH",
       "reset_script": "my-reset-tool --base \"$BASE_SHA\" -- \"$HEAD_BRANCH\"",
       "checkout_timeout_seconds": 300,
+      "fetch_timeout_seconds": 300,
       "worktree_directory": "~/custom/worktrees",
       "worktree_name_template": "{id}/src",
       "pool_size": 0,

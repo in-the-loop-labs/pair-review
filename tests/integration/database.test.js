@@ -3876,3 +3876,74 @@ describe('Migration 51 - widen idx_github_pr_cache_unique with host', () => {
     ).rejects.toThrow(/UNIQUE/i);
   });
 });
+
+// ============================================================================
+// Migration 55: fetch attempt tracking on worktree_pool
+// ============================================================================
+
+describe('Migration 55 - fetch attempt tracking on worktree_pool', () => {
+  let db;
+  const Database = require('better-sqlite3');
+
+  /** Pre-55 baseline: worktree_pool without the two backoff columns. */
+  function createPreMigration55Database() {
+    const testDb = new Database(':memory:');
+    testDb.exec(`
+      CREATE TABLE worktree_pool (
+        id TEXT PRIMARY KEY,
+        repository TEXT NOT NULL,
+        path TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL DEFAULT 'available'
+          CHECK(status IN ('available', 'in_use', 'switching', 'creating')),
+        current_pr_number INTEGER,
+        current_review_id INTEGER,
+        last_switched_at TEXT,
+        last_fetched_at TEXT,
+        created_at TEXT NOT NULL
+      )
+    `);
+    return testDb;
+  }
+
+  afterEach(() => {
+    if (db) {
+      db.close();
+      db = null;
+    }
+  });
+
+  it('adds last_fetch_attempt_at and fetch_failure_count', () => {
+    db = createPreMigration55Database();
+
+    MIGRATIONS[55](db);
+
+    const colNames = db.prepare('PRAGMA table_info(worktree_pool)').all().map(c => c.name);
+    expect(colNames).toEqual(expect.arrayContaining(['last_fetch_attempt_at', 'fetch_failure_count']));
+  });
+
+  it('defaults fetch_failure_count to 0 for existing rows', () => {
+    db = createPreMigration55Database();
+    db.prepare(`INSERT INTO worktree_pool (id, repository, path, created_at) VALUES ('pool-a', 'owner/repo', '/tmp/a', '2026-01-01T00:00:00Z')`).run();
+
+    MIGRATIONS[55](db);
+
+    const row = db.prepare(`SELECT * FROM worktree_pool WHERE id = 'pool-a'`).get();
+    expect(row.fetch_failure_count).toBe(0);
+    expect(row.last_fetch_attempt_at).toBeNull();
+  });
+
+  it('is idempotent when re-run', () => {
+    db = createPreMigration55Database();
+
+    MIGRATIONS[55](db);
+    expect(() => MIGRATIONS[55](db)).not.toThrow();
+
+    const colNames = db.prepare('PRAGMA table_info(worktree_pool)').all().map(c => c.name);
+    expect(colNames.filter(n => n === 'fetch_failure_count')).toHaveLength(1);
+  });
+
+  it('skips cleanly when worktree_pool does not exist', () => {
+    db = new Database(':memory:');
+    expect(() => MIGRATIONS[55](db)).not.toThrow();
+  });
+});

@@ -190,6 +190,81 @@ describe('WorktreePoolRepository', () => {
       const after = getPoolRow('pool-a');
       expect(after.last_fetched_at).toBeTruthy();
     });
+
+    it('also stamps last_fetch_attempt_at and clears the failure streak', async () => {
+      await repo.create({ id: 'pool-a', repository: 'owner/repo', path: '/tmp/a' });
+      await repo.recordFetchFailure('pool-a');
+      await repo.recordFetchFailure('pool-a');
+      expect(getPoolRow('pool-a').fetch_failure_count).toBe(2);
+
+      await repo.updateLastFetched('pool-a');
+
+      const after = getPoolRow('pool-a');
+      expect(after.fetch_failure_count).toBe(0);
+      expect(after.last_fetch_attempt_at).toBe(after.last_fetched_at);
+    });
+
+    it('only touches the requested entry', async () => {
+      await repo.create({ id: 'pool-a', repository: 'owner/repo', path: '/tmp/a' });
+      await repo.create({ id: 'pool-b', repository: 'owner/repo', path: '/tmp/b' });
+      await repo.recordFetchFailure('pool-b');
+
+      await repo.updateLastFetched('pool-a');
+
+      expect(getPoolRow('pool-b').last_fetched_at).toBeNull();
+      expect(getPoolRow('pool-b').fetch_failure_count).toBe(1);
+    });
+  });
+
+  // ── recordFetchAttempt ──────────────────────────────────────────────────
+  describe('recordFetchAttempt', () => {
+    it('stamps last_fetch_attempt_at without touching last_fetched_at', async () => {
+      await repo.create({ id: 'pool-a', repository: 'owner/repo', path: '/tmp/a' });
+
+      await repo.recordFetchAttempt('pool-a');
+
+      const row = getPoolRow('pool-a');
+      expect(row.last_fetch_attempt_at).toBeTruthy();
+      expect(row.last_fetched_at).toBeNull();
+      expect(row.fetch_failure_count).toBe(0);
+    });
+
+    it('overwrites an earlier attempt timestamp', async () => {
+      await repo.create({ id: 'pool-a', repository: 'owner/repo', path: '/tmp/a' });
+      db.prepare(`UPDATE worktree_pool SET last_fetch_attempt_at = '2020-01-01T00:00:00.000Z' WHERE id = 'pool-a'`).run();
+
+      await repo.recordFetchAttempt('pool-a');
+
+      expect(getPoolRow('pool-a').last_fetch_attempt_at > '2020-01-01T00:00:00.000Z').toBe(true);
+    });
+
+    it('is a no-op for an unknown id', async () => {
+      await expect(repo.recordFetchAttempt('nope')).resolves.not.toThrow();
+    });
+  });
+
+  // ── recordFetchFailure ──────────────────────────────────────────────────
+  describe('recordFetchFailure', () => {
+    it('increments the consecutive failure count', async () => {
+      await repo.create({ id: 'pool-a', repository: 'owner/repo', path: '/tmp/a' });
+      expect(getPoolRow('pool-a').fetch_failure_count).toBe(0);
+
+      await repo.recordFetchFailure('pool-a');
+      expect(getPoolRow('pool-a').fetch_failure_count).toBe(1);
+
+      await repo.recordFetchFailure('pool-a');
+      expect(getPoolRow('pool-a').fetch_failure_count).toBe(2);
+    });
+
+    it('does not stamp last_fetched_at', async () => {
+      await repo.create({ id: 'pool-a', repository: 'owner/repo', path: '/tmp/a' });
+      await repo.recordFetchFailure('pool-a');
+      expect(getPoolRow('pool-a').last_fetched_at).toBeNull();
+    });
+
+    it('is a no-op for an unknown id', async () => {
+      await expect(repo.recordFetchFailure('nope')).resolves.not.toThrow();
+    });
   });
 
   // ── findIdleForRepo ─────────────────────────────────────────────────────
@@ -232,6 +307,16 @@ describe('WorktreePoolRepository', () => {
       expect(result).toHaveLength(2); // pool-c excluded (switching)
       expect(result[0].id).toBe('pool-a'); // NULL last_fetched_at first
       expect(result[1].id).toBe('pool-b');
+    });
+
+    it('selects the backoff columns the fetch scheduler needs', async () => {
+      await repo.create({ id: 'pool-a', repository: 'owner/repo', path: '/tmp/a' });
+      await repo.recordFetchAttempt('pool-a');
+      await repo.recordFetchFailure('pool-a');
+
+      const [row] = await repo.findAllForFetch('owner/repo');
+      expect(row.last_fetch_attempt_at).toBeTruthy();
+      expect(row.fetch_failure_count).toBe(1);
     });
   });
 

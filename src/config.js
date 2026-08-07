@@ -54,6 +54,7 @@ const ALLOWED_FEATURE_VALUES = new Set(['graphql', 'rest', 'host']);
 
 const CONFIG_DIR = path.join(os.homedir(), '.pair-review');
 const DEFAULT_CHECKOUT_TIMEOUT_MS = 300000;
+const DEFAULT_FETCH_TIMEOUT_MS = 300000;
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 const CONFIG_LOCAL_FILE = path.join(CONFIG_DIR, 'config.local.json');
 const CONFIG_EXAMPLE_FILE = path.join(CONFIG_DIR, 'config.example.json');
@@ -1401,6 +1402,27 @@ function getRepoCheckoutTimeout(config, repository) {
 }
 
 /**
+ * Gets the configured git fetch timeout for a repository.
+ *
+ * This is simple-git's `timeout.block` — an IDLE timeout: the child `git fetch`
+ * is killed when it produces no output for this long, not when the total fetch
+ * exceeds it. Large monorepos can be legitimately silent for minutes during
+ * delta resolution, so raise this (or rely on `--progress`, which keeps output
+ * flowing) when background pool fetches are being killed mid-pack.
+ *
+ * @param {Object} config - Configuration object from loadConfig()
+ * @param {string} repository - Repository in "owner/repo" format
+ * @returns {number} - Timeout in milliseconds (default: 300000 = 5 minutes)
+ */
+function getRepoFetchTimeout(config, repository) {
+  const repoConfig = getRepoConfig(config, repository);
+  if (repoConfig?.fetch_timeout_seconds > 0) {
+    return repoConfig.fetch_timeout_seconds * 1000;
+  }
+  return DEFAULT_FETCH_TIMEOUT_MS; // 5 minutes default
+}
+
+/**
  * Gets the configured reset script for a repository
  * @param {Object} config - Configuration object from loadConfig()
  * @param {string} repository - Repository in "owner/repo" format
@@ -1412,7 +1434,13 @@ function getRepoResetScript(config, repository) {
 }
 
 /**
- * Gets whether updateWorktree should skip the bulk `git fetch <remote> --prune`
+ * Gets whether bulk `git fetch <remote> --prune` should be skipped for a repo.
+ *
+ * Applies to the periodic background fetch over pool worktrees, which is
+ * entirely disabled for the repo when this is set. The foreground refresh
+ * path no longer performs bulk fetches for any repo (it uses targeted
+ * refspec fetches), so this flag does not affect it.
+ *
  * @param {Object} config - Configuration object from loadConfig()
  * @param {string} repository - Repository in "owner/repo" format
  * @returns {boolean} - true if the bulk fetch should be skipped (default: false)
@@ -1668,6 +1696,7 @@ module.exports = {
   getRepoWorktreeNameTemplate,
   getWorktreeDisplayName,
   getRepoCheckoutTimeout,
+  getRepoFetchTimeout,
   resolveRepoOptions,
   getRepoResetScript,
   getRepoSkipBulkFetch,
@@ -1682,6 +1711,7 @@ module.exports = {
   shouldSkipUpdateNotifier,
   _resetTokenCache,
   DEFAULT_CHECKOUT_TIMEOUT_MS,
+  DEFAULT_FETCH_TIMEOUT_MS,
   // Canonical lists for per-area feature dispatch. Exported so tests
   // (and `src/github/client.js`'s `DEFAULT_FEATURES`) can assert against
   // a single source of truth.

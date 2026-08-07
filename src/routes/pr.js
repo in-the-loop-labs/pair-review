@@ -26,7 +26,7 @@ const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs').promises;
 const path = require('path');
-const { resolveHostBinding, resolveBindingRepositoryFromPR, getWorktreeDisplayName, resolveLoadSkills, buildCouncilProviderOverrides, getRepoSkipBulkFetch, getSummaryEnabled, getTourEnabled } = require('../config');
+const { resolveHostBinding, resolveBindingRepositoryFromPR, getWorktreeDisplayName, resolveLoadSkills, buildCouncilProviderOverrides, getSummaryEnabled, getTourEnabled } = require('../config');
 const { storedHostToOption, isDualHostRepo } = require('../utils/host-resolution');
 const { resolveHostName } = require('../links/repo-links');
 const { backgroundQueue } = require('../ai/background-queue');
@@ -590,8 +590,7 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
       owner,
       repo,
       prNumber,
-      prData,
-      { skipBulkFetch: getRepoSkipBulkFetch(config, repository) }
+      prData
     );
 
     // Generate fresh diff and get changed files

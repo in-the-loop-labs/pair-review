@@ -21,7 +21,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 54;
+const CURRENT_SCHEMA_VERSION = 55;
 
 /**
  * Database schema SQL statements
@@ -330,6 +330,8 @@ const SCHEMA_SQL = {
       current_review_id INTEGER,
       last_switched_at TEXT,
       last_fetched_at TEXT,
+      last_fetch_attempt_at TEXT,
+      fetch_failure_count INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL
     )
   `,
@@ -2320,6 +2322,35 @@ const MIGRATIONS = {
     }
     db.exec('CREATE INDEX IF NOT EXISTS idx_chat_snippets_last_used ON chat_snippets(last_used_at DESC)');
     console.log('Migration to schema version 54 complete');
+  },
+
+  // Migration to version 55: track background fetch attempts (not just
+  // successes) on pool worktrees. `last_fetched_at` only advances on success,
+  // so a repeatedly failing fetch stayed permanently "due" and re-ran every
+  // tick — on a large monorepo that re-downloaded the same pack forever.
+  // `last_fetch_attempt_at` + `fetch_failure_count` drive an exponential
+  // backoff instead. Each ALTER is guarded by columnExists so re-running the
+  // migration after a crash is safe.
+  55: (db) => {
+    console.log('Running migration to schema version 55: add fetch attempt tracking to worktree_pool...');
+    if (!tableExists(db, 'worktree_pool')) {
+      console.log('  worktree_pool table does not exist, skipping');
+      console.log('Migration to schema version 55 complete');
+      return;
+    }
+    if (!columnExists(db, 'worktree_pool', 'last_fetch_attempt_at')) {
+      db.exec('ALTER TABLE worktree_pool ADD COLUMN last_fetch_attempt_at TEXT');
+      console.log('  Added last_fetch_attempt_at column to worktree_pool');
+    } else {
+      console.log('  last_fetch_attempt_at column already present; nothing to do');
+    }
+    if (!columnExists(db, 'worktree_pool', 'fetch_failure_count')) {
+      db.exec('ALTER TABLE worktree_pool ADD COLUMN fetch_failure_count INTEGER NOT NULL DEFAULT 0');
+      console.log('  Added fetch_failure_count column to worktree_pool');
+    } else {
+      console.log('  fetch_failure_count column already present; nothing to do');
+    }
+    console.log('Migration to schema version 55 complete');
   }
 };
 
@@ -3009,11 +3040,28 @@ class WorktreePoolRepository {
   }
 
   /**
-   * Update last_fetched_at timestamp.
+   * Record a successful fetch: stamp both the success and attempt timestamps
+   * and clear the failure streak that drives the backoff.
    */
   async updateLastFetched(id) {
     const now = new Date().toISOString();
-    await run(this.db, `UPDATE worktree_pool SET last_fetched_at = ? WHERE id = ?`, [now, id]);
+    await run(this.db, `UPDATE worktree_pool SET last_fetched_at = ?, last_fetch_attempt_at = ?, fetch_failure_count = 0 WHERE id = ?`, [now, now, id]);
+  }
+
+  /**
+   * Stamp last_fetch_attempt_at before a fetch starts, so a fetch that is
+   * killed (or that dies with the whole process) still backs off on restart.
+   */
+  async recordFetchAttempt(id) {
+    const now = new Date().toISOString();
+    await run(this.db, `UPDATE worktree_pool SET last_fetch_attempt_at = ? WHERE id = ?`, [now, id]);
+  }
+
+  /**
+   * Increment the consecutive failure count for a pool worktree's fetch.
+   */
+  async recordFetchFailure(id) {
+    await run(this.db, `UPDATE worktree_pool SET fetch_failure_count = fetch_failure_count + 1 WHERE id = ?`, [id]);
   }
 
   /**
@@ -3045,7 +3093,7 @@ class WorktreePoolRepository {
    */
   async findAllForFetch(repository) {
     return await query(this.db, `
-      SELECT id, path, last_fetched_at, status
+      SELECT id, path, last_fetched_at, last_fetch_attempt_at, fetch_failure_count, status
       FROM worktree_pool
       WHERE repository = ? COLLATE NOCASE AND status NOT IN ('switching', 'creating')
       ORDER BY last_fetched_at ASC NULLS FIRST
