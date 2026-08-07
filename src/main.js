@@ -1,12 +1,14 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 const fs = require('fs');
+const path = require('path');
 const { v4: uuidv4 } = require('uuid');
-const { loadConfig, getConfigDir, showWelcomeMessage, resolveDbName, resolveRepoOptions, resolvePoolConfig, getRepoResetScript, resolveLoadSkills, buildCouncilProviderOverrides } = require('./config');
+const { loadConfig, getConfigDir, showWelcomeMessage, resolveDbName, resolveRepoOptions, resolvePoolConfig, getRepoResetScript, getRepoSkipBulkFetch, getRepoFetchTimeout, resolveLoadSkills, buildCouncilProviderOverrides } = require('./config');
 const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository, ReviewRepository, RepoSettingsRepository, GitHubReviewRepository, WorktreePoolRepository, CouncilRepository, CommentRepository, AnalysisRunRepository, PRMetadataRepository } = require('./database');
 const { PRArgumentParser } = require('./github/parser');
 const { GitHubClient } = require('./github/client');
 const { GitWorktreeManager } = require('./git/worktree');
 const { fetchNoTags } = require('./git/fetch-helpers');
+const { cleanupOrphanedKeepFiles } = require('./git/pack-cleanup');
 const { WorktreePoolLifecycle } = require('./git/worktree-pool-lifecycle');
 const { startServer } = require('./server');
 const Analyzer = require('./ai/analyzer');
@@ -2703,7 +2705,57 @@ async function handleActionReview(args, config, db, flags = {}, poolLifecycle = 
  */
 const POOL_FETCH_TICK_MS = 60 * 1000; // Check every minute
 
-function startPoolBackgroundFetches(db, config) {
+// Ceiling for the exponential retry backoff of a repeatedly failing fetch.
+const MAX_POOL_FETCH_BACKOFF_MS = 6 * 60 * 60 * 1000; // 6 hours
+
+// How often to refresh the cross-instance fetch lease while fetches run.
+// Must be comfortably below the 10-minute stale guard in tryClaimFetch.
+const POOL_FETCH_LEASE_HEARTBEAT_MS = 5 * 60 * 1000; // 5 minutes
+
+// Default dependencies for the background fetch loop (overridable for testing)
+const poolFetchDefaults = {
+  simpleGit,
+  fs,
+  cleanupOrphanedKeepFiles,
+};
+
+/**
+ * Decide whether a pool worktree is due for a background fetch.
+ *
+ * `last_fetched_at` only advances on success, so a failing entry would stay
+ * permanently due and re-fetch every tick — on a large monorepo that means
+ * re-downloading the same pack forever. `last_fetch_attempt_at` plus the
+ * consecutive failure count gate retries behind a doubling backoff
+ * (1x, 2x, 4x… the fetch interval) capped at MAX_POOL_FETCH_BACKOFF_MS.
+ *
+ * @param {Object} entry - Row from WorktreePoolRepository.findAllForFetch
+ * @param {number} intervalMs - Configured fetch interval in milliseconds
+ * @param {number} now - Current time in milliseconds since the epoch
+ * @returns {boolean} True if the entry should be fetched now
+ */
+function isPoolEntryDueForFetch(entry, intervalMs, now) {
+  if (entry.last_fetched_at) {
+    const elapsed = now - new Date(entry.last_fetched_at).getTime();
+    if (elapsed < intervalMs) return false;
+  }
+
+  if (!entry.last_fetch_attempt_at) return true;
+
+  const failures = entry.fetch_failure_count || 0;
+  const backoffMs = failures > 0
+    ? Math.min(intervalMs * Math.pow(2, failures - 1), MAX_POOL_FETCH_BACKOFF_MS)
+    : intervalMs;
+  return (now - new Date(entry.last_fetch_attempt_at).getTime()) >= backoffMs;
+}
+
+/**
+ * @param {Object} db - Database instance
+ * @param {Object} config - Configuration object
+ * @param {Object} [_deps] - Internal: dependency overrides for testing
+ * @returns {NodeJS.Timeout} The interval timer (so callers/tests can clear it)
+ */
+function startPoolBackgroundFetches(db, config, _deps = {}) {
+  const deps = { ...poolFetchDefaults, ..._deps };
   let fetchInProgress = false;
 
   const timer = setInterval(async () => {
@@ -2728,15 +2780,19 @@ function startPoolBackgroundFetches(db, config) {
         const { poolSize, poolFetchIntervalMinutes } = resolvePoolConfig(config, repoName, repoSettings);
         if (!poolSize || !poolFetchIntervalMinutes) continue;
 
+        // skip_bulk_fetch opts a repo out of unconditional whole-remote fetches
+        // entirely, including this periodic one.
+        if (getRepoSkipBulkFetch(config, repoName)) {
+          logger.debug(`Background fetch skipped for ${repoName}: skip_bulk_fetch is enabled`);
+          continue;
+        }
+
         const intervalMs = poolFetchIntervalMinutes * 60 * 1000;
+        const fetchTimeoutMs = getRepoFetchTimeout(config, repoName);
         const worktrees = await poolRepo.findAllForFetch(repoName);
 
         // Check if any worktree actually needs fetching before claiming the lease
-        const needsFetch = worktrees.some(entry => {
-          if (!entry.last_fetched_at) return true;
-          const elapsed = Date.now() - new Date(entry.last_fetched_at).getTime();
-          return elapsed >= intervalMs;
-        });
+        const needsFetch = worktrees.some(entry => isPoolEntryDueForFetch(entry, intervalMs, Date.now()));
         if (!needsFetch) continue;
 
         // Atomically claim the fetch lease — skips if another instance holds it.
@@ -2745,35 +2801,69 @@ function startPoolBackgroundFetches(db, config) {
           logger.info(`Background fetch skipped for ${repoName}: another instance is fetching`);
           continue;
         }
+        // Heartbeat the lease while fetches run. fetch_timeout_seconds is an
+        // IDLE timeout and --progress keeps output flowing, so a single healthy
+        // fetch can legitimately run far longer than the 10-minute stale guard.
+        // Without this, a second instance would deem the lease stale mid-fetch
+        // and start a concurrent fetch into the same shared object store —
+        // exactly the duplicate-pack scenario the lease exists to prevent.
+        const leaseHeartbeat = setInterval(() => {
+          repoSettingsRepo.refreshFetchLease(repoName).catch(() => {});
+        }, POOL_FETCH_LEASE_HEARTBEAT_MS);
+        if (leaseHeartbeat.unref) leaseHeartbeat.unref();
         try {
           for (const entry of worktrees) {
-            // Skip if fetched recently (within the configured interval)
-            if (entry.last_fetched_at) {
-              const elapsed = Date.now() - new Date(entry.last_fetched_at).getTime();
-              if (elapsed < intervalMs) continue;
-            }
+            // Recheck freshness/backoff — the serial loop can run for a while
+            if (!isPoolEntryDueForFetch(entry, intervalMs, Date.now())) continue;
 
-            if (!fs.existsSync(entry.path)) {
+            if (!deps.fs.existsSync(entry.path)) {
               logger.warn(`Background fetch skipped for ${entry.id}: directory no longer exists (${entry.path})`);
+              // Stamp the attempt so a vanished directory logs once per
+              // interval rather than once per 60-second tick, forever.
+              await poolRepo.recordFetchAttempt(entry.id);
               continue;
             }
 
             logger.info(`Background fetch starting for ${repoName} pool worktree ${entry.id}`);
+            // simple-git's timeout.block is an IDLE timeout, so stamp the
+            // attempt before starting: a fetch killed mid-pack (or a process
+            // that dies outright) then still backs off instead of retrying
+            // on the very next tick.
+            await poolRepo.recordFetchAttempt(entry.id);
+            const git = deps.simpleGit(entry.path, { timeout: { block: fetchTimeoutMs } });
             try {
-              const git = simpleGit(entry.path, { timeout: { block: 300000 } });
               const remotes = await git.getRemotes();
               const remote = remotes.find(r => r.name === 'origin') || remotes[0];
-              if (remote) await fetchNoTags(git, ['--prune', remote.name]);
+              // --progress forces git to emit progress without a tty, which
+              // keeps the idle timeout from killing a healthy fetch during
+              // long silent phases like delta resolution.
+              if (remote) await fetchNoTags(git, ['--progress', '--prune', remote.name]);
               await poolRepo.updateLastFetched(entry.id);
-              // Refresh the lease so the stale guard only needs to outlive
-              // a single stalled fetch, not the entire serial loop.
-              await repoSettingsRepo.refreshFetchLease(repoName);
               logger.info(`Background fetch complete for ${repoName} pool worktree ${entry.id}`);
             } catch (fetchErr) {
               logger.warn(`Background fetch failed for ${entry.id}: ${fetchErr.message}`);
+              try {
+                await poolRepo.recordFetchFailure(entry.id);
+              } catch (countErr) {
+                logger.warn(`Failed to record fetch failure for ${entry.id}: ${countErr.message}`);
+              }
+            }
+            // A killed fetch leaves the pack it wrote pinned by a
+            // `pack-*.keep` file; git repack silently skips kept packs, so
+            // the space is never reclaimed until the marker is gone. Sweep
+            // after every attempt — not just failures — so markers orphaned
+            // by a process that died outright (crash, SIGKILL, power loss)
+            // are also reclaimed once fetching resumes.
+            try {
+              const commonDir = await git.raw(['rev-parse', '--git-common-dir']);
+              const packDir = path.resolve(entry.path, commonDir.trim(), 'objects', 'pack');
+              await deps.cleanupOrphanedKeepFiles(packDir);
+            } catch (cleanupErr) {
+              logger.warn(`Pack keep-file cleanup failed for ${entry.id}: ${cleanupErr.message}`);
             }
           }
         } finally {
+          clearInterval(leaseHeartbeat);
           try {
             await repoSettingsRepo.markFetchFinished(repoName);
           } catch (finishErr) {
@@ -2792,6 +2882,8 @@ function startPoolBackgroundFetches(db, config) {
   if (timer.unref) timer.unref();
 
   logger.info(`Background pool fetch ticker started (checking every ${POOL_FETCH_TICK_MS / 1000}s)`);
+
+  return timer;
 }
 
 /**
@@ -2839,4 +2931,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { main, parseArgs, detectPRFromGitHubEnvironment, printCouncilList, handleHeadlessAnalysis, handleHeadlessDelegated, runHeadlessAnalysis, buildHeadlessJson, buildHeadlessErrorJson, emitHeadlessResult, resolveCliInstructions };
+module.exports = { main, parseArgs, detectPRFromGitHubEnvironment, printCouncilList, handleHeadlessAnalysis, handleHeadlessDelegated, runHeadlessAnalysis, buildHeadlessJson, buildHeadlessErrorJson, emitHeadlessResult, resolveCliInstructions, startPoolBackgroundFetches, isPoolEntryDueForFetch, POOL_FETCH_TICK_MS, MAX_POOL_FETCH_BACKOFF_MS };
