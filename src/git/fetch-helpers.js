@@ -28,14 +28,21 @@ async function rawFetchNoTags(git, args) {
  * Detect whether a fetch failed because a remote-tracking ref collides with the
  * ref hierarchy (a directory/file conflict, e.g. `refs/remotes/origin/foo`
  * exists as a ref while `refs/remotes/origin/foo/bar` needs to be created).
+ *
+ * `cannot lock ref` on its own is too broad: git emits it for transient
+ * lock-file races too ("cannot lock ref 'X': Unable to create '….lock': File
+ * exists"), which pruning cannot fix and which would waste a full prune + refetch.
+ * A genuine D/F conflict names the colliding ref in quotes — "'refs/remotes/
+ * origin/foo' exists" — so require that quoted-ref " exists" clause alongside it.
+ *
  * @param {Error} error
  * @returns {boolean}
  */
 function isRefHierarchyConflict(error) {
   const message = String(error?.message || '').toLowerCase();
-  return message.includes('cannot lock ref') ||
-    message.includes('exists; cannot create') ||
-    message.includes('would clobber existing tag');
+  if (message.includes('exists; cannot create')) return true;
+  if (message.includes('would clobber existing tag')) return true;
+  return message.includes('cannot lock ref') && message.includes("' exists");
 }
 
 /**

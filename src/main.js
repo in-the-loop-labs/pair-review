@@ -1,6 +1,7 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 const { loadConfig, getConfigDir, showWelcomeMessage, resolveDbName, resolveRepoOptions, resolvePoolConfig, getRepoResetScript, getRepoSkipBulkFetch, getRepoFetchTimeout, resolveLoadSkills, buildCouncilProviderOverrides } = require('./config');
 const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository, ReviewRepository, RepoSettingsRepository, GitHubReviewRepository, WorktreePoolRepository, CouncilRepository, CommentRepository, AnalysisRunRepository, PRMetadataRepository } = require('./database');
@@ -133,7 +134,6 @@ function detectPRFromGitHubEnvironment() {
  * Get the version from package.json
  */
 function getVersion() {
-  const path = require('path');
   const packageJson = require(path.join(__dirname, '..', 'package.json'));
   return packageJson.version;
 }
@@ -906,7 +906,7 @@ AI PROVIDERS:
       }
       let localRepository = null;
       if (wantsInstructionHandoff && flags.local) {
-        const localTarget = require('path').resolve(flags.localPath || process.cwd());
+        const localTarget = path.resolve(flags.localPath || process.cwd());
         const localRoot = await findGitRoot(localTarget);
         localRepository = await getRepositoryName(localRoot);
       }
@@ -1016,7 +1016,6 @@ AI PROVIDERS:
     }
 
     // Migrate existing worktrees to database (if any)
-    const path = require('path');
     const worktreeBaseDir = path.join(getConfigDir(), 'worktrees');
     const migrationResult = await migrateExistingWorktrees(db, worktreeBaseDir);
     if (migrationResult.migrated > 0) {
@@ -2290,7 +2289,7 @@ async function handleHeadlessDelegated(prArgs, config, db, flags, probe) {
   let localPath = null;
   let host;
   if (flags.local) {
-    localPath = require('path').resolve(flags.localPath || process.cwd());
+    localPath = path.resolve(flags.localPath || process.cwd());
     const repoRoot = await findGitRoot(localPath);
     repository = await getRepositoryName(repoRoot);
   } else {
@@ -2370,7 +2369,7 @@ async function handleHeadlessAnalysis(prArgs, config, db, flags, poolLifecycle) 
       }
     }
 
-    const resolvedPath = require('path').resolve(flags.localPath || process.cwd());
+    const resolvedPath = path.resolve(flags.localPath || process.cwd());
     console.log(`Finding git repository root from ${resolvedPath}...`);
     const repoPath = await findGitRoot(resolvedPath);
     console.log(`Found git repository at: ${repoPath}`);
@@ -2712,6 +2711,11 @@ const MAX_POOL_FETCH_BACKOFF_MS = 6 * 60 * 60 * 1000; // 6 hours
 // Must be comfortably below the 10-minute stale guard in tryClaimFetch.
 const POOL_FETCH_LEASE_HEARTBEAT_MS = 5 * 60 * 1000; // 5 minutes
 
+// Identifies this process as the holder of a repo fetch lease. Refresh and
+// release are gated on it, so an instance whose lease went stale and was taken
+// over by another cannot extend or clear the new holder's lease.
+const POOL_FETCH_INSTANCE_ID = crypto.randomUUID();
+
 // Default dependencies for the background fetch loop (overridable for testing)
 const poolFetchDefaults = {
   simpleGit,
@@ -2726,7 +2730,9 @@ const poolFetchDefaults = {
  * permanently due and re-fetch every tick — on a large monorepo that means
  * re-downloading the same pack forever. `last_fetch_attempt_at` plus the
  * consecutive failure count gate retries behind a doubling backoff
- * (1x, 2x, 4x… the fetch interval) capped at MAX_POOL_FETCH_BACKOFF_MS.
+ * (1x, 2x, 4x… the fetch interval) capped at MAX_POOL_FETCH_BACKOFF_MS — or at
+ * the configured interval when that is longer, since a cap below the interval
+ * would make a failing entry retry more often than a healthy one.
  *
  * @param {Object} entry - Row from WorktreePoolRepository.findAllForFetch
  * @param {number} intervalMs - Configured fetch interval in milliseconds
@@ -2743,7 +2749,7 @@ function isPoolEntryDueForFetch(entry, intervalMs, now) {
 
   const failures = entry.fetch_failure_count || 0;
   const backoffMs = failures > 0
-    ? Math.min(intervalMs * Math.pow(2, failures - 1), MAX_POOL_FETCH_BACKOFF_MS)
+    ? Math.min(intervalMs * Math.pow(2, failures - 1), Math.max(intervalMs, MAX_POOL_FETCH_BACKOFF_MS))
     : intervalMs;
   return (now - new Date(entry.last_fetch_attempt_at).getTime()) >= backoffMs;
 }
@@ -2781,11 +2787,11 @@ function startPoolBackgroundFetches(db, config, _deps = {}) {
         if (!poolSize || !poolFetchIntervalMinutes) continue;
 
         // skip_bulk_fetch opts a repo out of unconditional whole-remote fetches
-        // entirely, including this periodic one.
-        if (getRepoSkipBulkFetch(config, repoName)) {
-          logger.debug(`Background fetch skipped for ${repoName}: skip_bulk_fetch is enabled`);
-          continue;
-        }
+        // entirely, including this periodic one. The keep-file sweep below still
+        // runs for it: these are the huge monorepos whose foreground fetches get
+        // killed, so they are exactly the repos accumulating orphaned `.keep`
+        // markers that pin packs forever.
+        const skipBulk = getRepoSkipBulkFetch(config, repoName);
 
         const intervalMs = poolFetchIntervalMinutes * 60 * 1000;
         const fetchTimeoutMs = getRepoFetchTimeout(config, repoName);
@@ -2795,9 +2801,37 @@ function startPoolBackgroundFetches(db, config, _deps = {}) {
         const needsFetch = worktrees.some(entry => isPoolEntryDueForFetch(entry, intervalMs, Date.now()));
         if (!needsFetch) continue;
 
+        if (skipBulk) {
+          logger.debug(`Background fetch skipped for ${repoName}: skip_bulk_fetch is enabled`);
+          // Sweep once for the repo: all its pool worktrees share one git
+          // object store. The sweep only removes markers naming dead pids on
+          // this host, so it needs no fetch lease.
+          // Any surviving path reaches the shared object store, so the anchor
+          // only has to exist on disk — the needsFetch gate above already held
+          // the sweep to once per fetch interval. Requiring the anchor itself to
+          // be due would skip the sweep entirely when the due entry's directory
+          // has vanished but a not-yet-due sibling is still there.
+          const keepSweepEntry = worktrees.find(entry => deps.fs.existsSync(entry.path));
+          if (keepSweepEntry) {
+            try {
+              const keepSweepGit = deps.simpleGit(keepSweepEntry.path, { timeout: { block: fetchTimeoutMs } });
+              const commonDir = await keepSweepGit.raw(['rev-parse', '--git-common-dir']);
+              await deps.cleanupOrphanedKeepFiles(path.resolve(keepSweepEntry.path, commonDir.trim(), 'objects', 'pack'));
+            } catch (cleanupErr) {
+              logger.warn(`Pack keep-file cleanup failed for ${repoName}: ${cleanupErr.message}`);
+            }
+          }
+          // Stamp every entry so the sweep runs once per fetch interval rather
+          // than on every 60-second tick.
+          for (const entry of worktrees) {
+            await poolRepo.recordFetchAttempt(entry.id);
+          }
+          continue;
+        }
+
         // Atomically claim the fetch lease — skips if another instance holds it.
         // Pool worktrees share a git object store so concurrent fetches conflict.
-        if (!(await repoSettingsRepo.tryClaimFetch(repoName))) {
+        if (!(await repoSettingsRepo.tryClaimFetch(repoName, POOL_FETCH_INSTANCE_ID))) {
           logger.info(`Background fetch skipped for ${repoName}: another instance is fetching`);
           continue;
         }
@@ -2807,10 +2841,16 @@ function startPoolBackgroundFetches(db, config, _deps = {}) {
         // Without this, a second instance would deem the lease stale mid-fetch
         // and start a concurrent fetch into the same shared object store —
         // exactly the duplicate-pack scenario the lease exists to prevent.
+        let heartbeatInFlight = Promise.resolve();
         const leaseHeartbeat = setInterval(() => {
-          repoSettingsRepo.refreshFetchLease(repoName).catch(() => {});
+          heartbeatInFlight = repoSettingsRepo.refreshFetchLease(repoName, POOL_FETCH_INSTANCE_ID).catch(() => {});
         }, POOL_FETCH_LEASE_HEARTBEAT_MS);
         if (leaseHeartbeat.unref) leaseHeartbeat.unref();
+        // All pool worktrees of a repo share one git object store, so the
+        // keep-file sweep runs once per repo after the entry loop rather than
+        // once per entry.
+        let sweepGit = null;
+        let sweepEntry = null;
         try {
           for (const entry of worktrees) {
             // Recheck freshness/backoff — the serial loop can run for a while
@@ -2830,8 +2870,12 @@ function startPoolBackgroundFetches(db, config, _deps = {}) {
             // that dies outright) then still backs off instead of retrying
             // on the very next tick.
             await poolRepo.recordFetchAttempt(entry.id);
-            const git = deps.simpleGit(entry.path, { timeout: { block: fetchTimeoutMs } });
+            // Construct inside the try: simple-git's constructor throws on a
+            // bad path/options, and that must be recorded as a failure like any
+            // other rather than escaping and killing the whole repo's loop.
+            let git = null;
             try {
+              git = deps.simpleGit(entry.path, { timeout: { block: fetchTimeoutMs } });
               const remotes = await git.getRemotes();
               const remote = remotes.find(r => r.name === 'origin') || remotes[0];
               // --progress forces git to emit progress without a tty, which
@@ -2848,24 +2892,34 @@ function startPoolBackgroundFetches(db, config, _deps = {}) {
                 logger.warn(`Failed to record fetch failure for ${entry.id}: ${countErr.message}`);
               }
             }
-            // A killed fetch leaves the pack it wrote pinned by a
-            // `pack-*.keep` file; git repack silently skips kept packs, so
-            // the space is never reclaimed until the marker is gone. Sweep
-            // after every attempt — not just failures — so markers orphaned
-            // by a process that died outright (crash, SIGKILL, power loss)
-            // are also reclaimed once fetching resumes.
+            if (git) {
+              sweepGit = git;
+              sweepEntry = entry;
+            }
+          }
+          // A killed fetch leaves the pack it wrote pinned by a `pack-*.keep`
+          // file; git repack silently skips kept packs, so the space is never
+          // reclaimed until the marker is gone. Sweep after attempts of any
+          // outcome — not just failures — so markers orphaned by a process that
+          // died outright (crash, SIGKILL, power loss) are also reclaimed once
+          // fetching resumes.
+          if (sweepGit) {
             try {
-              const commonDir = await git.raw(['rev-parse', '--git-common-dir']);
-              const packDir = path.resolve(entry.path, commonDir.trim(), 'objects', 'pack');
+              const commonDir = await sweepGit.raw(['rev-parse', '--git-common-dir']);
+              const packDir = path.resolve(sweepEntry.path, commonDir.trim(), 'objects', 'pack');
               await deps.cleanupOrphanedKeepFiles(packDir);
             } catch (cleanupErr) {
-              logger.warn(`Pack keep-file cleanup failed for ${entry.id}: ${cleanupErr.message}`);
+              logger.warn(`Pack keep-file cleanup failed for ${repoName}: ${cleanupErr.message}`);
             }
           }
         } finally {
           clearInterval(leaseHeartbeat);
+          // A heartbeat scheduled before the clear can still be in flight; let
+          // it settle before releasing, or it could re-stamp pool_fetch_started_at
+          // after markFetchFinished and resurrect a lease we just gave up.
+          await heartbeatInFlight;
           try {
-            await repoSettingsRepo.markFetchFinished(repoName);
+            await repoSettingsRepo.markFetchFinished(repoName, POOL_FETCH_INSTANCE_ID);
           } catch (finishErr) {
             logger.warn(`Failed to release fetch lease for ${repoName}: ${finishErr.message}`);
           }

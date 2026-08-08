@@ -158,6 +158,7 @@ const SCHEMA_SQL = {
       pool_fetch_interval_minutes INTEGER,
       pool_fetch_started_at TEXT,
       pool_fetch_finished_at TEXT,
+      pool_fetch_owner TEXT,
       load_skills INTEGER,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -2329,26 +2330,37 @@ const MIGRATIONS = {
   // so a repeatedly failing fetch stayed permanently "due" and re-ran every
   // tick — on a large monorepo that re-downloaded the same pack forever.
   // `last_fetch_attempt_at` + `fetch_failure_count` drive an exponential
-  // backoff instead. Each ALTER is guarded by columnExists so re-running the
-  // migration after a crash is safe.
+  // backoff instead. Also records which instance holds the repo fetch lease
+  // (`pool_fetch_owner`) so a stale heartbeat cannot refresh — or a late
+  // release cannot clear — a lease another instance has since claimed.
+  // Each ALTER is guarded by columnExists so re-running the migration after a
+  // crash is safe, and each table is guarded independently so a partial apply
+  // finishes the remaining pieces.
   55: (db) => {
     console.log('Running migration to schema version 55: add fetch attempt tracking to worktree_pool...');
     if (!tableExists(db, 'worktree_pool')) {
       console.log('  worktree_pool table does not exist, skipping');
-      console.log('Migration to schema version 55 complete');
-      return;
-    }
-    if (!columnExists(db, 'worktree_pool', 'last_fetch_attempt_at')) {
-      db.exec('ALTER TABLE worktree_pool ADD COLUMN last_fetch_attempt_at TEXT');
-      console.log('  Added last_fetch_attempt_at column to worktree_pool');
     } else {
-      console.log('  last_fetch_attempt_at column already present; nothing to do');
+      if (!columnExists(db, 'worktree_pool', 'last_fetch_attempt_at')) {
+        db.exec('ALTER TABLE worktree_pool ADD COLUMN last_fetch_attempt_at TEXT');
+        console.log('  Added last_fetch_attempt_at column to worktree_pool');
+      } else {
+        console.log('  last_fetch_attempt_at column already present; nothing to do');
+      }
+      if (!columnExists(db, 'worktree_pool', 'fetch_failure_count')) {
+        db.exec('ALTER TABLE worktree_pool ADD COLUMN fetch_failure_count INTEGER NOT NULL DEFAULT 0');
+        console.log('  Added fetch_failure_count column to worktree_pool');
+      } else {
+        console.log('  fetch_failure_count column already present; nothing to do');
+      }
     }
-    if (!columnExists(db, 'worktree_pool', 'fetch_failure_count')) {
-      db.exec('ALTER TABLE worktree_pool ADD COLUMN fetch_failure_count INTEGER NOT NULL DEFAULT 0');
-      console.log('  Added fetch_failure_count column to worktree_pool');
+    if (!tableExists(db, 'repo_settings')) {
+      console.log('  repo_settings table does not exist, skipping fetch lease owner');
+    } else if (!columnExists(db, 'repo_settings', 'pool_fetch_owner')) {
+      db.exec('ALTER TABLE repo_settings ADD COLUMN pool_fetch_owner TEXT');
+      console.log('  Added pool_fetch_owner column to repo_settings');
     } else {
-      console.log('  fetch_failure_count column already present; nothing to do');
+      console.log('  pool_fetch_owner column already present; nothing to do');
     }
     console.log('Migration to schema version 55 complete');
   }
@@ -3058,10 +3070,14 @@ class WorktreePoolRepository {
   }
 
   /**
-   * Increment the consecutive failure count for a pool worktree's fetch.
+   * Increment the consecutive failure count for a pool worktree's fetch and
+   * re-stamp the attempt time. The backoff is measured from when the failure
+   * landed, not when the fetch started — otherwise a fetch that grinds for most
+   * of its timeout consumes its own cooldown and retries almost immediately.
    */
   async recordFetchFailure(id) {
-    await run(this.db, `UPDATE worktree_pool SET fetch_failure_count = fetch_failure_count + 1 WHERE id = ?`, [id]);
+    const now = new Date().toISOString();
+    await run(this.db, `UPDATE worktree_pool SET fetch_failure_count = fetch_failure_count + 1, last_fetch_attempt_at = ? WHERE id = ?`, [now, id]);
   }
 
   /**
@@ -3519,45 +3535,61 @@ class RepoSettingsRepository {
    * Uses SQLite UPSERT with a conditional WHERE clause to avoid TOCTOU races
    * between instances sharing the same database. Creates a repo_settings row
    * if one doesn't exist yet (config-only repos).
+   *
+   * The claim stamps `pool_fetch_owner` with the caller's instance id. Refresh
+   * and release are gated on that token, so an instance whose lease already
+   * expired and was taken over cannot extend or clear the new holder's lease.
+   *
    * @param {string} repository - Repository in owner/repo format
+   * @param {string} ownerId - Opaque id identifying the claiming instance
    * @param {number} [staleGuardMs=600000] - Consider a fetch stale after this many ms (default 10 min)
    * @returns {Promise<boolean>} true if the lease was successfully claimed
    */
-  async tryClaimFetch(repository, staleGuardMs = 600000) {
+  async tryClaimFetch(repository, ownerId, staleGuardMs = 600000) {
     const now = new Date().toISOString();
     const staleThreshold = new Date(Date.now() - staleGuardMs).toISOString();
     const result = await run(this.db,
-      `INSERT INTO repo_settings (repository, pool_fetch_started_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?)
+      `INSERT INTO repo_settings (repository, pool_fetch_started_at, pool_fetch_owner, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(repository) DO UPDATE SET pool_fetch_started_at = excluded.pool_fetch_started_at,
+         pool_fetch_owner = excluded.pool_fetch_owner,
          pool_fetch_finished_at = NULL
        WHERE pool_fetch_started_at IS NULL
          OR pool_fetch_finished_at >= pool_fetch_started_at
          OR pool_fetch_started_at < ?`,
-      [repository, now, now, now, staleThreshold]
+      [repository, now, ownerId ?? null, now, now, staleThreshold]
     );
     return result.changes > 0;
   }
 
   /**
-   * Refresh the fetch lease timestamp for a repository.
-   * Called after each successful worktree fetch to extend the stale guard window
-   * so the 10-minute default only needs to outlive a single stalled fetch rather
-   * than the entire serial loop across all worktrees.
+   * Extend the fetch lease for a repository (heartbeat).
+   *
+   * A single healthy fetch on a large monorepo can outlive the 10-minute stale
+   * guard, so the holder re-stamps `pool_fetch_started_at` periodically while
+   * its fetches run; without that, another instance would deem the lease stale
+   * mid-fetch and start a concurrent fetch into the same object store.
+   * The update is a no-op unless `ownerId` still matches the recorded owner, so
+   * a heartbeat from an instance that already lost the lease cannot revive it.
+   *
    * @param {string} repository - Repository in owner/repo format
+   * @param {string} ownerId - Instance id that claimed the lease
    */
-  async refreshFetchLease(repository) {
+  async refreshFetchLease(repository, ownerId) {
     const now = new Date().toISOString();
-    await run(this.db, `UPDATE repo_settings SET pool_fetch_started_at = ? WHERE repository = ?`, [now, repository]);
+    await run(this.db, `UPDATE repo_settings SET pool_fetch_started_at = ? WHERE repository = ? AND pool_fetch_owner = ?`, [now, repository, ownerId ?? null]);
   }
 
   /**
    * Mark a repo-level background fetch as finished.
+   * Only the instance that still owns the lease may release it — a late release
+   * from a previous holder must not clear a lease someone else has claimed.
    * @param {string} repository - Repository in owner/repo format
+   * @param {string} ownerId - Instance id that claimed the lease
    */
-  async markFetchFinished(repository) {
+  async markFetchFinished(repository, ownerId) {
     const now = new Date().toISOString();
-    await run(this.db, `UPDATE repo_settings SET pool_fetch_finished_at = ? WHERE repository = ?`, [now, repository]);
+    await run(this.db, `UPDATE repo_settings SET pool_fetch_finished_at = ? WHERE repository = ? AND pool_fetch_owner = ?`, [now, repository, ownerId ?? null]);
   }
 
   /**

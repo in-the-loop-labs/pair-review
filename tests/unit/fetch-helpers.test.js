@@ -53,11 +53,21 @@ describe('isRefHierarchyConflict', () => {
   });
 
   it('is case insensitive', () => {
-    expect(isRefHierarchyConflict(new Error('CANNOT LOCK REF refs/remotes/origin/x'))).toBe(true);
+    expect(isRefHierarchyConflict(new Error(
+      "CANNOT LOCK REF 'refs/remotes/origin/x/y': 'refs/remotes/origin/x' EXISTS"
+    ))).toBe(true);
   });
 
   it('does not match unrelated fetch failures', () => {
     expect(isRefHierarchyConflict(new Error('fatal: could not read from remote repository'))).toBe(false);
+  });
+
+  it('does not match a transient ref lock-file race', () => {
+    // Pruning cannot clear a stale `.lock` file, so this must not trigger the
+    // prune-and-retry path even though it also says "cannot lock ref".
+    expect(isRefHierarchyConflict(new Error(
+      "cannot lock ref 'refs/x': Unable to create '/repo/.git/refs/x.lock': File exists."
+    ))).toBe(false);
   });
 
   it('does not match a null or undefined error', () => {
@@ -94,7 +104,7 @@ describe('fetchWithPruneRecovery', () => {
   it('prunes stale remote-tracking refs and retries on a ref hierarchy conflict', async () => {
     const git = {
       fetch: vi.fn()
-        .mockRejectedValueOnce(new Error("cannot lock ref 'refs/remotes/origin/foo/bar'"))
+        .mockRejectedValueOnce(new Error("cannot lock ref 'refs/remotes/origin/foo/bar': 'refs/remotes/origin/foo' exists"))
         .mockResolvedValue('ok'),
       raw: vi.fn().mockResolvedValue(''),
     };
@@ -123,7 +133,7 @@ describe('fetchWithPruneRecovery', () => {
   it('propagates the second failure when the retry after pruning also fails', async () => {
     const git = {
       fetch: vi.fn()
-        .mockRejectedValueOnce(new Error("cannot lock ref 'refs/remotes/origin/foo/bar'"))
+        .mockRejectedValueOnce(new Error("cannot lock ref 'refs/remotes/origin/foo/bar': 'refs/remotes/origin/foo' exists"))
         .mockRejectedValueOnce(new Error('retry failed')),
       raw: vi.fn().mockResolvedValue(''),
     };
@@ -133,5 +143,19 @@ describe('fetchWithPruneRecovery', () => {
 
     expect(git.raw).toHaveBeenCalledWith(['remote', 'prune', 'origin']);
     expect(git.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('propagates a prune failure without retrying the fetch', async () => {
+    const git = {
+      fetch: vi.fn()
+        .mockRejectedValueOnce(new Error("cannot lock ref 'refs/remotes/origin/foo/bar': 'refs/remotes/origin/foo' exists")),
+      raw: vi.fn().mockRejectedValue(new Error('prune failed')),
+    };
+
+    await expect(fetchWithPruneRecovery(git, 'origin', refspec))
+      .rejects.toThrow('prune failed');
+
+    expect(git.raw).toHaveBeenCalledWith(['remote', 'prune', 'origin']);
+    expect(git.fetch).toHaveBeenCalledTimes(1);
   });
 });

@@ -23,7 +23,9 @@ skip that pack so the space is never reclaimed.
   legitimately silent for longer than the 5-minute default.
 - `skip_bulk_fetch` now governs the periodic background pool fetch for that
   repository. It no longer affects the foreground refresh path, which always
-  uses targeted fetches now (see the companion targeted-fetch change).
+  uses targeted fetches now (see the companion targeted-fetch change). The
+  orphaned-`.keep` sweep still runs for these repositories — they are the large
+  monorepos that strand the most markers.
 - Background fetches pass `--progress`, so git keeps emitting output during long
   quiet phases like delta resolution and the idle timeout no longer kills healthy
   fetches.
