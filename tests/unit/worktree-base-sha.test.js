@@ -76,7 +76,7 @@ describe('GitWorktreeManager base SHA availability', () => {
     const repoPath = '/tmp/repo';
     const repoGit = createMockGit({
       fetch: vi.fn()
-        .mockRejectedValueOnce(new Error("cannot lock ref 'refs/remotes/fork-remote/main/x'"))
+        .mockRejectedValueOnce(new Error("cannot lock ref 'refs/remotes/fork-remote/main/x': 'refs/remotes/fork-remote/main' exists"))
         .mockResolvedValue(undefined),
     });
     const worktreeGit = createMockGit({
@@ -171,7 +171,7 @@ describe('GitWorktreeManager base SHA availability', () => {
       revparse: vi.fn().mockResolvedValue('head-sha\n'),
     });
     worktreeGit.fetch = vi.fn()
-      .mockRejectedValueOnce(new Error("cannot lock ref 'refs/remotes/fork-remote/main/x'"))
+      .mockRejectedValueOnce(new Error("cannot lock ref 'refs/remotes/fork-remote/main/x': 'refs/remotes/fork-remote/main' exists"))
       .mockResolvedValue(undefined);
 
     manager._gitFor = vi.fn().mockReturnValue(worktreeGit);
@@ -233,11 +233,225 @@ describe('GitWorktreeManager base SHA availability', () => {
     });
 
     expect(worktreeGit.checkout).toHaveBeenCalledWith(['refs/remotes/fork-remote/pr-42']);
-    // Nested REST payloads carry no base_branch, so the advisory
-    // missing-base-branch warn is expected — only fetch failures are not.
+    // This payload carries a base SHA but no ref anywhere, so the advisory
+    // missing-base-branch warn fires — only fetch failures would be a problem.
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('No base branch recorded for PR #42')
+    );
     expect(warnSpy).not.toHaveBeenCalledWith(
       expect.stringContaining('Targeted base-branch fetch failed')
     );
+  });
+
+  it('fetches the base branch from a nested REST base.ref during update', async () => {
+    const worktreeGit = createMockGit({
+      raw: vi.fn(async (args) => {
+        if (args[0] === 'cat-file') return 'commit\n';
+        return '';
+      }),
+      revparse: vi.fn().mockResolvedValue('nested-head-sha\n'),
+    });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    manager._gitFor = vi.fn().mockReturnValue(worktreeGit);
+
+    await manager.updateWorktree('owner', 'repo', 42, {
+      base: { sha: 'nested-base-sha', ref: 'main' },
+      head: { sha: 'nested-head-sha' },
+    });
+
+    expect(worktreeGit.fetch).toHaveBeenCalledWith([
+      '--no-tags',
+      'fork-remote',
+      '+refs/heads/main:refs/remotes/fork-remote/main',
+    ]);
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining('No base branch recorded')
+    );
+  });
+
+  it('tolerates a non-hierarchy base-branch fetch failure when creating a worktree', async () => {
+    const repoPath = '/tmp/repo';
+    const repoGit = createMockGit({
+      fetch: vi.fn().mockRejectedValue(new Error('fatal: could not read from remote repository')),
+    });
+    const worktreeGit = createMockGit({
+      raw: vi.fn(async (args) => {
+        if (args[0] === 'cat-file') return 'commit\n';
+        return '';
+      }),
+      revparse: vi.fn().mockResolvedValue('head-sha\n'),
+    });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    manager._gitFor = vi.fn((dirPath) => (dirPath === repoPath ? repoGit : worktreeGit));
+
+    await expect(manager.createWorktreeForPR(
+      { owner: 'owner', repo: 'repo', number: 42 },
+      { base_branch: 'main', base_sha: 'base-sha', head_sha: 'head-sha', head_branch: 'feature' },
+      repoPath
+    )).resolves.toBeDefined();
+
+    expect(repoGit.raw).not.toHaveBeenCalledWith(['remote', 'prune', 'fork-remote']);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Could not fetch base branch main')
+    );
+    // The flow continues: the worktree is still created from the existing ref.
+    expect(repoGit.raw).toHaveBeenCalledWith(
+      expect.arrayContaining(['worktree', 'add'])
+    );
+  });
+
+  it('creates the worktree from the base SHA when the PR data carries no base branch', async () => {
+    const repoPath = '/tmp/repo';
+    const repoGit = createMockGit({
+      raw: vi.fn(async (args) => {
+        if (args[0] === 'cat-file' && args[2] === 'nested-base') {
+          if (!repoGit._seenBaseFetch) {
+            throw new Error('missing');
+          }
+          return 'commit\n';
+        }
+        if (args[0] === 'fetch' && args[1] === '--no-tags' && args[2] === 'fork-remote' && args[3] === 'nested-base') {
+          repoGit._seenBaseFetch = true;
+          return '';
+        }
+        return '';
+      }),
+    });
+    repoGit._seenBaseFetch = false;
+    const worktreeGit = createMockGit({
+      raw: vi.fn(async (args) => {
+        if (args[0] === 'cat-file') return 'commit\n';
+        return '';
+      }),
+    });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    manager._gitFor = vi.fn((dirPath) => (dirPath === repoPath ? repoGit : worktreeGit));
+
+    await expect(manager.createWorktreeForPR(
+      { owner: 'owner', repo: 'repo', number: 42 },
+      { base: { sha: 'nested-base' }, head: { sha: 'head-sha' } },
+      repoPath
+    )).resolves.toBeDefined();
+
+    const rawCalls = repoGit.raw.mock.calls.map(([args]) => args);
+    const addCall = rawCalls.find(args => args[0] === 'worktree' && args[1] === 'add');
+    // The bare SHA is the start point — `fork-remote/null` is not a ref.
+    expect(addCall[addCall.length - 1]).toBe('nested-base');
+    expect(rawCalls.some(args => args.includes('fork-remote/null'))).toBe(false);
+
+    // The SHA must land in the source repo's object store before the add,
+    // since the add itself resolves the start point.
+    const fetchIndex = rawCalls.findIndex(args => args[0] === 'fetch' && args[3] === 'nested-base');
+    const addIndex = rawCalls.indexOf(addCall);
+    expect(fetchIndex).toBeGreaterThanOrEqual(0);
+    expect(fetchIndex).toBeLessThan(addIndex);
+  });
+
+  it('fails with a PR-specific error when the PR data has neither a base branch nor a base SHA', async () => {
+    const repoPath = '/tmp/repo';
+    const repoGit = createMockGit();
+    const worktreeGit = createMockGit();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    manager._gitFor = vi.fn((dirPath) => (dirPath === repoPath ? repoGit : worktreeGit));
+
+    await expect(manager.createWorktreeForPR(
+      { owner: 'owner', repo: 'repo', number: 42 },
+      { head_sha: 'head-sha' },
+      repoPath
+    )).rejects.toThrow(/PR #42 \(owner\/repo\).*neither a base branch nor a base SHA/);
+
+    expect(repoGit.raw).not.toHaveBeenCalledWith(
+      expect.arrayContaining(['worktree', 'add'])
+    );
+  });
+
+  it('prunes and retries when the checkout-script head-branch fetch hits a ref hierarchy conflict', async () => {
+    const repoPath = '/tmp/repo';
+    const repoGit = createMockGit();
+    const worktreeGit = createMockGit({
+      raw: vi.fn(async (args) => {
+        if (args[0] === 'cat-file') return 'commit\n';
+        return '';
+      }),
+      fetch: vi.fn()
+        .mockRejectedValueOnce(new Error("cannot lock ref 'refs/remotes/fork-remote/feature/x': 'refs/remotes/fork-remote/feature' exists"))
+        .mockResolvedValue(undefined),
+    });
+
+    manager._gitFor = vi.fn((dirPath) => (dirPath === repoPath ? repoGit : worktreeGit));
+    manager.executeCheckoutScript = vi.fn().mockResolvedValue(undefined);
+
+    await expect(manager.createWorktreeForPR(
+      { owner: 'owner', repo: 'repo', number: 42 },
+      { base_branch: 'main', base_sha: 'base-sha', head_sha: 'head-sha', head_branch: 'feature' },
+      repoPath,
+      { checkoutScript: '/tmp/checkout.sh' }
+    )).resolves.toBeDefined();
+
+    expect(worktreeGit.raw).toHaveBeenCalledWith(['remote', 'prune', 'fork-remote']);
+    expect(worktreeGit.fetch).toHaveBeenNthCalledWith(2, [
+      '--no-tags',
+      'fork-remote',
+      '+refs/heads/feature:refs/remotes/fork-remote/feature',
+    ]);
+    // The retry succeeded, so the local branch is still created.
+    expect(worktreeGit.branch).toHaveBeenCalledWith(['-f', 'feature', 'fork-remote/feature']);
+  });
+
+  it('tolerates a missing head branch on the base remote for fork PRs', async () => {
+    const repoPath = '/tmp/repo';
+    const repoGit = createMockGit();
+    const worktreeGit = createMockGit({
+      raw: vi.fn(async (args) => {
+        if (args[0] === 'cat-file') return 'commit\n';
+        return '';
+      }),
+      fetch: vi.fn().mockRejectedValue(new Error("couldn't find remote ref refs/heads/feature")),
+    });
+
+    manager._gitFor = vi.fn((dirPath) => (dirPath === repoPath ? repoGit : worktreeGit));
+    manager.executeCheckoutScript = vi.fn().mockResolvedValue(undefined);
+
+    await expect(manager.createWorktreeForPR(
+      { owner: 'owner', repo: 'repo', number: 42 },
+      { base_branch: 'main', base_sha: 'base-sha', head_sha: 'head-sha', head_branch: 'feature' },
+      repoPath,
+      { checkoutScript: '/tmp/checkout.sh' }
+    )).resolves.toBeDefined();
+
+    // A fork's head branch legitimately does not exist on the base remote, so
+    // the failure must not prune or abort the checkout-script flow.
+    expect(worktreeGit.raw).not.toHaveBeenCalledWith(['remote', 'prune', 'fork-remote']);
+    expect(manager.executeCheckoutScript).toHaveBeenCalled();
+  });
+
+  it('fetches the base branch before refreshing an existing worktree', async () => {
+    const worktreeGit = createMockGit({
+      raw: vi.fn(async (args) => {
+        if (args[0] === 'cat-file') return 'commit\n';
+        return '';
+      }),
+    });
+
+    manager._gitFor = vi.fn().mockReturnValue(worktreeGit);
+
+    await manager.refreshWorktree(
+      { id: 'wt-1', path: '/tmp/worktrees/existing' },
+      42,
+      { base_branch: 'main', base_sha: 'base-sha', head_sha: 'head-sha' },
+      { owner: 'owner', repo: 'repo', number: 42 }
+    );
+
+    expect(worktreeGit.fetch).toHaveBeenCalledWith([
+      '--no-tags',
+      'fork-remote',
+      '+refs/heads/main:refs/remotes/fork-remote/main',
+    ]);
+    expect(worktreeGit.raw).toHaveBeenCalledWith(['reset', '--hard', 'refs/remotes/fork-remote/pr-42']);
   });
 
   it('fetches the exact base SHA when refreshing an existing worktree record', async () => {

@@ -1404,6 +1404,9 @@ function getRepoCheckoutTimeout(config, repository) {
 /**
  * Gets the configured git fetch timeout for a repository.
  *
+ * Scope: the BACKGROUND POOL fetch. Foreground worktree creation and refresh
+ * issue targeted ref fetches and are not governed by this timeout.
+ *
  * This is simple-git's `timeout.block` — an IDLE timeout: the child `git fetch`
  * is killed when it produces no output for this long, not when the total fetch
  * exceeds it. Large monorepos can be legitimately silent for minutes during

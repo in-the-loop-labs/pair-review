@@ -1942,9 +1942,13 @@ describe('RepoSettingsRepository', () => {
   });
 
   describe('pool fetch coordination', () => {
+    // Instance ids standing in for two processes sharing one database.
+    const OWNER_A = 'instance-a';
+    const OWNER_B = 'instance-b';
+
     describe('tryClaimFetch', () => {
       it('claims the lease when no row exists (creates repo_settings row)', async () => {
-        const claimed = await repoSettingsRepo.tryClaimFetch('config-only/repo');
+        const claimed = await repoSettingsRepo.tryClaimFetch('config-only/repo', OWNER_A);
 
         expect(claimed).toBe(true);
         const row = await queryOne(db, 'SELECT * FROM repo_settings WHERE repository = ?', ['config-only/repo']);
@@ -1953,10 +1957,31 @@ describe('RepoSettingsRepository', () => {
         expect(row.repository).toBe('config-only/repo');
       });
 
+      it('records the claiming instance as the lease owner', async () => {
+        await repoSettingsRepo.saveRepoSettings('owner/repo', {});
+
+        await repoSettingsRepo.tryClaimFetch('owner/repo', OWNER_A);
+
+        const row = await queryOne(db, 'SELECT pool_fetch_owner FROM repo_settings WHERE repository = ?', ['owner/repo']);
+        expect(row.pool_fetch_owner).toBe(OWNER_A);
+      });
+
+      it('records the new owner when a stale lease is taken over', async () => {
+        await repoSettingsRepo.saveRepoSettings('owner/repo', {});
+        await repoSettingsRepo.tryClaimFetch('owner/repo', OWNER_A);
+        const staleTimestamp = new Date(Date.now() - 60000).toISOString();
+        await run(db, `UPDATE repo_settings SET pool_fetch_started_at = ? WHERE repository = ?`, [staleTimestamp, 'owner/repo']);
+
+        expect(await repoSettingsRepo.tryClaimFetch('owner/repo', OWNER_B, 1)).toBe(true);
+
+        const row = await queryOne(db, 'SELECT pool_fetch_owner FROM repo_settings WHERE repository = ?', ['owner/repo']);
+        expect(row.pool_fetch_owner).toBe(OWNER_B);
+      });
+
       it('claims the lease when row exists but fetch never started', async () => {
         await repoSettingsRepo.saveRepoSettings('owner/repo', {});
 
-        const claimed = await repoSettingsRepo.tryClaimFetch('owner/repo');
+        const claimed = await repoSettingsRepo.tryClaimFetch('owner/repo', OWNER_A);
 
         expect(claimed).toBe(true);
         const row = await queryOne(db, 'SELECT pool_fetch_started_at FROM repo_settings WHERE repository = ?', ['owner/repo']);
@@ -1965,24 +1990,24 @@ describe('RepoSettingsRepository', () => {
 
       it('claims the lease when previous fetch finished normally', async () => {
         await repoSettingsRepo.saveRepoSettings('owner/repo', {});
-        await repoSettingsRepo.tryClaimFetch('owner/repo');
-        await repoSettingsRepo.markFetchFinished('owner/repo');
+        await repoSettingsRepo.tryClaimFetch('owner/repo', OWNER_A);
+        await repoSettingsRepo.markFetchFinished('owner/repo', OWNER_A);
 
-        const claimed = await repoSettingsRepo.tryClaimFetch('owner/repo');
+        const claimed = await repoSettingsRepo.tryClaimFetch('owner/repo', OWNER_A);
 
         expect(claimed).toBe(true);
       });
 
       it('clears pool_fetch_finished_at when reclaiming the lease', async () => {
         await repoSettingsRepo.saveRepoSettings('owner/repo', {});
-        await repoSettingsRepo.tryClaimFetch('owner/repo');
-        await repoSettingsRepo.markFetchFinished('owner/repo');
+        await repoSettingsRepo.tryClaimFetch('owner/repo', OWNER_A);
+        await repoSettingsRepo.markFetchFinished('owner/repo', OWNER_A);
 
         // Verify finished_at is set before reclaim
         const before = await queryOne(db, 'SELECT pool_fetch_finished_at FROM repo_settings WHERE repository = ?', ['owner/repo']);
         expect(before.pool_fetch_finished_at).not.toBeNull();
 
-        await repoSettingsRepo.tryClaimFetch('owner/repo');
+        await repoSettingsRepo.tryClaimFetch('owner/repo', OWNER_A);
 
         const after = await queryOne(db, 'SELECT pool_fetch_finished_at FROM repo_settings WHERE repository = ?', ['owner/repo']);
         expect(after.pool_fetch_finished_at).toBeNull();
@@ -1996,16 +2021,16 @@ describe('RepoSettingsRepository', () => {
         await run(db, `UPDATE repo_settings SET pool_fetch_started_at = ? WHERE repository = ?`, [staleTimestamp, 'owner/repo']);
 
         // With a 1ms guard the timestamp is clearly stale
-        const claimed = await repoSettingsRepo.tryClaimFetch('owner/repo', 1);
+        const claimed = await repoSettingsRepo.tryClaimFetch('owner/repo', OWNER_A, 1);
         expect(claimed).toBe(true);
       });
 
       it('rejects when a fetch is already in progress (not stale)', async () => {
         await repoSettingsRepo.saveRepoSettings('owner/repo', {});
-        await repoSettingsRepo.tryClaimFetch('owner/repo');
+        await repoSettingsRepo.tryClaimFetch('owner/repo', OWNER_A);
 
         // Second claim should fail — the first is still in progress and fresh
-        const claimed = await repoSettingsRepo.tryClaimFetch('owner/repo');
+        const claimed = await repoSettingsRepo.tryClaimFetch('owner/repo', OWNER_B);
         expect(claimed).toBe(false);
       });
 
@@ -2013,7 +2038,7 @@ describe('RepoSettingsRepository', () => {
         await repoSettingsRepo.saveRepoSettings('owner/repo', {});
 
         const before = Date.now();
-        await repoSettingsRepo.tryClaimFetch('owner/repo');
+        await repoSettingsRepo.tryClaimFetch('owner/repo', OWNER_A);
         const after = Date.now();
 
         const row = await queryOne(db, 'SELECT pool_fetch_started_at FROM repo_settings WHERE repository = ?', ['owner/repo']);
@@ -2026,7 +2051,7 @@ describe('RepoSettingsRepository', () => {
     describe('refreshFetchLease', () => {
       it('updates pool_fetch_started_at to the current time', async () => {
         await repoSettingsRepo.saveRepoSettings('owner/repo', {});
-        await repoSettingsRepo.tryClaimFetch('owner/repo');
+        await repoSettingsRepo.tryClaimFetch('owner/repo', OWNER_A);
 
         // Backdate the lease so the refreshed timestamp is guaranteed to be
         // strictly greater — no sleep needed
@@ -2035,7 +2060,7 @@ describe('RepoSettingsRepository', () => {
 
         const rowBefore = await queryOne(db, 'SELECT pool_fetch_started_at FROM repo_settings WHERE repository = ?', ['owner/repo']);
 
-        await repoSettingsRepo.refreshFetchLease('owner/repo');
+        await repoSettingsRepo.refreshFetchLease('owner/repo', OWNER_A);
 
         const rowAfter = await queryOne(db, 'SELECT pool_fetch_started_at FROM repo_settings WHERE repository = ?', ['owner/repo']);
         expect(new Date(rowAfter.pool_fetch_started_at).getTime()).toBeGreaterThan(
@@ -2043,12 +2068,26 @@ describe('RepoSettingsRepository', () => {
         );
       });
 
+      it('is a no-op when another instance now owns the lease', async () => {
+        await repoSettingsRepo.saveRepoSettings('owner/repo', {});
+        await repoSettingsRepo.tryClaimFetch('owner/repo', OWNER_B);
+        const backdated = new Date(Date.now() - 60000).toISOString();
+        await run(db, `UPDATE repo_settings SET pool_fetch_started_at = ? WHERE repository = ?`, [backdated, 'owner/repo']);
+
+        // A straggler heartbeat from the previous holder must not extend the
+        // lease the new owner is relying on.
+        await repoSettingsRepo.refreshFetchLease('owner/repo', OWNER_A);
+
+        const row = await queryOne(db, 'SELECT pool_fetch_started_at FROM repo_settings WHERE repository = ?', ['owner/repo']);
+        expect(row.pool_fetch_started_at).toBe(backdated);
+      });
+
       it('keeps the lease active so a subsequent tryClaimFetch is rejected', async () => {
         await repoSettingsRepo.saveRepoSettings('owner/repo', {});
-        await repoSettingsRepo.tryClaimFetch('owner/repo');
-        await repoSettingsRepo.refreshFetchLease('owner/repo');
+        await repoSettingsRepo.tryClaimFetch('owner/repo', OWNER_A);
+        await repoSettingsRepo.refreshFetchLease('owner/repo', OWNER_A);
 
-        const claimed = await repoSettingsRepo.tryClaimFetch('owner/repo');
+        const claimed = await repoSettingsRepo.tryClaimFetch('owner/repo', OWNER_B);
         expect(claimed).toBe(false);
       });
     });
@@ -2056,21 +2095,34 @@ describe('RepoSettingsRepository', () => {
     describe('markFetchFinished', () => {
       it('sets pool_fetch_finished_at', async () => {
         await repoSettingsRepo.saveRepoSettings('owner/repo', {});
-        await repoSettingsRepo.tryClaimFetch('owner/repo');
+        await repoSettingsRepo.tryClaimFetch('owner/repo', OWNER_A);
 
-        await repoSettingsRepo.markFetchFinished('owner/repo');
+        await repoSettingsRepo.markFetchFinished('owner/repo', OWNER_A);
 
         const row = await queryOne(db, 'SELECT pool_fetch_finished_at FROM repo_settings WHERE repository = ?', ['owner/repo']);
         expect(row.pool_fetch_finished_at).not.toBeNull();
         expect(new Date(row.pool_fetch_finished_at).getTime()).toBeGreaterThan(0);
       });
 
+      it('is a no-op when another instance now owns the lease', async () => {
+        await repoSettingsRepo.saveRepoSettings('owner/repo', {});
+        await repoSettingsRepo.tryClaimFetch('owner/repo', OWNER_B);
+
+        // A late release from the previous holder must not free the lease the
+        // new owner is actively fetching under.
+        await repoSettingsRepo.markFetchFinished('owner/repo', OWNER_A);
+
+        const row = await queryOne(db, 'SELECT pool_fetch_finished_at FROM repo_settings WHERE repository = ?', ['owner/repo']);
+        expect(row.pool_fetch_finished_at).toBeNull();
+        expect(await repoSettingsRepo.tryClaimFetch('owner/repo', OWNER_A)).toBe(false);
+      });
+
       it('allows the lease to be reclaimed after finishing', async () => {
         await repoSettingsRepo.saveRepoSettings('owner/repo', {});
-        await repoSettingsRepo.tryClaimFetch('owner/repo');
-        await repoSettingsRepo.markFetchFinished('owner/repo');
+        await repoSettingsRepo.tryClaimFetch('owner/repo', OWNER_A);
+        await repoSettingsRepo.markFetchFinished('owner/repo', OWNER_A);
 
-        const claimed = await repoSettingsRepo.tryClaimFetch('owner/repo');
+        const claimed = await repoSettingsRepo.tryClaimFetch('owner/repo', OWNER_B);
         expect(claimed).toBe(true);
       });
     });
@@ -3885,6 +3937,15 @@ describe('Migration 55 - fetch attempt tracking on worktree_pool', () => {
   let db;
   const Database = require('better-sqlite3');
 
+  const PRE_55_REPO_SETTINGS_SQL = `
+    CREATE TABLE repo_settings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      repository TEXT NOT NULL UNIQUE COLLATE NOCASE,
+      pool_fetch_started_at TEXT,
+      pool_fetch_finished_at TEXT
+    )
+  `;
+
   /** Pre-55 baseline: worktree_pool without the two backoff columns. */
   function createPreMigration55Database() {
     const testDb = new Database(':memory:');
@@ -3902,6 +3963,7 @@ describe('Migration 55 - fetch attempt tracking on worktree_pool', () => {
         created_at TEXT NOT NULL
       )
     `);
+    testDb.exec(PRE_55_REPO_SETTINGS_SQL);
     return testDb;
   }
 
@@ -3932,6 +3994,35 @@ describe('Migration 55 - fetch attempt tracking on worktree_pool', () => {
     expect(row.last_fetch_attempt_at).toBeNull();
   });
 
+  it('adds pool_fetch_owner to repo_settings', () => {
+    db = createPreMigration55Database();
+
+    MIGRATIONS[55](db);
+
+    const colNames = db.prepare('PRAGMA table_info(repo_settings)').all().map(c => c.name);
+    expect(colNames).toContain('pool_fetch_owner');
+  });
+
+  it('completes a partial apply left by a crashed earlier run', () => {
+    // A crash between the two worktree_pool ALTERs leaves last_fetch_attempt_at
+    // present, fetch_failure_count and pool_fetch_owner missing.
+    db = createPreMigration55Database();
+    db.exec('ALTER TABLE worktree_pool ADD COLUMN last_fetch_attempt_at TEXT');
+    db.prepare(`INSERT INTO worktree_pool (id, repository, path, created_at, last_fetch_attempt_at) VALUES ('pool-a', 'owner/repo', '/tmp/a', '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z')`).run();
+
+    MIGRATIONS[55](db);
+
+    const poolCols = db.prepare('PRAGMA table_info(worktree_pool)').all().map(c => c.name);
+    expect(poolCols.filter(n => n === 'last_fetch_attempt_at')).toHaveLength(1);
+    expect(poolCols).toContain('fetch_failure_count');
+    expect(db.prepare('PRAGMA table_info(repo_settings)').all().map(c => c.name)).toContain('pool_fetch_owner');
+
+    // The pre-existing column keeps its data.
+    const row = db.prepare(`SELECT * FROM worktree_pool WHERE id = 'pool-a'`).get();
+    expect(row.last_fetch_attempt_at).toBe('2026-01-02T00:00:00Z');
+    expect(row.fetch_failure_count).toBe(0);
+  });
+
   it('is idempotent when re-run', () => {
     db = createPreMigration55Database();
 
@@ -3940,10 +4031,21 @@ describe('Migration 55 - fetch attempt tracking on worktree_pool', () => {
 
     const colNames = db.prepare('PRAGMA table_info(worktree_pool)').all().map(c => c.name);
     expect(colNames.filter(n => n === 'fetch_failure_count')).toHaveLength(1);
+    expect(db.prepare('PRAGMA table_info(repo_settings)').all()
+      .map(c => c.name).filter(n => n === 'pool_fetch_owner')).toHaveLength(1);
   });
 
   it('skips cleanly when worktree_pool does not exist', () => {
     db = new Database(':memory:');
     expect(() => MIGRATIONS[55](db)).not.toThrow();
+  });
+
+  it('adds pool_fetch_owner even when worktree_pool is absent', () => {
+    db = new Database(':memory:');
+    db.exec(PRE_55_REPO_SETTINGS_SQL);
+
+    MIGRATIONS[55](db);
+
+    expect(db.prepare('PRAGMA table_info(repo_settings)').all().map(c => c.name)).toContain('pool_fetch_owner');
   });
 });

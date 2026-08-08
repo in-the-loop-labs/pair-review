@@ -8,18 +8,35 @@ const path = require('path');
 const { isPidAlive, cleanupOrphanedKeepFiles } = require('../../src/git/pack-cleanup');
 
 const HOST = 'test-host.local';
-// A pid that is essentially guaranteed not to be running. Values above the
-// platform pid ceiling make process.kill throw ESRCH rather than EPERM.
+// Pids for the injected process table below. Nothing here consults the real
+// one: an ambient pid is not ours to reason about and can be recycled between
+// the write and the check.
 const DEAD_PID = 4194303;
+const LIVE_PID = process.pid;
 
 describe('pack-cleanup', () => {
   let tmpDir;
   let packDir;
   let logger;
 
-  /** Deps that pin the hostname and capture log output. */
+  /**
+   * Deps that pin the hostname, capture log output, and supply a deterministic
+   * process table where only LIVE_PID is running.
+   */
   function makeDeps(overrides = {}) {
-    return { os: { hostname: () => HOST }, logger, ...overrides };
+    return {
+      os: { hostname: () => HOST },
+      logger,
+      process: {
+        kill: vi.fn((pid) => {
+          if (pid === LIVE_PID) return true;
+          const err = new Error('no such process');
+          err.code = 'ESRCH';
+          throw err;
+        })
+      },
+      ...overrides,
+    };
   }
 
   /** Write a pack + idx + .keep triple, returning the .keep path. */
@@ -45,10 +62,6 @@ describe('pack-cleanup', () => {
   describe('isPidAlive', () => {
     it('returns true for the current process', () => {
       expect(isPidAlive(process.pid)).toBe(true);
-    });
-
-    it('returns false for a pid that does not exist', () => {
-      expect(isPidAlive(DEAD_PID)).toBe(false);
     });
 
     it('treats EPERM as alive (process owned by another user)', () => {
@@ -98,7 +111,7 @@ describe('pack-cleanup', () => {
     });
 
     it('keeps a marker whose pid is still alive', async () => {
-      const keepPath = writePack('pack-live', `fetch-pack ${process.pid} on ${HOST}`);
+      const keepPath = writePack('pack-live', `fetch-pack ${LIVE_PID} on ${HOST}`);
 
       const summary = await cleanupOrphanedKeepFiles(packDir, makeDeps());
 
@@ -194,6 +207,33 @@ describe('pack-cleanup', () => {
       expect(logger.warn).toHaveBeenCalledTimes(1);
     });
 
+    it('counts a failed unlink as an error and still processes the rest', async () => {
+      writePack('pack-stuck', `fetch-pack ${DEAD_PID} on ${HOST}`);
+      const removable = writePack('pack-ok', `fetch-pack ${DEAD_PID} on ${HOST}`);
+
+      const deps = makeDeps({
+        fs: {
+          readdirSync: fs.readdirSync,
+          readFileSync: fs.readFileSync,
+          unlinkSync: (p) => {
+            if (String(p).includes('pack-stuck')) {
+              const err = new Error('permission denied');
+              err.code = 'EACCES';
+              throw err;
+            }
+            return fs.unlinkSync(p);
+          }
+        }
+      });
+
+      const summary = await cleanupOrphanedKeepFiles(packDir, deps);
+
+      expect(summary).toMatchObject({ scanned: 2, removed: 1, errors: 1 });
+      expect(fs.existsSync(path.join(packDir, 'pack-stuck.keep'))).toBe(true);
+      expect(fs.existsSync(removable)).toBe(false);
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+    });
+
     it('logs an info line naming the removed markers', async () => {
       writePack('pack-dead', `fetch-pack ${DEAD_PID} on ${HOST}`);
 
@@ -218,7 +258,7 @@ describe('pack-cleanup', () => {
 
     it('processes a mixed directory correctly in one pass', async () => {
       const dead = writePack('pack-dead', `fetch-pack ${DEAD_PID} on ${HOST}`);
-      const live = writePack('pack-live', `fetch-pack ${process.pid} on ${HOST}`);
+      const live = writePack('pack-live', `fetch-pack ${LIVE_PID} on ${HOST}`);
       const foreign = writePack('pack-foreign', `fetch-pack ${DEAD_PID} on elsewhere`);
 
       const summary = await cleanupOrphanedKeepFiles(packDir, makeDeps());

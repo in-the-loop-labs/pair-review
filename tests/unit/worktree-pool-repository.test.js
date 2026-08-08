@@ -262,6 +262,20 @@ describe('WorktreePoolRepository', () => {
       expect(getPoolRow('pool-a').last_fetched_at).toBeNull();
     });
 
+    it('re-stamps last_fetch_attempt_at so backoff runs from the failure', async () => {
+      await repo.create({ id: 'pool-a', repository: 'owner/repo', path: '/tmp/a' });
+      // A slow failure would otherwise burn its own cooldown: the attempt was
+      // stamped when the fetch started, long before it gave up.
+      await repo.recordFetchAttempt('pool-a');
+      db.prepare(`UPDATE worktree_pool SET last_fetch_attempt_at = '2020-01-01T00:00:00.000Z' WHERE id = 'pool-a'`).run();
+
+      await repo.recordFetchFailure('pool-a');
+
+      const row = getPoolRow('pool-a');
+      expect(row.last_fetch_attempt_at > '2020-01-01T00:00:00.000Z').toBe(true);
+      expect(row.fetch_failure_count).toBe(1);
+    });
+
     it('is a no-op for an unknown id', async () => {
       await expect(repo.recordFetchFailure('nope')).resolves.not.toThrow();
     });

@@ -69,6 +69,17 @@ describe('isPoolEntryDueForFetch', () => {
     expect(isPoolEntryDueForFetch(fresh, intervalMs, now)).toBe(false);
   });
 
+  it('never backs off less than the configured interval', () => {
+    // An 8h interval exceeds the 6h cap; capping below the interval would make
+    // a failing entry retry more often than a healthy one.
+    const eightHours = 8 * HOUR_MS;
+    const waiting = { last_fetch_attempt_at: at(7 * HOUR_MS), fetch_failure_count: 1 };
+    expect(isPoolEntryDueForFetch(waiting, eightHours, now)).toBe(false);
+
+    const due = { last_fetch_attempt_at: at(eightHours + 1000), fetch_failure_count: 1 };
+    expect(isPoolEntryDueForFetch(due, eightHours, now)).toBe(true);
+  });
+
   it('honours a recent success even when the failure count is high', () => {
     const entry = {
       last_fetched_at: at(1000),
@@ -82,12 +93,18 @@ describe('isPoolEntryDueForFetch', () => {
 describe('startPoolBackgroundFetches', () => {
   let db;
 
+  // `git rev-parse --git-common-dir` returns an absolute path for a linked
+  // worktree (the main clone's .git), so the sweep must resolve against that,
+  // not join it onto the entry's own path.
+  const COMMON_DIR = '/main-repo/.git';
+  const EXPECTED_PACK_DIR = path.resolve(COMMON_DIR, 'objects', 'pack');
+
   /** Build a fake simple-git instance plus the factory that hands it out. */
   function makeGit({ fetchImpl } = {}) {
     const git = {
       getRemotes: vi.fn(async () => [{ name: 'origin' }]),
       fetch: vi.fn(fetchImpl || (async () => undefined)),
-      raw: vi.fn(async () => '.git\n'),
+      raw: vi.fn(async () => `${COMMON_DIR}\n`),
     };
     const simpleGit = vi.fn(() => git);
     return { git, simpleGit };
@@ -211,8 +228,7 @@ describe('startPoolBackgroundFetches', () => {
     expect(row.fetch_failure_count).toBe(1);
 
     expect(deps.cleanupOrphanedKeepFiles).toHaveBeenCalledTimes(1);
-    const packDir = deps.cleanupOrphanedKeepFiles.mock.calls[0][0];
-    expect(packDir).toBe(path.resolve('/tmp/pool-a', '.git', 'objects', 'pack'));
+    expect(deps.cleanupOrphanedKeepFiles).toHaveBeenCalledWith(EXPECTED_PACK_DIR);
   });
 
   it('does not retry a failed entry on the next tick (backoff)', async () => {
@@ -241,20 +257,113 @@ describe('startPoolBackgroundFetches', () => {
 
     await runTicks({ repos: {} }, deps);
 
+    expect(deps.cleanupOrphanedKeepFiles).toHaveBeenCalledTimes(1);
     expect(poolRow('pool-a').fetch_failure_count).toBe(1);
   });
 
-  it('skips a repo entirely when skip_bulk_fetch is set', async () => {
+  it('survives a cleanup failure after a successful fetch', async () => {
     seedRepoSettings();
     seedPoolEntry('pool-a');
+    const { simpleGit } = makeGit();
+    const deps = makeDeps({
+      simpleGit,
+      cleanupOrphanedKeepFiles: vi.fn(async () => { throw new Error('cleanup exploded'); }),
+    });
+
+    await runTicks({ repos: {} }, deps);
+
+    expect(deps.cleanupOrphanedKeepFiles).toHaveBeenCalledTimes(1);
+    const row = poolRow('pool-a');
+    expect(row.last_fetched_at).toBeTruthy();
+    expect(row.fetch_failure_count).toBe(0);
+  });
+
+  it('sweeps keep files once per repo, not once per entry', async () => {
+    seedRepoSettings();
+    seedPoolEntry('pool-a');
+    seedPoolEntry('pool-b');
+    const { simpleGit } = makeGit();
+    const deps = makeDeps({ simpleGit });
+
+    await runTicks({ repos: {} }, deps);
+
+    // Both entries share one git object store, so one sweep covers them.
+    expect(poolRow('pool-a').last_fetched_at).toBeTruthy();
+    expect(poolRow('pool-b').last_fetched_at).toBeTruthy();
+    expect(deps.cleanupOrphanedKeepFiles).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips fetching but still sweeps keep files when skip_bulk_fetch is set', async () => {
+    seedRepoSettings();
+    seedPoolEntry('pool-a');
+    seedPoolEntry('pool-b');
     const { git, simpleGit } = makeGit();
+    const deps = makeDeps({ simpleGit });
+    const config = { repos: { 'owner/repo': { skip_bulk_fetch: true } } };
+
+    await runTicks(config, deps);
+
+    expect(git.fetch).not.toHaveBeenCalled();
+    // skip_bulk_fetch repos are the huge monorepos whose killed foreground
+    // fetches strand `.keep` markers, so the sweep must still run for them.
+    expect(deps.cleanupOrphanedKeepFiles).toHaveBeenCalledTimes(1);
+    expect(deps.cleanupOrphanedKeepFiles).toHaveBeenCalledWith(EXPECTED_PACK_DIR);
+    // Every entry is stamped so the sweep runs once per interval, not per tick.
+    expect(poolRow('pool-a').last_fetch_attempt_at).toBeTruthy();
+    expect(poolRow('pool-b').last_fetch_attempt_at).toBeTruthy();
+    expect(poolRow('pool-a').last_fetched_at).toBeNull();
+  });
+
+  it('sweeps a skip_bulk_fetch repo once per interval, not once per tick', async () => {
+    seedRepoSettings({ intervalMinutes: 60 });
+    seedPoolEntry('pool-a');
+    const { simpleGit } = makeGit();
+    const deps = makeDeps({ simpleGit });
+    const config = { repos: { 'owner/repo': { skip_bulk_fetch: true } } };
+
+    await runTicks(config, deps, 3);
+
+    expect(deps.cleanupOrphanedKeepFiles).toHaveBeenCalledTimes(1);
+  });
+
+  it('anchors the skip_bulk_fetch sweep on any surviving path, not only a due one', async () => {
+    seedRepoSettings({ intervalMinutes: 60 });
+    seedPoolEntry('pool-gone', { entryPath: '/tmp/pool-gone' });
+    seedPoolEntry('pool-fresh', { entryPath: '/tmp/pool-fresh' });
+    // pool-gone is the due entry but its directory has vanished; pool-fresh is
+    // inside the interval yet still on disk, and reaches the same object store.
+    db.prepare(`UPDATE worktree_pool SET last_fetched_at = ?, last_fetch_attempt_at = '2020-01-01T00:00:00.000Z' WHERE id = 'pool-fresh'`)
+      .run(new Date().toISOString());
+    const { git, simpleGit } = makeGit();
+    const deps = makeDeps({
+      simpleGit,
+      fs: { existsSync: (entryPath) => entryPath !== '/tmp/pool-gone' },
+    });
+    const config = { repos: { 'owner/repo': { skip_bulk_fetch: true } } };
+
+    await runTicks(config, deps);
+
+    expect(git.fetch).not.toHaveBeenCalled();
+    expect(deps.cleanupOrphanedKeepFiles).toHaveBeenCalledTimes(1);
+    expect(deps.cleanupOrphanedKeepFiles).toHaveBeenCalledWith(EXPECTED_PACK_DIR);
+    // The sweep ran from the surviving sibling, not the vanished due entry.
+    expect(simpleGit).toHaveBeenCalledWith('/tmp/pool-fresh', expect.anything());
+    expect(simpleGit).not.toHaveBeenCalledWith('/tmp/pool-gone', expect.anything());
+    expect(poolRow('pool-gone').last_fetch_attempt_at).toBeTruthy();
+    expect(poolRow('pool-fresh').last_fetch_attempt_at > '2020-01-01T00:00:00.000Z').toBe(true);
+  });
+
+  it('does not claim the fetch lease for a skip_bulk_fetch repo', async () => {
+    seedRepoSettings();
+    seedPoolEntry('pool-a');
+    const { simpleGit } = makeGit();
     const config = { repos: { 'owner/repo': { skip_bulk_fetch: true } } };
 
     await runTicks(config, makeDeps({ simpleGit }));
 
-    expect(git.fetch).not.toHaveBeenCalled();
-    expect(simpleGit).not.toHaveBeenCalled();
-    expect(poolRow('pool-a').last_fetch_attempt_at).toBeNull();
+    const row = db.prepare(`SELECT pool_fetch_started_at, pool_fetch_owner FROM repo_settings WHERE repository = 'owner/repo'`).get();
+    expect(row.pool_fetch_started_at).toBeNull();
+    expect(row.pool_fetch_owner).toBeNull();
   });
 
   it('passes the configured fetch timeout to simple-git', async () => {
@@ -362,12 +471,12 @@ describe('startPoolBackgroundFetches', () => {
     const failing = {
       getRemotes: vi.fn(async () => [{ name: 'origin' }]),
       fetch: vi.fn(async () => { throw new Error('boom'); }),
-      raw: vi.fn(async () => '.git\n'),
+      raw: vi.fn(async () => `${COMMON_DIR}\n`),
     };
     const ok = {
       getRemotes: vi.fn(async () => [{ name: 'origin' }]),
       fetch: vi.fn(async () => undefined),
-      raw: vi.fn(async () => '.git\n'),
+      raw: vi.fn(async () => `${COMMON_DIR}\n`),
     };
     const simpleGit = vi.fn((repoPath) => (repoPath === '/tmp/pool-a' ? failing : ok));
 
@@ -377,6 +486,173 @@ describe('startPoolBackgroundFetches', () => {
     expect(ok.fetch).toHaveBeenCalledTimes(1);
     expect(poolRow('pool-a').fetch_failure_count).toBe(1);
     expect(poolRow('pool-b').last_fetched_at).toBeTruthy();
+  });
+
+  it('stamps the attempt before the fetch starts', async () => {
+    seedRepoSettings();
+    seedPoolEntry('pool-a');
+    let attemptWhenFetchStarted;
+    const { simpleGit } = makeGit({
+      fetchImpl: async () => {
+        attemptWhenFetchStarted = poolRow('pool-a').last_fetch_attempt_at;
+        throw new Error('killed by signal SIGKILL');
+      }
+    });
+
+    await runTicks({ repos: {} }, makeDeps({ simpleGit }));
+
+    // A fetch killed mid-pack (or a process that dies outright) must still back
+    // off, which only works if the stamp landed before git started.
+    expect(attemptWhenFetchStarted).toBeTruthy();
+  });
+
+  it('records a failure when the git instance cannot be constructed', async () => {
+    seedRepoSettings();
+    seedPoolEntry('pool-a', { entryPath: '/tmp/pool-a' });
+    seedPoolEntry('pool-b', { entryPath: '/tmp/pool-b' });
+    const ok = {
+      getRemotes: vi.fn(async () => [{ name: 'origin' }]),
+      fetch: vi.fn(async () => undefined),
+      raw: vi.fn(async () => `${COMMON_DIR}\n`),
+    };
+    const simpleGit = vi.fn((repoPath) => {
+      if (repoPath === '/tmp/pool-a') throw new Error('cannot resolve git dir');
+      return ok;
+    });
+    const deps = makeDeps({ simpleGit });
+
+    await runTicks({ repos: {} }, deps);
+
+    expect(poolRow('pool-a').fetch_failure_count).toBe(1);
+    expect(poolRow('pool-b').last_fetched_at).toBeTruthy();
+    // The sweep still runs, using the instance that did construct.
+    expect(deps.cleanupOrphanedKeepFiles).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips the sweep when no git instance could be constructed', async () => {
+    seedRepoSettings();
+    seedPoolEntry('pool-a');
+    const simpleGit = vi.fn(() => { throw new Error('cannot resolve git dir'); });
+    const deps = makeDeps({ simpleGit });
+
+    await runTicks({ repos: {} }, deps);
+
+    expect(poolRow('pool-a').fetch_failure_count).toBe(1);
+    expect(deps.cleanupOrphanedKeepFiles).not.toHaveBeenCalled();
+  });
+
+  it('does not start a second pass while a fetch is still running', async () => {
+    // Two repos: repo-a's fetch hangs, repo-b is due and untouched behind it.
+    // Only a second repo can discriminate the in-progress guard — a lone repo's
+    // entry is stamped by the first pass and stops being due on its own.
+    seedRepoSettings({ repository: 'owner/repo-a', intervalMinutes: 60 });
+    seedRepoSettings({ repository: 'owner/repo-b', intervalMinutes: 60 });
+    seedPoolEntry('pool-a', { repository: 'owner/repo-a', entryPath: '/tmp/pool-a' });
+    seedPoolEntry('pool-b', { repository: 'owner/repo-b', entryPath: '/tmp/pool-b' });
+
+    let resolveFetchA;
+    const gitA = {
+      getRemotes: vi.fn(async () => [{ name: 'origin' }]),
+      fetch: vi.fn(() => new Promise((resolve) => { resolveFetchA = resolve; })),
+      raw: vi.fn(async () => `${COMMON_DIR}\n`),
+    };
+    const gitB = {
+      getRemotes: vi.fn(async () => [{ name: 'origin' }]),
+      fetch: vi.fn(async () => undefined),
+      raw: vi.fn(async () => `${COMMON_DIR}\n`),
+    };
+    const simpleGit = vi.fn((repoPath) => (repoPath === '/tmp/pool-a' ? gitA : gitB));
+    const deps = makeDeps({ simpleGit });
+    // A config key pins repo-a first in the iteration set (config keys are
+    // added before the DB rows), so repo-a is the one that hangs the pass.
+    const config = { repos: { 'owner/repo-a': {} } };
+
+    try {
+      vi.useFakeTimers();
+      const timer = startPoolBackgroundFetches(db, config, deps);
+      try {
+        // Tick 1: repo-a claims its lease and hangs before repo-b is reached.
+        await vi.advanceTimersByTimeAsync(POOL_FETCH_TICK_MS);
+        expect(gitA.fetch).toHaveBeenCalledTimes(1);
+        expect(gitB.fetch).not.toHaveBeenCalled();
+
+        // Tick 2 lands while repo-a is still hanging. repo-b is due and its
+        // lease is free, so without the guard this tick would fetch it
+        // concurrently with the in-flight pass.
+        await vi.advanceTimersByTimeAsync(POOL_FETCH_TICK_MS);
+        expect(gitB.fetch).not.toHaveBeenCalled();
+        expect(poolRow('pool-b').last_fetch_attempt_at).toBeNull();
+
+        // Once repo-a's fetch settles the original pass walks on to repo-b.
+        resolveFetchA();
+        await vi.advanceTimersByTimeAsync(POOL_FETCH_TICK_MS);
+        expect(gitA.fetch).toHaveBeenCalledTimes(1);
+        expect(gitB.fetch).toHaveBeenCalledTimes(1);
+        expect(poolRow('pool-a').last_fetched_at).toBeTruthy();
+        expect(poolRow('pool-b').last_fetched_at).toBeTruthy();
+      } finally {
+        clearInterval(timer);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps fetching and sweeping later repos when one repo\'s sweep throws', async () => {
+    seedRepoSettings({ repository: 'owner/repo-a' });
+    seedRepoSettings({ repository: 'owner/repo-b' });
+    seedPoolEntry('pool-a', { repository: 'owner/repo-a', entryPath: '/tmp/pool-a' });
+    seedPoolEntry('pool-b', { repository: 'owner/repo-b', entryPath: '/tmp/pool-b' });
+
+    const commonDirA = '/main-repo-a/.git';
+    const commonDirB = '/main-repo-b/.git';
+    const packDirA = path.resolve(commonDirA, 'objects', 'pack');
+    const packDirB = path.resolve(commonDirB, 'objects', 'pack');
+    const gitA = {
+      getRemotes: vi.fn(async () => [{ name: 'origin' }]),
+      fetch: vi.fn(async () => undefined),
+      raw: vi.fn(async () => `${commonDirA}\n`),
+    };
+    const gitB = {
+      getRemotes: vi.fn(async () => [{ name: 'origin' }]),
+      fetch: vi.fn(async () => undefined),
+      raw: vi.fn(async () => `${commonDirB}\n`),
+    };
+    const simpleGit = vi.fn((repoPath) => (repoPath === '/tmp/pool-a' ? gitA : gitB));
+    const deps = makeDeps({
+      simpleGit,
+      cleanupOrphanedKeepFiles: vi.fn(async (packDir) => {
+        if (packDir === packDirA) throw new Error('cleanup exploded');
+        return { scanned: 0, removed: 0, skipped: 0, errors: 0 };
+      }),
+    });
+    // Pins repo-a — the repo whose sweep throws — first in iteration order.
+    const config = { repos: { 'owner/repo-a': {} } };
+
+    await runTicks(config, deps);
+
+    // repo-a's sweep blew up, but it must not abort the outer repo loop.
+    expect(deps.cleanupOrphanedKeepFiles).toHaveBeenCalledWith(packDirA);
+    expect(deps.cleanupOrphanedKeepFiles).toHaveBeenCalledWith(packDirB);
+    expect(gitB.fetch).toHaveBeenCalledTimes(1);
+    expect(poolRow('pool-b').last_fetched_at).toBeTruthy();
+    // repo-a still fetched successfully and gave its lease back.
+    expect(poolRow('pool-a').last_fetched_at).toBeTruthy();
+    const leaseA = db.prepare(`SELECT pool_fetch_finished_at FROM repo_settings WHERE repository = 'owner/repo-a'`).get();
+    expect(leaseA.pool_fetch_finished_at).not.toBeNull();
+  });
+
+  it('releases the lease it claimed once the pass finishes', async () => {
+    seedRepoSettings();
+    seedPoolEntry('pool-a');
+    const { simpleGit } = makeGit();
+
+    await runTicks({ repos: {} }, makeDeps({ simpleGit }));
+
+    const row = db.prepare(`SELECT pool_fetch_started_at, pool_fetch_finished_at, pool_fetch_owner FROM repo_settings WHERE repository = 'owner/repo'`).get();
+    expect(row.pool_fetch_owner).toBeTruthy();
+    expect(row.pool_fetch_finished_at).not.toBeNull();
+    expect(row.pool_fetch_finished_at >= row.pool_fetch_started_at).toBe(true);
   });
 
   it('excludes entries in a transient status', async () => {
