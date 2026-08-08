@@ -12,7 +12,7 @@ const { AIProvider, registerProvider, quoteShellArgs } = require('./provider');
 const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { CancellationError, isAnalysisCancelled } = require('../routes/shared');
-const { wireAbortToChild, makeAbortError } = require('./abort-signal-wiring');
+const { wireAbortToChild, makeAbortError, killChildSafely } = require('./abort-signal-wiring');
 
 // Directory containing bin scripts (git-diff-lines, etc.)
 const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
@@ -286,7 +286,7 @@ class CopilotProvider extends AIProvider {
       if (timeout) {
         timeoutId = setTimeout(() => {
           logger.error(`${levelPrefix} Process ${pid} timed out after ${timeout}ms`);
-          copilot.kill('SIGTERM');
+          killChildSafely(copilot, { logPrefix: levelPrefix, shell: this.useShell });
           settle(reject, new Error(`${levelPrefix} Copilot CLI timed out after ${timeout}ms`));
         }, timeout);
       }
@@ -348,10 +348,25 @@ class CopilotProvider extends AIProvider {
           logger.info(`${levelPrefix} Raw response length: ${stdout.length} characters`);
           logger.info(`${levelPrefix} Attempting LLM-based JSON extraction fallback...`);
 
+          // The Copilot child has already exited, so a cancel arriving now only
+          // makes the abort wiring kill something already dead. Nothing else on
+          // this path consults it, so without the checks below a cancelled
+          // analysis would settle as a normal result. The signal is read
+          // alongside the wiring flag as the source of truth.
+          const cancelledDuringExtraction = () =>
+            abortWiring.cancelled() || abortSignal?.aborted === true;
+
           // Use async IIFE to handle the async LLM extraction
           (async () => {
             try {
-              const llmExtracted = await this.extractJSONWithLLM(stdout, { level, analysisId, registerProcess, logPrefix: levelPrefix });
+              // `abortSignal` lets the extraction spawn be killed rather than
+              // merely abandoned until its own 60s timeout.
+              const llmExtracted = await this.extractJSONWithLLM(stdout, { level, analysisId, registerProcess, logPrefix: levelPrefix, abortSignal });
+              if (cancelledDuringExtraction()) {
+                logger.info(`${levelPrefix} Cancelled by user during LLM extraction fallback`);
+                settle(reject, makeAbortError(`${levelPrefix} Cancelled by user`));
+                return;
+              }
               if (llmExtracted.success) {
                 logger.success(`${levelPrefix} LLM extraction fallback succeeded`);
                 settle(resolve, llmExtracted.data);
@@ -361,6 +376,13 @@ class CopilotProvider extends AIProvider {
                 settle(resolve, { raw: stdout, parsed: false });
               }
             } catch (llmError) {
+              // An abort that kills the extraction spawn surfaces here as a
+              // thrown error; it is a cancellation, not a parse failure.
+              if (cancelledDuringExtraction()) {
+                logger.info(`${levelPrefix} Cancelled by user during LLM extraction fallback`);
+                settle(reject, makeAbortError(`${levelPrefix} Cancelled by user`));
+                return;
+              }
               logger.warn(`${levelPrefix} LLM extraction fallback error: ${llmError.message}`);
               settle(resolve, { raw: stdout, parsed: false });
             }
@@ -473,7 +495,9 @@ class CopilotProvider extends AIProvider {
         if (settled) return;
         settled = true;
         logger.warn(`Copilot CLI availability check timed out after ${Math.round(timeoutMs / 1000)}s`);
-        try { copilot.kill(); } catch { /* ignore */ }
+        // Not `shell: useShell`: the probe spawn is not `detached`, so
+        // group-kill would ESRCH and leave the child running.
+        killChildSafely(copilot, { logPrefix: '[availability]' });
         resolve(false);
       }, timeoutMs);
 

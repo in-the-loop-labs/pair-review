@@ -13,6 +13,7 @@ const fs = require('fs');
 const { spawn } = require('child_process');
 const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
+const { killChildSafely, wireAbortToChild, makeAbortError } = require('./abort-signal-wiring');
 const { TIERS, TIER_ALIASES } = require('./prompts/config');
 
 // Directory containing bin scripts (git-diff-lines, etc.)
@@ -190,6 +191,10 @@ class AIProvider {
    * @property {boolean} useShell - Whether to use shell mode
    * @property {boolean} promptViaStdin - If true, send prompt to stdin; if false, append to args
    * @property {boolean} promptViaFile - If true, write prompt to a temp file and pass @filepath as a positional arg (Pi-specific @file syntax; currently only used by PiProvider)
+   * @property {string} promptFileArg - If set (e.g. `'--prompt-file'`), write prompt to a temp file
+   *   and append `[promptFileArg, filepath]` to args. For CLIs that take the prompt from a file via
+   *   a named flag (Muse). Takes precedence over promptViaFile; both keep the prompt off argv, so
+   *   neither can hit the OS single-argument limit.
    */
   getExtractionConfig(model) {
     // Default: extraction not supported
@@ -204,10 +209,15 @@ class AIProvider {
    * @param {string|number} options.level - Analysis level for logging
    * @param {string} options.analysisId - Analysis ID for process tracking (enables cancellation)
    * @param {Function} options.registerProcess - Function to register child process for cancellation
+   * @param {AbortSignal} [options.abortSignal] - Optional cancellation signal. When
+   *   supplied and aborted, the extraction child is killed and the returned promise
+   *   REJECTS with an AbortError (`isCancellation: true`) instead of resolving.
+   *   Callers that omit it keep the original resolve-only contract: every failure
+   *   still comes back as `{ success: false, error }`.
    * @returns {Promise<{success: boolean, data?: Object, error?: string}>}
    */
   async extractJSONWithLLM(rawResponse, options = {}) {
-    const { level = 'extraction', analysisId, registerProcess, logPrefix } = options;
+    const { level = 'extraction', analysisId, registerProcess, logPrefix, abortSignal } = options;
     const levelPrefix = logPrefix || `[Level ${level}]`;
 
     // Get the fast-tier model, with fallback to analysis model
@@ -222,27 +232,38 @@ class AIProvider {
       };
     }
 
-    const { command, args, useShell, promptViaStdin, promptViaFile, env: configEnv } = config;
+    const { command, args, useShell, promptViaStdin, promptViaFile, promptFileArg, env: configEnv } = config;
     const prompt = `Extract the JSON object from the following text. Return ONLY the valid JSON, nothing else. Do not include any explanation, markdown formatting, or code blocks - just the raw JSON.
 
 === BEGIN INPUT TEXT ===
 ${rawResponse}
 === END INPUT TEXT ===`;
 
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
+      // Already cancelled before we got here: don't spawn at all. Nothing has
+      // been written to disk yet, so there is nothing to clean up.
+      if (abortSignal && abortSignal.aborted) {
+        logger.info(`${levelPrefix} LLM extraction skipped: already cancelled`);
+        reject(makeAbortError(`${levelPrefix} Cancelled by user`));
+        return;
+      }
+
       // Build final command and args based on prompt delivery method
-      // promptViaFile: write to temp file, pass @filepath as positional arg (Pi @file syntax)
+      // promptFileArg:  write to temp file, pass `<flag> <path>` (Muse --prompt-file)
+      // promptViaFile:  write to temp file, pass `@filepath` as positional arg (Pi @file syntax)
       // promptViaStdin: write to process stdin after spawn
       // default: pass prompt as positional CLI arg
+      // The two file modes share one write/cleanup path and differ only in how
+      // the path reaches argv, so there is a single place that can leak a file.
       let tmpFile = null;
       let cleanupTmpFile = () => {};
       let finalArgs;
 
-      if (promptViaFile) {
+      if (promptFileArg || promptViaFile) {
         tmpFile = path.join(os.tmpdir(), `pair-review-extract-${Date.now()}-${process.pid}-${crypto.randomUUID()}.txt`);
         fs.writeFileSync(tmpFile, prompt);
         cleanupTmpFile = () => { try { fs.unlinkSync(tmpFile); } catch { /* ignore */ } };
-        finalArgs = [...args, `@${tmpFile}`];
+        finalArgs = promptFileArg ? [...args, promptFileArg, tmpFile] : [...args, `@${tmpFile}`];
       } else {
         finalArgs = promptViaStdin ? args : [...args, prompt];
       }
@@ -265,21 +286,47 @@ ${rawResponse}
         logger.info(`${levelPrefix} Registered extraction process ${proc.pid} for analysis ${analysisId}`);
       }
 
+      // Wire the optional AbortSignal -> SIGTERM. With no signal this is inert
+      // (`cancelled()` is always false, `detach()` a no-op), so callers that
+      // omit `abortSignal` behave exactly as before.
+      //
+      // Not `shell: useShell`: this spawn is not `detached`, so there is no
+      // process group to signal — group-kill would ESRCH and leave the child
+      // running. Plain child.kill, with the pid guard from killChildSafely.
+      // Same reasoning applies to the timeout path below.
+      const abortWiring = wireAbortToChild(proc, abortSignal, { logPrefix: levelPrefix });
+
       let stdout = '';
       let stderr = '';
       let settled = false;
       const timeout = 60000; // 60 second timeout for extraction
 
-      const settle = (result) => {
+      // Detaching is centralized here so it ALWAYS runs when this call returns,
+      // including via the timeout path that settles before the child exits.
+      // Analysis jobs reuse a single per-job signal across many provider calls,
+      // so a listener that outlives one call accumulates for the whole job.
+      const finish = (fn, value) => {
         if (settled) return;
         settled = true;
         if (timeoutId) clearTimeout(timeoutId);
-        resolve(result);
+        abortWiring.detach();
+        fn(value);
       };
+      const settle = (result) => finish(resolve, result);
+      const cancel = () => finish(reject, makeAbortError(`${levelPrefix} Cancelled by user`));
 
       const timeoutId = setTimeout(() => {
-        logger.warn(`${levelPrefix} LLM extraction timed out after ${timeout}ms`);
-        proc.kill('SIGTERM');
+        const cancelled = abortWiring.cancelled();
+        logger.warn(cancelled
+          ? `${levelPrefix} LLM extraction did not exit after cancellation`
+          : `${levelPrefix} LLM extraction timed out after ${timeout}ms`);
+        killChildSafely(proc, { logPrefix: levelPrefix });
+        if (cancelled) {
+          // Killed on cancel but the child never exited. Report the cancel, not
+          // the timeout, so the caller still sees an AbortError.
+          cancel();
+          return;
+        }
         settle({ success: false, error: 'LLM extraction timed out' });
       }, timeout);
 
@@ -294,6 +341,15 @@ ${rawResponse}
       proc.on('close', (code) => {
         cleanupTmpFile();
         if (settled) return;
+
+        // We SIGTERMed the child because the caller's signal aborted. Surface
+        // it as an AbortError so upstream can tell a user cancel from a real
+        // failure, rather than reporting a bogus non-zero exit.
+        if (abortWiring.cancelled()) {
+          logger.info(`${levelPrefix} LLM extraction cancelled by user (exit code ${code})`);
+          cancel();
+          return;
+        }
 
         if (code !== 0) {
           logger.warn(`${levelPrefix} LLM extraction process exited with code ${code}`);
@@ -320,28 +376,55 @@ ${rawResponse}
 
       proc.on('error', (error) => {
         cleanupTmpFile();
+        if (abortWiring.cancelled()) {
+          // A pidless child (spawn failure) is never signalled, so a cancel can
+          // land here instead of on `close`.
+          logger.info(`${levelPrefix} LLM extraction cancelled by user`);
+          cancel();
+          return;
+        }
         logger.warn(`${levelPrefix} LLM extraction process error: ${error.message}`);
         settle({ success: false, error: error.message });
       });
 
-      // Deliver prompt based on config method
-      if (promptViaStdin) {
-        // Handle stdin errors (e.g., EPIPE if process exits before write completes)
-        proc.stdin.on('error', (err) => {
-          logger.warn(`${levelPrefix} extraction stdin error: ${err.message}`);
-        });
+      // Deliver the prompt, then close stdin on EVERY delivery path — including
+      // plain-argv delivery, which used to leave it open. The target CLI may
+      // ignore stdin, but a wrapper command (`devx muse --`, `docker exec ...`)
+      // can block on an open stdin and hang until the extraction timeout above.
+      // The analysis paths in every provider end stdin for exactly this reason.
+      const stdin = proc.stdin;
+      if (stdin) {
+        // EPIPE arrives asynchronously when the CLI exits before the write
+        // drains; with no listener it becomes an unhandled 'error' event.
+        // Guarded because a stdin that is not a writable stream must not throw
+        // inside this executor and reject a promise callers expect to resolve.
+        if (typeof stdin.on === 'function') {
+          stdin.on('error', (err) => {
+            logger.warn(`${levelPrefix} extraction stdin error: ${err.message}`);
+          });
+        }
 
-        proc.stdin.write(prompt, (err) => {
-          if (err) {
-            logger.warn(`${levelPrefix} Failed to write extraction prompt: ${err}`);
-            proc.kill('SIGTERM');
-            settle({ success: false, error: `Failed to write prompt: ${err}` });
-          }
-        });
-        proc.stdin.end();
-      } else if (promptViaFile) {
-        // Prompt delivered via @file arg — close stdin so wrappers (e.g., devx) don't hang
-        proc.stdin.end();
+        if (promptViaStdin) {
+          stdin.write(prompt, (err) => {
+            if (err) {
+              // A cancel kills the child, which EPIPEs this write. That lands
+              // here before `close` fires, so without this check the cancelled
+              // call would settle as an ordinary write failure.
+              if (abortWiring.cancelled()) {
+                logger.info(`${levelPrefix} LLM extraction cancelled by user before the prompt was written`);
+                cancel();
+                return;
+              }
+              logger.warn(`${levelPrefix} Failed to write extraction prompt: ${err}`);
+              killChildSafely(proc, { logPrefix: levelPrefix });
+              settle({ success: false, error: `Failed to write prompt: ${err}` });
+            }
+          });
+        }
+
+        if (typeof stdin.end === 'function') {
+          stdin.end();
+        }
       }
     });
   }

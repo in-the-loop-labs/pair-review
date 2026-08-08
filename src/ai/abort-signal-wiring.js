@@ -4,6 +4,91 @@ const { spawn } = require('child_process');
 const logger = require('../utils/logger');
 
 /**
+ * Terminate a spawned child safely.
+ *
+ * Use this instead of a bare `child.kill('SIGTERM')` anywhere a child might
+ * not have started. Two hazards it exists to prevent:
+ *
+ * 1. **Self-signalling.** A child whose spawn failed (ENOENT from a missing or
+ *    misconfigured CLI command) has no pid. Node coerces the undefined pid to
+ *    `0`, and `kill(0, SIGTERM)` signals the CALLER'S OWN process group — so
+ *    pair-review terminates itself. Verified directly: the call returns `true`
+ *    and the current process receives SIGTERM.
+ * 2. **Orphaned grandchildren.** Under `shell: true` the child is the shell
+ *    wrapper, not the CLI. Killing only the wrapper leaves the real CLI running
+ *    and burning tokens, so shell-mode children are group-killed instead
+ *    (requires the caller to have spawned with `detached: true`).
+ *
+ * Never throws — that is a contract callers rely on, not just a hope. Every
+ * dispatch path has its own catch, and the whole body is wrapped so even a
+ * malformed `child` (missing `kill`, throwing `pid` getter) or a non-object
+ * `opts` returns false instead of propagating. `wireAbortToChild`'s abort
+ * listener depends on this: a throw there would escape into the AbortSignal
+ * dispatch with no caller frame to catch it.
+ *
+ * @param {import('child_process').ChildProcess} child - Spawned process.
+ * @param {Object} [opts]
+ * @param {boolean} [opts.shell=false] - True when spawned with `shell: true`.
+ * @param {string} [opts.logPrefix] - Log prefix for diagnostics.
+ * @returns {boolean} True if a signal was actually dispatched.
+ */
+function killChildSafely(child, opts = {}) {
+  if (!child) return false;
+  const options = (opts && typeof opts === 'object') ? opts : {};
+  const prefix = options.logPrefix || '';
+  const isShell = options.shell === true;
+
+  try {
+    if (!child.pid) {
+      // Spawn failed or has not completed — nothing to signal. See hazard 1.
+      return false;
+    }
+
+    if (isShell && process.platform !== 'win32') {
+      try {
+        process.kill(-child.pid, 'SIGTERM');
+        return true;
+      } catch (err) {
+        if (err && err.code === 'ESRCH') {
+          return false;  // Group already gone.
+        }
+        logger.warn(
+          `${prefix} process.kill(-pid) failed (${err.message}); falling back to child.kill`
+        );
+      }
+    }
+
+    if (isShell && process.platform === 'win32') {
+      // Windows has no process groups: wipe the tree rooted at the shell pid.
+      try {
+        spawn('taskkill', ['/T', '/F', '/PID', String(child.pid)], { stdio: 'ignore' })
+          .on('error', (err) => {
+            logger.warn(`${prefix} taskkill failed: ${err.message}`);
+          });
+        return true;
+      } catch (err) {
+        logger.warn(
+          `${prefix} spawn(taskkill) failed (${err.message}); falling back to child.kill`
+        );
+      }
+    }
+
+    try {
+      child.kill('SIGTERM');
+      return true;
+    } catch (err) {
+      logger.warn(`${prefix} child.kill failed: ${err.message}`);
+      return false;
+    }
+  } catch (err) {
+    // Reached only by a child that misbehaves outside the guarded calls above
+    // (e.g. a throwing `pid` getter). Enforces the never-throws contract.
+    logger.warn(`${prefix} kill dispatch failed unexpectedly: ${err && err.message}`);
+    return false;
+  }
+}
+
+/**
  * Attach an `AbortSignal` to a spawned child process so that aborting the
  * signal kills the child with `SIGTERM`. Returns a cleanup function that
  * detaches the abort listener — call it from the `close` / `error` /
@@ -43,53 +128,13 @@ function wireAbortToChild(child, signal, opts = {}) {
   const prefix = opts.logPrefix || '';
   const isShell = opts.shell === true;
 
-  const killChild = () => {
-    // `kill` / process group signaling returns false (or throws ESRCH) if
-    // the process is already gone, which is fine — we just need the side
-    // effect when it IS still alive.
-    if (isShell && child.pid && process.platform !== 'win32') {
-      // Group-kill the shell AND its CLI descendant. Requires the caller
-      // to have spawned with `detached: true` so the child became a
-      // process-group leader (`-pid` targets the group).
-      try {
-        process.kill(-child.pid, 'SIGTERM');
-        return;
-      } catch (err) {
-        if (err && err.code === 'ESRCH') {
-          // Group already gone — nothing to kill.
-          return;
-        }
-        // Fall through to single-process kill as a best effort.
-        logger.warn(
-          `${prefix} process.kill(-pid) failed (${err.message}); falling back to child.kill`
-        );
-      }
-    }
-    if (isShell && child.pid && process.platform === 'win32') {
-      // Windows has no process groups: spawn taskkill /T /F to wipe the
-      // tree rooted at our shell pid.
-      try {
-        spawn('taskkill', ['/T', '/F', '/PID', String(child.pid)], { stdio: 'ignore' })
-          .on('error', (err) => {
-            logger.warn(`${prefix} taskkill failed: ${err.message}`);
-          });
-        return;
-      } catch (err) {
-        logger.warn(
-          `${prefix} spawn(taskkill) failed (${err.message}); falling back to child.kill`
-        );
-      }
-    }
-    child.kill('SIGTERM');
-  };
-
   const onAbort = () => {
+    // `cancelled` is set FIRST so the close/error handler short-circuits even
+    // if the kill dispatch does nothing (pidless child, group already gone).
     cancelled = true;
-    try {
-      killChild();
-    } catch (err) {
-      logger.warn(`${prefix} child.kill on abort failed: ${err.message}`);
-    }
+    // killChildSafely owns the pid guard, the shell group-kill semantics and
+    // the never-throws contract, so no catch is needed here.
+    killChildSafely(child, { shell: isShell, logPrefix: prefix });
   };
 
   if (signal.aborted) {
@@ -127,4 +172,4 @@ function makeAbortError(message) {
   return err;
 }
 
-module.exports = { wireAbortToChild, makeAbortError };
+module.exports = { wireAbortToChild, makeAbortError, killChildSafely };

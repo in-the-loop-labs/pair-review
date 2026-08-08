@@ -18,6 +18,7 @@ const { glob } = require('glob');
 const fs = require('fs').promises;
 const path = require('path');
 const logger = require('../utils/logger');
+const { killChildSafely } = require('./abort-signal-wiring');
 const jsonExtractor = require('../utils/json-extractor');
 const configModule = require('../config');
 
@@ -266,7 +267,10 @@ function createExecutableProviderClass(id, config) {
             if (stderr.trim()) {
               logger.warn(`[${id}] stderr before timeout: ${stderr.trim().slice(0, 2000)}`);
             }
-            child.kill('SIGTERM');
+            // Not `shell: this.useShell`: this spawn is not `detached`, so
+            // group-kill would ESRCH and leave the child running — and it
+            // would bypass the kill wrapper above that records `cancelled`.
+            killChildSafely(child, { logPrefix: `[${id}]` });
           }, timeout);
         }
 
@@ -480,7 +484,9 @@ function createExecutableProviderClass(id, config) {
           if (settled) return;
           settled = true;
           logger.warn(`${id} availability check timed out after ${Math.round(timeoutMs / 1000)}s`);
-          try { child.kill(); } catch { /* ignore */ }
+          // Not `shell: true` (as spawned): the probe is not `detached`, so
+          // group-kill would ESRCH and leave the child running.
+          killChildSafely(child, { logPrefix: `[${id}]` });
           resolve(false);
         }, timeoutMs);
 

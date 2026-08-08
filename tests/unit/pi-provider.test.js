@@ -1270,6 +1270,8 @@ describe('PiProvider', () => {
       // Create a fake child process that never emits 'close'
       const fakeChild = new EventEmitter();
       fakeChild.stdout = new EventEmitter();
+      // A hung CLI has a real pid; killChildSafely skips pidless children.
+      fakeChild.pid = 12345;
       fakeChild.kill = vi.fn();
 
       mockSpawn.mockReturnValueOnce(fakeChild);
@@ -1292,6 +1294,8 @@ describe('PiProvider', () => {
 
       const fakeChild = new EventEmitter();
       fakeChild.stdout = new EventEmitter();
+      // A hung CLI has a real pid; killChildSafely skips pidless children.
+      fakeChild.pid = 12345;
       fakeChild.kill = vi.fn();
 
       mockSpawn.mockReturnValueOnce(fakeChild);
@@ -1321,6 +1325,9 @@ describe('PiProvider', () => {
       // Create a fake child process that exits quickly
       const fakeChild = new EventEmitter();
       fakeChild.stdout = new EventEmitter();
+      // pid set so "kill not called" proves the timer was cleared rather
+      // than passing vacuously via killChildSafely's pidless guard.
+      fakeChild.pid = 12345;
       fakeChild.kill = vi.fn();
 
       mockSpawn.mockReturnValueOnce(fakeChild);
@@ -1602,6 +1609,136 @@ describe('PiProvider', () => {
       } finally {
         warnSpy.mockRestore();
       }
+    });
+  });
+
+  // When the model answers in prose the LLM-extraction fallback runs. A cancel
+  // arriving while it is in flight must reject, not be laundered into a normal
+  // "unparsed response" result that makes the job look like it completed. The
+  // pre-existing `settled` guard only covers a cancel that landed BEFORE the
+  // await, so these tests abort from inside the extraction call.
+  describe('LLM-extraction fallback cancellation', () => {
+    const { EventEmitter } = require('events');
+    const fs = require('fs');
+    const PROSE = 'I could not analyse this diff.';
+
+    let writeFileSpy;
+    let unlinkSpy;
+
+    beforeEach(() => {
+      writeFileSpy = vi.spyOn(fs, 'writeFileSync').mockImplementation(() => {});
+      unlinkSpy = vi.spyOn(fs, 'unlinkSync').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      writeFileSpy.mockRestore();
+      unlinkSpy.mockRestore();
+    });
+
+    /**
+     * Minimal child mirroring the surface execute() touches. Pi delivers the
+     * prompt via @file, so stdin only needs end().
+     *
+     * @returns {EventEmitter} Fake child process
+     */
+    function createMockChild() {
+      const child = new EventEmitter();
+      child.stdin = { end: vi.fn() };
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.pid = 12345;
+      child.kill = vi.fn();
+      mockSpawn.mockReturnValueOnce(child);
+      return child;
+    }
+
+    /**
+     * Drive execute() to the extraction fallback: pi exits 0 having emitted
+     * assistant text that is not JSON.
+     *
+     * @param {EventEmitter} child - Fake child returned by the spawn spy
+     */
+    function reachExtractionFallback(child) {
+      child.stdout.emit('data', Buffer.from(JSON.stringify({
+        type: 'message_end',
+        message: { role: 'assistant', content: [{ type: 'text', text: PROSE }] }
+      }) + '\n'));
+      child.emit('close', 0);
+    }
+
+    it('forwards the abort signal so the extraction spawn can be killed, not merely abandoned', async () => {
+      const child = createMockChild();
+
+      const provider = new PiProvider('test-model');
+      const spy = vi.spyOn(provider, 'extractJSONWithLLM')
+        .mockResolvedValue({ success: true, data: { suggestions: [] } });
+      const controller = new AbortController();
+
+      const promise = provider.execute('prompt', { level: 1, abortSignal: controller.signal });
+      reachExtractionFallback(child);
+
+      expect(await promise).toEqual({ suggestions: [] });
+      // Without the signal the extraction child survives a cancel until its own
+      // 60s timeout.
+      expect(spy).toHaveBeenCalledWith(PROSE, expect.objectContaining({ abortSignal: controller.signal }));
+      // The prompt file must still be removed.
+      expect(unlinkSpy).toHaveBeenCalledWith(writeFileSpy.mock.calls[0][0]);
+    });
+
+    it('reports a cancel that lands while the fallback is still running', async () => {
+      // Pi has already exited by this point, so the abort wiring only kills
+      // something already dead. Without the post-await re-check a cancelled
+      // analysis would settle with a normal result.
+      const child = createMockChild();
+
+      const provider = new PiProvider('test-model');
+      const controller = new AbortController();
+      vi.spyOn(provider, 'extractJSONWithLLM').mockImplementation(async () => {
+        controller.abort();
+        return { success: true, data: { suggestions: [{ id: 1 }] } };
+      });
+
+      const promise = provider.execute('prompt', { level: 1, abortSignal: controller.signal });
+      const failure = promise.then(() => null, (err) => err);
+      reachExtractionFallback(child);
+
+      const error = await failure;
+      expect(error).toBeInstanceOf(Error);
+      expect(error.name).toBe('AbortError');
+      expect(error.isCancellation).toBe(true);
+      expect(error.message).toMatch(/Cancelled by user/);
+      expect(unlinkSpy).toHaveBeenCalledWith(writeFileSpy.mock.calls[0][0]);
+    });
+
+    it('treats an abort that kills the extraction spawn as a cancel, not a parse failure', async () => {
+      const child = createMockChild();
+
+      const provider = new PiProvider('test-model');
+      const controller = new AbortController();
+      vi.spyOn(provider, 'extractJSONWithLLM').mockImplementation(async () => {
+        controller.abort();
+        throw new Error('spawn terminated by SIGTERM');
+      });
+
+      const promise = provider.execute('prompt', { level: 1, abortSignal: controller.signal });
+      const failure = promise.then(() => null, (err) => err);
+      reachExtractionFallback(child);
+
+      const error = await failure;
+      expect(error.name).toBe('AbortError');
+      expect(error.isCancellation).toBe(true);
+    });
+
+    it('degrades to raw text when the extraction fallback throws without a cancel', async () => {
+      const child = createMockChild();
+
+      const provider = new PiProvider('test-model');
+      vi.spyOn(provider, 'extractJSONWithLLM').mockRejectedValue(new Error('extractor blew up'));
+
+      const promise = provider.execute('prompt', { level: 1 });
+      reachExtractionFallback(child);
+
+      expect(await promise).toEqual({ raw: PROSE, parsed: false });
     });
   });
 

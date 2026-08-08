@@ -173,6 +173,14 @@
       "installInstructions": "Install Codex CLI: npm install -g @openai/codex"
     },
 
+    "muse": {
+      "_comment": "Override Muse's built-in configuration. Muse drives Meta's 'muse' CLI (Muse Code) headlessly via 'muse exec --json'. Built-in model IDs: muse-spark-1.2-ultra, muse-spark-1.2-contributor-ultra, muse-spark-1.2-xhigh, muse-spark-1.2-contributor-xhigh, muse-spark-1.2-high (default; aliases 'muse-spark-1.2' and 'muse-spark'), muse-spark-1.2-contributor-high (alias 'muse-spark-1.2-contributor'), muse-spark-1.2-low, muse-spark-1.2-contributor-low. Each built-in maps to one of two real CLI models plus a --reasoning-effort level (none|minimal|low|medium|high|xhigh|ultra). NOTE: the 'contributor' models are cheaper because Meta may use their content for product improvement; pair-review defaults to the non-contributor model so that tradeoff is always an explicit opt-in. Naming the bare CLI model 'muse-spark-1.2-contributor' resolves to the contributor variant, so it opts into that data sharing too. Run 'muse login' once to authenticate.",
+      "command": "muse",
+      "extra_args": [],
+      "env": {},
+      "installInstructions": "Install Muse Code: see Meta's Muse Code install instructions (single shell command on macOS/Linux), then run 'muse login'"
+    },
+
     "copilot": {
       "_comment": "Override Copilot's built-in configuration.",
       "command": "copilot",

@@ -13,7 +13,7 @@ const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { CancellationError, isAnalysisCancelled } = require('../routes/shared');
 const { StreamParser, parseCodexLine } = require('./stream-parser');
-const { wireAbortToChild, makeAbortError } = require('./abort-signal-wiring');
+const { wireAbortToChild, makeAbortError, killChildSafely } = require('./abort-signal-wiring');
 
 // Directory containing bin scripts (git-diff-lines, etc.)
 const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
@@ -351,7 +351,7 @@ class CodexProvider extends AIProvider {
       if (timeout) {
         timeoutId = setTimeout(() => {
           logger.error(`${levelPrefix} Process ${pid} timed out after ${timeout}ms`);
-          codex.kill('SIGTERM');
+          killChildSafely(codex, { logPrefix: levelPrefix, shell: this.useShell });
           settle(reject, new Error(`${levelPrefix} Codex CLI timed out after ${timeout}ms`));
         }, timeout);
       }
@@ -455,10 +455,25 @@ class CodexProvider extends AIProvider {
           logger.info(`${levelPrefix} LLM fallback input length: ${llmFallbackInput.length} characters (${parsed.textContent ? 'text content' : 'raw stdout'})`);
           logger.info(`${levelPrefix} Attempting LLM-based JSON extraction fallback...`);
 
+          // The Codex child has already exited, so a cancel arriving now only
+          // makes the abort wiring kill something already dead. Nothing else on
+          // this path consults it, so without the checks below a cancelled
+          // analysis would settle as a normal result. The signal is read
+          // alongside the wiring flag as the source of truth.
+          const cancelledDuringExtraction = () =>
+            abortWiring.cancelled() || abortSignal?.aborted === true;
+
           // Use async IIFE to handle the async LLM extraction
           (async () => {
             try {
-              const llmExtracted = await this.extractJSONWithLLM(llmFallbackInput, { level, analysisId, registerProcess, logPrefix: levelPrefix });
+              // `abortSignal` lets the extraction spawn be killed rather than
+              // merely abandoned until its own 60s timeout.
+              const llmExtracted = await this.extractJSONWithLLM(llmFallbackInput, { level, analysisId, registerProcess, logPrefix: levelPrefix, abortSignal });
+              if (cancelledDuringExtraction()) {
+                logger.info(`${levelPrefix} Cancelled by user during LLM extraction fallback`);
+                settle(reject, makeAbortError(`${levelPrefix} Cancelled by user`));
+                return;
+              }
               if (llmExtracted.success) {
                 logger.success(`${levelPrefix} LLM extraction fallback succeeded`);
                 settle(resolve, llmExtracted.data);
@@ -468,6 +483,13 @@ class CodexProvider extends AIProvider {
                 settle(resolve, { raw: llmFallbackInput, parsed: false });
               }
             } catch (llmError) {
+              // An abort that kills the extraction spawn surfaces here as a
+              // thrown error; it is a cancellation, not a parse failure.
+              if (cancelledDuringExtraction()) {
+                logger.info(`${levelPrefix} Cancelled by user during LLM extraction fallback`);
+                settle(reject, makeAbortError(`${levelPrefix} Cancelled by user`));
+                return;
+              }
               logger.warn(`${levelPrefix} LLM extraction fallback error: ${llmError.message}`);
               settle(resolve, { raw: llmFallbackInput, parsed: false });
             }
@@ -496,7 +518,9 @@ class CodexProvider extends AIProvider {
       codex.stdin.write(prompt, (err) => {
         if (err) {
           logger.error(`${levelPrefix} Failed to write prompt to stdin: ${err}`);
-          codex.kill('SIGTERM');
+          // A failed spawn (ENOENT) EPIPEs stdin and lands here with a pidless
+          // child; killChildSafely skips the self-directed kill(0).
+          killChildSafely(codex, { logPrefix: levelPrefix, shell: this.useShell });
           settle(reject, new Error(`${levelPrefix} Failed to write prompt to stdin: ${err}`));
         }
       });
@@ -844,7 +868,9 @@ class CodexProvider extends AIProvider {
         if (settled) return;
         settled = true;
         logger.warn(`Codex CLI availability check timed out after ${Math.round(timeoutMs / 1000)}s`);
-        try { codex.kill(); } catch { /* ignore */ }
+        // Not `shell: useShell`: the probe spawn is not `detached`, so
+        // group-kill would ESRCH and leave the child running.
+        killChildSafely(codex, { logPrefix: '[availability]' });
         resolve(false);
       }, timeoutMs);
 

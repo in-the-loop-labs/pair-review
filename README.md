@@ -67,7 +67,7 @@ pair-review is a local web application for keeping humans in the loop with AI co
 - **Local-First**: All data and processing happens on your machine - no cloud dependencies
 - **GitHub-Familiar UI**: Interface feels instantly familiar to GitHub users
 - **Human-in-the-Loop**: AI suggests, you decide
-- **Multiple AI Providers**: Support for Claude, Antigravity, Codex, Copilot, OpenCode, Cursor, and Pi. Use your existing subscription!
+- **Multiple AI Providers**: Support for Claude, Antigravity, Codex, Copilot, OpenCode, Cursor, Pi, and Muse. Use your existing subscription!
 - **Progressive**: Start simple with manual review, add AI analysis when you need it
 
 ## Workflows
@@ -558,6 +558,7 @@ pair-review supports several environment variables for customizing behavior:
 | `PAIR_REVIEW_OPENCODE_CMD` | Custom command to invoke OpenCode CLI | `opencode` |
 | `PAIR_REVIEW_CURSOR_AGENT_CMD` | Custom command to invoke Cursor Agent CLI | `agent` |
 | `PAIR_REVIEW_PI_CMD` | Custom command to invoke Pi CLI | `pi` |
+| `PAIR_REVIEW_MUSE_CMD` | Custom command to invoke Muse Code CLI | `muse` |
 
 **Note:** `GITHUB_TOKEN` is the standard environment variable used by many GitHub tools (gh CLI, GitHub Actions, etc.). When set, it takes precedence over the `github_token` field in the config file.
 
@@ -615,12 +616,32 @@ pair-review integrates with AI providers via their CLI tools:
 - **OpenCode**: Uses OpenCode CLI (requires model configuration)
 - **Cursor**: Uses Cursor Agent CLI (streaming output with sandbox mode)
 - **Pi**: Uses Pi coding agent CLI (requires model configuration)
+- **Muse**: Uses Meta's Muse Code CLI (`muse`), a terminal coding agent released in beta in August 2026 and powered by the Muse Spark 1.2 model. Install it with the single shell command from Meta's Muse Code install instructions (macOS/Linux), then authenticate once with `muse login` (credentials are stored in `~/.config/muse/auth.json`). pair-review drives it headlessly via `muse exec --json`. Within pair-review, Muse is analysis-only: the CLI exposes no ACP server mode, so there is no Muse chat provider.
 
 You can select your preferred provider and model in the repository settings UI.
 
 #### Built-in vs. Configurable Providers
 
-Most providers (Claude, Antigravity, Codex, Copilot) come with built-in model definitions. **OpenCode and Pi are different** - they have no built-in models and require you to configure which models to use.
+Most providers (Claude, Antigravity, Codex, Copilot, Muse) come with built-in model definitions. **OpenCode and Pi are different** - they have no built-in models and require you to configure which models to use.
+
+##### Muse models and the contributor tradeoff
+
+Muse exposes its built-in models as reasoning-effort variants over two underlying CLI models:
+
+| Model ID | Tier | Underlying CLI model |
+|----------|------|----------------------|
+| `muse-spark-1.2-ultra` | thorough | `muse-spark-1.2` |
+| `muse-spark-1.2-contributor-ultra` | thorough | `muse-spark-1.2-contributor` |
+| `muse-spark-1.2-xhigh` | thorough | `muse-spark-1.2` |
+| `muse-spark-1.2-contributor-xhigh` | thorough | `muse-spark-1.2-contributor` |
+| `muse-spark-1.2-high` | balanced (**default**) | `muse-spark-1.2` |
+| `muse-spark-1.2-contributor-high` | balanced | `muse-spark-1.2-contributor` |
+| `muse-spark-1.2-low` | fast | `muse-spark-1.2` |
+| `muse-spark-1.2-contributor-low` | fast | `muse-spark-1.2-contributor` |
+
+`muse-spark-1.2` and `muse-spark` are convenience aliases for `muse-spark-1.2-high`. `muse-spark-1.2-contributor` is likewise an alias for `muse-spark-1.2-contributor-high` — worth knowing because it is the bare CLI model name, so `--model muse-spark-1.2-contributor` selects the data-sharing tier described below rather than erroring out.
+
+The `-contributor` models are substantially cheaper ($0.10/M input, $0.20/M output versus $1.25/M and $4.25/M) **because Meta may use their content for product improvement**. Since a code review sends your diff and surrounding source to the model, pair-review deliberately defaults to the non-contributor `muse-spark-1.2-high` — opting into data sharing is always an explicit choice you make by selecting a `-contributor` model, whether by its full ID or by that alias.
 
 #### Configuring Custom Models
 
@@ -802,7 +823,7 @@ Configure your preferred models in `providers.pi.models` — see [AI Provider Co
 }
 ```
 
-Available chat provider IDs: `pi`, `claude`, `codex`, `copilot-acp`, `opencode-acp`, `cursor-acp`. Each supports `command`, `args` (replaces defaults), `extra_args` (appends), and `env` overrides. Codex chat also supports `sandbox`: use `workspace-write` by default, or `read-only` for discussion-only sessions. (Antigravity is an analysis-only provider — it has no ACP mode, so there is no Antigravity chat provider.)
+Available chat provider IDs: `pi`, `claude`, `codex`, `copilot-acp`, `opencode-acp`, `cursor-acp`. Each supports `command`, `args` (replaces defaults), `extra_args` (appends), and `env` overrides. Codex chat also supports `sandbox`: use `workspace-write` by default, or `read-only` for discussion-only sessions. (Antigravity and Muse are analysis-only providers — neither CLI has an ACP mode, so there are no Antigravity or Muse chat providers.)
 
 **Keyboard shortcut:** Press `p` then `c` to toggle the chat panel.
 

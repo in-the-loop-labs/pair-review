@@ -3,6 +3,7 @@ const { spawn } = require('child_process');
 const path = require('path');
 const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
+const { killChildSafely } = require('./abort-signal-wiring');
 
 class ClaudeCLI {
   constructor(model = 'opus') {
@@ -62,10 +63,13 @@ class ClaudeCLI {
       let timeoutId = null;
 
       // Set timeout
+      // Not `shell: this.useShell`: this spawn is not `detached`, so there is
+      // no process group to signal — group-kill would ESRCH and leave the
+      // child running. Plain child.kill, with killChildSafely's pid guard.
       if (timeout) {
         timeoutId = setTimeout(() => {
           logger.error(`${levelPrefix} Process ${pid} timed out after ${timeout}ms`);
-          claude.kill('SIGTERM');
+          killChildSafely(claude, { logPrefix: levelPrefix });
           reject(new Error(`${levelPrefix} Claude CLI timed out after ${timeout}ms`));
         }, timeout);
       }
@@ -135,7 +139,9 @@ class ClaudeCLI {
         if (err) {
           logger.error(`${levelPrefix} Failed to write prompt to stdin: ${err}`);
           if (timeoutId) clearTimeout(timeoutId);
-          claude.kill('SIGTERM'); // Prevent resource leak
+          // A failed spawn (ENOENT) EPIPEs stdin and lands here with a pidless
+          // child; killChildSafely skips the self-directed kill(0).
+          killChildSafely(claude, { logPrefix: levelPrefix }); // Prevent resource leak
           reject(new Error(`${levelPrefix} Failed to write prompt to stdin: ${err}`));
         }
       });

@@ -12,7 +12,7 @@ const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { CancellationError, isAnalysisCancelled } = require('../routes/shared');
 const { StreamParser, parseClaudeLine } = require('./stream-parser');
-const { wireAbortToChild, makeAbortError } = require('./abort-signal-wiring');
+const { wireAbortToChild, makeAbortError, killChildSafely } = require('./abort-signal-wiring');
 
 // Directory containing bin scripts (git-diff-lines, etc.)
 const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
@@ -428,7 +428,7 @@ class ClaudeProvider extends AIProvider {
       if (timeout) {
         timeoutId = setTimeout(() => {
           logger.error(`${levelPrefix} Process ${pid} timed out after ${timeout}ms`);
-          claude.kill('SIGTERM');
+          killChildSafely(claude, { logPrefix: levelPrefix, shell: this.useShell });
           settle(reject, new Error(`${levelPrefix} Claude CLI timed out after ${timeout}ms`));
         }, timeout);
       }
@@ -543,10 +543,28 @@ class ClaudeProvider extends AIProvider {
           logger.info(`${levelPrefix} LLM fallback input length: ${llmFallbackInput.length} characters (${parsed.textContent ? 'text content' : 'raw stdout'})`);
           logger.info(`${levelPrefix} Attempting LLM-based JSON extraction fallback...`);
 
+          // A cancel that lands now still reaches the abort wiring, but the
+          // Claude child has already exited — the wiring kills something already
+          // dead, and nothing else on this path consults it. Without the checks
+          // below a cancelled analysis would settle as a normal result.
+          //
+          // Reads the signal as well as the wiring flag: `settle` (which detaches
+          // the listener) has not run on any path that reaches here, so the flag
+          // is live — but the signal is the source of truth.
+          const cancelledDuringExtraction = () =>
+            abortWiring.cancelled() || abortSignal?.aborted === true;
+
           // Use async IIFE to handle the async LLM extraction
           (async () => {
             try {
-              const llmExtracted = await this.extractJSONWithLLM(llmFallbackInput, { level, analysisId, registerProcess, logPrefix: levelPrefix });
+              // `abortSignal` lets the extraction spawn be killed rather than
+              // merely abandoned until its own 60s timeout.
+              const llmExtracted = await this.extractJSONWithLLM(llmFallbackInput, { level, analysisId, registerProcess, logPrefix: levelPrefix, abortSignal });
+              if (cancelledDuringExtraction()) {
+                logger.info(`${levelPrefix} Cancelled by user during LLM extraction fallback`);
+                settle(reject, makeAbortError(`${levelPrefix} Cancelled by user`));
+                return;
+              }
               if (llmExtracted.success) {
                 logger.success(`${levelPrefix} LLM extraction fallback succeeded`);
                 settle(resolve, llmExtracted.data);
@@ -556,6 +574,13 @@ class ClaudeProvider extends AIProvider {
                 settle(resolve, { raw: llmFallbackInput, parsed: false });
               }
             } catch (llmError) {
+              // An abort that kills the extraction spawn surfaces here as a
+              // thrown error; it is a cancellation, not a parse failure.
+              if (cancelledDuringExtraction()) {
+                logger.info(`${levelPrefix} Cancelled by user during LLM extraction fallback`);
+                settle(reject, makeAbortError(`${levelPrefix} Cancelled by user`));
+                return;
+              }
               logger.warn(`${levelPrefix} LLM extraction fallback error: ${llmError.message}`);
               settle(resolve, { raw: llmFallbackInput, parsed: false });
             }
@@ -584,7 +609,9 @@ class ClaudeProvider extends AIProvider {
       claude.stdin.write(prompt, (err) => {
         if (err) {
           logger.error(`${levelPrefix} Failed to write prompt to stdin: ${err}`);
-          claude.kill('SIGTERM');
+          // A failed spawn (ENOENT) EPIPEs stdin and lands here with a pidless
+          // child; killChildSafely skips the self-directed kill(0).
+          killChildSafely(claude, { logPrefix: levelPrefix, shell: this.useShell });
           settle(reject, new Error(`${levelPrefix} Failed to write prompt to stdin: ${err}`));
         }
       });
@@ -935,7 +962,9 @@ class ClaudeProvider extends AIProvider {
         if (settled) return;
         settled = true;
         logger.warn(`Claude CLI availability check timed out after ${Math.round(timeoutMs / 1000)}s`);
-        try { claude.kill(); } catch { /* ignore */ }
+        // Not `shell: useShell`: the probe spawn is not `detached`, so
+        // group-kill would ESRCH and leave the child running.
+        killChildSafely(claude, { logPrefix: '[availability]' });
         resolve(false);
       }, timeoutMs);
 
