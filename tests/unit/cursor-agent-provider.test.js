@@ -5,10 +5,8 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
  * Unit tests for CursorAgentProvider
  *
  * These tests focus on static methods, constructor behavior, response parsing,
- * and stream logging without requiring actual CLI processes.
- *
- * Note: execute() tests that require child_process.spawn mocking are not yet
- * implemented (would need a separate file for module isolation).
+ * and stream logging without requiring actual CLI processes. The spawn spy
+ * below additionally covers execute()'s LLM-extraction fallback.
  */
 
 // Mock logger to suppress output during tests
@@ -29,6 +27,16 @@ vi.mock('../../src/utils/logger', () => {
     setStreamDebugEnabled: (enabled) => { streamDebugEnabled = enabled; }
   };
 });
+
+// Spy on child_process.spawn BEFORE the provider is required, so the provider's
+// destructured `spawn` reference resolves to the spy. vi.mock does not intercept
+// CJS requires of Node built-in modules in vitest (see executable-provider.test.js).
+// Default behaviour delegates to the real spawn, so only tests that arm it with
+// mockReturnValue get a fake child.
+const childProcess = require('child_process');
+const realSpawn = childProcess.spawn;
+const mockSpawn = vi.fn((...args) => realSpawn(...args));
+childProcess.spawn = mockSpawn;
 
 // Import after mocks are set up
 const CursorAgentProvider = require('../../src/ai/cursor-agent-provider');
@@ -471,6 +479,136 @@ describe('CursorAgentProvider', () => {
         expect(result.success).toBe(true);
         expect(result.data).toEqual({ source: 'assistant' });
       });
+    });
+  });
+
+  // When the model answers in prose the LLM-extraction fallback runs. A cancel
+  // arriving while it is in flight must reject, not be laundered into a normal
+  // "unparsed response" result that makes the job look like it completed. The
+  // pre-existing `settled` guard only covers a cancel that landed BEFORE the
+  // await, so these tests abort from inside the extraction call.
+  describe('LLM-extraction fallback cancellation', () => {
+    const { EventEmitter } = require('events');
+    const PROSE = 'I could not analyse this diff.';
+
+    afterEach(() => {
+      // Leave the spy delegating to the real spawn so an armed fake child
+      // cannot leak into a later test.
+      mockSpawn.mockImplementation((...args) => realSpawn(...args));
+    });
+
+    /**
+     * Minimal child mirroring the surface execute() touches: stdout/stderr
+     * emitters, a writable stdin, kill, pid.
+     *
+     * @returns {EventEmitter} Fake child process
+     */
+    function createMockChild() {
+      const child = new EventEmitter();
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.pid = 4242;
+      child.kill = vi.fn();
+
+      const stdin = new EventEmitter();
+      stdin.write = vi.fn((data, cb) => {
+        if (typeof cb === 'function') cb();
+        return true;
+      });
+      stdin.end = vi.fn();
+      child.stdin = stdin;
+
+      return child;
+    }
+
+    /**
+     * Drive execute() to the extraction fallback: the agent exits 0 having
+     * emitted assistant text that is not JSON.
+     *
+     * @param {EventEmitter} child - Fake child returned by the spawn spy
+     */
+    function reachExtractionFallback(child) {
+      child.stdout.emit('data', JSON.stringify({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'text', text: PROSE }] }
+      }) + '\n');
+      child.emit('close', 0);
+    }
+
+    it('forwards the abort signal so the extraction spawn can be killed, not merely abandoned', async () => {
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+
+      const provider = new CursorAgentProvider('sonnet-4.5');
+      const spy = vi.spyOn(provider, 'extractJSONWithLLM')
+        .mockResolvedValue({ success: true, data: { suggestions: [] } });
+      const controller = new AbortController();
+
+      const promise = provider.execute('prompt', { abortSignal: controller.signal });
+      reachExtractionFallback(child);
+
+      expect(await promise).toEqual({ suggestions: [] });
+      // Without the signal the extraction child survives a cancel until its own
+      // 60s timeout.
+      expect(spy).toHaveBeenCalledWith(PROSE, expect.objectContaining({ abortSignal: controller.signal }));
+    });
+
+    it('reports a cancel that lands while the fallback is still running', async () => {
+      // The agent has already exited by this point, so the abort wiring only
+      // kills something already dead. Without the post-await re-check a
+      // cancelled analysis would settle with a normal result.
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+
+      const provider = new CursorAgentProvider('sonnet-4.5');
+      const controller = new AbortController();
+      vi.spyOn(provider, 'extractJSONWithLLM').mockImplementation(async () => {
+        controller.abort();
+        return { success: true, data: { suggestions: [{ id: 1 }] } };
+      });
+
+      const promise = provider.execute('prompt', { abortSignal: controller.signal });
+      const failure = promise.then(() => null, (err) => err);
+      reachExtractionFallback(child);
+
+      const error = await failure;
+      expect(error).toBeInstanceOf(Error);
+      expect(error.name).toBe('AbortError');
+      expect(error.isCancellation).toBe(true);
+      expect(error.message).toMatch(/Cancelled by user/);
+    });
+
+    it('treats an abort that kills the extraction spawn as a cancel, not a parse failure', async () => {
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+
+      const provider = new CursorAgentProvider('sonnet-4.5');
+      const controller = new AbortController();
+      vi.spyOn(provider, 'extractJSONWithLLM').mockImplementation(async () => {
+        controller.abort();
+        throw new Error('spawn terminated by SIGTERM');
+      });
+
+      const promise = provider.execute('prompt', { abortSignal: controller.signal });
+      const failure = promise.then(() => null, (err) => err);
+      reachExtractionFallback(child);
+
+      const error = await failure;
+      expect(error.name).toBe('AbortError');
+      expect(error.isCancellation).toBe(true);
+    });
+
+    it('degrades to raw text when the extraction fallback throws without a cancel', async () => {
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+
+      const provider = new CursorAgentProvider('sonnet-4.5');
+      vi.spyOn(provider, 'extractJSONWithLLM').mockRejectedValue(new Error('extractor blew up'));
+
+      const promise = provider.execute('prompt', {});
+      reachExtractionFallback(child);
+
+      expect(await promise).toEqual({ raw: PROSE, parsed: false });
     });
   });
 

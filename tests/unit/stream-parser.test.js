@@ -21,7 +21,7 @@ vi.mock('../../src/utils/logger', () => {
   };
 });
 
-const { StreamParser, truncateSnippet, stripPathPrefix, extractToolDetail, parseClaudeLine, parseCodexLine, parseOpenCodeLine, parseCursorAgentLine, parsePiLine, createPiLineParser } = require('../../src/ai/stream-parser');
+const { StreamParser, truncateSnippet, stripPathPrefix, extractToolDetail, parseClaudeLine, parseCodexLine, parseMuseLine, parseOpenCodeLine, parseCursorAgentLine, parsePiLine, createPiLineParser } = require('../../src/ai/stream-parser');
 
 // ---------------------------------------------------------------------------
 // truncateSnippet
@@ -560,6 +560,222 @@ describe('parseCodexLine', () => {
     expect(result.type).toBe('tool_use');
     expect(result.text).toContain('editor');
     expect(result.text).toContain('open file.txt');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseMuseLine
+//
+// Record shapes below are copied from real `muse exec --json` output
+// (Muse Code 0.1.0). Muse wraps everything in an envelope: the discriminator is
+// `payload_type` and the interesting fields live under `payload`.
+// ---------------------------------------------------------------------------
+describe('parseMuseLine', () => {
+  it('returns null for empty input', () => {
+    expect(parseMuseLine('')).toBeNull();
+  });
+
+  it('returns null for null input', () => {
+    expect(parseMuseLine(null)).toBeNull();
+  });
+
+  it('returns null for undefined input', () => {
+    expect(parseMuseLine(undefined)).toBeNull();
+  });
+
+  it('returns null for whitespace-only input', () => {
+    expect(parseMuseLine('   \t  ')).toBeNull();
+  });
+
+  it('returns null for malformed JSON without throwing', () => {
+    expect(() => parseMuseLine('{not json')).not.toThrow();
+    expect(parseMuseLine('{not json')).toBeNull();
+  });
+
+  it('returns null for a record with no payload_type', () => {
+    expect(parseMuseLine(JSON.stringify({ payload: { text: 'hi' } }))).toBeNull();
+  });
+
+  it('returns null for a record with no payload', () => {
+    expect(parseMuseLine(JSON.stringify({ payload_type: 'run.output.delta' }))).toBeNull();
+  });
+
+  it('parses run.output.delta as an assistant_text event', () => {
+    const line = JSON.stringify({
+      payload_type: 'run.output.delta',
+      sequence: 15,
+      payload: { kind: 'run_output_delta', text: 'Analyzing the diff now.' }
+    });
+    const result = parseMuseLine(line);
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('assistant_text');
+    expect(result.text).toBe('Analyzing the diff now.');
+    expect(typeof result.timestamp).toBe('number');
+  });
+
+  it('returns null for run.output.delta with empty text', () => {
+    const line = JSON.stringify({
+      payload_type: 'run.output.delta',
+      payload: { kind: 'run_output_delta', text: '' }
+    });
+    expect(parseMuseLine(line)).toBeNull();
+  });
+
+  it('returns null for run.output.delta with whitespace-only text', () => {
+    const line = JSON.stringify({
+      payload_type: 'run.output.delta',
+      payload: { kind: 'run_output_delta', text: '   \n  ' }
+    });
+    expect(parseMuseLine(line)).toBeNull();
+  });
+
+  it('truncates long assistant text', () => {
+    const line = JSON.stringify({
+      payload_type: 'run.output.delta',
+      payload: { kind: 'run_output_delta', text: 'x'.repeat(500) }
+    });
+    const result = parseMuseLine(line);
+    expect(result.text.length).toBeLessThanOrEqual(201);
+    expect(result.text.endsWith('…')).toBe(true);
+  });
+
+  it('parses a tool: side_effect_intent as a tool_use event', () => {
+    const line = JSON.stringify({
+      payload_type: 'task.lifecycle.side_effect_intent',
+      payload: {
+        kind: 'task_lifecycle',
+        event: {
+          kind: 'side_effect_intent',
+          operation: 'tool:read_file',
+          policy_decision: 'allow:policy'
+        }
+      }
+    });
+    const result = parseMuseLine(line);
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('tool_use');
+    // Muse's side_effect_intent record carries no tool arguments, so the event
+    // shows the bare tool name.
+    expect(result.text).toBe('read_file');
+    expect(typeof result.timestamp).toBe('number');
+  });
+
+  it('parses a tool:bash side_effect_intent', () => {
+    const line = JSON.stringify({
+      payload_type: 'task.lifecycle.side_effect_intent',
+      payload: { event: { operation: 'tool:bash', policy_decision: 'allow:policy' } }
+    });
+    expect(parseMuseLine(line).text).toBe('bash');
+  });
+
+  it('returns null for the model.meta.response side_effect_intent (not a tool)', () => {
+    const line = JSON.stringify({
+      payload_type: 'task.lifecycle.side_effect_intent',
+      payload: {
+        event: {
+          kind: 'side_effect_intent',
+          operation: 'model.meta.response',
+          policy_decision: 'not_applicable'
+        }
+      }
+    });
+    expect(parseMuseLine(line)).toBeNull();
+  });
+
+  it('returns null for a side_effect_intent with no operation', () => {
+    const line = JSON.stringify({
+      payload_type: 'task.lifecycle.side_effect_intent',
+      payload: { event: {} }
+    });
+    expect(parseMuseLine(line)).toBeNull();
+  });
+
+  it('falls back to "unknown" for a bare "tool:" operation', () => {
+    const line = JSON.stringify({
+      payload_type: 'task.lifecycle.side_effect_intent',
+      payload: { event: { operation: 'tool:' } }
+    });
+    expect(parseMuseLine(line).text).toBe('unknown');
+  });
+
+  it.each([
+    'runtime.command.accepted',
+    'session.run.linked',
+    'run.model.configured',
+    'turn.input.user',
+    'run.lifecycle.started',
+    'task.stream.linked',
+    'task.lifecycle.proposed',
+    'task.lifecycle.accepted',
+    'task.lifecycle.started',
+    'task.lifecycle.scheduled',
+    'task.lifecycle.status',
+    'task.lifecycle.completed',
+    'task.lifecycle.output',
+    'task.lifecycle.failed',
+    'task.lifecycle.rejected',
+    'tool.result',
+    'run.terminal.completed',
+    'run.terminal.failed'
+  ])('filters out %s records', (payloadType) => {
+    const line = JSON.stringify({
+      payload_type: payloadType,
+      payload: { kind: 'whatever', text: 'should not surface', event: { chunk: 'nope' } }
+    });
+    expect(parseMuseLine(line)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseMuseLine with cwd option
+// ---------------------------------------------------------------------------
+describe('parseMuseLine with cwd option', () => {
+  const cwd = '/Users/dev/worktree';
+
+  it('strips the cwd prefix when a future muse release supplies tool args', () => {
+    // Muse does not emit tool arguments today. The parser still routes them
+    // through extractToolDetail so that if a later release adds them, paths are
+    // reported relative to the worktree with no code change required.
+    const line = JSON.stringify({
+      payload_type: 'task.lifecycle.side_effect_intent',
+      payload: {
+        event: {
+          operation: 'tool:read_file',
+          input: { file_path: '/Users/dev/worktree/src/app.js' }
+        }
+      }
+    });
+    const result = parseMuseLine(line, { cwd });
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toBe('read_file: src/app.js');
+  });
+
+  it('surfaces a command detail when present', () => {
+    const line = JSON.stringify({
+      payload_type: 'task.lifecycle.side_effect_intent',
+      payload: {
+        event: { operation: 'tool:bash', args: { command: 'git status' } }
+      }
+    });
+    expect(parseMuseLine(line, { cwd }).text).toBe('bash: git status');
+  });
+
+  it('leaves paths outside the cwd untouched', () => {
+    const line = JSON.stringify({
+      payload_type: 'task.lifecycle.side_effect_intent',
+      payload: {
+        event: { operation: 'tool:read_file', arguments: { path: '/etc/hosts' } }
+      }
+    });
+    expect(parseMuseLine(line, { cwd }).text).toBe('read_file: /etc/hosts');
+  });
+
+  it('works without a cwd option', () => {
+    const line = JSON.stringify({
+      payload_type: 'task.lifecycle.side_effect_intent',
+      payload: { event: { operation: 'tool:read_file', input: { file_path: '/a/b.js' } } }
+    });
+    expect(parseMuseLine(line).text).toBe('read_file: /a/b.js');
   });
 });
 

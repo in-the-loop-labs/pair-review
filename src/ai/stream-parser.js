@@ -268,6 +268,76 @@ function parseOpenCodeLine(line, options = {}) {
 }
 
 /**
+ * Parse a single Muse JSONL line into a normalized event.
+ * Returns null if the line should not be emitted.
+ *
+ * Muse wraps every record in an envelope; the discriminator is `payload_type`
+ * and the interesting fields live under `payload`:
+ * - run.output.delta (payload.text) → assistant_text
+ * - task.lifecycle.side_effect_intent with payload.event.operation === 'tool:<name>' → tool_use
+ * - everything else (run.lifecycle.*, task.lifecycle.{proposed,accepted,started,
+ *   scheduled,status,completed,failed,rejected,output}, tool.result,
+ *   run.model.configured, run.terminal.*) → filtered out
+ *
+ * Note: side_effect_intent also fires for `model.meta.response` (the model call
+ * itself, not a tool); only `tool:`-prefixed operations become tool_use events.
+ *
+ * @param {string} line - A single JSONL line from Muse stdout
+ * @param {Object} [options] - Parse options
+ * @param {string} [options.cwd] - Working directory to strip from file paths
+ * @returns {{ type: string, text: string, timestamp: number } | null}
+ */
+function parseMuseLine(line, options = {}) {
+  if (!line || !line.trim()) return null;
+
+  const { cwd } = options;
+
+  try {
+    const event = JSON.parse(line);
+    const payloadType = event.payload_type;
+    const payload = event.payload || {};
+
+    if (payloadType === 'run.output.delta') {
+      const text = payload.text;
+      if (text && text.trim()) {
+        return {
+          type: 'assistant_text',
+          text: truncateSnippet(text),
+          timestamp: Date.now()
+        };
+      }
+      return null;
+    }
+
+    if (payloadType === 'task.lifecycle.side_effect_intent') {
+      const operation = payload.event?.operation || '';
+      if (!operation.startsWith('tool:')) return null;
+
+      const toolName = operation.slice('tool:'.length) || 'unknown';
+      // Muse's side_effect_intent record carries no tool arguments, so this
+      // resolves to '' today and the event shows the bare tool name. The lookup
+      // stays so a future muse release that adds arguments needs no code change.
+      const detail = extractToolDetail(
+        payload.event?.input || payload.event?.args || payload.event?.arguments,
+        cwd
+      );
+      const text = detail ? `${toolName}: ${detail}` : toolName;
+      return {
+        type: 'tool_use',
+        text: truncateSnippet(text),
+        timestamp: Date.now()
+      };
+    }
+
+    return null;
+  } catch {
+    // Best-effort side channel — silently ignore non-JSON or malformed lines.
+    // The main stdout buffer handles authoritative response parsing.
+    return null;
+  }
+}
+
+/**
  * Line-buffered stream parser that handles partial lines across chunks.
  * Feeds data incrementally and calls onEvent for each parsed event.
  */
@@ -586,6 +656,7 @@ module.exports = {
   extractToolDetail,
   parseClaudeLine,
   parseCodexLine,
+  parseMuseLine,
   parseOpenCodeLine,
   parseCursorAgentLine,
   parsePiLine,

@@ -557,6 +557,72 @@ describe('AntigravityProvider', () => {
           vi.useRealTimers();
         }
       });
+
+      it('forwards the abort signal so the extraction spawn can be killed, not merely abandoned', async () => {
+        const child = createMockChild();
+        mockSpawn.mockReturnValue(child);
+
+        const provider = new AntigravityProvider('gemini-3.1-pro-low');
+        const spy = vi.spyOn(provider, 'extractJSONWithLLM')
+          .mockResolvedValue({ success: true, data: { suggestions: [] } });
+        const controller = new AbortController();
+
+        const promise = provider.execute('prompt', { abortSignal: controller.signal });
+        child.stdout.emit('data', Buffer.from(PLAIN));
+        child.emit('close', 0);
+
+        expect(await promise).toEqual({ suggestions: [] });
+        // Without the signal the extraction child outlives a cancel until its
+        // own 60s timeout.
+        expect(spy).toHaveBeenCalledWith(PLAIN, expect.objectContaining({ abortSignal: controller.signal }));
+      });
+
+      it('reports a cancel that lands while the fallback is still running', async () => {
+        // agy has already exited by this point, so the abort wiring only kills
+        // something already dead. Without the post-await re-check a cancelled
+        // analysis would settle with a normal result.
+        const child = createMockChild();
+        mockSpawn.mockReturnValue(child);
+
+        const provider = new AntigravityProvider('gemini-3.1-pro-low');
+        const controller = new AbortController();
+        vi.spyOn(provider, 'extractJSONWithLLM').mockImplementation(async () => {
+          controller.abort();
+          return { success: true, data: { suggestions: [{ id: 1 }] } };
+        });
+
+        const promise = provider.execute('prompt', { abortSignal: controller.signal });
+        const failure = promise.then(() => null, (err) => err);
+        child.stdout.emit('data', Buffer.from(PLAIN));
+        child.emit('close', 0);
+
+        const error = await failure;
+        expect(error).toBeInstanceOf(Error);
+        expect(error.name).toBe('AbortError');
+        expect(error.isCancellation).toBe(true);
+        expect(error.message).toMatch(/Cancelled by user/);
+      });
+
+      it('treats an abort that kills the extraction spawn as a cancel, not a parse failure', async () => {
+        const child = createMockChild();
+        mockSpawn.mockReturnValue(child);
+
+        const provider = new AntigravityProvider('gemini-3.1-pro-low');
+        const controller = new AbortController();
+        vi.spyOn(provider, 'extractJSONWithLLM').mockImplementation(async () => {
+          controller.abort();
+          throw new Error('spawn terminated by SIGTERM');
+        });
+
+        const promise = provider.execute('prompt', { abortSignal: controller.signal });
+        const failure = promise.then(() => null, (err) => err);
+        child.stdout.emit('data', Buffer.from(PLAIN));
+        child.emit('close', 0);
+
+        const error = await failure;
+        expect(error.name).toBe('AbortError');
+        expect(error.isCancellation).toBe(true);
+      });
     });
 
     // The two cancellation paths intentionally reject with DIFFERENT error

@@ -49,7 +49,7 @@ const { AIProvider, registerProvider, quoteShellArgs } = require('./provider');
 const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { CancellationError, isAnalysisCancelled } = require('../routes/shared');
-const { wireAbortToChild, makeAbortError } = require('./abort-signal-wiring');
+const { wireAbortToChild, makeAbortError, killChildSafely } = require('./abort-signal-wiring');
 
 // Directory containing bin scripts (kept on PATH for parity with other providers)
 const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
@@ -339,7 +339,7 @@ class AntigravityProvider extends AIProvider {
       const backstopMs = budgetMs + TIMEOUT_BACKSTOP_GRACE_MS;
       timeoutId = setTimeout(() => {
         logger.error(`${levelPrefix} Process ${pid} exceeded its ${budgetMs}ms timeout budget (backstop fired at ${backstopMs}ms)`);
-        agy.kill('SIGTERM');
+        killChildSafely(agy, { logPrefix: levelPrefix, shell: this.useShell });
         settle(reject, new Error(`${levelPrefix} Antigravity CLI timed out after ${budgetMs}ms`));
       }, backstopMs);
 
@@ -415,9 +415,24 @@ class AntigravityProvider extends AIProvider {
           timeoutId = null;
         }
 
+        // agy has already exited, so a cancel arriving now only makes the abort
+        // wiring kill something already dead. Nothing else on this path consults
+        // it, so without the checks below a cancelled analysis would settle as a
+        // normal result. The signal is read alongside the wiring flag as the
+        // source of truth.
+        const cancelledDuringExtraction = () =>
+          abortWiring.cancelled() || abortSignal?.aborted === true;
+
         (async () => {
           try {
-            const llmExtracted = await this.extractJSONWithLLM(stdout, { level, analysisId, registerProcess, logPrefix: levelPrefix });
+            // `abortSignal` lets the extraction spawn be killed rather than
+            // merely abandoned until its own 60s timeout.
+            const llmExtracted = await this.extractJSONWithLLM(stdout, { level, analysisId, registerProcess, logPrefix: levelPrefix, abortSignal });
+            if (cancelledDuringExtraction()) {
+              logger.info(`${levelPrefix} Cancelled by user during LLM extraction fallback`);
+              settle(reject, makeAbortError(`${levelPrefix} Cancelled by user`));
+              return;
+            }
             if (llmExtracted.success) {
               logger.success(`${levelPrefix} LLM extraction fallback succeeded`);
               settle(resolve, llmExtracted.data);
@@ -427,6 +442,13 @@ class AntigravityProvider extends AIProvider {
               settle(resolve, { raw: stdout, parsed: false });
             }
           } catch (llmError) {
+            // An abort that kills the extraction spawn surfaces here as a thrown
+            // error; it is a cancellation, not a parse failure.
+            if (cancelledDuringExtraction()) {
+              logger.info(`${levelPrefix} Cancelled by user during LLM extraction fallback`);
+              settle(reject, makeAbortError(`${levelPrefix} Cancelled by user`));
+              return;
+            }
             logger.warn(`${levelPrefix} LLM extraction fallback error: ${llmError.message}`);
             settle(resolve, { raw: stdout, parsed: false });
           }
@@ -452,7 +474,9 @@ class AntigravityProvider extends AIProvider {
       agy.stdin.write(prompt, (err) => {
         if (err) {
           logger.error(`${levelPrefix} Failed to write prompt to stdin: ${err}`);
-          agy.kill('SIGTERM');
+          // A failed spawn (ENOENT) EPIPEs stdin and lands here with a pidless
+          // child; killChildSafely skips the self-directed kill(0).
+          killChildSafely(agy, { logPrefix: levelPrefix, shell: this.useShell });
           settle(reject, new Error(`${levelPrefix} Failed to write prompt to stdin: ${err}`));
         }
       });
@@ -535,7 +559,9 @@ class AntigravityProvider extends AIProvider {
         if (settled) return;
         settled = true;
         logger.warn(`Antigravity CLI availability check timed out after ${Math.round(timeoutMs / 1000)}s`);
-        try { agy.kill(); } catch { /* ignore */ }
+        // Not `shell: useShell`: the probe spawn is not `detached`, so
+        // group-kill would ESRCH and leave the child running.
+        killChildSafely(agy, { logPrefix: '[availability]' });
         resolve(false);
       }, timeoutMs);
 

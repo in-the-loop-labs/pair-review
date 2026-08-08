@@ -56,6 +56,8 @@ describe('OpenCodeProvider', () => {
       try {
         const child = new EventEmitter();
         child.stdout = new EventEmitter();
+        // A hung CLI has a real pid; killChildSafely skips pidless children.
+        child.pid = 4242;
         child.kill = vi.fn();
         mockSpawn.mockReturnValue(child);
 
@@ -86,6 +88,9 @@ describe('OpenCodeProvider', () => {
       try {
         const child = new EventEmitter();
         child.stdout = new EventEmitter();
+        // pid set so "kill not called" proves the timer was cleared rather
+        // than passing vacuously via killChildSafely's pidless guard.
+        child.pid = 4242;
         child.kill = vi.fn();
         mockSpawn.mockReturnValue(child);
 
@@ -555,6 +560,128 @@ describe('OpenCodeProvider', () => {
       logger.setStreamDebugEnabled(true);
       const line = JSON.stringify({ type: 'text' });
       expect(() => provider.logStreamLine(line, 1, '[Level 1]')).not.toThrow();
+    });
+  });
+
+  // When the model answers in prose the LLM-extraction fallback runs. A cancel
+  // arriving while it is in flight must reject, not be laundered into a normal
+  // "unparsed response" result.
+  describe('LLM-extraction fallback cancellation', () => {
+    const { EventEmitter } = require('events');
+    const PROSE = 'I could not analyse this diff.';
+
+    /**
+     * Minimal child mirroring the surface execute() touches: stdout/stderr
+     * emitters, a writable stdin, kill, pid.
+     *
+     * @returns {EventEmitter} Fake child process
+     */
+    function createMockChild() {
+      const child = new EventEmitter();
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.pid = 4242;
+      child.kill = vi.fn();
+
+      const stdin = new EventEmitter();
+      stdin.write = vi.fn((data, cb) => {
+        if (typeof cb === 'function') cb();
+        return true;
+      });
+      stdin.end = vi.fn();
+      child.stdin = stdin;
+
+      return child;
+    }
+
+    /**
+     * Drive execute() to the extraction fallback: opencode exits 0 having
+     * emitted assistant text that is not JSON.
+     *
+     * @param {EventEmitter} child - Fake child returned by the spawn spy
+     */
+    function reachExtractionFallback(child) {
+      child.stdout.emit('data', JSON.stringify({
+        type: 'text',
+        part: { type: 'text', text: PROSE }
+      }) + '\n');
+      child.emit('close', 0);
+    }
+
+    it('forwards the abort signal so the extraction spawn can be killed, not merely abandoned', async () => {
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+
+      const provider = new OpenCodeProvider('test-model');
+      const spy = vi.spyOn(provider, 'extractJSONWithLLM')
+        .mockResolvedValue({ success: true, data: { suggestions: [] } });
+      const controller = new AbortController();
+
+      const promise = provider.execute('prompt', { abortSignal: controller.signal });
+      reachExtractionFallback(child);
+
+      expect(await promise).toEqual({ suggestions: [] });
+      // Without the signal the extraction child survives a cancel until its own
+      // 60s timeout.
+      expect(spy).toHaveBeenCalledWith(PROSE, expect.objectContaining({ abortSignal: controller.signal }));
+    });
+
+    it('reports a cancel that lands while the fallback is still running', async () => {
+      // opencode has already exited by this point, so the abort wiring only
+      // kills something already dead. Without the post-await re-check a
+      // cancelled analysis would settle with a normal result.
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+
+      const provider = new OpenCodeProvider('test-model');
+      const controller = new AbortController();
+      vi.spyOn(provider, 'extractJSONWithLLM').mockImplementation(async () => {
+        controller.abort();
+        return { success: true, data: { suggestions: [{ id: 1 }] } };
+      });
+
+      const promise = provider.execute('prompt', { abortSignal: controller.signal });
+      const failure = promise.then(() => null, (err) => err);
+      reachExtractionFallback(child);
+
+      const error = await failure;
+      expect(error).toBeInstanceOf(Error);
+      expect(error.name).toBe('AbortError');
+      expect(error.isCancellation).toBe(true);
+      expect(error.message).toMatch(/Cancelled by user/);
+    });
+
+    it('treats an abort that kills the extraction spawn as a cancel, not a parse failure', async () => {
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+
+      const provider = new OpenCodeProvider('test-model');
+      const controller = new AbortController();
+      vi.spyOn(provider, 'extractJSONWithLLM').mockImplementation(async () => {
+        controller.abort();
+        throw new Error('spawn terminated by SIGTERM');
+      });
+
+      const promise = provider.execute('prompt', { abortSignal: controller.signal });
+      const failure = promise.then(() => null, (err) => err);
+      reachExtractionFallback(child);
+
+      const error = await failure;
+      expect(error.name).toBe('AbortError');
+      expect(error.isCancellation).toBe(true);
+    });
+
+    it('degrades to raw text when the extraction fallback throws without a cancel', async () => {
+      const child = createMockChild();
+      mockSpawn.mockReturnValue(child);
+
+      const provider = new OpenCodeProvider('test-model');
+      vi.spyOn(provider, 'extractJSONWithLLM').mockRejectedValue(new Error('extractor blew up'));
+
+      const promise = provider.execute('prompt', {});
+      reachExtractionFallback(child);
+
+      expect(await promise).toEqual({ raw: PROSE, parsed: false });
     });
   });
 

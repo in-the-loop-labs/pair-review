@@ -19,6 +19,7 @@ The providers are defined in `src/ai/` with these files:
 - `opencode-provider.js` - OpenCode CLI (no built-in models, config-only)
 - `claude-provider.js` - Anthropic Claude CLI models
 - `pi-provider.js` - Pi coding agent models
+- `muse-provider.js` - Meta Muse Code CLI (`muse`) models
 
 Each provider file has a `*_MODELS` array at the top defining models with:
 - `id`: The CLI model identifier (passed to `--model` flag)
@@ -52,6 +53,28 @@ Each CLI has different model listing commands:
 - **OpenCode**: `opencode models` — lists all models in `provider/model-id` format (shows bundled + provider models)
 - **Claude**: `claude --help` or check docs at code.claude.com/docs/en/cli-reference
 - **Pi**: `pi --list-models` — shows comprehensive table with provider, model, context, max-out, thinking, images columns.
+- **Muse**: No `models list` subcommand — and no models subcommand at all. Do not run
+  `muse models`: with no matching subcommand, muse treats `models` as a prompt and tries to
+  launch the interactive TUI. Read the locally cached catalog instead, which is the
+  authoritative source (the CLI fetches it from Meta's provider API and writes it after
+  login, so it only exists once `muse login` has run):
+  ```
+  cat ~/.local/share/muse/model-catalog/*.json
+  ```
+  Each file is JSON with a `rows` array; the fields that matter are `model_id` (the value for
+  `--model`), `display_label`, `is_default`, `context_limit`, and `cost`. Only the underlying
+  CLI model ids appear here — as of 2026-08-07 just `muse-spark-1.2` and
+  `muse-spark-1.2-contributor` — not pair-review's reasoning-effort variants (see the note
+  below).
+
+  To confirm a specific id is still valid, pass it with the prompt as a **positional
+  argument**; an unknown id fails fast with exit 1 and ``model `X` is not in the catalog``:
+  ```
+  muse exec --model <ID> "hi"
+  ```
+  Do **not** probe with `--prompt-file /dev/null`. Muse validates the prompt file before the
+  model, so that form always dies on `--prompt-file /dev/null is not a regular file` and tells
+  you nothing about the id — a bogus id and a valid one produce the identical error.
 
 ### 4. Get Model Recommendations for Code Review
 
@@ -107,3 +130,14 @@ Leave changes uncommitted for the user to review.
 - Copilot CLI may have limited model availability depending on subscription tier
 - Some CLIs may need authentication before they can list models or respond to queries
 - Run `agy models` to see which Antigravity models are currently available; the list can change as new models roll out
+- Muse's built-in model ids are **not** raw CLI model ids. Each one pairs an underlying CLI
+  model (`muse-spark-1.2` or `muse-spark-1.2-contributor`) with a `--reasoning-effort` level
+  (`none|minimal|low|medium|high|xhigh|ultra`), so several app-level ids map onto the same CLI
+  model. When updating, check whether the underlying model list changed *and* whether the effort
+  levels still make sense for each tier
+- The `muse-spark-1.2-contributor` model is much cheaper because Meta may use its content for
+  product improvement. **Keep the default on a non-contributor model** so opting into data
+  sharing stays an explicit user choice; do not promote a `-contributor` id to default.
+  Note that the cached catalog marks `muse-spark-1.2-contributor` with `is_default: true` —
+  that is muse's own default, and pair-review overrides it on purpose. Do not copy the
+  catalog's `is_default` across when refreshing the model list
