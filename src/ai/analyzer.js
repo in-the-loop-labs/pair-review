@@ -131,7 +131,7 @@ async function runExecutableVoice(voiceProvider, reviewId, worktreePath, prMetad
   try {
     const executableContext = {
       title: prMetadata.title || null,
-      description: prMetadata.description || null,
+      description: resolveReviewDescription(prMetadata) || null,
       cwd: worktreePath,
       outputDir: tmpDir,
       model: voiceProvider.resolvedModel !== undefined ? voiceProvider.resolvedModel : (voiceProvider.model || null),
@@ -202,17 +202,63 @@ async function runExecutableVoice(voiceProvider, reviewId, worktreePath, prMetad
 }
 
 /**
+ * Resolve the `owner/repo` identifier from review metadata.
+ *
+ * Review metadata reaches the analyzer in more than one shape:
+ *   - the normalized `pr_metadata` row (server routes, headless PR path), where
+ *     `repository` is the `"owner/repo"` string;
+ *   - the raw stored `pr_data` blob, where `repository` is the GitHub API object
+ *     `{ full_name, clone_url, ssh_url, default_branch }`;
+ *   - local reviews, where `repository` is a bare directory name (no slash).
+ *
+ * Accept all three instead of assuming a string. Callers used to do
+ * `prMetadata.repository?.split('/')`, which threw `TypeError` on the object
+ * shape — and because every consolidation stage builds its dedup context first,
+ * that single throw silently disabled consolidation for the whole run (#557).
+ *
+ * @param {Object} prMetadata - PR/review metadata
+ * @returns {string|null} The repository identifier, or null when unavailable
+ */
+function resolveRepositorySlug(prMetadata) {
+  const repository = prMetadata?.repository;
+  if (typeof repository === 'string') return repository || null;
+  if (repository && typeof repository.full_name === 'string') return repository.full_name || null;
+  return null;
+}
+
+/**
+ * Resolve the review description from review metadata.
+ *
+ * The normalized `pr_metadata` row and local metadata both use `description`;
+ * the raw `pr_data` blob carries the same text under the GitHub API's `body`.
+ * Accepting both keeps the PR description in the prompt regardless of which
+ * shape a caller passes — the same shape divergence behind #557.
+ *
+ * @param {Object} prMetadata - PR/review metadata
+ * @returns {string|null|undefined} The description, or null/undefined when unset
+ */
+function resolveReviewDescription(prMetadata) {
+  return prMetadata?.description ?? prMetadata?.body;
+}
+
+/**
  * Build the dedup context object from PR metadata and run identifiers.
  *
- * @param {Object} prMetadata - PR metadata with repository and pr_number
+ * Tolerates both metadata shapes described on {@link resolveRepositorySlug}: the
+ * pull request number is read from `pr_number` (normalized row) and falls back
+ * to `number` (raw `pr_data` blob). Local reviews carry neither and yield
+ * `undefined`, which the dedup consumers already treat as "not a PR".
+ *
+ * @param {Object} prMetadata - PR metadata with repository and pr_number/number
  * @param {Object} ids - { reviewId, serverPort, runId, excludeRunIds }
  * @param {string} [ids.runId] - Single run ID to exclude (backward compat)
  * @param {string[]} [ids.excludeRunIds] - Array of run IDs to exclude (takes precedence over runId)
  * @returns {Object} { owner, repo, pullNumber, reviewId, serverPort, runId, excludeRunIds }
  */
 function buildDedupContext(prMetadata, { reviewId, serverPort, runId, excludeRunIds }) {
-  const [owner, repo] = prMetadata.repository?.split('/') || [];
-  return { owner, repo, pullNumber: prMetadata.pr_number, reviewId, serverPort, runId, excludeRunIds };
+  const [owner, repo] = resolveRepositorySlug(prMetadata)?.split('/') || [];
+  const pullNumber = prMetadata?.pr_number ?? prMetadata?.number;
+  return { owner, repo, pullNumber, reviewId, serverPort, runId, excludeRunIds };
 }
 
 /**
@@ -1219,20 +1265,25 @@ Or simply ignore any changes to files matching these patterns in your analysis.
    * @returns {string} Context section or empty string
    */
   buildPRContextSection(prMetadata, criticalNote) {
+    const description = resolveReviewDescription(prMetadata);
     // Check for null/undefined explicitly to include section even if fields are empty strings
-    if (prMetadata.title != null || prMetadata.description != null) {
+    if (prMetadata.title != null || description != null) {
       const isLocal = prMetadata.reviewType === 'local';
       const sectionTitle = isLocal ? 'Review Context' : 'Pull Request Context';
       const descriptionLabel = isLocal ? 'Description:' : "Author's Description:";
 
-      // Build metadata lines (repository for both modes, PR-specific fields only for PR mode)
+      // Build metadata lines (repository for both modes, PR-specific fields only for PR mode).
+      // Both fields go through the shape-tolerant resolvers so a raw `pr_data`
+      // blob renders "owner/repo" rather than "[object Object]" (#557).
       const lines = [];
-      if (prMetadata.repository) {
-        lines.push(`**Repository:** ${prMetadata.repository}`);
+      const repositorySlug = resolveRepositorySlug(prMetadata);
+      if (repositorySlug) {
+        lines.push(`**Repository:** ${repositorySlug}`);
       }
       if (!isLocal) {
-        if (prMetadata.pr_number) {
-          lines.push(`**PR #:** ${prMetadata.pr_number}`);
+        const pullNumber = prMetadata.pr_number ?? prMetadata.number;
+        if (pullNumber) {
+          lines.push(`**PR #:** ${pullNumber}`);
         }
         if (prMetadata.author) {
           lines.push(`**Author:** @${prMetadata.author}`);
@@ -1245,7 +1296,7 @@ Or simply ignore any changes to files matching these patterns in your analysis.
 ${metadataLines}**Title:** ${prMetadata.title || '(No title provided)'}
 
 **${descriptionLabel}**
-${prMetadata.description || '(No description provided)'}
+${description || '(No description provided)'}
 
 ⚠️ **Critical Note:** ${criticalNote}
 
@@ -4158,5 +4209,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 
 module.exports = Analyzer;
 module.exports.buildDedupContext = buildDedupContext;
+module.exports.resolveRepositorySlug = resolveRepositorySlug;
+module.exports.resolveReviewDescription = resolveReviewDescription;
 module.exports.buildDedupInstructions = buildDedupInstructions;
 module.exports.fetchExistingReviewComments = fetchExistingReviewComments;

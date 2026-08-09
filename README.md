@@ -373,6 +373,7 @@ consolidated suggestion layer the app shows by default):
 {
   "ok": true,                 // false on failure (see below)
   "mode": "local",            // "pr" or "local"
+  "consolidation": "success", // "success", "failed", "skipped", or null (see below)
   "run": {
     "id": "…",                 // analysis run id
     "review_id": 1,
@@ -416,6 +417,25 @@ consolidated suggestion layer the app shows by default):
   ],
   "count": 1                   // suggestions.length
 }
+```
+
+**`consolidation`** reports the outcome of the final cross-level (and, for a
+council, cross-voice) consolidation step:
+
+| Value | Meaning |
+| --- | --- |
+| `"success"` | Consolidation ran and merged the inputs. |
+| `"failed"` | It threw. The run still completes and `ok` stays `true`, but `suggestions` is the raw union of every analysis level and every council voice rather than a merged review — expect duplicates and a much larger `count`. |
+| `"skipped"` | There was nothing to merge — a council that resolved to a single voice or a single level, or an executable provider that returns its own final set. The suggestion set is the intended one; this is a healthy outcome, not a degraded one. |
+| `null` | The run recorded no consolidation stage. |
+
+Only `"failed"` indicates degraded output, so branch on that value rather than on
+`!= "success"` — a single-voice council legitimately reports `"skipped"`. The
+human-readable (non-`--json`) output prints a warning for `"failed"` only.
+
+```bash
+# Treat a degraded run as a failure
+[ "$(echo "$result" | jq -r '.consolidation')" = "failed" ] && echo "unconsolidated!" >&2
 ```
 
 **On failure** (invalid flags, an unreadable `--instructions-file`, or an
