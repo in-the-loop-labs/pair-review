@@ -1,5 +1,72 @@
 # Changelog
 
+## 5.1.0
+
+### Minor Changes
+
+- 97eb051: Add Meta's Muse Code CLI (`muse`) as an AI review-analysis provider. Override the CLI command with `PAIR_REVIEW_MUSE_CMD`. Analysis runs headlessly via `muse exec --json`, so the CLI must be installed and authenticated once with `muse login`.
+
+  Select Muse from the repository or global settings pages, which pick a provider and a model together. From the CLI or config file, name a model alongside the provider — `--provider muse --model muse-spark-1.2`, or `default_provider` **and** `default_model` in `~/.pair-review/config.json`. Provider and model resolve on separate ladders, so `--provider muse` on its own leaves the model at the global default (`opus` out of the box) and Muse rejects the pair with `` model `opus` is not in the catalog ``. This is long-standing behavior shared by every provider, not something specific to Muse.
+
+  The built-in models are reasoning-effort variants over two underlying CLI models: `muse-spark-1.2-ultra` / `muse-spark-1.2-contributor-ultra` and `muse-spark-1.2-xhigh` / `muse-spark-1.2-contributor-xhigh` (thorough), `muse-spark-1.2-high` (balanced, the default, aliased as `muse-spark-1.2` and `muse-spark`), `muse-spark-1.2-contributor-high` (balanced, aliased as `muse-spark-1.2-contributor`), and `muse-spark-1.2-low` / `muse-spark-1.2-contributor-low` (fast). The `-contributor` models are cheaper because Meta may use their content for product improvement, so the default deliberately stays on the non-contributor model — opting into data sharing is an explicit choice, and naming the bare CLI model `muse-spark-1.2-contributor` makes that choice too.
+
+- 4a97fde: Stop background pool fetches from filling the disk on large monorepos (#552)
+
+  On a large monorepo, a `git fetch` that ran out of the 5-minute idle timeout was
+  SIGKILLed after writing its pack but before updating refs. Because
+  `last_fetched_at` only advanced on success, the worktree stayed permanently due
+  and re-downloaded the same pack every minute — and each killed fetch left an
+  orphaned `objects/pack/pack-*.keep` marker, which makes `git repack` silently
+  skip that pack so the space is never reclaimed.
+
+  - Background fetches now record every attempt, not just successes, and a failing
+    worktree backs off exponentially (one interval, then two, then four, capped at
+    six hours) instead of retrying on the next 60-second tick.
+  - Orphaned `pack-*.keep` files are cleaned up automatically after every
+    background fetch attempt, so `git repack`/`gc` can reclaim the space — even
+    when the marker was left by an earlier process that died outright. Only
+    markers written by a dead process on this same host are removed; the packs
+    themselves are never touched.
+  - New per-repo `fetch_timeout_seconds` setting for repositories whose fetches are
+    legitimately silent for longer than the 5-minute default.
+  - `skip_bulk_fetch` now governs the periodic background pool fetch for that
+    repository. It no longer affects the foreground refresh path, which always
+    uses targeted fetches now (see the companion targeted-fetch change). The
+    orphaned-`.keep` sweep still runs for these repositories — they are the large
+    monorepos that strand the most markers.
+  - Background fetches pass `--progress`, so git keeps emitting output during long
+    quiet phases like delta resolution and the idle timeout no longer kills healthy
+    fetches.
+
+### Patch Changes
+
+- 97eb051: Fix the shared LLM JSON-extraction fallback hanging on wrapper commands, and make it respond to cancellation.
+
+  `extractJSONWithLLM` closed the child's stdin only when the prompt was delivered over stdin or via an `@file` argument. A provider that passes the prompt as a plain CLI argument left stdin open, and while the target CLI itself ignores it, a wrapper command (`devx muse --`, `docker exec ... muse`) can block on an open stdin and hang until the 60-second extraction timeout. Stdin is now ended on every delivery path, with an `error` listener attached so a late EPIPE cannot become an unhandled exception.
+
+  The helper also ignored cancellation entirely: a user cancel fired while the extraction fallback was running could neither stop the spawn nor change the outcome. It now accepts an optional `abortSignal`, kills the extraction child when the signal fires, and rejects with an `AbortError`. An already-aborted signal skips the spawn altogether, and the abort listener is detached on every exit path so a long-lived per-job signal does not accumulate listeners. Callers that omit `abortSignal` are unaffected — every failure still resolves as `{ success: false, error }`.
+
+  Every provider now actually passes that signal through. The Claude, Codex, Copilot, Antigravity, Cursor Agent, OpenCode and Pi adapters called the extraction fallback without it, so cancelling a tour or summary during the fallback left the extraction child running to its 60-second timeout. Worse, those handlers turned the resulting cancellation into a plain `{ raw, parsed: false }` response, making a cancelled job look like one that had simply produced unparseable output. All seven now forward `abortSignal` and re-check for cancellation both after the extraction resolves and in the error path, rejecting with an `AbortError` instead of a parse failure — the behaviour the Muse provider already had.
+
+- 97eb051: Fix pair-review terminating itself when an analysis was cancelled while the provider CLI had failed to spawn.
+
+  `wireAbortToChild` called `child.kill('SIGTERM')` unconditionally. When the spawn had failed — a missing or misconfigured CLI command, or an abort arriving before the process was up — the child has no pid, and Node coerces the undefined pid to `0`. `kill(0, SIGTERM)` signals the _caller's own process group_, so cancelling such an analysis delivered SIGTERM to the pair-review server itself. Verified directly: the call returned `true` and the current process received SIGTERM.
+
+  The kill is now skipped when the child has no pid, matching the guard the shell-mode branches already applied. The pending `error`/`close` handler still settles the request, so cancellation continues to reject as before. This affected every CLI provider, since all of them share this wiring.
+
+  Cancellation was not the only way to reach the bad kill. The same guard now covers every place the AI layer terminates a spawned CLI: the per-level timeout handlers, the shared LLM JSON-extraction helper, the availability probes, and — most importantly — the stdin write-error handlers, which a failed spawn reaches directly, since it EPIPEs stdin and then killed a pidless child. In shell mode, timeout and stdin-error kills of the analysis child now signal the whole process group, so a timed-out CLI grandchild stops burning tokens instead of being orphaned behind its shell wrapper.
+
+- 73946b1: Upgrade @pierre/diffs from 1.1.15 to 1.2.12, picking up upstream diff renderer fixes and the new theme package line.
+- 4a97fde: Use targeted base-branch fetches with automatic prune recovery when creating and refreshing PR worktrees.
+
+  Refreshing a PR no longer runs a bulk `git fetch --prune <remote>`; worktree creation, update, and refresh all now fetch only the PR's base branch, and the PR-head fetch gets the same treatment. If a fetch hits a ref hierarchy conflict (a stale remote-tracking ref blocking a new one), stale refs are pruned with `git remote prune` and the fetch is retried once — this replaces a retry with `--force` that could never fix the conflict and swallowed the underlying error message. Transient ref lock-file races, which pruning cannot fix, are no longer mistaken for hierarchy conflicts.
+
+  PR payloads that carry the base branch only in nested REST form (`base.ref`) now get the targeted fetch too, instead of falling back to a direct SHA fetch that some Git servers reject.
+
+  A PR whose data carries no base branch at all — only a base SHA — now creates its worktree directly from that SHA instead of failing on an invalid `<remote>/null` start point. When neither a base branch nor a base SHA is present, the error names the PR instead of surfacing as an opaque git failure.
+
+  Because the bulk fetch is gone for everyone, `skip_bulk_fetch` no longer affects the foreground refresh path; it now governs the background worktree pool fetch loop.
+
 ## 5.0.3
 
 ### Patch Changes
