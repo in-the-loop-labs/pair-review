@@ -11,6 +11,7 @@
  *   - per-level rows, raw rows, dismissed finals, and other runs' rows are excluded
  *   - `count` matches `suggestions.length`
  *   - `run.level_outcomes` / `run.levels_config` are JSON-parsed objects
+ *   - the consolidation outcome is hoisted to a top-level `consolidation` field
  *   - per-suggestion `reasoning` is JSON-parsed
  *   - `mode` passes through unchanged ('pr' and 'local')
  *   - the (potentially large) `diff` column is NOT included
@@ -19,7 +20,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createTestDatabase, closeTestDatabase, seedTestReview } from '../utils/schema.js';
 
-const { buildHeadlessJson, buildHeadlessErrorJson } = require('../../src/main.js');
+const { buildHeadlessJson, buildHeadlessErrorJson, emitHeadlessResult } = require('../../src/main.js');
 
 const RUN_ID = 'run-under-test';
 const OTHER_RUN_ID = 'some-other-run';
@@ -238,6 +239,183 @@ describe('buildHeadlessJson', () => {
     expect(doc.suggestions).toEqual([]);
     expect(doc.count).toBe(0);
     expect(doc.mode).toBe('pr');
+  });
+
+  /**
+   * A failed consolidation still records status 'completed' and returns
+   * `ok: true` — the analyzer falls back to storing the raw union of every level
+   * (and every council voice). Without a top-level signal a machine consumer
+   * cannot distinguish that from a real consolidated review (issue #557).
+   */
+  describe('consolidation outcome hoisting', () => {
+    it('surfaces consolidation: "failed" at the top level while keeping ok: true', async () => {
+      const failedRunId = 'consolidation-failed-run';
+      seedRun(db, {
+        id: failedRunId,
+        reviewId,
+        overrides: {
+          level_outcomes: JSON.stringify({
+            level1: 'success', level2: 'success', level3: 'success', consolidation: 'failed'
+          })
+        }
+      });
+
+      const doc = await buildHeadlessJson(db, failedRunId, 'pr');
+      expect(doc.consolidation).toBe('failed');
+      // The run still completed; `ok` stays true so existing consumers do not break.
+      expect(doc.ok).toBe(true);
+      expect(doc.run.status).toBe('completed');
+    });
+
+    it('surfaces consolidation: "success" for a healthy run', async () => {
+      const okRunId = 'consolidation-ok-run';
+      seedRun(db, {
+        id: okRunId,
+        reviewId,
+        overrides: { level_outcomes: JSON.stringify({ consolidation: 'success' }) }
+      });
+
+      const doc = await buildHeadlessJson(db, okRunId, 'pr');
+      expect(doc.consolidation).toBe('success');
+    });
+
+    /**
+     * 'skipped' is a THIRD, healthy value — the council paths record it when a
+     * run resolves to a single voice or a single level and there is nothing to
+     * merge (src/ai/analyzer.js). It must survive as itself rather than being
+     * folded into 'success' or null: the web UI renders the same tri-state, and
+     * a consumer treating `!= 'success'` as degraded would misclassify a
+     * perfectly good single-voice council run.
+     */
+    it('surfaces consolidation: "skipped" distinctly from success and null', async () => {
+      const skippedRunId = 'consolidation-skipped-run';
+      seedRun(db, {
+        id: skippedRunId,
+        reviewId,
+        overrides: { level_outcomes: JSON.stringify({ consolidation: 'skipped' }) }
+      });
+
+      const doc = await buildHeadlessJson(db, skippedRunId, 'pr');
+      expect(doc.consolidation).toBe('skipped');
+      expect(doc.ok).toBe(true);
+    });
+
+    it('is null when level_outcomes records no consolidation stage', async () => {
+      // RUN_ID's seeded level_outcomes has per-level entries but no consolidation key.
+      const doc = await buildHeadlessJson(db, RUN_ID, 'pr');
+      expect(doc.consolidation).toBeNull();
+    });
+
+    it('is null when the run has no level_outcomes at all', async () => {
+      const bareRunId = 'bare-run';
+      seedRun(db, { id: bareRunId, reviewId, overrides: { level_outcomes: null } });
+
+      const doc = await buildHeadlessJson(db, bareRunId, 'pr');
+      expect(doc.consolidation).toBeNull();
+    });
+
+    it('is null for an unknown run id (no throw)', async () => {
+      const doc = await buildHeadlessJson(db, 'no-such-run', 'pr');
+      expect(doc.consolidation).toBeNull();
+    });
+  });
+});
+
+/**
+ * emitHeadlessResult writes the run outcome to stdout — JSON in --json mode, a
+ * human-readable block otherwise. These tests capture stdout rather than
+ * spawning the CLI, and focus on the consolidation-failure signal (#557), which
+ * is invisible in the status line alone.
+ */
+describe('emitHeadlessResult', () => {
+  let db;
+  let reviewId;
+  let written;
+  let restoreStdout;
+
+  beforeEach(() => {
+    db = createTestDatabase();
+    reviewId = seedTestReview(db, { prNumber: 1, repository: 'owner/repo' });
+
+    written = [];
+    const original = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk, ...rest) => {
+      written.push(String(chunk));
+      return true;
+    };
+    restoreStdout = () => { process.stdout.write = original; };
+  });
+
+  afterEach(() => {
+    // Restore FIRST — a failing assertion must not leave stdout patched for
+    // every later test in this file.
+    restoreStdout();
+    closeTestDatabase(db);
+  });
+
+  /** All stdout written during the call, joined. */
+  const output = () => written.join('');
+
+  it('warns in the human-readable output when consolidation failed', async () => {
+    const failedRunId = 'emit-failed-run';
+    seedRun(db, {
+      id: failedRunId,
+      reviewId,
+      overrides: { level_outcomes: JSON.stringify({ consolidation: 'failed' }) }
+    });
+
+    await emitHeadlessResult(db, { runId: failedRunId, mode: 'pr', flags: {} });
+
+    expect(output()).toContain('WARNING: consolidation failed');
+    expect(output()).toContain('raw union of');
+  });
+
+  it('does not warn when consolidation succeeded', async () => {
+    const okRunId = 'emit-ok-run';
+    seedRun(db, {
+      id: okRunId,
+      reviewId,
+      overrides: { level_outcomes: JSON.stringify({ consolidation: 'success' }) }
+    });
+
+    await emitHeadlessResult(db, { runId: okRunId, mode: 'pr', flags: {} });
+
+    expect(output()).not.toContain('WARNING');
+    expect(output()).toContain('Headless analysis complete');
+  });
+
+  it('does not warn when consolidation was skipped (a healthy outcome)', async () => {
+    // 'skipped' means there was nothing to merge (single voice / single level),
+    // NOT that the result is degraded — warning here would cry wolf on every
+    // single-voice council run.
+    const skippedRunId = 'emit-skipped-run';
+    seedRun(db, {
+      id: skippedRunId,
+      reviewId,
+      overrides: { level_outcomes: JSON.stringify({ consolidation: 'skipped' }) }
+    });
+
+    await emitHeadlessResult(db, { runId: skippedRunId, mode: 'pr', flags: {} });
+
+    expect(output()).not.toContain('WARNING');
+    expect(output()).toContain('Headless analysis complete');
+  });
+
+  it('emits the consolidation field in --json mode', async () => {
+    const failedRunId = 'emit-json-run';
+    seedRun(db, {
+      id: failedRunId,
+      reviewId,
+      overrides: { level_outcomes: JSON.stringify({ consolidation: 'failed' }) }
+    });
+
+    await emitHeadlessResult(db, { runId: failedRunId, mode: 'pr', flags: { json: true } });
+
+    const doc = JSON.parse(output());
+    expect(doc.consolidation).toBe('failed');
+    expect(doc.ok).toBe(true);
+    // JSON mode emits ONLY the document — no human-readable warning text.
+    expect(output()).not.toContain('WARNING');
   });
 });
 
