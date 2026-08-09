@@ -2,7 +2,7 @@
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 const { loadConfig, getConfigDir, showWelcomeMessage, resolveDbName, resolveRepoOptions, resolvePoolConfig, getRepoResetScript, resolveLoadSkills, buildCouncilProviderOverrides } = require('./config');
-const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository, ReviewRepository, RepoSettingsRepository, GitHubReviewRepository, WorktreePoolRepository, CouncilRepository, CommentRepository, AnalysisRunRepository } = require('./database');
+const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository, ReviewRepository, RepoSettingsRepository, GitHubReviewRepository, WorktreePoolRepository, CouncilRepository, CommentRepository, AnalysisRunRepository, PRMetadataRepository } = require('./database');
 const { PRArgumentParser } = require('./github/parser');
 const { GitHubClient } = require('./github/client');
 const { GitWorktreeManager } = require('./git/worktree');
@@ -1541,17 +1541,25 @@ async function performHeadlessReview(args, config, db, flags, options, externalP
       }).catch(err => { logger.warn(`Review hook failed: ${err.message}`); });
     }
 
-    // Get PR metadata ID for AI analysis
-    const prMetadata = await queryOne(db, `
-      SELECT id, pr_data FROM pr_metadata
-      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
-    `, [prInfo.number, repository]);
+    // Get PR metadata for AI analysis.
+    //
+    // Read it through PRMetadataRepository.getByPR — the SAME accessor the web
+    // routes use (src/routes/pr.js) — so the analyzer receives the normalized
+    // row shape it expects: `repository` as the "owner/repo" string, `pr_number`
+    // as the number, plus `description`/`author` from their columns. Passing the
+    // raw `pr_data` blob here (the previous behavior) handed the analyzer the
+    // GitHub API shape, where `repository` is an object and the number lives
+    // under `number`, which made buildDedupContext throw and silently drop every
+    // consolidation stage into its store-everything fallback (#557).
+    const prMetadataRepo = new PRMetadataRepository(db);
+    const prMetadata = await prMetadataRepo.getByPR(prInfo.number, repository);
 
     if (!prMetadata) {
       throw new Error('Failed to retrieve stored PR metadata');
     }
 
-    const storedPRData = JSON.parse(prMetadata.pr_data);
+    // The raw blob is still needed for fields that live only in pr_data (node_id).
+    const storedPRData = prMetadata.pr_data_parsed;
 
     // Get or create a review record for this PR
     // The review.id is passed to the analyzer so comments use review.id, not prMetadata.id
@@ -1600,7 +1608,7 @@ async function performHeadlessReview(args, config, db, flags, options, externalP
       const { result: analysisResult } = await runHeadlessAnalysis(db, config, {
         reviewId: review.id,
         worktreePath,
-        prMetadata: storedPRData,
+        prMetadata,
         changedFiles: null,
         repository,
         repoSettings,
@@ -1868,7 +1876,11 @@ Found ${validSuggestions.length} suggestion${validSuggestions.length === 1 ? '' 
  * @param {Object} params
  * @param {number} params.reviewId - Review id comments are stored under
  * @param {string} params.worktreePath - Checked-out worktree / local repo path
- * @param {Object} params.prMetadata - PR/local metadata (head_sha, base_sha, etc.)
+ * @param {Object} params.prMetadata - PR/local metadata (head_sha, base_sha, etc.).
+ *   PR mode MUST pass the normalized `pr_metadata` row (`repository` as the
+ *   "owner/repo" string, `pr_number` as the number) — the raw `pr_data` blob has
+ *   `repository` as an object and the number under `number`, which breaks dedup
+ *   context construction and, with it, consolidation (#557).
  * @param {Array|null} params.changedFiles - Changed-file list (local mode) or null (PR mode computes it)
  * @param {string} params.repository - owner/repo
  * @param {Object|null} params.repoSettings - Repo settings row
@@ -1953,9 +1965,11 @@ async function runHeadlessAnalysis(db, config, {
  *   convention) so the in-memory usage tracker populated by
  *   `resetAndRehydrate()` is the one acquisitions go through. Falls back to a
  *   fresh instance only when not supplied.
- * @returns {Promise<Object>} { githubClient, worktreePath, storedPRData, review,
+ * @returns {Promise<Object>} { githubClient, worktreePath, prMetadata, review,
  *   repository, repoSettings, poolWorktreeId, poolLifecycle, reviewConfig,
- *   providerOverrides }
+ *   providerOverrides }. `prMetadata` is the normalized `pr_metadata` row from
+ *   `PRMetadataRepository.getByPR` — the shape the analyzer expects — NOT the
+ *   raw `pr_data` blob (#557).
  */
 async function preparePrHeadless(db, config, flags, prArgs, externalPoolLifecycle = null) {
   const parser = new PRArgumentParser(config);
@@ -2160,16 +2174,15 @@ async function preparePrHeadless(db, config, flags, prArgs, externalPoolLifecycl
     }).catch(err => { logger.warn(`Review hook failed: ${err.message}`); });
   }
 
-  const prMetadata = await queryOne(db, `
-    SELECT id, pr_data FROM pr_metadata
-    WHERE pr_number = ? AND repository = ? COLLATE NOCASE
-  `, [prInfo.number, repository]);
+  // Read through PRMetadataRepository.getByPR so the analyzer gets the same
+  // normalized row the web routes pass (see the matching comment in
+  // performHeadlessReview and issue #557).
+  const prMetadataRepo = new PRMetadataRepository(db);
+  const prMetadata = await prMetadataRepo.getByPR(prInfo.number, repository);
 
   if (!prMetadata) {
     throw new Error('Failed to retrieve stored PR metadata');
   }
-
-  const storedPRData = JSON.parse(prMetadata.pr_data);
 
   const reviewRepo = new ReviewRepository(db);
   const { review } = await reviewRepo.getOrCreate({ prNumber: prInfo.number, repository });
@@ -2199,7 +2212,7 @@ async function preparePrHeadless(db, config, flags, prArgs, externalPoolLifecycl
   return {
     githubClient,
     worktreePath,
-    storedPRData,
+    prMetadata,
     review,
     repository,
     repoSettings,
@@ -2467,7 +2480,7 @@ async function handleHeadlessAnalysis(prArgs, config, db, flags, poolLifecycle) 
       ({ runId } = await runHeadlessAnalysis(db, config, {
         reviewId: prep.review.id,
         worktreePath: prep.worktreePath,
-        prMetadata: prep.storedPRData,
+        prMetadata: prep.prMetadata,
         changedFiles: null,
         repository: prep.repository,
         repoSettings: prep.repoSettings,
@@ -2503,7 +2516,9 @@ async function handleHeadlessAnalysis(prArgs, config, db, flags, poolLifecycle) 
  * @param {Object} db - Database instance
  * @param {string} runId - Analysis run id
  * @param {'pr'|'local'} mode - Review mode (passthrough)
- * @returns {Promise<Object>} { ok, mode, run, suggestions, count }
+ * @returns {Promise<Object>} { ok, mode, consolidation, run, suggestions, count }
+ *   where `consolidation` is 'success' | 'failed' | 'skipped' | null — see the
+ *   inline comment on the field for what each value means for `suggestions`.
  */
 async function buildHeadlessJson(db, runId, mode) {
   const run = await new AnalysisRunRepository(db).getById(runId, { includeDiff: false });
@@ -2523,6 +2538,26 @@ async function buildHeadlessJson(db, runId, mode) {
     // see buildHeadlessErrorJson for the failure shape.
     ok: true,
     mode,
+    // Hoisted out of `run.level_outcomes` because it materially changes what
+    // `suggestions` contains. When consolidation throws, every analyzer path
+    // falls back to storing the raw union of all levels (and, for a council, all
+    // voices) and STILL records status 'completed' — so a consumer branching only
+    // on `ok`/`status` cannot tell a consolidated review from a duplicate-laden
+    // concatenation.
+    //
+    // A straight passthrough of whatever the analyzer recorded, so the domain is
+    // the analyzer's, not ours:
+    //   'success' — consolidation ran and merged the inputs.
+    //   'failed'  — it threw; `suggestions` is the unmerged union. DEGRADED.
+    //   'skipped' — nothing to merge (single voice / single level / an executable
+    //               tool that returns its own final set). HEALTHY: the suggestion
+    //               set is already the intended one, which is why
+    //               emitHeadlessResult warns on 'failed' only.
+    //   null      — the run recorded no consolidation stage at all.
+    // Deliberately NOT collapsed to a boolean or folded into null: the web UI
+    // renders the same tri-state (public/js/modules/analysis-history.js), and
+    // 'skipped' carries information null does not.
+    consolidation: run?.level_outcomes?.consolidation ?? null,
     run,
     suggestions,
     count: suggestions.length
@@ -2560,6 +2595,11 @@ function buildHeadlessErrorJson({ mode, error }) {
  * Otherwise prints a human-readable summary to stdout. A successful run with zero
  * suggestions is still success — operational errors propagate to main()'s catch.
  *
+ * Both output modes flag a failed consolidation, which completes the run but
+ * replaces the consolidated review with the raw union of every level/voice.
+ *
+ * Exported for unit testing.
+ *
  * @param {Object} db - Database instance
  * @param {Object} params
  * @param {string} params.runId - Analysis run id
@@ -2588,6 +2628,13 @@ async function emitHeadlessResult(db, { runId, mode, flags }) {
   }
   lines.push(`  Config type: ${run.config_type || 'standard'}`);
   lines.push(`  Status:      ${run.status || '(unknown)'}`);
+  // A failed consolidation still completes the run, so the status line alone
+  // understates it — call out that the listing below is unconsolidated.
+  if (doc.consolidation === 'failed') {
+    lines.push('');
+    lines.push('  WARNING: consolidation failed. The suggestions below are the raw union of');
+    lines.push('           every analysis level (and every council voice) — expect duplicates.');
+  }
   if (run.summary) {
     lines.push('');
     lines.push('Summary:');
@@ -2789,4 +2836,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { main, parseArgs, detectPRFromGitHubEnvironment, printCouncilList, handleHeadlessAnalysis, handleHeadlessDelegated, runHeadlessAnalysis, buildHeadlessJson, buildHeadlessErrorJson, resolveCliInstructions };
+module.exports = { main, parseArgs, detectPRFromGitHubEnvironment, printCouncilList, handleHeadlessAnalysis, handleHeadlessDelegated, runHeadlessAnalysis, buildHeadlessJson, buildHeadlessErrorJson, emitHeadlessResult, resolveCliInstructions };
