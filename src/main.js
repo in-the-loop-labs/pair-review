@@ -18,7 +18,7 @@ const { handleLocalReview, findMainGitRoot, setupLocalReviewSession, findGitRoot
 const { resolveCliInstructions, prepareInteractiveAnalysisConfig } = require('./interactive-analysis-config');
 const { resolveCouncilHandle, getCouncilLastUsedRepos, shortId } = require('./councils/resolve-council');
 const { runHeadlessCouncilAnalysis } = require('./councils/headless-council');
-const { normalizeCouncilConfig, validateCouncilConfig } = require('./routes/councils');
+const { normalizeAndValidateCouncilConfig } = require('./councils/council-validation');
 const { resolveReviewConfig } = require('./review-config');
 const { GlobalSettingsService } = require('./settings/global-settings-service');
 const { redirectConsoleToStderr } = require('./mcp-stdio');
@@ -1346,9 +1346,9 @@ async function performHeadlessReview(args, config, db, flags, options, externalP
     if (flags.council) {
       const council = await resolveCouncilHandle(db, flags.council);
       const configType = council.type || 'advanced';
-      const councilConfig = normalizeCouncilConfig(council.config, configType);
-      // validateCouncilConfig returns an error string, or null when valid.
-      const validationError = validateCouncilConfig(councilConfig, configType);
+      // Normalizes, then validates the normalized config; `error` is a string,
+      // or null when valid.
+      const { error: validationError } = normalizeAndValidateCouncilConfig(council.config, configType);
       if (validationError) {
         throw new Error(`Invalid council "${council.name}": ${validationError}`);
       }
@@ -2003,8 +2003,7 @@ async function preparePrHeadless(db, config, flags, prArgs, externalPoolLifecycl
   if (flags.council) {
     const council = await resolveCouncilHandle(db, flags.council);
     const configType = council.type || 'advanced';
-    const councilConfig = normalizeCouncilConfig(council.config, configType);
-    const validationError = validateCouncilConfig(councilConfig, configType);
+    const { error: validationError } = normalizeAndValidateCouncilConfig(council.config, configType);
     if (validationError) {
       throw new Error(`Invalid council "${council.name}": ${validationError}`);
     }
@@ -2382,8 +2381,7 @@ async function handleHeadlessAnalysis(prArgs, config, db, flags, poolLifecycle) 
     if (flags.council) {
       const council = await resolveCouncilHandle(db, flags.council);
       const configType = council.type || 'advanced';
-      const councilConfig = normalizeCouncilConfig(council.config, configType);
-      const validationError = validateCouncilConfig(councilConfig, configType);
+      const { error: validationError } = normalizeAndValidateCouncilConfig(council.config, configType);
       if (validationError) {
         throw new Error(`Invalid council "${council.name}": ${validationError}`);
       }

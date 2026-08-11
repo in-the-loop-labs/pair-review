@@ -3,13 +3,17 @@
  * Unit tests for council config validation and normalization
  *
  * Tests the validateCouncilConfig and normalizeCouncilConfig functions
- * from the councils route module.
+ * from src/councils/council-validation.js.
  * Covers valid configs, edge cases, normalization of legacy formats,
  * and all validation error paths.
  */
 
-import { describe, it, expect } from 'vitest';
-import { validateCouncilConfig, normalizeCouncilConfig } from '../../src/routes/councils.js';
+import { describe, it, expect, vi } from 'vitest';
+import {
+  validateCouncilConfig,
+  normalizeCouncilConfig,
+  normalizeAndValidateCouncilConfig
+} from '../../src/councils/council-validation.js';
 
 describe('validateCouncilConfig', () => {
   const validConfig = {
@@ -193,7 +197,7 @@ describe('validateCouncilConfig', () => {
     describe('all-executable council', () => {
       it('should return null for all-executable council with all levels disabled', () => {
         // Register a fake executable provider via the CJS provider registry
-        // (councils.js uses require() which shares the same registry instance)
+        // (council-validation.js uses require() which shares the same registry instance)
         const { registerProvider } = require('../../src/ai/provider');
         class FakeExecutableProvider {
           static isExecutable = true;
@@ -569,5 +573,163 @@ describe('normalizeCouncilConfig', () => {
 
     expect(result.voices).toEqual([{ provider: 'claude', model: 'sonnet' }]);
     expect(result.levels).toEqual({ '1': true, '2': true, '3': false });
+  });
+});
+
+describe('normalizeAndValidateCouncilConfig', () => {
+  it('should normalize then validate an advanced-format config for type council', () => {
+    // The whole point of the combined helper: the raw config fails the
+    // voice-centric validator, the normalized one passes.
+    const advancedConfig = {
+      levels: {
+        '1': { enabled: true, voices: [{ provider: 'claude', model: 'sonnet' }] },
+        '2': { enabled: false, voices: [] }
+      },
+      orchestration: { provider: 'claude', model: 'opus' }
+    };
+    expect(validateCouncilConfig(advancedConfig, 'council')).toBe('config.voices must be a non-empty array');
+
+    const result = normalizeAndValidateCouncilConfig(advancedConfig, 'council');
+
+    expect(result.error).toBeNull();
+    expect(result.config.voices).toEqual([{ provider: 'claude', model: 'sonnet' }]);
+    expect(result.config.levels).toEqual({ '1': true, '2': false });
+    expect(result.config.consolidation).toEqual({ provider: 'claude', model: 'opus' });
+  });
+
+  it('should return the normalized config alongside the error when invalid for type council', () => {
+    // Advanced-shaped with every level disabled: normalization yields no voices.
+    const config = { levels: { '1': { enabled: false, voices: [] } } };
+
+    const result = normalizeAndValidateCouncilConfig(config, 'council');
+
+    expect(result.error).toBe('config.voices must be a non-empty array');
+    expect(result.config.voices).toEqual([]);
+    expect(result.config.levels).toEqual({ '1': false });
+  });
+
+  it('should pass a valid voice-centric config through unchanged', () => {
+    const config = {
+      voices: [{ provider: 'claude', model: 'sonnet' }],
+      levels: { '1': true, '2': false, '3': false }
+    };
+
+    const result = normalizeAndValidateCouncilConfig(config, 'council');
+
+    expect(result.error).toBeNull();
+    // Normalization is a no-op for an already voice-centric config.
+    expect(result.config).toBe(config);
+  });
+
+  it('should validate a valid advanced config with type advanced (normalize is a passthrough)', () => {
+    const config = {
+      levels: { '1': { enabled: true, voices: [{ provider: 'claude', model: 'sonnet' }] } }
+    };
+
+    const result = normalizeAndValidateCouncilConfig(config, 'advanced');
+
+    expect(result.error).toBeNull();
+    expect(result.config).toBe(config);
+  });
+
+  it('should return an error for an invalid advanced config', () => {
+    const config = { levels: { '1': { enabled: 'yes', voices: [] } } };
+
+    const result = normalizeAndValidateCouncilConfig(config, 'advanced');
+
+    expect(result.error).toContain('enabled must be a boolean');
+    expect(result.config).toBe(config);
+  });
+
+  it('should default to the advanced validator when no type is given', () => {
+    expect(normalizeAndValidateCouncilConfig({}, undefined).error)
+      .toBe('config.levels is required and must be an object');
+  });
+
+  it('should return the config-must-be-an-object error for a null config', () => {
+    const result = normalizeAndValidateCouncilConfig(null, 'council');
+
+    expect(result.error).toBe('config must be an object');
+    expect(result.config).toBeNull();
+  });
+
+  it('should thread _deps through to the voice-centric validator', () => {
+    const config = {
+      voices: [{ provider: 'injected-exec', model: 'default' }],
+      levels: { '1': false, '2': false, '3': false }
+    };
+    const getProviderClass = vi.fn(() => ({ isExecutable: true }));
+
+    expect(normalizeAndValidateCouncilConfig(config, 'council', { getProviderClass }).error).toBeNull();
+    expect(getProviderClass).toHaveBeenCalledWith('injected-exec');
+  });
+});
+
+// The registry lives in src/ai/provider.js but is only populated when src/ai is
+// loaded (the provider files self-register). council-validation.js deliberately
+// does not require src/ai, so callers either load it first or inject their own
+// lookup via _deps.
+describe('provider-registry dependency injection', () => {
+  const allDisabledCouncil = {
+    voices: [{ provider: 'never-registered-provider', model: 'default' }],
+    levels: { '1': false, '2': false, '3': false }
+  };
+
+  it('uses the live registry by default (unregistered provider is not executable)', () => {
+    expect(validateCouncilConfig(allDisabledCouncil, 'council'))
+      .toBe('At least one level (1, 2, or 3) must be enabled for non-executable providers');
+  });
+
+  it('uses the live registry by default (registered executable provider passes)', () => {
+    const { registerProvider } = require('../../src/ai/provider');
+    class FakeExecutableProvider {
+      static isExecutable = true;
+    }
+    registerProvider('default-path-exec-provider', FakeExecutableProvider);
+
+    const config = {
+      voices: [{ provider: 'default-path-exec-provider', model: 'default' }],
+      levels: { '1': false, '2': false, '3': false }
+    };
+    expect(validateCouncilConfig(config, 'council')).toBeNull();
+  });
+
+  it('accepts an injected getProviderClass that reports the voice as executable', () => {
+    const getProviderClass = vi.fn(() => ({ isExecutable: true }));
+
+    expect(validateCouncilConfig(allDisabledCouncil, 'council', { getProviderClass })).toBeNull();
+    expect(getProviderClass).toHaveBeenCalledWith('never-registered-provider');
+  });
+
+  it('rejects when the injected getProviderClass reports an empty registry', () => {
+    // Simulates a consumer that required council-validation without loading src/ai.
+    const getProviderClass = vi.fn(() => undefined);
+
+    expect(validateCouncilConfig(allDisabledCouncil, 'council', { getProviderClass }))
+      .toBe('At least one level (1, 2, or 3) must be enabled for non-executable providers');
+  });
+
+  it('requires an enabled level when only some voices are executable', () => {
+    const config = {
+      voices: [
+        { provider: 'exec', model: 'default' },
+        { provider: 'non-exec', model: 'default' }
+      ],
+      levels: { '1': false, '2': false, '3': false }
+    };
+    const getProviderClass = vi.fn(id => (id === 'exec' ? { isExecutable: true } : undefined));
+
+    expect(validateCouncilConfig(config, 'council', { getProviderClass }))
+      .toBe('At least one level (1, 2, or 3) must be enabled for non-executable providers');
+  });
+
+  it('ignores _deps for the advanced format, which never consults the registry', () => {
+    const getProviderClass = vi.fn();
+    const config = {
+      levels: { '1': { enabled: true, voices: [{ provider: 'claude', model: 'sonnet' }] } }
+    };
+
+    expect(validateCouncilConfig(config, 'advanced', { getProviderClass })).toBeNull();
+    expect(getProviderClass).not.toHaveBeenCalled();
   });
 });

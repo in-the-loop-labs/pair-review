@@ -57,7 +57,7 @@ const { mergeChangedFilesWithDiff, parseUnifiedDiffPatches } = require('../utils
 const { parseHunks } = require('../utils/diff-hunks');
 const { hashHunk } = require('../ai/hunk-hashing');
 const { resolveOriginalFileContentSpecs } = require('../utils/diff-file-content');
-const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
+const { normalizeAndValidateCouncilConfig } = require('../councils/council-validation');
 const { resolveReviewConfig } = require('../review-config');
 const { TIERS, TIER_ALIASES, VALID_TIERS, resolveTier } = require('../ai/prompts/config');
 const { getProviderClass, createProvider } = require('../ai/provider');
@@ -2629,9 +2629,9 @@ router.post('/api/pr/:owner/:repo/:number/analyses/council', async (req, res) =>
       configType = requestConfigType || 'advanced';
     }
 
-    councilConfig = normalizeCouncilConfig(councilConfig, configType);
-
-    const configError = validateCouncilConfig(councilConfig, configType);
+    const { config: normalizedCouncilConfig, error: configError } =
+      normalizeAndValidateCouncilConfig(councilConfig, configType);
+    councilConfig = normalizedCouncilConfig;
     if (configError) {
       return res.status(400).json({ error: `Invalid council config: ${configError}` });
     }

@@ -7,15 +7,25 @@
  */
 
 const { query, CouncilRepository } = require('../database');
+const { slugifyCouncilName } = require('../../public/js/utils/council-document');
 
 /**
- * Normalize a string for fuzzy name matching: lowercase, trim, collapse any run
- * of non-alphanumeric characters to a single dash, and strip leading/trailing dashes.
+ * Normalize a string for fuzzy name matching: lowercase, collapse any run of
+ * non-alphanumeric characters to a single dash, and strip leading/trailing dashes.
+ *
+ * INVARIANT: this is the same slug `councilFilenameStem` uses for exported
+ * council documents (both delegate to `slugifyCouncilName` in
+ * public/js/utils/council-document.js). The exported filename stem must remain a
+ * resolvable `--council` handle: `dream-team.council.json` IS
+ * `--council dream-team`. Note the deliberate asymmetry — matching uses the
+ * no-fallback slug, so an unsluggable council name yields '' and never matches
+ * the literal handle "council" that the filename falls back to.
+ *
  * @param {string} s - Input string
  * @returns {string} Normalized slug-like string
  */
 function normalizeForMatch(s) {
-  return String(s || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return slugifyCouncilName(s);
 }
 
 /**

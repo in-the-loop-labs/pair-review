@@ -25,7 +25,7 @@ const { setupStackPR } = require('../setup/stack-setup');
 const Analyzer = require('../ai/analyzer');
 const { getProviderClass, createProvider } = require('../ai/provider');
 const { VALID_TIERS, resolveTier } = require('../ai/prompts/config');
-const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
+const { normalizeAndValidateCouncilConfig } = require('../councils/council-validation');
 const ws = require('../ws');
 const {
   query,
@@ -667,8 +667,9 @@ async function launchStackCouncilAnalysis(deps, db, config, {
     throw new Error('Council analysis requires councilId or councilConfig');
   }
 
-  councilConfig = normalizeCouncilConfig(councilConfig, resolvedConfigType);
-  const configError = validateCouncilConfig(councilConfig, resolvedConfigType);
+  const { config: normalizedCouncilConfig, error: configError } =
+    normalizeAndValidateCouncilConfig(councilConfig, resolvedConfigType);
+  councilConfig = normalizedCouncilConfig;
   if (configError) {
     throw new Error(`Invalid council config: ${configError}`);
   }

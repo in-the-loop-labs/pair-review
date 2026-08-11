@@ -12,6 +12,7 @@ import { createTestDatabase } from '../utils/schema';
 import { listenOnLoopback, closeServer } from '../utils/loopback-server';
 
 const councilRoutes = require('../../src/routes/councils');
+const { CouncilRepository } = require('../../src/database');
 
 function createTestApp(db) {
   const app = express();
@@ -123,15 +124,39 @@ describe('Council Routes', () => {
       expect(res.body.council.config).toEqual(sampleCouncilConfig);
     });
 
-    it('should reject advanced config format when type is council', async () => {
+    // Save must be no stricter than run: every runtime consumer normalizes
+    // before validating, so an advanced-format config sent with type 'council'
+    // is normalized (voices lifted out of the levels, levels coerced to
+    // booleans) and accepted — the analyzer would have executed it happily.
+    it('should normalize an advanced-format config when type is council', async () => {
       // sampleConfig is advanced format (levels.X.enabled + levels.X.voices structure)
-      // When type is 'council', the voice-centric validator should reject it
       const res = await request(server)
         .post('/api/councils')
-        .send({ name: 'Mismatched', config: sampleConfig, type: 'council' });
+        .send({ name: 'Normalizable', config: sampleConfig, type: 'council' });
+
+      expect(res.status).toBe(201);
+      // Validated normalized, but STORED verbatim — the client's config is kept as-sent.
+      expect(res.body.council.config).toEqual(sampleConfig);
+    });
+
+    it('should reject a config that is still invalid after normalization when type is council', async () => {
+      // Advanced-shaped but every level disabled: normalization yields an empty
+      // voices array, so the voice-centric validator still rejects it.
+      const res = await request(server)
+        .post('/api/councils')
+        .send({
+          name: 'Unnormalizable',
+          config: {
+            levels: {
+              '1': { enabled: false, voices: [] },
+              '2': { enabled: false, voices: [] }
+            }
+          },
+          type: 'council'
+        });
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toContain('voices');
+      expect(res.body.error).toBe('config.voices must be a non-empty array');
     });
 
     it('should reject voice-centric config format when type is advanced', async () => {
@@ -279,14 +304,42 @@ describe('Council Routes', () => {
       expect(res.body.council.config).toEqual(sampleCouncilConfig);
     });
 
-    it('should reject type change without config when existing config is incompatible', async () => {
+    // Regression: the type-change check used to validate the RAW stored config
+    // against the new type's validator, so switching an advanced council to
+    // type 'council' without sending a config failed on
+    // 'config.voices must be a non-empty array' — even though normalization
+    // derives voices from the level voices and the analyzer would run it.
+    it('should accept a type change to council when the existing advanced config normalizes cleanly', async () => {
       // Create with advanced-format config
       const createRes = await request(server)
         .post('/api/councils')
-        .send({ name: 'Incompatible Type Change', config: sampleConfig, type: 'advanced' });
+        .send({ name: 'Normalizable Type Change', config: sampleConfig, type: 'advanced' });
       const id = createRes.body.council.id;
 
-      // Try to change type to 'council' without providing a council-format config
+      // Change type to 'council' without providing a council-format config
+      const res = await request(server)
+        .put(`/api/councils/${id}`)
+        .send({ type: 'council' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.council.type).toBe('council');
+      // Stored config is untouched — only the type changed.
+      expect(res.body.council.config).toEqual(sampleConfig);
+    });
+
+    it('should reject type change without config when the existing config is invalid even normalized', async () => {
+      // Persist a config the routes would never accept (legacy/hand-edited row):
+      // advanced-shaped with every level disabled, so normalization to
+      // voice-centric yields an empty voices array.
+      const councilRepo = new CouncilRepository(db);
+      const id = 'unnormalizable-council';
+      await councilRepo.create({
+        id,
+        name: 'Unnormalizable Existing',
+        type: 'advanced',
+        config: { levels: { '1': { enabled: false, voices: [] } } }
+      });
+
       const res = await request(server)
         .put(`/api/councils/${id}`)
         .send({ type: 'council' });
@@ -370,20 +423,35 @@ describe('Council Routes', () => {
       expect(res.body.council.config).toEqual(updatedConfig);
     });
 
-    it('should reject advanced config format when existing type is council', async () => {
+    it('should normalize an advanced config format update when existing type is council', async () => {
       // Create a council with type: 'council'
       const createRes = await request(server)
         .post('/api/councils')
         .send({ name: 'Council Type', config: sampleCouncilConfig, type: 'council' });
       const id = createRes.body.council.id;
 
-      // Try to update with advanced-format config (should fail because existing type is 'council')
+      // Update with advanced-format config: validated against the existing type
+      // 'council' AFTER normalization, so it is accepted and stored verbatim.
       const res = await request(server)
         .put(`/api/councils/${id}`)
         .send({ config: sampleConfig });
 
+      expect(res.status).toBe(200);
+      expect(res.body.council.config).toEqual(sampleConfig);
+    });
+
+    it('should reject a config update that is still invalid after normalization', async () => {
+      const createRes = await request(server)
+        .post('/api/councils')
+        .send({ name: 'Council Type', config: sampleCouncilConfig, type: 'council' });
+      const id = createRes.body.council.id;
+
+      const res = await request(server)
+        .put(`/api/councils/${id}`)
+        .send({ config: { levels: { '1': { enabled: false, voices: [] } } } });
+
       expect(res.status).toBe(400);
-      expect(res.body.error).toContain('voices');
+      expect(res.body.error).toBe('config.voices must be a non-empty array');
     });
 
     it('should use explicitly provided type for validation even when existing type differs', async () => {

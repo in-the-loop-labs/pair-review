@@ -36,7 +36,6 @@ const {
 } = require('./shared');
 const { generateScopedDiff, computeScopedDigest, getCurrentBranch } = require('../local-review');
 const { reviewScope } = require('../local-scope');
-const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
 const { TIERS, TIER_ALIASES, VALID_TIERS, resolveTier } = require('../ai/prompts/config');
 
 

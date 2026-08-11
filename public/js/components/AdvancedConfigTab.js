@@ -351,7 +351,7 @@ class AdvancedConfigTab {
           </select>
           <button class="btn btn-sm btn-save-council" id="council-save-btn" title="Save" disabled>Save</button>
           <button class="btn btn-sm btn-secondary" id="council-save-as-btn" title="Save As" disabled>Save As</button>
-          <button class="btn btn-sm btn-secondary" id="council-export-btn" title="Copy config JSON to clipboard">Export</button>
+          <button class="btn btn-sm btn-secondary" id="council-export-btn" title="Download as a .council.json document">Export</button>
           <button class="btn btn-sm btn-icon-danger" id="council-delete-btn" title="Delete council" disabled>
             <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
               <path d="M11 1.75V3h2.25a.75.75 0 010 1.5H2.75a.75.75 0 010-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75zM6.5 1.75a.25.25 0 01.25-.25h2.5a.25.25 0 01.25.25V3h-3V1.75zM4.496 6.675l.66 6.6a.25.25 0 00.249.225h5.19a.25.25 0 00.249-.225l.66-6.6a.75.75 0 011.492.149l-.66 6.6A1.748 1.748 0 0110.595 15h-5.19a1.75 1.75 0 01-1.741-1.575l-.66-6.6a.75.75 0 111.492-.15z"/>
@@ -1056,16 +1056,20 @@ class AdvancedConfigTab {
 
     const saveBtn = panel.querySelector('#council-save-btn');
     const saveAsBtn = panel.querySelector('#council-save-as-btn');
+    const exportBtn = panel.querySelector('#council-export-btn');
     const deleteBtn = panel.querySelector('#council-delete-btn');
 
     if (saveBtn) {
       saveBtn.disabled = !this._isDirty || !this.selectedCouncilId;
     }
-    if (saveAsBtn) {
-      // Reuse _validateConfig to keep enablement in sync with actual save validation
+    // Reuse _validateConfig to keep enablement in sync with actual save
+    // validation. Export shares the check: an invalid config can be neither
+    // saved nor exported (the exported document would not read back).
+    if (saveAsBtn || exportBtn) {
       const config = this._readConfigFromUI();
       const { valid } = this._validateConfig(config);
-      saveAsBtn.disabled = !valid;
+      if (saveAsBtn) saveAsBtn.disabled = !valid;
+      if (exportBtn) exportBtn.disabled = !valid;
     }
     if (deleteBtn) {
       // Delete is only available when viewing a saved council
@@ -1419,15 +1423,17 @@ class AdvancedConfigTab {
     }
   }
 
+  /**
+   * Export the council as a versioned council document: downloads
+   * `<slug>.council.json` and, best-effort, copies the same JSON to the
+   * clipboard.
+   *
+   * The whole body is shared with VoiceCentricConfigTab — only the type literal
+   * differs. See `exportCouncilFromTab` in public/js/utils/council-export.js for
+   * the validity gate and the deliberate live-config / selected-name identity.
+   */
   async _exportCouncil() {
-    const config = this._readConfigFromUI();
-    try {
-      await navigator.clipboard.writeText(JSON.stringify(config, null, 2));
-      if (window.toast) window.toast.showSuccess('Council config copied to clipboard');
-    } catch (error) {
-      console.error('Failed to copy to clipboard:', error);
-      if (window.toast) window.toast.showError('Failed to copy to clipboard');
-    }
+    return window.CouncilExport.exportCouncilFromTab(this, 'advanced');
   }
 
   async _deleteCouncil() {

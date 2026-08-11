@@ -14,7 +14,7 @@ const logger = require('../utils/logger');
 const { VALID_TIERS } = require('../ai/prompts/config');
 const { getAllProvidersInfo } = require('../ai');
 const { modelMatches } = require('../ai/provider');
-const { normalizeCouncilConfig, validateCouncilConfig } = require('./councils');
+const { normalizeAndValidateCouncilConfig } = require('../councils/council-validation');
 
 const router = express.Router();
 
@@ -211,8 +211,9 @@ function sanitizeCouncilConfig(config) {
     const shapeError = validateJsonShape(config.councilConfig, 'councilConfig');
     if (shapeError) return { error: shapeError };
 
-    councilConfig = normalizeCouncilConfig(config.councilConfig, configType);
-    const councilError = validateCouncilConfig(councilConfig, configType);
+    const { config: normalizedCouncilConfig, error: councilError } =
+      normalizeAndValidateCouncilConfig(config.councilConfig, configType);
+    councilConfig = normalizedCouncilConfig;
     if (councilError) return { error: `Invalid council config: ${councilError}` };
   }
 

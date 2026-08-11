@@ -16,12 +16,12 @@
  * the existing `performHeadlessReview` council path (src/main.js) consume:
  *   `{ council, configType, councilConfig }`.
  * The derivation of `configType`/`councilConfig` mirrors that code exactly
- * (`council.type || 'advanced'` + `normalizeCouncilConfig`).
+ * (`council.type || 'advanced'` + `normalizeAndValidateCouncilConfig`).
  */
 
 const { RepoSettingsRepository, CouncilRepository } = require('./database');
 const { resolveCouncilHandle } = require('./councils/resolve-council');
-const { normalizeCouncilConfig, validateCouncilConfig } = require('./routes/councils');
+const { normalizeAndValidateCouncilConfig } = require('./councils/council-validation');
 // Require the ./ai index (not ./ai/provider) so the provider registry is
 // populated by the provider files' self-registration before lookups here.
 const {
@@ -45,9 +45,10 @@ const logger = require('./utils/logger');
  */
 function _buildCouncilSelection(council) {
   const configType = council.type || 'advanced';
-  const councilConfig = normalizeCouncilConfig(council.config, configType);
-  // validateCouncilConfig returns an error string, or null when valid.
-  const validationError = validateCouncilConfig(councilConfig, configType);
+  // Normalizes, then validates the normalized config; `error` is a string, or
+  // null when valid.
+  const { config: councilConfig, error: validationError } =
+    normalizeAndValidateCouncilConfig(council.config, configType);
   if (validationError) {
     throw new Error(`Invalid council "${council.name}": ${validationError}`);
   }

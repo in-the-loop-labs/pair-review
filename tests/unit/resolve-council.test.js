@@ -18,6 +18,10 @@ const {
   getCouncilLastUsedRepos
 } = require('../../src/councils/resolve-council.js');
 const { CouncilRepository, AnalysisRunRepository } = require('../../src/database.js');
+const {
+  slugifyCouncilName,
+  councilFilenameStem
+} = require('../../public/js/utils/council-document.js');
 
 const sampleConfig = {
   levels: {
@@ -37,6 +41,17 @@ describe('normalizeForMatch', () => {
   it('handles null/undefined safely', () => {
     expect(normalizeForMatch(null)).toBe('');
     expect(normalizeForMatch(undefined)).toBe('');
+  });
+
+  it('is the same slug the council document export uses', () => {
+    for (const name of ['Dream Team', '  My Council  ', 'Security_Review!!', '--Edge--', '審査会', '', null, undefined]) {
+      expect(normalizeForMatch(name)).toBe(slugifyCouncilName(name));
+    }
+  });
+
+  it('does not inherit the filename fallback (an unnamed council is not "council")', () => {
+    expect(councilFilenameStem('審査会')).toBe('council');
+    expect(normalizeForMatch('審査会')).toBe('');
   });
 });
 
@@ -130,6 +145,21 @@ describe('resolveCouncilHandle', () => {
     await councilRepo.create({ id, name: 'My Council', config: sampleConfig });
 
     const result = await resolveCouncilHandle(db, 'my-council');
+    expect(result.id).toBe(id);
+  });
+
+  // Load-bearing invariant: the stem of an exported `<stem>.council.json` IS a
+  // usable `--council` handle. Both sides slug through slugifyCouncilName.
+  it.each([
+    'Dream Team',
+    'Security & Perf!',
+    '  Padded Name  ',
+    'snake_case_council'
+  ])('resolves the exported filename stem of %j as a handle', async (name) => {
+    const id = uuidv4();
+    await councilRepo.create({ id, name, config: sampleConfig });
+
+    const result = await resolveCouncilHandle(db, councilFilenameStem(name));
     expect(result.id).toBe(id);
   });
 

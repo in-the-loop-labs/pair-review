@@ -31,7 +31,7 @@ const { generateScopedDiff, computeScopedDigest, getBranchCommitCount, getFirstC
 const { STOPS, isValidScope, normalizeScope, reviewScope, includesBranch, DEFAULT_SCOPE, EMPTY_SCOPE_MESSAGE } = require('../local-scope');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
 const { getShaAbbrevLength } = require('../git/sha-abbrev');
-const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
+const { normalizeAndValidateCouncilConfig } = require('../councils/council-validation');
 const { resolveReviewConfig } = require('../review-config');
 const { TIERS, TIER_ALIASES, VALID_TIERS, resolveTier } = require('../ai/prompts/config');
 const { getProviderClass, createProvider } = require('../ai/provider');
@@ -2382,9 +2382,9 @@ router.post('/api/local/:reviewId/analyses/council', async (req, res) => {
       configType = requestConfigType || 'advanced';
     }
 
-    councilConfig = normalizeCouncilConfig(councilConfig, configType);
-
-    const configError = validateCouncilConfig(councilConfig, configType);
+    const { config: normalizedCouncilConfig, error: configError } =
+      normalizeAndValidateCouncilConfig(councilConfig, configType);
+    councilConfig = normalizedCouncilConfig;
     if (configError) {
       return res.status(400).json({ error: `Invalid council config: ${configError}` });
     }

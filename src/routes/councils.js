@@ -11,203 +11,9 @@ const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
 const { CouncilRepository } = require('../database');
-const { getProviderClass } = require('../ai/provider');
+const { normalizeAndValidateCouncilConfig } = require('../councils/council-validation');
 
 const router = express.Router();
-
-/**
- * Normalize a council config to match the expected shape for its type.
- *
- * When type is 'council' (voice-centric) but the config is in the levels-based
- * (advanced) format — e.g. from a previously saved council or a migration — this
- * extracts the voices and converts the levels to booleans so it passes validation.
- *
- * When type is anything else, or the config already matches, returns the config
- * as-is.
- *
- * @param {Object} config - Council configuration
- * @param {string} [type] - The council type ('council' or 'advanced')
- * @returns {Object} Normalized config (may be the original object if no changes needed)
- */
-function normalizeCouncilConfig(config, type) {
-  if (!config || typeof config !== 'object' || type !== 'council') {
-    return config;
-  }
-
-  // If it already has a voices array, it's already in voice-centric format
-  if (Array.isArray(config.voices) && config.voices.length > 0) {
-    return config;
-  }
-
-  // Check if levels are in the advanced format (objects with enabled/voices)
-  if (!config.levels || typeof config.levels !== 'object') {
-    return config;
-  }
-
-  const hasAdvancedLevels = Object.values(config.levels).some(
-    val => typeof val === 'object' && val !== null && 'enabled' in val
-  );
-
-  if (!hasAdvancedLevels) {
-    return config;
-  }
-
-  // Convert from advanced (levels-based) to voice-centric format
-  const normalizedVoices = [];
-  const seenVoices = new Set();
-  const normalizedLevels = {};
-
-  for (const [key, levelConfig] of Object.entries(config.levels)) {
-    if (typeof levelConfig === 'object' && levelConfig !== null) {
-      normalizedLevels[key] = levelConfig.enabled !== false;
-      if (levelConfig.enabled !== false && Array.isArray(levelConfig.voices)) {
-        for (const v of levelConfig.voices) {
-          const voiceSig = JSON.stringify(v, Object.keys(v).sort());
-          if (!seenVoices.has(voiceSig)) {
-            seenVoices.add(voiceSig);
-            normalizedVoices.push(v);
-          }
-        }
-      }
-    } else {
-      // Already boolean — keep as-is
-      normalizedLevels[key] = levelConfig !== false;
-    }
-  }
-
-  // Destructure out orchestration so it does not leak into the normalized output
-  const { orchestration, ...rest } = config;
-  return {
-    ...rest,
-    voices: normalizedVoices,
-    levels: normalizedLevels,
-    consolidation: config.consolidation || orchestration || undefined
-  };
-}
-
-/**
- * Validate a council config object
- * @param {Object} config - Council configuration
- * @param {string} [type] - The council type ('council' or 'advanced'), provided as a sibling field from req.body
- * @returns {string|null} Error message or null if valid
- */
-function validateCouncilConfig(config, type) {
-  if (!config || typeof config !== 'object') {
-    return 'config must be an object';
-  }
-
-  // Dispatch based on explicit type parameter (from req.body.type, not config.type)
-  if (type === 'council') {
-    return validateCouncilFormat(config);
-  }
-
-  // Legacy configs (no type) and type === 'advanced' use level-centric format
-  return validateAdvancedFormat(config);
-}
-
-/**
- * Validate the voice-centric council format (type: 'council')
- * @param {Object} config
- * @returns {string|null} Error message or null if valid
- */
-function validateCouncilFormat(config) {
-  // Validate voices array
-  if (!Array.isArray(config.voices) || config.voices.length === 0) {
-    return 'config.voices must be a non-empty array';
-  }
-
-  for (const [i, voice] of config.voices.entries()) {
-    if (!voice.provider) {
-      return `voices[${i}].provider is required`;
-    }
-    if (!voice.model) {
-      return `voices[${i}].model is required`;
-    }
-  }
-
-  // Validate levels
-  if (!config.levels || typeof config.levels !== 'object') {
-    return 'config.levels is required and must be an object';
-  }
-
-  // Skip level requirement when all voices are executable providers
-  const allExecutable = config.voices.every(v => {
-    const ProviderClass = getProviderClass(v.provider);
-    return ProviderClass?.isExecutable;
-  });
-
-  if (!allExecutable) {
-    const validLevels = ['1', '2', '3'];
-    const hasEnabled = Object.entries(config.levels).some(([key, val]) =>
-      validLevels.includes(key) && val === true
-    );
-    if (!hasEnabled) {
-      return 'At least one level (1, 2, or 3) must be enabled for non-executable providers';
-    }
-  }
-
-  // Validate consolidation (optional)
-  if (config.consolidation) {
-    if (!config.consolidation.provider || !config.consolidation.model) {
-      return 'consolidation.provider and consolidation.model are required when consolidation is specified';
-    }
-  }
-
-  return null;
-}
-
-/**
- * Validate the level-centric advanced format (type: 'advanced' or legacy no-type)
- * @param {Object} config
- * @returns {string|null} Error message or null if valid
- */
-function validateAdvancedFormat(config) {
-  // Validate levels
-  if (!config.levels || typeof config.levels !== 'object') {
-    return 'config.levels is required and must be an object';
-  }
-
-  const validLevels = ['1', '2', '3'];
-  for (const [levelKey, level] of Object.entries(config.levels)) {
-    if (!validLevels.includes(levelKey)) {
-      return `Invalid level key: "${levelKey}". Valid keys: ${validLevels.join(', ')}`;
-    }
-
-    if (typeof level.enabled !== 'boolean') {
-      return `levels.${levelKey}.enabled must be a boolean`;
-    }
-
-    if (level.enabled) {
-      if (!Array.isArray(level.voices) || level.voices.length === 0) {
-        return `levels.${levelKey}.voices must be a non-empty array when enabled`;
-      }
-
-      for (const [i, voice] of level.voices.entries()) {
-        if (!voice.provider) {
-          return `levels.${levelKey}.voices[${i}].provider is required`;
-        }
-        if (!voice.model) {
-          return `levels.${levelKey}.voices[${i}].model is required`;
-        }
-      }
-    }
-  }
-
-  // Ensure at least one level is enabled with voices
-  const hasEnabledLevel = Object.values(config.levels).some(l => l.enabled);
-  if (!hasEnabledLevel) {
-    return 'At least one level must be enabled';
-  }
-
-  // Validate orchestration (optional — defaults will be applied at runtime)
-  if (config.orchestration) {
-    if (!config.orchestration.provider || !config.orchestration.model) {
-      return 'orchestration.provider and orchestration.model are required when orchestration is specified';
-    }
-  }
-
-  return null;
-}
 
 /**
  * GET /api/councils — List all saved councils
@@ -262,7 +68,11 @@ router.post('/api/councils', async (req, res) => {
     }
 
     const effectiveType = type || 'advanced';
-    const validationError = validateCouncilConfig(config, effectiveType);
+    // Validate what the RUNTIME will actually run: every read path normalizes
+    // before validating, so saving must too or save is stricter than run and
+    // rejects councils the analyzer would happily execute. Note we validate the
+    // normalized config but STORE exactly what the client sent.
+    const { error: validationError } = normalizeAndValidateCouncilConfig(config, effectiveType);
     if (validationError) {
       return res.status(400).json({ error: validationError });
     }
@@ -296,18 +106,19 @@ router.put('/api/councils/:id', async (req, res) => {
       return res.status(404).json({ error: 'Council not found' });
     }
 
-    // Validate config if provided
+    // Validate config if provided. As on create, validate the NORMALIZED config
+    // (what the runtime will actually run) while storing what the client sent.
     if (config) {
       // A PUT might update config without changing type, so use the effective type:
       // prefer the explicitly provided type, fall back to the existing record's type
       const effectiveType = type !== undefined ? type : existing.type;
-      const validationError = validateCouncilConfig(config, effectiveType);
+      const { error: validationError } = normalizeAndValidateCouncilConfig(config, effectiveType);
       if (validationError) {
         return res.status(400).json({ error: validationError });
       }
     } else if (type !== undefined && type !== existing.type) {
       // Type is changing without a new config — validate existing config against the new type
-      const validationError = validateCouncilConfig(existing.config, type);
+      const { error: validationError } = normalizeAndValidateCouncilConfig(existing.config, type);
       if (validationError) {
         return res.status(400).json({ error: `Existing config is incompatible with type '${type}': ${validationError}` });
       }
@@ -356,5 +167,3 @@ router.delete('/api/councils/:id', async (req, res) => {
 });
 
 module.exports = router;
-module.exports.validateCouncilConfig = validateCouncilConfig;
-module.exports.normalizeCouncilConfig = normalizeCouncilConfig;
