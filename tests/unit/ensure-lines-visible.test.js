@@ -64,7 +64,6 @@ function createTestPRManager() {
 
   // Mock expandForSuggestion
   prManager.expandForSuggestion = vi.fn().mockResolvedValue(undefined);
-  prManager._materializeDeferredDiff = vi.fn().mockResolvedValue(false);
   prManager._ensurePierreContentUpgrade = vi.fn().mockResolvedValue(false);
   prManager.pierreBridge = null;
 

@@ -2,102 +2,135 @@
 /**
  * PierreBridge - Adapter between @pierre/diffs and pair-review
  *
- * Manages FileDiff instances per file, annotation rendering (comments, suggestions, forms),
- * gap expansion, diffPosition tracking, and theme management.
+ * Owns a SINGLE @pierre/diffs `CodeView` instance that virtualizes the whole
+ * changed-file list. Each changed file is one controlled `CodeViewDiffItem`
+ * (or `CodeViewFileItem` for context files); annotations (comments,
+ * suggestions, forms, hunk summaries, tour stops, external threads) live on the
+ * item data and are rendered through CodeView's `renderAnnotation` callback.
  *
- * Depends on: window.PierreDiffs (from vendor bundle)
+ * Design notes for maintainers:
+ *   - CodeView pools/recycles the `<diffs-container>` host elements as items
+ *     scroll in and out of view. NEVER stash per-file state on the DOM — the
+ *     element you get back may belong to a different item, and every light-DOM
+ *     insertion (header, annotations, gutter buttons) is regenerated from the
+ *     item's data on each remount. The source of truth is `this.files`.
+ *   - Every imperative change (annotations, context ranges, collapse, content
+ *     upgrade, theme) is published by rebuilding the item and calling
+ *     `updateItem` with a BUMPED `version`. `updateItem` is a no-op when the
+ *     version is unchanged, so forgetting to bump = nothing renders.
+ *   - Always re-`getItem` before `updateItem` (via `_publishItem`) so a change
+ *     that resolves after a `setItems` wiped/replaced the item is dropped
+ *     instead of resurrecting a stale record.
+ *
+ * Depends on: window.PierreDiffs (vendor bundle: CodeView, WorkerPoolManager,
+ * parsePatchFiles, parseDiffFromFile), window.PierreContext (range math).
  */
 
 class PierreBridge {
   /**
    * @param {Object} options
    * @param {string} options.theme - 'light' or 'dark'
-   * @param {Function} options.onCommentClick - (fileName, lineNumber, side) => void
+   * @param {Function} options.onCommentClick - (fileName, lineNumber, side, target) => void
    * @param {Function} options.onChatClick - (fileName, lineNumber, side, range?) => void
    * @param {Function} options.onLineSelect - (fileName, range) => void
-   * @param {Function} options.onHunkExpand - (fileName, hunkIndex, direction, lineCount) => void
    */
   constructor(options = {}) {
-    if (!window.PierreDiffs) {
-      console.warn('[PierreBridge] window.PierreDiffs not loaded — @pierre/diffs bundle missing. Falling back to legacy rendering.');
+    if (!window.PierreDiffs || !window.PierreDiffs.CodeView) {
+      console.warn('[PierreBridge] window.PierreDiffs.CodeView not loaded — @pierre/diffs bundle missing. Falling back to legacy rendering.');
       this._disabled = true;
     }
     this.options = options;
     this.theme = options.theme || PierreBridge.detectTheme();
 
     // Diff layout: 'unified' (single column) or 'split' (side-by-side).
-    // Stored as instance state so every FileDiff instance (including lazily
-    // created / rebuilt ones) inherits the current style. Toggled at runtime
-    // via setDiffStyle(). Invalid values fall back to 'unified'.
+    // Applied to the single CodeView via setOptions; toggled at runtime via
+    // setDiffStyle(). Invalid values fall back to 'unified'.
     this.diffStyle = PierreBridge.isValidDiffStyle(options.diffStyle)
       ? options.diffStyle
       : 'unified';
 
-    // Per-file state: { instance: FileDiff, metadata: FileDiffMetadata, container: HTMLElement,
-    //                   annotations: DiffLineAnnotation[], diffPositions: Map, formElements: Map }
+    // The single CodeView instance and the scroll-root element it manages.
+    // Created lazily on the first renderAll() so the DOM is guaranteed present.
+    this.codeView = null;
+    this.root = null;
+
+    // Item-height metrics (line-row/header/hunk-separator px) that CodeView uses
+    // to estimate item heights and reserve space for virtualized-out lines. The
+    // vendor defaults (lineHeight 20, diffHeaderHeight 44) do not match our
+    // rendered dimensions (real line ~17.4px, custom header ~53px), which makes
+    // every off-screen line over-reserved and the header under-reserved — the
+    // reservation then shifts as lines mount on scroll (wandering gaps) and
+    // navigation lands off. pr.js measures the real values from the rendered DOM
+    // and pushes them via setItemMetrics(); null until then (vendor defaults).
+    this._itemMetrics = null;
+
+    // Header factory supplied by the render caller (pr.js) so DiffRenderer /
+    // fileCommentManager stay in pr.js — the bridge never reaches into them.
+    // (fileName, context) => HTMLElement | null
+    this._renderHeader = null;
+
+    // (fileName, itemType) => string[] — caller-supplied domain host classes.
+    this._hostClassesFor = null;
+
+    // Per-file item state, keyed by CodeView item id: the file path for diff
+    // items, `context:<path>` for context-file items. Public: consumers probe
+    // `.files.has(path)` / `.files.get(path)` / iterate `.files`.
+    // Shape: {
+    //   id, fileName, itemType('diff'|'binary'|'context'), type('diff'|'file'),
+    //   metadata, baseMetadata, patch, annotations[], diffPositions:Map,
+    //   formElements:Map, contextRanges[], patchParityRanges, oldFile, newFile,
+    //   fileContents, collapsed, forcePlainText, binaryMessage, version,
+    //   _element, _shadowRoot, _instance, _splitLayoutRaf
+    // }
     this.files = new Map();
 
-    // CSS to inject into Shadow DOM for annotations, comments, suggestions
+    // CSS injected into every item's Shadow DOM for annotations/comments/forms.
     this._unsafeCSS = null;
 
-    // Monotonic counter for unique annotation IDs
+    // Monotonic counter for unique annotation IDs.
     this._annotationCounter = 0;
 
-    // Cache for gutter button containers — keyed by fileName.
-    // Stored here instead of on fileState because renderGutterUtility fires
-    // during instance.render(), before fileState is set on this.files.
+    // Custom annotation renderers registered by feature modules
+    // (hunk-summary, tour-stop, external-comment, and pr.js file-comments).
+    this._annotationRenderers = new Map();
+
+    // Live gutter-button containers + hovered-row getters, keyed by file id.
+    // Regenerated on each remount (renderGutterUtility runs once per mount).
     this._gutterContainers = new Map();
     this._gutterRowGetters = new Map();
-    this._hoveredRows = new Map();
 
-    // Shared options for all FileDiff instances
-    this._sharedOptions = null;
+    // Reverse map (VirtualizedFileDiff instance → item id). The instance is
+    // stable across an item's mount/unmount, so it resolves the id on the
+    // 'unmount' callback even when the context no longer carries the item —
+    // guaranteeing evicted items always get their stale DOM refs cleared.
+    this._instanceToId = new Map();
 
-    // Shared @pierre/diffs worker pool. Without this, FileDiff falls back to
-    // Shiki highlighting on the main thread, which can freeze large reviews.
+    // One-shot resolvers per item id, drained in onPostRender (mount/update)
+    // after the vendor has slotted annotations. Backs whenAnnotationsSlotted().
+    this._slotWaiters = new Map();
+
+    // Shared @pierre/diffs worker pool. Without this, highlighting happens on
+    // the main thread and can freeze large reviews.
     this.workerManager = this._createWorkerManager();
     this._workerReady = !this.workerManager;
     this._workersFailed = false;
     this._workerInitTimer = null;
     this._workerStatsUnsubscribe = null;
+
+    // Last pointer position — used only by isPointerOverFile() so background
+    // content upgrades can wait for the pointer to leave a file before
+    // re-rendering it (avoids yanking a diff out from under the cursor).
     this._lastPointerPosition = null;
     this._trackPointerPosition = (event) => {
       if (event.isPrimary === false) return;
       this._lastPointerPosition = {
         clientX: event.clientX,
         clientY: event.clientY,
-        screenX: event.screenX,
-        screenY: event.screenY,
-        pointerId: event.pointerId || 1,
-        pointerType: event.pointerType || 'mouse',
       };
-      this._sweepStaleFallbackGutters();
     };
     document.addEventListener('pointermove', this._trackPointerPosition, { passive: true });
     document.addEventListener('mousemove', this._trackPointerPosition, { passive: true });
-    // Fallback-positioned gutter buttons are position:fixed (viewport
-    // coordinates), so any scroll detaches them from their line. Clear on
-    // scroll and re-derive from the live pointer position (capture: true
-    // catches scrolls of inner containers too).
-    this._onAnyScroll = () => {
-      if (this._scrollSweepScheduled) return;
-      this._scrollSweepScheduled = true;
-      const schedule = typeof requestAnimationFrame === 'function'
-        ? requestAnimationFrame
-        : (callback) => setTimeout(callback, 0);
-      schedule(() => {
-        this._scrollSweepScheduled = false;
-        for (const [fileName, container] of this._gutterContainers) {
-          if (container?.dataset?.fallbackPositioned === undefined) continue;
-          this._clearFallbackGutterPosition(fileName);
-          const fileState = this.files.get(fileName);
-          if (fileState) this._restoreHoverAfterRender(fileState);
-        }
-      });
-    };
-    if (typeof window.addEventListener === 'function') {
-      window.addEventListener('scroll', this._onAnyScroll, { capture: true, passive: true });
-    }
+
     if (this.workerManager?.subscribeToStatChanges) {
       this._workerStatsUnsubscribe = this.workerManager.subscribeToStatChanges((stats) => {
         this._handleWorkerStats(stats);
@@ -145,47 +178,30 @@ class PierreBridge {
         });
       }
     }
-    for (const [, fileState] of this.files) {
-      if (fileState.instance) {
-        fileState.instance.setThemeType(theme);
-      }
+    // Re-publish the whole CodeView with the new themeType. setOptions detects
+    // the theme change, invalidates the (theme-baked) element pool, and
+    // reschedules a render on its own — no explicit render() needed.
+    if (this.codeView) {
+      this.codeView.setOptions(this._buildCodeViewOptions());
+      this.codeView.onThemeChange?.();
     }
   }
 
   // ─── Diff Style (unified / split) ─────────────────────────────────
 
-  /**
-   * @param {*} style
-   * @returns {boolean} true when `style` is a supported diff layout.
-   */
   static isValidDiffStyle(style) {
     return style === 'unified' || style === 'split';
   }
 
-  /**
-   * Current diff layout.
-   * @returns {'unified'|'split'}
-   */
   getDiffStyle() {
     return this.diffStyle;
   }
 
   /**
    * Switch every rendered file between unified and split (side-by-side) layout.
-   *
-   * Mirrors setTheme: validate, no-op when unchanged, update instance state,
-   * then re-render every FileDiff instance. Unlike theme, diffStyle is NOT a
-   * worker render option (it controls layout, not highlighting), so the worker
-   * pool is untouched here — only the per-instance FileDiff options change.
-   *
-   * `setOptions` replaces the instance's whole options object AND re-derives
-   * the hunks/interaction sub-managers, so we spread the instance's current
-   * options to preserve everything else (theme, gutter, selection, etc.). The
-   * instance keeps its stored lineAnnotations across setOptions, and rerender()
-   * re-runs the renderAnnotation callback, so user comments, AI suggestions,
-   * forms, and external threads survive the switch (they also live in
-   * fileState.annotations as the source of truth).
-   *
+   * diffStyle is a layout-affecting CodeView option, so setOptions relayouts
+   * and re-renders all mounted items on its own; the per-mount onPostRender
+   * hook re-runs _syncSplitAnnotationLayout for stretched split annotations.
    * @param {'unified'|'split'} style
    */
   setDiffStyle(style) {
@@ -195,58 +211,53 @@ class PierreBridge {
     }
     if (style === this.diffStyle) return;
     this.diffStyle = style;
-
-    for (const [fileName, fileState] of this.files) {
-      const instance = fileState?.instance;
-      if (!instance) continue;
-      if (typeof instance.setOptions === 'function') {
-        instance.setOptions({ ...(instance.options || {}), diffStyle: style });
-      } else if (typeof instance.mergeOptions === 'function') {
-        instance.mergeOptions({ diffStyle: style });
-      }
-      instance.rerender?.();
-      this._syncSplitAnnotationLayout(fileName);
-      // The layout swap moves every line; a fallback-positioned gutter
-      // container would keep floating at its old viewport coordinates.
-      this._clearFallbackGutterPosition(fileName);
-      this._restoreHoverAfterRender(fileState);
+    if (this.codeView) {
+      this.codeView.setOptions(this._buildCodeViewOptions());
     }
   }
 
+  // ─── Item Height Metrics ──────────────────────────────────────────
+
   /**
-   * Clear any fallback-positioned gutter buttons the pointer has abandoned.
+   * Correct the px metrics CodeView uses to estimate item heights (and reserve
+   * space for virtualized-out lines). The vendor's static getEstimatedLineHeight
+   * returns metrics.lineHeight for EVERY off-screen line and never adapts to
+   * measured heights, and the custom header is never measured (fixed at
+   * metrics.diffHeaderHeight) — so wrong metrics make reserved heights disagree
+   * with rendered heights, which shifts as lines mount on scroll. pr.js measures
+   * the real rendered dimensions and pushes them here.
    *
-   * The fallback positioner pins the buttons with position:fixed, and the
-   * only teardown used to be a pointerleave listener on the shadow ROOT —
-   * a non-element that never receives pointerleave — so buttons hovered in
-   * one spot could float there forever (over unrelated content after a
-   * scroll or a layout toggle). Runs from the document-level pointer
-   * tracker: keep the buttons while the pointer is over the file or the
-   * buttons themselves; clear otherwise.
-   * @private
+   * Only finite numbers are merged; a change within EPS px is treated as no-op
+   * to avoid a needless relayout on every render (sub-pixel measurement jitter).
+   * @param {{diffHeaderHeight?:number, lineHeight?:number, hunkSeparatorHeight?:number, spacing?:number}} metrics
+   * @returns {boolean} whether the metrics changed (and a relayout was scheduled)
    */
-  _sweepStaleFallbackGutters() {
-    for (const [fileName, container] of this._gutterContainers) {
-      if (container?.dataset?.fallbackPositioned === undefined) continue;
-      if (this._isPointerInsideFile(this.files.get(fileName))) continue;
-      const pos = this._lastPointerPosition;
-      const rect = container.getBoundingClientRect?.();
-      if (pos && rect &&
-          pos.clientX >= rect.left && pos.clientX <= rect.right &&
-          pos.clientY >= rect.top && pos.clientY <= rect.bottom) {
-        continue;
+  setItemMetrics(metrics) {
+    if (!metrics || typeof metrics !== 'object') return false;
+    const EPS = 0.5;
+    const next = { ...(this._itemMetrics || {}) };
+    let changed = false;
+    for (const key of ['diffHeaderHeight', 'lineHeight', 'hunkSeparatorHeight', 'spacing']) {
+      const value = metrics[key];
+      if (!Number.isFinite(value) || value <= 0) continue;
+      const prev = next[key];
+      if (!Number.isFinite(prev) || Math.abs(prev - value) >= EPS) {
+        next[key] = value;
+        changed = true;
       }
-      this._clearFallbackGutterPosition(fileName);
-      this._hoveredRows.delete(fileName);
     }
+    if (!changed) return false;
+    this._itemMetrics = next;
+    // setOptions recomputes the metrics cache; when it differs it relayouts and
+    // reschedules a render on its own — no explicit render() needed.
+    if (this.codeView) {
+      this.codeView.setOptions(this._buildCodeViewOptions());
+    }
+    return true;
   }
 
   // ─── CSS Injection ────────────────────────────────────────────────
 
-  /**
-   * Build CSS to inject into Shadow DOM for annotation content (comments, suggestions, forms).
-   * Called lazily on first use.
-   */
   getUnsafeCSS() {
     if (this._unsafeCSS !== null) return this._unsafeCSS;
     this._unsafeCSS = PierreBridge.ANNOTATION_CSS;
@@ -255,12 +266,11 @@ class PierreBridge {
 
   /**
    * Create the shared worker pool used by @pierre/diffs for syntax highlighting.
-   * The main thread still produces the initial plain-text AST, while expensive
-   * language highlighting happens off-thread and streams back through rerender().
    * @returns {Object|null}
    * @private
    */
   _createWorkerManager() {
+    if (this._disabled) return null;
     if (!window.PierreDiffs?.WorkerPoolManager || typeof Worker === 'undefined') {
       return null;
     }
@@ -291,175 +301,6 @@ class PierreBridge {
     }
   }
 
-  // ─── Patch Parsing & diffPosition Computation ─────────────────────
-
-  /**
-   * Parse a unified diff patch for a single file.
-   * @param {string} patch - Unified diff patch text (the part after the file header)
-   * @returns {import('@pierre/diffs').FileDiffMetadata}
-   */
-  parsePatch(patch) {
-    if (!patch) return null;
-
-    // The patch may already include git diff headers (from parseUnifiedDiff)
-    // or may be just hunk content starting with @@.
-    // parsePatchFiles handles both formats.
-    let input = patch;
-    if (!patch.startsWith('diff --git ')) {
-      // Bare hunk content — wrap with minimal git diff header
-      input = `diff --git a/file b/file\n--- a/file\n+++ b/file\n${patch}`;
-    }
-
-    const parsed = window.PierreDiffs.parsePatchFiles(input);
-    if (parsed && parsed.length > 0 && parsed[0].files && parsed[0].files.length > 0) {
-      return parsed[0].files[0];
-    }
-    // Fallback: try getSingularPatch
-    return window.PierreDiffs.getSingularPatch(patch);
-  }
-
-  /**
-   * Compute GitHub diffPosition mapping for a patch.
-   * diffPosition is a 1-indexed consecutive counter: each hunk header and each line counts.
-   *
-   * renderFile already parses the patch once (parsePatch → Pierre metadata), so
-   * when that metadata is supplied we derive positions from its ordered
-   * `hunkContent` segments instead of parsing the patch a SECOND time. The
-   * derivation is identical to the raw-patch walk because git's unified diff
-   * always emits a change region's deletions before its additions, which is the
-   * order Pierre's `hunkContent` records (verified equal across mixed /
-   * add-only / del-only / multi-hunk / no-trailing-newline patches). Metadata
-   * without `hunkContent` (older bundle, getSingularPatch fallback, null) falls
-   * back to parsing the raw patch.
-   *
-   * @param {string} patch - Unified diff patch text
-   * @param {Object} [metadata] - Pre-parsed Pierre FileDiffMetadata (optional)
-   * @returns {Map<string, number>} Map of "side:lineNumber" → diffPosition
-   */
-  computeDiffPositions(patch, metadata) {
-    if (metadata) {
-      const fromMeta = this._diffPositionsFromMetadata(metadata);
-      if (fromMeta) return fromMeta;
-    }
-    return this._diffPositionsFromPatch(patch);
-  }
-
-  /**
-   * Derive the diffPosition map from pre-parsed Pierre metadata's ordered
-   * `hunkContent` segments. Returns null (signalling "fall back to parsing the
-   * raw patch") when any hunk lacks `hunkContent` or carries a segment type we
-   * do not recognize, so an unexpected bundle shape can never yield a partial
-   * / wrong map.
-   * @param {Object} metadata - Pierre FileDiffMetadata
-   * @returns {Map<string, number>|null}
-   * @private
-   */
-  _diffPositionsFromMetadata(metadata) {
-    if (!metadata || !Array.isArray(metadata.hunks)) return null;
-
-    const positions = new Map();
-    let diffPosition = 0;
-
-    for (const hunk of metadata.hunks) {
-      if (!Array.isArray(hunk.hunkContent)) return null;
-      diffPosition++; // Hunk header counts as a position
-
-      let oldLineNum = hunk.deletionStart;
-      let newLineNum = hunk.additionStart;
-
-      for (const segment of hunk.hunkContent) {
-        if (segment.type === 'context') {
-          for (let i = 0; i < segment.lines; i++) {
-            diffPosition++;
-            positions.set(`RIGHT:${newLineNum}`, diffPosition);
-            positions.set(`LEFT:${oldLineNum}`, diffPosition);
-            oldLineNum++;
-            newLineNum++;
-          }
-        } else if (segment.type === 'change') {
-          // git emits all deletions before all additions within a change.
-          for (let i = 0; i < (segment.deletions || 0); i++) {
-            diffPosition++;
-            positions.set(`LEFT:${oldLineNum}`, diffPosition);
-            oldLineNum++;
-          }
-          for (let i = 0; i < (segment.additions || 0); i++) {
-            diffPosition++;
-            positions.set(`RIGHT:${newLineNum}`, diffPosition);
-            newLineNum++;
-          }
-        } else {
-          // Unknown segment type — bail to the raw-patch parser rather than
-          // emit a map that silently skips lines.
-          return null;
-        }
-      }
-    }
-
-    return positions;
-  }
-
-  /**
-   * Compute the diffPosition map by parsing the raw patch string. Fallback for
-   * computeDiffPositions when no usable metadata is available.
-   * @param {string} patch - Unified diff patch text
-   * @returns {Map<string, number>}
-   * @private
-   */
-  _diffPositionsFromPatch(patch) {
-    const positions = new Map();
-    if (!patch) return positions;
-
-    // Use HunkParser if available for consistent parsing
-    const blocks = window.HunkParser
-      ? window.HunkParser.parseDiffIntoBlocks(patch)
-      : this._parseBlocksFallback(patch);
-
-    let diffPosition = 0;
-
-    blocks.forEach(block => {
-      diffPosition++; // Hunk header counts as a position
-
-      let oldLineNum = block.oldStart;
-      let newLineNum = block.newStart;
-
-      block.lines.forEach(line => {
-        if (!line && line !== '') return;
-        diffPosition++;
-
-        if (line.startsWith('+')) {
-          positions.set(`RIGHT:${newLineNum}`, diffPosition);
-          newLineNum++;
-        } else if (line.startsWith('-')) {
-          positions.set(`LEFT:${oldLineNum}`, diffPosition);
-          oldLineNum++;
-        } else {
-          // Context line: addressable from both sides
-          positions.set(`RIGHT:${newLineNum}`, diffPosition);
-          positions.set(`LEFT:${oldLineNum}`, diffPosition);
-          oldLineNum++;
-          newLineNum++;
-        }
-      });
-    });
-
-    return positions;
-  }
-
-  /**
-   * Get diffPosition for a file + line + side.
-   * @param {string} fileName
-   * @param {number} lineNumber
-   * @param {string} side - 'LEFT' or 'RIGHT' (or 'additions'/'deletions')
-   * @returns {number|null}
-   */
-  getDiffPosition(fileName, lineNumber, side) {
-    const fileState = this.files.get(fileName);
-    if (!fileState) return null;
-    const normalizedSide = PierreBridge.normalizeSide(side);
-    return fileState.diffPositions.get(`${normalizedSide}:${lineNumber}`) || null;
-  }
-
   _handleWorkerStats(stats) {
     if (!stats) return;
 
@@ -471,27 +312,10 @@ class PierreBridge {
     if (stats.managerState !== 'initialized' || this._workerReady) return;
     this._workerReady = true;
     this._clearWorkerInitTimeout();
-    const schedule = typeof requestAnimationFrame === 'function'
-      ? requestAnimationFrame
-      : (callback) => setTimeout(callback, 0);
-    schedule(() => {
-      // A fallback (timeout / worker error) can land between scheduling this
-      // callback and running it, nulling the worker manager. If so, there is
-      // nothing to attach — bail out rather than rebuild with a dead pool.
-      if (this._workersFailed || !this.workerManager) return;
-      for (const [fileName, fileState] of [...this.files]) {
-        if (fileState.usesWorkerManager) {
-          // Already worker-backed — a bare rerender picks up the highlighter.
-          fileState.instance?.rerender?.();
-        } else if (!fileState.forcePlainText) {
-          // Rendered before the pool was ready, so its FileDiff was built with
-          // an undefined manager and can never gain worker highlighting from a
-          // bare rerender(). Reconstruct it through the worker path. Skip
-          // forcePlainText (large/plain) files — they are deliberately plain.
-          this._rebuildFileInstance(fileName, fileState, { useWorkerManager: true });
-        }
-      }
-    });
+    // The single CodeView already holds the worker manager reference; once the
+    // pool reports ready, a fresh render picks up worker highlighting. Bumping
+    // every item's version forces that render.
+    this._republishAll();
   }
 
   _startWorkerInitTimeout() {
@@ -533,21 +357,169 @@ class PierreBridge {
       }
     }
 
-    for (const [fileName, fileState] of [...this.files]) {
-      if (!fileState.usesWorkerManager) continue;
-      this._rebuildFileInstance(fileName, fileState, { useWorkerManager: false });
-    }
+    // The CodeView was constructed with the (now dead) worker manager as its
+    // second constructor arg; recreate it main-thread-only, preserving items.
+    this._recreateCodeViewMainThread();
     return true;
   }
 
-  _createFileDiffInstance(fileName, formElements, renderOptions = {}) {
-    const workerManager = renderOptions.useWorkerManager === false
-      ? undefined
-      : this.workerManager || undefined;
-    return new window.PierreDiffs.FileDiff({
+  // ─── Patch Parsing & diffPosition Computation ─────────────────────
+
+  /**
+   * Parse a unified diff patch for a single file.
+   * @param {string} patch - Unified diff patch text (after the file header)
+   * @returns {import('@pierre/diffs').FileDiffMetadata|null}
+   */
+  parsePatch(patch) {
+    if (!patch) return null;
+
+    let input = patch;
+    if (!patch.startsWith('diff --git ')) {
+      input = `diff --git a/file b/file\n--- a/file\n+++ b/file\n${patch}`;
+    }
+
+    const parsed = window.PierreDiffs.parsePatchFiles(input);
+    if (parsed && parsed.length > 0 && parsed[0].files && parsed[0].files.length > 0) {
+      return parsed[0].files[0];
+    }
+    return window.PierreDiffs.getSingularPatch(patch);
+  }
+
+  /**
+   * Compute GitHub diffPosition mapping for a patch.
+   * @param {string} patch
+   * @param {Object} [metadata] - Pre-parsed Pierre FileDiffMetadata (optional)
+   * @returns {Map<string, number>}
+   */
+  computeDiffPositions(patch, metadata) {
+    if (metadata) {
+      const fromMeta = this._diffPositionsFromMetadata(metadata);
+      if (fromMeta) return fromMeta;
+    }
+    return this._diffPositionsFromPatch(patch);
+  }
+
+  /**
+   * Derive the diffPosition map from pre-parsed Pierre metadata's ordered
+   * `hunkContent` segments. Returns null when any hunk lacks `hunkContent` or
+   * carries an unrecognized segment type, so an unexpected bundle shape can
+   * never yield a partial / wrong map.
+   * @param {Object} metadata
+   * @returns {Map<string, number>|null}
+   * @private
+   */
+  _diffPositionsFromMetadata(metadata) {
+    if (!metadata || !Array.isArray(metadata.hunks)) return null;
+
+    const positions = new Map();
+    let diffPosition = 0;
+
+    for (const hunk of metadata.hunks) {
+      if (!Array.isArray(hunk.hunkContent)) return null;
+      diffPosition++;
+
+      let oldLineNum = hunk.deletionStart;
+      let newLineNum = hunk.additionStart;
+
+      for (const segment of hunk.hunkContent) {
+        if (segment.type === 'context') {
+          for (let i = 0; i < segment.lines; i++) {
+            diffPosition++;
+            positions.set(`RIGHT:${newLineNum}`, diffPosition);
+            positions.set(`LEFT:${oldLineNum}`, diffPosition);
+            oldLineNum++;
+            newLineNum++;
+          }
+        } else if (segment.type === 'change') {
+          for (let i = 0; i < (segment.deletions || 0); i++) {
+            diffPosition++;
+            positions.set(`LEFT:${oldLineNum}`, diffPosition);
+            oldLineNum++;
+          }
+          for (let i = 0; i < (segment.additions || 0); i++) {
+            diffPosition++;
+            positions.set(`RIGHT:${newLineNum}`, diffPosition);
+            newLineNum++;
+          }
+        } else {
+          return null;
+        }
+      }
+    }
+
+    return positions;
+  }
+
+  /**
+   * Compute the diffPosition map by parsing the raw patch string.
+   * @param {string} patch
+   * @returns {Map<string, number>}
+   * @private
+   */
+  _diffPositionsFromPatch(patch) {
+    const positions = new Map();
+    if (!patch) return positions;
+
+    const blocks = window.HunkParser
+      ? window.HunkParser.parseDiffIntoBlocks(patch)
+      : this._parseBlocksFallback(patch);
+
+    let diffPosition = 0;
+
+    blocks.forEach(block => {
+      diffPosition++;
+
+      let oldLineNum = block.oldStart;
+      let newLineNum = block.newStart;
+
+      block.lines.forEach(line => {
+        if (!line && line !== '') return;
+        diffPosition++;
+
+        if (line.startsWith('+')) {
+          positions.set(`RIGHT:${newLineNum}`, diffPosition);
+          newLineNum++;
+        } else if (line.startsWith('-')) {
+          positions.set(`LEFT:${oldLineNum}`, diffPosition);
+          oldLineNum++;
+        } else {
+          positions.set(`RIGHT:${newLineNum}`, diffPosition);
+          positions.set(`LEFT:${oldLineNum}`, diffPosition);
+          oldLineNum++;
+          newLineNum++;
+        }
+      });
+    });
+
+    return positions;
+  }
+
+  /**
+   * Get diffPosition for a file + line + side.
+   * @param {string} fileName
+   * @param {number} lineNumber
+   * @param {string} side - 'LEFT' or 'RIGHT' (or 'additions'/'deletions')
+   * @returns {number|null}
+   */
+  getDiffPosition(fileName, lineNumber, side) {
+    const fileState = this.files.get(fileName);
+    if (!fileState || !fileState.diffPositions) return null;
+    const normalizedSide = PierreBridge.normalizeSide(side);
+    return fileState.diffPositions.get(`${normalizedSide}:${lineNumber}`) || null;
+  }
+
+  // ─── CodeView Lifecycle ───────────────────────────────────────────
+
+  /**
+   * Build the shared CodeView option object. Rebuilt (and handed to
+   * setOptions) whenever a top-level option changes (theme, diffStyle).
+   * @returns {Object}
+   * @private
+   */
+  _buildCodeViewOptions() {
+    return {
       theme: this.getThemeConfig(),
       themeType: this.theme,
-      disableFileHeader: true,
       diffStyle: this.diffStyle,
       diffIndicators: 'bars',
       overflow: 'wrap',
@@ -559,16 +531,39 @@ class PierreBridge {
       hunkSeparators: 'line-info',
       expansionLineCount: 20,
       collapsedContextThreshold: 5,
-      collapsed: renderOptions.collapsed || false,
+      stickyHeaders: true,
+      layout: { paddingTop: 0, paddingBottom: 16, gap: 16 },
+      ...(this._itemMetrics ? { itemMetrics: this._itemMetrics } : {}),
 
-      // Custom gutter render — dual buttons (chat + comment) matching legacy UI.
-      // Cannot combine with onGutterUtilityClick; use one gutter API at a time.
-      renderGutterUtility: (getHoveredRow) => {
-        return this._createGutterButtons(fileName, getHoveredRow);
+      renderCustomHeader: (_fileDiffOrFile, context) => {
+        const id = context?.item?.id;
+        const fileState = id != null ? this.files.get(id) : null;
+        if (!fileState || typeof this._renderHeader !== 'function') return undefined;
+        try {
+          return this._renderHeader(fileState.fileName, context) || undefined;
+        } catch (err) {
+          console.error('[PierreBridge] header factory failed:', err);
+          return undefined;
+        }
       },
 
-      onLineClick: (props) => {
-        if (this.options.onLineClick) {
+      renderAnnotation: (annotation, context) => {
+        const id = context?.item?.id;
+        const fileState = id != null ? this.files.get(id) : null;
+        if (!fileState) return undefined;
+        return this._renderAnnotation(annotation, fileState.fileName, fileState.formElements, id);
+      },
+
+      renderGutterUtility: (getHoveredRow, context) => {
+        const id = context?.item?.id;
+        const fileState = id != null ? this.files.get(id) : null;
+        if (!fileState || fileState.itemType === 'context') return undefined;
+        return this._createGutterButtons(id, fileState.fileName, getHoveredRow);
+      },
+
+      onLineClick: (props, context) => {
+        const fileName = context?.item ? this._fileNameForItemId(context.item.id) : null;
+        if (fileName && this.options.onLineClick) {
           this.options.onLineClick(fileName, {
             lineNumber: props.lineNumber,
             side: props.annotationSide === 'deletions' ? 'LEFT' : 'RIGHT',
@@ -578,384 +573,526 @@ class PierreBridge {
         }
       },
 
-      onLineSelected: (range) => {
-        if (this.options.onLineSelect) {
+      onLineSelected: (range, context) => {
+        const fileName = context?.item ? this._fileNameForItemId(context.item.id) : null;
+        if (fileName && this.options.onLineSelect) {
           this.options.onLineSelect(fileName, range);
         }
       },
 
-      onLineSelectionEnd: (range) => {
-        if (this.options.onLineSelectionEnd) {
+      onLineSelectionEnd: (range, context) => {
+        const fileName = context?.item ? this._fileNameForItemId(context.item.id) : null;
+        if (fileName && this.options.onLineSelectionEnd) {
           this.options.onLineSelectionEnd(fileName, range);
         }
       },
 
-      onHunkExpand: (hunkIndex, direction, lineCount) => {
-        if (this.options.onHunkExpand) {
-          this.options.onHunkExpand(fileName, hunkIndex, direction, lineCount);
-        }
-        // Expansion can widen the line-number gutter (digit growth) and
-        // rebuilds shadow rows — re-sync split card stretching.
-        this._syncSplitAnnotationLayout(fileName);
-      },
+      onPostRender: (fileContainer, instance, phase, context) => {
+        // The vendor FileDiff invokes onPostRender(fileContainer, instance,
+        // phase) where phase is 'mount'|'update'|'unmount'; CodeView's shared-
+        // callback wrapper appends the item context as the LAST arg. So context
+        // is the 4th param here, NOT the 3rd (that is the phase string).
+        //
+        // Resolve the item id from the context, falling back to the per-item
+        // instance (stable across mount/unmount) so the 'unmount' path can
+        // ALWAYS clear refs even if the context no longer carries the item.
+        const id = context?.item?.id
+          ?? (instance ? this._instanceToId.get(instance) : undefined);
+        if (id == null) return;
+        const fileState = this.files.get(id);
+        if (!fileState) return;
 
-      renderAnnotation: (annotation) => {
-        return this._renderAnnotation(annotation, fileName, formElements);
-      },
-
-      onPostRender: (node, inst) => {
-        // Store reference to shadow root for DOM access
-        const fileState = this.files.get(fileName);
-        if (fileState) {
-          fileState.shadowHost = node;
+        if (phase === 'unmount') {
+          // Item scrolled out of view — CodeView recycles its <diffs-container>
+          // host for a DIFFERENT item and restamps it. If we kept the stale
+          // ref, isPointerOverFile / _shadowRoot queries would read the wrong
+          // file's live DOM. Clear the refs, but only if they still point at
+          // THIS instance/element (a remount could already have re-populated
+          // them — pooling releases synchronously before reuse, but guard
+          // anyway). Consumers treat null refs as "not mounted" (same as
+          // pre-mount): isPointerOverFile → false, isLineVisible → metadata
+          // only, scroll flash → skipped.
+          const releasedHost = context?.element || fileState._element || fileContainer;
+          if (fileState._instance === instance || fileState._element === releasedHost) {
+            fileState._element = null;
+            fileState.container = null;
+            fileState._shadowRoot = null;
+            fileState._instance = null;
+          }
+          // Strip the identity/domain classes + data-file-name from the recycled
+          // host so it carries nothing from this item into its next occupant.
+          this._cleanHostClasses(releasedHost);
+          this._instanceToId.delete(instance);
+          return;
         }
-        this._syncSplitAnnotationLayout(fileName);
+
+        const host = context?.element || fileContainer;
+        fileState._element = host || null;
+        fileState.container = host || null;
+        fileState._shadowRoot = host?.shadowRoot || null;
+        fileState._instance = context?.instance || instance || null;
+        if (instance) this._instanceToId.set(instance, id);
+        // Reconcile the light-DOM host's identity + domain classes so
+        // isPointerOverFile / comment-minimizer / summaries-hidden CSS resolve,
+        // and a recycled host never keeps a previous item's classes.
+        this._applyHostClasses(fileState, host);
+        this._syncSplitAnnotationLayout(id);
+        // This callback runs AFTER the vendor's renderAnnotations() in the same
+        // render pass (FileDiff.js: renderAnnotations() then emitPostRender()),
+        // so the annotation slots are now in the DOM — resolve any waiters.
+        this._resolveSlotWaiters(id);
       },
-    }, workerManager);
+    };
+  }
+
+  _ensureCodeView(root) {
+    // An external wipe of #diff-container (a stray diffContainer.innerHTML —
+    // refreshPR's spinner, error states) detaches the CodeView's managed
+    // container while root === root; a bare early-return would then keep updating
+    // the now-orphaned node forever (the visible root stays frozen). Detect the
+    // detach positively (container is an element no longer parented by root) and
+    // treat it like a root change — fall through to a full re-setup. (Not
+    // isConnected: `root` is detached from the document in unit tests, so that
+    // would false-trigger; parentNode holds in both real and test DOM.)
+    const container = this.codeView && this.codeView.container;
+    const containerWiped = container && container.parentNode !== root;
+    if (this.codeView && this.root === root && !containerWiped) return this.codeView;
+
+    // Root changed, first render, or our container was externally wiped: tear
+    // down any prior CodeView and rebind.
+    if (this.codeView) {
+      try { this.codeView.cleanUp(); } catch (_err) { /* ignore */ }
+      this.codeView = null;
+    }
+    this.root = root;
+    root.innerHTML = '';
+    // Mark the root so pr.css can make it the overflow scroll container that
+    // CodeView.setup() requires (it scrolls the root directly). Scoped so the
+    // legacy per-file-table path is untouched.
+    root.classList.add('pierre-codeview-root');
+    const CodeView = window.PierreDiffs.CodeView;
+    this.codeView = new CodeView(this._buildCodeViewOptions(), this.workerManager || undefined);
+    this.codeView.setup(root);
+    return this.codeView;
   }
 
   /**
-   * Tear down a file's FileDiff instance and rebuild it from scratch, selecting
-   * whether the new instance is worker-backed via `useWorkerManager`.
+   * Render (or re-render) the whole changed-file list into `root`.
    *
-   * This is the shared multi-step sequence used in BOTH directions:
-   *   - Fallback: rebuild WITHOUT workers (`useWorkerManager: false`) when the
-   *     worker pool fails/times out (see `_fallbackToMainThreadRendering`).
-   *   - Init success: rebuild WITH workers (`useWorkerManager: true`) for files
-   *     that rendered before the worker pool finished initializing (see
-   *     `_handleWorkerStats`).
+   * This is the single render entry, replacing the old per-file renderFile /
+   * renderBinaryFile. `root` becomes the CodeView-managed scroll container.
    *
-   * Both paths need identical cleanup, re-parse, payload reconstruction (including
-   * the upgraded oldFile/newFile + contextRanges case), and hover restoration —
-   * only the manager differs, so the logic lives here once.
-   *
-   * @param {string} fileName
-   * @param {Object} fileState
-   * @param {Object} opts
-   * @param {boolean} opts.useWorkerManager - true to attach the worker pool,
-   *   false to rebuild on the main thread.
-   * @returns {boolean} true if a render occurred
+   * @param {HTMLElement} root - the #diff-container scroll element
+   * @param {Array<Object>} entries - ordered descriptors:
+   *   { id, type:'diff'|'binary'|'context', fileName, patch?, collapsed?,
+   *     forcePlainText?, contents?, binaryMessage? }
+   * @param {Object} [options]
+   * @param {Function} [options.renderHeader] - (fileName, context) => HTMLElement|null
+   * @returns {Map} this.files
+   */
+  renderAll(root, entries, options = {}) {
+    if (this._disabled || !root) return this.files;
+    if (typeof options.renderHeader === 'function') {
+      this._renderHeader = options.renderHeader;
+    }
+    // Optional per-item domain host classes (generated-file, summaries-hidden-
+    // file, …). The bridge owns applying/cleaning them so a pooled/recycled
+    // host never carries a previous item's classes. (fileName, itemType) => string[]
+    if (typeof options.hostClasses === 'function') {
+      this._hostClassesFor = options.hostClasses;
+    }
+
+    this._ensureCodeView(root);
+
+    // Rebuild per-file state from scratch. Any file dropped from `entries` is
+    // torn down; ids that persist are rebuilt (their annotations are reset —
+    // callers re-add them after renderAll, mirroring the legacy flow where
+    // destroyAll() preceded a fresh render).
+    this._teardownAllFileState();
+
+    const items = [];
+    for (const entry of entries || []) {
+      const fileState = this._createFileState(entry);
+      if (!fileState) continue;
+      this.files.set(fileState.id, fileState);
+      items.push(this._buildItem(fileState));
+    }
+
+    this.codeView.setItems(items);
+    return this.files;
+  }
+
+  /**
+   * Identity + domain classes the bridge manages on each item's light-DOM
+   * host. Reconciled on every mount and stripped on recycle so a pooled
+   * <diffs-container> never carries a previous item's classes.
+   * `d2h-file-wrapper` is the always-on base; the rest are conditional.
+   */
+  static MANAGED_HOST_CLASSES = [
+    'd2h-file-wrapper', 'context-file', 'collapsed', 'generated-file', 'summaries-hidden-file',
+  ];
+
+  /**
+   * Reconcile the managed classes + data-file-name on an item's host. Strips
+   * all managed classes first (a recycled host may carry a prior item's), then
+   * applies this item's: base + context-file/collapsed (bridge-known) + any
+   * caller-supplied domain classes (generated-file, summaries-hidden-file).
    * @private
    */
-  _rebuildFileInstance(fileName, fileState, { useWorkerManager } = {}) {
-    if (!fileState?.container || !fileState.patch) return false;
-
-    try {
-      fileState.instance?.cleanUp();
-    } catch (err) {
-      console.warn(`[PierreBridge] Failed to clean up existing diff instance for ${fileName}.`, err);
-    }
-
-    this._gutterContainers.delete(fileName);
-    fileState.container.innerHTML = '';
-    const renderOptions = {
-      collapsed: fileState.collapsed,
-      forcePlainText: fileState.forcePlainText,
-      useWorkerManager,
-    };
-    const metadata = this.parsePatch(fileState.patch);
-    if (metadata) {
-      metadata.name = fileName;
-      if (renderOptions.forcePlainText) {
-        metadata.lang = 'text';
-      }
-    }
-    const instance = this._createFileDiffInstance(fileName, fileState.formElements, renderOptions);
-    fileState.instance = instance;
-    fileState.metadata = metadata;
-    fileState.shadowHost = null;
-    fileState.usesWorkerManager = useWorkerManager === true && !!this.workerManager;
-
-    const payload = fileState.oldFile || fileState.newFile
-      ? {
-        oldFile: fileState.oldFile,
-        newFile: fileState.newFile,
-        fileDiff: this._effectiveContextRanges(fileState).length && fileState.baseMetadata
-          ? window.PierreContext?.mergeContextRanges?.(fileState.baseMetadata, this._effectiveContextRanges(fileState)) || fileState.baseMetadata
-          : fileState.baseMetadata || metadata,
-        lineAnnotations: fileState.annotations,
-        containerWrapper: fileState.container,
-      }
-      : {
-        fileDiff: metadata,
-        containerWrapper: fileState.container,
-        lineAnnotations: fileState.annotations,
-      };
-    const rendered = instance.render(payload);
-    fileState.shadowHost = fileState.container.querySelector('diffs-container') || fileState.container.firstElementChild;
-    if (rendered) this._installFallbackHoverTracking(fileName, fileState);
-    if (rendered) this._restoreHoverAfterRender(fileState);
-    return rendered;
-  }
-
-  _isPointerInsideFile(fileState) {
-    const pos = this._lastPointerPosition;
-    if (!pos || !fileState?.container?.isConnected) return false;
-
-    const rect = fileState.container.getBoundingClientRect();
-    return (
-      pos.clientX >= rect.left &&
-      pos.clientX <= rect.right &&
-      pos.clientY >= rect.top &&
-      pos.clientY <= rect.bottom
-    );
-  }
-
-  isPointerOverFile(fileName) {
-    return this._isPointerInsideFile(this.files.get(fileName));
-  }
-
-  _restoreHoverAfterRender(fileState) {
-    const pos = this._lastPointerPosition;
-    if (!pos || !this._isPointerInsideFile(fileState)) return;
-
-    const schedule = typeof requestAnimationFrame === 'function'
-      ? requestAnimationFrame
-      : (callback) => setTimeout(callback, 0);
-    schedule(() => {
-      if (!this._isPointerInsideFile(fileState)) return;
-
-      const shadowRoot = fileState.shadowHost?.shadowRoot
-        || fileState.container.querySelector('diffs-container')?.shadowRoot;
-      const target = shadowRoot?.elementFromPoint?.(pos.clientX, pos.clientY)
-        || document.elementFromPoint(pos.clientX, pos.clientY);
-      if (!target) return;
-
-      const eventInit = {
-        bubbles: true,
-        cancelable: true,
-        composed: true,
-        clientX: pos.clientX,
-        clientY: pos.clientY,
-        screenX: pos.screenX || 0,
-        screenY: pos.screenY || 0,
-        pointerId: pos.pointerId || 1,
-        pointerType: pos.pointerType || 'mouse',
-        isPrimary: true,
-      };
-      if (typeof window.PointerEvent === 'function') {
-        target.dispatchEvent(new window.PointerEvent('pointermove', eventInit));
-      }
-      target.dispatchEvent(new MouseEvent('mousemove', eventInit));
-    });
-  }
-
-  _getHoveredRow(fileName) {
-    const getter = this._gutterRowGetters.get(fileName);
-    if (getter) {
+  _applyHostClasses(fileState, host) {
+    if (!host || !host.classList) return;
+    host.classList.remove(...PierreBridge.MANAGED_HOST_CLASSES);
+    host.classList.add('d2h-file-wrapper');
+    if (fileState.itemType === 'context') host.classList.add('context-file');
+    if (fileState.collapsed) host.classList.add('collapsed');
+    if (typeof this._hostClassesFor === 'function') {
+      let extra;
       try {
-        const hovered = getter();
-        if (hovered) return hovered;
-      } catch (_err) {
-        // The cached gutter buttons can outlive a FileDiff instance during a
-        // rerender. Fall through to the bridge-tracked hover row.
+        extra = this._hostClassesFor(fileState.fileName, fileState.itemType);
+      } catch (err) {
+        console.error('[PierreBridge] hostClasses callback failed:', err);
+      }
+      if (Array.isArray(extra)) {
+        for (const cls of extra) if (cls) host.classList.add(cls);
       }
     }
-    return this._hoveredRows.get(fileName) || null;
+    if (host.dataset) host.dataset.fileName = fileState.fileName;
   }
 
   /**
-   * Derive the annotation side ('deletions'|'additions') for a hovered gutter
-   * line cell.
-   *
-   * Unified view stamps only one column, so the line-type string
-   * (change-deletion vs change-addition) is authoritative; context lines are
-   * addressable from the right (additions) side by convention.
-   *
-   * Split view renders two independent code columns and a context line's
-   * gutter carries a neutral 'context' line-type in BOTH columns — the string
-   * can no longer disambiguate. Derive the side from the enclosing
-   * `code[data-deletions]` / `code[data-additions]` column instead, falling
-   * back to the line-type string if (defensively) neither ancestor is found.
-   * @param {Element} lineCell - hovered gutter cell (has data-column-number)
-   * @returns {'deletions'|'additions'}
+   * Strip all managed classes + data-file-name from a recycled host.
    * @private
    */
-  _deriveHoverSide(lineCell) {
-    if (this.diffStyle === 'split') {
-      if (lineCell.closest?.('code[data-deletions]')) return 'deletions';
-      if (lineCell.closest?.('code[data-additions]')) return 'additions';
-    }
-    const lineType = lineCell.dataset?.lineType || '';
-    return lineType.includes('deletion') ? 'deletions' : 'additions';
+  _cleanHostClasses(host) {
+    if (!host || !host.classList) return;
+    host.classList.remove(...PierreBridge.MANAGED_HOST_CLASSES);
+    if (host.dataset && 'fileName' in host.dataset) delete host.dataset.fileName;
   }
-
-  _installFallbackHoverTracking(fileName, fileState) {
-    fileState._fallbackHoverCleanup?.();
-
-    const shadowRoot = fileState.shadowHost?.shadowRoot
-      || fileState.container?.querySelector('diffs-container')?.shadowRoot;
-    if (!shadowRoot) return;
-
-    const onPointerMove = (event) => {
-      const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
-      const lineCell = path.find(node =>
-        node?.nodeType === 1 &&
-        node.dataset?.columnNumber != null &&
-        node.dataset?.lineType != null
-      );
-      if (!lineCell) return;
-
-      const lineNumber = parseInt(lineCell.dataset.columnNumber, 10);
-      if (!Number.isFinite(lineNumber)) return;
-
-      this._hoveredRows.set(fileName, {
-        lineNumber,
-        side: this._deriveHoverSide(lineCell),
-      });
-      this._positionFallbackGutter(fileName, lineCell);
-    };
-
-    const onPointerLeave = () => {
-      this._hoveredRows.delete(fileName);
-      this._clearFallbackGutterPosition(fileName);
-    };
-
-    shadowRoot.addEventListener('pointermove', onPointerMove);
-    shadowRoot.addEventListener('mousemove', onPointerMove);
-    shadowRoot.addEventListener('pointerleave', onPointerLeave);
-    fileState._fallbackHoverCleanup = () => {
-      shadowRoot.removeEventListener('pointermove', onPointerMove);
-      shadowRoot.removeEventListener('mousemove', onPointerMove);
-      shadowRoot.removeEventListener('pointerleave', onPointerLeave);
-    };
-  }
-
-  _positionFallbackGutter(fileName, lineCell) {
-    const container = this._gutterContainers.get(fileName);
-    if (!container) return;
-
-    for (const [otherFileName, otherContainer] of this._gutterContainers) {
-      if (otherFileName === fileName || !otherContainer.parentElement) continue;
-      otherContainer._pierreFallbackParent = otherContainer._pierreFallbackParent || otherContainer.parentElement;
-      otherContainer.remove();
-    }
-
-    const rect = lineCell.getBoundingClientRect();
-    if (!rect.width || !rect.height) return;
-
-    const fileState = this.files.get(fileName);
-    const fallbackParent = fileState?.container?.closest?.('[data-file-name]') || fileState?.container;
-    container.dataset.fallbackPositioned = '';
-    if (fallbackParent && container.parentElement !== fallbackParent) {
-      container._pierreFallbackParent = container._pierreFallbackParent || container.parentElement;
-      fallbackParent.prepend(container);
-    }
-    container.style.position = 'fixed';
-    container.style.left = `${rect.right - 12}px`;
-    container.style.right = 'auto';
-    container.style.top = `${rect.top + (rect.height / 2)}px`;
-    container.style.transform = 'translateY(-50%)';
-    container.style.zIndex = '1000';
-  }
-
-  _clearFallbackGutterPosition(fileName) {
-    const container = this._gutterContainers.get(fileName);
-    // The marker is set as an empty string (falsy!) — presence-check it.
-    if (container?.dataset?.fallbackPositioned === undefined) return;
-
-    delete container.dataset.fallbackPositioned;
-    const fallbackParent = container._pierreFallbackParent;
-    if (fallbackParent?.isConnected && container.parentElement !== fallbackParent) {
-      fallbackParent.appendChild(container);
-    }
-    container._pierreFallbackParent = null;
-    container.style.removeProperty('position');
-    container.style.removeProperty('left');
-    container.style.removeProperty('right');
-    container.style.removeProperty('top');
-    container.style.removeProperty('transform');
-    container.style.removeProperty('z-index');
-  }
-
-  // ─── File Rendering ───────────────────────────────────────────────
 
   /**
-   * Create and render a FileDiff instance for a file.
-   * @param {string} fileName - File path
-   * @param {HTMLElement} container - DOM container to render into
-   * @param {string} patch - Unified diff patch text
-   * @param {Object} [renderOptions] - Additional render options
-   * @param {boolean} [renderOptions.collapsed] - Start collapsed
-   * @returns {Object} The file state object
+   * Build the per-file state record for one render entry.
+   * @param {Object} entry
+   * @returns {Object|null}
+   * @private
    */
-  renderFile(fileName, container, patch, renderOptions = {}) {
-    if (this._disabled) return null;
-
-    // Clean up existing instance
-    this.destroyFile(fileName);
-
-    const metadata = this.parsePatch(patch);
-    // Override the file name in metadata to match pair-review's name
-    if (metadata) {
-      metadata.name = fileName;
-      if (renderOptions.forcePlainText) {
-        metadata.lang = 'text';
-      }
-    }
-
-    // Reuse the metadata parsed just above — computeDiffPositions derives the
-    // diffPosition map from it instead of parsing the same patch a second time.
-    const diffPositions = this.computeDiffPositions(patch, metadata);
-    const annotations = [];
-    const formElements = new Map();
-
-    const useWorkerManager = !!(this.workerManager && this._workerReady);
-    const instance = this._createFileDiffInstance(fileName, formElements, {
-      ...renderOptions,
-      useWorkerManager,
-    });
-
-    const rendered = instance.render({
-      fileDiff: metadata,
-      containerWrapper: container,
-      lineAnnotations: annotations,
-    });
+  _createFileState(entry) {
+    if (!entry || !entry.id || !entry.fileName) return null;
+    const itemType = entry.type || 'diff';
 
     const fileState = {
-      instance,
-      fileName,
-      metadata,
-      container,
-      patch,
-      annotations,
-      diffPositions,
-      formElements,
-      shadowHost: container.querySelector('diffs-container') || container.firstElementChild,
-      // Context range support
+      id: entry.id,
+      fileName: entry.fileName,
+      itemType,
+      type: itemType === 'context' ? 'file' : 'diff',
+      metadata: null,
+      baseMetadata: null,
+      patch: entry.patch || null,
+      annotations: [],
+      diffPositions: new Map(),
+      formElements: new Map(),
+      contextRanges: [],
+      patchParityRanges: null,
       oldFile: null,
       newFile: null,
-      baseMetadata: null,   // metadata before context range merging
-      contextRanges: [],     // [{startLine, endLine}] in NEW file coords
-      // Lines the ORIGINAL PATCH rendered, captured at content upgrade. The
-      // full-contents re-diff can produce narrower context than the patch;
-      // these spans are merged into every render so the upgrade never
-      // un-renders visible lines (which would orphan annotations anchored to
-      // them). Unlike contextRanges, they survive clearContextRanges.
-      patchParityRanges: null,
-      forcePlainText: !!renderOptions.forcePlainText,
-      collapsed: !!renderOptions.collapsed,
-      usesWorkerManager: useWorkerManager,
+      fileContents: null,
+      collapsed: !!entry.collapsed,
+      forcePlainText: !!entry.forcePlainText,
+      binaryMessage: entry.binaryMessage || 'Binary file not shown',
+      version: 1,
+      _element: null,
+      _shadowRoot: null,
+      _instance: null,
+      _splitLayoutRaf: null,
     };
 
-    this.files.set(fileName, fileState);
-    fileState.shadowHost = fileState.container.querySelector('diffs-container') || fileState.container.firstElementChild;
-    if (rendered) this._installFallbackHoverTracking(fileName, fileState);
+    if (itemType === 'context') {
+      fileState.fileContents = {
+        name: entry.fileName,
+        contents: entry.contents || '',
+      };
+      if (fileState.forcePlainText) fileState.fileContents.lang = 'text';
+    } else if (itemType === 'binary') {
+      // Zero-hunk diff item: header-only. The binary message rides on the
+      // header (pr.js factory) so no body content is needed.
+      fileState.metadata = this._buildBinaryMetadata(entry.fileName);
+    } else {
+      const metadata = this.parsePatch(entry.patch);
+      if (metadata) {
+        metadata.name = entry.fileName;
+        if (fileState.forcePlainText) metadata.lang = 'text';
+      }
+      // A patch that fails to parse (or an empty patch) must never publish a
+      // null fileDiff — CodeView would throw. Fall back to a header-only item.
+      fileState.metadata = metadata || this._buildBinaryMetadata(entry.fileName);
+      fileState.diffPositions = this.computeDiffPositions(entry.patch, metadata);
+    }
+
     return fileState;
   }
 
   /**
-   * Upgrade a patch-only render with full file contents to enable hunk expansion.
-   * Calls render() again on the existing FileDiff instance — the library detects
-   * new content via areFilesEqual() and re-renders with isPartial: false.
+   * Build a zero-hunk FileDiffMetadata for a binary file (header only).
+   * @param {string} fileName
+   * @returns {Object}
+   * @private
+   */
+  _buildBinaryMetadata(fileName) {
+    return {
+      name: fileName,
+      type: 'change',
+      hunks: [],
+      splitLineCount: 0,
+      unifiedLineCount: 0,
+      isPartial: true,
+      deletionLines: [],
+      additionLines: [],
+    };
+  }
+
+  /**
+   * Build the CodeViewItem for a file state from its current data + version.
+   * @param {Object} fileState
+   * @returns {Object}
+   * @private
+   */
+  _buildItem(fileState) {
+    const annotations = this._sortedAnnotations(fileState);
+    if (fileState.type === 'file') {
+      return {
+        id: fileState.id,
+        type: 'file',
+        file: fileState.fileContents,
+        annotations,
+        version: fileState.version,
+        collapsed: fileState.collapsed,
+      };
+    }
+    return {
+      id: fileState.id,
+      type: 'diff',
+      fileDiff: fileState.metadata,
+      annotations,
+      version: fileState.version,
+      collapsed: fileState.collapsed,
+    };
+  }
+
+  /**
+   * Publish the current state of a file to the CodeView by bumping its version
+   * and calling updateItem. Re-reads the live record first so a change that
+   * resolves after the item was removed/replaced is dropped, not resurrected.
+   * @param {string} id
+   * @returns {boolean}
+   * @private
+   */
+  _publishItem(id) {
+    const fileState = this.files.get(id);
+    if (!fileState || !this.codeView) return false;
+    // Guard against stale writes: if the CodeView no longer holds this id
+    // (a newer setItems replaced the list), skip.
+    if (!this.codeView.getItem(id)) return false;
+    fileState.version = (fileState.version || 0) + 1;
+    return this.codeView.updateItem(this._buildItem(fileState));
+  }
+
+  /**
+   * Bump every item's version to force a full re-render (worker-ready, main
+   * thread fallback). Uses setItems so ordering is preserved.
+   * @private
+   */
+  _republishAll() {
+    if (!this.codeView || this.files.size === 0) return;
+    const items = [];
+    for (const fileState of this.files.values()) {
+      fileState.version = (fileState.version || 0) + 1;
+      items.push(this._buildItem(fileState));
+    }
+    this.codeView.setItems(items);
+  }
+
+  /**
+   * Recreate the CodeView main-thread-only (after a worker pool failure),
+   * preserving the current items and scroll position.
+   * @private
+   */
+  _recreateCodeViewMainThread() {
+    if (!this.codeView || !this.root) return;
+    const scrollTop = this.codeView.getScrollTop?.() || 0;
+    try { this.codeView.cleanUp(); } catch (_err) { /* ignore */ }
+    // cleanUp() disconnects observers/listeners but leaves its container <div> in
+    // the root, and setup() appends a fresh one — clear the root first (as
+    // _ensureCodeView does) or the old container leaks as orphaned DOM.
+    this.root.innerHTML = '';
+    const CodeView = window.PierreDiffs.CodeView;
+    this.codeView = new CodeView(this._buildCodeViewOptions(), undefined);
+    this.codeView.setup(this.root);
+    // Recreating bypasses the per-item unmount callbacks that normally drop
+    // instance→id entries, and every instance the old CodeView made is now dead —
+    // without this the map grows by one entry per file on every worker failure.
+    this._instanceToId.clear();
+    const items = [];
+    for (const fileState of this.files.values()) {
+      fileState.version = (fileState.version || 0) + 1;
+      // Clear ALL FOUR mount refs, symmetric with the onPostRender unmount path
+      // — consumers (external-comment-manager, tour-renderer) read
+      // fileState.container and treat non-null as mounted; leaving a stale
+      // detached container makes an off-screen file look mounted after recreate.
+      fileState._element = null;
+      fileState.container = null;
+      fileState._shadowRoot = null;
+      fileState._instance = null;
+      items.push(this._buildItem(fileState));
+    }
+    this.codeView.setItems(items);
+    if (scrollTop) this.codeView.scrollTo({ type: 'position', position: scrollTop });
+  }
+
+  /**
+   * Tear down all per-file state (gutter caches, split-layout rAFs) without
+   * touching the CodeView itself.
+   * @private
+   */
+  _teardownAllFileState() {
+    for (const fileState of this.files.values()) {
+      if (fileState._splitLayoutRaf != null) {
+        cancelAnimationFrame(fileState._splitLayoutRaf);
+      }
+      fileState.formElements?.clear?.();
+    }
+    // Resolve any outstanding slot waiters as not-mounted before dropping them,
+    // so awaiters of a torn-down item never hang. Snapshot and clear the map
+    // BEFORE resolving (as _resolveSlotWaiters does): each waiter's finish()
+    // splices itself out of the live array, so resolving while iterating it skips
+    // every second waiter — those then settle frames later via their own rAF
+    // fallback with the wrong reason instead of 'destroyed'.
+    const pendingWaiters = [...this._slotWaiters.values()];
+    this._slotWaiters.clear();
+    for (const waiters of pendingWaiters) {
+      // Same result shape destroyFile resolves with, element key included.
+      for (const w of waiters) w({ element: null, mounted: false, slotted: false, reason: 'destroyed' });
+    }
+    this.files.clear();
+    this._gutterContainers.clear();
+    this._gutterRowGetters.clear();
+    this._instanceToId.clear();
+  }
+
+  /**
+   * Destroy all items — resets the CodeView to an empty list and clears state.
+   * The CodeView instance and its root binding are preserved so the next
+   * renderAll() reuses them.
+   */
+  destroyAll() {
+    this._teardownAllFileState();
+    if (this.codeView) {
+      this.codeView.setItems([]);
+    }
+  }
+
+  /**
+   * Remove a single file's item. Rare (renderAll rebuilds wholesale) but kept
+   * for API parity.
+   * @param {string} fileName
+   */
+  destroyFile(fileName) {
+    const fileState = this.files.get(fileName);
+    if (!fileState) return;
+    if (fileState._splitLayoutRaf != null) cancelAnimationFrame(fileState._splitLayoutRaf);
+    fileState.formElements?.clear?.();
+    this._gutterContainers.delete(fileName);
+    this._gutterRowGetters.delete(fileName);
+    // Resolve + drop any pending slot waiters so awaiters never hang, and drop
+    // the instance→id mapping — otherwise these leak for every destroyed file /
+    // removed context item.
+    this._resolveSlotWaiters(fileName, { element: null, mounted: false, slotted: false, reason: 'destroyed' });
+    if (fileState._instance) this._instanceToId.delete(fileState._instance);
+    this.files.delete(fileName);
+    if (this.codeView) {
+      const remaining = [];
+      for (const fs of this.files.values()) remaining.push(this._buildItem(fs));
+      this.codeView.setItems(remaining);
+    }
+  }
+
+  // ─── Context Files (whole-file reference items) ───────────────────
+
+  /**
+   * CodeView item id for a context file (namespaced so a context entry never
+   * collides with a diff entry that shares the same path — see fix #540).
+   * @private
+   */
+  _contextIdFor(fileName) {
+    return `context:${fileName}`;
+  }
+
+  hasContextFile(fileName) {
+    return this.files.has(this._contextIdFor(fileName));
+  }
+
+  /**
+   * Add (or update the contents of) a context-file item — a whole-file
+   * reference view appended after the diff items. Idempotent per path.
+   * @param {string} fileName
+   * @param {string} contents - full file text
+   * @param {Object} [opts] - { collapsed }
+   * @returns {boolean}
+   */
+  addContextFile(fileName, contents, opts = {}) {
+    if (this._disabled || !this.codeView) return false;
+    const id = this._contextIdFor(fileName);
+    const existing = this.files.get(id);
+    if (existing) {
+      existing.fileContents = { name: fileName, contents: contents || '' };
+      if (existing.forcePlainText) existing.fileContents.lang = 'text';
+      return this._publishItem(id);
+    }
+    const fileState = this._createFileState({
+      id, type: 'context', fileName, contents, collapsed: !!opts.collapsed,
+    });
+    if (!fileState) return false;
+    this.files.set(id, fileState);
+    this.codeView.addItems([this._buildItem(fileState)]);
+    return true;
+  }
+
+  /**
+   * Remove a context-file item.
+   * @param {string} fileName
+   */
+  removeContextFileItem(fileName) {
+    this.destroyFile(this._contextIdFor(fileName));
+  }
+
+  /**
+   * Collapse/expand a context-file item.
+   * @param {string} fileName
+   * @param {boolean} collapsed
+   */
+  setContextFileCollapsed(fileName, collapsed) {
+    this.setCollapsed(this._contextIdFor(fileName), collapsed);
+  }
+
+  // ─── Content Upgrade (full contents → hunk expansion) ─────────────
+
+  /**
+   * Upgrade a patch-only diff item to full-contents metadata so hunk expansion
+   * (the vendor's line-info expand arrows) and context-range reveal work.
+   *
+   * Builds a non-partial FileDiffMetadata via parseDiffFromFile(old, new) and
+   * publishes it with a bumped version. Captures the patch's visible line spans
+   * so the full re-diff never un-renders lines the patch showed (which would
+   * orphan anchored comments/annotations).
+   *
    * @param {string} fileName
    * @param {{ name: string, contents: string }|null} oldFile
    * @param {{ name: string, contents: string }|null} newFile
-   * @returns {boolean} true if re-render occurred
+   * @returns {boolean} true if the upgrade published
    */
   upgradeFileContents(fileName, oldFile, newFile) {
     const fileState = this.files.get(fileName);
-    if (!fileState || !fileState.instance) return false;
+    if (!fileState || fileState.itemType !== 'diff') return false;
+    if (fileState.baseMetadata) return true; // already upgraded
+
     const nextOldFile = fileState.forcePlainText && oldFile
       ? { ...oldFile, lang: 'text' }
       : oldFile;
@@ -963,116 +1100,55 @@ class PierreBridge {
       ? { ...newFile, lang: 'text' }
       : newFile;
 
-    // Snapshot the currently-rendered hunk spans BEFORE render() replaces
-    // instance.fileDiff: the full-contents re-diff can compute narrower
-    // context than the original patch, silently un-rendering lines that
-    // annotations, comments, and the user's eyes are anchored to.
-    const prevHunks = fileState.instance.fileDiff?.hunks;
+    const parseFrom = window.PierreDiffs.parseDiffFromFile;
+    if (typeof parseFrom !== 'function') return false;
 
-    const rendered = fileState.instance.render({
-      oldFile: nextOldFile,
-      newFile: nextNewFile,
-      lineAnnotations: fileState.annotations,
-      containerWrapper: fileState.container,
-    });
-    // Cache full-file contents for re-render calls (context ranges, etc.)
+    let fullMetadata;
+    try {
+      fullMetadata = parseFrom(
+        nextOldFile || { name: fileName, contents: '' },
+        nextNewFile || { name: fileName, contents: '' }
+      );
+    } catch (err) {
+      console.warn(`[PierreBridge] parseDiffFromFile failed for ${fileName}; keeping patch-only diff.`, err);
+      return false;
+    }
+    if (!fullMetadata) return false;
+    fullMetadata.name = fileName;
+    if (fileState.forcePlainText) fullMetadata.lang = 'text';
+
+    // Capture the patch's addition-side spans BEFORE swapping metadata: the
+    // full-contents re-diff can compute narrower context than the patch, which
+    // would silently drop lines the patch (and anchored annotations) showed.
+    const prevHunks = fileState.metadata?.hunks;
+    if (!fileState.patchParityRanges && Array.isArray(prevHunks) && prevHunks.length) {
+      fileState.patchParityRanges = prevHunks
+        .filter(h => h.additionCount > 0)
+        .map(h => ({
+          startLine: h.additionStart,
+          endLine: h.additionStart + h.additionCount - 1,
+        }));
+    }
+
     fileState.oldFile = nextOldFile;
     fileState.newFile = nextNewFile;
-    // Snapshot metadata whenever the instance has a fileDiff,
-    // even if render() returned false (e.g. files-equal early exit)
-    if (fileState.instance.fileDiff) {
-      fileState.baseMetadata = fileState.instance.fileDiff;
-      if (!fileState.patchParityRanges && Array.isArray(prevHunks) && prevHunks.length) {
-        fileState.patchParityRanges = prevHunks
-          .filter(h => h.additionCount > 0)
-          .map(h => ({
-            startLine: h.additionStart,
-            endLine: h.additionStart + h.additionCount - 1,
-          }));
-      }
-      if (this._effectiveContextRanges(fileState).length) this._applyContextRanges(fileName);
-    }
-    if (rendered) this._installFallbackHoverTracking(fileName, fileState);
-    if (rendered) this._restoreHoverAfterRender(fileState);
-    return rendered;
-  }
-
-  /**
-   * Render a binary file placeholder (no diff).
-   * @param {HTMLElement} container
-   * @param {string} message
-   */
-  renderBinaryFile(container, message = 'Binary file') {
-    container.innerHTML = `<div class="pierre-binary-file">${message}</div>`;
-  }
-
-  /**
-   * Collapse/expand a file's diff rendering.
-   * @param {string} fileName
-   * @param {boolean} collapsed
-   */
-  setCollapsed(fileName, collapsed) {
-    const fileState = this.files.get(fileName);
-    if (!fileState) return;
-    const wasCollapsed = fileState.collapsed;
-    fileState.collapsed = collapsed;
-    // Vendor setOptions REPLACES the whole options object (it does not
-    // merge), so a bare { collapsed } would silently drop diffStyle, theme,
-    // renderAnnotation, and every other option — spread the live options in.
-    fileState.instance.setOptions({ ...(fileState.instance.options || {}), collapsed });
-    // A file rendered while collapsed has zero shadow-DOM lines (the vendor
-    // skips line rendering for collapsed instances). Flipping the option
-    // alone leaves the body empty on expand — force a rerender so the lines
-    // materialize. Cheap no-op when the lines already exist, and rerender
-    // re-applies fileState.annotations so nothing is lost.
-    if (wasCollapsed && !collapsed && typeof fileState.instance.rerender === 'function') {
-      fileState.instance.rerender();
-    }
-  }
-
-  /**
-   * Destroy a file's FileDiff instance and clean up.
-   * @param {string} fileName
-   */
-  destroyFile(fileName) {
-    const fileState = this.files.get(fileName);
-    if (!fileState) return;
-    const gutterContainer = this._gutterContainers.get(fileName);
-    if (fileState.instance) {
-      fileState.instance.cleanUp();
-    }
-    fileState._fallbackHoverCleanup?.();
-    this._clearFallbackGutterPosition(fileName);
-    gutterContainer?.remove();
-    fileState.formElements.clear();
-    this._gutterContainers.delete(fileName);
-    this._gutterRowGetters.delete(fileName);
-    this._hoveredRows.delete(fileName);
-    this.files.delete(fileName);
-  }
-
-  /**
-   * Destroy all file instances.
-   */
-  destroyAll() {
-    for (const [fileName] of this.files) {
-      this.destroyFile(fileName);
-    }
+    fileState.baseMetadata = fullMetadata;
+    fileState.metadata = this._effectiveMetadata(fileState);
+    return this._publishItem(fileName);
   }
 
   // ─── Context Ranges ──────────────────────────────────────────────
 
   /**
-   * Add context ranges to reveal non-contiguous lines in a file's diff.
-   * Ranges are in NEW file coordinates (1-indexed).
-   * If file contents aren't loaded yet, ranges are queued for later application.
+   * Add context ranges (NEW-file coords, 1-indexed) to reveal non-contiguous
+   * lines. Queued until content is upgraded (baseMetadata present).
    * @param {string} fileName
-   * @param {Array<{startLine: number, endLine: number}>} ranges
-   * @returns {boolean} true if ranges were applied immediately
+   * @param {Array<{startLine:number, endLine:number}>} ranges
+   * @returns {boolean} true if applied immediately
    */
   addContextRanges(fileName, ranges) {
     const fileState = this.files.get(fileName);
-    if (!fileState || !fileState.instance) return false;
+    if (!fileState || fileState.itemType !== 'diff') return false;
 
     const { mergeOverlapping } = window.PierreContext || {};
     if (!mergeOverlapping) {
@@ -1080,43 +1156,52 @@ class PierreBridge {
       return false;
     }
 
-    // Merge with existing context ranges (deduplicate)
     const existing = fileState.contextRanges || [];
     fileState.contextRanges = mergeOverlapping([...existing, ...ranges]);
 
-    // If file contents aren't loaded yet, ranges will be applied in upgradeFileContents
     if (!fileState.baseMetadata) return false;
-
-    return this._applyContextRanges(fileName);
+    fileState.metadata = this._effectiveMetadata(fileState);
+    return this._publishItem(fileName);
   }
 
   /**
-   * Re-render a file with new fileDiff metadata, preserving cached file contents.
-   * Clears expandedHunks to avoid stale hunk-index references.
-   * @param {Object} fileState
-   * @param {Object} fileDiff - merged or base metadata
+   * Remove specific context ranges from a file.
+   * @param {string} fileName
+   * @param {Array<{startLine:number, endLine:number}>} ranges
    * @returns {boolean}
-   * @private
    */
-  _renderWithFileDiff(fileState, fileDiff) {
-    fileState.instance.hunksRenderer?.expandedHunks?.clear();
-    const rendered = fileState.instance.render({
-      oldFile: fileState.oldFile,
-      newFile: fileState.newFile,
-      fileDiff,
-      lineAnnotations: fileState.annotations,
-      containerWrapper: fileState.container,
-    });
-    if (rendered) this._installFallbackHoverTracking(fileState.fileName, fileState);
-    if (rendered) this._restoreHoverAfterRender(fileState);
-    return rendered;
+  removeContextRanges(fileName, ranges) {
+    const fileState = this.files.get(fileName);
+    if (!fileState || fileState.itemType !== 'diff') return false;
+
+    const { subtractRanges } = window.PierreContext || {};
+    if (!subtractRanges) return false;
+
+    fileState.contextRanges = subtractRanges(fileState.contextRanges || [], ranges);
+    if (!fileState.baseMetadata) return false;
+    fileState.metadata = this._effectiveMetadata(fileState);
+    return this._publishItem(fileName);
   }
 
   /**
-   * All ranges that must be visible: patch-parity spans (immutable, captured
-   * at content upgrade) plus dynamically added context ranges.
+   * Remove all dynamically-added context ranges, restoring the diff view.
+   * Patch-parity spans are never shrunk below what the original patch showed.
+   * @param {string} fileName
+   * @returns {boolean}
+   */
+  clearContextRanges(fileName) {
+    const fileState = this.files.get(fileName);
+    if (!fileState || fileState.itemType !== 'diff') return false;
+    fileState.contextRanges = [];
+    if (!fileState.baseMetadata) return false;
+    fileState.metadata = this._effectiveMetadata(fileState);
+    return this._publishItem(fileName);
+  }
+
+  /**
+   * All spans that must stay visible: immutable patch-parity + dynamic ranges.
    * @param {Object} fileState
-   * @returns {Array<{startLine: number, endLine: number}>}
+   * @returns {Array<{startLine:number, endLine:number}>}
    * @private
    */
   _effectiveContextRanges(fileState) {
@@ -1126,68 +1211,29 @@ class PierreBridge {
     ];
   }
 
-  _applyContextRanges(fileName) {
-    const fileState = this.files.get(fileName);
-    if (!fileState?.baseMetadata) return false;
+  /**
+   * Compute the metadata to publish for a diff item: the base (full-contents)
+   * metadata with all effective context ranges merged in. Falls back to the
+   * patch-only metadata before an upgrade.
+   * @param {Object} fileState
+   * @returns {Object}
+   * @private
+   */
+  _effectiveMetadata(fileState) {
+    if (!fileState.baseMetadata) return fileState.metadata;
     const ranges = this._effectiveContextRanges(fileState);
-    if (!ranges.length) return false;
-
+    if (!ranges.length) return fileState.baseMetadata;
     const { mergeContextRanges } = window.PierreContext || {};
-    if (!mergeContextRanges) return false;
-
-    const merged = mergeContextRanges(fileState.baseMetadata, ranges);
-    return this._renderWithFileDiff(fileState, merged);
-  }
-
-  /**
-   * Remove specific context ranges from a file.
-   * @param {string} fileName
-   * @param {Array<{startLine: number, endLine: number}>} ranges
-   * @returns {boolean} true if re-render occurred
-   */
-  removeContextRanges(fileName, ranges) {
-    const fileState = this.files.get(fileName);
-    if (!fileState) return false;
-
-    const { subtractRanges } = window.PierreContext || {};
-    if (!subtractRanges) return false;
-
-    fileState.contextRanges = subtractRanges(fileState.contextRanges || [], ranges);
-
-    if (!fileState.baseMetadata) return false;
-    if (this._effectiveContextRanges(fileState).length === 0) {
-      return this._renderWithFileDiff(fileState, fileState.baseMetadata);
-    }
-    return this._applyContextRanges(fileName);
-  }
-
-  /**
-   * Remove all context ranges for a file, restoring original diff view.
-   * @param {string} fileName
-   * @returns {boolean} true if re-render occurred
-   */
-  clearContextRanges(fileName) {
-    const fileState = this.files.get(fileName);
-    if (!fileState) return false;
-
-    fileState.contextRanges = [];
-
-    if (!fileState.baseMetadata) return false;
-    // Patch-parity spans are not "context ranges" — clearing must never
-    // shrink the view below what the original patch rendered.
-    if (this._effectiveContextRanges(fileState).length) {
-      return this._applyContextRanges(fileName);
-    }
-    return this._renderWithFileDiff(fileState, fileState.baseMetadata);
+    if (!mergeContextRanges) return fileState.baseMetadata;
+    return mergeContextRanges(fileState.baseMetadata, ranges) || fileState.baseMetadata;
   }
 
   /**
    * Convert OLD-file (deletion-side) line numbers to NEW-file coordinates.
-   * Delegates to PierreContext using the file's baseMetadata for offset computation.
    * @param {string} fileName
-   * @param {number} oldStart - OLD-file line (1-indexed)
-   * @param {number} oldEnd - OLD-file line (1-indexed)
-   * @returns {{startLine: number, endLine: number}|null}
+   * @param {number} oldStart
+   * @param {number} oldEnd
+   * @returns {{startLine:number, endLine:number}|null}
    */
   convertOldToNew(fileName, oldStart, oldEnd) {
     const fileState = this.files.get(fileName);
@@ -1197,37 +1243,181 @@ class PierreBridge {
     return convertOldToNew(fileState.baseMetadata, oldStart, oldEnd);
   }
 
-  // ─── Gutter Buttons ───────────────────────────────────────────────
+  // ─── Collapse / Viewed ────────────────────────────────────────────
 
   /**
-   * Chat button SVG icon (GitHub-style speech bubble, matches legacy DiffRenderer).
-   * @private
+   * Collapse/expand a file's diff body. CodeView re-renders the body on a
+   * collapsed:true→false transition when the version is bumped, so no manual
+   * re-kick is needed (unlike the old per-FileDiff instance path).
+   * @param {string} fileName
+   * @param {boolean} collapsed
    */
-  static CHAT_SVG = `<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14"><path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/></svg>`;
+  setCollapsed(fileName, collapsed) {
+    const fileState = this.files.get(fileName);
+    if (!fileState) return;
+    // Always publish (even when the flag is unchanged): callers use this to
+    // force a header refresh after a viewed-state change that did not alter
+    // the collapse flag.
+    fileState.collapsed = collapsed;
+    this._publishItem(fileName);
+  }
+
+  // ─── Layout ───────────────────────────────────────────────────────
 
   /**
-   * Create dual gutter buttons (chat + comment) for renderGutterUtility.
+   * Push already-measured item heights into the DOM scroll extent.
    *
-   * @pierre/diffs calls this once per render. The returned element is placed
-   * in the light DOM and slotted into Shadow DOM. The library moves it to
-   * follow the hovered line's number cell automatically.
+   * CodeView reconciles item heights OUTSIDE a render pass — its ResizeObserver
+   * watches the sticky container that parents every rendered item, so content
+   * growing inside a mounted item does update `item.height` and the vendor's own
+   * `scrollHeight`. But only a RENDER pass calls `syncContainerHeight()`: compare
+   * computeRenderRangeAndEmit (CodeView.js:1284-1286) with the resize handler
+   * (CodeView.js:1404-1412), which reconciles and repositions but never syncs the
+   * container element's height. Until the next render the DOM container stays
+   * SHORT by exactly the growth: measured here as a scroll extent of 1216px while
+   * the vendor already believed 1430px after a file-comment form opened. The user
+   * cannot scroll to content in that gap, so on a file whose body already fills
+   * the viewport the form's Save button is unreachable.
    *
+   * Requests a QUEUED render, which the vendor coalesces to one pass per frame:
+   * a resize storm (a textarea autogrowing on every keystroke) costs one layout
+   * flush per frame, with no version bump, no annotation re-render and no
+   * layout-cache reset — unlike republishing the item.
+   * @returns {boolean} true when a render was requested
+   */
+  syncScrollExtent() {
+    if (this._disabled || typeof this.codeView?.render !== 'function') return false;
+    this.codeView.render(false);
+    return true;
+  }
+
+  // ─── Scrolling ────────────────────────────────────────────────────
+
+  /**
+   * Scroll a file into view.
    * @param {string} fileName
-   * @param {Function} getHoveredRow - () => { lineNumber, side } | undefined
-   * @returns {HTMLElement}
+   * @param {Object} [opts] - { align, behavior }
+   * @returns {boolean}
+   */
+  scrollToFile(fileName, opts = {}) {
+    if (!this.codeView || !this.files.has(fileName)) return false;
+    const align = opts.align || 'start';
+    let offset = opts.offset || 0;
+    // With stickyHeaders, an align:'start' item scroll positions the target's
+    // top edge at the viewport top — but the PRECEDING file's sticky header is
+    // still pinned there, so the target's own header renders one header-height
+    // below it (a visible empty gap). The vendor compensates line/range scrolls
+    // with getStickyHeaderOffset() but NOT item scrolls, so do it here: scroll
+    // an extra header-height past item.top (align:'start' ⇒ scrollTop =
+    // item.top − offset), which pushes the preceding header out and pins the
+    // target's own header at the top. The FIRST item has no preceding header,
+    // so it is left alone (offsetting it would scroll past the file's top).
+    const isFirstItem = this.files.keys().next().value === fileName;
+    if (align === 'start' && !isFirstItem) {
+      // Prefer the caller's measured header height (opts.stickyOffset — the
+      // actual rendered header, e.g. pr.js's --diff-file-header-height). The
+      // vendor's getStickyHeaderOffset() is only an itemMetrics ESTIMATE
+      // (default ~44) and undershoots a taller custom header, leaving a residual
+      // gap.
+      const stickyOffset = Number.isFinite(opts.stickyOffset)
+        ? opts.stickyOffset
+        : (typeof this.codeView.getStickyHeaderOffset === 'function'
+          ? (this.codeView.getStickyHeaderOffset() || 0)
+          : 0);
+      offset -= stickyOffset;
+    }
+    this.codeView.scrollTo({
+      type: 'item',
+      id: fileName,
+      align,
+      offset,
+      behavior: opts.behavior || 'smooth',
+    });
+    return true;
+  }
+
+  /**
+   * Scroll to a specific line in a file and flash it.
+   * @param {string} fileName
+   * @param {number} lineNumber
+   * @param {string} [side] - 'LEFT' or 'RIGHT'
+   * @param {boolean} [shouldScroll]
+   * @returns {boolean} false when the line cannot be resolved, so callers can
+   *   fall back to file-level navigation (scrollToFile).
+   */
+  scrollToLine(fileName, lineNumber, side = 'RIGHT', shouldScroll = true) {
+    const fileState = this.files.get(fileName);
+    if (!fileState || !this.codeView) return false;
+
+    // Answer from the parsed diff data, not the DOM: under virtualization an
+    // off-screen row is legitimately unmounted, but a line that is not in the
+    // file at all should still report failure so callers can fall back.
+    // Undecidable (metadata not parsed yet, context item) stays optimistic —
+    // callers treat false as "give up on this line".
+    if (this._lineInDiffData(fileState, lineNumber, side) === false) return false;
+
+    if (shouldScroll) {
+      this.codeView.scrollTo({
+        type: 'line',
+        id: fileName,
+        lineNumber,
+        side: PierreBridge.toPierreSide(side),
+        align: 'center',
+        behavior: 'smooth',
+      });
+    }
+    // Flash the target line once it is (or becomes) mounted. Best-effort:
+    // resolves the shadow-DOM row via the persisted instance.
+    this._flashLine(fileState, lineNumber, side);
+    return true;
+  }
+
+  /**
+   * Apply a brief highlight flash to a line's shadow-DOM element.
    * @private
    */
+  _flashLine(fileState, lineNumber, side, { maxFrames = 60 } = {}) {
+    const pierreSide = PierreBridge.toPierreSide(side);
+    const schedule = typeof requestAnimationFrame === 'function'
+      ? requestAnimationFrame
+      : (cb) => setTimeout(cb, 16);
+    // The preceding scrollToLine uses behavior:'smooth', so a virtualized-out
+    // target mounts many frames later — a fixed 2-frame wait would query before
+    // the row exists and silently no-op. Poll (bounded) for the row, re-reading
+    // fileState._instance each frame since virtualization can (re)mount the item.
+    let frames = 0;
+    const tryFlash = () => {
+      const instance = fileState._instance;
+      const indices = instance && typeof instance.getLineIndex === 'function'
+        ? instance.getLineIndex(lineNumber, pierreSide)
+        : undefined;
+      const lineEl = PierreBridge._queryLineElement(instance, indices, pierreSide);
+      if (lineEl) {
+        lineEl.classList.remove('pierre-line-highlight');
+        void lineEl.offsetWidth;
+        lineEl.classList.add('pierre-line-highlight');
+        lineEl.addEventListener('animationend', () => {
+          lineEl.classList.remove('pierre-line-highlight');
+        }, { once: true });
+        return;
+      }
+      if (++frames < maxFrames) schedule(tryFlash);
+    };
+    schedule(tryFlash);
+  }
+
+  // ─── Line Selection ───────────────────────────────────────────────
+
   /**
-   * Get the active line selection for a file, if any.
-   * Reads directly from @pierre/diffs' InteractionManager.
+   * Active line selection for a file, if any.
    * @param {string} fileName
-   * @returns {{ start: number, end: number, side: string }|null}
+   * @returns {{start:number, end:number, side:string}|null}
    */
   getLineSelection(fileName) {
-    const fileState = this.files.get(fileName);
-    if (!fileState || !fileState.instance) return null;
-    const range = fileState.instance.interactionManager.getSelection();
-    if (!range) return null;
+    if (!this.codeView) return null;
+    const selection = this.codeView.getSelectedLines?.();
+    if (!selection || selection.id !== fileName || !selection.range) return null;
+    const range = selection.range;
     return {
       start: range.start,
       end: range.end,
@@ -1236,321 +1426,459 @@ class PierreBridge {
   }
 
   /**
-   * Clear the active line selection for a file.
+   * Clear the active line selection.
    * @param {string} fileName
    */
   clearLineSelection(fileName) {
-    const fileState = this.files.get(fileName);
-    if (!fileState || !fileState.instance) return;
-    fileState.instance.setSelectedLines(null);
+    if (!this.codeView) return;
+    const selection = this.codeView.getSelectedLines?.();
+    if (selection && selection.id !== fileName) return;
+    this.codeView.clearSelectedLines?.();
   }
 
+  // ─── Hunk visibility / expansion ──────────────────────────────────
+
   /**
-   * Scroll to a specific line in a Pierre-rendered file.
-   *
-   * Line number cells live inside the @pierre/diffs shadow root, so light-DOM
-   * queries for `.line-num2`/`tr` return nothing. This reaches into the shadow
-   * DOM, resolves the line by index (via the instance's `getLineIndex`), scrolls
-   * it into view, and applies a brief highlight flash.
-   *
+   * Whether a line is currently rendered (inside a hunk of the published
+   * metadata) and not hidden in a collapsed gap.
    * @param {string} fileName
    * @param {number} lineNumber
-   * @param {string} [side] - 'LEFT' or 'RIGHT' (defaults to 'RIGHT')
-   * @returns {boolean} true if the line was found and scrolled to
+   * @param {string} side
+   * @returns {boolean}
    */
-  scrollToLine(fileName, lineNumber, side = 'RIGHT', shouldScroll = true) {
+  isLineVisible(fileName, lineNumber, side) {
     const fileState = this.files.get(fileName);
-    if (!fileState || !fileState.instance) return false;
-    const instance = fileState.instance;
-
-    const pierreSide = PierreBridge.toPierreSide(side);
-    const indices = typeof instance.getLineIndex === 'function'
-      ? instance.getLineIndex(lineNumber, pierreSide)
-      : undefined;
-    const lineEl = PierreBridge._queryLineElement(instance, indices, pierreSide);
-    if (!lineEl) return false;
-
-    // Use scrollIntoView on the shadow DOM element — it still scrolls the
-    // host document relative to the viewport.
-    if (shouldScroll) {
-      const rect = lineEl.getBoundingClientRect();
-      const isVisible = rect.top >= 0 && rect.bottom <= window.innerHeight;
-      if (!isVisible) {
-        lineEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
-    }
-
-    // Brief highlight flash so the user can locate the target line.
-    // The class is styled by ANNOTATION_CSS (injected into shadow DOM).
-    lineEl.classList.remove('pierre-line-highlight');
-    void lineEl.offsetWidth; // force reflow to restart animation
-    lineEl.classList.add('pierre-line-highlight');
-    lineEl.addEventListener('animationend', () => {
-      lineEl.classList.remove('pierre-line-highlight');
-    }, { once: true });
-
-    return true;
+    if (!fileState || fileState.collapsed) return false;
+    return this._lineInDiffData(fileState, lineNumber, side) === true;
   }
-
-  _createGutterButtons(fileName, getHoveredRow) {
-    this._gutterRowGetters.set(fileName, getHoveredRow);
-    // Reuse existing container if already created for this file
-    if (this._gutterContainers.has(fileName)) return this._gutterContainers.get(fileName);
-
-    const container = document.createElement('div');
-    container.className = 'pierre-gutter-buttons';
-    // Mark as utility so @pierre/diffs recognizes it in pointer path checks
-    container.setAttribute('data-utility-button', '');
-
-    /**
-     * Resolve the target for a gutter button click.
-     *
-     * Rules:
-     *  - If a multi-line range is active AND the button is currently over a
-     *    line inside that range (same side), apply the action to the range
-     *    and clear the selection.
-     *  - If a multi-line range is active but the button has moved to a line
-     *    OUTSIDE the range, cancel the range and apply the action to the
-     *    single hovered line.
-     *  - Otherwise, apply the action to the single hovered line.
-     */
-    const resolveClickTarget = () => {
-      const hovered = this._getHoveredRow(fileName);
-      const hoveredSide = hovered
-        ? (hovered.side === 'deletions' ? 'LEFT' : 'RIGHT')
-        : null;
-      const sel = this.getLineSelection(fileName);
-
-      if (sel && sel.start !== sel.end) {
-        const inRange = hovered
-          && hoveredSide === sel.side
-          && hovered.lineNumber >= sel.start
-          && hovered.lineNumber <= sel.end;
-        // Either we consume the range or we cancel it — in both cases clear.
-        this.clearLineSelection(fileName);
-        if (inRange) {
-          return { start: sel.start, end: sel.end, side: sel.side, isRange: true };
-        }
-        // Fall through to single-line resolution on the hovered line.
-      }
-
-      if (!hovered) return null;
-      return {
-        start: hovered.lineNumber,
-        end: hovered.lineNumber,
-        side: hoveredSide,
-        isRange: false,
-      };
-    };
-
-    // Wire a gutter button so that:
-    //  - A plain click triggers the action for the hovered line (or active
-    //    multi-line selection).
-    //  - Press-and-drag creates a multi-line selection (same UX as dragging
-    //    from a line number) WITHOUT triggering the action on release.
-    //
-    // Why this is needed:
-    //  @pierre/diffs cannot start line selection from button clicks — its
-    //  resolvePointerTarget fails because `data-code` is missing from the
-    //  composed path through the shadow DOM slot.  So we implement the drag
-    //  ourselves, calling setSelectedLines to set the selection in the
-    //  library.  We also stopPropagation on pointerdown to prevent the
-    //  library from interfering, and track whether a drag occurred to
-    //  suppress the spurious click that fires when the button DOM element
-    //  follows the hover and ends up under the cursor at the release point.
-    const wrapButton = (btn, handler) => {
-      let dragInfo = null;
-
-      btn.addEventListener('pointerdown', (e) => {
-        e.stopPropagation(); // library can't handle buttons; avoid interference
-        const hovered = this._getHoveredRow(fileName);
-        if (!hovered) return;
-        dragInfo = {
-          startLine: hovered.lineNumber,
-          side: hovered.side,          // 'additions' | 'deletions'
-          pointerId: e.pointerId,
-          dragged: false,
-        };
-
-        const onMove = (me) => {
-          if (!dragInfo || me.pointerId !== dragInfo.pointerId) return;
-          const cur = this._getHoveredRow(fileName);
-          if (!cur || cur.lineNumber === dragInfo.startLine) return;
-          dragInfo.dragged = true;
-          const fileState = this.files.get(fileName);
-          if (fileState?.instance) {
-            const start = Math.min(dragInfo.startLine, cur.lineNumber);
-            const end = Math.max(dragInfo.startLine, cur.lineNumber);
-            fileState.instance.setSelectedLines({
-              start, end, side: dragInfo.side,
-            });
-          }
-        };
-
-        const onUp = (ue) => {
-          if (!dragInfo || ue.pointerId !== dragInfo.pointerId) return;
-          document.removeEventListener('pointermove', onMove);
-          document.removeEventListener('pointerup', onUp);
-          document.removeEventListener('pointercancel', onUp);
-          // dragInfo.dragged is consumed by onclick below
-        };
-
-        document.addEventListener('pointermove', onMove);
-        document.addEventListener('pointerup', onUp);
-        // Touch/pen pointers can be canceled by the OS (edge gestures, palm
-        // rejection) in which case no pointerup fires. Clean up on cancel
-        // too so the document-level listeners don't leak.
-        document.addEventListener('pointercancel', onUp);
-      });
-
-      btn.onclick = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        if (!dragInfo) return;        // no pointerdown on this button (e.g. line-number drag landed here)
-        if (dragInfo.dragged) {       // suppress click that ends a button-initiated drag
-          dragInfo = null;
-          return;
-        }
-        dragInfo = null;
-        const target = resolveClickTarget();
-        if (!target) return;
-        handler(target);
-      };
-    };
-
-    // Chat button (left)
-    if (this.options.onChatClick) {
-      const chatBtn = document.createElement('button');
-      chatBtn.className = 'pierre-gutter-btn pierre-chat-btn';
-      chatBtn.title = 'Chat about this line';
-      chatBtn.innerHTML = PierreBridge.CHAT_SVG;
-      wrapButton(chatBtn, (target) => {
-        this.options.onChatClick(fileName, target.start, target.side, target);
-      });
-      container.appendChild(chatBtn);
-    }
-
-    // Comment button (right)
-    const commentBtn = document.createElement('button');
-    commentBtn.className = 'pierre-gutter-btn pierre-comment-btn';
-    commentBtn.title = 'Add comment';
-    commentBtn.textContent = '+';
-    wrapButton(commentBtn, (target) => {
-      if (this.options.onCommentClick) {
-        this.options.onCommentClick(fileName, target.start, target.side, target);
-      }
-    });
-    container.appendChild(commentBtn);
-
-    // Cache so we return the same element on rerender
-    this._gutterContainers.set(fileName, container);
-
-    return container;
-  }
-
-  // ─── Annotations (Comments, Suggestions, Forms) ───────────────────
 
   /**
-   * Add an annotation for a comment, suggestion, or form.
+   * Whether a line number falls inside the file's parsed diff data (published
+   * hunks, widened by any vendor-arrow expansion), independent of collapse
+   * state and of what is currently mounted.
+   *
+   * Returns `null` when the question is undecidable — a non-diff item (context
+   * files carry whole-file line numbers) or a file whose metadata has not been
+   * parsed yet. Callers must treat null as "assume present": a false answer is
+   * a give-up signal.
+   *
+   * @returns {boolean|null}
+   * @private
+   */
+  _lineInDiffData(fileState, lineNumber, side) {
+    if (!fileState || fileState.itemType !== 'diff') return null;
+    const hunks = fileState.metadata?.hunks;
+    if (!Array.isArray(hunks) || hunks.length === 0) return null;
+
+    const sideKey = PierreBridge.toPierreSide(side) === 'deletions' ? 'deletion' : 'addition';
+    const instance = fileState._instance;
+    for (let i = 0; i < hunks.length; i++) {
+      const hunk = hunks[i];
+      const count = hunk[`${sideKey}Count`];
+      if (!count) continue;
+      const start = hunk[`${sideKey}Start`];
+      // Widen by any vendor-arrow expansion tracked on the mounted instance.
+      const expanded = instance?.hunksRenderer?.getExpandedHunk?.(i);
+      const from = start - (expanded?.fromStart || 0);
+      const to = start + count - 1 + (expanded?.fromEnd || 0);
+      if (lineNumber >= from && lineNumber <= to) return true;
+    }
+    return false;
+  }
+
+  // ─── Shadow DOM / instance access ─────────────────────────────────
+
+  getShadowRoot(fileName) {
+    const fileState = this.files.get(fileName);
+    return fileState?._shadowRoot || fileState?._element?.shadowRoot || null;
+  }
+
+  getInstance(fileName) {
+    const fileState = this.files.get(fileName);
+    return fileState?._instance || null;
+  }
+
+  getHoveredLine(fileName) {
+    const instance = this.files.get(fileName)?._instance;
+    return instance?.getHoveredLine ? instance.getHoveredLine() : undefined;
+  }
+
+  isPointerOverFile(fileName) {
+    const fileState = this.files.get(fileName);
+    const el = fileState?._element;
+    const pos = this._lastPointerPosition;
+    if (!el || !el.isConnected || !pos) return false;
+    const rect = el.getBoundingClientRect();
+    return (
+      pos.clientX >= rect.left &&
+      pos.clientX <= rect.right &&
+      pos.clientY >= rect.top &&
+      pos.clientY <= rect.bottom
+    );
+  }
+
+  // ─── Render / slot signals ────────────────────────────────────────
+
+  /**
+   * True when an item is currently rendered (mounted host in the DOM, or in
+   * CodeView's rendered set). Used to decide "will slot" vs "virtualized out".
+   * @param {string} id
+   * @returns {boolean}
+   * @private
+   */
+  _isItemRendered(id) {
+    const fileState = this.files.get(id);
+    if (fileState?._element && fileState._element.isConnected) return true;
+    try {
+      const rendered = this.codeView?.getRenderedItems?.() || [];
+      return rendered.some(r => r && r.id === id);
+    } catch (_err) {
+      return false;
+    }
+  }
+
+  /**
+   * Resolve (and clear) any slot waiters for an item. Called from onPostRender
+   * once annotations are slotted. `result` defaults to the mounted/slotted
+   * success shape.
+   * @private
+   */
+  _resolveSlotWaiters(id, result) {
+    const waiters = this._slotWaiters.get(id);
+    if (!waiters || waiters.length === 0) return;
+    this._slotWaiters.delete(id);
+    for (const waiter of waiters) waiter(result);
+  }
+
+  /**
+   * Shared machinery behind whenAnnotationsSlotted (per-file) and
+   * whenAnnotationSlotted (per-annotation): one waiter registered on
+   * `_slotWaiters` for the onPostRender signal, plus a bounded rAF poll so the
+   * Promise NEVER hangs. Owns the settle-once bookkeeping and de-registration;
+   * callers supply only what differs — the probe and the terminal results.
+   *
    * @param {string} fileName
-   * @param {Object} annotation - { lineNumber, side, type, data }
-   *   side: 'LEFT'/'RIGHT' or 'additions'/'deletions'
-   *   type: 'comment' | 'suggestion' | 'comment-form'
-   *   data: type-specific data (comment object, suggestion object, form config)
+   * @param {Object} spec
+   * @param {Function} spec.probe - () => result|null. Non-null settles.
+   * @param {Function} spec.onBudgetExhausted - () => result once the frame
+   *   budget runs out with no probe hit.
+   * @param {Function} [spec.onSignal] - (forced) => result|null, run on the
+   *   onPostRender signal. Defaults to `forced || probe()`; a forced result
+   *   (teardown) always wins.
+   * @param {number} [spec.maxFrames=6]
+   * @param {boolean} [spec.probeFirst=false] - probe synchronously before
+   *   registering (steady state already satisfied).
+   * @returns {Promise<Object>}
+   * @private
+   */
+  _awaitSlot(fileName, { probe, onBudgetExhausted, onSignal, maxFrames = 6, probeFirst = false }) {
+    const raf = typeof requestAnimationFrame === 'function'
+      ? requestAnimationFrame
+      : (cb) => setTimeout(cb, 16);
+
+    return new Promise((resolve) => {
+      let settled = false;
+      // `waiter` is declared (as let, initialized to null) BEFORE finish() so no
+      // reference to it can land in a temporal dead zone: finish() reads it via
+      // arr.indexOf(waiter), and probeFirst can call finish() synchronously
+      // while a CONCURRENT waiter for the same file already exists — which is
+      // exactly the path that reaches indexOf.
+      let waiter = null;
+      const finish = (result) => {
+        if (settled) return;
+        settled = true;
+        const arr = this._slotWaiters.get(fileName);
+        if (arr) {
+          const idx = arr.indexOf(waiter);
+          if (idx >= 0) arr.splice(idx, 1);
+          if (arr.length === 0) this._slotWaiters.delete(fileName);
+        }
+        resolve(result);
+      };
+      waiter = (forced) => {
+        const result = onSignal ? onSignal(forced) : (forced || probe());
+        if (result) finish(result);
+      };
+
+      if (probeFirst) {
+        const immediate = probe();
+        if (immediate) { finish(immediate); return; }
+      }
+
+      // Primary deterministic signal: the next onPostRender for this item.
+      const arr = this._slotWaiters.get(fileName) || [];
+      arr.push(waiter);
+      this._slotWaiters.set(fileName, arr);
+
+      // Bounded fallback — never hangs. An unrendered item is given the FULL
+      // frame budget to mount (supports "scrollTo then await" with a larger
+      // maxFrames); onPostRender resolves the common case first.
+      let frames = 0;
+      const check = () => {
+        if (settled) return;
+        const result = probe();
+        if (result) { finish(result); return; }
+        if (++frames >= maxFrames) { finish(onBudgetExhausted()); return; }
+        raf(check);
+      };
+      raf(check);
+    });
+  }
+
+  /**
+   * Deterministic Promise that resolves once a file's annotations have been
+   * slotted into the DOM by the next render pass. Replaces fixed-duration waits
+   * (E2E, consumer read-back) — annotation publishing is async (updateItem
+   * schedules a rAF-batched CodeView render, and the vendor slots annotations
+   * during that render).
+   *
+   * The signal is `onPostRender`, which the vendor fires AFTER renderAnnotations
+   * in the same synchronous pass (FileDiff.js), so when it runs the
+   * `[data-annotation-slot]` wrappers exist. A bounded rendered-set fallback
+   * covers the two non-signal cases so the Promise NEVER hangs:
+   *   - item virtualized out of the render window → resolves not-mounted
+   *     (its annotations legitimately have no DOM until it scrolls in).
+   *   - item already mounted with no pending render (steady state) → resolves
+   *     slotted (its annotations are already in the DOM).
+   *
+   * Typical use: `await bridge.addAnnotation(...); const r = await
+   * bridge.whenAnnotationsSlotted(file); if (r.slotted) { ...query the DOM... }`.
+   *
+   * @param {string} fileName
+   * @param {Object} [options]
+   * @param {number} [options.maxFrames=6] - frame budget before the fallback
+   *   resolves a mounted-but-signal-less item as slotted.
+   * @returns {Promise<{mounted: boolean, slotted: boolean, reason?: string}>}
+   */
+  whenAnnotationsSlotted(fileName, options = {}) {
+    const maxFrames = Number.isFinite(options.maxFrames) ? options.maxFrames : 6;
+    if (!this.codeView || !this.files.has(fileName)) {
+      return Promise.resolve({ mounted: false, slotted: false, reason: 'unknown-file' });
+    }
+    // A rendered item has its annotations slotted (renderAnnotations already ran
+    // in the mount pass), so the frame probe resolves it slotted; an unrendered
+    // one resolves not-mounted once the budget runs out.
+    return this._awaitSlot(fileName, {
+      maxFrames,
+      probe: () => (this._isItemRendered(fileName) ? { mounted: true, slotted: true } : null),
+      onSignal: (forced) => forced || { mounted: true, slotted: true },
+      onBudgetExhausted: () => ({ mounted: false, slotted: false, reason: 'not-mounted' }),
+    });
+  }
+
+  /**
+   * Locate the slotted light-DOM element for a specific annotation id inside a
+   * mounted item's host. Returns null when the host is unmounted or the line
+   * carrying the annotation is outside the item's current render window.
+   * @private
+   */
+  _findSlottedAnnotationElement(fileState, annotationId) {
+    const host = fileState?._element;
+    if (!host || !host.isConnected || typeof host.querySelector !== 'function') return null;
+    let selector;
+    try {
+      const escaped = typeof CSS !== 'undefined' && CSS.escape
+        ? CSS.escape(String(annotationId))
+        : String(annotationId).replace(/["\\]/g, '\\$&');
+      selector = `[data-pr-annotation-id="${escaped}"]`;
+    } catch (_err) {
+      return null;
+    }
+    // Annotation content lives in the host's LIGHT DOM (the vendor wraps it in
+    // [data-annotation-slot] and projects it into a shadow <slot>), so a plain
+    // host.querySelector reaches it without crossing the shadow boundary.
+    return host.querySelector(selector) || null;
+  }
+
+  /**
+   * Deterministic Promise resolving to the slotted DOM element for ONE
+   * annotation (by id), for consumers that read a specific row back after
+   * adding it (tour stops, external threads). Companion to the per-file
+   * whenAnnotationsSlotted().
+   *
+   * Resolves { element, mounted, slotted, reason? }:
+   *   - element (HTMLElement) + slotted:true once the annotation's node is in
+   *     the DOM (signalled by onPostRender, which the vendor fires after
+   *     renderAnnotations in the same pass — never a bare timeout).
+   *   - element:null, mounted:false, reason:'not-mounted' when the item is
+   *     virtualized out. Its annotations legitimately have NO DOM until it
+   *     scrolls into view; the data anchor is intact and the element is
+   *     (re)created on remount. Callers should scrollTo/scrollToLine (which
+   *     mounts it) and await again — pass a larger `maxFrames` on that second
+   *     call so the waiter survives the scroll-driven mount.
+   *   - element:null, mounted:true, reason:'line-not-rendered' when the item is
+   *     mounted but the anchor line is outside its internal render window.
+   *   - reason 'unknown-file' / 'unknown-annotation' for bad inputs.
+   * NEVER hangs.
+   *
+   * @param {string} fileName
+   * @param {string} annotationId
+   * @param {Object} [options]
+   * @param {number} [options.maxFrames=6] - frame budget for the mount/slot
+   *   determination (raise it when awaiting a scroll-driven mount).
+   * @returns {Promise<{element: HTMLElement|null, mounted: boolean, slotted: boolean, reason?: string}>}
+   */
+  whenAnnotationSlotted(fileName, annotationId, options = {}) {
+    const maxFrames = Number.isFinite(options.maxFrames) ? options.maxFrames : 6;
+    const notMounted = (reason) => ({ element: null, mounted: false, slotted: false, reason });
+    const fileState = this.files.get(fileName);
+    if (!this.codeView || !fileState) return Promise.resolve(notMounted('unknown-file'));
+    if (!fileState.annotations.some(a => a.metadata.id === annotationId)) {
+      return Promise.resolve(notMounted('unknown-annotation'));
+    }
+    // At budget exhaustion the reason reflects the final state: not-mounted if
+    // the item never rendered, line-not-rendered if it is mounted but the anchor
+    // line is outside its internal render window.
+    return this._awaitSlot(fileName, {
+      maxFrames,
+      probeFirst: true, // steady state: already slotted
+      probe: () => {
+        const el = this._findSlottedAnnotationElement(fileState, annotationId);
+        return el ? { element: el, mounted: true, slotted: true } : null;
+      },
+      onBudgetExhausted: () => (this._isItemRendered(fileName)
+        ? { element: null, mounted: true, slotted: false, reason: 'line-not-rendered' }
+        : notMounted('not-mounted')),
+    });
+  }
+
+  // ─── Annotations (data API) ───────────────────────────────────────
+
+  /**
+   * Add one annotation and publish.
+   * @param {string} fileName
+   * @param {Object} annotation - { lineNumber, side, type, data, id? }
    */
   addAnnotation(fileName, annotation) {
     const fileState = this.files.get(fileName);
     if (!fileState) return;
-
     this._pushAnnotation(fileState, annotation);
-    this._updateAnnotations(fileName);
+    this._publishItem(fileName);
   }
 
   /**
-   * Add many annotations to a file with a SINGLE rerender + split-layout sync.
-   *
-   * Functionally equivalent to calling addAnnotation() once per item, but the
-   * expensive part — setLineAnnotations + a full instance.rerender() (a shadow
-   * DOM rebuild) + _syncSplitAnnotationLayout — runs once for the whole batch
-   * instead of K times. Loop callers that anchor many comments/suggestions to
-   * one file (see loadUserComments in pr.js and SuggestionManager) should use
-   * this; single-item callers keep using addAnnotation.
-   *
-   * Not-yet-rendered / missing file: mirrors addAnnotation exactly — a no-op
-   * (no fileState → return). The lazy-render path stores nothing here, so no
-   * annotations are lost or duplicated.
-   *
+   * Add many annotations with a single publish.
    * @param {string} fileName
-   * @param {Array<Object>} annotations - each { lineNumber, side, type, data, id? }
+   * @param {Array<Object>} annotations
    */
   addAnnotations(fileName, annotations) {
     const fileState = this.files.get(fileName);
     if (!fileState) return;
     if (!Array.isArray(annotations) || annotations.length === 0) return;
-
     for (const annotation of annotations) {
       this._pushAnnotation(fileState, annotation);
     }
-    this._updateAnnotations(fileName);
+    this._publishItem(fileName);
   }
 
   /**
-   * Push a single annotation onto a file's annotation list WITHOUT triggering a
-   * rerender. Shared by addAnnotation (one item) and addAnnotations (batch) so
-   * the annotation shape / id-generation lives in exactly one place.
-   * @param {Object} fileState
-   * @param {Object} annotation - { lineNumber, side, type, data, id? }
+   * Add a BATCH of annotations in a SINGLE publish, then resolve each one's
+   * slotted element from the single render pass. This is the perf-correct way
+   * to mount many annotations on a file: it costs ONE CodeView render + ONE
+   * onPostRender wait, instead of the N render cycles + N frame-waits a
+   * per-annotation `addAnnotation` + `await whenAnnotationSlotted` loop incurs
+   * (that pattern was the ~6x annotation-publish regression).
+   *
+   * Per-annotation semantics match whenAnnotationSlotted:
+   *   { element: HTMLElement, slotted:true, mounted:true }        — in the DOM
+   *   { element:null, mounted:false, reason:'not-mounted' }       — item virtualized out
+   *   { element:null, mounted:true, reason:'line-not-rendered' }  — line outside window
+   *   { element:null, ..., reason:'unknown-file'|'unknown-annotation' } — bad input
+   *
+   * Callers MUST supply a stable `id` on each annotation (that is the Map key
+   * and the data-pr-annotation-id used to locate the slotted element).
+   *
+   * @param {string} fileName
+   * @param {Array<Object>} annotations - each { lineNumber, side?, type, data, id }
+   * @param {Object} [options]
+   * @param {number} [options.maxFrames=6] - slot-await frame budget (raise it
+   *   when the file may need to mount, e.g. after a scrollTo).
+   * @returns {Promise<Map<string, {element: HTMLElement|null, mounted: boolean, slotted: boolean, reason?: string}>>}
+   */
+  async addAnnotationsAndAwait(fileName, annotations, options = {}) {
+    const maxFrames = Number.isFinite(options.maxFrames) ? options.maxFrames : 6;
+    const results = new Map();
+    const list = Array.isArray(annotations) ? annotations : [];
+    const fileState = this.files.get(fileName);
+    if (!this.codeView || !fileState) {
+      for (const a of list) {
+        if (a && a.id != null) {
+          results.set(a.id, { element: null, mounted: false, slotted: false, reason: 'unknown-file' });
+        }
+      }
+      return results;
+    }
+    if (list.length === 0) return results;
+
+    // ONE publish for the whole batch (addAnnotations → single updateItem/render).
+    this.addAnnotations(fileName, list);
+
+    // ONE slot-await riding onPostRender (the render that slotted the batch).
+    await this.whenAnnotationsSlotted(fileName, { maxFrames });
+
+    // Resolve each annotation from that single pass.
+    const rendered = this._isItemRendered(fileName);
+    for (const a of list) {
+      if (!a || a.id == null) continue;
+      const el = this._findSlottedAnnotationElement(fileState, a.id);
+      if (el) {
+        results.set(a.id, { element: el, mounted: true, slotted: true });
+      } else if (!rendered) {
+        results.set(a.id, { element: null, mounted: false, slotted: false, reason: 'not-mounted' });
+      } else {
+        results.set(a.id, { element: null, mounted: true, slotted: false, reason: 'line-not-rendered' });
+      }
+    }
+    return results;
+  }
+
+  /**
+   * Push a single annotation onto a file's list (no publish).
    * @private
    */
   _pushAnnotation(fileState, annotation) {
-    const pierreSide = PierreBridge.toPierreSide(annotation.side);
-    fileState.annotations.push({
-      side: pierreSide,
+    const entry = {
       lineNumber: annotation.lineNumber,
       metadata: {
         type: annotation.type,
         data: annotation.data,
-        id: annotation.id || `${annotation.type}-${annotation.lineNumber}-${pierreSide}-${++this._annotationCounter}`,
+        id: annotation.id
+          || `${annotation.type}-${annotation.lineNumber}-${annotation.side || ''}-${++this._annotationCounter}`,
       },
-    });
+    };
+    // Diff items carry a side; file (context) items do not.
+    if (fileState.type === 'diff') {
+      entry.side = PierreBridge.toPierreSide(annotation.side);
+    }
+    fileState.annotations.push(entry);
   }
 
   /**
-   * Remove an annotation by id.
+   * Remove an annotation by id and publish.
    * @param {string} fileName
    * @param {string} annotationId
    */
   removeAnnotation(fileName, annotationId) {
     const fileState = this.files.get(fileName);
     if (!fileState) return;
-
-    fileState.annotations = fileState.annotations.filter(
-      a => a.metadata.id !== annotationId
-    );
-    // Clean up form element if it was a form
+    fileState.annotations = fileState.annotations.filter(a => a.metadata.id !== annotationId);
     fileState.formElements.delete(annotationId);
-
-    this._updateAnnotations(fileName);
+    this._publishItem(fileName);
   }
 
   /**
-   * Remove all annotations of a given type for a file.
+   * Remove all annotations of a type for a file and publish.
    * @param {string} fileName
-   * @param {string} type - 'comment' | 'suggestion' | 'comment-form'
+   * @param {string} type
    */
   removeAnnotationsByType(fileName, type) {
     const fileState = this.files.get(fileName);
     if (!fileState) return;
-
     const removed = fileState.annotations.filter(a => a.metadata.type === type);
+    if (removed.length === 0) return;
     fileState.annotations = fileState.annotations.filter(a => a.metadata.type !== type);
-
-    // Clean up form elements
-    for (const ann of removed) {
-      fileState.formElements.delete(ann.metadata.id);
-    }
-
-    this._updateAnnotations(fileName);
+    for (const ann of removed) fileState.formElements.delete(ann.metadata.id);
+    this._publishItem(fileName);
   }
 
   /**
@@ -1562,104 +1890,95 @@ class PierreBridge {
   getAnnotations(fileName, type) {
     const fileState = this.files.get(fileName);
     if (!fileState) return [];
-    if (type) {
-      return fileState.annotations.filter(a => a.metadata.type === type);
-    }
+    if (type) return fileState.annotations.filter(a => a.metadata.type === type);
     return [...fileState.annotations];
   }
 
   /**
-   * Update annotations on the FileDiff instance.
+   * Merge a patch into an annotation's stored `data` in place, so a later
+   * virtualization remount re-renders the annotation from the UPDATED data
+   * (e.g. an edited comment body). Does NOT publish/re-render — the caller has
+   * already updated the currently-mounted card in the DOM; this only keeps the
+   * data model current so the edit survives a remount instead of reverting.
+   * The annotation objects are shared with the CodeView-held item, so the next
+   * render (remount or any publish) reflects the change.
+   * @param {string} fileName
+   * @param {string} annotationId
+   * @param {Object} patch - shallow-merged into the annotation's data
+   * @returns {boolean} true if the annotation was found and updated
+   */
+  updateAnnotationData(fileName, annotationId, patch) {
+    const fileState = this.files.get(fileName);
+    if (!fileState) return false;
+    const ann = fileState.annotations.find(a => a.metadata.id === annotationId);
+    if (!ann) return false;
+    if (patch && typeof patch === 'object') {
+      ann.metadata.data = { ...ann.metadata.data, ...patch };
+    }
+    return true;
+  }
+
+  /**
+   * Sorted copy of a file's annotations. At one line, hunk summaries and tour
+   * stops stack above suggestions/forms/comments/external threads (matching the
+   * legacy insertion order).
+   * @param {Object} fileState
+   * @returns {Array}
    * @private
    */
-  _updateAnnotations(fileName) {
-    const fileState = this.files.get(fileName);
-    if (!fileState || !fileState.instance) return;
-    // Sort so that at the same line, suggestions appear before comments.
-    // This matches the legacy rendering order where the suggestion row is
-    // inserted first, then the adopted comment row appears below it.
-    // Hunk summaries and tour stops describe the surrounding code, so they
-    // stack above suggestion/comment feedback anchored to the same line.
+  _sortedAnnotations(fileState) {
     const typeOrder = {
+      'file-comments': -3,
       'hunk-summary': -2,
       'tour-stop': -1,
       'suggestion': 0,
       'comment-form': 1,
       'comment': 2,
-      // External (host-synced) threads stack below user comments on the same
-      // line, mirroring the legacy insertion order (AI → user → external).
       'external-comment': 3,
     };
-    const sorted = [...fileState.annotations].sort((a, b) => {
+    return [...fileState.annotations].sort((a, b) => {
       if (a.lineNumber !== b.lineNumber) return a.lineNumber - b.lineNumber;
-      if (a.side !== b.side) return a.side < b.side ? -1 : 1;
+      const sideA = a.side || '';
+      const sideB = b.side || '';
+      if (sideA !== sideB) return sideA < sideB ? -1 : 1;
       return (typeOrder[a.metadata.type] ?? 1) - (typeOrder[b.metadata.type] ?? 1);
     });
-    fileState.instance.setLineAnnotations(sorted);
-    // setLineAnnotations only stores data — rerender() is needed to
-    // trigger the renderAnnotation callback and slot elements into the
-    // light DOM of the <diffs-container> host.
-    fileState.instance.rerender();
-    this._syncSplitAnnotationLayout(fileName);
   }
 
+  // ─── Split-view annotation stretching ─────────────────────────────
+
   /**
-   * Split view: stretch annotation cards across both columns.
-   *
-   * The vendor renders each annotation into ONE side's column plus an empty
-   * paired cell in the other column on the same shared grid row (split+wrap
-   * is a single four-track grid with display:contents columns), so a lone
-   * card only gets half the width. This pass:
-   *   1. Measures the middle (additions) gutter track — it is min-content
-   *      sized, so pure CSS cannot know its width — and publishes it on the
-   *      <pre> as --pr-split-gutter-width for ANNOTATION_CSS calc()s.
-   *   2. Marks cards whose opposite cell is empty with
-   *      .pr-annotation-fullwidth. When BOTH sides of a row hold cards
-   *      (LEFT + RIGHT annotation on the same row pair), neither is marked
-   *      and they stay half-width side by side.
-   *
-   * Entirely added/removed files get the same treatment: the vendor emits a
-   * lone code column stamped data-diff-type="single", which ANNOTATION_CSS
-   * boxes into one half of the split grid. Its own gutter is the measured
-   * track there, and every slotted card is lone by construction, so the same
-   * marking pass stretches them across both halves.
-   *
-   * Vendor renders wipe shadow-DOM classes/inline vars, so this is invoked
-   * (rAF-debounced per file) after every pass that can rebuild the shadow
-   * DOM: initial render (onPostRender), annotation updates, diffStyle
-   * switches, and hunk expansion. In unified mode it no-ops (every pre is
-   * "single" there too — one unified column — so the bridge's own diffStyle
-   * is the gate, not the attribute).
+   * Schedule a rAF-debounced split-annotation layout pass for a file.
    * @private
    */
-  _syncSplitAnnotationLayout(fileName) {
-    const fileState = this.files.get(fileName);
+  _syncSplitAnnotationLayout(id) {
+    const fileState = this.files.get(id);
     if (!fileState || fileState._splitLayoutRaf != null) return;
     const raf = typeof requestAnimationFrame === 'function'
       ? requestAnimationFrame
       : (fn) => setTimeout(fn, 16);
     fileState._splitLayoutRaf = raf(() => {
       fileState._splitLayoutRaf = null;
-      this._applySplitAnnotationLayout(fileName);
+      this._applySplitAnnotationLayout(id);
     });
   }
 
   /**
-   * Synchronous body of _syncSplitAnnotationLayout — see its doc comment.
+   * Stretch lone annotation cards across both columns in split view. See the
+   * ANNOTATION_CSS comment block for the geometry rationale. No-op in unified
+   * mode (the bridge's own diffStyle is the gate).
    * @private
    */
-  _applySplitAnnotationLayout(fileName) {
+  _applySplitAnnotationLayout(id) {
     if (this.diffStyle !== 'split') return;
-    const fileState = this.files.get(fileName);
-    const shadowRoot = fileState?.shadowHost?.shadowRoot;
+    const fileState = this.files.get(id);
+    const shadowRoot = fileState?._shadowRoot || fileState?._element?.shadowRoot;
     if (!shadowRoot) return;
     const pre = shadowRoot.querySelector(
       'pre[data-diff-type="split"], pre[data-diff-type="single"]'
     );
     if (!pre) return;
 
-    // Two-sided pre: measure the MIDDLE (additions) gutter track — it sits
-    // against the seam. One-sided pre: only one gutter exists; measure it.
     const gutter = pre.getAttribute('data-diff-type') === 'split'
       ? pre.querySelector('[data-additions] [data-gutter]')
       : pre.querySelector('[data-gutter]');
@@ -1668,7 +1987,6 @@ class PierreBridge {
       pre.style.setProperty('--pr-split-gutter-width', `${gutterWidth}px`);
     }
 
-    // Paired cells share the same "hunkIndex,lineIndex" attribute value.
     const byRow = new Map();
     for (const cell of pre.querySelectorAll('[data-line-annotation]')) {
       const key = cell.getAttribute('data-line-annotation');
@@ -1686,220 +2004,197 @@ class PierreBridge {
     }
   }
 
-  // ─── Gap Expansion ────────────────────────────────────────────────
+  // ─── Gutter Buttons ───────────────────────────────────────────────
+
+  static CHAT_SVG = `<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14"><path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/></svg>`;
 
   /**
-   * Expand a hunk in a file's diff.
-   * @param {string} fileName
-   * @param {number} hunkIndex
-   * @param {string} direction - 'up' | 'down' | 'both'
-   * @param {number} [lineCount] - Override default expansion count
-   */
-  expandHunk(fileName, hunkIndex, direction, lineCount) {
-    const fileState = this.files.get(fileName);
-    if (!fileState || !fileState.instance) return;
-    fileState.instance.expandHunk(hunkIndex, direction, lineCount);
-  }
-
-  /**
-   * Check if a line is visible (not in a collapsed gap) in a file's diff.
-   * @param {string} fileName
-   * @param {number} lineNumber
-   * @param {string} side - 'LEFT'/'RIGHT' or 'additions'/'deletions'
-   * @returns {boolean}
-   */
-  isLineVisible(fileName, lineNumber, side) {
-    const fileState = this.files.get(fileName);
-    if (!fileState || !fileState.instance) return false;
-    // A collapsed file renders zero code lines regardless of metadata.
-    if (fileState.collapsed) return false;
-    const instance = fileState.instance;
-    const hunks = instance.fileDiff?.hunks;
-    if (!Array.isArray(hunks) || hunks.length === 0) return false;
-
-    // Decide from the instance's CURRENT logical state, never the DOM.
-    // render()/rerender() paint asynchronously (worker highlighting), so the
-    // shadow DOM lags behind the latest render call — a DOM query here returns
-    // stale answers (e.g. a line still on screen right after
-    // clearContextRanges dropped it). instance.fileDiff is assigned
-    // synchronously inside render(), so hunk membership reflects the state the
-    // in-flight paint will converge to. A line is rendered iff it falls inside
-    // a hunk of the current (context-range-merged) metadata, widened by any
-    // user gap expansion tracked per hunk in hunksRenderer.expandedHunks.
-    const sideKey = PierreBridge.toPierreSide(side) === 'deletions' ? 'deletion' : 'addition';
-    for (let i = 0; i < hunks.length; i++) {
-      const hunk = hunks[i];
-      const count = hunk[`${sideKey}Count`];
-      if (!count) continue;
-      const start = hunk[`${sideKey}Start`];
-      const expanded = instance.hunksRenderer?.getExpandedHunk?.(i);
-      const from = start - (expanded?.fromStart || 0);
-      const to = start + count - 1 + (expanded?.fromEnd || 0);
-      if (lineNumber >= from && lineNumber <= to) return true;
-    }
-    return false;
-  }
-
-  /**
-   * Resolve the rendered shadow-DOM element for a line from the indices
-   * returned by instance.getLineIndex(). The vendor stamps data-line-index
-   * as a composite "unifiedIndex,splitIndex" key on content lines in BOTH
-   * unified and split layouts (see @pierre/diffs renderDiffWithHighlighter);
-   * fall back to the bare unified index for bundle versions that stamped a
-   * single number.
-   *
-   * Column scoping avoids matching ghost lines from other files rendered in
-   * the same document, and — in split view — targets the requested side:
-   *   - unified: the single `code[data-unified]` column.
-   *   - split:   `code[data-deletions]` (LEFT) or `code[data-additions]`
-   *     (RIGHT). A context line exists in BOTH columns with the SAME composite
-   *     key, so we search the requested side first and fall back to the other.
-   * @param {Object} instance - FileDiff instance
-   * @param {Array<number>|undefined} indices - [unifiedIndex, splitIndex]
-   * @param {'deletions'|'additions'} [side] - preferred split column
-   * @returns {Element|null}
+   * Get the currently hovered row for a file from the vendor getter installed
+   * by renderGutterUtility.
    * @private
    */
-  static _queryLineElement(instance, indices, side) {
-    if (!indices) return null;
-    const [unifiedIndex] = indices;
-    if (unifiedIndex == null) return null;
-    const pre = instance.pre;
-    if (!pre) return null;
-    const compositeKey = Array.isArray(indices) ? indices.join(',') : String(unifiedIndex);
-    for (const codeEl of PierreBridge._codeColumnsForSide(instance, pre, side)) {
-      if (!codeEl) continue;
-      const el = codeEl.querySelector(`[data-line][data-line-index="${compositeKey}"]`)
-        || codeEl.querySelector(`[data-line][data-line-index="${unifiedIndex}"]`);
-      if (el) return el;
+  _getHoveredRow(fileName) {
+    const getter = this._gutterRowGetters.get(fileName);
+    if (!getter) return null;
+    try {
+      return getter() || null;
+    } catch (_err) {
+      return null;
     }
-    return null;
   }
 
   /**
-   * Ordered list of code-column elements to search for a line, scoped to a
-   * single FileDiff instance. Unified returns the one unified column; split
-   * returns both columns with the requested `side` first. Falls back to the
-   * whole `pre` when no column element is resolvable.
-   * @param {Object} instance
-   * @param {Element} pre
-   * @param {'deletions'|'additions'} [side]
-   * @returns {Array<Element|null>}
+   * Create dual gutter buttons (chat + comment) for renderGutterUtility.
+   * Rendered once per mount; the vendor slots the element and repositions it to
+   * follow the hovered row. Drag from a button creates a multi-line selection
+   * (the library can't start selection from a button click).
+   * @param {string} id - item id
+   * @param {string} fileName
+   * @param {Function} getHoveredRow
+   * @returns {HTMLElement}
    * @private
    */
-  static _codeColumnsForSide(instance, pre, side) {
-    const unified = instance.codeUnified || pre.querySelector('code[data-unified]');
-    if (unified) return [unified];
-    const deletions = instance.codeDeletions || pre.querySelector('code[data-deletions]');
-    const additions = instance.codeAdditions || pre.querySelector('code[data-additions]');
-    if (deletions || additions) {
-      return side === 'deletions' ? [deletions, additions] : [additions, deletions];
+  _createGutterButtons(id, fileName, getHoveredRow) {
+    this._gutterRowGetters.set(id, getHoveredRow);
+    // Reuse the cached container if the vendor re-invokes this for the same
+    // item (e.g. on a remount), so gutter buttons don't accumulate — matches
+    // the pre-migration bridge. (The vendor renders the gutter once per mount.)
+    if (this._gutterContainers.has(id)) {
+      return this._gutterContainers.get(id);
     }
-    return [pre];
-  }
 
-  /**
-   * Expand collapsed gaps so that the given line becomes visible.
-   * Iterates over hunks to find which gap the line falls in, then
-   * expands that hunk upward/downward by enough lines to reveal it.
-   * @param {string} fileName
-   * @param {number} lineNumber
-   * @param {string} side - 'LEFT'/'RIGHT'
-   */
-  expandToLine(fileName, lineNumber, side = 'RIGHT') {
-    const fileState = this.files.get(fileName);
-    if (!fileState || !fileState.instance) return;
-    const instance = fileState.instance;
-    if (!instance.fileDiff || !instance.fileDiff.hunks) return;
+    const container = document.createElement('div');
+    container.className = 'pierre-gutter-buttons';
+    container.setAttribute('data-utility-button', '');
 
-    const hunks = instance.fileDiff.hunks;
-    const sideKey = PierreBridge.toPierreSide(side) === 'deletions' ? 'deletion' : 'addition';
+    const resolveClickTarget = () => {
+      const hovered = this._getHoveredRow(id);
+      const hoveredSide = hovered
+        ? (hovered.side === 'deletions' ? 'LEFT' : 'RIGHT')
+        : null;
+      const sel = this.getLineSelection(fileName);
 
-    for (let i = 0; i < hunks.length; i++) {
-      const hunk = hunks[i];
-      const hunkStart = hunk[`${sideKey}Start`];
-      const hunkEnd = hunkStart + hunk[`${sideKey}Count`] - 1;
-
-      // Target line is before this hunk — it's in the collapsed gap above
-      if (lineNumber < hunkStart) {
-        instance.expandHunk(i, 'up', hunk.collapsedBefore);
-        instance.rerender();
-        return;
+      if (sel && sel.start !== sel.end) {
+        const inRange = hovered
+          && hoveredSide === sel.side
+          && hovered.lineNumber >= sel.start
+          && hovered.lineNumber <= sel.end;
+        this.clearLineSelection(fileName);
+        if (inRange) {
+          return { start: sel.start, end: sel.end, side: sel.side, isRange: true };
+        }
       }
 
-      // Target line is within this hunk — already visible (or should be)
-      if (lineNumber <= hunkEnd) {
-        return;
-      }
+      if (!hovered) return null;
+      return {
+        start: hovered.lineNumber,
+        end: hovered.lineNumber,
+        side: hoveredSide,
+        isRange: false,
+      };
+    };
 
-      // If this is the last hunk and the line is after it — expand down
-      if (i === hunks.length - 1 && lineNumber > hunkEnd) {
-        instance.expandHunk(i, 'down', lineNumber - hunkEnd);
-        instance.rerender();
-        return;
-      }
+    const wrapButton = (btn, handler) => {
+      let dragInfo = null;
+
+      btn.addEventListener('pointerdown', (e) => {
+        e.stopPropagation();
+        const hovered = this._getHoveredRow(id);
+        if (!hovered) return;
+        dragInfo = {
+          startLine: hovered.lineNumber,
+          side: hovered.side,
+          pointerId: e.pointerId,
+          dragged: false,
+        };
+
+        const onMove = (me) => {
+          if (!dragInfo || me.pointerId !== dragInfo.pointerId) return;
+          const cur = this._getHoveredRow(id);
+          if (!cur || cur.lineNumber === dragInfo.startLine) return;
+          dragInfo.dragged = true;
+          const start = Math.min(dragInfo.startLine, cur.lineNumber);
+          const end = Math.max(dragInfo.startLine, cur.lineNumber);
+          this.codeView?.setSelectedLines?.({
+            id: fileName,
+            range: { start, end, side: dragInfo.side },
+          });
+        };
+
+        const onUp = (ue) => {
+          if (!dragInfo || ue.pointerId !== dragInfo.pointerId) return;
+          document.removeEventListener('pointermove', onMove);
+          document.removeEventListener('pointerup', onUp);
+          document.removeEventListener('pointercancel', onUp);
+        };
+
+        document.addEventListener('pointermove', onMove);
+        document.addEventListener('pointerup', onUp);
+        document.addEventListener('pointercancel', onUp);
+      });
+
+      btn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        // No pointerdown on this button — e.g. a line-number drag that ended
+        // over it. The click is a side effect of that drag, not a real
+        // activation, so ignore it. (Consequence: keyboard activation, which
+        // fires click with no pointerdown, also lands here. Pre-existing; these
+        // controls are pointer-revealed.)
+        if (!dragInfo) return;
+        if (dragInfo.dragged) {
+          dragInfo = null;
+          return;
+        }
+        dragInfo = null;
+        const target = resolveClickTarget();
+        if (!target) return;
+        handler(target);
+      };
+    };
+
+    if (this.options.onChatClick) {
+      const chatBtn = document.createElement('button');
+      chatBtn.className = 'pierre-gutter-btn pierre-chat-btn';
+      chatBtn.title = 'Chat about this line';
+      chatBtn.innerHTML = PierreBridge.CHAT_SVG;
+      wrapButton(chatBtn, (target) => {
+        this.options.onChatClick(fileName, target.start, target.side, target);
+      });
+      container.appendChild(chatBtn);
     }
-  }
 
-  // ─── Shadow DOM Access ────────────────────────────────────────────
+    const commentBtn = document.createElement('button');
+    commentBtn.className = 'pierre-gutter-btn pierre-comment-btn';
+    commentBtn.title = 'Add comment';
+    commentBtn.textContent = '+';
+    wrapButton(commentBtn, (target) => {
+      if (this.options.onCommentClick) {
+        this.options.onCommentClick(fileName, target.start, target.side, target);
+      }
+    });
+    container.appendChild(commentBtn);
 
-  /**
-   * Get the shadow root of a file's diff, if accessible.
-   * @param {string} fileName
-   * @returns {ShadowRoot|null}
-   */
-  getShadowRoot(fileName) {
-    const fileState = this.files.get(fileName);
-    if (!fileState || !fileState.shadowHost) return null;
-    return fileState.shadowHost.shadowRoot || null;
-  }
-
-  /**
-   * Get the FileDiff instance for a file.
-   * @param {string} fileName
-   * @returns {FileDiff|null}
-   */
-  getInstance(fileName) {
-    const fileState = this.files.get(fileName);
-    return fileState ? fileState.instance : null;
-  }
-
-  /**
-   * Get the currently hovered line info for a file.
-   * @param {string} fileName
-   * @returns {Object|undefined} { lineNumber, side }
-   */
-  getHoveredLine(fileName) {
-    const fileState = this.files.get(fileName);
-    if (!fileState || !fileState.instance) return undefined;
-    return fileState.instance.getHoveredLine();
+    this._gutterContainers.set(id, container);
+    return container;
   }
 
   // ─── Internal Rendering Callbacks ─────────────────────────────────
 
   /**
-   * Render an annotation element (comment, suggestion, or form).
-   * Reuses form DOM elements to preserve user input.
+   * Render an annotation element by dispatching on its type. Rebuilds fresh DOM
+   * on every call so it is idempotent under virtualization remounts (comment
+   * forms reuse a cached element per id to preserve textarea content).
    * @private
    */
-  _renderAnnotation(annotation, fileName, formElements) {
-    const { type, data, id } = annotation.metadata;
+  _renderAnnotation(annotation, fileName, formElements, id) {
+    const { type, data, id: annotationId } = annotation.metadata;
+    const element = this._renderAnnotationContent(type, data, annotationId, formElements, fileName);
+    // Stamp the annotation id so whenAnnotationSlotted() can locate the exact
+    // slotted element post-render (the vendor wraps this in [data-annotation-slot]).
+    if (element && element.nodeType === 1 && element.dataset) {
+      element.dataset.prAnnotationId = annotationId;
+    }
+    return element;
+  }
 
+  /**
+   * Dispatch to the type-specific annotation renderer.
+   * @private
+   */
+  _renderAnnotationContent(type, data, annotationId, formElements, fileName) {
     switch (type) {
     case 'comment':
-      return this._renderCommentAnnotation(data, id);
+      return this._renderCommentAnnotation(data, annotationId);
     case 'suggestion':
-      return this._renderSuggestionAnnotation(data, id);
+      return this._renderSuggestionAnnotation(data, annotationId);
     case 'comment-form':
-      return this._renderFormAnnotation(data, id, formElements, fileName);
+      return this._renderFormAnnotation(data, annotationId, formElements, fileName);
     default: {
-      // Custom annotation types (e.g. 'tour-stop', 'hunk-summary') are
-      // rendered by externally registered renderers so feature modules can
-      // plug in without modifying the bridge.
       const customRenderer = this._annotationRenderers?.get(type);
       if (customRenderer) {
         try {
-          return customRenderer(data, id, fileName) || undefined;
+          return customRenderer(data, annotationId, fileName) || undefined;
         } catch (err) {
           console.error(`[PierreBridge] custom annotation renderer for "${type}" failed:`, err);
           return undefined;
@@ -1910,31 +2205,17 @@ class PierreBridge {
     }
   }
 
-  /**
-   * Register a renderer for a custom annotation type. The callback receives
-   * (data, id, fileName) and must return a DOM element (or null to skip).
-   * Elements are slotted into the light DOM below their anchor line, so page
-   * CSS and inline event handlers work as they do for comments/suggestions.
-   * @param {string} type - Annotation type (e.g. 'tour-stop', 'hunk-summary')
-   * @param {Function} renderFn - (data, id, fileName) => Element|null
-   */
   registerAnnotationRenderer(type, renderFn) {
     if (!this._annotationRenderers) this._annotationRenderers = new Map();
     this._annotationRenderers.set(type, renderFn);
   }
 
-  /**
-   * Remove a previously registered custom annotation renderer.
-   * @param {string} type
-   */
   unregisterAnnotationRenderer(type) {
     this._annotationRenderers?.delete(type);
   }
 
   /**
    * Render a user comment annotation using the legacy comment UI.
-   * Produces DOM matching CommentManager.displayUserComment() so all existing
-   * CSS and event handling applies. Elements live in the light DOM (slotted).
    * @private
    */
   _renderCommentAnnotation(comment, id) {
@@ -1944,7 +2225,6 @@ class PierreBridge {
       ? `Lines ${comment.line_start}-${comment.line_end}`
       : `Line ${comment.line_start}`;
 
-    // Build metadata display for adopted comments (praise badge + title)
     let metadataHTML = '';
     if (comment.parent_id && comment.type && comment.type !== 'comment') {
       const badgeHTML = comment.type === 'praise'
@@ -1956,7 +2236,6 @@ class PierreBridge {
       `;
     }
 
-    // Icon based on origin (AI-adopted vs user-originated)
     const commentIcon = comment.parent_id
       ? `<svg class="octicon octicon-comment-ai" viewBox="0 0 16 16" width="16" height="16">
            <path d="M7.75 1a.75.75 0 0 1 0 1.5h-5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h2c.199 0 .39.079.53.22.141.14.22.331.22.53v2.19l2.72-2.72a.747.747 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-2a.75.75 0 0 1 1.5 0v2c0 .464-.184.909-.513 1.237A1.746 1.746 0 0 1 13.25 12H9.06l-2.573 2.573A1.457 1.457 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25v-7.5C1 1.784 1.784 1 2.75 1h5Zm4.519-.837a.248.248 0 0 1 .466 0l.238.648a3.726 3.726 0 0 0 2.218 2.219l.649.238a.249.249 0 0 1 0 .467l-.649.238a3.725 3.725 0 0 0-2.218 2.218l-.238.649a.248.248 0 0 1-.466 0l-.239-.649a3.725 3.725 0 0 0-2.218-2.218l-.649-.238a.249.249 0 0 1 0-.467l.649-.238A3.726 3.726 0 0 0 12.03.811l.239-.648Z"/>
@@ -2018,10 +2297,6 @@ class PierreBridge {
 
   /**
    * Render an AI suggestion annotation using the legacy suggestion UI.
-   * Delegates to SuggestionManager.createSuggestionRow() for zero duplication,
-   * then extracts the inner .ai-suggestion div. The element lives in the light
-   * DOM (slotted) so all existing CSS and document.querySelector() navigation
-   * works unchanged.
    * @private
    */
   _renderSuggestionAnnotation(suggestion, id) {
@@ -2042,7 +2317,6 @@ class PierreBridge {
       }
     }
 
-    // Fallback: minimal rendering if SuggestionManager unavailable
     return this._renderSuggestionFallback(suggestion, id);
   }
 
@@ -2075,28 +2349,16 @@ class PierreBridge {
     return container;
   }
 
-  /**
-   * Suggestion toolbar icon SVG (GitHub Primer file-diff-16 octicon).
-   * Matches CommentManager.SUGGESTION_ICON_SVG.
-   * @private
-   */
   static SUGGESTION_ICON_SVG = `<svg class="octicon" viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M1 1.75C1 .784 1.784 0 2.75 0h7.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16H2.75A1.75 1.75 0 0 1 1 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h10.5a.25.25 0 0 0 .25-.25V4.664a.25.25 0 0 0-.073-.177l-2.914-2.914a.25.25 0 0 0-.177-.073ZM8 3.25a.75.75 0 0 1 .75.75v1.5h1.5a.75.75 0 0 1 0 1.5h-1.5v1.5a.75.75 0 0 1-1.5 0V7h-1.5a.75.75 0 0 1 0-1.5h1.5V4A.75.75 0 0 1 8 3.25Zm-3 8a.75.75 0 0 1 .75-.75h4.5a.75.75 0 0 1 0 1.5h-4.5a.75.75 0 0 1-.75-.75Z"></path></svg>`;
 
-  /**
-   * Chat icon SVG for comment form (matches legacy CommentManager).
-   * @private
-   */
   static CHAT_FORM_SVG = `<svg viewBox="0 0 16 16" fill="currentColor" width="16" height="16"><path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/></svg>`;
 
   /**
-   * Render a comment form annotation.
-   * Reuses existing form DOM if available to preserve user input.
-   * Elements live in the light DOM (slotted) and use legacy comment form
-   * classes so page CSS applies.
+   * Render a comment form annotation. Reuses cached form DOM per id so textarea
+   * content survives re-renders (and virtualization remounts).
    * @private
    */
   _renderFormAnnotation(data, id, formElements, fileName) {
-    // Reuse existing form element to preserve textarea content
     if (formElements.has(id)) {
       return formElements.get(id);
     }
@@ -2105,12 +2367,11 @@ class PierreBridge {
     container.className = 'pierre-annotation user-comment-form';
     container.dataset.annotationId = id;
 
-    // Header — matches legacy comment form
     const header = document.createElement('div');
     header.className = 'comment-form-header';
     const icon = document.createElement('span');
     icon.className = 'comment-icon';
-    icon.textContent = '\uD83D\uDCAC'; // 💬
+    icon.textContent = '💬';
     header.appendChild(icon);
     const title = document.createElement('span');
     title.className = 'comment-title';
@@ -2124,8 +2385,6 @@ class PierreBridge {
     }
     container.appendChild(header);
 
-    // Suggestion toolbar — suggestionBtn is declared in the outer scope so
-    // the textarea input listener below can re-evaluate its disabled state.
     let suggestionBtn = null;
     if (data.showSuggestionBtn) {
       const toolbar = document.createElement('div');
@@ -2144,7 +2403,6 @@ class PierreBridge {
       container.appendChild(toolbar);
     }
 
-    // Textarea
     const textarea = document.createElement('textarea');
     textarea.className = 'comment-textarea';
     textarea.placeholder = 'Leave a comment... (Cmd/Ctrl+Enter to save)';
@@ -2158,20 +2416,13 @@ class PierreBridge {
     }
     container.appendChild(textarea);
 
-    // Actions — order matches legacy: Save, Chat, Cancel
     const actions = document.createElement('div');
     actions.className = 'comment-form-actions';
 
     const saveBtn = document.createElement('button');
     saveBtn.className = 'btn btn-sm btn-primary save-comment-btn';
     saveBtn.textContent = 'Save';
-    // Sync disabled state with initial textarea content — when `initialValue`
-    // is set programmatically above, the `input` event does not fire, so we
-    // must compute this here rather than relying on the listener.
     saveBtn.disabled = !textarea.value.trim();
-    // Guard against duplicate submits from rapid clicks or repeated
-    // Cmd+Enter. Parity with CommentManager.saveComment which notes:
-    // "Prevent duplicate saves from rapid clicks or Cmd+Enter".
     saveBtn.addEventListener('click', async () => {
       if (saveBtn.dataset.saving === 'true') return;
       if (!this.options.onCommentFormSubmit) return;
@@ -2180,8 +2431,6 @@ class PierreBridge {
       try {
         await this.options.onCommentFormSubmit(fileName, id, data, textarea.value);
       } finally {
-        // On success the form annotation has been removed and the button
-        // is detached; only touch the button if it's still connected.
         if (saveBtn.isConnected) {
           saveBtn.dataset.saving = 'false';
           saveBtn.disabled = !textarea.value.trim();
@@ -2225,9 +2474,6 @@ class PierreBridge {
 
     container.appendChild(actions);
 
-    // Enable/disable save button and re-evaluate suggestion button on input.
-    // Mirrors CommentManager.updateSuggestionButtonState so that manually
-    // deleting a ```suggestion block re-enables the toolbar button.
     const hasSuggestionBlock = (text) => /^\s*(`{3,})suggestion\s*$/m.test(text);
     textarea.addEventListener('input', () => {
       saveBtn.disabled = !textarea.value.trim();
@@ -2238,31 +2484,18 @@ class PierreBridge {
           ? 'Only one suggestion per comment'
           : 'Insert a suggestion';
       }
-      // Auto-resize
       textarea.style.height = 'auto';
       textarea.style.height = textarea.scrollHeight + 'px';
     });
 
-    // Keyboard shortcuts (Cmd/Ctrl+Enter, Escape) are handled by the
-    // delegated listener in PRManager.setupCommentFormDelegation() which
-    // matches .comment-textarea — no inline handler needed here.
-
-    // Cache form element for reuse
     formElements.set(id, container);
 
-    // Focus textarea and attach emoji picker after it's in the DOM.
-    // Matches parity with legacy CommentManager.showCommentForm — emoji
-    // autocomplete (typing `:`) should work in Pierre-rendered forms too.
     requestAnimationFrame(() => {
       textarea.focus();
       if (window.emojiPicker) window.emojiPicker.attach(textarea);
-      // Initial auto-resize for pre-filled content (input event doesn't
-      // fire for programmatic .value assignment).
       if (data.initialValue) {
         textarea.style.height = 'auto';
         textarea.style.height = textarea.scrollHeight + 'px';
-        // Sync suggestion button disabled state with pre-filled content —
-        // the input event listener doesn't fire for programmatic .value.
         if (suggestionBtn) {
           const has = hasSuggestionBlock(textarea.value);
           suggestionBtn.disabled = has;
@@ -2278,18 +2511,18 @@ class PierreBridge {
 
   /**
    * Get code content from stored metadata for a line range.
-   * Used by the suggestion button to pre-fill suggestion blocks.
    * @param {string} fileName
-   * @param {number} startLine - 1-based start line
-   * @param {number} endLine - 1-based end line
+   * @param {number} startLine
+   * @param {number} endLine
    * @param {string} side - 'LEFT' or 'RIGHT'
-   * @returns {string|null} Code text, or null if file not found
+   * @returns {string|null}
    */
   getCodeFromLines(fileName, startLine, endLine, side) {
     const fileState = this.files.get(fileName);
-    if (!fileState || !fileState.metadata) return null;
+    if (!fileState) return null;
 
     const metadata = fileState.baseMetadata || fileState.metadata;
+    if (!metadata) return null;
     const useAdditions = (side || 'RIGHT') === 'RIGHT';
     const lines = useAdditions ? metadata.additionLines : metadata.deletionLines;
     const hunks = metadata.hunks;
@@ -2302,10 +2535,8 @@ class PierreBridge {
       const hunkLineIndex = useAdditions ? hunk.additionLineIndex : hunk.deletionLineIndex;
       const hunkEnd = hunkStart + hunkCount - 1;
 
-      // Skip hunks entirely outside the requested range
       if (hunkEnd < startLine || hunkStart > endLine) continue;
 
-      // Walk lines in this hunk
       for (let i = 0; i < hunkCount; i++) {
         const lineNum = hunkStart + i;
         if (lineNum >= startLine && lineNum <= endLine) {
@@ -2323,27 +2554,63 @@ class PierreBridge {
   // ─── Utility ──────────────────────────────────────────────────────
 
   /**
-   * Normalize side from pair-review ('LEFT'/'RIGHT') to @pierre/diffs ('deletions'/'additions').
+   * Resolve the display file name for a CodeView item id (strips the
+   * `context:` prefix for context items).
+   * @private
    */
+  _fileNameForItemId(id) {
+    const fileState = this.files.get(id);
+    return fileState ? fileState.fileName : id;
+  }
+
   static toPierreSide(side) {
     if (side === 'LEFT' || side === 'deletions') return 'deletions';
     return 'additions';
   }
 
-  /**
-   * Normalize side from @pierre/diffs to pair-review format.
-   */
   static toPairReviewSide(side) {
     if (side === 'deletions' || side === 'LEFT') return 'LEFT';
     return 'RIGHT';
   }
 
-  /**
-   * Normalize side to pair-review format for diffPosition lookup.
-   */
   static normalizeSide(side) {
     if (side === 'deletions' || side === 'LEFT') return 'LEFT';
     return 'RIGHT';
+  }
+
+  /**
+   * Resolve the rendered shadow-DOM element for a line from getLineIndex()
+   * indices. Kept from the legacy bridge for scroll-to-line flashing.
+   * @private
+   */
+  static _queryLineElement(instance, indices, side) {
+    if (!instance || !indices) return null;
+    const [unifiedIndex] = indices;
+    if (unifiedIndex == null) return null;
+    const pre = instance.pre;
+    if (!pre) return null;
+    const compositeKey = Array.isArray(indices) ? indices.join(',') : String(unifiedIndex);
+    for (const codeEl of PierreBridge._codeColumnsForSide(instance, pre, side)) {
+      if (!codeEl) continue;
+      const el = codeEl.querySelector(`[data-line][data-line-index="${compositeKey}"]`)
+        || codeEl.querySelector(`[data-line][data-line-index="${unifiedIndex}"]`);
+      if (el) return el;
+    }
+    return null;
+  }
+
+  /**
+   * @private
+   */
+  static _codeColumnsForSide(instance, pre, side) {
+    const unified = instance.codeUnified || pre.querySelector('code[data-unified]');
+    if (unified) return [unified];
+    const deletions = instance.codeDeletions || pre.querySelector('code[data-deletions]');
+    const additions = instance.codeAdditions || pre.querySelector('code[data-additions]');
+    if (deletions || additions) {
+      return side === 'deletions' ? [deletions, additions] : [additions, deletions];
+    }
+    return [pre];
   }
 
   /**
@@ -2375,22 +2642,6 @@ class PierreBridge {
 
   // ─── CSS for Annotations ──────────────────────────────────────────
 
-  // Annotation CSS injected into Shadow DOM via unsafeCSS.
-  // Suggestions and comments use legacy classes (.ai-suggestion, .user-comment)
-  // styled by the page stylesheet. Only the comment form annotation lives
-  // entirely within the shadow DOM and needs styles here.
-  //
-  // Split layout: @pierre/diffs anchors each annotation to ONE code column —
-  // a 'deletions' annotation renders in the LEFT column, an 'additions'
-  // annotation in the RIGHT column — and emits an EMPTY paired cell in the
-  // opposite column on the same shared grid row (see getAnnotations()/
-  // pushLineWithAnnotation in DiffHunksRenderer). A lone card would only get
-  // half the width, so _syncSplitAnnotationLayout marks such cards with
-  // .pr-annotation-fullwidth and the rules below stretch them across both
-  // content tracks (the tracks are equal 1fr shares, so 200% + the measured
-  // middle-gutter width spans exactly to the far edge). min-width:0 lets
-  // unstretched cards (both sides annotated on one row) wrap inside their
-  // half-width cell rather than force horizontal overflow.
   static ANNOTATION_CSS = `
     .pierre-annotation {
       padding: 8px 12px;
@@ -2400,32 +2651,16 @@ class PierreBridge {
       font-size: 13px;
       line-height: 1.5;
     }
-    /* Let annotation cards wrap within a split column instead of overflowing. */
     [data-line-annotation] { min-width: 0; }
     [data-annotation-content] { min-width: 0; }
-    /* Split view: stretch a lone card across both columns. The class and
-       --pr-split-gutter-width are maintained by _syncSplitAnnotationLayout
-       (the middle gutter track is min-content sized — unknowable in pure
-       CSS). Without the var the card degrades to stopping at the seam.
-       z-index clears the middle gutter, which the vendor paints at 3. */
     [data-diff-type='split'] .pr-annotation-fullwidth {
       position: relative;
       z-index: 4;
       width: calc(200% + var(--pr-split-gutter-width, 0px));
     }
-    /* Right-column cards anchor at the additions track; pull them back to
-       the left content track's start edge. */
     [data-diff-type='split'] [data-additions] .pr-annotation-fullwidth {
       margin-left: calc(-100% - var(--pr-split-gutter-width, 0px));
     }
-    /* Split view, entirely added/removed file: the vendor emits ONE code
-       column stamped data-diff-type='single' and ships no rule for it, so
-       it stretches full width. Box it into the split layout instead:
-       deletions in the left half, additions in the right, other half empty.
-       The lone <code> keeps its internal gutter+content grid, so gutter and
-       content both live inside their 1fr half and can never cross the
-       center seam. The :has() guard skips unified mode, where every pre is
-       'single' but its code column is data-unified. */
     [data-diff-type='single']:has(> [data-additions], > [data-deletions]) {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -2438,36 +2673,11 @@ class PierreBridge {
       grid-column: 2;
       border-left: 1px solid var(--diffs-bg);
     }
-    /* The vendor's [data-code] ships overflow: scroll clip AND
-       contain: content. Both must be neutralized here, for different reasons:
-         - overflow: scroll clip is a scroll/clip box that would clip the
-           stretched cards; reset to visible (lines wrap in wrap mode, so
-           there is nothing to scroll).
-         - contain: content implies contain: PAINT, which clips descendant
-           paint to the code column's own border box REGARDLESS of overflow.
-           The .pr-annotation-fullwidth cards below reach past this box (a
-           right-half card sits at margin-left: calc(-100% - 2g)), so paint
-           containment would hide their left portion — header text and body —
-           while the right-aligned action buttons, which fall inside the box,
-           still paint (the "empty card" bug). Drop paint containment; keep
-           layout+style containment (cheap, no visual effect) so the vendor's
-           perf intent is mostly preserved.
-       Two-sided split columns escape both: they are display: contents and
-       generate no box, so neither overflow nor contain has anything to clip —
-       which is why this only bites one-sided (single) files, whose columns
-       ARE real boxes (display: grid children, above). */
     [data-diff-type='single'][data-overflow='wrap'] > [data-deletions],
     [data-diff-type='single'][data-overflow='wrap'] > [data-additions] {
       overflow: visible;
       contain: layout style;
     }
-    /* One-sided file: every card is lone, stretch across both halves.
-       Geometry (g = the file's own gutter, published by
-       _applySplitAnnotationLayout as --pr-split-gutter-width; 100% = the
-       content track = half minus g): a left-half card starts after its
-       gutter, so 200% + g reaches the far edge; a right-half card must
-       also cross the empty left half AND its own gutter — shift back by
-       100% + 2g and span 200% + 2g. */
     [data-diff-type='single'] .pr-annotation-fullwidth {
       position: relative;
       z-index: 4;
@@ -2479,9 +2689,6 @@ class PierreBridge {
       width: calc(200% + 2 * var(--pr-split-gutter-width, 0px));
       margin-left: calc(-100% - 2 * var(--pr-split-gutter-width, 0px));
     }
-    /* Brief flash applied by PierreBridge.scrollToLine. Generic [data-line]
-       match so it flashes whichever column (unified/deletions/additions) the
-       target line resolves to. */
     [data-line].pierre-line-highlight {
       animation: pierre-line-highlight-flash 3.5s ease-out forwards;
     }

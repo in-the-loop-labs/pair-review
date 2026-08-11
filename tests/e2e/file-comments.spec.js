@@ -15,7 +15,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender } from './helpers.js';
+import { waitForDiffToRender, expectResponse } from './helpers.js';
 
 // Helper to clean up all file comments for test isolation
 async function cleanupAllFileComments(page) {
@@ -63,7 +63,7 @@ async function createFileComment(page, text) {
   const saveBtn = form.locator('.submit-btn');
 
   // Wait for API response to get comment ID
-  const responsePromise = page.waitForResponse(
+  const responsePromise = expectResponse(page,
     response => response.url().includes('/comments') && response.request().method() === 'POST'
   );
 
@@ -293,7 +293,7 @@ test.describe('Creating File Comments', () => {
     await textarea.fill(testComment);
 
     // Set up API listener to get the comment ID
-    const responsePromise = page.waitForResponse(
+    const responsePromise = expectResponse(page,
       response => response.url().includes('/comments') && response.request().method() === 'POST'
     );
 
@@ -326,7 +326,7 @@ test.describe('Creating File Comments', () => {
 
   test('should call API when saving file comment', async ({ page }) => {
     // Set up API response listener
-    const responsePromise = page.waitForResponse(
+    const responsePromise = expectResponse(page,
       response => response.url().includes('/comments') && response.request().method() === 'POST'
     );
 

@@ -1,276 +1,132 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { JSDOM } from 'jsdom';
+const { createPierreEnv } = require('../utils/fake-code-view');
 
-const BRIDGE_PATH = '../../public/js/modules/pierre-bridge.js';
+const RENDER_OPTIONS = {
+  theme: { dark: 'github-dark', light: 'github-light' },
+  useTokenTransformer: false,
+  lineDiffType: 'word',
+  maxLineDiffLength: 1000,
+  tokenizeMaxLineLength: 1000,
+};
 
-let originalWindow;
-let originalWorker;
-let originalDocument;
-let originalRaf;
-
-function loadPierreBridge({
-  setRenderOptions = vi.fn(() => Promise.resolve()),
-  FileDiff = function FileDiff() {},
-  subscribeToStatChanges = vi.fn((callback) => {
-    callback({ managerState: 'initialized', workersFailed: false });
-    return () => {};
-  }),
-} = {}) {
-  delete require.cache[require.resolve(BRIDGE_PATH)];
-  const workerManagers = [];
-
-  class WorkerPoolManager {
-    constructor(poolOptions, renderOptions) {
-      this.poolOptions = poolOptions;
-      this.renderOptions = renderOptions;
-      this.setRenderOptions = setRenderOptions;
-      this.subscribeToStatChanges = subscribeToStatChanges;
-      this.terminate = vi.fn();
-      workerManagers.push(this);
-    }
-  }
-
-  global.Worker = function Worker() {};
-  const dom = new JSDOM('<!doctype html><body></body>', { url: 'http://localhost/' });
-  global.document = dom.window.document;
-  global.window = {
-    matchMedia: vi.fn(() => ({ matches: false })),
-    navigator: { hardwareConcurrency: 4 },
-    PierreDiffs: {
-      FileDiff,
-      WorkerPoolManager,
-      parsePatchFiles: vi.fn(() => ([{
-        files: [{ name: 'file', hunks: [] }],
-      }])),
-      getSingularPatch: vi.fn(() => ({ name: 'file', hunks: [] })),
-    },
-  };
-
-  return {
-    PierreBridge: require(BRIDGE_PATH),
-    setRenderOptions,
-    workerManagers,
-  };
+function renderOne(bridge, document) {
+  const root = document.createElement('div');
+  bridge.renderAll(root, [
+    { id: 'src/example.js', type: 'diff', fileName: 'src/example.js', patch: '@@ -1 +1 @@\n-old\n+new\n' },
+  ]);
+  return root;
 }
 
 describe('PierreBridge theme handling', () => {
-  beforeEach(() => {
-    originalWindow = global.window;
-    originalWorker = global.Worker;
-    originalDocument = global.document;
-    originalRaf = global.requestAnimationFrame;
-  });
+  let env;
 
   afterEach(() => {
-    delete require.cache[require.resolve(BRIDGE_PATH)];
-    if (originalWindow === undefined) {
-      delete global.window;
-    } else {
-      global.window = originalWindow;
-    }
-    if (originalWorker === undefined) {
-      delete global.Worker;
-    } else {
-      global.Worker = originalWorker;
-    }
-    if (originalDocument === undefined) {
-      delete global.document;
-    } else {
-      global.document = originalDocument;
-    }
-    if (originalRaf === undefined) {
-      delete global.requestAnimationFrame;
-    } else {
-      global.requestAnimationFrame = originalRaf;
-    }
+    env?.cleanup();
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
-  it('propagates theme changes to the worker pool render options', () => {
-    const { PierreBridge, setRenderOptions } = loadPierreBridge();
-    const bridge = new PierreBridge({ theme: 'light' });
-    const instance = { setThemeType: vi.fn() };
-    bridge.files.set('src/example.js', { instance });
+  it('propagates a theme change to the worker pool and re-publishes the CodeView', () => {
+    const setRenderOptions = vi.fn(() => Promise.resolve());
+    env = createPierreEnv({ worker: true, workerConfig: { setRenderOptions } });
+    const bridge = new env.PierreBridge({ theme: 'light' });
+    renderOne(bridge, env.document);
+    const codeView = env.codeViews[0];
+    const onThemeBefore = codeView.calls.onThemeChange;
 
     bridge.setTheme('dark');
 
-    expect(setRenderOptions).toHaveBeenCalledWith({
-      theme: {
-        dark: 'github-dark',
-        light: 'github-light',
-      },
-      useTokenTransformer: false,
-      lineDiffType: 'word',
-      maxLineDiffLength: 1000,
-      tokenizeMaxLineLength: 1000,
-    });
-    expect(instance.setThemeType).toHaveBeenCalledWith('dark');
+    expect(setRenderOptions).toHaveBeenCalledWith(RENDER_OPTIONS);
+    // The single CodeView is re-published with the new themeType.
+    expect(codeView.calls.setOptions.length).toBeGreaterThan(0);
+    expect(codeView.calls.setOptions.at(-1).themeType).toBe('dark');
+    expect(codeView.calls.onThemeChange).toBe(onThemeBefore + 1);
+    expect(bridge.theme).toBe('dark');
   });
 
-  it('uses non-worker rendering while startup is pending and disables workers on timeout', () => {
+  it('works worker-free: setTheme re-publishes the CodeView without a worker pool', () => {
+    env = createPierreEnv({ worker: false });
+    const bridge = new env.PierreBridge({ theme: 'light' });
+    expect(bridge.workerManager).toBeNull();
+    renderOne(bridge, env.document);
+    const codeView = env.codeViews[0];
+
+    expect(() => bridge.setTheme('dark')).not.toThrow();
+    expect(codeView.calls.setOptions.at(-1).themeType).toBe('dark');
+    expect(codeView.calls.onThemeChange).toBe(1);
+  });
+
+  it('renders through the worker-free path while startup is pending, then falls back on timeout', () => {
     vi.useFakeTimers();
     vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const terminate = vi.fn();
 
-    const renderCalls = [];
-    const instances = [];
-    class FileDiff {
-      constructor(_options, workerManager) {
-        this.workerManager = workerManager;
-        this.cleanUp = vi.fn();
-        instances.push(this);
-      }
-
-      render(payload) {
-        renderCalls.push({ workerManager: this.workerManager, payload });
-        payload.containerWrapper.appendChild(document.createElement('diffs-container'));
-        return !this.workerManager;
-      }
-    }
-
-    const { PierreBridge, workerManagers } = loadPierreBridge({
-      FileDiff,
-      subscribeToStatChanges: vi.fn((callback) => {
-        callback({ managerState: 'initializing', workersFailed: false });
-        return () => {};
-      }),
+    env = createPierreEnv({
+      worker: true,
+      workerConfig: {
+        initialStats: { managerState: 'initializing', workersFailed: false },
+        terminate,
+      },
     });
-    PierreBridge.WORKER_INIT_TIMEOUT_MS = 10;
+    env.PierreBridge.WORKER_INIT_TIMEOUT_MS = 10;
 
-    const bridge = new PierreBridge({ theme: 'light' });
-    const container = document.createElement('div');
-    bridge.renderFile('src/example.js', container, '@@ -1 +1 @@\n-old\n+new\n');
-
-    expect(bridge.workerManager).toBe(workerManagers[0]);
-    expect(renderCalls).toHaveLength(1);
-    expect(renderCalls[0].workerManager).toBeUndefined();
-    vi.advanceTimersByTime(10);
-
-    expect(bridge.workerManager).toBeNull();
-    expect(workerManagers[0].terminate).toHaveBeenCalled();
-    expect(instances[0].cleanUp).not.toHaveBeenCalled();
-    expect(renderCalls).toHaveLength(1);
-  });
-
-  it('rebuilds pre-init files through the worker path once the pool initializes', () => {
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    // Capture requestAnimationFrame callbacks so we can prove the rebuild is
-    // deferred (scheduled) and flush it deterministically.
-    const rafCallbacks = [];
-    global.requestAnimationFrame = (cb) => {
-      rafCallbacks.push(cb);
-      return rafCallbacks.length;
-    };
-    const flushRaf = () => rafCallbacks.splice(0).forEach((cb) => cb());
-
-    const instances = [];
-    class FileDiff {
-      constructor(_options, workerManager) {
-        this.workerManager = workerManager;
-        this.cleanUp = vi.fn();
-        this.rerender = vi.fn();
-        instances.push(this);
-      }
-
-      render(payload) {
-        this.lastPayload = payload;
-        payload.containerWrapper.appendChild(document.createElement('diffs-container'));
-        return true;
-      }
-    }
-
-    // Hold the pool in the "initializing" state at construction; capture the
-    // stats callback so the test can drive the initialized transition later.
-    let statsCallback = null;
-    const { PierreBridge, workerManagers } = loadPierreBridge({
-      FileDiff,
-      subscribeToStatChanges: vi.fn((callback) => {
-        statsCallback = callback;
-        callback({ managerState: 'initializing', workersFailed: false });
-        return () => {};
-      }),
-    });
-
-    const bridge = new PierreBridge({ theme: 'light' });
-    expect(bridge.workerManager).toBe(workerManagers[0]);
+    const bridge = new env.PierreBridge({ theme: 'light' });
+    expect(bridge.workerManager).toBe(env.workerManagers[0]);
     expect(bridge._workerReady).toBe(false);
 
-    // Render a file WHILE the worker pool is still initializing.
-    const container = document.createElement('div');
-    const fileState = bridge.renderFile('src/example.js', container, '@@ -1 +1 @@\n-old\n+new\n');
+    renderOne(bridge, env.document);
+    expect(env.codeViews).toHaveLength(1);
 
-    // It rendered without a worker: instance built with an undefined manager.
-    expect(instances).toHaveLength(1);
-    expect(instances[0].workerManager).toBeUndefined();
-    expect(fileState.usesWorkerManager).toBe(false);
+    vi.advanceTimersByTime(10);
 
-    // Pool finishes initializing.
-    statsCallback({ managerState: 'initialized', workersFailed: false });
-
-    // Rebuild must be deferred to requestAnimationFrame, not run synchronously.
-    expect(instances).toHaveLength(1);
-
-    flushRaf();
-
-    // The pre-init file is FULLY REBUILT through the worker path: a new FileDiff
-    // instance is constructed with the real worker manager, the old one is torn
-    // down, and usesWorkerManager flips to true.
-    expect(instances).toHaveLength(2);
-    expect(instances[0].cleanUp).toHaveBeenCalled();
-    expect(instances[1].workerManager).toBe(workerManagers[0]);
-    const rebuilt = bridge.files.get('src/example.js');
-    expect(rebuilt.instance).toBe(instances[1]);
-    expect(rebuilt.usesWorkerManager).toBe(true);
+    // The pool never initialized: workers are torn down and the CodeView is
+    // recreated main-thread-only, preserving items.
+    expect(bridge.workerManager).toBeNull();
+    expect(env.workerManagers[0].terminated).toBe(true);
+    expect(terminate).toHaveBeenCalled();
+    expect(env.codeViews).toHaveLength(2);
+    expect(env.codeViews[1].itemIds()).toEqual(['src/example.js']);
   });
 
-  it('skips forcePlainText files when rebuilding after worker init', () => {
+  it('re-publishes every item once the worker pool reports initialized', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    const rafCallbacks = [];
-    global.requestAnimationFrame = (cb) => {
-      rafCallbacks.push(cb);
-      return rafCallbacks.length;
-    };
-    const flushRaf = () => rafCallbacks.splice(0).forEach((cb) => cb());
-
-    const instances = [];
-    class FileDiff {
-      constructor(_options, workerManager) {
-        this.workerManager = workerManager;
-        this.cleanUp = vi.fn();
-        this.rerender = vi.fn();
-        instances.push(this);
-      }
-
-      render(payload) {
-        payload.containerWrapper.appendChild(document.createElement('diffs-container'));
-        return true;
-      }
-    }
-
-    let statsCallback = null;
-    const { PierreBridge } = loadPierreBridge({
-      FileDiff,
-      subscribeToStatChanges: vi.fn((callback) => {
-        statsCallback = callback;
-        callback({ managerState: 'initializing', workersFailed: false });
-        return () => {};
-      }),
+    env = createPierreEnv({
+      worker: true,
+      workerConfig: { initialStats: { managerState: 'initializing', workersFailed: false } },
     });
 
-    const bridge = new PierreBridge({ theme: 'light' });
-    const container = document.createElement('div');
-    bridge.renderFile('big/file.js', container, '@@ -1 +1 @@\n-old\n+new\n', { forcePlainText: true });
+    const bridge = new env.PierreBridge({ theme: 'light' });
+    expect(bridge._workerReady).toBe(false);
+    renderOne(bridge, env.document);
+    const codeView = env.codeViews[0];
+    const setItemsBefore = codeView.calls.setItems.length;
+    const versionBefore = codeView.getItem('src/example.js').version;
 
-    expect(instances).toHaveLength(1);
+    // Pool finishes initializing → the bridge re-publishes all items so a fresh
+    // render picks up worker highlighting.
+    env.workerManagers[0].emitStats({ managerState: 'initialized', workersFailed: false });
 
-    statsCallback({ managerState: 'initialized', workersFailed: false });
-    flushRaf();
+    expect(bridge._workerReady).toBe(true);
+    expect(codeView.calls.setItems.length).toBe(setItemsBefore + 1);
+    expect(codeView.getItem('src/example.js').version).toBeGreaterThan(versionBefore);
+  });
 
-    // A deliberately-plain file is not rebuilt — no new instance, still plain.
-    expect(instances).toHaveLength(1);
-    expect(bridge.files.get('big/file.js').usesWorkerManager).toBe(false);
+  it('falls back to main-thread rendering when the pool reports a failure', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    env = createPierreEnv({
+      worker: true,
+      workerConfig: { initialStats: { managerState: 'initializing', workersFailed: false } },
+    });
+    const bridge = new env.PierreBridge({ theme: 'light' });
+    renderOne(bridge, env.document);
+
+    env.workerManagers[0].emitStats({ managerState: 'failed', workersFailed: true });
+
+    expect(bridge.workerManager).toBeNull();
+    expect(env.workerManagers[0].terminated).toBe(true);
+    // A fresh main-thread CodeView is created carrying the same item.
+    expect(env.codeViews).toHaveLength(2);
+    expect(env.codeViews[1].itemIds()).toEqual(['src/example.js']);
   });
 });

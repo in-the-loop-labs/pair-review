@@ -11,7 +11,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender, hoverDiffLine } from './helpers.js';
+import { waitForDiffToRender, hoverDiffLine, openCommentFormOnLine, cleanupAllComments } from './helpers.js';
 
 /**
  * Enable chat in the test environment (Pi is not available in E2E).
@@ -30,18 +30,6 @@ async function enableChat(page) {
 async function disableChat(page) {
   await page.evaluate(() => {
     document.documentElement.setAttribute('data-chat', 'disabled');
-  });
-}
-
-// Helper to clean up all user comments
-async function cleanupAllComments(page) {
-  await page.evaluate(async () => {
-    const commentsResponse = await fetch('/api/reviews/1/comments?includeDismissed=true');
-    const data = await commentsResponse.json();
-    const comments = data.comments || [];
-    for (const comment of comments) {
-      await fetch(`/api/reviews/1/comments/${comment.id}`, { method: 'DELETE' });
-    }
   });
 }
 
@@ -128,11 +116,7 @@ test.describe('Comment form Chat button', () => {
     await chatCloseBtn.click();
 
     // Open a comment form by hovering and clicking the + button
-    await hoverDiffLine(page, 0);
-    const addCommentBtn = page.locator('.pierre-comment-btn').first();
-    await addCommentBtn.waitFor({ state: 'visible', timeout: 5000 });
-    await addCommentBtn.click();
-    await page.waitForSelector('.user-comment-form', { timeout: 5000 });
+    await openCommentFormOnLine(page, 0);
 
     // Type some text in the comment form
     const commentTextarea = page.locator('.user-comment-form textarea');
@@ -165,11 +149,7 @@ test.describe('Comment form Chat button', () => {
     await disableChat(page);
 
     // Open a comment form
-    await hoverDiffLine(page, 0);
-    const addCommentBtn = page.locator('.pierre-comment-btn').first();
-    await addCommentBtn.waitFor({ state: 'visible', timeout: 5000 });
-    await addCommentBtn.click();
-    await page.waitForSelector('.user-comment-form', { timeout: 5000 });
+    await openCommentFormOnLine(page, 0);
 
     // The Chat button in the comment form should be hidden
     const chatFromCommentBtn = page.locator('.comment-form-actions .btn-chat-from-comment');
@@ -190,11 +170,7 @@ test.describe('Review panel comment chat button', () => {
   test('opens chat from a user-created review panel entry', async ({ page }) => {
     await enableChat(page);
 
-    await hoverDiffLine(page, 0);
-    const addCommentBtn = page.locator('.pierre-comment-btn').first();
-    await addCommentBtn.waitFor({ state: 'visible', timeout: 5000 });
-    await addCommentBtn.click();
-    await page.waitForSelector('.user-comment-form', { timeout: 5000 });
+    await openCommentFormOnLine(page, 0);
 
     const commentText = 'Panel chat should use this user comment';
     const commentTextarea = page.locator('.user-comment-form textarea');
@@ -224,11 +200,7 @@ test.describe('Review panel comment chat button', () => {
   test('review-panel chat button is hidden when chat is disabled', async ({ page }) => {
     await disableChat(page);
 
-    await hoverDiffLine(page, 0);
-    const addCommentBtn = page.locator('.pierre-comment-btn').first();
-    await addCommentBtn.waitFor({ state: 'visible', timeout: 5000 });
-    await addCommentBtn.click();
-    await page.waitForSelector('.user-comment-form', { timeout: 5000 });
+    await openCommentFormOnLine(page, 0);
 
     const commentText = 'Review panel chat should stay hidden';
     const commentTextarea = page.locator('.user-comment-form textarea');

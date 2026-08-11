@@ -330,8 +330,12 @@ class FileCommentManager {
         window.aiPanel.addComment(commentData);
       }
 
-      // Update parent comment count
-      if (this.prManager?.updateCommentCount) {
+      // Register the new file-level comment in the parent's count-backing array
+      // (not just the count) so the data-backed count stays correct before a
+      // reload; fall back to the bare count refresh on older PRManagers.
+      if (this.prManager?._registerOptimisticUserComment) {
+        this.prManager._registerOptimisticUserComment(commentData);
+      } else if (this.prManager?.updateCommentCount) {
         this.prManager.updateCommentCount();
       }
 
@@ -639,8 +643,14 @@ class FileCommentManager {
         }
       }
 
-      // Update parent comment count for Preview button
-      if (this.prManager?.updateCommentCount) {
+      // Register the adopted comment in the parent's count-backing array, not
+      // just the count: the count is data-backed (prManager.userComments), so a
+      // bare updateCommentCount() would recompute from an array that does not
+      // yet contain this comment. _registerOptimisticUserComment repaints the
+      // count itself; older PRManagers fall back to the bare refresh.
+      if (this.prManager?._registerOptimisticUserComment) {
+        this.prManager._registerOptimisticUserComment(commentData);
+      } else if (this.prManager?.updateCommentCount) {
         this.prManager.updateCommentCount();
       }
 
@@ -907,8 +917,14 @@ class FileCommentManager {
         }
       }
 
-      // Update parent comment count for Preview button
-      if (this.prManager?.updateCommentCount) {
+      // Register the adopted comment in the parent's count-backing array, not
+      // just the count: the count is data-backed (prManager.userComments), so a
+      // bare updateCommentCount() would recompute from an array that does not
+      // yet contain this comment. _registerOptimisticUserComment repaints the
+      // count itself; older PRManagers fall back to the bare refresh.
+      if (this.prManager?._registerOptimisticUserComment) {
+        this.prManager._registerOptimisticUserComment(commentData);
+      } else if (this.prManager?.updateCommentCount) {
         this.prManager.updateCommentCount();
       }
 
@@ -1078,8 +1094,13 @@ class FileCommentManager {
         this.prManager.commentMinimizer.refreshIndicators();
       }
 
-      // Update parent comment count
-      if (this.prManager?.updateCommentCount) {
+      // Mark the record inactive AND repaint the parent count. Removing the card
+      // is not enough: the count is data-backed (filters prManager.userComments
+      // by status), so a card-only delete keeps counting this comment until a
+      // full reload.
+      if (this.prManager?._markCommentDeleted) {
+        this.prManager._markCommentDeleted(commentId);
+      } else if (this.prManager?.updateCommentCount) {
         this.prManager.updateCommentCount();
       }
 
@@ -1180,10 +1201,23 @@ class FileCommentManager {
     const commentsByZone = new Map();
     const suggestionsByZone = new Map();
 
+    // In CodeView a file virtualized-out SINCE load never built its zone on
+    // mount, so findZoneForFile (DOM query + cached GET) finds none and the card
+    // is dropped with nothing to re-hydrate it later. getOrCreate makes the
+    // cached zone NOW; the 'file-comments' renderer returns that SAME element
+    // when the file scrolls in, so the cards are already present. Legacy renders
+    // zones in the DOM and must not spawn detached ones — keep findZoneForFile.
+    const resolveZone = (file) => {
+      if (this.prManager?._usesPierreCodeView?.() && this.prManager._getOrCreateFileCommentsZone) {
+        return this.prManager._getOrCreateFileCommentsZone(file);
+      }
+      return this.findZoneForFile(file);
+    };
+
     if (comments) {
       for (const comment of comments) {
         if (comment.is_file_level === 1) {
-          const zone = this.findZoneForFile(comment.file);
+          const zone = resolveZone(comment.file);
           if (!zone) {
             continue;
           }
@@ -1198,7 +1232,7 @@ class FileCommentManager {
     if (suggestions) {
       for (const suggestion of suggestions) {
         if (suggestion.is_file_level === 1) {
-          const zone = this.findZoneForFile(suggestion.file);
+          const zone = resolveZone(suggestion.file);
           if (!zone) {
             continue;
           }
@@ -1210,8 +1244,13 @@ class FileCommentManager {
       }
     }
 
-    // Find all file comment zones and populate them
-    const zones = document.querySelectorAll('.file-comments-zone');
+    // Populate every target zone: the live DOM zones PLUS any cached/detached
+    // zone that resolved comments/suggestions (a virtualized-out file's zone is
+    // not in the DOM yet — populate it now so its cards are present when it
+    // mounts on scroll-in, independent of virtualization timing).
+    const zones = new Set(document.querySelectorAll('.file-comments-zone'));
+    for (const zone of commentsByZone.keys()) zones.add(zone);
+    for (const zone of suggestionsByZone.keys()) zones.add(zone);
     for (const zone of zones) {
       const container = zone.querySelector('.file-comments-container');
 
@@ -1265,15 +1304,23 @@ class FileCommentManager {
       : null;
 
     if (fileWrapper) {
-      return fileWrapper.querySelector('.file-comments-zone');
+      const zone = fileWrapper.querySelector('.file-comments-zone');
+      if (zone) return zone;
     }
 
     try {
       const escaped = globalThis.CSS?.escape ? CSS.escape(fileName) : fileName;
-      return document.querySelector(`.file-comments-zone[data-file-name="${escaped}"]`);
+      const zone = document.querySelector(`.file-comments-zone[data-file-name="${escaped}"]`);
+      if (zone) return zone;
     } catch {
-      return null;
+      // fall through to the cached zone
     }
+
+    // Fall back to the cached (possibly virtualized-out / detached) zone so
+    // file-level comments hydrate even when the file is off-screen at load time.
+    // The 'file-comments' CodeView renderer returns this SAME cached element, so
+    // cards populated here appear when the file mounts on scroll-in.
+    return this.prManager?._fileCommentZones?.get(fileName) || null;
   }
 
   /**

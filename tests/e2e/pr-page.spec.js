@@ -157,12 +157,10 @@ test.describe('PR Page', () => {
       await page.goto('/pr/test-owner/test-repo/1');
       await waitForDiffToRender(page);
 
-      // Scope to the main diff wrapper. There are multiple elements carrying
-      // data-file-name="src/utils.js" (e.g. .file-comments-zone); filter to the
-      // one that hosts the pierre diff body.
-      const utilsSection = page
-        .locator('[data-file-name="src/utils.js"]')
-        .filter({ has: page.locator('.pierre-diff-body') });
+      // Scope to the main diff host. Several elements carry
+      // data-file-name="src/utils.js" (e.g. the header's .file-comments-zone);
+      // the CodeView diff host is the stamped `<diffs-container>` itself.
+      const utilsSection = page.locator('diffs-container[data-file-name="src/utils.js"]');
       await expect(utilsSection).toBeVisible();
 
       // Find a separator that actually has expand controls. Expand buttons
@@ -208,11 +206,9 @@ test.describe('PR Page', () => {
       await page.goto('/pr/test-owner/test-repo/1');
       await waitForDiffToRender(page);
 
-      // Scope to the main diff wrapper, filtering out the sibling
-      // .file-comments-zone that also carries data-file-name.
-      const utilsSection = page
-        .locator('[data-file-name="src/utils.js"]')
-        .filter({ has: page.locator('.pierre-diff-body') });
+      // Scope to the main diff host (the stamped `<diffs-container>`), not the
+      // sibling .file-comments-zone that also carries data-file-name.
+      const utilsSection = page.locator('diffs-container[data-file-name="src/utils.js"]');
       await expect(utilsSection).toBeVisible();
 
       // Wait for expand controls before interacting — they only render after

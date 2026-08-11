@@ -59,8 +59,6 @@ class PRManager {
 
   static PIERRE_HIGHLIGHT_MAX_PATCH_CHARS = 300 * 1024;
   static PIERRE_HIGHLIGHT_MAX_PATCH_LINES = 3000;
-  static PIERRE_HIGHLIGHT_TOTAL_CHARS = 900 * 1024;
-  static PIERRE_HIGHLIGHT_TOTAL_LINES = 18000;
   static PIERRE_AUTO_RENDER_MAX_PATCH_CHARS = 500 * 1024;
   static PIERRE_AUTO_RENDER_MAX_PATCH_LINES = 20000;
   static PIERRE_UPGRADE_MAX_PATCH_CHARS = 120 * 1024;
@@ -69,7 +67,7 @@ class PRManager {
   static PIERRE_UPGRADE_MAX_CONTENT_LINES = 12000;
   static PIERRE_UPGRADE_CONCURRENCY = 4;
   static PIERRE_BACKGROUND_UPGRADE_DELAY_MS = 1000;
-  static PIERRE_POINTER_UPGRADE_DELAY_MS = 10000;
+  static PIERRE_POINTER_UPGRADE_RETRY_MS = 400;
 
   // Logo icon - infinity loop rotated for "in-the-loop" branding
   static LOGO_ICON = `
@@ -135,6 +133,11 @@ class PRManager {
     this.viewedFiles = new Set();
     // Context files - pinned non-diff file ranges
     this.contextFiles = [];
+    // Diff-only files from the sidebar list. null until updateFileList delivers
+    // the list — distinct from [] (a genuinely empty diff), because the
+    // "diff wins" suppression in loadContextFiles must not treat "not loaded
+    // yet" as "no diff files".
+    this.diffFiles = null;
     // Canonical file order - sorted file paths for consistent ordering across components
     this.canonicalFileOrder = new Map();
     // Raw per-file patch text for chat context enrichment
@@ -148,7 +151,6 @@ class PRManager {
     // lazy Pierre bodies render (set in _upgradeFilesWithContents, reset in
     // renderDiff). Null when no upgrade session is active.
     this._pierreUpgradeCandidates = null;
-    this._deferredDiffRenderPromises = new Map();
     // Analysis history manager - for switching between analysis runs
     this.analysisHistoryManager = null;
     // Currently selected analysis run ID (null = latest)
@@ -331,9 +333,6 @@ class PRManager {
           }
         });
       },
-      onHunkExpand: (fileName, hunkIndex, direction, lineCount) => {
-        // @pierre/diffs handles expansion natively
-      },
       onCommentEdit: (comment) => {
         if (this.commentManager) {
           this.commentManager.editComment(comment.id);
@@ -511,12 +510,97 @@ class PRManager {
    * single-line and uniform, so measuring the first one is representative.
    * Call after renderDiff appends the headers.
    */
-  _measureFileHeaderHeight() {
+  _measureFileHeaderHeight(attempt = 0) {
     const header = document.querySelector('.d2h-file-wrapper .d2h-file-header');
     if (header && header.offsetHeight) {
       document.documentElement.style.setProperty(
         '--diff-file-header-height', header.offsetHeight + 'px'
       );
+      return;
+    }
+    // In Local + CodeView the header light DOM mounts a few frames after
+    // renderAll (PR mode has it at the first rAF; Local does not), so a single
+    // pass leaves --diff-file-header-height unset and scrollToFile/scroll-margin
+    // fall back to 0. Retry until the header exists. Idempotent in both modes.
+    if (attempt < 8) {
+      requestAnimationFrame(() => this._measureFileHeaderHeight(attempt + 1));
+    }
+  }
+
+  /**
+   * Feed CodeView the real rendered item-height metrics (header, line-row and
+   * hunk-separator px) so its estimates match the DOM. The vendor's
+   * getEstimatedLineHeight is static (returns metrics.lineHeight for every
+   * off-screen line, never adapting to measured heights) and the custom header
+   * is never measured — so its defaults (lineHeight 20 vs our real ~17.4px,
+   * diffHeaderHeight 44 vs our ~53px) make reserved heights disagree with
+   * rendered heights, which then shifts as lines mount on scroll (wandering
+   * gaps) and makes navigation land off. Call after a CodeView render.
+   *
+   * The header lives in light DOM (measured into --diff-file-header-height by
+   * _measureFileHeaderHeight); the line rows and separators live in the vendor
+   * Shadow DOM, which populates a frame or two after mount — retry a bounded
+   * number of times until the line height is measurable.
+   */
+  _syncCodeViewItemMetrics(attempt = 0) {
+    if (!this._usesPierreCodeView() ||
+        typeof this.pierreBridge.setItemMetrics !== 'function') {
+      return;
+    }
+    const metrics = {};
+    // Probe every mounted host, not just the first: a binary or header-only first
+    // file has no shadow line rows at all, so sampling only that host re-measures
+    // the same row-less shadow root on each retry, burns the attempt budget and
+    // leaves lineHeight at the vendor default (~20 vs the real ~17.4) for the
+    // WHOLE view — which is the wandering-gap jank this method exists to prevent.
+    const hosts = document.querySelectorAll('#diff-container diffs-container');
+    for (const host of hosts) {
+      // Header lives in the item's light DOM. Measure it directly rather than
+      // trusting --diff-file-header-height, whose _measureFileHeaderHeight write
+      // can lag behind this pass (it did in Local mode); fall back to the CSS
+      // var only if no header is mounted yet.
+      if (metrics.diffHeaderHeight == null) {
+        const header = host.querySelector('.d2h-file-header');
+        if (header) {
+          const h = header.getBoundingClientRect().height;
+          if (h > 0) metrics.diffHeaderHeight = h;
+        }
+      }
+      const shadow = host.shadowRoot;
+      if (shadow) {
+        if (metrics.lineHeight == null) {
+          const line = shadow.querySelector('[data-line-index]');
+          if (line) {
+            const h = line.getBoundingClientRect().height;
+            if (h > 0) metrics.lineHeight = h;
+          }
+        }
+        if (metrics.hunkSeparatorHeight == null) {
+          const separator = shadow.querySelector('[data-separator-wrapper]');
+          if (separator) {
+            const h = separator.getBoundingClientRect().height;
+            if (h > 0) metrics.hunkSeparatorHeight = h;
+          }
+        }
+      }
+      // Separators are optional (a full-context file has none), so stop once the
+      // two metrics every item depends on are measured.
+      if (metrics.diffHeaderHeight != null && metrics.lineHeight != null) break;
+    }
+    if (metrics.diffHeaderHeight == null) {
+      const headerPx = parseFloat(
+        getComputedStyle(document.documentElement).getPropertyValue('--diff-file-header-height')
+      );
+      if (Number.isFinite(headerPx) && headerPx > 0) metrics.diffHeaderHeight = headerPx;
+    }
+
+    if (Object.keys(metrics).length) this.pierreBridge.setItemMetrics(metrics);
+
+    // The header (light DOM) and line rows (vendor Shadow DOM) can each mount a
+    // frame or two after render; retry until both are measured so neither the
+    // header offset nor off-screen line reservation is left at a vendor default.
+    if ((metrics.diffHeaderHeight == null || metrics.lineHeight == null) && attempt < 8) {
+      requestAnimationFrame(() => this._syncCodeViewItemMetrics(attempt + 1));
     }
   }
 
@@ -2833,25 +2917,12 @@ class PRManager {
    * Handle the diff-view toggle (Unified / Split) from DiffOptionsDropdown.
    *
    * Unlike handleWhitespaceToggle, this does NOT re-fetch the diff — it asks
-   * PierreBridge to re-render the existing file instances in the new style.
-   * Per the bridge contract, setDiffStyle preserves annotations (user
-   * comments, AI suggestions, external comments) across the re-render, so
-   * there is no need to invoke _rerenderAllOverlays here — doing so would
-   * duplicate work the bridge already handles. Scroll position can shift when
-   * rows change height between unified/split, so we save and restore it.
+   * PierreBridge to switch the single CodeView's diffStyle. The CodeView
+   * relayouts and re-renders all mounted items in the new style, preserving
+   * each item's annotations (comments, suggestions, external threads) and
+   * capturing a scroll anchor so position is retained across the swap — so no
+   * _rerenderAllOverlays and no manual scrollTop save/restore are needed here.
    * Shared by both PR mode and local mode (local.js patches PRManager).
-   *
-   * The diff pane scrolls inside `.diff-view` (overflow-y: auto), the same
-   * scroll root `_createFileBodyObserver` uses — not the window — so
-   * `window.scrollY` is ~0 here and restoring it is a no-op. Capture and
-   * restore that container's `scrollTop`, falling back to the window only when
-   * the container can't be resolved.
-   *
-   * Note: split mode collapses N+M unified rows into max(N,M) rows, so content
-   * above the viewport can change height and the restored offset may drift.
-   * A precise fix would re-anchor on the topmost visible file+line, but there
-   * is no existing helper to resolve that through the Pierre shadow DOM, so we
-   * restore the raw scrollTop and accept minor drift.
    * @param {('unified'|'split')} mode
    */
   handleDiffViewChange(mode) {
@@ -2860,17 +2931,10 @@ class PRManager {
     // won't reflect. (The dropdown also hides the control via
     // diffViewAvailable, so this is defense in depth.)
     if (!this.pierreBridge) return false;
-    const scrollContainer = document.querySelector?.('.diff-view') || null;
-    const scrollTop = scrollContainer ? scrollContainer.scrollTop : window.scrollY;
+    // The single CodeView owns scrolling on #diff-container; its setOptions
+    // relayout captures a scroll anchor and restores position across the
+    // unified/split swap, so no manual scrollTop save/restore is needed here.
     this.pierreBridge.setDiffStyle(mode);
-    // Restore scroll position after the DOM settles
-    requestAnimationFrame(() => {
-      if (scrollContainer) {
-        scrollContainer.scrollTop = scrollTop;
-      } else {
-        window.scrollTo(0, scrollTop);
-      }
-    });
     return true;
   }
 
@@ -3661,13 +3725,6 @@ class PRManager {
     return file._patchMetrics;
   }
 
-  _createPierreRenderBudget() {
-    return {
-      remainingChars: PRManager.PIERRE_HIGHLIGHT_TOTAL_CHARS,
-      remainingLines: PRManager.PIERRE_HIGHLIGHT_TOTAL_LINES,
-    };
-  }
-
   /**
    * Decide how to render a file with @pierre/diffs.
    *
@@ -3700,18 +3757,15 @@ class PRManager {
       metrics.chars > PRManager.PIERRE_HIGHLIGHT_MAX_PATCH_CHARS ||
       metrics.lines > PRManager.PIERRE_HIGHLIGHT_MAX_PATCH_LINES;
 
-    let exceedsTotalHighlightBudget = false;
-    const budget = this._pierreRenderBudget;
-    if (!exceedsFileHighlightBudget && budget) {
-      if (metrics.chars > budget.remainingChars || metrics.lines > budget.remainingLines) {
-        exceedsTotalHighlightBudget = true;
-      } else {
-        budget.remainingChars -= metrics.chars;
-        budget.remainingLines -= metrics.lines;
-      }
-    }
-
-    const forcePlainText = !!options.forceRender || exceedsFileHighlightBudget || exceedsTotalHighlightBudget;
+    // Highlighting is bounded per-file (a huge file still renders as plain
+    // text) and, since the CodeView migration, bounded by virtualization: only
+    // mounted items are highlighted at all. There is deliberately NO shared
+    // total budget — this runs for every file up front, so a pool would drain
+    // in file-list order regardless of what the user views, and the verdict is
+    // baked into the CodeView item with no re-highlight path. That permanently
+    // downgrades files the user may actually open, to save work virtualization
+    // never performs.
+    const forcePlainText = !!options.forceRender || exceedsFileHighlightBudget;
     return { usePierre: true, forcePlainText, deferDiff: false };
   }
 
@@ -3751,6 +3805,18 @@ class PRManager {
     if (!reviewId || !file?.patch || file.binary) return false;
     if (this.pierreBridge?.files?.get(file.file)?.baseMetadata) return true;
 
+    // A previous attempt already fetched and parsed these contents and then
+    // deferred on pointer-over. Nothing about the pointer moving invalidates
+    // them, and the baseMetadata early-out above can never cover the retry (the
+    // metadata only lands on a successful upgrade), so without this cache a
+    // pointer parked over a large file re-downloads and re-parses it on every
+    // retry tick. The cache is dropped whenever a render replaces the abort
+    // controller, so stale contents can never be published.
+    const cached = this._deferredUpgradeContents?.get(file.file);
+    if (cached) {
+      return this._publishPierreFileContents(file, cached.oldFile, cached.newFile, signal, options);
+    }
+
     // Use diff header metadata (not insertion/deletion counts) to determine
     // true file status. Only check before the first @@ hunk marker to avoid
     // matching code content that happens to contain these strings. If the
@@ -3783,13 +3849,7 @@ class PRManager {
 
       if (!oldFile && !newFile) return false;
       await this._yieldForDiffWork(signal);
-      if (signal?.aborted) return false;
-      if (options.waitForPointerIdle !== false) {
-        await this._waitForPierrePointerIdle(file.file, signal);
-      }
-      if (signal?.aborted) return false;
-      if (this.pierreBridge?.files?.get(file.file)?.baseMetadata) return true;
-      return this.pierreBridge.upgradeFileContents(file.file, oldFile, newFile);
+      return this._publishPierreFileContents(file, oldFile, newFile, signal, options);
     } catch (err) {
       if (err.name === 'AbortError') return false;
       console.error(`Failed to fetch file contents for ${file.file}:`, err);
@@ -3797,17 +3857,75 @@ class PRManager {
     }
   }
 
-  async _waitForPierrePointerIdle(filePath, signal) {
-    if (!this.pierreBridge?.isPointerOverFile?.(filePath)) return;
-
-    const start = Date.now();
-    while (
-      !signal?.aborted &&
-      this.pierreBridge?.isPointerOverFile?.(filePath) &&
-      Date.now() - start < PRManager.PIERRE_POINTER_UPGRADE_DELAY_MS
-    ) {
-      await new Promise(resolve => setTimeout(resolve, 100));
+  /**
+   * Publish already-fetched full contents to the bridge, or park them for a
+   * retry when the pointer is over the file. Shared by the fetching path and
+   * the deferred-retry path so both apply the same gate and the same cache
+   * bookkeeping.
+   * @param {Object} file - A changed_files entry
+   * @param {Object|null} oldFile - { name, contents } or null
+   * @param {Object|null} newFile - { name, contents } or null
+   * @param {AbortSignal|null} signal
+   * @param {Object} [options] - { waitForPointerIdle }
+   * @returns {Promise<boolean>} true once the bridge holds the full contents
+   * @private
+   */
+  async _publishPierreFileContents(file, oldFile, newFile, signal, options = {}) {
+    if (signal?.aborted) return false;
+    if (this.pierreBridge?.files?.get(file.file)?.baseMetadata) {
+      this._deferredUpgradeContents?.delete(file.file);
+      return true;
     }
+    // Defer while the pointer is over this file. The upgrade re-renders the
+    // diff (patch-only → full-contents flip) — a shadow-DOM rebuild that
+    // moves the hovered gutter comment button. Landing that mid hover/click
+    // under load is the dominant comment-family E2E flake ("element is not
+    // stable" → 30s timeouts). Offscreen files never trip this
+    // (isPointerOverFile is false) so they upgrade freely; a hovered file is
+    // requeued and retried once the pointer leaves. Checked IMMEDIATELY
+    // before the publish, not at batch start, so it reflects the live
+    // pointer. The immediate, user-driven path (waitForPointerIdle:false,
+    // e.g. jump-to-comment) upgrades now — the user asked for that expansion.
+    if (options.waitForPointerIdle !== false &&
+        this.pierreBridge?.isPointerOverFile?.(file.file)) {
+      // Keep the contents so the retry skips the fetch + JSON parse entirely.
+      if (!this._deferredUpgradeContents) this._deferredUpgradeContents = new Map();
+      this._deferredUpgradeContents.set(file.file, { oldFile, newFile });
+      this._deferPierreUpgrade(file);
+      return false;
+    }
+    if (signal?.aborted) return false;
+    const upgraded = await this.pierreBridge.upgradeFileContents(file.file, oldFile, newFile);
+    if (upgraded) this._deferredUpgradeContents?.delete(file.file);
+    return upgraded;
+  }
+
+  /**
+   * Requeue a background content upgrade that was deferred because the pointer
+   * was over the file. Retries after a short idle window (the pointer-over
+   * check re-runs then); keeps deferring while the pointer stays, so the
+   * re-render never lands mid-interaction. No-op once the file is upgraded, the
+   * render was superseded, or the queue was aborted.
+   * @param {Object} file - A changed_files entry
+   * @private
+   */
+  _deferPierreUpgrade(file) {
+    const signal = this._fileContentsAbort?.signal;
+    if (!signal || signal.aborted) return;
+    setTimeout(() => {
+      // Bail if a newer render replaced the abort controller, the queue was
+      // aborted, or the file upgraded some other way in the meantime.
+      if (this._fileContentsAbort?.signal !== signal || signal.aborted) return;
+      if (this.pierreBridge?.files?.get(file.file)?.baseMetadata) return;
+      // The deferred attempt was marked completed by the drain; clear that so
+      // the re-enqueue runs. Re-enqueue (not a direct drain) because the queue
+      // may have drained to empty and nulled _fileContentsUpgradeState — the
+      // enqueue path re-establishes a queue when one no longer exists. If the
+      // pointer is still over the file, this simply defers again (bounded to
+      // one retry per PIERRE_POINTER_UPGRADE_RETRY_MS until the pointer leaves).
+      this._fileContentsUpgradeState?.completed?.delete(file.file);
+      this._enqueuePierreContentUpgrade(file);
+    }, PRManager.PIERRE_POINTER_UPGRADE_RETRY_MS);
   }
 
   _getOrStartPierreContentUpgrade(file, signal, options = {}) {
@@ -3817,9 +3935,9 @@ class PRManager {
     }
     // The immediate (user-driven) and background paths are keyed separately ON
     // PURPOSE. Do NOT merge them into one key: sharing the background promise
-    // would make an immediate, user-driven upgrade inherit that promise's
-    // pointer-idle wait (_waitForPierrePointerIdle), stalling it behind idle
-    // throttling. The known cost of the split is a duplicate fetch + JSON parse
+    // would make an immediate, user-driven upgrade inherit the background
+    // path's pointer-over deferral (_deferPierreUpgrade), stalling it behind
+    // idle throttling. The known cost of the split is a duplicate fetch + JSON parse
     // when navigation races an in-flight background upgrade for the same file
     // (cheap once metadata lands, thanks to the baseMetadata early-return). A
     // future improvement could piggyback on the in-flight background fetch while
@@ -3932,13 +4050,23 @@ class PRManager {
    * @param {Object} pr - PR data with files
    */
   renderDiff(pr) {
+    // A payload with NO file list (changed_files/files undefined or non-array)
+    // means "unknown — keep the currently rendered diff", NOT an empty diff.
+    // Only an explicit array (including []) is authoritative. Bail BEFORE any
+    // teardown/abort so a partial refresh response (e.g. /refresh without
+    // changed_files) never wipes the rendered files into the "No files changed"
+    // placeholder; an explicit [] still falls through and renders it.
+    if (!Array.isArray(pr?.changed_files ?? pr?.files)) return;
+
     // Abort any in-flight file content fetches from progressive loading
     this._fileContentsAbort?.abort();
     this._fileContentsAbort = null;
     this._fileContentsUpgradeState = null;
     this._pierreContentUpgradePromises = new Map();
     this._pierreUpgradeCandidates = null;
-    this._deferredDiffRenderPromises = new Map();
+    // Contents parked for a pointer-deferred retry belong to the render that
+    // fetched them; this render's files may differ (scope/whitespace change).
+    this._deferredUpgradeContents = null;
 
     const diffContainer = document.getElementById('diff-container');
     if (!diffContainer) return;
@@ -3959,7 +4087,19 @@ class PRManager {
       this.pierreBridge.destroyAll();
     }
 
-    diffContainer.innerHTML = '';
+    // In CodeView mode the bridge owns #diff-container (it is the virtualized
+    // scroll root). destroyAll() reset the item list; a raw innerHTML wipe here
+    // would tear out the CodeView scaffolding, so it is legacy-path only.
+    // Per-file comment zones are cached across renders and must be reset.
+    if (this._usesPierreCodeView()) {
+      // Stop watching the zones about to be dropped: a detached zone can still
+      // report a resize, and flushing layout for a torn-down render is noise.
+      this._fileCommentZoneObserver?.disconnect();
+      this._fileCommentZones = new Map();
+      this._contextItemsByPath = new Map();
+    } else {
+      diffContainer.innerHTML = '';
+    }
 
     // Reset hunk-summary tracking — `renderPatch` will populate this as it
     // walks each block, and we hash the records once render finishes.
@@ -3990,69 +4130,73 @@ class PRManager {
     // and start fresh for this render generation. This runs for every render
     // path (initial load, whitespace toggle, scope change) since they all
     // funnel through renderDiff().
+    // Lazy-body observer machinery is legacy-only; CodeView virtualizes bodies
+    // natively (only visible items mount), so no IntersectionObserver is needed.
     this._teardownFileBodyObserver();
     this._lazyFileBodies = new Map();
-    this._fileBodyObserver = this._createFileBodyObserver();
+    if (!this._usesPierreCodeView()) {
+      this._fileBodyObserver = this._createFileBodyObserver();
+    }
 
     // Use changed_files array from API
     const files = pr.changed_files || pr.files || [];
     this.changedFilesByPath = new Map(files.map(file => [file.file, file]));
-    this._pierreRenderBudget = this._createPierreRenderBudget();
 
-    try {
-      // Collect generated files info before rendering
-      if (files.length > 0) {
-        files.forEach(file => {
-          if (file.generated) {
-            this.generatedFiles.set(file.file, {
-              insertions: file.insertions,
-              deletions: file.deletions
-            });
-          }
-        });
-      }
+    // Collect generated files info before rendering
+    if (files.length > 0) {
+      files.forEach(file => {
+        if (file.generated) {
+          this.generatedFiles.set(file.file, {
+            insertions: file.insertions,
+            deletions: file.deletions
+          });
+        }
+      });
+    }
 
-      // Parse each file's diff
-      if (files.length > 0) {
-        files.forEach(file => {
-          const fileWrapper = this.renderFileDiff(file);
-          if (fileWrapper) {
-            diffContainer.appendChild(fileWrapper);
-          }
-        });
+    // Parse each file's diff
+    if (this._usesPierreCodeView()) {
+      // Single-CodeView path: hand the whole ordered file list to the bridge,
+      // which builds one virtualized item per file. No per-file wrappers, no
+      // lazy observer — CodeView mounts only what is on screen.
+      this._renderDiffWithCodeView(files);
+    } else if (files.length > 0) {
+      files.forEach(file => {
+        const fileWrapper = this.renderFileDiff(file);
+        if (fileWrapper) {
+          diffContainer.appendChild(fileWrapper);
+        }
+      });
 
-        // NOTE: end-of-file gap validation runs per-file inside _renderFileBodyNow
-        // now (legacy bodies render lazily), not once globally here.
+      // NOTE: end-of-file gap validation runs per-file inside _renderFileBodyNow
+      // now (legacy bodies render lazily), not once globally here.
 
-        // Measure the now-rendered sticky file header so navigation can offset
-        // targets below it (scroll-margin-top in pr.css).
-        this._measureFileHeaderHeight();
-      } else {
-        diffContainer.innerHTML = '<div class="no-diff">No files changed</div>';
-      }
+      // Measure the now-rendered sticky file header so navigation can offset
+      // targets below it (scroll-margin-top in pr.css).
+      this._measureFileHeaderHeight();
+    } else {
+      diffContainer.innerHTML = '<div class="no-diff">No files changed</div>';
+    }
 
-      // Load context files after diff is rendered
-      this.contextFiles = [];
-      this.loadContextFiles();
+    // Load context files after diff is rendered
+    this.contextFiles = [];
+    this.loadContextFiles();
 
-      // Fetch hunk summaries (Phase 5). Fire-and-forget — the diff is fully
-      // usable while summaries arrive asynchronously. Anchors are wired lazily
-      // as each file body renders (_registerHunkAnchorsForFile); this just loads
-      // the server's summary map and applies it to whatever has rendered so far.
-      if (this.hunkSummaryRenderer) {
-        this._fetchHunkSummaryMap().catch((err) => {
-          console.warn('[HunkSummary] summary fetch failed:', err);
-        });
-      }
+    // Fetch hunk summaries (Phase 5). Fire-and-forget — the diff is fully
+    // usable while summaries arrive asynchronously. Anchors are wired lazily
+    // as each file body renders (_registerHunkAnchorsForFile); this just loads
+    // the server's summary map and applies it to whatever has rendered so far.
+    if (this.hunkSummaryRenderer) {
+      this._fetchHunkSummaryMap().catch((err) => {
+        console.warn('[HunkSummary] summary fetch failed:', err);
+      });
+    }
 
-      // Probe tour endpoint after diff is rendered. `currentPR.id` is now
-      // set (init()/LocalManager populates it before calling renderDiff),
-      // so the toolbar button can reflect the right state.
-      if (this._toursEnabled === true) {
-        this._loadAndStashTour().catch(() => {});
-      }
-    } finally {
-      this._pierreRenderBudget = null;
+    // Probe tour endpoint after diff is rendered. `currentPR.id` is now
+    // set (init()/LocalManager populates it before calling renderDiff),
+    // so the toolbar button can reflect the right state.
+    if (this._toursEnabled === true) {
+      this._loadAndStashTour().catch(() => {});
     }
   }
 
@@ -4061,14 +4205,10 @@ class PRManager {
    * to enable hunk expansion. Eligible files flow through one bounded idle
    * queue, and sidebar navigation can move a file to the front of the queue.
    *
-   * With lazy Pierre rendering, files enter pierreBridge.files only as their
-   * bodies render (on scroll/expand) — so the queue cannot be seeded from
-   * pierreBridge.files up front. Instead we record the eligible-by-size
-   * candidate set + the abort signal here, and each Pierre body enqueues itself
-   * as it renders (_renderPierreFileBodyNow → _enqueuePierreContentUpgrade). A
-   * delayed catch-up sweep also enqueues anything that rendered in the meantime
-   * (e.g. the initially-visible files, once the observer has fired), so both
-   * routes funnel through the de-duping _enqueuePierreContentUpgrade.
+   * Under the single-CodeView render path every changed file enters
+   * pierreBridge.files up front (renderAll), so we record the eligible-by-size
+   * candidate set + the abort signal here and a delayed catch-up sweep enqueues
+   * each candidate through the de-duping _enqueuePierreContentUpgrade.
    * @param {Array} files - The sorted changed_files array
    */
   _upgradeFilesWithContents(files) {
@@ -4080,6 +4220,9 @@ class PRManager {
     const controller = new AbortController();
     this._fileContentsAbort = controller;
     const signal = controller.signal;
+    // New controller = new render generation; drop any contents parked by the
+    // previous one (see _publishPierreFileContents).
+    this._deferredUpgradeContents = null;
 
     this._pierreUpgradeCandidates = new Set(
       files
@@ -4091,8 +4234,8 @@ class PRManager {
     const scheduleUpgrade = window.requestIdleCallback || ((cb) => setTimeout(cb, 50));
     setTimeout(() => scheduleUpgrade(() => {
       if (signal.aborted || this._fileContentsAbort?.signal !== signal) return;
-      // Catch-up: enqueue any candidate whose body already rendered by now.
-      // Later-rendering files are enqueued from _renderPierreFileBodyNow.
+      // Enqueue every eligible candidate; all files are already in
+      // pierreBridge.files under the CodeView render path.
       for (const file of this._getPierreContentUpgradeFiles(files)) {
         this._enqueuePierreContentUpgrade(file);
       }
@@ -4102,8 +4245,8 @@ class PRManager {
   /**
    * Enqueue a single (now-rendered) Pierre file for background content upgrade,
    * reusing the in-flight bounded queue when one exists so the concurrency cap
-   * is honored and nothing is double-scheduled. Called both from the delayed
-   * catch-up sweep and from _renderPierreFileBodyNow as bodies render.
+   * is honored and nothing is double-scheduled. Called from the delayed
+   * catch-up sweep in _upgradeFilesWithContents.
    * @param {Object} file - A changed_files entry
    */
   _enqueuePierreContentUpgrade(file) {
@@ -4126,167 +4269,408 @@ class PRManager {
     this._startFileContentUpgradeQueue([file], worker, signal);
   }
 
-  async _reanchorInlineFeedbackAfterDeferredRender() {
-    try {
-      const includeDismissed = window.aiPanel?.showDismissedComments || false;
-      await this.loadUserComments(includeDismissed);
-      await this.loadAISuggestions(null, this.selectedRunId);
-    } catch (err) {
-      console.error('Failed to re-anchor inline feedback after deferred diff render:', err);
-    }
+  /**
+   * True when diffs render through the single-CodeView bridge path (the bridge
+   * is present and enabled). When false, the legacy per-file table path runs.
+   * @returns {boolean}
+   */
+  _usesPierreCodeView() {
+    return !!(this.pierreBridge && !this.pierreBridge._disabled);
   }
 
-  _formatDiffSize(bytes) {
-    if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-    return `${Math.ceil(bytes / 1024)} KB`;
-  }
+  /**
+   * Build the ordered CodeView entry list for the whole changed-file set and
+   * hand it to the bridge in one call. Replaces the per-file renderFileDiff
+   * loop + IntersectionObserver on the CodeView path.
+   * @param {Array<Object>} files - changed_files entries
+   * @private
+   */
+  _renderDiffWithCodeView(files) {
+    const diffContainer = document.getElementById('diff-container');
+    if (!diffContainer) return;
 
-  _renderLegacyFileDiffBody(file) {
-    const table = document.createElement('table');
-    table.className = 'd2h-diff-table';
+    const entries = [];
+    for (const file of files || []) {
+      const isGenerated = file.generated || this.generatedFiles.has(file.file);
+      const isViewed = this.viewedFiles.has(file.file);
+      const isCollapsed = isGenerated || isViewed || this.collapsedFiles.has(file.file);
 
-    const tbody = document.createElement('tbody');
-    if (file.patch) {
-      this.renderPatch(tbody, file.patch, file.file, file.hunk_hashes || null);
-    } else if (file.binary) {
-      const row = document.createElement('tr');
-      row.innerHTML = '<td colspan="2" class="binary-file">Binary file</td>';
-      tbody.appendChild(row);
-    }
-    table.appendChild(tbody);
-
-    const fileBody = document.createElement('div');
-    fileBody.className = 'd2h-file-body';
-    fileBody.appendChild(table);
-    return fileBody;
-  }
-
-  _createDeferredDiffPlaceholder(file, wrapper) {
-    const metrics = this._getPatchMetrics(file);
-    const placeholder = document.createElement('div');
-    placeholder.className = 'no-diff large-diff-placeholder';
-
-    const message = document.createElement('span');
-    message.textContent = `Large diff (${this._formatDiffSize(metrics.chars)}, ${metrics.lines.toLocaleString()} lines)`;
-
-    const loadButton = document.createElement('button');
-    loadButton.type = 'button';
-    loadButton.className = 'btn btn-sm btn-secondary large-diff-load-btn';
-    loadButton.textContent = 'Load diff';
-    loadButton.addEventListener('click', async () => {
-      loadButton.disabled = true;
-      loadButton.textContent = 'Loading...';
-      // Route through _materializeDeferredDiff so the manual click shares the
-      // _deferredDiffRenderPromises cache and de-dupes with the auto-materialize
-      // path (ensureLinesVisible/expandForSuggestion). Rendering directly here
-      // could race a concurrent auto-materialize and run two _renderDeferredDiff
-      // calls on the same file. Request reanchor:true because a manual click is
-      // NOT inside a loadUserComments/loadAISuggestions reanchor flow, so inline
-      // comments/suggestions must be re-anchored to the freshly rendered diff.
-      await this._materializeDeferredDiff(file.file, { reanchor: true });
-    });
-
-    placeholder.appendChild(message);
-    placeholder.appendChild(loadButton);
-    return placeholder;
-  }
-
-  async _materializeDeferredDiff(filePath, options = {}) {
-    // reanchor defaults to false to preserve the auto-materialize callers
-    // (ensureLinesVisible/expandForSuggestion), which perform reanchoring at a
-    // higher level. The manual "Load diff" click passes reanchor:true. Shared-
-    // cache dedup: whichever call populates _deferredDiffRenderPromises first
-    // wins its reanchor setting — acceptable, because if auto-materialize
-    // (reanchor:false) wins, its caller reanchors anyway.
-    const { reanchor = false } = options;
-    if (!filePath) return false;
-    if (this.pierreBridge?.files?.has(filePath)) return true;
-    if (!this._deferredDiffRenderPromises) {
-      this._deferredDiffRenderPromises = new Map();
-    }
-
-    const existing = this._deferredDiffRenderPromises.get(filePath);
-    if (existing) return existing;
-
-    const wrapper = this.findFileElement(filePath);
-    const placeholder = wrapper?.querySelector('.large-diff-placeholder');
-    const file = this._getChangedFile(filePath);
-    if (!wrapper || !placeholder || !file) return false;
-
-    let promise;
-    promise = (async () => {
-      const signal = this._fileContentsAbort?.signal || null;
-      await this._yieldForDiffWork(signal);
-      // If renderDiff() re-ran during the idle yield, the review was torn down and
-      // rebuilt: the placeholder/wrapper we captured are now detached from the
-      // document (renderDiff clears the container), and the abort signal is flipped.
-      // Bail in that case so we don't clobber the freshly rendered file state.
-      if (signal?.aborted || !wrapper.isConnected || !placeholder.isConnected) {
-        return false;
-      }
-      await this._renderDeferredDiff(file, wrapper, placeholder, { reanchor });
-      return true;
-    })().finally(() => {
-      if (this._deferredDiffRenderPromises.get(filePath) === promise) {
-        this._deferredDiffRenderPromises.delete(filePath);
-      }
-    });
-    this._deferredDiffRenderPromises.set(filePath, promise);
-    return promise;
-  }
-
-  async _renderDeferredDiff(file, wrapper, placeholder, options = {}) {
-    const { reanchor = true } = options;
-    const isCollapsed = wrapper.classList.contains('collapsed');
-    const pierreDecision = this._getPierreRenderDecision(file, { forceRender: true });
-
-    if (pierreDecision.usePierre) {
-      const diffBody = document.createElement('div');
-      diffBody.className = 'pierre-diff-body';
-      placeholder.replaceWith(diffBody);
-      try {
-        this.pierreBridge.renderFile(file.file, diffBody, file.patch, {
+      if (file.binary) {
+        entries.push({
+          id: file.file,
+          type: 'binary',
+          fileName: file.file,
           collapsed: isCollapsed,
-          forcePlainText: true,
+          binaryMessage: 'Binary file not shown',
         });
-        // The file is only now in pierreBridge.files — wire its hunk-summary
-        // anchors so summaries mount on materialized large diffs too (the
-        // eager render path does this in renderFileDiff's Pierre branch).
-        this._registerPierreHunkAnchorsForFile(file);
-        if (reanchor) {
-          await this._reanchorInlineFeedbackAfterDeferredRender();
-        }
-      } catch (err) {
-        console.error(`Failed to render large diff for ${file.file}:`, err);
-        const retryPlaceholder = this._createDeferredDiffPlaceholder(file, wrapper);
-        const message = retryPlaceholder.querySelector('span');
-        if (message) message.textContent = 'Failed to render large diff';
-        diffBody.replaceWith(retryPlaceholder);
+        continue;
       }
-      return;
+
+      // `_getPierreRenderDecision` decides plain-text vs highlighted from the
+      // per-file caps. Under CodeView there is no deferral (virtualization
+      // already bounds work), so a `deferDiff` verdict just means "render
+      // plain-text" — the cap's intent is preserved.
+      const decision = this._getPierreRenderDecision(file);
+      entries.push({
+        id: file.file,
+        type: 'diff',
+        fileName: file.file,
+        patch: file.patch || null,
+        collapsed: isCollapsed,
+        forcePlainText: decision.forcePlainText || decision.deferDiff,
+      });
     }
 
-    // Legacy fallback (bridge unavailable). Swap the pending-record buffer so
-    // this eager render's hunk anchors register for this file only, mirroring
-    // _renderFileBodyNow — and register only after the body is attached, so
-    // anchor rows are connected when queued summaries try to mount.
-    const prevPending = this._pendingHunkRecords;
-    this._pendingHunkRecords = [];
-    let legacyBody;
-    let hunkRecords;
-    try {
-      legacyBody = this._renderLegacyFileDiffBody(file);
-    } finally {
-      hunkRecords = this._pendingHunkRecords;
-      this._pendingHunkRecords = prevPending;
+    this.pierreBridge.renderAll(diffContainer, entries, {
+      renderHeader: (fileName, ctx) => {
+        const id = ctx?.item?.id;
+        if (typeof id === 'string' && id.startsWith('context:')) {
+          return this._buildContextFileHeader(fileName);
+        }
+        return this._buildPierreFileHeader(fileName);
+      },
+      // Domain host classes reconciled by the bridge on every (re)mount and
+      // stripped on recycle. `collapsed`/`context-file` are bridge-derived;
+      // these are the pr.js-owned ones (generated + summaries-hidden).
+      hostClasses: (fileName, itemType) => this._pierreHostClasses(fileName, itemType),
+    });
+
+    // File-comments zones live in the scrolling body as lineNumber:0 (file-
+    // level) annotations, out of the sticky header region. Register the renderer
+    // and anchor one per file so the header comment button has a zone to write
+    // into and existing file comments render.
+    this._ensurePierreFileCommentsRenderer();
+    for (const file of files || []) {
+      this.pierreBridge.addAnnotation(file.file, {
+        type: 'file-comments',
+        side: this._pierreFileAnnotationSide(file),
+        lineNumber: 0,
+        id: `file-comments:${file.file}`,
+        data: { file: file.file },
+      });
     }
-    placeholder.replaceWith(legacyBody);
-    if (hunkRecords.length > 0) {
-      this._registerHunkAnchorsForFile(hunkRecords);
+
+    // Every file is registered in the bridge immediately (renderAll), so wire
+    // hunk-summary anchors for all of them now. There is no per-body render
+    // hook under CodeView, so drive it here or summaries never mount.
+    for (const file of files || []) {
+      if (file.binary || !file.patch) continue;
+      this._registerPierreHunkAnchorsForFile(file);
     }
-    if (reanchor) {
-      await this._reanchorInlineFeedbackAfterDeferredRender();
+
+    // Header markup lives in each item's light DOM; measure the first one for
+    // scroll-margin offsets once a frame has painted, then feed the real header,
+    // line-row and hunk-separator heights to CodeView so its item-height
+    // estimates (and off-screen line reservation) match what actually renders.
+    requestAnimationFrame(() => {
+      this._measureFileHeaderHeight();
+      this._syncCodeViewItemMetrics();
+    });
+
+    // Empty diff: the "No files changed" placeholder lives only in the legacy
+    // render branch, so an empty CodeView render left the pane blank. CodeView
+    // owns #diff-container (an innerHTML wipe would tear out its scaffolding and
+    // _ensureCodeView's same-root early-return would not restore it), so toggle
+    // a sibling message element the render explicitly adds/removes instead.
+    this._togglePierreEmptyPlaceholder(diffContainer, (files || []).length === 0);
+  }
+
+  /**
+   * Show or remove the "No files changed" placeholder alongside the CodeView
+   * scroll root without disturbing the vendor's own container child.
+   * @private
+   */
+  _togglePierreEmptyPlaceholder(container, show) {
+    if (!container) return;
+    let placeholder = container.querySelector(':scope > .no-diff');
+    if (show) {
+      if (!placeholder) {
+        placeholder = document.createElement('div');
+        placeholder.className = 'no-diff';
+        placeholder.textContent = 'No files changed';
+        container.appendChild(placeholder);
+      }
+    } else if (placeholder) {
+      placeholder.remove();
     }
+  }
+
+  /**
+   * The pr.js-owned domain classes to stamp on a CodeView item's host. The
+   * bridge derives d2h-file-wrapper/context-file/collapsed itself; these are
+   * the state-driven ones it can't know. Recomputed on every (re)mount so the
+   * host reflects live generated / summaries-hidden state, and never carries a
+   * recycled host's stale classes.
+   * @param {string} fileName
+   * @param {string} itemType - 'diff' | 'binary' | 'context'
+   * @returns {string[]}
+   * @private
+   */
+  _pierreHostClasses(fileName, itemType) {
+    if (itemType === 'context') return []; // generated/summaries don't apply
+    const classes = [];
+    if (this.generatedFiles.has(fileName) || this._getChangedFile(fileName)?.generated) {
+      classes.push('generated-file');
+    }
+    if (this.summariesHiddenFiles?.has(fileName)) {
+      classes.push('summaries-hidden-file');
+    }
+    return classes;
+  }
+
+  /**
+   * Build the header element for a diff/binary file in the CodeView path. Wraps
+   * the shared header parts (+ file-comments zone) in a single element so it can
+   * be returned from CodeView's renderCustomHeader callback. Rebuilt on every
+   * virtualization remount, so it reads live collapse/viewed state each call.
+   * @param {string} fileName
+   * @returns {HTMLElement|null}
+   * @private
+   */
+  /**
+   * Get (creating + caching) the per-file file-comments zone. Shared by the
+   * header button wiring and the CodeView 'file-comments' annotation renderer
+   * so both reference the SAME element (state — open form, indicator — is
+   * preserved across virtualization remounts). Cache is reset each renderDiff.
+   * @param {string} fileName
+   * @returns {HTMLElement|null}
+   * @private
+   */
+  _getOrCreateFileCommentsZone(fileName) {
+    if (!this.fileCommentManager) return null;
+    if (!this._fileCommentZones) this._fileCommentZones = new Map();
+    let zone = this._fileCommentZones.get(fileName);
+    if (!zone) {
+      zone = this.fileCommentManager.createFileCommentsZone(fileName);
+      this._fileCommentZones.set(fileName, zone);
+      this._observeFileCommentZoneSize(zone);
+    }
+    return zone;
+  }
+
+  /**
+   * Flush the CodeView scroll extent whenever a file-comments zone changes height.
+   *
+   * The vendor re-measures the item on its own (its ResizeObserver parents every
+   * rendered item), but it only pushes the new height into the scrollable
+   * container during a render pass — so after a form opens, the DOM scroll extent
+   * stays short by the form's height until something else happens to render.
+   * Measured: extent 1216px against the vendor's own 1430px. The user cannot
+   * scroll into that gap, which is what puts Save out of reach on a last file
+   * whose body already fills the viewport. See PierreBridge.syncScrollExtent.
+   *
+   * The zone's DOM is mutated from a dozen places that never touch the bridge
+   * (form open/cancel, card insert/delete, the adopt-suggestion form, the
+   * minimizer's expand toggle), so observing the element covers all of them at
+   * once. One observer for every zone; zones are cached per file and re-slotted
+   * across virtualization remounts, so each is observed exactly once, and
+   * renderDiff disconnects when it drops the cache. The requested render is
+   * queued, so a burst of resizes collapses into one flush per frame.
+   *
+   * LINE-level comment forms deliberately get no equivalent, but the reason is
+   * CONDITIONAL and worth stating precisely. Their textarea autogrow self-heals
+   * only when the growth pushes the CARET out of view: the browser then scrolls
+   * the container to keep it visible, and any scroll renders. Measured
+   * 2026-07-30 on the tall fixture — extent tracked the form exactly (+334px for
+   * +334px) via 2 caret-driven scrolls, Save reachable, observation on or off.
+   * When the caret stays visible no scroll happens, nothing renders, and the
+   * extent gap is real but RECOVERABLE (measured holding at 1431px for 10s under
+   * saturation, and closed by any later scroll). The unrecoverable shape is
+   * growth that does not move the caret while the root is already at max scroll —
+   * an error banner, a preview toggle, a paste that wraps within view. No such
+   * affordance exists today; whoever adds one must extend this observer to the
+   * cached line-form elements. See the KNOWN GAP note above the autogrow test in
+   * tests/e2e/codeview-behaviors.spec.js.
+   * @param {HTMLElement} zone
+   * @private
+   */
+  _observeFileCommentZoneSize(zone) {
+    if (!zone || !this._usesPierreCodeView() || typeof ResizeObserver === 'undefined') return;
+    if (!this._fileCommentZoneObserver) {
+      this._fileCommentZoneObserver = new ResizeObserver(() => {
+        this.pierreBridge?.syncScrollExtent();
+      });
+    }
+    this._fileCommentZoneObserver.observe(zone);
+  }
+
+  /**
+   * Register the CodeView 'file-comments' annotation renderer once. The zone is
+   * rendered as a lineNumber:0 (file-level) annotation in each item's scrolling
+   * body — out of the sticky header region — returning the same cached zone the
+   * header comment button writes into.
+   * @private
+   */
+  _ensurePierreFileCommentsRenderer() {
+    if (this._pierreFileCommentsRendererReady || !this.pierreBridge) return;
+    this.pierreBridge.registerAnnotationRenderer('file-comments', (_data, _id, fileName) => {
+      return this._getOrCreateFileCommentsZone(fileName) || undefined;
+    });
+    this._pierreFileCommentsRendererReady = true;
+  }
+
+  /**
+   * The diff side to anchor a file-level (lineNumber:0) annotation on. The
+   * vendor requires additions for a 'new' file and deletions for a 'deleted'
+   * file; anything else accepts either, so default to RIGHT.
+   * @param {Object} file - changed_files entry
+   * @returns {'LEFT'|'RIGHT'}
+   * @private
+   */
+  _pierreFileAnnotationSide(file) {
+    // GitHub Pulls API reports deleted files with status 'removed', and its
+    // patch STARTS at the first @@ (no `deleted file mode` git header), so the
+    // header sniff below never fires in PR mode. Prefer the explicit status;
+    // fall back to the patch header for Local mode (git diff carries the header).
+    if (file?.status === 'removed') return 'LEFT';
+    const patch = file?.patch || '';
+    const atIdx = patch.indexOf('@@');
+    const head = atIdx === -1 ? patch : patch.slice(0, atIdx);
+    return head.includes('deleted file mode') ? 'LEFT' : 'RIGHT';
+  }
+
+  _buildPierreFileHeader(fileName) {
+    const file = this._getChangedFile(fileName) || { file: fileName };
+    const isGenerated = file.generated || this.generatedFiles.has(fileName);
+    const isViewed = this.viewedFiles.has(fileName);
+    // Collapse truth comes from the bridge item once rendered; fall back to the
+    // seed computation for the very first build.
+    const fileState = this.pierreBridge?.files?.get(fileName);
+    const isCollapsed = fileState
+      ? !!fileState.collapsed
+      : (isGenerated || isViewed || this.collapsedFiles.has(fileName));
+
+    // Only the header row goes in the sticky custom header. The file-comments
+    // zone is rendered separately as a lineNumber:0 body annotation (see
+    // _renderDiffWithCodeView) so it scrolls with the diff instead of sticking
+    // — the legacy `.d2h-file-header { position: sticky }` used to slide over
+    // the zone and intercept its comment-card buttons. _buildDiffFileHeaderParts
+    // still creates/caches the zone and wires the header comment button to it.
+    const { header } = this._buildDiffFileHeaderParts(file, {
+      isGenerated, isViewed, isCollapsed, wrapper: null,
+    });
+
+    const container = document.createElement('div');
+    container.className = 'pierre-file-header-wrap';
+    container.appendChild(header);
+    return container;
+  }
+
+  /**
+   * Build the file header element and its file-comments zone. Shared by the
+   * legacy renderFileDiff path and the CodeView renderCustomHeader factory.
+   *
+   * The header carries the collapse chevron, viewed checkbox, stats, and the
+   * file comment / chat / per-file summary buttons. The comments zone is cached
+   * per file (this._fileCommentZones) so it survives CodeView virtualization
+   * remounts with any open comment form / indicator state intact.
+   *
+   * @param {Object} file - changed_files entry (needs `.file`)
+   * @param {Object} opts - { isGenerated, isViewed, isCollapsed, wrapper }
+   * @returns {{ header: HTMLElement, commentsZone: HTMLElement|null }}
+   * @private
+   */
+  _buildDiffFileHeaderParts(file, opts = {}) {
+    const { isGenerated, isViewed, isCollapsed, wrapper } = opts;
+    const fileStats = {
+      insertions: file.insertions || 0,
+      deletions: file.deletions || 0,
+    };
+
+    const header = window.DiffRenderer.createFileHeader(file.file, {
+      isGenerated,
+      isExpanded: !isCollapsed,
+      isViewed,
+      generatedInfo: isGenerated ? this.generatedFiles.get(file.file) : null,
+      fileStats,
+      renamed: file.renamed || false,
+      renamedFrom: file.renamedFrom || null,
+      onToggleCollapse: (path) => this.toggleFileCollapse(path),
+      onToggleViewed: (path, checked) => this.toggleFileViewed(path, checked),
+    });
+
+    let commentsZone = null;
+    if (this.fileCommentManager) {
+      // Reuse a cached zone per file so its state (open form, indicator)
+      // survives remounts on the CodeView path. Legacy path has no cache map
+      // (each render rebuilds), so create fresh there.
+      if (this._usesPierreCodeView()) {
+        commentsZone = this._getOrCreateFileCommentsZone(file.file);
+      } else {
+        commentsZone = this.fileCommentManager.createFileCommentsZone(file.file);
+      }
+
+      const fileCommentBtn = document.createElement('button');
+      fileCommentBtn.className = 'file-header-comment-btn';
+      fileCommentBtn.title = 'Add file comment';
+      fileCommentBtn.dataset.file = file.file;
+      fileCommentBtn.innerHTML = `
+        <svg class="comment-icon-outline" width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25Zm1.5 0v7.5c0 .138.112.25.25.25h2a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25H2.75a.25.25 0 0 0-.25.25Z"/>
+        </svg>
+        <svg class="comment-icon-filled" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="display:none">
+          <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25v-7.5Z"/>
+        </svg>
+      `;
+      fileCommentBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.fileCommentManager.showCommentForm(commentsZone, file.file);
+      });
+      header.appendChild(fileCommentBtn);
+      commentsZone.headerButton = fileCommentBtn;
+      // The button is rebuilt outline-only on every (re)mount; the cached zone
+      // survives virtualization and still holds its cards, so refresh the icon
+      // from the zone's current count or a file with comments shows the empty
+      // outline after scrolling out and back.
+      this.fileCommentManager.updateCommentCount(commentsZone);
+
+      const fileChatBtn = document.createElement('button');
+      fileChatBtn.className = 'file-header-chat-btn';
+      fileChatBtn.title = 'Chat about file';
+      fileChatBtn.dataset.file = file.file;
+      fileChatBtn.innerHTML = `
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/>
+        </svg>
+      `;
+      fileChatBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (window.chatPanel) {
+          window.chatPanel.open({ fileContext: { file: file.file } });
+        }
+      });
+      header.appendChild(fileChatBtn);
+
+      if (this._summariesEnabled !== false) {
+        const summaryToggleBtn = document.createElement('button');
+        summaryToggleBtn.className = 'file-header-summary-toggle';
+        summaryToggleBtn.dataset.file = file.file;
+        summaryToggleBtn.innerHTML = `
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
+            <path d="M0 3.75C0 2.784.784 2 1.75 2h12.5c.966 0 1.75.784 1.75 1.75v8.5A1.75 1.75 0 0 1 14.25 14H1.75A1.75 1.75 0 0 1 0 12.25Zm1.75-.25a.25.25 0 0 0-.25.25v8.5c0 .138.112.25.25.25h12.5a.25.25 0 0 0 .25-.25v-8.5a.25.25 0 0 0-.25-.25ZM3.5 6.25a.75.75 0 0 1 .75-.75h7a.75.75 0 0 1 0 1.5h-7a.75.75 0 0 1-.75-.75Zm.75 2.25h4a.75.75 0 0 1 0 1.5h-4a.75.75 0 0 1 0-1.5Z"/>
+          </svg>
+        `;
+
+        if (this._summariesEnabled !== true) {
+          summaryToggleBtn.classList.add('summary-toggle-pending');
+          summaryToggleBtn.style.display = 'none';
+        }
+
+        const fileIsHidden = this.summariesHiddenFiles?.has(file.file) || false;
+        if (fileIsHidden && wrapper) {
+          wrapper.classList.add('summaries-hidden-file');
+        }
+        this._syncFileSummaryToggleButton(summaryToggleBtn, file.file);
+
+        summaryToggleBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.toggleFileSummaries(file.file, wrapper || this.findFileElement(file.file));
+        });
+        header.appendChild(summaryToggleBtn);
+      }
+    }
+
+    return { header, commentsZone };
   }
 
   /**
@@ -4321,166 +4705,15 @@ class PRManager {
       deletions: file.deletions || 0
     };
 
-    // Create file header with new options API
-    const header = window.DiffRenderer.createFileHeader(file.file, {
-      isGenerated,
-      isExpanded: !isCollapsed,
-      isViewed,
-      generatedInfo: isGenerated ? this.generatedFiles.get(file.file) : null,
-      fileStats,
-      renamed: file.renamed || false,
-      renamedFrom: file.renamedFrom || null,
-      onToggleCollapse: (path) => this.toggleFileCollapse(path),
-      onToggleViewed: (path, checked) => this.toggleFileViewed(path, checked)
+    // Build the file header (+ file-comments zone). Shared with the CodeView
+    // render path via _buildPierreFileHeader so both render identical headers.
+    const { header, commentsZone } = this._buildDiffFileHeaderParts(file, {
+      isGenerated, isViewed, isCollapsed, wrapper,
     });
     wrapper.appendChild(header);
+    if (commentsZone) wrapper.appendChild(commentsZone);
 
-    // Create file-level comments zone (between header and diff)
-    if (this.fileCommentManager) {
-      const fileCommentsZone = this.fileCommentManager.createFileCommentsZone(file.file);
-      wrapper.appendChild(fileCommentsZone);
-
-      // Add file comment button to header - directly adds a file comment (like GitHub)
-      const fileCommentBtn = document.createElement('button');
-      fileCommentBtn.className = 'file-header-comment-btn';
-      fileCommentBtn.title = 'Add file comment';
-      fileCommentBtn.dataset.file = file.file;
-      // Outline icon (no comments) - will be updated by updateHeaderButtonState
-      fileCommentBtn.innerHTML = `
-        <svg class="comment-icon-outline" width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25Zm1.5 0v7.5c0 .138.112.25.25.25h2a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25H2.75a.25.25 0 0 0-.25.25Z"/>
-        </svg>
-        <svg class="comment-icon-filled" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="display:none">
-          <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25v-7.5Z"/>
-        </svg>
-      `;
-      fileCommentBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        // Directly open the comment form (like GitHub's behavior)
-        this.fileCommentManager.showCommentForm(fileCommentsZone, file.file);
-      });
-      header.appendChild(fileCommentBtn);
-
-      // Store reference for updating icon state later
-      fileCommentsZone.headerButton = fileCommentBtn;
-
-      // Add file chat button to header
-      const fileChatBtn = document.createElement('button');
-      fileChatBtn.className = 'file-header-chat-btn';
-      fileChatBtn.title = 'Chat about file';
-      fileChatBtn.dataset.file = file.file;
-      fileChatBtn.innerHTML = `
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/>
-        </svg>
-      `;
-      fileChatBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        if (window.chatPanel) {
-          window.chatPanel.open({
-            fileContext: { file: file.file }
-          });
-        }
-      });
-      header.appendChild(fileChatBtn);
-
-      // Per-file hunk-summary toggle. Mirrors the toolbar toggle but scoped to
-      // one file. Disabled (greyed) when no summaries exist yet for this file;
-      // _applyHunkSummaries / _registerHunkAnchorsForFile re-enable it as soon
-      // as hashes for this file are recorded (so a summary that arrives later
-      // doesn't get hidden behind a permanently-disabled button).
-      // Gated on `_summariesEnabled`: skipped entirely when /api/config has
-      // already reported the feature is off; created hidden + revealed later
-      // when config has not yet resolved.
-      if (this._summariesEnabled !== false) {
-        const summaryToggleBtn = document.createElement('button');
-        summaryToggleBtn.className = 'file-header-summary-toggle';
-        summaryToggleBtn.dataset.file = file.file;
-        summaryToggleBtn.innerHTML = `
-          <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
-            <path d="M0 3.75C0 2.784.784 2 1.75 2h12.5c.966 0 1.75.784 1.75 1.75v8.5A1.75 1.75 0 0 1 14.25 14H1.75A1.75 1.75 0 0 1 0 12.25Zm1.75-.25a.25.25 0 0 0-.25.25v8.5c0 .138.112.25.25.25h12.5a.25.25 0 0 0 .25-.25v-8.5a.25.25 0 0 0-.25-.25ZM3.5 6.25a.75.75 0 0 1 .75-.75h7a.75.75 0 0 1 0 1.5h-7a.75.75 0 0 1-.75-.75Zm.75 2.25h4a.75.75 0 0 1 0 1.5h-4a.75.75 0 0 1 0-1.5Z"/>
-          </svg>
-        `;
-
-        if (this._summariesEnabled !== true) {
-          // Config still pending; hide until the gate resolves.
-          summaryToggleBtn.classList.add('summary-toggle-pending');
-          summaryToggleBtn.style.display = 'none';
-        }
-
-        const fileIsHidden = this.summariesHiddenFiles?.has(file.file) || false;
-        if (fileIsHidden) {
-          wrapper.classList.add('summaries-hidden-file');
-        }
-        this._syncFileSummaryToggleButton(summaryToggleBtn, file.file);
-
-        summaryToggleBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          this.toggleFileSummaries(file.file, wrapper);
-        });
-        header.appendChild(summaryToggleBtn);
-      }
-    }
-
-    const pierreDecision = this._getPierreRenderDecision(file);
-
-    if (pierreDecision.deferDiff) {
-      wrapper.appendChild(this._createDeferredDiffPlaceholder(file, wrapper));
-      return wrapper;
-    }
-
-    // Create container for @pierre/diffs rendering. Built EMPTY here — the
-    // actual `pierreBridge.renderFile()` (patch parse + FileDiff instance +
-    // shadow-DOM build) is deferred to _renderPierreFileBodyNow, driven by the
-    // same IntersectionObserver + ensureFileBodyRendered machinery as legacy
-    // bodies. Rendering every (often collapsed/generated) file's Pierre body up
-    // front froze the browser on large PRs; now collapsed bodies (display:none)
-    // never intersect and stay unrendered until expanded, and expanded-offscreen
-    // bodies render only as they near the viewport.
-    if (pierreDecision.usePierre) {
-      const diffBody = document.createElement('div');
-      diffBody.className = 'pierre-diff-body';
-      wrapper.appendChild(diffBody);
-
-      // Reserve approximate height for EXPANDED-but-unrendered bodies so the
-      // scrollbar stays roughly stable as bodies fill in. Collapsed bodies are
-      // `display:none` (see pr.css .collapsed .pierre-diff-body) so contribute
-      // no height and need no placeholder. Cleared when the body renders.
-      if (!isCollapsed && file.patch) {
-        const approxLines = file.patch.split('\n').length;
-        diffBody.style.minHeight = (approxLines * PRManager.APPROX_DIFF_LINE_PX) + 'px';
-      }
-
-      // Register the lazy entry. `pierre:true` routes _renderFileBodyNow to the
-      // Pierre render path; `forcePlainText` is captured here so the highlight
-      // budget decision (consumed above in _getPierreRenderDecision, at
-      // registration time) is honored at actual render. `file` is the full
-      // changed_files entry, needed for renderFile + hunk-anchor wiring.
-      this._lazyFileBodies.set(file.file, {
-        fileName: file.file,
-        file,
-        pierre: true,
-        forcePlainText: pierreDecision.forcePlainText,
-        patch: file.patch || null,
-        binary: !!file.binary,
-        hunkHashes: file.hunk_hashes || null,
-        fileBody: diffBody,
-        wrapper,
-        rendered: false,
-        renderPromise: null,
-        gen: this._renderGen
-      });
-
-      // Observe the body so it renders as it nears the viewport. Collapsed
-      // bodies (display:none) never intersect → stay unrendered until expanded.
-      if ((file.patch || file.binary) && this._fileBodyObserver) {
-        this._fileBodyObserver.observe(diffBody);
-      }
-
-      return wrapper;
-    }
-
-    // Fallback: old table-based rendering (used when PierreBridge is not
+    // Old table-based rendering (used when PierreBridge is not
     // available). Created with an EMPTY tbody — the rows are NOT rendered
     // here; see the lazy-body machinery below. This is the core large-PR
     // perf fix: building + syntax-highlighting every line of every (often
@@ -4641,11 +4874,6 @@ class PRManager {
     if (entry.rendered) return entry.fileBody;
     if (this._fileBodyObserver) this._fileBodyObserver.unobserve(entry.fileBody);
 
-    // Pierre-rendered files build a FileDiff into a shadow DOM rather than a
-    // <tbody>; they have their own render path (no renderPatch / hunk records /
-    // EOF-gap machinery, which are legacy-table concepts).
-    if (entry.pierre) return this._renderPierreFileBodyNow(entry);
-
     const tbody = entry.fileBody.querySelector('tbody');
 
     // Capture only THIS file's hunk anchor records (renderPatch appends to
@@ -4697,63 +4925,6 @@ class PRManager {
     }
 
     return entry.fileBody;
-  }
-
-  /**
-   * Synchronously build a Pierre-rendered file's body: run
-   * `pierreBridge.renderFile()` (or the binary placeholder), clear the height
-   * placeholder, wire hunk-summary anchors, and enqueue background content
-   * upgrade. The Pierre analogue of the legacy branch in _renderFileBodyNow.
-   * Idempotent (caller guards on entry.rendered).
-   *
-   * The `collapsed` option reflects the LIVE wrapper state, not the value at
-   * registration: a file expanded via toggleFileCollapse materializes here
-   * BEFORE `.collapsed` is removed, so it renders collapsed (zero shadow lines)
-   * and setCollapsed(false) then rerenders to fill lines in — exactly the
-   * pre-lazy eager-render-then-expand sequence.
-   * @param {object} entry - a _lazyFileBodies value with pierre:true
-   * @returns {HTMLElement} the file body element
-   */
-  _renderPierreFileBodyNow(entry) {
-    const diffBody = entry.fileBody;
-
-    // Superseded render: renderDiff already ran pierreBridge.destroyAll() and
-    // detached this body via innerHTML=''. Rendering now would re-insert a dead
-    // file into pierreBridge.files (leaking it, and polluting later lookups).
-    // Mark done and skip — matches the legacy path's stale-gen wiring skip.
-    if (entry.gen !== this._renderGen) {
-      diffBody.style.minHeight = '';
-      entry.rendered = true;
-      entry.renderPromise = null;
-      return diffBody;
-    }
-
-    const collapsed = entry.wrapper?.classList?.contains('collapsed') || false;
-    if (entry.patch) {
-      this.pierreBridge.renderFile(entry.fileName, diffBody, entry.patch, {
-        collapsed,
-        forcePlainText: entry.forcePlainText,
-      });
-    } else if (entry.binary) {
-      this.pierreBridge.renderBinaryFile(diffBody);
-    }
-
-    diffBody.style.minHeight = '';
-    entry.rendered = true;
-    entry.renderPromise = null;
-
-    if (entry.patch) {
-      // Wire hunk-summary anchors now that the file is in pierreBridge.files —
-      // any summary that arrived (WS/fetch) before this body rendered was queued
-      // in _pendingSummariesByHash and is drained here.
-      this._registerPierreHunkAnchorsForFile(entry.file);
-      // Enqueue background content upgrade (enables hunk expansion). With lazy
-      // rendering the upgrade queue can't be seeded up front (the file wasn't in
-      // pierreBridge.files yet), so files are fed to it as they render.
-      this._enqueuePierreContentUpgrade(entry.file);
-    }
-
-    return diffBody;
   }
 
   /**
@@ -5094,6 +5265,18 @@ class PRManager {
    * @param {string} filePath - Path of the file
    */
   async toggleFileCollapse(filePath) {
+    // CodeView path: collapse state lives on the item, not a persistent DOM
+    // class. Flip it via the bridge; the item re-renders its header (chevron)
+    // and body from the new flag. Keep collapsedFiles in sync for persistence.
+    if (this._usesPierreCodeView() && this.pierreBridge.files.has(filePath)) {
+      const fileState = this.pierreBridge.files.get(filePath);
+      const willCollapse = !fileState.collapsed;
+      if (willCollapse) this.collapsedFiles.add(filePath);
+      else this.collapsedFiles.delete(filePath);
+      this.pierreBridge.setCollapsed(filePath, willCollapse);
+      return;
+    }
+
     const wrapper = this.findFileElement(filePath);
     if (!wrapper) return;
 
@@ -5127,6 +5310,24 @@ class PRManager {
    * @param {boolean} isViewed - Whether the file is now viewed
    */
   async toggleFileViewed(filePath, isViewed) {
+    // CodeView path: viewed auto-collapses (and unviewed auto-expands). Drive
+    // both the viewed set and the item's collapse flag through the bridge; the
+    // item re-renders its header so the checkbox/chevron reflect the new state.
+    if (this._usesPierreCodeView() && this.pierreBridge.files.has(filePath)) {
+      if (isViewed) {
+        this.viewedFiles.add(filePath);
+        this.collapsedFiles.add(filePath);
+        this.pierreBridge.setCollapsed(filePath, true);
+      } else {
+        this.viewedFiles.delete(filePath);
+        this.collapsedFiles.delete(filePath);
+        this.pierreBridge.setCollapsed(filePath, false);
+      }
+      this.updateFileItemViewedState(filePath, isViewed);
+      this.saveViewedState();
+      return;
+    }
+
     const wrapper = this.findFileElement(filePath);
 
     if (isViewed) {
@@ -5182,6 +5383,26 @@ class PRManager {
   }
 
   /**
+   * Resolve a file path to the ACTUAL CodeView item id in the bridge: the diff
+   * item id (plain path) when a diff item exists for it, otherwise the context
+   * item id (`context:<path>`). A context-only file has NO plain-path item, so
+   * any path that awaits slotting, scrolls, or hydrates a file by its plain path
+   * must resolve through here or it targets a non-existent item. Returns null
+   * when the bridge holds neither (unknown / legacy path).
+   * @param {string} filePath
+   * @returns {string|null}
+   * @private
+   */
+  _pierreItemIdForPath(filePath) {
+    const bridge = this.pierreBridge;
+    if (!bridge || !bridge.files) return null;
+    if (bridge.files.has(filePath)) return filePath;
+    const contextId = this._contextStateKey(filePath);
+    if (bridge.files.has(contextId)) return contextId;
+    return null;
+  }
+
+  /**
    * Find the context-entry wrapper for a file path. Unlike findFileElement,
    * this never resolves to the diff wrapper for the same file.
    * @param {string} filePath - Path of the file
@@ -5204,6 +5425,19 @@ class PRManager {
    * @param {string} filePath - Path of the file
    */
   toggleContextFileCollapse(filePath) {
+    // CodeView path: the context entry is a bridge file item, not a DOM
+    // wrapper. Flip its collapse flag through the bridge (the `context:` key
+    // keeps it distinct from any same-path diff entry, #540).
+    if (this._usesPierreCodeView() && this.pierreBridge.hasContextFile(filePath)) {
+      const key = this._contextStateKey(filePath);
+      const fileState = this.pierreBridge.files.get(key);
+      const willCollapse = !(fileState && fileState.collapsed);
+      if (willCollapse) this.collapsedFiles.add(key);
+      else this.collapsedFiles.delete(key);
+      this.pierreBridge.setContextFileCollapsed(filePath, willCollapse);
+      return;
+    }
+
     const wrapper = this.findContextFileWrapper(filePath);
     if (!wrapper) return;
 
@@ -5229,6 +5463,24 @@ class PRManager {
    * @param {boolean} isViewed - Whether the context entry is now viewed
    */
   toggleContextFileViewed(filePath, isViewed) {
+    // CodeView path: drive the context item's viewed/collapse state through the
+    // bridge; the item re-renders its header so the checkbox/chevron update.
+    if (this._usesPierreCodeView() && this.pierreBridge.hasContextFile(filePath)) {
+      const ckey = this._contextStateKey(filePath);
+      if (isViewed) {
+        this.viewedFiles.add(ckey);
+        this.collapsedFiles.add(ckey);
+        this.pierreBridge.setContextFileCollapsed(filePath, true);
+      } else {
+        this.viewedFiles.delete(ckey);
+        this.collapsedFiles.delete(ckey);
+        this.pierreBridge.setContextFileCollapsed(filePath, false);
+      }
+      this.updateFileItemViewedState(filePath, isViewed, { contextItem: true });
+      this.saveViewedState();
+      return;
+    }
+
     const wrapper = this.findContextFileWrapper(filePath);
     const key = this._contextStateKey(filePath);
     const header = wrapper ? wrapper.querySelector('.d2h-file-header') : null;
@@ -5804,8 +6056,6 @@ class PRManager {
       await this.toggleGeneratedFile(file);
     }
 
-    await this._materializeDeferredDiff(file);
-
     // For @pierre/diffs rendered files, use context ranges to reveal collapsed lines
     if (this.pierreBridge && this.pierreBridge.files.has(file)) {
       await this._ensurePierreContentUpgrade(file);
@@ -5907,8 +6157,6 @@ class PRManager {
       const { file, line_start, line_end, side } = item;
       if (!file || !line_start) continue;
       const resolvedSide = (side || 'right').toUpperCase();
-
-      await this._materializeDeferredDiff(file);
 
       // Materialize the lazy body BEFORE branching on the rendering engine. A
       // Pierre file whose body hasn't rendered yet is NOT in pierreBridge.files,
@@ -6290,6 +6538,17 @@ class PRManager {
       if (editFormEl) editFormEl.remove();
       commentDiv.classList.remove('editing-mode');
 
+      // Sync the data model, not just the DOM. Under CodeView, line comments
+      // re-render from bridge ANNOTATION DATA on remount, so an in-place DOM
+      // edit REVERTS when the file scrolls out and back unless the annotation's
+      // stored data is updated too. Also update this.userComments so a later
+      // load-driven re-render carries the new body.
+      const editedComment = this.userComments?.find(c => String(c.id) === String(commentId));
+      if (editedComment) editedComment.body = editedText;
+      if (this.pierreBridge && editedComment && editedComment.file && editedComment.is_file_level !== 1) {
+        this.pierreBridge.updateAnnotationData(editedComment.file, `comment-${commentId}`, { body: editedText });
+      }
+
       // Notify AI Panel about the updated comment body
       if (window.aiPanel?.updateComment) {
         window.aiPanel.updateComment(commentId, { body: editedText });
@@ -6339,25 +6598,31 @@ class PRManager {
 
       const apiResult = await response.json();
 
+      // Sync the data model and the count, not just the DOM: the annotation data
+      // model owns line-comment rendering (a removed row alone resurrects on
+      // remount) and the count is data-backed. Repaints even when the comment is
+      // virtualized out and there is no DOM to remove.
+      this._markCommentDeleted(commentId);
+
       // Check if dismissed comments filter is enabled for AI Panel updates
       const showDismissed = window.aiPanel?.showDismissedComments || false;
+
+      // File-level comment cards go first, through the zone-aware sweep: it
+      // reaches detached (virtualized-out) zones, which are re-slotted verbatim
+      // on scroll-in, and _markCommentDeleted deliberately leaves file-level
+      // comments' bridge annotations in place, so this DOM sweep is the ONLY
+      // removal. Before the generic query below, too — that one also matches a
+      // file-comment card by id, and removing the card there would rob the zone
+      // of its comment-count refresh.
+      const escapedId = globalThis.CSS?.escape
+        ? CSS.escape(String(commentId))
+        : String(commentId);
+      this._purgeFileCommentCards(`.file-comment-card[data-comment-id="${escapedId}"]`);
 
       // Always remove the comment from the diff view (design decision: dismissed comments never shown in diff)
       const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
       if (commentRow) {
         commentRow.remove();
-        this.updateCommentCount();
-      }
-
-      // Also handle file-level comment cards
-      const fileCommentCard = document.querySelector(`.file-comment-card[data-comment-id="${commentId}"]`);
-      if (fileCommentCard) {
-        const zone = fileCommentCard.closest('.file-comments-zone');
-        fileCommentCard.remove();
-        if (zone && this.fileCommentManager) {
-          this.fileCommentManager.updateCommentCount(zone);
-        }
-        this.updateCommentCount();
       }
 
       // Update AI Panel - transition to dismissed state or remove based on filter
@@ -6451,10 +6716,10 @@ class PRManager {
    * Clear all user comments (soft-delete with confirmation for bulk operations)
    */
   async clearAllUserComments() {
-    // Count both line-level and file-level user comments
-    const lineCommentRows = document.querySelectorAll('.user-comment-row:not(.suggestion-edit-pending)');
-    const fileCommentCards = document.querySelectorAll('.file-comment-card.user-comment');
-    const totalComments = lineCommentRows.length + fileCommentCards.length;
+    // Data-backed count (line + file level): a DOM query misses files the
+    // virtualized CodeView has unmounted and races the async annotation slot,
+    // so it would report "No comments to clear" while comments exist.
+    const totalComments = this._countActiveUserComments();
 
     if (totalComments === 0) {
       if (window.toast?.showInfo) {
@@ -6487,19 +6752,19 @@ class PRManager {
       const result = await response.json();
       const deletedCount = result.deletedCount || totalComments;
 
+      // Opportunistically remove the comment elements that are currently
+      // mounted; unmounted (virtualized-out) line comments are handled by the
+      // loadUserComments reload below.
+      const lineCommentRows = document.querySelectorAll('.user-comment-row:not(.suggestion-edit-pending)');
+
       // Remove line-level comment rows from DOM
       lineCommentRows.forEach(row => row.remove());
 
-      // Remove file-level comment cards from DOM
-      fileCommentCards.forEach(card => {
-        const zone = card.closest('.file-comments-zone');
-        card.remove();
-
-        // Update the file comment zone header button state
-        if (zone && this.fileCommentManager) {
-          this.fileCommentManager.updateCommentCount(zone);
-        }
-      });
+      // File-level cards get the zone-aware sweep: the reload backstop below
+      // only re-renders zones when fileLevelComments is non-empty, which it
+      // never is after a clear — so a card left in a detached zone would
+      // resurrect on scroll-in against a count that already reads 0.
+      this._purgeFileCommentCards('.file-comment-card.user-comment');
 
       // Remove line-level and file-level comment elements from diff view
       // (They have been soft-deleted, so should not appear in the diff panel per design decision)
@@ -6643,6 +6908,21 @@ class PRManager {
 
       // Load file-level comments into their zones (only active comments reach here)
       if (this.fileCommentManager && fileLevelComments.length > 0) {
+        // CodeView renders each file-comments zone as a lineNumber:0 body
+        // annotation on the next frame; loadFileComments locates zones via the
+        // DOM, so wait for the slotting pass first or the cards land nowhere on
+        // a fresh load/refresh (a mounted file resolves slotted; a virtualized-
+        // out file resolves not-mounted and its zone renders on scroll-in).
+        if (this._usesPierreCodeView() && this.pierreBridge?.whenAnnotationsSlotted) {
+          const files = [...new Set(fileLevelComments.map(c => c.file))];
+          await Promise.all(files.map(f => {
+            // A context-ONLY file has no plain-path item — await the REAL item id
+            // (context:<path>) or whenAnnotationsSlotted resolves 'unknown-file'
+            // instantly and hydration runs before the zone exists.
+            const itemId = this._pierreItemIdForPath(f) || f;
+            return this.pierreBridge.whenAnnotationsSlotted(itemId).catch(() => null);
+          }));
+        }
         this.fileCommentManager.loadFileComments(fileLevelComments, []);
       }
 
@@ -6893,6 +7173,85 @@ class PRManager {
   /**
    * Notify panels and navigator after a successful adoption
    */
+  /**
+   * Optimistically register a just-created comment in this.userComments and
+   * refresh the data-backed count. The array is otherwise only assigned
+   * wholesale (init + loadUserComments) with no push/splice, so any optimistic
+   * create (suggestion adoption, file-level comment) MUST funnel through here or
+   * _countActiveUserComments — and everything derived from it (SplitButton
+   * count, review-button text, Clear-All enablement, REQUEST_CHANGES validation)
+   * — stays stale until a WebSocket-triggered reload. Rendering stays with the
+   * caller; this owns only the data + count. Upserts by id and forces an ACTIVE
+   * status because the count filters out status === 'inactive'.
+   * @param {Object} comment - the created comment (server response shape)
+   */
+  _registerOptimisticUserComment(comment) {
+    if (!comment || comment.id == null) { this.updateCommentCount(); return; }
+    if (!Array.isArray(this.userComments)) this.userComments = [];
+    const existing = this.userComments.find(c => c && String(c.id) === String(comment.id));
+    if (existing) {
+      Object.assign(existing, comment);
+      if (existing.status === 'inactive') existing.status = 'active';
+    } else {
+      this.userComments.push({ ...comment, status: comment.status || 'active' });
+    }
+    this.updateCommentCount();
+  }
+
+  /**
+   * Remove file-level comment cards from EVERY zone, including the zones the
+   * virtualized CodeView has detached from the document. Those zones live on in
+   * `_fileCommentZones` and are re-slotted verbatim when their file scrolls back
+   * in, so a `document.querySelectorAll` sweep leaves cards that resurrect later
+   * — with no data-side backstop, since file-level comments keep their bridge
+   * annotation and the reload path re-renders zones only when there are
+   * file-level comments left to render.
+   * @param {string} selector - card selector to remove within each zone
+   * @private
+   */
+  _purgeFileCommentCards(selector) {
+    const zones = new Set(document.querySelectorAll('.file-comments-zone'));
+    for (const zone of this._fileCommentZones?.values() || []) zones.add(zone);
+    for (const zone of zones) {
+      let removed = 0;
+      for (const card of zone.querySelectorAll(selector)) {
+        card.remove();
+        removed++;
+      }
+      if (removed && this.fileCommentManager) {
+        this.fileCommentManager.updateCommentCount(zone);
+      }
+    }
+  }
+
+  /**
+   * Mark an already-deleted comment inactive in the count-backing data model and
+   * repaint the count. The delete direction of _registerOptimisticUserComment.
+   *
+   * The two delete flows each used to own only HALF of this invariant:
+   * deleteUserComment flipped the status but repainted the count only inside its
+   * DOM-removal branches (deleting a virtualized-out comment from the AI panel
+   * found neither row nor card, so the count never repainted), while
+   * FileCommentManager.deleteFileComment always repainted but never flipped the
+   * status (so the data-backed count kept counting the deleted comment until a
+   * full reload). DOM removal stays with the callers; this owns the data + count
+   * and repaints UNCONDITIONALLY. Line comments also drop their bridge
+   * annotation, or the comment resurrects when the file remounts.
+   * @param {number|string} commentId - the deleted comment's id
+   */
+  _markCommentDeleted(commentId) {
+    const comment = Array.isArray(this.userComments)
+      ? this.userComments.find(c => c && String(c.id) === String(commentId))
+      : null;
+    if (comment) {
+      if (this.pierreBridge && comment.file && comment.is_file_level !== 1) {
+        this.pierreBridge.removeAnnotation(comment.file, `comment-${commentId}`);
+      }
+      comment.status = 'inactive';
+    }
+    this.updateCommentCount();
+  }
+
   _notifyAdoption(suggestionId, newComment) {
     if (window.aiPanel?.addComment) {
       window.aiPanel.addComment(newComment);
@@ -6909,7 +7268,9 @@ class PRManager {
       window.aiPanel.updateFindingStatus(suggestionId, 'adopted');
     }
 
-    this.updateCommentCount();
+    // Add the adopted comment to the count-backing array (the panel got it via
+    // addComment above); a bare updateCommentCount here would count a stale array.
+    this._registerOptimisticUserComment(newComment);
 
     // Refresh minimize-mode indicators so the adopted comment is reflected
     if (this.commentMinimizer) {
@@ -7388,11 +7749,30 @@ class PRManager {
    * Update comment count display
    * Note: Dismissed comments are never in the diff DOM (design decision), so we simply count all visible elements.
    */
-  updateCommentCount() {
-    // Count both line-level comments (.user-comment-row) and file-level comments (.file-comment-card.user-comment)
+  /**
+   * Number of active user comments (line + file level) for count/validation UI
+   * (SplitButton "Clear All", review button, submit validation).
+   *
+   * Under CodeView, comment cards slot into the DOM asynchronously (next rAF)
+   * and virtualized-out files render no card at all, so a `document.querySelector`
+   * count RACES the render and undercounts — e.g. right after a save the card
+   * has not slotted yet, so Clear All stays disabled. Count from the loaded
+   * comment data instead, which is exact and virtualization-independent. Legacy
+   * (per-file table) rendering is synchronous, so its DOM count is reliable and
+   * remains the path there (and the fallback before comment data has loaded).
+   * @returns {number}
+   */
+  _countActiveUserComments() {
+    if (this._usesPierreCodeView() && Array.isArray(this.userComments)) {
+      return this.userComments.filter(c => c && c.status !== 'inactive').length;
+    }
     const lineComments = document.querySelectorAll('.user-comment-row:not(.suggestion-edit-pending)').length;
     const fileComments = document.querySelectorAll('.file-comment-card.user-comment').length;
-    const userComments = lineComments + fileComments;
+    return lineComments + fileComments;
+  }
+
+  updateCommentCount() {
+    const userComments = this._countActiveUserComments();
 
     if (this.splitButton) {
       this.splitButton.updateCommentCount(userComments);
@@ -7426,10 +7806,10 @@ class PRManager {
     const reviewBody = document.getElementById('review-body').value.trim();
     const submitBtn = document.getElementById('submit-review-btn');
 
-    // Count BOTH line-level and file-level comments for validation
-    const lineComments = document.querySelectorAll('.user-comment-row:not(.suggestion-edit-pending)').length;
-    const fileComments = document.querySelectorAll('.file-comment-card.user-comment').length;
-    const totalComments = lineComments + fileComments;
+    // Count BOTH line-level and file-level comments for validation. Uses the
+    // data-backed count under CodeView (a DOM count races the async annotation
+    // slot / undercounts virtualized-out files).
+    const totalComments = this._countActiveUserComments();
     if (reviewEvent === 'REQUEST_CHANGES' && !reviewBody && totalComments === 0) {
       alert('Please add comments or a review summary when requesting changes.');
       return;
@@ -7683,11 +8063,14 @@ class PRManager {
   }
 
   updateFileList(files) {
+    // Store diff-only files for merging with context files later. Assigned before
+    // the sidebar guard below: this is the data model the "diff wins" suppression
+    // reads, and it must leave the not-loaded-yet null state even when there is
+    // no sidebar to render into.
+    this.diffFiles = files.filter(f => !f.contextFile);
+
     const fileListContainer = document.getElementById('file-list');
     if (!fileListContainer) return;
-
-    // Store diff-only files for merging with context files later
-    this.diffFiles = files.filter(f => !f.contextFile);
 
     // Update sidebar file count badge
     const fileCountEl = document.getElementById('sidebar-file-count');
@@ -7876,6 +8259,16 @@ class PRManager {
   }
 
   async scrollToFile(filePath) {
+    // CodeView path: the bridge scrolls its virtualized root to the item, even
+    // when the file is currently virtualized out of the DOM. Move the file to
+    // the front of the content-upgrade queue first (mirrors the legacy hint).
+    if (this._usesPierreCodeView() && this.pierreBridge.files.has(filePath)) {
+      const fileState = this.pierreBridge.files.get(filePath);
+      if (!fileState.collapsed) this._prioritizePierreContentUpgrade(filePath);
+      await this._scrollToPierreItemWithStickyOffset(filePath);
+      return;
+    }
+
     const fileWrapper = this.findFileElement(filePath);
     if (fileWrapper) {
       // Render the body so the scroll target has its real height (an empty
@@ -7888,14 +8281,9 @@ class PRManager {
       // later still renders on demand via toggleFileCollapse.
       if (!fileWrapper.classList.contains('collapsed')) {
         await this.ensureFileBodyRendered(filePath);
-        // Only now can this file be moved to the front of the Pierre
-        // content-upgrade queue: rendering its body is what enqueues it
-        // (_renderPierreFileBodyNow → _enqueuePierreContentUpgrade), so
-        // state.pending contains it and the reorder actually takes effect.
-        // Hoisting this before the render would be a silent no-op — findIndex
-        // misses the not-yet-enqueued file and the later render appends it to
-        // the queue tail. Collapsed files stay hidden and never upgrade, so
-        // they intentionally get no priority hint.
+        // Move this file to the front of the Pierre content-upgrade queue.
+        // Collapsed files stay hidden and never upgrade, so they intentionally
+        // get no priority hint.
         this._prioritizePierreContentUpgrade(filePath);
       }
       // Stable variant: lazy bodies between here and the target render as
@@ -7909,6 +8297,98 @@ class PRManager {
         fileWrapper.scrollIntoView(scrollOptions);
       }
     }
+  }
+
+  /**
+   * Scroll a CodeView item (diff file OR `context:<path>` reference) to the top
+   * of the viewport, compensated for the preceding item's pinned sticky header.
+   *
+   * The vendor compensates line/range scrolls but not item scrolls, so every
+   * whole-item jump needs this — context items render in the SAME CodeView with
+   * the same sticky headers, so they need it identically.
+   * @param {string} itemId - bridge item id (file path or `context:<path>`)
+   * @private
+   */
+  async _scrollToPierreItemWithStickyOffset(itemId) {
+    // --diff-file-header-height is measured by _measureFileHeaderHeight; fall
+    // back to the vendor's own sticky offset if it is not set yet.
+    const headerPx = parseFloat(
+      getComputedStyle(document.documentElement).getPropertyValue('--diff-file-header-height')
+    );
+    const base = Number.isFinite(headerPx) && headerPx > 0
+      ? headerPx
+      : (this.pierreBridge.codeView
+        && typeof this.pierreBridge.codeView.getStickyHeaderOffset === 'function'
+          ? (this.pierreBridge.codeView.getStickyHeaderOffset() || 0)
+          : 0);
+    this.pierreBridge.scrollToFile(itemId, { align: 'start', behavior: 'smooth', stickyOffset: base });
+
+    // A full header-height of compensation lands a normal file flush, but a
+    // short / collapsed (header-only) target cannot absorb it and overshoots
+    // (its header clipped above the toolbar); an unmeasured base undershoots.
+    // The landing gap moves ~1:1 with the offset, so once the smooth scroll
+    // settles, nudge the offset by the residual gap until flush. Corrections
+    // are instant (no second glide) and bounded; tall targets land within
+    // tolerance on the first pass and never enter the loop.
+    const LANDING_TOLERANCE = 2;
+    let gap = await this._awaitPierreNavGap(itemId);
+    let comp = base;
+    let guard = 0;
+    while (gap != null && Math.abs(gap) > LANDING_TOLERANCE && guard++ < 3) {
+      comp = Math.max(0, comp + gap);
+      this.pierreBridge.scrollToFile(itemId, { align: 'start', behavior: 'auto', stickyOffset: comp });
+      gap = await this._awaitPierreNavGap(itemId, { timeout: 400 });
+    }
+  }
+
+  /**
+   * The px gap between a CodeView item header's top and the scroll container's
+   * top — 0 is flush under the toolbar, negative means the header is clipped
+   * above it. Returns null when the target's header is not mounted (virtualized
+   * out) so callers can keep waiting.
+   *
+   * Takes a bridge ITEM id, not a path: hosts carry `data-file-name` (the plain
+   * path), so a file with both a diff item and a `context:<path>` item has two
+   * matching hosts — the item's type picks the right one.
+   * @param {string} itemId - bridge item id (file path or `context:<path>`)
+   */
+  _pierreNavGap(itemId) {
+    const container = document.getElementById('diff-container');
+    if (!container) return null;
+    const fileState = this.pierreBridge?.files?.get(itemId);
+    const fileName = fileState?.fileName || itemId;
+    const base = `diffs-container[data-file-name="${CSS.escape(fileName)}"]`;
+    const host = container.querySelector(
+      fileState?.itemType === 'context' ? `${base}.context-file` : `${base}:not(.context-file)`
+    );
+    const header = host ? host.querySelector('.d2h-file-header') : null;
+    if (!header) return null;
+    return Math.round(
+      header.getBoundingClientRect().top - container.getBoundingClientRect().top
+    );
+  }
+
+  /**
+   * Wait for a smooth scroll to a CodeView item to settle, then return the
+   * landing gap (see _pierreNavGap). Polls per frame until the gap holds steady
+   * (the target may still be mounting on the way in) or a timeout elapses.
+   */
+  async _awaitPierreNavGap(itemId, { timeout = 1200, stableFrames = 3 } = {}) {
+    const start = performance.now();
+    let last = null;
+    let stable = 0;
+    while (performance.now() - start < timeout) {
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      const gap = this._pierreNavGap(itemId);
+      if (gap == null) { last = null; stable = 0; continue; }
+      if (last != null && Math.abs(gap - last) <= 1) {
+        if (++stable >= stableFrames) return gap;
+      } else {
+        stable = 0;
+      }
+      last = gap;
+    }
+    return last;
   }
 
   setActiveFile(filePath) {
@@ -8653,9 +9133,13 @@ class PRManager {
       refreshBtn.disabled = true;
     }
 
-    // Show loading state in diff container
+    // Show loading state in diff container. NOT under CodeView: the bridge owns
+    // #diff-container (its managed container is a child), and the re-render's
+    // destroyAll preserves the CodeView↔root binding so _ensureCodeView would
+    // early-return and keep updating the now-detached container while this
+    // spinner shows forever. The refresh button shows its own spinning state.
     const diffContainer = document.getElementById('diff-container');
-    if (diffContainer) {
+    if (diffContainer && !this._usesPierreCodeView()) {
       diffContainer.innerHTML = '<div class="loading">Refreshing pull request...</div>';
     }
 
@@ -8751,6 +9235,18 @@ class PRManager {
     const reviewId = this.currentPR?.id;
     if (!reviewId) return;
 
+    // The "diff wins" suppression below needs the diff's file list to know which
+    // context rows are shadowed by a diff entry. `diffFiles` stays null until
+    // updateFileList delivers it, and this method's callers (WebSocket
+    // context_files_changed, the visibility-change flush, ensureContextFile) are
+    // NOT ordered after that assignment. Treating the null window as "no diff
+    // files" would render a context:<path> item for a path about to gain a diff
+    // entry — the both-items-exist state the rule makes unrepresentable (the zone
+    // cache and item-id resolution assume it cannot happen). Bail before touching
+    // any state; renderDiff calls this again right after updateFileList, and no
+    // context item can exist yet during that window.
+    if (!Array.isArray(this.diffFiles)) return;
+
     // Capture before anything reassigns this.contextFiles — needed to scrub
     // context-scoped state for rows deleted remotely (peer tab / WebSocket).
     const previousFiles = this.contextFiles || [];
@@ -8768,6 +9264,20 @@ class PRManager {
       // Remove only deleted context files (handles both standalone and merged wrappers)
       for (const old of this.contextFiles || []) {
         if (!newIds.has(old.id)) {
+          if (this._usesPierreCodeView()) {
+            // CodeView path: context entries are whole-file bridge items keyed
+            // by path. Drop this record; remove the item only when no records
+            // remain for its path.
+            const recs = (this._contextItemsByPath?.get(old.file) || [])
+              .filter(r => r.id !== old.id);
+            if (recs.length > 0) {
+              this._contextItemsByPath.set(old.file, recs);
+            } else {
+              this._contextItemsByPath?.delete(old.file);
+              this.pierreBridge.removeContextFileItem(old.file);
+            }
+            continue;
+          }
           const el = document.querySelector(`[data-context-id="${old.id}"]`);
           if (!el) continue;
           if (el.classList.contains('context-file')) {
@@ -8801,7 +9311,8 @@ class PRManager {
       // so a file leaving the diff self-heals back to a context wrapper.
       // Mirrors the add-time guards (ensureContextFile, the POST route) and
       // the sidebar merge (mergeFileListWithContext).
-      const diffPaths = new Set((this.diffFiles || []).map(f => f.file));
+      // Guaranteed populated by the not-loaded-yet bail at the top of the method.
+      const diffPaths = new Set(this.diffFiles.map(f => f.file));
       let newFilesRendered = false;
       for (const cf of newFiles) {
         if (diffPaths.has(cf.file)) continue;
@@ -8979,11 +9490,194 @@ class PRManager {
   }
 
   /**
+   * Render a context file as a whole-file CodeView reference item (CodeView
+   * path). Multiple context ranges for the same path collapse into one item.
+   * @param {Object} contextFile
+   * @private
+   */
+  async _renderContextFileCodeView(contextFile) {
+    const data = await this.fetchFileContent(contextFile.file);
+    if (!data || !data.lines) return;
+
+    const contents = data.lines.join('\n');
+    const contextKey = this._contextStateKey(contextFile.file);
+    const collapsed = this.viewedFiles.has(contextKey) || this.collapsedFiles.has(contextKey);
+
+    // Track the context records per path so the header dismiss button can
+    // remove every range that produced this reference item.
+    if (!this._contextItemsByPath) this._contextItemsByPath = new Map();
+    const recs = this._contextItemsByPath.get(contextFile.file) || [];
+    if (!recs.some(r => r.id === contextFile.id)) recs.push(contextFile);
+    this._contextItemsByPath.set(contextFile.file, recs);
+
+    this.pierreBridge.addContextFile(contextFile.file, contents, { collapsed });
+
+    // Render the file-comments zone as a lineNumber:0 body annotation (file
+    // items take no side), mirroring the diff path. Context items are keyed by
+    // their `context:<path>` id in the bridge; the renderer still receives the
+    // plain path via fileState.fileName. This method runs once PER RECORD but
+    // a path collapses into ONE `context:<path>` item, so upsert by id (add
+    // only when not already anchored) or each record appends a duplicate zone.
+    this._ensurePierreFileCommentsRenderer();
+    const contextItemKey = this._contextStateKey(contextFile.file);
+    const annotationId = `file-comments:${contextFile.file}`;
+    const alreadyAnchored = (this.pierreBridge.getAnnotations(contextItemKey) || [])
+      .some(a => a.metadata?.id === annotationId);
+    if (!alreadyAnchored) {
+      this.pierreBridge.addAnnotation(contextItemKey, {
+        type: 'file-comments',
+        lineNumber: 0,
+        id: annotationId,
+        data: { file: contextFile.file },
+      });
+    }
+  }
+
+  /**
+   * Build the header element for a context-file reference item in the CodeView
+   * path (chevron, name, CONTEXT badge, viewed checkbox, comment/chat/dismiss).
+   *
+   * renderContextFile's legacy branch builds a near-identical header inline. That
+   * duplication is deliberate and stays: the legacy branch runs only when the
+   * vendor bundle fails to load and is slated for removal, so a shared
+   * abstraction would exist to serve a consumer about to be deleted.
+   * @param {string} fileName
+   * @returns {HTMLElement}
+   * @private
+   */
+  _buildContextFileHeader(fileName) {
+    const header = document.createElement('div');
+    header.className = 'd2h-file-header context-file-header';
+
+    const contextKey = this._contextStateKey(fileName);
+    const fileState = this.pierreBridge?.files?.get(contextKey);
+    const isCollapsed = fileState ? !!fileState.collapsed : this.collapsedFiles.has(contextKey);
+
+    const chevronBtn = document.createElement('button');
+    chevronBtn.className = 'file-collapse-toggle';
+    chevronBtn.title = 'Collapse file';
+    chevronBtn.innerHTML = window.DiffRenderer.CHEVRON_DOWN_ICON;
+    chevronBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleContextFileCollapse(fileName);
+    });
+    header.appendChild(chevronBtn);
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'd2h-file-name';
+    nameEl.textContent = fileName;
+    header.appendChild(nameEl);
+
+    const contextLabel = document.createElement('span');
+    contextLabel.className = 'context-badge';
+    contextLabel.textContent = 'CONTEXT';
+    header.appendChild(contextLabel);
+
+    const viewedLabel = document.createElement('label');
+    viewedLabel.className = 'file-viewed-label';
+    viewedLabel.title = 'Mark file as viewed';
+    const viewedCheckbox = document.createElement('input');
+    viewedCheckbox.type = 'checkbox';
+    viewedCheckbox.className = 'file-viewed-checkbox';
+    viewedCheckbox.checked = this.viewedFiles.has(contextKey);
+    viewedCheckbox.addEventListener('change', (e) => {
+      e.stopPropagation();
+      this.toggleContextFileViewed(fileName, viewedCheckbox.checked);
+    });
+    viewedLabel.appendChild(viewedCheckbox);
+    viewedLabel.appendChild(document.createTextNode('Viewed'));
+    header.appendChild(viewedLabel);
+
+    if (this.fileCommentManager) {
+      // The zone renders as a lineNumber:0 body annotation (see
+      // _renderContextFileCodeView), not appended to this sticky header.
+      const commentsZone = this._getOrCreateFileCommentsZone(fileName);
+      const fileCommentBtn = document.createElement('button');
+      fileCommentBtn.className = 'file-header-comment-btn';
+      fileCommentBtn.title = 'Add file comment';
+      fileCommentBtn.dataset.file = fileName;
+      fileCommentBtn.innerHTML = `
+        <svg class="comment-icon-outline" width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25Zm1.5 0v7.5c0 .138.112.25.25.25h2a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25H2.75a.25.25 0 0 0-.25.25Z"/>
+        </svg>
+        <svg class="comment-icon-filled" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="display:none">
+          <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25v-7.5Z"/>
+        </svg>
+      `;
+      fileCommentBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.fileCommentManager.showCommentForm(commentsZone, fileName);
+      });
+      header.appendChild(fileCommentBtn);
+      commentsZone.headerButton = fileCommentBtn;
+      // Refresh the rebuilt icon from the cached zone's count (see the diff
+      // header path) so a context file with comments keeps its filled icon
+      // across virtualization remounts.
+      this.fileCommentManager.updateCommentCount(commentsZone);
+    }
+
+    const fileChatBtn = document.createElement('button');
+    fileChatBtn.className = 'file-header-chat-btn';
+    fileChatBtn.title = 'Chat about file';
+    fileChatBtn.dataset.file = fileName;
+    fileChatBtn.innerHTML = `
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+        <path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/>
+      </svg>
+    `;
+    fileChatBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (window.chatPanel) {
+        window.chatPanel.open({ fileContext: { file: fileName } });
+      }
+    });
+    header.appendChild(fileChatBtn);
+
+    const dismissBtn = document.createElement('button');
+    dismissBtn.className = 'context-file-dismiss';
+    dismissBtn.title = 'Remove context file';
+    dismissBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.749.749 0 0 1 1.275.326.749.749 0 0 1-.215.734L9.06 8l3.22 3.22a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215L8 9.06l-3.22 3.22a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z"/></svg>`;
+    dismissBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const recs = this._contextItemsByPath?.get(fileName) || [];
+      const removeAll = async () => {
+        for (const rec of recs) {
+          await this.removeContextFile(rec.id);
+        }
+      };
+      removeAll();
+    });
+    header.appendChild(dismissBtn);
+
+    header.addEventListener('click', (e) => {
+      if (e.target.closest('.file-viewed-label') || e.target.closest('.file-collapse-toggle') ||
+          e.target.closest('.file-header-comment-btn') || e.target.closest('.file-header-chat-btn') ||
+          e.target.closest('.context-file-dismiss')) {
+        return;
+      }
+      this.toggleContextFileCollapse(fileName);
+    });
+
+    if (isCollapsed) {
+      window.DiffRenderer.updateFileHeaderState(header, false);
+    }
+
+    return header;
+  }
+
+  /**
    * Render a single context file range in the diff panel.
    * Merges ranges for the same file into a single wrapper with multiple chunk tbodies.
    * @param {Object} contextFile - { id, review_id, file, line_start, line_end, label }
    */
   async renderContextFile(contextFile) {
+    // CodeView path: context files become whole-file reference items appended
+    // after the diff items (the chunk-range table model does not map onto the
+    // single virtualized CodeView, so the whole reference file is shown).
+    if (this._usesPierreCodeView()) {
+      return this._renderContextFileCodeView(contextFile);
+    }
+
     const diffContainer = document.getElementById('diff-container');
     if (!diffContainer) return;
 
@@ -9239,6 +9933,23 @@ class PRManager {
    * @param {number} [lineStart] - Optional line number to highlight
    */
   async scrollToContextFile(file, lineStart, contextId) {
+    // CodeView path: context files are `context:<path>` virtualized items with
+    // NO legacy .context-chunk / .context-file / <tr> DOM (and none at all when
+    // virtualized out), so the legacy query below no-ops. Scroll through the
+    // bridge by the resolved item id instead, mirroring diff-file nav.
+    if (this._usesPierreCodeView()) {
+      const itemId = this._pierreItemIdForPath(file);
+      if (!itemId) return;
+      if (lineStart) {
+        // Line scrolls are compensated by the vendor; only whole-item jumps
+        // need the sticky-header offset + landing correction.
+        this.pierreBridge.scrollToLine(itemId, lineStart, 'RIGHT');
+      } else {
+        await this._scrollToPierreItemWithStickyOffset(itemId);
+      }
+      return;
+    }
+
     // Use contextId to find a specific chunk tbody within a merged wrapper,
     // or fall back to a standalone wrapper or the file-level wrapper.
     let target;

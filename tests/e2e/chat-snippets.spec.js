@@ -24,7 +24,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender } from './helpers.js';
+import { waitForDiffToRender, expectResponse } from './helpers.js';
 
 /**
  * Force chat into "available" state so the toggle button is interactive. Pi
@@ -230,7 +230,7 @@ test.describe('Chat prompt snippets (PR mode)', () => {
 
     // Insert Alpha. Wait for the fire-and-forget touch to land so the reopened
     // dropdown reflects the new order deterministically.
-    const touchResp = page.waitForResponse(
+    const touchResp = expectResponse(page,
       (r) => /\/api\/snippets\/\d+\/touch$/.test(r.url()) && r.request().method() === 'POST'
     );
     await items.getByText('Alpha snippet body').click();

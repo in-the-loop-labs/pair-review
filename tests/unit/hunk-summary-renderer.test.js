@@ -36,6 +36,16 @@ function createFakeBridge(fileNames = ['a.js']) {
     removeAnnotation(fileName, id) {
       annotations.delete(id);
     },
+    // Simulate a CodeView virtualization remount: the vendor discards each
+    // annotation's DOM and re-invokes the registered renderer with the stored
+    // data. Every stored annotation gets a freshly-built element, exactly as
+    // when a file scrolls back into view.
+    remount() {
+      for (const [id, ann] of annotations) {
+        const el = renderFn ? renderFn(ann.data, ann.id, ann.fileName) : null;
+        annotations.set(id, { ...ann, el });
+      }
+    },
     _annotations: annotations,
   };
 }
@@ -231,6 +241,27 @@ describe('HunkSummaryRenderer', () => {
       expect(pierreRenderer.renderPierre('a.js', { lineNumber: 1, side: 'RIGHT' }, { summary_text: 'x' })).toBeNull();
       expect(pierreRenderer.renderPierre('a.js', { lineNumber: 1, side: 'RIGHT' }, { content_hash: 'h', summary_text: '' })).toBeNull();
       expect(bridge._annotations.size).toBe(0);
+    });
+
+    it('rebuilds a complete card on virtualization remount (idempotent per remount)', () => {
+      pierreRenderer.renderPierre(
+        'a.js', { lineNumber: 12, side: 'RIGHT' },
+        { content_hash: 'hash-a', summary_text: 'Adds a helper.' }
+      );
+      const first = bridge._annotations.get('hunk-summary-hash-a').el;
+
+      // CodeView pools out the file, discards the card, then re-invokes the
+      // renderer when it scrolls back in.
+      bridge.remount();
+      const second = bridge._annotations.get('hunk-summary-hash-a').el;
+
+      // A brand-new element every time — never the discarded one — and it is
+      // fully rebuilt from the stored summary data, not from surviving DOM.
+      expect(second).not.toBe(first);
+      expect(second.classList.contains('hunk-summary-row')).toBe(true);
+      expect(second.querySelector('.hunk-summary-text').textContent).toBe('Adds a helper.');
+      // Exactly one annotation still tracked — remount must not stack duplicates.
+      expect(bridge._annotations.size).toBe(1);
     });
   });
 });

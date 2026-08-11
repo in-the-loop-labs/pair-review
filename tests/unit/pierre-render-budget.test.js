@@ -7,8 +7,6 @@ const { PRManager } = require('../../public/js/pr.js');
 const DEFAULTS = {
   PIERRE_HIGHLIGHT_MAX_PATCH_CHARS: PRManager.PIERRE_HIGHLIGHT_MAX_PATCH_CHARS,
   PIERRE_HIGHLIGHT_MAX_PATCH_LINES: PRManager.PIERRE_HIGHLIGHT_MAX_PATCH_LINES,
-  PIERRE_HIGHLIGHT_TOTAL_CHARS: PRManager.PIERRE_HIGHLIGHT_TOTAL_CHARS,
-  PIERRE_HIGHLIGHT_TOTAL_LINES: PRManager.PIERRE_HIGHLIGHT_TOTAL_LINES,
   PIERRE_AUTO_RENDER_MAX_PATCH_CHARS: PRManager.PIERRE_AUTO_RENDER_MAX_PATCH_CHARS,
   PIERRE_AUTO_RENDER_MAX_PATCH_LINES: PRManager.PIERRE_AUTO_RENDER_MAX_PATCH_LINES,
   PIERRE_UPGRADE_MAX_PATCH_CHARS: PRManager.PIERRE_UPGRADE_MAX_PATCH_CHARS,
@@ -17,7 +15,7 @@ const DEFAULTS = {
   PIERRE_UPGRADE_MAX_CONTENT_LINES: PRManager.PIERRE_UPGRADE_MAX_CONTENT_LINES,
   PIERRE_UPGRADE_CONCURRENCY: PRManager.PIERRE_UPGRADE_CONCURRENCY,
   PIERRE_BACKGROUND_UPGRADE_DELAY_MS: PRManager.PIERRE_BACKGROUND_UPGRADE_DELAY_MS,
-  PIERRE_POINTER_UPGRADE_DELAY_MS: PRManager.PIERRE_POINTER_UPGRADE_DELAY_MS,
+  PIERRE_POINTER_UPGRADE_RETRY_MS: PRManager.PIERRE_POINTER_UPGRADE_RETRY_MS,
 };
 
 let originalFetch;
@@ -31,11 +29,9 @@ function createManager({ worker = true } = {}) {
     workerManager: worker ? {} : null,
     files: new Map(),
   };
-  manager._pierreRenderBudget = manager._createPierreRenderBudget();
   manager.currentPR = { id: 42 };
   manager.changedFilesByPath = new Map();
   manager._pierreContentUpgradePromises = new Map();
-  manager._deferredDiffRenderPromises = new Map();
   manager._yieldForDiffWork = () => Promise.resolve();
   return manager;
 }
@@ -55,8 +51,6 @@ describe('PRManager Pierre render budgeting', () => {
     originalDocument = global.document;
     PRManager.PIERRE_HIGHLIGHT_MAX_PATCH_CHARS = 50;
     PRManager.PIERRE_HIGHLIGHT_MAX_PATCH_LINES = 10;
-    PRManager.PIERRE_HIGHLIGHT_TOTAL_CHARS = 80;
-    PRManager.PIERRE_HIGHLIGHT_TOTAL_LINES = 20;
     PRManager.PIERRE_AUTO_RENDER_MAX_PATCH_CHARS = 200;
     PRManager.PIERRE_AUTO_RENDER_MAX_PATCH_LINES = 50;
     PRManager.PIERRE_UPGRADE_MAX_PATCH_CHARS = 40;
@@ -94,7 +88,6 @@ describe('PRManager Pierre render budgeting', () => {
     expect(PRManager.PIERRE_UPGRADE_MAX_PATCH_LINES).toBeGreaterThanOrEqual(
       PRManager.PIERRE_HIGHLIGHT_MAX_PATCH_LINES
     );
-    expect(PRManager.PIERRE_HIGHLIGHT_TOTAL_LINES).toBeGreaterThanOrEqual(15000);
     expect(manager._isPatchEligibleForContentUpgrade(fileWithPatch('@@ -1 +1 @@\n-old\n+new\n'))).toBe(true);
     expect(manager._isContentEligibleForPierreUpgrade(sourceFile, sourceFile)).toBe(true);
   });
@@ -121,16 +114,21 @@ describe('PRManager Pierre render budgeting', () => {
     });
   });
 
-  it('forces plain rendering after the total syntax-highlight budget is exhausted', () => {
+  // There is deliberately NO shared cross-file highlight pool: the decision
+  // runs for every file up front (in file-list order, not view order) and the
+  // verdict is baked into the CodeView item with no re-highlight path, so a
+  // pool would permanently downgrade files the user may open — to save work
+  // virtualization never performs for unmounted items anyway.
+  it('does not downgrade later files once earlier files have been highlighted', () => {
     const manager = createManager({ worker: true });
 
-    const first = manager._getPierreRenderDecision(fileWithPatch('a'.repeat(45)));
-    const second = manager._getPierreRenderDecision(fileWithPatch('b'.repeat(45)));
+    const decisions = Array.from({ length: 5 }, (_, i) =>
+      manager._getPierreRenderDecision(fileWithPatch(String(i).repeat(45)))
+    );
 
-    expect(first.forcePlainText).toBe(false);
-    expect(first.usePierre).toBe(true);
-    expect(second.forcePlainText).toBe(true);
-    expect(second.usePierre).toBe(true);
+    for (const decision of decisions) {
+      expect(decision).toEqual({ usePierre: true, forcePlainText: false, deferDiff: false });
+    }
   });
 
   it('defers automatic inline rendering for patches above the automatic render budget', () => {
@@ -239,26 +237,246 @@ describe('PRManager Pierre render budgeting', () => {
     expect(manager._fileContentsUpgradeState).toBe(existingState);
   });
 
-  it('waits to apply background full-content upgrades while the pointer is over the file', async () => {
-    vi.useFakeTimers();
-    const manager = createManager({ worker: true });
-    let pointerOverFile = true;
-    manager.pierreBridge.isPointerOverFile = vi.fn(() => pointerOverFile);
+  // Background full-content upgrades re-render the diff (patch-only → full-
+  // contents flip = a shadow-DOM rebuild that moves the hovered gutter button).
+  // _fetchAndUpgradePierreFileContents re-checks isPointerOverFile IMMEDIATELY
+  // before the per-file publish: a hovered file is deferred + requeued (so the
+  // rebuild never lands mid hover/click — the comment-family E2E flake), an
+  // offscreen file upgrades freely, and the user-driven waitForPointerIdle:false
+  // path (jump-to-comment) upgrades now regardless.
+  describe('pointer-idle content-upgrade gating', () => {
+    const PATCH = '@@ -1 +1 @@\n-a\n+b\n';
 
-    let resolved = false;
-    const waitPromise = manager
-      ._waitForPierrePointerIdle('src/hovered.js', { aborted: false })
-      .then(() => {
-        resolved = true;
+    function upgradeManager({ hovered }) {
+      const manager = createManager({ worker: true });
+      manager._fileContentsAbort = { signal: { aborted: false } };
+      manager.pierreBridge.isPointerOverFile = vi.fn(() => hovered);
+      manager.pierreBridge.upgradeFileContents = vi.fn(() => true);
+      global.fetch = vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ oldContents: 'o\n', newContents: 'n\n' }),
+      }));
+      return manager;
+    }
+
+    it('defers instead of publishing while the pointer is over the file', async () => {
+      const manager = upgradeManager({ hovered: true });
+      const deferSpy = vi.spyOn(manager, '_deferPierreUpgrade').mockImplementation(() => {});
+      const file = { file: 'src/hovered.js', patch: PATCH };
+
+      const result = await manager._fetchAndUpgradePierreFileContents(file, { aborted: false });
+
+      expect(result).toBe(false);
+      expect(manager.pierreBridge.upgradeFileContents).not.toHaveBeenCalled();
+      expect(deferSpy).toHaveBeenCalledWith(file);
+    });
+
+    it('publishes immediately for an offscreen (non-hovered) file', async () => {
+      const manager = upgradeManager({ hovered: false });
+      const deferSpy = vi.spyOn(manager, '_deferPierreUpgrade');
+      const file = { file: 'src/off.js', patch: PATCH };
+
+      const result = await manager._fetchAndUpgradePierreFileContents(file, { aborted: false });
+
+      expect(result).toBe(true);
+      expect(deferSpy).not.toHaveBeenCalled();
+      expect(manager.pierreBridge.upgradeFileContents).toHaveBeenCalledWith(
+        'src/off.js', expect.any(Object), expect.any(Object)
+      );
+    });
+
+    it('skips the pointer gate on the user-driven immediate path (waitForPointerIdle:false)', async () => {
+      const manager = upgradeManager({ hovered: true }); // hovered, but user asked
+      const deferSpy = vi.spyOn(manager, '_deferPierreUpgrade');
+      const file = { file: 'src/jump.js', patch: PATCH };
+
+      const result = await manager._fetchAndUpgradePierreFileContents(
+        file, { aborted: false }, { waitForPointerIdle: false }
+      );
+
+      expect(result).toBe(true);
+      expect(deferSpy).not.toHaveBeenCalled();
+      expect(manager.pierreBridge.upgradeFileContents).toHaveBeenCalledWith(
+        'src/jump.js', expect.any(Object), expect.any(Object)
+      );
+    });
+
+    it('requeues a deferred upgrade after the retry window (pointer-leave path)', async () => {
+      vi.useFakeTimers();
+      try {
+        const manager = createManager({ worker: true });
+        manager._fileContentsAbort = { signal: { aborted: false } };
+        manager._pierreUpgradeCandidates = new Set(['src/hovered.js']);
+        // The drain marked the deferred file completed; the retry must clear it.
+        manager._fileContentsUpgradeState = { completed: new Set(['src/hovered.js']) };
+        const enqueueSpy = vi.spyOn(manager, '_enqueuePierreContentUpgrade').mockImplementation(() => {});
+        const file = { file: 'src/hovered.js', patch: PATCH };
+
+        manager._deferPierreUpgrade(file);
+
+        await vi.advanceTimersByTimeAsync(PRManager.PIERRE_POINTER_UPGRADE_RETRY_MS - 1);
+        expect(enqueueSpy).not.toHaveBeenCalled(); // not before the window elapses
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(manager._fileContentsUpgradeState.completed.has('src/hovered.js')).toBe(false);
+        expect(enqueueSpy).toHaveBeenCalledWith(file);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not requeue a deferred upgrade once the queue is aborted', async () => {
+      vi.useFakeTimers();
+      try {
+        const manager = createManager({ worker: true });
+        const signal = { aborted: false };
+        manager._fileContentsAbort = { signal };
+        const enqueueSpy = vi.spyOn(manager, '_enqueuePierreContentUpgrade').mockImplementation(() => {});
+        const file = { file: 'src/hovered.js', patch: PATCH };
+
+        manager._deferPierreUpgrade(file);
+        signal.aborted = true; // a newer render aborted the queue mid-wait
+
+        await vi.advanceTimersByTimeAsync(PRManager.PIERRE_POINTER_UPGRADE_RETRY_MS);
+        expect(enqueueSpy).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // Regression: the requeue must re-establish a queue when the previous one
+    // drained to empty and nulled _fileContentsUpgradeState. A push-only enqueue
+    // would silently drop the retry.
+    it('re-establishes a drained/nulled queue on requeue', () => {
+      const manager = createManager({ worker: true });
+      const signal = { aborted: false };
+      manager._fileContentsAbort = { signal };
+      manager._pierreUpgradeCandidates = new Set(['src/drained.js']);
+      manager._fileContentsUpgradeState = null; // queue drained empty and nulled
+      const startSpy = vi.spyOn(manager, '_startFileContentUpgradeQueue').mockImplementation(() => {});
+      const file = { file: 'src/drained.js', patch: PATCH };
+
+      manager._enqueuePierreContentUpgrade(file);
+
+      expect(startSpy).toHaveBeenCalledTimes(1);
+      expect(startSpy).toHaveBeenCalledWith([file], expect.any(Function), signal);
+    });
+
+    it('reuses a live queue on requeue instead of starting a new one', () => {
+      const manager = createManager({ worker: true });
+      const signal = { aborted: false };
+      manager._fileContentsAbort = { signal };
+      manager._pierreUpgradeCandidates = new Set(['src/live.js']);
+      const state = { signal, completed: new Set(), inFlight: new Set(), pending: [] };
+      manager._fileContentsUpgradeState = state;
+      const startSpy = vi.spyOn(manager, '_startFileContentUpgradeQueue').mockImplementation(() => {});
+      const drainSpy = vi.spyOn(manager, '_drainFileContentUpgradeQueue').mockImplementation(() => {});
+      const file = { file: 'src/live.js', patch: PATCH };
+
+      manager._enqueuePierreContentUpgrade(file);
+
+      expect(startSpy).not.toHaveBeenCalled();
+      expect(state.pending).toContainEqual(file);
+      expect(drainSpy).toHaveBeenCalledWith(state);
+    });
+
+    // The contents fetched for a deferred attempt are parked and reused: the
+    // pointer moving does not invalidate them, and the baseMetadata early-out
+    // cannot cover the retry (metadata only lands on a successful upgrade), so
+    // without the cache a pointer parked over a file re-downloads and re-parses
+    // it on every retry tick.
+    it('reuses the fetched contents on a deferred retry instead of re-fetching', async () => {
+      const manager = upgradeManager({ hovered: true });
+      vi.spyOn(manager, '_deferPierreUpgrade').mockImplementation(() => {});
+      const file = { file: 'src/hovered.js', patch: PATCH };
+
+      await manager._fetchAndUpgradePierreFileContents(file, { aborted: false });
+      await manager._fetchAndUpgradePierreFileContents(file, { aborted: false });
+      await manager._fetchAndUpgradePierreFileContents(file, { aborted: false });
+
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      expect(manager._deferredUpgradeContents.get('src/hovered.js')).toEqual({
+        oldFile: { name: 'src/hovered.js', contents: 'o\n' },
+        newFile: { name: 'src/hovered.js', contents: 'n\n' },
       });
+    });
 
-    await vi.advanceTimersByTimeAsync(200);
-    expect(resolved).toBe(false);
+    it('publishes the cached contents (no second fetch) once the pointer leaves', async () => {
+      const manager = upgradeManager({ hovered: true });
+      vi.spyOn(manager, '_deferPierreUpgrade').mockImplementation(() => {});
+      const file = { file: 'src/hovered.js', patch: PATCH };
 
-    pointerOverFile = false;
-    await vi.advanceTimersByTimeAsync(100);
-    await waitPromise;
-    expect(resolved).toBe(true);
+      expect(await manager._fetchAndUpgradePierreFileContents(file, { aborted: false })).toBe(false);
+      manager.pierreBridge.isPointerOverFile.mockReturnValue(false);
+      expect(await manager._fetchAndUpgradePierreFileContents(file, { aborted: false })).toBe(true);
+
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      expect(manager.pierreBridge.upgradeFileContents).toHaveBeenCalledWith(
+        'src/hovered.js',
+        { name: 'src/hovered.js', contents: 'o\n' },
+        { name: 'src/hovered.js', contents: 'n\n' }
+      );
+      // Published — nothing left to park.
+      expect(manager._deferredUpgradeContents.has('src/hovered.js')).toBe(false);
+    });
+
+    it('drops parked contents when a new render replaces the abort controller', () => {
+      vi.useFakeTimers();
+      try {
+        global.window = { requestIdleCallback: null };
+        const manager = createManager({ worker: true });
+        manager._deferredUpgradeContents = new Map([['src/stale.js', { oldFile: null, newFile: {} }]]);
+
+        // The catch-up sweep is scheduled, not run — only the controller swap
+        // (and the cache drop that goes with it) is under test here.
+        manager._upgradeFilesWithContents([{ file: 'src/stale.js', patch: PATCH }]);
+
+        expect(manager._fileContentsAbort).toBeInstanceOf(AbortController);
+        expect(manager._deferredUpgradeContents).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // End-to-end: a file deferred while hovered upgrades on its own once the
+    // pointer leaves — through the real defer timer → requeue → drained-queue
+    // re-establish → worker → re-fetch → publish chain (no method mocked).
+    it('upgrades a deferred file end-to-end after the pointer leaves', async () => {
+      vi.useFakeTimers();
+      try {
+        const manager = createManager({ worker: true });
+        const signal = { aborted: false };
+        manager._fileContentsAbort = { signal };
+        manager._pierreUpgradeCandidates = new Set(['e2e.js']);
+        let hovered = true;
+        manager.pierreBridge.isPointerOverFile = vi.fn(() => hovered);
+        manager.pierreBridge.upgradeFileContents = vi.fn((filePath) => {
+          manager.pierreBridge.files.set(filePath, { baseMetadata: { hunks: [] } });
+          return true;
+        });
+        global.fetch = vi.fn(async () => ({
+          ok: true,
+          json: async () => ({ oldContents: 'o\n', newContents: 'n\n' }),
+        }));
+        const file = { file: 'e2e.js', patch: PATCH };
+
+        // First background attempt while hovered → deferred (retry timer armed).
+        const deferred = await manager._fetchAndUpgradePierreFileContents(file, signal);
+        expect(deferred).toBe(false);
+        expect(manager.pierreBridge.upgradeFileContents).not.toHaveBeenCalled();
+
+        // Pointer leaves; the retry re-enqueues, re-fetches, and now publishes.
+        hovered = false;
+        await vi.advanceTimersByTimeAsync(PRManager.PIERRE_POINTER_UPGRADE_RETRY_MS);
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(manager.pierreBridge.upgradeFileContents).toHaveBeenCalledWith(
+          'e2e.js', expect.any(Object), expect.any(Object)
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   it('forces a full-content upgrade when hidden Pierre line anchoring needs metadata', async () => {
@@ -296,37 +514,8 @@ describe('PRManager Pierre render budgeting', () => {
     );
   });
 
-  it('materializes deferred diffs for line-targeting paths without recursive reanchor', async () => {
-    const dom = new JSDOM(`
-      <!doctype html>
-      <div class="d2h-file-wrapper" data-file-name="src/huge.js">
-        <div class="large-diff-placeholder"></div>
-      </div>
-    `, { url: 'http://localhost/' });
-    global.window = dom.window;
-    global.document = dom.window.document;
-
-    const manager = createManager({ worker: true });
-    const file = fileWithPatch('x'.repeat(220));
-    file.file = 'src/huge.js';
-    manager.changedFilesByPath.set(file.file, file);
-    manager.findFileElement = vi.fn(() => document.querySelector('.d2h-file-wrapper'));
-    manager._renderDeferredDiff = vi.fn(async () => {});
-
-    await expect(manager._materializeDeferredDiff(file.file)).resolves.toBe(true);
-
-    const placeholder = document.querySelector('.large-diff-placeholder');
-    expect(manager._renderDeferredDiff).toHaveBeenCalledWith(
-      file,
-      document.querySelector('.d2h-file-wrapper'),
-      placeholder,
-      { reanchor: false }
-    );
-  });
-
   it('ensures Pierre metadata before adding hidden-line context ranges', async () => {
     const manager = createManager({ worker: true });
-    manager._materializeDeferredDiff = vi.fn(async () => true);
     manager._ensurePierreContentUpgrade = vi.fn(async () => true);
     manager.pierreBridge = {
       files: new Map([['src/needs-anchor.js', { baseMetadata: null }]]),
@@ -341,7 +530,6 @@ describe('PRManager Pierre render budgeting', () => {
       side: 'RIGHT',
     }]);
 
-    expect(manager._materializeDeferredDiff).toHaveBeenCalledWith('src/needs-anchor.js');
     expect(manager._ensurePierreContentUpgrade).toHaveBeenCalledWith('src/needs-anchor.js');
     expect(manager.pierreBridge.addContextRanges).toHaveBeenCalledWith(
       'src/needs-anchor.js',
@@ -354,7 +542,6 @@ describe('PRManager Pierre render budgeting', () => {
     // Before the fix, only line_start was checked, so a range with a visible
     // start but a hidden end skipped addContextRanges and never revealed line_end.
     const manager = createManager({ worker: true });
-    manager._materializeDeferredDiff = vi.fn(async () => true);
     manager._ensurePierreContentUpgrade = vi.fn(async () => true);
     const isLineVisible = vi.fn((_file, line) => line === 40); // start visible, end hidden
     manager.pierreBridge = {
@@ -382,7 +569,6 @@ describe('PRManager Pierre render budgeting', () => {
     // Preserve the skip-when-fully-visible optimization: both endpoints visible
     // must NOT trigger addContextRanges (avoids needless re-render churn).
     const manager = createManager({ worker: true });
-    manager._materializeDeferredDiff = vi.fn(async () => true);
     manager._ensurePierreContentUpgrade = vi.fn(async () => true);
     manager.pierreBridge = {
       files: new Map([['src/visible.js', { baseMetadata: { hunks: [] } }]]),
@@ -401,124 +587,4 @@ describe('PRManager Pierre render budgeting', () => {
     expect(manager._ensurePierreContentUpgrade).not.toHaveBeenCalled();
   });
 
-  it('routes the deferred "Load diff" click through _materializeDeferredDiff with reanchor', async () => {
-    // Finding 3: the click handler must go through _materializeDeferredDiff so it
-    // shares the render-promise cache and de-dupes with auto-materialize. Because
-    // a manual click is not inside a loadUserComments/loadAISuggestions flow, it
-    // must render with reanchor:true.
-    const dom = new JSDOM(`
-      <!doctype html>
-      <div class="d2h-file-wrapper" data-file-name="src/huge.js"></div>
-    `, { url: 'http://localhost/' });
-    global.window = dom.window;
-    global.document = dom.window.document;
-
-    const manager = createManager({ worker: true });
-    const file = fileWithPatch('x'.repeat(220));
-    file.file = 'src/huge.js';
-    manager.changedFilesByPath.set(file.file, file);
-    const wrapper = document.querySelector('.d2h-file-wrapper');
-    manager.findFileElement = vi.fn(() => wrapper);
-    manager._renderDeferredDiff = vi.fn(async () => {});
-
-    const placeholder = manager._createDeferredDiffPlaceholder(file, wrapper);
-    wrapper.appendChild(placeholder);
-
-    const materializeSpy = vi.spyOn(manager, '_materializeDeferredDiff');
-    const button = placeholder.querySelector('.large-diff-load-btn');
-    button.click();
-
-    // Let the async click handler and the queued render microtasks drain.
-    await new Promise(resolve => setTimeout(resolve, 0));
-    await Promise.resolve();
-
-    expect(materializeSpy).toHaveBeenCalledWith('src/huge.js', { reanchor: true });
-    expect(button.disabled).toBe(true);
-    expect(button.textContent).toBe('Loading...');
-    expect(manager._renderDeferredDiff).toHaveBeenCalledWith(
-      file,
-      wrapper,
-      placeholder,
-      { reanchor: true }
-    );
-  });
-
-  it('de-dupes concurrent materialize calls for the same file into a single render', async () => {
-    // Finding 3: two concurrent triggers for the same file must share the
-    // _deferredDiffRenderPromises cache and produce exactly one _renderDeferredDiff.
-    // The first call wins its reanchor setting.
-    const dom = new JSDOM(`
-      <!doctype html>
-      <div class="d2h-file-wrapper" data-file-name="src/huge.js">
-        <div class="large-diff-placeholder"></div>
-      </div>
-    `, { url: 'http://localhost/' });
-    global.window = dom.window;
-    global.document = dom.window.document;
-
-    const manager = createManager({ worker: true });
-    const file = fileWithPatch('x'.repeat(220));
-    file.file = 'src/huge.js';
-    manager.changedFilesByPath.set(file.file, file);
-    manager.findFileElement = vi.fn(() => document.querySelector('.d2h-file-wrapper'));
-
-    let resolveRender;
-    const renderGate = new Promise(resolve => { resolveRender = resolve; });
-    manager._renderDeferredDiff = vi.fn(() => renderGate);
-
-    const first = manager._materializeDeferredDiff(file.file, { reanchor: true });
-    const second = manager._materializeDeferredDiff(file.file); // defaults reanchor:false
-    resolveRender();
-    await Promise.all([first, second]);
-
-    expect(manager._renderDeferredDiff).toHaveBeenCalledTimes(1);
-    expect(manager._renderDeferredDiff).toHaveBeenCalledWith(
-      file,
-      document.querySelector('.d2h-file-wrapper'),
-      document.querySelector('.large-diff-placeholder'),
-      { reanchor: true }
-    );
-  });
-
-  it('bails without clobbering file state when the review is rebuilt during the idle yield', async () => {
-    // A deferred materialize snapshots wrapper/placeholder, then yields. If
-    // renderDiff() re-runs during that idle window it clears the container,
-    // detaching the captured placeholder. The stale task must return early and
-    // never call renderFile/_renderDeferredDiff, or it would destroy the freshly
-    // rebuilt pierreBridge.files entry and replace it with a detached-DOM node.
-    const dom = new JSDOM(`
-      <!doctype html>
-      <div class="d2h-file-wrapper" data-file-name="src/huge.js">
-        <div class="large-diff-placeholder"></div>
-      </div>
-    `, { url: 'http://localhost/' });
-    global.window = dom.window;
-    global.document = dom.window.document;
-
-    const manager = createManager({ worker: true });
-    const file = fileWithPatch('x'.repeat(220));
-    file.file = 'src/huge.js';
-    manager.changedFilesByPath.set(file.file, file);
-    const wrapper = document.querySelector('.d2h-file-wrapper');
-    const placeholder = document.querySelector('.large-diff-placeholder');
-    manager.findFileElement = vi.fn(() => wrapper);
-    manager._renderDeferredDiff = vi.fn(async () => {});
-
-    // Idle yield held open so we can simulate the teardown mid-flight. A null
-    // abort signal is deliberate: the isConnected checks — not the abort flag —
-    // are the load-bearing guard (the signal is null when pierreBridge is off).
-    manager._fileContentsAbort = null;
-    let releaseYield;
-    const yieldGate = new Promise(resolve => { releaseYield = resolve; });
-    manager._yieldForDiffWork = vi.fn(() => yieldGate);
-
-    const materialize = manager._materializeDeferredDiff(file.file);
-    // renderDiff() clears diffContainer.innerHTML, detaching the placeholder.
-    placeholder.remove();
-    releaseYield();
-
-    await expect(materialize).resolves.toBe(false);
-    expect(manager._renderDeferredDiff).not.toHaveBeenCalled();
-    expect(manager.pierreBridge.files.has(file.file)).toBe(false);
-  });
 });

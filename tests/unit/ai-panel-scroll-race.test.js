@@ -184,3 +184,293 @@ describe('AIPanel scroll-to latest-wins race', () => {
     expect(inst._scrollDiffTarget).toHaveBeenCalledWith(finding);
   });
 });
+
+describe('AIPanel scrollToExternalThread — virtualized threads (CodeView)', () => {
+  /** A file wrapper (mounted header) with no thread row yet. */
+  function makeFileWrapper(file = 'a.js') {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'd2h-file-wrapper';
+    wrapper.dataset.fileName = file;
+    document.body.appendChild(wrapper);
+    return wrapper;
+  }
+
+  /** Inject a slotted external-comment row into a file wrapper. */
+  function slotRow(wrapper, { threadId = '7', source = 'github' } = {}) {
+    const row = document.createElement('div');
+    row.className = 'external-comment-row';
+    row.dataset.threadId = String(threadId);
+    row.dataset.source = source;
+    wrapper.appendChild(row);
+    return row;
+  }
+
+  it('materializes a virtualized-out thread via bridge line-scroll, then scrolls to the row', async () => {
+    const wrapper = makeFileWrapper('a.js');
+    const bridge = {
+      files: { has: (f) => f === 'a.js' },
+      // Scrolling mounts the item and slots the annotation → the row appears.
+      scrollToLine: vi.fn(() => slotRow(wrapper)),
+      scrollToFile: vi.fn(),
+      whenAnnotationsSlotted: vi.fn(async () => ({ mounted: true, slotted: true })),
+    };
+    window.prManager = { pierreBridge: bridge };
+
+    const inst = makeInstance();
+    // Side comes from the panel's thread list (LEFT here, to prove it's used).
+    inst.externalThreads = [{ id: 7, source: 'github', side: 'LEFT' }];
+
+    await inst.scrollToExternalThread('7', 'github', 'a.js', 42);
+
+    // Precise line-scroll with the thread's resolved side, then await the slot.
+    expect(bridge.scrollToLine).toHaveBeenCalledWith('a.js', 42, 'LEFT', true);
+    expect(bridge.scrollToFile).not.toHaveBeenCalled();
+    expect(bridge.whenAnnotationsSlotted).toHaveBeenCalledWith('a.js', { maxFrames: 30 });
+    // Then scrolled to the now-slotted row and flashed it.
+    const row = wrapper.querySelector('.external-comment-row');
+    expect(inst._scrollDiffTarget).toHaveBeenCalledWith(row);
+    expect(row.classList.contains('external-comment-row--focused')).toBe(true);
+  });
+
+  it('does NOT bridge-scroll when the thread row is already live', async () => {
+    const wrapper = makeFileWrapper('a.js');
+    const row = slotRow(wrapper);
+    const bridge = {
+      files: { has: () => true },
+      scrollToLine: vi.fn(),
+      scrollToFile: vi.fn(),
+      whenAnnotationsSlotted: vi.fn(),
+    };
+    window.prManager = { pierreBridge: bridge };
+
+    const inst = makeInstance();
+    inst.externalThreads = [{ id: 7, source: 'github', side: 'RIGHT' }];
+
+    await inst.scrollToExternalThread('7', 'github', 'a.js', 42);
+
+    expect(bridge.scrollToLine).not.toHaveBeenCalled();
+    expect(bridge.scrollToFile).not.toHaveBeenCalled();
+    expect(bridge.whenAnnotationsSlotted).not.toHaveBeenCalled();
+    expect(inst._scrollDiffTarget).toHaveBeenCalledWith(row);
+  });
+
+  it('falls back to scrollToFile when no anchor line is known', async () => {
+    const wrapper = makeFileWrapper('a.js');
+    const bridge = {
+      files: { has: () => true },
+      scrollToLine: vi.fn(),
+      scrollToFile: vi.fn(() => slotRow(wrapper)),
+      whenAnnotationsSlotted: vi.fn(async () => ({ mounted: true, slotted: true })),
+    };
+    window.prManager = { pierreBridge: bridge };
+
+    const inst = makeInstance();
+    inst.externalThreads = [{ id: 7, source: 'github', side: 'RIGHT' }];
+
+    await inst.scrollToExternalThread('7', 'github', 'a.js', null);
+
+    expect(bridge.scrollToLine).not.toHaveBeenCalled();
+    expect(bridge.scrollToFile).toHaveBeenCalledWith('a.js');
+    expect(inst._scrollDiffTarget).toHaveBeenCalledWith(wrapper.querySelector('.external-comment-row'));
+  });
+
+  it('is a graceful no-op when the file is not a pierre file (legacy fallback)', async () => {
+    // No bridge: legacy path, nothing to materialize; a missing row just no-ops.
+    window.prManager = {};
+    const inst = makeInstance();
+    inst.externalThreads = [{ id: 7, source: 'github', side: 'RIGHT' }];
+
+    await inst.scrollToExternalThread('7', 'github', 'a.js', 42);
+
+    expect(inst._scrollDiffTarget).not.toHaveBeenCalled();
+  });
+});
+
+describe('AIPanel nav materialize — shared helper across comment/finding paths', () => {
+  function makeFileWrapper(file = 'a.js') {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'd2h-file-wrapper';
+    wrapper.dataset.fileName = file;
+    document.body.appendChild(wrapper);
+    return wrapper;
+  }
+
+  it('scrollToFinding: materializes a virtualized-out finding via bridge line-scroll', async () => {
+    const wrapper = makeFileWrapper('a.js');
+    const bridge = {
+      files: { has: () => true },
+      scrollToLine: vi.fn(() => {
+        const s = document.createElement('div');
+        s.className = 'ai-suggestion';
+        s.dataset.suggestionId = 'F1';
+        wrapper.appendChild(s);
+      }),
+      scrollToFile: vi.fn(),
+      whenAnnotationsSlotted: vi.fn(async () => ({ mounted: true, slotted: true })),
+    };
+    window.prManager = { pierreBridge: bridge };
+
+    const inst = makeInstance();
+    inst.findings = [{ id: 'F1', side: 'RIGHT' }];
+
+    await inst.scrollToFinding('F1', 'a.js', 42, 'RIGHT');
+
+    expect(bridge.scrollToLine).toHaveBeenCalledWith('a.js', 42, 'RIGHT', true);
+    expect(bridge.whenAnnotationsSlotted).toHaveBeenCalledWith('a.js', { maxFrames: 30 });
+    const row = wrapper.querySelector('.ai-suggestion');
+    expect(inst._scrollDiffTarget).toHaveBeenCalledWith(row);
+    expect(row.classList.contains('current-suggestion')).toBe(true);
+  });
+
+  it('scrollToComment: materializes a virtualized-out comment via bridge line-scroll', async () => {
+    const wrapper = makeFileWrapper('a.js');
+    const bridge = {
+      files: { has: () => true },
+      scrollToLine: vi.fn(() => {
+        const row = document.createElement('div');
+        row.className = 'user-comment-row';
+        row.dataset.commentId = 'C1';
+        row.appendChild(Object.assign(document.createElement('div'), { className: 'user-comment' }));
+        wrapper.appendChild(row);
+      }),
+      scrollToFile: vi.fn(),
+      whenAnnotationsSlotted: vi.fn(async () => ({ mounted: true, slotted: true })),
+    };
+    window.prManager = { pierreBridge: bridge };
+
+    const inst = makeInstance();
+    inst.comments = [{ id: 'C1', side: 'LEFT' }];
+
+    await inst.scrollToComment('C1', 'a.js', 42, 'LEFT');
+
+    expect(bridge.scrollToLine).toHaveBeenCalledWith('a.js', 42, 'LEFT', true);
+    const row = wrapper.querySelector('.user-comment-row');
+    expect(inst._scrollDiffTarget).toHaveBeenCalledWith(row);
+    expect(row.querySelector('.user-comment').classList.contains('highlight-flash')).toBe(true);
+  });
+
+  it('scrollToComment: reveals a collapsed gap on a MOUNTED file, no bridge scroll (compose)', async () => {
+    // The two mechanisms compose: ensureLinesVisible unfolds the gap and the
+    // row appears WITHOUT a virtualization scroll, so the bridge is not touched.
+    const wrapper = makeFileWrapper('a.js');
+    const ensureLinesVisible = vi.fn(async () => {
+      const row = document.createElement('div');
+      row.className = 'user-comment-row';
+      row.dataset.commentId = 'C1';
+      row.appendChild(Object.assign(document.createElement('div'), { className: 'user-comment' }));
+      wrapper.appendChild(row);
+    });
+    const bridge = {
+      files: { has: () => true },
+      scrollToLine: vi.fn(),
+      scrollToFile: vi.fn(),
+      whenAnnotationsSlotted: vi.fn(),
+    };
+    window.prManager = { pierreBridge: bridge, ensureLinesVisible };
+
+    const inst = makeInstance();
+    inst.comments = [{ id: 'C1', side: 'RIGHT' }];
+
+    await inst.scrollToComment('C1', 'a.js', 42, 'RIGHT');
+
+    expect(ensureLinesVisible).toHaveBeenCalledWith([
+      { file: 'a.js', line_start: 42, line_end: 42, side: 'RIGHT' },
+    ]);
+    // Row materialized by the gap-reveal → no virtualization scroll needed.
+    expect(bridge.scrollToLine).not.toHaveBeenCalled();
+    expect(bridge.scrollToFile).not.toHaveBeenCalled();
+    expect(inst._scrollDiffTarget).toHaveBeenCalledWith(wrapper.querySelector('.user-comment-row'));
+  });
+
+  it('onFindingClick (user comment): materializes despite the panel mirroring the comment id (F2 regression)', async () => {
+    // The AI-panel finding-item and its quick-action-chat button carry the
+    // comment id (data-comment-id). If the row lookup isn't scoped to the diff
+    // view, it matches that PANEL button, the materialize gate sees a false
+    // "row already live", and the virtualized-out file never mounts — the exact
+    // divergence where a DIRECT scrollToComment worked but the click didn't.
+    const diffContainer = document.createElement('div');
+    diffContainer.id = 'diff-container';
+    document.body.appendChild(diffContainer);
+    const wrapper = document.createElement('div');
+    wrapper.className = 'd2h-file-wrapper';
+    wrapper.dataset.fileName = 'a.js';
+    diffContainer.appendChild(wrapper);
+
+    // Panel list item + chat button mirror the comment id, OUTSIDE #diff-container.
+    const findingsList = document.createElement('div');
+    const panelChatBtn = document.createElement('button');
+    panelChatBtn.className = 'quick-action-chat';
+    panelChatBtn.dataset.commentId = 'C1';
+    findingsList.appendChild(panelChatBtn);
+    document.body.appendChild(findingsList);
+
+    const bridge = {
+      files: { has: () => true },
+      scrollToLine: vi.fn(() => {
+        const row = document.createElement('div');
+        row.className = 'user-comment-row';
+        row.dataset.commentId = 'C1';
+        row.appendChild(Object.assign(document.createElement('div'), { className: 'user-comment' }));
+        wrapper.appendChild(row); // slots into the diff container
+      }),
+      scrollToFile: vi.fn(),
+      whenAnnotationsSlotted: vi.fn(async () => ({ mounted: true, slotted: true })),
+    };
+    window.prManager = { pierreBridge: bridge };
+
+    const inst = makeInstance();
+    inst.comments = [{ id: 'C1', file: 'a.js', line_start: 3, side: 'RIGHT' }];
+    inst.findingsList = findingsList;
+    inst.getFilteredItems = () => [];
+    inst.getItemKey = () => '';
+    inst.updateNavigationCounter = () => {};
+
+    const item = document.createElement('button');
+    item.className = 'finding-item';
+    Object.assign(item.dataset, { id: 'C1', itemType: 'comment', file: 'a.js', line: '3', index: '0' });
+
+    // Capture the async nav the (fire-and-forget) click starts, to await it.
+    const origScroll = inst.scrollToComment.bind(inst);
+    let navP;
+    inst.scrollToComment = (...a) => { navP = origScroll(...a); return navP; };
+
+    inst.onFindingClick(item);
+    await navP;
+
+    // The panel's mirrored data-comment-id must NOT block materialize.
+    expect(bridge.scrollToLine).toHaveBeenCalledWith('a.js', 3, 'RIGHT', true);
+    const row = diffContainer.querySelector('.user-comment-row');
+    expect(row).not.toBeNull();
+    expect(inst._scrollDiffTarget).toHaveBeenCalledWith(row);
+  });
+
+  it('scrollToComment (file-level): materializes via scrollToFile (no line anchor)', async () => {
+    const wrapper = makeFileWrapper('a.js');
+    const bridge = {
+      files: { has: () => true },
+      scrollToLine: vi.fn(),
+      scrollToFile: vi.fn(() => {
+        const zone = document.createElement('div');
+        zone.className = 'file-comments-zone';
+        const card = document.createElement('div');
+        card.className = 'file-comment-card';
+        card.dataset.commentId = 'C1';
+        zone.appendChild(card);
+        wrapper.appendChild(zone);
+      }),
+      whenAnnotationsSlotted: vi.fn(async () => ({ mounted: true, slotted: true })),
+    };
+    window.prManager = { pierreBridge: bridge };
+
+    const inst = makeInstance();
+    inst.comments = [{ id: 'C1', side: 'RIGHT', is_file_level: 1 }];
+
+    await inst.scrollToComment('C1', 'a.js', null, 'RIGHT');
+
+    // File-level → no line, so a file-scroll mounts the header/zone.
+    expect(bridge.scrollToLine).not.toHaveBeenCalled();
+    expect(bridge.scrollToFile).toHaveBeenCalledWith('a.js');
+    const card = wrapper.querySelector('.file-comment-card');
+    expect(inst._scrollDiffTarget).toHaveBeenCalledWith(card);
+  });
+});

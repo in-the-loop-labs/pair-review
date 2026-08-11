@@ -29,7 +29,8 @@ import {
   setDiffView,
   openSplitCommentForm,
   expectAnnotationInSplitColumn,
-  seedAISuggestions
+  seedAISuggestions,
+  cleanupComments
 } from './helpers.js';
 
 const DIFF_VIEW_STORAGE_KEY = 'pair-review-diff-view';
@@ -54,19 +55,6 @@ async function seedComment(page, reviewId, { file = FILE, line = 3, side = 'RIGH
     const data = await resp.json();
     return data.commentId;
   }, { reviewId, file, line, side, body });
-}
-
-/** Delete every comment on a review so the shared worker DB stays clean. */
-async function cleanupComments(page, reviewId) {
-  await page.evaluate(async (rid) => {
-    try {
-      const resp = await fetch(`/api/reviews/${rid}/comments?includeDismissed=true`);
-      const data = await resp.json();
-      for (const c of (data.comments || [])) {
-        await fetch(`/api/reviews/${rid}/comments/${c.id}`, { method: 'DELETE' });
-      }
-    } catch { /* best-effort */ }
-  }, reviewId);
 }
 
 /**
@@ -107,8 +95,8 @@ for (const mode of MODES) {
 
       // Both split columns are present for the file.
       const columns = await page.evaluate((file) => {
-        const wrapper = document.querySelector(`.d2h-file-wrapper[data-file-name="${file}"]`);
-        const sr = wrapper?.querySelector('diffs-container')?.shadowRoot;
+        const host = document.querySelector(`diffs-container[data-file-name="${file}"]`);
+        const sr = host?.shadowRoot;
         const pre = sr?.querySelector('pre');
         return {
           diffType: pre?.getAttribute('data-diff-type'),
@@ -246,8 +234,7 @@ test.describe('Split diff view — full-width annotation cards (PR mode)', () =>
    */
   async function cardMetrics(page, text) {
     return page.evaluate(({ file, text }) => {
-      const wrapper = document.querySelector(`.d2h-file-wrapper[data-file-name="${file}"]`);
-      const host = wrapper?.querySelector('diffs-container');
+      const host = document.querySelector(`diffs-container[data-file-name="${file}"]`);
       const pre = host?.shadowRoot?.querySelector('pre[data-diff-type="split"]');
       if (!host || !pre) return null;
       const lightWrappers = [...host.querySelectorAll('[data-annotation-slot]')];
@@ -459,7 +446,7 @@ test.describe('Split diff view — one-sided files (PR mode)', () => {
   async function oneSidedGeometry(page, file) {
     return page.evaluate((f) => {
       const pre = document
-        .querySelector(`.d2h-file-wrapper[data-file-name="${f}"] diffs-container`)
+        .querySelector(`diffs-container[data-file-name="${f}"]`)
         ?.shadowRoot?.querySelector('pre[data-diff-type="single"]');
       if (!pre) return null;
       const box = (el) => {
@@ -484,7 +471,7 @@ test.describe('Split diff view — one-sided files (PR mode)', () => {
   /** Full-width-card metrics for a lone card inside a one-sided (single) pre. */
   async function singleCardMetrics(page, file, text) {
     return page.evaluate(({ f, t }) => {
-      const host = document.querySelector(`.d2h-file-wrapper[data-file-name="${f}"] diffs-container`);
+      const host = document.querySelector(`diffs-container[data-file-name="${f}"]`);
       const pre = host?.shadowRoot?.querySelector('pre[data-diff-type="single"]');
       if (!host || !pre) return null;
       const wrapper = [...host.querySelectorAll('[data-annotation-slot]')]
@@ -617,7 +604,7 @@ test.describe('Split diff view — one-sided files (PR mode)', () => {
     await expect.poll(async () => {
       return page.evaluate((f) => {
         const pre = document
-          .querySelector(`.d2h-file-wrapper[data-file-name="${f}"] diffs-container`)
+          .querySelector(`diffs-container[data-file-name="${f}"]`)
           ?.shadowRoot?.querySelector('pre[data-diff-type="single"]');
         if (!pre) return null;
         const code = pre.querySelector('code[data-unified]');
@@ -634,7 +621,7 @@ test.describe('Split diff view — one-sided files (PR mode)', () => {
 
     const u = await page.evaluate((f) => {
       const pre = document
-        .querySelector(`.d2h-file-wrapper[data-file-name="${f}"] diffs-container`)
+        .querySelector(`diffs-container[data-file-name="${f}"]`)
         ?.shadowRoot?.querySelector('pre[data-diff-type="single"]');
       const code = pre?.querySelector('code[data-unified]');
       return { ratio: code.getBoundingClientRect().width / pre.getBoundingClientRect().width };

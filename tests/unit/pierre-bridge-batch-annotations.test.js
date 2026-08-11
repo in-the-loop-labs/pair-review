@@ -1,56 +1,29 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { JSDOM } from 'jsdom';
-
-const BRIDGE_PATH = '../../public/js/modules/pierre-bridge.js';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+const { createPierreEnv } = require('../utils/fake-code-view');
 
 // Coverage for the batch annotation path (addAnnotations): applying K
-// annotations to a file must trigger exactly ONE setLineAnnotations + rerender
-// + split-layout sync, not K of them. Loop callers (loadUserComments,
-// SuggestionManager) rely on this to avoid K full shadow-DOM rebuilds per file.
+// annotations to a file must publish the item EXACTLY ONCE (one version-bumped
+// updateItem), not K times. Loop callers (loadUserComments, SuggestionManager)
+// rely on this to avoid K full re-renders per file.
 
 describe('PierreBridge batch annotations', () => {
-  let PierreBridge;
-  let dom;
+  let env;
   let bridge;
-  let instance;
-  let fileState;
+  let codeView;
 
   beforeEach(() => {
-    delete require.cache[require.resolve(BRIDGE_PATH)];
-    dom = new JSDOM('<!doctype html><body></body>', { url: 'http://localhost/' });
-    global.document = dom.window.document;
-    global.window = {
-      PierreDiffs: undefined,
-      matchMedia: () => ({ matches: false }),
-    };
-    // Keep _syncSplitAnnotationLayout's rAF a no-op so no timers leak; we count
-    // it separately via a spy below.
-    global.requestAnimationFrame = () => {};
-    PierreBridge = require(BRIDGE_PATH);
-    bridge = new PierreBridge({});
-
-    instance = {
-      setLineAnnotations: vi.fn(),
-      rerender: vi.fn(),
-    };
-    fileState = {
-      instance,
-      fileName: 'a.js',
-      container: global.document.createElement('div'),
-      annotations: [],
-      formElements: new Map(),
-    };
-    bridge.files.set('a.js', fileState);
-    // Spy on the split-layout sync so we can assert one call per batch.
-    vi.spyOn(bridge, '_syncSplitAnnotationLayout');
+    env = createPierreEnv({ worker: false });
+    bridge = new env.PierreBridge({});
+    const root = env.document.createElement('div');
+    bridge.renderAll(root, [
+      { id: 'a.js', type: 'diff', fileName: 'a.js', patch: '@@ -1 +1 @@\n-old\n+new\n' },
+    ]);
+    codeView = env.codeViews[0];
   });
 
   afterEach(() => {
-    delete global.window;
-    delete global.document;
-    delete global.requestAnimationFrame;
-    vi.restoreAllMocks();
+    env.cleanup();
   });
 
   function makeAnnotations(n) {
@@ -63,63 +36,86 @@ describe('PierreBridge batch annotations', () => {
     }));
   }
 
-  it('applies a batch of N annotations with exactly one rerender', () => {
+  it('applies a batch of N annotations with exactly one publish', () => {
+    const before = codeView.calls.updateItem.length;
     bridge.addAnnotations('a.js', makeAnnotations(5));
 
-    expect(fileState.annotations).toHaveLength(5);
-    expect(instance.setLineAnnotations).toHaveBeenCalledTimes(1);
-    expect(instance.rerender).toHaveBeenCalledTimes(1);
-    expect(bridge._syncSplitAnnotationLayout).toHaveBeenCalledTimes(1);
-    // The single setLineAnnotations call carries all five annotations.
-    expect(instance.setLineAnnotations.mock.calls[0][0]).toHaveLength(5);
+    expect(bridge.files.get('a.js').annotations).toHaveLength(5);
+    expect(codeView.calls.updateItem.length).toBe(before + 1);
+    // The single published item carries all five annotations.
+    expect(codeView.getItem('a.js').annotations).toHaveLength(5);
+  });
+
+  it('bumps the version once for the whole batch', () => {
+    const before = codeView.getItem('a.js').version;
+    bridge.addAnnotations('a.js', makeAnnotations(3));
+    expect(codeView.getItem('a.js').version).toBe(before + 1);
   });
 
   it('applies the same shape/ids a per-item loop would produce', () => {
     bridge.addAnnotations('a.js', makeAnnotations(3));
 
-    expect(fileState.annotations.map(a => a.metadata.id)).toEqual([
+    const annotations = bridge.files.get('a.js').annotations;
+    expect(annotations.map(a => a.metadata.id)).toEqual([
       'comment-1', 'comment-2', 'comment-3',
     ]);
-    expect(fileState.annotations[0]).toMatchObject({
+    expect(annotations[0]).toMatchObject({
       side: 'additions',
       lineNumber: 1,
       metadata: { type: 'comment', id: 'comment-1' },
     });
   });
 
-  it('single addAnnotation still triggers exactly one rerender', () => {
+  it('single addAnnotation publishes exactly once', () => {
+    const before = codeView.calls.updateItem.length;
     bridge.addAnnotation('a.js', {
       lineNumber: 2, side: 'RIGHT', type: 'comment', id: 'c-1', data: {},
     });
 
-    expect(fileState.annotations).toHaveLength(1);
-    expect(instance.setLineAnnotations).toHaveBeenCalledTimes(1);
-    expect(instance.rerender).toHaveBeenCalledTimes(1);
+    expect(bridge.files.get('a.js').annotations).toHaveLength(1);
+    expect(codeView.calls.updateItem.length).toBe(before + 1);
   });
 
-  it('N single addAnnotation calls rerender N times (demonstrates the batch win)', () => {
+  it('N single addAnnotation calls publish N times (demonstrates the batch win)', () => {
+    const before = codeView.calls.updateItem.length;
     for (const ann of makeAnnotations(4)) bridge.addAnnotation('a.js', ann);
-    expect(instance.rerender).toHaveBeenCalledTimes(4);
+    expect(codeView.calls.updateItem.length).toBe(before + 4);
   });
 
-  it('is a no-op (no crash, no rerender) for a missing / not-yet-rendered file', () => {
+  it('is a no-op (no crash, no publish) for a missing / not-yet-rendered file', () => {
+    const before = codeView.calls.updateItem.length;
     expect(() => bridge.addAnnotations('missing.js', makeAnnotations(3))).not.toThrow();
-    expect(instance.rerender).not.toHaveBeenCalled();
+    expect(codeView.calls.updateItem.length).toBe(before);
   });
 
-  it('does not rerender for an empty or non-array batch', () => {
+  it('does not publish for an empty or non-array batch', () => {
+    const before = codeView.calls.updateItem.length;
     bridge.addAnnotations('a.js', []);
     bridge.addAnnotations('a.js', undefined);
-    expect(fileState.annotations).toHaveLength(0);
-    expect(instance.rerender).not.toHaveBeenCalled();
+    expect(bridge.files.get('a.js').annotations).toHaveLength(0);
+    expect(codeView.calls.updateItem.length).toBe(before);
   });
 
   it('generates fallback ids when a batch item omits one', () => {
     bridge.addAnnotations('a.js', [
       { lineNumber: 9, side: 'LEFT', type: 'suggestion', data: {} },
     ]);
-    const { id, type } = fileState.annotations[0].metadata;
+    const { id, type } = bridge.files.get('a.js').annotations[0].metadata;
     expect(type).toBe('suggestion');
-    expect(id).toMatch(/^suggestion-9-deletions-\d+$/);
+    expect(id).toMatch(/^suggestion-9-LEFT-\d+$/);
+  });
+
+  it('drops a stale publish to an id CodeView no longer holds', () => {
+    // A newer setItems replaced the list (e.g. a re-render): a late annotation
+    // add must not resurrect the wiped record.
+    codeView.setItems([]);
+    const before = codeView.calls.updateItem.length;
+    bridge.addAnnotation('a.js', {
+      lineNumber: 1, side: 'RIGHT', type: 'comment', id: 'late', data: {},
+    });
+    // updateItem is attempted but returns false (id gone); nothing is stored.
+    expect(codeView.getItem('a.js')).toBeUndefined();
+    // The publish guard bails before calling updateItem when getItem is empty.
+    expect(codeView.calls.updateItem.length).toBe(before);
   });
 });

@@ -648,52 +648,117 @@ describe('AIPanel.scrollToExternalThread', () => {
     global.document = originalDocument;
   });
 
-  function setupDocumentWithRow({ threadId = '101', source = 'github' } = {}) {
+  function makeRow({ file = null } = {}) {
     const focusedClass = { add: vi.fn(), remove: vi.fn() };
-    const row = {
-      classList: focusedClass,
-      scrollIntoView: vi.fn(),
-      closest: vi.fn(() => null),
+    return {
+      row: {
+        classList: focusedClass,
+        scrollIntoView: vi.fn(),
+        closest: vi.fn(() => (file ? { dataset: { fileName: file } } : null)),
+      },
+      focusedClass,
     };
+  }
+
+  /**
+   * Document whose only match is the SOURCE-QUALIFIED compound selector.
+   * Requiring both attributes is what gives `_findExternalRow`'s
+   * `(threadId, source)` branch independent coverage — a loose "contains the
+   * thread id" stub also matches the id-only fallback selector, so dropping
+   * the compound branch in production would still pass.
+   */
+  function setupDocumentWithRow({ threadId = '101', source = 'github' } = {}) {
+    const { row, focusedClass } = makeRow();
+    const selectors = [];
 
     global.document = {
       ...originalDocument,
       querySelector: vi.fn((selector) => {
-        // Match the (threadId, source) compound selector
-        if (selector.includes(`data-thread-id="${threadId}"`)) return row;
-        return null;
+        selectors.push(selector);
+        const matches = selector.includes(`data-thread-id="${threadId}"`)
+          && selector.includes(`data-source="${source}"`);
+        return matches ? row : null;
       }),
       querySelectorAll: vi.fn(() => []),
     };
-    return { row, focusedClass };
+    return { row, focusedClass, selectors };
   }
 
-  it('finds the row by (threadId, source) and scrolls it into view', () => {
-    const { row } = setupDocumentWithRow({ threadId: '42', source: 'github' });
+  it('finds the row by (threadId, source) and scrolls it into view', async () => {
+    const { row, selectors } = setupDocumentWithRow({ threadId: '42', source: 'github' });
     const panel = createTestPanel();
     panel.expandFileIfCollapsed = vi.fn(() => false);
 
-    panel.scrollToExternalThread('42', 'github', 'src/utils.js', 5);
+    await panel.scrollToExternalThread('42', 'github', 'src/utils.js', 5);
 
     expect(row.scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' });
+    // The compound selector is the one that matched (the stub rejects id-only).
+    expect(selectors[0]).toContain('data-thread-id="42"');
+    expect(selectors[0]).toContain('data-source="github"');
   });
 
-  it('adds a transient .external-comment-row--focused class', () => {
-    vi.useFakeTimers();
+  it('falls back to the id-only selector when the row carries no data-source', async () => {
+    const { row } = makeRow();
+    const selectors = [];
+    global.document = {
+      ...originalDocument,
+      // Mirrors a row rebuilt without data-source: only the bare
+      // [data-thread-id] selector can match.
+      querySelector: vi.fn((selector) => {
+        selectors.push(selector);
+        if (selector.includes('data-source')) return null;
+        return selector.includes('data-thread-id="42"') ? row : null;
+      }),
+      querySelectorAll: vi.fn(() => []),
+    };
+    const panel = createTestPanel();
+    panel.expandFileIfCollapsed = vi.fn(() => false);
+
+    await panel.scrollToExternalThread('42', 'github', 'src/utils.js', 5);
+
+    expect(row.scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' });
+    // An id-only selector was tried (this path is what located the row).
+    expect(selectors.some((s) => !s.includes('data-source'))).toBe(true);
+  });
+
+  it('falls back to the first row in the matching file when both id selectors miss', async () => {
+    const { row } = makeRow({ file: 'src/utils.js' });
+    const { row: otherFileRow } = makeRow({ file: 'src/other.js' });
+    global.document = {
+      ...originalDocument,
+      querySelector: vi.fn(() => null), // ids momentarily missing after a rebuild
+      querySelectorAll: vi.fn(() => [otherFileRow, row]),
+    };
+    const panel = createTestPanel();
+    panel.expandFileIfCollapsed = vi.fn(() => false);
+
+    await panel.scrollToExternalThread('42', 'github', 'src/utils.js', 5);
+
+    expect(row.scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' });
+    expect(otherFileRow.scrollIntoView).not.toHaveBeenCalled();
+  });
+
+  it('adds a transient .external-comment-row--focused class', async () => {
     const { focusedClass } = setupDocumentWithRow({ threadId: '7' });
     const panel = createTestPanel();
     panel.expandFileIfCollapsed = vi.fn(() => false);
 
-    panel.scrollToExternalThread('7', 'github', 'src/x.js', 1);
-    expect(focusedClass.add).toHaveBeenCalledWith('external-comment-row--focused');
+    // The method is async (materialize step). Fake timers only mock setTimeout,
+    // not promises/microtasks, so `await` still resolves; the flash-removal
+    // setTimeout is scheduled under fake timers and driven below.
+    vi.useFakeTimers();
+    try {
+      await panel.scrollToExternalThread('7', 'github', 'src/x.js', 1);
+      expect(focusedClass.add).toHaveBeenCalledWith('external-comment-row--focused');
 
-    vi.advanceTimersByTime(2000);
-    expect(focusedClass.remove).toHaveBeenCalledWith('external-comment-row--focused');
-
-    vi.useRealTimers();
+      vi.advanceTimersByTime(2000);
+      expect(focusedClass.remove).toHaveBeenCalledWith('external-comment-row--focused');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it('is a no-op when no matching row is in the DOM', () => {
+  it('is a no-op when no matching row is in the DOM', async () => {
     global.document = {
       ...originalDocument,
       querySelector: vi.fn(() => null),
@@ -701,7 +766,7 @@ describe('AIPanel.scrollToExternalThread', () => {
     };
     const panel = createTestPanel();
     panel.expandFileIfCollapsed = vi.fn(() => false);
-    expect(() => panel.scrollToExternalThread('999', 'github', 'src/x.js', 1)).not.toThrow();
+    await expect(panel.scrollToExternalThread('999', 'github', 'src/x.js', 1)).resolves.toBeUndefined();
   });
 });
 

@@ -554,6 +554,171 @@ describe('ReviewModal', () => {
     });
   });
 
+  describe('getActiveCommentCount (data-backed comment counting)', () => {
+    // Regression: under the virtualized CodeView, comment DOM exists only for
+    // mounted files, so the modal's old DOM-only count undercounted (often to
+    // 0). getActiveCommentCount now prefers the PRManager's data-backed
+    // _countActiveUserComments, with the DOM queries as the legacy fallback.
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('prefers prManager._countActiveUserComments over the (empty) DOM', () => {
+      const { modal } = createTestReviewModal();
+      global.window.prManager = {
+        _countActiveUserComments: vi.fn().mockReturnValue(5)
+      };
+      // Default document mock returns [] for every querySelectorAll — an
+      // empty DOM, as when all commented files are virtualized out.
+      expect(modal.getActiveCommentCount()).toBe(5);
+      expect(global.window.prManager._countActiveUserComments).toHaveBeenCalled();
+    });
+
+    it('falls back to the DOM count when prManager is undefined', () => {
+      const { modal } = createTestReviewModal();
+      global.window.prManager = undefined;
+      global.document.querySelectorAll = vi.fn().mockImplementation((sel) => {
+        if (sel === '.user-comment-row:not(.suggestion-edit-pending)') {
+          return [createMockElement('div'), createMockElement('div')];
+        }
+        if (sel === '.file-comment-card.user-comment') {
+          return [createMockElement('div')];
+        }
+        return [];
+      });
+
+      expect(modal.getActiveCommentCount()).toBe(3);
+    });
+
+    it('falls back to the DOM count when the manager lacks _countActiveUserComments', () => {
+      const { modal } = createTestReviewModal();
+      global.window.prManager = {}; // no counting method
+      global.document.querySelectorAll = vi.fn().mockImplementation((sel) => {
+        if (sel === '.user-comment-row:not(.suggestion-edit-pending)') {
+          return [createMockElement('div')];
+        }
+        return [];
+      });
+
+      expect(modal.getActiveCommentCount()).toBe(1);
+    });
+
+    it('updateCommentCount renders the data-backed count with plural text and shows the element', () => {
+      const { modal, modalContainer } = createTestReviewModal();
+      global.window.prManager = {
+        _countActiveUserComments: () => 5
+      };
+
+      const countElement = createMockElement('div');
+      const warningElement = createMockElement('div');
+      const baseQuerySelector = modalContainer.querySelector;
+      modalContainer.querySelector = vi.fn().mockImplementation((sel) => {
+        if (sel === '.review-comment-count') return countElement;
+        if (sel === '#large-review-warning') return warningElement;
+        return baseQuerySelector(sel);
+      });
+
+      modal.updateCommentCount();
+
+      expect(countElement.innerHTML).toContain('<strong>5</strong>');
+      expect(countElement.innerHTML).toContain('comments will be submitted');
+      expect(countElement.style.display).toBe('flex');
+      // 5 <= 50, so the large-review warning stays hidden.
+      expect(warningElement.style.display).toBe('none');
+    });
+
+    it('updateCommentCount hides the element when the data-backed count is 0', () => {
+      const { modal, modalContainer } = createTestReviewModal();
+      global.window.prManager = {
+        _countActiveUserComments: () => 0
+      };
+
+      const countElement = createMockElement('div');
+      const baseQuerySelector = modalContainer.querySelector;
+      modalContainer.querySelector = vi.fn().mockImplementation((sel) => {
+        if (sel === '.review-comment-count') return countElement;
+        return baseQuerySelector(sel);
+      });
+
+      modal.updateCommentCount();
+
+      expect(countElement.style.display).toBe('none');
+    });
+
+    /**
+     * Wire a modal for driving submitReview(): a REQUEST_CHANGES radio, an
+     * empty review body, and a persistent error element so showError/hideError
+     * are observable. Returns the pieces the assertions need.
+     */
+    function setupSubmitReviewTest() {
+      const { modal, modalContainer, textarea } = createTestReviewModal();
+      textarea.value = '';
+
+      const errorElement = createMockElement('div');
+      const warningElement = createMockElement('div');
+      const rcRadio = createMockElement('input');
+      rcRadio.value = 'REQUEST_CHANGES';
+
+      const baseQuerySelector = modalContainer.querySelector;
+      modalContainer.querySelector = vi.fn().mockImplementation((sel) => {
+        if (sel === 'input[name="review-event"]:checked') return rcRadio;
+        if (sel === '#review-error-message') return errorElement;
+        if (sel === '#large-review-warning') return warningElement;
+        return baseQuerySelector(sel);
+      });
+
+      // Not under test; touches submit-button DOM the mock harness omits.
+      modal.setSubmittingState = vi.fn();
+      modal.hide = vi.fn();
+
+      return { modal, errorElement };
+    }
+
+    it('submitReview REQUEST_CHANGES with empty body passes validation when the manager counts comments', async () => {
+      const { modal, errorElement } = setupSubmitReviewTest();
+      global.window.prManager = {
+        _countActiveUserComments: () => 5,
+        currentPR: { owner: 'o', repo: 'r', number: 1 },
+        updatePendingDraftIndicator: vi.fn()
+      };
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: vi.fn().mockResolvedValue({ github_url: 'https://github.com/o/r/pull/1' })
+      });
+      vi.stubGlobal('fetch', mockFetch);
+
+      await modal.submitReview();
+
+      // No validation error — 5 data-backed comments satisfy REQUEST_CHANGES
+      // even though the DOM (and the review body) are empty.
+      expect(errorElement.textContent).not.toContain('Please add comments');
+      // Proof it got past validation: the submission was actually issued.
+      expect(mockFetch).toHaveBeenCalledWith(
+        '/api/pr/o/r/1/submit-review',
+        expect.objectContaining({ method: 'POST' })
+      );
+      expect(modal.setSubmittingState).toHaveBeenCalledWith(true, 'REQUEST_CHANGES');
+    });
+
+    it('submitReview REQUEST_CHANGES with empty body and 0 comments shows the validation error and does not submit', async () => {
+      const { modal, errorElement } = setupSubmitReviewTest();
+      global.window.prManager = {
+        _countActiveUserComments: () => 0,
+        currentPR: { owner: 'o', repo: 'r', number: 1 }
+      };
+      const mockFetch = vi.fn();
+      vi.stubGlobal('fetch', mockFetch);
+
+      await modal.submitReview();
+
+      expect(errorElement.textContent).toBe('Please add comments or a review summary when requesting changes.');
+      expect(errorElement.style.display).toBe('block');
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(modal.setSubmittingState).not.toHaveBeenCalled();
+    });
+  });
+
   describe('resolveDraftPrUrl (post-draft-submit open URL)', () => {
     let ReviewModal;
     beforeEach(() => {

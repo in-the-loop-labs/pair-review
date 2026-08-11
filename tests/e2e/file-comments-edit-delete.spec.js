@@ -12,7 +12,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender } from './helpers.js';
+import { waitForDiffToRender, expectResponse } from './helpers.js';
 
 // Helper to clean up all file comments for test isolation
 async function cleanupAllFileComments(page) {
@@ -60,7 +60,7 @@ async function createFileComment(page, text) {
   const saveBtn = form.locator('.submit-btn');
 
   // Wait for API response to get comment ID
-  const responsePromise = page.waitForResponse(
+  const responsePromise = expectResponse(page,
     response => response.url().includes('/comments') && response.request().method() === 'POST'
   );
 
@@ -122,7 +122,7 @@ test.describe('Editing File Comments', () => {
     await expect(editTextarea).toBeVisible({ timeout: 5000 });
 
     // Set up API listener
-    const responsePromise = page.waitForResponse(
+    const responsePromise = expectResponse(page,
       response => response.url().includes('/comments/') && response.request().method() === 'PUT'
     );
 
@@ -188,7 +188,7 @@ test.describe('Editing File Comments', () => {
     await editTextarea.fill(textWithQuotes);
 
     // Set up API listener
-    const saveResponsePromise = page.waitForResponse(
+    const saveResponsePromise = expectResponse(page,
       response => response.url().includes('/comments/') && response.request().method() === 'PUT'
     );
 
@@ -235,7 +235,7 @@ test.describe('Editing File Comments', () => {
     const textWithQuotes = "This file's structure doesn't follow the team's conventions";
     await editTextarea.fill(textWithQuotes);
 
-    const saveResponsePromise = page.waitForResponse(
+    const saveResponsePromise = expectResponse(page,
       response => response.url().includes('/comments/') && response.request().method() === 'PUT'
     );
 
@@ -285,7 +285,7 @@ test.describe('Deleting File Comments', () => {
     const card = page.locator(`[data-comment-id="${commentId}"]`);
 
     // Set up API listener
-    const deleteResponsePromise = page.waitForResponse(
+    const deleteResponsePromise = expectResponse(page,
       response => response.url().includes('/comments/') && response.request().method() === 'DELETE'
     );
 

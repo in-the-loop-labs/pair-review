@@ -51,6 +51,15 @@
 // <script> tags into the shared global scope.
 const TOUR_RENDERER_LOCATION_PATH = 'm12.596 11.596-3.535 3.536a1.5 1.5 0 0 1-2.122 0l-3.535-3.536a6.5 6.5 0 1 1 9.192-9.193 6.5 6.5 0 0 1 0 9.193Zm-1.06-8.132v-.001a5 5 0 1 0-7.072 7.072L8 14.07l3.536-3.534a5 5 0 0 0 0-7.072ZM8 9a2 2 0 1 1-.001-3.999A2 2 0 0 1 8 9Z';
 
+// Sentinel returned by `_mountStopPierre` when a stop's anchor line IS in the
+// diff (so the stop is valid) but its file is currently virtualized out of the
+// CodeView render window, so the annotation card has no light-DOM element yet.
+// The navigator treats this as "mountable" (truthy); `scrollToStop` then routes
+// through the bridge to scroll the item into view, which mounts it and slots the
+// card. Distinct from a real element (query re-resolves the live node) and from
+// null (a genuinely impossible anchor that should be skipped).
+const TOUR_PIERRE_PENDING_MOUNT = Object.freeze({ pendingPierreMount: true });
+
 /**
  * Escape a string for inclusion in a CSS attribute selector. Prefers the
  * native `CSS.escape` when available (real browsers) and falls back to a
@@ -408,16 +417,23 @@ class TourRenderer {
       }
     }
 
-    // Ensure the 'tour-stop' renderer is registered on the bridge, then add
-    // the annotation. addAnnotation triggers a synchronous rerender that
-    // invokes our renderer and slots the `<div class="tour-annotation-row">`
-    // into the file's light DOM.
+    // Ensure the 'tour-stop' renderer is registered on the bridge, then add the
+    // annotation. Under CodeView, addAnnotation publishes via updateItem, which
+    // slots the `<div class="tour-annotation-row">` on the NEXT rAF render — NOT
+    // synchronously (the old per-FileDiff path rerendered inline). Reading the
+    // DOM back on this tick found null and skipped every stop, exiting the tour;
+    // instead we await the bridge's deterministic slot signal.
     this._ensureTourStopRendererRegistered();
     const id = this._pierreAnnotationId(index);
-    // Record BEFORE adding so the renderer callback (fired synchronously by
-    // addAnnotation) can resolve the active-stop state for this index.
+    // Record BEFORE adding so the renderer callback can resolve the active-stop
+    // state for this index when it slots.
     this._pierreMounts.set(index, { filePath, side, id, anchorLine });
     if (typeof bridge.addAnnotation === 'function') {
+      // Dedupe by id: a re-probe of an already-added (but virtualized-out) stop
+      // must not stack a second annotation carrying the same id.
+      if (typeof bridge.removeAnnotation === 'function') {
+        try { bridge.removeAnnotation(filePath, id); } catch (_) { /* best effort */ }
+      }
       bridge.addAnnotation(filePath, {
         lineNumber: anchorLine,
         side,
@@ -427,22 +443,71 @@ class TourRenderer {
       });
     }
 
-    const row = this._queryPierreRow(filePath, index);
-    if (!row) {
-      // The bridge accepted the annotation but nothing slotted (line not
-      // actually rendered). Roll back so we don't leave a phantom mount.
-      this._pierreMounts.delete(index);
-      if (typeof bridge.removeAnnotation === 'function') {
-        try { bridge.removeAnnotation(filePath, id); } catch (_) { /* best effort */ }
-      }
-      console.warn(
-        `[TourRenderer] pierre annotation did not slot for ${filePath}:${anchorLine} (${side}); ` +
-        'stop will be skipped'
-      );
-      return null;
+    const { element, pending } = await this._resolvePierreSlot(bridge, filePath, id, index);
+    // The await is a suspension window — bail if the tour was torn down.
+    if (isStale()) return null;
+
+    if (element) {
+      this._mounted.set(index, element);
+      return element;
     }
-    this._mounted.set(index, row);
-    return row;
+    if (pending) {
+      // The anchor line IS in the diff (isLineVisible passed), but the file — or
+      // the line within it — is outside the CodeView render window, so the card
+      // has no DOM yet. The stop is valid: report a pending mount so the
+      // navigator keeps it, and scrollToStop will scroll the item in (mounting +
+      // slotting the card, active-stop re-applied from _activeIndex). Do NOT
+      // skip on timing/virtualization.
+      return TOUR_PIERRE_PENDING_MOUNT;
+    }
+
+    // Genuinely unmountable (bad input / the annotation was dropped). Roll back
+    // so we don't leave a phantom mount, and let the navigator probe on.
+    this._pierreMounts.delete(index);
+    if (typeof bridge.removeAnnotation === 'function') {
+      try { bridge.removeAnnotation(filePath, id); } catch (_) { /* best effort */ }
+    }
+    console.warn(
+      `[TourRenderer] pierre annotation did not slot for ${filePath}:${anchorLine} (${side}); ` +
+      'stop will be skipped'
+    );
+    return null;
+  }
+
+  /**
+   * Resolve the slotted element for a just-added annotation via the bridge's
+   * deterministic slot signal, normalized to `{ element, pending }`:
+   *   - `element` — the slotted light-DOM node (use directly; no re-query), or null.
+   *   - `pending` — true when the card legitimately has no DOM yet because the
+   *     item (or the anchor line within it) is virtualized out of the render
+   *     window; the stop is valid and scrollToStop will materialize it.
+   * Prefers the per-annotation `whenAnnotationSlotted` (returns the exact node);
+   * falls back to the per-file `whenAnnotationsSlotted`, then to a synchronous
+   * query for legacy / synchronous-slotting bridges (older builds, unit fakes).
+   * @param {Object} bridge
+   * @param {string} filePath
+   * @param {string} id - annotation id
+   * @param {number} index - stop index (for the per-file / legacy DOM query)
+   * @returns {Promise<{element: HTMLElement|null, pending: boolean}>}
+   * @private
+   */
+  async _resolvePierreSlot(bridge, filePath, id, index) {
+    if (bridge && typeof bridge.whenAnnotationSlotted === 'function') {
+      const r = await bridge.whenAnnotationSlotted(filePath, id);
+      const el = (r && r.element) || null;
+      const pending = !el && !!r && (
+        r.reason === 'not-mounted' ||
+        r.reason === 'line-not-rendered' ||
+        r.mounted === false
+      );
+      return { element: el, pending };
+    }
+    if (bridge && typeof bridge.whenAnnotationsSlotted === 'function') {
+      const r = await bridge.whenAnnotationsSlotted(filePath);
+      if (r && r.slotted) return { element: this._queryPierreRow(filePath, index), pending: false };
+      return { element: null, pending: !!r && r.mounted === false };
+    }
+    return { element: this._queryPierreRow(filePath, index), pending: false };
   }
 
   /**
@@ -775,8 +840,14 @@ class TourRenderer {
   }
 
   /**
-   * Smoothly scroll the mounted row for `index` into view, centering it.
-   * No-op if the row isn't mounted.
+   * Smoothly scroll the stop at `index` into view, centering it.
+   *
+   * If the stop's row is live (mounted), scroll onto it directly. If it isn't —
+   * the common CodeView case where the stop's file is virtualized out and its
+   * card has no DOM yet — route through the bridge's line scroll, which brings
+   * the item into the render window (mounting it and slotting the card, with
+   * active-stop re-applied from `_activeIndex`). Legacy stops with no live row
+   * have nothing to scroll to, so this is a no-op for them.
    * @param {number} index
    */
   scrollToStop(index) {
@@ -784,20 +855,35 @@ class TourRenderer {
     // so the cached reference can be stale). The slotted pierre `<div>` and
     // the legacy `<tr>` both have layout, so scrollIntoView works on either.
     const row = this._resolveRow(index);
-    if (!row || !row.isConnected) return;
-    const options = {
-      behavior: this._reduceMotion ? 'auto' : 'smooth',
-      block: 'center'
-    };
-    // Lazy bodies between the viewport and the stop render as the scroll
-    // passes them, shifting layout so a plain scrollIntoView lands off
-    // target. The stable variant re-corrects once the scroll settles.
-    // Fire-and-forget: it bails on its own if the row unmounts (tour exit)
-    // or the user scrolls.
-    if (window.ScrollUtils?.scrollIntoViewStable) {
-      window.ScrollUtils.scrollIntoViewStable(row, options);
-    } else {
-      row.scrollIntoView(options);
+    if (row && row.isConnected) {
+      const options = {
+        behavior: this._reduceMotion ? 'auto' : 'smooth',
+        block: 'center'
+      };
+      // Lazy bodies between the viewport and the stop render as the scroll
+      // passes them, shifting layout so a plain scrollIntoView lands off
+      // target. The stable variant re-corrects once the scroll settles.
+      // Fire-and-forget: it bails on its own if the row unmounts (tour exit)
+      // or the user scrolls.
+      if (window.ScrollUtils?.scrollIntoViewStable) {
+        window.ScrollUtils.scrollIntoViewStable(row, options);
+      } else {
+        row.scrollIntoView(options);
+      }
+      return;
+    }
+
+    // No live row. For a pierre stop this means its file is virtualized out of
+    // the CodeView render window; scroll to the anchor line via the bridge,
+    // which mounts the item and slots the tour card.
+    const pierre = this._pierreMounts.get(index);
+    if (!pierre) return;
+    const bridge = this.prManager && this.prManager.pierreBridge;
+    if (!bridge) return;
+    if (typeof bridge.scrollToLine === 'function') {
+      bridge.scrollToLine(pierre.filePath, pierre.anchorLine, pierre.side, true);
+    } else if (typeof bridge.scrollToFile === 'function') {
+      bridge.scrollToFile(pierre.filePath);
     }
   }
 

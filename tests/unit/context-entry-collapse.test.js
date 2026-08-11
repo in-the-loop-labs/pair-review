@@ -311,6 +311,72 @@ describe('context entry collapse independence (#540)', () => {
 
       expect(manager.renderContextFile).toHaveBeenCalledWith(row);
     });
+
+    // `diffFiles` is null until updateFileList delivers the sidebar list, and
+    // this method's other callers (the context_files_changed WebSocket event,
+    // the visibility-change flush, ensureContextFile) are NOT ordered after that
+    // assignment. Treating that null window as "no diff files" would render a
+    // context entry for a path about to gain a diff entry — the both-items-exist
+    // state the "diff wins" rule makes unrepresentable (the zone cache and item
+    // id resolution assume it cannot happen). The bail must come BEFORE any
+    // state is touched; renderDiff re-runs this immediately after updateFileList.
+    it('BAILS before fetching while diffFiles is still unpopulated (null)', async () => {
+      manager.diffFiles = null;
+      const existing = [{ id: 9, file: 'src/kept.js', line_start: 1, line_end: 4 }];
+      manager.contextFiles = existing;
+      stubContextFilesResponse([{ id: 1, file: FILE, line_start: 1, line_end: 10 }]);
+
+      await manager.loadContextFiles();
+
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+      expect(manager.renderContextFile).not.toHaveBeenCalled();
+      expect(manager.rebuildFileListWithContext).not.toHaveBeenCalled();
+      expect(manager.contextFiles).toBe(existing); // untouched, not reassigned
+    });
+
+    it('BAILS for any non-array diffFiles (undefined)', async () => {
+      manager.diffFiles = undefined;
+      stubContextFilesResponse([{ id: 1, file: FILE, line_start: 1, line_end: 10 }]);
+
+      await manager.loadContextFiles();
+
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    // The sentinel is only meaningful if the ONE thing that clears it always
+    // runs. updateFileList assigns diffFiles ABOVE its `#file-list` early
+    // return, so a page state with no sidebar container (the sidebar is not
+    // rendered yet / was wiped) cannot pin diffFiles at null and permanently
+    // suppress every context entry.
+    it('updateFileList populates diffFiles even with no #file-list container', () => {
+      expect(document.getElementById('file-list')).toBeNull();
+      manager.diffFiles = null;
+
+      manager.updateFileList([
+        { file: 'src/a.js' },
+        { file: 'src/b.js' },
+        { file: 'src/ctx.js', contextFile: true }, // context rows are not diff files
+      ]);
+
+      expect(manager.diffFiles).toEqual([{ file: 'src/a.js' }, { file: 'src/b.js' }]);
+    });
+
+    it('updateFileList([]) leaves the empty-diff state, not the null sentinel', () => {
+      manager.diffFiles = null;
+      manager.updateFileList([]);
+      expect(manager.diffFiles).toEqual([]);
+    });
+
+    it('PROCEEDS on an empty array — a genuinely empty diff is not "not loaded yet"', async () => {
+      manager.diffFiles = [];
+      const row = { id: 1, file: FILE, line_start: 1, line_end: 10 };
+      stubContextFilesResponse([row]);
+
+      await manager.loadContextFiles();
+
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+      expect(manager.renderContextFile).toHaveBeenCalledWith(row);
+    });
   });
 
   describe('loadContextFiles remote-delete context-key scrub', () => {

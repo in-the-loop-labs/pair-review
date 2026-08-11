@@ -927,11 +927,19 @@ async function startTestServer(port) {
   });
   app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 
-  // Start server on the given port
-  const server = await new Promise((resolve, reject) => {
-    const srv = app.listen(port, () => resolve(srv));
-    srv.on('error', (err) => reject(err));
-  });
+  // Start server on the given port. On failure (EADDRINUSE when a previous run's
+  // socket has not released yet) close the database before rejecting, so the
+  // caller's retry does not leak a handle per attempt.
+  let server;
+  try {
+    server = await new Promise((resolve, reject) => {
+      const srv = app.listen(port, () => resolve(srv));
+      srv.on('error', (err) => reject(err));
+    });
+  } catch (err) {
+    try { db.close(); } catch { /* already closed */ }
+    throw err;
+  }
 
   console.log(`E2E test server (worker) running on http://localhost:${port}`);
 

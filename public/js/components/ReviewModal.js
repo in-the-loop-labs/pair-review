@@ -378,13 +378,27 @@ class ReviewModal {
   }
 
   /**
+   * Count active user comments (line + file level) for display/validation.
+   * Prefers the PRManager's data-backed count — under the virtualized
+   * CodeView a DOM query misses unmounted files and races the async
+   * annotation slot, so it undercounts. Falls back to the DOM count when
+   * no manager is available (legacy rendering).
+   */
+  getActiveCommentCount() {
+    const manager = window.prManager;
+    if (manager && typeof manager._countActiveUserComments === 'function') {
+      return manager._countActiveUserComments();
+    }
+    const lineComments = document.querySelectorAll('.user-comment-row:not(.suggestion-edit-pending)').length;
+    const fileComments = document.querySelectorAll('.file-comment-card.user-comment').length;
+    return lineComments + fileComments;
+  }
+
+  /**
    * Update comment count display in modal
    */
   updateCommentCount() {
-    // Count both line-level comments (.user-comment-row) and file-level comments (.file-comment-card.user-comment)
-    const lineComments = document.querySelectorAll('.user-comment-row:not(.suggestion-edit-pending)').length;
-    const fileComments = document.querySelectorAll('.file-comment-card.user-comment').length;
-    const userComments = lineComments + fileComments;
+    const userComments = this.getActiveCommentCount();
     const countElement = this.modal.querySelector('.review-comment-count');
     
     if (countElement) {
@@ -481,11 +495,8 @@ class ReviewModal {
       : reviewBody;
     const selectedOption = this.modal.querySelector('input[name="review-event"]:checked');
     const reviewEvent = selectedOption ? selectedOption.value : 'COMMENT';
-    // Count BOTH line-level (.user-comment-row) and file-level (.file-comment-card.user-comment) comments
-    // This must match the counting logic in updateCommentCount() for consistency
-    const lineComments = document.querySelectorAll('.user-comment-row:not(.suggestion-edit-pending)').length;
-    const fileComments = document.querySelectorAll('.file-comment-card.user-comment').length;
-    const commentCount = lineComments + fileComments;
+    // Must match the counting logic in updateCommentCount() for consistency
+    const commentCount = this.getActiveCommentCount();
     
     // Hide any previous errors
     this.hideError();

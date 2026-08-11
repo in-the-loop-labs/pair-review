@@ -17,7 +17,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender } from './helpers.js';
+import { waitForDiffToRender, expectResponse } from './helpers.js';
 
 /**
  * Force chat into "available" state so the toggle is interactive and a session
@@ -105,7 +105,7 @@ test.describe('Save chat message as snippet (PR mode)', () => {
     await expect(pill).toHaveText('Save as snippet');
 
     // Click the pill and confirm the POST landed, then the pill dismisses.
-    const saveResp = page.waitForResponse(
+    const saveResp = expectResponse(page,
       (r) => r.url().endsWith('/api/snippets') && r.request().method() === 'POST'
     );
     await pill.click();
@@ -148,7 +148,7 @@ test.describe('Save chat message as snippet (local mode)', () => {
     const pill = page.locator('.chat-panel__save-snippet-pill');
     await expect(pill).toBeVisible();
 
-    const saveResp = page.waitForResponse(
+    const saveResp = expectResponse(page,
       (r) => r.url().endsWith('/api/snippets') && r.request().method() === 'POST'
     );
     await pill.click();

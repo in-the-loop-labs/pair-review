@@ -241,15 +241,57 @@ class ExternalCommentManager {
    */
   async render() {
     this.clear();
+
+    // Partition threads by routing. File-level and legacy-table threads render
+    // inline in source order (they don't touch the annotation bridge); pierre
+    // threads are grouped per file so each file's whole set publishes+slots in
+    // ONE render pass via addAnnotationsAndAwait — the old per-thread
+    // addAnnotation + await loop cost one full rAF render cycle EACH (the ~6x
+    // annotation-publish regression).
+    const pierreByFile = new Map();
     for (const [, threads] of this.threadsBySource) {
       if (!Array.isArray(threads)) continue;
       for (const thread of threads) {
         try {
-          await this._renderThread(thread);
+          const anchor = this._resolveAnchor(thread);
+          if (!anchor) {
+            this._warnNoAnchor(thread);
+            continue;
+          }
+          if (anchor.fileLevel) {
+            this._renderThreadFileLevel(thread, anchor.file);
+            continue;
+          }
+          if (this._isPierreFile(anchor.file)) {
+            if (!pierreByFile.has(anchor.file)) pierreByFile.set(anchor.file, []);
+            pierreByFile.get(anchor.file).push({ thread, anchor });
+            continue;
+          }
+          await this._renderThreadLegacy(thread, anchor);
         } catch (err) {
           if (typeof console !== 'undefined') {
             console.warn('[ExternalCommentManager] Failed to render thread', thread?.id, err);
           }
+        }
+      }
+    }
+
+    // Mount each pierre file's threads in a single batched publish+slot.
+    const bridge = this._pierreBridge();
+    for (const [file, entries] of pierreByFile) {
+      try {
+        if (bridge && typeof bridge.addAnnotationsAndAwait === 'function') {
+          await this._renderPierreThreadsBatched(bridge, file, entries);
+        } else {
+          // Older bridge without the batch primitive: fall back to per-thread
+          // (each self-reveals + awaits). Correct, just not perf-optimal.
+          for (const { thread, anchor } of entries) {
+            await this._renderThreadPierre(thread, anchor);
+          }
+        }
+      } catch (err) {
+        if (typeof console !== 'undefined') {
+          console.warn('[ExternalCommentManager] Failed to render pierre threads for', file, err);
         }
       }
     }
@@ -304,8 +346,35 @@ class ExternalCommentManager {
       }
     }
 
-    const rows = document.querySelectorAll('.external-comment-row');
-    rows.forEach((row) => row.remove());
+    // Sweep the document AND every cached file-comments zone: under CodeView a
+    // virtualized-out file's zone is DETACHED from the document but still holds
+    // its rendered rows, and it is re-slotted verbatim on scroll-in — so a
+    // document-only sweep leaves those rows behind and the next render()
+    // appends a duplicate that surfaces when the file scrolls back in. A
+    // detached element is a valid querySelectorAll root.
+    for (const root of [document, ...this._cachedCommentZones()]) {
+      root.querySelectorAll('.external-comment-row').forEach((row) => row.remove());
+    }
+  }
+
+  /**
+   * Every `.file-comments-zone` the PR manager has cached, including zones
+   * currently detached from the document because their file is virtualized
+   * out. FileCommentManager.findZoneForFile falls back to this same cache, so
+   * our cards can legitimately live inside a detached zone.
+   * @returns {Element[]}
+   * @private
+   */
+  _cachedCommentZones() {
+    const zones = typeof window !== 'undefined' && window.prManager
+      ? window.prManager._fileCommentZones
+      : null;
+    if (!zones || typeof zones.values !== 'function') return [];
+    const out = [];
+    for (const zone of zones.values()) {
+      if (zone && typeof zone.querySelectorAll === 'function') out.push(zone);
+    }
+    return out;
   }
 
   // ------------------------------------------------------------------
@@ -404,47 +473,119 @@ class ExternalCommentManager {
   }
 
   /**
-   * Render a single thread (root + replies) into the diff.
-   *
-   * When the anchor line isn't initially in the DOM (collapsed context for
-   * outdated comments is the common case) we ask the PR manager to expand
-   * any hidden lines that cover the anchor and re-look-up before giving up.
-   * If still missing we drop to a file-level fallback so the discussion
-   * stays visible rather than disappearing silently.
-   *
-   * Async because `PRManager.ensureLinesVisible` returns a Promise — we
-   * MUST await it before re-looking-up, otherwise the freshly-materialized
-   * row is not yet in the DOM when we ask for it.
+   * Warn once (per thread) that a thread has no resolvable anchor.
    * @private
    */
-  async _renderThread(thread) {
-    if (!thread) return;
-    const anchor = this._resolveAnchor(thread);
-    if (!anchor) {
-      const key = `${thread.source}:${thread.id}`;
-      if (!this._anchorWarnings.has(key)) {
-        this._anchorWarnings.add(key);
+  _warnNoAnchor(thread) {
+    const key = `${thread.source}:${thread.id}`;
+    if (this._anchorWarnings.has(key)) return;
+    this._anchorWarnings.add(key);
+    if (typeof console !== 'undefined') {
+      console.warn('[ExternalCommentManager] Skipping thread with no anchor', thread.id);
+    }
+  }
+
+  /**
+   * Mount a whole file's worth of pierre threads in ONE publish + ONE render +
+   * ONE slot-await via `bridge.addAnnotationsAndAwait`, then apply the keep /
+   * fallback verdict per thread. Replaces the per-thread addAnnotation + await
+   * loop that cost one rAF render cycle each (the ~6x publish regression).
+   *
+   * Anchor-line reveal (ensureLinesVisible) is batched for the whole file too,
+   * so a set of collapsed/outdated anchors costs one gap-expansion pass.
+   * @param {Object} bridge
+   * @param {string} file
+   * @param {Array<{thread: Object, anchor: {file:string,line:number,side:string}}>} entries
+   * @private
+   */
+  async _renderPierreThreadsBatched(bridge, file, entries) {
+    // Reveal every anchor line for this file at once (outdated/collapsed anchors
+    // are the common case) before publishing, so the batch add sees the lines.
+    if (this._canEnsureLinesVisible()) {
+      try {
+        await window.prManager.ensureLinesVisible(entries.map(({ anchor }) => ({
+          file,
+          line_start: anchor.line,
+          line_end: anchor.line,
+          side: anchor.side,
+        })));
+      } catch (err) {
         if (typeof console !== 'undefined') {
-          console.warn('[ExternalCommentManager] Skipping thread with no anchor', thread.id);
+          console.warn('[ExternalCommentManager] ensureLinesVisible threw (pierre batch), continuing', err);
         }
       }
-      return;
     }
 
-    // File-level comments render in the per-file comments zone above the diff
-    // (light DOM, shared by both diff engines) — no line anchor, no bridge.
-    if (anchor.fileLevel) {
-      this._renderThreadFileLevel(thread, anchor.file);
-      return;
-    }
+    this._ensurePierreRendererRegistered(bridge);
 
-    // Route by rendering engine. Pierre-rendered files have no light-DOM
-    // <tr> rows to anchor against, so they mount via the annotation bridge.
-    if (this._isPierreFile(anchor.file)) {
-      await this._renderThreadPierre(thread, anchor);
-      return;
-    }
+    const annotations = entries.map(({ thread, anchor }) => ({
+      lineNumber: anchor.line,
+      side: anchor.side,
+      type: 'external-comment',
+      id: this._pierreAnnotationId(thread),
+      data: thread,
+    }));
 
+    const verdicts = await bridge.addAnnotationsAndAwait(file, annotations);
+
+    for (const { thread, anchor } of entries) {
+      const id = this._pierreAnnotationId(thread);
+      const verdict = verdicts && (typeof verdicts.get === 'function' ? verdicts.get(id) : verdicts[id]);
+      this._applyPierreSlotVerdict(bridge, file, thread, anchor, id, verdict);
+    }
+  }
+
+  /**
+   * Apply the three-way keep / fallback decision for one pierre thread from its
+   * slot verdict (`{ element, reason }`, from either the batch Map or the
+   * per-thread `_resolvePierreSlot`). Shared so the batched and per-thread paths
+   * can never diverge:
+   *   - element present            → slotted, done.
+   *   - 'not-mounted' (whole file virtualized out) → KEEP when the anchor line
+   *     is in the diff, or when we have no hunk metadata to judge with.
+   *   - 'line-not-rendered' + line in diff (isLineVisible) → KEEP (windowed, valid).
+   *   - otherwise (line absent / bad input) → roll back + file-level fallback.
+   * @private
+   */
+  _applyPierreSlotVerdict(bridge, file, thread, anchor, id, verdict) {
+    const element = verdict && verdict.element;
+    if (element) return;
+    const reason = verdict && verdict.reason;
+    // 'not-mounted' means the FILE is off-screen — it says nothing about whether
+    // the anchor line still exists in the diff. Validate it the same way the
+    // mounted case does (isLineVisible reads parsed patch metadata, so it
+    // answers for an unmounted file too); otherwise a stale anchor behaves
+    // differently by scroll position: demoted to a file-level card while the
+    // file is on-screen, kept as an annotation that can never slot while it is
+    // off-screen — the discussion goes permanently invisible. With no metadata
+    // yet there is nothing to judge with, so keep and let a later render decide.
+    if (reason === 'not-mounted') {
+      if (!this._hasHunkMetadata(bridge, file) || this._anchorLineInDiff(bridge, anchor)) return;
+    }
+    if (reason === 'line-not-rendered' && this._anchorLineInDiff(bridge, anchor)) return;
+
+    if (bridge && typeof bridge.removeAnnotation === 'function') {
+      try { bridge.removeAnnotation(file, id); } catch { /* best effort */ }
+    }
+    this._renderPierreFileFallback(thread, file);
+  }
+
+  /**
+   * Render a single LEGACY (table-rendered) thread into the diff.
+   *
+   * When the anchor line isn't initially in the DOM (collapsed context for
+   * outdated comments is the common case) we ask the PR manager to expand any
+   * hidden lines that cover the anchor and re-look-up before giving up. If still
+   * missing we drop to a file-level fallback so the discussion stays visible.
+   *
+   * Async because `PRManager.ensureLinesVisible` returns a Promise — we MUST
+   * await it before re-looking-up, otherwise the freshly-materialized row is not
+   * yet in the DOM when we ask for it.
+   * @param {Object} thread
+   * @param {{file:string, line:number, side:string}} anchor - resolved, non-file-level
+   * @private
+   */
+  async _renderThreadLegacy(thread, anchor) {
     let targetRow = this._findDiffLineRow(anchor.file, anchor.line, anchor.side);
 
     // Outdated discussions often land on lines that the diff renderer
@@ -642,16 +783,82 @@ class ExternalCommentManager {
       data: thread,
     });
 
-    // addAnnotation rerenders synchronously; verify the row actually slotted.
-    // If the anchor line still isn't rendered, roll back and fall back to a
-    // file-level card so an unanchorable (e.g. destroyed-upstream) discussion
-    // stays discoverable rather than silently vanishing.
-    if (!this._queryPierreRow(anchor.file, thread)) {
-      if (typeof bridge.removeAnnotation === 'function') {
-        try { bridge.removeAnnotation(anchor.file, id); } catch { /* best effort */ }
-      }
-      this._renderPierreFileFallback(thread, anchor.file);
+    // Under CodeView the card slots on the NEXT rAF render, not synchronously,
+    // so we await the bridge's deterministic slot signal before deciding whether
+    // to fall back. A synchronous DOM read here found null and wrongly demoted
+    // every thread to a file-level card. The keep/fallback decision (including
+    // the metadata-oracle disambiguation of 'line-not-rendered') is shared with
+    // the batched path via _applyPierreSlotVerdict so the two can't diverge.
+    const verdict = await this._resolvePierreSlot(bridge, anchor.file, id, thread);
+    this._applyPierreSlotVerdict(bridge, anchor.file, thread, anchor, id, verdict);
+  }
+
+  /**
+   * Whether the bridge holds enough parsed patch metadata for `file` to judge
+   * an anchor line at all — the precondition `isLineVisible` itself needs, so a
+   * `false` from it means "line absent" rather than "nothing published yet".
+   * @param {Object} bridge
+   * @param {string} file
+   * @returns {boolean}
+   * @private
+   */
+  _hasHunkMetadata(bridge, file) {
+    const fileState = bridge && bridge.files && typeof bridge.files.get === 'function'
+      ? bridge.files.get(file)
+      : null;
+    if (!fileState || fileState.itemType !== 'diff') return false;
+    const hunks = fileState.metadata && fileState.metadata.hunks;
+    return Array.isArray(hunks) && hunks.length > 0;
+  }
+
+  /**
+   * Whether the thread's anchor line is part of the published diff metadata —
+   * the pure-metadata oracle used to disambiguate a slot miss (windowed-but-
+   * valid vs genuinely absent). Consults the same `bridge.isLineVisible`
+   * metadata check the anchor resolution relies on.
+   * @param {Object} bridge
+   * @param {{ file: string, line: number, side: string }} anchor
+   * @returns {boolean}
+   * @private
+   */
+  _anchorLineInDiff(bridge, anchor) {
+    if (!bridge || typeof bridge.isLineVisible !== 'function' || !anchor) return false;
+    try {
+      return !!bridge.isLineVisible(anchor.file, anchor.line, anchor.side);
+    } catch {
+      return false;
     }
+  }
+
+  /**
+   * Resolve the slotted card for a just-added external-comment annotation via
+   * the bridge's deterministic slot signal, normalized to `{ element, reason }`.
+   * `element` is the slotted node (use directly), or null with a `reason` the
+   * caller uses to decide keep-vs-fallback ('not-mounted' | 'line-not-rendered'
+   * | undefined). Prefers the per-annotation signal (returns the exact node);
+   * falls back to the per-file signal, then a synchronous query for legacy /
+   * synchronous-slotting bridges (unit fakes).
+   * @param {Object} bridge
+   * @param {string} file
+   * @param {string} id - annotation id
+   * @param {Object} thread - the thread being rendered (for the DOM fallback query)
+   * @returns {Promise<{element: HTMLElement|null, reason?: string}>}
+   * @private
+   */
+  async _resolvePierreSlot(bridge, file, id, thread) {
+    if (bridge && typeof bridge.whenAnnotationSlotted === 'function') {
+      const r = await bridge.whenAnnotationSlotted(file, id);
+      if (r && r.element) return { element: r.element };
+      const reason = (r && r.reason) || (r && r.mounted === false ? 'not-mounted' : undefined);
+      return { element: null, reason };
+    }
+    if (bridge && typeof bridge.whenAnnotationsSlotted === 'function') {
+      const r = await bridge.whenAnnotationsSlotted(file);
+      if (r && r.mounted === false) return { element: null, reason: 'not-mounted' };
+      const el = this._queryPierreRow(file, thread);
+      return { element: el, reason: el ? undefined : 'line-not-rendered' };
+    }
+    return { element: this._queryPierreRow(file, thread) };
   }
 
   /**

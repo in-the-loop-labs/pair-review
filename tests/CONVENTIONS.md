@@ -95,6 +95,35 @@ because violating it produced a real, observed flake or measurable waste.
   defaults after every clear (`applyDefaultMocks()` in
   `tests/integration/routes.test.js`).
 
+## Playwright E2E
+
+- **A pending `page.waitForResponse` / `waitForRequest` kills the whole worker.**
+  Both are registered *before* the action that triggers them, so there is always
+  a window before the `await`. If anything in that window fails — a click that
+  times out, a failed assertion, the test deadline — the still-pending promise
+  rejects unhandled, which does not merely fail the test: Playwright reports
+  `worker process exited unexpectedly (code=1)` and every remaining test in that
+  file fails at 0ms, so the run's failure set reshuffles by which worker died.
+  Use `expectResponse` / `expectRequest` from `tests/e2e/helpers.js` — they
+  attach the no-op catch and return the same promise, so awaiting it still
+  reports a genuinely missing response.
+- **The E2E file-contents endpoint answers for ANY path.**
+  `tests/e2e/test-server.js` serves `src/utils.js` verbatim and falls back to a
+  generic 40-line body for every other file name. So the idle content upgrade
+  fires for every non-binary file in a mocked diff and re-renders it — a
+  300-line patch *shrinks* to 40 lines. Any test that measures geometry (scroll
+  extent, item tops, element positions) must first wait for the upgrade to land
+  (`pierreBridge.files.get(file).baseMetadata` is set) **and** for the extent to
+  settle. Measuring across the upgrade reports churn as signal: it has produced
+  both a phantom 314px "wandering gap" and a phantom 218px "the layout absorbed
+  the form".
+- **Assert the positive sentinel before the negative.** After an evict/remount
+  or any rebuild-from-data, assert the row that must still be there *first* —
+  that is the proof the rebuild finished — and only then that the removed row is
+  absent. Reversed, the absence check passes against a host that has not
+  rebuilt yet. `whenAnnotationsSlotted` is a bounded best-effort, not a barrier,
+  so pair it with a generous Playwright assertion rather than trusting it alone.
+
 ## Cleanup
 
 - Every resource a test creates (server, socket, temp dir, patched global,

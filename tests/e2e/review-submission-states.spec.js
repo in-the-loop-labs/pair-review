@@ -9,7 +9,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender } from './helpers.js';
+import { waitForDiffToRender, expectRequest } from './helpers.js';
 
 // Helper to open the review modal
 async function openReviewModal(page) {
@@ -169,7 +169,7 @@ test.describe('Assisted-by Footer Toggle', () => {
     await textarea.fill('Great work!');
 
     // Intercept the submit API call
-    const submitPromise = page.waitForRequest(request =>
+    const submitPromise = expectRequest(page, request =>
       request.url().includes('/submit-review') && request.method() === 'POST'
     );
 
@@ -192,7 +192,7 @@ test.describe('Assisted-by Footer Toggle', () => {
     await textarea.fill('No footer please');
 
     // Intercept the submit API call
-    const submitPromise = page.waitForRequest(request =>
+    const submitPromise = expectRequest(page, request =>
       request.url().includes('/submit-review') && request.method() === 'POST'
     );
 

@@ -1054,6 +1054,131 @@ describe('TourRenderer — pierre-rendered files (annotation path)', () => {
     return { bridge, wrapper, container, filePath, visible };
   }
 
+  /**
+   * Async-slotting fake: mirrors CodeView, where addAnnotation publishes via
+   * updateItem and the card slots on a LATER frame — NOT synchronously. Exposes
+   * the bridge affordance `whenAnnotationsSlotted`. `virtualizedOut:true` models
+   * a file scrolled out of the render window: annotations live in data with no
+   * DOM until `scrollToLine` mounts the item.
+   */
+  function makeAsyncPierreEnv({ visibleLines = [], virtualizedOut = false, filePath = 'src/pierre.js' } = {}) {
+    document.body.innerHTML = '';
+    const wrapper = document.createElement('div');
+    wrapper.className = 'd2h-file-wrapper';
+    wrapper.dataset.fileName = filePath;
+    const container = document.createElement('div');
+    container.className = 'pierre-diff-body';
+    wrapper.appendChild(container);
+    document.body.appendChild(wrapper);
+
+    const renderers = new Map();
+    const files = new Map();
+    const visible = new Set(visibleLines);
+    let rendered = !virtualizedOut;
+
+    const slot = (f) => {
+      const fs = files.get(f);
+      if (!fs) return;
+      fs.container.querySelectorAll('.tour-annotation-row').forEach(el => el.remove());
+      if (!rendered) return; // virtualized out → nothing in the DOM yet
+      for (const a of fs.annotations) {
+        if (!visible.has(`${a.side}:${a.lineNumber}`)) continue;
+        const fn = renderers.get(a.type);
+        const el = fn ? fn(a.data, a.id, f) : null;
+        // Mirror the real bridge, which stamps the annotation id on the slotted
+        // node so whenAnnotationSlotted can return the exact element.
+        if (el) { el.dataset.prAnnotationId = a.id; fs.container.appendChild(el); }
+      }
+    };
+
+    const bridge = {
+      files,
+      scrollToLineCalls: [],
+      registerAnnotationRenderer(type, fn) { renderers.set(type, fn); },
+      isLineVisible(f, line, side) { return visible.has(`${side}:${line}`); },
+      // Publish into data only — NO synchronous slot (unlike the legacy path).
+      addAnnotation(f, ann) {
+        const fs = files.get(f);
+        if (!fs) return;
+        fs.annotations = fs.annotations.filter(a => a.id !== ann.id);
+        fs.annotations.push({
+          id: ann.id, type: ann.type, data: ann.data,
+          lineNumber: ann.lineNumber, side: ann.side,
+        });
+      },
+      removeAnnotation(f, id) {
+        const fs = files.get(f);
+        if (!fs) return;
+        fs.annotations = fs.annotations.filter(a => a.id !== id);
+        slot(f);
+      },
+      // Deterministic stand-in for the real rAF-batched per-annotation signal:
+      // resolves to the exact slotted element, or a virtualized-out verdict.
+      async whenAnnotationSlotted(f, id) {
+        await Promise.resolve();
+        if (!rendered) return { element: null, mounted: false, slotted: false, reason: 'not-mounted' };
+        slot(f);
+        const fs = files.get(f);
+        const el = fs
+          ? fs.container.querySelector(`.tour-annotation-row[data-pr-annotation-id="${id}"]`)
+          : null;
+        return el
+          ? { element: el, mounted: true, slotted: true }
+          : { element: null, mounted: true, slotted: false, reason: 'line-not-rendered' };
+      },
+      scrollToLine(f, line, side) {
+        this.scrollToLineCalls.push({ file: f, line, side });
+        rendered = true; // scrolling brings the item into the render window
+        slot(f);
+      },
+    };
+
+    files.set(filePath, { container, annotations: [] });
+    return { bridge, wrapper, container, filePath };
+  }
+
+  it('async slotting: mountStop awaits the slot signal and returns the row (regression)', async () => {
+    // Regression for the sync read-back bug: CodeView slots the card on a later
+    // frame, so the old synchronous _queryPierreRow read null on this tick and
+    // skipped every stop, exiting the tour. mountStop must await
+    // whenAnnotationsSlotted and only then resolve the row.
+    const { bridge, container } = makeAsyncPierreEnv({ visibleLines: ['RIGHT:11'] });
+    const r = new TourRenderer({ pierreBridge: bridge, _tourGen: 1 });
+    r.setStops([makeStop({ file_path: 'src/pierre.js', line_start: 11, line_end: 11 })]);
+
+    const row = await r.mountStop(0);
+    expect(row).toBeTruthy();
+    expect(row.tagName).toBe('DIV');
+    expect(row.dataset.stopIndex).toBe('0');
+    expect(container.querySelector('.tour-annotation-row[data-stop-index="0"]')).toBe(row);
+    expect(r._pierreMounts.has(0)).toBe(true);
+  });
+
+  it('virtualized-out: mountStop keeps the stop (pending sentinel) and scrollToStop mounts it', async () => {
+    const { bridge, container } = makeAsyncPierreEnv({
+      visibleLines: ['RIGHT:11'], virtualizedOut: true,
+    });
+    const r = new TourRenderer({ pierreBridge: bridge, _tourGen: 1 });
+    r.setStops([makeStop({ file_path: 'src/pierre.js', line_start: 11, line_end: 11 })]);
+
+    const result = await r.mountStop(0);
+    // Not skipped: a truthy pending-mount marker (not an element); mount kept.
+    expect(result).toBeTruthy();
+    expect(result.tagName).toBeUndefined();
+    expect(r._pierreMounts.has(0)).toBe(true);
+    // No card yet — the file is virtualized out of the render window.
+    expect(container.querySelector('.tour-annotation-row')).toBeNull();
+
+    // Activating + scrolling routes through the bridge scrollToLine, which
+    // mounts the item and slots the card with active-stop from _activeIndex.
+    r.highlightActive(0);
+    r.scrollToStop(0);
+    expect(bridge.scrollToLineCalls).toEqual([{ file: 'src/pierre.js', line: 11, side: 'RIGHT' }]);
+    const row = container.querySelector('.tour-annotation-row[data-stop-index="0"]');
+    expect(row).toBeTruthy();
+    expect(row.classList.contains('active-stop')).toBe(true);
+  });
+
   it('routes to the pierre path and slots a <div> tour-annotation-row', async () => {
     const { bridge, container } = makePierreEnv({ visibleLines: ['RIGHT:11'] });
     const r = new TourRenderer({ pierreBridge: bridge, _tourGen: 1 });
@@ -1072,6 +1197,34 @@ describe('TourRenderer — pierre-rendered files (annotation path)', () => {
     // Tracked as a pierre mount, not a legacy one.
     expect(r._pierreMounts.has(0)).toBe(true);
     expect(r._pierreMounts.get(0).id).toBe('tour-stop-0');
+  });
+
+  it('rebuilds a complete, still-highlighted card on virtualization remount', async () => {
+    const { bridge, container } = makePierreEnv({ visibleLines: ['RIGHT:11'] });
+    const r = new TourRenderer({ pierreBridge: bridge, _tourGen: 1 });
+    r.setStops([makeStop({ file_path: 'src/pierre.js', line_start: 11, line_end: 11 })]);
+
+    const first = await r.mountStop(0);
+    r.highlightActive(0);
+    expect(first.classList.contains('active-stop')).toBe(true);
+
+    // CodeView pools the file out and back in: the slotted card is discarded
+    // and the registered 'tour-stop' renderer is re-invoked from the stored
+    // annotation data (no addAnnotation call — a pure virtualization remount).
+    bridge._render('src/pierre.js');
+    const second = container.querySelector('.tour-annotation-row[data-stop-index="0"]');
+
+    // A brand-new element, fully rebuilt from data — never the discarded one.
+    expect(second).not.toBe(first);
+    expect(second.querySelector('.tour-annotation-title').textContent).toBe('Stop title');
+    expect(second.querySelector('.tour-annotation-chat-btn')).toBeTruthy();
+    // The active-stop highlight survives because it is re-applied from
+    // _activeIndex (instance state), not carried on the discarded DOM.
+    expect(second.classList.contains('active-stop')).toBe(true);
+    // Remount must not stack duplicate rows.
+    expect(container.querySelectorAll('.tour-annotation-row').length).toBe(1);
+    // _resolveRow re-resolves the live element rather than the stale cache.
+    expect(r._resolveRow(0)).toBe(second);
   });
 
   it('renders the full description with no clamp/footer/Show-more on the pierre path', async () => {

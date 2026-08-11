@@ -6,8 +6,11 @@
  * Unit tests for PRManager.handleDiffViewChange (Unified / Split toggle).
  *
  * The handler must NOT re-fetch the diff — it delegates to
- * pierreBridge.setDiffStyle (which preserves annotations) and restores the
- * scroll position. This handler is shared by PR mode and local mode.
+ * pierreBridge.setDiffStyle (which preserves annotations). Under the single
+ * CodeView, scrolling lives on #diff-container and setDiffStyle's relayout
+ * captures/restores the scroll anchor itself, so the handler must NOT do any
+ * manual scrollTop save/restore (doing so would fight CodeView's anchoring).
+ * This handler is shared by PR mode and local mode.
  *
  * PRManager is a browser-only file with no exports, so we load it in a vm
  * sandbox (mirroring pr-manager-set-loading.test.js). Functions compiled in
@@ -70,28 +73,21 @@ describe('PRManager.handleDiffViewChange', () => {
     expect(mgr.pierreBridge.setDiffStyle).toHaveBeenCalledWith('split');
   });
 
-  it('restores the window scroll position when no .diff-view container exists', () => {
-    // Default sandbox document has no querySelector, so the handler falls back
-    // to the window scroll position.
-    mgr.pierreBridge = { setDiffStyle: vi.fn() };
-
-    mgr.handleDiffViewChange('split');
-
-    expect(sandbox.scrollTo).toHaveBeenCalledWith(0, 250);
-  });
-
-  it('captures and restores the .diff-view container scrollTop (not the window)', () => {
-    // The diff pane scrolls inside `.diff-view`, so window.scrollY is ~0 and
-    // the handler must save/restore the container's scrollTop instead. Simulate
-    // the layout swap resetting scrollTop to 0 and assert it is restored.
+  it('does not manually scroll — CodeView owns scroll anchoring across the swap', () => {
+    // The single CodeView on #diff-container captures/restores its own scroll
+    // anchor during setDiffStyle's relayout. A manual window/container scroll
+    // here would fight that, so the handler must touch neither. setDiffStyle's
+    // stub resets the container scrollTop (as the real relayout would); if the
+    // handler tried to "restore" it, scrollTop would go back to 420.
     const container = { scrollTop: 420 };
     mgr.pierreBridge = { setDiffStyle: vi.fn(() => { container.scrollTop = 0; }) };
     sandbox.document.querySelector = vi.fn((sel) => (sel === '.diff-view' ? container : null));
 
     mgr.handleDiffViewChange('split');
 
-    expect(container.scrollTop).toBe(420);
+    // Neither the window nor the container scroll is touched by the handler.
     expect(sandbox.scrollTo).not.toHaveBeenCalled();
+    expect(container.scrollTop).toBe(0); // NOT restored to 420 — CodeView owns it
   });
 
   it('does NOT re-fetch the diff (no loadAndDisplayFiles / _rerenderAllOverlays)', () => {

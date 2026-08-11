@@ -7,7 +7,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender } from './helpers.js';
+import { waitForDiffToRender, expectRequest } from './helpers.js';
 
 test.describe('Auto-Analyze Query Parameter', () => {
   test('should skip refresh and auto-trigger analysis when ?analyze=true is present after fresh load', async ({ page }) => {
@@ -21,7 +21,7 @@ test.describe('Auto-Analyze Query Parameter', () => {
     });
 
     // Intercept the analyze POST request to verify it fires
-    const analyzeRequest = page.waitForRequest(
+    const analyzeRequest = expectRequest(page,
       request => request.url().includes('/api/pr/test-owner/test-repo/1/analyses') &&
                  request.method() === 'POST',
       { timeout: 10000 }
@@ -53,7 +53,7 @@ test.describe('Auto-Analyze Query Parameter', () => {
     });
 
     // Intercept the analyze POST to confirm it fires (after the refresh)
-    const analyzeRequest = page.waitForRequest(
+    const analyzeRequest = expectRequest(page,
       request => request.url().includes('/api/pr/test-owner/test-repo/1/analyses') &&
                  request.method() === 'POST',
       { timeout: 10000 }
@@ -124,7 +124,7 @@ test.describe('Auto-Analyze Query Parameter', () => {
       });
     });
 
-    const analyzeRequest = page.waitForRequest(
+    const analyzeRequest = expectRequest(page,
       request => request.url().includes('/api/pr/test-owner/test-repo/1/analyses') &&
                  request.method() === 'POST',
       { timeout: 10000 }
@@ -229,7 +229,7 @@ test.describe('Auto-Analyze Query Parameter - Local Mode', () => {
     });
 
     // Intercept the analyze POST request to verify it fires
-    const analyzeRequest = page.waitForRequest(
+    const analyzeRequest = expectRequest(page,
       request => request.url().includes('/api/local/2/analyses') &&
                  request.method() === 'POST',
       { timeout: 10000 }
@@ -295,7 +295,7 @@ test.describe('Auto-Analyze Query Parameter - Local Mode', () => {
       }
     });
 
-    const analyzeRequest = page.waitForRequest(
+    const analyzeRequest = expectRequest(page,
       request => request.url().includes('/api/local/2/analyses') &&
                  request.method() === 'POST',
       { timeout: 10000 }

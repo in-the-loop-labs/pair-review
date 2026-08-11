@@ -409,6 +409,99 @@ describe('ExternalCommentManager.clear', async () => {
   });
 });
 
+// =======================================================================
+// clear() and DETACHED (virtualized-out) file-comments zones
+//
+// Under CodeView a file scrolled out of the render window has its
+// `.file-comments-zone` detached from the document but cached in
+// `prManager._fileCommentZones`, and the zone is re-slotted verbatim when the
+// file scrolls back in. FileCommentManager.findZoneForFile falls back to that
+// cache, so our file-level / file-fallback cards can land inside a detached
+// zone — where a document-only sweep can never reach them.
+// =======================================================================
+describe('ExternalCommentManager.clear detached zones', async () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    delete window.prManager;
+  });
+  afterEach(() => {
+    document.body.innerHTML = '';
+    delete window.prManager;
+    vi.restoreAllMocks();
+  });
+
+  // A cached-but-detached zone plus the prManager wiring the manager resolves
+  // it through (FileCommentManager.findZoneForFile reads the same cache).
+  function detachedZone(file = 'src/app.js') {
+    const zone = document.createElement('div');
+    zone.className = 'file-comments-zone';
+    zone.dataset.fileName = file;
+    const container = document.createElement('div');
+    container.className = 'file-comments-container';
+    zone.appendChild(container);
+    // Deliberately NOT appended to the document — the file is virtualized out.
+    const zones = new Map([[file, zone]]);
+    window.prManager = {
+      _fileCommentZones: zones,
+      fileCommentManager: { findZoneForFile: (f) => zones.get(f) || null },
+      ensureLinesVisible: vi.fn(async () => {}),
+    };
+    return { zone, container };
+  }
+
+  function fileLevelThread(overrides = {}) {
+    return makeComment({
+      is_file_level: 1,
+      line_start: null,
+      line_end: null,
+      original_line_start: null,
+      original_line_end: null,
+      ...overrides,
+    });
+  }
+
+  it('a second render does not stack a duplicate card inside a detached zone', async () => {
+    const { zone, container } = detachedZone();
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [fileLevelThread({ id: 8, body: 'whole file comment' })]);
+    await mgr.render();
+    expect(container.querySelectorAll('.external-comment-row').length).toBe(1);
+    // The card exists only in the detached zone — nothing in the document.
+    expect(document.querySelectorAll('.external-comment-row').length).toBe(0);
+
+    // Refresh / post-AI re-render while the file is still off-screen.
+    await mgr.render();
+
+    expect(zone.querySelectorAll('.external-comment-row').length).toBe(1);
+    expect(container.querySelectorAll('.external-comment-row').length).toBe(1);
+    expect(container.querySelector('.external-comment-row').dataset.threadId).toBe('8');
+  });
+
+  it('clear() empties a detached zone', async () => {
+    const { zone } = detachedZone();
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [fileLevelThread({ id: 8 })]);
+    await mgr.render();
+    expect(zone.querySelectorAll('.external-comment-row').length).toBe(1);
+
+    mgr.clear();
+    expect(zone.querySelectorAll('.external-comment-row').length).toBe(0);
+  });
+
+  it('clear() tolerates a missing / non-Map zone cache', () => {
+    const mgr = makeManager();
+    window.prManager = {};
+    expect(() => mgr.clear()).not.toThrow();
+    window.prManager = { _fileCommentZones: { notAMap: true } };
+    expect(() => mgr.clear()).not.toThrow();
+    // Junk entries in the cache are skipped rather than thrown on.
+    window.prManager = { _fileCommentZones: new Map([['a.js', null], ['b.js', {}]]) };
+    expect(() => mgr.clear()).not.toThrow();
+  });
+});
+
 describe('ExternalCommentManager ordering rule', async () => {
   beforeEach(() => {
     document.body.innerHTML = '';
@@ -744,7 +837,129 @@ function makePierreBridge({ files = ['src/app.js'], slots = true } = {}) {
     }),
     getAnnotations: vi.fn((file, type) =>
       annotationsByFile.get(file).filter((a) => !type || a.type === type)),
+    // Simulate a CodeView virtualization remount: discard the file's slotted
+    // annotation DOM and rebuild it from stored data by re-invoking the
+    // registered renderer — no add/remove call, a pure remount.
+    _remount: (file) => reslot(file),
   };
+}
+
+/**
+ * Async-slotting fake bridge: mirrors CodeView, where addAnnotation publishes
+ * into item data and the card slots on a LATER frame — NOT synchronously.
+ * Exposes the bridge affordance `whenAnnotationsSlotted`. Modes:
+ *   - default: the annotation slots when the signal resolves (mounted file).
+ *   - virtualizedOut: whole file scrolled out of the render window → signal
+ *     resolves `{ reason:'not-mounted' }`, no DOM ever slots.
+ *   - lineWindowed: file mounted, anchor line windowed out of the render range
+ *     but IS a real diff line → `reason:'line-not-rendered'`, isLineVisible=true.
+ *   - outdated: file mounted, anchor line genuinely absent from the diff
+ *     (outdated / dropped) → `reason:'line-not-rendered'`, isLineVisible=false.
+ *
+ * `hunks: true` publishes parsed patch metadata on the file state (what the
+ * real bridge holds once a patch is parsed, mounted or not) so the manager can
+ * tell "line absent from the diff" from "nothing published yet". `lineInDiff`
+ * overrides what the isLineVisible oracle answers, independent of `mode`.
+ */
+function makeAsyncPierreBridge({ files = ['src/app.js'], mode = 'default', batch = true, hunks = false, lineInDiff: lineInDiffOpt } = {}) {
+  const renderers = new Map();
+  const annotationsByFile = new Map();
+  const fileMap = new Map();
+  // Metadata oracle: the anchor line is a real diff line in every mode except
+  // 'outdated' (where it was dropped from the diff).
+  const lineInDiff = lineInDiffOpt === undefined ? mode !== 'outdated' : lineInDiffOpt;
+
+  const doSlot = (file) => {
+    const { container } = fileMap.get(file);
+    container.querySelectorAll('.external-comment-row').forEach((r) => r.remove());
+    if (mode === 'virtualizedOut' || mode === 'lineWindowed' || mode === 'outdated') return;
+    for (const ann of annotationsByFile.get(file)) {
+      const fn = renderers.get(ann.type);
+      if (!fn) continue;
+      const el = fn(ann.data, ann.id, file);
+      // Mirror the real bridge stamping the annotation id on the slotted node.
+      if (el) { el.dataset.prAnnotationId = ann.id; container.appendChild(el); }
+    }
+  };
+
+  for (const f of files) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'd2h-file-wrapper';
+    wrapper.dataset.fileName = f;
+    const container = document.createElement('div');
+    container.className = 'pierre-diff-body';
+    wrapper.appendChild(container);
+    document.body.appendChild(wrapper);
+    annotationsByFile.set(f, []);
+    fileMap.set(f, hunks
+      ? { container, itemType: 'diff', metadata: { hunks: [{ additionStart: 1, additionCount: 50 }] } }
+      : { container });
+  }
+
+  // Per-annotation verdict for the current mode, after a slot pass.
+  const verdictFor = (file, id) => {
+    if (mode === 'virtualizedOut') {
+      return { element: null, mounted: false, slotted: false, reason: 'not-mounted' };
+    }
+    if (mode === 'lineWindowed' || mode === 'outdated') {
+      // File mounted, but the anchor line has no row: either windowed out of the
+      // render range (lineWindowed, valid) or genuinely dropped (outdated). The
+      // bridge can't tell them apart — both report line-not-rendered; the manager
+      // disambiguates via isLineVisible.
+      return { element: null, mounted: true, slotted: false, reason: 'line-not-rendered' };
+    }
+    const { container } = fileMap.get(file);
+    const el = container.querySelector(`.external-comment-row[data-pr-annotation-id="${id}"]`);
+    return el
+      ? { element: el, mounted: true, slotted: true }
+      : { element: null, mounted: true, slotted: false, reason: 'line-not-rendered' };
+  };
+
+  const bridge = {
+    files: fileMap,
+    registerAnnotationRenderer: vi.fn((type, fn) => renderers.set(type, fn)),
+    // Publish into data only — no synchronous slot.
+    addAnnotation: vi.fn((file, ann) => {
+      annotationsByFile.set(file, annotationsByFile.get(file).filter((a) => a.id !== ann.id));
+      annotationsByFile.get(file).push(ann);
+    }),
+    removeAnnotation: vi.fn((file, id) => {
+      annotationsByFile.set(file, annotationsByFile.get(file).filter((a) => a.id !== id));
+      doSlot(file);
+    }),
+    removeAnnotationsByType: vi.fn((file, type) => {
+      annotationsByFile.set(file, annotationsByFile.get(file).filter((a) => a.type !== type));
+      doSlot(file);
+    }),
+    getAnnotations: vi.fn((file, type) =>
+      annotationsByFile.get(file).filter((a) => !type || a.type === type)),
+    // Pure-metadata oracle the manager uses to disambiguate 'line-not-rendered'.
+    isLineVisible: vi.fn(() => lineInDiff),
+    // Per-thread fallback signal (used only when the batch primitive is absent).
+    whenAnnotationSlotted: vi.fn(async (file, id) => {
+      await Promise.resolve();
+      if (mode === 'default') doSlot(file);
+      return verdictFor(file, id);
+    }),
+  };
+
+  if (batch) {
+    // The perf-correct batch primitive: ONE publish + ONE slot pass for the
+    // whole file, returning a Map<id, verdict>.
+    bridge.addAnnotationsAndAwait = vi.fn(async (file, anns) => {
+      await Promise.resolve();
+      for (const a of anns) {
+        annotationsByFile.set(file, annotationsByFile.get(file).filter((x) => x.id !== a.id));
+        annotationsByFile.get(file).push(a);
+      }
+      if (mode === 'default') doSlot(file);
+      const results = new Map();
+      for (const a of anns) results.set(a.id, verdictFor(file, a.id));
+      return results;
+    });
+  }
+
+  return bridge;
 }
 
 describe('ExternalCommentManager pierre annotation path', async () => {
@@ -784,6 +999,228 @@ describe('ExternalCommentManager pierre annotation path', async () => {
     expect(row.dataset.source).toBe('github');
     expect(row.querySelectorAll('.external-comment').length).toBe(1);
     expect(row.querySelector('.external-comment-body').textContent).toBe('pierre body');
+  });
+
+  it('batches a file through addAnnotationsAndAwait (single publish), keeps the slotted rows (regression)', async () => {
+    // Regression for the sync read-back bug AND the ~6x publish regression:
+    // CodeView slots on a later frame, and the whole file's threads must publish
+    // + slot in ONE pass (batch), not one addAnnotation + await per thread.
+    const bridge = makeAsyncPierreBridge({ files: ['src/app.js'] });
+    window.prManager = { pierreBridge: bridge, ensureLinesVisible: vi.fn(async () => {}) };
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [makeComment({ id: 7, body: 'pierre body' })]);
+    await mgr.render();
+
+    // ONE batched call for the file; the per-thread await loop is not used.
+    expect(bridge.addAnnotationsAndAwait).toHaveBeenCalledTimes(1);
+    expect(bridge.addAnnotationsAndAwait).toHaveBeenCalledWith('src/app.js', expect.any(Array));
+    expect(bridge.whenAnnotationSlotted).not.toHaveBeenCalled();
+    // No rollback, no fallback demotion.
+    expect(bridge.removeAnnotation).not.toHaveBeenCalled();
+    const rows = document.querySelectorAll('.external-comment-row');
+    expect(rows.length).toBe(1);
+    expect(rows[0].dataset.threadId).toBe('7');
+    expect(rows[0].classList.contains('external-comment-row--file-level')).toBe(false);
+    expect(rows[0].classList.contains('external-comment-row--file-fallback')).toBe(false);
+  });
+
+  it('batches ALL threads of one file into a single addAnnotationsAndAwait call', async () => {
+    const bridge = makeAsyncPierreBridge({ files: ['src/app.js'] });
+    window.prManager = { pierreBridge: bridge, ensureLinesVisible: vi.fn(async () => {}) };
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [
+      makeComment({ id: 7, line_start: 10, line_end: 10, body: 'first' }),
+      makeComment({ id: 8, line_start: 12, line_end: 12, body: 'second' }),
+      makeComment({ id: 9, line_start: 20, line_end: 20, body: 'third' }),
+    ]);
+    await mgr.render();
+
+    // Exactly one batched publish for the file, carrying all three annotations.
+    expect(bridge.addAnnotationsAndAwait).toHaveBeenCalledTimes(1);
+    const [file, anns] = bridge.addAnnotationsAndAwait.mock.calls[0];
+    expect(file).toBe('src/app.js');
+    expect(anns).toHaveLength(3);
+    expect(anns.map((a) => a.data.id)).toEqual([7, 8, 9]);
+    // ensureLinesVisible was batched too — one call covering all three lines.
+    expect(window.prManager.ensureLinesVisible).toHaveBeenCalledTimes(1);
+    expect(window.prManager.ensureLinesVisible.mock.calls[0][0]).toHaveLength(3);
+    // All three rows slotted, none demoted.
+    expect(document.querySelectorAll('.external-comment-row').length).toBe(3);
+    expect(document.querySelector('.external-comment-row--file-fallback')).toBeNull();
+  });
+
+  it('virtualized-out file: keeps the annotations, does NOT demote to a file-level card', async () => {
+    const bridge = makeAsyncPierreBridge({ files: ['src/app.js'], mode: 'virtualizedOut' });
+    window.prManager = { pierreBridge: bridge, ensureLinesVisible: vi.fn(async () => {}) };
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [makeComment({ id: 7 })]);
+    await mgr.render();
+
+    // Batched publish; every verdict is not-mounted → keep. No rollback, no
+    // fallback card (the whole file is off-screen; rows slot when it scrolls in).
+    expect(bridge.addAnnotationsAndAwait).toHaveBeenCalledTimes(1);
+    expect(bridge.removeAnnotation).not.toHaveBeenCalled();
+    expect(document.querySelector('.external-comment-row')).toBeNull();
+  });
+
+  it('virtualized-out file with a stale anchor: rolls back and falls back to a file-level card', async () => {
+    // Regression: 'not-mounted' only says the FILE is off-screen — it says
+    // nothing about the anchor line. Keeping the annotation unconditionally made
+    // a stale anchor (GitHub comment on a line no longer in the diff) behave
+    // differently by scroll position: demoted to a file-level card while the
+    // file is on-screen, but kept as an annotation that can never slot while it
+    // is off-screen, so the discussion was permanently invisible. With hunk
+    // metadata published, isLineVisible answers for an unmounted file too.
+    const bridge = makeAsyncPierreBridge({
+      files: ['src/app.js'],
+      mode: 'virtualizedOut',
+      hunks: true,
+      lineInDiff: false,
+    });
+    const wrapper = document.querySelector('.d2h-file-wrapper[data-file-name="src/app.js"]');
+    const zone = document.createElement('div');
+    zone.className = 'file-comments-zone';
+    zone.dataset.fileName = 'src/app.js';
+    zone.innerHTML = '<div class="file-comments-container"></div>';
+    wrapper.prepend(zone);
+    window.prManager = { pierreBridge: bridge, ensureLinesVisible: vi.fn(async () => {}) };
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [makeComment({ id: 7 })]);
+    await mgr.render();
+
+    expect(bridge.isLineVisible).toHaveBeenCalledWith('src/app.js', 10, 'RIGHT');
+    expect(bridge.removeAnnotation).toHaveBeenCalledWith('src/app.js', expect.any(String));
+    const fallback = document.querySelector('.external-comment-row--file-fallback');
+    expect(fallback).not.toBeNull();
+    expect(fallback.dataset.threadId).toBe('7');
+  });
+
+  it('virtualized-out file with a valid anchor line: keeps the annotation', async () => {
+    // Same off-screen file, but the anchor IS a real diff line — the thread must
+    // stay anchored so it slots when the file scrolls in.
+    const bridge = makeAsyncPierreBridge({
+      files: ['src/app.js'],
+      mode: 'virtualizedOut',
+      hunks: true,
+      lineInDiff: true,
+    });
+    window.prManager = { pierreBridge: bridge, ensureLinesVisible: vi.fn(async () => {}) };
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [makeComment({ id: 7 })]);
+    await mgr.render();
+
+    expect(bridge.isLineVisible).toHaveBeenCalledWith('src/app.js', 10, 'RIGHT');
+    expect(bridge.removeAnnotation).not.toHaveBeenCalled();
+    expect(document.querySelector('.external-comment-row')).toBeNull();
+  });
+
+  it('virtualized-out file with NO hunk metadata yet: keeps the annotation without consulting the oracle', async () => {
+    // Nothing published to judge with — isLineVisible would answer false for
+    // "not parsed yet" exactly as it does for "line absent", so demoting here
+    // would wrongly strip every thread of a file whose patch has not landed.
+    const bridge = makeAsyncPierreBridge({ files: ['src/app.js'], mode: 'virtualizedOut' });
+    window.prManager = { pierreBridge: bridge, ensureLinesVisible: vi.fn(async () => {}) };
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [makeComment({ id: 7 })]);
+    await mgr.render();
+
+    expect(bridge.isLineVisible).not.toHaveBeenCalled();
+    expect(bridge.removeAnnotation).not.toHaveBeenCalled();
+    expect(document.querySelector('.external-comment-row')).toBeNull();
+  });
+
+  it('falls back to the per-thread path when the bridge lacks the batch primitive', async () => {
+    // Older bridge builds without addAnnotationsAndAwait must still render
+    // correctly via the per-thread addAnnotation + whenAnnotationSlotted loop.
+    const bridge = makeAsyncPierreBridge({ files: ['src/app.js'], batch: false });
+    window.prManager = { pierreBridge: bridge, ensureLinesVisible: vi.fn(async () => {}) };
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [makeComment({ id: 7, body: 'pierre body' })]);
+    await mgr.render();
+
+    expect(bridge.addAnnotationsAndAwait).toBeUndefined();
+    expect(bridge.addAnnotation).toHaveBeenCalledTimes(1);
+    expect(bridge.whenAnnotationSlotted).toHaveBeenCalledWith('src/app.js', expect.any(String));
+    expect(bridge.removeAnnotation).not.toHaveBeenCalled();
+    const rows = document.querySelectorAll('.external-comment-row');
+    expect(rows.length).toBe(1);
+    expect(rows[0].dataset.threadId).toBe('7');
+  });
+
+  it('line windowed out but IS a real diff line: keeps the annotation, no file-level demotion', async () => {
+    // Regression guard: a mounted long file's far-away line can lack a row purely
+    // from render-range windowing. isLineVisible (metadata) says the line is in
+    // the diff, so the thread must stay anchored (it slots when the window
+    // reaches it) — NOT be demoted to a file-level card.
+    const bridge = makeAsyncPierreBridge({ files: ['src/app.js'], mode: 'lineWindowed' });
+    window.prManager = { pierreBridge: bridge, ensureLinesVisible: vi.fn(async () => {}) };
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [makeComment({ id: 7 })]);
+    await mgr.render();
+
+    // Metadata oracle consulted; annotation kept; no rollback, no fallback card.
+    expect(bridge.isLineVisible).toHaveBeenCalledWith('src/app.js', 10, 'RIGHT');
+    expect(bridge.removeAnnotation).not.toHaveBeenCalled();
+    expect(document.querySelector('.external-comment-row--file-fallback')).toBeNull();
+    expect(document.querySelector('.external-comment-row--file-level')).toBeNull();
+  });
+
+  it('outdated line genuinely absent from the diff: rolls back and falls back to a file-level card', async () => {
+    const bridge = makeAsyncPierreBridge({ files: ['src/app.js'], mode: 'outdated' });
+    // A comments zone so the file-level fallback has somewhere to land.
+    const wrapper = document.querySelector('.d2h-file-wrapper[data-file-name="src/app.js"]');
+    const zone = document.createElement('div');
+    zone.className = 'file-comments-zone';
+    zone.dataset.fileName = 'src/app.js';
+    zone.innerHTML = '<div class="file-comments-container"></div>';
+    wrapper.prepend(zone);
+    window.prManager = { pierreBridge: bridge, ensureLinesVisible: vi.fn(async () => {}) };
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [makeComment({ id: 7 })]);
+    await mgr.render();
+
+    // line-not-rendered AND isLineVisible=false (line dropped from the diff) →
+    // roll back the annotation and fall back to a file-level card.
+    expect(bridge.isLineVisible).toHaveBeenCalledWith('src/app.js', 10, 'RIGHT');
+    expect(bridge.removeAnnotation).toHaveBeenCalledWith('src/app.js', expect.any(String));
+    const fallback = document.querySelector('.external-comment-row--file-fallback');
+    expect(fallback).not.toBeNull();
+    expect(fallback.dataset.threadId).toBe('7');
+  });
+
+  it('rebuilds a complete row on virtualization remount without stacking duplicates', async () => {
+    const bridge = makePierreBridge({ files: ['src/app.js'] });
+    window.prManager = { pierreBridge: bridge, ensureLinesVisible: vi.fn(async () => {}) };
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [makeComment({ id: 7, body: 'pierre body' })]);
+    await mgr.render();
+    const first = document.querySelector('.external-comment-row');
+    expect(first).not.toBeNull();
+
+    // The file scrolls out and back: CodeView discards the slotted <div> and
+    // re-invokes the registered renderer from the stored thread data.
+    bridge._remount('src/app.js');
+
+    const rows = document.querySelectorAll('.external-comment-row');
+    // Exactly one row — the remount rebuilds, it does not stack.
+    expect(rows.length).toBe(1);
+    const second = rows[0];
+    // A brand-new element, fully rebuilt from data (thread id, body preserved).
+    expect(second).not.toBe(first);
+    expect(second.tagName).toBe('DIV');
+    expect(second.dataset.threadId).toBe('7');
+    expect(second.dataset.source).toBe('github');
+    expect(second.querySelector('.external-comment-body').textContent).toBe('pierre body');
   });
 
   it('expands collapsed gaps (ensureLinesVisible) BEFORE adding the annotation', async () => {

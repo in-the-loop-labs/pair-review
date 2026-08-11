@@ -1,16 +1,15 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { JSDOM } from 'jsdom';
+const { createPierreEnv } = require('../utils/fake-code-view');
 
-const BRIDGE_PATH = '../../public/js/modules/pierre-bridge.js';
 const HUNK_PARSER_PATH = '../../public/js/modules/hunk-parser.js';
 
-// Coverage for eliminating the double patch parse: renderFile parses the patch
-// once (parsePatchFiles → Pierre metadata) and computeDiffPositions derives the
-// diffPosition map from that metadata's ordered hunkContent instead of parsing
-// the same patch a SECOND time with HunkParser. The derivation must be byte-for
-// -byte identical to the raw-patch walk, and must fall back to raw parsing when
-// metadata lacks hunkContent.
+// Coverage for eliminating the double patch parse: creating a diff item parses
+// the patch once (parsePatchFiles -> Pierre metadata) and computeDiffPositions
+// derives the diffPosition map from that metadata's ordered hunkContent instead
+// of parsing the same patch a SECOND time with HunkParser. The derivation must
+// be byte-for-byte identical to the raw-patch walk, and must fall back to raw
+// parsing when metadata lacks hunkContent.
 
 // One representative mixed hunk (context + change + context) and its metadata.
 const PATCH = '@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n';
@@ -41,29 +40,19 @@ function mapsEqual(a, b) {
 }
 
 describe('PierreBridge.computeDiffPositions metadata derivation', () => {
-  let PierreBridge;
-  let dom;
+  let env;
   let bridge;
 
   beforeEach(() => {
-    delete require.cache[require.resolve(BRIDGE_PATH)];
+    env = createPierreEnv({ diffs: false });
     delete require.cache[require.resolve(HUNK_PARSER_PATH)];
-    dom = new JSDOM('<!doctype html><body></body>', { url: 'http://localhost/' });
-    global.document = dom.window.document;
-    global.window = {
-      PierreDiffs: undefined,
-      matchMedia: () => ({ matches: false }),
-    };
-    global.requestAnimationFrame = () => {};
-    PierreBridge = require(BRIDGE_PATH);
-    require(HUNK_PARSER_PATH); // assigns global.window.HunkParser
-    bridge = new PierreBridge({});
+    require(HUNK_PARSER_PATH); // assigns window.HunkParser
+    bridge = new env.PierreBridge({});
   });
 
   afterEach(() => {
-    delete global.window;
-    delete global.document;
-    delete global.requestAnimationFrame;
+    delete require.cache[require.resolve(HUNK_PARSER_PATH)];
+    env.cleanup();
     vi.restoreAllMocks();
   });
 
@@ -146,50 +135,36 @@ describe('PierreBridge.computeDiffPositions metadata derivation', () => {
   });
 });
 
-describe('PierreBridge.renderFile parses the patch only once', () => {
-  let PierreBridge;
-  let dom;
+describe('PierreBridge.renderAll builds each diff item parsing the patch only once', () => {
+  let env;
+  let bridge;
   let parsePatchFiles;
-  let FakeFileDiff;
 
   beforeEach(() => {
-    delete require.cache[require.resolve(BRIDGE_PATH)];
+    // parsePatchFiles returns the mixed-hunk METADATA (with hunkContent), so
+    // computeDiffPositions derives positions from it and never touches HunkParser.
+    parsePatchFiles = vi.fn((input) => [{ files: [structuredClone(METADATA)] }]);
+    env = createPierreEnv({ worker: false });
+    global.window.PierreDiffs.parsePatchFiles = parsePatchFiles;
     delete require.cache[require.resolve(HUNK_PARSER_PATH)];
-    dom = new JSDOM('<!doctype html><body></body>', { url: 'http://localhost/' });
-    global.document = dom.window.document;
-    global.requestAnimationFrame = () => {};
-
-    parsePatchFiles = vi.fn(() => [{ files: [structuredClone(METADATA)] }]);
-    FakeFileDiff = class {
-      constructor() { this.fileDiff = { hunks: METADATA.hunks }; }
-      render() { return true; }
-    };
-    global.window = {
-      matchMedia: () => ({ matches: false }),
-      PierreDiffs: {
-        parsePatchFiles,
-        getSingularPatch: () => null,
-        FileDiff: FakeFileDiff,
-        // No WorkerPoolManager → bridge runs worker-free.
-      },
-    };
-    PierreBridge = require(BRIDGE_PATH);
     require(HUNK_PARSER_PATH);
+    bridge = new env.PierreBridge({});
   });
 
   afterEach(() => {
-    delete global.window;
-    delete global.document;
-    delete global.requestAnimationFrame;
+    delete require.cache[require.resolve(HUNK_PARSER_PATH)];
+    env.cleanup();
     vi.restoreAllMocks();
   });
 
   it('parses via parsePatchFiles once and never via HunkParser', () => {
-    const bridge = new PierreBridge({});
     const hunkSpy = vi.spyOn(global.window.HunkParser, 'parseDiffIntoBlocks');
-    const container = global.document.createElement('div');
+    const root = global.document.createElement('div');
 
-    const fileState = bridge.renderFile('a.js', container, PATCH);
+    const files = bridge.renderAll(root, [
+      { id: 'a.js', type: 'diff', fileName: 'a.js', patch: PATCH },
+    ]);
+    const fileState = files.get('a.js');
 
     expect(fileState).toBeTruthy();
     expect(parsePatchFiles).toHaveBeenCalledTimes(1);
@@ -198,5 +173,8 @@ describe('PierreBridge.renderFile parses the patch only once', () => {
     // diffPositions still computed correctly.
     expect(fileState.diffPositions.get('RIGHT:2')).toBe(4);
     expect(fileState.diffPositions.get('LEFT:3')).toBe(5);
+    // One CodeView built, seeded with exactly the one diff item.
+    expect(env.codeViews).toHaveLength(1);
+    expect(env.codeViews[0].itemIds()).toEqual(['a.js']);
   });
 });

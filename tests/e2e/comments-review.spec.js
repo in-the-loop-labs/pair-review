@@ -7,19 +7,15 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender, hoverDiffLine } from './helpers.js';
+import { waitForDiffToRender, openCommentFormOnLine, expectResponse } from './helpers.js';
 
 test.describe('Comment Creation', () => {
   test('should show comment form when add comment button is clicked', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
-    // Hover over a line number to show the add comment button
-    await hoverDiffLine(page, 0);
-
-    // Click the add comment button
-    const addCommentBtn = page.locator('.pierre-comment-btn').first();
-    await addCommentBtn.click();
+    // Open the comment form (hardened re-hover-and-click reveal).
+    await openCommentFormOnLine(page, 0);
 
     // The comment form should appear (.user-comment-form is the actual class)
     const commentForm = page.locator('.user-comment-form, .comment-form-row');
@@ -30,9 +26,7 @@ test.describe('Comment Creation', () => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
-    // Hover and click add comment
-    await hoverDiffLine(page, 0);
-    await page.locator('.pierre-comment-btn').first().click();
+    await openCommentFormOnLine(page, 0);
 
     // Should have a textarea for comment input
     const textarea = page.locator('.user-comment-form textarea, .comment-textarea');
@@ -43,12 +37,7 @@ test.describe('Comment Creation', () => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
-    // Hover and click add comment
-    await hoverDiffLine(page, 0);
-    await page.locator('.pierre-comment-btn').first().click();
-
-    // Wait for form to appear
-    await page.waitForSelector('.user-comment-form', { timeout: 5000 });
+    await openCommentFormOnLine(page, 0);
 
     // Should have submit button (uses btn-primary or Add Comment text)
     const submitBtn = page.locator('.comment-form-actions button.btn-primary, button:has-text("Add Comment")');
@@ -64,12 +53,8 @@ test.describe('Comment Creation', () => {
     await waitForDiffToRender(page);
 
     // Hover and click add comment
-    await hoverDiffLine(page, 0);
-    await page.locator('.pierre-comment-btn').first().click();
-
-    // Wait for form
+    await openCommentFormOnLine(page, 0);
     const form = page.locator('.user-comment-form');
-    await expect(form.first()).toBeVisible({ timeout: 5000 });
 
     // Click cancel button
     const cancelBtn = page.locator('.comment-form-actions button:has-text("Cancel")');
@@ -146,7 +131,7 @@ test.describe('Review Modal', () => {
 test.describe('API Integration', () => {
   test('should fetch PR data from API on page load', async ({ page }) => {
     // Set up response listener before navigation
-    const responsePromise = page.waitForResponse(
+    const responsePromise = expectResponse(page,
       response => response.url().includes('/api/pr/') && response.status() === 200
     );
 
@@ -159,7 +144,7 @@ test.describe('API Integration', () => {
 
   test('should fetch diff data from API', async ({ page }) => {
     // Set up response listener
-    const responsePromise = page.waitForResponse(
+    const responsePromise = expectResponse(page,
       response => response.url().includes('/diff') && response.status() === 200,
       { timeout: 15000 }
     );

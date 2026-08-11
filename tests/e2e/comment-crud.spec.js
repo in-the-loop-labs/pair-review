@@ -14,23 +14,13 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender, openCommentFormOnLine, hoverDiffLine } from './helpers.js';
-
-// Helper to clean up all user comments (call via API to ensure clean state)
-async function cleanupAllComments(page) {
-  // Delete all user comments via API to ensure test isolation
-  await page.evaluate(async () => {
-    // Fetch all user comments (including dismissed ones) using the correct API
-    const commentsResponse = await fetch('/api/reviews/1/comments?includeDismissed=true');
-    const data = await commentsResponse.json();
-    const comments = data.comments || [];
-
-    // Delete each user comment (this performs a hard delete for inactive/dismissed comments)
-    for (const comment of comments) {
-      await fetch(`/api/reviews/1/comments/${comment.id}`, { method: 'DELETE' });
-    }
-  });
-}
+import {
+  waitForDiffToRender,
+  openCommentFormOnLine,
+  hoverUntilGutterVisible,
+  expectResponse,
+  cleanupAllComments,
+} from './helpers.js';
 
 test.describe('Comment Creation and Submission', () => {
   test.afterEach(async ({ page }) => {
@@ -208,7 +198,7 @@ test.describe('Comment Editing', () => {
     await editTextarea.fill('Edited comment text');
 
     // Wait for API call to complete
-    const responsePromise = page.waitForResponse(
+    const responsePromise = expectResponse(page,
       response => response.url().includes('/comments/') && response.request().method() === 'PUT'
     );
 
@@ -274,7 +264,7 @@ test.describe('Comment Editing', () => {
     await editTextarea.fill(textWithQuotes);
 
     // Wait for API call to complete
-    const saveResponsePromise = page.waitForResponse(
+    const saveResponsePromise = expectResponse(page,
       response => response.url().includes('/comments/') && response.request().method() === 'PUT'
     );
 
@@ -323,7 +313,7 @@ test.describe('Comment Editing', () => {
     const textWithQuotes = "It's important to check the value's type";
     await editTextarea.fill(textWithQuotes);
 
-    const saveResponsePromise = page.waitForResponse(
+    const saveResponsePromise = expectResponse(page,
       response => response.url().includes('/comments/') && response.request().method() === 'PUT'
     );
 
@@ -379,7 +369,7 @@ test.describe('Comment Deletion', () => {
     const commentId = await commentRow.getAttribute('data-comment-id');
 
     // Set up API listener before deletion
-    const deleteResponsePromise = page.waitForResponse(
+    const deleteResponsePromise = expectResponse(page,
       response => response.url().includes('/comments/') && response.request().method() === 'DELETE'
     );
 
@@ -408,10 +398,16 @@ test.describe('Multi-line Selection', () => {
     const count = await lineNumbers.count();
     expect(count).toBeGreaterThan(2);
 
-    await hoverDiffLine(page, 1);
-
-    const commentBtn = page.locator('.pierre-comment-btn').first();
-    await expect(commentBtn).toBeVisible({ timeout: 3000 });
+    // Re-hover on each poll (hoverUntilGutterVisible), like the sibling
+    // multi-line test: the vendor reveals the gutter only while the row is
+    // hovered, and an async re-render (the ~1s content upgrade) can rebuild the
+    // row out from under a ONE-SHOT hover, so the button is never visible for
+    // the plain `toBeVisible` that follows.
+    await hoverUntilGutterVisible(page, {
+      cell: page.locator('[data-column-number]').nth(1),
+      button: page.locator('.pierre-comment-btn').first(),
+      timeout: 8000,
+    });
   });
 
   test('should keep the gutter comment button available after a multi-line selection', async ({ page }) => {
@@ -420,20 +416,36 @@ test.describe('Multi-line Selection', () => {
 
     // Drive the @pierre/diffs line selection directly, the same way the
     // PierreBridge does when the user drags from the gutter button. The
-    // pointer-drag plumbing is covered by pierre-bridge unit tests.
+    // pointer-drag plumbing is covered by pierre-bridge unit tests. Target
+    // utils.js, whose first hunk has real additions on lines 2-7 (main.js's
+    // additions start at line 12, so a 3-5 range there would select nothing).
     const applied = await page.evaluate(() => {
       const bridge = window.prManager?.pierreBridge;
-      if (!bridge) return false;
-      const [fileState] = bridge.files.values();
-      if (!fileState?.instance) return false;
-      fileState.instance.setSelectedLines({ start: 2, end: 4, side: 'additions' });
+      if (!bridge?.codeView) return false;
+      const fileState = bridge.files.get('src/utils.js');
+      if (!fileState) return false;
+      // The single CodeView owns line selection now (the bridge drives it the
+      // same way from a gutter-button drag) — the per-file instance is private
+      // (`_instance`), so go through the public codeView selection API.
+      bridge.codeView.setSelectedLines({
+        id: 'src/utils.js',
+        range: { start: 3, end: 5, side: 'additions' },
+      });
       return true;
     });
     expect(applied).toBe(true);
 
-    await hoverDiffLine(page, 2);
-    const commentBtn = page.locator('.pierre-comment-btn').first();
-    await expect(commentBtn).toBeVisible({ timeout: 3000 });
+    // The gutter button must stay available after the selection. It reveals
+    // only while its row is hovered; hoverUntilGutterVisible re-hovers on each
+    // poll so a reveal dropped by an async re-render (the ~1s content-upgrade)
+    // is re-established. Scope to the utils.js host so we assert on THAT file's
+    // button, not another mounted file's (hidden) one.
+    const utilsHost = page.locator('diffs-container[data-file-name="src/utils.js"]');
+    await hoverUntilGutterVisible(page, {
+      cell: utilsHost.locator('[data-column-number="4"]').last(),
+      button: utilsHost.locator('.pierre-comment-btn').first(),
+      timeout: 5000,
+    });
   });
 
   test('should create a comment for a multi-line range', async ({ page }) => {
@@ -448,10 +460,15 @@ test.describe('Multi-line Selection', () => {
 
     const applied = await page.evaluate(() => {
       const bridge = window.prManager?.pierreBridge;
-      if (!bridge) return false;
+      if (!bridge?.codeView) return false;
       const fileState = bridge.files.get('src/utils.js');
-      if (!fileState?.instance) return false;
-      fileState.instance.setSelectedLines({ start: 3, end: 5, side: 'additions' });
+      if (!fileState) return false;
+      // Drive selection through the single CodeView (matches how the bridge's
+      // gutter-drag sets it); the per-file `_instance` is private.
+      bridge.codeView.setSelectedLines({
+        id: 'src/utils.js',
+        range: { start: 3, end: 5, side: 'additions' },
+      });
       return true;
     });
     expect(applied).toBe(true);
@@ -555,7 +572,7 @@ test.describe('Comment API Integration', () => {
     await waitForDiffToRender(page);
 
     // Set up API response listener
-    const responsePromise = page.waitForResponse(
+    const responsePromise = expectResponse(page,
       response => response.url().includes('/comments') && response.request().method() === 'POST'
     );
 
@@ -586,7 +603,7 @@ test.describe('Comment API Integration', () => {
     await expect(page.locator('.user-comment-row').first()).toBeVisible({ timeout: 5000 });
 
     // Set up delete API listener
-    const deleteResponsePromise = page.waitForResponse(
+    const deleteResponsePromise = expectResponse(page,
       response => response.url().includes('/comments/') && response.request().method() === 'DELETE'
     );
 
@@ -610,7 +627,7 @@ test.describe('Comment API Integration', () => {
     await expect(page.locator('.user-comment-row').first()).toBeVisible({ timeout: 5000 });
 
     // Set up update API listener
-    const updateResponsePromise = page.waitForResponse(
+    const updateResponsePromise = expectResponse(page,
       response => response.url().includes('/comments/') && response.request().method() === 'PUT'
     );
 

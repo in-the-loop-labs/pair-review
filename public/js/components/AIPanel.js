@@ -6,6 +6,11 @@
  */
 
 class AIPanel {
+    // Frame budget for the nav row poll after a smooth materialize-scroll.
+    // Matches the bridge's own line-flash poll order of magnitude — long enough
+    // for a smooth scroll to land the row, short enough to never feel stuck.
+    static NAV_ROW_MAX_FRAMES = 30;
+
     // Icon SVG constants for reuse
     static ICONS = {
         adopt: `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
@@ -1196,75 +1201,60 @@ class AIPanel {
         const resolvedSide = side
             || this.findings?.find(f => String(f.id) === String(findingId))?.side
             || 'RIGHT';
-        // Expand the file first if it's collapsed
-        const expansion = this.expandFileIfCollapsed(file);
-        if (expansion && typeof expansion.then === 'function') await expansion;
-        // Always render the target's lazy body — an expanded-but-offscreen
-        // body has no suggestion rows until rendered, so the lookup below
-        // would miss on the first attempt (expansion only covers the
-        // collapsed case).
-        if (file && window.prManager?.ensureFileBodyRendered) {
-            try { await window.prManager.ensureFileBodyRendered(file); } catch { /* best effort */ }
+        // Expand/render the file, reveal a collapsed gap and/or materialize a
+        // virtualized-out target, then resolve the row (shared with
+        // scrollToComment/scrollToExternalThread). Bails on supersede.
+        const findRow = () => this._findFindingRow(findingId, file, line);
+        if (!(await this._ensureNavTargetRendered({ file, line, side: resolvedSide, myGen, findRow }))) return;
+
+        const targetSuggestion = findRow();
+        if (!targetSuggestion) return;
+
+        const minimizer = window.prManager?.commentMinimizer;
+        let scrollTarget = targetSuggestion;
+        if (minimizer?.active) {
+            // Expand file-level comments so the target becomes visible
+            minimizer.expandForElement(targetSuggestion);
+            // Comments are minimized — scroll to the parent diff line instead
+            scrollTarget = minimizer.findDiffRowFor(targetSuggestion) || targetSuggestion;
         }
+        this._scrollDiffTarget(scrollTarget);
+        targetSuggestion.classList.add('current-suggestion');
+        setTimeout(() => targetSuggestion.classList.remove('current-suggestion'), 2000);
+    }
 
-        const doScroll = async () => {
-            // Reveal the target line first — for Pierre-rendered files this
-            // materializes deferred diffs and expands collapsed gaps.
-            if (file && line && window.prManager?.ensureLinesVisible) {
-                await window.prManager.ensureLinesVisible([
-                    { file, line_start: parseInt(line, 10), line_end: parseInt(line, 10), side: resolvedSide }
-                ]);
-            }
-
-            let targetSuggestion = null;
-
-            // First, try to find by exact ID match (most reliable)
-            if (findingId) {
-                targetSuggestion = document.querySelector(`.ai-suggestion[data-suggestion-id="${findingId}"]`);
-            }
-
-            // Fallback: match by file and line (for suggestions without IDs)
-            if (!targetSuggestion && file) {
-                const suggestions = document.querySelectorAll('.ai-suggestion');
-                for (const suggestion of suggestions) {
-                    const suggestionFile = suggestion.closest('[data-file-name]')?.dataset?.fileName;
-                    if (suggestionFile && suggestionFile.includes(file)) {
-                        // If we have a line number, try to match more precisely
-                        if (line) {
-                            const row = suggestion.closest('tr');
-                            const prevRow = row?.previousElementSibling;
-                            const rowLine = prevRow?.querySelector('.line-num2')?.textContent?.trim();
-                            if (rowLine === line) {
-                                targetSuggestion = suggestion;
-                                break;
-                            }
-                        } else {
-                            // No line specified, take first match in file
-                            targetSuggestion = suggestion;
-                            break;
-                        }
+    /**
+     * Locate the live `.ai-suggestion` element for a finding: by exact id, then
+     * by file (and line, when given). Returns null when none is in the DOM.
+     * @param {string|number} findingId
+     * @param {string} file
+     * @param {number|string} line
+     * @returns {HTMLElement|null}
+     * @private
+     */
+    _findFindingRow(findingId, file, line) {
+        if (typeof document === 'undefined') return null;
+        if (findingId) {
+            const byId = document.querySelector(`.ai-suggestion[data-suggestion-id="${findingId}"]`);
+            if (byId) return byId;
+        }
+        if (file) {
+            const suggestions = document.querySelectorAll('.ai-suggestion');
+            for (const suggestion of suggestions) {
+                const suggestionFile = suggestion.closest('[data-file-name]')?.dataset?.fileName;
+                if (suggestionFile && suggestionFile.includes(file)) {
+                    if (line) {
+                        const row = suggestion.closest('tr');
+                        const prevRow = row?.previousElementSibling;
+                        const rowLine = prevRow?.querySelector('.line-num2')?.textContent?.trim();
+                        if (rowLine === line) return suggestion;
+                    } else {
+                        return suggestion;
                     }
                 }
             }
-
-            if (targetSuggestion) {
-                const minimizer = window.prManager?.commentMinimizer;
-                let scrollTarget = targetSuggestion;
-                if (minimizer?.active) {
-                    // Expand file-level comments so the target becomes visible
-                    minimizer.expandForElement(targetSuggestion);
-                    // Comments are minimized — scroll to the parent diff line instead
-                    scrollTarget = minimizer.findDiffRowFor(targetSuggestion) || targetSuggestion;
-                }
-                this._scrollDiffTarget(scrollTarget);
-                targetSuggestion.classList.add('current-suggestion');
-                setTimeout(() => targetSuggestion.classList.remove('current-suggestion'), 2000);
-            }
-        };
-
-        // A newer navigation took over while we awaited — let it win.
-        if (myGen !== this._navGen) return;
-        doScroll();
+        }
+        return null;
     }
 
     /**
@@ -1299,85 +1289,97 @@ class AIPanel {
         const resolvedSide = side
             || this.comments?.find(c => String(c.id) === String(commentId))?.side
             || 'RIGHT';
-        // Expand the file first if it's collapsed
-        const expansion = this.expandFileIfCollapsed(file);
-        if (expansion && typeof expansion.then === 'function') await expansion;
-        // Always render the target's lazy body — comment rows don't exist
-        // inside an unrendered body, so the lookup below would miss.
-        if (file && window.prManager?.ensureFileBodyRendered) {
-            try { await window.prManager.ensureFileBodyRendered(file); } catch { /* best effort */ }
+        const comment = this.comments.find(c => String(c.id) === String(commentId));
+        const isFileLevel = !!(comment && (comment.is_file_level === 1 || comment.is_file_level === true));
+
+        // Expand/render the file, reveal a collapsed gap and/or materialize a
+        // virtualized-out target, then resolve the row (shared with
+        // scrollToFinding/scrollToExternalThread).
+        // File-level comments live in the header's comments zone (no line anchor),
+        // so materialization uses a file-scroll (line omitted) to mount the file.
+        const findRow = () => this._findCommentRow(commentId, file, line, isFileLevel);
+        if (!(await this._ensureNavTargetRendered({
+            file, line: isFileLevel ? null : line, side: resolvedSide, myGen, findRow,
+        }))) return;
+
+        const targetElement = findRow();
+        if (!targetElement) return;
+
+        // Expand the file-comments zone if the target is a file-level card.
+        if (isFileLevel) {
+            const zone = targetElement.closest('.file-comments-zone');
+            if (zone && zone.classList.contains('collapsed')) {
+                zone.classList.remove('collapsed');
+            }
         }
 
-        const doScroll = async () => {
-            if (file && line && window.prManager?.ensureLinesVisible) {
-                await window.prManager.ensureLinesVisible([
-                    { file, line_start: parseInt(line, 10), line_end: parseInt(line, 10), side: resolvedSide }
-                ]);
-            }
+        const minimizer = window.prManager?.commentMinimizer;
+        let scrollTarget = targetElement;
+        if (minimizer?.active) {
+            minimizer.expandForElement(targetElement);
+            const diffRow = isFileLevel ? null : minimizer.findDiffRowFor(targetElement);
+            scrollTarget = diffRow || targetElement;
+        }
+        this._scrollDiffTarget(scrollTarget);
+        // Add highlight effect — find .user-comment inside (works for both
+        // legacy rows and @pierre/diffs annotation divs)
+        const commentDiv = isFileLevel ? targetElement : (targetElement.querySelector('.user-comment') || targetElement);
+        if (commentDiv) {
+            commentDiv.classList.add('highlight-flash');
+            setTimeout(() => commentDiv.classList.remove('highlight-flash'), 2000);
+        }
+    }
 
-            let targetElement = null;
-            let isFileLevel = false;
-
-            // Check if this is a file-level comment
-            const comment = this.comments.find(c => String(c.id) === String(commentId));
-            if (comment && (comment.is_file_level === 1 || comment.is_file_level === true)) {
-                isFileLevel = true;
-            }
-
-            // For file-level comments, find the comment card in the file-comments-zone
-            if (isFileLevel && commentId) {
-                targetElement = document.querySelector(`.file-comment-card[data-comment-id="${commentId}"]`);
-
-                // If found, make sure the zone is expanded
-                if (targetElement) {
-                    const zone = targetElement.closest('.file-comments-zone');
-                    if (zone && zone.classList.contains('collapsed')) {
-                        zone.classList.remove('collapsed');
-                    }
+    /**
+     * Locate the live comment element: a file-level `.file-comment-card`, else a
+     * line-level `.user-comment-row` / `[data-comment-id]`, else by file+line.
+     * Returns null when none is in the DOM.
+     * @param {string|number} commentId
+     * @param {string} file
+     * @param {number|string} line
+     * @param {boolean} isFileLevel
+     * @returns {HTMLElement|null}
+     * @private
+     */
+    _findCommentRow(commentId, file, line, isFileLevel) {
+        if (typeof document === 'undefined') return null;
+        // Scope to the diff view. The unqualified `[data-comment-id]` selector
+        // would otherwise match the AI panel's OWN elements (the finding-item's
+        // quick-action-chat button also carries data-comment-id), which made the
+        // materialize gate `!findRow()` see a false "row already live" and skip
+        // mounting a virtualized-out comment's file.
+        const root = this._diffRoot();
+        let target = null;
+        if (isFileLevel && commentId) {
+            target = root.querySelector(`.file-comment-card[data-comment-id="${commentId}"]`);
+        }
+        if (!target && commentId) {
+            target = root.querySelector(`.user-comment-row[data-comment-id="${commentId}"]`)
+                || root.querySelector(`[data-comment-id="${commentId}"]`);
+        }
+        if (!target && file && line) {
+            const commentRows = root.querySelectorAll('.user-comment-row, [data-comment-id]');
+            for (const row of commentRows) {
+                if (row.dataset.file === file && row.dataset.lineStart === line) {
+                    target = row;
+                    break;
                 }
             }
+        }
+        return target;
+    }
 
-            // For line-level comments, try to find by exact comment ID.
-            // Legacy path uses .user-comment-row (table rows), annotation path
-            // uses [data-comment-id] on light-DOM divs slotted into @pierre/diffs.
-            if (!targetElement && commentId) {
-                targetElement = document.querySelector(`.user-comment-row[data-comment-id="${commentId}"]`)
-                    || document.querySelector(`[data-comment-id="${commentId}"]`);
-            }
-
-            // Fallback: find by file and line if no direct match
-            if (!targetElement && file && line) {
-                const commentRows = document.querySelectorAll('.user-comment-row, [data-comment-id]');
-                for (const row of commentRows) {
-                    if (row.dataset.file === file && row.dataset.lineStart === line) {
-                        targetElement = row;
-                        break;
-                    }
-                }
-            }
-
-            if (targetElement) {
-                const minimizer = window.prManager?.commentMinimizer;
-                let scrollTarget = targetElement;
-                if (minimizer?.active) {
-                    minimizer.expandForElement(targetElement);
-                    const diffRow = isFileLevel ? null : minimizer.findDiffRowFor(targetElement);
-                    scrollTarget = diffRow || targetElement;
-                }
-                this._scrollDiffTarget(scrollTarget);
-                // Add highlight effect — find .user-comment inside (works for both
-                // legacy rows and @pierre/diffs annotation divs)
-                const commentDiv = isFileLevel ? targetElement : (targetElement.querySelector('.user-comment') || targetElement);
-                if (commentDiv) {
-                    commentDiv.classList.add('highlight-flash');
-                    setTimeout(() => commentDiv.classList.remove('highlight-flash'), 2000);
-                }
-            }
-        };
-
-        // A newer navigation took over while we awaited — let it win.
-        if (myGen !== this._navGen) return;
-        doScroll();
+    /**
+     * The diff-view root to scope nav row lookups to, so a query can never match
+     * the AI panel's own DOM (which mirrors comment/thread/finding ids on its
+     * list items and quick-action buttons). Falls back to `document` when the
+     * container isn't present (e.g. legacy/no-diff test harnesses).
+     * @returns {Document|HTMLElement}
+     * @private
+     */
+    _diffRoot() {
+        if (typeof document === 'undefined') return null;
+        return document.getElementById('diff-container') || document;
     }
 
     /**
@@ -1394,72 +1396,192 @@ class AIPanel {
      */
     async scrollToExternalThread(threadId, source, file, line) {
         const myGen = ++this._navGen;
-        // Expand the file first if it's collapsed
+        const side = this._externalThreadSide(threadId, source);
+        // Strict for the materialize gate: an unrelated mounted row in the same
+        // file must not read as "the target is already live", or the real target
+        // never mounts and we focus the wrong thread.
+        const findRow = () => this._findExternalRow(threadId, source, file, true);
+        // Expand/render the file, reveal a collapsed gap and/or materialize a
+        // virtualized-out target (shared with scrollToComment/scrollToFinding).
+        // Bails on supersede.
+        if (!(await this._ensureNavTargetRendered({ file, line, side, myGen, findRow }))) return;
+
+        // Loose for the final lookup: a rebuilt row can momentarily lack its ids.
+        const target = this._findExternalRow(threadId, source, file);
+        if (!target) return;
+
+        const minimizer = window.prManager?.commentMinimizer;
+        let scrollTarget = target;
+        if (minimizer?.active) {
+            minimizer.expandForElement(target);
+            scrollTarget = minimizer.findDiffRowFor(target) || target;
+        }
+        this._scrollDiffTarget(scrollTarget);
+
+        // Transient focus flash. The class is removed after 2s — if the row is
+        // rebuilt before then, the class is lost with it, which is fine: the
+        // flash is purely cosmetic.
+        target.classList.add('external-comment-row--focused');
+        setTimeout(() => target.classList.remove('external-comment-row--focused'), 2000);
+    }
+
+    /**
+     * Ensure a nav target's annotation row is in the DOM before we look it up,
+     * composing the mechanisms a virtualized diff needs (shared by all three
+     * panel nav paths so a new entry point can't drift):
+     *   0. EXPAND/RENDER — un-collapse the file and await its lazy body. An
+     *      expanded-but-offscreen body carries no suggestion/comment/thread
+     *      rows until rendered, so the caller's lookup would miss outright.
+     *   1. GAP-REVEAL — `prManager.ensureLinesVisible` unfolds a collapsed gap
+     *      covering the anchor line on a MOUNTED file (a folded line has no row).
+     *   2. MATERIALIZE — if the row is STILL absent and the file is
+     *      CodeView-virtualized (present in `bridge.files` but its item/line is
+     *      outside the render window), scroll it in via the bridge
+     *      (`scrollToLine` for a real 1-indexed line, else `scrollToFile`) and
+     *      await the slot signal, then poll (bounded) for the row itself.
+     *
+     * Every await re-checks the latest-wins `_navGen`; returns false when a newer
+     * navigation superseded this one (caller bails instead of snapping to a
+     * stale target). A non-pierre / legacy file with no live row is a graceful
+     * no-op (returns true; the caller's lookup simply finds nothing).
+     *
+     * @param {Object} opts
+     * @param {string} opts.file
+     * @param {number|string} opts.line - anchor line (null/NaN → file-level scroll)
+     * @param {string} opts.side - 'LEFT' | 'RIGHT'
+     * @param {number} opts.myGen - this call's _navGen token
+     * @param {() => Element|null} opts.findRow - locate the live row, or null
+     * @returns {Promise<boolean>} whether to proceed (not superseded)
+     * @private
+     */
+    async _ensureNavTargetRendered({ file, line, side, myGen, findRow }) {
+        if (!file) return myGen === this._navGen;
+
+        // 0. Expand the file if collapsed, then render its lazy body.
         const expansion = this.expandFileIfCollapsed(file);
         if (expansion && typeof expansion.then === 'function') await expansion;
-        // Always render the target's lazy body — external thread rows don't
-        // exist inside an unrendered body, so the lookup below would miss.
-        if (file && window.prManager?.ensureFileBodyRendered) {
+        if (window.prManager?.ensureFileBodyRendered) {
             try { await window.prManager.ensureFileBodyRendered(file); } catch { /* best effort */ }
         }
+        if (myGen !== this._navGen) return false;
 
-        const doScroll = () => {
-            let target = null;
+        const lineNum = parseInt(line, 10);
+        const hasLine = Number.isFinite(lineNum) && lineNum >= 1;
 
-            // Most reliable: match on (threadId, source). `data-thread-id`
-            // and `data-source` are written by ExternalCommentManager._buildThreadRow.
-            if (threadId) {
-                const idAttr = (typeof globalThis !== 'undefined' && globalThis.CSS?.escape)
-                    ? globalThis.CSS.escape(String(threadId))
-                    : String(threadId);
-                if (source) {
-                    const srcAttr = (typeof globalThis !== 'undefined' && globalThis.CSS?.escape)
-                        ? globalThis.CSS.escape(String(source))
-                        : String(source);
-                    target = document.querySelector(
-                        `.external-comment-row[data-thread-id="${idAttr}"][data-source="${srcAttr}"]`
-                    );
-                }
-                if (!target) {
-                    target = document.querySelector(
-                        `.external-comment-row[data-thread-id="${idAttr}"]`
-                    );
-                }
+        // 1. Gap-reveal (also materializes deferred context on pierre files).
+        if (hasLine && window.prManager?.ensureLinesVisible) {
+            try {
+                await window.prManager.ensureLinesVisible([
+                    { file, line_start: lineNum, line_end: lineNum, side: side || 'RIGHT' }
+                ]);
+            } catch { /* best effort */ }
+            if (myGen !== this._navGen) return false;
+        }
+
+        // 2. Materialize a virtualized-out target via the bridge.
+        const bridge = window.prManager?.pierreBridge;
+        if (bridge && bridge.files?.has?.(file) && typeof findRow === 'function' && !findRow()) {
+            if (hasLine && typeof bridge.scrollToLine === 'function') {
+                bridge.scrollToLine(file, lineNum, side || 'RIGHT', true);
+            } else if (typeof bridge.scrollToFile === 'function') {
+                bridge.scrollToFile(file);
             }
-
-            // Fallback: scan within the matching file by anchor line. Useful
-            // when the row was rebuilt and IDs are momentarily missing.
-            if (!target && file) {
-                const rows = document.querySelectorAll('.external-comment-row');
-                for (const row of rows) {
-                    const rowFile = row.closest('[data-file-name]')?.dataset?.fileName;
-                    if (rowFile && rowFile === file) {
-                        target = row;
-                        break;
-                    }
-                }
+            if (typeof bridge.whenAnnotationsSlotted === 'function') {
+                // Generous frame budget: the item must mount from the scroll
+                // before its annotation slots.
+                try { await bridge.whenAnnotationsSlotted(file, { maxFrames: 30 }); } catch { /* best effort */ }
             }
+            if (myGen !== this._navGen) return false;
 
-            if (target) {
-                const minimizer = window.prManager?.commentMinimizer;
-                let scrollTarget = target;
-                if (minimizer?.active) {
-                    minimizer.expandForElement(target);
-                    scrollTarget = minimizer.findDiffRowFor(target) || target;
-                }
-                this._scrollDiffTarget(scrollTarget);
-
-                // Transient focus flash. The class is removed after 2s — if
-                // the row is rebuilt before then, the class is lost with it,
-                // which is fine: the flash is purely cosmetic.
-                target.classList.add('external-comment-row--focused');
-                setTimeout(() => target.classList.remove('external-comment-row--focused'), 2000);
+            // whenAnnotationsSlotted answers "is the FILE item mounted", which is
+            // already true for a mounted file whose target LINE sits outside the
+            // render window — CodeView virtualizes lines within a file too. The
+            // scroll above is smooth, so that row mounts several frames later;
+            // poll for the actual target (bounded, never hangs) instead of
+            // checking once and silently giving up.
+            for (let frames = 0; frames < AIPanel.NAV_ROW_MAX_FRAMES && !findRow(); frames++) {
+                await AIPanel._nextFrame();
+                if (myGen !== this._navGen) return false;
             }
-        };
+        }
 
-        // A newer navigation took over while we awaited — let it win.
-        if (myGen !== this._navGen) return;
-        doScroll();
+        return true;
+    }
+
+    /**
+     * Await one animation frame (falls back to a ~frame timeout where rAF is
+     * unavailable). Called as a method so tests can stub the wait.
+     * @returns {Promise<void>}
+     * @private
+     */
+    static _nextFrame() {
+        return new Promise((resolve) => {
+            if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => resolve());
+            else setTimeout(resolve, 16);
+        });
+    }
+
+    /**
+     * Find the live `.external-comment-row` for a thread: match on
+     * (threadId, source), then just threadId, then fall back to the first row in
+     * the matching file (IDs momentarily missing after a rebuild). Returns null
+     * when no row is currently in the DOM — e.g. the file/line is virtualized
+     * out of the CodeView render window (the caller then materializes it).
+     * @param {string|number} threadId
+     * @param {string} source
+     * @param {string} file
+     * @param {boolean} [strict] - when true, skip the loose first-row-in-file
+     *   fallback. The materialize gate must NOT accept an unrelated row: doing so
+     *   skips mounting the real target and then focuses the wrong thread.
+     * @returns {HTMLElement|null}
+     * @private
+     */
+    _findExternalRow(threadId, source, file, strict = false) {
+        if (typeof document === 'undefined') return null;
+        // Most reliable: match on (threadId, source). `data-thread-id` and
+        // `data-source` are written by ExternalCommentManager's thread wrapper.
+        if (threadId) {
+            const idAttr = (typeof globalThis !== 'undefined' && globalThis.CSS?.escape)
+                ? globalThis.CSS.escape(String(threadId))
+                : String(threadId);
+            if (source) {
+                const srcAttr = (typeof globalThis !== 'undefined' && globalThis.CSS?.escape)
+                    ? globalThis.CSS.escape(String(source))
+                    : String(source);
+                const bySrc = document.querySelector(
+                    `.external-comment-row[data-thread-id="${idAttr}"][data-source="${srcAttr}"]`
+                );
+                if (bySrc) return bySrc;
+            }
+            const byId = document.querySelector(`.external-comment-row[data-thread-id="${idAttr}"]`);
+            if (byId) return byId;
+        }
+        // Fallback: first row in the matching file (rebuilt row, IDs missing).
+        if (!strict && file) {
+            const rows = document.querySelectorAll('.external-comment-row');
+            for (const row of rows) {
+                const rowFile = row.closest('[data-file-name]')?.dataset?.fileName;
+                if (rowFile && rowFile === file) return row;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Resolve a thread's diff side ('LEFT'|'RIGHT') from the panel's thread
+     * list, so a bridge line-scroll targets the right coordinate system.
+     * Defaults to 'RIGHT' when the thread or its side is unknown.
+     * @param {string|number} threadId
+     * @param {string} source
+     * @returns {string}
+     * @private
+     */
+    _externalThreadSide(threadId, source) {
+        const threads = Array.isArray(this.externalThreads) ? this.externalThreads : [];
+        const match = threads.find((t) =>
+            t && String(t.id) === String(threadId) && (!source || String(t.source) === String(source))
+        );
+        return (match && match.side) || 'RIGHT';
     }
 
     // ========================================

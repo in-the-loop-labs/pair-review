@@ -422,6 +422,45 @@ describe('CommentMinimizer — rerender resilience', () => {
 
     expect(lineIndicators()).toHaveLength(1);
   });
+
+  it('re-applies file-level expansion after the header is recreated on remount', () => {
+    // Under CodeView the file header is rebuilt on every virtualization remount
+    // (destroying its injected indicator), while the file-comments zone is
+    // reused from PRManager's per-file cache — so its element identity, and the
+    // `_expandedFiles` key derived from it, survive the remount.
+    const { zone, header } = makeFile('a.js', { withZone: true });
+    fileCommentCard(zone, 'user-comment');
+
+    const cm = new CommentMinimizer();
+    cm.setMinimized(true);
+
+    // User expands the file-level comments.
+    document.querySelector('.d2h-file-header .file-comment-indicator').click();
+    expect(cm._expandedFiles.has(zone)).toBe(true);
+    expect(zone.classList.contains('file-comments-expanded')).toBe(true);
+
+    // Remount: the old header (with its indicator) is discarded and a fresh one
+    // built in its place; the SAME zone element is re-used (cached), keeping its
+    // `file-comments-expanded` class.
+    const wrapper = zone.closest('.d2h-file-wrapper');
+    header.remove();
+    const newHeader = document.createElement('div');
+    newHeader.className = 'd2h-file-header';
+    const commentBtn = document.createElement('button');
+    commentBtn.className = 'file-header-comment-btn';
+    newHeader.appendChild(commentBtn);
+    wrapper.insertBefore(newHeader, zone);
+    expect(document.querySelector('.file-comment-indicator')).toBeNull();
+
+    // A refresh re-injects the indicator and restores its expanded state from
+    // the cached-zone key that survived.
+    cm.refreshIndicators();
+
+    const btn = document.querySelector('.d2h-file-header .file-comment-indicator');
+    expect(btn).toBeTruthy();
+    expect(btn.classList.contains('expanded')).toBe(true);
+    expect(zone.classList.contains('file-comments-expanded')).toBe(true);
+  });
 });
 
 // ===========================================================================

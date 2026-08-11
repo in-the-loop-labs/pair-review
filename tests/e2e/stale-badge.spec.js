@@ -7,7 +7,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender } from './helpers.js';
+import { waitForDiffToRender, expectRequest } from './helpers.js';
 
 test.describe('Stale PR Badge', () => {
   test('badge is hidden when PR is not stale', async ({ page }) => {
@@ -76,17 +76,28 @@ test.describe('Stale PR Badge', () => {
       });
     });
 
-    // Track refresh calls
+    // Track refresh calls. The refresh REPLACES currentPR with data.data and
+    // re-renders from it, so a realistic response MUST carry changed_files (+
+    // diff) — otherwise the re-render sees no files and shows the empty "No
+    // files changed" placeholder (no diff lines), and waitForDiffToRender hangs.
+    // A real refresh always returns the current file list.
     await page.route('**/api/pr/test-owner/test-repo/1/refresh', route => {
       refreshCalled = true;
       route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ success: true, data: { owner: 'test-owner', repo: 'test-repo', number: 1, title: 'Test PR for E2E', id: 1 } })
+        body: JSON.stringify({
+          success: true,
+          data: {
+            owner: 'test-owner', repo: 'test-repo', number: 1, title: 'Test PR for E2E', id: 1,
+            changed_files: [{ file: 'src/utils.js', additions: 1, deletions: 0 }],
+            diff: 'diff --git a/src/utils.js b/src/utils.js\n--- a/src/utils.js\n+++ b/src/utils.js\n@@ -1,2 +1,3 @@\n line a\n+added line\n line b\n',
+          },
+        })
       });
     });
 
-    const refreshPromise = page.waitForRequest("**/api/pr/test-owner/test-repo/1/refresh");
+    const refreshPromise = expectRequest(page, "**/api/pr/test-owner/test-repo/1/refresh");
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
     await refreshPromise;

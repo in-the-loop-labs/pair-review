@@ -13687,12 +13687,50 @@ body.tour-active .d2h-file-header {
    @pierre/diffs integration
    ============================================================ */
 
+/* Single-CodeView scroll container. CodeView.setup() scrolls its root element
+   directly (it reads root.scrollTop and adds the scroll listener to the root),
+   so #diff-container must be the bounded, overflow:auto scroll region and
+   .diff-view must stop scrolling. Scoped to .pierre-codeview-root (added by the
+   bridge) so the legacy per-file-table fallback path keeps its old scroll model
+   (.diff-view scrolls; #diff-container overflow:visible for sticky headers). */
+.main-layout .diff-view:has(> .diff-container.pierre-codeview-root),
+.diff-view:has(> .diff-container.pierre-codeview-root) {
+  overflow: hidden;
+}
+
+.main-layout .diff-container.pierre-codeview-root,
+.diff-container.pierre-codeview-root {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overflow-anchor: none;
+  padding: 0;
+}
+
+/* CodeView owns header stickiness via its own sticky container. The legacy
+   `.d2h-file-header { position: sticky; z-index: 4 }` becomes a SECOND sticky
+   inside CodeView's sticky region and used to slide over the file-comments
+   zone, intercepting its comment-card buttons. Neutralize it in CodeView mode
+   (the file-comments zone now renders as a body annotation, not in the header). */
+.pierre-codeview-root .d2h-file-header {
+  position: static;
+  z-index: auto;
+}
+
 /* @pierre/diffs container */
 .pierre-diff-body {
   overflow-x: auto;
   border: 1px solid var(--color-border-default);
   border-top: none;
   border-radius: 0 0 6px 6px;
+}
+
+/* CodeView file header wrapper (light DOM, projected into each item's sticky
+   header slot). Holds the file header + its file-comments zone. */
+.pierre-file-header-wrap {
+  display: block;
+  background: var(--color-bg-primary);
 }
 
 /* Custom elements default to display:inline — force block layout.

@@ -37,9 +37,11 @@ beforeEach(() => {
     }
   };
 
-  // Setup document mock
+  // Setup document mock. querySelectorAll backs the zone-aware file-comment
+  // card sweep (_purgeFileCommentCards); no zones exist in these tests.
   global.document = {
-    querySelector: vi.fn()
+    querySelector: vi.fn(),
+    querySelectorAll: vi.fn(() => [])
   };
 
   // Setup alert mock
@@ -713,12 +715,12 @@ describe('PRManager Suggestion Status', () => {
         dataset: { hiddenForAdoption: 'true', suggestionId: parentSuggestionId }
       };
 
-      // Reset querySelector mock to handle all 3 calls:
-      // 1) line-level comment row, 2) file-level comment card, 3) suggestion div
+      // Reset querySelector mock to handle both calls: 1) line-level comment
+      // row, 2) suggestion div. (File-level cards are swept per-zone via
+      // querySelectorAll, not looked up on the document.)
       document.querySelector.mockReset();
       document.querySelector
         .mockReturnValueOnce(mockCommentRow)       // [data-comment-id="..."]
-        .mockReturnValueOnce(null)                  // .file-comment-card[data-comment-id="..."]
         .mockReturnValueOnce(mockSuggestionDiv);    // [data-suggestion-id="..."]
 
       await prManager.deleteUserComment(commentId);
@@ -764,11 +766,10 @@ describe('PRManager Suggestion Status', () => {
         })
       });
 
-      // querySelector calls: comment row, file-comment card, suggestion div
+      // querySelector calls: comment row, suggestion div
       document.querySelector.mockReset();
       document.querySelector
         .mockReturnValueOnce(mockCommentRow)       // line-level comment row
-        .mockReturnValueOnce(null)                  // file-level comment card
         .mockReturnValueOnce(mockSuggestionDiv);    // suggestion div lookup
 
       await prManager.deleteUserComment(commentId);

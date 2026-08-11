@@ -13,38 +13,55 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender, openCommentFormOnLine } from './helpers.js';
+import {
+  waitForDiffToRender,
+  openCommentFormOnLine,
+  expectResponse,
+  cleanupAllComments,
+} from './helpers.js';
 
-// Helper to clean up all user comments (call via API to ensure clean state)
-async function cleanupAllComments(page) {
-  // Delete all user comments via API to ensure test isolation
-  await page.evaluate(async () => {
-    // Fetch all user comments (including dismissed ones) using the correct API
-    const commentsResponse = await fetch('/api/reviews/1/comments?includeDismissed=true');
-    const data = await commentsResponse.json();
-    const comments = data.comments || [];
-
-    // Delete each user comment (this performs a hard delete for inactive/dismissed comments)
-    for (const comment of comments) {
-      await fetch(`/api/reviews/1/comments/${comment.id}`, { method: 'DELETE' });
-    }
-  });
+// Wait for the SplitButton's comment-count MODEL to reflect the created comments
+// before asserting on Clear All. The dropdown stamps `disabled` on the Clear All
+// item from `commentCount` at RENDER time (SplitButton.js), and the count is
+// updated by prManager.updateCommentCount() asynchronously after a comment
+// publishes — so a `.user-comment-row` being visible does NOT guarantee the
+// count model has caught up under load. This waits for the actual state to
+// settle (correctness), not for the UI to stop churning (tolerance).
+async function waitForSplitButtonCount(page, min = 1) {
+  await expect
+    .poll(async () => page.evaluate(() => window.prManager?.splitButton?.getCommentCount?.() ?? 0),
+      { timeout: 10000 })
+    .toBeGreaterThanOrEqual(min);
 }
 
 
 test.describe('Comment Display', () => {
-  test('should display line info in comment header', async ({ page }) => {
+  // Start each test from a verified-empty slate (the per-worker DB is shared
+  // across specs, so a sibling spec's leftover row could otherwise satisfy the
+  // `.first()` assertions below and mask a broken create). Mirrors the isolation
+  // every other describe in this file uses.
+  test.beforeEach(async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
+    await cleanupAllComments(page);
+    await page.reload();
+    await waitForDiffToRender(page);
+    await expect(page.locator('.user-comment-row')).toHaveCount(0, { timeout: 5000 });
+  });
 
+  test.afterEach(async ({ page }) => {
+    await cleanupAllComments(page);
+  });
+
+  test('should display line info in comment header', async ({ page }) => {
     // Create a comment
     await openCommentFormOnLine(page, 0);
     const textarea = page.locator('.user-comment-form textarea');
     await textarea.fill('Comment with line info');
     await page.locator('.save-comment-btn').click();
 
-    // Wait for comment to appear
-    await expect(page.locator('.user-comment-row').first()).toBeVisible({ timeout: 5000 });
+    // Exactly one row now exists (clean slate), so `.first()` is the row we made.
+    await expect(page.locator('.user-comment-row')).toHaveCount(1, { timeout: 5000 });
 
     // Should show line info
     const lineInfo = page.locator('.user-comment-line-info');
@@ -53,17 +70,14 @@ test.describe('Comment Display', () => {
   });
 
   test('should display user icon for user-created comments', async ({ page }) => {
-    await page.goto('/pr/test-owner/test-repo/1');
-    await waitForDiffToRender(page);
-
     // Create a comment
     await openCommentFormOnLine(page, 0);
     const textarea = page.locator('.user-comment-form textarea');
     await textarea.fill('User comment');
     await page.locator('.save-comment-btn').click();
 
-    // Wait for comment to appear
-    await expect(page.locator('.user-comment-row').first()).toBeVisible({ timeout: 5000 });
+    // Exactly one row now exists (clean slate), so `.first()` is the row we made.
+    await expect(page.locator('.user-comment-row')).toHaveCount(1, { timeout: 5000 });
 
     // Should have user origin class (not AI)
     const userComment = page.locator('.user-comment.comment-user-origin');
@@ -101,7 +115,7 @@ test.describe('Dismissed Comment Persistence', () => {
     const commentId = await commentRow.getAttribute('data-comment-id');
 
     // Set up API listener for delete (which dismisses the comment)
-    const deleteResponsePromise = page.waitForResponse(
+    const deleteResponsePromise = expectResponse(page,
       response => response.url().includes('/comments/') && response.request().method() === 'DELETE'
     );
 
@@ -130,7 +144,7 @@ test.describe('Dismissed Comment Persistence', () => {
     await expect(filterToggleBtn).toBeVisible({ timeout: 5000 });
 
     // Set up listener for the user-comments API call before clicking
-    const filterResponsePromise = page.waitForResponse(
+    const filterResponsePromise = expectResponse(page,
       response => response.url().includes('/comments') && response.url().includes('includeDismissed') && response.status() === 200,
       { timeout: 10000 }
     );
@@ -209,7 +223,7 @@ test.describe('Comment Restore', () => {
     const commentId = await commentRow.getAttribute('data-comment-id');
 
     // Set up API listener for delete
-    const deleteResponsePromise = page.waitForResponse(
+    const deleteResponsePromise = expectResponse(page,
       response => response.url().includes('/comments/') && response.request().method() === 'DELETE'
     );
 
@@ -238,7 +252,7 @@ test.describe('Comment Restore', () => {
     await expect(filterToggleBtn).toBeVisible({ timeout: 5000 });
 
     // Set up listener for the user-comments API call before clicking
-    const restoreFilterResponsePromise = page.waitForResponse(
+    const restoreFilterResponsePromise = expectResponse(page,
       response => response.url().includes('/comments') && response.url().includes('includeDismissed') && response.status() === 200,
       { timeout: 10000 }
     );
@@ -268,7 +282,7 @@ test.describe('Comment Restore', () => {
     await expect(restoreBtn).toBeVisible({ timeout: 3000 });
 
     // Set up API listener for restore
-    const restoreResponsePromise = page.waitForResponse(
+    const restoreResponsePromise = expectResponse(page,
       response => response.url().includes('/restore') && response.request().method() === 'PUT'
     );
 
@@ -364,7 +378,7 @@ test.describe('Bulk Deletion via Clear All', () => {
     await expect(confirmBtn).toBeVisible();
 
     // Set up API listener for bulk delete
-    const bulkDeleteResponsePromise = page.waitForResponse(
+    const bulkDeleteResponsePromise = expectResponse(page,
       response => response.url().includes('/comments') && response.request().method() === 'DELETE'
     );
 
@@ -421,7 +435,7 @@ test.describe('Bulk Deletion via Clear All', () => {
     // Confirm the deletion
     await expect(page.locator('.confirm-dialog-overlay')).toBeVisible({ timeout: 3000 });
 
-    const bulkDeleteResponsePromise = page.waitForResponse(
+    const bulkDeleteResponsePromise = expectResponse(page,
       response => response.url().includes('/comments') && response.request().method() === 'DELETE'
     );
 
@@ -444,7 +458,7 @@ test.describe('Bulk Deletion via Clear All', () => {
     await expect(filterToggleBtn).toBeVisible({ timeout: 5000 });
 
     // Set up listener for the user-comments API call with includeDismissed
-    const filterResponsePromise = page.waitForResponse(
+    const filterResponsePromise = expectResponse(page,
       response => response.url().includes('/comments') && response.url().includes('includeDismissed') && response.status() === 200,
       { timeout: 10000 }
     );
@@ -513,7 +527,7 @@ test.describe('Bulk Deletion via Clear All', () => {
 
     await expect(page.locator('.confirm-dialog-overlay')).toBeVisible({ timeout: 3000 });
 
-    const bulkDeleteResponsePromise = page.waitForResponse(
+    const bulkDeleteResponsePromise = expectResponse(page,
       response => response.url().includes('/comments') && response.request().method() === 'DELETE'
     );
 
@@ -601,6 +615,9 @@ test.describe('SplitButton Dropdown Clear All', () => {
     await textarea.fill('Test comment for SplitButton Clear All');
     await page.locator('.save-comment-btn').click();
     await expect(page.locator('.user-comment-row').first()).toBeVisible({ timeout: 5000 });
+    // The Clear All item is rendered enabled/disabled from the count model; wait
+    // for it to reflect the new comment before opening the dropdown.
+    await waitForSplitButtonCount(page, 1);
 
     // Open the SplitButton dropdown
     const dropdownToggle = page.locator('#split-button-dropdown-toggle');
@@ -639,6 +656,8 @@ test.describe('SplitButton Dropdown Clear All', () => {
     await textarea.fill('Test comment for dropdown replacement test');
     await page.locator('.save-comment-btn').click();
     await expect(page.locator('.user-comment-row').first()).toBeVisible({ timeout: 5000 });
+    // Wait for the count model to reflect the comment before driving the dropdown.
+    await waitForSplitButtonCount(page, 1);
 
     // Open the SplitButton dropdown
     const dropdownToggle = page.locator('#split-button-dropdown-toggle');
