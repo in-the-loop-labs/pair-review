@@ -19,7 +19,8 @@ import {
   _indexAnnouncedIds,
   parseEnabledLevels,
   getProvider,
-  resolveProviderModel
+  resolveProviderModel,
+  finalizeConsolidationLevel
 } from '../../src/routes/shared.js';
 
 /**
@@ -1710,5 +1711,49 @@ describe('resolveProviderModel', () => {
     // provider: no request, no CLI override → repo settings ('codex')
     // model: CLI override wins over repo settings ('gpt-5.5')
     expect(result).toEqual({ provider: 'codex', model: 'gpt-5.5' });
+  });
+});
+
+describe('finalizeConsolidationLevel', () => {
+  it('marks level 4 completed when the result reports no consolidation failure', () => {
+    const result = { levelOutcomes: { consolidation: 'success' } };
+    expect(finalizeConsolidationLevel(result, { status: 'running', progress: 'Consolidating...' }))
+      .toEqual({ status: 'completed', progress: 'Results finalized' });
+  });
+
+  it('marks level 4 failed when result.levelOutcomes.consolidation is failed', () => {
+    const result = { levelOutcomes: { consolidation: 'failed' } };
+    const finalized = finalizeConsolidationLevel(result, { status: 'running', progress: 'Consolidating...' });
+    expect(finalized.status).toBe('failed');
+    expect(finalized.progress).toContain('Consolidation failed');
+  });
+
+  it('marks level 4 failed when result.orchestrationFailed is true', () => {
+    const finalized = finalizeConsolidationLevel({ orchestrationFailed: true }, { status: 'running' });
+    expect(finalized.status).toBe('failed');
+  });
+
+  it('preserves a failed status reported via progress events even when the result lacks outcome fields', () => {
+    const finalized = finalizeConsolidationLevel({}, { status: 'failed', progress: 'boom' });
+    expect(finalized.status).toBe('failed');
+  });
+
+  it('preserves the steps and voices maps from the existing level-4 state', () => {
+    const level4 = {
+      status: 'running',
+      steps: { orchestration: { status: 'running', progress: 'Finalizing results...' } },
+      voices: { 'claude-opus': { status: 'completed', progress: 'Done' } }
+    };
+    const finalized = finalizeConsolidationLevel({ levelOutcomes: { consolidation: 'failed' } }, level4);
+    expect(finalized.steps).toEqual(level4.steps);
+    expect(finalized.voices).toEqual(level4.voices);
+    expect(finalized.status).toBe('failed');
+  });
+
+  it('handles an undefined level-4 state (some flows never initialize it)', () => {
+    expect(finalizeConsolidationLevel({ levelOutcomes: { consolidation: 'success' } }, undefined))
+      .toEqual({ status: 'completed', progress: 'Results finalized' });
+    expect(finalizeConsolidationLevel(undefined, undefined))
+      .toEqual({ status: 'completed', progress: 'Results finalized' });
   });
 });

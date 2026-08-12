@@ -22,7 +22,8 @@ const {
   localReviewDiffs,
   determineCompletionInfo,
   broadcastProgress,
-  createProgressCallback
+  createProgressCallback,
+  finalizeConsolidationLevel
 } = require('./shared');
 const { safeParseJson } = require('../utils/safe-parse-json');
 const { resolveLoadSkills, resolveHostBinding } = require('../config');
@@ -56,7 +57,9 @@ async function handleAnalysisCompletion(analysisId, runId, result, savePersisten
       currentStatus.levels[i] = { status: 'completed', progress: `Level ${i} complete` };
     }
   }
-  currentStatus.levels[4] = { status: 'completed', progress: 'Results finalized' };
+  // Derive the terminal consolidation state from the authoritative result —
+  // the run finishing does not mean the consolidation step succeeded
+  currentStatus.levels[4] = finalizeConsolidationLevel(result, currentStatus.levels?.[4]);
 
   const completedStatus = {
     ...currentStatus,

@@ -1,6 +1,6 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 import { describe, it, expect } from 'vitest';
-import { extractJSON } from '../../src/utils/json-extractor.js';
+import { extractJSON, sanitizeControlCharactersInStrings } from '../../src/utils/json-extractor.js';
 
 describe('extractJSON', () => {
   describe('empty/null input', () => {
@@ -378,6 +378,100 @@ describe('extractJSON', () => {
       const result = extractJSON('this is not json at all', 'test');
       expect(result).toHaveProperty('response');
       expect(result.response).toContain('this is not json');
+    });
+  });
+
+  // Regression tests for issue #560: consolidation responses embedding code
+  // snippets with raw (unescaped) control characters inside string literals
+  // caused every extraction strategy to fail, silently dropping all suggestions.
+  describe('unescaped control characters in string literals (issue #560)', () => {
+    it('should recover JSON with a raw newline inside a string value', () => {
+      const json = '{"suggestions": [{"file": "a.py", "line": 177, "description": "Use:\ndelete()"}], "summary": "ok"}';
+      const result = extractJSON(json, 'test');
+      expect(result.success).toBe(true);
+      expect(result.data.suggestions).toHaveLength(1);
+      expect(result.data.suggestions[0].description).toBe('Use:\ndelete()');
+      expect(result.data.summary).toBe('ok');
+    });
+
+    it('should recover JSON with raw tabs and carriage returns inside string values', () => {
+      const json = '{"suggestions": [{"title": "a\tb\rc"}]}';
+      const result = extractJSON(json, 'test');
+      expect(result.success).toBe(true);
+      expect(result.data.suggestions[0].title).toBe('a\tb\rc');
+    });
+
+    it('should recover JSON with other raw control characters inside string values', () => {
+      const json = '{"title": "a\u0000b\u001fc"}';
+      const result = extractJSON(json, 'test');
+      expect(result.success).toBe(true);
+      expect(result.data.title).toBe('a\u0000b\u001fc');
+    });
+
+    it('should recover a code-block-wrapped JSON containing a raw newline in a string', () => {
+      const response = 'Here is the result:\n```json\n{"suggestions": [{"description": "line1\nline2"}]}\n```\nDone.';
+      const result = extractJSON(response, 'test');
+      expect(result.success).toBe(true);
+      expect(result.data.suggestions[0].description).toBe('line1\nline2');
+    });
+
+    it('should recover JSON with a raw newline when preceded by prose preamble', () => {
+      const response = 'The consolidated review follows.\n{"suggestions": [{"description": "before\nafter"}], "summary": "s"}';
+      const result = extractJSON(response, 'test');
+      expect(result.success).toBe(true);
+      expect(result.data.suggestions[0].description).toBe('before\nafter');
+    });
+
+    it('should not corrupt properly escaped sequences in string values', () => {
+      // Contains a properly escaped newline AND a raw newline in the same string
+      const json = '{"description": "escaped\\nvalue\nraw"}';
+      const result = extractJSON(json, 'test');
+      expect(result.success).toBe(true);
+      expect(result.data.description).toBe('escaped\nvalue\nraw');
+    });
+
+    it('should handle escaped quotes and backslashes around raw control characters', () => {
+      const json = '{"description": "say \\"hi\\" \\\\path\nnext"}';
+      const result = extractJSON(json, 'test');
+      expect(result.success).toBe(true);
+      expect(result.data.description).toBe('say "hi" \\path\nnext');
+    });
+  });
+
+  describe('sanitizeControlCharactersInStrings', () => {
+    it('should escape control characters only inside string literals', () => {
+      const input = '{\n  "a": "x\ny"\n}';
+      const output = sanitizeControlCharactersInStrings(input);
+      // Structural newlines (outside strings) are untouched; in-string newline is escaped
+      expect(output).toBe('{\n  "a": "x\\ny"\n}');
+      expect(JSON.parse(output)).toEqual({ a: 'x\ny' });
+    });
+
+    it('should leave already-valid JSON unchanged', () => {
+      const input = '{"a": "x\\ny", "b": [1, 2]}';
+      expect(sanitizeControlCharactersInStrings(input)).toBe(input);
+    });
+
+    it('should escape uncommon control characters as unicode escapes', () => {
+      const input = '{"a": "x\u0001y"}';
+      const output = sanitizeControlCharactersInStrings(input);
+      expect(output).toBe('{"a": "x\\u0001y"}');
+      expect(JSON.parse(output)).toEqual({ a: 'x\u0001y' });
+    });
+
+    it('should not treat an escaped quote as the end of a string', () => {
+      const input = '{"a": "he said \\"hi\\"\nnext"}';
+      const output = sanitizeControlCharactersInStrings(input);
+      expect(JSON.parse(output)).toEqual({ a: 'he said "hi"\nnext' });
+    });
+
+    it('should repair a raw control character immediately following a backslash', () => {
+      // String value contains a trailing backslash followed by a raw newline:
+      // the dangling backslash must be doubled and the newline escaped.
+      const input = '{"a": "x\\\ny"}';
+      const output = sanitizeControlCharactersInStrings(input);
+      // Parsed value is backslash + newline
+      expect(JSON.parse(output)).toEqual({ a: 'x\\\ny' });
     });
   });
 

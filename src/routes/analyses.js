@@ -31,7 +31,8 @@ const {
   localReviewDiffs,
   broadcastProgress,
   killProcesses,
-  createProgressCallback
+  createProgressCallback,
+  finalizeConsolidationLevel
 } = require('./shared');
 const { generateScopedDiff, computeScopedDigest, getCurrentBranch } = require('../local-review');
 const { reviewScope } = require('../local-scope');
@@ -675,7 +676,10 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
         suggestionsCount: result.suggestions.length,
         levels: {
           ...currentStatus.levels,
-          4: { status: 'completed', progress: 'Results finalized' }
+          // Derive the terminal consolidation state from the authoritative
+          // result — the run finishing does not mean consolidation succeeded,
+          // and some council paths never emit a terminal orchestration event
+          4: finalizeConsolidationLevel(result, currentStatus.levels?.[4])
         }
       };
       for (const levelKey of ['1', '2', '3', 'exec']) {
