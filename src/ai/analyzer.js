@@ -385,6 +385,20 @@ A suggestion is a duplicate if it targets the same file and overlapping lines an
   return sections.join('\n\n');
 }
 
+/**
+ * A response object is "ours" if it carries any key from our response schema.
+ * A string `summary` alone is a valid zero-finding result (e.g. "all findings
+ * duplicated existing comments"), so it counts. Shared by both acceptance
+ * branches in parseResponseWithMeta so they cannot drift (issue #560).
+ * @param {Object} obj - Candidate response object
+ * @returns {boolean} True if the object carries any schema key
+ */
+function hasSchemaKeys(obj) {
+  return Array.isArray(obj.suggestions) ||
+    Array.isArray(obj.fileLevelSuggestions) ||
+    typeof obj.summary === 'string';
+}
+
 class Analyzer {
   /**
    * @param {Object} database - Database instance
@@ -643,9 +657,15 @@ class Analyzer {
 
         const orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata, mergedInstructions, worktreePath, { analysisId, tier, progressCallback, timeout: executionTimeout, logPrefix, reviewerNum, excludePrevious, dedupContext, githubClient });
 
-        // Report orchestration step as completed
+        // orchestrateWithAI degrades to the raw union of level suggestions when
+        // consolidation fails internally — report that honestly instead of 'success'
+        const consolidationOutcome = orchestrationResult.consolidationFailed ? 'failed' : 'success';
+
+        // Report orchestration step outcome
         if (progressCallback) {
-          progressCallback({ level: 'orchestration', status: 'completed', progress: 'Cross-level consolidation complete' });
+          progressCallback(orchestrationResult.consolidationFailed
+            ? { level: 'orchestration', status: 'failed', progress: 'Cross-level consolidation failed' }
+            : { level: 'orchestration', status: 'completed', progress: 'Cross-level consolidation complete' });
         }
 
         // Validate and finalize suggestions
@@ -670,7 +690,7 @@ class Analyzer {
           level1: levelResults.level1.status,
           level2: levelResults.level2.status,
           level3: levelResults.level3.status,
-          consolidation: 'success'
+          consolidation: consolidationOutcome
         };
 
         // Update analysis_run record with completion data
@@ -694,7 +714,8 @@ class Analyzer {
           suggestions: finalSuggestions,
           levelResults,
           levelOutcomes,
-          summary: orchestrationResult.summary
+          summary: orchestrationResult.summary,
+          ...(orchestrationResult.consolidationFailed ? { orchestrationFailed: true } : {})
         };
 
       } catch (orchestrationError) {
@@ -1192,6 +1213,8 @@ Or simply ignore any changes to files matching these patterns in your analysis.
       });
 
       // Parse and validate the response
+      // A parse failure here still reports Level 1 success with zero suggestions;
+      // honest per-level parse-failure reporting is a known follow-up to issue #560.
       updateProgress('Processing AI results');
       const parsedSuggestions = this.parseResponse(response, 1);
       logger.success(`${lp}Parsed ${parsedSuggestions.length} valid Level 1 suggestions`);
@@ -1623,30 +1646,64 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
    * @param {Array} previousSuggestions - Previous suggestions to check for duplicates
    */
   parseResponse(response, level, previousSuggestions = []) {
+    return this.parseResponseWithMeta(response, level, previousSuggestions).suggestions;
+  }
+
+  /**
+   * Parse a response into suggestions, also reporting whether the response was
+   * recognizable as our response schema. `parseFailed: true` means no parseable
+   * suggestions were found — nothing in the response carried any of our schema
+   * keys (suggestions / fileLevelSuggestions / summary). That is distinct from
+   * a legitimately empty `suggestions: []` or a summary-only zero-finding
+   * response — consolidation callers use the distinction to fall back instead
+   * of silently reporting success with zero suggestions (issue #560).
+   *
+   * @param {Object} response - Provider response
+   * @param {number|string} level - Analysis level (for logging)
+   * @param {Array} previousSuggestions - Previous suggestions to check for duplicates
+   * @returns {{ suggestions: Array, parseFailed: boolean }}
+   */
+  parseResponseWithMeta(response, level, previousSuggestions = []) {
     const levelPrefix = `[Level ${level}]`;
 
     // Separate previous suggestions into line-level and file-level for deduplication
     const previousLineSuggestions = previousSuggestions.filter(s => !s.is_file_level);
     const previousFileLevelSuggestions = previousSuggestions.filter(s => s.is_file_level);
 
-    // If response is already parsed JSON
-    if (response.suggestions && Array.isArray(response.suggestions)) {
-      const lineSuggestions = this.validateSuggestions(response.suggestions, previousLineSuggestions);
-      const fileLevelSuggestions = response.fileLevelSuggestions
-        ? this.validateFileLevelSuggestions(response.fileLevelSuggestions, previousFileLevelSuggestions)
-        : [];
-      return [...lineSuggestions, ...fileLevelSuggestions];
+    // Already-parsed branch — the common path: providers resolve parsed schema
+    // objects directly and only fall back to `{ raw, parsed: false }` (which
+    // never carries a string summary) when their own parsing fails. Suggestion
+    // arrays are authoritative regardless of any `raw` payload; a summary alone
+    // is accepted here only when there is no `raw` payload to try first, so a
+    // hypothetical `{ summary, raw }` shape with extractable suggestions in
+    // `raw` does not lose them (final summary-only acceptance is below).
+    // validateSuggestions requires real arrays, so default the missing ones —
+    // a summary-only object has neither.
+    if (Array.isArray(response.suggestions) || Array.isArray(response.fileLevelSuggestions) ||
+        (hasSchemaKeys(response) && !response.raw)) {
+      const lineSuggestions = this.validateSuggestions(response.suggestions || [], previousLineSuggestions);
+      const fileLevelSuggestions = this.validateFileLevelSuggestions(
+        response.fileLevelSuggestions || [], previousFileLevelSuggestions
+      );
+      return { suggestions: [...lineSuggestions, ...fileLevelSuggestions], parseFailed: false };
     }
 
-    // If response is raw text, try multiple extraction strategies
+    // If response is raw text, try multiple extraction strategies. Extraction can
+    // latch onto unrelated JSON fragments in prose, so only JSON carrying one of
+    // our schema keys counts as parsed — a summary-only object is a legitimate
+    // zero-finding response (e.g. "all findings duplicated existing comments").
     if (response.raw) {
       const extracted = extractJSON(response.raw, level);
-      if (extracted.success && extracted.data.suggestions && Array.isArray(extracted.data.suggestions)) {
-        const lineSuggestions = this.validateSuggestions(extracted.data.suggestions, previousLineSuggestions);
+      if (extracted.success && hasSchemaKeys(extracted.data)) {
+        const lineSuggestions = this.validateSuggestions(extracted.data.suggestions || [], previousLineSuggestions);
         const fileLevelSuggestions = extracted.data.fileLevelSuggestions
           ? this.validateFileLevelSuggestions(extracted.data.fileLevelSuggestions, previousFileLevelSuggestions)
           : [];
-        return [...lineSuggestions, ...fileLevelSuggestions];
+        return { suggestions: [...lineSuggestions, ...fileLevelSuggestions], parseFailed: false };
+      } else if (extracted.success) {
+        logger.warn(`${levelPrefix} Extracted JSON carried none of the expected schema keys (suggestions/fileLevelSuggestions/summary)`);
+        logger.info(`${levelPrefix} Raw response length: ${response.raw.length} characters`);
+        logger.info(`${levelPrefix} Raw response preview: ${response.raw.substring(0, 500)}...`);
       } else {
         logger.warn(`${levelPrefix} JSON extraction failed: ${extracted.error}`);
         logger.info(`${levelPrefix} Raw response length: ${response.raw.length} characters`);
@@ -1654,9 +1711,17 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
       }
     }
 
+    // A string `summary` alone is a valid zero-finding result — reached only
+    // for a `{ summary, raw }` response whose raw extraction yielded nothing
+    // better (arrays would have been accepted above).
+    if (hasSchemaKeys(response)) {
+      logger.info(`${levelPrefix} Accepting summary-only response as a zero-finding result`);
+      return { suggestions: [], parseFailed: false };
+    }
+
     // Fallback to empty array
     logger.warn(`${levelPrefix} No valid suggestions found in response`);
-    return [];
+    return { suggestions: [], parseFailed: true };
   }
 
   /**
@@ -2161,6 +2226,8 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
       });
 
       // Parse and validate the response
+      // A parse failure here still reports Level 2 success with zero suggestions;
+      // honest per-level parse-failure reporting is a known follow-up to issue #560.
       updateProgress('Processing AI results');
       let suggestions = this.parseResponse(response, 2);
       logger.success(`${lp}Parsed ${suggestions.length} valid Level 2 suggestions`);
@@ -2275,6 +2342,8 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
       });
 
       // Parse and validate the response
+      // A parse failure here still reports Level 3 success with zero suggestions;
+      // honest per-level parse-failure reporting is a known follow-up to issue #560.
       updateProgress('Processing codebase context results');
       let suggestions = this.parseResponse(response, 3);
       logger.success(`${lp}Parsed ${suggestions.length} valid Level 3 suggestions`);
@@ -2782,7 +2851,9 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @param {Object} [options.excludePrevious] - { github: bool, feedback: bool } for dedup
    * @param {Object} [options.dedupContext] - { owner, repo, pullNumber, reviewId, serverPort }
    * @param {Object} [options.githubClient] - GitHubClient used to pre-fetch existing PR review comments for dedup
-   * @returns {Promise<Array>} Curated suggestions array
+   * @returns {Promise<{suggestions: Array, summary: string, consolidationFailed?: boolean}>}
+   *   Consolidation result. `consolidationFailed: true` means the suggestions
+   *   array is the raw union of all levels rather than a curated set.
    */
   async orchestrateWithAI(allSuggestions, prMetadata, customInstructions = null, worktreePath = null, options = {}) {
     const { analysisId, tier = 'balanced', progressCallback, providerOverride, modelOverride, timeout = 600000, logPrefix: lp = '', reviewerNum, excludePrevious, dedupContext, githubClient } = options;
@@ -2842,7 +2913,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       });
 
       // Parse the orchestrated response
-      const orchestratedSuggestions = this.parseResponse(response, 'orchestration');
+      const { suggestions: orchestratedSuggestions, parseFailed } = this.parseResponseWithMeta(response, 'orchestration');
 
       // Debug: If consolidation returned 0 suggestions but there was input, log for investigation
       const inputLevel1Count = allSuggestions.level1?.length || 0;
@@ -2866,6 +2937,17 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         }
       }
 
+      // A response with no parseable suggestions (nothing recognizable as our
+      // response schema), when the levels produced suggestions, means every
+      // input suggestion would be silently dropped. Route that through the
+      // fallback below instead of reporting success with zero suggestions
+      // (issue #560). A parseable-but-empty `suggestions: []` is left alone —
+      // the consolidator may legitimately curate everything away (e.g. dedup
+      // against previously posted comments).
+      if (parseFailed && hadInputSuggestions) {
+        throw new Error('Consolidation response could not be parsed; falling back to unconsolidated suggestions');
+      }
+
       // Extract summary from the orchestration response
       let summary = `Analyzed PR with ${orchestratedSuggestions.length} curated suggestions`;
       if (response.summary) {
@@ -2883,8 +2965,11 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         suggestions: orchestratedSuggestions,
         summary: summary
       };
-      
+
     } catch (error) {
+      // Cancellation is not a consolidation failure — propagate so the run is
+      // recorded as cancelled instead of consolidation 'failed'
+      if (error.isCancellation) throw error;
       logger.warn(`${lp}[Consolidation] Cross-level consolidation failed: ${error.message}`);
       logger.warn(`${lp}[Consolidation] Falling back to storing all original suggestions`);
 
@@ -2911,7 +2996,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 
       return {
         suggestions: fallbackSuggestions,
-        summary: `Analysis complete (consolidation failed): ${fallbackSuggestions.length} suggestions from all analysis levels`
+        summary: `Analysis complete (consolidation failed): ${fallbackSuggestions.length} suggestions from all analysis levels`,
+        consolidationFailed: true
       };
     }
   }
@@ -3372,6 +3458,10 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       logger.info('[ReviewerCouncil] Single reviewer result — skipping consolidation');
       const singleResult = successfulVoices[0].result;
 
+      // Preserve the surviving reviewer's own outcomes (e.g. a failed intra-run
+      // consolidation) — only cross-voice consolidation was skipped here
+      const singleLevelOutcomes = singleResult.levelOutcomes || { consolidation: 'skipped' };
+
       const finalSuggestions = this.validateAndFinalizeSuggestions(
         singleResult.suggestions, fileLineCountMap, validFiles
       );
@@ -3383,7 +3473,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           summary: singleResult.summary,
           totalSuggestions: finalSuggestions.length,
           filesAnalyzed: validFiles.length,
-          levelOutcomes: { consolidation: 'skipped' }
+          levelOutcomes: singleLevelOutcomes
         });
       } catch (err) {
         logger.warn(`[ReviewerCouncil] Failed to update parent run: ${err.message}`);
@@ -3393,7 +3483,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         runId: parentRunId,
         suggestions: finalSuggestions,
         summary: singleResult.summary || `Review council complete: ${finalSuggestions.length} suggestions`,
-        levelOutcomes: { consolidation: 'skipped' }
+        levelOutcomes: singleLevelOutcomes
       };
     }
 
@@ -3471,6 +3561,17 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 
       logger.success(`[ReviewerCouncil] Analysis complete: ${finalSuggestions.length} consolidated suggestions`);
 
+      // Terminal orchestration event must be voiceId-less: events with a
+      // voiceId only update levels[4].voices, never the aggregate status
+      if (progressCallback) {
+        progressCallback({
+          status: 'completed',
+          progress: 'Cross-reviewer consolidation complete',
+          level: 'orchestration',
+          voiceCentric: true
+        });
+      }
+
       return {
         runId: parentRunId,
         suggestions: finalSuggestions,
@@ -3478,7 +3579,22 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         levelOutcomes: { consolidation: 'success' }
       };
     } catch (error) {
+      // Cancellation is not a consolidation failure — propagate so the run is
+      // recorded as cancelled instead of consolidation 'failed'
+      if (error.isCancellation) throw error;
       logger.error(`[ReviewerCouncil] Cross-reviewer consolidation failed: ${error.message}`);
+
+      // Surface the failure live — without a terminal voiceId-less event,
+      // levels[4] stays 'running' and the completion handler would show
+      // consolidation as completed while the run records it as failed
+      if (progressCallback) {
+        progressCallback({
+          status: 'failed',
+          progress: 'Consolidation failed — showing unconsolidated results',
+          level: 'orchestration',
+          voiceCentric: true
+        });
+      }
 
       // Fallback: use all voice suggestions combined
       const fallbackSuggestions = this.validateAndFinalizeSuggestions(
@@ -3728,6 +3844,10 @@ File-level suggestions should NOT have a line number. They apply to the entire f
     }
 
     // Pass 1: Intra-level consolidation (for levels with >1 reviewer)
+    // Track Pass 1 fallbacks so the final outcome reports them as a failed
+    // consolidation even when Pass 2 succeeds (the final set then contains
+    // raw, unconsolidated suggestions for the affected level)
+    let intraLevelConsolidationFailed = false;
     const consolidatedPerLevel = {};
     for (const [levelStr, suggestions] of Object.entries(levelSuggestions)) {
       const level = parseInt(levelStr);
@@ -3764,7 +3884,11 @@ File-level suggestions should NOT have a line number. They apply to the entire f
             progressCallback({ level: `consolidation-L${level}`, status: 'completed', progress: `Level ${level} consolidation complete` });
           }
         } catch (error) {
+          // Cancellation is not a consolidation failure — propagate so the run
+          // is recorded as cancelled instead of consolidation 'failed'
+          if (error.isCancellation) throw error;
           logger.warn(`[Council] Intra-level consolidation failed for Level ${level}: ${error.message}`);
+          intraLevelConsolidationFailed = true;
           consolidatedPerLevel[level] = suggestions; // Fallback to raw
           // Report intra-level consolidation step as failed
           if (progressCallback) {
@@ -3791,9 +3915,18 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         { analysisId, tier: orchTier, progressCallback, providerOverride: orchProvider, modelOverride: orchModel, timeout: orchConfig.timeout || 600000, excludePrevious, dedupContext, githubClient }
       );
 
-      // Report cross-level orchestration step as completed
+      // orchestrateWithAI degrades to the raw union of level suggestions when
+      // consolidation fails internally, and a Pass 1 fallback means raw
+      // suggestions leaked into the final set — report either honestly
+      // instead of 'success'
+      const consolidationOutcome = (intraLevelConsolidationFailed || orchestrationResult.consolidationFailed)
+        ? 'failed' : 'success';
+
+      // Report cross-level orchestration step outcome
       if (progressCallback) {
-        progressCallback({ level: 'orchestration', status: 'completed', progress: 'Cross-level consolidation complete' });
+        progressCallback(orchestrationResult.consolidationFailed
+          ? { level: 'orchestration', status: 'failed', progress: 'Cross-level consolidation failed' }
+          : { level: 'orchestration', status: 'completed', progress: 'Cross-level consolidation complete' });
       }
 
       const finalSuggestions = this.validateAndFinalizeSuggestions(
@@ -3809,9 +3942,13 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         runId,
         suggestions: finalSuggestions,
         summary: orchestrationResult.summary,
-        levelOutcomes: { consolidation: 'success' }
+        ...(consolidationOutcome === 'failed' ? { orchestrationFailed: true } : {}),
+        levelOutcomes: { consolidation: consolidationOutcome }
       };
     } catch (error) {
+      // Cancellation is not a consolidation failure — propagate so the run is
+      // recorded as cancelled instead of consolidation 'failed'
+      if (error.isCancellation) throw error;
       logger.error(`[Council] Cross-level consolidation failed: ${error.message}`);
 
       // Report cross-level orchestration step as failed
@@ -3883,6 +4020,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       });
 
       // Parse response
+      // A parse failure here still reports the voice as completed with zero
+      // suggestions; honest per-voice reporting is a known follow-up to issue #560.
       const suggestions = this.parseResponse(response, level);
       logger.success(`[Council] ${displayLabel}: parsed ${suggestions.length} suggestions`);
 
@@ -3974,7 +4113,19 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       } : undefined
     });
 
-    return this.parseResponse(response, level);
+    // Use the disambiguated identifier so parse logs don't read as the
+    // Level N reviewer itself (matches the provider call's level above)
+    const { suggestions: consolidated, parseFailed } = this.parseResponseWithMeta(response, `consolidation-L${level}`);
+
+    // A consolidation response with no parseable suggestions (nothing
+    // recognizable as our response schema) would silently drop every reviewer
+    // suggestion for this level (issue #560). Throw so the caller falls back
+    // to the raw per-reviewer suggestions instead.
+    if (parseFailed && suggestionCount > 0) {
+      throw new Error(`Level ${level} consolidation response could not be parsed (${suggestionCount} reviewer suggestions at risk); falling back to raw suggestions`);
+    }
+
+    return consolidated;
   }
 
   /**
@@ -4161,7 +4312,20 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       } : undefined
     });
 
-    const suggestions = this.parseResponse(response, 'consolidation');
+    const { suggestions, parseFailed } = this.parseResponseWithMeta(response, 'consolidation');
+
+    // If the consolidation response carried no parseable suggestions (nothing
+    // recognizable as our response schema) while the voices produced
+    // suggestions, every voice suggestion would be silently dropped and the
+    // run would still report success (issue #560). Throw so
+    // the caller's fallback path stores the raw voice suggestions and records
+    // the consolidation outcome as 'failed'. A parseable-but-empty
+    // `suggestions: []` is a legitimate outcome (e.g. dedup curated everything
+    // away) and is not treated as a failure.
+    const inputSuggestionCount = voiceReviews.reduce((sum, v) => sum + (v.suggestionCount || 0), 0);
+    if (parseFailed && inputSuggestionCount > 0) {
+      throw new Error(`Cross-voice consolidation response could not be parsed (${inputSuggestionCount} voice suggestions at risk); falling back to unconsolidated suggestions`);
+    }
 
     // Extract summary from response, falling back to raw JSON extraction (same pattern as orchestrateWithAI)
     let summary;

@@ -401,6 +401,86 @@ describe('runReviewerCentricCouncil', () => {
     });
   });
 
+  describe('terminal orchestration progress events (issue #560)', () => {
+    // The aggregate levels[4] status only moves on voiceId-less orchestration
+    // events (events with a voiceId update levels[4].voices only), so the
+    // terminal events emitted around cross-voice consolidation must be
+    // voiceId-less for the live progress UI to reflect the real outcome.
+
+    function buildMultiVoiceRun(progressCallback) {
+      const { reviewContext, councilConfig } = buildTestContext({
+        extraVoices: [{ provider: 'antigravity', model: 'pro', tier: 'balanced' }]
+      });
+      let callCount = 0;
+      vi.spyOn(Analyzer.prototype, 'analyzeAllLevels').mockImplementation(async () => {
+        callCount++;
+        return { suggestions: buildMockSuggestions(callCount === 1 ? 3 : 2), summary: `Voice ${callCount}` };
+      });
+      return {
+        reviewContext,
+        councilConfig,
+        options: { analysisId: 'test-analysis-id', runId: 'parent-run-id', progressCallback }
+      };
+    }
+
+    function orchestrationEvents(progressCallback) {
+      return progressCallback.mock.calls
+        .map(([update]) => update)
+        .filter(u => u.level === 'orchestration');
+    }
+
+    it('emits a voiceId-less terminal completed event when cross-voice consolidation succeeds', async () => {
+      const progressCallback = vi.fn();
+      const { reviewContext, councilConfig, options } = buildMultiVoiceRun(progressCallback);
+
+      vi.spyOn(analyzer, '_crossVoiceConsolidate').mockResolvedValue({
+        suggestions: buildMockSuggestions(4),
+        summary: 'Consolidated'
+      });
+
+      await analyzer.runReviewerCentricCouncil(reviewContext, councilConfig, options);
+
+      const terminal = orchestrationEvents(progressCallback).find(u => u.status === 'completed');
+      expect(terminal).toBeDefined();
+      expect(terminal.voiceCentric).toBe(true);
+      expect(terminal.voiceId).toBeUndefined();
+      expect(terminal.progress).toBe('Cross-reviewer consolidation complete');
+    });
+
+    it('emits a voiceId-less terminal failed event when cross-voice consolidation fails', async () => {
+      const progressCallback = vi.fn();
+      const { reviewContext, councilConfig, options } = buildMultiVoiceRun(progressCallback);
+
+      vi.spyOn(analyzer, '_crossVoiceConsolidate').mockRejectedValue(new Error('consolidation blew up'));
+
+      const result = await analyzer.runReviewerCentricCouncil(reviewContext, councilConfig, options);
+
+      const terminal = orchestrationEvents(progressCallback).find(u => u.status === 'failed');
+      expect(terminal).toBeDefined();
+      expect(terminal.voiceCentric).toBe(true);
+      expect(terminal.voiceId).toBeUndefined();
+      expect(terminal.progress).toContain('Consolidation failed');
+
+      // The fallback result still records the failure authoritatively
+      expect(result.orchestrationFailed).toBe(true);
+      expect(result.levelOutcomes).toEqual({ consolidation: 'failed' });
+    });
+
+    it('does not emit a terminal failed event on cancellation (propagates instead)', async () => {
+      const progressCallback = vi.fn();
+      const { reviewContext, councilConfig, options } = buildMultiVoiceRun(progressCallback);
+
+      vi.spyOn(analyzer, '_crossVoiceConsolidate').mockRejectedValue(new CancellationError('cancelled'));
+
+      await expect(
+        analyzer.runReviewerCentricCouncil(reviewContext, councilConfig, options)
+      ).rejects.toThrow('cancelled');
+
+      const terminal = orchestrationEvents(progressCallback).filter(u => u.status === 'failed' || u.status === 'completed');
+      expect(terminal).toEqual([]);
+    });
+  });
+
   describe('custom_instructions column storage', () => {
     // Regression: custom_instructions was storing mergedInstructions (global + repo + request
     // concatenated with XML tags) instead of only the request-level instructions.
