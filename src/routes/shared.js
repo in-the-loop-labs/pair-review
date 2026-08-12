@@ -522,6 +522,32 @@ function createProgressCallback(analysisId) {
 }
 
 /**
+ * Build the terminal level-4 (consolidation) progress state for a completed
+ * analysis. The outcome is driven by the authoritative analyzer result rather
+ * than the transient progress state alone — some council paths never emit a
+ * terminal voiceId-less orchestration event, so levels[4] can still read
+ * 'running' even when consolidation failed (issue #560).
+ *
+ * @param {Object} result - Analyzer result (may carry levelOutcomes / orchestrationFailed)
+ * @param {Object} [level4] - Current levels[4] progress state, if any
+ * @returns {Object} Terminal level-4 state (preserves existing steps/voices maps)
+ */
+function finalizeConsolidationLevel(result, level4) {
+  const consolidationFailed =
+    result?.levelOutcomes?.consolidation === 'failed' ||
+    result?.orchestrationFailed === true ||
+    level4?.status === 'failed';
+  return {
+    // Spread keeps the `steps` / `voices` maps a plain
+    // `{ status, progress }` replacement would silently drop
+    ...level4,
+    ...(consolidationFailed
+      ? { status: 'failed', progress: 'Consolidation failed — showing unconsolidated results' }
+      : { status: 'completed', progress: 'Results finalized' })
+  };
+}
+
+/**
  * Parse enabledLevels from a request body into a normalized { 1: bool, 2: bool, 3: bool } object.
  *
  * Accepts three formats:
@@ -570,5 +596,6 @@ module.exports = {
   killProcesses,
   isAnalysisCancelled,
   createProgressCallback,
+  finalizeConsolidationLevel,
   parseEnabledLevels
 };

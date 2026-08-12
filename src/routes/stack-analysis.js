@@ -43,6 +43,7 @@ const {
   determineCompletionInfo,
   broadcastProgress,
   createProgressCallback,
+  finalizeConsolidationLevel,
   parseEnabledLevels,
   registerProcess: registerProcessForCancellation,
   killProcesses
@@ -586,7 +587,9 @@ async function launchStackSingleAnalysis(deps, db, config, {
       for (let lvl = 1; lvl <= completionInfo.completedLevel; lvl++) {
         currentStatus.levels[lvl] = { status: 'completed', progress: `Level ${lvl} complete` };
       }
-      currentStatus.levels[4] = { status: 'completed', progress: 'Results finalized' };
+      // Derive the terminal consolidation state from the authoritative result —
+      // the run finishing does not mean the consolidation step succeeded
+      currentStatus.levels[4] = finalizeConsolidationLevel(result, currentStatus.levels?.[4]);
       const completedStatus = {
         ...currentStatus,
         status: 'completed',

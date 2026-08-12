@@ -54,6 +54,7 @@ const {
   broadcastProgress,
   CancellationError,
   createProgressCallback,
+  finalizeConsolidationLevel,
   parseEnabledLevels,
   registerProcess: registerProcessForCancellation
 } = require('./shared');
@@ -1657,11 +1658,11 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
           };
         }
 
-        // Mark orchestration (level 4) as completed
-        currentStatus.levels[4] = {
-          status: 'completed',
-          progress: 'Results finalized'
-        };
+        // Derive the terminal consolidation (level 4) state from the
+        // authoritative result — the run finishing does not mean the
+        // consolidation step succeeded, and some council paths never emit a
+        // terminal orchestration progress event
+        currentStatus.levels[4] = finalizeConsolidationLevel(result, currentStatus.levels?.[4]);
 
         const completedStatus = {
           ...currentStatus,
