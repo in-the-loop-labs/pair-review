@@ -1462,7 +1462,7 @@ router.get('/api/file-content-original/:fileName(*)', async (req, res) => {
 router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
   try {
     const { owner, repo, number } = req.params;
-    const { event, body } = req.body; // event: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT' | 'DRAFT'
+    const { event, body, viewedFiles } = req.body; // event: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT' | 'DRAFT'
     const prNumber = parseInt(number);
 
     if (isNaN(prNumber) || prNumber <= 0) {
@@ -1759,6 +1759,27 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
 
       // Commit transaction
       await run(db, 'COMMIT');
+
+      try {
+        const changedFilePaths = new Set(
+          (prData.changed_files || [])
+            .map((file) => typeof file === 'string'
+              ? file
+              : file?.filename || file?.file || file?.path)
+            .filter(Boolean)
+        );
+        const viewedFilePaths = Array.isArray(viewedFiles)
+          ? [...new Set(viewedFiles)].filter((filePath) => changedFilePaths.has(filePath))
+          : [];
+        if (prData.node_id && viewedFilePaths.length > 0) {
+          await githubClient.markFilesAsViewed(prData.node_id, viewedFilePaths);
+        }
+      } catch (error) {
+        logger.warn(
+          `Review succeeded for ${owner}/${repo}#${prNumber}, but viewed files could not be ` +
+          `synced to GitHub: ${error.message}`
+        );
+      }
 
       // Send success response after all database operations complete.
       // Use the configured remote-host display name (e.g. "Meteorite")
