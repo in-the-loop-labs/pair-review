@@ -395,6 +395,14 @@ describe('Consolidation prompt templates (direct tests)', () => {
     }
   });
 
+  it('thorough consolidation should preserve attack scenarios when merging', () => {
+    const thorough = require('../../src/ai/prompts/baseline/consolidation/thorough');
+
+    // Exploit framing from the analysis levels must survive consolidation
+    expect(thorough.taggedPrompt).toContain('failure and attack scenarios');
+    expect(thorough.taggedPrompt).toContain('do not summarize an exploit description back into a code observation');
+  });
+
   it('parseSections should return balanced-output and summary-synthesis as required sections', () => {
     const thorough = require('../../src/ai/prompts/baseline/consolidation/thorough');
     const balanced = require('../../src/ai/prompts/baseline/consolidation/balanced');

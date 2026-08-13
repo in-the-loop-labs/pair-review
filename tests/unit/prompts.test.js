@@ -626,9 +626,14 @@ describe('Baseline Level 1 Thorough', () => {
     const baseline = await import('../../src/ai/prompts/baseline/level1/thorough.js');
 
     // These sections are specific to the thorough tier
-    expect(baseline.defaultOrder).toContain('reasoning-encouragement');
+    expect(baseline.defaultOrder).toContain('mission');
+    expect(baseline.defaultOrder).toContain('verification-standard');
+    expect(baseline.defaultOrder).toContain('do-not-report');
     expect(baseline.defaultOrder).toContain('confidence-guidance');
-    expect(baseline.defaultOrder).toContain('category-definitions');
+    // Removed for the frontier-model redesign: no category tutoring or
+    // reasoning-encouragement boilerplate
+    expect(baseline.defaultOrder).not.toContain('category-definitions');
+    expect(baseline.defaultOrder).not.toContain('reasoning-encouragement');
   });
 
   it('should have tier attributes on sections', async () => {
@@ -657,22 +662,65 @@ describe('Baseline Level 1 Thorough', () => {
     expect(baseline.taggedPrompt).toContain('Confidence is about certainty, not severity');
   });
 
-  it('should have extended focus areas', async () => {
+  it('should have prioritized focus areas', async () => {
     const baseline = await import('../../src/ai/prompts/baseline/level1/thorough.js');
 
-    // Should have categorized focus areas
-    expect(baseline.taggedPrompt).toContain('### Correctness');
-    expect(baseline.taggedPrompt).toContain('### Security');
-    expect(baseline.taggedPrompt).toContain('### Performance');
-    expect(baseline.taggedPrompt).toContain('### Code Quality');
-    expect(baseline.taggedPrompt).toContain('### Documentation');
+    // Prioritized hunting list: security first, then correctness, praise capped
+    expect(baseline.taggedPrompt).toContain('## What to Hunt For');
+    expect(baseline.taggedPrompt).toContain('**Security**');
+    expect(baseline.taggedPrompt).toContain('**Correctness**');
+    expect(baseline.taggedPrompt).toContain('**Over-engineering**');
+    expect(baseline.taggedPrompt).toContain('**Praise**');
+    expect(baseline.taggedPrompt.indexOf('**Security**'))
+      .toBeLessThan(baseline.taggedPrompt.indexOf('**Correctness**'));
   });
 
-  it('should have reasoning encouragement', async () => {
+  it('should have a verification standard requiring failure scenarios and refutation', async () => {
     const baseline = await import('../../src/ai/prompts/baseline/level1/thorough.js');
 
-    expect(baseline.taggedPrompt).toContain('Reasoning Approach');
-    expect(baseline.taggedPrompt).toContain('Quality matters more than speed');
+    expect(baseline.taggedPrompt).toContain('## Verification Standard');
+    expect(baseline.taggedPrompt).toContain('State the failure concretely');
+    expect(baseline.taggedPrompt).toContain('Try to refute it');
+    // Security findings are framed as exploits, with the fix in the suggestion
+    expect(baseline.taggedPrompt).toContain('Security findings are attack scenarios');
+    expect(baseline.taggedPrompt).toContain('report it as hardening at reduced confidence');
+    // Simplicity findings need a concrete simpler alternative, or they're style
+    expect(baseline.taggedPrompt).toContain('Simplicity findings must show the simpler version');
+  });
+
+  it('should have a do-not-report list', async () => {
+    const baseline = await import('../../src/ai/prompts/baseline/level1/thorough.js');
+
+    expect(baseline.taggedPrompt).toContain('## Do Not Report');
+    expect(baseline.taggedPrompt).toContain('Pre-existing issues');
+    expect(baseline.taggedPrompt).toContain('linter');
+    // Carve-out: unverifiable high-impact hazards survive as questions instead
+    // of being silently dropped
+    expect(baseline.taggedPrompt).toContain('Exception: a high-impact hazard you cannot statically verify');
+    // Scoped as "don't hunt for test gaps", not a ban on the severity category
+    // (severity-classification lists test coverage as medium)
+    expect(baseline.taggedPrompt).toContain('do not go looking for missing tests here');
+    expect(baseline.taggedPrompt).not.toContain('Missing tests — Level 3 evaluates test coverage');
+  });
+
+  it('should have a depth-first mission without checklist padding', async () => {
+    const baseline = await import('../../src/ai/prompts/baseline/level1/thorough.js');
+
+    expect(baseline.taggedPrompt).toContain('## Mission');
+    expect(baseline.taggedPrompt).toContain('depth-first');
+    expect(baseline.taggedPrompt).toContain('Do not manufacture findings');
+  });
+
+  it('should have consistent scope guidance (no contradictions)', async () => {
+    const baseline = await import('../../src/ai/prompts/baseline/level1/thorough.js');
+
+    // The scope section resolves the old contradiction: verification reads
+    // are allowed, but findings must be about the change itself
+    expect(baseline.taggedPrompt).toContain('## Scope');
+    expect(baseline.taggedPrompt).toContain('verification is never scope creep');
+    // The old contradictory instructions must be gone
+    expect(baseline.taggedPrompt).not.toContain('Do not analyze file context or surrounding unchanged code');
+    expect(baseline.taggedPrompt).not.toContain('Do not review unchanged code or missing tests');
   });
 
   it('should build correctly with context', () => {
@@ -923,10 +971,15 @@ describe('Baseline Level 2 Thorough', () => {
     const baseline = await import('../../src/ai/prompts/baseline/level2/thorough.js');
 
     // These sections are specific to the thorough tier
-    expect(baseline.defaultOrder).toContain('reasoning-encouragement');
+    expect(baseline.defaultOrder).toContain('reasoning-framework');
+    expect(baseline.defaultOrder).toContain('conventions-as-evidence');
+    expect(baseline.defaultOrder).toContain('verification-standard');
+    expect(baseline.defaultOrder).toContain('do-not-report');
     expect(baseline.defaultOrder).toContain('confidence-guidance');
-    expect(baseline.defaultOrder).toContain('category-definitions');
     expect(baseline.defaultOrder).toContain('file-level-guidance');
+    // Removed for the frontier-model redesign
+    expect(baseline.defaultOrder).not.toContain('category-definitions');
+    expect(baseline.defaultOrder).not.toContain('reasoning-encouragement');
   });
 
   it('should have tier attributes on sections', async () => {
@@ -955,27 +1008,50 @@ describe('Baseline Level 2 Thorough', () => {
     expect(baseline.taggedPrompt).toContain('Confidence is about certainty, not severity');
   });
 
-  it('should have extended focus areas with file context emphasis', async () => {
+  it('should have prioritized focus areas with file context emphasis', async () => {
     const baseline = await import('../../src/ai/prompts/baseline/level2/thorough.js');
 
-    // Should have categorized focus areas specific to file context
-    expect(baseline.taggedPrompt).toContain('### Consistency');
-    expect(baseline.taggedPrompt).toContain('### Integration Quality');
-    expect(baseline.taggedPrompt).toContain('### Security (File Scope)');
-    expect(baseline.taggedPrompt).toContain('### Performance (File Scope)');
-    expect(baseline.taggedPrompt).toContain('### Code Quality');
-    expect(baseline.taggedPrompt).toContain('### Documentation');
+    // Prioritized hunting list: security first, then contract violations, praise capped
+    expect(baseline.taggedPrompt).toContain('## What to Hunt For');
+    expect(baseline.taggedPrompt).toContain('**Security regressions**');
+    expect(baseline.taggedPrompt).toContain('**Contract violations**');
+    expect(baseline.taggedPrompt).toContain('**Integration defects**');
+    expect(baseline.taggedPrompt).toContain('**Consistency**');
+    expect(baseline.taggedPrompt).toContain('**Praise**');
+    expect(baseline.taggedPrompt.indexOf('**Security regressions**'))
+      .toBeLessThan(baseline.taggedPrompt.indexOf('**Contract violations**'));
   });
 
   it('should have reasoning framework', async () => {
     const baseline = await import('../../src/ai/prompts/baseline/level2/thorough.js');
 
-    // Opus-optimized: Multi-phase reasoning framework for sophisticated analysis
+    // Multi-phase reasoning framework for sophisticated analysis
     expect(baseline.taggedPrompt).toContain('Reasoning Framework');
     expect(baseline.taggedPrompt).toContain('Phase 1');
     expect(baseline.taggedPrompt).toContain('Phase 2');
     expect(baseline.taggedPrompt).toContain('Phase 3');
     expect(baseline.taggedPrompt).toContain('Output Calibration');
+  });
+
+  it('should treat file conventions as evidence, not authority', async () => {
+    const baseline = await import('../../src/ai/prompts/baseline/level2/thorough.js');
+
+    expect(baseline.taggedPrompt).toContain('Conventions Are Evidence, Not Law');
+    expect(baseline.taggedPrompt).toContain('deviation is an improvement');
+    expect(baseline.taggedPrompt).toContain('conformance to a bad pattern');
+    // The old authority framing must be gone
+    expect(baseline.taggedPrompt).not.toContain('conventions as authoritative');
+  });
+
+  it('should have verification standard and do-not-report list', async () => {
+    const baseline = await import('../../src/ai/prompts/baseline/level2/thorough.js');
+
+    expect(baseline.taggedPrompt).toContain('## Verification Standard');
+    expect(baseline.taggedPrompt).toContain('cite the specific lines that establish the pattern');
+    expect(baseline.taggedPrompt).toContain('Security findings are attack scenarios');
+    expect(baseline.taggedPrompt).toContain('Simplicity findings must show the simpler version');
+    expect(baseline.taggedPrompt).toContain('## Do Not Report');
+    expect(baseline.taggedPrompt).toContain("Diff-only findings (Level 1's job)");
   });
 
   it('should have file-level guidance', async () => {
@@ -1026,14 +1102,12 @@ describe('Baseline Level 2 Thorough', () => {
     expect(builder.tier).toBe('thorough');
   });
 
-  it('should have category definitions with file-context examples', async () => {
+  it('should NOT have category definitions tutoring', async () => {
     const baseline = await import('../../src/ai/prompts/baseline/level2/thorough.js');
 
-    // Should have category definitions
-    expect(baseline.taggedPrompt).toContain('Category Definitions');
-    expect(baseline.taggedPrompt).toContain('### Issue Types');
-
-    // Examples should be file-context specific
+    // Frontier-model redesign: no category taxonomy tutoring
+    expect(baseline.taggedPrompt).not.toContain('Category Definitions');
+    // But findings must still explain why file context was needed
     expect(baseline.taggedPrompt).toContain('file context');
   });
 });
@@ -1419,10 +1493,13 @@ describe('Baseline Level 3 Thorough', () => {
     const baseline = await import('../../src/ai/prompts/baseline/level3/thorough.js');
 
     // These sections are specific to the thorough tier
-    expect(baseline.defaultOrder).toContain('reasoning-encouragement');
+    expect(baseline.defaultOrder).toContain('verification-standard');
+    expect(baseline.defaultOrder).toContain('do-not-report');
     expect(baseline.defaultOrder).toContain('confidence-guidance');
-    expect(baseline.defaultOrder).toContain('category-definitions');
     expect(baseline.defaultOrder).toContain('file-level-guidance');
+    // Removed for the frontier-model redesign
+    expect(baseline.defaultOrder).not.toContain('category-definitions');
+    expect(baseline.defaultOrder).not.toContain('reasoning-encouragement');
   });
 
   it('should have tier attributes on sections', async () => {
@@ -1451,30 +1528,30 @@ describe('Baseline Level 3 Thorough', () => {
     expect(baseline.taggedPrompt).toContain('Confidence != severity');
   });
 
-  it('should have extended focus areas with codebase context emphasis', async () => {
+  it('should have prioritized focus areas with codebase context emphasis', async () => {
     const baseline = await import('../../src/ai/prompts/baseline/level3/thorough.js');
 
-    // Should have categorized focus areas specific to codebase context
-    expect(baseline.taggedPrompt).toContain('### Architectural Consistency');
-    expect(baseline.taggedPrompt).toContain('### Established Patterns');
-    expect(baseline.taggedPrompt).toContain('### Cross-File Dependencies');
-    expect(baseline.taggedPrompt).toContain('### Testing Coverage');
-    expect(baseline.taggedPrompt).toContain('### Documentation Completeness');
-    expect(baseline.taggedPrompt).toContain('### API Contracts');
-    expect(baseline.taggedPrompt).toContain('### Configuration & Environment');
-    expect(baseline.taggedPrompt).toContain('### Breaking Changes & Compatibility');
-    expect(baseline.taggedPrompt).toContain('### Performance Impact');
-    expect(baseline.taggedPrompt).toContain('### Security Considerations');
+    // Prioritized hunting list: security first, then breaking changes, praise capped
+    expect(baseline.taggedPrompt).toContain('## What to Hunt For');
+    expect(baseline.taggedPrompt).toContain('**Security boundaries**');
+    expect(baseline.taggedPrompt).toContain('**Breaking changes**');
+    expect(baseline.taggedPrompt).toContain('**Pattern conformance**');
+    expect(baseline.taggedPrompt).toContain('**Missing accompanying changes**');
+    expect(baseline.taggedPrompt).toContain('**System-level risk**');
+    expect(baseline.taggedPrompt).toContain('**Praise**');
+    expect(baseline.taggedPrompt.indexOf('**Security boundaries**'))
+      .toBeLessThan(baseline.taggedPrompt.indexOf('**Breaking changes**'));
   });
 
-  it('should have reasoning encouragement', async () => {
+  it('should have evidence-grounded verification standard', async () => {
     const baseline = await import('../../src/ai/prompts/baseline/level3/thorough.js');
 
-    expect(baseline.taggedPrompt).toContain('Reasoning Approach');
-    // Should guide sophisticated codebase analysis with dependency tracing and architectural thinking
-    expect(baseline.taggedPrompt).toContain('Dependency tracing');
-    expect(baseline.taggedPrompt).toContain('Architectural thinking');
-    expect(baseline.taggedPrompt).toContain('Quality matters more than speed');
+    expect(baseline.taggedPrompt).toContain('## Verification Standard');
+    expect(baseline.taggedPrompt).toContain('Cited patterns must exist');
+    expect(baseline.taggedPrompt).toContain('Breaking-change claims must name the victim');
+    expect(baseline.taggedPrompt).toContain('Refute before reporting');
+    expect(baseline.taggedPrompt).toContain('Security findings are attack scenarios');
+    expect(baseline.taggedPrompt).toContain('Simplicity findings must show the simpler version');
   });
 
   it('should have detailed file-level guidance', async () => {
@@ -1532,14 +1609,12 @@ describe('Baseline Level 3 Thorough', () => {
     expect(builder.tier).toBe('thorough');
   });
 
-  it('should have category definitions with codebase-context examples', async () => {
+  it('should NOT have category definitions tutoring', async () => {
     const baseline = await import('../../src/ai/prompts/baseline/level3/thorough.js');
 
-    // Should have category definitions
-    expect(baseline.taggedPrompt).toContain('Category Definitions');
-    expect(baseline.taggedPrompt).toContain('### Issue Types');
-
-    // Examples should be codebase-context specific
+    // Frontier-model redesign: no category taxonomy tutoring
+    expect(baseline.taggedPrompt).not.toContain('Category Definitions');
+    // But findings must still explain why codebase context was needed
     expect(baseline.taggedPrompt).toContain('codebase context');
   });
 
@@ -1558,11 +1633,9 @@ describe('Baseline Level 3 Thorough', () => {
     // Should have numbered steps in analysis process
     expect(baseline.taggedPrompt).toContain('Map the change scope');
     expect(baseline.taggedPrompt).toContain('Trace dependencies');
-    expect(baseline.taggedPrompt).toContain('Identify patterns');
-    expect(baseline.taggedPrompt).toContain('Evaluate conformance');
-    expect(baseline.taggedPrompt).toContain('Assess ripple effects');
+    expect(baseline.taggedPrompt).toContain('Find the precedents');
+    expect(baseline.taggedPrompt).toContain('Assess system impact');
     expect(baseline.taggedPrompt).toContain('Check completeness');
-    expect(baseline.taggedPrompt).toContain('Consider evolution');
   });
 
   it('should have available commands for codebase exploration', async () => {
@@ -1577,14 +1650,12 @@ describe('Baseline Level 3 Thorough', () => {
     expect(baseline.taggedPrompt).toContain('parallel read-only Tasks');
   });
 
-  it('should have scope guidance and exploration strategy in guidelines', async () => {
+  it('should have scope guidance distinguishing Level 3 from Level 1/2', async () => {
     const baseline = await import('../../src/ai/prompts/baseline/level3/thorough.js');
 
-    // Thorough should have scope guidance distinguishing Level 3 from Level 1/2
-    expect(baseline.taggedPrompt).toContain('### Scope: Level 3 vs Level 1/2');
-    // And exploration strategy
-    expect(baseline.taggedPrompt).toContain('### Exploration Strategy');
-    expect(baseline.taggedPrompt).toContain('Start with the changed files');
+    // The scope test now lives in the do-not-report section
+    expect(baseline.taggedPrompt).toContain('Did I need to look at other files to find this?');
+    expect(baseline.taggedPrompt).toContain('Levels 1 and 2 own those');
   });
 
   it('should have Level 3 output schema', async () => {
@@ -2054,9 +2125,10 @@ describe('Baseline Orchestration Thorough', () => {
     const baseline = await import('../../src/ai/prompts/baseline/orchestration/thorough.js');
 
     // These sections are specific to the thorough tier
-    expect(baseline.defaultOrder).toContain('reasoning-encouragement');
     expect(baseline.defaultOrder).toContain('confidence-guidance');
     expect(baseline.defaultOrder).toContain('file-level-guidance');
+    // Removed for the frontier-model redesign
+    expect(baseline.defaultOrder).not.toContain('reasoning-encouragement');
   });
 
   it('should have tier attributes on sections', async () => {
@@ -2083,11 +2155,10 @@ describe('Baseline Orchestration Thorough', () => {
     expect(baseline.taggedPrompt).toContain('Very low (<0.3)');
   });
 
-  it('should have reasoning encouragement', async () => {
+  it('should frame curation as depth over volume', async () => {
     const baseline = await import('../../src/ai/prompts/baseline/orchestration/thorough.js');
 
-    expect(baseline.taggedPrompt).toContain('Reasoning Approach');
-    expect(baseline.taggedPrompt).toContain('Quality matters more than speed');
+    expect(baseline.taggedPrompt).toContain("curate, don't concatenate");
   });
 
   it('should have placeholders for multi-level suggestions', async () => {
@@ -2123,10 +2194,17 @@ describe('Baseline Orchestration Thorough', () => {
     expect(baseline.taggedPrompt).toContain('Merging Best Practices');
     expect(baseline.taggedPrompt).toContain('combining suggestions across levels');
     expect(baseline.taggedPrompt).toContain('Do NOT mention which level');
-    // Opus-optimized conflict resolution guidance
+    // Conflict resolution guidance
     expect(baseline.taggedPrompt).toContain('Handling Level Contradictions');
-    expect(baseline.taggedPrompt).toContain('Combining Confidence Scores');
     expect(baseline.taggedPrompt).toContain('Cross-level agreement');
+    // Evidence-based confidence adjustment, not score arithmetic
+    expect(baseline.taggedPrompt).toContain('Adjusting Confidence When Merging');
+    expect(baseline.taggedPrompt).toContain('never by mechanical score arithmetic');
+    expect(baseline.taggedPrompt).not.toContain('boost confidence by 0.1');
+    expect(baseline.taggedPrompt).not.toContain('lower confidence minus 0.1');
+    // Exploit framing from the levels must survive merging
+    expect(baseline.taggedPrompt).toContain('failure and attack scenarios');
+    expect(baseline.taggedPrompt).toContain('do not summarize an exploit description back into a code observation');
   });
 
   it('should have detailed priority-based curation', async () => {
@@ -2147,33 +2225,32 @@ describe('Baseline Orchestration Thorough', () => {
     const baseline = await import('../../src/ai/prompts/baseline/orchestration/thorough.js');
 
     expect(baseline.taggedPrompt).toContain('Human-Centric Framing');
-    expect(baseline.taggedPrompt).toContain('Language Principles');
-    expect(baseline.taggedPrompt).toContain('Preserve Reviewer Autonomy');
-    expect(baseline.taggedPrompt).toContain('Provide Helpful Context');
-    expect(baseline.taggedPrompt).toContain('Tone and Style');
+    expect(baseline.taggedPrompt).toContain('observations, not demands');
     expect(baseline.taggedPrompt).toContain('pair programming partner');
+    expect(baseline.taggedPrompt).toContain('makes the final decisions');
   });
 
-  it('should have focused confidence guidance for orchestration', async () => {
+  it('should have unified confidence semantics for orchestration', async () => {
     const baseline = await import('../../src/ai/prompts/baseline/orchestration/thorough.js');
 
-    // Should have confidence calibration focused on curation value
     expect(baseline.taggedPrompt).toContain('High (0.8-1.0)');
     expect(baseline.taggedPrompt).toContain('Medium (0.5-0.79)');
     expect(baseline.taggedPrompt).toContain('Low (0.3-0.49)');
     expect(baseline.taggedPrompt).toContain('Very low (<0.3)');
-    // Key conceptual distinction
-    expect(baseline.taggedPrompt).toContain('Confidence is about certainty of value, not severity');
+    // Confidence keeps one meaning across the whole pipeline; inclusion is a
+    // separate editorial judgment
+    expect(baseline.taggedPrompt).toContain('one meaning across the pipeline');
+    expect(baseline.taggedPrompt).toContain('probability that the finding is real');
+    expect(baseline.taggedPrompt).not.toContain('certainty of value');
   });
 
   it('should have detailed file-level guidance', async () => {
     const baseline = await import('../../src/ai/prompts/baseline/orchestration/thorough.js');
 
     expect(baseline.taggedPrompt).toContain('File-Level Suggestions');
-    expect(baseline.taggedPrompt).toContain('Preserving File-Level Insights');
-    expect(baseline.taggedPrompt).toContain('Good Examples of File-Level Suggestions');
-    expect(baseline.taggedPrompt).toContain('When to Create File-Level Suggestions');
-    expect(baseline.taggedPrompt).toContain('Merging File-Level Suggestions');
+    expect(baseline.taggedPrompt).toContain('[FILE-LEVEL]');
+    expect(baseline.taggedPrompt).toContain('fileLevelSuggestions');
+    expect(baseline.taggedPrompt).toContain('NO line number');
   });
 
   it('should have summary synthesis guidance', async () => {
@@ -2198,12 +2275,12 @@ describe('Baseline Orchestration Thorough', () => {
     expect(baseline.taggedPrompt).toContain('coherent story');
   });
 
-  it('should have review philosophy', async () => {
+  it('should preserve the pair-partner philosophy in framing', async () => {
     const baseline = await import('../../src/ai/prompts/baseline/orchestration/thorough.js');
 
-    expect(baseline.taggedPrompt).toContain('Review Philosophy');
-    expect(baseline.taggedPrompt).toContain('Be constructive');
-    expect(baseline.taggedPrompt).toContain('pair programmer');
+    // Philosophy now lives in the human-centric framing section
+    expect(baseline.taggedPrompt).toContain('pair programming partner');
+    expect(baseline.taggedPrompt).toContain('not an enforcer');
   });
 
   it('should build correctly with context', () => {
@@ -2247,13 +2324,17 @@ describe('Baseline Orchestration Thorough', () => {
     expect(baseline.taggedPrompt).toContain('DELETED lines');
   });
 
-  it('should have quality over quantity emphasis', async () => {
+  it('should scale output to the PR instead of a fixed count target', async () => {
     const baseline = await import('../../src/ai/prompts/baseline/orchestration/thorough.js');
 
     expect(baseline.taggedPrompt).toContain('Quality over quantity');
     expect(baseline.taggedPrompt).toContain('Limit praise suggestions');
-    expect(baseline.taggedPrompt).toContain('Avoid suggestion overload');
-    expect(baseline.taggedPrompt).toContain('8-15 total suggestions');
+    expect(baseline.taggedPrompt).toContain('Scale Output to the PR');
+    expect(baseline.taggedPrompt).toContain('Every suggestion must earn its place');
+    // Fixed count anchors cause padding on small PRs and truncation on big ones
+    expect(baseline.taggedPrompt).not.toContain('8-15 total suggestions');
+    // Category balancing is gone: report what is actually there
+    expect(baseline.taggedPrompt).not.toContain('Balance between different categories');
   });
 
   it('should have role description with orchestration context', async () => {

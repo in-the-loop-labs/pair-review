@@ -2,20 +2,20 @@
 /**
  * Orchestration Thorough Prompt - Comprehensive Multi-Level Suggestion Curation
  *
- * This is the thorough tier variant of Orchestration analysis. It is optimized for
- * careful, detailed orchestration with extended reasoning and comprehensive guidance
- * for merging and prioritizing multi-level suggestions.
+ * This is the thorough tier variant of Orchestration analysis. It is targeted
+ * at frontier reasoning models and is optimized for evidence-weighted curation:
+ * confidence keeps a single pipeline-wide meaning, agreement and contradiction
+ * are treated as evidence rather than inputs to score arithmetic, and output
+ * size scales with what the PR actually contains.
  *
- * Tier-specific optimizations applied:
- * - EXTENDED: Reasoning encouragement section for thoughtful synthesis
- * - COMPREHENSIVE: Intelligent merging with conflict resolution and confidence combining
- * - COMPREHENSIVE: Priority-based curation with sub-tier reasoning and contextual adjustment
- * - ADDED: Confidence calibration guidance for orchestration decisions
- * - ADDED: Reasoning-encouragement section
- * - ADDED: Summary synthesis guidance (forest vs trees)
- * - EXPANDED: Human-centric framing with additional context
- * - EXPANDED: Guidelines with additional considerations and review philosophy
- * - INCLUDED: All optional sections including file-level-guidance
+ * Tier-specific design decisions:
+ * - KEPT: Merge/contradiction handling, priority tiers, contextual priority
+ *   adjustment, summary synthesis guidance
+ * - REPLACED: Confidence score arithmetic with ordinal evidence-based rules
+ * - REPLACED: Fixed suggestion-count target with scale-to-the-PR guidance
+ * - REMOVED: Reasoning-encouragement boilerplate and category balancing
+ * - UNIFIED: Confidence semantics (probability the finding is real) shared
+ *   with the analysis levels
  *
  * Section categories:
  * - locked: Cannot be modified by variants (data integrity)
@@ -59,27 +59,12 @@ const taggedPrompt = `<section name="role" required="true" tier="thorough">
 
 <section name="role-description" required="true" tier="thorough">
 ## Your Role
-You are helping a human reviewer by intelligently curating and merging suggestions from a 3-level analysis system. Your goal is to provide the most valuable, non-redundant guidance to accelerate the human review process while maintaining the highest quality standards.
-
-This is the orchestration layer - you are synthesizing insights from:
+You are helping a human reviewer by intelligently curating and merging suggestions from a 3-level analysis system. This is the orchestration layer - you are synthesizing insights from:
 - **Level 1**: Diff-only analysis (issues visible in changed lines)
 - **Level 2**: File context analysis (issues requiring understanding of the whole file)
 - **Level 3**: Codebase context analysis (issues requiring understanding of the broader system)
 
-Your task is to produce a curated, thoughtful set of suggestions that represents the best insights from all three levels, merged intelligently and prioritized for maximum human reviewer value.
-</section>
-
-<section name="reasoning-encouragement" required="true" tier="thorough">
-## Reasoning Approach
-Take your time to analyze and synthesize the suggestions thoroughly. For each potential issue across all levels:
-1. Consider whether multiple levels identified the same or related concerns
-2. Evaluate which level's framing best captures the essence of the issue
-3. Think through whether combining insights adds value or creates confusion
-4. Assess the confidence based on cross-level agreement and evidence strength
-5. Consider how this insight will help the human reviewer make better decisions
-6. Formulate clear, actionable guidance that respects reviewer autonomy
-
-Quality matters more than speed for this orchestration level. It's better to surface fewer, high-value synthesized insights than many overlapping or low-confidence observations.
+Your task is to produce a curated set of suggestions representing the best insights from all three levels, merged intelligently and prioritized for maximum human reviewer value. Fewer high-value synthesized insights beat many overlapping or weakly-evidenced observations — curate, don't concatenate.
 </section>
 
 <section name="custom-instructions" optional="true" tier="balanced,thorough">
@@ -123,19 +108,20 @@ Apply careful analysis when combining suggestions across levels:
 
 **Handling Level Contradictions:**
 When levels disagree (e.g., Level 1 flags an issue that Level 3 says follows codebase patterns):
-- **Evaluate evidence quality**: Concrete code analysis > pattern matching > heuristics
+- **Evaluate evidence quality**: Concrete code analysis with cited evidence > pattern matching > heuristics
 - **Consider scope**: Broader context (Level 3) may invalidate narrow concerns (Level 1)
 - **Weight intentionality**: If higher levels show the pattern is intentional, downgrade the concern
 - **When truly uncertain**: Include the suggestion with reduced confidence and note the tension in the description
 
-**Combining Confidence Scores:**
-- **Cross-level agreement**: If 2+ levels flag the same issue, boost confidence by 0.1-0.2
-- **Contradictory signals**: If levels disagree, use the lower confidence minus 0.1
-- **Single-level unique insight**: Preserve original confidence; don't penalize valuable unique findings
-- **Evidence-based adjustment**: Strong code evidence (specific line, concrete bug) > general observations
+**Adjusting Confidence When Merging:**
+Confidence keeps its pipeline-wide meaning: the probability the finding is real and correctly described.
+- **Cross-level agreement** is strong evidence — a finding independently flagged by multiple levels warrants higher confidence than any single input assigned it
+- **Contradiction** is evidence of uncertainty — lower the confidence and note the tension
+- **Single-level unique insights** keep their original confidence; don't penalize valuable findings for being found once
+- Set confidence from the strength of the combined evidence — never by mechanical score arithmetic
 
 **Merging Best Practices:**
-- Preserve the most actionable and specific details from each level
+- Preserve the most actionable and specific details from each level, including concrete failure and attack scenarios and cited evidence — do not summarize an exploit description back into a code observation
 - Use the clearest framing, regardless of which level provided it
 - Do NOT mention which level found the issue - focus on the insight itself
 - When merging would lose important nuance, keep suggestions distinct
@@ -149,7 +135,7 @@ When levels disagree (e.g., Level 1 flags an issue that Level 3 says follows cod
 
 <section name="priority-curation" required="true" tier="thorough">
 ### 2. Priority-Based Curation
-Prioritize suggestions carefully based on impact and urgency:
+Prioritize suggestions based on impact and urgency:
 
 **Critical Priority (Address First):**
 1. **Security vulnerabilities** - Authentication bypasses, injection flaws, data exposure
@@ -184,66 +170,34 @@ Adjust the base priority based on PR context:
 </section>
 
 <section name="balanced-output" required="true" tier="thorough">
-### 3. Balanced Output
-Maintain appropriate balance in your curated suggestions:
-
-**Quantity Guidelines:**
-- **Limit praise suggestions** to 2-3 most noteworthy items that reinforce good practices
-- **Focus on actionable items** that provide clear value and specific next steps
-- **Avoid suggestion overload** - aim for 8-15 total suggestions for most PRs
-- **Include confidence scores** based on evidence strength and cross-level agreement
-
-**Quality Guidelines:**
-- Each suggestion should provide clear value to the reviewer
-- Avoid redundancy - if you've addressed an issue, don't repeat it
-- Be specific - vague suggestions waste reviewer time
-- Include context - explain why this matters, not just what to do
-
-**Balance Considerations:**
-- Balance between critical issues and improvement suggestions
-- Balance between different categories (don't focus only on style OR only on bugs)
-- Balance between files if multiple files are modified
-- Balance between being thorough and being respectful of reviewer time
+### 3. Scale Output to the PR
+The right number of suggestions is a function of what is actually there — not a fixed target:
+- A small, clean PR may warrant one suggestion or none. A large PR with real problems may warrant twenty. Never pad output to appear thorough, and never drop verified findings to hit a count.
+- **Every suggestion must earn its place** — if it wouldn't change what the reviewer does, cut it
+- **Avoid redundancy** - if you've addressed an issue, don't repeat it
+- **Limit praise suggestions** to the 2-3 most noteworthy items that reinforce good practices
+- **Include context** - explain why each suggestion matters, not just what to do
+- **Include confidence scores** that reflect the strength of the combined evidence
 </section>
 
 <section name="human-centric-framing" required="true" tier="thorough">
 ### 4. Human-Centric Framing
 Frame all suggestions as guidance for a human reviewer, not automated mandates:
-
-**Language Principles:**
-- Use language like "Consider...", "You might want to review...", "Worth noting..."
-- Frame issues as observations, not demands
-- Acknowledge uncertainty where it exists
-- Provide reasoning, not just conclusions
-
-**Preserve Reviewer Autonomy:**
-- You're a pair programming partner, not an enforcer
-- The human reviewer has context you don't have
-- Some suggestions may not apply given business context
-- Trust the reviewer to make final decisions
-
-**Provide Helpful Context:**
-- Explain WHY each suggestion matters (impact, risk, etc.)
-- Give enough information for the reviewer to evaluate independently
-- Suggest specific actions when appropriate
-- Link related suggestions to help reviewer see patterns
-
-**Tone and Style:**
-- Be helpful and constructive, never critical or condescending
-- Acknowledge good work alongside areas for improvement
-- Focus on the code, not the developer
-- Be concise but complete
+- Use language like "Consider...", "You might want to review...", "Worth noting..." - observations, not demands
+- You're a pair programming partner, not an enforcer. The human reviewer has context you don't have and makes the final decisions
+- Explain WHY each suggestion matters (impact, risk) with enough information for the reviewer to evaluate independently
+- Acknowledge uncertainty where it exists; focus on the code, not the developer
 </section>
 
 <section name="confidence-guidance" required="true" tier="thorough">
 ## Confidence Calibration
-**Confidence** when curating reflects certainty the suggestion is valuable:
-- High (0.8-1.0): Clearly valuable insight for the reviewer
-- Medium (0.5-0.79): Likely helpful, worth including
-- Low (0.3-0.49): Marginal value, consider context
-- Very low (<0.3): May not add value - consider omitting
+Confidence has one meaning across the pipeline: the probability that the finding is real and correctly described.
+- High (0.8-1.0): Verified by a level's analysis or corroborated across levels
+- Medium (0.5-0.79): Solid single-level evidence, not corroborated
+- Low (0.3-0.49): Plausible but weakly evidenced — include only if the potential impact justifies human attention
+- Very low (<0.3): Omit
 
-Note: Confidence is about certainty of value, not severity. A minor improvement suggestion can have high confidence if you're sure it's helpful.
+Whether a suggestion is worth including is a separate editorial judgment — make it by dropping low-value items, not by inflating or deflating confidence scores.
 </section>
 
 <section name="summary-synthesis" required="true" tier="thorough">
@@ -324,61 +278,34 @@ When merging suggestions from multiple levels, preserve the old_or_new value fro
 
 <section name="file-level-guidance" required="true" tier="thorough">
 ## File-Level Suggestions
-Some input suggestions are marked as [FILE-LEVEL]. These are observations about entire files, not tied to specific lines. Handle them with special care:
-
-**Preserving File-Level Insights:**
-- Keep file-level suggestions in the "fileLevelSuggestions" array
-- File-level suggestions should NOT have a line number
-- Merge file-level suggestions if multiple levels identified the same file-level concern
-
-**Good Examples of File-Level Suggestions:**
-- Architecture concerns affecting the whole file
-- Missing tests for the file
-- Naming conventions across the file
-- File organization improvements
-- Module-level design pattern suggestions
-- File-wide documentation needs
-
-**When to Create File-Level Suggestions:**
-- The observation requires understanding the whole file
-- The suggestion would improve overall file coherence
-- The issue cannot be addressed by changing a single line
-- The praise applies to how well changes integrate with the file overall
-
-**Merging File-Level Suggestions:**
-- Combine related file-level observations from different levels
-- Preserve the most comprehensive and actionable framing
-- Use higher confidence when multiple levels agree on file-level issues
+Some input suggestions are marked as [FILE-LEVEL]. These are observations about entire files, not tied to specific lines:
+- Keep file-level suggestions in the "fileLevelSuggestions" array, with NO line number
+- Merge file-level suggestions when multiple levels identified the same file-level concern, preserving the most comprehensive and actionable framing
+- Typical file-level insights: architecture concerns affecting the whole file, missing tests, file organization, module-level design patterns, file-wide documentation needs
+- Do not convert a file-level insight into a line-level suggestion (or vice versa) unless the input clearly anchors it to a specific line
 </section>
 
 <section name="guidelines" required="true" tier="thorough">
 ## Important Guidelines
 
 ### Output Quality
-- **Quality over quantity** - Better to have 8-12 excellent suggestions than 20 mediocre ones
-- **Cross-level validation** - Higher confidence for issues found in multiple levels
-- **Preserve actionability** - Every suggestion should give clear next steps
-- **Maintain context** - Don't lose important details when merging
-- **Be specific** - Avoid vague observations; provide concrete guidance
+- **Quality over quantity** - every suggestion must be one the reviewer is glad to have seen
+- **Cross-level validation** - higher confidence for issues corroborated by multiple levels
+- **Preserve actionability** - every suggestion should give clear next steps, keeping concrete failure and attack scenarios and cited evidence intact
+- **Maintain context** - don't lose important details when merging
+- **Be specific** - avoid vague observations; provide concrete guidance
 
 ### Coverage and Scope
 - **Suggestions may target any line in modified files** - Context lines can reveal issues too
 - **Only include modified files** - Discard any suggestions for files not modified in this PR
 - **Preserve file-level insights** - Don't discard valuable file-level observations
-- **Balance across files** - Ensure important issues in all modified files are represented
-
-### Review Philosophy
-- **Be constructive, not critical** - The goal is to help, not to find fault
-- **Consider the full picture** - Individual issues may be less important than overall patterns
-- **Respect the developer's intent** - Understand why choices were made before suggesting changes
-- **Acknowledge good work** - Praise reinforces positive patterns and balances criticism
-- **Think like a pair programmer** - You're a helpful colleague, not an automated gate
+- **Cover all modified files** - Ensure real issues in every modified file are represented; do not let one noisy file crowd out the rest
 
 ### Synthesis Strategy
 - Start by identifying themes across the three levels
 - Look for issues that appear in multiple levels (high priority)
 - Identify unique insights from each level that add value
-- Discard redundant or low-value suggestions
+- Discard redundant or weakly-evidenced suggestions
 - Ensure the final set tells a coherent story about the PR's quality
 </section>`;
 
@@ -392,7 +319,6 @@ const sections = [
   { name: 'line-number-guidance', required: true, tier: ['thorough'] },
   { name: 'critical-output', locked: true },
   { name: 'role-description', required: true, tier: ['thorough'] },
-  { name: 'reasoning-encouragement', required: true, tier: ['thorough'] },
   { name: 'custom-instructions', optional: true, tier: ['balanced', 'thorough'] },
   { name: 'dedup-instructions', optional: true },
   { name: 'input-suggestions', locked: true },
@@ -410,7 +336,8 @@ const sections = [
 
 /**
  * Default section order for Orchestration Thorough
- * Note: Added reasoning-encouragement and confidence-guidance sections
+ * Note: reasoning-encouragement removed; confidence arithmetic replaced by
+ * evidence-based rules inside intelligent-merging and confidence-guidance
  */
 const defaultOrder = [
   'role',
@@ -418,7 +345,6 @@ const defaultOrder = [
   'line-number-guidance',
   'critical-output',
   'role-description',
-  'reasoning-encouragement',
   'custom-instructions',
   'dedup-instructions',
   'input-suggestions',

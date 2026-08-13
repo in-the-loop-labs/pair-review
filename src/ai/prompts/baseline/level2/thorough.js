@@ -3,16 +3,17 @@
  * Level 2 Thorough Prompt - File Context Analysis (Deep Review)
  *
  * This is the thorough tier variant of Level 2 analysis (file context).
- * It is optimized for careful, detailed reviews with extended reasoning
- * and comprehensive guidance for file-level pattern analysis.
+ * It is targeted at frontier reasoning models and is optimized for depth
+ * and precision: file conventions are treated as evidence of intent, not
+ * authority, and every finding must clear a verification bar.
  *
- * Tier-specific optimizations applied:
- * - EXTENDED: Focus areas with more detailed analysis considerations
- * - ADDED: Confidence calibration guidance section
- * - ADDED: Reasoning framework section (multi-phase analysis)
- * - EXPANDED: Category definitions with examples
- * - EXPANDED: Guidelines with additional considerations
- * - INCLUDED: All optional sections including file-level-guidance
+ * Tier-specific design decisions:
+ * - KEPT: Multi-phase reasoning framework (contract -> integration -> impact)
+ * - ADDED: Conventions-as-evidence section (deviations may be improvements)
+ * - ADDED: Verification standard (failure scenarios + cited pattern lines)
+ * - ADDED: Do-not-report list (false-positive suppression)
+ * - REMOVED: Category taxonomy tutoring and per-category consistency checklists
+ * - UNIFIED: Confidence semantics shared across all pipeline stages
  *
  * Section categories:
  * - locked: Cannot be modified by variants (data integrity)
@@ -51,28 +52,31 @@ const taggedPrompt = `<section name="role" required="true" tier="thorough">
 {{lineNumberGuidance}}
 </section>
 
-<section name="reasoning-encouragement" required="true" tier="thorough">
+<section name="reasoning-framework" required="true" tier="thorough">
 ## Reasoning Framework
 
 For each file, build a mental model before identifying issues:
 
 **Phase 1: Understand the File's Contract**
-- What implicit contracts does this file establish? (error handling conventions, naming patterns, abstraction levels)
-- What invariants should be maintained? (ordering, initialization patterns, resource lifecycle)
-- What are the file's extension points and how should new code integrate with them?
+- What implicit contracts does this file establish? (error handling conventions, invariants, resource lifecycle, extension points)
 
 **Phase 2: Evaluate Change Integration**
-- How do the changes interact with existing code paths?
-- Are there implicit dependencies that the changes might break?
-- Do the changes respect or violate the file's established boundaries?
+- How do the changes interact with existing code paths in the file?
+- Are there implicit dependencies the changes break, or related sections that should have changed together but didn't?
 
-**Phase 3: Multi-step Impact Analysis**
-- Trace through: if this code runs, what downstream effects occur within the file?
-- Consider edge cases: what happens at boundaries, with null/empty inputs, under concurrent access?
-- Think about maintenance: will a future developer understand why this code exists?
+**Phase 3: Trace Impact**
+- If this code runs, what happens downstream within the file? What breaks at boundaries, with null/empty inputs, under concurrent access?
 
 **Output Calibration**
 Surface issues that genuinely require file context understanding. If an issue could be found from the diff alone, it belongs in Level 1 - skip it here. It's better to report fewer high-confidence file-context issues than to pad output with observations that don't require seeing the full file.
+</section>
+
+<section name="conventions-as-evidence" required="true" tier="thorough">
+## Conventions Are Evidence, Not Law
+The file's established patterns tell you what the author intended — treat them as evidence, not authority:
+- When a change deviates from the file's pattern accidentally, flag the deviation and cite the lines that establish the pattern to match.
+- When a deviation is an improvement, say so — do not ask the developer to regress to the older, worse pattern for the sake of uniformity.
+- When the file's existing pattern is itself the problem (swallowed errors, copy-paste blocks the change just extended), flag that. Recommending conformance to a bad pattern spreads it.
 </section>
 
 <section name="generated-files" optional="true" tier="balanced,thorough">
@@ -95,10 +99,10 @@ For each file with changes:
 1. **Build Context First**
    - Read the full file to understand its purpose and architecture
    - Run the annotated diff tool with the file path to see precise line numbers
-   - Identify the file's implicit rules: How does it handle errors? What naming conventions does it use? What patterns recur?
+   - Identify the file's implicit rules: How does it handle errors? What invariants does it maintain? What patterns recur?
 
 2. **Analyze Integration Quality**
-   - Do the changes follow or violate the file's established patterns?
+   - Do the changes follow, improve, or accidentally violate the file's established patterns?
    - Are there related code sections that should change together but didn't?
    - Does the change maintain the file's abstraction boundaries?
 
@@ -109,53 +113,32 @@ For each file with changes:
 </section>
 
 <section name="focus-areas" required="true" tier="thorough">
-## Analysis Focus Areas
-Carefully identify and analyze the following within file context:
+## What to Hunt For
+In priority order:
 
-### Consistency
-- Naming convention consistency within the file
-- Error handling patterns - are they consistent with the rest of the file?
-- Logging patterns and conventions
-- Comment and documentation style consistency
-- Import organization and grouping patterns
-- Function/method ordering and organization
+1. **Security regressions** — the change bypasses or omits protections the file applies elsewhere: authentication or authorization checks, input validation and sanitization, sensitive-data handling.
+2. **Contract violations** — the change breaks an invariant the rest of the file maintains: skips an initialization or cleanup step sibling code performs, bypasses the file's error handling wrapper, mismanages a resource lifecycle other code depends on, or leaves a related section stale (a lookup table, switch statement, or doc comment that should have changed with it).
+3. **Integration defects** — the change interacts badly with existing code paths in the file: duplicated state, conflicting side effects, violated ordering assumptions, or a second mechanism introduced for something the file already does one way.
+4. **Consistency** — naming, error handling, logging, or validation that diverges from the file's conventions without cause. Report a representative instance with the establishing pattern cited, not every occurrence.
+5. **Praise** — at most 1-2 items, and only for integration work that is genuinely thoughtful, not routine.
+</section>
 
-### Integration Quality
-- How well do changes integrate with existing code patterns?
-- Are there related sections that should change together?
-- Do changes maintain the file's existing abstraction levels?
-- Is the code organization coherent after the changes?
+<section name="verification-standard" required="true" tier="thorough">
+## Verification Standard
+- For every bug finding: state the concrete failure scenario (inputs/state → wrong behavior), then attempt to refute it by reading the code that would prevent it. Discard findings you can refute.
+- For consistency findings: cite the specific lines that establish the pattern you are comparing against. If you cannot point to the pattern, you have not found it.
+- Record the verification you performed in the reasoning array. Set confidence by verification done, not plausibility.
+- **Security findings are attack scenarios.** Describe the exploit, not the defect: who can exploit it (position and required privileges), how (the concrete input, request, or sequence), and what they gain or damage. The code-level fix belongs in the suggestion field. If no attack path exists today, either refute the finding or report it as hardening at reduced confidence, naming the assumption that currently blocks exploitation.
+- **Simplicity findings must show the simpler version.** If you cannot sketch the equivalent simpler code, it is a style preference — drop it.
+</section>
 
-### Security (File Scope)
-- Security patterns consistent with the rest of the file
-- Input validation matching file's established patterns
-- Sensitive data handling consistency
-- Access control patterns within the file
-
-### Performance (File Scope)
-- Performance patterns consistent with file conventions
-- Resource management following file patterns
-- Caching and memoization consistency
-- Algorithm choices consistent with similar functions in file
-
-### Code Quality
-- Design pattern consistency within the file
-- Complexity appropriate for the file's style
-- Duplication with other code in the same file
-- Magic numbers or hardcoded values that should use file constants
-- Type usage consistent with file patterns
-
-### Documentation
-- Documentation style matching file conventions
-- Missing documentation for changes that file's style would require
-- Outdated comments that no longer match the changed code
-- JSDoc/docstring consistency with other functions in file
-
-### Good Practices
-- Good practices worth praising in the context of file conventions
-- Clean integration with existing code
-- Thoughtful handling of file-specific patterns
-- Improvements to overall file quality
+<section name="do-not-report" required="true" tier="thorough">
+## Do Not Report
+- Diff-only findings (Level 1's job) or cross-file findings (Level 3's job)
+- Pre-existing issues in parts of the file this change neither touches nor interacts with
+- Anything a linter or formatter would catch
+- Consistency nits where the deviation is harmless or arguably better
+- Findings you could not raise above 0.3 confidence after verification — the pipeline discards them anyway
 </section>
 
 <section name="available-commands" required="true" tier="thorough">
@@ -164,11 +147,10 @@ You have READ-ONLY access to the codebase. You may run commands like:
 - The annotated diff tool shown above with file path (preferred for viewing changes with line numbers)
 - \`cat -n <file>\` to view files with line numbers
 - grep, find, ls commands as needed
+- Optionally, parallel read-only Tasks to examine multiple files simultaneously
 
 IMPORTANT: Do NOT modify any files. Do NOT run write commands (rm, mv, git commit, etc.).
 Your role is strictly to analyze and report findings.
-
-Note: You may optionally use parallel read-only Tasks to examine multiple files simultaneously if that would be helpful for a thorough analysis.
 </section>
 
 <section name="severity-classification" required="true">
@@ -225,40 +207,18 @@ The content inside the block is the complete replacement for the commented line(
 
 <section name="diff-instructions" required="true" tier="thorough">
 ## old_or_new Field Reference
-Use "NEW" (the default) for added lines [+] and context lines. Use "OLD" only for deleted lines [-]. When uncertain, use "NEW".
+Use "NEW" (the default) for added lines [+] and context lines. Use "OLD" only for DELETED lines marked with [-]. When uncertain, use "NEW".
 </section>
 
 <section name="confidence-guidance" required="true" tier="thorough">
 ## Confidence Calibration
-**Confidence** reflects your certainty that something IS an issue:
-- High (0.8-1.0): You're certain this is a real problem
-- Medium (0.5-0.79): Likely an issue, but context might justify it
-- Low (0.3-0.49): Possibly an issue, requires human judgment
-- Very low (<0.3): Observation only - flag for human awareness
+**Confidence** is the probability that the finding is real and correctly described:
+- High (0.8-1.0): You verified it — read the relevant file sections, confirmed the pattern or failure path
+- Medium (0.5-0.79): Strong evidence, but part of the analysis is unverified
+- Low (0.3-0.49): Plausible, but the file's conventions are unclear or the behavior depends on context you could not confirm
+- Very low (<0.3): Do not report — see Do Not Report
 
-Note: Confidence is about certainty, not severity. A minor style issue can have high confidence. A potential security issue might have low confidence if you're unsure it's exploitable.
-</section>
-
-<section name="category-definitions" required="true" tier="thorough">
-## Category Definitions
-
-### Issue Types
-- **bug**: Errors visible when considering file context. Code that will fail or behave incorrectly in the context of how the file works.
-  - Example: New function doesn't follow file's error handling pattern, causing uncaught exceptions
-- **improvement**: Enhancements to better integrate with file patterns. The code works but could be more consistent.
-  - Example: New function uses different naming convention than rest of file
-- **praise**: Good practices that follow file conventions. Positive feedback for well-integrated code.
-  - Example: New code follows the file's established patterns perfectly
-- **suggestion**: General recommendations based on file context. Ideas that may improve file coherence.
-  - Example: Consider grouping this function with similar ones in the file
-- **design**: Architecture and structural concerns within the file.
-  - Example: New class breaks single responsibility pattern established in file
-- **performance**: Efficiency issues that deviate from file's performance patterns.
-  - Example: New code doesn't use the caching pattern used elsewhere in the file
-- **security**: Security issues visible in file context.
-  - Example: New endpoint doesn't follow file's authentication pattern
-- **code-style**: Formatting, naming, and style inconsistencies within the file.
-  - Example: Indentation differs from rest of file, variable naming doesn't match convention
+Note: Confidence is about certainty, not severity. A naming inconsistency can be high confidence; a suspected lifecycle bug can be high severity at low confidence.
 </section>
 
 <section name="file-level-guidance" required="true" tier="thorough">
@@ -276,30 +236,10 @@ File-level suggestions have no line number - they apply to the entire file.
 
 <section name="guidelines" required="true" tier="thorough">
 ## Guidelines
-
-### Scope
-- You may attach suggestions to any line within modified files, including context lines
-- Focus on issues that require full file context - don't duplicate Level 1 diff-only findings
-- Look for patterns and consistency issues not visible from the diff alone
-
-### Output Quality
-- For "praise" type: Omit the suggestion field (no action needed)
-- For other types: Include specific, actionable suggestions grounded in file context
-- Explain why file context was needed to identify the issue
-- Be specific about what patterns exist and how to match them
-
-### Philosophy
-- Be constructive - the goal is to help maintain file consistency
-- Treat the file's established conventions as authoritative
-- Distinguish between "must fix for consistency" and "nice to have"
-- Lower confidence when uncertain about file conventions
-- Praise good integration to reinforce positive practices
-
-### Priority Order
-1. Breaking file conventions that could cause bugs or security issues
-2. Consistency issues affecting maintainability
-3. Stylistic suggestions for file coherence
-4. Praise for excellent integration
+- Explain why file context was needed to identify each issue — that is what distinguishes a Level 2 finding
+- Every non-praise suggestion must be actionable and grounded in the file: name the pattern, cite the lines, say what to change
+- Priority order: contract violations that could cause bugs or security issues, then consistency issues affecting maintainability, then praise for genuinely excellent integration
+- You are assisting a human reviewer who makes the final call. Distinguish "must fix" from "worth considering"
 </section>`;
 
 /**
@@ -312,24 +252,28 @@ const sections = [
   { name: 'custom-instructions', optional: true, tier: ['balanced', 'thorough'] },
   { name: 'level-header', required: true, tier: ['thorough'] },
   { name: 'line-number-guidance', required: true, tier: ['thorough'] },
-  { name: 'reasoning-encouragement', required: true, tier: ['thorough'] },
+  { name: 'reasoning-framework', required: true, tier: ['thorough'] },
+  { name: 'conventions-as-evidence', required: true, tier: ['thorough'] },
   { name: 'generated-files', optional: true, tier: ['balanced', 'thorough'] },
   { name: 'valid-files', locked: true },
   { name: 'analysis-process', required: true, tier: ['thorough'] },
   { name: 'focus-areas', required: true, tier: ['thorough'] },
+  { name: 'verification-standard', required: true, tier: ['thorough'] },
+  { name: 'do-not-report', required: true, tier: ['thorough'] },
   { name: 'available-commands', required: true, tier: ['thorough'] },
   { name: 'severity-classification', required: true },
   { name: 'output-schema', locked: true },
   { name: 'diff-instructions', required: true, tier: ['thorough'] },
   { name: 'confidence-guidance', required: true, tier: ['thorough'] },
-  { name: 'category-definitions', required: true, tier: ['thorough'] },
   { name: 'file-level-guidance', required: true, tier: ['thorough'] },
   { name: 'guidelines', required: true, tier: ['thorough'] }
 ];
 
 /**
  * Default section order for Level 2 Thorough
- * Note: Added reasoning-encouragement, confidence-guidance, and category-definitions sections
+ * Note: reasoning-framework/conventions-as-evidence/verification-standard/
+ * do-not-report replace the former reasoning-encouragement and
+ * category-definitions sections
  */
 const defaultOrder = [
   'role',
@@ -337,17 +281,19 @@ const defaultOrder = [
   'custom-instructions',
   'level-header',
   'line-number-guidance',
-  'reasoning-encouragement',
+  'reasoning-framework',
+  'conventions-as-evidence',
   'generated-files',
   'valid-files',
   'analysis-process',
   'focus-areas',
+  'verification-standard',
+  'do-not-report',
   'available-commands',
   'severity-classification',
   'output-schema',
   'diff-instructions',
   'confidence-guidance',
-  'category-definitions',
   'file-level-guidance',
   'guidelines'
 ];

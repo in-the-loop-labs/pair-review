@@ -2,17 +2,19 @@
 /**
  * Consolidation Thorough Prompt - Comprehensive Cross-Reviewer Suggestion Merging
  *
- * This is the thorough tier variant of Consolidation analysis. It is optimized for
- * careful, detailed merging with extended reasoning and comprehensive guidance
- * for resolving conflicts and synthesizing multi-reviewer findings.
+ * This is the thorough tier variant of Consolidation analysis. It is targeted
+ * at frontier reasoning models and is optimized for evidence-weighted merging:
+ * confidence keeps a single pipeline-wide meaning, reviewer agreement and
+ * contradiction are treated as evidence rather than inputs to score
+ * arithmetic, and unique single-reviewer insights are protected.
  *
- * Tier-specific optimizations applied:
- * - ADDED: Reasoning encouragement section for thoughtful synthesis
- * - COMPREHENSIVE: Consolidation rules with detailed conflict resolution
- * - COMPREHENSIVE: Consensus handling with confidence calibration
- * - ADDED: Summary synthesis guidance
- * - EXPANDED: Guidelines with review philosophy
- * - INCLUDED: All optional sections
+ * Tier-specific design decisions:
+ * - KEPT: Deduplication/conflict-resolution rules, reviewer context weighting,
+ *   unique-insight protection, summary synthesis guidance
+ * - REPLACED: Confidence score arithmetic with ordinal evidence-based rules
+ * - REMOVED: Reasoning-encouragement boilerplate
+ * - UNIFIED: Confidence semantics (probability the finding is real) shared
+ *   with the analysis levels
  *
  * Section categories:
  * - locked: Cannot be modified by variants (data integrity)
@@ -53,17 +55,6 @@ const taggedPrompt = `<section name="role" required="true" tier="thorough">
 Multiple independent AI reviewers have analyzed the same code changes. Your task is to carefully merge their findings into a single, high-quality set of suggestions. This requires thoughtful deduplication, nuanced conflict resolution, and preservation of the most valuable unique insights from each reviewer.
 
 Each reviewer may have used a different AI model, perspective, or focus area. Your consolidation should produce output that is stronger than any individual review.
-</section>
-
-<section name="reasoning-encouragement" required="true" tier="thorough">
-## Reasoning Approach
-Take your time to analyze the reviewer findings thoroughly. For each cluster of related suggestions:
-1. Identify which reviewers flagged the same or overlapping issues
-2. Evaluate the strength of evidence from each reviewer
-3. Determine the best framing that captures the full insight
-4. Calibrate confidence based on reviewer agreement and evidence quality
-5. Consider whether merging would lose important nuance
-6. Formulate clear, actionable guidance that respects reviewer autonomy
 </section>
 
 <section name="custom-instructions" optional="true" tier="balanced,thorough">
@@ -110,13 +101,13 @@ Apply careful analysis when identifying duplicates:
 - Situations where separate action items are clearer than combined ones
 
 **Merging Best Practices:**
-- Preserve the most actionable and specific details from each reviewer
+- Preserve the most actionable and specific details from each reviewer, including concrete failure and attack scenarios and cited evidence — do not summarize an exploit description back into a code observation
 - Use the clearest framing, regardless of which reviewer provided it
 - Do NOT mention which reviewer found the issue — focus on the insight itself
 
 ### 2. Conflict Resolution
 When reviewers disagree about an issue:
-- **Evaluate evidence quality**: Concrete code analysis > pattern matching > heuristics
+- **Evaluate evidence quality**: Concrete code analysis with cited evidence > pattern matching > heuristics
 - **Consider specificity**: More specific analysis usually wins
 - **Weight actionability**: Prefer the suggestion that gives clearer next steps
 - **When truly uncertain**: Include the suggestion with reduced confidence and note the tension in the description
@@ -141,28 +132,29 @@ Assess severity based on the evidence and reasoning across all reviewers. When r
 
 <section name="consensus-handling" required="true" tier="thorough">
 ### 6. Consensus Handling and Confidence Calibration
+Confidence keeps its pipeline-wide meaning: the probability the finding is real and correctly described.
 
 **Cross-Reviewer Agreement:**
-- **Strong consensus** (3+ reviewers): Boost confidence by 0.2 (cap at 1.0)
-- **Moderate consensus** (2 reviewers): Boost confidence by 0.1
-- **Single reviewer**: Preserve original confidence — don't penalize valuable unique findings
-- **Contradiction**: Use the lower confidence minus 0.1
+- **Independent convergence is strong evidence.** A finding flagged by multiple reviewers warrants higher confidence than any single reviewer assigned it — the more reviewers, the stronger the evidence
+- **Contradiction is evidence of uncertainty.** Resolve on the evidence (see Conflict Resolution); if genuinely unresolvable, keep the finding at reduced confidence and note the tension
+- **Lone findings keep their original confidence** — don't penalize valuable unique insights
+- Set confidence from the strength of the combined evidence — never by mechanical score arithmetic
 
-**Confidence Calibration:**
-- High (0.8+): Clear issues with strong evidence or multi-reviewer consensus
-- Medium (0.5-0.79): Likely valuable suggestions with reasonable evidence
-- Lower (0.3-0.49): Marginal suggestions — include only if unique and actionable
-- Very low (<0.3): Consider omitting unless multi-reviewer consensus
+**Confidence Bands:**
+- High (0.8+): Strong evidence — verified analysis or multi-reviewer consensus
+- Medium (0.5-0.79): Reasonable evidence from a single reviewer
+- Lower (0.3-0.49): Weakly evidenced — include only if unique and actionable
+- Very low (<0.3): Omit unless multiple reviewers agree
 
-Note: Confidence is about certainty of value, not severity.
+Note: Confidence is about certainty the finding is real, not severity.
 </section>
 
 <section name="balanced-output" required="true" tier="thorough">
 ### 7. Balanced Output
 - **Deduplicate, don't concatenate**: If two reviewers flagged the same issue, merge them into one suggestion. If three reviewers each found one style nit, consider whether one representative example suffices. Distinct findings should each be preserved — the goal is to eliminate redundancy, not to reduce count.
 - **Limit praise** to 2–3 most noteworthy items across all reviewers. Praise should highlight genuinely commendable patterns, not routine correctness.
-- **Avoid suggestion overload** — a review with 30 suggestions is harder to act on than one with 12 well-chosen ones. Aim for quality over quantity.
-- **Include confidence scores** that reflect cross-reviewer agreement: consensus findings get boosted, lone findings keep their original confidence.
+- **Every suggestion must earn its place** — a review with 30 suggestions is harder to act on than one with 12 well-chosen ones. Cut items that wouldn't change what the reviewer does; keep every distinct, well-evidenced finding.
+- **Include confidence scores** that reflect the strength of the combined evidence: consensus findings warrant higher confidence, lone findings keep their original confidence.
 </section>
 
 <section name="summary-synthesis" required="true" tier="thorough">
@@ -226,7 +218,7 @@ The content inside the block is the complete replacement for the commented line(
 ## Line Number Reference (old_or_new field)
 The "old_or_new" field indicates which line number column to use:
 - **"NEW"** (default): Use the NEW column number. Correct for added [+] and context lines.
-- **"OLD"**: Use the OLD column number. ONLY for deleted [-] lines.
+- **"OLD"**: Use the OLD column number. ONLY for DELETED lines [-].
 
 **IMPORTANT**: Context lines exist in BOTH versions — always use "NEW" for them.
 Preserve the old_or_new value from input suggestions when merging.
@@ -237,13 +229,13 @@ Preserve the old_or_new value from input suggestions when merging.
 
 ### Output Quality
 - **Quality over quantity** — better to have fewer excellent suggestions than many mediocre ones
-- **Cross-reviewer agreement** is strong evidence — boost confidence accordingly
-- **Preserve actionability** — every suggestion should give clear next steps
+- **Cross-reviewer agreement** is strong evidence — weight confidence accordingly
+- **Preserve actionability** — every suggestion should give clear next steps, keeping concrete failure and attack scenarios and cited evidence intact
 - **Maintain context** — don't lose important details when merging
 
 ### Coverage and Scope
 - **Only include modified files** — discard suggestions for files not in this changeset
-- **Balance across files** — ensure important issues in all modified files are represented
+- **Cover all modified files** — ensure real issues in every modified file are represented
 - **Preserve unique perspectives** — different reviewer models may catch different things
 
 ### Review Philosophy
@@ -263,7 +255,6 @@ const sections = [
   { name: 'line-number-guidance', required: true },
   { name: 'critical-output', locked: true },
   { name: 'role-description', required: true, tier: ['thorough'] },
-  { name: 'reasoning-encouragement', required: true, tier: ['thorough'] },
   { name: 'custom-instructions', optional: true, tier: ['balanced', 'thorough'] },
   { name: 'dedup-instructions', optional: true },
   { name: 'reviewer-context-guidance', required: true, tier: ['thorough'] },
@@ -279,6 +270,8 @@ const sections = [
 
 /**
  * Default section order for Consolidation Thorough
+ * Note: reasoning-encouragement removed; confidence arithmetic replaced by
+ * evidence-based rules inside consensus-handling
  */
 const defaultOrder = [
   'role',
@@ -286,7 +279,6 @@ const defaultOrder = [
   'line-number-guidance',
   'critical-output',
   'role-description',
-  'reasoning-encouragement',
   'custom-instructions',
   'dedup-instructions',
   'reviewer-context-guidance',

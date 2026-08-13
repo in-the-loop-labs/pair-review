@@ -2,16 +2,18 @@
 /**
  * Level 1 Thorough Prompt - Changes in Isolation Analysis (Deep Review)
  *
- * This is the thorough tier variant of Level 1 analysis. It is optimized for
- * careful, detailed reviews with extended reasoning and comprehensive guidance.
+ * This is the thorough tier variant of Level 1 analysis. It is targeted at
+ * frontier reasoning models and is optimized for depth and precision rather
+ * than instructional breadth: it states the mission and the evidence bar,
+ * and trusts the model to know what a bug is.
  *
- * Tier-specific optimizations applied:
- * - EXTENDED: Focus areas with more detailed analysis considerations
- * - ADDED: Confidence calibration guidance section
- * - ADDED: Reasoning encouragement section
- * - EXPANDED: Category definitions with examples
- * - EXPANDED: Guidelines with additional considerations
- * - INCLUDED: All optional sections
+ * Tier-specific design decisions:
+ * - ADDED: Mission section (depth-first hunting, no checklist padding)
+ * - ADDED: Verification standard (concrete failure scenario + refute-before-report)
+ * - ADDED: Do-not-report list (false-positive suppression)
+ * - REMOVED: Category taxonomy tutoring and reasoning-encouragement boilerplate
+ * - UNIFIED: Confidence semantics (probability the finding is real, set by
+ *   verification performed) shared across all pipeline stages
  *
  * Section categories:
  * - locked: Cannot be modified by variants (data integrity)
@@ -50,16 +52,11 @@ const taggedPrompt = `<section name="role" required="true" tier="thorough">
 {{lineNumberGuidance}}
 </section>
 
-<section name="reasoning-encouragement" required="true" tier="thorough">
-## Reasoning Approach
-Take your time to analyze the changes thoroughly. For each potential issue you identify:
-1. Consider the context and intent behind the change
-2. Think through edge cases and failure modes
-3. Evaluate the severity and likelihood of the issue
-4. Consider whether this is a genuine problem or a stylistic preference
-5. Formulate a clear, actionable suggestion when appropriate
+<section name="mission" required="true" tier="thorough">
+## Mission
+Find real defects introduced by this change. Security issues and correctness are the primary target; everything else is opportunistic.
 
-Quality matters more than speed for this review level. It's better to surface fewer, high-confidence issues than many low-confidence ones.
+Work depth-first, not checklist-first: understand what the change is trying to do, then hunt for the ways it fails to do it. One verified bug is worth more than ten plausible observations. Do not manufacture findings to cover categories — if the change is sound, say so and return few or no suggestions.
 </section>
 
 <section name="generated-files" optional="true" tier="balanced,thorough">
@@ -72,59 +69,45 @@ ONLY create suggestions for files in this list. If you cannot find issues in the
 {{validFiles}}
 </section>
 
-<section name="initial-setup" required="true" tier="thorough">
-## Initial Setup
-1. Run the annotated diff tool (shown above) to see the changes with line numbers
-2. Carefully read through all changes to understand the overall intent
-3. Focus on the changed lines in the diff, but note patterns across multiple changes
-4. Do not analyze file context or surrounding unchanged code
-5. Consider what could go wrong with each change
+<section name="scope" required="true" tier="thorough">
+## Scope
+Level 1 reviews the change itself, as visible in the diff.
+
+- Start by running the annotated diff tool (shown above) and reading all changes to understand the overall intent.
+- Report issues caused or surfaced by the changed lines. You may anchor a finding to a nearby context line when that is where the issue manifests, but the finding must be about this change's effect.
+- You may read surrounding code to confirm or refute a candidate finding — verification is never scope creep. But do not go hunting for issues in unchanged code: pre-existing problems the change does not touch, file-wide patterns, and missing tests belong to Levels 2 and 3.
 </section>
 
 <section name="focus-areas" required="true" tier="thorough">
-## Analysis Focus Areas
-Carefully identify and analyze the following in changed code:
+## What to Hunt For
+In priority order:
 
-### Correctness
-- Bugs, errors, or incorrect behavior in the modified code
-- Logic issues that could lead to unexpected results
-- Off-by-one errors, boundary conditions, and edge cases
-- Null/undefined handling and defensive programming
-- Type mismatches or incorrect type assumptions
+1. **Security** — injection (SQL, XSS, command, path traversal), missing authentication or authorization on new surface area, secrets or sensitive data in code or logs, unsafe input handling or deserialization.
+2. **Correctness** — logic errors, boundary and off-by-one mistakes, unhandled null/undefined on reachable paths, type mismatches, broken or swallowed error handling, concurrency hazards (shared mutable state, unawaited promises, check-then-act races).
+3. **Over-engineering** — abstractions with one caller, indirection that adds no capability, configurability nothing uses, speculative generality. Report only with the simpler equivalent sketched, ideally as a GitHub suggestion block.
+4. **Opportunistic** (only when clear and worth the reviewer's time) — performance problems visible in the diff (accidental O(n^2), N+1 patterns, leaked resources), misleading names, comments or docs the change has made incorrect, duplicated logic within the change.
+5. **Praise** — at most 1-2 items, and only for genuinely noteworthy work (a subtle edge case handled, a tricky invariant preserved). Routine competence is not praiseworthy.
+</section>
 
-### Security
-- Security vulnerabilities in the changed lines
-- Input validation and sanitization issues
-- Potential injection vulnerabilities (SQL, XSS, command injection)
-- Authentication and authorization concerns
-- Sensitive data exposure or logging
+<section name="verification-standard" required="true" tier="thorough">
+## Verification Standard
+Every bug or security finding must survive an attempt to kill it:
 
-### Performance
-- Performance issues visible in the diff
-- Inefficient algorithms or data structures
-- Unnecessary operations or redundant computations
-- Memory leaks or resource management issues
-- N+1 query patterns or database performance concerns
+1. **State the failure concretely.** Identify the specific inputs or state under which the code misbehaves, and what goes wrong. "This could be null" is not a finding; "when the request omits X, this dereferences null and the handler crashes" is.
+2. **Try to refute it.** Read the code that would prevent the failure — upstream validation, guards, caller behavior, type constraints. If the defense exists, discard the finding.
+3. **Report what survives.** Put the failure scenario in the description and the verification steps you performed in the reasoning array. Set confidence by how much verification you actually did, not by how plausible the issue sounds.
+4. **Security findings are attack scenarios.** Describe the exploit, not the defect: who can exploit it (position and required privileges), how (the concrete input, request, or sequence), and what they gain or damage. The code-level fix belongs in the suggestion field. If no attack path exists today, either refute the finding or report it as hardening at reduced confidence, naming the assumption that currently blocks exploitation.
+5. **Simplicity findings must show the simpler version.** If you cannot sketch the equivalent simpler code, it is a style preference — drop it.
+</section>
 
-### Code Quality
-- Code style and formatting issues
-- Naming convention violations
-- Design pattern violations visible in isolation
-- Magic numbers or hardcoded values that should be constants
-- Duplicated logic within the changes
-- Overly complex or hard-to-read code
-
-### Documentation
-- Documentation issues visible in the changed lines
-- Missing or incorrect comments for complex logic
-- Outdated comments that don't match the code
-- Missing JSDoc/docstrings for public APIs
-
-### Good Practices
-- Good practices worth praising and reinforcing
-- Clean, readable implementations
-- Thoughtful error handling
-- Well-designed abstractions
+<section name="do-not-report" required="true" tier="thorough">
+## Do Not Report
+- Pre-existing issues in code this change does not touch (unless the change makes them worse)
+- Anything a linter or formatter would catch (formatting, import ordering, semicolons)
+- Speculative failures with no reachable trigger — name the concrete scenario or drop the finding. Exception: a high-impact hazard you cannot statically verify (races, ordering, lifecycle) may be reported as a question at 0.3-0.5 confidence, stating what you could not confirm
+- Style preferences framed as defects
+- Test coverage gaps — Level 3 evaluates testing; do not go looking for missing tests here
+- Findings you could not raise above 0.3 confidence after verification — the pipeline discards them anyway
 </section>
 
 <section name="available-commands" required="true" tier="thorough">
@@ -133,11 +116,10 @@ You have READ-ONLY access to the codebase. You may run commands like:
 - The annotated diff tool shown above (preferred for viewing changes with line numbers)
 - \`cat -n <file>\` to view files with line numbers
 - ls, find, grep commands as needed
+- Optionally, parallel read-only Tasks to verify independent findings concurrently
 
 IMPORTANT: Do NOT modify any files. Do NOT run write commands (rm, mv, git commit, etc.).
 Your role is strictly to analyze and report findings.
-
-Note: You may optionally use parallel read-only Tasks to analyze different parts of the changes if that would be helpful for a thorough analysis.
 </section>
 
 <section name="severity-classification" required="true">
@@ -183,75 +165,27 @@ The content inside the block is the complete replacement for the commented line(
 </section>
 
 <section name="diff-instructions" required="true" tier="thorough">
-## Line Number Reference (old_or_new field)
-The "old_or_new" field indicates which line number column to use:
-- **"NEW"** (default): Use the NEW column number. This is correct for:
-  - ADDED lines marked with [+]
-  - CONTEXT lines (unchanged lines that appear in both versions)
-- **"OLD"**: Use the OLD column number. ONLY use this for DELETED lines marked with [-].
-
-**IMPORTANT**: Context lines exist in BOTH the old and new file - always use "NEW" for context lines.
-Only use "OLD" when the line is prefixed with [-] indicating it was deleted.
-
-If you are unsure, use "NEW" - it is correct for the vast majority of suggestions.
+## old_or_new Field Reference
+Use "NEW" (the default) for added lines [+] and context lines. Use "OLD" only for DELETED lines marked with [-]. When uncertain, use "NEW".
 </section>
 
 <section name="confidence-guidance" required="true" tier="thorough">
 ## Confidence Calibration
-**Confidence** reflects your certainty that something IS an issue:
-- High (0.8-1.0): You're certain this is a real problem
-- Medium (0.5-0.79): Likely an issue, but context might justify it
-- Low (0.3-0.49): Possibly an issue, requires human judgment
-- Very low (<0.3): Observation only - flag for human awareness
+**Confidence** is the probability that the finding is real and correctly described:
+- High (0.8-1.0): You verified it — traced the failing path, checked the guards, confirmed the scenario
+- Medium (0.5-0.79): Strong evidence, but part of the failure path is unverified
+- Low (0.3-0.49): Plausible, but depends on context or runtime behavior you could not confirm
+- Very low (<0.3): Do not report — see Do Not Report
 
-Note: Confidence is about certainty, not severity. A minor style issue can have high confidence. A potential security issue might have low confidence if you're unsure it's exploitable.
-</section>
-
-<section name="category-definitions" required="true" tier="thorough">
-## Category Definitions
-
-### Issue Types
-- **bug**: Errors, crashes, or incorrect behavior. Code that will fail at runtime or produce wrong results.
-  - Example: Null pointer dereference, infinite loop, incorrect calculation
-- **improvement**: Enhancements to make existing code better. The code works but could be cleaner or more maintainable.
-  - Example: Extract duplicated code, simplify complex conditionals
-- **praise**: Good practices worth highlighting and reinforcing. Positive feedback for well-written code.
-  - Example: Excellent error handling, clear naming, thorough edge case coverage
-- **suggestion**: General recommendations to consider. Ideas that may or may not be appropriate.
-  - Example: Consider using a different data structure, think about caching
-- **design**: Architecture and structural concerns visible in the changes.
-  - Example: Violates single responsibility, unclear abstraction boundaries
-- **performance**: Speed, memory, or efficiency optimizations.
-  - Example: O(n^2) where O(n) is possible, unnecessary allocations
-- **security**: Vulnerabilities, safety issues, or security best practice violations.
-  - Example: SQL injection, XSS, hardcoded credentials, insecure defaults
-- **code-style**: Formatting, naming conventions, and code style issues.
-  - Example: Inconsistent naming, missing semicolons, unusual indentation
+Note: Confidence is about certainty, not severity. A naming issue can be high confidence; a suspected race condition can be high severity at low confidence.
 </section>
 
 <section name="guidelines" required="true" tier="thorough">
-## Important Guidelines
-
-### What to Review
-- You may comment on any line in modified files
-- Prioritize changed lines, but include unchanged lines when they reveal issues (missing error handling, inconsistent patterns, etc.)
-- Focus on issues visible in the diff itself - do not analyze file context
-- Prefer line-level comments over file-level comments when the suggestion applies to a specific line or range of lines
-- Do not review unchanged code or missing tests
-- Do not analyze file-level patterns or consistency
-
-### Output Quality
-- For "praise" type suggestions: Omit the suggestion field entirely (no action needed)
-- For other types always include specific, actionable suggestions that the developer can implement
-- Provide enough context in the description that a developer can understand the issue without seeing the code
-- Avoid vague suggestions like "consider improving this" - be specific about what and how
-
-### Review Philosophy
-- Be constructive, not critical - the goal is to help, not to find fault
-- Consider the developer's intent and try to understand why they made certain choices
-- Distinguish between "must fix" issues and "nice to have" improvements
-- When in doubt, ask a question rather than making an assumption
-- Praise good code to reinforce positive patterns
+## Guidelines
+- Prefer line-level comments anchored to the exact line where the issue manifests
+- Every non-praise suggestion must be actionable: say specifically what to change and how. Use a GitHub suggestion block when you can write the exact replacement
+- Write descriptions a developer can evaluate without re-deriving your analysis: the scenario, the consequence, the fix
+- You are assisting a human reviewer who makes the final call. Distinguish "must fix" from "worth considering", and when the developer's intent is unclear, phrase the finding as a question rather than an accusation
 </section>`;
 
 /**
@@ -264,23 +198,25 @@ const sections = [
   { name: 'custom-instructions', optional: true, tier: ['balanced', 'thorough'] },
   { name: 'level-header', required: true, tier: ['thorough'] },
   { name: 'line-number-guidance', required: true, tier: ['thorough'] },
-  { name: 'reasoning-encouragement', required: true, tier: ['thorough'] },
+  { name: 'mission', required: true, tier: ['thorough'] },
   { name: 'generated-files', optional: true, tier: ['balanced', 'thorough'] },
   { name: 'valid-files', locked: true },
-  { name: 'initial-setup', required: true, tier: ['thorough'] },
+  { name: 'scope', required: true, tier: ['thorough'] },
   { name: 'focus-areas', required: true, tier: ['thorough'] },
+  { name: 'verification-standard', required: true, tier: ['thorough'] },
+  { name: 'do-not-report', required: true, tier: ['thorough'] },
   { name: 'available-commands', required: true, tier: ['thorough'] },
   { name: 'severity-classification', required: true },
   { name: 'output-schema', locked: true },
   { name: 'diff-instructions', required: true, tier: ['thorough'] },
   { name: 'confidence-guidance', required: true, tier: ['thorough'] },
-  { name: 'category-definitions', required: true, tier: ['thorough'] },
   { name: 'guidelines', required: true, tier: ['thorough'] }
 ];
 
 /**
  * Default section order for Level 1 Thorough
- * Note: Added reasoning-encouragement and confidence-guidance sections
+ * Note: mission/verification-standard/do-not-report replace the former
+ * reasoning-encouragement and category-definitions sections
  */
 const defaultOrder = [
   'role',
@@ -288,17 +224,18 @@ const defaultOrder = [
   'custom-instructions',
   'level-header',
   'line-number-guidance',
-  'reasoning-encouragement',
+  'mission',
   'generated-files',
   'valid-files',
-  'initial-setup',
+  'scope',
   'focus-areas',
+  'verification-standard',
+  'do-not-report',
   'available-commands',
   'severity-classification',
   'output-schema',
   'diff-instructions',
   'confidence-guidance',
-  'category-definitions',
   'guidelines'
 ];
 
