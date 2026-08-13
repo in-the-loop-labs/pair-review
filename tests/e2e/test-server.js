@@ -197,11 +197,17 @@ function insertTestData(db) {
     node_id: 'PR_test_node_123'
   });
 
-  // Insert PR metadata
+  // Insert PR metadata.
+  // `last_accessed_at` is REQUIRED: /api/worktrees/recent filters on
+  // `pm.last_accessed_at IS NOT NULL` (local-mode cache rows deliberately leave
+  // it NULL) and orders by it DESC. Omitting it here empties the dashboard,
+  // which makes public/js/index.js auto-open the help modal whose `.visible`
+  // overlay then swallows clicks across every landing-page spec.
+  const now = new Date().toISOString();
   db.prepare(`
-    INSERT INTO pr_metadata (pr_number, repository, title, description, author, base_branch, head_branch, pr_data)
-    VALUES (1, 'test-owner/test-repo', 'Test PR for E2E', 'Test description', 'testuser', 'main', 'feature-test', ?)
-  `).run(prData);
+    INSERT INTO pr_metadata (pr_number, repository, title, description, author, base_branch, head_branch, pr_data, last_accessed_at)
+    VALUES (1, 'test-owner/test-repo', 'Test PR for E2E', 'Test description', 'testuser', 'main', 'feature-test', ?, ?)
+  `).run(prData, now);
 
   // Insert review record (needed for comments to work - PR API returns review.id)
   db.prepare(`
@@ -209,8 +215,7 @@ function insertTestData(db) {
     VALUES (1, 'test-owner/test-repo', 'draft')
   `).run();
 
-  // Insert worktree
-  const now = new Date().toISOString();
+  // Insert worktree (reuses `now` from the pr_metadata insert above)
   db.prepare(`
     INSERT INTO worktrees (id, pr_number, repository, branch, path, created_at, last_accessed_at)
     VALUES ('e2e-test-id', 1, 'test-owner/test-repo', 'feature-test', '/tmp/worktree/e2e-test', ?, ?)
