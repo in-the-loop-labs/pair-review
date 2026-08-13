@@ -4049,3 +4049,437 @@ describe('Migration 55 - fetch attempt tracking on worktree_pool', () => {
     expect(db.prepare('PRAGMA table_info(repo_settings)').all().map(c => c.name)).toContain('pool_fetch_owner');
   });
 });
+
+// ============================================================================
+// PRMetadataRepository.upsertPRMetadata
+//
+// The minimal-cache write used by local mode's PR bridge. Its load-bearing
+// behaviour is that it must NOT clobber a parallel PR-mode session: PR mode
+// writes diff / changed_files / worktree_path / fetched_at into the SAME
+// pr_metadata.pr_data blob (src/setup/pr-setup.js), and this method only ever
+// has the minimal subset in hand.
+// ============================================================================
+
+describe('PRMetadataRepository.upsertPRMetadata', () => {
+  const { PRMetadataRepository } = database;
+  let db;
+  let repo;
+
+  beforeEach(async () => {
+    db = await createTestDatabase();
+    repo = new PRMetadataRepository(db);
+  });
+
+  afterEach(async () => {
+    if (db) {
+      await closeTestDatabase(db);
+    }
+  });
+
+  const prData = ({ state = 'open', merged = false } = {}) => ({
+    number: 42,
+    node_id: 'PR_node42',
+    title: 'Refreshed title',
+    body: 'Refreshed body',
+    author: 'octocat',
+    state,
+    merged,
+    base_branch: 'main',
+    head_branch: 'feature',
+    base_sha: 'base-new',
+    head_sha: 'head-new',
+    html_url: 'https://github.com/owner/repo/pull/42'
+  });
+
+  /** Seed a row shaped like one written by PR-mode setup. */
+  async function seedPRModeRow({ host = null } = {}) {
+    const result = await run(db, `
+      INSERT INTO pr_metadata (pr_number, repository, title, description, author, base_branch, head_branch, pr_data, host)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [42, 'owner/repo', 'Stale title', 'Stale body', 'olduser', 'main', 'feature', JSON.stringify({
+      state: 'open',
+      merged: false,
+      html_url: 'https://github.com/owner/repo/pull/42',
+      base_sha: 'base-old',
+      head_sha: 'head-old',
+      node_id: 'PR_node42',
+      // PR-mode-only keys this method never has in hand:
+      diff: 'diff --git a/f.js b/f.js',
+      changed_files: [{ file: 'f.js', additions: 1, deletions: 0 }],
+      worktree_path: '/worktrees/owner-repo-42',
+      fetched_at: '2026-01-01T00:00:00Z'
+    }), host]);
+    return result.lastID;
+  }
+
+  describe('INSERT path', () => {
+    it('creates a row with only the minimal pr_data keys and reports created: true', async () => {
+      const result = await repo.upsertPRMetadata({ prNumber: 42, repository: 'owner/repo', prData: prData() });
+
+      expect(result.created).toBe(true);
+      expect(result.id).toBeGreaterThan(0);
+
+      const row = await queryOne(db, 'SELECT * FROM pr_metadata WHERE id = ?', [result.id]);
+      expect(row.title).toBe('Refreshed title');
+      expect(row.description).toBe('Refreshed body');
+      expect(row.author).toBe('octocat');
+      expect(row.base_branch).toBe('main');
+      expect(row.head_branch).toBe('feature');
+
+      expect(JSON.parse(row.pr_data)).toEqual({
+        state: 'open',
+        merged: false,
+        html_url: 'https://github.com/owner/repo/pull/42',
+        base_sha: 'base-new',
+        head_sha: 'head-new',
+        node_id: 'PR_node42'
+      });
+      // No diff / changed_files / worktree_path — this is the minimal cache.
+      expect(JSON.parse(row.pr_data).diff).toBeUndefined();
+    });
+
+    it('stamps the resolved host so a later PR-mode session resolves the same host', async () => {
+      // A NULL host is not neutral: storedHostToOption maps NULL on a DUAL
+      // repo straight to github.com, skipping the probe that would find the
+      // PR on the alt host. A local-mode write must not pin the wrong host.
+      const { id } = await repo.upsertPRMetadata({
+        prNumber: 42,
+        repository: 'owner/repo',
+        prData: prData(),
+        host: 'https://ghe.example.com/api/v3'
+      });
+
+      const row = await queryOne(db, 'SELECT host FROM pr_metadata WHERE id = ?', [id]);
+      expect(row.host).toBe('https://ghe.example.com/api/v3');
+      expect(await repo.getPRHost('owner/repo', 42)).toBe('https://ghe.example.com/api/v3');
+    });
+
+    it('writes NULL host for github.com, which getPRHost distinguishes from "no row"', async () => {
+      await repo.upsertPRMetadata({ prNumber: 42, repository: 'owner/repo', prData: prData(), host: null });
+
+      expect(await repo.getPRHost('owner/repo', 42)).toBeNull();
+      expect(await repo.getPRHost('owner/repo', 99)).toBeUndefined();
+    });
+
+    it('carries merged separately from state rather than deriving state: "merged"', async () => {
+      // GitHub reports a merged PR as state 'closed' + merged true, and never
+      // returns 'merged' as a state. pr_data.state is read by PR-mode routes
+      // and handed to the AI as context, so it must not be fabricated.
+      const { id } = await repo.upsertPRMetadata({
+        prNumber: 42,
+        repository: 'owner/repo',
+        prData: prData({ state: 'closed', merged: true })
+      });
+
+      const parsed = JSON.parse((await queryOne(db, 'SELECT pr_data FROM pr_metadata WHERE id = ?', [id])).pr_data);
+      expect(parsed.state).toBe('closed');
+      expect(parsed.merged).toBe(true);
+    });
+
+    it('coerces a missing merged flag to false', async () => {
+      const bare = prData();
+      delete bare.merged;
+      const { id } = await repo.upsertPRMetadata({ prNumber: 42, repository: 'owner/repo', prData: bare });
+
+      const parsed = JSON.parse((await queryOne(db, 'SELECT pr_data FROM pr_metadata WHERE id = ?', [id])).pr_data);
+      expect(parsed.merged).toBe(false);
+    });
+
+    it('leaves last_accessed_at NULL — a background cache warm is not an access', async () => {
+      // Stamping it would plant a phantom row at the TOP of the dashboard PR
+      // tab (ORDER BY last_accessed_at DESC), linking to /pr/... and kicking
+      // off a clone + worktree for a PR the user never opened in PR mode.
+      const { id } = await repo.upsertPRMetadata({ prNumber: 42, repository: 'owner/repo', prData: prData() });
+
+      const row = await queryOne(db, 'SELECT last_accessed_at FROM pr_metadata WHERE id = ?', [id]);
+      expect(row.last_accessed_at).toBeNull();
+    });
+  });
+
+  describe('UPDATE path', () => {
+    it('preserves PR-mode-only pr_data keys while refreshing the minimal ones', async () => {
+      const id = await seedPRModeRow();
+
+      const result = await repo.upsertPRMetadata({
+        prNumber: 42,
+        repository: 'owner/repo',
+        prData: prData({ state: 'closed', merged: true })
+      });
+
+      expect(result).toEqual({ id, created: false });
+
+      const row = await queryOne(db, 'SELECT * FROM pr_metadata WHERE id = ?', [id]);
+      const parsed = JSON.parse(row.pr_data);
+
+      // Refreshed:
+      expect(parsed.state).toBe('closed');
+      expect(parsed.merged).toBe(true);
+      expect(parsed.head_sha).toBe('head-new');
+      expect(parsed.base_sha).toBe('base-new');
+      expect(row.title).toBe('Refreshed title');
+      expect(row.author).toBe('octocat');
+
+      // Survived — a wholesale overwrite here would silently strip a
+      // concurrent PR review's cached diff and worktree.
+      expect(parsed.diff).toBe('diff --git a/f.js b/f.js');
+      expect(parsed.changed_files).toEqual([{ file: 'f.js', additions: 1, deletions: 0 }]);
+      expect(parsed.worktree_path).toBe('/worktrees/owner-repo-42');
+      expect(parsed.fetched_at).toBe('2026-01-01T00:00:00Z');
+    });
+
+    it('leaves an existing last_accessed_at untouched — a refresh is not an access', async () => {
+      const id = await seedPRModeRow();
+      await run(db, 'UPDATE pr_metadata SET last_accessed_at = ? WHERE id = ?', ['2020-01-01T00:00:00Z', id]);
+
+      await repo.upsertPRMetadata({ prNumber: 42, repository: 'owner/repo', prData: prData() });
+
+      const row = await queryOne(db, 'SELECT last_accessed_at FROM pr_metadata WHERE id = ?', [id]);
+      expect(row.last_accessed_at).toBe('2020-01-01T00:00:00Z');
+    });
+
+    it('leaves an existing host stamp untouched', async () => {
+      const id = await seedPRModeRow({ host: 'https://ghe.example.com/api/v3' });
+
+      await repo.upsertPRMetadata({
+        prNumber: 42,
+        repository: 'owner/repo',
+        prData: prData(),
+        host: null
+      });
+
+      const row = await queryOne(db, 'SELECT host FROM pr_metadata WHERE id = ?', [id]);
+      expect(row.host).toBe('https://ghe.example.com/api/v3');
+    });
+
+    it('falls back to the minimal blob when the stored pr_data is unparseable', async () => {
+      const result = await run(db, `
+        INSERT INTO pr_metadata (pr_number, repository, title, pr_data)
+        VALUES (?, ?, ?, ?)
+      `, [42, 'owner/repo', 'Stale title', '{not json']);
+
+      await repo.upsertPRMetadata({ prNumber: 42, repository: 'owner/repo', prData: prData() });
+
+      const row = await queryOne(db, 'SELECT pr_data FROM pr_metadata WHERE id = ?', [result.lastID]);
+      expect(JSON.parse(row.pr_data).state).toBe('open');
+    });
+
+    it('matches the existing row case-insensitively rather than inserting a duplicate', async () => {
+      const id = await seedPRModeRow();
+
+      const result = await repo.upsertPRMetadata({
+        prNumber: 42,
+        repository: 'Owner/Repo',
+        prData: prData()
+      });
+
+      expect(result).toEqual({ id, created: false });
+      const rows = await query(db, 'SELECT id FROM pr_metadata WHERE pr_number = ?', [42]);
+      expect(rows).toHaveLength(1);
+    });
+  });
+
+  /**
+   * Cross-host collision guard — the same rule `storePRData` enforces
+   * (tests/integration/store-prdata-collision.test.js), now shared via
+   * `assertNoCrossHostPRConflict`.
+   *
+   * This method writes the SAME pr_metadata rows PR-mode setup treats as source
+   * of truth, so skipping the check here would lose the loud failure if the
+   * "PR numbers do not collide across hosts" assumption ever breaks. A read-side
+   * `WHERE host = ?` filter is NOT the fix: idx_pr_metadata_unique is
+   * (pr_number, repository) with no host column, so one row per pair is the
+   * intended schema and the mismatch has to be a conflict, not a filter.
+   */
+  describe('cross-host collision guard', () => {
+    it('throws for a DIFFERENT PR already stored on another host, leaving the row untouched', async () => {
+      const id = await seedPRModeRow({ host: 'https://ghe.example.com/api/v3' });
+      const different = prData();
+      different.node_id = 'PR_someoneElse';
+
+      await expect(repo.upsertPRMetadata({
+        prNumber: 42,
+        repository: 'owner/repo',
+        prData: different,
+        host: null
+      })).rejects.toThrow(/Cross-host PR conflict for owner\/repo #42/);
+
+      // No partial write: title, host and the stored id are all unchanged.
+      const row = await queryOne(db, 'SELECT host, title, pr_data FROM pr_metadata WHERE id = ?', [id]);
+      expect(row.host).toBe('https://ghe.example.com/api/v3');
+      expect(row.title).toBe('Stale title');
+      expect(JSON.parse(row.pr_data).node_id).toBe('PR_node42');
+    });
+
+    it('proceeds when the API id matches (same logical PR, host relabel)', async () => {
+      const id = await seedPRModeRow({ host: 'https://ghe.example.com/api/v3' });
+
+      const result = await repo.upsertPRMetadata({
+        prNumber: 42,
+        repository: 'owner/repo',
+        prData: prData(),   // same node_id as the seeded row
+        host: null
+      });
+
+      expect(result).toEqual({ id, created: false });
+      const row = await queryOne(db, 'SELECT title FROM pr_metadata WHERE id = ?', [id]);
+      expect(row.title).toBe('Refreshed title');
+    });
+
+    it('warns and proceeds when the stored row has no parseable API id', async () => {
+      const logger = require('../../src/utils/logger');
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      const result = await run(db, `
+        INSERT INTO pr_metadata (pr_number, repository, title, pr_data, host)
+        VALUES (?, ?, ?, ?, ?)
+      `, [42, 'owner/repo', 'Stale title', JSON.stringify({ head_sha: 'h' }), 'https://ghe.example.com/api/v3']);
+
+      await repo.upsertPRMetadata({
+        prNumber: 42,
+        repository: 'owner/repo',
+        prData: prData(),
+        host: null
+      });
+
+      const row = await queryOne(db, 'SELECT title FROM pr_metadata WHERE id = ?', [result.lastID]);
+      expect(row.title).toBe('Refreshed title');
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/upsertPRMetadata: .*no parseable API id/));
+      warnSpy.mockRestore();
+    });
+
+    it('does not fire when the incoming host matches the stored host', async () => {
+      await seedPRModeRow({ host: 'https://ghe.example.com/api/v3' });
+      const different = prData();
+      different.node_id = 'PR_someoneElse';
+
+      await expect(repo.upsertPRMetadata({
+        prNumber: 42,
+        repository: 'owner/repo',
+        prData: different,
+        host: 'https://ghe.example.com/api/v3'
+      })).resolves.toMatchObject({ created: false });
+    });
+
+    it('does not fire when the caller supplies no host (host unknown)', async () => {
+      // `undefined` means "the caller does not know the host" — there is
+      // nothing to compare, and the UPDATE arm leaves the column alone.
+      const id = await seedPRModeRow({ host: 'https://ghe.example.com/api/v3' });
+      const different = prData();
+      different.node_id = 'PR_someoneElse';
+
+      await expect(repo.upsertPRMetadata({
+        prNumber: 42,
+        repository: 'owner/repo',
+        prData: different
+      })).resolves.toMatchObject({ id, created: false });
+
+      const row = await queryOne(db, 'SELECT host FROM pr_metadata WHERE id = ?', [id]);
+      expect(row.host).toBe('https://ghe.example.com/api/v3');
+    });
+
+    it('does not fire when there is no existing row', async () => {
+      await expect(repo.upsertPRMetadata({
+        prNumber: 42,
+        repository: 'owner/repo',
+        prData: prData(),
+        host: 'https://ghe.example.com/api/v3'
+      })).resolves.toMatchObject({ created: true });
+    });
+  });
+
+  /**
+   * There is NO "host unknown" encoding on INSERT. Omitting `host`, passing
+   * `undefined` and passing `null` all store SQL NULL, which
+   * `storedHostToOption` reads back as github.com for a plain or dual repo.
+   * The only encoding of "unknown" is the ABSENCE of a row — which is why a
+   * caller that merely GUESSED the host must not create one (see
+   * `fetchPRMetadata`'s `hostAmbiguous` gate).
+   */
+  describe('host column encoding on INSERT', () => {
+    it('stores NULL for omitted, undefined and explicit-null host alike', async () => {
+      await repo.upsertPRMetadata({ prNumber: 1, repository: 'owner/repo', prData: prData() });
+      await repo.upsertPRMetadata({ prNumber: 2, repository: 'owner/repo', prData: prData(), host: undefined });
+      await repo.upsertPRMetadata({ prNumber: 3, repository: 'owner/repo', prData: prData(), host: null });
+
+      expect(await repo.getPRHost('owner/repo', 1)).toBeNull();
+      expect(await repo.getPRHost('owner/repo', 2)).toBeNull();
+      expect(await repo.getPRHost('owner/repo', 3)).toBeNull();
+      // …and "no row" is the only value that reads back as unknown.
+      expect(await repo.getPRHost('owner/repo', 4)).toBeUndefined();
+    });
+  });
+
+  // ==========================================================================
+  // Cold-path race
+  //
+  // REGRESSION: a SELECT-then-INSERT across an `await` loses this race with
+  // "UNIQUE constraint failed: pr_metadata.pr_number, pr_metadata.repository".
+  // Local mode fires two cold-path callers for the same PR milliseconds apart:
+  // the fire-and-forget write-through in GET /api/local/:reviewId and the
+  // blocking GET /api/local/:reviewId/pr-metadata the browser requests next.
+  // ==========================================================================
+  describe('concurrent callers', () => {
+    it('settles two concurrent upserts for the same PR without a UNIQUE violation', async () => {
+      const [first, second] = await Promise.all([
+        repo.upsertPRMetadata({ prNumber: 42, repository: 'owner/repo', prData: prData() }),
+        repo.upsertPRMetadata({
+          prNumber: 42,
+          repository: 'owner/repo',
+          prData: prData({ state: 'closed', merged: true })
+        })
+      ]);
+
+      // Exactly one caller inserted; both resolve to the same row.
+      expect([first.created, second.created].sort()).toEqual([false, true]);
+      expect(first.id).toBe(second.id);
+
+      const rows = await query(db, 'SELECT * FROM pr_metadata WHERE pr_number = ?', [42]);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].title).toBe('Refreshed title');
+      expect(rows[0].author).toBe('octocat');
+      expect(rows[0].last_accessed_at).toBeNull();
+
+      const parsed = JSON.parse(rows[0].pr_data);
+      expect(parsed.head_sha).toBe('head-new');
+      expect(parsed.base_sha).toBe('base-new');
+      expect(parsed.node_id).toBe('PR_node42');
+      // Both callers fetched the same PR, so whichever landed last is correct.
+      expect(['open', 'closed']).toContain(parsed.state);
+    });
+
+    it('keeps PR-mode-only pr_data keys when two callers race an existing row', async () => {
+      // The old read-then-merge window was also a lost-update window: an
+      // UPDATE built from a stale pr_data snapshot could drop a newer diff /
+      // worktree_path written by storePRData. The merge now runs inside SQLite.
+      const id = await seedPRModeRow();
+
+      const results = await Promise.all([
+        repo.upsertPRMetadata({ prNumber: 42, repository: 'owner/repo', prData: prData() }),
+        repo.upsertPRMetadata({ prNumber: 42, repository: 'owner/repo', prData: prData() })
+      ]);
+
+      expect(results).toEqual([{ id, created: false }, { id, created: false }]);
+
+      const parsed = JSON.parse((await queryOne(db, 'SELECT pr_data FROM pr_metadata WHERE id = ?', [id])).pr_data);
+      expect(parsed.diff).toBe('diff --git a/f.js b/f.js');
+      expect(parsed.worktree_path).toBe('/worktrees/owner-repo-42');
+      expect(parsed.changed_files).toEqual([{ file: 'f.js', additions: 1, deletions: 0 }]);
+      expect(parsed.head_sha).toBe('head-new');
+    });
+
+    it('reports created: true only for the call that inserted the row', async () => {
+      const first = await repo.upsertPRMetadata({ prNumber: 42, repository: 'owner/repo', prData: prData() });
+      const second = await repo.upsertPRMetadata({ prNumber: 42, repository: 'owner/repo', prData: prData() });
+
+      expect(first.created).toBe(true);
+      expect(second).toEqual({ id: first.id, created: false });
+
+      // `created` cannot be derived from lastID: SQLite does not reset the
+      // connection's last-insert rowid for a non-inserting upsert arm, so a
+      // later unrelated INSERT would make it report the wrong row.
+      const other = await repo.upsertPRMetadata({ prNumber: 43, repository: 'owner/repo', prData: prData() });
+      const third = await repo.upsertPRMetadata({ prNumber: 42, repository: 'owner/repo', prData: prData() });
+      expect(other.id).not.toBe(first.id);
+      expect(third).toEqual({ id: first.id, created: false });
+    });
+  });
+});
