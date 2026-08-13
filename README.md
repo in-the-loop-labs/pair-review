@@ -988,6 +988,8 @@ An implement→review→fix loop with pair-review as the review oracle. The agen
 |-------|-------------|
 | `/pair-loop:loop` | Implement, review with pair-review councils, triage, fix, and repeat until clean |
 
+**Run the loop in your agent's main session — do not delegate it to a subagent.** Each council round is a 15–40 minute external process owned by the session that started it, so a subagent's exit kills the round mid-flight and the work is discarded. Delegating the implementation or fix work *within* a round is fine; delegating the loop itself is not.
+
 ### code-critic — Standalone Analysis
 
 AI-powered code review analysis that works without any server or MCP dependency. Install this plugin for three-level AI analysis directly in your coding agent.
