@@ -84,16 +84,17 @@ class AnalysisConfigModal {
       // Track availability check status
       this.availabilityCheckInProgress = data.checkInProgress || false;
 
+      // A malformed payload takes the same route as a failed fetch: the catch
+      // below installs the hardcoded fallback. (buildProviderMap answers `{}`
+      // for a non-array, so this check is what keeps that fallback firing.)
+      if (!Array.isArray(data.providers)) {
+        throw new Error('Malformed providers response');
+      }
+
       // Convert array to object keyed by provider id
       // Filter out providers with no models configured (e.g., unconfigured OpenCode)
-      this.providers = {};
-      for (const provider of data.providers) {
-        if (provider.models && provider.models.length > 0) {
-          this.providers[provider.id] = provider;
-        } else {
-          console.warn(`Provider "${provider.name}" has no models configured and will not be available`);
-        }
-      }
+      // Resolved at call time so script order stays a non-issue.
+      this.providers = window.ProviderMap.buildProviderMap(data.providers);
 
       this.providersLoaded = true;
 

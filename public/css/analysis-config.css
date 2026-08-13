@@ -102,89 +102,49 @@
   font-size: 14px;
 }
 
-/* Confirm dialog buttons should be centered */
-.confirm-dialog-container .modal-footer {
-  justify-content: center;
-}
-
-/* When a secondary button is visible (3 buttons), widen and stack vertically.
-   column-reverse puts Confirm (primary) on top, Cancel on bottom. */
-.confirm-dialog-container.has-secondary {
-  min-width: 440px;
-}
-
-.confirm-dialog-container.has-secondary .modal-footer {
-  flex-direction: column-reverse;
-  align-items: stretch;
-}
-
-.confirm-dialog-container.has-secondary .modal-footer .btn {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-
-/* Button description subtitles */
-.modal-footer .btn .btn-label {
-  display: block;
-}
-
-.modal-footer .btn .btn-desc {
-  display: block;
-  font-size: 12px;
-  font-weight: normal;
-  opacity: 0.7;
-  margin-top: 2px;
-}
+/* Confirm dialog specific rules live in confirm-dialog.css so that pages can
+   use ConfirmDialog without loading this stylesheet. */
 
 /* Dialogs spawned from within other modals need higher z-index */
-#text-input-dialog,
-#confirm-dialog {
+#text-input-dialog {
   z-index: 10000; /* Must stack above analysis-config-overlay (1100) */
 }
 
-#text-input-dialog .btn-secondary,
-#confirm-dialog .btn-secondary {
+#text-input-dialog .btn-secondary {
   background-color: #f6f8fa;
   color: #24292f;
   border: 1px solid #d1d9e0;
 }
 
-#text-input-dialog .btn-secondary:hover,
-#confirm-dialog .btn-secondary:hover {
+#text-input-dialog .btn-secondary:hover {
   background-color: #eaeef2;
 }
 
-#text-input-dialog .btn-primary,
-#confirm-dialog .btn-primary {
+#text-input-dialog .btn-primary {
   background-color: var(--color-accent-primary, #0969da);
   color: white;
   border: 1px solid var(--color-accent-primary, #0969da);
 }
 
-#text-input-dialog .btn-danger,
-#confirm-dialog .btn-danger {
+#text-input-dialog .btn-danger {
   background-color: var(--color-danger, #d1242f);
   color: white;
   border: 1px solid var(--color-danger, #d1242f);
 }
 
-#text-input-dialog .btn-warning,
-#confirm-dialog .btn-warning {
+#text-input-dialog .btn-warning {
   background-color: #d97706;
   color: white;
   border: 1px solid #d97706;
 }
 
-[data-theme="dark"] #text-input-dialog .btn-secondary,
-[data-theme="dark"] #confirm-dialog .btn-secondary {
+[data-theme="dark"] #text-input-dialog .btn-secondary {
   background-color: var(--color-bg-secondary, #161b22);
   color: var(--color-text-primary, #c9d1d9);
   border-color: var(--color-border-primary, #30363d);
 }
 
-[data-theme="dark"] #text-input-dialog .btn-secondary:hover,
-[data-theme="dark"] #confirm-dialog .btn-secondary:hover {
+[data-theme="dark"] #text-input-dialog .btn-secondary:hover {
   background-color: var(--color-bg-tertiary, #1c2128);
 }
 
@@ -320,13 +280,13 @@
   border-bottom: 1px solid var(--color-border-primary);
 }
 
-.header-title-section {
+.analysis-config-overlay .header-title-section {
   display: flex;
   align-items: center;
   gap: 12px;
 }
 
-.header-icon {
+.analysis-config-overlay .header-icon {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -344,7 +304,7 @@
   color: var(--color-text-primary);
 }
 
-.header-subtitle {
+.analysis-config-overlay .header-subtitle {
   margin: 2px 0 0;
   font-size: 12px;
   color: var(--color-text-secondary);

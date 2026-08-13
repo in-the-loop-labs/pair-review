@@ -227,6 +227,13 @@ class AdvancedConfigTab {
   }
 
   /**
+   * Whether the config has unsaved changes
+   */
+  get isDirty() {
+    return this._isDirty;
+  }
+
+  /**
    * Validate council config. At least one level must be enabled.
    * @param {Object} config - Council config to validate
    * @returns {{ valid: boolean, error: string|null }}

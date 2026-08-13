@@ -1,0 +1,209 @@
+/* Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0 */
+
+/*
+ * Standalone stylesheet for the ConfirmDialog component.
+ *
+ * The generic modal shell rules (.modal-overlay, .modal-container, ...) also
+ * live unscoped in analysis-config.css. They are duplicated here, scoped to
+ * .confirm-dialog-overlay, so a page can use ConfirmDialog without pulling in
+ * the analysis-config modal stylesheet (and the analysis-config modal's
+ * unscoped header rules along with it).
+ *
+ * Values are copied verbatim from analysis-config.css so pages that load both
+ * stylesheets render identically. The only omissions are `width`/`height` on
+ * .modal-container, which ConfirmDialog sets inline.
+ */
+
+/* ============================================
+   Modal shell (scoped copies)
+   ============================================ */
+
+.confirm-dialog-overlay.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.confirm-dialog-overlay .modal-backdrop {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+}
+
+/* width/height intentionally omitted: ConfirmDialog sets both inline. */
+.confirm-dialog-overlay .modal-container {
+  position: relative;
+  background: var(--color-bg-primary, #ffffff);
+  border-radius: 20px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--color-border-default, #d1d9e0);
+}
+
+.confirm-dialog-overlay .modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 24px 24px 16px 24px;
+  border-bottom: 1px solid var(--ai-border, rgba(217, 119, 6, 0.3));
+  background: var(--ai-subtle, rgba(217, 119, 6, 0.08));
+}
+
+.confirm-dialog-overlay .modal-header h3 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ai-primary, #d97706);
+  margin: 0;
+}
+
+.confirm-dialog-overlay .modal-close-btn {
+  background: none;
+  border: none;
+  padding: 4px;
+  cursor: pointer;
+  border-radius: 4px;
+  color: var(--color-text-secondary, #656d76);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.confirm-dialog-overlay .modal-close-btn:hover {
+  background: var(--color-bg-tertiary, #f6f8fa);
+  color: var(--color-text-primary, #24292f);
+}
+
+.confirm-dialog-overlay .modal-body {
+  padding: 16px 24px;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.confirm-dialog-overlay .modal-footer {
+  padding: 16px 24px 24px 24px;
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  border-top: 1px solid var(--color-border-default, #d1d9e0);
+}
+
+.confirm-dialog-overlay .modal-footer .btn {
+  padding: 8px 16px;
+  font-size: 14px;
+}
+
+/* Dark theme adjustments for the modal shell */
+[data-theme="dark"] .confirm-dialog-overlay .modal-container {
+  background: var(--color-bg-primary);
+  border-color: var(--color-border-default);
+}
+
+[data-theme="dark"] .confirm-dialog-overlay .modal-header {
+  border-color: var(--color-border-default);
+}
+
+[data-theme="dark"] .confirm-dialog-overlay .modal-footer {
+  border-color: var(--color-border-default);
+}
+
+[data-theme="dark"] .confirm-dialog-overlay .modal-close-btn:hover {
+  background: var(--color-bg-secondary);
+}
+
+[data-theme="dark"] .confirm-dialog-overlay .modal-body {
+  color: var(--color-text-primary); /* Better contrast for dark mode */
+}
+
+/* ============================================
+   Confirm dialog specifics
+   ============================================ */
+
+/* Confirm dialog buttons should be centered */
+.confirm-dialog-container .modal-footer {
+  justify-content: center;
+}
+
+/* When a secondary button is visible (3 buttons), widen and stack vertically.
+   column-reverse puts Confirm (primary) on top, Cancel on bottom. */
+.confirm-dialog-container.has-secondary {
+  min-width: 440px;
+}
+
+.confirm-dialog-container.has-secondary .modal-footer {
+  flex-direction: column-reverse;
+  align-items: stretch;
+}
+
+.confirm-dialog-container.has-secondary .modal-footer .btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* Button description subtitles */
+.confirm-dialog-overlay .modal-footer .btn .btn-label {
+  display: block;
+}
+
+.confirm-dialog-overlay .modal-footer .btn .btn-desc {
+  display: block;
+  font-size: 12px;
+  font-weight: normal;
+  opacity: 0.7;
+  margin-top: 2px;
+}
+
+/* Dialogs spawned from within other modals need higher z-index */
+#confirm-dialog {
+  z-index: 10000; /* Must stack above analysis-config-overlay (1100) */
+}
+
+#confirm-dialog .btn-secondary {
+  background-color: #f6f8fa;
+  color: #24292f;
+  border: 1px solid #d1d9e0;
+}
+
+#confirm-dialog .btn-secondary:hover {
+  background-color: #eaeef2;
+}
+
+#confirm-dialog .btn-primary {
+  background-color: var(--color-accent-primary, #0969da);
+  color: white;
+  border: 1px solid var(--color-accent-primary, #0969da);
+}
+
+#confirm-dialog .btn-danger {
+  background-color: var(--color-danger, #d1242f);
+  color: white;
+  border: 1px solid var(--color-danger, #d1242f);
+}
+
+#confirm-dialog .btn-warning {
+  background-color: #d97706;
+  color: white;
+  border: 1px solid #d97706;
+}
+
+[data-theme="dark"] #confirm-dialog .btn-secondary {
+  background-color: var(--color-bg-secondary, #161b22);
+  color: var(--color-text-primary, #c9d1d9);
+  border-color: var(--color-border-primary, #30363d);
+}
+
+[data-theme="dark"] #confirm-dialog .btn-secondary:hover {
+  background-color: var(--color-bg-tertiary, #1c2128);
+}
