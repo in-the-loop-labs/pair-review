@@ -40,8 +40,12 @@ const SAMPLE_CONFIG = {
  *   to simulate a GitHub Actions environment). An empty-string value clears the
  *   inherited variable, which matters when the test runner itself executes in
  *   CI and would otherwise leak real GITHUB_* values into the child.
+ * @param {string[]} [unsetEnv] - env vars to DELETE from the child's
+ *   environment. Needed for PAIR_REVIEW_NO_FILE_COUNCILS, which vitest sets
+ *   globally and the child inherits: only an absent key lets the real
+ *   file-council loader run.
  */
-function runCli(args, testHomeDir, extraEnv = {}) {
+function runCli(args, testHomeDir, extraEnv = {}, unsetEnv = []) {
   // Use process.execPath (not the literal 'node') so the child runs under the
   // SAME Node major as the test runner — better-sqlite3 is a native module and
   // only loads under the Node ABI its binary was built for.
@@ -50,15 +54,19 @@ function runCli(args, testHomeDir, extraEnv = {}) {
   // config from <cwd>/.pair-review/, so running from the repo would leak the
   // developer's local .pair-review/config.local.json (e.g. a custom db_name)
   // into the child and break DB isolation.
+  const env = {
+    ...process.env,
+    HOME: testHomeDir,
+    GITHUB_TOKEN: '',
+    PAIR_REVIEW_NO_OPEN: '1',
+    ...extraEnv
+  };
+  for (const key of unsetEnv) {
+    delete env[key];
+  }
   return spawnSync(process.execPath, [path.join(REPO_ROOT, 'bin/pair-review.js'), ...args], {
     cwd: testHomeDir,
-    env: {
-      ...process.env,
-      HOME: testHomeDir,
-      GITHUB_TOKEN: '',
-      PAIR_REVIEW_NO_OPEN: '1',
-      ...extraEnv
-    },
+    env,
     timeout: 20000
   });
 }
@@ -141,6 +149,37 @@ describe('CLI council flags (integration)', () => {
 
     expect(result.status).toBe(0);
     expect(stdout).toContain('No councils found');
+  });
+
+  // The only test that exercises the REAL file-council loader end-to-end: the
+  // child reads an actual `~/.pair-review/councils/*.json` off the temp HOME.
+  it('--list-councils loads a council file from the config dir and marks it as file-sourced', async () => {
+    const councilsDir = path.join(testHomeDir, '.pair-review', 'councils');
+    await fs.mkdir(councilsDir, { recursive: true });
+    await fs.writeFile(
+      path.join(councilsDir, 'dream-team.council.json'),
+      JSON.stringify({
+        pair_review_council: 1,
+        name: 'Dream Team',
+        type: 'council',
+        config: {
+          voices: [{ provider: 'claude', model: 'sonnet' }],
+          levels: { '1': true }
+        }
+      }, null, 2)
+    );
+
+    const result = runCli(['--list-councils'], testHomeDir, {}, ['PAIR_REVIEW_NO_FILE_COUNCILS']);
+    const stdout = result.stdout?.toString() || '';
+
+    expect(result.status).toBe(0);
+    // The full `file:` id is the printed handle (a shortId would not resolve).
+    expect(stdout).toContain('file:dream-team');
+    expect(stdout).toContain('Dream Team');
+    expect(stdout).toMatch(/SOURCE/);
+    expect(stdout).toMatch(/file:dream-team.*\bfile\b/);
+    // And it is offered as a --council handle in the closing hint.
+    expect(stdout).toContain('--council file:dream-team');
   });
 
   it('--ai-draft with a bad --council handle exits non-zero with a clear error', () => {

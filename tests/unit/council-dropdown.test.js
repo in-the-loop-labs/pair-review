@@ -32,6 +32,61 @@ describe('CouncilDropdown.typeBadge', () => {
   });
 });
 
+describe('CouncilDropdown.sourceBadge', () => {
+  it('badges file-overlay councils and nothing else', () => {
+    expect(CouncilDropdown.sourceBadge({ id: 'file:x', name: 'X', source: 'file' }))
+      .toEqual({ label: 'File', cssClass: 'badge-file' });
+    expect(CouncilDropdown.sourceBadge({ id: 'c1', name: 'X', source: 'db' })).toBeNull();
+    expect(CouncilDropdown.sourceBadge({ id: 'c1', name: 'X' })).toBeNull();
+    expect(CouncilDropdown.sourceBadge(null)).toBeNull();
+    expect(CouncilDropdown.sourceBadge(undefined)).toBeNull();
+  });
+});
+
+describe('CouncilDropdown file councils', () => {
+  const MIXED = [
+    { id: 'c1', name: 'Db Council', type: 'council', source: 'db' },
+    { id: 'file:dream', name: 'File Council', type: 'advanced', source: 'file' }
+  ];
+
+  it('renders the File badge alongside the type badge for file councils only', () => {
+    const container = mount();
+    new CouncilDropdown({ container, councils: MIXED });
+    const options = container.querySelectorAll('.custom-dropdown-option');
+    // Sorted alphabetically: "Db Council" before "File Council".
+    const dbOption = options[0];
+    const fileOption = options[1];
+
+    expect(dbOption.textContent).toContain('Db Council');
+    expect(dbOption.querySelector('.council-type-badge.badge-standard')).toBeTruthy();
+    expect(dbOption.querySelector('.badge-file')).toBeNull();
+
+    expect(fileOption.textContent).toContain('File Council');
+    // Both badges: the type badge stays, the File badge is additive.
+    expect(fileOption.querySelectorAll('.council-type-badge')).toHaveLength(2);
+    expect(fileOption.querySelector('.council-type-badge.badge-advanced')).toBeTruthy();
+    const fileBadge = fileOption.querySelector('.council-type-badge.badge-file');
+    expect(fileBadge).toBeTruthy();
+    expect(fileBadge.textContent).toBe('File');
+  });
+
+  it('shows the File badge in the trigger when a file council is selected', () => {
+    const container = mount();
+    new CouncilDropdown({ container, councils: MIXED, selectedId: 'file:dream' });
+    const trigger = container.querySelector('.custom-dropdown-trigger');
+    expect(trigger.textContent).toContain('File Council');
+    expect(trigger.querySelector('.council-type-badge.badge-file')).toBeTruthy();
+  });
+
+  it('shows no File badge in the trigger when a db council is selected', () => {
+    const container = mount();
+    new CouncilDropdown({ container, councils: MIXED, selectedId: 'c1' });
+    const trigger = container.querySelector('.custom-dropdown-trigger');
+    expect(trigger.textContent).toContain('Db Council');
+    expect(trigger.querySelector('.badge-file')).toBeNull();
+  });
+});
+
 describe('CouncilDropdown rendering', () => {
   it('renders each council as an option with its type badge', () => {
     const container = mount();

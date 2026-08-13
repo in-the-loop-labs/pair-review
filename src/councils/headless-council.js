@@ -1,7 +1,8 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 
 const { v4: uuidv4 } = require('uuid');
-const { AnalysisRunRepository, CouncilRepository } = require('../database');
+const { AnalysisRunRepository } = require('../database');
+const { getLevelsConfigForRun, touchCouncilLastUsedAt } = require('./run-config');
 const logger = require('../utils/logger');
 
 /**
@@ -24,7 +25,9 @@ const logger = require('../utils/logger');
  *   - The analyzer methods do NOT mark the parent run completed/failed; this
  *     helper does it (mirroring the route's `.then()` / `.catch()`).
  * Any change to run-record fields or completion handling must be applied to
- * BOTH this function and `launchCouncilAnalysis`.
+ * BOTH this function and `launchCouncilAnalysis`. The pieces that used to drift
+ * — the `levels_config` derivation and the MRU touch — now come from the shared
+ * `./run-config` helpers, which enforce that half of the parity mechanically.
  *
  * @param {Object} db - Database instance
  * @param {Object} params - Analysis parameters
@@ -64,16 +67,7 @@ async function runHeadlessCouncilAnalysis(db, params) {
 
   const runId = uuidv4();
 
-  // Compute levelsConfig the same way launchCouncilAnalysis (analyses.js:533-541) does.
-  let levelsConfig = null;
-  if (configType === 'council') {
-    levelsConfig = councilConfig.levels || null;
-  } else if (councilConfig.levels) {
-    levelsConfig = {};
-    for (const [key, val] of Object.entries(councilConfig.levels)) {
-      levelsConfig[key] = val?.enabled !== false;
-    }
-  }
+  const levelsConfig = getLevelsConfigForRun(councilConfig, configType);
 
   const runRepo = new AnalysisRunRepository(db);
   await runRepo.create({
@@ -90,7 +84,7 @@ async function runHeadlessCouncilAnalysis(db, params) {
     levelsConfig
   });
 
-  new CouncilRepository(db).touchLastUsedAt(council.id).catch(err => {
+  touchCouncilLastUsedAt(db, council.id).catch(err => {
     logger.warn(`Failed to update council last_used_at: ${err.message}`);
   });
 

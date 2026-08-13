@@ -10,7 +10,7 @@
  * completion/failure semantics, and the last_used_at touch.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createTestDatabase, seedTestReview } from '../utils/schema.js';
 
 const { runHeadlessCouncilAnalysis } = require('../../src/councils/headless-council.js');
@@ -65,6 +65,10 @@ describe('runHeadlessCouncilAnalysis', () => {
     db = await createTestDatabase();
     councilRepo = new CouncilRepository(db);
     reviewId = seedTestReview(db, { prNumber: 42, repository: 'test/repo' });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('configType "council" dispatches to runReviewerCentricCouncil and records a completed run', async () => {
@@ -183,5 +187,64 @@ describe('runHeadlessCouncilAnalysis', () => {
 
     const after = await councilRepo.getById(council.id);
     expect(after.last_used_at).toBeTruthy();
+  });
+
+  it('touches last_used_at for a DB council id', async () => {
+    const council = await seedCouncil({ id: 'council-db-touch', type: 'council' });
+    const touchSpy = vi.spyOn(CouncilRepository.prototype, 'touchLastUsedAt');
+
+    await runHeadlessCouncilAnalysis(db, {
+      analyzer: createFakeAnalyzer(),
+      reviewId,
+      council,
+      configType: 'council',
+      councilConfig: sampleConfig,
+      worktreePath: '/tmp/worktree',
+      prMetadata: { head_sha: 'sha' },
+      instructions: { globalInstructions: null, repoInstructions: null, requestInstructions: null },
+      githubClient: null
+    });
+
+    expect(touchSpy).toHaveBeenCalledWith('council-db-touch');
+  });
+
+  it('does not touch last_used_at for a file council (no DB row to touch)', async () => {
+    // File councils live only in the read-only overlay — there is no councils
+    // row for `file:` ids, so the MRU touch must be skipped entirely.
+    const council = {
+      id: 'file:dream-team',
+      name: 'Dream Team',
+      type: 'council',
+      config: sampleConfig,
+      source: 'file',
+      readOnly: true
+    };
+    const touchSpy = vi.spyOn(CouncilRepository.prototype, 'touchLastUsedAt');
+    const analyzer = createFakeAnalyzer();
+
+    const result = await runHeadlessCouncilAnalysis(db, {
+      analyzer,
+      reviewId,
+      council,
+      configType: 'council',
+      councilConfig: sampleConfig,
+      worktreePath: '/tmp/worktree',
+      prMetadata: { head_sha: 'sha' },
+      instructions: { globalInstructions: null, repoInstructions: null, requestInstructions: null },
+      githubClient: null
+    });
+
+    expect(touchSpy).not.toHaveBeenCalled();
+
+    // The run itself is still recorded and attributed to the file council id,
+    // which is what gives file councils a "last used with" in --list-councils.
+    const run = await queryOne(
+      db,
+      'SELECT provider, model, status FROM analysis_runs WHERE id = ?',
+      [result.runId]
+    );
+    expect(run.provider).toBe('council');
+    expect(run.model).toBe('file:dream-team');
+    expect(run.status).toBe('completed');
   });
 });

@@ -30,6 +30,7 @@
 - [Features](#features)
   - [Three-Level AI Analysis](#three-level-ai-analysis)
   - [Analysis Configuration](#analysis-configuration)
+  - [Council Files](#council-files)
   - [Chat](#chat)
   - [Customization](#customization)
   - [Review Feedback Export](#review-feedback-export)
@@ -203,7 +204,7 @@ pair-review --local [path]
 | `--instructions <text>` | Per-run custom instructions for this analysis. Applies to any mode that runs analysis — `--headless`, `--ai-draft`, `--ai-review` (consumed directly), and `--ai`/`--council` (carried into the browser-triggered analysis). Rejected with a clear error if no analysis mode is selected, so it is never silently dropped. Default: none. |
 | `--instructions-file <path>` | Read per-run custom instructions from a file (5000-character cap). Mutually exclusive with `--instructions`. |
 | `--council <handle>` | Run analysis with a saved multi-voice council. Implies analysis. The handle resolves by council name, name-slug, id (prefix), or a partial name fragment (resolving when it matches a single council, otherwise listing the candidates). When set, `--model` is ignored (council voices use their own per-voice models). Works in headless PR (`--ai-draft`/`--ai-review`/`--headless`), interactive PR (`--ai`), and local (`--local --ai`) modes. |
-| `--list-councils` | List saved councils with their handles, names, types, and last-used repo, then exit. Use a printed handle with `--council`. |
+| `--list-councils` | List every council — saved and file-based — with their handles, names, types, `SOURCE` (`db` or `file`), and last-used repo, then exit. Use a printed handle with `--council`. |
 | `--configure` | Show setup instructions and configuration options |
 | `-d`, `--debug` | Enable verbose debug logging for troubleshooting |
 | `-h`, `--help` | Show help message with full CLI documentation |
@@ -811,6 +812,34 @@ The key difference from Review Council is consolidation order: Advanced consolid
 - **Large changesets with Opus 4.6**: Use review council instructions to tell the model to use a Team — it will spawn sub-agents to divide the work
 - **Multi-model parallel review**: Give each model a specific focus area (security, performance, correctness) via per-model instructions and get combined results
 - **Cross-model perspectives**: Run the same analysis across different providers (e.g., Claude, Antigravity, GPT) — where models agree signals high-confidence findings, but unique outliers from a single model can be equally valuable, catching issue types that only that model excels at spotting
+
+### Council Files
+
+Councils normally live in the local database, but you can also define them as files on disk. Drop a council document into `~/.pair-review/councils/` and it appears everywhere a saved council does: the analysis config selector, `--council` handles, `--list-councils`, and repo/global default-council settings.
+
+A council document is a JSON file. Both `<name>.council.json` and `<name>.json` are read, and the **filename stem is the council's identity**: `dream-team.council.json` and `dream-team.json` both become the council `file:dream-team`, so two files sharing a stem collide and only the alphabetically first one loads. The stem must be URL-safe (it appears in URLs and API paths); files with spaces or other unsafe characters in the name are skipped.
+
+```json
+{
+  "pair_review_council": 1,
+  "name": "Dream Team",
+  "type": "council",
+  "description": "Optional free text",
+  "config": { "voices": [...], "levels": {...}, "consolidation": {...} }
+}
+```
+
+- `pair_review_council` — format version, currently `1` (required)
+- `name` — display name (required); the filename stem (`dream-team`) doubles as a `--council` handle
+- `type` — `"council"` (voice-centric Review Council) or `"advanced"` (level-centric) (required)
+- `description` — optional; shown alongside the council where available
+- `config` — exactly what the Export button produces; export a council from the UI to get a valid starting point (required). If you export a saved council and drop it in as a file, delete the database copy afterwards — otherwise both answer to the same name and `--council <name>` fails with an ambiguity error instead of resolving.
+
+**If a council does not appear:** files missing required fields, or whose `config` fails validation, are skipped with a warning logged to the terminal — check pair-review's output.
+
+File councils are **read-only overlays**: the file is the single owner. In the UI they're marked `(file)`, Save and Delete are disabled, and Save As creates an editable database copy (that's the "import" flow — no separate import feature). The API refuses writes to them, and they have no last-used ordering of their own.
+
+Files are loaded once at startup — **restart pair-review to pick up changes**. Known limitation: a delegated headless run (`--headless` against an already-running server) hands off only the council's identity, so it runs against the files that server loaded at *its* startup. A council file added since then 404s; an edited one runs as the server loaded it, with only a warning to say so. Restart the server to pick up either.
 
 ### Chat
 

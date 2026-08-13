@@ -9,6 +9,7 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const { createTestDatabase } = require('../utils/schema');
 
 // Mock analysis timing - how long the simulated AI analysis takes
@@ -907,6 +908,24 @@ async function startTestServer(port) {
     abortSession: () => {}
   };
 
+  // File-council overlay isolation. The council store caches its file overlay
+  // once per process, and this server runs IN the Playwright worker process —
+  // without priming, the first store access would read the shared
+  // /tmp/.pair-review-e2e-test dir (cross-worker leakage) at an
+  // ordering-dependent moment. Instead: a per-worker mkdtemp councils dir,
+  // primed empty here, with an explicit test-only reload hook so a spec can
+  // write real .council.json files and deterministically (re)load them
+  // through the REAL loader. Specs must reload again after removing their
+  // files (afterAll) so later specs on this worker see an empty overlay.
+  const { _resetForTests } = require('../../src/councils/council-store');
+  const { loadFileCouncils } = require('../../src/councils/file-councils');
+  const councilsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pair-review-e2e-councils-'));
+  _resetForTests(await loadFileCouncils({ dirs: [councilsDir] }));
+  app.post('/__test/reload-file-councils', async (req, res) => {
+    _resetForTests(await loadFileCouncils({ dirs: [councilsDir] }));
+    res.json({ ok: true });
+  });
+
   app.use('/', analysisRoutes);
   app.use('/', reviewsRoutes);
   app.use('/', configRoutes);
@@ -935,7 +954,7 @@ async function startTestServer(port) {
 
   console.log(`E2E test server (worker) running on http://localhost:${port}`);
 
-  return { server, db, app, port };
+  return { server, db, app, port, councilsDir };
 }
 
 module.exports = { startTestServer };

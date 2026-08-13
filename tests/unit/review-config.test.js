@@ -20,6 +20,7 @@ import { createTestDatabase, closeTestDatabase } from '../utils/schema.js';
 const { resolveReviewConfig } = require('../../src/review-config.js');
 const { applyConfigOverrides } = require('../../src/ai');
 const { CouncilRepository, RepoSettingsRepository } = require('../../src/database.js');
+const { _resetForTests } = require('../../src/councils/council-store.js');
 const logger = require('../../src/utils/logger.js');
 
 const REPOSITORY = 'test/repo';
@@ -602,6 +603,125 @@ describe('resolveReviewConfig', () => {
         { default_provider: 'omp', default_model: 'opus', _globalOverrides: { default_provider: 'omp' } }
       );
       expect(result).toEqual({ type: 'single', provider: 'omp', model: 'repo-omp-model' });
+    });
+  });
+
+  // Both default-council tiers resolve through CouncilStore, so a `file:` id
+  // from the read-only overlay (`~/.pair-review/councils/*.json`) is a valid
+  // default. Vitest sets PAIR_REVIEW_NO_FILE_COUNCILS=1, so the overlay is empty
+  // unless a test primes it via `_resetForTests(rows)`.
+  describe('11. file councils as repo/global defaults', () => {
+    /** A file-overlay row shaped exactly like `loadFileCouncils` returns. */
+    function fileCouncilRow({ stem = 'dream-team', name = 'Dream Team', type = 'advanced', config = advancedConfig } = {}) {
+      return {
+        id: `file:${stem}`,
+        name,
+        type,
+        config,
+        description: 'From a file',
+        last_used_at: null,
+        created_at: null,
+        updated_at: null,
+        source: 'file',
+        readOnly: true,
+        filePath: `/councils/${stem}.council.json`
+      };
+    }
+
+    // Mandatory: the overlay cache is module-level and would otherwise leak into
+    // every later test in this file.
+    afterEach(() => {
+      _resetForTests();
+    });
+
+    it('resolves a repo default_council_id pointing at a file council', async () => {
+      _resetForTests([fileCouncilRow()]);
+      seedRepoSettings(db, { default_council_id: 'file:dream-team' });
+
+      const result = await resolveReviewConfig(db, REPOSITORY, {}, { default_provider: 'claude', default_model: 'opus' });
+
+      expect(result.type).toBe('council');
+      expect(result.council.id).toBe('file:dream-team');
+      expect(result.council.source).toBe('file');
+      expect(result.configType).toBe('advanced');
+      expect(result.councilConfig).toEqual(advancedConfig);
+    });
+
+    it('resolves a global default_council_id pointing at a voice-centric file council', async () => {
+      _resetForTests([fileCouncilRow({ stem: 'voices', name: 'Voices', type: 'council', config: voiceConfig })]);
+
+      const result = await resolveReviewConfig(
+        db, REPOSITORY, {},
+        { default_provider: 'claude', default_model: 'opus', _globalOverrides: { default_council_id: 'file:voices' } }
+      );
+
+      expect(result.type).toBe('council');
+      expect(result.council.id).toBe('file:voices');
+      expect(result.configType).toBe('council');
+      expect(result.councilConfig.voices).toHaveLength(2);
+    });
+
+    it('resolves a config-file default_council_id pointing at a file council', async () => {
+      _resetForTests([fileCouncilRow()]);
+
+      const result = await resolveReviewConfig(db, REPOSITORY, {}, { default_council_id: 'file:dream-team' });
+
+      expect(result.type).toBe('council');
+      expect(result.council.id).toBe('file:dream-team');
+    });
+
+    it('a repo file council beats a global default council', async () => {
+      const globalId = uuidv4();
+      await new CouncilRepository(db).create({ id: globalId, name: 'Global', config: advancedConfig, type: 'advanced' });
+      _resetForTests([fileCouncilRow()]);
+      seedRepoSettings(db, { default_council_id: 'file:dream-team' });
+
+      const result = await resolveReviewConfig(
+        db, REPOSITORY, {},
+        { _globalOverrides: { default_council_id: globalId } }
+      );
+
+      expect(result.council.id).toBe('file:dream-team');
+    });
+
+    // A council file the user renamed or deleted must not break the run: the
+    // stale-id behavior is identical to a deleted DB council.
+    it('falls back to the single default (with a warning) when a repo file: id is stale', async () => {
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      _resetForTests([]);
+      seedRepoSettings(db, { default_council_id: 'file:deleted-council' });
+
+      const result = await resolveReviewConfig(
+        db, REPOSITORY, {},
+        { default_provider: 'claude', default_model: 'opus' }
+      );
+
+      expect(result).toEqual({ type: 'single', provider: 'claude', model: 'opus' });
+      expect(warnSpy).toHaveBeenCalledOnce();
+      expect(warnSpy.mock.calls[0][0]).toMatch(/file:deleted-council.*was not found/);
+    });
+
+    it('falls back to the single default (with a warning) when a global file: id is stale', async () => {
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      _resetForTests([]);
+
+      const result = await resolveReviewConfig(
+        db, REPOSITORY, {},
+        { default_provider: 'claude', default_model: 'opus', _globalOverrides: { default_council_id: 'file:deleted-council' } }
+      );
+
+      expect(result).toEqual({ type: 'single', provider: 'claude', model: 'opus' });
+      expect(warnSpy).toHaveBeenCalledOnce();
+      expect(warnSpy.mock.calls[0][0]).toMatch(/Global default council "file:deleted-council" was not found/);
+    });
+
+    it('resolves an explicit --council handle naming a file council', async () => {
+      _resetForTests([fileCouncilRow()]);
+
+      const result = await resolveReviewConfig(db, REPOSITORY, { council: 'file:dream' }, {});
+
+      expect(result.type).toBe('council');
+      expect(result.council.id).toBe('file:dream-team');
     });
   });
 

@@ -10,6 +10,10 @@ export default defineConfig({
     // (prevents hangs from e.g. commit.gpgsign requiring TTY-based pinentry)
     env: {
       PAIR_REVIEW_NO_OPEN: '1',
+      // Keep the file-council overlay out of in-process tests: without this,
+      // the council store's lazy load would read the developer's real
+      // ~/.pair-review/councils. Tests prime rows via _resetForTests instead.
+      PAIR_REVIEW_NO_FILE_COUNCILS: '1',
       GIT_CONFIG_NOSYSTEM: '1',
       GIT_CONFIG_GLOBAL: '/dev/null',
     },

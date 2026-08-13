@@ -3,11 +3,12 @@
  * Unit tests for the council handle resolver.
  *
  * Covers resolveCouncilHandle (id / id-prefix / name / normalized-name matching,
- * ambiguity, and not-found) and getCouncilLastUsedRepos (most-recent council run
- * per council, with inline-config and run-less councils excluded).
+ * ambiguity, and not-found), the same matching over the read-only file-council
+ * overlay (`file:<stem>` ids), and getCouncilLastUsedRepos (most-recent council
+ * run per council, with inline-config and run-less councils excluded).
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { v4 as uuidv4 } from 'uuid';
 import { createTestDatabase, seedTestReview } from '../utils/schema.js';
 
@@ -17,6 +18,7 @@ const {
   resolveCouncilHandle,
   getCouncilLastUsedRepos
 } = require('../../src/councils/resolve-council.js');
+const { _resetForTests } = require('../../src/councils/council-store.js');
 const { CouncilRepository, AnalysisRunRepository } = require('../../src/database.js');
 const {
   slugifyCouncilName,
@@ -282,6 +284,199 @@ describe('resolveCouncilHandle', () => {
 
     const result = await resolveCouncilHandle(db, 'abcdef');
     expect(result.id).toBe(targetId);
+  });
+});
+
+// The resolver filters over `CouncilStore.list()`, so the read-only file
+// overlay (`~/.pair-review/councils/*.json`, ids `file:<stem>`) is matchable by
+// every tier a DB council is. Vitest sets PAIR_REVIEW_NO_FILE_COUNCILS=1, so the
+// overlay is empty unless a test primes it via `_resetForTests(rows)`.
+describe('resolveCouncilHandle with file councils', () => {
+  let db;
+  let councilRepo;
+
+  /** Build a file-overlay row shaped exactly like `loadFileCouncils` returns. */
+  function fileCouncilRow(stem, name, overrides = {}) {
+    return {
+      id: `file:${stem}`,
+      name,
+      type: 'advanced',
+      config: sampleConfig,
+      description: null,
+      last_used_at: null,
+      created_at: null,
+      updated_at: null,
+      source: 'file',
+      readOnly: true,
+      filePath: `/councils/${stem}.council.json`,
+      ...overrides
+    };
+  }
+
+  beforeEach(async () => {
+    db = await createTestDatabase();
+    councilRepo = new CouncilRepository(db);
+  });
+
+  // Mandatory: the overlay cache is module-level, so a primed row would leak
+  // into every later test in this file (and change their match counts).
+  afterEach(() => {
+    _resetForTests();
+  });
+
+  it('resolves a file council by its exact id, preserving the overlay fields', async () => {
+    _resetForTests([fileCouncilRow('dream-team', 'Dream Team')]);
+
+    const result = await resolveCouncilHandle(db, 'file:dream-team');
+
+    expect(result.id).toBe('file:dream-team');
+    expect(result.name).toBe('Dream Team');
+    expect(result.source).toBe('file');
+    expect(result.readOnly).toBe(true);
+    expect(result.filePath).toBe('/councils/dream-team.council.json');
+  });
+
+  it('resolves a unique `file:`-prefix match', async () => {
+    _resetForTests([
+      fileCouncilRow('dream-team', 'Dream Team'),
+      fileCouncilRow('security-sweep', 'Security Sweep')
+    ]);
+
+    const result = await resolveCouncilHandle(db, 'file:dream');
+    expect(result.id).toBe('file:dream-team');
+  });
+
+  it('throws on an ambiguous `file:`-prefix match, listing both file ids', async () => {
+    _resetForTests([
+      fileCouncilRow('dream-team', 'Dream Team'),
+      fileCouncilRow('daily-check', 'Daily Check')
+    ]);
+
+    let err;
+    try {
+      await resolveCouncilHandle(db, 'file:d');
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeDefined();
+    expect(err.message).toMatch(/Ambiguous council "file:d" matches 2 councils/);
+    expect(err.message).toContain('file:dream-team');
+    expect(err.message).toContain('file:daily-check');
+  });
+
+  it('resolves a file council by exact name (case-insensitive)', async () => {
+    _resetForTests([fileCouncilRow('dream-team', 'Dream Team')]);
+
+    const result = await resolveCouncilHandle(db, 'dream team');
+    expect(result.id).toBe('file:dream-team');
+  });
+
+  it('resolves a file council by its normalized name', async () => {
+    _resetForTests([fileCouncilRow('dream-team', 'Dream Team')]);
+
+    const result = await resolveCouncilHandle(db, 'dream-team');
+    expect(result.id).toBe('file:dream-team');
+  });
+
+  it('resolves a file council by its filename stem when the stem differs from the name', async () => {
+    // The stem is the promised handle regardless of what the document calls
+    // itself: `my-security.council.json` IS `--council my-security`.
+    _resetForTests([fileCouncilRow('my-security', 'Security Review')]);
+
+    const result = await resolveCouncilHandle(db, 'my-security');
+    expect(result.id).toBe('file:my-security');
+  });
+
+  // Regression: the stem comparison used to slugify only the handle and test it
+  // against the raw id, so any loadable stem that is not already slug-shaped
+  // (the loader admits `_` and `.`) was unresolvable by its own filename.
+  it('resolves a filename stem that is not slug-shaped, by either spelling', async () => {
+    _resetForTests([fileCouncilRow('my_security', 'Security Review')]);
+
+    // The stem exactly as it appears in `my_security.council.json`.
+    expect((await resolveCouncilHandle(db, 'my_security')).id).toBe('file:my_security');
+    // Slug-to-slug comparison means the slugified spelling works too.
+    expect((await resolveCouncilHandle(db, 'my-security')).id).toBe('file:my_security');
+  });
+
+  it('throws when a filename stem collides with another council\'s normalized name', async () => {
+    const dbId = uuidv4();
+    await councilRepo.create({ id: dbId, name: 'My Security', config: sampleConfig });
+    _resetForTests([fileCouncilRow('my-security', 'Security Review')]);
+
+    let err;
+    try {
+      await resolveCouncilHandle(db, 'my-security');
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeDefined();
+    expect(err.message).toMatch(/Ambiguous council "my-security" matches 2 councils/);
+    expect(err.message).toContain(dbId);
+    expect(err.message).toContain('file:my-security');
+  });
+
+  it('resolves a file council by a substring name fragment', async () => {
+    _resetForTests([
+      fileCouncilRow('dream-team', 'Dream Team'),
+      fileCouncilRow('security-sweep', 'Security Sweep')
+    ]);
+
+    const result = await resolveCouncilHandle(db, 'team');
+    expect(result.id).toBe('file:dream-team');
+  });
+
+  it('resolves across both sources: a DB council still wins its own exact name', async () => {
+    const dbId = uuidv4();
+    await councilRepo.create({ id: dbId, name: 'Security Sweep', config: sampleConfig });
+    _resetForTests([fileCouncilRow('dream-team', 'Dream Team')]);
+
+    expect((await resolveCouncilHandle(db, 'Security Sweep')).id).toBe(dbId);
+    expect((await resolveCouncilHandle(db, 'Dream Team')).id).toBe('file:dream-team');
+  });
+
+  it('throws the existing ambiguity error when a DB and a file council share a name', async () => {
+    const dbId = uuidv4();
+    await councilRepo.create({ id: dbId, name: 'Dream Team', config: sampleConfig });
+    _resetForTests([fileCouncilRow('dream-team', 'Dream Team')]);
+
+    let err;
+    try {
+      await resolveCouncilHandle(db, 'Dream Team');
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeDefined();
+    expect(err.message).toMatch(/Ambiguous council "Dream Team" matches 2 councils/);
+    expect(err.message).toContain(dbId);
+    expect(err.message).toContain('file:dream-team');
+    // Mixed-source collisions get an extra hint: the id is not the only fix.
+    expect(err.message).toContain(
+      'A council file and a saved council share this name. ' +
+      'Delete or rename one to keep the name handle usable.'
+    );
+  });
+
+  it('omits the mixed-source hint when both matches come from files', async () => {
+    _resetForTests([
+      fileCouncilRow('dream-team', 'Dream Team'),
+      fileCouncilRow('daily-check', 'Daily Check')
+    ]);
+
+    let err;
+    try {
+      await resolveCouncilHandle(db, 'file:d');
+    } catch (e) {
+      err = e;
+    }
+    expect(err.message).not.toContain('A council file and a saved council share this name');
+  });
+
+  it('still reports not-found when no file council matches', async () => {
+    _resetForTests([fileCouncilRow('dream-team', 'Dream Team')]);
+
+    await expect(resolveCouncilHandle(db, 'file:nope'))
+      .rejects.toThrow(/No council matches "file:nope"/);
   });
 });
 

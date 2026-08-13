@@ -19,7 +19,8 @@
  * (`council.type || 'advanced'` + `normalizeAndValidateCouncilConfig`).
  */
 
-const { RepoSettingsRepository, CouncilRepository } = require('./database');
+const { RepoSettingsRepository } = require('./database');
+const { createCouncilStore } = require('./councils/council-store');
 const { resolveCouncilHandle } = require('./councils/resolve-council');
 const { normalizeAndValidateCouncilConfig } = require('./councils/council-validation');
 // Require the ./ai index (not ./ai/provider) so the provider registry is
@@ -38,7 +39,7 @@ const logger = require('./utils/logger');
  * existing headless council path (`performHeadlessReview`, src/main.js).
  *
  * @param {Object} council - Full council row (parsed config), as returned by
- *   `resolveCouncilHandle` or `CouncilRepository.getById`.
+ *   `resolveCouncilHandle` or `CouncilStore.getById`.
  * @returns {{ council: Object, configType: string, councilConfig: Object }}
  * @throws {Error} If the council's config is invalid for its type.
  * @private
@@ -190,12 +191,14 @@ function _resolveProviderDefaultModel(providerId) {
  *      (e.g. `--model`). Returns a single selection; any missing field falls
  *      through to env/repo/config defaults.
  *   3. `repo_settings.default_council_id` — looked up directly by id via
- *      `CouncilRepository.getById` (we already hold the UUID, so no handle
- *      matching is needed). If the id points to a council that no longer exists,
- *      a warning is logged and resolution falls through to the single default.
+ *      `CouncilStore.getById` (we already hold the id — a UUID for a saved
+ *      council, `file:<stem>` for a file council — so no handle matching is
+ *      needed). If the id points to a council that no longer exists, a warning
+ *      is logged and resolution falls through to the single default.
  *   4. Global default council — `config._globalOverrides.default_council_id`
  *      (an in-app /settings override) or a config-file `default_council_id`.
- *      Resolved by id like the repo tier; a stale id logs a warning and falls
+ *      Resolved by id through `CouncilStore.getById` like the repo tier (again,
+ *      a UUID or a `file:<stem>`); a stale id logs a warning and falls
  *      through. Sits ABOVE the single ladder, so it also outranks a repo's
  *      single provider/model default.
  *   5. `repo_settings.default_provider` / `default_model`, then global in-app
@@ -238,9 +241,10 @@ async function resolveReviewConfig(db, repository, explicit = {}, config = {}) {
     ? await new RepoSettingsRepository(db).getRepoSettings(repository)
     : null;
 
-  // 3. Repo default council (resolve directly by id — we already hold the UUID).
+  // 3. Repo default council (resolve directly by id — we already hold the id:
+  //    a UUID for a saved council, `file:<stem>` for a file council).
   if (repoSettings?.default_council_id) {
-    const council = await new CouncilRepository(db).getById(repoSettings.default_council_id);
+    const council = await (await createCouncilStore(db)).getById(repoSettings.default_council_id);
     if (council) {
       return { type: 'council', ..._buildCouncilSelection(council) };
     }
@@ -266,7 +270,7 @@ async function resolveReviewConfig(db, repository, explicit = {}, config = {}) {
   const globalCouncilId = (cfg._globalOverrides && cfg._globalOverrides.default_council_id)
     || cfg.default_council_id;
   if (globalCouncilId) {
-    const council = await new CouncilRepository(db).getById(globalCouncilId);
+    const council = await (await createCouncilStore(db)).getById(globalCouncilId);
     if (council) {
       return { type: 'council', ..._buildCouncilSelection(council) };
     }

@@ -14,7 +14,7 @@
  */
 
 const express = require('express');
-const { query, queryOne, run, withTransaction, WorktreeRepository, ReviewRepository, GitHubReviewRepository, RepoSettingsRepository, AnalysisRunRepository, PRMetadataRepository, CouncilRepository } = require('../database');
+const { query, queryOne, run, withTransaction, WorktreeRepository, ReviewRepository, GitHubReviewRepository, RepoSettingsRepository, AnalysisRunRepository, PRMetadataRepository } = require('../database');
 const { GitWorktreeManager } = require('../git/worktree');
 const { GitHubClient } = require('../github/client');
 const { PRArgumentParser } = require('../github/parser');
@@ -57,7 +57,7 @@ const { mergeChangedFilesWithDiff, parseUnifiedDiffPatches } = require('../utils
 const { parseHunks } = require('../utils/diff-hunks');
 const { hashHunk } = require('../ai/hunk-hashing');
 const { resolveOriginalFileContentSpecs } = require('../utils/diff-file-content');
-const { normalizeAndValidateCouncilConfig } = require('../councils/council-validation');
+const { resolveCouncilConfigForRun, councilNotFoundMessage } = require('../councils/run-config');
 const { resolveReviewConfig } = require('../review-config');
 const { TIERS, TIER_ALIASES, VALID_TIERS, resolveTier } = require('../ai/prompts/config');
 const { getProviderClass, createProvider } = require('../ai/provider');
@@ -2614,24 +2614,13 @@ router.post('/api/pr/:owner/:repo/:number/analyses/council', async (req, res) =>
     const repository = normalizeRepository(owner, repo);
     const db = req.app.get('db');
 
-    let councilConfig;
-    let configType;
-    if (councilId) {
-      const councilRepo = new CouncilRepository(db);
-      const council = await councilRepo.getById(councilId);
-      if (!council) {
-        return res.status(404).json({ error: 'Council not found' });
-      }
-      councilConfig = council.config;
-      configType = requestConfigType || council.type || 'advanced';
-    } else {
-      councilConfig = inlineConfig;
-      configType = requestConfigType || 'advanced';
+    const resolved = await resolveCouncilConfigForRun(db, {
+      councilId, inlineConfig, requestConfigType
+    });
+    if (resolved.notFound) {
+      return res.status(404).json({ error: councilNotFoundMessage(councilId) });
     }
-
-    const { config: normalizedCouncilConfig, error: configError } =
-      normalizeAndValidateCouncilConfig(councilConfig, configType);
-    councilConfig = normalizedCouncilConfig;
+    const { councilConfig, configType, error: configError } = resolved;
     if (configError) {
       return res.status(400).json({ error: `Invalid council config: ${configError}` });
     }

@@ -1081,7 +1081,7 @@ async function handleLocalReview(targetPath, flags = {}) {
     if (analysisConfigId) {
       url += `&analysisConfigId=${analysisConfigId}`;
     } else if (councilSelection) {
-      url += `&council=${councilSelection.id}`;
+      url += `&council=${encodeURIComponent(councilSelection.id)}`;
     }
     console.log(`\nOpening browser to: ${url}`);
     await open(url);

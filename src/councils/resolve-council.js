@@ -6,7 +6,8 @@
  * saved council row, and gathers "Last Used With" metadata for the council list.
  */
 
-const { query, CouncilRepository } = require('../database');
+const { query } = require('../database');
+const { createCouncilStore, isFileCouncilId, FILE_ID_PREFIX } = require('./council-store');
 const { slugifyCouncilName } = require('../../public/js/utils/council-document');
 
 /**
@@ -52,9 +53,17 @@ function _ambiguityError(handle, matches) {
     // every shortId would be identical and could not disambiguate.
     return `  ${name}  (${c.id})`;
   });
+  // A name that resolves to both a file council and a saved one is a collision
+  // the user can actually fix, and the fix differs from "use the id" — say so.
+  const spansSources =
+    matches.some(c => c.source === 'file') && matches.some(c => c.source !== 'file');
+  const hint = spansSources
+    ? '\nA council file and a saved council share this name. ' +
+      'Delete or rename one to keep the name handle usable.'
+    : '';
   return new Error(
     `Ambiguous council "${handle}" matches ${matches.length} councils. Disambiguate with the id:\n` +
-    lines.join('\n')
+    lines.join('\n') + hint
   );
 }
 
@@ -63,9 +72,12 @@ function _ambiguityError(handle, matches) {
  *
  * Matching order (first unambiguous match wins):
  *   1. Exact id
- *   2. UUID-prefix (only for hex-ish handles of length >= 4)
+ *   2. Id-prefix: `file:`-prefix for file-council ids, UUID-prefix for hex-ish
+ *      handles of length >= 4
  *   3. Exact name (case-insensitive)
- *   4. Normalized name
+ *   4. Normalized name, OR a file council's filename stem compared in slug space
+ *      (`my-security` finds `file:my-security` AND `file:my_security`, whatever
+ *      the document's own name says)
  *   5. Partial (substring) name fragment (last resort, never shadows the above)
  *
  * @param {Database} db - Database instance
@@ -74,7 +86,7 @@ function _ambiguityError(handle, matches) {
  * @throws {Error} If the handle is missing, ambiguous, or matches nothing
  */
 async function resolveCouncilHandle(db, handle) {
-  const all = await new CouncilRepository(db).list();
+  const all = await (await createCouncilStore(db)).list();
 
   if (!handle) {
     throw new Error('A council handle is required.');
@@ -83,6 +95,15 @@ async function resolveCouncilHandle(db, handle) {
   // 1. Exact id
   const exactId = all.find(c => c.id === handle);
   if (exactId) return exactId;
+
+  // 2a. `file:`-prefix match for file-council ids (`file:dream` → the file
+  // council `file:dream-team`). The hex-ish UUID-prefix branch below can never
+  // match these (':' fails its pattern), so this is its file-id counterpart.
+  if (handle.length > FILE_ID_PREFIX.length && handle.toLowerCase().startsWith(FILE_ID_PREFIX)) {
+    const m = all.filter(c => c.id.toLowerCase().startsWith(handle.toLowerCase()));
+    if (m.length === 1) return m[0];
+    if (m.length > 1) throw _ambiguityError(handle, m);
+  }
 
   // 2. UUID-prefix match (only for hex-ish handles of meaningful length)
   if (handle.length >= 4 && /^[0-9a-f-]+$/i.test(handle)) {
@@ -98,10 +119,22 @@ async function resolveCouncilHandle(db, handle) {
     if (m.length > 1) throw _ambiguityError(handle, m);
   }
 
-  // 4. Normalized name
+  // 4. Normalized name, or a file council's filename stem. The stem is a
+  // promised `--council` handle (`dream-team.council.json` IS
+  // `--council dream-team`) even when it differs from the slugified document
+  // name, so match it here rather than leaving it to the substring tier.
+  // Handle and stem are BOTH compared in slug space: the loader admits any stem
+  // that survives `encodeURIComponent` (so `my_security.council.json` and
+  // `My.Security.council.json` are loadable), and comparing a slugified handle
+  // against a raw stem would strand exactly those. A stem that collides with
+  // another council's normalized name funnels into the ambiguity error instead
+  // of silently picking one.
   {
     const hn = normalizeForMatch(handle);
-    const m = all.filter(c => normalizeForMatch(c.name) === hn);
+    const m = all.filter(c =>
+      normalizeForMatch(c.name) === hn ||
+      (isFileCouncilId(c.id) && normalizeForMatch(c.id.slice(FILE_ID_PREFIX.length)) === hn)
+    );
     if (m.length === 1) return m[0];
     if (m.length > 1) throw _ambiguityError(handle, m);
   }

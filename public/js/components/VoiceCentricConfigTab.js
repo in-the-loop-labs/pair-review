@@ -7,6 +7,14 @@
  * and global level toggles (L1/L2/L3) apply to every reviewer uniformly.
  */
 class VoiceCentricConfigTab {
+  /**
+   * What the shared council CRUD (public/js/utils/council-crud.js) needs to
+   * speak for THIS tab: the API type literal and this tab's own council
+   * `<select>`. Read off the class (not `this`) so the delegations work on any
+   * tab-like context.
+   */
+  static COUNCIL_CRUD_SPEC = { type: 'council', selectorId: '#vc-council-selector' };
+
   /** Info circle SVG icon for section tooltips */
   static INFO_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8Zm8-6.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM6.5 7.75A.75.75 0 0 1 7.25 7h1a.75.75 0 0 1 .75.75v2.75h.25a.75.75 0 0 1 0 1.5h-2a.75.75 0 0 1 0-1.5h.25v-2h-.25a.75.75 0 0 1-.75-.75ZM8 6a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z"/></svg>`;
 
@@ -163,6 +171,13 @@ class VoiceCentricConfigTab {
 
   /**
    * Auto-save council if dirty before analysis starts.
+   *
+   * Editing a file council and then hitting Analyze deliberately forks a
+   * timestamped DB copy here rather than writing back: file councils are
+   * read-only, and the config that actually ran has to be persisted for
+   * history and reuse. The fork is lazy — a clean file council returns early
+   * on the guard below and keeps its `file:` attribution, so tweaks that are
+   * abandoned without analyzing leave no junk rows behind.
    */
   async autoSaveIfDirty() {
     if (!this._isDirty && this.selectedCouncilId) return;
@@ -1260,6 +1275,22 @@ class VoiceCentricConfigTab {
 
   // --- Council selector ---
 
+  /**
+   * Whether a council id belongs to the read-only file overlay
+   * (`~/.pair-review/councils/`).
+   *
+   * Mirrors isFileCouncilId() in src/councils/council-store.js, which is what
+   * the API gates PUT/DELETE on. Testing the id (not a joined `source` field)
+   * means the check still holds when the council list is empty or stale
+   * (loadCouncils() swallows fetch failures by setting this.councils = []).
+   *
+   * @param {string|null|undefined} councilId
+   * @returns {boolean}
+   */
+  _isFileCouncil(councilId) {
+    return typeof councilId === 'string' && councilId.startsWith('file:');
+  }
+
   _renderCouncilSelector() {
     const selector = this.modal.querySelector('#vc-council-selector');
     if (!selector) return;
@@ -1269,7 +1300,7 @@ class VoiceCentricConfigTab {
     for (const council of this.councils) {
       const opt = document.createElement('option');
       opt.value = council.id;
-      opt.textContent = council.name;
+      opt.textContent = this._isFileCouncil(council.id) ? `${council.name} (file)` : council.name;
       selector.appendChild(opt);
     }
 
@@ -1314,8 +1345,12 @@ class VoiceCentricConfigTab {
     const exportBtn = panel.querySelector('#vc-council-export-btn');
     const deleteBtn = panel.querySelector('#vc-council-delete-btn');
 
+    // File councils are read-only: no in-place save, no delete. Save As stays
+    // enabled — it POSTs a copy, which is the duplicate-to-my-councils flow.
+    const isFile = this._isFileCouncil(this.selectedCouncilId);
+
     if (saveBtn) {
-      saveBtn.disabled = !this._isDirty || !this.selectedCouncilId;
+      saveBtn.disabled = !this._isDirty || !this.selectedCouncilId || isFile;
     }
     // Save As and Export share one validity check: an invalid config can be
     // neither saved nor exported (the exported document would not read back).
@@ -1326,7 +1361,7 @@ class VoiceCentricConfigTab {
       if (exportBtn) exportBtn.disabled = !valid;
     }
     if (deleteBtn) {
-      deleteBtn.disabled = !this.selectedCouncilId;
+      deleteBtn.disabled = !this.selectedCouncilId || isFile;
     }
 
     this._updateDirtyHint();
@@ -1379,97 +1414,41 @@ class VoiceCentricConfigTab {
 
   // --- Council CRUD ---
 
+  /**
+   * Save the live config over the selected council, forking a copy when the
+   * selection is a read-only file council or when nothing is selected.
+   *
+   * The whole body is shared with AdvancedConfigTab — only the type literal and
+   * the selector id differ. See `saveCouncil` in
+   * public/js/utils/council-crud.js.
+   */
   async _saveCouncil() {
-    const config = this._readConfigFromUI();
-    const { valid } = this._validateConfig(config);
-    if (!valid) {
-      if (window.toast) window.toast.showWarning('At least one review level must be enabled.');
-      return;
-    }
-    if (this.selectedCouncilId) {
-      try {
-        await this._putCouncil(this.selectedCouncilId, config);
-      } catch (error) {
-        console.error('Error saving council:', error);
-        if (window.toast) window.toast.showError('Failed to save council');
-      }
-    } else {
-      this._saveCouncilAs();
-    }
+    return window.CouncilCrud.saveCouncil(this, VoiceCentricConfigTab.COUNCIL_CRUD_SPEC);
   }
 
+  /** Prompt for a name and POST the live config as a new council. */
   async _saveCouncilAs() {
-    const config = this._readConfigFromUI();
-    const { valid } = this._validateConfig(config);
-    if (!valid) {
-      if (window.toast) window.toast.showWarning('At least one review level must be enabled.');
-      return;
-    }
-
-    const dialog = window.textInputDialog;
-    if (!dialog) return;
-    const currentCouncil = this.selectedCouncilId
-      ? this.councils.find(c => c.id === this.selectedCouncilId)
-      : null;
-    let name;
-    while (true) {
-      name = await dialog.show({
-        title: 'Save Council As',
-        label: 'Council name',
-        placeholder: 'Enter a name for this council',
-        value: name || currentCouncil?.name || '',
-        confirmText: 'Save',
-        confirmClass: 'btn-primary'
-      });
-      if (!name) return;
-      const duplicate = this.councils.find(c => c.name.toLowerCase() === name.toLowerCase());
-      if (!duplicate) break;
-      if (window.toast) window.toast.showWarning('A council with that name already exists.');
-    }
-    try {
-      await this._postCouncil(name, config);
-    } catch (error) {
-      console.error('Error saving council:', error);
-      if (window.toast) window.toast.showError('Failed to save council');
-    }
+    return window.CouncilCrud.saveCouncilAs(this, VoiceCentricConfigTab.COUNCIL_CRUD_SPEC);
   }
 
+  /**
+   * PUT (update) an existing council by ID.
+   * Handles fetch, response check, markClean, and selector refresh.
+   * @param {string} councilId - The council ID to update
+   * @param {Object} config - The council configuration to save
+   */
   async _putCouncil(councilId, config) {
-    const response = await fetch(`/api/councils/${councilId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ config, type: 'council' })
-    });
-    if (!response.ok) {
-      throw new Error(`PUT /api/councils/${councilId} failed: ${response.status}`);
-    }
-    this._markClean();
-    await this.loadCouncils();
-    const selector = this.modal.querySelector('#vc-council-selector');
-    if (selector) {
-      selector.value = this.selectedCouncilId;
-      selector.classList.remove('new-council-selected');
-    }
+    return window.CouncilCrud.putCouncil(this, VoiceCentricConfigTab.COUNCIL_CRUD_SPEC, councilId, config);
   }
 
+  /**
+   * POST (create) a new council with the given name.
+   * Handles fetch, response check, markClean, selector refresh, and selection update.
+   * @param {string} name - The name for the new council
+   * @param {Object} config - The council configuration to save
+   */
   async _postCouncil(name, config) {
-    const response = await fetch('/api/councils', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, config, type: 'council' })
-    });
-    if (!response.ok) {
-      throw new Error(`POST /api/councils failed: ${response.status}`);
-    }
-    const data = await response.json();
-    this.selectedCouncilId = data.council.id;
-    this._markClean();
-    await this.loadCouncils();
-    const selector = this.modal.querySelector('#vc-council-selector');
-    if (selector) {
-      selector.value = this.selectedCouncilId;
-      selector.classList.remove('new-council-selected');
-    }
+    return window.CouncilCrud.postCouncil(this, VoiceCentricConfigTab.COUNCIL_CRUD_SPEC, name, config);
   }
 
   /**
@@ -1485,45 +1464,9 @@ class VoiceCentricConfigTab {
     return window.CouncilExport.exportCouncilFromTab(this, 'council');
   }
 
+  /** Confirm and DELETE the selected council, then reset to "+ New Council". */
   async _deleteCouncil() {
-    if (!this.selectedCouncilId) return;
-
-    const council = this.councils.find(c => c.id === this.selectedCouncilId);
-    const councilName = council?.name || 'this council';
-
-    const confirmDlg = window.confirmDialog;
-    if (!confirmDlg) return;
-    const result = await confirmDlg.show({
-      title: 'Delete Council',
-      message: `Are you sure you want to delete "${councilName}"?`,
-      confirmText: 'Delete',
-      confirmClass: 'btn-danger'
-    });
-    if (result !== 'confirm') return;
-
-    try {
-      const response = await fetch(`/api/councils/${this.selectedCouncilId}`, { method: 'DELETE' });
-      if (!response.ok) {
-        throw new Error(`DELETE /api/councils/${this.selectedCouncilId} failed: ${response.status}`);
-      }
-
-      this.selectedCouncilId = null;
-      this._applyConfigToUI(this._defaultConfig());
-      this._markClean();
-      await this.loadCouncils();
-
-      const selector = this.modal.querySelector('#vc-council-selector');
-      if (selector) {
-        selector.value = '';
-        selector.classList.add('new-council-selected');
-      }
-      this._updateSaveButtonStates();
-
-      if (window.toast) window.toast.showSuccess('Council deleted');
-    } catch (error) {
-      console.error('Error deleting council:', error);
-      if (window.toast) window.toast.showError('Failed to delete council');
-    }
+    return window.CouncilCrud.deleteCouncil(this, VoiceCentricConfigTab.COUNCIL_CRUD_SPEC);
   }
 }
 

@@ -12,8 +12,29 @@ const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
 const { CouncilRepository } = require('../database');
 const { normalizeAndValidateCouncilConfig } = require('../councils/council-validation');
+const { createCouncilStore, isFileCouncilId } = require('../councils/council-store');
 
 const router = express.Router();
+
+/**
+ * Refuse a write against a file-backed council.
+ *
+ * File councils are owned by their file on disk — the API must never write
+ * them, so the mutating routes bail out here before touching the repository.
+ *
+ * @param {Object} res - Express response
+ * @param {string} id - Council id from the request
+ * @param {string} action - Past-tense verb for the message ('updated', 'deleted')
+ * @returns {boolean} true when the request was refused (caller must return)
+ */
+function refuseFileCouncil(res, id, action) {
+  if (!isFileCouncilId(id)) return false;
+  res.status(403).json({
+    error: `This council is defined in a file and cannot be ${action} through the API. ` +
+      'Change the file on disk instead.'
+  });
+  return true;
+}
 
 /**
  * GET /api/councils — List all saved councils
@@ -21,8 +42,8 @@ const router = express.Router();
 router.get('/api/councils', async (req, res) => {
   try {
     const db = req.app.get('db');
-    const councilRepo = new CouncilRepository(db);
-    const councils = await councilRepo.list();
+    const store = await createCouncilStore(db);
+    const councils = await store.list();
 
     res.json({ councils });
   } catch (error) {
@@ -38,8 +59,8 @@ router.get('/api/councils/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const db = req.app.get('db');
-    const councilRepo = new CouncilRepository(db);
-    const council = await councilRepo.getById(id);
+    const store = await createCouncilStore(db);
+    const council = await store.getById(id);
 
     if (!council) {
       return res.status(404).json({ error: 'Council not found' });
@@ -95,6 +116,7 @@ router.post('/api/councils', async (req, res) => {
 router.put('/api/councils/:id', async (req, res) => {
   try {
     const { id } = req.params;
+    if (refuseFileCouncil(res, id, 'updated')) return;
     const { name, config, type } = req.body || {};
 
     const db = req.app.get('db');
@@ -151,6 +173,7 @@ router.put('/api/councils/:id', async (req, res) => {
 router.delete('/api/councils/:id', async (req, res) => {
   try {
     const { id } = req.params;
+    if (refuseFileCouncil(res, id, 'deleted')) return;
     const db = req.app.get('db');
     const councilRepo = new CouncilRepository(db);
 

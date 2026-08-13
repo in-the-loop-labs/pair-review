@@ -16,7 +16,7 @@ const express = require('express');
 const { execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs').promises;
-const { query, queryOne, run, ReviewRepository, RepoSettingsRepository, AnalysisRunRepository, CouncilRepository } = require('../database');
+const { query, queryOne, run, ReviewRepository, RepoSettingsRepository, AnalysisRunRepository } = require('../database');
 const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
@@ -31,7 +31,7 @@ const { generateScopedDiff, computeScopedDigest, getBranchCommitCount, getFirstC
 const { STOPS, isValidScope, normalizeScope, reviewScope, includesBranch, DEFAULT_SCOPE, EMPTY_SCOPE_MESSAGE } = require('../local-scope');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
 const { getShaAbbrevLength } = require('../git/sha-abbrev');
-const { normalizeAndValidateCouncilConfig } = require('../councils/council-validation');
+const { resolveCouncilConfigForRun, councilNotFoundMessage } = require('../councils/run-config');
 const { resolveReviewConfig } = require('../review-config');
 const { TIERS, TIER_ALIASES, VALID_TIERS, resolveTier } = require('../ai/prompts/config');
 const { getProviderClass, createProvider } = require('../ai/provider');
@@ -2367,24 +2367,13 @@ router.post('/api/local/:reviewId/analyses/council', async (req, res) => {
     }
 
     // Resolve council config and determine config type
-    let councilConfig;
-    let configType;
-    if (councilId) {
-      const councilRepo = new CouncilRepository(db);
-      const council = await councilRepo.getById(councilId);
-      if (!council) {
-        return res.status(404).json({ error: 'Council not found' });
-      }
-      councilConfig = council.config;
-      configType = requestConfigType || council.type || 'advanced';
-    } else {
-      councilConfig = inlineConfig;
-      configType = requestConfigType || 'advanced';
+    const resolved = await resolveCouncilConfigForRun(db, {
+      councilId, inlineConfig, requestConfigType
+    });
+    if (resolved.notFound) {
+      return res.status(404).json({ error: councilNotFoundMessage(councilId) });
     }
-
-    const { config: normalizedCouncilConfig, error: configError } =
-      normalizeAndValidateCouncilConfig(councilConfig, configType);
-    councilConfig = normalizedCouncilConfig;
+    const { councilConfig, configType, error: configError } = resolved;
     if (configError) {
       return res.status(400).json({ error: `Invalid council config: ${configError}` });
     }

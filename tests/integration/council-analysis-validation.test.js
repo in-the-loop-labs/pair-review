@@ -56,6 +56,7 @@ const testConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pair-review-cfg-'))
 vi.spyOn(configModule, 'getConfigDir').mockReturnValue(testConfigDir);
 
 const { run } = require('../../src/database');
+const { _resetForTests } = require('../../src/councils/council-store');
 
 const analysisRoutes = require('../../src/routes/analyses');
 const prRoutes = require('../../src/routes/pr');
@@ -87,6 +88,30 @@ const voiceCentricConfig = {
   levels: { '1': true, '2': true, '3': false },
   consolidation: { provider: 'claude', model: 'opus', tier: 'balanced' }
 };
+
+/**
+ * A file-overlay row shaped exactly like `loadFileCouncils` returns. Councils
+ * from `~/.pair-review/councils/*.json` reach these endpoints as `file:` ids and
+ * must resolve like any saved council.
+ */
+const fileCouncilRow = {
+  id: 'file:dream-team',
+  name: 'Dream Team',
+  type: 'council',
+  config: voiceCentricConfig,
+  description: null,
+  last_used_at: null,
+  created_at: null,
+  updated_at: null,
+  source: 'file',
+  readOnly: true,
+  filePath: '/councils/dream-team.council.json'
+};
+
+/** The 404 text a `file:` id that this process never loaded must produce. */
+const FILE_COUNCIL_MISS =
+  'Council "file:not-there" is defined in a file this server has not loaded. ' +
+  'Restart pair-review to pick up new council files.';
 
 /** A valid level-centric advanced config (type: 'advanced') */
 const advancedConfig = {
@@ -243,6 +268,33 @@ describe('Council analysis config validation in analysis routes', () => {
       expect(response.body.error).toContain('not found');
     });
 
+    describe('file councils', () => {
+      // Mandatory: the overlay cache is module-level and would leak into every
+      // later test in this file.
+      beforeEach(() => _resetForTests([fileCouncilRow]));
+      afterEach(() => _resetForTests());
+
+      it('resolves a file: council id and proceeds past council resolution', async () => {
+        const response = await request(server)
+          .post('/api/pr/test-owner/test-repo/42/analyses/council')
+          .send({ councilId: 'file:dream-team' });
+
+        // The council resolved and validated; the run stops at the PR metadata
+        // lookup, which is as far as PR mode gets in this harness.
+        expect(response.status).toBe(404);
+        expect(response.body.error).toContain('Pull request #42 not found');
+      });
+
+      it('returns a file-aware 404 for a file: id this process never loaded', async () => {
+        const response = await request(server)
+          .post('/api/pr/test-owner/test-repo/42/analyses/council')
+          .send({ councilId: 'file:not-there' });
+
+        expect(response.status).toBe(404);
+        expect(response.body.error).toBe(FILE_COUNCIL_MISS);
+      });
+    });
+
     it('should normalize saved council with type council but levels-based config', async () => {
       // Regression test: a council saved with type 'council' but config in levels-based format
       // (could happen from a migration or previous version of the code)
@@ -391,6 +443,30 @@ describe('Council analysis config validation in analysis routes', () => {
       expect(response.status).not.toBe(400);
       expect([200, 201]).toContain(response.status);
       expect(response.body.isCouncil).toBe(true);
+    });
+
+    describe('file councils', () => {
+      beforeEach(() => _resetForTests([fileCouncilRow]));
+      afterEach(() => _resetForTests());
+
+      it('resolves a file: council id and launches the analysis', async () => {
+        const response = await request(server)
+          .post(`/api/local/${localReviewId}/analyses/council`)
+          .send({ councilId: 'file:dream-team' });
+
+        expect([200, 201]).toContain(response.status);
+        expect(response.body.analysisId).toBeDefined();
+        expect(response.body.isCouncil).toBe(true);
+      });
+
+      it('returns a file-aware 404 for a file: id this process never loaded', async () => {
+        const response = await request(server)
+          .post(`/api/local/${localReviewId}/analyses/council`)
+          .send({ councilId: 'file:not-there' });
+
+        expect(response.status).toBe(404);
+        expect(response.body.error).toBe(FILE_COUNCIL_MISS);
+      });
     });
 
     it('should normalize saved council with type council but levels-based config (local mode)', async () => {

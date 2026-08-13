@@ -70,6 +70,18 @@ class CouncilDropdown {
     return { label: 'Standard', cssClass: 'badge-standard' };
   }
 
+  /**
+   * Map a council's source to an extra badge: file-overlay councils
+   * (`source: 'file'`, read-only, defined in ~/.pair-review/councils/) get a
+   * "File" badge next to the type badge; DB councils get none.
+   * @param {Object|null|undefined} council
+   * @returns {{ label: string, cssClass: string }|null}
+   */
+  static sourceBadge(council) {
+    if (council?.source === 'file') return { label: 'File', cssClass: 'badge-file' };
+    return null;
+  }
+
   /** Replace the council list and re-render (preserving the current selection). */
   setCouncils(councils) {
     this.councils = Array.isArray(councils) ? councils : [];
@@ -101,8 +113,10 @@ class CouncilDropdown {
     const selected = this.councils.find((c) => c.id === this.selectedId);
     if (selected) {
       const badge = CouncilDropdown.typeBadge(selected.type);
+      const source = CouncilDropdown.sourceBadge(selected);
       return `<span class="trigger-text">${this.escapeHtml(selected.name)}</span>` +
-        `<span class="council-type-badge ${badge.cssClass}">${badge.label}</span>`;
+        `<span class="council-type-badge ${badge.cssClass}">${badge.label}</span>` +
+        (source ? `<span class="council-type-badge ${source.cssClass}">${source.label}</span>` : '');
     }
     // Nothing selected and no (or unmatched) none option.
     const placeholder = this.councils.length > 0 ? this.placeholder : this.emptyText;
@@ -127,10 +141,12 @@ class CouncilDropdown {
     );
     for (const council of sorted) {
       const badge = CouncilDropdown.typeBadge(council.type);
+      const source = CouncilDropdown.sourceBadge(council);
       const selected = council.id === this.selectedId;
       html += `<div class="custom-dropdown-option${selected ? ' selected' : ''}" data-value="${this.escapeHtml(council.id)}" role="option" aria-selected="${selected}">` +
         `<span class="option-name">${this.escapeHtml(council.name)}</span>` +
         `<span class="council-type-badge ${badge.cssClass}">${badge.label}</span>` +
+        (source ? `<span class="council-type-badge ${source.cssClass}">${source.label}</span>` : '') +
         `</div>`;
     }
     return html;

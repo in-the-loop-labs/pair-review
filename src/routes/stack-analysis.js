@@ -25,7 +25,8 @@ const { setupStackPR } = require('../setup/stack-setup');
 const Analyzer = require('../ai/analyzer');
 const { getProviderClass, createProvider } = require('../ai/provider');
 const { VALID_TIERS, resolveTier } = require('../ai/prompts/config');
-const { normalizeAndValidateCouncilConfig } = require('../councils/council-validation');
+const { isFileCouncilId } = require('../councils/council-store');
+const { resolveCouncilConfigForRun, councilNotFoundMessage } = require('../councils/run-config');
 const ws = require('../ws');
 const {
   query,
@@ -33,8 +34,7 @@ const {
   ReviewRepository,
   RepoSettingsRepository,
   AnalysisRunRepository,
-  PRMetadataRepository,
-  CouncilRepository
+  PRMetadataRepository
 } = require('../database');
 const {
   activeAnalyses,
@@ -650,26 +650,21 @@ async function launchStackCouncilAnalysis(deps, db, config, {
   providerOverrides = {},
   providerOverridesMap = null
 }) {
-  let councilConfig;
-  let resolvedConfigType = configType;
-
-  if (councilId) {
-    const councilRepo = new CouncilRepository(db);
-    const council = await councilRepo.getById(councilId);
-    if (!council) {
-      throw new Error(`Council ${councilId} not found`);
-    }
-    councilConfig = council.config;
-    resolvedConfigType = configType || council.type || 'advanced';
-  } else if (rawCouncilConfig) {
-    councilConfig = rawCouncilConfig;
-  } else {
+  if (!councilId && !rawCouncilConfig) {
     throw new Error('Council analysis requires councilId or councilConfig');
   }
 
-  const { config: normalizedCouncilConfig, error: configError } =
-    normalizeAndValidateCouncilConfig(councilConfig, resolvedConfigType);
-  councilConfig = normalizedCouncilConfig;
+  const resolved = await resolveCouncilConfigForRun(db, {
+    councilId, inlineConfig: rawCouncilConfig, requestConfigType: configType
+  });
+  if (resolved.notFound) {
+    throw new Error(
+      isFileCouncilId(councilId)
+        ? councilNotFoundMessage(councilId)
+        : `Council ${councilId} not found`
+    );
+  }
+  const { councilConfig, configType: resolvedConfigType, error: configError } = resolved;
   if (configError) {
     throw new Error(`Invalid council config: ${configError}`);
   }

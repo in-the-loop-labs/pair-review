@@ -125,6 +125,7 @@ function describeExportButtonState(tabSpec) {
           _readConfigFromUI: vi.fn(() => config),
           _validateConfig: TabClass.prototype._validateConfig,
           _updateDirtyHint: TabClass.prototype._updateDirtyHint,
+          _isFileCouncil: TabClass.prototype._isFileCouncil,
           _isDirty: false,
           selectedCouncilId: null,
           councils: [],
@@ -217,9 +218,11 @@ describe('VoiceCentricConfigTab._updateSaveButtonStates (reviewer count)', () =>
       _readConfigFromUI: () => ({ levels: { 1: true } }),
       _validateConfig: VoiceCentricConfigTab.prototype._validateConfig,
       _updateDirtyHint: VoiceCentricConfigTab.prototype._updateDirtyHint,
+      _isFileCouncil: VoiceCentricConfigTab.prototype._isFileCouncil,
       _getReviewerCount: () => 0,
       _isDirty: false,
-      selectedCouncilId: null
+      selectedCouncilId: null,
+      councils: []
     };
 
     VoiceCentricConfigTab.prototype._updateSaveButtonStates.call(ctx);

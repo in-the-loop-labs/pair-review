@@ -15,7 +15,7 @@
  */
 
 const express = require('express');
-const { queryOne, withTransaction, ReviewRepository, CommentRepository, AnalysisRunRepository, CouncilRepository } = require('../database');
+const { queryOne, withTransaction, ReviewRepository, CommentRepository, AnalysisRunRepository } = require('../database');
 const Analyzer = require('../ai/analyzer');
 const { getTierForModel } = require('../ai/provider');
 const { v4: uuidv4 } = require('uuid');
@@ -25,6 +25,7 @@ const { fireHooks, hasHooks } = require('../hooks/hook-runner');
 const { buildAnalysisStartedPayload, buildAnalysisCompletedPayload, getCachedUser } = require('../hooks/payloads');
 const path = require('path');
 const { normalizeRepository } = require('../utils/paths');
+const { getLevelsConfigForRun, touchCouncilLastUsedAt } = require('../councils/run-config');
 const {
   activeAnalyses,
   reviewToAnalysisId,
@@ -530,15 +531,7 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
   const runId = uuidv4();
   const analysisId = runId;
 
-  let levelsConfig = null;
-  if (isVoiceCentric && councilConfig.levels) {
-    levelsConfig = councilConfig.levels;
-  } else if (councilConfig.levels) {
-    levelsConfig = {};
-    for (const [key, val] of Object.entries(councilConfig.levels)) {
-      levelsConfig[key] = val?.enabled !== false;
-    }
-  }
+  const levelsConfig = getLevelsConfigForRun(councilConfig, configType);
 
   const analysisRunRepo = new AnalysisRunRepository(db);
   await analysisRunRepo.create({
@@ -555,12 +548,9 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
     levelsConfig
   });
 
-  if (councilId) {
-    const councilRepo = new CouncilRepository(db);
-    councilRepo.touchLastUsedAt(councilId).catch(err => {
-      logger.warn(`Failed to update council last_used_at: ${err.message}`);
-    });
-  }
+  touchCouncilLastUsedAt(db, councilId).catch(err => {
+    logger.warn(`Failed to update council last_used_at: ${err.message}`);
+  });
 
   const initialStatus = {
     id: analysisId,

@@ -749,7 +749,9 @@ class PRManager {
       let councilName = null;
       let councilType = null;
       try {
-        const resp = await fetch(`/api/councils/${urlCouncilId}`);
+        // Ids are not always UUIDs: a file-overlay council is `file:<stem>`,
+        // and the stem comes from a filename.
+        const resp = await fetch(`/api/councils/${encodeURIComponent(urlCouncilId)}`);
         if (resp.ok) {
           const data = await resp.json();
           councilConfig = data.council?.config || null;
@@ -763,7 +765,15 @@ class PRManager {
       }
 
       // Only honor the URL council if we successfully fetched its config.
-      // Otherwise fall through to the existing default-selection logic.
+      // Otherwise fall through to the existing default-selection logic — but
+      // say so, since silently analyzing with a different config than the one
+      // the user asked for is worse than the miss itself.
+      if (!councilConfig) {
+        window.toast?.showWarning(
+          `Council "${this.escapeHtml(urlCouncilId)}" was not found on this server — using the default analysis config. ` +
+          'If the council file is new, restart pair-review to pick it up.'
+        );
+      }
       if (councilConfig) {
         return {
           isCouncil: true,
@@ -788,7 +798,7 @@ class PRManager {
       let councilConfig = null;
       let councilName = null;
       try {
-        const resp = await fetch(`/api/councils/${councilId}`);
+        const resp = await fetch(`/api/councils/${encodeURIComponent(councilId)}`);
         if (resp.ok) {
           const data = await resp.json();
           councilConfig = data.council?.config || null;

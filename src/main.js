@@ -4,7 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 const { loadConfig, getConfigDir, showWelcomeMessage, resolveDbName, resolveRepoOptions, resolvePoolConfig, getRepoResetScript, getRepoSkipBulkFetch, getRepoFetchTimeout, resolveLoadSkills, buildCouncilProviderOverrides } = require('./config');
-const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository, ReviewRepository, RepoSettingsRepository, GitHubReviewRepository, WorktreePoolRepository, CouncilRepository, CommentRepository, AnalysisRunRepository, PRMetadataRepository } = require('./database');
+const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository, ReviewRepository, RepoSettingsRepository, GitHubReviewRepository, WorktreePoolRepository, CommentRepository, AnalysisRunRepository, PRMetadataRepository } = require('./database');
 const { PRArgumentParser } = require('./github/parser');
 const { GitHubClient } = require('./github/client');
 const { GitWorktreeManager } = require('./git/worktree');
@@ -18,7 +18,9 @@ const { handleLocalReview, findMainGitRoot, setupLocalReviewSession, findGitRoot
 const { resolveCliInstructions, prepareInteractiveAnalysisConfig } = require('./interactive-analysis-config');
 const { resolveCouncilHandle, getCouncilLastUsedRepos, shortId } = require('./councils/resolve-council');
 const { runHeadlessCouncilAnalysis } = require('./councils/headless-council');
+const { createCouncilStore } = require('./councils/council-store');
 const { normalizeAndValidateCouncilConfig } = require('./councils/council-validation');
+const { fileCouncilStalenessWarning } = require('./councils/run-config');
 const { resolveReviewConfig } = require('./review-config');
 const { GlobalSettingsService } = require('./settings/global-settings-service');
 const { redirectConsoleToStderr } = require('./mcp-stdio');
@@ -305,7 +307,7 @@ MORE INFO:
  * @param {Object} db - Database instance
  */
 async function printCouncilList(db) {
-  const councils = await new CouncilRepository(db).list();
+  const councils = await (await createCouncilStore(db)).list();
 
   if (!councils || councils.length === 0) {
     console.log('No councils found. Create one in the web UI under Analysis settings.');
@@ -323,9 +325,13 @@ async function printCouncilList(db) {
       lastUsedWith = `${entry.repository}${entry.pr_number ? `#${entry.pr_number}` : ''}`;
     }
     return {
-      handle: shortId(c.id),
+      // A file council's printed handle must stay resolvable: `file:` ids are
+      // not UUIDs, so an 8-char slice would resolve to nothing — print the
+      // full id instead.
+      handle: c.source === 'file' ? c.id : shortId(c.id),
       name: c.name || '',
       type: c.type || '',
+      source: c.source || 'db',
       lastUsed,
       lastUsedWith
     };
@@ -335,6 +341,7 @@ async function printCouncilList(db) {
     handle: 'HANDLE',
     name: 'NAME',
     type: 'TYPE',
+    source: 'SOURCE',
     lastUsed: 'LAST USED',
     lastUsedWith: 'LAST USED WITH'
   };
@@ -352,6 +359,7 @@ async function printCouncilList(db) {
       String(r.handle).padEnd(widths.handle),
       String(r.name).padEnd(widths.name),
       String(r.type).padEnd(widths.type),
+      String(r.source).padEnd(widths.source),
       String(r.lastUsed).padEnd(widths.lastUsed),
       String(r.lastUsedWith).padEnd(widths.lastUsedWith)
     ].join('  ');
@@ -363,7 +371,7 @@ async function printCouncilList(db) {
 
   console.log('');
   console.log('Pass a handle with --council, e.g.:');
-  console.log('  pair-review <pr> --ai-draft --council ' + shortId(councils[0].id));
+  console.log('  pair-review <pr> --ai-draft --council ' + rows[0].handle);
 }
 
 /**
@@ -841,18 +849,33 @@ AI PROVIDERS:
     // No redirect is repeated here: it would be too late to matter and is
     // redundant given the early call.
 
-    // NOTE: debug_stream handling, the yolo env bridge, and applyConfigOverrides
-    // are deliberately deferred until AFTER the global-settings overlay is folded
-    // into `config` (below, right after DB init). Each latches a config value that
-    // an in-app /settings override can change (debug_stream, yolo → the
-    // provider-runtime yoloMode), so running them here — on the pre-overlay file
-    // config — would ignore a restart-required override.
+    // NOTE: debug_stream handling and the yolo env bridge are deliberately
+    // deferred until AFTER the global-settings overlay is folded into `config`
+    // (below, right after DB init). Each latches a config value that an in-app
+    // /settings override can change (debug_stream, yolo → the provider-runtime
+    // yoloMode), so running them here — on the pre-overlay file config — would
+    // ignore a restart-required override. `applyConfigOverrides` runs BOTH here
+    // and there (see the early call just below).
 
     // --model is ignored when --council is set: council voices use their own
     // per-voice models, so a top-level --model has no effect on the analysis.
     if (flags.council && flags.model) {
       console.warn('Warning: --model is ignored when --council is set; council voices use their own per-voice models.');
     }
+
+    // Register config-declared providers BEFORE anything resolves a council.
+    // File-council validation asks the provider registry whether a council's
+    // voices are executable (an all-levels-disabled council is only legal when
+    // they are), and both `--list-councils` and `--council` resolution load the
+    // file overlay — so a user's executable/alias providers must already be
+    // registered or their own councils are skipped as invalid.
+    //
+    // This does NOT replace the later call: only that one sees the
+    // global-settings overlay and the settled `config.yolo`/PAIR_REVIEW_YOLO,
+    // neither of which exists yet here. `applyConfigOverrides` clears and
+    // rebuilds its state on every call, so running it twice is safe and the
+    // later call wins.
+    applyConfigOverrides(config);
 
     // --list-councils: print the saved councils and exit. Needs the database
     // but no server, no PR/local context, and no single-port delegation.
@@ -937,6 +960,12 @@ AI PROVIDERS:
         localRepository
       });
       if (delegated) {
+        // File councils are loaded once per process, so THIS process resolved
+        // the handle against a fresher overlay than the running server may have.
+        const staleWarning = fileCouncilStalenessWarning(cliCouncil?.id);
+        if (staleWarning) {
+          console.warn(staleWarning);
+        }
         if (db) { try { db.close(); } catch { /* ignore */ } }
         process.exit(0);
       }
@@ -957,9 +986,11 @@ AI PROVIDERS:
     // DB read failure leaves the file config intact rather than aborting startup.
     //
     // Paths that exit BEFORE this point run on the pre-overlay file config and
-    // therefore cannot see in-app overrides — this is intentional: `--list-councils`
-    // only reads DB rows (no config-driven behavior), and a single-port delegated
-    // launch hands off to an already-running server that applies its own overlay.
+    // therefore cannot see in-app overrides — this is intentional: a single-port
+    // delegated launch hands off to an already-running server that applies its
+    // own overlay, and `--list-councils` needs only the provider registry (which
+    // the early `applyConfigOverrides` above has already built from the file
+    // config) to validate the councils it prints.
     try {
       const overlay = new GlobalSettingsService({ db, baseConfig: config, layers });
       Object.assign(config, overlay.buildEffectiveConfig());
@@ -986,10 +1017,10 @@ AI PROVIDERS:
       process.env.PAIR_REVIEW_YOLO = 'true';
     }
 
-    // Apply provider config overrides (including yolo) for all code paths
-    // (interactive, headless, local). server.js calls this independently on
-    // startup, but headless paths (--ai-draft, --ai-review) never start the
-    // server, so we must also apply here.
+    // Re-apply provider config overrides, now that the overlay and yolo are
+    // settled, for all code paths (interactive, headless, local). server.js
+    // calls this independently on startup, but headless paths (--ai-draft,
+    // --ai-review) never start the server, so we must also apply here.
     applyConfigOverrides(config);
 
     // Headless server delegation: when a compatible pair-review server is
@@ -1244,7 +1275,7 @@ async function handlePullRequest(args, config, db, flags = {}, poolLifecycle = n
     if (analysisConfigId) {
       url += `&analysisConfigId=${analysisConfigId}`;
     } else if (councilSelection) {
-      url += `&council=${councilSelection.id}`;
+      url += `&council=${encodeURIComponent(councilSelection.id)}`;
     }
 
     // Thread the pasted URL's host to setup so it binds directly instead of
@@ -2329,6 +2360,18 @@ async function handleHeadlessDelegated(prArgs, config, db, flags, probe) {
     { council: flags.council, provider: flags.provider, model: flags.model },
     config
   );
+
+  // Same hazard as the browser-delegation branch above: only the council ID
+  // crosses to the server, and its file overlay is frozen at ITS startup. This
+  // process validated the council file as it is on disk NOW; the server may run
+  // an older version of it and still exit 0. In --json mode console is already
+  // redirected to stderr, so this cannot corrupt the JSON document on stdout.
+  if (reviewConfig.type === 'council') {
+    const staleWarning = fileCouncilStalenessWarning(reviewConfig.council?.id);
+    if (staleWarning) {
+      console.warn(staleWarning);
+    }
+  }
 
   // Take ownership of the interrupt signals for the delegated run. `require`ing
   // ./server (main.js top) registered server.js's module-level gracefulShutdown

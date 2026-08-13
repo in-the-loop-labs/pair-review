@@ -162,3 +162,20 @@
   background: rgba(139, 92, 246, 0.15);
   color: #a78bfa;
 }
+
+/* The trigger has no flex gap of its own (unlike the option rows), so two
+   adjacent badges would collide there. */
+.custom-dropdown-trigger .council-type-badge + .council-type-badge {
+  margin-left: 8px;
+}
+
+/* Read-only file-overlay councils (~/.pair-review/councils/) */
+.council-type-badge.badge-file {
+  background: rgba(245, 158, 11, 0.12);
+  color: #b45309;
+}
+
+[data-theme="dark"] .council-type-badge.badge-file {
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+}

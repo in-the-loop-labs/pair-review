@@ -13,6 +13,7 @@ import { listenOnLoopback, closeServer } from '../utils/loopback-server';
 
 const councilRoutes = require('../../src/routes/councils');
 const { CouncilRepository } = require('../../src/database');
+const { _resetForTests } = require('../../src/councils/council-store');
 
 function createTestApp(db) {
   const app = express();
@@ -491,6 +492,140 @@ describe('Council Routes', () => {
     it('should return 404 for non-existent council', async () => {
       const res = await request(server).delete('/api/councils/does-not-exist');
       expect(res.status).toBe(404);
+    });
+  });
+
+  // The read-only file overlay (`~/.pair-review/councils/*.json`) is served by
+  // the same endpoints as DB councils, but the FILE owns those rows: PUT and
+  // DELETE must refuse them. Vitest sets PAIR_REVIEW_NO_FILE_COUNCILS=1, so the
+  // overlay is empty unless a test primes it via `_resetForTests(rows)`.
+  describe('file council overlay', () => {
+    const readOnlyError = (action) =>
+      `This council is defined in a file and cannot be ${action} through the API. ` +
+      'Change the file on disk instead.';
+
+    /** A file-overlay row shaped exactly like `loadFileCouncils` returns. */
+    function fileCouncilRow(stem, name, overrides = {}) {
+      return {
+        id: `file:${stem}`,
+        name,
+        type: 'advanced',
+        config: sampleConfig,
+        description: `${name} from a file`,
+        last_used_at: null,
+        created_at: null,
+        updated_at: null,
+        source: 'file',
+        readOnly: true,
+        filePath: `/councils/${stem}.council.json`,
+        ...overrides
+      };
+    }
+
+    beforeEach(() => {
+      _resetForTests([
+        fileCouncilRow('zed', 'Zed File'),
+        fileCouncilRow('alpha', 'Alpha File')
+      ]);
+    });
+
+    // Mandatory: the overlay cache is module-level and would otherwise leak into
+    // every later test in this file (and every ordering assumption in them).
+    afterEach(() => {
+      _resetForTests();
+    });
+
+    it('GET /api/councils lists DB rows (source db) first, then file rows name-sorted', async () => {
+      await request(server).post('/api/councils').send({ name: 'Saved', config: sampleConfig });
+
+      const res = await request(server).get('/api/councils');
+      expect(res.status).toBe(200);
+      expect(res.body.councils).toHaveLength(3);
+
+      const [dbRow, first, second] = res.body.councils;
+      expect(dbRow.name).toBe('Saved');
+      expect(dbRow.source).toBe('db');
+      // DB rows carry no overlay fields.
+      expect(dbRow.readOnly).toBeUndefined();
+      expect(dbRow.filePath).toBeUndefined();
+
+      // File rows are appended, sorted by name (Alpha before Zed) — they have no
+      // MRU to order by.
+      expect([first.id, second.id]).toEqual(['file:alpha', 'file:zed']);
+      expect(first.source).toBe('file');
+      expect(first.readOnly).toBe(true);
+      expect(first.filePath).toBe('/councils/alpha.council.json');
+      expect(first.description).toBe('Alpha File from a file');
+    });
+
+    it('GET /api/councils/:id returns a file council by its file: id', async () => {
+      const res = await request(server).get('/api/councils/file:alpha');
+
+      expect(res.status).toBe(200);
+      expect(res.body.council.id).toBe('file:alpha');
+      expect(res.body.council.name).toBe('Alpha File');
+      expect(res.body.council.source).toBe('file');
+      expect(res.body.council.readOnly).toBe(true);
+      expect(res.body.council.config).toEqual(sampleConfig);
+    });
+
+    it('GET /api/councils/:id returns 404 for an unknown file: id', async () => {
+      const res = await request(server).get('/api/councils/file:not-there');
+      expect(res.status).toBe(404);
+    });
+
+    it('PUT /api/councils/:id refuses a file council with 403', async () => {
+      const res = await request(server)
+        .put('/api/councils/file:alpha')
+        .send({ name: 'Renamed' });
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe(readOnlyError('updated'));
+    });
+
+    // The guard runs BEFORE any db work, so an unknown `file:` id is a 403
+    // (read-only), never the 404 the repository lookup would produce.
+    it('PUT /api/councils/:id refuses an unknown file: id with 403, not 404', async () => {
+      const res = await request(server)
+        .put('/api/councils/file:not-there')
+        .send({ name: 'Renamed' });
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe(readOnlyError('updated'));
+    });
+
+    it('DELETE /api/councils/:id refuses a file council with 403', async () => {
+      const res = await request(server).delete('/api/councils/file:alpha');
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe(readOnlyError('deleted'));
+
+      // Still listed afterwards — nothing was removed.
+      const listRes = await request(server).get('/api/councils');
+      expect(listRes.body.councils.map(c => c.id)).toContain('file:alpha');
+    });
+
+    it('DELETE /api/councils/:id refuses an unknown file: id with 403, not 404', async () => {
+      const res = await request(server).delete('/api/councils/file:not-there');
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe(readOnlyError('deleted'));
+    });
+
+    it('POST /api/councils still creates a DB council while the overlay is populated', async () => {
+      const res = await request(server)
+        .post('/api/councils')
+        .send({ name: 'Alpha File', config: sampleConfig });
+
+      // A name collision with a file council is not a conflict — the POST is the
+      // "duplicate this file council into the DB" flow.
+      expect(res.status).toBe(201);
+      expect(res.body.council.name).toBe('Alpha File');
+      expect(res.body.council.id).not.toMatch(/^file:/);
+
+      const getRes = await request(server).get(`/api/councils/${res.body.council.id}`);
+      expect(getRes.status).toBe(200);
+      expect(getRes.body.council.source).toBe('db');
     });
   });
 });

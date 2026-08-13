@@ -161,9 +161,10 @@ class AnalysisHistoryManager {
   }
 
   /**
-   * Resolve a council name from its UUID, with caching.
+   * Resolve a council name from its id, with caching.
    * Fetches from /api/councils/:id and caches the result.
-   * @param {string} councilId - The council UUID
+   * @param {string} councilId - The council id (a UUID, or `file:<stem>` for a
+   *   file-overlay council — stems can contain arbitrary path characters)
    * @returns {Promise<string>} The council name, or 'Unknown Council' on failure
    */
   async resolveCouncilName(councilId) {
@@ -174,7 +175,7 @@ class AnalysisHistoryManager {
     }
 
     try {
-      const response = await fetch(`/api/councils/${councilId}`);
+      const response = await fetch(`/api/councils/${encodeURIComponent(councilId)}`);
       if (!response.ok) {
         this.councilNameCache[councilId] = 'Unknown Council';
         return 'Unknown Council';
