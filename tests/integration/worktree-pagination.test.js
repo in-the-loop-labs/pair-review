@@ -9,7 +9,7 @@ import { listenOnLoopback, closeServer } from '../utils/loopback-server';
 // 1. vi.spyOn(fs, 'access') must be set up BEFORE the route module is loaded,
 //    and ESM static imports are hoisted above any runtime statements.
 // 2. require() is evaluated in order, giving us control over mock timing.
-const { run } = require('../../src/database.js');
+const { run, PRMetadataRepository } = require('../../src/database.js');
 
 // Mock fs.access to simulate worktree path existence checks
 const fs = require('fs').promises;
@@ -528,6 +528,63 @@ describe('GET /api/worktrees/recent — pagination', () => {
     });
   });
 
+  // ==========================================================================
+  // REGRESSION: local mode's PR-association cache warm must not plant a
+  // phantom row in the dashboard PR tab.
+  //
+  // PRMetadataRepository.upsertPRMetadata writes a pr_metadata row carrying a
+  // real GitHub title for a PR the user only referenced from a LOCAL review.
+  // It leaves last_accessed_at NULL, and this endpoint must filter on that —
+  // otherwise the row renders as a 'cached' entry linking to /pr/<o>/<r>/<n>,
+  // where one click starts a clone + worktree + diff for a PR the user never
+  // opened in PR mode.
+  // ==========================================================================
+  /** Warm the metadata cache exactly the way local mode's PR bridge does. */
+  async function warmMetadataCache(db, { prNumber, repository, title }) {
+    await new PRMetadataRepository(db).upsertPRMetadata({
+      prNumber,
+      repository,
+      prData: {
+        title,
+        body: 'body',
+        author: 'octocat',
+        state: 'open',
+        merged: false,
+        base_branch: 'main',
+        head_branch: 'feature',
+        base_sha: 'base',
+        head_sha: 'head',
+        node_id: `PR_node${prNumber}`,
+        html_url: `https://github.com/${repository}/pull/${prNumber}`
+      }
+    });
+  }
+
+  it('should exclude a cache-warmed PR the user never opened in PR mode', async () => {
+    await insertWorktree(db, {
+      id: 'wt-opened',
+      prNumber: 1,
+      repository: 'owner/repo',
+      title: 'Genuinely opened PR',
+      author: 'user',
+      accessedAt: new Date(Date.now() - 60000).toISOString()
+    });
+
+    await warmMetadataCache(db, { prNumber: 99, repository: 'owner/repo', title: 'Cache-warmed PR' });
+
+    // Guard the premise: the row exists with a real title and no access stamp,
+    // so the title filter alone would let it through — and sort it FIRST.
+    const warmed = db.prepare('SELECT title, last_accessed_at FROM pr_metadata WHERE pr_number = 99').get();
+    expect(warmed.title).toBe('Cache-warmed PR');
+    expect(warmed.last_accessed_at).toBeNull();
+
+    const res = await request(server).get('/api/worktrees/recent?limit=10');
+
+    expect(res.status).toBe(200);
+    expect(res.body.reviews.map(r => r.pr_number)).toEqual([1]);
+    expect(res.body.hasMore).toBe(false);
+  });
+
   it('leaves a legacy NULL host as github.com when the recorded URL is github.com', async () => {
     const apiHost = 'https://meteorite.example/api/v3';
     app.set('config', {
@@ -562,6 +619,51 @@ describe('GET /api/worktrees/recent — pagination', () => {
     expect(res.body.reviews[0].setup_host).toBe('github');
     expect(res.body.reviews[0].repo_links.external).toBeNull();
     expect(res.body.reviews[0].repo_links.github).toBe(true);
+  });
+
+  it('should never surface a NULL last_accessed_at row on any page', async () => {
+    // SQLite sorts NULLs last under DESC, so an unfiltered warmed row lands at
+    // the bottom of page 1 and then vanishes from page 2 (the cursor filter
+    // `last_accessed_at < ?` is never true for NULL) — an item that exists on
+    // one page and nowhere else.
+    for (let i = 1; i <= 2; i++) {
+      await insertWorktree(db, {
+        id: `wt-${i}`,
+        prNumber: i,
+        repository: 'owner/repo',
+        title: `PR ${i}`,
+        author: 'user',
+        accessedAt: new Date(Date.now() - i * 60000).toISOString()
+      });
+    }
+    await warmMetadataCache(db, { prNumber: 99, repository: 'owner/repo', title: 'Cache-warmed PR' });
+
+    // limit=2 with 3 candidate rows: an unfiltered query fetches 3, reports
+    // hasMore=true off the warmed row, and then hands back an empty page 2.
+    const page1 = await request(server).get('/api/worktrees/recent?limit=2');
+    expect(page1.body.reviews.map(r => r.pr_number)).toEqual([1, 2]);
+    expect(page1.body.hasMore).toBe(false);
+
+    const cursor = page1.body.reviews[1].last_accessed_at;
+    const page2 = await request(server).get(`/api/worktrees/recent?limit=2&before=${encodeURIComponent(cursor)}`);
+    expect(page2.body.reviews).toHaveLength(0);
+    expect(page2.body.hasMore).toBe(false);
+  });
+
+  it('should list the PR once the user genuinely opens it in PR mode', async () => {
+    // The NULL filter is self-healing, not a permanent hide: PR-mode setup
+    // (src/setup/pr-setup.js) stamps last_accessed_at and the row graduates.
+    await warmMetadataCache(db, { prNumber: 99, repository: 'owner/repo', title: 'Cache-warmed PR' });
+
+    const hidden = await request(server).get('/api/worktrees/recent?limit=10');
+    expect(hidden.body.reviews).toHaveLength(0);
+
+    await run(db, 'UPDATE pr_metadata SET last_accessed_at = ? WHERE pr_number = ?', [new Date().toISOString(), 99]);
+
+    const listed = await request(server).get('/api/worktrees/recent?limit=10');
+    expect(listed.body.reviews.map(r => r.pr_number)).toEqual([99]);
+    expect(listed.body.reviews[0].pr_title).toBe('Cache-warmed PR');
+    expect(listed.body.reviews[0].storage_status).toBe('cached');
   });
 
   it('should return html_url as null when pr_data has no html_url', async () => {

@@ -170,7 +170,55 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
       'SELECT id, pr_data FROM pr_metadata WHERE pr_number = ? AND repository = ? COLLATE NOCASE',
       [prNumber, repository]
     );
-    if (existingPR) {
+
+    // Parse the stored blob ONCE, BEFORE the worktree/pool lookup, because every
+    // shortcut below hangs off the same precondition: a stored diff. There are
+    // three of them — the pool reclaim, the plain `existing: true` return, and
+    // restore mode — and none of them regenerates a diff.
+    //
+    // WHY A STORED DIFF IS THE PRECONDITION: `pr_data` blobs are no longer
+    // guaranteed to be complete snapshots. `PRMetadataRepository.upsertPRMetadata`
+    // (the local-mode PR-association cache) INSERTs a metadata-only blob —
+    // { state, merged, html_url, base_sha, head_sha, node_id } — with no diff and
+    // no worktree_path, and it does so with no user opt-in, for any local review
+    // whose branch has an associated PR. Serving such a row is a silent failure,
+    // not a loud one: GET /api/pr renders `changed_files || []` and `diff || ''`,
+    // so the user lands on a structurally valid PR review page showing ZERO files.
+    //
+    //   - The fast-path returns hand back `{ existing: true }` and never run
+    //     setup at all. Both are reachable with a metadata-only blob because a
+    //     `worktrees` row can outlive its `pr_metadata` row: pool slots keep
+    //     theirs by design (deleteReviewById in src/routes/worktrees.js), and
+    //     `ReviewRepository.deleteWithRelatedData` (the stale-review sweep in
+    //     src/main.js) deletes pr_metadata while touching neither `worktrees`
+    //     nor `worktree_pool`. A later local review on the associated branch
+    //     then re-INSERTs the diff-less blob.
+    //   - Restore mode is just as blind: head_sha alone selects it, worktree
+    //     creation still SUCCEEDS (base_sha covers the missing base_branch,
+    //     refs/pull/N/head covers the missing branch name) so the
+    //     isShaNotFoundError fallback to a fresh setup never fires, and its
+    //     restore branch deliberately skips sparse/diff/storePRData.
+    //
+    // `diff` is the honest precondition for all three: every writer of a
+    // complete blob persists one — storePRData (src/setup/pr-setup.js), the PR
+    // refresh handler (src/routes/pr.js), and the viewed-files handler, which is
+    // a read-modify-write that preserves it. head_sha stays in the restore gate
+    // because setupPRReview's own `isRestore` check keys off it. An older or
+    // blank-diff row simply degrades to a full setup, which self-heals the blob;
+    // falling through here is the already-exercised path taken when a pool slot
+    // was reassigned, and it happens BEFORE any mutation (markInUse /
+    // setCurrentReviewId), so no pool state is half-applied.
+    let storedPRData = null;
+    if (existingPR && existingPR.pr_data) {
+      try {
+        storedPRData = JSON.parse(existingPR.pr_data);
+      } catch {
+        logger.warn(`Could not parse stored pr_data for ${repository} #${prNumber}`);
+      }
+    }
+    const hasStoredDiff = !!(storedPRData && typeof storedPRData.diff === 'string' && storedPRData.diff.length > 0);
+
+    if (existingPR && hasStoredDiff) {
       const worktree = await queryOne(
         db,
         'SELECT id FROM worktrees WHERE pr_number = ? AND repository = ? COLLATE NOCASE',
@@ -201,21 +249,16 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
       } else {
         logger.info(`PR metadata exists but worktree missing for ${repository} #${prNumber}, re-running setup`);
       }
+    } else if (existingPR) {
+      logger.info(
+        `Stored pr_data for ${repository} #${prNumber} has no diff (metadata-only cache); ` +
+        'running full setup instead of serving the stored review'
+      );
     }
 
-    // If we have stored PR data with a head_sha, pass it to setupPRReview
-    // so it can attempt restore mode (skip GitHub fetch + diff regeneration).
-    let restoreMetadata = null;
-    if (existingPR && existingPR.pr_data) {
-      try {
-        const parsed = JSON.parse(existingPR.pr_data);
-        if (parsed.head_sha) {
-          restoreMetadata = parsed;
-        }
-      } catch (e) {
-        logger.warn(`Could not parse stored pr_data for ${repository} #${prNumber}`);
-      }
-    }
+    // Restore-mode gate (see the stored-diff rationale above). head_sha selects
+    // restore mode inside setupPRReview; the diff is what makes it safe.
+    const restoreMetadata = (hasStoredDiff && storedPRData.head_sha) ? storedPRData : null;
 
     // Start the async setup
     const setupId = crypto.randomUUID();

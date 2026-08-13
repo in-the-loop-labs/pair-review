@@ -489,7 +489,7 @@ checking the exit code first (as above) covers every outcome.
 On first run, pair-review will prompt you to configure the application.
 
 **Token Requirements:**
-- **Local mode** (`--local`): Works without a GitHub token - no configuration needed
+- **Local mode** (`--local`): Works without a GitHub token - no configuration needed. If a token is configured and the local branch has an open pull request, the header surfaces a clickable PR pill with title, author, and state.
 - **PR review mode**: Requires a GitHub Personal Access Token to fetch PR data and submit reviews
 
 Configuration is stored in `~/.pair-review/config.json`:

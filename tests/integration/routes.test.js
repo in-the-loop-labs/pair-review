@@ -614,6 +614,55 @@ describe('PR Management Endpoints', () => {
 
   });
 
+  describe('POST /api/pr/:owner/:repo/:number/refresh', () => {
+    /**
+     * Regression: the refresh handler builds its `pr_data` blob from scratch
+     * instead of merging into the stored one, and it used to omit `merged`.
+     * GitHub reports a merged PR as `state: 'closed'` + `merged: true`, so the
+     * omission silently downgraded every merged PR to a plain closed one on the
+     * first refresh — `normalizePRMetadata` then yields `merged: false,
+     * state: 'closed'` and the local mode PR pill renders red "(closed)".
+     */
+    it('preserves merged: true in the stored pr_data blob across a refresh', async () => {
+      await insertTestPR(db, 1, 'owner/repo');
+      await insertTestWorktree(db, 1, 'owner/repo');
+
+      // GitHub's shape for a merged PR.
+      vi.spyOn(GitHubClient.prototype, 'fetchPullRequest').mockResolvedValue({
+        ...mockGitHubResponses.fetchPullRequest,
+        state: 'closed',
+        merged: true
+      });
+
+      const response = await request(server).post('/api/pr/owner/repo/1/refresh');
+
+      expect(response.status).toBe(200);
+      const row = await queryOne(db, `
+        SELECT pr_data FROM pr_metadata WHERE pr_number = ? AND repository = ?
+      `, [1, 'owner/repo']);
+      const stored = JSON.parse(row.pr_data);
+      expect(stored.merged).toBe(true);
+      expect(stored.state).toBe('closed');
+    });
+
+    it('writes merged: false for an open PR rather than dropping the field', async () => {
+      await insertTestPR(db, 2, 'owner/repo');
+      await insertTestWorktree(db, 2, 'owner/repo');
+
+      // Default mock omits `merged` entirely, mirroring an older cached shape.
+      const response = await request(server).post('/api/pr/owner/repo/2/refresh');
+
+      expect(response.status).toBe(200);
+      const row = await queryOne(db, `
+        SELECT pr_data FROM pr_metadata WHERE pr_number = ? AND repository = ?
+      `, [2, 'owner/repo']);
+      const stored = JSON.parse(row.pr_data);
+      // Present and explicitly false — never undefined.
+      expect(stored).toHaveProperty('merged');
+      expect(stored.merged).toBe(false);
+    });
+  });
+
   describe('GET /api/prs', () => {
     it('should return empty array when no PRs exist', async () => {
       const response = await request(server)
@@ -9060,6 +9109,7 @@ describe('GET /api/local/:reviewId capabilities', () => {
   let app;
   let server;
   let savedToken;
+  let fetchPullRequestSpy;
 
   beforeEach(async () => {
     db = await createTestDatabase();
@@ -9069,15 +9119,43 @@ describe('GET /api/local/:reviewId capabilities', () => {
     // controls token availability via app.set('config', ...) per case.
     savedToken = process.env.GITHUB_TOKEN;
     delete process.env.GITHUB_TOKEN;
+
+    // No real network, ever (tests/CONVENTIONS.md). Any case with an
+    // association + a token and a cold pr_metadata cache fires the route's
+    // background `fetchPRMetadata`, which reaches GitHub's `pulls.get`.
+    // Spying the prototype intercepts it without a module-level vi.mock:
+    // providers/pr-context.js captures the GitHubClient *class* at require
+    // time, so it sees this same prototype. Default is "no PR found", which
+    // returns before any DB write — tests that want the write-through opt in
+    // by overriding the resolved value.
+    fetchPullRequestSpy = vi.spyOn(GitHubClient.prototype, 'fetchPullRequest')
+      .mockResolvedValue(null);
+
+    // The negative cache is module-level state shared by every test in this
+    // fork. A recorded negative from one case would silently suppress the
+    // background fetch in another.
+    localRoutes._prDetectionCache.clear();
   });
 
   afterEach(async () => {
     if (savedToken !== undefined) process.env.GITHUB_TOKEN = savedToken;
+    fetchPullRequestSpy?.mockRestore();
+    localRoutes._prDetectionCache.clear();
     await closeServer(server);
     if (db) {
       await closeTestDatabase(db);
     }
   });
+
+  /**
+   * The background metadata fetch is fire-and-forget, so the response can
+   * return while the GitHub call and pr_metadata write are still in flight —
+   * and `afterEach` would then close the server and DB underneath them. Await
+   * the deterministic signal instead of a fixed delay.
+   */
+  async function waitForBackgroundFetch() {
+    await vi.waitFor(() => expect(fetchPullRequestSpy).toHaveBeenCalled());
+  }
 
   // Phase 0: associations go to associated_pr_* columns; pr_number on local
   // rows would poison getReviewByPR. Test helper mirrors that contract.
@@ -9118,8 +9196,11 @@ describe('GET /api/local/:reviewId capabilities', () => {
   });
 
   it('reports hasAssociatedPR=true and hasGitHubToken=false when no token', async () => {
-    // Use the server-resolved token slot rather than re-resolving via config.
+    // With an association, hasGitHubToken reflects any credential resolvable
+    // for that repository — the global slot OR a config/repo-scoped binding.
+    // "No token" therefore means clearing both, not just the server slot.
     app.set('githubToken', '');
+    app.set('config', { port: 7247, theme: 'light', model: 'sonnet', external_comments: false });
     const reviewId = await insertLocal({ associatedPrNumber: 123, associatedPrRepository: 'owner/repo' });
 
     const response = await request(server).get(`/api/local/${reviewId}`);
@@ -9131,6 +9212,29 @@ describe('GET /api/local/:reviewId capabilities', () => {
       ...ALL_ACTIONS_FALSE,
     });
     expect(response.body.associatedPR).toEqual({ prNumber: 123, repository: 'owner/repo' });
+    // No credential → nothing to fetch with.
+    expect(fetchPullRequestSpy).not.toHaveBeenCalled();
+  });
+
+  it('reports hasGitHubToken=true from a repo-scoped binding when the global token slot is empty', async () => {
+    // Regression guard: app.set('githubToken') holds the GLOBAL token and
+    // knows nothing about repos[...].token. Reporting false here would stop
+    // the frontend from ever requesting metadata for an alt-host repo.
+    app.set('githubToken', '');
+    app.set('config', {
+      port: 7247,
+      theme: 'light',
+      model: 'sonnet',
+      external_comments: false,
+      repos: { 'owner/repo': { api_host: 'https://ghe.example.com/api/v3', token: 'repo-scoped-token' } },
+    });
+    const reviewId = await insertLocal({ associatedPrNumber: 321, associatedPrRepository: 'owner/repo' });
+
+    const response = await request(server).get(`/api/local/${reviewId}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.capabilities.hasGitHubToken).toBe(true);
+    await waitForBackgroundFetch();
   });
 
   it('reports both prerequisites true when PR is associated and token is present (action flags still Phase-0 false)', async () => {
@@ -9146,5 +9250,280 @@ describe('GET /api/local/:reviewId capabilities', () => {
       ...ALL_ACTIONS_FALSE,
     });
     expect(response.body.associatedPR).toEqual({ prNumber: 456, repository: 'owner/repo' });
+    // Association + token + cold cache fires the background fetch; settle it
+    // before teardown closes the server and DB out from under it.
+    await waitForBackgroundFetch();
+  });
+
+  // Phase 1: when pr_metadata cache is warm, canShowPRMetadata flips true
+  // and associatedPR is enriched with title/author/url/state/head_sha.
+  it('Phase 1: surfaces PR metadata + flips canShowPRMetadata when cache is warm', async () => {
+    const prNumber = 789;
+    const repository = 'owner/repo';
+    const reviewId = await insertLocal({ associatedPrNumber: prNumber, associatedPrRepository: repository });
+
+    // Pre-populate pr_metadata so the GET reads from cache without hitting GitHub.
+    const prData = JSON.stringify({
+      state: 'open',
+      merged: false,
+      html_url: `https://github.com/${repository}/pull/${prNumber}`,
+      base_sha: 'aaa111',
+      head_sha: 'bbb222',
+      node_id: 'PR_node789'
+    });
+    await run(db, `
+      INSERT INTO pr_metadata
+        (pr_number, repository, title, description, author, base_branch, head_branch, pr_data)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `, [prNumber, repository, 'Fix the thing', 'desc', 'octocat', 'main', 'feature', prData]);
+
+    const response = await request(server).get(`/api/local/${reviewId}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.capabilities).toEqual({
+      hasAssociatedPR: true,
+      hasGitHubToken: true,
+      ...ALL_ACTIONS_FALSE,
+      canShowPRMetadata: true,
+    });
+    expect(response.body.associatedPR).toEqual({
+      prNumber,
+      repository,
+      title: 'Fix the thing',
+      author: 'octocat',
+      url: `https://github.com/${repository}/pull/${prNumber}`,
+      state: 'open',
+      merged: false,
+      head_sha: 'bbb222',
+    });
+    // Warm cache short-circuits before any GitHub call.
+    expect(fetchPullRequestSpy).not.toHaveBeenCalled();
+  });
+
+  it('Phase 1: surfaces merged=true separately from state so the pill can render merged styling', async () => {
+    // GitHub reports a merged PR as state 'closed' + merged true. Collapsing
+    // that into state:'merged' would fabricate a value the API never returns
+    // and that PR mode / the AI chat context also read from this column.
+    const prNumber = 790;
+    const repository = 'owner/repo';
+    const reviewId = await insertLocal({ associatedPrNumber: prNumber, associatedPrRepository: repository });
+    await run(db, `
+      INSERT INTO pr_metadata
+        (pr_number, repository, title, description, author, base_branch, head_branch, pr_data)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `, [prNumber, repository, 'Shipped', 'desc', 'octocat', 'main', 'feature', JSON.stringify({
+      state: 'closed',
+      merged: true,
+      html_url: `https://github.com/${repository}/pull/${prNumber}`,
+      head_sha: 'ccc333'
+    })]);
+
+    const response = await request(server).get(`/api/local/${reviewId}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.associatedPR.state).toBe('closed');
+    expect(response.body.associatedPR.merged).toBe(true);
+  });
+
+  it('Phase 1: keeps canShowPRMetadata false on cache miss, and the background refresh writes through', async () => {
+    // Association exists, token exists, but pr_metadata row absent → cache cold.
+    const reviewId = await insertLocal({ associatedPrNumber: 999, associatedPrRepository: 'owner/repo' });
+    fetchPullRequestSpy.mockResolvedValue({
+      number: 999,
+      node_id: 'PR_node999',
+      title: 'Warmed by background fetch',
+      body: 'desc',
+      author: 'octocat',
+      state: 'open',
+      merged: false,
+      base_branch: 'main',
+      head_branch: 'feature',
+      base_sha: 'aaa111',
+      head_sha: 'bbb222',
+      html_url: 'https://github.com/owner/repo/pull/999'
+    });
+
+    const response = await request(server).get(`/api/local/${reviewId}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.capabilities.canShowPRMetadata).toBe(false);
+    expect(response.body.capabilities.hasAssociatedPR).toBe(true);
+    // associatedPR is still set with the bare prNumber/repository.
+    expect(response.body.associatedPR.prNumber).toBe(999);
+    expect(response.body.associatedPR.repository).toBe('owner/repo');
+    // No metadata fields surfaced when cache is cold.
+    expect(response.body.associatedPR.title).toBeUndefined();
+
+    // The write-through is the whole point of the background block — assert
+    // the row lands rather than returning while it is still in flight.
+    await waitForBackgroundFetch();
+    await vi.waitFor(async () => {
+      const row = await queryOne(db, 'SELECT title, host FROM pr_metadata WHERE pr_number = ? AND repository = ?', [999, 'owner/repo']);
+      expect(row?.title).toBe('Warmed by background fetch');
+    });
+  });
+
+  it('Phase 1: background metadata fetch is negative-cached so repeated loads stop re-hitting GitHub', async () => {
+    // A persistently unreachable PR (revoked token, deleted PR, outage) would
+    // otherwise issue a fresh pulls.get on every single page load.
+    const failingId = await insertLocal({ associatedPrNumber: 4242, associatedPrRepository: 'owner/repo' });
+    const sentinelId = await insertLocal({ associatedPrNumber: 4243, associatedPrRepository: 'owner/repo' });
+    fetchPullRequestSpy.mockRejectedValue(new Error('404 Not Found'));
+
+    await request(server).get(`/api/local/${failingId}`);
+    await waitForBackgroundFetch();
+    const prNumbersFetched = () => fetchPullRequestSpy.mock.calls.map(c => c[2]);
+    expect(prNumbersFetched()).toEqual([4242]);
+
+    // "Never re-fetched" is a negative claim, so prove it with a sentinel on
+    // the same channel rather than an observation window: trigger the
+    // forbidden request first, then a request that MUST fetch. When the
+    // sentinel lands, any repeat of the forbidden one would already be there.
+    await request(server).get(`/api/local/${failingId}`);
+    await request(server).get(`/api/local/${sentinelId}`);
+    await vi.waitFor(() => expect(prNumbersFetched()).toContain(4243));
+
+    expect(prNumbersFetched().filter(n => n === 4242)).toHaveLength(1);
+  });
+
+  it('Phase 1: the negative-cache key cannot collide with a branch of the same name', async () => {
+    // Detection entries are keyed `${repo}:${branch}`; metadata entries use
+    // `pr#<number>`. A branch literally named "4242" must not suppress the
+    // metadata fetch for PR #4242.
+    localRoutes._prDetectionCache.recordPRDetectionNegative('owner/repo', '4242');
+    const reviewId = await insertLocal({ associatedPrNumber: 4242, associatedPrRepository: 'owner/repo' });
+
+    await request(server).get(`/api/local/${reviewId}`);
+
+    await waitForBackgroundFetch();
+  });
+});
+
+// ============================================================================
+// GET /api/local/:reviewId/pr-metadata - blocking cold-cache warm-up
+// ============================================================================
+
+describe('GET /api/local/:reviewId/pr-metadata', () => {
+  let db;
+  let app;
+  let server;
+  let savedToken;
+  let fetchPullRequestSpy;
+
+  beforeEach(async () => {
+    db = await createTestDatabase();
+    app = createTestApp(db);
+    server = await listenOnLoopback(app);
+    savedToken = process.env.GITHUB_TOKEN;
+    delete process.env.GITHUB_TOKEN;
+    fetchPullRequestSpy = vi.spyOn(GitHubClient.prototype, 'fetchPullRequest')
+      .mockResolvedValue(null);
+    localRoutes._prDetectionCache.clear();
+  });
+
+  afterEach(async () => {
+    if (savedToken !== undefined) process.env.GITHUB_TOKEN = savedToken;
+    fetchPullRequestSpy?.mockRestore();
+    localRoutes._prDetectionCache.clear();
+    await closeServer(server);
+    if (db) {
+      await closeTestDatabase(db);
+    }
+  });
+
+  async function insertLocal({ associatedPrNumber = null, associatedPrRepository = 'owner/repo' } = {}) {
+    const result = await run(db, `
+      INSERT INTO reviews (
+        repository, status, review_type, local_path, local_head_sha,
+        associated_pr_number, associated_pr_repository
+      )
+      VALUES ('placeholder', 'draft', 'local', '/tmp/pr-meta-test', 'deadbeef', ?, ?)
+    `, [associatedPrNumber, associatedPrNumber ? associatedPrRepository : null]);
+    return result.lastID;
+  }
+
+  it('returns 400 for an invalid review ID', async () => {
+    const response = await request(server).get('/api/local/not-a-number/pr-metadata');
+    expect(response.status).toBe(400);
+  });
+
+  it('returns 404 when the local review does not exist', async () => {
+    const response = await request(server).get('/api/local/999999/pr-metadata');
+    expect(response.status).toBe(404);
+  });
+
+  it('returns a null association without calling GitHub when no PR is associated', async () => {
+    const reviewId = await insertLocal({ associatedPrNumber: null });
+
+    const response = await request(server).get(`/api/local/${reviewId}/pr-metadata`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.associatedPR).toBeNull();
+    expect(response.body.capabilities.canShowPRMetadata).toBe(false);
+    expect(fetchPullRequestSpy).not.toHaveBeenCalled();
+  });
+
+  it('fetches on a cold cache and returns metadata with canShowPRMetadata=true', async () => {
+    // This is the endpoint's reason to exist: the main GET never blocks on
+    // GitHub, so without this the pill would wait for a full page reload.
+    const reviewId = await insertLocal({ associatedPrNumber: 77 });
+    fetchPullRequestSpy.mockResolvedValue({
+      number: 77,
+      node_id: 'PR_node77',
+      title: 'Cold cache warmed on demand',
+      body: 'desc',
+      author: 'octocat',
+      state: 'open',
+      merged: false,
+      base_branch: 'main',
+      head_branch: 'feature',
+      base_sha: 'aaa111',
+      head_sha: 'bbb222',
+      html_url: 'https://github.com/owner/repo/pull/77'
+    });
+
+    const response = await request(server).get(`/api/local/${reviewId}/pr-metadata`);
+
+    expect(response.status).toBe(200);
+    expect(fetchPullRequestSpy).toHaveBeenCalledTimes(1);
+    expect(response.body.capabilities.canShowPRMetadata).toBe(true);
+    expect(response.body.associatedPR).toEqual({
+      prNumber: 77,
+      repository: 'owner/repo',
+      title: 'Cold cache warmed on demand',
+      author: 'octocat',
+      url: 'https://github.com/owner/repo/pull/77',
+      state: 'open',
+      merged: false,
+      head_sha: 'bbb222',
+    });
+  });
+
+  it('serves a warm cache without calling GitHub', async () => {
+    const reviewId = await insertLocal({ associatedPrNumber: 78 });
+    await run(db, `
+      INSERT INTO pr_metadata
+        (pr_number, repository, title, description, author, base_branch, head_branch, pr_data)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `, [78, 'owner/repo', 'Already cached', 'desc', 'octocat', 'main', 'feature', JSON.stringify({
+      state: 'open', merged: false, html_url: 'https://github.com/owner/repo/pull/78', head_sha: 'ccc333'
+    })]);
+
+    const response = await request(server).get(`/api/local/${reviewId}/pr-metadata`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.associatedPR.title).toBe('Already cached');
+    expect(fetchPullRequestSpy).not.toHaveBeenCalled();
+  });
+
+  it('keeps canShowPRMetadata false when the fetch fails, without throwing', async () => {
+    const reviewId = await insertLocal({ associatedPrNumber: 79 });
+    fetchPullRequestSpy.mockRejectedValue(new Error('403 rate limited'));
+
+    const response = await request(server).get(`/api/local/${reviewId}/pr-metadata`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.capabilities.canShowPRMetadata).toBe(false);
+    expect(response.body.associatedPR).toEqual({ prNumber: 79, repository: 'owner/repo' });
   });
 });
