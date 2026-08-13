@@ -131,6 +131,23 @@ router.post('/api/worktrees/create', async (req, res) => {
  * Lists from pr_metadata (source of truth) and includes storage status
  * based on whether a local worktree directory exists.
  *
+ * Only rows with a non-NULL `last_accessed_at` are listed — that column means
+ * "the user actually opened this PR" (stamped by src/server.js on a PR-mode
+ * visit and by src/setup/pr-setup.js during setup). `PRMetadataRepository
+ * .upsertPRMetadata` writes background cache rows for local-mode PR
+ * associations and deliberately leaves the column NULL; those rows carry a
+ * real GitHub title, so without this predicate they would clear the title
+ * filter and render as 'cached' entries linking to /pr/<owner>/<repo>/<n>,
+ * where a click kicks off a full clone + worktree + diff for a PR the user
+ * never opened in PR mode. The filter is also required for pagination
+ * correctness: SQLite sorts NULLs last under DESC, so an unfiltered NULL row
+ * appears at the bottom of page 1 and then vanishes from page 2+ because the
+ * `last_accessed_at < ?` cursor is never true for NULL. This hides nothing
+ * permanently — the row graduates into the list the moment the user opens the
+ * PR in PR mode. Legacy rows are unaffected: migration 31 backfilled every
+ * pre-existing NULL (from worktrees, then updated_at as a fallback).
+ * Index-backed by idx_pr_metadata_last_accessed.
+ *
  * Query parameters:
  *   limit  - Number of reviews to return (default 10, max 50)
  *   before - ISO timestamp cursor: return reviews accessed before this time.
@@ -173,6 +190,7 @@ router.get('/api/worktrees/recent', async (req, res) => {
       FROM pr_metadata pm
       LEFT JOIN worktrees w ON pm.pr_number = w.pr_number AND pm.repository = w.repository COLLATE NOCASE
       WHERE pm.title IS NOT NULL AND pm.title != ''
+        AND pm.last_accessed_at IS NOT NULL
         ${before ? 'AND pm.last_accessed_at < ?' : ''}
       ORDER BY pm.last_accessed_at DESC
       LIMIT ?
