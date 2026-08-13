@@ -49,11 +49,19 @@ These are not judgment calls:
 3. **Sequence strictly: fix → write triage back → then run the next round.**
 4. **One review at a time.** Never run two reviews concurrently for the same
    repo.
-5. **Do not commit or push.** Leave changes in the working tree. New
+5. **Drive the loop from the session that owns it — never delegate a review
+   round to a subagent.** A round is a 15–40 minute external process, and a
+   background process is killed when the session that spawned it ends. A
+   subagent's session ends the moment it returns, so a round launched inside
+   one dies mid-flight and the run is lost. If you are reading this from
+   inside a subagent, do not start a round — hand the loop back to the main
+   session. (Subagents are still fine for work that *finishes inside the
+   agent*: implementing the objective, applying a batch of fixes.)
+6. **Do not commit or push.** Leave changes in the working tree. New
    (untracked) files are included automatically whenever the review scope ends
    at `untracked` — which the default scope (`unstaged..untracked`) does — so
    no `git add -N` (intent-to-add) is needed.
-6. **Report failures faithfully.** A failed run (`"ok": false`, non-zero
+7. **Report failures faithfully.** A failed run (`"ok": false`, non-zero
    exit) is reported as what it is — never papered over as "no findings".
 
 ## Phase: Setup
@@ -69,8 +77,10 @@ These are not judgment calls:
    call. An unknown handle → show the available names and ask the user.
 4. If an objective was given and the working tree has no relevant changes
    yet, implement the objective first (directly or via a Task agent — your
-   call based on size). Verify with `git status --short` that changes exist
-   before the first review round; if none, tell the user and stop.
+   call based on size; delegation is safe here because the agent's work
+   finishes before it returns, unlike a review round — hard rule 5). Verify
+   with `git status --short` that changes exist before the first review
+   round; if none, tell the user and stop.
 
 ## Running a review round
 
@@ -94,6 +104,10 @@ pair-review --local --headless --json --council <handle> [--scope <range>] --ins
   Run the command in the background (or with a timeout of at least 45
   minutes) and wait for it to exit. Do not abandon or kill it early; do not
   start a second review while one is running (hard rule 4).
+- **Launch it from the loop's own session, not from a subagent.** The
+  background process belongs to the session that spawned it, so a round
+  started inside a subagent is killed the moment that agent returns — the
+  council work is thrown away and the JSON never arrives (hard rule 5).
 - stdout is exactly one JSON document (logs go to stderr):
   - success: `{"ok": true, "mode": "local", "run": {...}, "suggestions":
     [...], "count": N}` — exit code 0. **Zero suggestions is still
@@ -141,8 +155,9 @@ fresh.
 ## Fix
 
 Apply the fixes (directly or via a Task agent for large batches — your
-call). Run the project's relevant tests for the changed code. A fix that
-breaks tests is not a fix.
+call; delegation is safe here for the same reason as in Setup — the agent's
+edits and test runs complete before it returns). Run the project's relevant
+tests for the changed code. A fix that breaks tests is not a fix.
 
 ## Write triage back (optional, needs the server)
 
