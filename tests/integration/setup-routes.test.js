@@ -32,12 +32,56 @@ function createApp(db, config = { github_token: 'test-token' }, { withPool = fal
   return app;
 }
 
-/** Seed a pr_metadata row for test assertions. */
-function seedPRMetadata(db, { prNumber = 42, repository = 'owner/repo' } = {}) {
+/**
+ * A COMPLETE `pr_data` snapshot — the shape storePRData / the PR refresh handler
+ * persist. Every fast-path shortcut in the route (pool reclaim, plain
+ * `existing: true`, restore mode) requires the stored diff this blob carries.
+ */
+const COMPLETE_PR_DATA = {
+  title: 'Test PR',
+  head_sha: 'abc123',
+  head_branch: 'feature',
+  base_sha: 'base123',
+  diff: 'diff --git a/a.js b/a.js\n@@ -1 +1 @@\n-a\n+b\n',
+  changed_files: [{ filename: 'a.js' }],
+  worktree_path: '/somewhere/wt'
+};
+
+/**
+ * Exactly the blob `PRMetadataRepository.upsertPRMetadata`'s INSERT arm writes
+ * for a local review whose branch has an associated PR: metadata only, carrying
+ * head_sha but NO diff and no worktree_path.
+ */
+const METADATA_ONLY_PR_DATA = {
+  state: 'open',
+  merged: false,
+  html_url: 'https://github.com/owner/repo/pull/42',
+  base_sha: 'base123',
+  head_sha: 'head456',
+  node_id: 'PR_node'
+};
+
+/**
+ * Seed a pr_metadata row for test assertions. Defaults to a COMPLETE `pr_data`
+ * blob: the route only serves a stored review when the blob carries a diff, so
+ * a fixture without one exercises the fall-through, not the fast path.
+ */
+function seedPRMetadata(db, { prNumber = 42, repository = 'owner/repo', prData = COMPLETE_PR_DATA } = {}) {
   const now = new Date().toISOString();
   db.prepare(
-    'INSERT INTO pr_metadata (pr_number, repository, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)'
-  ).run(prNumber, repository, 'Test PR', now, now);
+    'INSERT INTO pr_metadata (pr_number, repository, title, pr_data, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(prNumber, repository, 'Test PR', JSON.stringify(prData), now, now);
+}
+
+/**
+ * Seed a pr_metadata row carrying a specific `pr_data` blob. Used by the
+ * restore-mode gate tests, which turn entirely on which keys that blob holds.
+ */
+function seedPRMetadataWithData(db, prData, { prNumber = 42, repository = 'owner/repo', title = 'Test PR' } = {}) {
+  const now = new Date().toISOString();
+  db.prepare(
+    'INSERT INTO pr_metadata (pr_number, repository, title, pr_data, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(prNumber, repository, title, JSON.stringify(prData), now, now);
 }
 
 /** Seed a worktrees row for test assertions. */
@@ -95,6 +139,7 @@ describe('POST /api/setup/pr/:owner/:repo/:number', () => {
     expect(res.status).toBe(200);
     expect(res.body.existing).toBe(true);
     expect(res.body.reviewUrl).toBe('/pr/owner/repo/42');
+    expect(prSetupModule.setupPRReview).not.toHaveBeenCalled();
   });
 
   it('returns existing: true when worktree is a pool worktree with in_use status', async () => {
@@ -109,8 +154,12 @@ describe('POST /api/setup/pr/:owner/:repo/:number', () => {
     expect(res.status).toBe(200);
     expect(res.body.existing).toBe(true);
     expect(res.body.reviewUrl).toBe('/pr/owner/repo/42');
+    expect(prSetupModule.setupPRReview).not.toHaveBeenCalled();
   });
 
+  // The pool reclaim is a real optimization (it skips a fetch + checkout), so a
+  // stored-diff gate that is too strict would silently make EVERY reclaim slow.
+  // Pin the happy path: a complete blob still short-circuits setup entirely.
   it('reclaims pool worktree when available but still associated with the same PR', async () => {
     seedPRMetadata(db);
     seedWorktree(db, { id: 'pool-abc' });
@@ -123,10 +172,100 @@ describe('POST /api/setup/pr/:owner/:repo/:number', () => {
     expect(res.status).toBe(200);
     expect(res.body.existing).toBe(true);
     expect(res.body.reviewUrl).toBe('/pr/owner/repo/42');
+    expect(res.body.setupId).toBeUndefined();
+    expect(prSetupModule.setupPRReview).not.toHaveBeenCalled();
     // Pool entry should be reclaimed as in_use
     const poolEntry = db.prepare('SELECT status, current_review_id FROM worktree_pool WHERE id = ?').get('pool-abc');
     expect(poolEntry.status).toBe('in_use');
     expect(poolEntry.current_review_id).toBeTruthy();
+  });
+
+  // REGRESSION: the stored-diff gate used to live BELOW the worktree lookup, so
+  // the pool-reclaim return bypassed it entirely. Reachable sequence: review PR
+  // 42 in a pool worktree → delete the review (deleteReviewById keeps the
+  // worktrees row for pool slots, deletes pr_metadata, and releaseForDeletion →
+  // markAvailable preserves current_pr_number) → start a local review on the
+  // associated branch (cold cache → upsertPRMetadata INSERTs a diff-less blob) →
+  // reopen the PR. The reclaim returned `existing: true` without ever
+  // regenerating a diff, and GET /api/pr renders `diff || ''` — a structurally
+  // valid PR page with ZERO files.
+  it('does not reclaim an available pool worktree when pr_data is a metadata-only blob', async () => {
+    seedPRMetadata(db, { prData: METADATA_ONLY_PR_DATA });
+    seedWorktree(db, { id: 'pool-abc' });
+    seedPoolEntry(db, { id: 'pool-abc', status: 'available', prNumber: 42 });
+
+    const app = createApp(db, undefined, { withPool: true });
+    server = await listenOnLoopback(app);
+    const res = await request(server).post('/api/setup/pr/owner/repo/42');
+
+    expect(res.status).toBe(200);
+    expect(res.body.existing).toBeUndefined();
+    expect(res.body.setupId).toBeTruthy();
+
+    // Full setup runs, and NOT in restore mode (which skips diff generation too).
+    expect(prSetupModule.setupPRReview).toHaveBeenCalledOnce();
+    expect(prSetupModule.setupPRReview.mock.calls[0][0].restoreMetadata).toBeNull();
+  });
+
+  // The gate is evaluated BEFORE the reclaim's mutations, so falling through
+  // must leave the pool slot exactly as it was — setup's own acquireForPR
+  // (claimByPR → refresh) is what claims it. A half-applied reclaim (in_use with
+  // no review owner) would leak the slot: no owner means the idle grace period
+  // can never fire to reclaim it.
+  it('leaves the pool entry untouched when the metadata-only blob forces a fall-through', async () => {
+    seedPRMetadata(db, { prData: METADATA_ONLY_PR_DATA });
+    seedWorktree(db, { id: 'pool-abc' });
+    seedPoolEntry(db, { id: 'pool-abc', status: 'available', prNumber: 42 });
+
+    const app = createApp(db, undefined, { withPool: true });
+    server = await listenOnLoopback(app);
+    await request(server).post('/api/setup/pr/owner/repo/42');
+
+    const poolEntry = db.prepare('SELECT status, current_pr_number, current_review_id FROM worktree_pool WHERE id = ?').get('pool-abc');
+    expect(poolEntry.status).toBe('available');
+    expect(poolEntry.current_pr_number).toBe(42);
+    expect(poolEntry.current_review_id).toBeFalsy();
+  });
+
+  // The SECOND early return (the `else` arm) is reachable with the same blob:
+  // a `worktrees` row can outlive its pr_metadata row. `deleteWithRelatedData`
+  // (the stale-review sweep in src/main.js) deletes reviews + orphan pr_metadata
+  // and touches neither `worktrees` nor `worktree_pool`, and the stale-WORKTREE
+  // sweep excludes pool rows (`wp.id IS NULL` in WorktreeRepository.findStale).
+  // A pool slot left in_use across a server restart therefore keeps both its
+  // worktrees row and its in_use status while its pr_metadata row is swept.
+  it('does not serve an in_use pool worktree when pr_data is a metadata-only blob', async () => {
+    seedPRMetadata(db, { prData: METADATA_ONLY_PR_DATA });
+    seedWorktree(db, { id: 'pool-abc' });
+    seedPoolEntry(db, { id: 'pool-abc', status: 'in_use', prNumber: 42 });
+
+    const app = createApp(db, undefined, { withPool: true });
+    server = await listenOnLoopback(app);
+    const res = await request(server).post('/api/setup/pr/owner/repo/42');
+
+    expect(res.status).toBe(200);
+    expect(res.body.existing).toBeUndefined();
+    expect(res.body.setupId).toBeTruthy();
+    expect(prSetupModule.setupPRReview).toHaveBeenCalledOnce();
+    expect(prSetupModule.setupPRReview.mock.calls[0][0].restoreMetadata).toBeNull();
+  });
+
+  // Same `else` arm, non-pool branch (poolEntry === null): the stale-review
+  // sweep leaves the worktrees row behind for non-pool worktrees too.
+  it('does not serve a non-pool worktree when pr_data is a metadata-only blob', async () => {
+    seedPRMetadata(db, { prData: METADATA_ONLY_PR_DATA });
+    seedWorktree(db);
+    // No pool entry — traditional worktree
+
+    const app = createApp(db);
+    server = await listenOnLoopback(app);
+    const res = await request(server).post('/api/setup/pr/owner/repo/42');
+
+    expect(res.status).toBe(200);
+    expect(res.body.existing).toBeUndefined();
+    expect(res.body.setupId).toBeTruthy();
+    expect(prSetupModule.setupPRReview).toHaveBeenCalledOnce();
+    expect(prSetupModule.setupPRReview.mock.calls[0][0].restoreMetadata).toBeNull();
   });
 
   it('falls through to setup when pool worktree was reassigned to a different PR', async () => {
@@ -170,13 +309,18 @@ describe('POST /api/setup/pr/:owner/:repo/:number', () => {
     expect(res.body.setupId).toBeTruthy();
   });
 
-  it('passes restoreMetadata to setupPRReview when pr_data has head_sha', async () => {
-    // Seed PR metadata WITH pr_data containing head_sha
-    const now = new Date().toISOString();
-    const prDataJson = JSON.stringify({ title: 'Test PR', head_sha: 'abc123', head_branch: 'feature' });
-    db.prepare(
-      'INSERT INTO pr_metadata (pr_number, repository, title, pr_data, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(42, 'owner/repo', 'Test PR', prDataJson, now, now);
+  it('passes restoreMetadata to setupPRReview when pr_data is a complete snapshot', async () => {
+    // Seed PR metadata WITH a complete pr_data blob (head_sha AND a stored diff),
+    // the shape every legitimate restore-eligible writer produces (storePRData /
+    // the PR refresh handler).
+    seedPRMetadataWithData(db, {
+      title: 'Test PR',
+      head_sha: 'abc123',
+      head_branch: 'feature',
+      diff: 'diff --git a/a.js b/a.js\n@@ -1 +1 @@\n-a\n+b\n',
+      changed_files: [{ filename: 'a.js' }],
+      worktree_path: '/somewhere/wt'
+    });
     // No worktree row — forces setup to run
 
     const app = createApp(db);
@@ -191,15 +335,12 @@ describe('POST /api/setup/pr/:owner/:repo/:number', () => {
     const callArgs = prSetupModule.setupPRReview.mock.calls[0][0];
     expect(callArgs.restoreMetadata).toBeTruthy();
     expect(callArgs.restoreMetadata.head_sha).toBe('abc123');
+    expect(callArgs.restoreMetadata.diff).toContain('diff --git');
   });
 
   it('passes null restoreMetadata when pr_data lacks head_sha', async () => {
     // Seed PR metadata with pr_data that has no head_sha
-    const now = new Date().toISOString();
-    const prDataJson = JSON.stringify({ title: 'Test PR', body: 'no sha here' });
-    db.prepare(
-      'INSERT INTO pr_metadata (pr_number, repository, title, pr_data, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(42, 'owner/repo', 'Test PR', prDataJson, now, now);
+    seedPRMetadataWithData(db, { title: 'Test PR', body: 'no sha here' });
 
     const app = createApp(db);
     server = await listenOnLoopback(app);
@@ -211,6 +352,72 @@ describe('POST /api/setup/pr/:owner/:repo/:number', () => {
     expect(prSetupModule.setupPRReview).toHaveBeenCalledOnce();
     const callArgs = prSetupModule.setupPRReview.mock.calls[0][0];
     expect(callArgs.restoreMetadata).toBeNull();
+  });
+
+  // REGRESSION: PRMetadataRepository.upsertPRMetadata (local-mode PR association)
+  // is the first writer to persist a PARTIAL pr_data blob — metadata only, no
+  // diff and no worktree_path. It carries head_sha, so a head_sha-only restore
+  // gate selected restore mode for it; setupPRReview then skips diff generation,
+  // worktree creation still succeeds (base_sha + refs/pull/N/head), the
+  // isShaNotFoundError fresh-setup fallback never fires, and the user lands on a
+  // PR review page rendering zero files. The gate must require a stored diff.
+  it('passes null restoreMetadata for a metadata-only pr_data blob (no diff)', async () => {
+    // Exactly the shape upsertPRMetadata's INSERT arm produces.
+    seedPRMetadataWithData(db, {
+      state: 'open',
+      merged: false,
+      html_url: 'https://github.com/owner/repo/pull/42',
+      base_sha: 'base123',
+      head_sha: 'head456',
+      node_id: 'PR_node'
+    });
+    // No worktree row — the dashboard-click path that reaches PR setup.
+
+    const app = createApp(db);
+    server = await listenOnLoopback(app);
+    const res = await request(server).post('/api/setup/pr/owner/repo/42');
+
+    expect(res.status).toBe(200);
+    expect(res.body.setupId).toBeTruthy();
+
+    // Fresh setup must run: restore mode is NOT selected despite head_sha.
+    expect(prSetupModule.setupPRReview).toHaveBeenCalledOnce();
+    const callArgs = prSetupModule.setupPRReview.mock.calls[0][0];
+    expect(callArgs.restoreMetadata).toBeNull();
+  });
+
+  it('passes null restoreMetadata when the stored diff is an empty string', async () => {
+    // A blank diff cannot restore anything — degrade to fresh setup, which
+    // self-heals the blob rather than rendering an empty review.
+    seedPRMetadataWithData(db, {
+      title: 'Test PR',
+      head_sha: 'abc123',
+      diff: '',
+      worktree_path: '/somewhere/wt'
+    });
+
+    const app = createApp(db);
+    server = await listenOnLoopback(app);
+    const res = await request(server).post('/api/setup/pr/owner/repo/42');
+
+    expect(res.status).toBe(200);
+    expect(prSetupModule.setupPRReview).toHaveBeenCalledOnce();
+    expect(prSetupModule.setupPRReview.mock.calls[0][0].restoreMetadata).toBeNull();
+  });
+
+  it('passes null restoreMetadata when pr_data is unparseable', async () => {
+    const now = new Date().toISOString();
+    db.prepare(
+      'INSERT INTO pr_metadata (pr_number, repository, title, pr_data, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(42, 'owner/repo', 'Test PR', '{not json', now, now);
+
+    const app = createApp(db);
+    server = await listenOnLoopback(app);
+    const res = await request(server).post('/api/setup/pr/owner/repo/42');
+
+    expect(res.status).toBe(200);
+    expect(prSetupModule.setupPRReview).toHaveBeenCalledOnce();
+    expect(prSetupModule.setupPRReview.mock.calls[0][0].restoreMetadata).toBeNull();
   });
 
   it('passes null restoreMetadata when no existing PR metadata', async () => {

@@ -606,6 +606,12 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
     // Prepare extended data
     const extendedData = {
       state: prData.state,
+      // GitHub reports a merged PR as state 'closed' + merged true, so dropping
+      // `merged` here silently downgrades every merged PR to a plain closed one
+      // on refresh. `storePRData`/`upsertPRMetadata` both persist it (see
+      // src/database.js:5549); this hand-rolled blob is the only writer that
+      // did not, and `renderAssociatedPRPill` reads it to pick the pill colour.
+      merged: Boolean(prData.merged),
       diff: diff,
       changed_files: changedFiles,
       additions: prData.additions || 0,

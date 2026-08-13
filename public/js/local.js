@@ -43,6 +43,12 @@ class LocalManager {
       canSyncDrafts: false,       // Phase 4
       canSubmitToGitHub: false    // Phase 5
     };
+    // Cold-cache PR metadata warm-up state; see _maybeWarmPRMetadata().
+    // `_prMetadataWarmAttempted` is an in-flight latch (held across the
+    // request, released again when the attempt failed recoverably);
+    // `_prMetadataWarmAttempts` is the hard per-page-load retry budget.
+    this._prMetadataWarmAttempted = false;
+    this._prMetadataWarmAttempts = 0;
 
     // Wait for PRManager to be ready, then initialize local mode
     if (window.prManager) {
@@ -1358,6 +1364,13 @@ class LocalManager {
       branchText.textContent = reviewData.branch || 'unknown';
     }
 
+    // Phase 1: associated PR pill — only when the backend says this local
+    // review has reachable PR metadata. Read the capability flag, not
+    // mode/path. When the flag is off the pill stays hidden even if
+    // associatedPR is populated; on a cold cache the renderer asks the
+    // blocking /pr-metadata endpoint once and re-renders itself.
+    this.renderAssociatedPRPill(reviewData);
+
     // Wire up header branch copy button
     const branchCopy = document.getElementById('local-branch-copy');
     if (branchCopy && !branchCopy.hasAttribute('data-listener-added')) {
@@ -1486,6 +1499,143 @@ class LocalManager {
     const manager = window.prManager;
     if (manager?.renderBaseBranchSelector) {
       manager.renderBaseBranchSelector(manager.currentPR);
+    }
+  }
+
+  /**
+   * Render the associated-PR pill in the local header. Gated on
+   * `canShowPRMetadata` so the pill stays hidden when the metadata cache is
+   * cold, even though `associatedPR` may already be set.
+   *
+   * Hiding relies on the `hidden` attribute, which only works because
+   * `.local-header-info .info-item[hidden] { display: none }` in
+   * public/local.html overrides the sibling `display: flex` — an author-origin
+   * `display` always beats the UA's `[hidden]` rule, so without that override
+   * this early return is a no-op and an empty pill renders for every review.
+   *
+   * Cold cache: `GET /api/local/:reviewId` reads metadata from cache only and
+   * never blocks on GitHub, so a first load can arrive with the flag off. Ask
+   * the blocking endpoint — nothing else re-renders this header in-session
+   * (no poll; `refreshDiff` only touches diff/stats), so otherwise the pill
+   * would not appear until a full page reload. `_maybeWarmPRMetadata` owns the
+   * retry budget; calling it on every hidden render is intentional and bounded.
+   *
+   * @param {Object} reviewData - response body from GET /api/local/:reviewId
+   */
+  renderAssociatedPRPill(reviewData) {
+    const container = document.getElementById('local-pr-info');
+    if (!container) return;
+
+    if (!this.hasCapability('canShowPRMetadata') || !reviewData.associatedPR) {
+      container.setAttribute('hidden', '');
+      this._maybeWarmPRMetadata();
+      return;
+    }
+
+    const pr = reviewData.associatedPR;
+    const link = document.getElementById('local-pr-link');
+    const numberEl = document.getElementById('local-pr-number');
+    const titleEl = document.getElementById('local-pr-title');
+    const authorEl = document.getElementById('local-pr-author');
+
+    // GitHub's `state` is only 'open' or 'closed'; `merged` is a separate
+    // boolean. Derive the display value here rather than storing a fabricated
+    // state — `pr_data.state` is shared with PR mode and the AI chat context.
+    // Used for BOTH the class and the tooltip, or a merged PR would get
+    // merged-purple styling with a '(closed)' label.
+    const displayState = pr.merged ? 'merged' : pr.state;
+
+    if (numberEl) numberEl.textContent = `#${pr.prNumber}`;
+    if (titleEl) titleEl.textContent = pr.title || '';
+    if (authorEl) authorEl.textContent = pr.author ? `by ${pr.author}` : '';
+    if (link) {
+      const parts = (pr.repository || '').split('/');
+      const fallback = parts.length === 2
+        ? `https://github.com/${parts[0]}/${parts[1]}/pull/${pr.prNumber}`
+        : '#';
+      link.href = pr.url || fallback;
+      const tooltipParts = [pr.title, pr.author ? `by ${pr.author}` : null, displayState ? `(${displayState})` : null].filter(Boolean);
+      link.title = tooltipParts.join(' ') || `View PR #${pr.prNumber} on GitHub`;
+      link.classList.remove('state-open', 'state-closed', 'state-merged');
+      if (displayState) link.classList.add(`state-${displayState.toLowerCase()}`);
+    }
+
+    container.removeAttribute('hidden');
+  }
+
+  /**
+   * Warm-up for the associated-PR pill when it is hidden ONLY because the
+   * metadata cache is cold: the backend knows about the PR and has a
+   * credential, but `GET /api/local/:reviewId` returned before the write-through
+   * landed. Hits the blocking `/pr-metadata` endpoint and re-renders the header
+   * alone — never the diff or comments.
+   *
+   * Retry policy — two guards, doing different jobs:
+   *
+   *   `_prMetadataWarmAttempted` is an IN-FLIGHT latch, not a one-shot. It was
+   *   one-shot, which meant a single failed warm (network blip, or the loser of
+   *   a concurrent-write race answering `canShowPRMetadata: false`) cost the
+   *   pill for the entire page session — precisely the guarantee this endpoint
+   *   exists to provide, failing on the first load of a cold review. It is now
+   *   released again whenever the attempt failed in a way a later legitimate
+   *   trigger could recover from.
+   *
+   *   `_prMetadataWarmAttempts` is the hard budget that keeps that release from
+   *   becoming a spin: a permanently-failing PR gets at most
+   *   MAX_PR_METADATA_WARM_ATTEMPTS calls per page load, no matter how often
+   *   the header re-renders. The server's five-minute negative cache makes
+   *   those few retries cheap (it answers from cache without calling GitHub).
+   *
+   * The release happens in `finally`, AFTER the re-render below. That ordering
+   * is load-bearing: `renderAssociatedPRPill` calls back into this method when
+   * the pill stays hidden, so releasing the latch first would recurse straight
+   * into another fetch.
+   *
+   * @returns {Promise<void>}
+   */
+  async _maybeWarmPRMetadata() {
+    if (this._prMetadataWarmAttempted) return;
+    // Only the cold-cache shape qualifies. No association, or no credential,
+    // means the pill is correctly hidden and the endpoint has nothing to add.
+    if (!this.hasCapability('hasAssociatedPR') || !this.hasCapability('hasGitHubToken')) return;
+    if (this.hasCapability('canShowPRMetadata')) return;
+    const attempts = this._prMetadataWarmAttempts || 0;
+    if (attempts >= LocalManager.MAX_PR_METADATA_WARM_ATTEMPTS) return;
+    this._prMetadataWarmAttempted = true;
+    this._prMetadataWarmAttempts = attempts + 1;
+
+    // Only a response that actually turned the pill on counts as success; a
+    // 200 that still reports `canShowPRMetadata: false` is a failed warm.
+    let warmed = false;
+    try {
+      const response = await fetch(`/api/local/${this.reviewId}/pr-metadata`);
+      if (!response.ok) return;
+      const data = await response.json();
+      if (!data || !data.capabilities) return;
+
+      // MERGE, never overwrite. _applyScopeResult mutates this.localData in
+      // place, so a scope change made while this request was in flight would
+      // be silently reverted by a wholesale assignment.
+      this.capabilities = { ...(this.capabilities || {}), ...data.capabilities };
+      if (this.localData) {
+        this.localData.capabilities = this.capabilities;
+        this.localData.associatedPR = data.associatedPR;
+      }
+      const manager = window.prManager;
+      if (manager) {
+        manager.capabilities = this.capabilities;
+      }
+      warmed = Boolean(this.capabilities.canShowPRMetadata);
+
+      // Header only — this.localData may have moved on, so render from it
+      // rather than from the response body.
+      this.renderAssociatedPRPill(this.localData || data);
+    } catch (error) {
+      console.warn('PR metadata warm-up failed:', error);
+    } finally {
+      // Released only on failure; a warmed pill needs no further calls (and
+      // the `canShowPRMetadata` guard above would stop them anyway).
+      if (!warmed) this._prMetadataWarmAttempted = false;
     }
   }
 
@@ -1977,6 +2127,13 @@ class LocalManager {
     document.addEventListener('keydown', keyHandler);
   }
 }
+
+/**
+ * Hard per-page-load budget for the cold-cache PR-metadata warm-up; see
+ * _maybeWarmPRMetadata(). A static rather than a file-level const because this
+ * file is a plain <script> sharing global scope with pr.js.
+ */
+LocalManager.MAX_PR_METADATA_WARM_ATTEMPTS = 3;
 
 // Initialize LocalManager when in local mode
 if (typeof window !== 'undefined' && window.PAIR_REVIEW_LOCAL_MODE) {

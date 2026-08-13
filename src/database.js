@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs').promises;
 const fsSync = require('fs');
 const { getConfigDir } = require('./config');
+const logger = require('./utils/logger');
 
 let dbPath = null;
 
@@ -5363,6 +5364,80 @@ async function migrateExistingWorktrees(db, worktreeBaseDir) {
 }
 
 /**
+ * Cross-host collision guard for `pr_metadata` writers.
+ *
+ * INVARIANT: a given (repository, pr_number) identifies exactly ONE pull
+ * request across ALL hosts. This is the confirmed plan assumption
+ * (plans/per-pr-host-resolution.md, "Assumption (confirmed)") — PR numbers do
+ * NOT collide between github.com and an alt host for the same repo — and it is
+ * why durable identity stays keyed UNIQUE(pr_number, repository) with no host
+ * column and the /pr/:owner/:repo/:number URL scheme is unchanged.
+ *
+ * If that assumption is ever violated (two DIFFERENT PRs share a number on two
+ * hosts), a writer's UPDATE arm would silently overwrite the first PR's pr_data
+ * and re-point its reviews/worktrees at the second. Detect it: when this
+ * fetch's host differs from the stored row's host, the API id must match. Same
+ * id → same logical PR, the host difference is the intended self-heal relabel →
+ * proceed. Different id → genuine cross-host duplicate → refuse rather than
+ * corrupt the wrong PR. Unparseable stored id → proceed but warn (can't prove
+ * either way; nothing to compare against).
+ *
+ * Extracted so BOTH `pr_metadata` writers enforce it: `storePRData`
+ * (src/setup/pr-setup.js, PR-mode setup) and
+ * `PRMetadataRepository.upsertPRMetadata` (the local-mode background cache
+ * warm). Local mode writes the same rows PR mode treats as source of truth, so
+ * skipping the check there would lose the LOUD FAILURE this exists to produce.
+ *
+ * Callers MUST have read `existingRow` themselves (id/host/pr_data) so the
+ * guard can reject before any mutation.
+ *
+ * @param {{host: string|null, pr_data: string|null}|null|undefined} existingRow
+ *   The stored pr_metadata row, or null/undefined when none exists.
+ * @param {Object} params
+ * @param {string} params.repository - owner/repo (for the message)
+ * @param {number} params.prNumber - PR number (for the message)
+ * @param {string|null|undefined} params.host - The host this write would stamp.
+ *   `undefined` means "the caller does not know the host" — no guard (there is
+ *   nothing to compare, and the writer leaves the column untouched).
+ * @param {Object} params.prData - The incoming PR payload (id / node_id).
+ * @param {string} [params.context] - Writer name used in the warn line.
+ * @throws {Error} `Cross-host PR conflict for ...` when two different PRs share
+ *   a number across hosts.
+ */
+function assertNoCrossHostPRConflict(existingRow, { repository, prNumber, host, prData, context = 'storePRData' } = {}) {
+  // `undefined` host = caller doesn't know → nothing to compare against.
+  if (!existingRow || host === undefined) return;
+  if (existingRow.host === host) return;
+
+  const incomingId = (prData && (prData.id ?? prData.node_id)) ?? null;
+  let storedId = null;
+  try {
+    const storedData = existingRow.pr_data ? JSON.parse(existingRow.pr_data) : null;
+    if (storedData) storedId = storedData.id ?? storedData.node_id ?? null;
+  } catch {
+    storedId = null; // unparseable → treated as "unknown" below
+  }
+  const storedHostLabel = existingRow.host === null ? 'github.com' : existingRow.host;
+  const incomingHostLabel = host === null ? 'github.com' : host;
+  if (storedId === null) {
+    logger.warn(
+      `${context}: stored pr_metadata for ${repository} #${prNumber} has no parseable API id; ` +
+      `proceeding with host relabel (${storedHostLabel} -> ${incomingHostLabel})`
+    );
+    return;
+  }
+  if (incomingId !== null && String(storedId) !== String(incomingId)) {
+    throw new Error(
+      `Cross-host PR conflict for ${repository} #${prNumber}: a DIFFERENT pull request with this ` +
+      `number is already stored on ${storedHostLabel}, but this fetch came from ${incomingHostLabel}. ` +
+      `pair-review assumes pull request numbers do not collide across hosts for a repository ` +
+      `(see plans/per-pr-host-resolution.md); reviewing two different PRs that share number ` +
+      `#${prNumber} on different hosts is not supported.`
+    );
+  }
+}
+
+/**
  * PRMetadataRepository class for managing PR metadata database records
  */
 class PRMetadataRepository {
@@ -5466,6 +5541,196 @@ class PRMetadataRepository {
     `, [runId, id]);
 
     return result.changes > 0;
+  }
+
+  /**
+   * Upsert a minimal PR metadata cache entry from a normalized GitHubClient
+   * `fetchPullRequest` result. Designed for local-mode bridge callers that
+   * have an association but no worktree.
+   *
+   * On INSERT: writes top-level fields, the resolved `host`, and a minimal
+   *   pr_data with { state, merged, html_url, base_sha, head_sha, node_id }.
+   *   `last_accessed_at` is deliberately left NULL — see below.
+   * On UPDATE: refreshes top-level fields (title, description, author,
+   *   base_branch, head_branch) AND merges the minimal keys into the
+   *   existing pr_data — preserving PR-mode-only keys like worktree_path
+   *   and diff so a parallel PR session is not clobbered. `host` is left
+   *   untouched, matching `updatePRHost`'s "leave every other column alone"
+   *   contract: an existing row's host was stamped by whoever resolved it.
+   *   `last_accessed_at` is likewise untouched.
+   *
+   * WHY last_accessed_at STAYS NULL ON INSERT
+   * -----------------------------------------
+   * `last_accessed_at` means "the user actually opened this PR" (src/server.js
+   * stamps it on a PR-mode visit; src/setup/pr-setup.js stamps it on setup).
+   * This method runs from a background local-mode cache warm the user never
+   * asked for, so stamping it would plant a phantom row at the TOP of the
+   * dashboard's PR tab (`ORDER BY last_accessed_at DESC` in
+   * src/routes/worktrees.js) — a 'cached' entry linking to
+   * /pr/<owner>/<repo>/<n> that triggers a full clone + worktree + diff for a
+   * PR the user never opened in PR mode. Leaving it NULL keeps the row a pure
+   * cache entry; the dashboard query filters `last_accessed_at IS NOT NULL`.
+   * This is self-healing, not a permanent hide: the row graduates into the
+   * list the moment the user genuinely opens the PR in PR mode.
+   *
+   * `merged` is carried as its own key because GitHub's API never returns
+   * 'merged' as a `state` — it is a separate boolean. `pr_data.state` is a
+   * shared column read by PR-mode routes and the AI chat context, so a
+   * derived `state: 'merged'` would put a fabricated value in front of those
+   * consumers. Display-time derivation belongs at the render site.
+   *
+   * CONCURRENCY
+   * -----------
+   * This method never reads-then-writes. Two callers race on the cold path
+   * (the fire-and-forget write-through in GET /api/local/:reviewId and the
+   * blocking GET /api/local/:reviewId/pr-metadata the browser fires
+   * milliseconds later), and a SELECT-then-INSERT across an `await` loses
+   * that race with `UNIQUE constraint failed: pr_metadata.pr_number,
+   * pr_metadata.repository`. Both statements below are individually atomic:
+   *   1. UPDATE ... RETURNING id — the pr_data merge happens INSIDE SQLite
+   *      via json_patch, so there is no stale-snapshot window in which a
+   *      newer `diff` / `worktree_path` written by `storePRData` could be
+   *      dropped.
+   *   2. INSERT ... ON CONFLICT DO NOTHING RETURNING id — the loser of an
+   *      insert race gets no row back instead of an exception, and loops
+   *      once to merge into the winner's row.
+   * A plain single-statement `ON CONFLICT(pr_number, repository) DO UPDATE`
+   * cannot be used on its own here: `idx_pr_metadata_unique` is a BINARY
+   * (case-sensitive) index, and naming a `COLLATE NOCASE` conflict target
+   * raises "ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE
+   * constraint" — so the case-insensitive row matching every other
+   * pr_metadata lookup uses (see `getByPR`) has to live in the UPDATE arm.
+   *
+   * The `created` flag comes from which statement produced a row, because
+   * SQLite offers no cheaper signal: `changes` is 1 for either arm of an
+   * upsert, `lastID` is the connection's last INSERTed rowid (it is NOT
+   * reset by a DO UPDATE, so it reports an unrelated row), `excluded` is not
+   * in scope inside RETURNING, and `created_at == updated_at` is a coin flip
+   * because CURRENT_TIMESTAMP has 1-second resolution.
+   *
+   * CROSS-HOST COLLISION GUARD
+   * --------------------------
+   * `storePRData` (the PR-mode writer) reads the existing row first and refuses
+   * a write that would relabel a DIFFERENT pull request's row onto another
+   * host. This method writes the SAME rows PR mode treats as source of truth,
+   * so it runs the same check via the shared `assertNoCrossHostPRConflict`.
+   * The pre-read is a CHECK only — the write path below is unchanged and still
+   * never reads-then-writes, so the concurrency argument still holds: a row
+   * created by a racing writer after the check is simply a row the check did
+   * not see, exactly as if no check existed. Defence in depth, not a
+   * serializable invariant.
+   *
+   * THERE IS NO "HOST UNKNOWN" ENCODING ON INSERT
+   * ---------------------------------------------
+   * `host` omitted, `host: undefined`, and `host: null` all store SQL NULL, and
+   * `storedHostToOption` reads NULL as "github.com" for a plain or dual repo —
+   * so creating a row is itself an assertion that the host is known. The only
+   * encoding of "unknown" is the ABSENCE of a row (`getPRHost` → `undefined`,
+   * which is what makes PR-mode setup probe). A caller that merely GUESSED the
+   * host (e.g. the two-argument ambiguity rule on a dual repo) must therefore
+   * not call this method at all — see `fetchPRMetadata` in
+   * src/providers/pr-context.js, which gates on `hostBinding.hostAmbiguous`.
+   *
+   * @param {Object} params
+   * @param {number} params.prNumber
+   * @param {string} params.repository - owner/repo
+   * @param {Object} params.prData - GitHubClient.fetchPullRequest result
+   * @param {string|null} [params.host] - Resolved api_host for this repo, or
+   *   null for github.com. INSERT only (an existing row's host is left to
+   *   whoever stamped it). `undefined` means "caller does not know the host":
+   *   the collision guard is skipped and the column still lands as NULL on
+   *   INSERT — see the note above on why that is not an "unknown" encoding.
+   * @returns {Promise<{id: number, created: boolean}>}
+   */
+  async upsertPRMetadata({ prNumber, repository, prData, host = undefined }) {
+    // `undefined` = "caller doesn't know the host". Mirrors storePRData's
+    // `writeHost` gate: only a host the caller actually resolved participates
+    // in the collision guard.
+    const writeHost = host !== undefined;
+    const hostValue = writeHost ? host : null;
+
+    if (writeHost) {
+      const existing = await queryOne(this.db, `
+        SELECT id, host, pr_data FROM pr_metadata
+        WHERE pr_number = ? AND repository = ? COLLATE NOCASE
+        ORDER BY id LIMIT 1
+      `, [prNumber, repository]);
+      assertNoCrossHostPRConflict(existing, {
+        repository, prNumber, host, prData, context: 'upsertPRMetadata'
+      });
+    }
+
+    const minimal = {
+      state: prData.state,
+      merged: Boolean(prData.merged),
+      html_url: prData.html_url,
+      base_sha: prData.base_sha,
+      head_sha: prData.head_sha,
+      node_id: prData.node_id
+    };
+    const minimalJson = JSON.stringify(minimal);
+    const topLevel = [
+      prData.title,
+      prData.body || '',
+      prData.author,
+      prData.base_branch,
+      prData.head_branch
+    ];
+
+    // Bounded: each pass either returns or observes the other writer's row.
+    // Only a concurrent DELETE (review cleanup) can force a third pass.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      // Merge-update any existing row. json_patch applies RFC 7386 merge
+      // semantics — the same shallow "new keys win, unknown keys survive" the
+      // old `{ ...existing, ...minimal }` spread produced, with one corner:
+      // a null in the patch REMOVES the key rather than storing an explicit
+      // null, so a consumer reading `pr_data.head_sha` sees undefined instead
+      // of null when GitHub reports it as null. json_valid() reproduces the
+      // old JSON.parse try/catch: unparseable stored pr_data falls back to the
+      // minimal blob instead of raising "malformed JSON".
+      // The id subselect keeps the case-insensitive match used by getByPR
+      // while guaranteeing exactly one row is touched.
+      const updated = await queryOne(this.db, `
+        UPDATE pr_metadata
+        SET title = ?,
+            description = ?,
+            author = ?,
+            base_branch = ?,
+            head_branch = ?,
+            pr_data = json_patch(
+              CASE WHEN json_valid(pr_data) THEN pr_data ELSE json('{}') END,
+              json(?)
+            ),
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = (
+          SELECT id FROM pr_metadata
+          WHERE pr_number = ? AND repository = ? COLLATE NOCASE
+          ORDER BY id LIMIT 1
+        )
+        RETURNING id
+      `, [...topLevel, minimalJson, prNumber, repository]);
+
+      if (updated) return { id: updated.id, created: false };
+
+      // No row yet — claim it. DO NOTHING turns the loser of a concurrent
+      // insert into a no-op (undefined) rather than a UNIQUE violation.
+      // last_accessed_at is intentionally omitted (stays NULL) — see above.
+      const inserted = await queryOne(this.db, `
+        INSERT INTO pr_metadata
+          (pr_number, repository, title, description, author,
+           base_branch, head_branch, pr_data, host)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(pr_number, repository) DO NOTHING
+        RETURNING id
+      `, [prNumber, repository, ...topLevel, minimalJson, hostValue]);
+
+      if (inserted) return { id: inserted.id, created: true };
+    }
+
+    throw new Error(
+      `upsertPRMetadata: could not settle pr_metadata for ${repository} #${prNumber} ` +
+      '(row repeatedly created and removed by a concurrent writer)'
+    );
   }
 }
 
@@ -6488,6 +6753,7 @@ module.exports = {
   CommentRepository,
   ExternalCommentRepository,
   PRMetadataRepository,
+  assertNoCrossHostPRConflict,
   AnalysisRunRepository,
   GitHubReviewRepository,
   CouncilRepository,

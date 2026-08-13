@@ -11,7 +11,7 @@
  *   - setupPRReview: full orchestrator that wires the above together
  */
 
-const { run, queryOne, WorktreeRepository, RepoSettingsRepository, ReviewRepository, PRMetadataRepository } = require('../database');
+const { run, queryOne, WorktreeRepository, RepoSettingsRepository, ReviewRepository, PRMetadataRepository, assertNoCrossHostPRConflict } = require('../database');
 const { GitWorktreeManager, MISSING_COMMIT_ERROR_CODE } = require('../git/worktree');
 const { WorktreePoolLifecycle } = require('../git/worktree-pool-lifecycle');
 const { GitHubClient } = require('../github/client');
@@ -63,49 +63,21 @@ async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath,
       SELECT id, host, pr_data FROM pr_metadata WHERE pr_number = ? AND repository = ? COLLATE NOCASE
     `, [prInfo.number, repository]);
 
-    // Cross-host collision guard.
-    //
-    // INVARIANT: a given (repository, pr_number) identifies exactly ONE pull
-    // request across ALL hosts. This is the confirmed plan assumption
-    // (plans/per-pr-host-resolution.md, "Assumption (confirmed)") — PR numbers do
-    // NOT collide between github.com and an alt host for the same repo — and it
-    // is why durable identity stays keyed UNIQUE(pr_number, repository) with no
-    // host column and the /pr/:owner/:repo/:number URL scheme is unchanged.
-    //
-    // If that assumption is ever violated (two DIFFERENT PRs share a number on
-    // two hosts), the UPDATE arm below would silently overwrite the first PR's
-    // pr_data and re-point its reviews/worktrees at the second. Detect it: when
-    // this fetch's host differs from the stored row's host, the API id must
-    // match. Same id → same logical PR, the host difference is the intended
-    // self-heal relabel → proceed. Different id → genuine cross-host duplicate →
-    // refuse rather than corrupt the wrong PR. Unparseable stored id → proceed
-    // but warn (can't prove either way; nothing to compare against).
-    if (existingPR && writeHost && existingPR.host !== hostValue) {
-      const incomingId = prData.id ?? prData.node_id ?? null;
-      let storedId = null;
-      try {
-        const storedData = existingPR.pr_data ? JSON.parse(existingPR.pr_data) : null;
-        if (storedData) storedId = storedData.id ?? storedData.node_id ?? null;
-      } catch {
-        storedId = null; // unparseable → treated as "unknown" below
-      }
-      const storedHostLabel = existingPR.host === null ? 'github.com' : existingPR.host;
-      const incomingHostLabel = hostValue === null ? 'github.com' : hostValue;
-      if (storedId === null) {
-        logger.warn(
-          `storePRData: stored pr_metadata for ${repository} #${prInfo.number} has no parseable API id; ` +
-          `proceeding with host relabel (${storedHostLabel} -> ${incomingHostLabel})`
-        );
-      } else if (incomingId !== null && String(storedId) !== String(incomingId)) {
-        throw new Error(
-          `Cross-host PR conflict for ${repository} #${prInfo.number}: a DIFFERENT pull request with this ` +
-          `number is already stored on ${storedHostLabel}, but this fetch came from ${incomingHostLabel}. ` +
-          `pair-review assumes pull request numbers do not collide across hosts for a repository ` +
-          `(see plans/per-pr-host-resolution.md); reviewing two different PRs that share number ` +
-          `#${prInfo.number} on different hosts is not supported.`
-        );
-      }
-    }
+    // Cross-host collision guard — shared with the local-mode writer
+    // (`PRMetadataRepository.upsertPRMetadata`), which persists rows into the
+    // same table that PR-mode setup treats as source of truth. The rule, the
+    // warn line and the thrown message all live in
+    // `assertNoCrossHostPRConflict` (src/database.js) so the two writers cannot
+    // drift. `options.host === undefined` (writeHost false) means the caller
+    // does not know the host: the guard is a no-op and the column is left
+    // untouched below.
+    assertNoCrossHostPRConflict(existingPR, {
+      repository,
+      prNumber: prInfo.number,
+      host: writeHost ? hostValue : undefined,
+      prData,
+      context: 'storePRData'
+    });
 
     // Store or update worktree record (skip when using --use-checkout,
     // since the path is the user's working directory, not a managed worktree)

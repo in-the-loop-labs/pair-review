@@ -132,6 +132,59 @@
             flex-shrink: 0;
         }
 
+        /* Associated PR pill (Phase 1 of local↔PR bridge) */
+        .local-pr-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 2px 10px;
+            background-color: var(--color-bg-tertiary);
+            border: 1px solid var(--color-border-primary);
+            border-radius: 12px;
+            font-size: 12px;
+            color: var(--color-text-primary);
+            text-decoration: none;
+            max-width: 360px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .local-pr-pill:hover {
+            border-color: var(--color-accent-fg, var(--color-text-link, #0969da));
+            color: var(--color-accent-fg, var(--color-text-link, #0969da));
+        }
+
+        .local-pr-pill svg {
+            color: var(--color-success-fg, #1a7f37);
+            flex-shrink: 0;
+        }
+
+        .local-pr-pill.state-closed svg {
+            color: var(--color-danger-fg, #cf222e);
+        }
+
+        .local-pr-pill.state-merged svg {
+            color: #8250df;
+        }
+
+        .local-pr-pill .local-pr-number {
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 600;
+            color: var(--color-text-secondary);
+        }
+
+        .local-pr-pill .local-pr-title {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 240px;
+        }
+
+        .local-pr-pill .local-pr-author {
+            color: var(--color-text-tertiary);
+            font-size: 11px;
+        }
+
         /* Dark mode improvements for header icon buttons */
         [data-theme="dark"] .header-icon-group {
             background: var(--color-bg-tertiary);
@@ -163,6 +216,17 @@
             gap: 6px;
             min-width: 0;
             overflow: hidden;
+        }
+
+        /* The `hidden` attribute only hides via the UA rule
+           `[hidden] { display: none }`, which ANY author-origin `display`
+           declaration beats regardless of specificity. The rule above matches
+           #local-pr-info, so without this override the PR pill renders
+           unconditionally (empty, when there is no association). Same
+           collision/fix as public/css/pr.css:6807, :8759 and
+           public/css/settings.css:420. */
+        .local-header-info .info-item[hidden] {
+            display: none;
         }
 
         .local-header-info .info-value {
@@ -302,6 +366,16 @@
                             </svg>
                             <span id="local-base-branch-text">--</span>
                         </span>
+                    </div>
+                    <div class="info-item" id="local-pr-info" hidden>
+                        <a class="local-pr-pill" id="local-pr-link" href="#" target="_blank" rel="noopener noreferrer" title="">
+                            <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14" aria-hidden="true">
+                                <path d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm8.25.75a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Z"/>
+                            </svg>
+                            <span class="local-pr-number" id="local-pr-number"></span>
+                            <span class="local-pr-title" id="local-pr-title"></span>
+                            <span class="local-pr-author" id="local-pr-author"></span>
+                        </a>
                     </div>
                 </div>
                 <span id="stale-badge" class="stale-badge" style="display: none" title="Working directory has changed">
