@@ -1,0 +1,261 @@
+/* Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0 */
+
+/*
+ * Styles for the CouncilManager component
+ * (public/js/components/CouncilManager.js), the settings page's "Councils"
+ * section. Modeled on snippet-manager.css: colors reference the shared CSS
+ * custom properties defined by pr.css so light and dark themes both work, with
+ * `[data-theme="dark"]` overrides only where a literal color is unavoidable.
+ *
+ * Deliberately NOT redefined here:
+ *   - `.council-type-badge` and its `.badge-standard` / `.badge-advanced` /
+ *     `.badge-file` modifiers — they live in council-dropdown.css, which the
+ *     settings page already loads, and CouncilDropdown.typeBadge/sourceBadge
+ *     dictate those exact class names.
+ *   - the hosted config tab's own chrome — analysis-config.css owns it.
+ */
+
+/* ─── Inline manager ──────────────────────────────────────────────────────── */
+
+.council-manager {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.council-manager__loading,
+.council-manager__empty {
+  color: var(--color-text-secondary, #57606a);
+  font-size: 13px;
+  padding: 8px 0;
+}
+
+.council-manager__error {
+  color: var(--color-danger, #cf222e);
+  font-size: 13px;
+  padding: 8px 12px;
+  border: 1px solid var(--color-danger, #cf222e);
+  border-radius: var(--radius-md, 6px);
+  background: var(--color-bg-secondary, #f6f8fa);
+}
+
+.council-manager__list-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.council-manager__list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-border-primary, #d1d9e0);
+  border-radius: var(--radius-md, 6px);
+  overflow: hidden;
+}
+
+.council-manager__row-wrap {
+  border-bottom: 1px solid var(--color-border-primary, #d1d9e0);
+  background: var(--color-bg-primary, #ffffff);
+}
+
+.council-manager__row-wrap:last-child {
+  border-bottom: none;
+}
+
+.council-manager__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+}
+
+/* The expander: name + badges + description. A button for keyboard access; the
+   action buttons are siblings, never nested inside it. */
+.council-manager__row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 2px 0;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+
+.council-manager__row-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.council-manager__name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary, #1f2328);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.council-manager__description {
+  font-size: 12px;
+  color: var(--color-text-secondary, #57606a);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.council-manager__row-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+}
+
+.council-manager__row-btn,
+.council-manager__add-btn,
+.council-manager__cancel-btn,
+.council-manager__back-btn,
+.council-manager__save-btn {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: var(--radius-md, 6px);
+  border: 1px solid var(--color-border-primary, #d1d9e0);
+  background: var(--color-bg-secondary, #f6f8fa);
+  color: var(--color-text-primary, #1f2328);
+  cursor: pointer;
+}
+
+.council-manager__row-btn:hover,
+.council-manager__add-btn:hover,
+.council-manager__cancel-btn:hover,
+.council-manager__back-btn:hover {
+  background: var(--color-bg-tertiary, #eaeef2);
+}
+
+.council-manager__delete-btn:hover {
+  border-color: var(--color-danger, #cf222e);
+  color: var(--color-danger, #cf222e);
+}
+
+.council-manager__add-btn {
+  align-self: flex-start;
+}
+
+.council-manager__save-btn {
+  background: var(--color-accent-primary, #0969da);
+  border-color: var(--color-accent-primary, #0969da);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.council-manager__save-btn:hover {
+  background: var(--color-accent-hover, var(--color-accent-primary, #0860ca));
+}
+
+.council-manager__save-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* ─── Composition preview (CouncilCard) ───────────────────────────────────── */
+
+.council-manager__preview {
+  padding: 0 12px 12px 12px;
+}
+
+/* ─── Type chooser (Add, step 1) ──────────────────────────────────────────── */
+
+.council-manager__chooser {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.council-manager__chooser-heading {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary, #1f2328);
+}
+
+.council-manager__chooser-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.council-manager__chooser-option {
+  flex: 1 1 220px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border-primary, #d1d9e0);
+  border-radius: var(--radius-md, 6px);
+  background: var(--color-bg-primary, #ffffff);
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+
+.council-manager__chooser-option:hover {
+  border-color: var(--color-accent-primary, #0969da);
+  background: var(--color-bg-secondary, #f6f8fa);
+}
+
+.council-manager__chooser-option-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary, #1f2328);
+}
+
+.council-manager__chooser-option-description {
+  font-size: 12px;
+  color: var(--color-text-secondary, #57606a);
+}
+
+.council-manager__cancel-btn {
+  align-self: flex-start;
+}
+
+/* ─── Editor (hosted config tab) ──────────────────────────────────────────── */
+
+.council-manager__editor-header {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary, #1f2328);
+}
+
+.council-manager__tab-host {
+  border: 1px solid var(--color-border-primary, #d1d9e0);
+  border-radius: var(--radius-md, 6px);
+  background: var(--color-bg-primary, #ffffff);
+  padding: 12px;
+}
+
+.council-manager__editor-footer {
+  display: flex;
+  gap: 8px;
+}
+
+/* ─── Themes ──────────────────────────────────────────────────────────────── */
+
+/*
+ * There are deliberately no `[data-theme="dark"]` blocks in this file. Every
+ * color above is a shared custom property, and pr.css redefines the whole set
+ * under `[data-theme="dark"]` (pr.css:731), so both themes are already covered —
+ * exactly how snippet-manager.css handles it. The one literal, the white label
+ * on the accent-filled Save button, is correct in both themes.
+ *
+ * `[data-theme="dark"]` rules belong here only if a color ever has to be stated
+ * literally (the pattern council-dropdown.css uses for the badge palette).
+ */

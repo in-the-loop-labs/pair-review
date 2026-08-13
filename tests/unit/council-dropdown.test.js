@@ -28,7 +28,32 @@ describe('CouncilDropdown.typeBadge', () => {
   it('maps advanced and standard types', () => {
     expect(CouncilDropdown.typeBadge('advanced')).toEqual({ label: 'Advanced', cssClass: 'badge-advanced' });
     expect(CouncilDropdown.typeBadge('council')).toEqual({ label: 'Standard', cssClass: 'badge-standard' });
-    expect(CouncilDropdown.typeBadge(undefined)).toEqual({ label: 'Standard', cssClass: 'badge-standard' });
+  });
+
+  // REGRESSION (integration review, defect 4): a legacy row predating the
+  // `type` column badged as "Standard" here while CouncilManager's list rows
+  // (which normalize via `_effectiveType`) badged the SAME council "Advanced" —
+  // both visible at once on /settings, ~30px apart. An untyped row holds a
+  // level-keyed config, `AdvancedConfigTab.loadCouncils` claims it, and
+  // POST /api/councils stores `type || 'advanced'`, so Advanced is the truth.
+  it('treats a missing type as advanced (legacy, level-centric rows)', () => {
+    for (const type of [undefined, null, '']) {
+      expect(CouncilDropdown.typeBadge(type)).toEqual({ label: 'Advanced', cssClass: 'badge-advanced' });
+    }
+  });
+
+  it('badges an untyped council as Advanced in both the option list and the trigger', () => {
+    const legacy = [{ id: 'legacy', name: 'Old Council' }];
+    const container = mount();
+    new CouncilDropdown({ container, councils: legacy, selectedId: 'legacy' });
+
+    const option = container.querySelector('.custom-dropdown-option .council-type-badge');
+    expect(option.textContent).toBe('Advanced');
+    expect(option.classList.contains('badge-advanced')).toBe(true);
+
+    const trigger = container.querySelector('.custom-dropdown-trigger .council-type-badge');
+    expect(trigger.textContent).toBe('Advanced');
+    expect(container.querySelector('.badge-standard')).toBeNull();
   });
 });
 

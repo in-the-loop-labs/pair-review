@@ -306,8 +306,10 @@ class SnippetManager {
   /**
    * Confirm a destructive delete. Prefers the repo's styled confirmDialog
    * (available in the chat modal context, where it stacks above via a higher
-   * z-index); falls back to native confirm on pages that don't load it (e.g.
-   * the settings page). Returns true when the user confirms.
+   * z-index); falls back to native confirm on a page that does not load
+   * ConfirmDialog.js at all. (The settings page used to be such a page; it now
+   * loads the styled dialog alongside the Councils section.) Returns true when
+   * the user confirms.
    */
   async _confirmDelete() {
     const message = 'Delete this snippet? This cannot be undone.';

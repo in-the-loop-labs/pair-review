@@ -323,11 +323,16 @@ test.describe('Chat prompt snippets (settings page)', () => {
     await expect(manager.locator('.snippet-manager__row')).toHaveCount(1);
 
     // ── Delete ──
-    // Delete is guarded by a confirmation. The settings page doesn't load the
-    // styled confirmDialog, so SnippetManager falls back to native window.confirm
-    // — accept it (Playwright auto-dismisses dialogs by default).
-    page.once('dialog', (dialog) => dialog.accept());
+    // Delete is guarded by a confirmation. The settings page now loads
+    // ConfirmDialog.js (it came with the Councils section), so SnippetManager
+    // takes its PREFERRED styled path instead of the native window.confirm
+    // fallback it used while that script was missing here.
     await manager.locator('.snippet-manager__delete-btn').click();
+    const confirmDialog = page.locator('#confirm-dialog');
+    await expect(confirmDialog).toBeVisible();
+    await expect(confirmDialog.locator('#confirm-dialog-message'))
+      .toHaveText('Delete this snippet? This cannot be undone.');
+    await confirmDialog.locator('#confirm-dialog-btn').click();
     await expect(manager.locator('.snippet-manager__row')).toHaveCount(0);
     await expect(manager.locator('.snippet-manager__empty')).toBeVisible();
   });

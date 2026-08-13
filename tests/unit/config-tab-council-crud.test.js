@@ -81,6 +81,7 @@ beforeEach(() => {
 afterEach(() => {
   delete window.toast;
   delete window.confirmDialog;
+  delete window.textInputDialog;
   vi.unstubAllGlobals();
   document.body.innerHTML = '';
 });
@@ -223,7 +224,11 @@ for (const spec of TABS) {
       });
 
       try {
-        await expect(TabClass.prototype._saveCouncil.call(ctx)).resolves.toBeUndefined();
+        // Resolves FALSE, not undefined — see the RETURN CONTRACT in
+        // council-crud.js. CouncilManager's editor footer exits to the list on
+        // this value, so a swallowed failure that reported "no result" was
+        // indistinguishable from a successful save.
+        await expect(TabClass.prototype._saveCouncil.call(ctx)).resolves.toBe(false);
       } finally {
         consoleSpy.mockRestore();
       }
@@ -242,13 +247,110 @@ for (const spec of TABS) {
         _saveCouncilAs: vi.fn()
       });
 
-      await TabClass.prototype._saveCouncil.call(ctx);
+      const result = await TabClass.prototype._saveCouncil.call(ctx);
 
+      expect(result).toBe(false);
       expect(window.toast.showWarning)
         .toHaveBeenCalledWith('At least one review level must be enabled.');
       expect(ctx._putCouncil).not.toHaveBeenCalled();
       expect(ctx._saveCouncilAs).not.toHaveBeenCalled();
       expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    // The whole point of the boolean: every consumer that must know whether a
+    // write happened (today CouncilManager's editor footer) reads it, and the
+    // refusal paths are exactly the ones that leave the tab clean.
+    describe(`${label} council CRUD return contract`, () => {
+      it('_saveCouncil resolves true after a successful PUT', async () => {
+        const ctx = makeCtx({
+          _readConfigFromUI: vi.fn(() => CONFIG),
+          _validateConfig: vi.fn(() => ({ valid: true })),
+          _isFileCouncil: vi.fn(() => false),
+          _putCouncil: vi.fn(async () => true)
+        });
+
+        await expect(TabClass.prototype._saveCouncil.call(ctx)).resolves.toBe(true);
+      });
+
+      it('_saveCouncil forwards the fork result when nothing is selected', async () => {
+        const ctx = makeCtx({
+          selectedCouncilId: null,
+          _readConfigFromUI: vi.fn(() => CONFIG),
+          _validateConfig: vi.fn(() => ({ valid: true })),
+          _isFileCouncil: vi.fn(() => false),
+          _saveCouncilAs: vi.fn(async () => false)
+        });
+
+        // A cancelled Save As prompt is the trigger that made a brand-new,
+        // never-edited council look saved.
+        await expect(TabClass.prototype._saveCouncil.call(ctx)).resolves.toBe(false);
+
+        ctx._saveCouncilAs = vi.fn(async () => true);
+        await expect(TabClass.prototype._saveCouncil.call(ctx)).resolves.toBe(true);
+      });
+
+      it('_saveCouncilAs resolves false on a cancelled prompt and true after a POST', async () => {
+        const base = {
+          selectedCouncilId: null,
+          councils: [],
+          _readConfigFromUI: vi.fn(() => CONFIG),
+          _validateConfig: vi.fn(() => ({ valid: true })),
+          _isFileCouncil: vi.fn(() => false),
+          _postCouncil: vi.fn(async () => true)
+        };
+
+        window.textInputDialog = { show: vi.fn(async () => null) };
+        const cancelled = makeCtx({ ...base });
+        await expect(TabClass.prototype._saveCouncilAs.call(cancelled)).resolves.toBe(false);
+        expect(cancelled._postCouncil).not.toHaveBeenCalled();
+
+        window.textInputDialog = { show: vi.fn(async () => 'Fresh Council') };
+        const saved = makeCtx({ ...base });
+        await expect(TabClass.prototype._saveCouncilAs.call(saved)).resolves.toBe(true);
+        expect(saved._postCouncil).toHaveBeenCalledWith('Fresh Council', CONFIG);
+      });
+
+      it('_saveCouncilAs resolves false when the POST fails', async () => {
+        const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        window.textInputDialog = { show: vi.fn(async () => 'Fresh Council') };
+        const ctx = makeCtx({
+          selectedCouncilId: null,
+          councils: [],
+          _readConfigFromUI: vi.fn(() => CONFIG),
+          _validateConfig: vi.fn(() => ({ valid: true })),
+          _isFileCouncil: vi.fn(() => false),
+          _postCouncil: vi.fn(async () => { throw new Error('boom'); })
+        });
+
+        try {
+          await expect(TabClass.prototype._saveCouncilAs.call(ctx)).resolves.toBe(false);
+        } finally {
+          consoleSpy.mockRestore();
+        }
+        expect(window.toast.showError).toHaveBeenCalledWith('Failed to save council');
+      });
+
+      it('_putCouncil / _postCouncil resolve true on success', async () => {
+        vi.stubGlobal('fetch', vi.fn(async () => okResponse({ council: { id: 'c2' } })));
+        const ctx = makeCtx();
+
+        await expect(TabClass.prototype._putCouncil.call(ctx, 'c1', CONFIG)).resolves.toBe(true);
+        await expect(TabClass.prototype._postCouncil.call(ctx, 'New Council', CONFIG)).resolves.toBe(true);
+      });
+
+      it('_deleteCouncil reports whether the row was removed', async () => {
+        vi.stubGlobal('fetch', vi.fn(async () => okResponse()));
+        window.confirmDialog = { show: vi.fn(async () => 'confirm') };
+        await expect(TabClass.prototype._deleteCouncil.call(makeCtx())).resolves.toBe(true);
+
+        window.confirmDialog = { show: vi.fn(async () => 'cancel') };
+        await expect(TabClass.prototype._deleteCouncil.call(makeCtx())).resolves.toBe(false);
+
+        window.confirmDialog = { show: vi.fn(async () => 'confirm') };
+        await expect(
+          TabClass.prototype._deleteCouncil.call(makeCtx({ selectedCouncilId: null }))
+        ).resolves.toBe(false);
+      });
     });
   });
 }

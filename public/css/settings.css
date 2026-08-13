@@ -467,6 +467,13 @@ body {
   color: var(--color-text-tertiary);
 }
 
+/* A stored default that points at a deleted council. Tertiary grey reads as
+   "informational aside"; this is a state the user has to act on, so it takes
+   the warning colour the rest of the app uses for a stale/degraded value. */
+.council-preview-hint--stale {
+  color: var(--color-warning, #d29922);
+}
+
 /* ============================================
    Source Badges
    ============================================ */
@@ -956,19 +963,27 @@ body {
 
 /* ============================================
    Toast Notifications
+
+   TWO toast implementations render into the ONE #toast-container on this page:
+   the shared Toast component (public/js/components/Toast.js — window.toast,
+   used by CouncilManager and the config tabs it hosts) and this page's own
+   `SettingsPage#showToast`. Both stamp the bare `.toast` class, so every rule
+   below is scoped to `.settings-toast`, the marker class only settings.js adds.
+
+   >>> DO NOT unscope these. This file loads AFTER pr.css, so an unqualified
+   `.toast { transform: … }` here outranks pr.css's `.toast-show` (equal
+   specificity, later source) and parked every window.toast message off the
+   right edge of the viewport at opacity 1 — invisible, un-dismissable, and
+   silently swallowing "A council with that name already exists." and every
+   "Failed to …" error. The container positioning is deliberately NOT
+   overridden either: pr.css owns it (z-index 20000, above the modal overlays
+   this page's dialogs use), and one container means one stacking behavior.
    ============================================ */
 
-.toast-container {
-  position: fixed;
-  top: 24px;
-  right: 24px;
-  z-index: 1000;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.toast {
+/* pr.css's `.toast` base already sets `opacity: 0` and `pointer-events: auto`;
+   both are inherited here, so this only has to add the card styling and its own
+   slide-in transform. `.toast.settings-toast` (0-2-0) outranks it. */
+.toast.settings-toast {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -978,15 +993,20 @@ body {
   border-radius: 10px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
   transform: translateX(120%);
-  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.3s ease;
   min-width: 260px;
+  max-width: 500px;
 }
 
-.toast.show {
+/* `opacity` is restored explicitly: pr.css's `.toast` zeroes it and its
+   `.toast-show` (a class settings.js never adds) is what normally brings it
+   back. */
+.toast.settings-toast.show {
   transform: translateX(0);
+  opacity: 1;
 }
 
-.toast-icon {
+.settings-toast .toast-icon {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -996,23 +1016,24 @@ body {
   flex-shrink: 0;
 }
 
-.toast.success .toast-icon {
+.settings-toast.success .toast-icon {
   background: rgba(34, 197, 94, 0.15);
   color: #22c55e;
 }
 
-.toast.error .toast-icon {
+.settings-toast.error .toast-icon {
   background: rgba(239, 68, 68, 0.15);
   color: #ef4444;
 }
 
-.toast-message {
+.settings-toast .toast-message {
   flex: 1;
   font-size: 14px;
+  font-weight: 400;
   color: var(--color-text-primary);
 }
 
-.toast-close {
+.settings-toast .toast-close {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1026,7 +1047,7 @@ body {
   transition: background-color 0.15s ease, color 0.15s ease;
 }
 
-.toast-close:hover {
+.settings-toast .toast-close:hover {
   background: var(--color-bg-tertiary);
   color: var(--color-text-secondary);
 }

@@ -61,6 +61,15 @@ const COUNCIL_KEYS = new Set([
   'default_council_id'
 ]);
 
+// What the "Default for Analysis" control says when the stored council id no
+// longer resolves to a council — the council was deleted (DELETE
+// /api/councils/:id deliberately leaves the setting pointing at the dead id;
+// src/review-config.js warns and falls back to the provider/model default at
+// run time) or a file-overlay council stopped resolving. Used by BOTH the
+// dropdown trigger and the preview beneath it so the two cannot contradict each
+// other.
+const STALE_COUNCIL_LABEL = 'Selected council no longer exists — pick another';
+
 // Map the API `source` enum to a display label + CSS modifier class.
 const SOURCE_DISPLAY = {
   app: { label: 'in-app', cls: 'app' },
@@ -80,6 +89,10 @@ const REPOS_NAV_TITLE = 'Repositories';
 // Stable DOM id for the (static) Chat Snippets section, and its nav title.
 const SNIPPETS_SECTION_ID = 'snippets-section';
 const SNIPPETS_NAV_TITLE = 'Chat Snippets';
+
+// Stable DOM id for the (static) Councils section, and its nav title.
+const COUNCILS_SECTION_ID = 'councils-section';
+const COUNCILS_NAV_TITLE = 'Councils';
 
 class SettingsPage {
   constructor() {
@@ -112,6 +125,10 @@ class SettingsPage {
     this.snippetsVisible = false;
     // Mounted SnippetManager instance, if any.
     this._snippetManager = null;
+    // Whether the Councils section is visible (mounted successfully).
+    this.councilsVisible = false;
+    // Mounted CouncilManager instance, if any.
+    this._councilManager = null;
     // Current active nav target id (scrollspy).
     this.activeNavId = null;
 
@@ -129,6 +146,8 @@ class SettingsPage {
     await Promise.all([this.loadProviders(), this.loadChatProviders(), this.loadCouncils()]);
     await this.loadSettings();
     await this.loadRepos();
+    // Static sections, mounted in the order they appear in settings.html.
+    this.mountCouncils();
     this.mountSnippets();
 
     // Build the side navigation once the sections it points at are in the DOM.
@@ -177,8 +196,11 @@ class SettingsPage {
       const response = await fetch('/api/councils');
       if (!response.ok) throw new Error('Failed to fetch councils');
       const data = await response.json();
-      // councils: [{ id, name, type }]. The select renderer preserves an
-      // unknown current value so a stale/deleted council id still shows.
+      // councils: [{ id, name, type }]. A stored default_council_id that is NOT
+      // in this list (the council was deleted, or lives behind a file overlay
+      // that stopped resolving) is a real state the UI has to name — see
+      // `isStaleCouncilId` / `STALE_COUNCIL_LABEL`, which say so in the trigger
+      // instead of falling back to the "Select a council…" placeholder.
       this.councils = Array.isArray(data.councils) ? data.councils : [];
     } catch (error) {
       console.error('Error loading councils:', error);
@@ -256,6 +278,57 @@ class SettingsPage {
     } catch (error) {
       console.error('Error mounting snippet manager:', error);
       section.style.display = 'none';
+    }
+  }
+
+  /**
+   * Mount the shared CouncilManager into the (static) Councils section. Same
+   * contract as mountSnippets: the component fetches its own data and renders
+   * its own empty/error states, so the section stays visible as long as the
+   * component is available, and is hidden if its script failed to load.
+   *
+   * `onChange` fires after every successful council mutation (create, rename,
+   * duplicate, delete, edit). This page also renders the "Default for Analysis"
+   * council picker from the same `/api/councils` list, so it must be re-fetched
+   * or that dropdown silently goes stale.
+   */
+  mountCouncils() {
+    const section = document.getElementById(COUNCILS_SECTION_ID);
+    const mount = document.getElementById('councils-manager');
+    if (!section || !mount) return;
+
+    if (typeof CouncilManager === 'undefined') {
+      section.style.display = 'none';
+      return;
+    }
+
+    try {
+      this._councilManager = new CouncilManager(mount, {
+        onChange: () => { this.refreshCouncilRows(); }
+      });
+      section.style.display = '';
+      this.councilsVisible = true;
+    } catch (error) {
+      console.error('Error mounting council manager:', error);
+      section.style.display = 'none';
+    }
+  }
+
+  /**
+   * Re-fetch the council list and re-render every council-valued setting row
+   * (the "Default for Analysis" picker + its composition preview) so an edit
+   * made in the Councils section is reflected immediately. Never throws — a
+   * failed refresh leaves the previous list in place.
+   */
+  async refreshCouncilRows() {
+    try {
+      await this.loadCouncils();
+      for (const key of COUNCIL_KEYS) {
+        const setting = this.settingsByKey[key];
+        if (setting) this.rerenderRow(setting);
+      }
+    } catch (error) {
+      console.error('Error refreshing council settings rows:', error);
     }
   }
 
@@ -522,12 +595,24 @@ class SettingsPage {
         delete this._councilDropdowns[key];
       }
 
+      const selectedId = setting.value == null ? '' : String(setting.value);
+      // A stale selection (the stored council was deleted) matches no option, so
+      // the dropdown falls back to its placeholder text. The default one reads
+      // "Select a council…" — i.e. "nothing is configured" — while the preview
+      // directly beneath contradicted it by reporting a missing council, and the
+      // base "Default Provider / Model" option is not marked selected either.
+      // Both now say the same true thing. `emptyText` covers the same state when
+      // the council list is empty (deleting the last council hits exactly that).
+      const staleLabel = this.isStaleCouncilId(selectedId) ? STALE_COUNCIL_LABEL : undefined;
+
       this._councilDropdowns[key] = new Dropdown({
         container: mount,
         councils: this.councils,
-        selectedId: setting.value == null ? '' : String(setting.value),
+        selectedId,
         includeNone: true,
         noneLabel: 'Default Provider / Model',
+        placeholder: staleLabel,
+        emptyText: staleLabel,
         disabled: setting.final === true,
         onSelect: (value) => {
           if (setting.final === true) return;
@@ -561,10 +646,23 @@ class SettingsPage {
   }
 
   /**
+   * Whether a stored council id points at a council that no longer exists.
+   * An empty value is the base "Default Provider / Model" option, never stale.
+   * @param {string} value - The setting's current value.
+   * @returns {boolean}
+   */
+  isStaleCouncilId(value) {
+    const id = value == null ? '' : String(value);
+    if (id === '') return false;
+    return !(this.councils || []).some((c) => String(c.id) === id);
+  }
+
+  /**
    * Render the composition preview for a council row into its
    * `[data-role="council-preview"]` container: the CouncilCard for a selected
    * council, a short hint for the base "Default Provider / Model" option, or a
-   * "not found" note for a stale id.
+   * "no longer exists" note for a stale id — the same sentence the dropdown
+   * trigger shows, so the two controls cannot say different things.
    * @param {HTMLElement} row - The setting row element.
    * @param {Object} setting - The setting descriptor (value = council id or '').
    */
@@ -584,12 +682,13 @@ class SettingsPage {
       return;
     }
 
-    const council = (this.councils || []).find((c) => c.id === value);
+    const council = (this.councils || []).find((c) => String(c.id) === value);
     if (!council) {
       el.innerHTML = '';
       const note = document.createElement('p');
-      note.className = 'council-preview-hint';
-      note.textContent = 'Selected council was not found.';
+      note.className = 'council-preview-hint council-preview-hint--stale';
+      note.textContent =
+        `${STALE_COUNCIL_LABEL}. Analysis falls back to the Default Provider / Model rows below.`;
       el.appendChild(note);
       return;
     }
@@ -602,7 +701,13 @@ class SettingsPage {
         resolveModelDisplay: (p, m) => this.resolveModelDisplay(p, m)
       });
     }
-    this._councilCards[setting.key].render(council);
+    // CouncilCard dispatches its LAYOUT on `type`, and a legacy untyped row
+    // holds a level-keyed config that only the advanced layout can read — the
+    // voice layout would show zero reviewers and a bogus level summary. Normalize
+    // it here, exactly as CouncilManager does for its own row previews, so this
+    // card, CouncilManager's row and the dropdown badge above all agree.
+    const type = council.type === 'council' ? 'council' : 'advanced';
+    this._councilCards[setting.key].render({ ...council, type });
   }
 
   /**
@@ -745,9 +850,10 @@ class SettingsPage {
    * @param {Array} sections - rendered dynamic sections
    * @param {boolean} includeRepos - append the Repositories nav item
    * @param {boolean} [includeSnippets] - append the Chat Snippets nav item
+   * @param {boolean} [includeCouncils] - append the Councils nav item
    * @returns {Array<{id: string, title: string}>}
    */
-  navItems(sections, includeRepos, includeSnippets) {
+  navItems(sections, includeRepos, includeSnippets, includeCouncils) {
     const items = (sections || []).map(s => {
       // Only attach `badge` when the section actually has one, so callers that
       // build sections without badges keep a clean {id, title} shape.
@@ -755,8 +861,13 @@ class SettingsPage {
       if (s.badge) item.badge = s.badge;
       return item;
     });
-    // Chat Snippets precedes Repositories so Repositories stays the terminal
-    // section (both the static markup and the scrollspy depend on this order).
+    // Councils, then Chat Snippets, both ahead of Repositories so Repositories
+    // stays the terminal section (both the static markup and the scrollspy's
+    // bottom guard depend on this order). Matches the order of the static
+    // sections in settings.html.
+    if (includeCouncils) {
+      items.push({ id: COUNCILS_SECTION_ID, title: COUNCILS_NAV_TITLE });
+    }
     if (includeSnippets) {
       items.push({ id: SNIPPETS_SECTION_ID, title: SNIPPETS_NAV_TITLE });
     }
@@ -788,7 +899,7 @@ class SettingsPage {
    * once after settings + repos have loaded so every target section exists.
    */
   buildNavigation() {
-    const items = this.navItems(this.sections, this.reposVisible, this.snippetsVisible);
+    const items = this.navItems(this.sections, this.reposVisible, this.snippetsVisible, this.councilsVisible);
     this.navItemsList = items;
     this.renderNav(items);
     this.setupNavClickHandler();
@@ -1039,12 +1150,26 @@ class SettingsPage {
     }[c]));
   }
 
+  /**
+   * This page's own toast: a dismissible card in the top-right stack.
+   *
+   * `settings-toast` is LOAD-BEARING, not decoration. The page also loads the
+   * shared Toast component (window.toast — CouncilManager and the config tabs
+   * it hosts message through it) and both render into the same
+   * `#toast-container` with the same bare `.toast` class. The marker class is
+   * what lets public/css/settings.css style this one without capturing the
+   * other; unqualified `.toast` rules in settings.css (which loads after
+   * pr.css) previously parked every window.toast message off-screen.
+   *
+   * @param {'success'|'error'} type
+   * @param {string} message
+   */
   showToast(type, message) {
     const container = document.getElementById('toast-container');
     if (!container) return;
 
     const toast = document.createElement('div');
-    toast.className = `toast ${type}`;
+    toast.className = `toast settings-toast ${type}`;
     toast.innerHTML = `
       <div class="toast-icon">
         ${type === 'success'
@@ -1082,5 +1207,5 @@ if (typeof document !== 'undefined' && document.addEventListener) {
 
 // Export for unit tests (jsdom/vm sandbox), following the repo pattern.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { SettingsPage, SETTINGS_GROUPS, PROVIDER_KEYS, CHAT_PROVIDER_KEYS, MODEL_KEYS, COUNCIL_KEYS, SOURCE_DISPLAY };
+  module.exports = { SettingsPage, SETTINGS_GROUPS, PROVIDER_KEYS, CHAT_PROVIDER_KEYS, MODEL_KEYS, COUNCIL_KEYS, SOURCE_DISPLAY, STALE_COUNCIL_LABEL };
 }

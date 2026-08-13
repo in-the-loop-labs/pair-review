@@ -30,6 +30,7 @@
 - [Features](#features)
   - [Three-Level AI Analysis](#three-level-ai-analysis)
   - [Analysis Configuration](#analysis-configuration)
+  - [Managing Councils](#managing-councils)
   - [Council Files](#council-files)
   - [Chat](#chat)
   - [Customization](#customization)
@@ -812,6 +813,20 @@ The key difference from Review Council is consolidation order: Advanced consolid
 - **Large changesets with Opus 4.6**: Use review council instructions to tell the model to use a Team — it will spawn sub-agents to divide the work
 - **Multi-model parallel review**: Give each model a specific focus area (security, performance, correctness) via per-model instructions and get combined results
 - **Cross-model perspectives**: Run the same analysis across different providers (e.g., Claude, Antigravity, GPT) — where models agree signals high-confidence findings, but unique outliers from a single model can be equally valuable, catching issue types that only that model excels at spotting
+
+### Managing Councils
+
+Councils can be created and edited from the analysis dialog during a review, or from the [global settings page](#global-settings-page) when no review is open: navigate to `/settings` (or the gear icon on the landing page) and pick **Councils** in the side navigation. Both use the same editor, and the same councils are available from either place.
+
+From the Councils section you can:
+
+- **Add** a council — choose Council (one set of reviewers for every enabled level) or Advanced (reviewers per level), then configure reviewers, levels, and consolidation
+- **Edit** a saved council; click any row first to expand a preview of its composition
+- **Duplicate** a council under a new name
+- **Export** a council as a versioned `.council.json` document — it downloads and is copied to the clipboard, and can be dropped into `~/.pair-review/councils/` to become a [council file](#council-files) or handed to a teammate
+- **Delete** a saved council
+
+Councils loaded from files are read-only here, marked with a **File** badge (hover it for the file path), and offer only Duplicate and Export. Duplicate gives you an editable database copy; to change the council itself, edit the file and restart pair-review.
 
 ### Council Files
 

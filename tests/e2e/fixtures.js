@@ -24,9 +24,22 @@ const test = base.extend({
   // Inject CSS to disable all animations/transitions for faster test execution
   page: async ({ page }, use) => {
     await page.addInitScript(() => {
-      const style = document.createElement('style');
-      style.textContent = '*, *::before, *::after { animation-duration: 0s !important; transition-duration: 0s !important; animation-delay: 0s !important; transition-delay: 0s !important; }';
-      (document.head || document.documentElement).appendChild(style);
+      // Init scripts also run before the document element exists (the initial
+      // about:blank, and the very start of each navigation), where BOTH
+      // document.head and document.documentElement are null. Appending blindly
+      // threw an uncaught TypeError on every page in the suite — invisible
+      // until a spec attached a `pageerror` listener. Retry once the DOM is up.
+      const inject = () => {
+        const root = document.head || document.documentElement;
+        if (!root) return false;
+        const style = document.createElement('style');
+        style.textContent = '*, *::before, *::after { animation-duration: 0s !important; transition-duration: 0s !important; animation-delay: 0s !important; transition-delay: 0s !important; }';
+        root.appendChild(style);
+        return true;
+      };
+      if (!inject()) {
+        document.addEventListener('DOMContentLoaded', inject, { once: true });
+      }
     });
     await use(page);
   },

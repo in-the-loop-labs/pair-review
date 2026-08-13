@@ -61,13 +61,24 @@ class CouncilDropdown {
 
   /**
    * Map a council type to its display badge. Shared so the dropdown and any
-   * consumer (e.g. a card preview) label types identically.
-   * @param {string} type
+   * consumer (e.g. a card preview, CouncilManager's list rows) label types
+   * identically.
+   *
+   * ONLY `'council'` is Standard. Everything else — including a legacy row with
+   * no `type` at all, which predates the column — is Advanced: such a row holds
+   * a level-keyed config, `AdvancedConfigTab.loadCouncils` claims it
+   * (`!c.type || c.type === 'advanced'`), and POST /api/councils stores
+   * `type || 'advanced'`. Normalizing HERE rather than at each call site is what
+   * stops the two renderers on /settings (CouncilManager's list row and the
+   * "Default for Analysis" picker directly above it) from badging the same
+   * council "Advanced" and "Standard" ~30px apart.
+   *
+   * @param {string|null|undefined} type
    * @returns {{ label: string, cssClass: string }}
    */
   static typeBadge(type) {
-    if (type === 'advanced') return { label: 'Advanced', cssClass: 'badge-advanced' };
-    return { label: 'Standard', cssClass: 'badge-standard' };
+    if (type === 'council') return { label: 'Standard', cssClass: 'badge-standard' };
+    return { label: 'Advanced', cssClass: 'badge-advanced' };
   }
 
   /**

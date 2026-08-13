@@ -11,7 +11,7 @@
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
-const { SettingsPage, SOURCE_DISPLAY, PROVIDER_KEYS, CHAT_PROVIDER_KEYS, MODEL_KEYS, COUNCIL_KEYS } = require('../../public/js/settings.js');
+const { SettingsPage, SOURCE_DISPLAY, PROVIDER_KEYS, CHAT_PROVIDER_KEYS, MODEL_KEYS, COUNCIL_KEYS, STALE_COUNCIL_LABEL } = require('../../public/js/settings.js');
 
 /**
  * Build a SettingsPage instance without invoking the constructor/init.
@@ -26,6 +26,9 @@ function createPage(providers = []) {
   page._seq = {};
   page._councilDropdowns = {};
   page._councilCards = {};
+  // Section visibility flags, matching the real constructor's initial state.
+  page.snippetsVisible = false;
+  page.councilsVisible = false;
   return page;
 }
 
@@ -503,14 +506,108 @@ describe('"Default for Analysis" composition preview', () => {
     expect(preview.textContent).toContain('Claude / Sonnet');
   });
 
-  it('shows a not-found note for a stale council id', () => {
+  it('names a stale council id and says what happens instead', () => {
     const page = createPage(previewProviders);
     page.councils = previewCouncils;
     const row = councilRow('deleted');
     page.renderCouncilPreview(row, { key: 'default_council_id', value: 'deleted' });
     const preview = row.querySelector('[data-role="council-preview"]');
-    expect(preview.textContent).toContain('not found');
+    expect(preview.textContent).toContain(STALE_COUNCIL_LABEL);
+    expect(preview.textContent).toContain('Default Provider / Model rows below');
+    expect(preview.querySelector('.council-preview-hint--stale')).toBeTruthy();
     expect(preview.querySelector('.council-card')).toBeNull();
+  });
+
+  // REGRESSION (integration review, defect 5): DELETE /api/councils/:id
+  // deliberately leaves `default_council_id` pointing at the dead id. The
+  // dropdown matched no option and fell back to its default placeholder,
+  // "Select a council...", which reads as "nothing is configured" — while the
+  // preview 30px below said the council was missing, and the base "Default
+  // Provider / Model" option was not marked selected either. Three controls,
+  // three different stories.
+  describe('a stale/deleted default council', () => {
+    function mountStale(page, value) {
+      window.CouncilDropdown = CouncilDropdown;
+      page.settingsByKey = {
+        default_council_id: baseSetting({ key: 'default_council_id', group: 'ai', type: 'string', value })
+      };
+      document.body.innerHTML = `
+        <div id="settings-sections">
+          <div class="setting-row" data-key="default_council_id">
+            <div class="council-control-wrap">
+              <div class="custom-dropdown" data-role="council-mount"></div>
+              <div class="council-preview" data-role="council-preview"></div>
+            </div>
+          </div>
+        </div>`;
+      page.mountCouncilDropdowns(document.getElementById('settings-sections'));
+      return document.querySelector('.setting-row');
+    }
+
+    it('isStaleCouncilId only flags a non-empty id that resolves to nothing', () => {
+      const page = createPage(previewProviders);
+      page.councils = previewCouncils;
+      expect(page.isStaleCouncilId('deleted')).toBe(true);
+      expect(page.isStaleCouncilId('c1')).toBe(false);
+      // The base "Default Provider / Model" option is a real choice, not stale.
+      expect(page.isStaleCouncilId('')).toBe(false);
+      expect(page.isStaleCouncilId(null)).toBe(false);
+      expect(page.isStaleCouncilId(undefined)).toBe(false);
+    });
+
+    it('says so in the dropdown trigger instead of "Select a council..."', () => {
+      const page = createPage(previewProviders);
+      page.councils = previewCouncils;
+      const row = mountStale(page, 'deleted');
+
+      const trigger = row.querySelector('.custom-dropdown-trigger');
+      expect(trigger.textContent).toContain(STALE_COUNCIL_LABEL);
+      expect(trigger.textContent).not.toContain('Select a council');
+      // ...and the preview beneath it tells the same story, not a second one.
+      expect(row.querySelector('.council-preview').textContent).toContain(STALE_COUNCIL_LABEL);
+    });
+
+    it('still says so when the last council was the one deleted (empty list)', () => {
+      const page = createPage(previewProviders);
+      page.councils = [];
+      const row = mountStale(page, 'deleted');
+
+      const trigger = row.querySelector('.custom-dropdown-trigger');
+      expect(trigger.textContent).toContain(STALE_COUNCIL_LABEL);
+      expect(trigger.textContent).not.toContain('No councils available');
+    });
+
+    it('leaves the normal placeholder alone when the selection resolves', () => {
+      const page = createPage(previewProviders);
+      page.councils = previewCouncils;
+      const row = mountStale(page, 'c1');
+
+      const trigger = row.querySelector('.custom-dropdown-trigger');
+      expect(trigger.textContent).toContain('Security');
+      expect(trigger.textContent).not.toContain(STALE_COUNCIL_LABEL);
+      expect(page._councilDropdowns.default_council_id.placeholder).toBe('Select a council...');
+    });
+  });
+
+  it('previews a legacy untyped council with the advanced layout, matching its badge', () => {
+    // REGRESSION (integration review, defect 4): CouncilDropdown.typeBadge now
+    // badges an untyped row "Advanced". CouncilCard dispatches its LAYOUT on
+    // the same field, so passing the row through raw would render a level-keyed
+    // config with the voice layout — zero reviewers under an "Advanced" badge.
+    window.CouncilCard = CouncilCard;
+    const page = createPage(previewProviders);
+    const legacy = {
+      id: 'legacy',
+      name: 'Old Council',
+      config: { levels: { '1': { enabled: true, voices: [{ provider: 'claude', model: 'sonnet' }] } } }
+    };
+    page.councils = [legacy];
+    const row = councilRow('legacy');
+    page.renderCouncilPreview(row, { key: 'default_council_id', value: 'legacy' });
+
+    const preview = row.querySelector('[data-role="council-preview"]');
+    expect(preview.querySelector('.council-card-badge-advanced')).toBeTruthy();
+    expect(preview.textContent).toContain('Claude / Sonnet');
   });
 
   it('mountCouncilDropdowns renders both the dropdown and the composition preview', () => {
@@ -744,6 +841,167 @@ describe('mountSnippets', () => {
     expect(calls[0]).toBe(document.getElementById('snippets-manager'));
     // Visible = display cleared (not 'none').
     expect(document.getElementById('snippets-section').style.display).not.toBe('none');
+  });
+});
+
+describe('navItems — Councils section', () => {
+  it('places Councils immediately before Chat Snippets, with Repositories last', () => {
+    const page = createPage();
+    const items = page.navItems([{ id: 'section-general', title: 'General' }], true, true, true);
+    expect(items).toEqual([
+      { id: 'section-general', title: 'General' },
+      { id: 'councils-section', title: 'Councils' },
+      { id: 'snippets-section', title: 'Chat Snippets' },
+      { id: 'repos-section', title: 'Repositories' }
+    ]);
+    // Repositories must remain terminal — the scrollspy bottom guard depends on it.
+    expect(items[items.length - 1].id).toBe('repos-section');
+  });
+
+  it('omits Councils when councilsVisible is false, leaving the rest of the order intact', () => {
+    const page = createPage();
+    const items = page.navItems([{ id: 'section-general', title: 'General' }], true, true, false);
+    expect(items.some(i => i.id === 'councils-section')).toBe(false);
+    expect(items).toEqual([
+      { id: 'section-general', title: 'General' },
+      { id: 'snippets-section', title: 'Chat Snippets' },
+      { id: 'repos-section', title: 'Repositories' }
+    ]);
+  });
+
+  it('omits Councils for legacy three-argument callers (back-compat arity)', () => {
+    const page = createPage();
+    const items = page.navItems([{ id: 'section-general', title: 'General' }], true, true);
+    expect(items.some(i => i.id === 'councils-section')).toBe(false);
+  });
+
+  it('renders Councils before Repositories even when snippets are hidden', () => {
+    const page = createPage();
+    const items = page.navItems([], true, false, true);
+    expect(items).toEqual([
+      { id: 'councils-section', title: 'Councils' },
+      { id: 'repos-section', title: 'Repositories' }
+    ]);
+  });
+});
+
+describe('mountCouncils', () => {
+  function setupDom() {
+    document.body.innerHTML = `
+      <section class="settings-section" id="councils-section">
+        <div id="councils-manager"></div>
+      </section>`;
+  }
+
+  afterEach(() => {
+    delete global.CouncilManager;
+    document.body.innerHTML = '';
+    vi.restoreAllMocks();
+  });
+
+  it('is a no-op when the mount node is missing (no throw, stays hidden)', () => {
+    document.body.innerHTML = ''; // neither section nor mount present
+    const page = createPage();
+    expect(() => page.mountCouncils()).not.toThrow();
+    expect(page.councilsVisible).toBeFalsy();
+    expect(page._councilManager).toBeFalsy();
+  });
+
+  it('hides the section when CouncilManager is undefined (script failed to load)', () => {
+    setupDom();
+    delete global.CouncilManager;
+    const page = createPage();
+    page.mountCouncils();
+    expect(document.getElementById('councils-section').style.display).toBe('none');
+    expect(page.councilsVisible).toBe(false);
+  });
+
+  it('hides the section and logs when the constructor throws', () => {
+    setupDom();
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    global.CouncilManager = function () { throw new Error('boom'); };
+    const page = createPage();
+    page.mountCouncils();
+    expect(document.getElementById('councils-section').style.display).toBe('none');
+    expect(page.councilsVisible).toBe(false);
+    expect(errSpy).toHaveBeenCalled();
+  });
+
+  it('constructs a CouncilManager against #councils-manager and marks the section visible', () => {
+    setupDom();
+    const calls = [];
+    global.CouncilManager = function (container, options) {
+      calls.push({ container, options });
+      this.container = container;
+    };
+    const page = createPage();
+    page.mountCouncils();
+    expect(page.councilsVisible).toBe(true);
+    expect(page._councilManager).toBeInstanceOf(global.CouncilManager);
+    expect(calls[0].container).toBe(document.getElementById('councils-manager'));
+    // Visible = display cleared (not 'none').
+    expect(document.getElementById('councils-section').style.display).not.toBe('none');
+  });
+
+  it('passes an onChange that refreshes the council-valued setting rows', () => {
+    setupDom();
+    let captured = null;
+    global.CouncilManager = function (container, options) { captured = options; };
+    const page = createPage();
+    page.mountCouncils();
+    expect(typeof captured.onChange).toBe('function');
+
+    page.refreshCouncilRows = vi.fn();
+    captured.onChange();
+    expect(page.refreshCouncilRows).toHaveBeenCalled();
+  });
+});
+
+describe('refreshCouncilRows', () => {
+  afterEach(() => {
+    document.body.innerHTML = '';
+    vi.restoreAllMocks();
+  });
+
+  it('re-fetches /api/councils and re-renders every council-valued row', async () => {
+    const page = createPage();
+    page.councils = [{ id: 'old', name: 'Old', type: 'council' }];
+    page.settingsByKey = {
+      default_council_id: baseSetting({ key: 'default_council_id', group: 'ai', type: 'string', value: 'new' })
+    };
+    const fresh = [{ id: 'new', name: 'New', type: 'council' }];
+    global.fetch = vi.fn(async () => makeResponse({ councils: fresh }));
+    const rerendered = [];
+    page.rerenderRow = (s) => rerendered.push(s.key);
+
+    await page.refreshCouncilRows();
+
+    expect(global.fetch).toHaveBeenCalledWith('/api/councils');
+    expect(page.councils).toEqual(fresh);
+    expect(rerendered).toEqual(['default_council_id']);
+  });
+
+  it('skips rows whose descriptor is not loaded and never throws', async () => {
+    const page = createPage();
+    page.settingsByKey = {}; // council key not present on this deployment
+    global.fetch = vi.fn(async () => makeResponse({ councils: [] }));
+    page.rerenderRow = vi.fn();
+
+    await expect(page.refreshCouncilRows()).resolves.toBeUndefined();
+    expect(page.rerenderRow).not.toHaveBeenCalled();
+  });
+
+  it('swallows a rerender failure so a council mutation can never break the page', async () => {
+    const page = createPage();
+    page.settingsByKey = {
+      default_council_id: baseSetting({ key: 'default_council_id', group: 'ai', type: 'string', value: '' })
+    };
+    global.fetch = vi.fn(async () => makeResponse({ councils: [] }));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    page.rerenderRow = () => { throw new Error('boom'); };
+
+    await expect(page.refreshCouncilRows()).resolves.toBeUndefined();
+    expect(errSpy).toHaveBeenCalled();
   });
 });
 
@@ -1139,5 +1397,60 @@ describe('mutation race guard — updateSetting / resetSetting serialize per key
 
     expect(applied).toEqual(['blue']);
     expect(page.settingsByKey.theme.value).toBe('blue');
+  });
+});
+
+describe('showToast — coexistence with the shared Toast component', () => {
+  // REGRESSION (integration review, defect 1): /settings loads BOTH toast
+  // implementations into the same #toast-container — the shared Toast component
+  // (window.toast, which CouncilManager and the hosted config tabs message
+  // through) and this page's own showToast. Both stamp the bare `.toast` class.
+  // public/css/settings.css loads after pr.css, so its unqualified
+  // `.toast { transform: translateX(120%) }` outranked pr.css's `.toast-show`
+  // (equal specificity, later source) and parked every window.toast message off
+  // the right edge of the viewport at opacity 1: "A council with that name
+  // already exists.", "Council deleted", and every "Failed to …" went
+  // invisible. The CSS is now scoped to `.settings-toast`; this pins the marker
+  // class it is scoped to, and the disjointness of the two class sets.
+  //
+  // The rendered geometry is asserted for real (with the real stylesheets) in
+  // tests/e2e/council-settings.spec.js.
+  function toastHost() {
+    document.body.innerHTML = '<div class="toast-container" id="toast-container"></div>';
+    return document.getElementById('toast-container');
+  }
+
+  it('stamps the settings-toast marker class the page stylesheet is scoped to', () => {
+    const page = createPage();
+    const container = toastHost();
+    page.showToast('success', 'Theme saved');
+
+    const toast = container.querySelector('.toast');
+    expect(toast.classList.contains('settings-toast')).toBe(true);
+    expect(toast.classList.contains('success')).toBe(true);
+    expect(toast.querySelector('.toast-message').textContent).toBe('Theme saved');
+  });
+
+  it('never stamps the shared component\'s classes (and vice versa)', () => {
+    const page = createPage();
+    const container = toastHost();
+    page.showToast('error', 'Failed to save: boom');
+
+    const toast = container.querySelector('.toast');
+    // Toast.js reveals with `toast-show` and colours with `toast-success` /
+    // `toast-error` / `toast-warning` / `toast-info`. If this page ever starts
+    // using any of them, the scoped settings.css rules stop applying to it.
+    for (const shared of ['toast-show', 'toast-success', 'toast-error', 'toast-warning', 'toast-info']) {
+      expect(toast.classList.contains(shared)).toBe(false);
+    }
+    // ...and the class the shared component reveals with is NOT the one this
+    // page adds, which is why settings.css must not style `.toast` bare.
+    expect(toast.classList.contains('show')).toBe(false);
+  });
+
+  it('is a no-op without a container (never throws)', () => {
+    const page = createPage();
+    document.body.innerHTML = '';
+    expect(() => page.showToast('success', 'nowhere to go')).not.toThrow();
   });
 });

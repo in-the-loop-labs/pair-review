@@ -7,8 +7,14 @@
     <title>Global Settings - Pair Review</title>
     <link rel="icon" type="image/png" href="/favicon.png">
     <link rel="stylesheet" href="/css/pr.css">
+    <!-- analysis-config.css carries the hosted config-tab markup (.config-section,
+         .voice-row, .model-card, .council-selector-row, .provider-btn, …) and the
+         TextInputDialog styling. Loaded before settings.css so the page header
+         rules in settings.css always win. -->
+    <link rel="stylesheet" href="/css/analysis-config.css">
     <link rel="stylesheet" href="/css/council-dropdown.css">
     <link rel="stylesheet" href="/css/council-card.css">
+    <link rel="stylesheet" href="/css/council-manager.css">
     <link rel="stylesheet" href="/css/snippet-manager.css">
     <link rel="stylesheet" href="/css/settings.css">
     <link rel="stylesheet" href="/css/confirm-dialog.css">
@@ -98,6 +104,17 @@
                         <!-- Setting sections rendered dynamically -->
                         <div id="settings-sections"></div>
 
+                        <!-- Councils section -->
+                        <section class="settings-section" id="councils-section">
+                            <div class="section-header">
+                                <h2>Councils</h2>
+                                <p class="section-description">
+                                    Reusable analysis councils available from any review.
+                                </p>
+                            </div>
+                            <div id="councils-manager"></div>
+                        </section>
+
                         <!-- Chat Snippets section -->
                         <section class="settings-section" id="snippets-section">
                             <div class="section-header">
@@ -130,8 +147,33 @@
     <div class="toast-container" id="toast-container"></div>
 
     <!-- JavaScript -->
+    <!-- Shared dialogs/toasts: window.toast, window.confirmDialog,
+         window.textInputDialog. The council CRUD helpers and the config tabs
+         look these up at call time, so they only need to exist by then — but
+         they are loaded first so the ordering matches pr.html. -->
+    <script src="/js/components/Toast.js"></script>
+    <script src="/js/components/ConfirmDialog.js"></script>
+    <script src="/js/components/TextInputDialog.js"></script>
+    <!-- Council document/export/CRUD helpers + provider-map, all consumed by the
+         config tabs and CouncilManager. -->
+    <script src="/js/utils/council-document.js"></script>
+    <script src="/js/utils/council-export.js"></script>
+    <script src="/js/utils/council-crud.js"></script>
+    <script src="/js/utils/provider-map.js"></script>
+    <!-- resolveProviderModelPair/buildProviderModelScopes: CouncilManager uses
+         them to seed a new council's first reviewer with a provider/model pair
+         that really exists (the tabs' own fallback is an alias, not an option
+         value). -->
+    <script src="/js/utils/provider-model.js"></script>
     <script src="/js/components/CouncilDropdown.js"></script>
     <script src="/js/components/CouncilCard.js"></script>
+    <!-- Config tab editors hosted by CouncilManager. NOTE: AnalysisConfigModal
+         must never be loaded on this page — the tab element ids are page-global
+         and only one instance of each tab may exist per page. -->
+    <script src="/js/components/TimeoutSelect.js"></script>
+    <script src="/js/components/VoiceCentricConfigTab.js"></script>
+    <script src="/js/components/AdvancedConfigTab.js"></script>
+    <script src="/js/components/CouncilManager.js"></script>
     <script src="/js/components/SnippetManager.js"></script>
     <script src="/js/theme.js"></script>
     <script src="/js/settings.js"></script>

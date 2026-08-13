@@ -64,6 +64,8 @@ wiring); 1, 3, 4, 5 are safe for a weaker model following this spec.
 
 ## Phase 1 — Document format + real export (PR 1)
 
+**Shipped** — commit `21c6b23e`.
+
 ### 1a. New file: `public/js/utils/council-document.js`
 
 Dual-export module (browser global `window.CouncilDocument` + CommonJS), same
@@ -164,6 +166,9 @@ downloads a file"). Copyright header on both new files. No README change yet
 ---
 
 ## Phase 2 — `~/.pair-review/councils/` read-only overlay (PR 2)
+
+**Shipped** — commit `a40125df`. It also carried Phase 3's 3a-pre extraction
+(see below), pulled forward so Phase 3 would not edit both tab copies again.
 
 No DB migration. Loaded **once per process at first use** (no hot reload —
 project policy; restart to pick up file changes).
@@ -329,6 +334,11 @@ untouched).
 
 ## Phase 3 — Settings-page council manager (PR 3)
 
+**Shipped** — 3a-pre landed early with Phase 2 (`a40125df`); 3a–3d in commit
+`99c76287` ("refactor: prep config tabs and CSS for settings-page hosting");
+3e–3g in the settings-page commit. Where the implementation diverged from this
+spec, the divergence is recorded inline below as **As shipped**.
+
 Key recon facts this design leans on: the tabs query ids only inside the root
 element passed to their constructor, and the settings page never loads
 `AnalysisConfigModal` — so with **at most one instance of each tab per page**
@@ -349,16 +359,25 @@ Phase 1 extracted only the export body (`public/js/utils/council-export.js`,
 delegated to at call time); the remaining five are worth extracting **before**
 3b/3c, which edit both copies again.
 
-Shape: `public/js/components/council-crud.js` exporting
-`applyCouncilCrud(TabClass, { councilType, selectorId })`, called once per tab.
-The tabs already agree on every collaborator it needs (`this.councils`,
-`this.selectedCouncilId`, `this.modal`, `_readConfigFromUI`, `_validateConfig`,
-`_markClean`, `loadCouncils`, `_applyConfigToUI`, `_defaultConfig`,
+Shape — **as shipped**: `public/js/utils/council-crud.js` (utils, *not*
+components), publishing `window.CouncilCrud` as free functions
+`saveCouncil(tab, spec)` / `saveCouncilAs` / `putCouncil` / `postCouncil` /
+`deleteCouncil`, where `spec = { type, selectorId }` is a static on each tab
+(`VoiceCentricConfigTab.COUNCIL_CRUD_SPEC`). NOT the planned
+`applyCouncilCrud(TabClass, …)` prototype install: each tab keeps its own
+`_saveCouncil`/`_saveCouncilAs`/… and delegates from inside the method body,
+matching how `council-export.js` already worked. The tabs already agree on
+every collaborator it needs (`this.councils`, `this.selectedCouncilId`,
+`this.modal`, `_readConfigFromUI`, `_validateConfig`, `_markClean`,
+`loadCouncils`, `_applyConfigToUI`, `_defaultConfig`,
 `_updateSaveButtonStates`), so it needs no new plumbing. Traps:
-1. The install runs at **module-evaluation** time, unlike the call-time
-   `window.*` lookups used everywhere else — so the dual browser/CommonJS tab
-   files need a guarded `require`-vs-`window` resolution, and a script-tag
-   ordering rule on all four pages (pr, local, index, settings).
+1. ~~The install runs at module-evaluation time … so the tab files need a
+   guarded `require`-vs-`window` resolution and a script-tag ordering rule on
+   all four pages.~~ **Wrong, and moot as shipped.** Delegation happens at CALL
+   time (`window.CouncilCrud.saveCouncil(this, SPEC)` from inside the tab's own
+   method), so nothing is resolved at load time, there is no script-ordering
+   constraint on any page, and the tab methods stay on the prototype for free —
+   which is what trap 3 asks for.
 2. `AdvancedConfigTab.loadCouncils` filters `!c.type || c.type === 'advanced'`
    while the voice tab filters `c.type === 'council'` — legacy no-type councils
    are advanced-only, so that filter stays a **parameter**, never a symmetric
@@ -379,6 +398,17 @@ currently falls back to native `confirm`). Fix at source:
 3. Verify `/settings` and `/settings/:owner/:repo` headers render unchanged,
    and the settings page can now use `window.confirmDialog`.
 
+**As shipped, a second reason `analysis-config.css` is load-bearing on the
+settings page** (not in this spec): the `#text-input-dialog` /
+`.text-input-dialog-field` rules live ONLY in that file, and the extraction
+deliberately left those grouped halves behind. So the settings page must load
+`analysis-config.css` for the Duplicate / Save As name prompt to be styled at
+all — independently of the hosted config-tab markup it also supplies. It is
+linked before `settings.css` so the page-header rules there still win.
+(Side effect, intentional: with `ConfirmDialog.js` now on the page,
+`SnippetManager` takes its preferred styled-dialog path instead of the native
+`confirm` fallback — `tests/e2e/chat-snippets.spec.js` was updated to match.)
+
 ### 3b. Null-guard audit in both tabs (small, mechanical)
 
 On the settings page these modal-only elements don't exist; every access must
@@ -392,6 +422,11 @@ tolerate `null`:
 Add a regression unit test that injects a tab into a bare container (no modal
 chrome) and exercises `inject` → `_applyConfigToUI` → `_markDirty` →
 `_readConfigFromUI` without throwing.
+
+**As shipped**: the audit found both tabs were *already* null-tolerant at every
+one of these sites, so no guards were added — only the regression suite
+(`tests/unit/config-tab-bare-container.test.js`, mutation-verified) that pins
+the tolerance in place.
 
 ### 3c. Fix the isDirty asymmetry
 
@@ -418,6 +453,11 @@ read it first): `constructor(container, { onChange } = {})`, all elements via
 **List mode**: `GET /api/councils` → rows showing name, type badge
 (Standard/Advanced — reuse `CouncilDropdown.typeBadge`), `File` badge +
 `filePath` tooltip for file councils, `description` as subtitle when present.
+(**Correction**: `typeBadge(type)` takes a **type string**, not a council
+object — only `sourceBadge(council)` takes the council. Both return
+`{ label, cssClass }`, so the row builds its own `<span>`. CouncilManager feeds
+`typeBadge` the *effective* type, so a legacy untyped row badges "Advanced",
+matching the editor its Edit button opens.)
 Row click toggles an inline `CouncilCard` preview (component already loaded on
 settings page; pass `resolveModelDisplay` derived from the provider map).
 Row actions — DB councils: Edit, Duplicate, Export, Delete; file councils:
@@ -436,10 +476,24 @@ type chooser (Council / Advanced). Then host one tab instance:
    div; pass the **wrapper** as the tab's constructor argument (it plays the
    modal's role as query root).
 2. Call in this order (mirrors the load-bearing modal sequence at
-   `AnalysisConfigModal.js:916-943`): `inject(panel)`,
-   `setProviders(providerMap)`, `reset()`, then for Edit:
-   `setDefaultCouncilId(id)` followed by `await loadCouncils()` (the pending
-   default id is applied when the selector renders).
+   `AnalysisConfigModal.js:916-943`) — **corrected, as shipped**:
+   `inject(panel)` → `setProviders(providerMap)` →
+   `setDefaultOrchestration(provider, model)` → `reset()` → for Edit
+   `setDefaultCouncilId(id)` → `await loadCouncils()` (the pending default id is
+   applied when the selector renders).
+
+   The spec's omission of **`setDefaultOrchestration()`** was a real bug, not a
+   detail: `reset()` repaints from `_defaultConfig()`, whose fallback pair is
+   `claude`/`sonnet`, and `sonnet` is an *alias* — not a model `<option>` value.
+   Assigning it selects nothing, `_readConfigFromUI` then drops the reviewer row
+   (it keeps only rows with BOTH provider and model), the new council POSTs
+   `voices: []`, and the API 400s. `AnalysisConfigModal` calls
+   `setDefaultOrchestration` before `reset()` for exactly this reason
+   (`AnalysisConfigModal.js:928`). CouncilManager resolves the pair with the
+   shared `resolveProviderModelPair` / `buildProviderModelScopes` over
+   `/api/config` + `/api/providers` (hence the extra `provider-model.js` script
+   tag in 3f), and canonicalises any alias to the model id the `<select>`
+   actually carries before handing it over.
 3. Footer buttons owned by CouncilManager: **Save** →
    `tab._saveCouncil()` (same private call the modal makes at :460-462);
    **Back** → if `tab.isDirty`, confirmDialog "Discard unsaved changes?",
@@ -465,6 +519,13 @@ registry-driven):
   and `window.textInputDialog` (grep pr.html for their script tags and mirror
   them). Stylesheets: `council-manager.css`, `analysis-config.css` (safe
   after 3a), `confirm-dialog.css`.
+  **As shipped** the script list also carries `/js/utils/council-crud.js` (from
+  3a-pre) and `/js/utils/provider-model.js` (for the `setDefaultOrchestration`
+  fix above), and the `window.toast` / `window.confirmDialog` /
+  `window.textInputDialog` providers turned out to be `Toast.js`,
+  `ConfirmDialog.js` and `TextInputDialog.js`. Order is cosmetic — every one of
+  these is resolved on `window` at call time — but pr.html's order is mirrored
+  anyway.
 - `public/js/settings.js`: constants `COUNCILS_SECTION_ID = 'councils-section'`,
   nav title "Councils" (:77-82 region); `mountCouncils()` modeled on
   `mountSnippets()` (:242-260) incl. the `typeof CouncilManager ===
@@ -497,6 +558,11 @@ registry-driven):
 
 Changeset (minor). Copyright headers. README: short "Managing councils"
 section pointing at `/settings`.
+
+**Done**: `.changeset/settings-council-manager.md` (minor); copyright headers
+audited across every file new in Phase 3 (all present); README gained a
+"Managing Councils" section immediately before "Council Files", plus its Table
+of Contents entry. No migration → no test-schema updates.
 
 ---
 

@@ -26,6 +26,16 @@
  * matching how the tabs already reach them, and keeping script order a
  * non-issue.
  *
+ * >>> RETURN CONTRACT: every function here resolves to a BOOLEAN — `true` iff a
+ * write actually reached the server and succeeded, `false` on every refusal
+ * (invalid config, cancelled name prompt, missing dialog, swallowed request
+ * error). Nothing rejects. Callers that only fire-and-forget (the tabs' own
+ * panel buttons, AnalysisConfigModal) may keep ignoring it; a caller that has to
+ * know whether the write happened — CouncilManager's editor footer, which exits
+ * to the list and fires onChange — MUST read it. Deducing success from
+ * `tab.isDirty` does not work: a Save on an already-clean editor is refused
+ * without ever going dirty, so "not dirty" reads as "saved".
+ *
  * Loaded in the browser as `window.CouncilCrud`; also exported via CommonJS for
  * unit tests. No DOM access at load time.
  *
@@ -62,30 +72,34 @@ function syncSelectorToSelection(tab, spec) {
  *
  * @param {Object} tab - The config tab instance
  * @param {CouncilCrudSpec} spec - The tab's CRUD descriptor
- * @returns {Promise<void>}
+ * @returns {Promise<boolean>} true iff a council was written (see RETURN CONTRACT)
  */
 async function saveCouncil(tab, spec) {
   const config = tab._readConfigFromUI();
   const { valid } = tab._validateConfig(config);
   if (!valid) {
     if (window.toast) window.toast.showWarning(INVALID_CONFIG_MESSAGE);
-    return;
+    return false;
   }
   if (tab.selectedCouncilId) {
     // A file council cannot be PUT — fork a copy instead (mirrors the
     // no-selection branch below).
+    // `await` (not a bare `return`) so the boolean contract holds even if a
+    // subclass/stub returns something else; the fork is still awaited either
+    // way, so a caller that awaits Save never races the POST.
     if (tab._isFileCouncil(tab.selectedCouncilId)) {
-      return tab._saveCouncilAs();
+      return Boolean(await tab._saveCouncilAs());
     }
     try {
       await tab._putCouncil(tab.selectedCouncilId, config);
     } catch (error) {
       console.error('Error saving council:', error);
       if (window.toast) window.toast.showError('Failed to save council');
+      return false;
     }
-  } else {
-    return tab._saveCouncilAs();
+    return true;
   }
+  return Boolean(await tab._saveCouncilAs());
 }
 
 /**
@@ -96,18 +110,18 @@ async function saveCouncil(tab, spec) {
  *
  * @param {Object} tab - The config tab instance
  * @param {CouncilCrudSpec} spec - The tab's CRUD descriptor
- * @returns {Promise<void>}
+ * @returns {Promise<boolean>} true iff a council was created (see RETURN CONTRACT)
  */
 async function saveCouncilAs(tab, spec) {
   const config = tab._readConfigFromUI();
   const { valid } = tab._validateConfig(config);
   if (!valid) {
     if (window.toast) window.toast.showWarning(INVALID_CONFIG_MESSAGE);
-    return;
+    return false;
   }
 
   const dialog = window.textInputDialog;
-  if (!dialog) return;
+  if (!dialog) return false;
   const currentCouncil = tab.selectedCouncilId
     ? tab.councils.find(c => c.id === tab.selectedCouncilId)
     : null;
@@ -127,7 +141,13 @@ async function saveCouncilAs(tab, spec) {
       confirmText: 'Save',
       confirmClass: 'btn-primary'
     });
-    if (!name) return;
+    if (!name) return false;
+    // DELIBERATE: scans only `tab.councils`, which the tab has already filtered
+    // to its own type — so a "Standard" name may collide with an existing
+    // "Advanced" council and still be accepted. CouncilManager._duplicate scans
+    // the WHOLE list instead. There is no server-side UNIQUE on councils.name,
+    // so neither is authoritative and the difference is harmless; do not
+    // "align" them without deciding which one is right.
     const duplicate = tab.councils.find(c => c.name.toLowerCase() === name.toLowerCase());
     if (!duplicate) break;
     if (window.toast) window.toast.showWarning('A council with that name already exists.');
@@ -137,7 +157,9 @@ async function saveCouncilAs(tab, spec) {
   } catch (error) {
     console.error('Error saving council:', error);
     if (window.toast) window.toast.showError('Failed to save council');
+    return false;
   }
+  return true;
 }
 
 /**
@@ -148,7 +170,8 @@ async function saveCouncilAs(tab, spec) {
  * @param {CouncilCrudSpec} spec - The tab's CRUD descriptor
  * @param {string} councilId - The council ID to update
  * @param {Object} config - The council configuration to save
- * @returns {Promise<void>}
+ * @returns {Promise<boolean>} always true — a failed request REJECTS here (the
+ *   callers above translate that into `false`)
  */
 async function putCouncil(tab, spec, councilId, config) {
   const response = await fetch(`/api/councils/${councilId}`, {
@@ -162,6 +185,7 @@ async function putCouncil(tab, spec, councilId, config) {
   tab._markClean();
   await tab.loadCouncils();
   syncSelectorToSelection(tab, spec);
+  return true;
 }
 
 /**
@@ -172,7 +196,8 @@ async function putCouncil(tab, spec, councilId, config) {
  * @param {CouncilCrudSpec} spec - The tab's CRUD descriptor
  * @param {string} name - The name for the new council
  * @param {Object} config - The council configuration to save
- * @returns {Promise<void>}
+ * @returns {Promise<boolean>} always true — a failed request REJECTS here (the
+ *   callers above translate that into `false`)
  */
 async function postCouncil(tab, spec, name, config) {
   const response = await fetch('/api/councils', {
@@ -188,6 +213,7 @@ async function postCouncil(tab, spec, name, config) {
   tab._markClean();
   await tab.loadCouncils();
   syncSelectorToSelection(tab, spec);
+  return true;
 }
 
 /**
@@ -196,23 +222,23 @@ async function postCouncil(tab, spec, name, config) {
  *
  * @param {Object} tab - The config tab instance
  * @param {CouncilCrudSpec} spec - The tab's CRUD descriptor
- * @returns {Promise<void>}
+ * @returns {Promise<boolean>} true iff the council was deleted (see RETURN CONTRACT)
  */
 async function deleteCouncil(tab, spec) {
-  if (!tab.selectedCouncilId) return;
+  if (!tab.selectedCouncilId) return false;
 
   const council = tab.councils.find(c => c.id === tab.selectedCouncilId);
   const councilName = council?.name || 'this council';
 
   const confirmDlg = window.confirmDialog;
-  if (!confirmDlg) return;
+  if (!confirmDlg) return false;
   const result = await confirmDlg.show({
     title: 'Delete Council',
     message: `Are you sure you want to delete "${councilName}"?`,
     confirmText: 'Delete',
     confirmClass: 'btn-danger'
   });
-  if (result !== 'confirm') return;
+  if (result !== 'confirm') return false;
 
   try {
     const response = await fetch(`/api/councils/${tab.selectedCouncilId}`, { method: 'DELETE' });
@@ -234,9 +260,11 @@ async function deleteCouncil(tab, spec) {
     tab._updateSaveButtonStates();
 
     if (window.toast) window.toast.showSuccess('Council deleted');
+    return true;
   } catch (error) {
     console.error('Error deleting council:', error);
     if (window.toast) window.toast.showError('Failed to delete council');
+    return false;
   }
 }
 

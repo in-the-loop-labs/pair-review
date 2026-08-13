@@ -1421,12 +1421,17 @@ class VoiceCentricConfigTab {
    * The whole body is shared with AdvancedConfigTab — only the type literal and
    * the selector id differ. See `saveCouncil` in
    * public/js/utils/council-crud.js.
+   *
+   * @returns {Promise<boolean>} true iff a council was written. Never rejects.
    */
   async _saveCouncil() {
     return window.CouncilCrud.saveCouncil(this, VoiceCentricConfigTab.COUNCIL_CRUD_SPEC);
   }
 
-  /** Prompt for a name and POST the live config as a new council. */
+  /**
+   * Prompt for a name and POST the live config as a new council.
+   * @returns {Promise<boolean>} true iff a council was created. Never rejects.
+   */
   async _saveCouncilAs() {
     return window.CouncilCrud.saveCouncilAs(this, VoiceCentricConfigTab.COUNCIL_CRUD_SPEC);
   }
