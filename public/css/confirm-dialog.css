@@ -12,6 +12,17 @@
  * Values are copied verbatim from analysis-config.css so pages that load both
  * stylesheets render identically. The only omissions are `width`/`height` on
  * .modal-container, which ConfirmDialog sets inline.
+ *
+ * SCOPE OF THE STANDALONE CLAIM: it covers ConfirmDialog and nothing else.
+ * Only the .confirm-dialog-overlay-scoped rules are self-sufficient — they are
+ * what ConfirmDialog puts on its overlay.
+ *
+ * TextInputDialog also reuses the `confirm-dialog-container` class (see the
+ * .confirm-dialog-container footer rules below) but is NOT standalone: it has
+ * no .confirm-dialog-overlay, so its shell (.modal-overlay/.modal-container)
+ * and its #text-input-dialog / .text-input-dialog-field styles still come from
+ * analysis-config.css. Any page using TextInputDialog must link BOTH
+ * stylesheets; a page needing only ConfirmDialog can link this one alone.
  */
 
 /* ============================================
@@ -128,6 +139,12 @@
 
 /* ============================================
    Confirm dialog specifics
+
+   NOTE: these .confirm-dialog-container rules are keyed on the CONTAINER, not
+   the .confirm-dialog-overlay used above, and TextInputDialog reuses that class
+   too. So this block also styles the name-prompt dialog — which, unlike
+   ConfirmDialog, additionally needs analysis-config.css for its shell and field
+   styles. Changing anything here affects both dialogs.
    ============================================ */
 
 /* Confirm dialog buttons should be centered */

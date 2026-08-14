@@ -3,6 +3,10 @@
  * Generic Text Input Dialog Component
  * Displays a modal dialog with a text input field and customizable actions.
  * Returns a Promise that resolves to the trimmed input string, or null if cancelled.
+ *
+ * STYLESHEETS: this component needs BOTH public/css/analysis-config.css AND
+ * public/css/confirm-dialog.css. Unlike ConfirmDialog, it is not standalone —
+ * see the note on the `confirm-dialog-container` class in createModal() below.
  */
 class TextInputDialog {
   constructor() {
@@ -29,6 +33,11 @@ class TextInputDialog {
     modalContainer.className = 'modal-overlay';
     modalContainer.style.display = 'none';
 
+    // `confirm-dialog-container` is borrowed from ConfirmDialog purely for its
+    // footer centering, which lives in public/css/confirm-dialog.css. The shell
+    // (.modal-overlay/.modal-container) and .text-input-dialog-field styles live
+    // in public/css/analysis-config.css. This dialog therefore requires BOTH
+    // stylesheets — a page linking only one renders it partially unstyled.
     modalContainer.innerHTML = `
       <div class="modal-backdrop" data-action="cancel"></div>
       <div class="modal-container confirm-dialog-container" style="width: 400px; height: auto;">

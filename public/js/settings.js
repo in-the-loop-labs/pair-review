@@ -701,13 +701,11 @@ class SettingsPage {
         resolveModelDisplay: (p, m) => this.resolveModelDisplay(p, m)
       });
     }
-    // CouncilCard dispatches its LAYOUT on `type`, and a legacy untyped row
-    // holds a level-keyed config that only the advanced layout can read — the
-    // voice layout would show zero reviewers and a bogus level summary. Normalize
-    // it here, exactly as CouncilManager does for its own row previews, so this
-    // card, CouncilManager's row and the dropdown badge above all agree.
-    const type = council.type === 'council' ? 'council' : 'advanced';
-    this._councilCards[setting.key].render({ ...council, type });
+    // Pass the row through as-is: CouncilCard.render owns the type→layout rule
+    // (including legacy untyped ⇒ advanced) for every council surface, so this
+    // card, CouncilManager's row preview and the dropdown badge above cannot
+    // disagree about the same council.
+    this._councilCards[setting.key].render(council);
   }
 
   /**

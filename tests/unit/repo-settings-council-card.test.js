@@ -2,10 +2,15 @@
 /**
  * Unit tests for council card rendering in RepoSettingsPage.
  *
- * Tests resolveModelDisplay, renderCouncilCard dispatch,
- * renderVoiceCouncilCard, renderAdvancedCouncilCard,
- * setAnalysisMode (council card integration), and
+ * Tests resolveModelDisplay, renderCouncilCard (layout dispatch and the markup
+ * each layout produces), setAnalysisMode (council card integration), and
  * selectCouncilOption (council card rendering on selection).
+ *
+ * renderCouncilCard is the page's ONLY council-preview entry point: it looks up
+ * #model-card-preview, binds the page's alias-aware resolveModelDisplay, and
+ * hands the council to CouncilCard.render, which owns the type→layout rule for
+ * every council surface in the app. The page used to re-implement that dispatch
+ * in renderVoiceCouncilCard/renderAdvancedCouncilCard and drifted from it.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -236,10 +241,9 @@ const classSource = source.substring(
 // Evaluate in a function to capture the class
 RepoSettingsPage = new Function(`${classSource}\nreturn RepoSettingsPage;`)();
 
-// The council card is now rendered by the shared CouncilCard component; the
-// page's renderVoiceCouncilCard/renderAdvancedCouncilCard delegate to it. Expose
-// it as a global so the eval'd class methods can resolve it (they look up
-// window.CouncilCard || CouncilCard).
+// The council card is rendered by the shared CouncilCard component, which the
+// page's renderCouncilCard delegates to. Expose it as a global so the eval'd
+// class methods can resolve it (they look up window.CouncilCard || CouncilCard).
 global.CouncilCard = require('../../public/js/components/CouncilCard.js').CouncilCard;
 
 beforeEach(() => {
@@ -367,74 +371,109 @@ describe('RepoSettingsPage - Council Card', () => {
   // -- renderCouncilCard (dispatch) -----------------------------------------
 
   describe('renderCouncilCard', () => {
-    it('should dispatch to renderVoiceCouncilCard for type "council"', () => {
+    // The layout is now chosen inside CouncilCard.render, so these assert on
+    // the markup each layout produces rather than on which page method ran.
+    // `.council-card-summary` is emitted only by the voice layout;
+    // `.council-card-badge-advanced` only by the advanced one.
+    const VOICE_MARKER = 'council-card-summary';
+    const ADVANCED_MARKER = 'council-card-badge-advanced';
+
+    it('should render the voice layout for type "council"', () => {
       const instance = createInstance();
       const container = registerElement('model-card-preview');
-      instance.renderVoiceCouncilCard = vi.fn();
-      instance.renderAdvancedCouncilCard = vi.fn();
 
       instance.renderCouncilCard(mockStandardCouncil);
 
-      expect(instance.renderVoiceCouncilCard).toHaveBeenCalledWith(mockStandardCouncil);
-      expect(instance.renderAdvancedCouncilCard).not.toHaveBeenCalled();
+      expect(container.innerHTML).toContain(VOICE_MARKER);
+      expect(container.innerHTML).not.toContain(ADVANCED_MARKER);
     });
 
-    it('should dispatch to renderAdvancedCouncilCard for type "advanced"', () => {
+    it('should render the advanced layout for type "advanced"', () => {
       const instance = createInstance();
       const container = registerElement('model-card-preview');
-      instance.renderVoiceCouncilCard = vi.fn();
-      instance.renderAdvancedCouncilCard = vi.fn();
 
       instance.renderCouncilCard(mockAdvancedCouncil);
 
-      expect(instance.renderAdvancedCouncilCard).toHaveBeenCalledWith(mockAdvancedCouncil);
-      expect(instance.renderVoiceCouncilCard).not.toHaveBeenCalled();
+      expect(container.innerHTML).toContain(ADVANCED_MARKER);
+      expect(container.innerHTML).not.toContain(VOICE_MARKER);
     });
 
-    it('should default to renderVoiceCouncilCard for unknown type', () => {
+    // REGRESSION: this used to assert unknown/untyped ⇒ VOICE, which is what let
+    // the page render a voice layout under a CouncilDropdown badge reading
+    // "Advanced". Untyped rows predate the `type` column and are level-centric
+    // (AdvancedConfigTab.loadCouncils claims `!c.type || c.type === 'advanced'`,
+    // VoiceCentricConfigTab takes only `c.type === 'council'`, and
+    // POST /api/councils stores `type || 'advanced'`), so advanced is correct.
+    it('should render the advanced layout for a legacy untyped council', () => {
       const instance = createInstance();
       const container = registerElement('model-card-preview');
-      instance.renderVoiceCouncilCard = vi.fn();
-      instance.renderAdvancedCouncilCard = vi.fn();
 
-      const unknownTypeCouncil = { ...mockStandardCouncil, type: 'unknown' };
-      instance.renderCouncilCard(unknownTypeCouncil);
+      const untypedCouncil = {
+        id: 'legacy',
+        name: 'Legacy Council',
+        // no `type` — a row written before the column existed
+        config: {
+          levels: {
+            '1': { enabled: true, voices: [{ provider: 'claude', model: 'sonnet', tier: 'balanced' }] }
+          }
+        }
+      };
+      instance.renderCouncilCard(untypedCouncil);
 
-      expect(instance.renderVoiceCouncilCard).toHaveBeenCalledWith(unknownTypeCouncil);
-      expect(instance.renderAdvancedCouncilCard).not.toHaveBeenCalled();
+      expect(container.innerHTML).toContain(ADVANCED_MARKER);
+      expect(container.innerHTML).not.toContain(VOICE_MARKER);
+      // The level-keyed config actually renders, rather than collapsing to an
+      // empty reviewer list the way the voice layout rendered it.
+      expect(container.innerHTML).toContain('Level 1 — Isolation');
+      expect(container.innerHTML).toContain('Claude / Claude Sonnet');
     });
 
-    it('should return early for null council', () => {
+    it('should render the advanced layout for an unrecognized type', () => {
       const instance = createInstance();
-      instance.renderVoiceCouncilCard = vi.fn();
-      instance.renderAdvancedCouncilCard = vi.fn();
+      const container = registerElement('model-card-preview');
+
+      instance.renderCouncilCard({ ...mockStandardCouncil, type: 'unknown' });
+
+      expect(container.innerHTML).toContain(ADVANCED_MARKER);
+      expect(container.innerHTML).not.toContain(VOICE_MARKER);
+    });
+
+    it('should return early for null council, leaving the card untouched', () => {
+      const instance = createInstance();
+      const container = registerElement('model-card-preview');
+      container.innerHTML = 'sentinel';
 
       instance.renderCouncilCard(null);
 
-      expect(instance.renderVoiceCouncilCard).not.toHaveBeenCalled();
-      expect(instance.renderAdvancedCouncilCard).not.toHaveBeenCalled();
+      // Deliberately NOT cleared — callers hide the container instead.
+      expect(container.innerHTML).toBe('sentinel');
     });
 
-    it('should return early for undefined council', () => {
+    it('should return early for undefined council, leaving the card untouched', () => {
       const instance = createInstance();
-      instance.renderVoiceCouncilCard = vi.fn();
-      instance.renderAdvancedCouncilCard = vi.fn();
+      const container = registerElement('model-card-preview');
+      container.innerHTML = 'sentinel';
 
       instance.renderCouncilCard(undefined);
 
-      expect(instance.renderVoiceCouncilCard).not.toHaveBeenCalled();
-      expect(instance.renderAdvancedCouncilCard).not.toHaveBeenCalled();
+      expect(container.innerHTML).toBe('sentinel');
+    });
+
+    it('should be a no-op when the preview container is absent', () => {
+      const instance = createInstance();
+      // No registerElement('model-card-preview') — getElementById returns null.
+      expect(() => instance.renderCouncilCard(mockStandardCouncil)).not.toThrow();
     });
   });
 
-  // -- renderVoiceCouncilCard -----------------------------------------------
+  // -- standard (voice) layout ----------------------------------------------
 
-  describe('renderVoiceCouncilCard', () => {
+  describe('renderCouncilCard — standard (voice) layout', () => {
     it('should render council name', () => {
       const instance = createInstance();
       const container = registerElement('model-card-preview');
 
-      instance.renderVoiceCouncilCard(mockStandardCouncil);
+      instance.renderCouncilCard(mockStandardCouncil);
 
       expect(container.innerHTML).toContain('Speed Council');
     });
@@ -443,7 +482,7 @@ describe('RepoSettingsPage - Council Card', () => {
       const instance = createInstance();
       const container = registerElement('model-card-preview');
 
-      instance.renderVoiceCouncilCard(mockStandardCouncil);
+      instance.renderCouncilCard(mockStandardCouncil);
 
       // Levels 1 and 2 are enabled, 3 is not
       expect(container.innerHTML).toContain('Levels 1, 2');
@@ -462,7 +501,7 @@ describe('RepoSettingsPage - Council Card', () => {
         }
       };
 
-      instance.renderVoiceCouncilCard(allLevelsCouncil);
+      instance.renderCouncilCard(allLevelsCouncil);
 
       expect(container.innerHTML).toContain('Levels 1, 2, 3');
     });
@@ -479,7 +518,7 @@ describe('RepoSettingsPage - Council Card', () => {
         }
       };
 
-      instance.renderVoiceCouncilCard(noLevelsCouncil);
+      instance.renderCouncilCard(noLevelsCouncil);
 
       expect(container.innerHTML).toContain('No levels configured');
     });
@@ -488,7 +527,7 @@ describe('RepoSettingsPage - Council Card', () => {
       const instance = createInstance();
       const container = registerElement('model-card-preview');
 
-      instance.renderVoiceCouncilCard(mockStandardCouncil);
+      instance.renderCouncilCard(mockStandardCouncil);
 
       // Check provider/model names appear
       expect(container.innerHTML).toContain('Claude');
@@ -506,7 +545,7 @@ describe('RepoSettingsPage - Council Card', () => {
       const instance = createInstance();
       const container = registerElement('model-card-preview');
 
-      instance.renderVoiceCouncilCard(mockStandardCouncil);
+      instance.renderCouncilCard(mockStandardCouncil);
 
       expect(container.innerHTML).toContain('Consolidation');
       expect(container.innerHTML).toContain('council-card-consolidation');
@@ -526,7 +565,7 @@ describe('RepoSettingsPage - Council Card', () => {
         }
       };
 
-      instance.renderVoiceCouncilCard(noConsolidation);
+      instance.renderCouncilCard(noConsolidation);
 
       expect(container.innerHTML).not.toContain('Consolidation');
       expect(container.innerHTML).not.toContain('council-card-divider');
@@ -545,7 +584,7 @@ describe('RepoSettingsPage - Council Card', () => {
         }
       };
 
-      instance.renderVoiceCouncilCard(noConsolProvider);
+      instance.renderCouncilCard(noConsolProvider);
 
       expect(container.innerHTML).not.toContain('Consolidation');
     });
@@ -565,7 +604,7 @@ describe('RepoSettingsPage - Council Card', () => {
         }
       };
 
-      instance.renderVoiceCouncilCard(singleVoice);
+      instance.renderCouncilCard(singleVoice);
 
       expect(container.innerHTML).toContain('Solo Council');
       expect(container.innerHTML).toContain('Claude Opus');
@@ -586,7 +625,7 @@ describe('RepoSettingsPage - Council Card', () => {
         }
       };
 
-      instance.renderVoiceCouncilCard(emptyVoices);
+      instance.renderCouncilCard(emptyVoices);
 
       expect(container.innerHTML).toContain('Empty Council');
       expect(container.innerHTML).toContain('council-card');
@@ -603,7 +642,7 @@ describe('RepoSettingsPage - Council Card', () => {
         // no config
       };
 
-      instance.renderVoiceCouncilCard(noConfig);
+      instance.renderCouncilCard(noConfig);
 
       expect(container.innerHTML).toContain('No Config');
       expect(container.innerHTML).toContain('No levels configured');
@@ -614,7 +653,7 @@ describe('RepoSettingsPage - Council Card', () => {
       // Do not register model-card-preview
 
       // Should not throw
-      expect(() => instance.renderVoiceCouncilCard(mockStandardCouncil)).not.toThrow();
+      expect(() => instance.renderCouncilCard(mockStandardCouncil)).not.toThrow();
     });
 
     it('should use escapeHtml for council name to prevent XSS', () => {
@@ -631,7 +670,7 @@ describe('RepoSettingsPage - Council Card', () => {
         }
       };
 
-      instance.renderVoiceCouncilCard(xssCouncil);
+      instance.renderCouncilCard(xssCouncil);
 
       // The raw script tag should not appear in the output
       expect(container.innerHTML).not.toContain('<script>');
@@ -654,20 +693,20 @@ describe('RepoSettingsPage - Council Card', () => {
         }
       };
 
-      instance.renderVoiceCouncilCard(noTierCouncil);
+      instance.renderCouncilCard(noTierCouncil);
 
       expect(container.innerHTML).not.toContain('council-card-tier');
     });
   });
 
-  // -- renderAdvancedCouncilCard --------------------------------------------
+  // -- advanced layout ------------------------------------------------------
 
-  describe('renderAdvancedCouncilCard', () => {
+  describe('renderCouncilCard — advanced layout', () => {
     it('should render council name with Advanced badge', () => {
       const instance = createInstance();
       const container = registerElement('model-card-preview');
 
-      instance.renderAdvancedCouncilCard(mockAdvancedCouncil);
+      instance.renderCouncilCard(mockAdvancedCouncil);
 
       expect(container.innerHTML).toContain('Deep Review');
       expect(container.innerHTML).toContain('Advanced');
@@ -678,7 +717,7 @@ describe('RepoSettingsPage - Council Card', () => {
       const instance = createInstance();
       const container = registerElement('model-card-preview');
 
-      instance.renderAdvancedCouncilCard(mockAdvancedCouncil);
+      instance.renderCouncilCard(mockAdvancedCouncil);
 
       // Level 1 and 2 are enabled
       expect(container.innerHTML).toContain('Level 1 — Isolation');
@@ -691,7 +730,7 @@ describe('RepoSettingsPage - Council Card', () => {
       const instance = createInstance();
       const container = registerElement('model-card-preview');
 
-      instance.renderAdvancedCouncilCard(mockAdvancedCouncil);
+      instance.renderCouncilCard(mockAdvancedCouncil);
 
       // Level 1 has Claude Haiku
       expect(container.innerHTML).toContain('Claude Haiku');
@@ -704,7 +743,7 @@ describe('RepoSettingsPage - Council Card', () => {
       const instance = createInstance();
       const container = registerElement('model-card-preview');
 
-      instance.renderAdvancedCouncilCard(mockAdvancedCouncil);
+      instance.renderCouncilCard(mockAdvancedCouncil);
 
       expect(container.innerHTML).toContain('council-card-tier');
       expect(container.innerHTML).toContain('fast');
@@ -716,7 +755,7 @@ describe('RepoSettingsPage - Council Card', () => {
       const instance = createInstance();
       const container = registerElement('model-card-preview');
 
-      instance.renderAdvancedCouncilCard(mockAdvancedCouncil);
+      instance.renderCouncilCard(mockAdvancedCouncil);
 
       expect(container.innerHTML).toContain('Orchestration');
       expect(container.innerHTML).toContain('council-card-consolidation');
@@ -736,7 +775,7 @@ describe('RepoSettingsPage - Council Card', () => {
         }
       };
 
-      instance.renderAdvancedCouncilCard(noConsol);
+      instance.renderCouncilCard(noConsol);
 
       expect(container.innerHTML).not.toContain('Orchestration');
       expect(container.innerHTML).not.toContain('council-card-divider');
@@ -760,7 +799,7 @@ describe('RepoSettingsPage - Council Card', () => {
         }
       };
 
-      instance.renderAdvancedCouncilCard(allLevels);
+      instance.renderCouncilCard(allLevels);
 
       expect(container.innerHTML).toContain('Level 1 — Isolation');
       expect(container.innerHTML).toContain('Level 2 — File Context');
@@ -784,7 +823,7 @@ describe('RepoSettingsPage - Council Card', () => {
         }
       };
 
-      instance.renderAdvancedCouncilCard(emptyVoicesLevel);
+      instance.renderCouncilCard(emptyVoicesLevel);
 
       expect(container.innerHTML).toContain('Level 1 — Isolation');
       // No voices, but the level header should still be shown
@@ -801,7 +840,7 @@ describe('RepoSettingsPage - Council Card', () => {
         type: 'advanced'
       };
 
-      instance.renderAdvancedCouncilCard(noConfig);
+      instance.renderCouncilCard(noConfig);
 
       expect(container.innerHTML).toContain('No Config');
       expect(container.innerHTML).toContain('Advanced');
@@ -811,7 +850,7 @@ describe('RepoSettingsPage - Council Card', () => {
       const instance = createInstance();
       // Do not register model-card-preview
 
-      expect(() => instance.renderAdvancedCouncilCard(mockAdvancedCouncil)).not.toThrow();
+      expect(() => instance.renderCouncilCard(mockAdvancedCouncil)).not.toThrow();
     });
 
     it('should use escapeHtml for council name to prevent XSS', () => {
@@ -827,7 +866,7 @@ describe('RepoSettingsPage - Council Card', () => {
         }
       };
 
-      instance.renderAdvancedCouncilCard(xssCouncil);
+      instance.renderCouncilCard(xssCouncil);
 
       // The dangerous HTML should be escaped
       expect(container.innerHTML).not.toContain('<img');
@@ -840,7 +879,7 @@ describe('RepoSettingsPage - Council Card', () => {
 
       // The level labels are hardcoded ('Level 1 — Isolation', etc.), but escapeHtml
       // is still called on them. Verify the standard labels pass through safely.
-      instance.renderAdvancedCouncilCard(mockAdvancedCouncil);
+      instance.renderCouncilCard(mockAdvancedCouncil);
 
       expect(container.innerHTML).toContain('Level 1 — Isolation');
       expect(container.innerHTML).toContain('Level 2 — File Context');
@@ -861,7 +900,7 @@ describe('RepoSettingsPage - Council Card', () => {
         }
       };
 
-      instance.renderAdvancedCouncilCard(noTierAdvanced);
+      instance.renderCouncilCard(noTierAdvanced);
 
       expect(container.innerHTML).not.toContain('council-card-tier');
     });
@@ -870,7 +909,7 @@ describe('RepoSettingsPage - Council Card', () => {
       const instance = createInstance();
       const container = registerElement('model-card-preview');
 
-      instance.renderAdvancedCouncilCard(mockAdvancedCouncil);
+      instance.renderCouncilCard(mockAdvancedCouncil);
 
       // Level 2 has two voices
       const html = container.innerHTML;

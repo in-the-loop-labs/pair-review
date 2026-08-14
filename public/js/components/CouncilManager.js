@@ -206,8 +206,8 @@ class CouncilManager {
    */
   _listSignature() {
     return this._councils
-      .map(c => `${c.id} ${c.name} ${c.updated_at || ''}`)
-      .join('');
+      .map(c => `${c.id}\u0000${c.name}\u0000${c.updated_at || ''}`)
+      .join('\u0001');
   }
 
   // ─── Council helpers ───────────────────────────────────────────────────────
@@ -402,13 +402,13 @@ class CouncilManager {
       wrap.appendChild(preview);
       const Card = window.CouncilCard;
       if (Card) {
+        // Pass the row through as-is: CouncilCard.render applies the same
+        // type→layout rule `_effectiveType` encodes for the badge, so the card
+        // and the badge above it always agree without normalizing twice.
         new Card({
           container: preview,
           resolveModelDisplay: (providerId, modelId) => this._resolveModelDisplay(providerId, modelId)
-        // CouncilCard dispatches on `type` too, so it gets the same effective
-        // type as the badge — a legacy row holds a level-keyed config and has to
-        // render with the advanced layout, not the voice one.
-        }).render({ ...council, type: this._effectiveType(council) });
+        }).render(council);
       }
     }
 

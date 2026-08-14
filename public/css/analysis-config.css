@@ -105,6 +105,25 @@
 /* Confirm dialog specific rules live in confirm-dialog.css so that pages can
    use ConfirmDialog without loading this stylesheet. */
 
+/* ============================================
+   Text input dialog (TextInputDialog.js)
+   ============================================
+
+   DEPENDENCY: TextInputDialog needs BOTH this stylesheet AND
+   confirm-dialog.css. It is NOT standalone the way ConfirmDialog is.
+
+   This file owns the generic modal shell (.modal-overlay / .modal-container /
+   .modal-header / .modal-body / .modal-footer, unscoped) plus everything
+   #text-input-dialog and .text-input-dialog-field below.
+
+   confirm-dialog.css owns the footer centering, because TextInputDialog reuses
+   ConfirmDialog's `confirm-dialog-container` class on its container
+   (TextInputDialog.js) to inherit it.
+
+   A page that loads only one of the two renders the name-prompt dialog
+   partially unstyled. The settings page depends on this exact pairing for the
+   Duplicate / Save As prompt. Every page using TextInputDialog must link both. */
+
 /* Dialogs spawned from within other modals need higher z-index */
 #text-input-dialog {
   z-index: 10000; /* Must stack above analysis-config-overlay (1100) */

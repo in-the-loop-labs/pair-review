@@ -590,10 +590,13 @@ describe('"Default for Analysis" composition preview', () => {
   });
 
   it('previews a legacy untyped council with the advanced layout, matching its badge', () => {
-    // REGRESSION (integration review, defect 4): CouncilDropdown.typeBadge now
-    // badges an untyped row "Advanced". CouncilCard dispatches its LAYOUT on
-    // the same field, so passing the row through raw would render a level-keyed
-    // config with the voice layout — zero reviewers under an "Advanced" badge.
+    // REGRESSION (integration review, defect 4): CouncilDropdown.typeBadge
+    // badges an untyped row "Advanced", and the card below it must agree — a
+    // level-keyed config under the voice layout shows zero reviewers and a bogus
+    // level summary. The page used to normalize `type` itself before handing the
+    // council over; that rule now lives solely in CouncilCard.render (which is
+    // what fixed the repo-settings page, the one surface that never got a copy),
+    // so this passes the row through raw and pins the outcome end to end.
     window.CouncilCard = CouncilCard;
     const page = createPage(previewProviders);
     const legacy = {

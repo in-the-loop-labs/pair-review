@@ -141,6 +141,10 @@ function installFetch(store) {
       return makeResponse({ providers: store.providers || PROVIDERS });
     }
     if (url === '/api/config') {
+      // `configFails` makes the route 500 from the very first call, so a mount
+      // can exercise the real constructor-time failure rather than a hand-rolled
+      // re-invocation of the private loader.
+      if (store.configFails) return makeResponse({ error: 'nope' }, { ok: false, status: 500 });
       return makeResponse(store.config || APP_CONFIG);
     }
     if (url === '/api/councils' && method === 'GET') {
@@ -372,6 +376,34 @@ describe('CouncilManager preview', () => {
 
     main().click();
     expect(host.querySelector('.council-manager__preview')).toBeNull();
+  });
+
+  // REGRESSION: a row predating the `type` column holds a level-keyed config.
+  // The badge calls it "Advanced" (via `_effectiveType`/`typeBadge`), so the
+  // card right below it must use the advanced layout too — the voice layout
+  // reads `config.voices`, which such a row does not have, and would render an
+  // empty reviewer list under an "Advanced" badge. The rule now lives solely in
+  // CouncilCard.render; this pins that the manager still gets it right after
+  // dropping its own normalization spread.
+  it('previews a legacy untyped council with the advanced layout, matching its badge', async () => {
+    const untyped = dbCouncil({ id: 'db-legacy', name: 'Old Council', config: ADVANCED_CONFIG });
+    delete untyped.type;
+    const { host } = await mountManager({ list: [untyped], nextId: 2 });
+
+    const row = rowFor(host, 'db-legacy');
+    expect(row.querySelector('.council-type-badge').textContent).toBe('Advanced');
+
+    row.querySelector('.council-manager__row-main').click();
+
+    const preview = host.querySelector('.council-manager__preview');
+    expect(preview.querySelector('.council-card-badge-advanced')).toBeTruthy();
+    // The level-keyed config renders rather than collapsing to zero reviewers.
+    expect(preview.querySelector('.council-card-level-header').textContent)
+      .toContain('Level 1 — Isolation');
+    expect(preview.querySelector('.council-card-reviewer-name').textContent)
+      .toContain('Claude / Sonnet');
+    // The voice layout's level summary must be absent.
+    expect(preview.querySelector('.council-card-summary')).toBeNull();
   });
 
   it('shows only one preview at a time', async () => {
@@ -851,16 +883,19 @@ describe('CouncilManager editor mount sequence', () => {
     }
   });
 
-  it('survives a failed /api/config fetch', async () => {
-    const { host, manager } = await mountManager({ list: [], nextId: 1, config: null });
-    // `config: null` falls through to APP_CONFIG, so force a real failure.
-    global.fetch = vi.fn(async (url) => {
-      if (url === '/api/config') return makeResponse({ error: 'nope' }, { ok: false, status: 500 });
-      if (url === '/api/providers') return makeResponse({ providers: PROVIDERS });
-      return makeResponse({ councils: [] });
-    });
-    manager._appConfig = {};
-    await manager._loadAppConfig();
+  it('survives a failed /api/config fetch during the initial mount', async () => {
+    // The failure is armed BEFORE construction, so `/api/config` rejects inside
+    // the constructor's `_init()` Promise.all — the path that actually runs in
+    // production. Driving `_loadAppConfig()` by hand afterwards would leave an
+    // unhandled rejection during first paint undetected.
+    const { host, manager } = await mountManager({ list: [dbCouncil()], nextId: 2, configFails: true });
+
+    // mountManager already waited for `.council-manager__list-wrap`, so _init()
+    // resolved and painted despite the failed fetch. The list is real, not the
+    // loading or error state.
+    expect(host.querySelector('.council-manager__error')).toBeNull();
+    expect(rowFor(host, 'db-1')).toBeTruthy();
+    expect(manager._appConfig).toEqual({});
 
     host.querySelector('.council-manager__add-btn').click();
     host.querySelectorAll('.council-manager__chooser-option')[0].click();

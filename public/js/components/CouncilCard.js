@@ -14,11 +14,14 @@
  * modelId) => { providerName, modelName }` callback rather than the component
  * reaching for page-specific data.
  *
- * Consumers:
- *   - public/js/repo-settings.js — renderVoiceCouncilCard / renderAdvancedCouncilCard
- *     delegate here; resolveModelDisplay uses its own alias-aware lookup.
+ * Consumers (all of them call `render()` and let it pick the layout — see the
+ * note on that method; none may pre-normalize `type` on the way in):
+ *   - public/js/repo-settings.js — renderCouncilCard delegates here;
+ *     resolveModelDisplay uses its own alias-aware lookup.
  *   - public/js/settings.js — renders the preview beneath the "Default for
  *     Analysis" dropdown when a council is selected.
+ *   - public/js/components/CouncilManager.js — the expanded row preview in the
+ *     global settings page's Councils section.
  *
  * CSS classes (.council-card*) live in public/css/council-card.css (loaded by
  * both pages). The component only sets innerHTML + calls the injected resolver,
@@ -57,6 +60,23 @@ class CouncilCard {
   /**
    * Render the preview for `council`, dispatching by type. A falsy council
    * clears the container.
+   *
+   * THE single place council `type` is turned into a layout. Only the literal
+   * `'council'` gets the voice layout; everything else — `'advanced'`, an
+   * unrecognized value, and crucially a legacy row with NO `type` at all — gets
+   * the advanced one. Legacy untyped rows predate the `type` column and hold a
+   * level-keyed config that only the advanced layout can read; the voice layout
+   * would show zero reviewers under a bogus level summary. The rest of the app
+   * already reads them that way (`AdvancedConfigTab.loadCouncils` claims
+   * `!c.type || c.type === 'advanced'`, `VoiceCentricConfigTab.loadCouncils`
+   * takes only `c.type === 'council'`, and POST /api/councils stores
+   * `type || 'advanced'`), and `CouncilDropdown.typeBadge` badges them
+   * "Advanced" — so this matches the badge that sits above the card.
+   *
+   * Every consumer must route through here rather than pre-normalizing `type`
+   * itself: three separate copies of this rule is exactly how the repo-settings
+   * page ended up rendering a voice layout under an "Advanced" badge.
+   *
    * @param {Object|null} council - { id, name, type, config }
    */
   render(council) {
@@ -65,10 +85,10 @@ class CouncilCard {
       this.clear();
       return;
     }
-    if (council.type === 'advanced') {
-      this.renderAdvanced(council);
-    } else {
+    if (council.type === 'council') {
       this.renderVoice(council);
+    } else {
+      this.renderAdvanced(council);
     }
   }
 

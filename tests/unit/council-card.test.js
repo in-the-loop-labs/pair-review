@@ -91,6 +91,35 @@ describe('CouncilCard.render dispatch', () => {
     expect(container.querySelector('.council-card-consolidation-label').textContent).toBe('Orchestration');
   });
 
+  // REGRESSION: `render` is the single place council `type` becomes a layout.
+  // A legacy row predating the `type` column holds a level-keyed config, so the
+  // voice layout would render it as zero reviewers under a bogus level summary
+  // — and CouncilDropdown.typeBadge already badges those rows "Advanced", so the
+  // badge and the card directly beneath it would contradict each other.
+  it('renders a legacy untyped council with the advanced layout', () => {
+    const container = mount();
+    const { type, ...untyped } = advancedCouncil;
+    expect(untyped.type).toBeUndefined();
+
+    new CouncilCard({ container, resolveModelDisplay }).render(untyped);
+
+    expect(container.querySelector('.council-card-badge-advanced')).toBeTruthy();
+    // The level-keyed config actually renders instead of collapsing to nothing.
+    const headers = [...container.querySelectorAll('.council-card-level-header')].map(h => h.textContent);
+    expect(headers.some(h => /Level 1 — Isolation/.test(h))).toBe(true);
+    expect(container.textContent).toContain('P:claude / M:sonnet');
+    // The voice layout's level summary must not appear.
+    expect(container.querySelector('.council-card-summary')).toBeNull();
+  });
+
+  it('renders an unrecognized type with the advanced layout', () => {
+    const container = mount();
+    new CouncilCard({ container, resolveModelDisplay })
+      .render({ ...advancedCouncil, type: 'something-else' });
+    expect(container.querySelector('.council-card-badge-advanced')).toBeTruthy();
+    expect(container.querySelector('.council-card-summary')).toBeNull();
+  });
+
   it('escapes the council name', () => {
     const container = mount();
     new CouncilCard({ container, resolveModelDisplay })

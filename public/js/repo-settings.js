@@ -577,16 +577,25 @@ class RepoSettingsPage {
   }
 
   /**
-   * Render a council card preview into #model-card-preview
+   * Render a council card preview into #model-card-preview.
+   *
+   * Layout dispatch lives in CouncilCard.render, not here — including the
+   * legacy-untyped ⇒ advanced rule. This page re-implemented the dispatch and
+   * drifted: an untyped row rendered the voice layout (zero reviewers, bogus
+   * level summary) directly beneath a CouncilDropdown badge reading "Advanced".
+   * Do not reintroduce a `council.type` test in this file.
+   *
+   * A falsy council leaves whatever is on screen alone (callers hide the
+   * preview container instead); it deliberately does not clear the card.
+   *
    * @param {object} council - Council object with id, name, type, config
    */
   renderCouncilCard(council) {
     if (!council) return;
-    if (council.type === 'advanced') {
-      this.renderAdvancedCouncilCard(council);
-    } else {
-      this.renderVoiceCouncilCard(council);
-    }
+    const container = document.getElementById('model-card-preview');
+    if (!container) return;
+    const card = this._getCouncilCard(container);
+    if (card) card.render(council);
   }
 
   /**
@@ -608,28 +617,6 @@ class RepoSettingsPage {
       });
     }
     return this._councilCard;
-  }
-
-  /**
-   * Render a standard (voice) council card via the shared CouncilCard component.
-   * @param {object} council
-   */
-  renderVoiceCouncilCard(council) {
-    const container = document.getElementById('model-card-preview');
-    if (!container) return;
-    const card = this._getCouncilCard(container);
-    if (card) card.renderVoice(council);
-  }
-
-  /**
-   * Render an advanced council card via the shared CouncilCard component.
-   * @param {object} council
-   */
-  renderAdvancedCouncilCard(council) {
-    const container = document.getElementById('model-card-preview');
-    if (!container) return;
-    const card = this._getCouncilCard(container);
-    if (card) card.renderAdvanced(council);
   }
 
   async loadSettings() {
