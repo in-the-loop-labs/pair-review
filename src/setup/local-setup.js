@@ -6,7 +6,7 @@ const { fireHooks, hasHooks } = require('../hooks/hook-runner');
 const { buildReviewStartedPayload, buildReviewLoadedPayload, getCachedUser } = require('../hooks/payloads');
 const { STOPS } = require('../local-scope');
 const logger = require('../utils/logger');
-const { LOCAL_REVIEW_PATH_URL_ERROR, rejectUrlLikeLocalReviewPath } = require('../utils/local-path-input');
+const { isLocalPathUrlError, rejectUrlLikeLocalReviewPath } = require('../utils/local-path-input');
 const path = require('path');
 const fs = require('fs').promises;
 
@@ -35,12 +35,14 @@ async function setupLocalReview({ db, targetPath, onProgress, config, flags = {}
   let resolvedPath;
   try {
     progress({ step: 'validate', status: 'running', message: 'Validating target path...' });
-    rejectUrlLikeLocalReviewPath(targetPath);
+    rejectUrlLikeLocalReviewPath(targetPath, config);
     resolvedPath = path.resolve(targetPath);
     await fs.access(resolvedPath);
     progress({ step: 'validate', status: 'completed', message: `Path resolved to ${resolvedPath}` });
   } catch (err) {
-    const message = err.message === LOCAL_REVIEW_PATH_URL_ERROR
+    // Branch on the error CODE, never the message: the URL error names the
+    // configured hosts, so its text varies per installation.
+    const message = isLocalPathUrlError(err)
       ? err.message
       : `Path does not exist: ${path.resolve(targetPath)}`;
     progress({ step: 'validate', status: 'error', message });

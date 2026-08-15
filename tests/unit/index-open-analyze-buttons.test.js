@@ -528,7 +528,10 @@ describe('Index page Open/Analyze buttons', () => {
     const browseBtn = elementsById['browse-local-btn'];
     const input = elementsById['local-path-input'];
     const errorEl = elementsById['start-review-error-local'];
-    errorEl.textContent = 'Local reviews require a filesystem path, not a URL. Pass GitHub or Graphite URLs as PR review inputs instead.';
+    // The URL error is flagged, not text-matched: it names the configured
+    // hosts and so its wording varies per installation.
+    errorEl.textContent = 'Local reviews require a filesystem path, not a URL. Pass GitHub URLs as PR review inputs instead.';
+    errorEl.dataset.localPathUrlError = 'true';
     errorEl.classList.remove.mockClear();
 
     global.fetch = vi.fn((url) => {

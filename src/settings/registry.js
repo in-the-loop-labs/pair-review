@@ -66,7 +66,7 @@ const REGISTRY = [
   {
     key: 'enable_graphite',
     label: 'Show Graphite links',
-    description: 'Show Graphite links alongside GitHub links in the PR header.',
+    description: 'Show Graphite links alongside GitHub links in the PR header, and name Graphite in the PR URL prompts and errors. Graphite PR URLs are accepted either way.',
     group: 'general',
     type: 'boolean',
     default: false,

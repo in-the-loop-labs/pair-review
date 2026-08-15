@@ -1018,7 +1018,13 @@ async function handleLocalReview(targetPath, flags = {}) {
   let setupComplete = false;
 
   try {
-    rejectUrlLikeLocalReviewPath(targetPath);
+    // Loaded before path validation so the "that's a URL" error can name the
+    // configured hosts (GitHub, Graphite, alt hosts) and so scheme-less
+    // alt-host URLs are recognised. The first-run welcome still waits until
+    // the path has been validated.
+    const { config, isFirstRun } = await loadConfig();
+
+    rejectUrlLikeLocalReviewPath(targetPath, config);
 
     const resolvedPath = path.resolve(targetPath || process.cwd());
 
@@ -1031,8 +1037,6 @@ async function handleLocalReview(targetPath, flags = {}) {
     console.log(`Finding git repository root from ${resolvedPath}...`);
     const repoPath = await module.exports.findGitRoot(resolvedPath);
     console.log(`Found git repository at: ${repoPath}`);
-
-    const { config, isFirstRun } = await loadConfig();
 
     if (isFirstRun) {
       showWelcomeMessage();

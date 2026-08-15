@@ -1394,11 +1394,14 @@
                     <div class="tab-pane active" id="pr-tab">
                         <div class="start-review-section">
                             <form class="start-review-form" id="start-review-form">
+                                <!-- The placeholder is host-neutral until /api/config
+                                     resolves; index.js rewrites it to name the configured
+                                     hosts (GitHub, Graphite when enabled, any alt hosts). -->
                                 <input
                                     type="text"
                                     class="start-review-input"
                                     id="pr-url-input"
-                                    placeholder="Enter GitHub or Graphite PR URL"
+                                    placeholder="Enter PR URL"
                                     autocomplete="off"
                                     spellcheck="false"
                                 >
@@ -1532,7 +1535,7 @@
                 <pre><code class="cmd-example" data-args="123"></code></pre>
 
                 <h3>Review a PR by URL</h3>
-                <p>From anywhere, using a full GitHub or Graphite URL:</p>
+                <p>From anywhere, using a full <span data-pr-host-list>GitHub</span> URL:</p>
                 <pre><code class="cmd-example" data-args="https://github.com/owner/repo/pull/123"></code></pre>
 
                 <h3>Review Local Changes</h3>

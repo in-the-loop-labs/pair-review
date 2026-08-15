@@ -390,7 +390,7 @@ router.post('/api/local/start', async (req, res) => {
     }
 
     try {
-      rejectUrlLikeLocalReviewPath(inputPath);
+      rejectUrlLikeLocalReviewPath(inputPath, req.app.get('config'));
     } catch (err) {
       return res.status(400).json({ error: err.message });
     }

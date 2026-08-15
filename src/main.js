@@ -566,6 +566,12 @@ function parseArgs(args) {
       flags.local = true;
       // Next argument is optional path (if not starting with -)
       if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+        // parseArgs() is deliberately config-free — it is exported and
+        // unit-tested as a pure argv parser — so this catches only explicit
+        // `scheme://` inputs, with host-neutral copy. A scheme-less alt-host
+        // URL needs config and is caught by the re-check in main() right after
+        // loadConfig() (and again downstream by handleLocalReview /
+        // attemptDelegation / the local routes).
         rejectUrlLikeLocalReviewPath(args[i + 1]);
         flags.localPath = args[i + 1];
         i++; // Skip next argument since we consumed it
@@ -738,6 +744,17 @@ AI PROVIDERS:
     // Parse command line arguments including flags (before DB init so
     // single-port delegation can skip DB entirely)
     const { prArgs, flags } = parseArgs(args);
+
+    // parseArgs() ran config-free, so it could only reject `scheme://` inputs.
+    // Re-check now that config is loaded: a configured alt host makes
+    // `ghe.example.com/owner/repo/pull/1` a URL too, and the message can name
+    // the hosts this install actually accepts. Several branches below resolve
+    // flags.localPath directly (the instruction handoff at the delegation
+    // check, handleHeadlessDelegated, the headless local path), so the
+    // invariant has to hold here rather than only in handleLocalReview().
+    if (flags.local && flags.localPath) {
+      rejectUrlLikeLocalReviewPath(flags.localPath, config);
+    }
 
     // Headless-mode flag validation (fail fast, before any DB/server work).
     // --instructions and --instructions-file are mutually exclusive.
