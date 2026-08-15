@@ -348,6 +348,48 @@ describe('PR Management Endpoints', () => {
         host: null, isDualHost: true
       });
     });
+
+    // The 400 body is the message the landing page shows on a parse failure.
+    // It names the hosts this install accepts, derived from config — pin it so a
+    // refactor cannot quietly revert the copy to a hardcoded "GitHub" literal.
+    it('names the configured hosts in the 400 message for an unparseable URL', async () => {
+      app.set('config', {
+        enable_graphite: true,
+        repos: {
+          'myteam/myproject': {
+            api_host: 'https://api.meteorite.example/api/v3',
+            links: {
+              external: {
+                name: 'Meteorite',
+                label: 'Open on Meteorite',
+                url_template: 'https://meteorite.example/{owner}/{repo}/pull/{number}'
+              }
+            }
+          }
+        }
+      });
+
+      const response = await request(server)
+        .post('/api/parse-pr-url')
+        .send({ url: 'https://example.com/not/a/pr' });
+
+      expect(response.status).toBe(400);
+      expect(response.body.valid).toBe(false);
+      expect(response.body.error)
+        .toBe('Invalid PR URL. Please enter a GitHub, Graphite, or Meteorite PR URL.');
+    });
+
+    it('names GitHub alone in the 400 message on a default install', async () => {
+      app.set('config', { enable_graphite: false, repos: {} });
+
+      const response = await request(server)
+        .post('/api/parse-pr-url')
+        .send({ url: 'https://example.com/not/a/pr' });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error)
+        .toBe('Invalid PR URL. Please enter a GitHub PR URL.');
+    });
   });
 
   describe('GET /api/pr/:owner/:repo/:number', () => {
@@ -3479,6 +3521,67 @@ describe('Config Endpoints', () => {
       // selectModel() guard does with 'sonnet' anyway. Claude's coherent default is
       // the canonical 'opus-4.8-xhigh'.
       expect(response.body.default_model).toBe('opus-4.8-xhigh');
+    });
+
+    // The landing page, its URL-validation errors, and the local-path "that's
+    // a URL" error all name the hosts pair-review accepts PR URLs from. That
+    // list is derived from config here rather than hardcoded in the markup, so
+    // an alt host is named by configuring it — not by patching shipped strings.
+    describe('pr_host_names / pr_host_list / pr_url_hostnames', () => {
+      const ALT_HOST_REPO = {
+        api_host: 'https://api.meteorite.example/api/v3',
+        links: {
+          external: {
+            name: 'Meteorite',
+            label: 'Open on Meteorite',
+            url_template: 'https://meteorite.example/{owner}/{repo}/pull/{number}'
+          }
+        }
+      };
+
+      it('names GitHub alone by default (Graphite is off unless enabled)', async () => {
+        app.set('config', { ...app.get('config'), enable_graphite: false, repos: {} });
+
+        const response = await request(server).get('/api/config');
+
+        expect(response.body.pr_host_names).toEqual(['GitHub']);
+        expect(response.body.pr_host_list).toBe('GitHub');
+      });
+
+      it('adds Graphite when enable_graphite is on', async () => {
+        app.set('config', { ...app.get('config'), enable_graphite: true, repos: {} });
+
+        const response = await request(server).get('/api/config');
+
+        expect(response.body.pr_host_names).toEqual(['GitHub', 'Graphite']);
+        expect(response.body.pr_host_list).toBe('GitHub or Graphite');
+      });
+
+      it('adds an alt host from repos[*].links.external.name', async () => {
+        app.set('config', {
+          ...app.get('config'),
+          enable_graphite: true,
+          repos: { 'myteam/myproject': ALT_HOST_REPO }
+        });
+
+        const response = await request(server).get('/api/config');
+
+        expect(response.body.pr_host_names).toEqual(['GitHub', 'Graphite', 'Meteorite']);
+        expect(response.body.pr_host_list).toBe('GitHub, Graphite, or Meteorite');
+      });
+
+      it('publishes the alt host domains for scheme-less URL detection', async () => {
+        app.set('config', {
+          ...app.get('config'),
+          repos: { 'myteam/myproject': ALT_HOST_REPO }
+        });
+
+        const response = await request(server).get('/api/config');
+
+        expect(response.body.pr_url_hostnames).toEqual(expect.arrayContaining([
+          'github.com', 'meteorite.example', 'api.meteorite.example'
+        ]));
+      });
     });
 
     it('should return configured provider and model defaults', async () => {

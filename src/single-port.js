@@ -327,7 +327,7 @@ async function attemptDelegation(config, flags, prArgs, _deps, options = {}) {
   // analyze=true (and analysisConfigId supersedes both when present).
   let url;
   if (flags.local) {
-    rejectUrlLikeLocalReviewPath(flags.localPath);
+    rejectUrlLikeLocalReviewPath(flags.localPath, config);
     const targetPath = path.resolve(flags.localPath || process.cwd());
     const analysisConfigId = await handoffAnalysisConfigId(options.localRepository || null);
     url = buildDelegationUrl(port, 'local', {

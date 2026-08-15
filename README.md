@@ -516,7 +516,7 @@ For advanced configuration with custom providers and models, see [AI Provider Co
 |-----|---------|-------------|
 | `external_comments` | `false` | Opt-in: set to `true` to fetch and display GitHub PR review comments inline. Enables the **External** segment, the refresh button, and `/api/reviews/*/external-comments*` routes. |
 | `enable_chat` | `true` | Enables the chat panel feature (uses `chat_provider`). |
-| `enable_graphite` | `false` | Show Graphite links alongside GitHub links. |
+| `enable_graphite` | `false` | Show Graphite links alongside GitHub links, and name Graphite in the PR URL prompts and errors. Graphite PR URLs are accepted either way. |
 | `skip_update_notifier` | `false` | Suppress the "update available" notification on exit. |
 
 ### Configuration Files

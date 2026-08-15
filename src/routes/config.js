@@ -34,6 +34,7 @@ const {
   getTourAutoGenerate
 } = require('../config');
 const { resolveRepoLinks } = require('../links/repo-links');
+const { resolveKnownHostNames, formatHostList, resolveUrlLikeHostnames } = require('../links/host-names');
 const { version } = require('../../package.json');
 const semver = require('semver');
 const { getAllChatProviders, getAllCachedChatAvailability } = require('../chat/chat-providers');
@@ -158,6 +159,8 @@ router.get('/api/config', (req, res) => {
     hasRepoGithubToken = Boolean(resolvePreflightBinding(repository, config, undefined).token);
   }
 
+  const hostNames = resolveKnownHostNames(config);
+
   // Only return safe configuration values (not secrets like github_token)
   res.json({
     version,
@@ -190,6 +193,19 @@ router.get('/api/config', (req, res) => {
     pi_available: getCachedAvailability('pi')?.available || false,
     assisted_by_url: config.assisted_by_url || 'https://github.com/in-the-loop-labs/pair-review',
     enable_graphite: config.enable_graphite === true,
+    // Code hosts pair-review accepts PR URLs from, derived from config
+    // (GitHub always; Graphite only when enabled; each alt host's
+    // `links.external.name`). Drives the landing-page placeholder, the help
+    // copy, and the client-side URL validation errors — surfaces that render
+    // before any repo is resolved and so cannot use resolveHostName().
+    // Both shapes are shipped so the Oxford-comma formatting has exactly one
+    // implementation (server-side) and cannot drift from the server's own copy.
+    pr_host_names: hostNames,
+    pr_host_list: formatHostList(hostNames),
+    // Hostnames the local-path input should recognise as scheme-less PR URLs
+    // (github.com, Graphite, and every configured alt host's API and web
+    // domains), so the client pre-flight matches the server's own check.
+    pr_url_hostnames: resolveUrlLikeHostnames(config),
     external_comments: config.external_comments !== false,
     chat_spinner: config.chat_spinner || 'dots',
     summaries: {

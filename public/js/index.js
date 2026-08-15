@@ -116,14 +116,94 @@
   // (window.encodeBase64Utf8 / window.getRepoStorageKey), shared with pr.js so the
   // per-repo keys this page writes stay byte-identical to those the PR page reads.
 
-  const LOCAL_REVIEW_PATH_URL_ERROR = 'Local reviews require a filesystem path, not a URL. Pass GitHub or Graphite URLs as PR review inputs instead.';
+  // Hosts named in URL copy, from /api/config's `pr_host_list`, which the
+  // SERVER formats (GitHub always; Graphite only when enable_graphite; each alt
+  // host's links.external.name). Taking the pre-joined string rather than the
+  // array keeps the Oxford-comma formatting in exactly one place —
+  // src/links/host-names.js — so this copy cannot drift from the
+  // identically-worded server-side errors.
+  //
+  // null until /api/config resolves. The copy then reads host-neutral rather
+  // than naming the built-ins, which would claim an alt host's URLs are
+  // unsupported when they are accepted (matching localReviewPathUrlError() in
+  // src/utils/local-path-input.js for its config-free callers).
+  let prHostList = null;
+
+  // Hostnames recognised as scheme-less PR URLs. Seeded with the built-ins and
+  // replaced from /api/config's `pr_url_hostnames`, which adds every
+  // configured alt host. Mirrors resolveUrlLikeHostnames() server-side.
+  let prUrlHostnames = ['github.com', 'app.graphite.dev', 'app.graphite.com'];
+
+  /** "GitHub " / "GitHub or Graphite " while the host list is known, else "". */
+  function prHostPrefix() {
+    return prHostList ? prHostList + ' ' : '';
+  }
+
+  function localReviewPathUrlError() {
+    return 'Local reviews require a filesystem path, not a URL. '
+      + 'Pass ' + (prHostList ? prHostList + ' URLs' : 'PR URLs')
+      + ' as PR review inputs instead.';
+  }
+
+  /**
+   * Adopt the server-formatted host list and refresh the copy that names it.
+   *
+   * Called once /api/config resolves. The static markup ships host-neutral
+   * ("Enter PR URL", "a GitHub URL") so nothing flashes a host list that the
+   * installation does not actually support.
+   *
+   * @param {Object} config - /api/config payload
+   */
+  function applyPrHostList(config) {
+    if (!config) return;
+    if (Array.isArray(config.pr_url_hostnames) && config.pr_url_hostnames.length > 0) {
+      prUrlHostnames = config.pr_url_hostnames;
+    }
+    if (typeof config.pr_host_list !== 'string' || !config.pr_host_list) return;
+    prHostList = config.pr_host_list;
+
+    const urlInput = document.getElementById('pr-url-input');
+    if (urlInput) urlInput.placeholder = 'Enter ' + prHostList + ' PR URL';
+
+    document.querySelectorAll('[data-pr-host-list]').forEach(el => {
+      el.textContent = prHostList;
+    });
+  }
+
+  /**
+   * Drop the "this element is showing the URL error" marker.
+   *
+   * Called from every writer that replaces or hides the message, so the flag
+   * cannot outlive the message it describes — otherwise an unrelated error
+   * (e.g. a failed directory picker) would be dismissed by the next keystroke.
+   *
+   * @param {HTMLElement} errorEl
+   */
+  function clearLocalPathUrlErrorFlag(errorEl) {
+    if (errorEl) delete errorEl.dataset.localPathUrlError;
+  }
+
+  /**
+   * Show the "that's a URL, not a path" error and mark the element so
+   * handleLocalPathInput can clear it without comparing message text.
+   */
+  function showLocalPathUrlError() {
+    // showError() clears the flag first, so setting it AFTER is what makes it
+    // describe THIS message rather than a previous one.
+    showError('local', localReviewPathUrlError());
+    const errorEl = document.getElementById('start-review-error-local');
+    if (errorEl) errorEl.dataset.localPathUrlError = 'true';
+  }
 
   function isUrlLikeLocalReviewPath(value) {
     if (!value || typeof value !== 'string') return false;
     const trimmed = value.trim();
     if (!trimmed) return false;
     if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) return true;
-    if (/^(?:github\.com|app\.graphite\.(?:dev|com))\//i.test(trimmed)) return true;
+    // Require a path separator so a bare hostname-shaped directory name is
+    // not mistaken for a URL.
+    const lower = trimmed.toLowerCase();
+    if (prUrlHostnames.some(hostname => lower.startsWith(hostname + '/'))) return true;
     // Keep this aligned with src/utils/local-path-input.js: only a leading
     // user@host:path token is treated as an SSH-style remote.
     if (/^[^@/\\\s]+@[^:/\\\s]+:[^\s]+$/.test(trimmed)) return true;
@@ -172,6 +252,7 @@
     const elId = tab === 'pr' ? 'start-review-error-pr' : 'start-review-error-local';
     const errorEl = document.getElementById(elId);
     if (errorEl) {
+      clearLocalPathUrlErrorFlag(errorEl);
       errorEl.textContent = message;
       errorEl.classList.remove('info');
       errorEl.classList.add('visible');
@@ -188,6 +269,7 @@
     const elId = tab === 'pr' ? 'start-review-error-pr' : 'start-review-error-local';
     const errorEl = document.getElementById(elId);
     if (errorEl) {
+      clearLocalPathUrlErrorFlag(errorEl);
       errorEl.textContent = message;
       errorEl.classList.add('visible', 'info');
     }
@@ -885,7 +967,10 @@
 
     // Clear previous errors/info messages
     const errorEl = document.getElementById('start-review-error-local');
-    if (errorEl) errorEl.classList.remove('visible', 'info');
+    if (errorEl) {
+      errorEl.classList.remove('visible', 'info');
+      clearLocalPathUrlErrorFlag(errorEl);
+    }
 
     if (!pathValue) {
       showError('local', 'Please enter a directory path');
@@ -894,7 +979,7 @@
     }
 
     if (isUrlLikeLocalReviewPath(pathValue)) {
-      showError('local', LOCAL_REVIEW_PATH_URL_ERROR);
+      showLocalPathUrlError();
       input.focus();
       return;
     }
@@ -912,12 +997,16 @@
     if (!input || !errorEl) return;
 
     if (isUrlLikeLocalReviewPath(input.value)) {
-      showError('local', LOCAL_REVIEW_PATH_URL_ERROR);
+      showLocalPathUrlError();
       return;
     }
 
-    if (errorEl.textContent === LOCAL_REVIEW_PATH_URL_ERROR) {
+    // Flagged rather than text-compared: the message names the configured
+    // hosts, so it can change between being shown and being cleared (the
+    // host list arrives asynchronously from /api/config).
+    if (errorEl.dataset.localPathUrlError === 'true') {
       errorEl.classList.remove('visible', 'info');
+      clearLocalPathUrlErrorFlag(errorEl);
     }
   }
 
@@ -1313,7 +1402,7 @@
 
     // Validate input
     if (!url) {
-      showError('pr', 'Please enter a GitHub PR URL');
+      showError('pr', 'Please enter a ' + prHostPrefix() + 'PR URL');
       input.focus();
       return;
     }
@@ -1325,7 +1414,7 @@
     const parsed = await parsePRUrl(url);
     if (!parsed) {
       setFormLoading('pr', false);
-      showError('pr', 'Invalid PR URL. Please enter a GitHub or Graphite PR URL (e.g., https://github.com/owner/repo/pull/123)');
+      showError('pr', 'Invalid PR URL. Please enter a ' + prHostPrefix() + 'PR URL (e.g., https://github.com/owner/repo/pull/123)');
       input.focus();
       return;
     }
@@ -1397,6 +1486,7 @@
         window.__pairReview.modelOverride = config.model_override || null;
         window.__pairReview.hasGithubToken = Boolean(config.has_github_token);
         window.__pairReview.enableGraphite = config.enable_graphite === true;
+        applyPrHostList(config);
         window.__pairReview.chatSpinner = config.chat_spinner || 'dots';
         window.__pairReview.chatEnterToSend = config.chat_enter_to_send !== false;
 
@@ -2592,7 +2682,14 @@
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
       buildReviewUrlsFromRows: buildReviewUrlsFromRows,
-      getSelectedCollectionRows: getSelectedCollectionRows
+      getSelectedCollectionRows: getSelectedCollectionRows,
+      applyPrHostList: applyPrHostList,
+      isUrlLikeLocalReviewPath: isUrlLikeLocalReviewPath,
+      localReviewPathUrlError: localReviewPathUrlError,
+      showError: showError,
+      showInfo: showInfo,
+      showLocalPathUrlError: showLocalPathUrlError,
+      handleLocalPathInput: handleLocalPathInput
     };
   }
 

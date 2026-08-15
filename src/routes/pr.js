@@ -29,6 +29,7 @@ const path = require('path');
 const { resolveHostBinding, resolveBindingRepositoryFromPR, getWorktreeDisplayName, resolveLoadSkills, buildCouncilProviderOverrides, getSummaryEnabled, getTourEnabled } = require('../config');
 const { storedHostToOption, isDualHostRepo } = require('../utils/host-resolution');
 const { resolveHostName } = require('../links/repo-links');
+const { resolveHostListText } = require('../links/host-names');
 const { backgroundQueue } = require('../ai/background-queue');
 const logger = require('../utils/logger');
 const { buildDiffLineSet } = require('../utils/diff-annotator');
@@ -1992,7 +1993,7 @@ router.post('/api/parse-pr-url', (req, res) => {
   }
 
   return res.status(400).json({
-    error: 'Invalid PR URL. Please enter a GitHub or Graphite PR URL.',
+    error: `Invalid PR URL. Please enter a ${resolveHostListText(config)} PR URL.`,
     valid: false
   });
 });

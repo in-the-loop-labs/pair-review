@@ -214,7 +214,8 @@ Customise the link buttons shown in the review header.
   - `name` (optional) — display name of the host (e.g. `"Meteorite"`). Used
     in place of the literal "GitHub" in user-facing text: the review-submit
     success toast, the pending-draft notice and indicator, and the
-    "Save as Draft" description. Defaults to `"GitHub"` when unset.
+    "Save as Draft" description. It also joins the global host list described
+    in "Naming Your Host in the UI" below. Defaults to `"GitHub"` when unset.
   - `label` (required) — display text for the header link button.
   - `url_template` (required) — URL with `{owner}`, `{repo}`, `{number}`,
     `{branch}`, `{base_branch}`, `{head_sha}` placeholders. The resolved
@@ -236,6 +237,52 @@ Note that the host's web URL frequently cannot be derived from `api_host`
 (the API host, web host, and the host returned in PR `html_url` values may
 be three different domains), which is why `url_template` exists and is used
 for every host-facing link.
+
+## Naming Your Host in the UI
+
+`links.external.name` names the host wherever pair-review has resolved a
+repository. Some copy is rendered *before* any repository is known — the
+landing-page PR input, the URL validation errors, and the local-review
+"that's a URL, not a path" error. Those surfaces use a **global host list**
+derived from the whole configuration:
+
+1. **GitHub** — always present. Repos with no entry fall back to `github.com`
+   and the top-level credentials, so github.com is always reachable.
+2. **Graphite** — only when the top-level `enable_graphite` is `true`. It
+   defaults to `false`, so a default install never advertises it. The flag
+   controls *naming* only: Graphite PR URLs are accepted either way.
+3. **Each distinct `links.external.name`** of a repo that also sets
+   `api_host`, in configuration order.
+
+With `enable_graphite: true` and one alt host named `"Meteorite"`, the
+landing-page input reads:
+
+> Enter GitHub, Graphite, or Meteorite PR URL
+
+and the parse failure reads:
+
+> Invalid PR URL. Please enter a GitHub, Graphite, or Meteorite PR URL.
+
+Two details worth knowing:
+
+- An alt-host repo with **no** `links.external.name` contributes nothing; it
+  resolves to "GitHub", which is already in the list.
+- `name` only registers as part of a *usable* external link, so it needs
+  `label` and an `https://` `url_template` alongside it — the same
+  requirement as the header link button.
+
+The list is served to the frontend by `GET /api/config` as `pr_host_names`
+(the array) and `pr_host_list` (the formatted fragment). The same endpoint
+publishes `pr_url_hostnames`, the domains derived from each alt host's
+`api_host` and `links.external.url_template`, so that a scheme-less alt-host
+URL pasted into the **local path** box is recognised as a URL rather than
+resolved as a directory name. A scheme-less `api_host` (`ghe.example.com`)
+works, and a non-default port is recorded both with and without the port so
+either shape of paste is recognised.
+
+If you have been patching these strings downstream (e.g. a packaging overlay
+rewriting the shipped copy), configure `links.external.name` instead — the
+strings are no longer stable patch targets.
 
 ## Dual-Host Repositories
 
