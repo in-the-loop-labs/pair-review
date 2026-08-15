@@ -403,6 +403,44 @@ describe('Consolidation prompt templates (direct tests)', () => {
     expect(thorough.taggedPrompt).toContain('do not summarize an exploit description back into a code observation');
   });
 
+  it('thorough consolidation should require an adversarial verification pass', () => {
+    const thorough = require('../../src/ai/prompts/baseline/consolidation/thorough');
+
+    expect(thorough.defaultOrder).toContain('adversarial-verification');
+    // Verification reads the inputs and runs before the merge rules
+    const verifyIdx = thorough.defaultOrder.indexOf('adversarial-verification');
+    expect(thorough.defaultOrder[verifyIdx - 1]).toBe('input-suggestions');
+    expect(thorough.defaultOrder[verifyIdx + 1]).toBe('consolidation-rules');
+
+    const section = thorough.sections.find(s => s.name === 'adversarial-verification');
+    expect(section).toBeDefined();
+    expect(section.required).toBe(true);
+
+    const parsed = thorough.parseSections().find(s => s.name === 'adversarial-verification');
+    expect(parsed).toBeDefined();
+    // Refutation asymmetry: drops need positive evidence of wrongness;
+    // unverifiable findings keep their original confidence (suppression-by-doubt
+    // removes genuine defects, not incorrect ones — eval 2026-08-15)
+    expect(parsed.content).toContain('inability to verify is not refutation');
+    expect(parsed.content).toContain('keep it at its original confidence');
+    // Refutation by code evidence beats reviewer consensus (shared blind spots)
+    expect(parsed.content).toContain('code evidence outranks consensus');
+    // Repo access must stay READ-ONLY — this wording is a real mitigation
+    // under harnesses whose shell tool is not mechanically sandboxed
+    expect(parsed.content).toContain('READ-ONLY');
+    expect(parsed.content).toContain('Do NOT modify files');
+  });
+
+  it('adversarial verification is thorough-only until the balanced/fast ports', () => {
+    const balanced = require('../../src/ai/prompts/baseline/consolidation/balanced');
+    const fast = require('../../src/ai/prompts/baseline/consolidation/fast');
+
+    for (const template of [balanced, fast]) {
+      expect(template.taggedPrompt).not.toContain('name="adversarial-verification"');
+      expect(template.defaultOrder).not.toContain('adversarial-verification');
+    }
+  });
+
   it('parseSections should return balanced-output and summary-synthesis as required sections', () => {
     const thorough = require('../../src/ai/prompts/baseline/consolidation/thorough');
     const balanced = require('../../src/ai/prompts/baseline/consolidation/balanced');

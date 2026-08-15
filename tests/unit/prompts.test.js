@@ -686,6 +686,12 @@ describe('Baseline Level 1 Thorough', () => {
     expect(baseline.taggedPrompt).toContain('report it as hardening at reduced confidence');
     // Simplicity findings need a concrete simpler alternative, or they're style
     expect(baseline.taggedPrompt).toContain('Simplicity findings must show the simpler version');
+    // Refutation asymmetry: drops require positive refutation evidence;
+    // unverifiable-but-concrete findings surface as low-confidence questions
+    // (eval 2026-08-15: suppression-by-doubt removes genuine defects, not
+    // incorrect ones — borderline findings go up for downstream adjudication)
+    expect(baseline.taggedPrompt).toContain('Discard only what you actually refuted');
+    expect(baseline.taggedPrompt).toContain('neither confirm nor refute');
   });
 
   it('should have a do-not-report list', async () => {
@@ -695,12 +701,16 @@ describe('Baseline Level 1 Thorough', () => {
     expect(baseline.taggedPrompt).toContain('Pre-existing issues');
     expect(baseline.taggedPrompt).toContain('linter');
     // Carve-out: unverifiable high-impact hazards survive as questions instead
-    // of being silently dropped
+    // of being silently dropped (widened beyond races/ordering/lifecycle)
     expect(baseline.taggedPrompt).toContain('Exception: a high-impact hazard you cannot statically verify');
+    expect(baseline.taggedPrompt).toContain('environment- or configuration-dependent behavior');
     // Scoped as "don't hunt for test gaps", not a ban on the severity category
     // (severity-classification lists test coverage as medium)
     expect(baseline.taggedPrompt).toContain('do not go looking for missing tests here');
     expect(baseline.taggedPrompt).not.toContain('Missing tests — Level 3 evaluates test coverage');
+    // The 0.3 floor stays (matches the pipeline filter), but the futility
+    // framing that taught self-censorship must not return
+    expect(baseline.taggedPrompt).not.toContain('the pipeline discards them anyway');
   });
 
   it('should have a depth-first mission without checklist padding', async () => {
@@ -1050,8 +1060,12 @@ describe('Baseline Level 2 Thorough', () => {
     expect(baseline.taggedPrompt).toContain('cite the specific lines that establish the pattern');
     expect(baseline.taggedPrompt).toContain('Security findings are attack scenarios');
     expect(baseline.taggedPrompt).toContain('Simplicity findings must show the simpler version');
+    // Refutation asymmetry: only refuted findings are discarded; unverifiable
+    // concrete scenarios surface as low-confidence questions
+    expect(baseline.taggedPrompt).toContain('neither confirm nor refute');
     expect(baseline.taggedPrompt).toContain('## Do Not Report');
     expect(baseline.taggedPrompt).toContain("Diff-only findings (Level 1's job)");
+    expect(baseline.taggedPrompt).not.toContain('the pipeline discards them anyway');
   });
 
   it('should have file-level guidance', async () => {
@@ -1552,6 +1566,11 @@ describe('Baseline Level 3 Thorough', () => {
     expect(baseline.taggedPrompt).toContain('Refute before reporting');
     expect(baseline.taggedPrompt).toContain('Security findings are attack scenarios');
     expect(baseline.taggedPrompt).toContain('Simplicity findings must show the simpler version');
+    // Refutation asymmetry: only refuted findings are discarded; unverifiable
+    // concrete findings surface as low-confidence questions
+    expect(baseline.taggedPrompt).toContain('Discard only what you actually refuted');
+    expect(baseline.taggedPrompt).toContain('neither confirm nor refute');
+    expect(baseline.taggedPrompt).not.toContain('the pipeline discards them anyway');
   });
 
   it('should have detailed file-level guidance', async () => {
@@ -1646,8 +1665,10 @@ describe('Baseline Level 3 Thorough', () => {
     expect(baseline.taggedPrompt).toContain('grep -r');
     expect(baseline.taggedPrompt).toContain('ls, tree commands');
     expect(baseline.taggedPrompt).toContain('READ-ONLY');
-    // Thorough should mention parallel Tasks
-    expect(baseline.taggedPrompt).toContain('parallel read-only Tasks');
+    // Thorough should mention delegation harness-neutrally — never a
+    // harness-specific tool name like Claude's "Tasks"
+    expect(baseline.taggedPrompt).toContain('subagent or task-delegation tool');
+    expect(baseline.taggedPrompt).not.toContain('parallel read-only Tasks');
   });
 
   it('should have scope guidance distinguishing Level 3 from Level 1/2', async () => {

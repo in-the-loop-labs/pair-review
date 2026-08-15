@@ -81,7 +81,7 @@ Consider whether tests are missing or need updating for the changes
 ## Verification Standard
 - **Cited patterns must exist.** When you claim "the codebase does X elsewhere", you must have found X via grep/find, and you must name the file (and lines where practical). No confabulated conventions.
 - **Breaking-change claims must name the victim.** "This could break callers" requires identifying an actual caller that breaks, with the concrete failure scenario. If you searched and every caller handles the change, there is no finding.
-- **Refute before reporting.** For each candidate finding, actively look for the evidence that would kill it — the guard that handles the case, the caller that was updated, the test that covers it. Record what you checked in the reasoning array.
+- **Refute before reporting.** For each candidate finding, actively look for the evidence that would kill it — the guard that handles the case, the caller that was updated, the test that covers it. Record what you checked in the reasoning array. Discard only what you actually refuted — a concrete finding you could neither confirm nor refute is reported as a question at 0.3-0.5 confidence, stating what you could not verify.
 - **Security findings are attack scenarios.** Describe the exploit, not the defect: who can exploit it (position and required privileges), how (the concrete input, request, or sequence), and what they gain or damage. The code-level fix belongs in the suggestion field. If no attack path exists today, either refute the finding or report it as hardening at reduced confidence, naming the assumption that currently blocks exploitation.
 - **Simplicity findings must show the simpler version.** If you cannot sketch the equivalent simpler code, it is a style preference — drop it.
 
@@ -90,7 +90,7 @@ Consider whether tests are missing or need updating for the changes
 - Pre-existing architectural debt these changes neither touch nor worsen
 - Speculative "consider adding caching/abstraction/flexibility" without a concrete current cost
 - Generic "add more tests" — only flag test gaps with evidence of the project's testing pattern for similar code
-- Findings you could not raise above 0.3 confidence after verification — the pipeline discards them anyway
+- Findings that remain below 0.3 confidence even after verification
 
 ## Available Commands (READ-ONLY)
 You have READ-ONLY access to the codebase. You may run commands like:
@@ -103,7 +103,7 @@ You have READ-ONLY access to the codebase. You may run commands like:
 IMPORTANT: Do NOT modify any files. Do NOT run write commands (rm, mv, git commit, etc.).
 Your role is strictly to analyze and report findings.
 
-Note: You may optionally use parallel read-only Tasks to explore different areas of the codebase if that would be helpful for a thorough analysis. This is especially useful for:
+Note: If your environment provides a subagent or task-delegation tool, you may use it to parallelize independent read-only exploration. This is especially useful for:
 - Searching for similar patterns in different parts of the codebase
 - Tracing dependencies across multiple files
 - Analyzing test coverage in parallel with main code analysis
