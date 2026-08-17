@@ -1,0 +1,5 @@
+---
+"@in-the-loop-labs/pair-review": patch
+---
+
+Fix provider-only selections inheriting a foreign model id. Picking a provider without a model (e.g. `--provider pi` or `--provider omp`) previously fell through to the global `default_model` — which is intended to pair with the global `default_provider` — so Pi/OMP were handed a model like `opus` instead of their own `default` mode. Provider/model defaults now resolve as coherent pairs per tier (repo settings, in-app override, config file), with an omitted model falling back to the selected provider's own default. This also applies when only the global default provider is switched on /settings (the inherited model no longer leaks to the new provider), and the provider's own default — including `providers.<id>.default_model` and `disabled_models` overrides — now ranks above the hardcoded `claude`/`opus` fallback, so a fully unconfigured setup resolves Claude's canonical default id (`opus-4.8-xhigh`, of which `opus` is an alias). Summary and tour model resolution gets the same guard when the summary provider differs from the global default provider.

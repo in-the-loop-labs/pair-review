@@ -22,6 +22,14 @@
 const { RepoSettingsRepository, CouncilRepository } = require('./database');
 const { resolveCouncilHandle } = require('./councils/resolve-council');
 const { normalizeCouncilConfig, validateCouncilConfig } = require('./routes/councils');
+// Require the ./ai index (not ./ai/provider) so the provider registry is
+// populated by the provider files' self-registration before lookups here.
+const {
+  getProviderClass,
+  getProviderConfigOverrides,
+  applyModelOverrides,
+  resolveDefaultModel
+} = require('./ai');
 const logger = require('./utils/logger');
 
 /**
@@ -52,7 +60,7 @@ function _buildCouncilSelection(council) {
  * Precedence (highest first), per the global-settings design ("specificity
  * first, then in-app > files"):
  *   provider: explicit › repo default › global in-app override › config.default_provider › config.provider › 'claude'
- *   model:    explicit › repo default › global in-app override › config.default_model    › config.model    › 'opus'
+ *   model:    explicit › repo default › global in-app override › config.default_model › provider's own default › 'opus'
  *
  * The global in-app override (from the /settings page, carried on
  * `config._globalOverrides`) sits ABOVE the config files but BELOW the repo
@@ -78,7 +86,22 @@ function _buildCouncilSelection(council) {
  *
  * Each field falls through independently, so supplying only `explicit.model`
  * still resolves the provider from repo/override/config defaults (and vice
- * versa).
+ * versa) — BUT a tier's `default_model` is *intended* to pair with that
+ * tier's `default_provider`, so a tier's model is only consulted when its
+ * provider agrees with the resolved provider. Without that guard, a
+ * provider-only pick (`--provider omp`) walks the model ladder down to the
+ * global default and hands OMP a foreign model id like 'opus' instead of the
+ * provider's own default mode. A tier that names no provider is treated as
+ * provider-agnostic and still applies (e.g. a model-only in-app override).
+ * Note `cfg` is the FLATTENED effective config, not a single layer:
+ * loadConfig() merges DEFAULT_CONFIG and the config files, then
+ * buildEffectiveConfig() dot-path-writes in-app overrides into the same flat
+ * object, so `cfg.default_provider` and `cfg.default_model` may come from
+ * different layers — see the `cfgPairSuspect` guard below for the case where
+ * that incoherence is provable. When no compatible tier supplies a model,
+ * the provider's own default is used (mirroring what the settings UI derives
+ * via `models.find(m => m.default)`), with the global model as the last
+ * resort for providers with no built-in default (e.g. OpenCode).
  *
  * @param {Object} explicit - { provider, model } (either may be undefined)
  * @param {Object|null} repoSettings - Row from RepoSettingsRepository.getRepoSettings
@@ -95,13 +118,65 @@ function _buildSingleSelection(explicit, repoSettings, config) {
     || cfg.default_provider
     || cfg.provider
     || 'claude';
+
+  // A tier's model applies only when that tier's provider matches the
+  // resolved provider (or the tier names no provider at all).
+  const tierModel = (tierProvider, model) =>
+    ((!tierProvider || tierProvider === provider) ? model : null);
+
+  // A provider-only in-app override proves the flattened `cfg` pair is
+  // incoherent: buildEffectiveConfig() wrote the new provider into `cfg` via
+  // setPath() but left the config-file/default model beneath it. In that
+  // case `cfg`'s provider matches the resolved provider by construction, so
+  // the tier guard cannot catch the mismatch — skip the `cfg` tier entirely
+  // and let the provider's own default supply the model. (A config FILE that
+  // sets only default_provider over DEFAULT_CONFIG's model has the same
+  // incoherence but is not detectable here; tracked separately.)
+  const cfgPairSuspect = Boolean(overrides.default_provider && !overrides.default_model);
+
+  // An explicit --model passes through verbatim: Pi/OMP fuzzy-match arbitrary
+  // ids ('opus', 'gpt-5.2') that are deliberately not in their model list, so
+  // it must never be second-guessed against the provider's models. The
+  // hardcoded 'claude'/'opus' pair sits BELOW the override-aware provider
+  // default as a last-resort rescue (e.g. no provider class registered for
+  // 'claude'), so a configured `providers.claude.default_model` or a
+  // disabled 'opus' is honored on the provider-default rung first.
   const model = explicit.model
-    || repoSettings?.default_model
-    || overrides.default_model
+    || tierModel(repoSettings?.default_provider, repoSettings?.default_model)
+    || tierModel(overrides.default_provider, overrides.default_model)
+    || (cfgPairSuspect ? null : tierModel(cfg.default_provider || cfg.provider, cfg.default_model || cfg.model))
+    || _resolveProviderDefaultModel(provider)
+    || tierModel('claude', 'opus')
     || cfg.default_model
     || cfg.model
     || 'opus';
   return { type: 'single', provider, model };
+}
+
+/**
+ * Resolve a provider's own default model, honoring config overrides
+ * (`providers.<id>.models` / `default_model` / `disabled_models`) exactly the
+ * way `createProvider` does when handed a null model — so a provider-only
+ * selection lands on the same model the settings UI shows as that provider's
+ * default. Returns null for unknown providers and for providers with no
+ * default (e.g. OpenCode), letting the caller fall back to the global model.
+ *
+ * @param {string} providerId - Provider ID
+ * @returns {string|null} Default model id, or null
+ * @private
+ */
+function _resolveProviderDefaultModel(providerId) {
+  const ProviderClass = getProviderClass(providerId);
+  if (!ProviderClass) return null;
+  try {
+    const overrides = getProviderConfigOverrides(providerId);
+    const effectiveModels = applyModelOverrides(ProviderClass.getModels(), overrides);
+    return resolveDefaultModel(effectiveModels, overrides?.default_model)
+      || ProviderClass.getDefaultModel();
+  } catch (error) {
+    logger.warn(`Could not resolve default model for provider "${providerId}": ${error.message}`);
+    return null;
+  }
 }
 
 /**
@@ -124,7 +199,8 @@ function _buildSingleSelection(explicit, repoSettings, config) {
  *      single provider/model default.
  *   5. `repo_settings.default_provider` / `default_model`, then global in-app
  *      override (`config._globalOverrides`) › global `config` defaults — single
- *      selection (final hardcoded fallbacks 'claude' / 'opus').
+ *      selection. The final fallback provider is 'claude' with that provider's
+ *      own default model; 'opus' remains the hardcoded last-resort model floor.
  *
  * @param {Object} db - Database instance.
  * @param {string} repository - Repository in `owner/repo` form (may be null/undefined

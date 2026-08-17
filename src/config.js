@@ -67,7 +67,7 @@ const DEFAULT_CONFIG = {
   port: 7247,
   single_port: true,  // When true, reuse a single server on the configured port; new invocations delegate to the running server
   theme: "light",
-  default_provider: "claude",  // AI provider: 'claude', 'antigravity', 'codex', 'copilot', 'opencode', 'cursor-agent', 'pi', 'muse'
+  default_provider: "claude",  // AI provider: 'claude', 'antigravity', 'codex', 'copilot', 'opencode', 'cursor-agent', 'pi', 'omp', 'muse'
   default_model: "opus",       // Model within the provider (e.g., 'opus' for Claude, 'gemini-3.1-pro-low' for Antigravity)
   tours: {
     enabled: false,            // When true, the guided-tour feature is available (toolbar button visible, etc.)
@@ -234,7 +234,29 @@ function getSummaryProvider(config) {
 
 /**
  * Gets the summary model for summary/tour generation
- * Resolution order: summaries.model → providerClass fast-tier → default_model
+ * Resolution order: summaries.model → providerClass fast-tier → provider
+ * default (when the summary provider differs from the global default
+ * provider) → default_model
+ *
+ * The provider-default rung guards against handing the summary provider a
+ * foreign model id: the global `default_model` is *intended* to pair with
+ * `default_provider` (the effective config is flattened from independent
+ * layers, so the pairing is not guaranteed), so when `summaries.provider`
+ * selects a DIFFERENT provider with no fast tier (e.g. OMP, whose single
+ * model is 'balanced'), that provider's own default is used instead of the
+ * global model. When the summary provider IS the global default provider,
+ * the configured `default_model` still wins. Providers with no built-in
+ * default (e.g. OpenCode returns null) fall through to default_model.
+ *
+ * Known limitation: this rung (and the fast-tier rung above it) reads the
+ * provider class's STATIC built-in model table, so per-provider config
+ * overrides (`providers.<id>.models` / `default_model` / `disabled_models`)
+ * are not applied here, unlike `createProvider(id, null)`. Acceptable
+ * because the result is always a valid id for *that* provider (the bug this
+ * rung fixes), just not necessarily the configured one; an override-aware
+ * fix would need this module to import from src/ai, which it deliberately
+ * does not.
+ *
  * @param {Object} config - Configuration object
  * @param {Function} [providerClass] - Optional provider class with static getModels()
  * @returns {string} - Model name
@@ -245,6 +267,13 @@ function getSummaryModel(config, providerClass = null) {
   if (providerClass && typeof providerClass.getModels === 'function') {
     const fast = providerClass.getModels().find(m => m.tier === 'fast');
     if (fast) return fast.id;
+  }
+  if (providerClass
+      && typeof providerClass.getProviderId === 'function'
+      && typeof providerClass.getDefaultModel === 'function'
+      && providerClass.getProviderId() !== getDefaultProvider(config)) {
+    const providerDefault = providerClass.getDefaultModel();
+    if (providerDefault) return providerDefault;
   }
   return getDefaultModel(config);
 }

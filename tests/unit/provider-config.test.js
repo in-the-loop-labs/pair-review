@@ -390,6 +390,48 @@ describe('Provider Configuration', () => {
       expect(overrides.load_skills).toBeUndefined();
       expect(overrides.app_extensions).toBeUndefined();
     });
+
+    it('should store advisor in overrides for standard providers', () => {
+      applyConfigOverrides({
+        providers: {
+          omp: {
+            advisor: true
+          }
+        }
+      });
+      const overrides = getProviderConfigOverrides('omp');
+      expect(overrides).toBeDefined();
+      expect(overrides.advisor).toBe(true);
+    });
+
+    it('should store advisor for alias providers', () => {
+      applyConfigOverrides({
+        providers: {
+          'omp-custom': {
+            type: 'omp',
+            name: 'Custom OMP',
+            advisor: true,
+            models: [{ id: 'default', tier: 'balanced', default: true }]
+          }
+        }
+      });
+      const overrides = getProviderConfigOverrides('omp-custom');
+      expect(overrides).toBeDefined();
+      expect(overrides.advisor).toBe(true);
+    });
+
+    it('should leave advisor undefined when not set in config', () => {
+      applyConfigOverrides({
+        providers: {
+          omp: {
+            command: '/custom/omp'
+          }
+        }
+      });
+      const overrides = getProviderConfigOverrides('omp');
+      expect(overrides).toBeDefined();
+      expect(overrides.advisor).toBeUndefined();
+    });
   });
 
   describe('getAllProvidersInfo with overrides', () => {
@@ -968,8 +1010,8 @@ describe('Provider Configuration', () => {
 
       const provider = createProvider('pi-reskin');
       expect(provider).toBeDefined();
-      // Pi provider stores command as piCmd, not command
-      expect(provider.piCmd).toBe('/custom/pi');
+      // Pi provider stores command as cliCmd, not command
+      expect(provider.cliCmd).toBe('/custom/pi');
     });
 
     it('should appear in getAllProvidersInfo', () => {

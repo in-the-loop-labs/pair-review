@@ -19,6 +19,7 @@ The providers are defined in `src/ai/` with these files:
 - `opencode-provider.js` - OpenCode CLI (no built-in models, config-only)
 - `claude-provider.js` - Anthropic Claude CLI models
 - `pi-provider.js` - Pi coding agent models
+- `omp-provider.js` - OMP / Oh My Pi CLI (`omp`, a Pi fork; only a `default` mode built in, real models are config-only)
 - `muse-provider.js` - Meta Muse Code CLI (`muse`) models
 
 Each provider file has a `*_MODELS` array at the top defining models with:
@@ -53,6 +54,7 @@ Each CLI has different model listing commands:
 - **OpenCode**: `opencode models` — lists all models in `provider/model-id` format (shows bundled + provider models)
 - **Claude**: `claude --help` or check docs at code.claude.com/docs/en/cli-reference
 - **Pi**: `pi --list-models` — shows comprehensive table with provider, model, context, max-out, thinking, images columns.
+- **OMP**: `omp models` (or `omp models --json`) — lists the catalog grouped by provider with context, max-out, thinking, images columns. `omp models find <substring>` searches; `omp models refresh` forces a fresh catalog fetch.
 - **Muse**: No `models list` subcommand — and no models subcommand at all. Do not run
   `muse models`: with no matching subcommand, muse treats `models` as a prompt and tries to
   launch the interactive TUI. Read the locally cached catalog instead, which is the

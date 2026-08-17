@@ -112,7 +112,9 @@ describe('buildInteractiveAnalysisConfig (pure builder, no storage)', () => {
     // builder used to omit flags.provider from the resolveReviewConfig picks, so
     // the explicit provider silently fell through to the config default. With
     // config.default_provider = 'claude' and flags.provider = 'codex', the
-    // explicit pick must win. Model is unspecified, so it resolves from config.
+    // explicit pick must win. Model is unspecified and the global default_model
+    // ('opus') is paired with a DIFFERENT provider (claude), so the model
+    // resolves to codex's own default rather than a foreign model id.
     const cfg = await buildInteractiveAnalysisConfig({
       db,
       config: { default_provider: 'claude', default_model: 'opus' },
@@ -120,7 +122,7 @@ describe('buildInteractiveAnalysisConfig (pure builder, no storage)', () => {
       repository: REPOSITORY
     });
 
-    expect(cfg).toEqual({ provider: 'codex', model: 'opus', customInstructions: 'be terse' });
+    expect(cfg).toEqual({ provider: 'codex', model: 'gpt-5.6-sol-high', customInstructions: 'be terse' });
   });
 
   it('an explicit --provider overrides a repo default council (regression: no silent council switch)', async () => {

@@ -237,6 +237,45 @@
       ]
     },
 
+    "omp": {
+      "_comment": "Override OMP's (Oh My Pi, a Pi fork) built-in configuration. The built-in 'default' mode uses whatever model your OMP configuration (~/.omp/agent/config.yml) selects, so models below are optional. Model ids are passed to 'omp --model' verbatim, which fuzzy-matches ('opus', 'gpt-5.2') and accepts provider/model strings ('anthropic/claude-opus-5') — run 'omp models' to list the catalog. Set advisor to true to enable OMP's advisor runtime during reviews (disabled by default: it passively reviews each turn and injects notes, adding cost and nondeterminism).",
+      "command": "omp",
+      "load_skills": true,
+      "advisor": false,
+      "extra_args": [],
+      "env": {},
+      "installInstructions": "Install OMP (Oh My Pi): npm install -g @oh-my-pi/pi-coding-agent",
+      "models": [
+        {
+          "id": "google/gemini-3.1-flash-lite",
+          "tier": "fast",
+          "name": "Gemini 3.1 Flash Lite",
+          "description": "Google's fast model",
+          "tagline": "Lightning Fast",
+          "badge": "Fastest",
+          "badgeClass": "badge-speed"
+        },
+        {
+          "id": "anthropic/claude-sonnet-5",
+          "tier": "balanced",
+          "name": "Claude Sonnet 5",
+          "description": "Fast and capable for most reviews",
+          "tagline": "Best balance of speed and quality",
+          "badge": "Recommended",
+          "badgeClass": "badge-recommended"
+        },
+        {
+          "id": "anthropic/claude-opus-5",
+          "tier": "thorough",
+          "name": "Claude Opus 5",
+          "description": "Most capable model for complex reviews",
+          "tagline": "Most Capable",
+          "badge": "Most Thorough",
+          "badgeClass": "badge-power"
+        }
+      ]
+    },
+
     "my-review-tool": {
       "_comment": "Example executable provider. Runs an external CLI tool and maps its output to pair-review's suggestion format using an LLM. The tool's raw output is transformed via mapping_instructions.",
       "type": "executable",

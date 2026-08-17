@@ -2065,6 +2065,49 @@ describe('config.js', () => {
       const config = {};
       expect(getSummaryModel(config)).toBe('opus');
     });
+
+    // The global default_model pairs with default_provider. A summary provider
+    // that differs from the global default provider must not inherit that
+    // foreign model id — it lands on its own default instead.
+    it('uses the provider default when the provider differs from the global default provider and has no fast tier', () => {
+      const config = { summaries: { provider: 'omp' }, default_provider: 'claude', default_model: 'opus' };
+      const FakeOmp = {
+        getProviderId: () => 'omp',
+        getDefaultModel: () => 'default',
+        getModels: () => [{ id: 'default', tier: 'balanced' }]
+      };
+      expect(getSummaryModel(config, FakeOmp)).toBe('default');
+    });
+
+    it('keeps the global default_model when the provider IS the global default provider', () => {
+      const config = { default_provider: 'pi', default_model: 'multi-model' };
+      const FakePi = {
+        getProviderId: () => 'pi',
+        getDefaultModel: () => 'default',
+        getModels: () => [{ id: 'default', tier: 'balanced' }]
+      };
+      expect(getSummaryModel(config, FakePi)).toBe('multi-model');
+    });
+
+    it('prefers a fast-tier model over the provider default', () => {
+      const config = { default_provider: 'claude', default_model: 'opus' };
+      const FakeProvider = {
+        getProviderId: () => 'other',
+        getDefaultModel: () => 'other-default',
+        getModels: () => [{ id: 'quick', tier: 'fast' }, { id: 'other-default', tier: 'balanced' }]
+      };
+      expect(getSummaryModel(config, FakeProvider)).toBe('quick');
+    });
+
+    it('falls back to default_model when the differing provider has no default (null)', () => {
+      const config = { default_provider: 'claude', default_model: 'opus' };
+      const FakeOpenCode = {
+        getProviderId: () => 'opencode',
+        getDefaultModel: () => null,
+        getModels: () => []
+      };
+      expect(getSummaryModel(config, FakeOpenCode)).toBe('opus');
+    });
   });
 
   describe('getTourProvider', () => {
