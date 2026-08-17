@@ -403,7 +403,27 @@ describe('Consolidation prompt templates (direct tests)', () => {
     expect(thorough.taggedPrompt).toContain('do not summarize an exploit description back into a code observation');
   });
 
-  it('thorough consolidation should require an adversarial verification pass', () => {
+  it('shared adversarial verification section should pin the refutation contract', () => {
+    const { ADVERSARIAL_VERIFICATION_SECTION } = require('../../src/ai/prompts/shared/adversarial-verification');
+
+    // Refutation asymmetry: drops need positive evidence of wrongness;
+    // unverifiable findings keep their original confidence (suppression-by-doubt
+    // removes genuine defects, not incorrect ones — eval 2026-08-15)
+    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('## Adversarial Verification');
+    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('inability to verify is not refutation');
+    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('keep it at its original confidence');
+    // Refutation by code evidence beats source consensus (shared blind spots)
+    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('code evidence outranks consensus');
+    // Repo access must stay READ-ONLY — this wording is a real mitigation
+    // under harnesses whose shell tool is not mechanically sandboxed
+    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('READ-ONLY');
+    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('Do NOT modify files');
+    // Source-neutral wording: the same text serves cross-voice consolidation
+    // (reviewers) and cross-level orchestration (levels)
+    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('one reviewer or one level');
+  });
+
+  it('thorough consolidation should carry adversarial verification as a flow-conditional placeholder', () => {
     const thorough = require('../../src/ai/prompts/baseline/consolidation/thorough');
 
     expect(thorough.defaultOrder).toContain('adversarial-verification');
@@ -412,23 +432,45 @@ describe('Consolidation prompt templates (direct tests)', () => {
     expect(thorough.defaultOrder[verifyIdx - 1]).toBe('input-suggestions');
     expect(thorough.defaultOrder[verifyIdx + 1]).toBe('consolidation-rules');
 
+    // Optional + placeholder-fed: cross-voice consolidation fills it (final
+    // merge stage of the reviewer-centric council), intra-level consolidation
+    // passes '' (Pass 1 of the level-centric council — verification belongs
+    // to its Pass 2 cross-level orchestration, run exactly once per flow)
     const section = thorough.sections.find(s => s.name === 'adversarial-verification');
     expect(section).toBeDefined();
-    expect(section.required).toBe(true);
-
+    expect(section.optional).toBe(true);
     const parsed = thorough.parseSections().find(s => s.name === 'adversarial-verification');
-    expect(parsed).toBeDefined();
-    // Refutation asymmetry: drops need positive evidence of wrongness;
-    // unverifiable findings keep their original confidence (suppression-by-doubt
-    // removes genuine defects, not incorrect ones — eval 2026-08-15)
-    expect(parsed.content).toContain('inability to verify is not refutation');
-    expect(parsed.content).toContain('keep it at its original confidence');
-    // Refutation by code evidence beats reviewer consensus (shared blind spots)
-    expect(parsed.content).toContain('code evidence outranks consensus');
-    // Repo access must stay READ-ONLY — this wording is a real mitigation
-    // under harnesses whose shell tool is not mechanically sandboxed
-    expect(parsed.content).toContain('READ-ONLY');
-    expect(parsed.content).toContain('Do NOT modify files');
+    expect(parsed.content).toBe('{{adversarialVerification}}');
+  });
+
+  it('cross-voice consolidation fills the adversarial placeholder; intra-level passes empty', () => {
+    const crossVoiceBody = Analyzer.prototype._crossVoiceConsolidate.toString();
+    const intraLevelBody = Analyzer.prototype._intraLevelConsolidate.toString();
+
+    expect(crossVoiceBody).toContain('adversarialVerification: ADVERSARIAL_VERIFICATION_SECTION');
+    expect(intraLevelBody).toContain("adversarialVerification: ''");
+    expect(intraLevelBody).not.toContain('adversarialVerification: ADVERSARIAL_VERIFICATION_SECTION');
+  });
+
+  it('orchestration verifies adversarially unless running as a council voice', () => {
+    // buildOrchestrationPrompt fills the section by default (standalone
+    // single-reviewer runs and level-centric Pass 2 are final merge stages)
+    // and omits it when skipAdversarialVerification is set
+    const buildBody = Analyzer.prototype.buildOrchestrationPrompt.toString();
+    expect(buildBody).toContain("adversarialVerification: dedupOptions.skipAdversarialVerification ? '' : ADVERSARIAL_VERIFICATION_SECTION");
+
+    // orchestrateWithAI threads the flag from its options into the prompt build
+    const orchBody = Analyzer.prototype.orchestrateWithAI.toString();
+    expect(orchBody).toContain('skipAdversarialVerification');
+
+    // The multi-voice reviewer-centric council skips per-voice verification —
+    // each voice's internal cross-level merge must not pre-kill findings
+    // before cross-voice consolidation can see overlap between voices. The
+    // single-voice council shortcut deliberately does NOT skip (that voice's
+    // orchestration is the flow's final merge stage).
+    const councilBody = Analyzer.prototype.runReviewerCentricCouncil.toString();
+    expect(councilBody).toContain('skipAdversarialVerification: true');
+    expect((councilBody.match(/skipAdversarialVerification: true/g) || []).length).toBe(1);
   });
 
   it('adversarial verification is thorough-only until the balanced/fast ports', () => {
