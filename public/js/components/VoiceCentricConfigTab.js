@@ -50,9 +50,26 @@ class VoiceCentricConfigTab {
   static DEFAULT_TIMEOUT = 600000;
 
 
-  constructor(modal) {
+  /**
+   * @param {HTMLElement} modal - The tab's query root (the modal, or any host
+   *   element containing exactly one `#tab-panel-council`).
+   * @param {Object} [options]
+   * @param {boolean} [options.hosted=false] - True when the tab is embedded in a
+   *   host that owns the save affordances and has no review of its own (the
+   *   settings-page CouncilManager). A hosted tab renders neither the per-review
+   *   "This Review" block — there is no review to attach instructions to, and
+   *   `_readConfigFromUI` never reads that textarea, so anything typed there
+   *   would be silently discarded — nor its own Save / Save As / Export /
+   *   Delete row, so the host's footer is the single write surface.
+   */
+  constructor(modal, options = {}) {
     this.modal = modal;
+    this._hosted = options.hosted === true;
     this.councils = [];
+    // The UNFILTERED council list from the last successful load. `councils` is
+    // filtered to this tab's own type for the selector; the duplicate-name scan
+    // in Save As needs every name, of every type (see council-crud.js).
+    this._allCouncils = [];
     this.selectedCouncilId = null;
     this.providers = {};
     this._injected = false;
@@ -98,23 +115,43 @@ class VoiceCentricConfigTab {
   }
 
   /**
-   * Load saved councils from the API, filtering to type === 'council'
+   * Load saved councils from the API, filtering the SELECTOR to
+   * `type === 'council'`.
+   *
+   * That filter is asymmetric with `AdvancedConfigTab.loadCouncils`, which also
+   * claims untyped legacy rows (`!c.type || c.type === 'advanced'`), and the
+   * asymmetry is load-bearing: legacy rows predate the `type` column and are
+   * level-centric, so Advanced is the only tab that can render them.
+   * `CouncilCard` and `CouncilDropdown` both cite this rule. Do not "unify" it.
+   *
+   * The unfiltered response is kept as `_allCouncils` for the duplicate-name
+   * scan, which must see every name regardless of type.
+   *
+   * @returns {Promise<boolean>} true iff the fetch succeeded and the selector
+   *   was re-rendered. NEVER rejects — several callers fire and forget.
    */
   async loadCouncils() {
     try {
       const response = await fetch('/api/councils');
       if (!response.ok) throw new Error('Failed to fetch councils');
       const data = await response.json();
+      const all = Array.isArray(data.councils) ? data.councils : [];
+      this._allCouncils = all;
       // Only show voice-centric councils (legacy councils without a type are level-centric, shown in Advanced tab)
-      this.councils = (data.councils || []).filter(c => c.type === 'council');
+      this.councils = all.filter(c => c.type === 'council');
       this._councilsLoaded = true;
       this._renderCouncilSelector();
+      return true;
     } catch (error) {
       console.error('Error loading councils:', error);
+      // Both lists are cleared together: a stale name scan is no more trustworthy
+      // than a stale selector.
       this.councils = [];
+      this._allCouncils = [];
       if (window.toast) {
         window.toast.showError('Failed to load saved councils');
       }
+      return false;
     }
   }
 
@@ -155,16 +192,27 @@ class VoiceCentricConfigTab {
   _validateConfig(config) {
     // At least one level must be enabled
     // Voice-centric format: levels values are booleans (true/false)
-    const hasEnabledLevel = Object.values(config.levels).some(l =>
+    const hasEnabledLevel = Object.values(config?.levels || {}).some(l =>
       typeof l === 'boolean' ? l : l?.enabled
     );
     if (!hasEnabledLevel) {
       return { valid: false, error: 'At least one review level must be enabled.' };
     }
-    // Must have at least one reviewer
-    const reviewerCount = this._getReviewerCount();
-    if (reviewerCount === 0) {
-      return { valid: false, error: 'At least one reviewer is required.' };
+    // Validate the ARGUMENT, not the document. This used to count `.vc-reviewer`
+    // DOM rows via `_getReviewerCount()`, which is not the same number:
+    // `_readConfigFromUI` keeps a reviewer only `if (provider && model)`, so a
+    // row whose provider or model <select> is empty — the state a saved council
+    // lands in when its provider is no longer available — vanishes from
+    // `voices` while still counting as a row. Validation passed, the POST sent
+    // `voices: []`, and the server answered
+    // 'config.voices must be a non-empty array' (src/councils/council-validation.js).
+    // Reading the same object the request will carry is the only way the two
+    // can agree.
+    if ((config?.voices || []).length === 0) {
+      return {
+        valid: false,
+        error: 'Add at least one reviewer with both a provider and a model selected.'
+      };
     }
     return { valid: true, error: null };
   }
@@ -194,6 +242,11 @@ class VoiceCentricConfigTab {
         const baseName = (existing?.name || 'Council').replace(/\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}$/, '').trim();
         name = `${baseName} ${timestamp}`;
       } else {
+        // 'Council' is the persisted `type` column literal for this tab
+        // ('council'), not the badge text — CouncilDropdown.typeBadge renders
+        // that type as "Standard". Naming after the stored type keeps the name
+        // meaningful if the badge is ever reworded. Only reachable with NO
+        // council selected; otherwise the branch above takes `existing.name`.
         name = `Council ${timestamp}`;
       }
       await this._postCouncil(name, config);
@@ -238,11 +291,39 @@ class VoiceCentricConfigTab {
   }
 
   /**
-   * Set default orchestration provider/model
+   * Set the default provider/model pair used to seed a NEW council.
+   *
+   * ORDERING: `setProviders()` MUST have run first. The pair is canonicalized
+   * against `this.providers`, and with no provider metadata loaded there is
+   * nothing to canonicalize against — the arguments are kept as-is (the
+   * constructor's claude/sonnet seed still covers empties). Both existing hosts
+   * honour this: AnalysisConfigModal and CouncilManager each call setProviders,
+   * then setDefaultOrchestration, then reset().
+   *
+   * Canonicalization is not cosmetic. Callers hand us the output of
+   * `resolveProviderModelPair`, which deliberately PRESERVES a configured alias
+   * (`pair-review <pr> --model opus` reaches here as `opus`) and resolves
+   * against the raw `/api/providers` array rather than the map this tab renders
+   * from. `_defaultConfig()` assigns the pair straight onto two `<select>`
+   * elements whose options are canonical ids of available providers only, so
+   * either half can select nothing — and an empty select makes
+   * `_readConfigFromUI` drop the reviewer row, which POSTs `voices: []` and
+   * 400s. See `resolveDefaultOrchestration` in public/js/utils/provider-map.js.
+   *
+   * `window.ProviderMap` is resolved at CALL time, never at module-eval time
+   * (this codebase's rule — see public/js/utils/council-export.js), and its
+   * absence degrades to the previous behavior instead of throwing.
+   *
+   * @param {string|null} provider - Desired provider id (may be unavailable)
+   * @param {string|null} model - Desired model id (may be an alias)
    */
   setDefaultOrchestration(provider, model) {
-    this._defaultProvider = provider || 'claude';
-    this._defaultModel = model || 'sonnet';
+    const providerMap = typeof window !== 'undefined' ? window.ProviderMap : null;
+    const pair = providerMap?.resolveDefaultOrchestration
+      ? providerMap.resolveDefaultOrchestration(this.providers, provider, model)
+      : { provider, model };
+    this._defaultProvider = pair.provider || 'claude';
+    this._defaultModel = pair.model || 'sonnet';
   }
 
   /**
@@ -297,6 +378,31 @@ class VoiceCentricConfigTab {
     return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
   }
 
+  /**
+   * The tab's OWN write controls: Save, Save As, Export, Delete.
+   *
+   * Omitted entirely when the tab is hosted (see the constructor). Save and
+   * Save As and Delete each write to the server, and a host that cannot see
+   * those writes cannot know its list went stale; the settings-page manager
+   * therefore owns Save in its own footer and offers Delete per row. Export is
+   * dropped with them because it is part of this control row and the host
+   * offers its own — it writes no server state either way.
+   *
+   * @returns {string} HTML string
+   */
+  static buildCouncilActionsHTML() {
+    return `
+      <button class="btn btn-sm btn-save-council" id="vc-council-save-btn" title="Save" disabled>Save</button>
+      <button class="btn btn-sm btn-secondary" id="vc-council-save-as-btn" title="Save As" disabled>Save As</button>
+      <button class="btn btn-sm btn-secondary" id="vc-council-export-btn" title="Download as a .council.json document">Export</button>
+      <button class="btn btn-sm btn-icon-danger" id="vc-council-delete-btn" title="Delete council" disabled>
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M11 1.75V3h2.25a.75.75 0 010 1.5H2.75a.75.75 0 010-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75zM6.5 1.75a.25.25 0 01.25-.25h2.5a.25.25 0 01.25.25V3h-3V1.75zM4.496 6.675l.66 6.6a.25.25 0 00.249.225h5.19a.25.25 0 00.249-.225l.66-6.6a.75.75 0 011.492.149l-.66 6.6A1.748 1.748 0 0110.595 15h-5.19a1.75 1.75 0 01-1.741-1.575l-.66-6.6a.75.75 0 111.492-.15z"/>
+        </svg>
+      </button>
+    `;
+  }
+
   _buildHTML() {
     return `
       <section class="config-section">
@@ -306,14 +412,7 @@ class VoiceCentricConfigTab {
           <select id="vc-council-selector" class="council-select new-council-selected">
             <option value="" class="council-option-new">+ New Council</option>
           </select>
-          <button class="btn btn-sm btn-save-council" id="vc-council-save-btn" title="Save" disabled>Save</button>
-          <button class="btn btn-sm btn-secondary" id="vc-council-save-as-btn" title="Save As" disabled>Save As</button>
-          <button class="btn btn-sm btn-secondary" id="vc-council-export-btn" title="Download as a .council.json document">Export</button>
-          <button class="btn btn-sm btn-icon-danger" id="vc-council-delete-btn" title="Delete council" disabled>
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M11 1.75V3h2.25a.75.75 0 010 1.5H2.75a.75.75 0 010-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75zM6.5 1.75a.25.25 0 01.25-.25h2.5a.25.25 0 01.25.25V3h-3V1.75zM4.496 6.675l.66 6.6a.25.25 0 00.249.225h5.19a.25.25 0 00.249-.225l.66-6.6a.75.75 0 011.492.149l-.66 6.6A1.748 1.748 0 0110.595 15h-5.19a1.75 1.75 0 01-1.741-1.575l-.66-6.6a.75.75 0 111.492-.15z"/>
-            </svg>
-          </button>
+          ${this._hosted ? '' : VoiceCentricConfigTab.buildCouncilActionsHTML()}
         </div>
       </section>
 
@@ -371,7 +470,7 @@ class VoiceCentricConfigTab {
         </div>
       </section>
 
-      ${this._buildInstructionsHTML()}
+      ${this._hosted ? '' : this._buildInstructionsHTML()}
     `;
   }
 
@@ -400,6 +499,19 @@ class VoiceCentricConfigTab {
     `;
   }
 
+  /**
+   * The per-review block below the "This Review" divider: the repo-instructions
+   * banner and the per-analysis Custom Instructions textarea.
+   *
+   * Not rendered when the tab is hosted (see the constructor). Everything here
+   * belongs to one analysis run, not to the council: `_readConfigFromUI()`
+   * returns only `{ voices, levels, consolidation }` and never reads
+   * `#vc-custom-instructions`, and the textarea carries `data-no-dirty` so
+   * typing in it does not even mark the tab dirty. On a page with no review the
+   * whole block is a promise the save cannot keep.
+   *
+   * @returns {string} HTML string
+   */
   _buildInstructionsHTML() {
     return `
       <div class="council-review-divider">
@@ -622,11 +734,6 @@ class VoiceCentricConfigTab {
       panel.querySelector('#vc-repo-instructions-banner').style.display = 'flex';
       panel.querySelector('#vc-repo-instructions-expanded').style.display = 'none';
     });
-  }
-
-  _getReviewerCount() {
-    const list = this.modal.querySelector('#vc-reviewer-list');
-    return list ? list.querySelectorAll('.vc-reviewer').length : 0;
   }
 
   _addReviewer() {

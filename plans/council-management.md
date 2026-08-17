@@ -475,6 +475,16 @@ type chooser (Council / Advanced). Then host one tab instance:
 1. Create `<div id="tab-panel-council">` (or `-advanced`) inside a wrapper
    div; pass the **wrapper** as the tab's constructor argument (it plays the
    modal's role as query root).
+
+   **Revised (2026-08-17 review round)**: the constructor takes a second
+   argument, `new TabClass(wrapper, { hosted: true })`. A hosted tab renders
+   neither its own Save / Save As / Export / Delete row — so the host footer in
+   step 3 is the single write surface instead of a second one competing with
+   the tab's — nor the per-review "This Review" instructions block, which has
+   no review to attach to and whose textarea `_readConfigFromUI` never reads
+   (anything typed there was silently discarded). The spec assumed the tab's
+   in-panel row would simply be present alongside the host footer; it must not
+   be.
 2. Call in this order (mirrors the load-bearing modal sequence at
    `AnalysisConfigModal.js:916-943`) — **corrected, as shipped**:
    `inject(panel)` → `setProviders(providerMap)` →
@@ -566,7 +576,216 @@ of Contents entry. No migration → no test-schema updates.
 
 ---
 
+## Phase 3 review round (2026-08-17) — decisions, deferrals, and one ordered work item
+
+Recorded so they are not re-litigated, and so nothing here is later mistaken for
+drift and "fixed".
+
+### Decision A — auto-save name prefixes
+
+An analysis started with unsaved editor changes auto-saves a council with a
+generated name. Those prefixes become:
+
+| Tab | Prefix | Was |
+| --- | --- | --- |
+| `VoiceCentricConfigTab` | `Council <timestamp>` | `Council <timestamp>` (unchanged) |
+| `AdvancedConfigTab` | `Advanced <timestamp>` | `Config <timestamp>` |
+
+Rationale: the words now map onto the persisted `type` column literals
+(`'council'` / `'advanced'`), so the generated name survives any future badge
+rename, and a level-keyed pipeline is not conceptually a council — the
+distinction is real and worth keeping rather than unifying away.
+
+**Name and badge deliberately use different words for the voice half.**
+`CouncilDropdown.typeBadge` maps type `'council'` to the label **Standard**, so
+an auto-saved `Council 2026-08-17 14:02` row sits under a "Standard" badge.
+That is by design; it is not a bug to fix by renaming either side.
+
+Changeset: `.changeset/advanced-autosave-council-name.md` (patch) — the
+`Config` → `Advanced` half is a user-visible generated name.
+
+### Decision B — extract the remaining tab duplication, in this order, before Phase 4
+
+3a-pre moved five CRUD methods out and the two remaining copies have **not**
+diverged since. But ~346 lines across 13 methods are still duplicated between
+the two tabs (≈187 in `VoiceCentricConfigTab`, ≈159 in `AdvancedConfigTab`),
+and most of them differ only in values that `COUNCIL_CRUD_SPEC` almost already
+carries:
+
+- **Identical** (measured 2026-08-17): `_isFileCouncil`, `_markDirty`,
+  `_markClean`, `_formatTimestamp`, `_syncTierToModel`, `setDefaultCouncilId`
+  (comment included). `_updateDirtyHint` is identical apart from one stale
+  comment line in the voice copy.
+- **Differ only in the class name reaching the same constant**:
+  `_getProviderDefaultTimeout`.
+- **Differ only in a selector or panel id**: `_renderCouncilSelector`,
+  `_updateSaveButtonStates`, `_updateCharCount`.
+- **Differ in a behaviour-carrying value**: `loadCouncils` (the filter
+  predicate) and `autoSaveIfDirty` (the name prefix — Decision A).
+
+**Ordered work item. The order is the safety property.**
+
+1. **Land the missing `loadCouncils` filter tests first.** ~~No test called
+   either tab's real `loadCouncils`~~, yet the filter asymmetry
+   (`c.type === 'council'` vs `!c.type || c.type === 'advanced'`) is the stated
+   premise for four other assertions added this round. Extracting an unpinned
+   method is how a regression ships green.
+
+   **DONE** — landed in the 2026-08-17 review round as
+   `tests/unit/config-tab-load-councils.test.js` (17 tests): both tab classes
+   run through a shared spec whose `expectedCouncilIds` pins exactly which
+   council shapes each tab shows, plus a `loadCouncils type-filter asymmetry`
+   suite asserting every shape routes to exactly one tab. Mutation-verified:
+   tightening Advanced's predicate to `c.type === 'advanced'` — the precise
+   Decision B regression — reddens two of them.
+
+   **Check before starting step 2** (filename-agnostic on purpose — the tests
+   did not land in the file this plan first guessed at): run
+   `grep -rl "loadCouncils" tests/unit/` and confirm at least one hit is a test
+   that calls a real tab's `loadCouncils`, not a `loadCouncils: vi.fn(...)`
+   collaborator mock. Better still, just run the suite — the file above is the
+   current answer, but do not let a rename turn a passing gate into a
+   permanent "not landed".
+2. **Then the extraction, as its own commit, before Phase 4 begins.** This is
+   the precedent the branch already set with `99c76287 refactor: prep config
+   tabs and CSS for settings-page hosting` — a prep refactor landed ahead of
+   the feature, not folded into it. **This step is the remaining work; step 1
+   no longer blocks it.**
+   Grow `COUNCIL_CRUD_SPEC` to carry: panel id, char-count id, timeout
+   constant, auto-save prefix, and the filter predicate.
+3. CSS extraction is **deferred** — see below. Do not fold it into step 2.
+
+**Hazards (Decision B)**
+
+> `loadCouncils`'s predicate and `autoSaveIfDirty`'s prefix look like
+> incidental drift and are **not**. The filter asymmetry is deliberate (legacy
+> untyped councils are advanced-only — the 3a-pre trap 2 above insists it stays
+> a parameter) and the prefixes are deliberately different per Decision A. A
+> "merge the duplicates" pass will naturally unify both. They must stay
+> parameterized through `COUNCIL_CRUD_SPEC`.
+> Both are now pinned, so such a pass goes red rather than green:
+> `tests/unit/config-tab-load-councils.test.js` for the filter, and
+> `tests/unit/config-tab-new-council-defaults.test.js` for the prefixes
+> (including an explicit "falls back to Advanced, not Config" case).
+>
+> `_updateDirtyHint`, `_updateSaveButtonStates` and `_updateCharCount` reach
+> for modal-owned nodes through the tab root. The settings-page host has none
+> of them; the null-tolerance pinned by
+> `tests/unit/config-tab-bare-container.test.js` (3b) must survive the
+> extraction.
+>
+> `setDefaultCouncilId` is called by both the modal and CouncilManager, and its
+> body depends on `_councilsLoaded` / `_injected`. Extracting it moves a method
+> that two hosts call at different points in their mount sequence.
+
+### Deferral — CSS extraction waits for a third settings-page manager
+
+`public/css/council-manager.css` (261 lines) and
+`public/css/snippet-manager.css` (233 lines) are near-copies. Measured
+2026-08-17, after normalizing the BEM block prefix: **13 shared element
+families** — `__loading`, `__empty`, `__error`, `__list-wrap`, `__list`,
+`__row`, `__row-actions`, `__row-btn`, `__preview`, `__add-btn`, `__save-btn`,
+`__cancel-btn`, `__delete-btn` — and **131 identical lines** by longest-common-
+subsequence alignment (138 by `diff`'s changed-line accounting; ~104 of them
+non-blank). Either way, over half of `council-manager.css` is a rename away
+from the snippet one, and `settings.html` links both.
+
+**DECIDED: defer the extraction until the third settings-page manager
+arrives** (Phase 4 or later — the CLI phase adds no manager, so this may sit
+past it). Two copies is tolerable; three is not. Waiting means the shared base
+is designed against three real cases instead of guessed from two —
+and the extraction is not free, since the class rename has to move through the
+JS and the E2E selectors (`.council-manager__save-btn` is asserted in
+`tests/e2e/council-settings.spec.js:297`).
+
+### Follow-ups (explicitly NOT in this round)
+
+Listed worst-first. The head of this list is a real bug, not a tidy-up.
+
+- **BUG, prioritise — "Add council" can silently overwrite a DIFFERENT
+  council.** Pre-existing; found by integration review and traced by the
+  CouncilManager agent, 2026-08-17. Not a cosmetic label defect — an
+  unintended in-place overwrite with no confirmation and no undo.
+
+  Repro: Councils → Add council → pick a type → the editor opens in Add mode on
+  "+ New Council" **with the tab's full council `<select>` right there in the
+  panel** → pick an existing council from it → footer Save. The existing
+  council is overwritten.
+
+  Why the `<select>` is there and live: it is the one control from the tab's
+  action row that survives hosting, and it must be —
+  `_renderCouncilSelector` is where `_pendingDefaultCouncilId` becomes
+  `selectedCouncilId`, so `hosted: true` suppresses only
+  `buildCouncilActionsHTML()` (`VoiceCentricConfigTab.js:415`), never the
+  `<select>` on the line above. Its change handler is fully wired
+  (`VoiceCentricConfigTab.js:574`): it sets `this.selectedCouncilId`, paints
+  that council's config into the panel, and `_markClean()`s. So picking from it
+  is not an obscure gesture — with a dropdown sitting in an "Add" pane it is
+  the obvious way to say "start from that one".
+
+  Why Save then overwrites: `CouncilCrud.saveCouncil` branches on
+  `tab.selectedCouncilId` (`council-crud.js:141`) and PUTs. Meanwhile
+  `CouncilManager` set its header once at `_openEditor`
+  (`CouncilManager.js:594`, `councilId ? 'Edit council' : 'New council'`) and
+  `_editingId` stays `null` — neither follows the selector. **The header
+  reading "New council" is what creates the false expectation**; the user
+  presses Save believing they are creating.
+
+  Accurate parts to keep: the data stays internally consistent (the PUT writes
+  exactly what the panel shows), and this does **not** undermine the
+  `_listSignature` deletion — the write goes through footer Save, which reaches
+  `_exitEditor({ mutated: true })` (`CouncilManager.js:823`), so the host is
+  correctly notified either way.
+
+  Candidate fixes, as proposed:
+  1. Make the header reflect the tab's live selection. Stops the lie, but Save
+     still overwrites.
+  2. Have `_openEditor`'s Add path treat a selection change as **leaving Add
+     mode**: header follows, `_editingId` follows, and Save then legitimately
+     updates the council the user chose.
+
+  **Recommended: (2)** — (1) alone leaves the surprising write in place. A
+  third option, suppressing the `<select>` when hosted in Add mode, was
+  considered and rejected: it costs the "start from an existing council"
+  affordance for no gain.
+
+- **`tests/e2e/helpers.js` consolidation.** `council-settings.spec.js`
+  re-implements Phase 2's file-council fixture verbatim from
+  `council-file-overlay.spec.js`, and its `seedCouncil` / `clearDbCouncils` /
+  two config fixtures duplicate `council-save-button.spec.js`'s — with a third
+  inline seeder in `global-settings.spec.js`. `helpers.js` is the shared home.
+  When consolidating, **pick ONE seeding transport**: the copies use
+  `page.request` and `page.evaluate(fetch)` for the same operation, and only
+  the latter is visible to a spec's failed-request watcher.
+- **Repo settings never clears a dead `default_council_id`.**
+  `checkForChanges` compares against `originalSettings`, so a council id whose
+  council was deleted is silently resubmitted on the next Save rather than
+  cleared. Whether Save *should* clear it is an undecided behaviour change, not
+  a bug fix — decide before implementing.
+- **Duplicate fetches on `/settings`.** `AnalysisConfigModal` fetches nothing
+  twice, but the settings page fetches `/api/providers` and `/api/config`
+  twice — once in `settings.js`, once in `CouncilManager`. Partly addressed in
+  this round via constructor options; re-measure what remains before doing
+  more.
+- **The council-load tri-state has four shapes.** `SettingsPage` and
+  `RepoSettingsPage` each carry a `councilsLoadFailed` boolean (an empty
+  `councils` array alone cannot distinguish "none exist" from "we don't know");
+  `CouncilManager` reuses its own `_error` string for the same distinction.
+  Semantically equivalent, cosmetically divergent: on a failed load the three
+  surfaces respectively show an explanatory note, hide the preview, and
+  suppress the empty state. Recorded as a **decision to revisit** — not a
+  defect, and not worth unifying until something depends on the three agreeing.
+
+---
+
 ## Phase 4 — CLI `pair-review council <verb>` (PR 4, later)
+
+**Prerequisite from the Phase 3 review round** (above): Decision B step 2 — the
+tab-duplication extraction, as its own commit — lands before Phase 4 work
+starts. The `council-manager.css` / `snippet-manager.css` extraction is
+deferred separately and is *not* a Phase 4 prerequisite (its trigger is a third
+settings-page manager, which the CLI does not add). Neither touches the CLI
+surface below; Phase 4's own spec is unaffected.
 
 ### 4a. Dispatch
 
@@ -756,6 +975,18 @@ with the verb table.
   touch prompts, but any config-shape drift must be checked in all three.
 - **Config loaded once at startup** — no hot reload anywhere in this plan; do
   not flag missing cleanup on reapply.
+- **Two tab methods only LOOK like drift** (Decision B, 2026-08-17):
+  `loadCouncils`'s filter predicate (`c.type === 'council'` vs
+  `!c.type || c.type === 'advanced'`) and `autoSaveIfDirty`'s name prefix
+  (`Council` vs `Advanced`) are deliberate per-tab differences. Any
+  deduplication pass must keep them parameterized through
+  `COUNCIL_CRUD_SPEC`, never unify them.
+- **Legacy untyped councils are advanced, in one place only.** The
+  untyped ⇒ advanced rule lives in `CouncilCard.render` (layout),
+  `CouncilDropdown.typeBadge` (label), and the two `loadCouncils` filters
+  (which editor owns them). Those four must agree; the Phase 3 review round
+  fixed a case where the badge and the card disagreed for one commit. Do not
+  add a fifth copy by pre-normalizing `type` in a consumer.
 - Test conventions: loopback server for supertest, no fixed sleeps, mkdtemp
   paths, `PAIR_REVIEW_NO_OPEN: '1'` on any CLI spawn
   (`tests/CONVENTIONS.md`).
@@ -779,3 +1010,12 @@ with the verb table.
   (2026-08-10).
 - CLI (Phase 4) and project-local councils (Phase 5) sequenced last as
   separate PRs (2026-08-10).
+- Auto-save prefixes are `Council <timestamp>` / `Advanced <timestamp>`,
+  tracking the `type` column literals; the voice half deliberately does not
+  match its "Standard" badge (Decision A, 2026-08-17).
+- The remaining ~346 lines of tab duplication get extracted as its own commit
+  before Phase 4, after the `loadCouncils` filter tests pin the asymmetry
+  (Decision B, 2026-08-17).
+- `council-manager.css` / `snippet-manager.css` extraction deferred until a
+  third settings-page manager exists — design the base against three cases,
+  not two (2026-08-17).

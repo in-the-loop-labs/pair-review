@@ -339,6 +339,14 @@ html, body {
   left: calc(100% + 20px);
 }
 
+/* When a deleted council leaves nothing to draw, this container holds the shared
+   `.council-preview-hint` note (public/css/council-card.css) instead of a card.
+   The container is absolutely positioned and unconstrained, so cap the note at
+   the card's own width or the sentence runs off the side of the page. */
+.settings-model-card-preview .council-preview-hint {
+  max-width: 190px;
+}
+
 /* Override the interactive model-card styles for the static preview card */
 .model-card.settings-model-card-static {
   position: relative;

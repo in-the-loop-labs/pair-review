@@ -6,7 +6,8 @@
  * same "what does this council run" preview (reviewers/models, levels, and
  * consolidation) when a council is chosen as the Default for Analysis. It renders
  * into a caller-supplied container and dispatches on council type
- * (voice/standard vs. advanced), exactly like the original.
+ * (voice/standard vs. advanced) — see `render()` for the exact rule, which is
+ * NOT the one the original repo-settings code used.
  *
  * Provider/model id → display-name resolution differs per page (repo settings
  * keys providers by id; the global settings page holds an array from
@@ -70,12 +71,20 @@ class CouncilCard {
    * already reads them that way (`AdvancedConfigTab.loadCouncils` claims
    * `!c.type || c.type === 'advanced'`, `VoiceCentricConfigTab.loadCouncils`
    * takes only `c.type === 'council'`, and POST /api/councils stores
-   * `type || 'advanced'`), and `CouncilDropdown.typeBadge` badges them
+   * `type || 'advanced'`), and `CouncilDropdown.typeBadge` now badges them
    * "Advanced" — so this matches the badge that sits above the card.
    *
+   * History, so the polarity is not "corrected" back: BOTH the badge and this
+   * dispatch used to treat untyped as the voice/standard case, so they agreed
+   * with each other and were wrong together — the card showed zero reviewers,
+   * badged "Standard", for a council the editors opened as advanced. The badge
+   * was flipped first (`typeBadge`), which left the two disagreeing for exactly
+   * one commit; this dispatch is the other half of the same fix.
+   *
    * Every consumer must route through here rather than pre-normalizing `type`
-   * itself: three separate copies of this rule is exactly how the repo-settings
-   * page ended up rendering a voice layout under an "Advanced" badge.
+   * itself. Copies of this rule are what let the badge and the card drift apart
+   * in the first place: repo-settings.js carried its own `type === 'advanced'`
+   * test and had to be fixed separately from `typeBadge`.
    *
    * @param {Object|null} council - { id, name, type, config }
    */

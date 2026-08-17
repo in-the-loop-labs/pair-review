@@ -62,13 +62,31 @@ const COUNCIL_KEYS = new Set([
 ]);
 
 // What the "Default for Analysis" control says when the stored council id no
-// longer resolves to a council — the council was deleted (DELETE
-// /api/councils/:id deliberately leaves the setting pointing at the dead id;
-// src/review-config.js warns and falls back to the provider/model default at
-// run time) or a file-overlay council stopped resolving. Used by BOTH the
-// dropdown trigger and the preview beneath it so the two cannot contradict each
-// other.
-const STALE_COUNCIL_LABEL = 'Selected council no longer exists — pick another';
+// longer resolves to a council. The sentence itself lives on CouncilDropdown —
+// the one component BOTH council surfaces load — so this page and the repo
+// settings page (a separate page script that cannot import from this one) say
+// the same thing. Resolved at CALL time, never at module-eval time: this script
+// is loaded as a page script and unit tests may require the component after this
+// module is evaluated.
+// Returns '' when the component is unavailable, in which case callers simply
+// omit the stale wording rather than duplicating the literal here.
+function councilDropdownStatic(name) {
+  const Dropdown = (typeof window !== 'undefined' && window.CouncilDropdown)
+    || (typeof CouncilDropdown !== 'undefined' ? CouncilDropdown : null);
+  return (Dropdown && Dropdown[name]) || '';
+}
+
+function staleCouncilLabel() {
+  return councilDropdownStatic('STALE_COUNCIL_LABEL');
+}
+
+// The council list could not be loaded — distinct from "deleted" and from
+// "there are none", and shared for the same reason: the dropdown trigger and
+// the preview beneath it are rendered by different code and must not describe
+// the same state differently.
+function councilsUnavailableLabel() {
+  return councilDropdownStatic('COUNCILS_UNAVAILABLE_LABEL');
+}
 
 // Map the API `source` enum to a display label + CSS modifier class.
 const SOURCE_DISPLAY = {
@@ -98,12 +116,22 @@ class SettingsPage {
   constructor() {
     // Map of key -> descriptor from the API (kept in sync after PUT/DELETE).
     this.settingsByKey = {};
-    // Array of analysis provider definitions from /api/providers.
+    // Analysis provider definitions from /api/providers, filtered to those with
+    // models (what the pickers may offer).
     this.providers = [];
+    // The same payload UNFILTERED, or null if the load failed. See loadProviders.
+    this.allProviders = null;
+    // The whole /api/config payload, or null if the load failed.
+    this.appConfig = null;
     // Array of chat provider definitions from /api/config (chat_providers).
     this.chatProviders = [];
     // Array of saved councils from /api/councils (for the default-council key).
     this.councils = [];
+    // Whether the LAST /api/councils load failed. `councils` alone cannot say:
+    // an empty array would mean both "no councils exist" and "we don't know",
+    // and the stale-council layer treats the list as authoritative. See
+    // loadCouncils / isStaleCouncilId.
+    this.councilsLoadFailed = false;
     // Mounted CouncilDropdown instances keyed by setting key, so a re-render can
     // tear down the previous instance (its document outside-click listener)
     // before mounting a fresh one.
@@ -169,10 +197,19 @@ class SettingsPage {
       const response = await fetch('/api/providers');
       if (!response.ok) throw new Error('Failed to fetch providers');
       const data = await response.json();
+      // The UNFILTERED payload. A provider that declares no models cannot be
+      // offered in a picker, but it can still be NAMED by a saved council, so
+      // display-name resolution and the hosted CouncilManager both want the raw
+      // list (see resolveModelDisplay / mountCouncils).
+      this.allProviders = Array.isArray(data.providers) ? data.providers : [];
       // Keep only providers that actually have models configured.
-      this.providers = (data.providers || []).filter(p => p.models && p.models.length > 0);
+      this.providers = this.allProviders.filter(p => p.models && p.models.length > 0);
     } catch (error) {
       console.error('Error loading providers:', error);
+      // null, not []: mountCouncils passes this down, and a component handed an
+      // empty array would treat it as "the host already loaded them" and skip
+      // its own fetch. Let it retry instead.
+      this.allProviders = null;
       this.providers = [];
     }
   }
@@ -185,12 +222,29 @@ class SettingsPage {
       // chat_providers: [{ id, name, type, available }]. Kept as-is; the select
       // renderer only needs id + name and preserves an unknown current value.
       this.chatProviders = Array.isArray(data.chat_providers) ? data.chat_providers : [];
+      // The whole payload is kept too: the hosted CouncilManager needs it for the
+      // default provider/model pair a new council starts from, and re-fetching
+      // /api/config inside the component would hit it twice per page load.
+      this.appConfig = data && typeof data === 'object' ? data : {};
     } catch (error) {
       console.error('Error loading chat providers:', error);
       this.chatProviders = [];
+      this.appConfig = null;
     }
   }
 
+  /**
+   * Load the council list. Never throws.
+   *
+   * On failure the previous list is left ALONE and `councilsLoadFailed` is set:
+   * "we could not load" must stay distinguishable from "there are none". If the
+   * catch emptied the list instead, `isStaleCouncilId` would report every stored
+   * id as deleted, and a transient /api/councils blip would tell the user — in
+   * the trigger AND the preview at once — that a perfectly good
+   * `default_council_id` no longer exists, inviting them to overwrite it. That
+   * path is hot: refreshCouncilRows() re-runs this after every mutation made in
+   * the Councils section.
+   */
   async loadCouncils() {
     try {
       const response = await fetch('/api/councils');
@@ -199,12 +253,13 @@ class SettingsPage {
       // councils: [{ id, name, type }]. A stored default_council_id that is NOT
       // in this list (the council was deleted, or lives behind a file overlay
       // that stopped resolving) is a real state the UI has to name — see
-      // `isStaleCouncilId` / `STALE_COUNCIL_LABEL`, which say so in the trigger
+      // `isStaleCouncilId` / `staleCouncilLabel()`, which say so in the trigger
       // instead of falling back to the "Select a council…" placeholder.
       this.councils = Array.isArray(data.councils) ? data.councils : [];
+      this.councilsLoadFailed = false;
     } catch (error) {
       console.error('Error loading councils:', error);
-      this.councils = [];
+      this.councilsLoadFailed = true;
     }
   }
 
@@ -291,6 +346,11 @@ class SettingsPage {
    * duplicate, delete, edit). This page also renders the "Default for Analysis"
    * council picker from the same `/api/councils` list, so it must be re-fetched
    * or that dropdown silently goes stale.
+   *
+   * `providers` / `appConfig` hand the component what init() already fetched, so
+   * /api/providers and /api/config are not requested twice per page load
+   * ("pass resolved values down, don't reach up"). Either is omitted when this
+   * page's own load failed, so the component can retry on its own.
    */
   mountCouncils() {
     const section = document.getElementById(COUNCILS_SECTION_ID);
@@ -303,9 +363,10 @@ class SettingsPage {
     }
 
     try {
-      this._councilManager = new CouncilManager(mount, {
-        onChange: () => { this.refreshCouncilRows(); }
-      });
+      const options = { onChange: () => { this.refreshCouncilRows(); } };
+      if (Array.isArray(this.allProviders)) options.providers = this.allProviders;
+      if (this.appConfig && typeof this.appConfig === 'object') options.appConfig = this.appConfig;
+      this._councilManager = new CouncilManager(mount, options);
       section.style.display = '';
       this.councilsVisible = true;
     } catch (error) {
@@ -318,7 +379,8 @@ class SettingsPage {
    * Re-fetch the council list and re-render every council-valued setting row
    * (the "Default for Analysis" picker + its composition preview) so an edit
    * made in the Councils section is reflected immediately. Never throws — a
-   * failed refresh leaves the previous list in place.
+   * failed refresh leaves the previous list in place (loadCouncils does not
+   * clear it) and suppresses the stale-council wording until a load succeeds.
    */
   async refreshCouncilRows() {
     try {
@@ -603,7 +665,17 @@ class SettingsPage {
       // base "Default Provider / Model" option is not marked selected either.
       // Both now say the same true thing. `emptyText` covers the same state when
       // the council list is empty (deleting the last council hits exactly that).
-      const staleLabel = this.isStaleCouncilId(selectedId) ? STALE_COUNCIL_LABEL : undefined;
+      //
+      // A FAILED load is the other unmatched-selection case, and it needs its own
+      // wording: nothing is stale then (isStaleCouncilId answers false), but the
+      // list is also empty on a first-load failure, so leaving these undefined let
+      // the component fall back to its "No councils available" default — the
+      // trigger asserting the account has no councils while the preview 30px below
+      // said we could not tell. Same label in both slots, matching the preview.
+      const triggerLabel = this.councilsLoadFailed
+        ? councilsUnavailableLabel()
+        : (this.isStaleCouncilId(selectedId) ? staleCouncilLabel() : '');
+      const staleLabel = triggerLabel || undefined;
 
       this._councilDropdowns[key] = new Dropdown({
         container: mount,
@@ -627,33 +699,46 @@ class SettingsPage {
 
   /**
    * Resolve provider/model ids to display names from the loaded analysis
-   * providers (GET /api/providers, an array). Falls back to the raw ids when a
-   * provider or model is unknown — the CouncilCard component consumes this.
+   * providers (GET /api/providers, an array) — the CouncilCard component
+   * consumes this.
+   *
+   * Delegates to the shared `ProviderMap.resolveModelDisplay`, which is
+   * ALIAS-aware: a hand-authored ~/.pair-review/councils/*.json may legitimately
+   * store a legacy model id, and this page renders CouncilCards beside
+   * CouncilManager's, so the two must name the same model identically. Resolved
+   * at call time (page-script load order). Without the util we degrade to the
+   * raw ids rather than growing a second implementation.
+   *
    * @param {string} providerId
    * @param {string} modelId
    * @returns {{ providerName: string, modelName: string }}
    */
   resolveModelDisplay(providerId, modelId) {
-    const provider = (this.providers || []).find((p) => p.id === providerId);
-    if (!provider) {
+    const util = (typeof window !== 'undefined' && window.ProviderMap) || null;
+    if (!util || typeof util.resolveModelDisplay !== 'function') {
       return { providerName: providerId || 'Unknown', modelName: modelId || 'Unknown' };
     }
-    const model = (provider.models || []).find((m) => (m && (m.id != null ? m.id : m)) === modelId);
-    return {
-      providerName: provider.name || provider.id || providerId,
-      modelName: model ? (model.name || model.id || modelId) : (modelId || 'Unknown')
-    };
+    // Prefer the unfiltered list: a council may name a provider that declares no
+    // models, and that provider still has a display name.
+    return util.resolveModelDisplay(this.allProviders || this.providers || [], providerId, modelId);
   }
 
   /**
    * Whether a stored council id points at a council that no longer exists.
    * An empty value is the base "Default Provider / Model" option, never stale.
+   *
+   * Answers `false` while the last council load failed: absence from a list we
+   * could not load is not evidence of deletion, and claiming otherwise is worse
+   * than the neutral placeholder (it invites the user to overwrite a good
+   * setting). See loadCouncils.
+   *
    * @param {string} value - The setting's current value.
    * @returns {boolean}
    */
   isStaleCouncilId(value) {
     const id = value == null ? '' : String(value);
     if (id === '') return false;
+    if (this.councilsLoadFailed) return false;
     return !(this.councils || []).some((c) => String(c.id) === id);
   }
 
@@ -686,9 +771,20 @@ class SettingsPage {
     if (!council) {
       el.innerHTML = '';
       const note = document.createElement('p');
-      note.className = 'council-preview-hint council-preview-hint--stale';
-      note.textContent =
-        `${STALE_COUNCIL_LABEL}. Analysis falls back to the Default Provider / Model rows below.`;
+      if (this.councilsLoadFailed) {
+        // We could not load the list, so we cannot tell a deleted council from
+        // one we simply have not seen. Say the true thing (and stay neutral
+        // grey) rather than accusing a stored id of being dead.
+        note.className = 'council-preview-hint';
+        note.textContent = [councilsUnavailableLabel(), 'The saved selection is unchanged.']
+          .filter(Boolean)
+          .join('. ');
+      } else {
+        note.className = 'council-preview-hint council-preview-hint--stale';
+        note.textContent = [staleCouncilLabel(), 'Analysis falls back to the Default Provider / Model rows below.']
+          .filter(Boolean)
+          .join('. ');
+      }
       el.appendChild(note);
       return;
     }
@@ -1205,5 +1301,5 @@ if (typeof document !== 'undefined' && document.addEventListener) {
 
 // Export for unit tests (jsdom/vm sandbox), following the repo pattern.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { SettingsPage, SETTINGS_GROUPS, PROVIDER_KEYS, CHAT_PROVIDER_KEYS, MODEL_KEYS, COUNCIL_KEYS, SOURCE_DISPLAY, STALE_COUNCIL_LABEL };
+  module.exports = { SettingsPage, SETTINGS_GROUPS, PROVIDER_KEYS, CHAT_PROVIDER_KEYS, MODEL_KEYS, COUNCIL_KEYS, SOURCE_DISPLAY, staleCouncilLabel };
 }

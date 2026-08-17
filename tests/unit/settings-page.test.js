@@ -9,9 +9,25 @@
  * data-loading side effects never fire.
  */
 
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { SettingsPage, SOURCE_DISPLAY, PROVIDER_KEYS, CHAT_PROVIDER_KEYS, MODEL_KEYS, COUNCIL_KEYS, STALE_COUNCIL_LABEL } = require('../../public/js/settings.js');
+const { SettingsPage, SOURCE_DISPLAY, PROVIDER_KEYS, CHAT_PROVIDER_KEYS, MODEL_KEYS, COUNCIL_KEYS, staleCouncilLabel } = require('../../public/js/settings.js');
+const { CouncilDropdown: CouncilDropdownClass } = require('../../public/js/components/CouncilDropdown.js');
+
+// The page reads the stale-council sentence off the shared component (one
+// literal, two pages) and resolves model display names through the shared
+// provider-map util, both at call time on `window`. Install them once, exactly
+// as settings.html's script order does.
+window.CouncilDropdown = CouncilDropdownClass;
+window.ProviderMap = require('../../public/js/utils/provider-map.js');
+
+const STALE_COUNCIL_LABEL = CouncilDropdownClass.STALE_COUNCIL_LABEL;
+
+// Globals stubbed with vi.stubGlobal (never bare `global.x =`, which
+// restoreAllMocks does not undo — see tests/CONVENTIONS.md, Mock hygiene).
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 /**
  * Build a SettingsPage instance without invoking the constructor/init.
@@ -20,8 +36,11 @@ const { SettingsPage, SOURCE_DISPLAY, PROVIDER_KEYS, CHAT_PROVIDER_KEYS, MODEL_K
 function createPage(providers = []) {
   const page = Object.create(SettingsPage.prototype);
   page.providers = providers;
+  page.allProviders = providers;
+  page.appConfig = null;
   page.chatProviders = [];
   page.councils = [];
+  page.councilsLoadFailed = false;
   page.settingsByKey = {};
   page._seq = {};
   page._councilDropdowns = {};
@@ -426,32 +445,151 @@ describe('COUNCIL_KEYS + "Default for Analysis" control (shared CouncilDropdown)
 
   it('mountCouncilDropdowns is a no-op when the component is unavailable', () => {
     const page = createPage();
+    // Restored: the rest of the file (and the page itself) reads the component
+    // off `window` at call time, so a bare delete would leak into later tests.
+    const saved = window.CouncilDropdown;
     delete window.CouncilDropdown;
-    page.settingsByKey = { default_council_id: councilSetting() };
-    document.body.innerHTML = `
-      <div id="settings-sections">
-        <div class="setting-row" data-key="default_council_id">
-          <div class="custom-dropdown" data-role="council-mount"></div>
-        </div>
-      </div>`;
-    expect(() => page.mountCouncilDropdowns(document.getElementById('settings-sections'))).not.toThrow();
-    expect(page._councilDropdowns.default_council_id).toBeUndefined();
+    try {
+      page.settingsByKey = { default_council_id: councilSetting() };
+      document.body.innerHTML = `
+        <div id="settings-sections">
+          <div class="setting-row" data-key="default_council_id">
+            <div class="custom-dropdown" data-role="council-mount"></div>
+          </div>
+        </div>`;
+      expect(() => page.mountCouncilDropdowns(document.getElementById('settings-sections'))).not.toThrow();
+      expect(page._councilDropdowns.default_council_id).toBeUndefined();
+    } finally {
+      window.CouncilDropdown = saved;
+    }
   });
 
   it('loadCouncils populates councils from GET /api/councils', async () => {
     const page = createPage();
-    global.fetch = vi.fn(async () => makeResponse({ councils }));
+    vi.stubGlobal('fetch', vi.fn(async () => makeResponse({ councils })));
     await page.loadCouncils();
     expect(page.councils).toEqual(councils);
+    expect(page.councilsLoadFailed).toBe(false);
     expect(global.fetch).toHaveBeenCalledWith('/api/councils');
   });
 
-  it('loadCouncils defaults to an empty list on failure', async () => {
-    const page = createPage();
-    page.councils = [{ id: 'stale' }];
-    global.fetch = vi.fn(async () => makeResponse({}, { ok: false, status: 500 }));
-    await page.loadCouncils();
-    expect(page.councils).toEqual([]);
+  // REGRESSION: the catch used to do `this.councils = []`, so `[]` meant BOTH
+  // "no councils exist" and "the fetch failed" — and the stale-council layer
+  // treats the list as authoritative. A transient /api/councils failure then
+  // announced, in the trigger AND the preview at once, that a perfectly valid
+  // default_council_id had been deleted. refreshCouncilRows() re-runs this after
+  // every mutation made in the Councils section, so the window is wide.
+  describe('a FAILED council load is not an empty council list', () => {
+    // The catch logs; silence it and restore so nothing leaks to later tests.
+    beforeEach(() => { vi.spyOn(console, 'error').mockImplementation(() => {}); });
+    afterEach(() => { vi.restoreAllMocks(); });
+
+    it('keeps the previous list and records the failure', async () => {
+      const page = createPage();
+      page.councils = councils;
+      vi.stubGlobal('fetch', vi.fn(async () => makeResponse({}, { ok: false, status: 500 })));
+
+      await page.loadCouncils();
+
+      expect(page.councils).toEqual(councils);
+      expect(page.councilsLoadFailed).toBe(true);
+    });
+
+    it('reports nothing as stale while the last load failed', async () => {
+      const page = createPage();
+      page.councils = councils;
+      vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline'); }));
+      await page.loadCouncils();
+
+      // Not in the (last known) list either — but absence from a list we could
+      // not refresh is not evidence of deletion.
+      expect(page.isStaleCouncilId('c1')).toBe(false);
+      expect(page.isStaleCouncilId('never-existed')).toBe(false);
+    });
+
+    // REGRESSION (integration review): leaving placeholder/emptyText undefined
+    // here let the component fall back to its "No councils available" default.
+    // On a FIRST-load failure the list IS empty, so the trigger asserted the
+    // account has no councils while the preview 30px below said we could not
+    // tell — the trigger-vs-preview contradiction this round exists to remove,
+    // reintroduced through the state this round created.
+    it('names the unloadable list in the dropdown, not "no councils" and not "deleted"', async () => {
+      const page = createPage();
+      page.councils = [];   // first load, nothing cached
+      page.settingsByKey = { default_council_id: councilSetting({ value: 'c1' }) };
+      vi.stubGlobal('fetch', vi.fn(async () => makeResponse({}, { ok: false, status: 500 })));
+      await page.loadCouncils();
+
+      document.body.innerHTML = `
+        <div id="settings-sections">
+          <div class="setting-row" data-key="default_council_id">
+            <div class="council-control-wrap">
+              <div class="custom-dropdown" data-role="council-mount"></div>
+              <div class="council-preview" data-role="council-preview"></div>
+            </div>
+          </div>
+        </div>`;
+      page.mountCouncilDropdowns(document.getElementById('settings-sections'));
+
+      const dropdown = page._councilDropdowns.default_council_id;
+      const UNAVAILABLE = CouncilDropdownClass.COUNCILS_UNAVAILABLE_LABEL;
+      expect(dropdown.placeholder).toBe(UNAVAILABLE);
+      expect(dropdown.emptyText).toBe(UNAVAILABLE);
+
+      const trigger = document.querySelector('.custom-dropdown-trigger');
+      expect(trigger.textContent).toContain(UNAVAILABLE);
+      expect(trigger.textContent).not.toContain('No councils available');
+      expect(trigger.textContent).not.toContain(STALE_COUNCIL_LABEL);
+      // ...and the preview beneath tells the SAME story, not a second one.
+      expect(document.querySelector('.council-preview').textContent).toContain(UNAVAILABLE);
+    });
+
+    it('keeps the neutral placeholder once the load succeeds again', async () => {
+      const page = createPage();
+      page.settingsByKey = { default_council_id: councilSetting({ value: 'c1' }) };
+      vi.stubGlobal('fetch', vi.fn(async () => makeResponse({ councils })));
+      await page.loadCouncils();
+
+      document.body.innerHTML = `
+        <div id="settings-sections">
+          <div class="setting-row" data-key="default_council_id">
+            <div class="custom-dropdown" data-role="council-mount"></div>
+          </div>
+        </div>`;
+      page.mountCouncilDropdowns(document.getElementById('settings-sections'));
+
+      const dropdown = page._councilDropdowns.default_council_id;
+      expect(dropdown.placeholder).toBe('Select a council...');
+      expect(dropdown.emptyText).toBe('No councils available');
+    });
+
+    it('clears the flag on the next successful load', async () => {
+      const page = createPage();
+      page.councils = councils;
+      vi.stubGlobal('fetch', vi.fn(async () => makeResponse({}, { ok: false, status: 500 })));
+      await page.loadCouncils();
+      expect(page.councilsLoadFailed).toBe(true);
+
+      vi.stubGlobal('fetch', vi.fn(async () => makeResponse({ councils: [councils[0]] })));
+      await page.loadCouncils();
+
+      expect(page.councilsLoadFailed).toBe(false);
+      expect(page.councils).toEqual([councils[0]]);
+      // ...and the genuinely-deleted council reads as deleted again.
+      expect(page.isStaleCouncilId('c2')).toBe(true);
+    });
+
+    it('a SUCCESSFUL load returning [] still means "there are none"', async () => {
+      const page = createPage();
+      page.councils = councils;
+      vi.stubGlobal('fetch', vi.fn(async () => makeResponse({ councils: [] })));
+
+      await page.loadCouncils();
+
+      expect(page.councils).toEqual([]);
+      expect(page.councilsLoadFailed).toBe(false);
+      expect(page.isStaleCouncilId('c1')).toBe(true);
+    });
   });
 });
 
@@ -480,6 +618,57 @@ describe('"Default for Analysis" composition preview', () => {
     expect(page.resolveModelDisplay('claude', 'sonnet')).toEqual({ providerName: 'Claude', modelName: 'Sonnet' });
     // Unknown provider/model fall back to the raw ids.
     expect(page.resolveModelDisplay('nope', 'x')).toEqual({ providerName: 'nope', modelName: 'x' });
+  });
+
+  // This page and CouncilManager render CouncilCards on the SAME screen; they
+  // used to hold three separate copies of this resolver and disagreed about
+  // aliases and about providers that declare no models.
+  describe('resolveModelDisplay delegates to the shared ProviderMap util', () => {
+    const aliasProviders = [
+      { id: 'claude', name: 'Claude', models: [{ id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', aliases: ['sonnet'] }] },
+      // Declares no models: buildProviderMap drops it, but a hand-authored
+      // council file can still name it, and it still has a display name.
+      { id: 'opencode', name: 'OpenCode', models: [] }
+    ];
+
+    it('resolves an alias to the canonical model name', () => {
+      const page = createPage(aliasProviders);
+      expect(page.resolveModelDisplay('claude', 'sonnet'))
+        .toEqual({ providerName: 'Claude', modelName: 'Claude Sonnet 4.5' });
+    });
+
+    it('names a provider that declares no models (the raw list, not the map)', () => {
+      const page = createPage([]);
+      page.allProviders = aliasProviders;
+      // `providers` is the model-filtered list the pickers use; the resolver must
+      // not be limited to it.
+      page.providers = aliasProviders.filter(p => p.models.length > 0);
+      expect(page.resolveModelDisplay('opencode', 'whatever'))
+        .toEqual({ providerName: 'OpenCode', modelName: 'whatever' });
+    });
+
+    it('calls the util rather than re-implementing the lookup', () => {
+      const page = createPage(aliasProviders);
+      const spy = vi.spyOn(window.ProviderMap, 'resolveModelDisplay');
+      try {
+        page.resolveModelDisplay('claude', 'sonnet');
+        expect(spy).toHaveBeenCalledWith(aliasProviders, 'claude', 'sonnet');
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('degrades to raw ids when the util is not loaded (never throws)', () => {
+      const page = createPage(aliasProviders);
+      const saved = window.ProviderMap;
+      delete window.ProviderMap;
+      try {
+        expect(page.resolveModelDisplay('claude', 'sonnet'))
+          .toEqual({ providerName: 'claude', modelName: 'sonnet' });
+      } finally {
+        window.ProviderMap = saved;
+      }
+    });
   });
 
   it('shows a hint (not a card) for the base "Default Provider / Model" option', () => {
@@ -555,6 +744,26 @@ describe('"Default for Analysis" composition preview', () => {
       expect(page.isStaleCouncilId(undefined)).toBe(false);
     });
 
+    // The repo settings page renders the SAME setting through the same
+    // component and must word this state identically. settings.js and
+    // repo-settings.js are separate page scripts with no import between them, so
+    // the one literal lives on the component both pages load.
+    it('takes its wording from CouncilDropdown, not a local literal', () => {
+      expect(typeof CouncilDropdown.STALE_COUNCIL_LABEL).toBe('string');
+      expect(CouncilDropdown.STALE_COUNCIL_LABEL.length).toBeGreaterThan(0);
+      expect(staleCouncilLabel()).toBe(CouncilDropdown.STALE_COUNCIL_LABEL);
+    });
+
+    it('omits the stale wording (rather than duplicating it) with no component loaded', () => {
+      const saved = window.CouncilDropdown;
+      delete window.CouncilDropdown;
+      try {
+        expect(staleCouncilLabel()).toBe('');
+      } finally {
+        window.CouncilDropdown = saved;
+      }
+    });
+
     it('says so in the dropdown trigger instead of "Select a council..."', () => {
       const page = createPage(previewProviders);
       page.councils = previewCouncils;
@@ -575,6 +784,24 @@ describe('"Default for Analysis" composition preview', () => {
       const trigger = row.querySelector('.custom-dropdown-trigger');
       expect(trigger.textContent).toContain(STALE_COUNCIL_LABEL);
       expect(trigger.textContent).not.toContain('No councils available');
+    });
+
+    it('does NOT accuse the stored id when the council list failed to load', () => {
+      const page = createPage(previewProviders);
+      // Previous list survived the failure but does not contain the stored id
+      // (e.g. the very first load failed) — we still cannot claim it is dead.
+      page.councils = [];
+      page.councilsLoadFailed = true;
+      const row = mountStale(page, 'c1');
+
+      const trigger = row.querySelector('.custom-dropdown-trigger');
+      expect(trigger.textContent).not.toContain(STALE_COUNCIL_LABEL);
+      const preview = row.querySelector('.council-preview');
+      expect(preview.textContent).not.toContain(STALE_COUNCIL_LABEL);
+      expect(preview.querySelector('.council-preview-hint--stale')).toBeNull();
+      // ...and it says what actually happened instead of nothing at all.
+      expect(preview.querySelector('.council-preview-hint')).toBeTruthy();
+      expect(preview.textContent).toContain('Could not load the council list');
     });
 
     it('leaves the normal placeholder alone when the selection resolves', () => {
@@ -958,6 +1185,40 @@ describe('mountCouncils', () => {
     captured.onChange();
     expect(page.refreshCouncilRows).toHaveBeenCalled();
   });
+
+  // "Pass resolved values down, don't reach up": init() has already fetched
+  // /api/providers and /api/config, so the hosted component must not fetch them
+  // a second time on every settings load.
+  it('hands the component the providers and config this page already loaded', () => {
+    setupDom();
+    let captured = null;
+    global.CouncilManager = function (container, options) { captured = options; };
+    const page = createPage();
+    // The UNFILTERED provider list: a council may name a provider that declares
+    // no models, and the component's own resolver needs it.
+    page.allProviders = [{ id: 'claude', name: 'Claude', models: [{ id: 'sonnet' }] }, { id: 'opencode', name: 'OpenCode', models: [] }];
+    page.providers = [page.allProviders[0]];
+    page.appConfig = { default_provider: 'claude' };
+
+    page.mountCouncils();
+
+    expect(captured.providers).toBe(page.allProviders);
+    expect(captured.appConfig).toBe(page.appConfig);
+  });
+
+  it('omits whichever of the two this page failed to load, so the component can retry', () => {
+    setupDom();
+    let captured = null;
+    global.CouncilManager = function (container, options) { captured = options; };
+    const page = createPage();
+    page.allProviders = null;   // loadProviders failed
+    page.appConfig = null;      // loadChatProviders failed
+
+    page.mountCouncils();
+
+    expect('providers' in captured).toBe(false);
+    expect('appConfig' in captured).toBe(false);
+  });
 });
 
 describe('refreshCouncilRows', () => {
@@ -973,7 +1234,7 @@ describe('refreshCouncilRows', () => {
       default_council_id: baseSetting({ key: 'default_council_id', group: 'ai', type: 'string', value: 'new' })
     };
     const fresh = [{ id: 'new', name: 'New', type: 'council' }];
-    global.fetch = vi.fn(async () => makeResponse({ councils: fresh }));
+    vi.stubGlobal('fetch', vi.fn(async () => makeResponse({ councils: fresh })));
     const rerendered = [];
     page.rerenderRow = (s) => rerendered.push(s.key);
 
@@ -984,10 +1245,32 @@ describe('refreshCouncilRows', () => {
     expect(rerendered).toEqual(['default_council_id']);
   });
 
+  // The JSDoc promises "a failed refresh leaves the previous list in place";
+  // before the loadCouncils fix it emptied the list and every council-valued row
+  // re-rendered as "the selected council no longer exists".
+  it('leaves the previous list (and the row wording) alone when the refresh fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const page = createPage();
+    const known = [{ id: 'keep', name: 'Keep', type: 'council' }];
+    page.councils = known;
+    page.settingsByKey = {
+      default_council_id: baseSetting({ key: 'default_council_id', group: 'ai', type: 'string', value: 'keep' })
+    };
+    vi.stubGlobal('fetch', vi.fn(async () => makeResponse({}, { ok: false, status: 503 })));
+    const rerendered = [];
+    page.rerenderRow = (s) => rerendered.push(s.key);
+
+    await page.refreshCouncilRows();
+
+    expect(page.councils).toEqual(known);
+    expect(rerendered).toEqual(['default_council_id']);
+    expect(page.isStaleCouncilId('keep')).toBe(false);
+  });
+
   it('skips rows whose descriptor is not loaded and never throws', async () => {
     const page = createPage();
     page.settingsByKey = {}; // council key not present on this deployment
-    global.fetch = vi.fn(async () => makeResponse({ councils: [] }));
+    vi.stubGlobal('fetch', vi.fn(async () => makeResponse({ councils: [] })));
     page.rerenderRow = vi.fn();
 
     await expect(page.refreshCouncilRows()).resolves.toBeUndefined();
@@ -999,7 +1282,7 @@ describe('refreshCouncilRows', () => {
     page.settingsByKey = {
       default_council_id: baseSetting({ key: 'default_council_id', group: 'ai', type: 'string', value: '' })
     };
-    global.fetch = vi.fn(async () => makeResponse({ councils: [] }));
+    vi.stubGlobal('fetch', vi.fn(async () => makeResponse({ councils: [] })));
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     page.rerenderRow = () => { throw new Error('boom'); };
 
@@ -1298,18 +1581,75 @@ describe('chat_provider dropdown — sourced from chat providers, not analysis p
 
   it('loadChatProviders populates chatProviders from GET /api/config', async () => {
     const page = createPage();
-    global.fetch = vi.fn(async () => makeResponse({ chat_providers: chatProviders }));
+    vi.stubGlobal('fetch', vi.fn(async () => makeResponse({ chat_providers: chatProviders })));
     await page.loadChatProviders();
     expect(page.chatProviders).toEqual(chatProviders);
     expect(global.fetch).toHaveBeenCalledWith('/api/config');
   });
 
   it('loadChatProviders defaults to an empty list on failure', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
     const page = createPage();
     page.chatProviders = [{ id: 'stale' }];
-    global.fetch = vi.fn(async () => makeResponse({}, { ok: false, status: 500 }));
+    vi.stubGlobal('fetch', vi.fn(async () => makeResponse({}, { ok: false, status: 500 })));
     await page.loadChatProviders();
     expect(page.chatProviders).toEqual([]);
+    vi.restoreAllMocks();
+  });
+
+  // The same /api/config response is kept whole for the hosted CouncilManager
+  // (see mountCouncils) — null on failure so the component refetches instead of
+  // trusting an empty object.
+  it('loadChatProviders keeps the whole /api/config payload for the hosted component', async () => {
+    const page = createPage();
+    const payload = { chat_providers: chatProviders, default_provider: 'claude' };
+    vi.stubGlobal('fetch', vi.fn(async () => makeResponse(payload)));
+    await page.loadChatProviders();
+    expect(page.appConfig).toEqual(payload);
+  });
+
+  it('loadChatProviders nulls the kept config on failure', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const page = createPage();
+    page.appConfig = { stale: true };
+    vi.stubGlobal('fetch', vi.fn(async () => makeResponse({}, { ok: false, status: 500 })));
+    await page.loadChatProviders();
+    expect(page.appConfig).toBeNull();
+    vi.restoreAllMocks();
+  });
+});
+
+describe('loadProviders — filtered list for pickers, raw list for name resolution', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  const payload = {
+    providers: [
+      { id: 'claude', name: 'Claude', models: [{ id: 'sonnet', name: 'Sonnet' }] },
+      { id: 'opencode', name: 'OpenCode', models: [] }
+    ]
+  };
+
+  it('keeps both shapes: allProviders raw, providers model-filtered', async () => {
+    const page = createPage();
+    vi.stubGlobal('fetch', vi.fn(async () => makeResponse(payload)));
+
+    await page.loadProviders();
+
+    expect(page.allProviders).toEqual(payload.providers);
+    expect(page.providers.map(p => p.id)).toEqual(['claude']);
+    // A provider with no models still resolves to its display name.
+    expect(page.resolveModelDisplay('opencode', 'x').providerName).toBe('OpenCode');
+  });
+
+  it('nulls the raw list on failure so mountCouncils does not pass an empty one down', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const page = createPage();
+    vi.stubGlobal('fetch', vi.fn(async () => makeResponse({}, { ok: false, status: 500 })));
+
+    await page.loadProviders();
+
+    expect(page.allProviders).toBeNull();
+    expect(page.providers).toEqual([]);
   });
 });
 
@@ -1338,7 +1678,7 @@ describe('mutation race guard — updateSetting / resetSetting serialize per key
     const d2 = deferred();
     const calls = [d1.promise, d2.promise];
     let i = 0;
-    global.fetch = vi.fn(() => calls[i++]);
+    vi.stubGlobal('fetch', vi.fn(() => calls[i++]));
 
     const p1 = page.updateSetting('theme', 'dark');   // seq 1 (stale)
     const p2 = page.updateSetting('theme', 'light');  // seq 2 (winner)
@@ -1363,7 +1703,7 @@ describe('mutation race guard — updateSetting / resetSetting serialize per key
     const dDel = deferred();
     const calls = [dPut.promise, dDel.promise];
     let i = 0;
-    global.fetch = vi.fn(() => calls[i++]);
+    vi.stubGlobal('fetch', vi.fn(() => calls[i++]));
 
     const put = page.updateSetting('theme', 'light');  // seq 1 (stale)
     const del = page.resetSetting('theme');            // seq 2 (winner)
@@ -1387,7 +1727,7 @@ describe('mutation race guard — updateSetting / resetSetting serialize per key
     const dOk = deferred();
     const calls = [dFail.promise, dOk.promise];
     let i = 0;
-    global.fetch = vi.fn(() => calls[i++]);
+    vi.stubGlobal('fetch', vi.fn(() => calls[i++]));
 
     const failing = page.updateSetting('theme', 'dark');   // seq 1 — will error
     const winner = page.updateSetting('theme', 'blue');    // seq 2 — succeeds
@@ -1423,37 +1763,80 @@ describe('showToast — coexistence with the shared Toast component', () => {
     return document.getElementById('toast-container');
   }
 
-  it('stamps the settings-toast marker class the page stylesheet is scoped to', () => {
-    const page = createPage();
-    const container = toastHost();
-    page.showToast('success', 'Theme saved');
+  /**
+   * Run `fn` with showToast's 4000ms dismiss timer faked, so no test leaves a
+   * live timer (and a later `toast.remove()`) in flight — tests/CONVENTIONS.md,
+   * Cleanup. `requestAnimationFrame` is deliberately left REAL: the reveal
+   * happens in a rAF callback and these tests assert it actually happens, which
+   * vitest's default fake-timer set would silently prevent.
+   */
+  async function withFakeDismissTimer(fn) {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      await fn();
+    } finally {
+      vi.useRealTimers();
+    }
+  }
 
-    const toast = container.querySelector('.toast');
-    expect(toast.classList.contains('settings-toast')).toBe(true);
-    expect(toast.classList.contains('success')).toBe(true);
-    expect(toast.querySelector('.toast-message').textContent).toBe('Theme saved');
+  const nextFrame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+
+  it('stamps the settings-toast marker class the page stylesheet is scoped to', async () => {
+    await withFakeDismissTimer(async () => {
+      const page = createPage();
+      const container = toastHost();
+      page.showToast('success', 'Theme saved');
+      await nextFrame();
+
+      const toast = container.querySelector('.toast');
+      expect(toast.classList.contains('settings-toast')).toBe(true);
+      expect(toast.classList.contains('success')).toBe(true);
+      expect(toast.querySelector('.toast-message').textContent).toBe('Theme saved');
+    });
   });
 
-  it('never stamps the shared component\'s classes (and vice versa)', () => {
-    const page = createPage();
-    const container = toastHost();
-    page.showToast('error', 'Failed to save: boom');
+  it('never stamps the shared component\'s classes (and vice versa)', async () => {
+    await withFakeDismissTimer(async () => {
+      const page = createPage();
+      const container = toastHost();
+      page.showToast('error', 'Failed to save: boom');
+      await nextFrame();
 
-    const toast = container.querySelector('.toast');
-    // Toast.js reveals with `toast-show` and colours with `toast-success` /
-    // `toast-error` / `toast-warning` / `toast-info`. If this page ever starts
-    // using any of them, the scoped settings.css rules stop applying to it.
-    for (const shared of ['toast-show', 'toast-success', 'toast-error', 'toast-warning', 'toast-info']) {
-      expect(toast.classList.contains(shared)).toBe(false);
-    }
-    // ...and the class the shared component reveals with is NOT the one this
-    // page adds, which is why settings.css must not style `.toast` bare.
-    expect(toast.classList.contains('show')).toBe(false);
+      const toast = container.querySelector('.toast');
+      // Toast.js reveals with `toast-show` and colours with `toast-success` /
+      // `toast-error` / `toast-warning` / `toast-info`. If this page ever starts
+      // using any of them, the scoped settings.css rules stop applying to it.
+      // THIS loop is the coexistence check.
+      for (const shared of ['toast-show', 'toast-success', 'toast-error', 'toast-warning', 'toast-info']) {
+        expect(toast.classList.contains(shared)).toBe(false);
+      }
+      // The class this page reveals with is `show` — a DIFFERENT class from the
+      // shared component's `toast-show`, which is why settings.css must not
+      // style `.toast` bare. Asserted AFTER a frame, because that is when the
+      // reveal happens: checking synchronously would pass even if the reveal
+      // were deleted and the toast stayed at opacity 0 forever.
+      expect(toast.classList.contains('show')).toBe(true);
+    });
   });
 
   it('is a no-op without a container (never throws)', () => {
     const page = createPage();
     document.body.innerHTML = '';
     expect(() => page.showToast('success', 'nowhere to go')).not.toThrow();
+  });
+
+  it('auto-dismisses after 4s (the timer is real, not just scheduled)', async () => {
+    await withFakeDismissTimer(async () => {
+      const page = createPage();
+      const container = toastHost();
+      page.showToast('success', 'Theme saved');
+      await nextFrame();
+      const toast = container.querySelector('.toast');
+
+      vi.advanceTimersByTime(4000);
+      expect(toast.classList.contains('show')).toBe(false);
+      vi.advanceTimersByTime(300);
+      expect(container.querySelector('.toast')).toBeNull();
+    });
   });
 });

@@ -54,9 +54,13 @@ const TABS = [
       export: 'vc-council-export-btn',
       delete: 'vc-council-delete-btn'
     },
-    validConfig: { levels: { 1: true, 2: false, 3: false } },
-    // Voice-centric validity also depends on the reviewer count.
-    extraCtx: { _getReviewerCount: () => 2 }
+    // Voice-centric validity also depends on the voices the config carries —
+    // `_validateConfig` reads the argument, never the DOM.
+    validConfig: {
+      voices: [{ provider: 'claude', model: 'sonnet' }],
+      levels: { 1: true, 2: false, 3: false }
+    },
+    extraCtx: {}
   },
   {
     label: 'AdvancedConfigTab',
@@ -69,7 +73,14 @@ const TABS = [
       export: 'council-export-btn',
       delete: 'council-delete-btn'
     },
-    validConfig: { levels: { 1: { enabled: true }, 2: { enabled: false } } },
+    // An ENABLED level must carry at least one voice, mirroring the server's
+    // `levels.N.voices must be a non-empty array when enabled`.
+    validConfig: {
+      levels: {
+        1: { enabled: true, voices: [{ provider: 'claude', model: 'sonnet' }] },
+        2: { enabled: false, voices: [] }
+      }
+    },
     extraCtx: {}
   }
 ];

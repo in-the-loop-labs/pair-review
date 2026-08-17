@@ -24,6 +24,48 @@ afterEach(() => {
   document.body.innerHTML = '';
 });
 
+describe('CouncilDropdown.STALE_COUNCIL_LABEL', () => {
+  // The sentence for "your saved council was deleted" is rendered by FOUR
+  // controls across two pages: the dropdown trigger and the composition preview
+  // on /settings, and the dropdown trigger and card preview on
+  // /settings/:owner/:repo. Those pages are separate scripts with no import
+  // between them, so the literal lives HERE — the one component both load — and
+  // both read it from this static. Do not re-type it in a page script.
+  it('is a non-empty sentence exposed as a static on the component', () => {
+    expect(typeof CouncilDropdown.STALE_COUNCIL_LABEL).toBe('string');
+    expect(CouncilDropdown.STALE_COUNCIL_LABEL.trim().length).toBeGreaterThan(0);
+    // Names the state AND tells the user what to do about it.
+    expect(CouncilDropdown.STALE_COUNCIL_LABEL).toMatch(/no longer exists/i);
+  });
+
+  // Three states, three sentences, and the UI must never substitute one for
+  // another: deleted (this static), unloadable (COUNCILS_UNAVAILABLE_LABEL), and
+  // genuinely none (the component's own emptyText default).
+  it('is distinct from the "could not load" sentence', () => {
+    expect(typeof CouncilDropdown.COUNCILS_UNAVAILABLE_LABEL).toBe('string');
+    expect(CouncilDropdown.COUNCILS_UNAVAILABLE_LABEL.trim().length).toBeGreaterThan(0);
+    expect(CouncilDropdown.COUNCILS_UNAVAILABLE_LABEL).not.toBe(CouncilDropdown.STALE_COUNCIL_LABEL);
+    // Neither may read as "the account has no councils".
+    expect(CouncilDropdown.COUNCILS_UNAVAILABLE_LABEL).not.toMatch(/no councils/i);
+    expect(CouncilDropdown.STALE_COUNCIL_LABEL).not.toMatch(/no councils/i);
+  });
+
+  it('can be used as a placeholder/emptyText, replacing the generic wording', () => {
+    const container = mount();
+    const dd = new CouncilDropdown({
+      container,
+      councils: [],
+      selectedId: 'deleted',
+      placeholder: CouncilDropdown.STALE_COUNCIL_LABEL,
+      emptyText: CouncilDropdown.STALE_COUNCIL_LABEL
+    });
+    const trigger = container.querySelector('.custom-dropdown-trigger');
+    expect(trigger.textContent).toContain(CouncilDropdown.STALE_COUNCIL_LABEL);
+    expect(trigger.textContent).not.toContain('Select a council');
+    dd.destroy();
+  });
+});
+
 describe('CouncilDropdown.typeBadge', () => {
   it('maps advanced and standard types', () => {
     expect(CouncilDropdown.typeBadge('advanced')).toEqual({ label: 'Advanced', cssClass: 'badge-advanced' });

@@ -264,8 +264,18 @@ beforeEach(() => {
     location: { pathname: '/settings/test-owner/test-repo', search: '' },
     addEventListener: vi.fn(),
     getTierIcon: vi.fn((tier) => `<svg class="tier-${tier}"></svg>`),
+    // Both are resolved off `window` at call time by the page, exactly as
+    // repo-settings.html's script order provides them: the alias-aware
+    // display-name resolver, and the component that owns the shared
+    // "council no longer exists" sentence.
+    ProviderMap: require('../../public/js/utils/provider-map.js'),
+    CouncilDropdown: require('../../public/js/components/CouncilDropdown.js').CouncilDropdown,
+    CouncilCard: global.CouncilCard,
   };
 });
+
+const STALE_LABEL = require('../../public/js/components/CouncilDropdown.js').CouncilDropdown.STALE_COUNCIL_LABEL;
+const UNAVAILABLE_LABEL = require('../../public/js/components/CouncilDropdown.js').CouncilDropdown.COUNCILS_UNAVAILABLE_LABEL;
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -993,10 +1003,52 @@ describe('RepoSettingsPage - Council Card', () => {
       expect(cardPreview.style.display).toBe('none');
     });
 
-    it('should hide preview when council mode with non-existent council ID', () => {
+    // REGRESSION: this used to HIDE the preview, so a repo whose default council
+    // had been deleted opened in Council mode looking exactly like "you never
+    // configured one" — while the dead id sat in currentSettings and was
+    // re-saved on the next Save. Now that the dropdown trigger names the dead
+    // council, hiding here would also contradict the trigger 30px above it.
+    it('should name a deleted council instead of hiding the preview', () => {
       const instance = createInstance({
         currentSettings: { default_council_id: 'nonexistent' },
         councils: [mockStandardCouncil]
+      });
+      instance.checkForChanges = vi.fn();
+      const { cardPreview } = setupModePanels();
+
+      instance.setAnalysisMode('council');
+
+      expect(cardPreview.style.display).toBe('');
+      expect(cardPreview.innerHTML).toContain(STALE_LABEL);
+      expect(cardPreview.innerHTML).toContain('council-preview-hint--stale');
+    });
+
+    // Aligned with SettingsPage#renderCouncilPreview: a chosen-but-unresolvable
+    // council always gets a note, never a silently empty box. The wording is the
+    // neutral "could not load" one — we cannot claim the id is dead.
+    it('should explain an unloadable list rather than hiding the preview', () => {
+      const instance = createInstance({
+        currentSettings: { default_council_id: 'maybe-fine' },
+        councils: [],
+        councilsLoadFailed: true
+      });
+      instance.checkForChanges = vi.fn();
+      const { cardPreview } = setupModePanels();
+
+      instance.setAnalysisMode('council');
+
+      expect(cardPreview.style.display).toBe('');
+      expect(cardPreview.innerHTML).toContain(UNAVAILABLE_LABEL);
+      expect(cardPreview.innerHTML).not.toContain(STALE_LABEL);
+      // Neutral grey, not the warning colour reserved for a deleted council.
+      expect(cardPreview.innerHTML).not.toContain('council-preview-hint--stale');
+    });
+
+    it('should still hide the preview when no council is chosen at all', () => {
+      const instance = createInstance({
+        currentSettings: { default_council_id: null },
+        councils: [],
+        councilsLoadFailed: true
       });
       instance.checkForChanges = vi.fn();
       const { cardPreview } = setupModePanels();
@@ -1104,7 +1156,9 @@ describe('RepoSettingsPage - Council Card', () => {
       expect(cardPreview.style.display).toBe('none');
     });
 
-    it('should hide preview when selecting non-existent council', () => {
+    // Same miss-site as setAnalysisMode's, and it must tell the same story —
+    // both now route through _renderCouncilPreviewFor.
+    it('should name a deleted council instead of hiding the preview', () => {
       const instance = createInstance({
         councils: [mockStandardCouncil],
         currentSettings: {}
@@ -1117,7 +1171,9 @@ describe('RepoSettingsPage - Council Card', () => {
 
       instance.selectCouncilOption(container, 'nonexistent-id');
 
-      expect(cardPreview.style.display).toBe('none');
+      expect(cardPreview.style.display).toBe('');
+      expect(cardPreview.innerHTML).toContain(STALE_LABEL);
+      expect(cardPreview.innerHTML).toContain('council-preview-hint--stale');
     });
 
     it('should update currentSettings.default_council_id', () => {
@@ -1198,6 +1254,304 @@ describe('RepoSettingsPage - Council Card', () => {
       instance.selectCouncilOption(container, 'council-1');
 
       expect(instance.closeCouncilDropdown).toHaveBeenCalledWith(container);
+    });
+  });
+
+  // -- loadCouncils: "could not load" is not "there are none" ----------------
+
+  describe('loadCouncils', () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    function stubFetch(impl) {
+      vi.stubGlobal('fetch', vi.fn(impl));
+    }
+
+    it('populates the list and clears the failure flag', async () => {
+      registerElement('default-council-dropdown');
+      const instance = createInstance({ councilsLoadFailed: true });
+      stubFetch(async () => ({ ok: true, json: async () => ({ councils: [mockStandardCouncil] }) }));
+
+      await instance.loadCouncils();
+
+      expect(instance.councils).toEqual([mockStandardCouncil]);
+      expect(instance.councilsLoadFailed).toBe(false);
+    });
+
+    // Mirrors SettingsPage#loadCouncils: emptying the list on failure would make
+    // every stored default_council_id look deleted.
+    it('keeps the previous list and records the failure', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      registerElement('default-council-dropdown');
+      const instance = createInstance({ councils: [mockStandardCouncil] });
+      stubFetch(async () => ({ ok: false, status: 500, json: async () => ({}) }));
+
+      await instance.loadCouncils();
+
+      expect(instance.councils).toEqual([mockStandardCouncil]);
+      expect(instance.councilsLoadFailed).toBe(true);
+    });
+
+    it('isStaleCouncilId: only a non-empty id absent from a list we DID load', async () => {
+      const instance = createInstance({ councils: [mockStandardCouncil] });
+      expect(instance.isStaleCouncilId('council-1')).toBe(false);
+      expect(instance.isStaleCouncilId('ghost')).toBe(true);
+      expect(instance.isStaleCouncilId('')).toBe(false);
+      expect(instance.isStaleCouncilId(null)).toBe(false);
+
+      instance.councilsLoadFailed = true;
+      expect(instance.isStaleCouncilId('ghost')).toBe(false);
+    });
+  });
+
+  // -- renderCouncilDropdown: the trigger names a deleted council -------------
+
+  describe('renderCouncilDropdown', () => {
+    /** Record the options the page hands the shared component. */
+    function stubDropdown() {
+      const seen = [];
+      class FakeDropdown {
+        // The real component carries the shared sentences as statics, and the
+        // page reads them off the same global it constructs from.
+        static STALE_COUNCIL_LABEL = STALE_LABEL;
+        static COUNCILS_UNAVAILABLE_LABEL = UNAVAILABLE_LABEL;
+        constructor(opts) { Object.assign(this, opts); seen.push(this); }
+        render() { this.rendered = (this.rendered || 0) + 1; }
+      }
+      global.window.CouncilDropdown = FakeDropdown;
+      return seen;
+    }
+
+    it('passes the generic placeholder when the selection resolves', () => {
+      registerElement('default-council-dropdown');
+      const seen = stubDropdown();
+      const instance = createInstance({
+        councils: [mockStandardCouncil],
+        currentSettings: { default_council_id: 'council-1' }
+      });
+
+      instance.renderCouncilDropdown();
+
+      expect(seen[0].placeholder).toBe('Select a council...');
+      expect(seen[0].emptyText).not.toContain('no longer exists');
+    });
+
+    // REGRESSION: the repo page passed the generic 'Select a council...' for a
+    // dangling id, so a deleted default read as "you never configured one" —
+    // while the global settings page named it. Same setting, same component,
+    // two stories.
+    it('names a deleted council in BOTH the placeholder and the empty text', () => {
+      registerElement('default-council-dropdown');
+      const seen = stubDropdown();
+      const instance = createInstance({
+        councils: [mockStandardCouncil],
+        currentSettings: { default_council_id: 'deleted' }
+      });
+
+      instance.renderCouncilDropdown();
+
+      expect(seen[0].placeholder).toBe(STALE_LABEL);
+      // Deleting the LAST council empties the list — emptyText covers that.
+      expect(seen[0].emptyText).toBe(STALE_LABEL);
+    });
+
+    it('re-applies the wording on refresh, not just on first construction', () => {
+      registerElement('default-council-dropdown');
+      const seen = stubDropdown();
+      const instance = createInstance({
+        councils: [mockStandardCouncil],
+        currentSettings: { default_council_id: 'council-1' }
+      });
+      instance.renderCouncilDropdown();
+      expect(seen).toHaveLength(1);
+
+      // The council is deleted elsewhere and the list refreshes; the instance is
+      // reused (its outside-click listener must not be re-stacked).
+      instance.councils = [];
+      instance.renderCouncilDropdown();
+
+      expect(seen).toHaveLength(1);
+      expect(seen[0].placeholder).toBe(STALE_LABEL);
+      expect(seen[0].emptyText).toBe(STALE_LABEL);
+      expect(seen[0].rendered).toBe(1);
+    });
+
+    // REGRESSION (integration review): with the list unloadable AND empty, the
+    // generic fallbacks are claims this page cannot support — and the empty-list
+    // one is an INSTRUCTION ("create one in Settings › Councils") resting on one.
+    it('names the unloadable list instead of claiming there are none', () => {
+      registerElement('default-council-dropdown');
+      const seen = stubDropdown();
+      const instance = createInstance({
+        councils: [],
+        councilsLoadFailed: true,
+        currentSettings: { default_council_id: 'council-1' }
+      });
+
+      instance.renderCouncilDropdown();
+
+      expect(seen[0].placeholder).toBe(UNAVAILABLE_LABEL);
+      expect(seen[0].emptyText).toBe(UNAVAILABLE_LABEL);
+      // Never the stale wording: absence from a list we could not load is not
+      // evidence of deletion.
+      expect(seen[0].placeholder).not.toBe(STALE_LABEL);
+    });
+
+    it('points an empty list at where councils are actually created now', () => {
+      registerElement('default-council-dropdown');
+      const seen = stubDropdown();
+      const instance = createInstance({ councils: [], currentSettings: {} });
+
+      instance.renderCouncilDropdown();
+
+      // Councils are no longer created only from the analysis config modal.
+      expect(seen[0].emptyText).not.toContain('analysis config');
+      expect(seen[0].emptyText).toContain('Settings');
+    });
+
+    // Both pages read the sentence off the same static; neither re-types it.
+    it('uses the shared CouncilDropdown constant, not a local literal', () => {
+      const { CouncilDropdown } = require('../../public/js/components/CouncilDropdown.js');
+      const instance = createInstance();
+      expect(instance._staleCouncilLabel()).toBe(CouncilDropdown.STALE_COUNCIL_LABEL);
+
+      const saved = global.window.CouncilDropdown;
+      delete global.window.CouncilDropdown;
+      try {
+        // Nothing to read it from ⇒ omit the wording rather than duplicate it.
+        expect(instance._staleCouncilLabel()).toBe('');
+      } finally {
+        global.window.CouncilDropdown = saved;
+      }
+    });
+  });
+
+  // -- shared provider-map delegation ----------------------------------------
+
+  describe('resolveModelDisplay / findModelWithAliases delegate to ProviderMap', () => {
+    it('calls the shared util rather than re-implementing the lookup', () => {
+      const instance = createInstance();
+      const spy = vi.spyOn(global.window.ProviderMap, 'resolveModelDisplay');
+      try {
+        instance.resolveModelDisplay('claude', 'sonnet');
+        expect(spy).toHaveBeenCalledWith(instance.providers, 'claude', 'sonnet');
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('findModelWithAliases delegates too (one alias implementation)', () => {
+      const instance = createInstance();
+      const spy = vi.spyOn(global.window.ProviderMap, 'findModelWithAliases');
+      try {
+        const provider = instance.providers.claude;
+        instance.findModelWithAliases(provider, 'sonnet');
+        expect(spy).toHaveBeenCalledWith(provider, 'sonnet');
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('still resolves a legacy alias to the canonical model name', () => {
+      const instance = createInstance({
+        providers: {
+          claude: {
+            id: 'claude',
+            name: 'Claude',
+            models: [{ id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', aliases: ['sonnet'] }]
+          }
+        }
+      });
+      expect(instance.resolveModelDisplay('claude', 'sonnet'))
+        .toEqual({ providerName: 'Claude', modelName: 'Claude Sonnet 4.5' });
+    });
+
+    it('degrades to raw ids when the util is not loaded (never throws)', () => {
+      const instance = createInstance();
+      const saved = global.window.ProviderMap;
+      delete global.window.ProviderMap;
+      try {
+        expect(instance.resolveModelDisplay('claude', 'sonnet'))
+          .toEqual({ providerName: 'claude', modelName: 'sonnet' });
+        expect(instance.findModelWithAliases(instance.providers.claude, 'sonnet')).toBeUndefined();
+      } finally {
+        global.window.ProviderMap = saved;
+      }
+    });
+
+    // REGRESSION (integration review): this page passed its provider MAP, which
+    // loadProviders builds WITHOUT providers that declare no models. A council
+    // naming `opencode` therefore rendered "OpenCode" on /settings and in the
+    // Councils preview, but a bare "opencode" here — the exact cross-surface
+    // divergence the shared util exists to kill. Both other consumers pass the
+    // unfiltered array; so does this one now.
+    it('names a provider that declares no models, like the other two surfaces', () => {
+      const raw = [
+        { id: 'claude', name: 'Claude', models: [{ id: 'sonnet', name: 'Claude Sonnet' }] },
+        { id: 'opencode', name: 'OpenCode', models: [] }
+      ];
+      const instance = createInstance({
+        allProviders: raw,
+        providers: { claude: raw[0] }   // what buildProviderMap leaves behind
+      });
+
+      expect(instance.resolveModelDisplay('opencode', 'gpt-x'))
+        .toEqual({ providerName: 'OpenCode', modelName: 'gpt-x' });
+      // The util is handed the raw list, not the filtered map.
+      const spy = vi.spyOn(global.window.ProviderMap, 'resolveModelDisplay');
+      try {
+        instance.resolveModelDisplay('claude', 'sonnet');
+        expect(spy).toHaveBeenCalledWith(raw, 'claude', 'sonnet');
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('falls back to the map when the raw list is unavailable', () => {
+      const instance = createInstance({ allProviders: [] });
+      expect(instance.resolveModelDisplay('claude', 'sonnet'))
+        .toEqual({ providerName: 'Claude', modelName: 'Claude Sonnet' });
+    });
+  });
+
+  // -- loadProviders: one array→map conversion, in the shared util ------------
+
+  describe('loadProviders', () => {
+    afterEach(() => { vi.unstubAllGlobals(); });
+
+    const payload = {
+      providers: [
+        { id: 'claude', name: 'Claude', models: [{ id: 'sonnet', name: 'Claude Sonnet' }] },
+        { id: 'opencode', name: 'OpenCode', models: [] }
+      ]
+    };
+
+    it('keeps the raw array AND the filtered map, via ProviderMap.buildProviderMap', async () => {
+      const instance = createInstance({ providers: {}, allProviders: [] });
+      instance.renderProviderSelect = vi.fn();
+      const spy = vi.spyOn(global.window.ProviderMap, 'buildProviderMap');
+      vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => payload })));
+
+      await instance.loadProviders();
+
+      expect(spy).toHaveBeenCalledWith(payload.providers);
+      expect(instance.allProviders).toEqual(payload.providers);
+      expect(Object.keys(instance.providers)).toEqual(['claude']);
+      spy.mockRestore();
+    });
+
+    it('empties both on failure', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const instance = createInstance({ allProviders: payload.providers });
+      instance.renderProviderSelect = vi.fn();
+      instance.showToast = vi.fn();
+      vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 500, json: async () => ({}) })));
+
+      await instance.loadProviders();
+
+      expect(instance.allProviders).toEqual([]);
+      expect(instance.providers).toEqual({});
     });
   });
 

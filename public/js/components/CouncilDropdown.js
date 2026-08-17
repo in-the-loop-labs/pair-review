@@ -27,6 +27,32 @@
 
 class CouncilDropdown {
   /**
+   * What a council control says when the stored council id no longer resolves to
+   * a council — the council was deleted (DELETE /api/councils/:id deliberately
+   * leaves the setting pointing at the dead id; src/review-config.js warns and
+   * falls back to the provider/model default at run time) or a file-overlay
+   * council stopped resolving.
+   *
+   * It lives HERE, on the one component both council surfaces already load
+   * (settings.html and repo-settings.html), because the global settings page and
+   * the repo settings page are separate page scripts that cannot import from each
+   * other — the sentence would otherwise exist twice and drift. Consumers read
+   * `CouncilDropdown.STALE_COUNCIL_LABEL` for the dropdown trigger AND the
+   * preview beneath it, so the two cannot contradict each other.
+   */
+  static STALE_COUNCIL_LABEL = 'Selected council no longer exists — pick another';
+
+  /**
+   * What a council control says when the council list could not be LOADED — a
+   * different state from "the council was deleted" and from "there are none",
+   * and the only one of the three the UI cannot verify. Shared for the same
+   * reason as STALE_COUNCIL_LABEL: the trigger and the preview beneath it are
+   * rendered by different code on two pages, and an unloadable list must not
+   * come out as "No councils available" in one and "we don't know" in the other.
+   */
+  static COUNCILS_UNAVAILABLE_LABEL = 'Could not load the council list';
+
+  /**
    * @param {Object} opts
    * @param {HTMLElement} opts.container - Mount element (given `.custom-dropdown`).
    * @param {Array<{id:string,name:string,type:string}>} [opts.councils] - Council list.

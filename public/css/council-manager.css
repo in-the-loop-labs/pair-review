@@ -13,6 +13,19 @@
  *     settings page already loads, and CouncilDropdown.typeBadge/sourceBadge
  *     dictate those exact class names.
  *   - the hosted config tab's own chrome — analysis-config.css owns it.
+ *
+ * >>> KNOWN DUPLICATION — DO NOT ADD A THIRD COPY.
+ * The list/button block below (`__loading`, `__empty`, `__error`, `__list-wrap`,
+ * `__list`, `__row`, `__row-actions`, `__row-btn`, `__preview`, `__add-btn`,
+ * `__save-btn`, `__cancel-btn`, `__delete-btn`) is a BEM rename of the same 13
+ * selector families in snippet-manager.css — ~139 identical lines, and
+ * settings.html links both stylesheets, so the page ships one button system
+ * twice. Modeling on snippet-manager.css was right; copying it is the part to
+ * stop. Extraction into a shared settings-manager base is scheduled for
+ * Phase 4, when the third settings-page manager lands and the shared base can
+ * be designed against three real cases instead of guessed from two (the rename
+ * has to move through the JS and the E2E selectors, so it is not free). If you
+ * are here to add a fourth copy: do the extraction instead.
  */
 
 /* ─── Inline manager ──────────────────────────────────────────────────────── */
@@ -156,13 +169,22 @@
   font-weight: 600;
 }
 
-.council-manager__save-btn:hover {
+.council-manager__save-btn:not(:disabled):hover {
   background: var(--color-accent-hover, var(--color-accent-primary, #0860ca));
 }
 
-.council-manager__save-btn:disabled {
+/* Both footer buttons are disabled while a mutation is in flight, and Save is
+   disabled again while the hosted tab is still mounting — see
+   CouncilManager._syncFooterButtons. The guard has to be visible, not just
+   effective. */
+.council-manager__save-btn:disabled,
+.council-manager__back-btn:disabled {
   opacity: 0.55;
   cursor: not-allowed;
+}
+
+.council-manager__back-btn:disabled:hover {
+  background: var(--color-bg-secondary, #f6f8fa);
 }
 
 /* ─── Composition preview (CouncilCard) ───────────────────────────────────── */

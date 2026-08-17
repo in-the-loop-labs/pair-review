@@ -116,3 +116,23 @@
   background: rgba(139, 92, 246, 0.15);
   color: #a78bfa;
 }
+
+/* ── The note that stands IN PLACE of a card ────────────────────────────────
+   Both council surfaces render a short line instead of a card when there is
+   nothing to draw: the base "Default Provider / Model" choice, or a stored
+   default whose council was deleted. These rules started in settings.css, which
+   the repo settings page does not load, so the note rendered unstyled there;
+   they belong beside the component both pages DO load. */
+
+.council-preview-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+}
+
+/* A stored default that points at a deleted council. Tertiary grey reads as
+   "informational aside"; this is a state the user has to act on, so it takes
+   the warning colour the rest of the app uses for a stale/degraded value. */
+.council-preview-hint--stale {
+  color: var(--color-warning, #d29922);
+}

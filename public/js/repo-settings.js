@@ -11,9 +11,16 @@ class RepoSettingsPage {
     this.originalSettings = {};
     this.currentSettings = {};
     this.hasUnsavedChanges = false;
+    // Provider map (id → provider), filtered to those with models: what the
+    // pickers may offer. `allProviders` is the same payload unfiltered — see
+    // loadProviders / resolveModelDisplay.
     this.providers = {};
+    this.allProviders = [];
     this.selectedProvider = null;
     this.councils = [];
+    // Whether the LAST /api/councils load failed — see loadCouncils. `councils`
+    // alone cannot distinguish "none exist" from "we don't know".
+    this.councilsLoadFailed = false;
     this.worktreeData = null;
 
     this.init();
@@ -291,16 +298,16 @@ class RepoSettingsPage {
 
       const data = await response.json();
 
-      // Convert array to object keyed by provider id
-      // Filter out providers with no models configured (e.g., unconfigured OpenCode)
-      this.providers = {};
-      for (const provider of data.providers) {
-        if (provider.models && provider.models.length > 0) {
-          this.providers[provider.id] = provider;
-        } else {
-          console.warn(`Provider "${provider.name}" has no models configured and will not be available`);
-        }
-      }
+      // The UNFILTERED payload. A provider that declares no models cannot be
+      // OFFERED in a picker, but a saved council can still name one, and it
+      // still has a display name — so name resolution reads this list, not the
+      // map below. See resolveModelDisplay.
+      this.allProviders = Array.isArray(data.providers) ? data.providers : [];
+      // Map keyed by provider id, dropping providers with no models configured
+      // (e.g. unconfigured OpenCode). The array→map conversion, the filter and
+      // its console warning all live in the shared util — this page used to
+      // hand-roll a third copy of them.
+      this.providers = this._buildProviderMap(this.allProviders);
 
       // Render provider buttons now that we have data
       this.renderProviderSelect();
@@ -309,14 +316,29 @@ class RepoSettingsPage {
       console.error('Error loading providers:', error);
       // No hardcoded fallback — rely on the /api/providers endpoint as the single source of truth.
       // If the endpoint is unavailable, show an empty state rather than stale data.
+      this.allProviders = [];
       this.providers = {};
       this.renderProviderSelect();
       this.showToast('error', 'Failed to load AI providers. Please refresh the page.');
     }
   }
 
+  /** `window.ProviderMap.buildProviderMap`, resolved at call time. */
+  _buildProviderMap(providerList) {
+    const util = (typeof window !== 'undefined' && window.ProviderMap) || null;
+    return util && typeof util.buildProviderMap === 'function'
+      ? util.buildProviderMap(providerList)
+      : {};
+  }
+
   /**
-   * Load saved councils for the default council dropdown
+   * Load saved councils for the default council dropdown. Never throws.
+   *
+   * On failure the previous list is left ALONE and `councilsLoadFailed` is set.
+   * "Could not load" must stay distinguishable from "there are none": the
+   * stale-council wording below treats this list as authoritative, so an emptied
+   * list would tell the user their saved `default_council_id` had been deleted
+   * every time /api/councils blipped. Mirrors SettingsPage#loadCouncils.
    */
   async loadCouncils() {
     const container = document.getElementById('default-council-dropdown');
@@ -326,11 +348,53 @@ class RepoSettingsPage {
       const response = await fetch('/api/councils');
       if (!response.ok) throw new Error('Failed to fetch councils');
       const data = await response.json();
-      this.councils = data.councils || [];
+      this.councils = Array.isArray(data.councils) ? data.councils : [];
+      this.councilsLoadFailed = false;
     } catch (error) {
       console.error('Error loading councils:', error);
-      this.councils = [];
+      this.councilsLoadFailed = true;
     }
+  }
+
+  /**
+   * Read a shared council-state sentence off CouncilDropdown (loaded by both
+   * settings.html and repo-settings.html) at CALL time. The global settings page
+   * reads the same statics, so the two pages cannot word the same state
+   * differently. '' when the component is unavailable — callers then simply omit
+   * the wording rather than duplicating the literal here.
+   * @param {string} name - Static property name on CouncilDropdown.
+   * @returns {string}
+   * @private
+   */
+  _councilDropdownStatic(name) {
+    const Dropdown = (typeof window !== 'undefined' && window.CouncilDropdown)
+      || (typeof CouncilDropdown !== 'undefined' ? CouncilDropdown : null);
+    return (Dropdown && Dropdown[name]) || '';
+  }
+
+  /** The shared "this council is gone" sentence. @returns {string} @private */
+  _staleCouncilLabel() {
+    return this._councilDropdownStatic('STALE_COUNCIL_LABEL');
+  }
+
+  /** The shared "we could not load the list" sentence. @returns {string} @private */
+  _councilsUnavailableLabel() {
+    return this._councilDropdownStatic('COUNCILS_UNAVAILABLE_LABEL');
+  }
+
+  /**
+   * Whether a stored council id points at a council that no longer exists.
+   * Empty/absent is "no council chosen", never stale; and while the last load
+   * failed nothing is stale, because absence from a list we could not load is
+   * not evidence of deletion. Mirrors SettingsPage#isStaleCouncilId.
+   * @param {string|null|undefined} value
+   * @returns {boolean}
+   */
+  isStaleCouncilId(value) {
+    const id = value == null ? '' : String(value);
+    if (id === '') return false;
+    if (this.councilsLoadFailed) return false;
+    return !(this.councils || []).some(c => String(c.id) === id);
   }
 
   /**
@@ -352,20 +416,97 @@ class RepoSettingsPage {
     if (!Dropdown) return;
 
     const selectedId = this.currentSettings.default_council_id || '';
+    // A deleted council leaves the id stored (DELETE /api/councils/:id does not
+    // clear it) but matches no option, so the trigger falls back to placeholder
+    // text. The generic one reads as "you never configured one"; name the real
+    // state instead, in the same words the global settings page uses. `emptyText`
+    // covers the same state once the list is empty — deleting the last council
+    // from /settings hits exactly that.
+    //
+    // A FAILED load needs its own wording: nothing is stale then, but the list
+    // may also be empty, and both defaults below are claims this page cannot
+    // support — "No councils yet — create one…" is an INSTRUCTION resting on
+    // one. Same label in both slots, matching the preview beneath.
+    const stale = this.councilsLoadFailed
+      ? this._councilsUnavailableLabel()
+      : (this.isStaleCouncilId(selectedId) ? this._staleCouncilLabel() : '');
+    const placeholder = stale || 'Select a council...';
+    const emptyText = stale || 'No councils yet — create one in Settings › Councils';
+
     if (!this._councilDropdown) {
       this._councilDropdown = new Dropdown({
         container,
         councils: this.councils,
         selectedId,
-        placeholder: 'Select a council...',
-        emptyText: 'No councils yet — create one from the analysis config',
+        placeholder,
+        emptyText,
         onSelect: (value) => this.selectCouncilOption(container, value)
       });
     } else {
       this._councilDropdown.councils = this.councils;
       this._councilDropdown.selectedId = selectedId;
+      // Re-applied on every refresh: the selection can go stale (or stop being
+      // stale) without the instance being rebuilt.
+      this._councilDropdown.placeholder = placeholder;
+      this._councilDropdown.emptyText = emptyText;
       this._councilDropdown.render();
     }
+  }
+
+  /**
+   * Render #model-card-preview for a council id, whatever the caller's route in:
+   * the card when the council resolves, the shared "no longer exists" note when
+   * the id is stale, the shared "could not load" note when the list is unknown,
+   * and a hidden preview only when no council is chosen at all.
+   *
+   * setAnalysisMode and selectCouncilOption both used to inline this and both
+   * just HID the preview on a miss — which, once the trigger above started
+   * naming the dead council, would have put "no longer exists" directly above a
+   * silently empty box. One helper, one story — and the same three-way story
+   * SettingsPage#renderCouncilPreview tells, so the two pages do not describe
+   * the same three states differently.
+   *
+   * @param {string|null|undefined} councilId
+   * @private
+   */
+  _renderCouncilPreviewFor(councilId) {
+    const cardPreview = document.getElementById('model-card-preview');
+    if (!cardPreview) return;
+
+    const id = councilId || '';
+    const council = id ? this.councils.find(c => String(c.id) === String(id)) : null;
+    if (council) {
+      cardPreview.style.display = '';
+      this.renderCouncilCard(council);
+      return;
+    }
+
+    // Nothing chosen — there is no state to explain.
+    if (!id) {
+      cardPreview.style.display = 'none';
+      return;
+    }
+
+    // A chosen council that does not resolve is either deleted (warning) or
+    // unknown because the list would not load (neutral). Both are notes, never
+    // a silently empty box.
+    const stale = this.isStaleCouncilId(id);
+    const sentence = stale
+      ? [this._staleCouncilLabel(), 'Analysis falls back to the default provider / model.']
+        .filter(Boolean).join('. ')
+      : [this._councilsUnavailableLabel(), 'The saved selection is unchanged.']
+        .filter(Boolean).join('. ');
+    const cls = stale
+      ? 'council-preview-hint council-preview-hint--stale'
+      : 'council-preview-hint';
+
+    cardPreview.style.display = '';
+    // Styled by public/css/council-card.css (loaded by this page AND the global
+    // settings page), not settings.css — this page never loads that.
+    cardPreview.innerHTML = `<p class="${cls}">${this.escapeHtml(sentence)}</p>`;
+    // The cached CouncilCard wrote into this container; drop it so the next
+    // render rebuilds rather than assuming its own markup is still there.
+    this._councilCard = null;
   }
 
   /**
@@ -388,15 +529,9 @@ class RepoSettingsPage {
       if (cardPreview) cardPreview.style.display = '';
       this.renderModelCard();
     } else {
-      // Council mode: show council card if a council is selected
-      const councilId = this.currentSettings.default_council_id;
-      const council = councilId ? this.councils.find(c => c.id === councilId) : null;
-      if (council && cardPreview) {
-        cardPreview.style.display = '';
-        this.renderCouncilCard(council);
-      } else if (cardPreview) {
-        cardPreview.style.display = 'none';
-      }
+      // Council mode: the card for a resolved council, the stale note for a
+      // deleted one, hidden when nothing is chosen.
+      this._renderCouncilPreviewFor(this.currentSettings.default_council_id);
     }
     // Map to default_tab: 'single' or 'council'
     this.currentSettings.default_tab = mode === 'council' ? 'council' : 'single';
@@ -433,15 +568,8 @@ class RepoSettingsPage {
     this.renderCouncilDropdown();
     this.closeCouncilDropdown(container);
 
-    // Render council card preview or hide it
-    const cardPreview = document.getElementById('model-card-preview');
-    const council = value ? this.councils.find(c => c.id === value) : null;
-    if (council && cardPreview) {
-      cardPreview.style.display = '';
-      this.renderCouncilCard(council);
-    } else if (cardPreview) {
-      cardPreview.style.display = 'none';
-    }
+    // Card, stale note, or hidden — same rule as setAnalysisMode.
+    this._renderCouncilPreviewFor(value);
 
     this.checkForChanges();
   }
@@ -485,13 +613,19 @@ class RepoSettingsPage {
    * must still resolve to the canonical model so the UI shows the correct
    * selection instead of silently falling back to the provider default.
    *
+   * Kept as a method for this page's four other call sites (renderModelCard,
+   * updateUI, the provider-change handler) but the LOOKUP itself lives in
+   * public/js/utils/provider-map.js so the settings page, the council manager
+   * and this page cannot disagree about which model an alias names.
+   *
    * @param {Object} provider - Provider object with a `models` array
    * @param {string} modelId - Model ID to look up (may be an alias)
    * @returns {Object|undefined} Matching model definition, or undefined if not found
    */
   findModelWithAliases(provider, modelId) {
-    if (!provider || !provider.models || !modelId) return undefined;
-    return provider.models.find(m => m.id === modelId || m.aliases?.includes(modelId));
+    const util = (typeof window !== 'undefined' && window.ProviderMap) || null;
+    if (!util || typeof util.findModelWithAliases !== 'function') return undefined;
+    return util.findModelWithAliases(provider, modelId);
   }
 
   /**
@@ -557,23 +691,33 @@ class RepoSettingsPage {
   }
 
   /**
-   * Resolve provider/model IDs to display names using loaded provider data
+   * Resolve provider/model IDs to display names using loaded provider data.
+   *
+   * Delegates to the shared, alias-aware `ProviderMap.resolveModelDisplay` so the
+   * three council surfaces name the same model identically — historical
+   * council/voice configs that stored a legacy model ID included. Resolved at
+   * call time; without the util we degrade to the raw ids rather than growing a
+   * second implementation.
+   *
+   * Fed the UNFILTERED list, exactly like SettingsPage#resolveModelDisplay and
+   * CouncilManager's resolver. Passing this page's provider MAP would resurrect
+   * the divergence the shared util exists to kill: the map drops providers that
+   * declare no models, so a council naming `opencode` rendered "OpenCode" on
+   * /settings and a bare "opencode" here.
+   *
    * @param {string} providerId
    * @param {string} modelId
    * @returns {{ providerName: string, modelName: string }}
    */
   resolveModelDisplay(providerId, modelId) {
-    const provider = this.providers[providerId];
-    if (!provider) {
+    const util = (typeof window !== 'undefined' && window.ProviderMap) || null;
+    if (!util || typeof util.resolveModelDisplay !== 'function') {
       return { providerName: providerId || 'Unknown', modelName: modelId || 'Unknown' };
     }
-    // Match aliases so historical council/voice configs that stored a legacy
-    // model ID still show the canonical model's display name.
-    const model = this.findModelWithAliases(provider, modelId);
-    return {
-      providerName: provider.name,
-      modelName: model ? model.name : (modelId || 'Unknown')
-    };
+    const providers = (this.allProviders && this.allProviders.length)
+      ? this.allProviders
+      : this.providers;
+    return util.resolveModelDisplay(providers, providerId, modelId);
   }
 
   /**
@@ -581,9 +725,10 @@ class RepoSettingsPage {
    *
    * Layout dispatch lives in CouncilCard.render, not here — including the
    * legacy-untyped ⇒ advanced rule. This page re-implemented the dispatch and
-   * drifted: an untyped row rendered the voice layout (zero reviewers, bogus
-   * level summary) directly beneath a CouncilDropdown badge reading "Advanced".
-   * Do not reintroduce a `council.type` test in this file.
+   * then drifted from it: after `CouncilDropdown.typeBadge` was corrected to
+   * badge untyped councils "Advanced", this copy still sent them to the voice
+   * layout (zero reviewers, bogus level summary). Do not reintroduce a
+   * `council.type` test in this file.
    *
    * A falsy council leaves whatever is on screen alone (callers hide the
    * preview container instead); it deliberately does not clear the card.

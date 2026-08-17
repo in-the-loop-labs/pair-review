@@ -15,7 +15,10 @@
  *      globals they publish are all defined — a 404 or a missing global would
  *      silently hide the section behind the `typeof CouncilManager` guard, and a
  *      spec that only asserted "the list is empty" would still pass.
- *   3. Create / Edit / Duplicate / Delete round-trips through the hosted tab.
+ *   3. Create / Edit / Duplicate / Delete round-trips through the hosted tab,
+ *      driven through the MANAGER'S FOOTER — the hosted tab renders no write
+ *      buttons of its own (`hosted: true`), so the footer is the only surface
+ *      that can PUT or POST from this page.
  *   4. File councils (the read-only `~/.pair-review/councils/` overlay) render a
  *      File badge with Duplicate + Export but no Edit and no Delete.
  *   5. Leaving the editor dirty asks before discarding.
@@ -26,8 +29,12 @@
  * a silent JS exception on the settings page fails the test that provoked it.
  *
  * Councils live in the per-worker E2E DB, shared with other specs on the same
- * worker, so each test starts by deleting every DB council (file councils are
- * left alone — the API refuses to delete them by design).
+ * worker (`testServer` is worker-scoped and `fullyParallel` is false), so the
+ * cleanup below is SYMMETRIC: every test starts AND ends with an empty council
+ * table. Clearing only on the way in protects this spec from its predecessors
+ * while leaving a dozen rows behind for everything that runs after it — the
+ * invariant council-file-overlay.spec.js and council-save-button.spec.js both
+ * maintain. File councils are left alone; the API refuses to delete them.
  */
 
 import fs from 'fs/promises';
@@ -93,14 +100,27 @@ function expectNoPageProblems(problems) {
   expect(problems.failedRequests).toEqual([]);
 }
 
-/** Delete every DB council. `file:` ids are read-only and are skipped. */
+/**
+ * Delete every DB council. `file:` ids are read-only and are skipped.
+ *
+ * ONE TRANSPORT for every fixture call in this spec: `page.request`, never
+ * `page.evaluate(fetch)`. It is the only one that works from the hook that
+ * needs it — `beforeEach`/`afterEach` run with the page on `about:blank`
+ * (before the first `goto`, and after a test that failed before navigating),
+ * where a relative `fetch` inside the page has no origin to resolve against.
+ * The trade-off is that fixture traffic is invisible to `watchForPageProblems`,
+ * which is deliberate: a 4xx from teardown is a fixture bug, not the page
+ * misbehaving, and it should not land in an unrelated test's error budget.
+ * Both calls below assert their own status instead.
+ */
 async function clearDbCouncils(page) {
   const res = await page.request.get('/api/councils');
   if (!res.ok()) return;
   const { councils } = await res.json();
   for (const council of councils || []) {
     if (String(council.id).startsWith('file:')) continue;
-    await page.request.delete(`/api/councils/${council.id}`);
+    const deleted = await page.request.delete(`/api/councils/${council.id}`);
+    expect(deleted.ok(), `cleanup failed for council ${council.id}`).toBeTruthy();
   }
 }
 
@@ -129,11 +149,18 @@ function councilRow(page, name) {
   });
 }
 
-test.describe('Settings councils - section wiring', () => {
-  test.beforeEach(async ({ page }) => {
-    await clearDbCouncils(page);
-  });
+// Symmetric, file-level, and therefore stated ONCE. `page` is test-scoped, so
+// the trailing half has to be afterEach — an afterAll would run with a page
+// that no longer exists.
+test.beforeEach(async ({ page }) => {
+  await clearDbCouncils(page);
+});
 
+test.afterEach(async ({ page }) => {
+  await clearDbCouncils(page);
+});
+
+test.describe('Settings councils - section wiring', () => {
   test('renders the Councils section and navigates before Chat Snippets', async ({ page }) => {
     const problems = watchForPageProblems(page);
     await openSettingsCouncils(page);
@@ -241,10 +268,6 @@ test.describe('Settings councils - section wiring', () => {
 });
 
 test.describe('Settings councils - create', () => {
-  test.beforeEach(async ({ page }) => {
-    await clearDbCouncils(page);
-  });
-
   test('Add → Council mounts the voice-centric tab and saves a new council', async ({ page }) => {
     const problems = watchForPageProblems(page);
     await openSettingsCouncils(page);
@@ -259,13 +282,20 @@ test.describe('Settings councils - create', () => {
     const panel = page.locator('#tab-panel-council');
     await expect(panel).toBeVisible();
     await expect(page.locator('#tab-panel-advanced')).toHaveCount(0);
-    // The tab's own council-selector row rendered inside the panel …
+    // The tab's own council <select> still renders — it is where the pending
+    // default council id gets applied, so an Edit depends on it …
     await expect(panel.locator('.council-selector-row #vc-council-selector')).toBeVisible();
-    // … with the tab's own Save / Save As / Export / Delete buttons.
-    await expect(panel.locator('#vc-council-save-btn')).toBeVisible();
-    await expect(panel.locator('#vc-council-save-as-btn')).toBeVisible();
-    await expect(panel.locator('#vc-council-export-btn')).toBeVisible();
-    await expect(panel.locator('#vc-council-delete-btn')).toBeVisible();
+    // … but NOT its Save / Save As / Export / Delete buttons: a hosted tab
+    // leaves every write to the manager's footer, so there is exactly one write
+    // surface on this page.
+    await expect(panel.locator('#vc-council-save-btn')).toHaveCount(0);
+    await expect(panel.locator('#vc-council-save-as-btn')).toHaveCount(0);
+    await expect(panel.locator('#vc-council-export-btn')).toHaveCount(0);
+    await expect(panel.locator('#vc-council-delete-btn')).toHaveCount(0);
+    // The per-review "This Review" block goes with them: there is no review to
+    // attach instructions to on a global settings page.
+    await expect(panel.locator('#vc-custom-instructions')).toHaveCount(0);
+    await expect(panel.locator('#vc-repo-instructions-banner')).toHaveCount(0);
 
     // Providers loaded into the reviewer row (setProviders ran before reset).
     const providerSelect = panel.locator('#vc-reviewer-list .voice-provider').first();
@@ -332,6 +362,98 @@ test.describe('Settings councils - create', () => {
     expectNoPageProblems(problems);
   });
 
+  test('cancelling the name prompt keeps the editor open and creates nothing', async ({ page }) => {
+    // REGRESSION GUARD, documented in `_saveFromEditor`: success used to be
+    // inferred from `tab.isDirty` going false, and a brand-new editor is
+    // ALREADY clean — so Add council → Save → cancel read as "saved", exited to
+    // the list and fired onChange for a council that was never created. Only
+    // council-crud's explicit boolean may unlock the exit.
+    const problems = watchForPageProblems(page);
+    await openSettingsCouncils(page);
+
+    let posted = 0;
+    page.on('request', (request) => {
+      if (request.url().endsWith('/api/councils') && request.method() === 'POST') posted += 1;
+    });
+
+    await page.locator('.council-manager__add-btn').click();
+    await page.locator('.council-manager__chooser-council').click();
+    await expect(page.locator('#tab-panel-council #vc-council-selector')).toBeVisible();
+
+    await page.locator('.council-manager__save-btn').click();
+    const dialog = page.locator('#text-input-dialog-input');
+    await expect(dialog).toBeVisible();
+    await page.locator('#text-input-dialog .modal-footer [data-action="cancel"]').click();
+    await expect(dialog).toBeHidden();
+
+    // Still in the editor, with nothing written and nothing in the list.
+    await expect(page.locator('#tab-panel-council')).toBeVisible();
+    await expect(page.locator('.council-manager__list-wrap')).toHaveCount(0);
+    // The footer is usable again — a refused save must not wedge it.
+    await expect(page.locator('.council-manager__save-btn')).toBeEnabled();
+    expect(posted).toBe(0);
+
+    await page.locator('.council-manager__back-btn').click();
+    await expect(page.locator('.council-manager__empty')).toBeVisible();
+
+    expectNoPageProblems(problems);
+  });
+
+  test('the footer Save is disabled until the hosted tab has finished loading', async ({ page }) => {
+    // THE RACE THIS BRANCH FIXES. `setDefaultCouncilId` only records a PENDING
+    // id; `selectedCouncilId` is not assigned until `_renderCouncilSelector`
+    // runs at the END of `loadCouncils`. A Save inside that window failed
+    // council-crud's selection test and POSTed a NEW council out of default
+    // config while the header read "Edit council".
+    const id = await seedCouncil(page, {
+      name: 'E2E Slow Load Council',
+      type: 'council',
+      config: voiceCouncilConfig
+    });
+
+    const problems = watchForPageProblems(page);
+    await openSettingsCouncils(page);
+
+    // Hold the tab's council fetch open. The manager's own first load already
+    // happened above, so this delay lands on the editor mount.
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    await page.route('**/api/councils', async (route) => {
+      if (route.request().method() !== 'GET') return route.continue();
+      await held;
+      await route.continue();
+    });
+
+    await councilRow(page, 'E2E Slow Load Council').locator('.council-manager__edit-btn').click();
+
+    const saveBtn = page.locator('.council-manager__save-btn');
+    await expect(page.locator('#tab-panel-council')).toBeVisible();
+    await expect(saveBtn).toBeDisabled();
+    // Back stays available — there is nothing dirty to lose yet.
+    await expect(page.locator('.council-manager__back-btn')).toBeEnabled();
+
+    // Disabled is the visible half. Force the attribute off and click anyway:
+    // the handler must still be INERT, because the tab it would save is not
+    // published until the mount resolves. If it were live, this click would
+    // fall through to Save As and open the name prompt.
+    let posted = 0;
+    page.on('request', (request) => {
+      if (request.url().endsWith('/api/councils') && request.method() === 'POST') posted += 1;
+    });
+    await saveBtn.evaluate(el => { el.disabled = false; });
+    await saveBtn.click();
+    await expect(page.locator('#text-input-dialog-input')).toBeHidden();
+    expect(posted).toBe(0);
+    await expect(page.locator('.council-manager__editor-header')).toHaveText('Edit council');
+
+    release();
+    await expect(page.locator('#tab-panel-council #vc-council-selector')).toHaveValue(id);
+    await expect(saveBtn).toBeEnabled();
+    await page.unroute('**/api/councils');
+
+    expectNoPageProblems(problems);
+  });
+
   test('Add → Advanced mounts the level-centric tab', async ({ page }) => {
     const problems = watchForPageProblems(page);
     await openSettingsCouncils(page);
@@ -349,10 +471,6 @@ test.describe('Settings councils - create', () => {
 });
 
 test.describe('Settings councils - edit', () => {
-  test.beforeEach(async ({ page }) => {
-    await clearDbCouncils(page);
-  });
-
   test('editing a voice-centric council opens the Council tab pre-selected', async ({ page }) => {
     const id = await seedCouncil(page, {
       name: 'E2E Standard Council',
@@ -370,8 +488,75 @@ test.describe('Settings councils - edit', () => {
     const selector = page.locator('#tab-panel-council #vc-council-selector');
     await expect(selector).toBeVisible();
     await expect(selector).toHaveValue(id);
-    // In-place Save is available (an existing, non-file council).
-    await expect(page.locator('#tab-panel-council #vc-council-delete-btn')).toBeEnabled();
+    // The footer Save is live once the mount resolved — that (not any button
+    // inside the panel) is what performs the in-place PUT.
+    await expect(page.locator('.council-manager__save-btn')).toBeEnabled();
+
+    expectNoPageProblems(problems);
+  });
+
+  test('the footer Save updates the council in place and returns to the list', async ({ page }) => {
+    // The edit → dirty → footer Save → PUT → auto-exit flow was uncovered: the
+    // only click on `.council-manager__save-btn` in this spec was the CREATE
+    // path with no council selected, which deliberately forks to Save As. The
+    // PUT the spec did observe came from the tab's in-panel button, which does
+    // not run `_saveFromEditor`, does not exit and does not fire onChange —
+    // and no longer exists when hosted.
+    const id = await seedCouncil(page, {
+      name: 'E2E Inplace Save',
+      type: 'council',
+      config: voiceCouncilConfig
+    });
+
+    const problems = watchForPageProblems(page);
+    await openSettingsCouncils(page);
+    await councilRow(page, 'E2E Inplace Save').locator('.council-manager__edit-btn').click();
+
+    const panel = page.locator('#tab-panel-council');
+    await expect(panel.locator('#vc-council-selector')).toHaveValue(id);
+    // Barrier on the state that actually decides PUT vs Save As. The <select>'s
+    // value and `tab.selectedCouncilId` are assigned together in
+    // `_renderCouncilSelector` (the only other way the value becomes `id` is a
+    // restore of a value that already was `id`), so the assertion above already
+    // implies this one — it is stated anyway because a name prompt on in-place
+    // Save is the F2 signature, and this makes a recurrence name its own cause
+    // instead of surfacing as a surprising dialog five lines later.
+    await expect.poll(() => page.evaluate(
+      () => window.settingsPage?._councilManager?._tab?.selectedCouncilId ?? null
+    )).toBe(id);
+
+    // Dirty the editor through a real control.
+    await panel.locator('#vc-reviewer-list .voice-tier').first().selectOption('thorough');
+
+    const putPromise = page.waitForResponse(
+      r => r.url().includes(`/api/councils/${id}`) && r.request().method() === 'PUT'
+    );
+    await page.locator('.council-manager__save-btn').click();
+    const putRes = await putPromise;
+    expect(putRes.status(), await putRes.text()).toBe(200);
+
+    // An in-place save NEVER prompts for a name — that is the Save As fork, and
+    // taking it here would create a duplicate council instead of updating one.
+    // (The dialog's DOM is built at page load and merely hidden, so this is a
+    // visibility assertion, not a count one.)
+    await expect(page.locator('#text-input-dialog-input')).toBeHidden();
+    // The save exits to the list, with the row still there (and still one row).
+    await expect(page.locator('#tab-panel-council')).toHaveCount(0);
+    await expect(page.locator('.council-manager__list-wrap')).toBeVisible();
+    await expect(councilRow(page, 'E2E Inplace Save')).toHaveCount(1);
+    await expect(page.locator('.council-manager__row-wrap')).toHaveCount(1);
+
+    // The write really landed: the tier survived the round trip.
+    const stored = await page.request.get(`/api/councils`);
+    const { councils } = await stored.json();
+    expect(councils.find(c => c.id === id).config.voices[0].tier).toBe('thorough');
+
+    // onChange fired, so the Default-for-Analysis picker refreshed in place.
+    const councilRowSetting = page.locator('.setting-row[data-key="default_council_id"]');
+    await councilRowSetting.locator('.custom-dropdown-trigger').click();
+    await expect(
+      councilRowSetting.locator('.custom-dropdown-option', { hasText: 'E2E Inplace Save' })
+    ).toHaveCount(1);
 
     expectNoPageProblems(problems);
   });
@@ -399,82 +584,102 @@ test.describe('Settings councils - edit', () => {
     expectNoPageProblems(problems);
   });
 
-  test("the tab's own Save / Export / Save As / Delete row works in the editor", async ({ page }) => {
-    // CouncilManager owns only the Save/Back footer — the tab keeps rendering
-    // its own action row inside the panel, and on this page it is the first
-    // time that row runs outside the analysis modal.
+  test('Edit on a council deleted elsewhere refuses instead of forking a new one', async ({ page }) => {
+    // Reachable any time a second browser tab (or another process) removes the
+    // council between this page's list paint and the editor's own load. The GET
+    // succeeds, so nothing reports a failure — but the tab cannot select the
+    // council, and an editor left up in that state labels itself "Edit council"
+    // over a null selection: the next Save prompts for a name and POSTs a NEW
+    // council. That name prompt is the F2 signature, and this is the door the
+    // publish-late fix alone does not close.
     const id = await seedCouncil(page, {
-      name: 'E2E Panel Actions',
+      name: 'E2E Vanishing Council',
       type: 'council',
       config: voiceCouncilConfig
     });
 
     const problems = watchForPageProblems(page);
     await openSettingsCouncils(page);
-    await councilRow(page, 'E2E Panel Actions').locator('.council-manager__edit-btn').click();
+    const row = councilRow(page, 'E2E Vanishing Council');
+    await expect(row).toHaveCount(1);
 
-    const panel = page.locator('#tab-panel-council');
-    await expect(panel.locator('#vc-council-selector')).toHaveValue(id);
+    // Gone from under the rendered row.
+    const deleted = await page.request.delete(`/api/councils/${id}`);
+    expect(deleted.ok()).toBeTruthy();
 
-    // Save is gated on dirty; changing the tier arms it.
-    const saveBtn = panel.locator('#vc-council-save-btn');
-    await expect(saveBtn).toBeDisabled();
-    await panel.locator('#vc-reviewer-list .voice-tier').first().selectOption('thorough');
-    await expect(saveBtn).toBeEnabled();
+    let posted = 0;
+    page.on('request', (request) => {
+      if (request.url().endsWith('/api/councils') && request.method() === 'POST') posted += 1;
+    });
 
-    const putPromise = page.waitForResponse(
-      r => r.url().includes(`/api/councils/${id}`) && r.request().method() === 'PUT'
-    );
-    await saveBtn.click();
-    const putRes = await putPromise;
-    expect(putRes.status(), await putRes.text()).toBe(200);
-    // A successful write marks the tab clean again.
-    await expect(saveBtn).toBeDisabled();
+    await row.locator('.council-manager__edit-btn').click();
 
-    // Export writes a council document straight from the panel.
-    const downloadPromise = page.waitForEvent('download');
-    await panel.locator('#vc-council-export-btn').click();
-    expect((await downloadPromise).suggestedFilename()).toMatch(/\.council\.json$/);
+    // Back on the list, with the reason stated.
+    await expect(page.locator('.council-manager__list-wrap')).toBeVisible();
+    await expect(page.locator('#tab-panel-council')).toHaveCount(0);
+    await expect(page.locator('.council-manager__error'))
+      .toHaveText('That council is no longer available.');
+    // No half-open editor means no way to reach the name prompt at all.
+    await expect(page.locator('#text-input-dialog-input')).toBeHidden();
+    expect(posted).toBe(0);
 
-    // Save As forks a copy under a new name.
-    const postPromise = page.waitForResponse(
-      r => r.url().endsWith('/api/councils') && r.request().method() === 'POST'
-    );
-    await panel.locator('#vc-council-save-as-btn').click();
-    const nameInput = page.locator('#text-input-dialog-input');
-    await expect(nameInput).toHaveValue('E2E Panel Actions');
-    await nameInput.fill('E2E Panel Fork');
-    await page.locator('#text-input-dialog-btn').click();
-    const postRes = await postPromise;
-    expect(postRes.status(), await postRes.text()).toBe(201);
-    const forkId = (await postRes.json()).council.id;
-    await expect(panel.locator('#vc-council-selector')).toHaveValue(forkId);
+    // The page's own toast reported it (this one is raised by production, so it
+    // carries the default lifetime — assert its text, not its geometry).
+    await expect(page.locator('#toast-container .toast.toast-error'))
+      .toHaveText('Failed to open the council editor');
 
-    // Delete removes the fork (now the selection) and resets to "+ New Council".
-    const deletePromise = page.waitForResponse(
-      r => r.url().includes(`/api/councils/${forkId}`) && r.request().method() === 'DELETE'
-    );
-    await panel.locator('#vc-council-delete-btn').click();
+    expectNoPageProblems(problems);
+  });
+
+  test('the hosted panel offers no write buttons of its own, on either tab', async ({ page }) => {
+    // The tab used to render its own Save / Save As / Export / Delete row here,
+    // giving the page TWO write surfaces — and the manager could only infer the
+    // panel's writes from a {id, name, updated_at} fingerprint of the list,
+    // which SQLite's one-second `updated_at` hid same-second edits from. One
+    // surface, one explicit signal: the inference is gone, so the row must be
+    // too, on BOTH tabs.
+    const vcId = await seedCouncil(page, { name: 'E2E Panel VC', type: 'council', config: voiceCouncilConfig });
+    const advId = await seedCouncil(page, { name: 'E2E Panel Adv', config: advancedCouncilConfig });
+
+    const problems = watchForPageProblems(page);
+    await openSettingsCouncils(page);
+
+    await councilRow(page, 'E2E Panel VC').locator('.council-manager__edit-btn').click();
+    const vcPanel = page.locator('#tab-panel-council');
+    // WAIT FOR THE SELECTED VALUE, not merely for the <select> to exist. The
+    // element is there from `inject()`, but `_renderCouncilSelector` runs at the
+    // END of the tab's load and finishes with `_applyConfigToUI(council.config)`
+    // + `_markClean()` — so an edit made before that repaint is silently
+    // reverted AND un-dirtied, and the Back below then finds a clean editor and
+    // leaves without the discard prompt this test asserts.
+    await expect(vcPanel.locator('#vc-council-selector')).toHaveValue(vcId);
+    for (const id of ['#vc-council-save-btn', '#vc-council-save-as-btn',
+      '#vc-council-export-btn', '#vc-council-delete-btn']) {
+      await expect(vcPanel.locator(id)).toHaveCount(0);
+    }
+    // Everything the editor is FOR still works: the reviewer controls.
+    await vcPanel.locator('#vc-reviewer-list .voice-tier').first().selectOption('thorough');
+    await expect(vcPanel.locator('#vc-reviewer-list .voice-tier').first()).toHaveValue('thorough');
+
+    await page.locator('.council-manager__back-btn').click();
     const dialog = page.locator('#confirm-dialog');
     await expect(dialog).toBeVisible();
-    await expect(dialog.locator('#confirm-dialog-message')).toHaveText(
-      'Are you sure you want to delete "E2E Panel Fork"?'
-    );
     await dialog.locator('#confirm-dialog-btn').click();
-    expect((await deletePromise).ok()).toBeTruthy();
-    await expect(panel.locator('#vc-council-selector')).toHaveValue('');
+    await expect(page.locator('.council-manager__list-wrap')).toBeVisible();
 
-    // Back out: the list reflects the out-of-band mutations the panel made.
-    await page.locator('.council-manager__back-btn').click();
-    await expect(page.locator('#tab-panel-council')).toHaveCount(0);
-    await expect(councilRow(page, 'E2E Panel Actions')).toHaveCount(1);
-    await expect(councilRow(page, 'E2E Panel Fork')).toHaveCount(0);
+    await councilRow(page, 'E2E Panel Adv').locator('.council-manager__edit-btn').click();
+    const advPanel = page.locator('#tab-panel-advanced');
+    await expect(advPanel.locator('#council-selector')).toHaveValue(advId);
+    for (const id of ['#council-save-btn', '#council-save-as-btn',
+      '#council-export-btn', '#council-delete-btn']) {
+      await expect(advPanel.locator(id)).toHaveCount(0);
+    }
 
     expectNoPageProblems(problems);
   });
 
   test('Back with unsaved changes asks before discarding', async ({ page }) => {
-    await seedCouncil(page, {
+    const id = await seedCouncil(page, {
       name: 'E2E Dirty Council',
       type: 'council',
       config: voiceCouncilConfig
@@ -483,7 +688,10 @@ test.describe('Settings councils - edit', () => {
     const problems = watchForPageProblems(page);
     await openSettingsCouncils(page);
     await councilRow(page, 'E2E Dirty Council').locator('.council-manager__edit-btn').click();
-    await expect(page.locator('#tab-panel-council #vc-council-selector')).toBeVisible();
+    // The selected VALUE, not mere visibility: the mount's final
+    // `_applyConfigToUI` + `_markClean` would otherwise wipe the reviewer added
+    // below, along with the dirty flag this test depends on.
+    await expect(page.locator('#tab-panel-council #vc-council-selector')).toHaveValue(id);
 
     // Adding a reviewer marks the tab dirty.
     await page.locator('#vc-add-reviewer-btn').click();
@@ -511,20 +719,24 @@ test.describe('Settings councils - edit', () => {
   test('re-entering the editor never leaves two tab panels on the page', async ({ page }) => {
     // The config tabs query hardcoded, page-global ids. Every editor open builds
     // a fresh tab instance, so a leaked panel would give those ids two owners.
-    await seedCouncil(page, { name: 'E2E Reentry VC', type: 'council', config: voiceCouncilConfig });
-    await seedCouncil(page, { name: 'E2E Reentry Adv', config: advancedCouncilConfig });
+    const vcId = await seedCouncil(page, { name: 'E2E Reentry VC', type: 'council', config: voiceCouncilConfig });
+    const advId = await seedCouncil(page, { name: 'E2E Reentry Adv', config: advancedCouncilConfig });
 
     const problems = watchForPageProblems(page);
     await openSettingsCouncils(page);
 
-    for (const [name, panelId, selectorId] of [
-      ['E2E Reentry VC', '#tab-panel-council', '#vc-council-selector'],
-      ['E2E Reentry Adv', '#tab-panel-advanced', '#council-selector'],
-      ['E2E Reentry VC', '#tab-panel-council', '#vc-council-selector']
+    for (const [name, panelId, selectorId, id] of [
+      ['E2E Reentry VC', '#tab-panel-council', '#vc-council-selector', vcId],
+      ['E2E Reentry Adv', '#tab-panel-advanced', '#council-selector', advId],
+      ['E2E Reentry VC', '#tab-panel-council', '#vc-council-selector', vcId]
     ]) {
       await councilRow(page, name).locator('.council-manager__edit-btn').click();
       await expect(page.locator(panelId)).toHaveCount(1);
-      await expect(page.locator(selectorId)).toHaveCount(1);
+      // Each pass leaves through Back, so wait for the mount to finish before
+      // leaving: otherwise the loop races an in-flight mount against the next
+      // open, and only the manager's editor-epoch guard keeps the panels
+      // straight — which is a fix to exercise deliberately, not by accident.
+      await expect(page.locator(selectorId)).toHaveValue(id);
       await expect(page.locator('#tab-panel-council')).toHaveCount(panelId === '#tab-panel-council' ? 1 : 0);
       await expect(page.locator('#tab-panel-advanced')).toHaveCount(panelId === '#tab-panel-advanced' ? 1 : 0);
       await page.locator('.council-manager__back-btn').click();
@@ -535,7 +747,7 @@ test.describe('Settings councils - edit', () => {
   });
 
   test('Back from a clean editor returns to the list without a prompt', async ({ page }) => {
-    await seedCouncil(page, {
+    const id = await seedCouncil(page, {
       name: 'E2E Clean Council',
       type: 'council',
       config: voiceCouncilConfig
@@ -544,7 +756,9 @@ test.describe('Settings councils - edit', () => {
     const problems = watchForPageProblems(page);
     await openSettingsCouncils(page);
     await councilRow(page, 'E2E Clean Council').locator('.council-manager__edit-btn').click();
-    await expect(page.locator('#tab-panel-council #vc-council-selector')).toBeVisible();
+    // A fully mounted editor, so "clean" means the tab really settled clean
+    // rather than not having loaded yet.
+    await expect(page.locator('#tab-panel-council #vc-council-selector')).toHaveValue(id);
 
     await page.locator('.council-manager__back-btn').click();
     await expect(page.locator('#tab-panel-council')).toHaveCount(0);
@@ -556,10 +770,6 @@ test.describe('Settings councils - edit', () => {
 });
 
 test.describe('Settings councils - duplicate and delete', () => {
-  test.beforeEach(async ({ page }) => {
-    await clearDbCouncils(page);
-  });
-
   test('Duplicate prefills "<name> (copy)" and creates a second council', async ({ page }) => {
     await seedCouncil(page, {
       name: 'E2E Dup Source',
@@ -668,35 +878,53 @@ test.describe('Settings councils - toasts stay on screen', () => {
   //
   // Playwright's toBeVisible() passes for an off-viewport element, so these
   // assert the BOX and the computed opacity, not visibility.
-  test.beforeEach(async ({ page }) => {
-    await clearDbCouncils(page);
-  });
-
-  /** True once the toast has settled fully inside the viewport. */
-  async function toastIsOnScreen(page, toast) {
-    const box = await toast.boundingBox();
-    const viewport = page.viewportSize();
-    if (!box || !viewport) return null;
-    return {
-      insideLeft: box.x >= 0,
-      insideRight: Math.round(box.x + box.width) <= viewport.width,
-      insideTop: box.y >= 0,
-      hasSize: box.width > 0 && box.height > 0
-    };
+  /**
+   * Where the toast actually is, read in ONE page.evaluate against the DOM node.
+   *
+   * Deliberately not `locator.boundingBox()`: that auto-waits for an attached,
+   * visible element, and both toast implementations remove themselves on a
+   * timer (4s here, 5s for window.toast). Once the element vanishes mid-assert
+   * the boundingBox promise simply never settles — `expect.poll`'s own budget
+   * cannot interrupt a pending call — and the test hangs to the 30s test
+   * timeout, reported as a generic timeout with no hint of the cause. Reading
+   * the node directly turns a vanished toast into `{ removed: true }`: an
+   * instant, readable diff.
+   *
+   * Asserts "on screen", not a specific axis — the container is top-centre and
+   * the entry animation's axis is settings.css's business, not this spec's.
+   */
+  async function toastGeometry(page, selector) {
+    return page.evaluate((sel) => {
+      const el = document.querySelector(sel);
+      if (!el) return { removed: true };
+      const box = el.getBoundingClientRect();
+      return {
+        insideLeft: box.left >= 0,
+        insideRight: Math.round(box.right) <= window.innerWidth,
+        insideTop: box.top >= 0,
+        insideBottom: Math.round(box.bottom) <= window.innerHeight,
+        hasSize: box.width > 0 && box.height > 0
+      };
+    }, selector);
   }
 
-  const ON_SCREEN = { insideLeft: true, insideRight: true, insideTop: true, hasSize: true };
+  const ON_SCREEN = {
+    insideLeft: true, insideRight: true, insideTop: true, insideBottom: true, hasSize: true
+  };
 
   test('a window.toast message renders inside the viewport, not off the right edge', async ({ page }) => {
     const problems = watchForPageProblems(page);
     await openSettingsCouncils(page);
 
-    await page.evaluate(() => window.toast.showWarning('A council with that name already exists.'));
+    // A minute-long toast: the element cannot expire out from under the poll,
+    // so the only thing this can fail on is the geometry it is testing.
+    await page.evaluate(() => window.toast.showWarning('A council with that name already exists.', 60000));
 
-    const toast = page.locator('#toast-container .toast.toast-warning');
+    const selector = '#toast-container .toast.toast-warning';
+    const toast = page.locator(selector);
     await expect(toast).toHaveText('A council with that name already exists.');
     await expect(toast).toHaveCSS('opacity', '1');
-    await expect.poll(() => toastIsOnScreen(page, toast), { timeout: 3000 }).toEqual(ON_SCREEN);
+    await expect.poll(() => toastGeometry(page, selector), { timeout: 3000 }).toEqual(ON_SCREEN);
 
     expectNoPageProblems(problems);
   });
@@ -707,16 +935,22 @@ test.describe('Settings councils - toasts stay on screen', () => {
 
     await page.evaluate(() => window.settingsPage.showToast('success', 'Theme saved'));
 
-    const toast = page.locator('#toast-container .toast.settings-toast');
+    const selector = '#toast-container .toast.settings-toast';
+    const toast = page.locator(selector);
     await expect(toast).toContainText('Theme saved');
     // pr.css zeroes `.toast` opacity and reveals with `toast-show`, which this
     // implementation never adds — the scoped `.toast.settings-toast.show` rule
     // has to restore it.
     await expect(toast).toHaveCSS('opacity', '1');
-    await expect.poll(() => toastIsOnScreen(page, toast), { timeout: 3000 }).toEqual(ON_SCREEN);
+    await expect.poll(() => toastGeometry(page, selector), { timeout: 3000 }).toEqual(ON_SCREEN);
     // Its dismiss button is reachable (the shared container is pointer-events:none).
+    // Bounded to 1s so only the CLICK can satisfy this: showToast's own
+    // setTimeout removes the node after 4s + a 300ms fade, so the default 10s
+    // expect timeout passed whether or not the close handler did anything —
+    // including in the exact regression this test exists to guard, the
+    // container's `pointer-events: none` swallowing the target.
     await toast.locator('[data-role="toast-close"]').click();
-    await expect(toast).toHaveCount(0);
+    await expect(toast).toHaveCount(0, { timeout: 1000 });
 
     expectNoPageProblems(problems);
   });
@@ -739,9 +973,13 @@ test.describe('Settings councils - toasts stay on screen', () => {
     await nameInput.fill('e2e toast source'); // same name, different case
     await page.locator('#text-input-dialog-btn').click();
 
-    const toast = page.locator('#toast-container .toast.toast-warning');
+    // Production raises this one, so it carries the default 5s lifetime — the
+    // geometry read above returns { removed: true } rather than hanging if the
+    // poll ever loses that race.
+    const selector = '#toast-container .toast.toast-warning';
+    const toast = page.locator(selector);
     await expect(toast).toHaveText('A council with that name already exists.');
-    await expect.poll(() => toastIsOnScreen(page, toast), { timeout: 3000 }).toEqual(ON_SCREEN);
+    await expect.poll(() => toastGeometry(page, selector), { timeout: 3000 }).toEqual(ON_SCREEN);
     // The prompt is re-offered with what the user typed, still on screen.
     await expect(nameInput).toHaveValue('e2e toast source');
 
@@ -768,10 +1006,6 @@ test.describe('Settings councils - file overlay', () => {
       method: 'POST'
     });
     expect(res.ok).toBeTruthy();
-  });
-
-  test.beforeEach(async ({ page }) => {
-    await clearDbCouncils(page);
   });
 
   test('a file council shows the File badge with no Edit and no Delete', async ({ page }) => {

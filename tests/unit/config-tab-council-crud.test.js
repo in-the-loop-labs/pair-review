@@ -72,6 +72,16 @@ function makeCtx(overrides = {}) {
 
 const okResponse = (body = {}) => ({ ok: true, status: 200, json: async () => body });
 
+/** A failure whose body carries the API's own `{ error }` diagnosis. */
+const errorResponse = (status, body) => ({ ok: false, status, json: async () => body });
+
+/** A failure whose body is not JSON at all (a proxy's HTML 502, say). */
+const unparseableResponse = (status) => ({
+  ok: false,
+  status,
+  json: async () => { throw new SyntaxError('Unexpected token <'); }
+});
+
 const select = (ctx, id) => ctx.modal.querySelector(`#${id}`);
 
 beforeEach(() => {
@@ -197,7 +207,10 @@ for (const spec of TABS) {
         consoleSpy.mockRestore();
       }
 
-      expect(window.toast.showError).toHaveBeenCalledWith('Failed to delete council');
+      // No JSON body on this response at all: the read is best-effort and the
+      // status line stands in.
+      expect(window.toast.showError)
+        .toHaveBeenCalledWith('DELETE /api/councils/c1 failed: 403');
       expect(ctx.selectedCouncilId).toBe('c1');
       expect(ctx._applyConfigToUI).not.toHaveBeenCalled();
     });
@@ -233,6 +246,26 @@ for (const spec of TABS) {
         consoleSpy.mockRestore();
       }
 
+      // The thrown message reaches the toast; 'Failed to save council' is only
+      // the fallback for an error that carries none.
+      expect(window.toast.showError).toHaveBeenCalledWith('boom');
+    });
+
+    it('falls back to the fixed message when the failure carries none', async () => {
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const ctx = makeCtx({
+        _readConfigFromUI: vi.fn(() => CONFIG),
+        _validateConfig: vi.fn(() => ({ valid: true })),
+        _isFileCouncil: vi.fn(() => false),
+        _putCouncil: vi.fn(async () => { throw new Error('   '); })
+      });
+
+      try {
+        await expect(TabClass.prototype._saveCouncil.call(ctx)).resolves.toBe(false);
+      } finally {
+        consoleSpy.mockRestore();
+      }
+
       expect(window.toast.showError).toHaveBeenCalledWith('Failed to save council');
     });
 
@@ -255,6 +288,28 @@ for (const spec of TABS) {
       expect(ctx._putCouncil).not.toHaveBeenCalled();
       expect(ctx._saveCouncilAs).not.toHaveBeenCalled();
       expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    // `_validateConfig` returns `{ valid, error }` and its `error` names the
+    // actual problem ('Level 2 needs at least one reviewer…'). Toasting the
+    // hardcoded level message instead sent the user looking at the wrong control.
+    it.each([
+      ['_saveCouncil', () => ({ _putCouncil: vi.fn(), _saveCouncilAs: vi.fn() })],
+      ['_saveCouncilAs', () => ({ _postCouncil: vi.fn() })]
+    ])('%s surfaces the validator\'s own message', async (method, extras) => {
+      window.textInputDialog = { show: vi.fn() };
+      const ctx = makeCtx({
+        _readConfigFromUI: vi.fn(() => CONFIG),
+        _validateConfig: vi.fn(() => ({ valid: false, error: 'Reviewer 2 has no model selected.' })),
+        _isFileCouncil: vi.fn(() => false),
+        ...extras()
+      });
+
+      await expect(TabClass.prototype[method].call(ctx)).resolves.toBe(false);
+
+      expect(window.toast.showWarning)
+        .toHaveBeenCalledWith('Reviewer 2 has no model selected.');
+      expect(window.textInputDialog.show).not.toHaveBeenCalled();
     });
 
     // The whole point of the boolean: every consumer that must know whether a
@@ -290,24 +345,89 @@ for (const spec of TABS) {
       });
 
       it('_saveCouncilAs resolves false on a cancelled prompt and true after a POST', async () => {
-        const base = {
+        // A FACTORY, not a shared literal: spreading one object into two
+        // contexts would hand both the same live `vi.fn()` instances, so the
+        // second assertion would see the first's call history.
+        const base = () => ({
           selectedCouncilId: null,
           councils: [],
           _readConfigFromUI: vi.fn(() => CONFIG),
           _validateConfig: vi.fn(() => ({ valid: true })),
           _isFileCouncil: vi.fn(() => false),
           _postCouncil: vi.fn(async () => true)
-        };
+        });
 
         window.textInputDialog = { show: vi.fn(async () => null) };
-        const cancelled = makeCtx({ ...base });
+        const cancelled = makeCtx(base());
         await expect(TabClass.prototype._saveCouncilAs.call(cancelled)).resolves.toBe(false);
         expect(cancelled._postCouncil).not.toHaveBeenCalled();
 
         window.textInputDialog = { show: vi.fn(async () => 'Fresh Council') };
-        const saved = makeCtx({ ...base });
+        const saved = makeCtx(base());
         await expect(TabClass.prototype._saveCouncilAs.call(saved)).resolves.toBe(true);
         expect(saved._postCouncil).toHaveBeenCalledWith('Fresh Council', CONFIG);
+      });
+
+      // The file-council fork is the HIGHEST-risk instance of the boolean
+      // contract: a file council is read-only, so Save ALWAYS forks, and
+      // CouncilManager's footer exits to the list and fires onChange on a truthy
+      // result. A cancelled fork prompt reported as success would look like a
+      // save that never happened.
+      it('_saveCouncil forwards the fork result for a FILE council', async () => {
+        const forFork = (saveAsResult) => makeCtx({
+          selectedCouncilId: 'file:dream-team',
+          _readConfigFromUI: vi.fn(() => CONFIG),
+          _validateConfig: vi.fn(() => ({ valid: true })),
+          _isFileCouncil: vi.fn(() => true),
+          _putCouncil: vi.fn(),
+          _saveCouncilAs: vi.fn(async () => saveAsResult)
+        });
+
+        const cancelled = forFork(false);
+        await expect(TabClass.prototype._saveCouncil.call(cancelled)).resolves.toBe(false);
+        expect(cancelled._putCouncil).not.toHaveBeenCalled();
+
+        const forked = forFork(true);
+        await expect(TabClass.prototype._saveCouncil.call(forked)).resolves.toBe(true);
+        expect(forked._putCouncil).not.toHaveBeenCalled();
+      });
+
+      it('_saveCouncil coerces a non-boolean fork result for a FILE council', async () => {
+        // `Boolean(await ...)` also guards a dropped `await`: returning the
+        // promise itself would be truthy no matter what it resolved to.
+        const ctx = makeCtx({
+          selectedCouncilId: 'file:dream-team',
+          _readConfigFromUI: vi.fn(() => CONFIG),
+          _validateConfig: vi.fn(() => ({ valid: true })),
+          _isFileCouncil: vi.fn(() => true),
+          _saveCouncilAs: vi.fn(async () => undefined)
+        });
+
+        await expect(TabClass.prototype._saveCouncil.call(ctx)).resolves.toBe(false);
+      });
+
+      it('_saveCouncilAs resolves false when the name dialog is unavailable', async () => {
+        delete window.textInputDialog;
+        const ctx = makeCtx({
+          selectedCouncilId: null,
+          councils: [],
+          _readConfigFromUI: vi.fn(() => CONFIG),
+          _validateConfig: vi.fn(() => ({ valid: true })),
+          _isFileCouncil: vi.fn(() => false),
+          _postCouncil: vi.fn()
+        });
+
+        await expect(TabClass.prototype._saveCouncilAs.call(ctx)).resolves.toBe(false);
+        expect(ctx._postCouncil).not.toHaveBeenCalled();
+      });
+
+      it('_deleteCouncil resolves false when the confirm dialog is unavailable', async () => {
+        delete window.confirmDialog;
+        const fetchSpy = vi.fn();
+        vi.stubGlobal('fetch', fetchSpy);
+
+        await expect(TabClass.prototype._deleteCouncil.call(makeCtx())).resolves.toBe(false);
+        expect(fetchSpy).not.toHaveBeenCalled();
       });
 
       it('_saveCouncilAs resolves false when the POST fails', async () => {
@@ -327,7 +447,7 @@ for (const spec of TABS) {
         } finally {
           consoleSpy.mockRestore();
         }
-        expect(window.toast.showError).toHaveBeenCalledWith('Failed to save council');
+        expect(window.toast.showError).toHaveBeenCalledWith('boom');
       });
 
       it('_putCouncil / _postCouncil resolve true on success', async () => {
@@ -336,6 +456,18 @@ for (const spec of TABS) {
 
         await expect(TabClass.prototype._putCouncil.call(ctx, 'c1', CONFIG)).resolves.toBe(true);
         await expect(TabClass.prototype._postCouncil.call(ctx, 'New Council', CONFIG)).resolves.toBe(true);
+      });
+
+      it('_deleteCouncil resolves false when the DELETE fails', async () => {
+        const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        vi.stubGlobal('fetch', vi.fn(async () => errorResponse(403, { error: 'read-only' })));
+        window.confirmDialog = { show: vi.fn(async () => 'confirm') };
+
+        try {
+          await expect(TabClass.prototype._deleteCouncil.call(makeCtx())).resolves.toBe(false);
+        } finally {
+          consoleSpy.mockRestore();
+        }
       });
 
       it('_deleteCouncil reports whether the row was removed', async () => {
@@ -350,6 +482,198 @@ for (const spec of TABS) {
         await expect(
           TabClass.prototype._deleteCouncil.call(makeCtx({ selectedCouncilId: null }))
         ).resolves.toBe(false);
+      });
+    });
+
+    /**
+     * The API answers a 400 with `{ error: '...' }` naming the actual problem.
+     * Throwing on the status alone discarded all of it and the user got a fixed
+     * 'Failed to save council' — which on /settings, where the council editor
+     * is the primary authoring surface and no console is open, is the entire
+     * feedback there is.
+     */
+    describe(`${label} council CRUD server error surfacing`, () => {
+      it('_putCouncil rejects with the server message, not the status', async () => {
+        vi.stubGlobal('fetch', vi.fn(async () => errorResponse(400, {
+          error: "Existing config is incompatible with type 'council': levels must be booleans"
+        })));
+
+        await expect(TabClass.prototype._putCouncil.call(makeCtx(), 'c1', CONFIG))
+          .rejects.toThrow("Existing config is incompatible with type 'council': levels must be booleans");
+      });
+
+      it('_postCouncil rejects with the server message, not the status', async () => {
+        vi.stubGlobal('fetch', vi.fn(async () => errorResponse(400, {
+          error: 'config.voices must be a non-empty array'
+        })));
+
+        await expect(TabClass.prototype._postCouncil.call(makeCtx(), 'New', CONFIG))
+          .rejects.toThrow('config.voices must be a non-empty array');
+      });
+
+      it.each([
+        ['a body that is not JSON', unparseableResponse(502), 'PUT /api/councils/c1 failed: 502'],
+        ['a JSON body with no error key', errorResponse(500, { ok: false }), 'PUT /api/councils/c1 failed: 500'],
+        ['a blank error string', errorResponse(500, { error: '  ' }), 'PUT /api/councils/c1 failed: 500'],
+        ['no json method at all', { ok: false, status: 503 }, 'PUT /api/councils/c1 failed: 503']
+      ])('_putCouncil falls back to the status line for %s', async (_label, response, expected) => {
+        vi.stubGlobal('fetch', vi.fn(async () => response));
+
+        await expect(TabClass.prototype._putCouncil.call(makeCtx(), 'c1', CONFIG))
+          .rejects.toThrow(expected);
+      });
+
+      it('surfaces the server message through the Save toast', async () => {
+        const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        vi.stubGlobal('fetch', vi.fn(async () => errorResponse(400, {
+          error: 'levels.2.voices must be a non-empty array when enabled'
+        })));
+        const ctx = makeCtx({
+          _readConfigFromUI: vi.fn(() => CONFIG),
+          _validateConfig: vi.fn(() => ({ valid: true })),
+          _isFileCouncil: vi.fn(() => false),
+          _putCouncil: TabClass.prototype._putCouncil
+        });
+
+        try {
+          await expect(TabClass.prototype._saveCouncil.call(ctx)).resolves.toBe(false);
+        } finally {
+          consoleSpy.mockRestore();
+        }
+
+        expect(window.toast.showError)
+          .toHaveBeenCalledWith('levels.2.voices must be a non-empty array when enabled');
+      });
+
+      it('surfaces the server message through the Save As toast', async () => {
+        const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        vi.stubGlobal('fetch', vi.fn(async () => errorResponse(400, {
+          error: 'config.voices must be a non-empty array'
+        })));
+        window.textInputDialog = { show: vi.fn(async () => 'Fresh Council') };
+        const ctx = makeCtx({
+          selectedCouncilId: null,
+          councils: [],
+          _readConfigFromUI: vi.fn(() => CONFIG),
+          _validateConfig: vi.fn(() => ({ valid: true })),
+          _isFileCouncil: vi.fn(() => false),
+          _postCouncil: TabClass.prototype._postCouncil
+        });
+
+        try {
+          await expect(TabClass.prototype._saveCouncilAs.call(ctx)).resolves.toBe(false);
+        } finally {
+          consoleSpy.mockRestore();
+        }
+
+        expect(window.toast.showError)
+          .toHaveBeenCalledWith('config.voices must be a non-empty array');
+      });
+
+      it('surfaces the server message through the Delete toast', async () => {
+        const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        vi.stubGlobal('fetch', vi.fn(async () => errorResponse(403, {
+          error: 'File councils are read-only'
+        })));
+        window.confirmDialog = { show: vi.fn(async () => 'confirm') };
+
+        try {
+          await expect(TabClass.prototype._deleteCouncil.call(makeCtx())).resolves.toBe(false);
+        } finally {
+          consoleSpy.mockRestore();
+        }
+
+        expect(window.toast.showError).toHaveBeenCalledWith('File councils are read-only');
+      });
+    });
+
+    /**
+     * The duplicate-name scan reads the WHOLE list, not this tab's
+     * type-filtered one. `--council <name>` resolves by name at three tiers in
+     * src/councils/resolve-council.js and every one of them throws on more than
+     * one match, so a cross-type name collision permanently breaks the handle
+     * for BOTH councils.
+     */
+    describe(`${label} Save As duplicate-name scan`, () => {
+      const OTHER_TYPE = { id: 'other-1', name: 'Dream Team', type: 'somethingelse' };
+
+      function scanCtx(overrides = {}) {
+        return makeCtx({
+          selectedCouncilId: null,
+          councils: [],
+          _readConfigFromUI: vi.fn(() => CONFIG),
+          _validateConfig: vi.fn(() => ({ valid: true })),
+          _isFileCouncil: vi.fn(() => false),
+          _postCouncil: vi.fn(async () => true),
+          ...overrides
+        });
+      }
+
+      it('rejects a name held by a council of the OTHER type', async () => {
+        const offered = [];
+        window.textInputDialog = {
+          show: vi.fn(async (options) => {
+            offered.push(options.value);
+            return offered.length === 1 ? 'Dream Team' : 'Dream Team II';
+          })
+        };
+        // `councils` is empty — this tab cannot see the collision. Only
+        // `_allCouncils` can.
+        const ctx = scanCtx({ _allCouncils: [OTHER_TYPE] });
+
+        await expect(TabClass.prototype._saveCouncilAs.call(ctx)).resolves.toBe(true);
+
+        expect(window.toast.showWarning)
+          .toHaveBeenCalledWith('A council with that name already exists.');
+        expect(ctx._postCouncil).toHaveBeenCalledWith('Dream Team II', CONFIG);
+      });
+
+      it('accepts a free name without bouncing', async () => {
+        window.textInputDialog = { show: vi.fn(async (o) => o.value || 'Fresh') };
+        const ctx = scanCtx({ _allCouncils: [OTHER_TYPE] });
+
+        await expect(TabClass.prototype._saveCouncilAs.call(ctx)).resolves.toBe(true);
+
+        expect(window.toast.showWarning).not.toHaveBeenCalled();
+        expect(window.textInputDialog.show).toHaveBeenCalledTimes(1);
+      });
+
+      it('falls back to the filtered list when the tab never loaded', async () => {
+        // `_allCouncils` absent (a stubbed context, or a tab whose first
+        // loadCouncils has not resolved): the scan is the strictly narrower one
+        // it always was, never a crash.
+        const offered = [];
+        window.textInputDialog = {
+          show: vi.fn(async (options) => {
+            offered.push(options.value);
+            return offered.length === 1 ? 'Db Council' : 'Db Council II';
+          })
+        };
+        const ctx = scanCtx({ councils: [{ id: 'c1', name: 'Db Council' }] });
+        delete ctx._allCouncils;
+
+        await expect(TabClass.prototype._saveCouncilAs.call(ctx)).resolves.toBe(true);
+
+        expect(window.toast.showWarning)
+          .toHaveBeenCalledWith('A council with that name already exists.');
+        expect(ctx._postCouncil).toHaveBeenCalledWith('Db Council II', CONFIG);
+      });
+
+      it('matches case-insensitively and tolerates a nameless row', async () => {
+        const offered = [];
+        window.textInputDialog = {
+          show: vi.fn(async (options) => {
+            offered.push(options.value);
+            return offered.length === 1 ? 'dream team' : 'Something Else';
+          })
+        };
+        const ctx = scanCtx({ _allCouncils: [{ id: 'x' }, OTHER_TYPE] });
+
+        await expect(TabClass.prototype._saveCouncilAs.call(ctx)).resolves.toBe(true);
+
+        expect(window.toast.showWarning)
+          .toHaveBeenCalledWith('A council with that name already exists.');
+        expect(ctx._postCouncil).toHaveBeenCalledWith('Something Else', CONFIG);
       });
     });
   });

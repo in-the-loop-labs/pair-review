@@ -461,18 +461,9 @@ body {
   width: 100%;
 }
 
-.council-preview-hint {
-  margin: 0;
-  font-size: 12px;
-  color: var(--color-text-tertiary);
-}
-
-/* A stored default that points at a deleted council. Tertiary grey reads as
-   "informational aside"; this is a state the user has to act on, so it takes
-   the warning colour the rest of the app uses for a stale/degraded value. */
-.council-preview-hint--stale {
-  color: var(--color-warning, #d29922);
-}
+/* `.council-preview-hint` / `.council-preview-hint--stale` live in
+   public/css/council-card.css — the repo settings page renders the same stale
+   note and does NOT load this stylesheet. */
 
 /* ============================================
    Source Badges
@@ -981,8 +972,16 @@ body {
    ============================================ */
 
 /* pr.css's `.toast` base already sets `opacity: 0` and `pointer-events: auto`;
-   both are inherited here, so this only has to add the card styling and its own
-   slide-in transform. `.toast.settings-toast` (0-2-0) outranks it. */
+   both are inherited here, so this only has to add the card styling and restate
+   the entry transform (a `.toast.settings-toast` rule, 0-2-0, outranks the base).
+
+   The AXIS is not a free choice: pr.css owns `.toast-container` and anchors it
+   top-CENTRE (`left: 50%; transform: translateX(-50%)`), so an X-axis offset no
+   longer parks the toast off a viewport edge — it parks it over mid-screen page
+   content and the toast then drifts sideways into place. Y matches both the
+   container and the OTHER implementation rendering into it (Toast.js via
+   `.toast` → `.toast-show`, `translateY(-20px)` → `translateY(0)`); same
+   distance, so the two enter identically. */
 .toast.settings-toast {
   display: flex;
   align-items: center;
@@ -992,7 +991,7 @@ body {
   border: 1px solid var(--color-border-primary);
   border-radius: 10px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
-  transform: translateX(120%);
+  transform: translateY(-20px);
   transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.3s ease;
   min-width: 260px;
   max-width: 500px;
@@ -1002,7 +1001,7 @@ body {
    `.toast-show` (a class settings.js never adds) is what normally brings it
    back. */
 .toast.settings-toast.show {
-  transform: translateX(0);
+  transform: translateY(0);
   opacity: 1;
 }
 

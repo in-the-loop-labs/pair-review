@@ -31,10 +31,17 @@ const TABS = [
       export: '#vc-council-export-btn',
       delete: '#vc-council-delete-btn'
     },
-    validConfig: { levels: { 1: true, 2: false, 3: false } },
-    invalidConfig: { levels: { 1: false, 2: false, 3: false } },
-    // Voice-centric validity also depends on the reviewer count.
-    extraCtx: { _getReviewerCount: () => 2 }
+    // Voice-centric validity also depends on the voices the config carries —
+    // `_validateConfig` reads the argument, never the DOM.
+    validConfig: {
+      voices: [{ provider: 'claude', model: 'sonnet' }],
+      levels: { 1: true, 2: false, 3: false }
+    },
+    invalidConfig: {
+      voices: [{ provider: 'claude', model: 'sonnet' }],
+      levels: { 1: false, 2: false, 3: false }
+    },
+    extraCtx: {}
   },
   {
     label: 'AdvancedConfigTab',
@@ -47,8 +54,17 @@ const TABS = [
       export: '#council-export-btn',
       delete: '#council-delete-btn'
     },
-    validConfig: { levels: { 1: { enabled: true }, 2: { enabled: false } } },
-    invalidConfig: { levels: { 1: { enabled: false }, 2: { enabled: false } } },
+    // An ENABLED level must carry at least one voice, mirroring the server's
+    // `levels.N.voices must be a non-empty array when enabled`.
+    validConfig: {
+      levels: {
+        1: { enabled: true, voices: [{ provider: 'claude', model: 'sonnet' }] },
+        2: { enabled: false, voices: [] }
+      }
+    },
+    invalidConfig: {
+      levels: { 1: { enabled: false, voices: [] }, 2: { enabled: false, voices: [] } }
+    },
     extraCtx: {}
   }
 ];
@@ -210,16 +226,19 @@ for (const tabSpec of TABS) {
 }
 
 describe('VoiceCentricConfigTab._updateSaveButtonStates (reviewer count)', () => {
-  it('disables Export when a level is enabled but there are no reviewers', () => {
+  it('disables Export when a level is enabled but the config carries no voices', () => {
+    // The count that matters is `config.voices.length`, not the number of
+    // `.vc-reviewer` rows on screen: `_readConfigFromUI` drops any row whose
+    // provider or model select is empty, so a panel showing one reviewer still
+    // produces `voices: []` and the server refuses the save.
     const exportBtn = { disabled: undefined };
     const panel = { querySelector: (sel) => (sel === '#vc-council-export-btn' ? exportBtn : null) };
     const ctx = {
       modal: { querySelector: (sel) => (sel === '#tab-panel-council' ? panel : null) },
-      _readConfigFromUI: () => ({ levels: { 1: true } }),
+      _readConfigFromUI: () => ({ voices: [], levels: { 1: true } }),
       _validateConfig: VoiceCentricConfigTab.prototype._validateConfig,
       _updateDirtyHint: VoiceCentricConfigTab.prototype._updateDirtyHint,
       _isFileCouncil: VoiceCentricConfigTab.prototype._isFileCouncil,
-      _getReviewerCount: () => 0,
       _isDirty: false,
       selectedCouncilId: null,
       councils: []

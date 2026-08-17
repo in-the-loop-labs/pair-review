@@ -53,9 +53,26 @@ class AdvancedConfigTab {
   static DEFAULT_TIMEOUT = 600000;
 
 
-  constructor(modal) {
+  /**
+   * @param {HTMLElement} modal - The tab's query root (the modal, or any host
+   *   element containing exactly one `#tab-panel-advanced`).
+   * @param {Object} [options]
+   * @param {boolean} [options.hosted=false] - True when the tab is embedded in a
+   *   host that owns the save affordances and has no review of its own (the
+   *   settings-page CouncilManager). A hosted tab renders neither the per-review
+   *   "This Review" block — there is no review to attach instructions to, and
+   *   `_readConfigFromUI` never reads that textarea, so anything typed there
+   *   would be silently discarded — nor its own Save / Save As / Export /
+   *   Delete row, so the host's footer is the single write surface.
+   */
+  constructor(modal, options = {}) {
     this.modal = modal;
+    this._hosted = options.hosted === true;
     this.councils = [];
+    // The UNFILTERED council list from the last successful load. `councils` is
+    // filtered to this tab's own types for the selector; the duplicate-name scan
+    // in Save As needs every name, of every type (see council-crud.js).
+    this._allCouncils = [];
     this.selectedCouncilId = null;
     this.providers = {};
     this._injected = false;
@@ -105,23 +122,45 @@ class AdvancedConfigTab {
   }
 
   /**
-   * Load saved councils from the API
+   * Load saved councils from the API, filtering the SELECTOR to advanced and
+   * legacy-untyped rows.
+   *
+   * That filter is asymmetric with `VoiceCentricConfigTab.loadCouncils`, which
+   * takes `c.type === 'council'` only, and the asymmetry is load-bearing:
+   * untyped rows predate the `type` column and are level-centric, so THIS tab
+   * is the only one that can render them. Tighten this to
+   * `c.type === 'advanced'` and every legacy council disappears from both
+   * selectors. `CouncilCard`, `CouncilDropdown` and `CouncilManager` all cite
+   * this rule. Do not "unify" it.
+   *
+   * The unfiltered response is kept as `_allCouncils` for the duplicate-name
+   * scan, which must see every name regardless of type.
+   *
+   * @returns {Promise<boolean>} true iff the fetch succeeded and the selector
+   *   was re-rendered. NEVER rejects — several callers fire and forget.
    */
   async loadCouncils() {
     try {
       const response = await fetch('/api/councils');
       if (!response.ok) throw new Error('Failed to fetch councils');
       const data = await response.json();
+      const all = Array.isArray(data.councils) ? data.councils : [];
+      this._allCouncils = all;
       // Only show advanced (level-centric) councils, or councils with no type (legacy)
-      this.councils = (data.councils || []).filter(c => !c.type || c.type === 'advanced');
+      this.councils = all.filter(c => !c.type || c.type === 'advanced');
       this._councilsLoaded = true;
       this._renderCouncilSelector();
+      return true;
     } catch (error) {
       console.error('Error loading councils:', error);
+      // Both lists are cleared together: a stale name scan is no more trustworthy
+      // than a stale selector.
       this.councils = [];
+      this._allCouncils = [];
       if (window.toast) {
         window.toast.showError('Failed to load saved councils');
       }
+      return false;
     }
   }
 
@@ -176,14 +215,39 @@ class AdvancedConfigTab {
   }
 
   /**
-   * Set default orchestration provider/model for new councils.
-   * Falls back to 'claude'/'sonnet' if not provided.
-   * @param {string} provider - Default provider ID (e.g., 'claude', 'antigravity')
-   * @param {string} model - Default model ID (e.g., 'sonnet', 'opus')
+   * Set the default provider/model pair used to seed a NEW council.
+   * Falls back to 'claude'/'sonnet' if nothing can be resolved.
+   *
+   * ORDERING: `setProviders()` MUST have run first. The pair is canonicalized
+   * against `this.providers`, and with no provider metadata loaded there is
+   * nothing to canonicalize against — the arguments are kept as-is. Both
+   * existing hosts honour this: AnalysisConfigModal and CouncilManager each
+   * call setProviders, then setDefaultOrchestration, then reset().
+   *
+   * Canonicalization is not cosmetic. Callers hand us the output of
+   * `resolveProviderModelPair`, which deliberately PRESERVES a configured alias
+   * (`pair-review <pr> --model opus` reaches here as `opus`) and resolves
+   * against the raw `/api/providers` array rather than the map this tab renders
+   * from. `_defaultConfig()` assigns the pair straight onto `<select>` elements
+   * whose options are canonical ids of available providers only, so either half
+   * can select nothing — and an empty select makes `_readConfigFromUI` drop the
+   * reviewer row, which POSTs an enabled level with no voices and 400s. See
+   * `resolveDefaultOrchestration` in public/js/utils/provider-map.js.
+   *
+   * `window.ProviderMap` is resolved at CALL time, never at module-eval time
+   * (this codebase's rule — see public/js/utils/council-export.js), and its
+   * absence degrades to the previous behavior instead of throwing.
+   *
+   * @param {string|null} provider - Desired provider ID (may be unavailable)
+   * @param {string|null} model - Desired model ID (may be an alias, e.g. 'opus')
    */
   setDefaultOrchestration(provider, model) {
-    this._defaultProvider = provider || 'claude';
-    this._defaultModel = model || 'sonnet';
+    const providerMap = typeof window !== 'undefined' ? window.ProviderMap : null;
+    const pair = providerMap?.resolveDefaultOrchestration
+      ? providerMap.resolveDefaultOrchestration(this.providers, provider, model)
+      : { provider, model };
+    this._defaultProvider = pair.provider || 'claude';
+    this._defaultModel = pair.model || 'sonnet';
   }
 
   /**
@@ -234,14 +298,35 @@ class AdvancedConfigTab {
   }
 
   /**
-   * Validate council config. At least one level must be enabled.
+   * Validate council config: at least one level enabled, and every enabled
+   * level carrying at least one reviewer.
+   *
+   * Mirrors `validateAdvancedFormat` in src/councils/council-validation.js,
+   * which is what the API applies — its
+   * `levels.${key}.voices must be a non-empty array when enabled` was reachable
+   * from a panel this validator called valid. A reviewer row survives
+   * `_readConfigFromUI` only `if (provider && model)`, so a row whose provider
+   * or model `<select>` is empty (the state a saved council lands in when its
+   * provider is no longer available) leaves an enabled level with `voices: []`.
+   * The check runs on every keystroke via `_updateSaveButtonStates`, so it stays
+   * O(3) over the argument and never touches the DOM.
+   *
    * @param {Object} config - Council config to validate
    * @returns {{ valid: boolean, error: string|null }}
    */
   _validateConfig(config) {
-    const hasEnabledLevel = Object.values(config.levels).some(l => l.enabled);
+    const levels = config?.levels || {};
+    const hasEnabledLevel = Object.values(levels).some(l => l?.enabled);
     if (!hasEnabledLevel) {
       return { valid: false, error: 'At least one review level must be enabled.' };
+    }
+    for (const [key, level] of Object.entries(levels)) {
+      if (level?.enabled && (level.voices || []).length === 0) {
+        return {
+          valid: false,
+          error: `Level ${key} needs at least one reviewer with both a provider and a model selected.`
+        };
+      }
     }
     return { valid: true, error: null };
   }
@@ -289,10 +374,15 @@ class AdvancedConfigTab {
       if (this.selectedCouncilId) {
         // Fork: create new council based on existing, don't mutate the original
         const existing = this.councils.find(c => c.id === this.selectedCouncilId);
-        const baseName = (existing?.name || 'Config').replace(/\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}$/, '').trim();
+        const baseName = (existing?.name || 'Advanced').replace(/\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}$/, '').trim();
         name = `${baseName} ${timestamp}`;
       } else {
-        name = `Config ${timestamp}`;
+        // 'Advanced' is the persisted `type` column literal for this tab, so the
+        // name stays meaningful if the badge wording ever changes. Only reachable
+        // with NO council selected; otherwise the branch above takes
+        // `existing.name` (and only falls back here when the selected id is
+        // missing from `this.councils`, i.e. after a failed loadCouncils).
+        name = `Advanced ${timestamp}`;
       }
       await this._postCouncil(name, config);
     } catch (error) {
@@ -362,6 +452,31 @@ class AdvancedConfigTab {
     };
   }
 
+  /**
+   * The tab's OWN write controls: Save, Save As, Export, Delete.
+   *
+   * Omitted entirely when the tab is hosted (see the constructor). Save, Save As
+   * and Delete each write to the server, and a host that cannot see those writes
+   * cannot know its list went stale; the settings-page manager therefore owns
+   * Save in its own footer and offers Delete per row. Export is dropped with
+   * them because it is part of this control row and the host offers its own —
+   * it writes no server state either way.
+   *
+   * @returns {string} HTML string
+   */
+  static buildCouncilActionsHTML() {
+    return `
+      <button class="btn btn-sm btn-save-council" id="council-save-btn" title="Save" disabled>Save</button>
+      <button class="btn btn-sm btn-secondary" id="council-save-as-btn" title="Save As" disabled>Save As</button>
+      <button class="btn btn-sm btn-secondary" id="council-export-btn" title="Download as a .council.json document">Export</button>
+      <button class="btn btn-sm btn-icon-danger" id="council-delete-btn" title="Delete council" disabled>
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M11 1.75V3h2.25a.75.75 0 010 1.5H2.75a.75.75 0 010-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75zM6.5 1.75a.25.25 0 01.25-.25h2.5a.25.25 0 01.25.25V3h-3V1.75zM4.496 6.675l.66 6.6a.25.25 0 00.249.225h5.19a.25.25 0 00.249-.225l.66-6.6a.75.75 0 011.492.149l-.66 6.6A1.748 1.748 0 0110.595 15h-5.19a1.75 1.75 0 01-1.741-1.575l-.66-6.6a.75.75 0 111.492-.15z"/>
+        </svg>
+      </button>
+    `;
+  }
+
   _buildCouncilHTML() {
     return `
       <section class="config-section">
@@ -371,14 +486,7 @@ class AdvancedConfigTab {
           <select id="council-selector" class="council-select new-council-selected">
             <option value="" class="council-option-new">+ New Council</option>
           </select>
-          <button class="btn btn-sm btn-save-council" id="council-save-btn" title="Save" disabled>Save</button>
-          <button class="btn btn-sm btn-secondary" id="council-save-as-btn" title="Save As" disabled>Save As</button>
-          <button class="btn btn-sm btn-secondary" id="council-export-btn" title="Download as a .council.json document">Export</button>
-          <button class="btn btn-sm btn-icon-danger" id="council-delete-btn" title="Delete council" disabled>
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M11 1.75V3h2.25a.75.75 0 010 1.5H2.75a.75.75 0 010-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75zM6.5 1.75a.25.25 0 01.25-.25h2.5a.25.25 0 01.25.25V3h-3V1.75zM4.496 6.675l.66 6.6a.25.25 0 00.249.225h5.19a.25.25 0 00.249-.225l.66-6.6a.75.75 0 011.492.149l-.66 6.6A1.748 1.748 0 0110.595 15h-5.19a1.75 1.75 0 01-1.741-1.575l-.66-6.6a.75.75 0 111.492-.15z"/>
-            </svg>
-          </button>
+          ${this._hosted ? '' : AdvancedConfigTab.buildCouncilActionsHTML()}
         </div>
       </section>
 
@@ -412,7 +520,7 @@ class AdvancedConfigTab {
         </div>
       </section>
 
-      ${this._buildInstructionsHTML()}
+      ${this._hosted ? '' : this._buildInstructionsHTML()}
     `;
   }
 
@@ -476,7 +584,15 @@ class AdvancedConfigTab {
   }
 
   /**
-   * Build the Custom Instructions + Repo Instructions section for council tab
+   * Build the Custom Instructions + Repo Instructions section for council tab:
+   * the per-review block below the "This Review" divider.
+   *
+   * Not rendered when the tab is hosted (see the constructor). Everything here
+   * belongs to one analysis run, not to the council: `_readConfigFromUI()`
+   * returns only `{ levels, consolidation }` and never reads
+   * `#council-custom-instructions`, and the textarea carries `data-no-dirty` so
+   * typing in it does not even mark the tab dirty. On a page with no review the
+   * whole block is a promise the save cannot keep.
    */
   _buildInstructionsHTML() {
     return `

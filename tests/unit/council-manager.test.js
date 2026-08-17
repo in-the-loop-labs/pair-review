@@ -356,6 +356,69 @@ describe('CouncilManager list mode', () => {
 
     await vi.waitFor(() => expect(host.querySelector('.council-manager__error')).toBeTruthy());
   });
+
+  // "The request failed" and "you have no councils" are different states. The
+  // component used to collapse them: the catch assigned `this._councils = []`
+  // and `_buildList` decided purely on length, so a transient error rendered as
+  // an authoritative "No councils yet." — under the error banner, contradicting
+  // it. Every mutation path ends in `_fetchAndRender()`, so one flaky GET right
+  // after a successful delete wiped the whole list off the screen.
+  describe('a failed load reports UNKNOWN, never EMPTY', () => {
+    it('does not claim "No councils yet." when the very first load failed', async () => {
+      global.fetch = vi.fn(async (url) => {
+        if (url === '/api/providers') return makeResponse({ providers: PROVIDERS });
+        if (url === '/api/config') return makeResponse(APP_CONFIG);
+        return makeResponse({ error: 'boom' }, { ok: false, status: 500 });
+      });
+      const host = mount();
+      new CouncilManager(host);
+
+      await vi.waitFor(() => expect(host.querySelector('.council-manager__error')).toBeTruthy());
+      expect(host.querySelector('.council-manager__empty')).toBeNull();
+      // Add council stays reachable — the list being unknown is no reason to
+      // take the only affordance away.
+      expect(host.querySelector('.council-manager__add-btn')).toBeTruthy();
+    });
+
+    it('keeps the rows it already knows about when a refresh fails', async () => {
+      const { host, manager } = await mountManager({
+        list: [dbCouncil(), dbCouncil({ id: 'db-2', name: 'Survivor' })],
+        nextId: 3
+      });
+
+      // The DELETE lands; the refresh that follows it does not.
+      global.fetch = vi.fn(async (url, opts = {}) => {
+        if ((opts.method || 'GET') === 'DELETE') return makeResponse({ success: true });
+        return makeResponse({ error: 'refresh exploded' }, { ok: false, status: 503 });
+      });
+
+      rowFor(host, 'db-1').querySelector('.council-manager__delete-btn').click();
+
+      await vi.waitFor(() => expect(host.querySelector('.council-manager__error')).toBeTruthy());
+      await vi.waitFor(() => expect(manager._busy).toBe(false));
+      // Both rows are still on screen — stale, but truthful and recoverable.
+      expect(host.querySelectorAll('.council-manager__row-wrap')).toHaveLength(2);
+      // …and the two messages never contradict each other.
+      expect(host.querySelector('.council-manager__empty')).toBeNull();
+    });
+
+    it('clears the banner and shows the empty state once a load succeeds again', async () => {
+      const store = { list: [dbCouncil()], nextId: 2 };
+      const { host, manager } = await mountManager(store);
+
+      global.fetch = vi.fn(async () => makeResponse({ error: 'boom' }, { ok: false, status: 500 }));
+      await manager._fetchAndRender();
+      expect(host.querySelector('.council-manager__error')).toBeTruthy();
+      expect(host.querySelectorAll('.council-manager__row-wrap')).toHaveLength(1);
+
+      store.list = [];
+      installFetch(store);
+      await manager._fetchAndRender();
+
+      expect(host.querySelector('.council-manager__error')).toBeNull();
+      expect(host.querySelector('.council-manager__empty').textContent).toContain('No councils yet');
+    });
+  });
 });
 
 describe('CouncilManager preview', () => {
@@ -417,6 +480,72 @@ describe('CouncilManager preview', () => {
 
     expect(host.querySelectorAll('.council-manager__preview')).toHaveLength(1);
     expect(rowFor(host, 'db-2').querySelector('.council-manager__preview')).toBeTruthy();
+  });
+
+  // The preview used to resolve names from a THIRD private copy of
+  // resolveModelDisplay — map-keyed and exact-match — while repo-settings.js's
+  // copy was alias-aware and settings.js's read the raw array. Two of the three
+  // render CouncilCards on the SAME settings page, and they disagreed.
+  describe('display names come from the shared ProviderMap resolver', () => {
+    /** A provider the map form DROPS: no models declared. */
+    const NO_MODEL_PROVIDER = { id: 'opencode', name: 'OpenCode', models: [] };
+
+    it('delegates to ProviderMap.resolveModelDisplay with the RAW provider array', async () => {
+      const spy = vi.spyOn(window.ProviderMap, 'resolveModelDisplay');
+      const { host } = await mountManager({
+        list: [dbCouncil()],
+        nextId: 2,
+        providers: PROVIDERS
+      });
+
+      rowFor(host, 'db-1').querySelector('.council-manager__row-main').click();
+
+      expect(spy).toHaveBeenCalled();
+      // The ARRAY, not `_providers` — buildProviderMap drops model-less
+      // providers, and a stored council may still name one.
+      expect(Array.isArray(spy.mock.calls[0][0])).toBe(true);
+      expect(spy.mock.calls[0].slice(1)).toEqual(['claude', 'sonnet']);
+    });
+
+    it('renders the canonical model name for a council that stored an ALIAS', async () => {
+      // council-validation.js only requires `voice.model` to be non-empty, so a
+      // hand-written ~/.pair-review/councils/*.json can legitimately say
+      // "sonnet". The exact-match copy printed "Claude / sonnet" here while
+      // repo-settings printed "Claude / Sonnet 4.6" for the same council.
+      const aliased = {
+        voices: [{ provider: 'claude', model: 'sonnet', tier: 'balanced' }],
+        levels: { 1: true, 2: false, 3: false }
+      };
+      const { host } = await mountManager({
+        list: [dbCouncil({ config: aliased })],
+        nextId: 2,
+        providers: VERSIONED_PROVIDERS
+      });
+
+      rowFor(host, 'db-1').querySelector('.council-manager__row-main').click();
+
+      expect(host.querySelector('.council-card-reviewer-name').textContent)
+        .toContain('Claude / Sonnet 4.6');
+    });
+
+    it('names a provider the provider MAP drops for having no models', async () => {
+      const orphaned = {
+        voices: [{ provider: 'opencode', model: 'zen', tier: 'balanced' }],
+        levels: { 1: true, 2: false, 3: false }
+      };
+      const { host } = await mountManager({
+        list: [dbCouncil({ config: orphaned })],
+        nextId: 2,
+        providers: [...PROVIDERS, NO_MODEL_PROVIDER]
+      });
+
+      rowFor(host, 'db-1').querySelector('.council-manager__row-main').click();
+
+      // Resolving from the map printed the bare id ("opencode") while the
+      // "Default for Analysis" card a few pixels above showed "OpenCode".
+      expect(host.querySelector('.council-card-reviewer-name').textContent)
+        .toContain('OpenCode / zen');
+    });
   });
 
   it('does not toggle the preview when an action button is clicked', async () => {
@@ -558,6 +687,167 @@ describe('CouncilManager duplicate', () => {
 
     rowFor(host, 'db-1').querySelector('.council-manager__duplicate-btn').click();
     await vi.waitFor(() => expect(window.textInputDialog.show).toHaveBeenCalledTimes(2));
+  });
+
+  it('surfaces the server message and clears _busy after a failed duplicate', async () => {
+    // The mirror of the failed-delete test, and the more interesting half: the
+    // POST that fails here is exactly the one this feature's headline
+    // regression is about (a council posting `voices: []` gets a 400). A
+    // regression that moved `this._busy = false` out of the `finally` would
+    // wedge every row button for the rest of the session with the suite green.
+    window.textInputDialog.show = vi.fn().mockResolvedValue('Dream Team (copy)');
+    const onChange = vi.fn();
+    const { host, manager } = await mountManager({ list: [dbCouncil()], nextId: 2 }, { onChange });
+
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      if (url === '/api/councils' && (opts.method || 'GET') === 'GET') {
+        return makeResponse({ councils: [dbCouncil()] });
+      }
+      return makeResponse({ error: 'config.voices must be a non-empty array' }, { ok: false, status: 400 });
+    });
+
+    rowFor(host, 'db-1').querySelector('.council-manager__duplicate-btn').click();
+
+    await vi.waitFor(() => expect(host.querySelector('.council-manager__error')).toBeTruthy());
+    // The banner carries the SERVER's diagnosis; the toast stays generic.
+    expect(host.querySelector('.council-manager__error').textContent)
+      .toBe('config.voices must be a non-empty array');
+    expect(window.toast.showError).toHaveBeenCalledWith('Failed to duplicate council');
+    expect(onChange).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(manager._busy).toBe(false));
+    // The failure did not cost the user the row they were duplicating.
+    expect(rowFor(host, 'db-1')).toBeTruthy();
+    expect(host.querySelector('.council-manager__empty')).toBeNull();
+  });
+});
+
+// One multi-step sequence, one order. `_duplicate` and `_delete` used to
+// notify BEFORE their re-fetch while `_exitEditor` notified after — so the
+// host's own `refreshCouncilRows()` GET raced ours, two parallel
+// `GET /api/councils` per mutation, with the host free to paint from whichever
+// landed first. All three now go last, which is also the only order that makes
+// "onChange fires when the change is visible" true.
+describe('CouncilManager onChange ordering', () => {
+  /**
+   * Mount with an onChange that records what the component looked like AT THE
+   * MOMENT it was called — the host's view of the world when it decides to
+   * refresh.
+   */
+  function observingHost() {
+    const seen = [];
+    const onChange = vi.fn();
+    return {
+      seen,
+      onChange,
+      attach: (host, manager) => {
+        manager.onChange = () => {
+          onChange();
+          seen.push({
+            rows: host.querySelectorAll('.council-manager__row-wrap').length,
+            names: manager._councils.map(c => c.name)
+          });
+        };
+      }
+    };
+  }
+
+  it('notifies AFTER the refetch on delete, so the host sees the new list', async () => {
+    const observer = observingHost();
+    const { host, manager } = await mountManager({
+      list: [dbCouncil(), dbCouncil({ id: 'db-2', name: 'Survivor' })],
+      nextId: 3
+    });
+    observer.attach(host, manager);
+
+    rowFor(host, 'db-1').querySelector('.council-manager__delete-btn').click();
+
+    await vi.waitFor(() => expect(observer.onChange).toHaveBeenCalledTimes(1));
+    // Notifying first would have shown the host two rows and 'Dream Team'
+    // still present, while a second GET was already in flight.
+    expect(observer.seen).toEqual([{ rows: 1, names: ['Survivor'] }]);
+  });
+
+  it('notifies AFTER the refetch on duplicate, so the host sees the new council', async () => {
+    window.textInputDialog.show = vi.fn().mockResolvedValue('Dream Team (copy)');
+    const observer = observingHost();
+    const { host, manager } = await mountManager({ list: [dbCouncil()], nextId: 2 });
+    observer.attach(host, manager);
+
+    rowFor(host, 'db-1').querySelector('.council-manager__duplicate-btn').click();
+
+    await vi.waitFor(() => expect(observer.onChange).toHaveBeenCalledTimes(1));
+    expect(observer.seen).toEqual([{ rows: 2, names: ['Dream Team (copy)', 'Dream Team'] }]);
+  });
+
+  it('notifies AFTER the refetch on a footer save, matching the other two', async () => {
+    const observer = observingHost();
+    const store = { list: [dbCouncil()], nextId: 2 };
+    const { host, manager } = await mountManager(store);
+    observer.attach(host, manager);
+
+    rowFor(host, 'db-1').querySelector('.council-manager__edit-btn').click();
+    await vi.waitFor(() => expect(manager._tab).toBeTruthy());
+    await vi.waitFor(() => expect(manager._tab.selectedCouncilId).toBe('db-1'));
+
+    // A council created elsewhere while the editor was open: the host must not
+    // be told to refresh until our own list already includes it.
+    store.list.unshift(dbCouncil({ id: 'db-9', name: 'Made Elsewhere' }));
+    manager._tab._markDirty();
+    host.querySelector('.council-manager__save-btn').click();
+
+    await vi.waitFor(() => expect(observer.onChange).toHaveBeenCalledTimes(1));
+    expect(observer.seen).toEqual([{ rows: 2, names: ['Made Elsewhere', 'Dream Team'] }]);
+  });
+
+  it('issues exactly one GET per mutation from this component', async () => {
+    // The paired half of the ordering fix: notifying first put the host's GET
+    // in flight next to ours. This component contributes one.
+    const { host, fetchMock } = await mountManager({ list: [dbCouncil()], nextId: 2 });
+    const getsBefore = fetchMock.mock.calls
+      .filter(([u, o]) => u === '/api/councils' && (!o || !o.method)).length;
+
+    rowFor(host, 'db-1').querySelector('.council-manager__delete-btn').click();
+
+    await vi.waitFor(() => expect(host.querySelector('.council-manager__empty')).toBeTruthy());
+    const getsAfter = fetchMock.mock.calls
+      .filter(([u, o]) => u === '/api/councils' && (!o || !o.method)).length;
+    expect(getsAfter - getsBefore).toBe(1);
+  });
+});
+
+describe('CouncilManager pre-loaded host data', () => {
+  it('uses the providers and config the host page already fetched', async () => {
+    // "Pass resolved values down, don't reach up": the settings page has both
+    // payloads before it mounts this component, and the page was fetching each
+    // of them twice.
+    const store = { list: [dbCouncil()], nextId: 2 };
+    const fetchMock = installFetch(store);
+    const host = mount();
+    const manager = new CouncilManager(host, {
+      providers: VERSIONED_PROVIDERS,
+      appConfig: { default_provider: 'claude', default_model: 'sonnet' }
+    });
+
+    await vi.waitFor(() => expect(host.querySelector('.council-manager__list-wrap')).toBeTruthy());
+
+    expect(fetchMock.mock.calls.some(([u]) => u === '/api/providers')).toBe(false);
+    expect(fetchMock.mock.calls.some(([u]) => u === '/api/config')).toBe(false);
+    expect(manager._providerList).toBe(VERSIONED_PROVIDERS);
+    // The map form the tabs consume is derived from them, not re-fetched.
+    expect(Object.keys(manager._providers)).toEqual(['claude']);
+
+    // And the seeded default pair still resolves through the shared resolver.
+    host.querySelector('.council-manager__add-btn').click();
+    host.querySelectorAll('.council-manager__chooser-option')[0].click();
+    await vi.waitFor(() => expect(manager._tab).toBeTruthy());
+    expect(manager._tab._defaultModel).toBe('sonnet-4.6');
+  });
+
+  it('still fetches for itself when the host supplies nothing', async () => {
+    const { fetchMock } = await mountManager({ list: [], nextId: 1 });
+
+    expect(fetchMock.mock.calls.some(([u]) => u === '/api/providers')).toBe(true);
+    expect(fetchMock.mock.calls.some(([u]) => u === '/api/config')).toBe(true);
   });
 });
 
@@ -720,7 +1010,9 @@ describe('CouncilManager editor mount sequence', () => {
 
     options[0].click();
 
-    await vi.waitFor(() => expect(order).toContain('loadCouncils'));
+    // The tab is published only when the mount has fully resolved, so waiting
+    // for `_tab` waits for loadCouncils() to settle — not merely to be called.
+    await vi.waitFor(() => expect(manager._tab).toBeTruthy());
     // setProviders AND setDefaultOrchestration BEFORE reset (reset repaints from
     // _defaultConfig, which reads _defaultProvider/_defaultModel and the provider
     // dropdown data); no setDefaultCouncilId on the Add path.
@@ -739,7 +1031,7 @@ describe('CouncilManager editor mount sequence', () => {
     host.querySelector('.council-manager__add-btn').click();
     host.querySelectorAll('.council-manager__chooser-option')[1].click();
 
-    await vi.waitFor(() => expect(order).toContain('loadCouncils'));
+    await vi.waitFor(() => expect(manager._tab).toBeTruthy());
     expect(order).toEqual(['inject', 'setProviders', 'setDefaultOrchestration', 'reset', 'loadCouncils']);
     expect(host.querySelector('#tab-panel-advanced')).toBeTruthy();
     expect(manager._tab).toBeInstanceOf(AdvancedConfigTab);
@@ -905,6 +1197,186 @@ describe('CouncilManager editor mount sequence', () => {
     expect(manager._tab._defaultModel).toBe('sonnet');
   });
 
+  it('constructs the tab with { hosted: true } and gets no in-panel write buttons', async () => {
+    const real = window.VoiceCentricConfigTab;
+    const seen = [];
+    try {
+      window.VoiceCentricConfigTab = class extends real {
+        constructor(root, options) {
+          super(root, options);
+          seen.push(options);
+        }
+      };
+      const { host, manager } = await mountManager({ list: [dbCouncil()], nextId: 2 });
+
+      rowFor(host, 'db-1').querySelector('.council-manager__edit-btn').click();
+      await vi.waitFor(() => expect(manager._tab).toBeTruthy());
+
+      expect(seen).toEqual([{ hosted: true }]);
+      // The consequence that matters: the tab's own Save / Save As / Delete row
+      // is gone, so CouncilManager's footer is the ONLY write surface in editor
+      // mode — which is what lets `onChange` drop its list-diff heuristic.
+      expect(host.querySelector('#vc-council-save-btn')).toBeNull();
+      expect(host.querySelector('#vc-council-save-as-btn')).toBeNull();
+      expect(host.querySelector('#vc-council-delete-btn')).toBeNull();
+      // The council <select> itself must survive: it is where
+      // _renderCouncilSelector applies the pending default id, and dropping it
+      // would turn every Edit into a Create.
+      expect(host.querySelector('#vc-council-selector')).toBeTruthy();
+      expect(manager._tab.selectedCouncilId).toBe('db-1');
+    } finally {
+      window.VoiceCentricConfigTab = real;
+    }
+  });
+
+  // The footer Save used to be wired and live BEFORE `await tab.loadCouncils()`
+  // resolved. In that window `tab.selectedCouncilId` is still null (the pending
+  // default id is only applied by _renderCouncilSelector, at the END of the
+  // load) and the UI still shows reset() defaults — so a Save fell through
+  // council-crud's Save As branch and POSTed a BRAND NEW council built from
+  // default config, under a header reading "Edit council". Nothing reported it:
+  // the save "succeeded", the editor exited and onChange fired.
+  describe('the mount window', () => {
+    /** Park the tab's loadCouncils on a gate, keeping the real behavior. */
+    function gateLoadCouncils(TabClass) {
+      const gate = deferred();
+      const original = TabClass.prototype.loadCouncils;
+      const settled = { done: false };
+      vi.spyOn(TabClass.prototype, 'loadCouncils').mockImplementation(async function (...args) {
+        await gate.promise;
+        const result = await original.apply(this, args);
+        settled.done = true;
+        return result;
+      });
+      return { gate, settled };
+    }
+
+    it('renders the footer Save disabled, and inert, until the mount resolves', async () => {
+      const { gate, settled } = gateLoadCouncils(VoiceCentricConfigTab);
+      const onChange = vi.fn();
+      const { host, manager, fetchMock } = await mountManager(
+        { list: [dbCouncil()], nextId: 2 }, { onChange }
+      );
+
+      rowFor(host, 'db-1').querySelector('.council-manager__edit-btn').click();
+
+      // The editor chrome is up, the tab is not published yet.
+      const saveBtn = host.querySelector('.council-manager__save-btn');
+      expect(saveBtn).toBeTruthy();
+      expect(saveBtn.disabled).toBe(true);
+      expect(manager._tab).toBeNull();
+
+      // Visible AND safe: force the handler past the disabled attribute.
+      await manager._saveFromEditor();
+      expect(fetchMock.mock.calls.some(([u, o]) => u === '/api/councils' && o && o.method === 'POST')).toBe(false);
+      expect(window.textInputDialog.show).not.toHaveBeenCalled();
+      expect(onChange).not.toHaveBeenCalled();
+      expect(host.querySelector('.council-manager__editor-header').textContent).toBe('Edit council');
+
+      gate.resolve();
+      await vi.waitFor(() => expect(manager._tab).toBeTruthy());
+      expect(settled.done).toBe(true);
+      expect(host.querySelector('.council-manager__save-btn').disabled).toBe(false);
+      expect(manager._tab.selectedCouncilId).toBe('db-1');
+    });
+
+    it('tears the editor down when the tab reports a failed council load', async () => {
+      // The quiet permanent variant: loadCouncils swallows its own fetch error,
+      // so the promise resolves cleanly and the editor used to sit there
+      // labelled "Edit council" in the no-selection state forever — every Save
+      // from then on forking a copy instead of updating.
+      vi.spyOn(VoiceCentricConfigTab.prototype, 'loadCouncils').mockResolvedValue(false);
+      const { host, manager } = await mountManager({ list: [dbCouncil()], nextId: 2 });
+
+      rowFor(host, 'db-1').querySelector('.council-manager__edit-btn').click();
+
+      await vi.waitFor(() => {
+        expect(window.toast.showError).toHaveBeenCalledWith('Failed to open the council editor');
+      });
+      expect(manager._tab).toBeNull();
+      expect(host.querySelector('#tab-panel-council')).toBeNull();
+      expect(host.querySelector('.council-manager__list-wrap')).toBeTruthy();
+    });
+
+    it('refuses to open an editor for a council the tab could not select', async () => {
+      // The OTHER door into the same Edit-becomes-Create failure, and the one a
+      // second browser tab can open at any time: the council is deleted between
+      // the list paint that drew the Edit button and the tab's own load. The
+      // fetch SUCCEEDS, so the boolean above says nothing;
+      // `_renderCouncilSelector` consumes the pending id without finding a
+      // match, leaving `selectedCouncilId` null under an "Edit council" header,
+      // and the next Save forks a new council through the name prompt.
+      const store = { list: [dbCouncil()], nextId: 2 };
+      const { host, manager } = await mountManager(store);
+
+      // The row is on screen from the first paint; the council is gone by the
+      // time the editor asks for it.
+      store.list = [];
+      rowFor(host, 'db-1').querySelector('.council-manager__edit-btn').click();
+
+      await vi.waitFor(() => expect(host.querySelector('.council-manager__list-wrap')).toBeTruthy());
+      expect(manager._tab).toBeNull();
+      expect(host.querySelector('#tab-panel-council')).toBeNull();
+      expect(window.toast.showError).toHaveBeenCalledWith('Failed to open the council editor');
+      // The banner says why, in words the user can act on.
+      expect(host.querySelector('.council-manager__error').textContent)
+        .toBe('That council is no longer available.');
+    });
+
+    it('keeps an internal exception out of the banner', async () => {
+      // Only the messages _openEditor authors reach the UI; a tab class that
+      // throws its own error is a console matter.
+      const real = window.VoiceCentricConfigTab;
+      try {
+        window.VoiceCentricConfigTab = class {
+          inject() { throw new Error('boom'); }
+        };
+        const { host } = await mountManager({ list: [dbCouncil()], nextId: 2 });
+
+        rowFor(host, 'db-1').querySelector('.council-manager__edit-btn').click();
+
+        await vi.waitFor(() => {
+          expect(window.toast.showError).toHaveBeenCalledWith('Failed to open the council editor');
+        });
+        expect(host.querySelector('.council-manager__error')).toBeNull();
+      } finally {
+        window.VoiceCentricConfigTab = real;
+      }
+    });
+
+    it('names the reason in the banner when the council load fails', async () => {
+      vi.spyOn(VoiceCentricConfigTab.prototype, 'loadCouncils').mockResolvedValue(false);
+      const { host } = await mountManager({ list: [dbCouncil()], nextId: 2 });
+
+      rowFor(host, 'db-1').querySelector('.council-manager__edit-btn').click();
+
+      await vi.waitFor(() => expect(host.querySelector('.council-manager__error')).toBeTruthy());
+      expect(host.querySelector('.council-manager__error').textContent)
+        .toBe('Could not load your councils. Please try again.');
+    });
+
+    it('does not publish a tab whose editor was left before the mount resolved', async () => {
+      const { gate, settled } = gateLoadCouncils(VoiceCentricConfigTab);
+      const { host, manager } = await mountManager({ list: [dbCouncil()], nextId: 2 });
+
+      rowFor(host, 'db-1').querySelector('.council-manager__edit-btn').click();
+      expect(manager._tab).toBeNull();
+
+      // Back is live during the mount (there is nothing dirty to lose yet).
+      host.querySelector('.council-manager__back-btn').click();
+      await vi.waitFor(() => expect(host.querySelector('.council-manager__list-wrap')).toBeTruthy());
+
+      gate.resolve();
+      await vi.waitFor(() => expect(settled.done).toBe(true));
+      await new Promise(setImmediate);
+
+      // The abandoned mount must not install itself over the list.
+      expect(manager._tab).toBeNull();
+      expect(manager._mode).toBe('list');
+      expect(host.querySelector('#tab-panel-council')).toBeNull();
+    });
+  });
+
   it('Cancel on the type chooser returns to the list without mounting a tab', async () => {
     const { host, manager } = await mountManager({ list: [dbCouncil()], nextId: 2 });
 
@@ -952,6 +1424,11 @@ describe('CouncilManager editor footer', () => {
     host.querySelector('.council-manager__save-btn').click();
 
     await vi.waitFor(() => expect(manager._tab._saveCouncil).toHaveBeenCalledTimes(1));
+    // Settle on the guard, not on the call: `_busy` is held for the whole of
+    // _saveFromEditor (exit included), so a regression that wrongly proceeded
+    // into _exitEditor is still in flight when _saveCouncil resolves and the
+    // assertions below would pass against a doomed editor.
+    await vi.waitFor(() => expect(manager._busy).toBe(false));
     expect(host.querySelector('#tab-panel-council')).toBeTruthy();
     expect(host.querySelector('.council-manager__list-wrap')).toBeNull();
     expect(onChange).not.toHaveBeenCalled();
@@ -1000,12 +1477,22 @@ describe('CouncilManager editor footer', () => {
         if (url === '/api/councils' && (opts.method || 'GET') === 'GET') {
           return makeResponse({ councils: [dbCouncil()] });
         }
-        return makeResponse({ error: 'nope' }, { ok: false, status: 500 });
+        return makeResponse(
+          { error: 'config.voices must be a non-empty array' },
+          { ok: false, status: 400 }
+        );
       });
 
       host.querySelector('.council-manager__save-btn').click();
 
-      await vi.waitFor(() => expect(window.toast.showError).toHaveBeenCalledWith('Failed to save council'));
+      // The SERVER's diagnosis reaches the user, not a fixed string — on this
+      // page the toast is the only feedback there is.
+      await vi.waitFor(() => expect(window.toast.showError)
+        .toHaveBeenCalledWith('config.voices must be a non-empty array'));
+      // `_busy` is held across the whole save, exit included, so waiting for it
+      // to clear is waiting for _saveFromEditor to have SETTLED — not merely
+      // for _saveCouncil to have been called. A regression that wrongly
+      // proceeded into _exitEditor would still be mid-refetch otherwise.
       await vi.waitFor(() => expect(manager._busy).toBe(false));
 
       expect(host.querySelector('#tab-panel-council')).toBeTruthy();
@@ -1024,6 +1511,93 @@ describe('CouncilManager editor footer', () => {
 
       await vi.waitFor(() => expect(host.querySelector('.council-manager__list-wrap')).toBeTruthy());
       expect(fetchMock.mock.calls.some(([u, o]) => u === '/api/councils/db-1' && o && o.method === 'PUT')).toBe(true);
+      expect(onChange).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // `_saveFromEditor`, `_duplicate` and `_delete` all claimed `_busy` before
+  // their first await; `_backFromEditor` did not, and the footer buttons were
+  // never disabled. So Back stayed live for the whole duration of a save:
+  // "Discard unsaved changes?" popped over a POST that was already committing,
+  // and answering Discard ran `_exitEditor()` immediately AND again when the
+  // save resolved — two re-fetches and two onChange notifications for one write.
+  describe('Back and Save cannot overlap', () => {
+    it('holds the guard, disables both footer buttons, and refuses Back for the whole save', async () => {
+      const gate = deferred();
+      const onChange = vi.fn();
+      const { host, manager } = await openEditor({ list: [dbCouncil()], nextId: 2 }, { onChange });
+
+      manager._tab._markDirty();
+      vi.spyOn(manager._tab, '_saveCouncil').mockImplementation(() => gate.promise);
+      host.querySelector('.council-manager__save-btn').click();
+      await vi.waitFor(() => expect(manager._busy).toBe(true));
+
+      // Visible half: neither footer button is clickable mid-write.
+      expect(host.querySelector('.council-manager__save-btn').disabled).toBe(true);
+      expect(host.querySelector('.council-manager__back-btn').disabled).toBe(true);
+      // Guard half: the handler refuses even when driven directly.
+      await manager._backFromEditor();
+      expect(window.confirmDialog.show).not.toHaveBeenCalled();
+      expect(host.querySelector('#tab-panel-council')).toBeTruthy();
+
+      gate.resolve(true);
+      await vi.waitFor(() => expect(host.querySelector('.council-manager__list-wrap')).toBeTruthy());
+      await vi.waitFor(() => expect(manager._busy).toBe(false));
+      // Exactly one exit, so exactly one notification.
+      expect(onChange).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the guard claimed across the post-save exit, not just the write', async () => {
+      // The `finally` used to release `_busy` BEFORE awaiting `_exitEditor`,
+      // leaving the window open across the exit's own re-fetch.
+      const { host, manager } = await openEditor({ list: [dbCouncil()], nextId: 2 });
+
+      let busyOnEntry = null;
+      const realExit = manager._exitEditor.bind(manager);
+      vi.spyOn(manager, '_exitEditor').mockImplementation(async (options) => {
+        busyOnEntry = manager._busy;
+        return realExit(options);
+      });
+
+      manager._tab._markDirty();
+      host.querySelector('.council-manager__save-btn').click();
+
+      await vi.waitFor(() => expect(host.querySelector('.council-manager__list-wrap')).toBeTruthy());
+      expect(busyOnEntry).toBe(true);
+      expect(manager._busy).toBe(false);
+    });
+
+    it('a save whose editor was replaced mid-flight notifies but spares the new editor', async () => {
+      // `_saveFromEditor` captures `const tab = this._tab` and its continuation
+      // runs after an await. Without re-validating that reference, the pending
+      // continuation tore down a DIFFERENT, freshly-opened editor.
+      const gate = deferred();
+      const onChange = vi.fn();
+      const { host, manager } = await openEditor({
+        list: [dbCouncil(), dbCouncil({ id: 'db-2', name: 'Second' })],
+        nextId: 3
+      }, { onChange });
+
+      const firstTab = manager._tab;
+      firstTab._markDirty();
+      vi.spyOn(firstTab, '_saveCouncil').mockImplementation(() => gate.promise);
+      host.querySelector('.council-manager__save-btn').click();
+      await vi.waitFor(() => expect(manager._busy).toBe(true));
+
+      // A second editor opens over the top (the manager's own entry point; the
+      // footer Back is guarded, so this is the remaining route).
+      await manager._openEditor({ type: 'council', councilId: 'db-2' });
+      await vi.waitFor(() => expect(manager._tab).toBeTruthy());
+      expect(manager._tab).not.toBe(firstTab);
+
+      gate.resolve(true);
+      await vi.waitFor(() => expect(manager._busy).toBe(false));
+
+      // The editor on screen is untouched: still mounted, still the new one.
+      expect(host.querySelector('#tab-panel-council')).toBeTruthy();
+      expect(manager._tab.selectedCouncilId).toBe('db-2');
+      expect(host.querySelector('.council-manager__list-wrap')).toBeNull();
+      // The write DID land, so the host still hears about it — exactly once.
       expect(onChange).toHaveBeenCalledTimes(1);
     });
   });
@@ -1062,29 +1636,43 @@ describe('CouncilManager editor footer', () => {
     expect(manager._tab).toBeNull();
   });
 
-  it('Back on a clean editor leaves immediately without a confirmation', async () => {
-    const { host, manager } = await openEditor({ list: [dbCouncil()], nextId: 2 });
+  it('Back on a clean editor leaves immediately without a confirmation, and does NOT notify', async () => {
+    // GUARDS THE NEGATIVE HALF OF THE onChange CONTRACT. Since the hosted tab
+    // stopped rendering its own write buttons, `_exitEditor` notifies ONLY on an
+    // explicit `mutated: true` — the old `_listSignature()` diff is gone. Drop
+    // the `if (mutated)` and this suite would otherwise stay green while every
+    // Back click made the settings page re-fetch /api/councils and repaint its
+    // Default-for-Analysis picker for nothing.
+    const onChange = vi.fn();
+    const { host, manager } = await openEditor({ list: [dbCouncil()], nextId: 2 }, { onChange });
 
     expect(manager._tab.isDirty).toBe(false);
     host.querySelector('.council-manager__back-btn').click();
 
     await vi.waitFor(() => expect(host.querySelector('.council-manager__list-wrap')).toBeTruthy());
     expect(window.confirmDialog.show).not.toHaveBeenCalled();
+    expect(onChange).not.toHaveBeenCalled();
   });
 
-  it('notifies the host when the tab\'s own buttons changed the list', async () => {
+  it('does not notify when the list changed under the editor without a save we own', async () => {
+    // The inference this replaces fingerprinted {id, name, updated_at} and
+    // notified on any difference. It was there for the tab's OWN in-panel
+    // Save As / Delete row, which no longer renders when hosted — and it was
+    // unreliable anyway (SQLite's one-second `updated_at` hid same-second
+    // in-place edits). A list that moved for some other reason is not our
+    // mutation to report.
     const onChange = vi.fn();
     const store = { list: [dbCouncil()], nextId: 2 };
     const { host, manager } = await openEditor(store, { onChange });
 
-    // The tab renders its own Save As / Delete row; those writes never pass
-    // through CouncilManager, so leaving the editor diffs the list instead.
     store.list = [];
     host.querySelector('.council-manager__back-btn').click();
 
-    await vi.waitFor(() => expect(host.querySelector('.council-manager__empty')).toBeTruthy());
-    expect(onChange).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(host.querySelector('.council-manager__list-wrap')).toBeTruthy());
     expect(manager._tab).toBeNull();
+    expect(onChange).not.toHaveBeenCalled();
+    // The heuristic itself is gone, not merely unused.
+    expect(manager._listSignature).toBeUndefined();
   });
 });
 

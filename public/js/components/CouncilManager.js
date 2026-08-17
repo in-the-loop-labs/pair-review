@@ -21,9 +21,13 @@
  *   - EDITOR: hosts ONE instance of the existing config tab
  *     (VoiceCentricConfigTab for `type === 'council'`, AdvancedConfigTab for
  *     legacy/`'advanced'`) in a plain wrapper div that plays the modal's role as
- *     the tab's query root. CouncilManager owns only the Save/Back footer; the
- *     tab keeps rendering its own Save / Save As / Export / Delete row inside the
- *     panel — the same duplication AnalysisConfigModal already ships.
+ *     the tab's query root. The tab is constructed with `{ hosted: true }`, which
+ *     drops the two regions that only make sense inside AnalysisConfigModal: the
+ *     per-review "This Review" block (repo-instructions banner + custom
+ *     instructions) and the tab's OWN Save / Save As / Delete row. That leaves
+ *     the Save/Back footer below as the SINGLE write surface in editor mode,
+ *     which is why `onChange` fires on an explicit mutation signal only — there
+ *     is no longer any out-of-band write to infer from the list.
  *
  * >>> CONSTRAINT: ONE INSTANCE PER PAGE, AND NEVER ALONGSIDE AnalysisConfigModal.
  * The config tabs query hardcoded, page-global element ids — `#tab-panel-council`,
@@ -47,8 +51,14 @@ class CouncilManager {
    * @param {HTMLElement} container - Mount point; its contents are managed here.
    * @param {Object} [options]
    * @param {Function} [options.onChange] - Called after any successful mutation.
+   * @param {Array<Object>} [options.providers] - The host page's already-loaded
+   *   `GET /api/providers` array. Supplying it skips this component's own fetch
+   *   ("pass resolved values down, don't reach up"); omitting it keeps the
+   *   component independently mountable on a page that has not loaded them.
+   * @param {Object} [options.appConfig] - The host page's already-loaded
+   *   `GET /api/config` object, same deal.
    */
-  constructor(container, { onChange } = {}) {
+  constructor(container, { onChange, providers, appConfig } = {}) {
     this.container = container;
     this.onChange = typeof onChange === 'function' ? onChange : null;
 
@@ -56,14 +66,18 @@ class CouncilManager {
     this._mode = 'list';
     // Latest council list from the API (DB rows first, file rows appended).
     this._councils = [];
-    // Provider map ({ [providerId]: provider }) for the tabs and the preview.
-    this._providers = {};
     // The raw /api/providers array — resolveProviderModelPair needs the list
     // form (with each provider's `defaultModel` and model aliases), which the
-    // map form drops.
-    this._providerList = [];
+    // map form drops, and so does the preview's name resolution: the map DROPS
+    // providers that declare no models, and a council can legitimately name one.
+    this._providerList = Array.isArray(providers) ? providers : [];
+    // Provider map ({ [providerId]: provider }) for the tabs.
+    this._providers = this._buildProviderMap(this._providerList);
     // /api/config, for the page's default provider/model pair.
-    this._appConfig = {};
+    this._appConfig = appConfig && typeof appConfig === 'object' ? appConfig : {};
+    // Whether the host handed us those two, so _init() can skip the fetches.
+    this._providersPreloaded = Array.isArray(providers);
+    this._appConfigPreloaded = Boolean(appConfig && typeof appConfig === 'object');
     // Id of the row whose CouncilCard preview is expanded (null = none).
     this._expandedId = null;
     // Guards against overlapping saves/deletes/duplicates.
@@ -72,9 +86,12 @@ class CouncilManager {
     this._error = null;
 
     // Editor state.
-    this._tab = null;          // the hosted config tab instance
-    this._tabType = null;      // 'council' | 'advanced'
-    this._editingId = null;    // council id being edited (null for Add)
+    this._tab = null;          // the hosted config tab instance, PUBLISHED ONLY
+                               // once its async mount has fully resolved
+    // Bumped by every editor open and every exit. A mount that spans an await
+    // compares it before publishing, so an editor the user has already left (or
+    // replaced) can never install its tab over the current view.
+    this._editorEpoch = 0;
 
     // Document-level listeners we attach (currently none — the tabs and their
     // TimeoutSelects manage their own — but tracked so destroy() can always tear
@@ -89,10 +106,24 @@ class CouncilManager {
 
   // ─── Data ──────────────────────────────────────────────────────────────────
 
-  /** First paint: providers, app defaults and councils in parallel, then render. */
+  /**
+   * First paint: providers, app defaults and councils in parallel, then render.
+   * The two the host already loaded (see the constructor options) are not
+   * re-fetched — the page would otherwise hit /api/providers and /api/config
+   * twice on every settings load.
+   */
   async _init() {
-    await Promise.all([this._loadProviders(), this._loadAppConfig(), this._loadCouncils()]);
+    const loads = [this._loadCouncils()];
+    if (!this._providersPreloaded) loads.push(this._loadProviders());
+    if (!this._appConfigPreloaded) loads.push(this._loadAppConfig());
+    await Promise.all(loads);
     this._render();
+  }
+
+  /** `window.ProviderMap.buildProviderMap`, resolved at call time. */
+  _buildProviderMap(providerList) {
+    const providerMap = window.ProviderMap;
+    return providerMap ? providerMap.buildProviderMap(providerList) : {};
   }
 
   /**
@@ -105,9 +136,8 @@ class CouncilManager {
       const response = await fetch('/api/providers');
       if (!response.ok) throw new Error(`Failed to load providers (${response.status})`);
       const data = await response.json();
-      const providerMap = window.ProviderMap;
       this._providerList = Array.isArray(data.providers) ? data.providers : [];
-      this._providers = providerMap ? providerMap.buildProviderMap(data.providers) : {};
+      this._providers = this._buildProviderMap(this._providerList);
     } catch (error) {
       console.error('Error loading providers:', error);
       this._providerList = [];
@@ -154,31 +184,25 @@ class CouncilManager {
     if (!resolvePair || !buildScopes) return { provider: null, model: null };
     // No repo scope on a global page: config defaults (and any CLI override).
     const pair = resolvePair(buildScopes(null, this._appConfig || {}), this._providerList || []);
-    return { provider: pair.provider, model: this._canonicalModelId(pair.provider, pair.model) };
+    // The pair is handed to setDefaultOrchestration as-is: canonicalizing a
+    // configured alias to the id the model `<select>` carries as an option is
+    // the TAB's job (it owns the select), and doing it here as well produced two
+    // copies of the same alias table that could disagree.
+    return { provider: pair.provider, model: pair.model };
   }
 
   /**
-   * Map a model id to the id the model `<select>` actually carries as an option.
+   * Refresh the council list.
    *
-   * The resolver deliberately PRESERVES a configured alias (`sonnet`) when it
-   * belongs to the provider — right for anything that hands the pair to a
-   * backend, wrong for a `<select>`, whose options are canonical ids only.
-   * Assigning an alias selects nothing, which is the same empty-model failure
-   * the resolver call above exists to prevent. Unknown ids pass through
-   * unchanged (a custom provider has no metadata to canonicalize against).
-   *
-   * @param {string|null} providerId
-   * @param {string|null} modelId
-   * @returns {string|null}
+   * A FAILED refresh leaves `this._councils` alone. "The request failed" and
+   * "you have no councils" are different states, and every mutation path ends
+   * in `_fetchAndRender()` — so collapsing them meant one flaky GET right after
+   * a successful delete wiped every known-good row off the screen and captioned
+   * it "No councils yet." The stale rows under the error banner are truthful
+   * (they are what we last knew) and recoverable (the next mutation re-fetches).
+   * `_buildList` suppresses the empty state while `_error` is set, so the two
+   * messages can never contradict each other.
    */
-  _canonicalModelId(providerId, modelId) {
-    if (!providerId || !modelId) return modelId;
-    const provider = (this._providerList || []).find(p => p && p.id === providerId);
-    const models = provider && Array.isArray(provider.models) ? provider.models : [];
-    const match = models.find(m => m && (m.id === modelId || (m.aliases || []).includes(modelId)));
-    return match ? match.id : modelId;
-  }
-
   async _loadCouncils() {
     try {
       const response = await fetch('/api/councils');
@@ -187,7 +211,6 @@ class CouncilManager {
       this._councils = Array.isArray(data.councils) ? data.councils : [];
       this._error = null;
     } catch (error) {
-      this._councils = [];
       this._error = error && error.message ? error.message : 'Failed to load councils';
     }
   }
@@ -195,19 +218,6 @@ class CouncilManager {
   async _fetchAndRender() {
     await this._loadCouncils();
     this._render();
-  }
-
-  /**
-   * A cheap fingerprint of the current list, used to notice mutations made
-   * through the hosted tab's OWN buttons (Save As / Delete inside the panel),
-   * which CouncilManager never sees. Best-effort by design: `updated_at` has
-   * one-second resolution in SQLite, so a same-second in-place edit can look
-   * unchanged. The Save button we own reports its success explicitly instead.
-   */
-  _listSignature() {
-    return this._councils
-      .map(c => `${c.id}\u0000${c.name}\u0000${c.updated_at || ''}`)
-      .join('\u0001');
   }
 
   // ─── Council helpers ───────────────────────────────────────────────────────
@@ -227,21 +237,26 @@ class CouncilManager {
   }
 
   /**
-   * Resolve provider/model ids to display names from the loaded provider map,
-   * falling back to the raw ids. Handed to CouncilCard, which has no page
-   * knowledge of its own. Mirrors `settings.js#resolveModelDisplay`, which reads
-   * the same data as an array.
+   * Resolve provider/model ids to display names for the CouncilCard preview,
+   * which has no page knowledge of its own.
+   *
+   * Delegates to the ONE shared, alias-aware implementation in
+   * public/js/utils/provider-map.js — repo-settings.js, settings.js and this
+   * file each grew their own copy and the three had already drifted apart
+   * (alias-blindness here and in settings.js, and a map-vs-array split that made
+   * two cards on the SAME settings page disagree about a provider's name).
+   *
+   * The RAW `_providerList` goes in, not `_providers`: `buildProviderMap` drops
+   * providers that declare no models, and a council may name one — resolving
+   * from the map printed the bare id (`opencode`) where the card above it
+   * printed `OpenCode`.
    */
   _resolveModelDisplay(providerId, modelId) {
-    const provider = this._providers ? this._providers[providerId] : null;
-    if (!provider) {
-      return { providerName: providerId || 'Unknown', modelName: modelId || 'Unknown' };
+    const providerMap = window.ProviderMap;
+    if (providerMap && typeof providerMap.resolveModelDisplay === 'function') {
+      return providerMap.resolveModelDisplay(this._providerList, providerId, modelId);
     }
-    const model = (provider.models || []).find(m => (m && (m.id != null ? m.id : m)) === modelId);
-    return {
-      providerName: provider.name || provider.id || providerId,
-      modelName: model ? (model.name || model.id || modelId) : (modelId || 'Unknown')
-    };
+    return { providerName: providerId || 'Unknown', modelName: modelId || 'Unknown' };
   }
 
   // ─── Rendering ─────────────────────────────────────────────────────────────
@@ -282,12 +297,16 @@ class CouncilManager {
     const wrap = document.createElement('div');
     wrap.className = 'council-manager__list-wrap';
 
-    if (this._councils.length === 0) {
+    // "No councils yet." is a claim about the account, and only a SUCCESSFUL
+    // load can make it. While `_error` is set the list is unknown, not empty:
+    // the banner above already says what went wrong, and whatever rows we last
+    // knew about stay on screen under it (see `_loadCouncils`).
+    if (this._councils.length === 0 && !this._error) {
       const empty = document.createElement('div');
       empty.className = 'council-manager__empty';
       empty.textContent = 'No councils yet.';
       wrap.appendChild(empty);
-    } else {
+    } else if (this._councils.length > 0) {
       const list = document.createElement('div');
       list.className = 'council-manager__list';
       for (const council of this._councils) {
@@ -520,11 +539,27 @@ class CouncilManager {
    * setDefaultCouncilId() records a PENDING id that _renderCouncilSelector()
    * applies, so it has to precede loadCouncils().
    *
-   *   inject(panel) → setProviders(map) → setDefaultOrchestration(pair) →
-   *   reset() → [setDefaultCouncilId(id)] → loadCouncils()
+   *   new TabClass(wrapper, { hosted: true }) → inject(panel) →
+   *   setProviders(map) → setDefaultOrchestration(pair) → reset() →
+   *   [setDefaultCouncilId(id)] → await loadCouncils() → PUBLISH `this._tab`
    *
    * The wrapper div — not the panel — is the tab's constructor argument: the tab
-   * plays `this.modal.querySelector('#tab-panel-…')` against it.
+   * plays `this.modal.querySelector('#tab-panel-…')` against it. `hosted: true`
+   * drops the per-review "This Review" region and the tab's own Save / Save As /
+   * Delete row, neither of which belongs on a global settings page.
+   *
+   * >>> THE TAB IS PUBLISHED LAST, AND THE FOOTER SAVE STARTS DISABLED.
+   * `loadCouncils()` is a round trip, and `setDefaultCouncilId(id)` only records
+   * a PENDING id until `_renderCouncilSelector()` runs at the END of it — so for
+   * the whole GET the tab's `selectedCouncilId` is still null and its UI still
+   * shows `reset()` defaults. A Save in that window would fail `saveCouncil`'s
+   * selection test and fork a BRAND NEW council out of default config while the
+   * header said "Edit council". Publishing late makes `_saveFromEditor`'s null
+   * check inert-by-construction; the disabled button makes it visible.
+   *
+   * A load that FAILS tears the editor back down (see the C3 boolean contract on
+   * `loadCouncils`): the alternative is an "Edit council" pane permanently stuck
+   * in the no-selection state, where every later Save forks a copy instead.
    *
    * @param {Object} params
    * @param {string} params.type - 'council' (voice-centric) or 'advanced'
@@ -540,9 +575,13 @@ class CouncilManager {
       return;
     }
 
+    // Claim this open. Anything still in flight from a previous one (or from an
+    // exit that happened while we were mounting) is now stale and must not
+    // publish itself over the editor we are about to build.
+    const epoch = ++this._editorEpoch;
+
     this._mode = 'editor';
-    this._tabType = type;
-    this._editingId = councilId;
+    this._tab = null;
     this._expandedId = null;
 
     this.container.innerHTML = '';
@@ -575,6 +614,8 @@ class CouncilManager {
     saveBtn.type = 'button';
     saveBtn.className = 'council-manager__save-btn';
     saveBtn.textContent = 'Save';
+    // Armed by _syncFooterButtons() once the mount below resolves.
+    saveBtn.disabled = true;
     saveBtn.addEventListener('click', () => this._saveFromEditor());
     footer.appendChild(saveBtn);
 
@@ -588,55 +629,157 @@ class CouncilManager {
     root.appendChild(footer);
     this.container.appendChild(root);
 
+    // Set at the two failure sites below that have something a user can act on;
+    // the catch puts it in the list banner. Stays null for anything unexpected.
+    let userMessage = null;
+
     try {
-      const tab = new TabClass(wrapper);
-      this._tab = tab;
+      const tab = new TabClass(wrapper, { hosted: true });
       tab.inject(panel);
       tab.setProviders(this._providers);
       const { provider, model } = this._defaultOrchestration();
       tab.setDefaultOrchestration(provider, model);
       tab.reset();
       if (councilId) tab.setDefaultCouncilId(councilId);
-      await tab.loadCouncils();
+      // `loadCouncils` swallows its own fetch error, so the promise resolving is
+      // NOT proof the selector rendered — only the boolean is. An explicit
+      // `false` is the failure signal; anything else (including a tab that
+      // predates the contract) counts as mounted.
+      const loaded = await tab.loadCouncils();
+      if (loaded === false) {
+        userMessage = 'Could not load your councils. Please try again.';
+        throw new Error(userMessage);
+      }
+      // Asked to EDIT something the tab could not select. `loadCouncils`
+      // succeeded, so this is not a transport failure: the council was deleted
+      // (another tab, another window, a file-overlay reload) between the list
+      // paint that drew the Edit button and this load, and
+      // `_renderCouncilSelector` consumes the pending id whether or not it
+      // finds a match. Leaving the editor up would label it "Edit council" over
+      // a NULL selection, and the next Save would fail council-crud's selection
+      // test and fork a brand-new council from whatever the UI happens to show
+      // — the same silent Edit-becomes-Create this mount order exists to
+      // prevent, arriving through a different door.
+      if (councilId && tab.selectedCouncilId !== councilId) {
+        userMessage = 'That council is no longer available.';
+        throw new Error(userMessage);
+      }
+      // The user left (or re-opened) the editor while the GET was in flight —
+      // that view owns the container now; this tab is garbage.
+      if (this._editorEpoch !== epoch) return;
+      this._tab = tab;
+      this._syncFooterButtons();
     } catch (error) {
       // A half-mounted tab is worse than none: drop it and go back to the list
       // rather than leave a dead editor (and an unhandled rejection) behind.
-      console.error('Error opening the council editor:', error);
+      //
+      // `userMessage` separates the two kinds of failure. A council that was
+      // deleted elsewhere, or a council list that would not load, is an
+      // EXPECTED condition this component handles and explains in the banner —
+      // a warning. Anything else is a real defect and keeps its error trace.
+      if (userMessage) {
+        console.warn('Council editor not opened:', error);
+      } else {
+        console.error('Error opening the council editor:', error);
+      }
+      // A mount that lost its claim has no UI left to complain about — the view
+      // on screen belongs to a later open (or to the list).
+      if (this._editorEpoch !== epoch) return;
       if (window.toast) window.toast.showError('Failed to open the council editor');
       this._tab = null;
-      this._tabType = null;
-      this._editingId = null;
       this._mode = 'list';
+      // The toast is transient; the banner says WHY the editor closed. Only the
+      // two messages this method authored qualify — an internal exception
+      // ("boom" from a broken tab class) belongs in the console, not in the UI.
+      this._error = userMessage;
       this._render();
     }
   }
 
   /**
    * Leave the editor: drop the tab, re-fetch the list (a rename or a brand-new
-   * council has to show up), and notify the host once if anything changed.
+   * council has to show up), and notify the host iff a write actually happened.
+   *
+   * `mutated` is the ONLY signal. This used to fall back to diffing a
+   * `{id, name, updated_at}` fingerprint of the list, because the hosted tab
+   * rendered its own Save / Save As / Delete row and wrote behind our back. Two
+   * things were wrong with that: SQLite's `CURRENT_TIMESTAMP` has one-second
+   * resolution and the fingerprint ignored config content, so a same-second
+   * in-place edit read as "nothing changed" and the settings page's
+   * Default-for-Analysis picker silently kept stale rows. The hosted tab no
+   * longer renders that row at all (`hosted: true`), so the footer Save below is
+   * the only write surface and the heuristic has nothing left to guess at.
    *
    * @param {Object} [options]
-   * @param {boolean} [options.mutated] - A save we own succeeded; notify
-   *   unconditionally instead of relying on the list fingerprint.
+   * @param {boolean} [options.mutated] - A save we own succeeded.
    */
   async _exitEditor({ mutated = false } = {}) {
-    const before = this._listSignature();
+    // Any mount still in flight belongs to an editor that no longer exists.
+    this._editorEpoch++;
 
     this._tab = null;
-    this._tabType = null;
-    this._editingId = null;
     this._mode = 'list';
     this._expandedId = null;
     this._error = null;
 
     await this._fetchAndRender();
 
-    if (mutated || this._listSignature() !== before) {
-      this._notifyChanged();
-    }
+    if (mutated) this._notifyChanged();
   }
 
   // ─── Mutations ─────────────────────────────────────────────────────────────
+
+  /**
+   * Claim or release the single-mutation guard, keeping the editor footer in
+   * step with it. Every path that sets `_busy` goes through here so the guard is
+   * VISIBLE — a live-looking Save or Back that silently no-ops reads as a broken
+   * button. The row buttons in list mode are left alone: `_busy` is only ever
+   * held there across a modal dialog, which already blocks the page.
+   *
+   * @param {boolean} busy
+   */
+  _setBusy(busy) {
+    this._busy = busy;
+    this._syncFooterButtons();
+  }
+
+  /**
+   * Footer button states. Save is live only when a fully-mounted tab is
+   * published AND no mutation is in flight; Back only when nothing is in flight.
+   * Queried rather than cached: in list mode there is no footer and both lookups
+   * are a harmless null.
+   */
+  _syncFooterButtons() {
+    if (!this.container) return;
+    const saveBtn = this.container.querySelector('.council-manager__save-btn');
+    if (saveBtn) saveBtn.disabled = this._busy || !this._tab;
+    const backBtn = this.container.querySelector('.council-manager__back-btn');
+    if (backBtn) backBtn.disabled = this._busy;
+  }
+
+  /**
+   * The tail every successful mutation shares: clear the banner, confirm it to
+   * the user, repaint from the server, and only THEN tell the host.
+   *
+   * >>> NOTIFY AFTER THE REFETCH, NOT BEFORE.
+   * `_duplicate` and `_delete` used to notify first, which put the host's
+   * `refreshCouncilRows()` GET in flight alongside our own — two parallel
+   * `GET /api/councils` per mutation, and a host repainting from a response
+   * that raced ours. `_exitEditor` already notified last, so the same
+   * three-step sequence existed in two orders. Notifying last also means the
+   * host is called with this component's view already settled, which is the
+   * only order that makes "onChange fires when the change is visible" true.
+   * The cost is that the host's refresh starts one round trip later; that is
+   * deliberate, and cheap next to a duplicated fetch.
+   *
+   * @param {string} successMessage - Toast text for the completed mutation.
+   */
+  async _afterMutation(successMessage) {
+    this._error = null;
+    if (window.toast) window.toast.showSuccess(successMessage);
+    await this._fetchAndRender();
+    this._notifyChanged();
+  }
 
   /**
    * Save the hosted tab through the same private entry point AnalysisConfigModal
@@ -650,38 +793,68 @@ class CouncilManager {
    * untouched: Add council → Save → cancel the name prompt read as "saved",
    * exited to the list and fired onChange for a council that was never created.
    * Only the explicit signal may unlock the exit.
+   *
+   * The guard is held across `_exitEditor` too, not released at the end of the
+   * write: the exit is itself a round trip (`_fetchAndRender`), and releasing
+   * early re-opened the window where Back could run over a save in progress.
    */
   async _saveFromEditor() {
     const tab = this._tab;
     if (!tab || this._busy) return;
-    this._busy = true;
-    let saved = false;
+    this._setBusy(true);
     try {
-      saved = await tab._saveCouncil();
-    } catch (error) {
-      console.error('Error saving council:', error);
-      if (window.toast) window.toast.showError('Failed to save council');
-      return;
+      let saved = false;
+      try {
+        saved = await tab._saveCouncil();
+      } catch (error) {
+        console.error('Error saving council:', error);
+        if (window.toast) window.toast.showError('Failed to save council');
+        return;
+      }
+      if (!saved) return;
+      if (this._tab !== tab) {
+        // The editor we saved is no longer the one on screen (a destroy(), or a
+        // re-open driven straight through _openEditor). The write DID land, so
+        // the host still has to hear about it — but tearing down whatever is
+        // mounted now would discard an unrelated edit.
+        this._notifyChanged();
+        return;
+      }
+      await this._exitEditor({ mutated: true });
     } finally {
-      this._busy = false;
+      this._setBusy(false);
     }
-    if (!saved) return;
-    await this._exitEditor({ mutated: true });
   }
 
-  /** Back: confirm before discarding unsaved edits, then return to the list. */
+  /**
+   * Back: confirm before discarding unsaved edits, then return to the list.
+   *
+   * Guarded by `_busy` like every other mutation path. Without it Back stayed
+   * live for the whole duration of a save: "Discard unsaved changes?" would pop
+   * over a POST that was already committing, and answering Discard ran
+   * `_exitEditor()` once immediately and again when the save resolved — two
+   * re-fetches and two onChange notifications for one write.
+   */
   async _backFromEditor() {
-    const tab = this._tab;
-    if (tab && tab.isDirty) {
-      const confirmed = await this._confirm({
-        title: 'Discard changes',
-        message: 'Discard unsaved changes?',
-        confirmText: 'Discard',
-        confirmClass: 'btn-danger'
-      });
-      if (!confirmed) return;
+    if (this._busy) return;
+    this._setBusy(true);
+    try {
+      const tab = this._tab;
+      if (tab && tab.isDirty) {
+        const confirmed = await this._confirm({
+          title: 'Discard changes',
+          message: 'Discard unsaved changes?',
+          confirmText: 'Discard',
+          confirmClass: 'btn-danger'
+        });
+        if (!confirmed) return;
+        // The editor could have been replaced while the dialog was open.
+        if (this._tab !== tab) return;
+      }
+      await this._exitEditor();
+    } finally {
+      this._setBusy(false);
     }
-    await this._exitEditor();
   }
 
   /**
@@ -707,7 +880,7 @@ class CouncilManager {
     // Claim the guard BEFORE the first await. Setting it after the name prompt
     // let a double-click enter the handler twice and open a second prompt whose
     // promise could then never settle (the dialog is a singleton).
-    this._busy = true;
+    this._setBusy(true);
     try {
       const defaultName = `${council.name} (copy)`;
       let name;
@@ -721,11 +894,19 @@ class CouncilManager {
           confirmClass: 'btn-primary'
         });
         if (!name) return;
-        // DELIBERATE: scans the WHOLE list, across both types and both sources.
-        // The tabs' Save As (`saveCouncilAs` in public/js/utils/council-crud.js)
-        // scans only its own type-filtered `tab.councils`. There is no
-        // server-side UNIQUE on councils.name, so neither is authoritative;
-        // do not "align" them without deciding which one is right.
+        // Scans the WHOLE list, across both types and both sources — and the
+        // tabs' Save As (`saveCouncilAs` in public/js/utils/council-crud.js) now
+        // does the same, via the unfiltered `tab._allCouncils`. The two used to
+        // disagree, Save As scanning only its own type-filtered `tab.councils`.
+        //
+        // Whole-list is the correct rule, and the reason is outside this file:
+        // `--council <name>` resolves by name in src/councils/resolve-council.js
+        // at tier 3 (exact, case-insensitive), tier 4 (normalized) and tier 5
+        // (fragment), and every one of those throws on more than one match. A
+        // Standard council saved under a name an Advanced council already holds
+        // therefore breaks the handle for BOTH; only the raw uuid still works.
+        // There is no server-side UNIQUE on councils.name to catch it, so these
+        // two client-side scans are the only guard — keep them aligned.
         const duplicate = this._councils.find(c => (c.name || '').toLowerCase() === name.toLowerCase());
         if (!duplicate) break;
         if (window.toast) window.toast.showWarning('A council with that name already exists.');
@@ -740,17 +921,14 @@ class CouncilManager {
         const data = await response.json().catch(() => ({}));
         throw new Error(data.error || `Failed to duplicate council (${response.status})`);
       }
-      this._error = null;
-      if (window.toast) window.toast.showSuccess('Council duplicated');
-      this._notifyChanged();
-      await this._fetchAndRender();
+      await this._afterMutation('Council duplicated');
     } catch (error) {
       console.error('Error duplicating council:', error);
       if (window.toast) window.toast.showError('Failed to duplicate council');
       this._error = error && error.message ? error.message : 'Failed to duplicate council';
       this._render();
     } finally {
-      this._busy = false;
+      this._setBusy(false);
     }
   }
 
@@ -795,7 +973,7 @@ class CouncilManager {
     // Claim the guard BEFORE awaiting the confirmation, not after it resolves:
     // otherwise a double-click runs the handler twice and the second run is only
     // saved from a double DELETE by confirmDialog happening to be a singleton.
-    this._busy = true;
+    this._setBusy(true);
     try {
       const confirmed = await this._confirm({
         title: 'Delete Council',
@@ -812,17 +990,14 @@ class CouncilManager {
         const data = await response.json().catch(() => ({}));
         throw new Error(data.error || `Failed to delete council (${response.status})`);
       }
-      this._error = null;
-      if (window.toast) window.toast.showSuccess('Council deleted');
-      this._notifyChanged();
-      await this._fetchAndRender();
+      await this._afterMutation('Council deleted');
     } catch (error) {
       console.error('Error deleting council:', error);
       if (window.toast) window.toast.showError('Failed to delete council');
       this._error = error && error.message ? error.message : 'Failed to delete council';
       this._render();
     } finally {
-      this._busy = false;
+      this._setBusy(false);
     }
   }
 
@@ -856,12 +1031,13 @@ class CouncilManager {
       target.removeEventListener(type, handler);
     }
     this._docListeners = [];
+    // Abandon any editor mount still in flight, so it cannot publish a tab into
+    // a component that has already been torn down.
+    this._editorEpoch++;
     // The hosted tab has no destroy() of its own (AnalysisConfigModal caches and
     // reuses its tabs the same way); dropping the DOM drops its listeners, and
     // its TimeoutSelects only hold a document listener while they are open.
     this._tab = null;
-    this._tabType = null;
-    this._editingId = null;
     this._expandedId = null;
     if (this.container) {
       this.container.innerHTML = '';
