@@ -11,14 +11,15 @@
  * Tier-specific design decisions:
  * - KEPT: Deduplication/conflict-resolution rules, reviewer context weighting,
  *   unique-insight protection, summary synthesis guidance
- * - ADDED: Adversarial verification pass — the consolidator reads the repo
- *   (both flows execute with cwd = worktree) and refutes findings against the
- *   code. Fresh-context refutation catches what reviewer self-verification
- *   cannot: a reviewer's confidently-held misreading survives its own
- *   refute-before-report step, but not a skeptical reader with the code open.
- *   Drops require positive evidence of wrongness; unverifiable findings keep
- *   their original confidence (eval 2026-08-15: suppression-by-doubt removes
- *   genuine defects, not incorrect ones)
+ * - ADDED: Adversarial verification pass, FLOW-CONDITIONAL via the
+ *   {{adversarialVerification}} placeholder (shared text in
+ *   ../../shared/adversarial-verification.js). Cross-voice consolidation —
+ *   the reviewer-centric council's final merge stage — fills it; intra-level
+ *   consolidation (the level-centric council's Pass 1) passes '' so findings
+ *   reach the final cross-level orchestration pass unverified, with
+ *   cross-voice overlap intact as evidence. Adversarial verification runs
+ *   exactly once per analysis flow, at the last merge point — every extra
+ *   pass is an independent chance to wrongly kill a true positive.
  * - REPLACED: Confidence score arithmetic with ordinal evidence-based rules
  * - REMOVED: Reasoning-encouragement boilerplate
  * - UNIFIED: Confidence semantics (probability the finding is real) shared
@@ -38,6 +39,9 @@
  * - {{lineNumberGuidance}} - Line number guidance section
  * - {{customInstructions}} - Custom instructions section (optional)
  * - {{dedupInstructions}} - Dedup instructions section (optional)
+ * - {{adversarialVerification}} - Adversarial verification section (optional;
+ *   filled with ADVERSARIAL_VERIFICATION_SECTION by cross-voice consolidation,
+ *   '' by intra-level consolidation)
  * - {{reviewerSuggestions}} - Formatted reviewer suggestions input
  * - {{suggestionCount}} - Total number of input suggestions
  * - {{reviewerCount}} - Number of reviewers being consolidated
@@ -92,16 +96,8 @@ Each reviewer below may have been configured with custom instructions. These fal
 {{reviewerSuggestions}}
 </section>
 
-<section name="adversarial-verification" required="true" tier="thorough">
-## Adversarial Verification
-The reviewers who produced these findings believed them; you do not have to. You are the first reader with no attachment to any finding — before consolidating, take a fresh, skeptical pass to weed out false positives. You have READ-ONLY access to the repository: the diff tool shown above, plus \`cat -n\`, \`ls\`, \`grep\`, and \`find\`. Do NOT modify files or run write commands.
-
-You cannot deep-verify everything, so spend verification where it changes the outcome: bug and security findings that are high-severity, reported by only one reviewer, or whose reasoning looks thin or generic.
-
-1. **Check the claim against the code.** Open the cited file at the cited line. Confirm the code actually says what the finding claims — incorrect findings frequently misquote or misread the code. A finding that misdescribes the code is refuted: drop it.
-2. **Look for the defense the reviewer missed.** Read the surrounding code for the guard, validation, type constraint, or caller behavior that would prevent the claimed failure. If it exists, the finding is refuted: drop it, even when several reviewers agree — reviewers share blind spots, and code evidence outranks consensus.
-3. **Dropping requires evidence; doubt does not.** Discard a finding only when you found concrete proof it is wrong. If you could not verify it either way, keep it at its original confidence — inability to verify is not refutation.
-4. **Record what you checked.** Append your verification steps to the finding's reasoning array. A finding you verified against the code warrants higher confidence than one you merely passed through.
+<section name="adversarial-verification" optional="true" tier="thorough">
+{{adversarialVerification}}
 </section>
 
 <section name="consolidation-rules" required="true" tier="thorough">
@@ -279,7 +275,7 @@ const sections = [
   { name: 'dedup-instructions', optional: true },
   { name: 'reviewer-context-guidance', required: true, tier: ['thorough'] },
   { name: 'input-suggestions', locked: true },
-  { name: 'adversarial-verification', required: true, tier: ['thorough'] },
+  { name: 'adversarial-verification', optional: true, tier: ['thorough'] },
   { name: 'consolidation-rules', required: true, tier: ['thorough'] },
   { name: 'consensus-handling', required: true, tier: ['thorough'] },
   { name: 'balanced-output', required: true, tier: ['thorough'] },

@@ -2182,6 +2182,28 @@ describe('Baseline Orchestration Thorough', () => {
     expect(baseline.taggedPrompt).toContain("curate, don't concatenate");
   });
 
+  it('should carry adversarial verification as a flow-conditional placeholder', async () => {
+    const baseline = await import('../../src/ai/prompts/baseline/orchestration/thorough.js');
+
+    // Adversarial verification runs exactly once per flow, at the final
+    // merge stage. Orchestration is that stage for standalone single-reviewer
+    // runs and the level-centric council's Pass 2 — but a voice's internal
+    // cross-level merge inside a multi-voice reviewer-centric council must
+    // NOT verify (cross-voice consolidation is that flow's final stage), so
+    // the section is placeholder-fed, not static
+    expect(baseline.defaultOrder).toContain('adversarial-verification');
+    const verifyIdx = baseline.defaultOrder.indexOf('adversarial-verification');
+    expect(baseline.defaultOrder[verifyIdx - 1]).toBe('input-suggestions');
+    expect(baseline.defaultOrder[verifyIdx + 1]).toBe('intelligent-merging');
+
+    const section = baseline.sections.find(s => s.name === 'adversarial-verification');
+    expect(section).toBeDefined();
+    expect(section.optional).toBe(true);
+
+    const parsed = baseline.parseSections().find(s => s.name === 'adversarial-verification');
+    expect(parsed.content).toBe('{{adversarialVerification}}');
+  });
+
   it('should have placeholders for multi-level suggestions', async () => {
     const baseline = await import('../../src/ai/prompts/baseline/orchestration/thorough.js');
 

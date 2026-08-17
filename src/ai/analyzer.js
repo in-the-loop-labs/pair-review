@@ -14,6 +14,7 @@ const { normalizePath, pathExistsInList, resolveRenamedFile } = require('../util
 const { buildFileLineCountMap, validateSuggestionLineNumbers } = require('../utils/line-validation');
 const { getPromptBuilder } = require('./prompts');
 const { formatValidFiles } = require('./prompts/shared/valid-files');
+const { ADVERSARIAL_VERIFICATION_SECTION } = require('./prompts/shared/adversarial-verification');
 const { GIT_DIFF_FLAGS } = require('../git/diff-flags');
 const {
   buildAnalysisLineNumberGuidance,
@@ -655,7 +656,7 @@ class Analyzer {
         // Build dedup context from prMetadata and options
         const dedupContext = buildDedupContext(prMetadata, { reviewId: prId, serverPort, runId });
 
-        const orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata, mergedInstructions, worktreePath, { analysisId, tier, progressCallback, timeout: executionTimeout, logPrefix, reviewerNum, excludePrevious, dedupContext, githubClient });
+        const orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata, mergedInstructions, worktreePath, { analysisId, tier, progressCallback, timeout: executionTimeout, logPrefix, reviewerNum, excludePrevious, dedupContext, githubClient, skipAdversarialVerification: options.skipAdversarialVerification });
 
         // orchestrateWithAI degrades to the raw union of level suggestions when
         // consolidation fails internally — report that honestly instead of 'success'
@@ -2856,7 +2857,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    *   array is the raw union of all levels rather than a curated set.
    */
   async orchestrateWithAI(allSuggestions, prMetadata, customInstructions = null, worktreePath = null, options = {}) {
-    const { analysisId, tier = 'balanced', progressCallback, providerOverride, modelOverride, timeout = 600000, logPrefix: lp = '', reviewerNum, excludePrevious, dedupContext, githubClient } = options;
+    const { analysisId, tier = 'balanced', progressCallback, providerOverride, modelOverride, timeout = 600000, logPrefix: lp = '', reviewerNum, excludePrevious, dedupContext, githubClient, skipAdversarialVerification } = options;
     // Build adapter-level log prefix: when reviewerNum is set (council mode),
     // use compact format like [R1 Orch] so concurrent reviewers are disambiguated
     const adapterLogPrefix = reviewerNum ? `[R${reviewerNum} Orch]` : '';
@@ -2896,7 +2897,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       }
 
       // Build the consolidation prompt
-      const prompt = this.buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions, worktreePath, tier, lp, { excludePrevious, dedupContext: resolvedDedupContext });
+      const prompt = this.buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions, worktreePath, tier, lp, { excludePrevious, dedupContext: resolvedDedupContext, skipAdversarialVerification });
 
       // Execute AI for cross-level consolidation
       logger.info(`${lp}[Consolidation] Running AI consolidation to curate and merge suggestions...`);
@@ -3022,9 +3023,12 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @param {string} worktreePath - Path to the git worktree
    * @param {string} tier - Capability tier: 'fast', 'balanced', or 'thorough' (default: 'balanced')
    * @param {string} logPrefix - Optional log prefix for reviewer identification in council mode
-   * @param {Object} [dedupOptions] - Dedup options
+   * @param {Object} [dedupOptions] - Dedup and prompt options
    * @param {Object} [dedupOptions.excludePrevious] - { github: bool, feedback: bool }
    * @param {Object} [dedupOptions.dedupContext] - { owner, repo, pullNumber, reviewId, serverPort }
+   * @param {boolean} [dedupOptions.skipAdversarialVerification] - Omit the adversarial
+   *   verification section. Set for per-voice orchestration inside a multi-voice
+   *   reviewer-centric council, where verification belongs to cross-voice consolidation
    * @returns {string} Orchestration prompt
    */
   buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions = null, worktreePath = null, tier = 'balanced', logPrefix = '', dedupOptions = {}) {
@@ -3042,6 +3046,14 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       customInstructions: customInstructions ? this.buildCustomInstructionsSection(customInstructions) : '',
       lineNumberGuidance: this.buildOrchestrationLineNumberGuidance(worktreePath),
       dedupInstructions: buildDedupInstructions(dedupOptions.excludePrevious, dedupOptions.dedupContext || {}),
+      // Adversarial verification runs exactly once per analysis flow, at the
+      // final merge stage. Orchestration IS that stage for standalone
+      // single-reviewer runs and the level-centric council's Pass 2 — but when
+      // analyzeAllLevels runs as one voice inside a multi-voice
+      // reviewer-centric council, cross-voice consolidation is the final stage
+      // and per-voice verification would pre-kill findings before cross-voice
+      // overlap is visible (same once-per-flow rule as dedup).
+      adversarialVerification: dedupOptions.skipAdversarialVerification ? '' : ADVERSARIAL_VERIFICATION_SECTION,
       level1Count: allSuggestions.level1?.length || 0,
       level2Count: allSuggestions.level2?.length || 0,
       level3Count: allSuggestions.level3?.length || 0,
@@ -3354,7 +3366,10 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         }
 
         // Note: excludePrevious/serverPort omitted intentionally — dedup runs once
-        // during cross-voice consolidation, not per-voice.
+        // during cross-voice consolidation, not per-voice. Adversarial
+        // verification follows the same rule: skipped here so this voice's
+        // internal cross-level merge does not pre-kill findings before
+        // cross-voice consolidation can see overlap between voices.
         const result = await voiceAnalyzer.analyzeAllLevels(
           reviewId,
           worktreePath,
@@ -3366,6 +3381,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
             analysisId,
             runId: childRunId,
             skipRunCreation: true,
+            skipAdversarialVerification: true,
             enabledLevels,
             tier: voiceTier,
             timeout: voiceTimeout,
@@ -4096,6 +4112,12 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       reviewIntro: `You are consolidating Level ${level} code review suggestions from multiple independent AI reviewers for ${reviewDescription}.`,
       customInstructions: customInstructions ? this.buildCustomInstructionsSection(customInstructions) : '',
       dedupInstructions: '',
+      // Intra-level consolidation is Pass 1 of the level-centric council —
+      // NOT the flow's final merge stage. Adversarial verification runs
+      // exactly once per flow, at the last merge point (here, the Pass 2
+      // cross-level orchestration, where it is embedded statically), so
+      // findings reach it with cross-voice overlap intact as evidence.
+      adversarialVerification: '',
       lineNumberGuidance: this.buildOrchestrationLineNumberGuidance(worktreePath),
       reviewerSuggestions,
       suggestionCount,
@@ -4296,6 +4318,9 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       customInstructions: customInstructions ? this.buildCustomInstructionsSection(customInstructions) : '',
       lineNumberGuidance: this.buildOrchestrationLineNumberGuidance(worktreePath),
       dedupInstructions: buildDedupInstructions(excludePrevious, resolvedDedupContext || {}),
+      // Cross-voice consolidation is the reviewer-centric council's final
+      // merge stage — the one place in this flow the adversarial pass runs
+      adversarialVerification: ADVERSARIAL_VERIFICATION_SECTION,
       reviewerSuggestions: voiceDescriptions,
       suggestionCount: voiceReviews.reduce((sum, v) => sum + v.suggestionCount, 0),
       reviewerCount: voiceReviews.length

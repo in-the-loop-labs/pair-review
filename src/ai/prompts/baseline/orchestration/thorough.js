@@ -9,6 +9,16 @@
  * size scales with what the PR actually contains.
  *
  * Tier-specific design decisions:
+ * - ADDED: Adversarial verification, FLOW-CONDITIONAL via the
+ *   {{adversarialVerification}} placeholder (shared text in
+ *   ../../shared/adversarial-verification.js). Filled when this orchestration
+ *   is the FINAL merge stage of its flow — standalone single-reviewer runs
+ *   and the level-centric council's Pass 2 — where all sources are collected
+ *   and overlap/conflict is visible as evidence. Passed '' when
+ *   analyzeAllLevels runs as one voice inside a multi-voice reviewer-centric
+ *   council (options.skipAdversarialVerification): verification there belongs
+ *   to cross-voice consolidation, exactly once per flow, so per-voice merges
+ *   must not pre-kill findings before cross-voice overlap is visible.
  * - KEPT: Merge/contradiction handling, priority tiers, contextual priority
  *   adjustment, summary synthesis guidance
  * - REPLACED: Confidence score arithmetic with ordinal evidence-based rules
@@ -33,6 +43,10 @@ const { ORCHESTRATION_INPUT_SCHEMA_DOCS } = require('../../shared/output-schema'
  * - {{prContext}} - PR context section (optional, may be empty)
  * - {{customInstructions}} - Custom instructions section (optional)
  * - {{dedupInstructions}} - Dedup instructions section (optional)
+ * - {{adversarialVerification}} - Adversarial verification section (optional;
+ *   filled with ADVERSARIAL_VERIFICATION_SECTION when this orchestration is
+ *   the flow's final merge stage, '' for per-voice runs inside a multi-voice
+ *   reviewer-centric council)
  * - {{lineNumberGuidance}} - Line number guidance section
  * - {{level1Count}} - Number of Level 1 suggestions
  * - {{level2Count}} - Number of Level 2 suggestions
@@ -88,6 +102,10 @@ ${ORCHESTRATION_INPUT_SCHEMA_DOCS}
 
 **Level 3 - Codebase Context ({{level3Count}} suggestions):**
 {{level3Suggestions}}
+</section>
+
+<section name="adversarial-verification" optional="true" tier="thorough">
+{{adversarialVerification}}
 </section>
 
 <section name="intelligent-merging" required="true" tier="thorough">
@@ -322,6 +340,7 @@ const sections = [
   { name: 'custom-instructions', optional: true, tier: ['balanced', 'thorough'] },
   { name: 'dedup-instructions', optional: true },
   { name: 'input-suggestions', locked: true },
+  { name: 'adversarial-verification', optional: true, tier: ['thorough'] },
   { name: 'intelligent-merging', required: true, tier: ['thorough'] },
   { name: 'priority-curation', required: true, tier: ['thorough'] },
   { name: 'balanced-output', required: true, tier: ['thorough'] },
@@ -348,6 +367,7 @@ const defaultOrder = [
   'custom-instructions',
   'dedup-instructions',
   'input-suggestions',
+  'adversarial-verification',
   'intelligent-merging',
   'priority-curation',
   'balanced-output',

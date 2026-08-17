@@ -14,6 +14,7 @@ const {
   buildOrchestrationLineNumberGuidance,
 } = require('./line-number-guidance');
 const { buildSparseCheckoutGuidance } = require('./sparse-checkout-guidance');
+const { ADVERSARIAL_VERIFICATION_SECTION } = require('./shared/adversarial-verification');
 
 /**
  * Skill-appropriate default values for prompt placeholders.
@@ -41,6 +42,10 @@ const SKILL_DEFAULTS = {
 
   // Dedup instructions — empty by default (section collapses)
   dedupInstructions: '',
+
+  // Skill usage is a standalone (single-reviewer) run, so orchestration is
+  // the flow's final merge stage — the adversarial verification pass applies
+  adversarialVerification: ADVERSARIAL_VERIFICATION_SECTION,
 
   // Orchestration data markers
   level1Count: '[N]',
