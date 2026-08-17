@@ -1,0 +1,13 @@
+# Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
+#
+# OMP config overlay loaded via `omp --config` for every pair-review analysis
+# run. Review runs must not depend on the user's global ~/.omp/agent/config.yml
+# for these settings.
+#
+# advisor.enabled: the advisor runtime passively reviews each turn and injects
+# notes into the conversation. That adds cost and nondeterminism to analysis
+# runs, so it is disabled by default. Set `"advisor": true` in
+# config.json providers.omp to opt back in (pair-review then passes --advisor
+# instead of this overlay).
+advisor:
+  enabled: false

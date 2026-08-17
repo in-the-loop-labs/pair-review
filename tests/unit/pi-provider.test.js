@@ -42,14 +42,6 @@ vi.mock('../../src/utils/logger', () => {
 
 // Import after mocks are set up
 const PiProvider = require('../../src/ai/pi-provider');
-const {
-  _extractAssistantText: extractAssistantText,
-  _isPiEventEnvelope: isPiEventEnvelope,
-  _appendWithLimit: appendWithLimit,
-  _appendHeadTailBuffer: appendHeadTailBuffer,
-  _formatHeadTailBuffer: formatHeadTailBuffer,
-  _finalizePiResponseParsing: finalizePiResponseParsing
-} = require('../../src/ai/pi-provider');
 
 describe('PiProvider', () => {
   const originalEnv = { ...process.env };
@@ -69,111 +61,6 @@ describe('PiProvider', () => {
   afterEach(() => {
     // Restore original environment
     process.env = { ...originalEnv };
-  });
-
-  describe('internal helpers', () => {
-    describe('isPiEventEnvelope', () => {
-      it('should return false for a review-like object without a type field', () => {
-        expect(isPiEventEnvelope({ result: { comments: [] } })).toBe(false);
-      });
-
-      it('should return true for event types ending in _start/_update/_end', () => {
-        expect(isPiEventEnvelope({ type: 'tool_execution_end' })).toBe(true);
-        expect(isPiEventEnvelope({ type: 'message_update' })).toBe(true);
-      });
-
-      it('should return true for session events', () => {
-        expect(isPiEventEnvelope({ type: 'session' })).toBe(true);
-      });
-
-      it('should return false for non-objects and arrays', () => {
-        expect(isPiEventEnvelope(null)).toBe(false);
-        expect(isPiEventEnvelope('string')).toBe(false);
-        expect(isPiEventEnvelope([{ type: 'message_end' }])).toBe(false);
-      });
-    });
-
-    describe('appendWithLimit', () => {
-      it('should return the existing string unchanged for empty chunks', () => {
-        expect(appendWithLimit('abc', '', 5)).toEqual({ value: 'abc', truncated: false });
-      });
-
-      it('should append when the chunk fits within the limit', () => {
-        expect(appendWithLimit('ab', 'cd', 4)).toEqual({ value: 'abcd', truncated: false });
-      });
-
-      it('should report truncation on an exact full buffer followed by more data', () => {
-        expect(appendWithLimit('abcd', 'z', 4)).toEqual({ value: 'abcd', truncated: true });
-      });
-
-      it('should truncate overflowing chunks to the remaining capacity', () => {
-        expect(appendWithLimit('ab', 'cdef', 4)).toEqual({ value: 'abcd', truncated: true });
-      });
-    });
-
-    describe('appendHeadTailBuffer / formatHeadTailBuffer', () => {
-      const fresh = () => ({ head: '', tail: '', headFull: false, omittedChars: 0 });
-
-      it('should keep the full content when it fits within head+tail capacity', () => {
-        const buffer = fresh();
-        appendHeadTailBuffer(buffer, 'a'.repeat(140), 100, 50);
-
-        expect(buffer.headFull).toBe(true);
-        expect(buffer.omittedChars).toBe(0);
-        expect(formatHeadTailBuffer(buffer)).toBe('a'.repeat(140));
-      });
-
-      it('should treat an exact head fill as no data loss', () => {
-        const buffer = fresh();
-        appendHeadTailBuffer(buffer, 'a'.repeat(100), 100, 50);
-
-        expect(buffer.headFull).toBe(true);
-        expect(buffer.omittedChars).toBe(0);
-        expect(formatHeadTailBuffer(buffer)).toBe('a'.repeat(100));
-      });
-
-      it('should record omitted chars once the tail overflows', () => {
-        const buffer = fresh();
-        appendHeadTailBuffer(buffer, 'H'.repeat(100), 100, 50);
-        appendHeadTailBuffer(buffer, 'T'.repeat(200), 100, 50);
-
-        expect(buffer.omittedChars).toBe(150);
-        expect(formatHeadTailBuffer(buffer)).toContain('...[150 chars omitted]...');
-      });
-    });
-
-    describe('finalizePiResponseParsing', () => {
-      it('should prefer valid textContent over rawOutput', () => {
-        const result = finalizePiResponseParsing({
-          textContent: '{"findings":[]}',
-          rawOutput: '{"ignored":true}'
-        }, 1, '[Level 1]');
-
-        expect(result.success).toBe(true);
-        expect(result.data).toEqual({ findings: [] });
-      });
-
-      it('should parse raw output when no assistant text exists', () => {
-        const result = finalizePiResponseParsing({
-          textContent: '',
-          rawOutput: '{"findings":[{"title":"x"}]}'
-        }, 1, '[Level 1]');
-
-        expect(result.success).toBe(true);
-        expect(result.data).toEqual({ findings: [{ title: 'x' }] });
-      });
-
-      it('should fail closed when raw output was truncated before assistant text was recovered', () => {
-        const result = finalizePiResponseParsing({
-          textContent: '',
-          rawOutput: '{"type":"session"}',
-          rawOutputTruncated: true
-        }, 1, '[Level 1]');
-
-        expect(result.success).toBe(false);
-        expect(result.error).toContain('truncated before assistant text could be recovered');
-      });
-    });
   });
 
   describe('static methods', () => {
@@ -223,20 +110,20 @@ describe('PiProvider', () => {
 
     it('should use default pi command', () => {
       const provider = new PiProvider('test-model');
-      expect(provider.piCmd).toBe('pi');
+      expect(provider.cliCmd).toBe('pi');
       expect(provider.useShell).toBe(false);
     });
 
     it('should respect PAIR_REVIEW_PI_CMD environment variable', () => {
       process.env.PAIR_REVIEW_PI_CMD = '/custom/pi';
       const provider = new PiProvider('test-model');
-      expect(provider.piCmd).toBe('/custom/pi');
+      expect(provider.cliCmd).toBe('/custom/pi');
     });
 
     it('should use shell mode for multi-word commands', () => {
       process.env.PAIR_REVIEW_PI_CMD = 'npx pi';
       const provider = new PiProvider('test-model');
-      expect(provider.piCmd).toBe('npx pi');
+      expect(provider.cliCmd).toBe('npx pi');
       expect(provider.useShell).toBe(true);
     });
 
@@ -293,7 +180,7 @@ describe('PiProvider', () => {
       const provider = new PiProvider('test-model', {
         command: '/path/to/pi'
       });
-      expect(provider.piCmd).toBe('/path/to/pi');
+      expect(provider.cliCmd).toBe('/path/to/pi');
     });
 
     it('should prefer ENV command over config command', () => {
@@ -301,7 +188,7 @@ describe('PiProvider', () => {
       const provider = new PiProvider('test-model', {
         command: '/config/pi'
       });
-      expect(provider.piCmd).toBe('/env/pi');
+      expect(provider.cliCmd).toBe('/env/pi');
     });
 
     it('should set PI_CMD in extraEnv to the resolved pi command', () => {
@@ -482,7 +369,7 @@ describe('PiProvider', () => {
     });
   });
 
-  describe('parsePiResponse', () => {
+  describe('parseResponse', () => {
     it('should parse text from message_end events', () => {
       const provider = new PiProvider('test-model');
       const stdout = [
@@ -490,7 +377,7 @@ describe('PiProvider', () => {
         '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\\"findings\\":[]}"}]}}'
       ].join('\n');
 
-      const result = provider.parsePiResponse(stdout, 1);
+      const result = provider.parseResponse(stdout, 1);
       expect(result.success).toBe(true);
       expect(result.data).toEqual({ findings: [] });
     });
@@ -502,7 +389,7 @@ describe('PiProvider', () => {
         '{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"{\\"key\\":\\"value\\"}"}]}}'
       ].join('\n');
 
-      const result = provider.parsePiResponse(stdout, 1);
+      const result = provider.parseResponse(stdout, 1);
       expect(result.success).toBe(true);
       expect(result.data).toEqual({ key: 'value' });
     });
@@ -516,7 +403,7 @@ describe('PiProvider', () => {
         ]
       });
 
-      const result = provider.parsePiResponse(stdout, 1);
+      const result = provider.parseResponse(stdout, 1);
       expect(result.success).toBe(true);
       expect(result.data).toEqual({ items: [1, 2, 3] });
     });
@@ -528,7 +415,7 @@ describe('PiProvider', () => {
         message: { role: 'assistant', content: '{"simple":"string"}' }
       });
 
-      const result = provider.parsePiResponse(stdout, 1);
+      const result = provider.parseResponse(stdout, 1);
       expect(result.success).toBe(true);
       expect(result.data).toEqual({ simple: 'string' });
     });
@@ -541,7 +428,7 @@ describe('PiProvider', () => {
         '{"type":"turn_start"}'
       ].join('\n');
 
-      const result = provider.parsePiResponse(stdout, 1);
+      const result = provider.parseResponse(stdout, 1);
       expect(result.success).toBe(true);
       expect(result.data).toEqual({ valid: true });
     });
@@ -550,13 +437,13 @@ describe('PiProvider', () => {
       const provider = new PiProvider('test-model');
       const stdout = '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Just plain text, no JSON"}]}}';
 
-      const result = provider.parsePiResponse(stdout, 1);
+      const result = provider.parseResponse(stdout, 1);
       expect(result.success).toBe(false);
     });
 
     it('should handle empty stdout', () => {
       const provider = new PiProvider('test-model');
-      const result = provider.parsePiResponse('', 1);
+      const result = provider.parseResponse('', 1);
       expect(result.success).toBe(false);
     });
 
@@ -564,7 +451,7 @@ describe('PiProvider', () => {
       const provider = new PiProvider('test-model');
       const stdout = '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"```json\\n{\\"wrapped\\":true}\\n```"}]}}';
 
-      const result = provider.parsePiResponse(stdout, 1);
+      const result = provider.parseResponse(stdout, 1);
       expect(result.success).toBe(true);
       expect(result.data).toEqual({ wrapped: true });
     });
@@ -583,7 +470,7 @@ describe('PiProvider', () => {
         })
       ].join('\n');
 
-      const result = provider.parsePiResponse(stdout, 1);
+      const result = provider.parseResponse(stdout, 1);
       expect(result.success).toBe(true);
       expect(result.data).toEqual({ result: 'data' });
     });
@@ -595,7 +482,7 @@ describe('PiProvider', () => {
         '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\\"found\\":true}"}]}}'
       ].join('\n');
 
-      const result = provider.parsePiResponse(stdout, 1);
+      const result = provider.parseResponse(stdout, 1);
       expect(result.success).toBe(true);
       expect(result.data).toEqual({ found: true });
     });
@@ -608,7 +495,7 @@ describe('PiProvider', () => {
         '{"type":"tool_execution_end","result":"lots of tool output","isError":false}'
       ].join('\n');
 
-      const result = provider.parsePiResponse(stdout, 1);
+      const result = provider.parseResponse(stdout, 1);
       expect(result.success).toBe(false);
     });
 
@@ -616,7 +503,7 @@ describe('PiProvider', () => {
       const provider = new PiProvider('test-model');
       const stdout = '{"findings":[{"title":"Direct JSON"}]}';
 
-      const result = provider.parsePiResponse(stdout, 1);
+      const result = provider.parseResponse(stdout, 1);
       expect(result.success).toBe(true);
       expect(result.data).toEqual({ findings: [{ title: 'Direct JSON' }] });
     });
@@ -934,6 +821,18 @@ describe('PiProvider', () => {
       expect(args).toContain('--model');
       expect(args).toContain('any-model');
     });
+
+    it('should add --no-skills when load_skills is false (mirrors the analysis run)', () => {
+      const provider = new PiProvider('test-model', { load_skills: false });
+      const args = provider.buildArgsForModel('any-model');
+
+      expect(args).toContain('--no-skills');
+    });
+
+    it('should not add --no-skills when load_skills is unset or true', () => {
+      expect(new PiProvider('test-model').buildArgsForModel('any-model')).not.toContain('--no-skills');
+      expect(new PiProvider('test-model', { load_skills: true }).buildArgsForModel('any-model')).not.toContain('--no-skills');
+    });
   });
 
   describe('getExtractionConfig', () => {
@@ -1049,16 +948,40 @@ describe('PiProvider', () => {
       expect(config.env).toMatchObject({ API_KEY: 'shell-key' });
     });
 
-    it('should include merged provider and model env in env field', () => {
+    it('should resolve env for the extraction model, not the analysis model', () => {
+      // The analysis model carries its own env; the extraction fallback runs a
+      // different model, so its env must be re-merged for THAT model rather
+      // than reusing the analysis model's cached env.
       const provider = new PiProvider('special-model', {
         env: { VAR1: 'provider-val' },
         models: [
-          { id: 'special-model', env: { VAR1: 'model-val', VAR2: 'extra' } }
+          { id: 'special-model', env: { VAR1: 'analysis-val', VAR2: 'analysis-extra' } },
+          { id: 'extraction-model', env: { VAR1: 'extraction-val', VAR3: 'extraction-extra' } }
         ]
       });
       const config = provider.getExtractionConfig('extraction-model');
 
-      expect(config.env).toMatchObject({ VAR1: 'model-val', VAR2: 'extra' });
+      expect(config.env).toMatchObject({ VAR1: 'extraction-val', VAR3: 'extraction-extra' });
+      expect(config.env).not.toHaveProperty('VAR2');
+    });
+
+    it('should fall back to provider-level env when the extraction model has none', () => {
+      const provider = new PiProvider('special-model', {
+        env: { VAR1: 'provider-val' },
+        models: [
+          { id: 'special-model', env: { VAR1: 'analysis-val' } }
+        ]
+      });
+      const config = provider.getExtractionConfig('extraction-model');
+
+      expect(config.env).toMatchObject({ VAR1: 'provider-val' });
+    });
+
+    it('should mirror --no-skills in the extraction args when load_skills is false', () => {
+      const provider = new PiProvider('test-model', { load_skills: false });
+      const config = provider.getExtractionConfig('extraction-model');
+
+      expect(config.args).toContain('--no-skills');
     });
 
     it('should omit --no-session in extraction config when PAIR_REVIEW_PI_SESSION is set', () => {
@@ -1081,109 +1004,7 @@ describe('PiProvider', () => {
     });
   });
 
-  describe('extractAssistantText', () => {
-    it('should extract text from array content blocks', () => {
-      const seenTexts = new Set();
-      const content = [
-        { type: 'text', text: 'Hello' },
-        { type: 'text', text: ' World' }
-      ];
-      const result = extractAssistantText(content, seenTexts);
-      expect(result).toBe('Hello World');
-    });
-
-    it('should extract text from string content', () => {
-      const seenTexts = new Set();
-      const result = extractAssistantText('Simple string', seenTexts);
-      expect(result).toBe('Simple string');
-    });
-
-    it('should skip non-text blocks', () => {
-      const seenTexts = new Set();
-      const content = [
-        { type: 'tool_use', text: 'should be ignored' },
-        { type: 'text', text: 'real text' }
-      ];
-      const result = extractAssistantText(content, seenTexts);
-      expect(result).toBe('real text');
-    });
-
-    it('should skip blocks without text', () => {
-      const seenTexts = new Set();
-      const content = [
-        { type: 'text' },
-        { type: 'text', text: null },
-        { type: 'text', text: 'valid' }
-      ];
-      const result = extractAssistantText(content, seenTexts);
-      expect(result).toBe('valid');
-    });
-
-    it('should dedup identical text blocks using Set', () => {
-      const seenTexts = new Set();
-      const content = [
-        { type: 'text', text: 'same text' },
-        { type: 'text', text: 'same text' }
-      ];
-      const result = extractAssistantText(content, seenTexts);
-      expect(result).toBe('same text');
-    });
-
-    it('should dedup across multiple calls with shared Set', () => {
-      const seenTexts = new Set();
-      const content1 = [{ type: 'text', text: 'first pass' }];
-      const content2 = [{ type: 'text', text: 'first pass' }];
-      const r1 = extractAssistantText(content1, seenTexts);
-      const r2 = extractAssistantText(content2, seenTexts);
-      expect(r1).toBe('first pass');
-      expect(r2).toBe('');
-    });
-
-    it('should not incorrectly dedup substring matches', () => {
-      // This is the key fix: substring "abc" is contained in "abcdef",
-      // but they are different text blocks and should NOT be deduped
-      const seenTexts = new Set();
-      const content1 = [{ type: 'text', text: 'abcdef' }];
-      const content2 = [{ type: 'text', text: 'abc' }];
-      const r1 = extractAssistantText(content1, seenTexts);
-      const r2 = extractAssistantText(content2, seenTexts);
-      expect(r1).toBe('abcdef');
-      expect(r2).toBe('abc');
-    });
-
-    it('should handle null content', () => {
-      const seenTexts = new Set();
-      const result = extractAssistantText(null, seenTexts);
-      expect(result).toBe('');
-    });
-
-    it('should handle undefined content', () => {
-      const seenTexts = new Set();
-      const result = extractAssistantText(undefined, seenTexts);
-      expect(result).toBe('');
-    });
-
-    it('should handle empty array', () => {
-      const seenTexts = new Set();
-      const result = extractAssistantText([], seenTexts);
-      expect(result).toBe('');
-    });
-
-    it('should handle empty string', () => {
-      const seenTexts = new Set();
-      const result = extractAssistantText('', seenTexts);
-      // Empty string is falsy, handled by the typeof check
-      expect(result).toBe('');
-    });
-
-    it('should handle number content (not array or string)', () => {
-      const seenTexts = new Set();
-      const result = extractAssistantText(42, seenTexts);
-      expect(result).toBe('');
-    });
-  });
-
-  describe('parsePiResponse dedup uses exact matching (not substring)', () => {
+  describe('parseResponse dedup uses exact matching (not substring)', () => {
     it('should not dedup texts that are substrings of each other', () => {
       const provider = new PiProvider('test-model');
       // "abc" is a substring of "abcdef", but they are different blocks
@@ -1198,7 +1019,7 @@ describe('PiProvider', () => {
         })
       ].join('\n');
 
-      const result = provider.parsePiResponse(stdout, 1);
+      const result = provider.parseResponse(stdout, 1);
       // Both texts should be included since they are different (exact match, not substring)
       expect(result.success).toBe(true);
     });

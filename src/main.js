@@ -242,7 +242,7 @@ OPTIONS:
                             --model when the model belongs to a non-default
                             provider (e.g. --provider codex --model gpt-5.5).
                             Available: claude, antigravity, codex, copilot,
-                            opencode, cursor-agent, pi, muse
+                            opencode, cursor-agent, pi, omp, muse
     --council <handle>      Run analysis with a saved council (multi-voice). Handle is a
                             council name, name-slug, or id (prefix). See --list-councils.
     --list-councils         List saved councils (handles to use with --council) and exit
@@ -277,6 +277,7 @@ ENVIRONMENT VARIABLES:
     PAIR_REVIEW_CLAUDE_CMD  Custom command to invoke Claude CLI (default: claude)
     PAIR_REVIEW_ANTIGRAVITY_CMD  Custom command to invoke Antigravity CLI (default: agy)
     PAIR_REVIEW_CODEX_CMD   Custom command to invoke Codex CLI (default: codex)
+    PAIR_REVIEW_OMP_CMD     Custom command to invoke OMP (Oh My Pi) CLI (default: omp)
     PAIR_REVIEW_MUSE_CMD    Custom command to invoke Muse Code CLI (default: muse)
 
 CONFIGURATION:
@@ -673,6 +674,7 @@ ENVIRONMENT VARIABLES:
     PAIR_REVIEW_CLAUDE_CMD  Custom Claude CLI command (default: claude)
     PAIR_REVIEW_ANTIGRAVITY_CMD  Custom Antigravity CLI command (default: agy)
     PAIR_REVIEW_CODEX_CMD   Custom Codex CLI command (default: codex)
+    PAIR_REVIEW_OMP_CMD     Custom OMP (Oh My Pi) CLI command (default: omp)
     PAIR_REVIEW_MUSE_CMD    Custom Muse Code CLI command (default: muse)
     PAIR_REVIEW_DB_NAME     Custom database filename (overrides config)
 
@@ -684,6 +686,7 @@ AI PROVIDERS:
     Claude (default): Requires 'claude' CLI installed
     Antigravity: Requires 'agy' CLI installed
     Codex: Requires 'codex' CLI installed
+    OMP: Requires 'omp' CLI installed
     Muse: Requires 'muse' CLI installed
 
     Select provider per-repository in the web UI settings.

@@ -578,6 +578,7 @@ pair-review supports several environment variables for customizing behavior:
 | `PAIR_REVIEW_OPENCODE_CMD` | Custom command to invoke OpenCode CLI | `opencode` |
 | `PAIR_REVIEW_CURSOR_AGENT_CMD` | Custom command to invoke Cursor Agent CLI | `agent` |
 | `PAIR_REVIEW_PI_CMD` | Custom command to invoke Pi CLI | `pi` |
+| `PAIR_REVIEW_OMP_CMD` | Custom command to invoke OMP (Oh My Pi) CLI | `omp` |
 | `PAIR_REVIEW_MUSE_CMD` | Custom command to invoke Muse Code CLI | `muse` |
 
 **Note:** `GITHUB_TOKEN` is the standard environment variable used by many GitHub tools (gh CLI, GitHub Actions, etc.). When set, it takes precedence over the `github_token` field in the config file.
@@ -636,13 +637,14 @@ pair-review integrates with AI providers via their CLI tools:
 - **OpenCode**: Uses OpenCode CLI (requires model configuration)
 - **Cursor**: Uses Cursor Agent CLI (streaming output with sandbox mode)
 - **Pi**: Uses Pi coding agent CLI (requires model configuration)
+- **OMP**: Uses the [Oh My Pi](https://github.com/can1357/oh-my-pi) CLI (`omp`), a fork of the Pi coding agent. Install it with `npm install -g @oh-my-pi/pi-coding-agent`. Works out of the box: the built-in `default` mode uses whatever model your OMP configuration selects, and you can add specific models via `providers.omp.models` (run `omp models` to list the catalog). OMP's advisor runtime — which passively reviews each turn and injects notes — is disabled during reviews by default for deterministic, lower-cost analysis; set `"advisor": true` in `providers.omp` to opt back in.
 - **Muse**: Uses Meta's Muse Code CLI (`muse`), a terminal coding agent released in beta in August 2026 and powered by the Muse Spark 1.2 model. Install it with the single shell command from Meta's Muse Code install instructions (macOS/Linux), then authenticate once with `muse login` (credentials are stored in `~/.config/muse/auth.json`). pair-review drives it headlessly via `muse exec --json`. Within pair-review, Muse is analysis-only: the CLI exposes no ACP server mode, so there is no Muse chat provider.
 
 You can select your preferred provider and model in the repository settings UI.
 
 #### Built-in vs. Configurable Providers
 
-Most providers (Claude, Antigravity, Codex, Copilot, Muse) come with built-in model definitions. **OpenCode and Pi are different** - they have no built-in models and require you to configure which models to use.
+Most providers (Claude, Antigravity, Codex, Copilot, Muse) come with built-in model definitions. **OpenCode and Pi are different** - they have no built-in models and require you to configure which models to use. **OMP** sits in between: it ships a single `default` mode that delegates to your OMP configuration (`~/.omp/agent/config.yml`), so it works without any pair-review model configuration, and you can add specific models via `providers.omp.models`. OMP model `id`s are passed to `omp --model` verbatim, which fuzzy-matches (`"opus"`, `"gpt-5.2"`) and accepts full `provider/model` strings (`"anthropic/claude-opus-5"`).
 
 ##### Muse models and the contributor tradeoff
 
@@ -719,6 +721,7 @@ You can override provider settings and define custom models in your config file.
 | `installInstructions` | Custom installation instructions shown in UI |
 | `availability_timeout_seconds` | Seconds to allow for the startup availability probe before the provider is reported unavailable (default `10`). Raise it for providers whose check runs a slow build/compile step. Also supported per chat provider under `chat_providers.<id>`. |
 | `availability_command` | Command run to decide availability. Executable providers default to always-available when omitted; chat providers fall back to `<command> --version` (or, for the built-in Pi, the cached AI-provider status). Pair with `availability_timeout_seconds` when the probe runs a slow build. |
+| `advisor` | OMP only. Set to `true` to enable OMP's advisor runtime during analysis (`--advisor`). Defaults to `false`: pair-review disables the advisor via a bundled config overlay, even when it is enabled in your global OMP configuration. |
 | `models` | Array of model definitions (see below) |
 | `default_model` | Model `id` to use as the provider's default (in the picker and when no model is specified). Preferred over the per-model `default: true` flag. If it names an unknown or disabled model, the provider falls back to automatic selection. |
 | `disabled_models` | Array of model selectors to hide, matched by model `id` or alias. Disabled models disappear from the model picker for that provider. Works on built-in models too, so you can remove a built-in option without redefining the rest. A list that would hide *every* model is ignored. |
@@ -1204,6 +1207,9 @@ A: OpenCode has no built-in models, so you must configure them in your `~/.pair-
 
 **Q: How do I use Pi as my AI provider?**
 A: Like OpenCode, Pi has no built-in models. Configure them in your `~/.pair-review/config.json` by adding a `providers.pi.models` array with at least one model definition. Pi supports many providers (Google, Anthropic, OpenAI, etc.) via its `--provider` and `--model` flags. See the [AI Provider Configuration](#ai-provider-configuration) section and `config.example.json` for examples.
+
+**Q: How do I use OMP (Oh My Pi) as my AI provider?**
+A: OMP works out of the box: the built-in `default` mode uses whatever model your OMP configuration (`~/.omp/agent/config.yml`) selects. To pin specific models, add a `providers.omp.models` array — each model's `cli_model` is passed to `omp --model` verbatim, which fuzzy-matches and accepts `provider/model` strings (run `omp models` to list the catalog). During reviews pair-review disables OMP's advisor runtime by default (it injects notes into each turn, adding cost and nondeterminism); set `"advisor": true` under `providers.omp` to enable it.
 
 **Q: Why does chat use Pi instead of Claude or other providers?**
 A: Pi provides persistent interactive sessions with a full agent — it can read files and run commands in the context of the codebase. Pi is model-agnostic and uses your existing provider subscriptions — no separate API keys needed.

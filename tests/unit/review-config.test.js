@@ -8,7 +8,8 @@
  *   2. explicit --provider/--model
  *   3. repo_settings.default_council_id
  *   4. repo_settings.default_provider/default_model
- *   5. global config default (then hardcoded 'claude'/'opus')
+ *   5. global config default (then 'claude' + that provider's own default
+ *      model, with hardcoded 'opus' as the last-resort floor)
  * plus graceful fallback when default_council_id points at a missing council.
  */
 
@@ -17,6 +18,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { createTestDatabase, closeTestDatabase } from '../utils/schema.js';
 
 const { resolveReviewConfig } = require('../../src/review-config.js');
+const { applyConfigOverrides } = require('../../src/ai');
 const { CouncilRepository, RepoSettingsRepository } = require('../../src/database.js');
 const logger = require('../../src/utils/logger.js');
 
@@ -279,9 +281,12 @@ describe('resolveReviewConfig', () => {
       expect(result).toEqual({ type: 'single', provider: 'codex', model: 'gpt-5' });
     });
 
-    it('falls back to hardcoded claude/opus when nothing is configured', async () => {
+    it('falls back to claude with the provider\'s own default model when nothing is configured', async () => {
+      // The provider-default rung ranks above the hardcoded 'claude'/'opus'
+      // rescue, so the zero-config case resolves Claude's canonical default id
+      // (of which 'opus' is an alias) — functionally the same model.
       const result = await resolveReviewConfig(db, REPOSITORY, {}, {});
-      expect(result).toEqual({ type: 'single', provider: 'claude', model: 'opus' });
+      expect(result).toEqual({ type: 'single', provider: 'claude', model: 'opus-4.8-xhigh' });
     });
   });
 
@@ -449,6 +454,157 @@ describe('resolveReviewConfig', () => {
     });
   });
 
+  // A tier's default_model is saved as a pair with that tier's default_provider,
+  // so a provider-only pick must not inherit a model configured for a DIFFERENT
+  // provider — it lands on the provider's own default instead (matching the
+  // default the settings UI derives via models.find(m => m.default)).
+  describe('9. provider-default model for provider-only selections', () => {
+    it('resolves --provider omp to OMP\'s default mode, not the global default_model', async () => {
+      const result = await resolveReviewConfig(
+        db, REPOSITORY,
+        { provider: 'omp' },
+        { default_provider: 'claude', default_model: 'opus' }
+      );
+      expect(result).toEqual({ type: 'single', provider: 'omp', model: 'default' });
+    });
+
+    it('resolves --provider pi to Pi\'s default mode, not the global default_model', async () => {
+      const result = await resolveReviewConfig(
+        db, REPOSITORY,
+        { provider: 'pi' },
+        { default_provider: 'claude', default_model: 'opus' }
+      );
+      expect(result).toEqual({ type: 'single', provider: 'pi', model: 'default' });
+    });
+
+    it('passes an explicit --model through verbatim even for fuzzy-matching providers', async () => {
+      const result = await resolveReviewConfig(
+        db, REPOSITORY,
+        { provider: 'omp', model: 'opus' },
+        { default_provider: 'claude', default_model: 'opus' }
+      );
+      expect(result).toEqual({ type: 'single', provider: 'omp', model: 'opus' });
+    });
+
+    it('keeps the global default_model when its paired provider matches the pick', async () => {
+      const result = await resolveReviewConfig(
+        db, REPOSITORY,
+        { provider: 'pi' },
+        { default_provider: 'pi', default_model: 'multi-model' }
+      );
+      expect(result).toEqual({ type: 'single', provider: 'pi', model: 'multi-model' });
+    });
+
+    it('skips a repo default_model saved for a different provider', async () => {
+      seedRepoSettings(db, { default_provider: 'claude', default_model: 'sonnet' });
+
+      const result = await resolveReviewConfig(
+        db, REPOSITORY,
+        { provider: 'omp' },
+        { default_provider: 'claude', default_model: 'opus' }
+      );
+      expect(result).toEqual({ type: 'single', provider: 'omp', model: 'default' });
+    });
+
+    it('still applies a provider-agnostic model-only in-app override', async () => {
+      // An override tier that names no provider is treated as provider-agnostic.
+      const result = await resolveReviewConfig(
+        db, REPOSITORY,
+        { provider: 'omp' },
+        { default_provider: 'claude', default_model: 'opus', _globalOverrides: { default_model: 'app-model' } }
+      );
+      expect(result).toEqual({ type: 'single', provider: 'omp', model: 'app-model' });
+    });
+
+    it('falls back to the global model when the provider has no built-in default (opencode)', async () => {
+      const result = await resolveReviewConfig(
+        db, REPOSITORY,
+        { provider: 'opencode' },
+        { default_provider: 'claude', default_model: 'opus' }
+      );
+      expect(result).toEqual({ type: 'single', provider: 'opencode', model: 'opus' });
+    });
+
+    it('falls back to the hardcoded model for an unregistered provider', async () => {
+      const result = await resolveReviewConfig(
+        db, REPOSITORY,
+        { provider: 'not-a-provider' },
+        {}
+      );
+      expect(result).toEqual({ type: 'single', provider: 'not-a-provider', model: 'opus' });
+    });
+  });
+
+  // The provider-default rung ranks ABOVE the hardcoded 'claude'/'opus' rescue,
+  // and it resolves via _resolveProviderDefaultModel, which honors per-provider
+  // config overrides (providers.<id>.default_model / disabled_models) the same
+  // way createProvider(id, null) does.
+  describe('10. provider config overrides on the provider-default rung', () => {
+    afterEach(() => {
+      // applyConfigOverrides clears + repopulates the module-level override map;
+      // reset it so other tests in this file see pristine built-in defaults.
+      applyConfigOverrides({ providers: {} });
+    });
+
+    it('honors a configured providers.claude.default_model on a provider-only pick', async () => {
+      applyConfigOverrides({ providers: { claude: { default_model: 'sonnet-5-xhigh' } } });
+
+      const result = await resolveReviewConfig(db, REPOSITORY, { provider: 'claude' }, {});
+      expect(result).toEqual({ type: 'single', provider: 'claude', model: 'sonnet-5-xhigh' });
+    });
+
+    it('does not resurrect a disabled default: opus in disabled_models resolves another model', async () => {
+      applyConfigOverrides({ providers: { claude: { disabled_models: ['opus'] } } });
+
+      const result = await resolveReviewConfig(db, REPOSITORY, { provider: 'claude' }, {});
+      // With the default (opus-4.8-xhigh, alias 'opus') disabled, resolution
+      // falls to the first balanced-tier model in Claude's built-in list.
+      expect(result).toEqual({ type: 'single', provider: 'claude', model: 'sonnet-5-xhigh' });
+    });
+  });
+
+  // `cfg` is the FLATTENED effective config: buildEffectiveConfig() dot-path-
+  // writes in-app overrides into the merged file config, so a provider-only
+  // /settings override leaves cfg.default_provider (new) paired with
+  // cfg.default_model (inherited from a lower layer). The tier guard cannot see
+  // that — cfg's provider matches by construction — so the resolver skips the
+  // cfg tier when the overrides prove the pair incoherent (provider set, model
+  // not).
+  describe('11. provider-only in-app override (incoherent flattened cfg pair)', () => {
+    it('skips the inherited cfg model and uses the new provider\'s own default', async () => {
+      // Simulates flipping only "Default provider" to omp on /settings over a
+      // claude/opus config file: the override is folded into cfg AND carried on
+      // _globalOverrides without a model.
+      const result = await resolveReviewConfig(
+        db, REPOSITORY, {},
+        { default_provider: 'omp', default_model: 'opus', _globalOverrides: { default_provider: 'omp' } }
+      );
+      expect(result).toEqual({ type: 'single', provider: 'omp', model: 'default' });
+    });
+
+    it('applies the override pair when the override sets provider AND model (pair is coherent)', async () => {
+      const result = await resolveReviewConfig(
+        db, REPOSITORY, {},
+        {
+          default_provider: 'omp',
+          default_model: 'app-model',
+          _globalOverrides: { default_provider: 'omp', default_model: 'app-model' }
+        }
+      );
+      expect(result).toEqual({ type: 'single', provider: 'omp', model: 'app-model' });
+    });
+
+    it('a repo default_model for the same provider still wins over the provider default', async () => {
+      seedRepoSettings(db, { default_provider: 'omp', default_model: 'repo-omp-model' });
+
+      const result = await resolveReviewConfig(
+        db, REPOSITORY, {},
+        { default_provider: 'omp', default_model: 'opus', _globalOverrides: { default_provider: 'omp' } }
+      );
+      expect(result).toEqual({ type: 'single', provider: 'omp', model: 'repo-omp-model' });
+    });
+  });
+
   describe('edge cases', () => {
     it('treats a null/undefined repository as "no repo defaults"', async () => {
       const result = await resolveReviewConfig(
@@ -461,7 +617,7 @@ describe('resolveReviewConfig', () => {
 
     it('defaults explicit and config args to empty objects', async () => {
       const result = await resolveReviewConfig(db, REPOSITORY);
-      expect(result).toEqual({ type: 'single', provider: 'claude', model: 'opus' });
+      expect(result).toEqual({ type: 'single', provider: 'claude', model: 'opus-4.8-xhigh' });
     });
   });
 });

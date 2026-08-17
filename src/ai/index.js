@@ -55,6 +55,7 @@ require('./copilot-provider');
 require('./opencode-provider');
 require('./cursor-agent-provider');
 require('./pi-provider');
+require('./omp-provider');
 require('./muse-provider');
 
 // Export the unified API
