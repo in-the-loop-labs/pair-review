@@ -6,6 +6,7 @@ const { GitHubApiError, isComplexityError } = require('./errors');
 const pendingReviewOps = require('./operations/pending-review');
 const reviewLifecycleOps = require('./operations/review-lifecycle');
 const pendingReviewCommentsOps = require('./operations/pending-review-comments');
+const viewedFilesOps = require('./operations/viewed-files');
 
 // Defaults used when `GitHubClient` is constructed from a bare token
 // string (i.e. without a resolved binding). These mirror the
@@ -614,6 +615,25 @@ class GitHubClient {
       comments,
       batchSize,
       prContext
+    );
+  }
+
+  /**
+   * Mark pull-request file paths as viewed on github.com.
+   *
+   * GitHub exposes this capability only through GraphQL; alternate hosts are
+   * skipped by the operation dispatcher.
+   *
+   * @param {string} prNodeId - GraphQL node ID for the pull request
+   * @param {Array} paths - File paths to mark as viewed
+   * @returns {Promise<void>}
+   */
+  async markFilesAsViewed(prNodeId, paths) {
+    return viewedFilesOps.markFilesAsViewed(
+      this.octokit,
+      this.apiHost,
+      prNodeId,
+      paths
     );
   }
 
