@@ -55,6 +55,14 @@ class PiBridge extends EventEmitter {
     this.sessionPath = options.sessionPath || null;
     this.loadSkills = options.loadSkills !== false;
 
+    // Subclass hooks (see OmpBridge): log prefix, human-readable CLI name for
+    // error messages, and the flag used to resume from a session file. OMP is
+    // a Pi fork that speaks the same RPC protocol but resumes via --resume
+    // (it has no --session flag).
+    this.logName = 'PiBridge';
+    this.cliName = 'Pi';
+    this.sessionFlag = '--session';
+
     this._process = null;
     this._readline = null;
     this._ready = false;
@@ -73,7 +81,7 @@ class PiBridge extends EventEmitter {
    */
   async start() {
     if (this._process) {
-      throw new Error('PiBridge already started');
+      throw new Error(`${this.logName} already started`);
     }
 
     const args = this._buildArgs();
@@ -84,7 +92,7 @@ class PiBridge extends EventEmitter {
     const spawnCmd = useShell ? `${command} ${quoteShellArgs(args).join(' ')}` : command;
     const spawnArgs = useShell ? [] : args;
 
-    logger.info(`[PiBridge] Starting Pi RPC: ${command} ${args.join(' ')}`);
+    logger.info(`[${this.logName}] Starting ${this.cliName} RPC: ${command} ${args.join(' ')}`);
 
     return new Promise((resolve, reject) => {
       const proc = spawn(spawnCmd, spawnArgs, {
@@ -100,9 +108,9 @@ class PiBridge extends EventEmitter {
       proc.on('error', (err) => {
         if (!this._ready) {
           this._ready = false;
-          reject(new Error(`Failed to start Pi RPC: ${err.message}`));
+          reject(new Error(`Failed to start ${this.cliName} RPC: ${err.message}`));
         } else {
-          logger.error(`[PiBridge] Process error: ${err.message}`);
+          logger.error(`[${this.logName}] Process error: ${err.message}`);
           this.emit('error', { error: err });
         }
       });
@@ -114,14 +122,14 @@ class PiBridge extends EventEmitter {
         this._process = null;
 
         if (!wasReady && !this._closing) {
-          reject(new Error(`Pi RPC exited before ready (code=${code}, signal=${signal})`));
+          reject(new Error(`${this.cliName} RPC exited before ready (code=${code}, signal=${signal})`));
         }
 
         if (!this._closing) {
-          logger.warn(`[PiBridge] Process exited unexpectedly (code=${code}, signal=${signal})`);
-          this.emit('error', { error: new Error(`Pi process exited (code=${code}, signal=${signal})`) });
+          logger.warn(`[${this.logName}] Process exited unexpectedly (code=${code}, signal=${signal})`);
+          this.emit('error', { error: new Error(`${this.cliName} process exited (code=${code}, signal=${signal})`) });
         } else {
-          logger.info(`[PiBridge] Process exited (code=${code}, signal=${signal})`);
+          logger.info(`[${this.logName}] Process exited (code=${code}, signal=${signal})`);
         }
 
         this.emit('close');
@@ -131,7 +139,7 @@ class PiBridge extends EventEmitter {
       proc.stderr.on('data', (data) => {
         const text = data.toString().trim();
         if (text) {
-          logger.debug(`[PiBridge] stderr: ${text}`);
+          logger.debug(`[${this.logName}] stderr: ${text}`);
         }
       });
 
@@ -147,7 +155,7 @@ class PiBridge extends EventEmitter {
 
       // Handle stdin errors (e.g., EPIPE if process dies)
       proc.stdin.on('error', (err) => {
-        logger.error(`[PiBridge] stdin error: ${err.message}`);
+        logger.error(`[${this.logName}] stdin error: ${err.message}`);
       });
 
       // Pi RPC doesn't emit a specific "ready" event, so we consider it ready
@@ -156,7 +164,7 @@ class PiBridge extends EventEmitter {
       setImmediate(() => {
         if (this._process && !this._ready) {
           this._ready = true;
-          logger.info(`[PiBridge] Ready (PID ${proc.pid})`);
+          logger.info(`[${this.logName}] Ready (PID ${proc.pid})`);
           this.emit('ready');
           resolve();
         }
@@ -171,7 +179,7 @@ class PiBridge extends EventEmitter {
    */
   async sendMessage(content) {
     if (!this.isReady()) {
-      throw new Error('PiBridge is not ready');
+      throw new Error(`${this.logName} is not ready`);
     }
 
     // Reset accumulated text for this new turn
@@ -179,9 +187,9 @@ class PiBridge extends EventEmitter {
     this._inMessage = false;
 
     const command = JSON.stringify({ type: 'prompt', message: content });
-    logger.debug(`[PiBridge] Sending prompt (${content.length} chars): ${content.substring(0, 100)}${content.length > 100 ? '...' : ''}`);
+    logger.debug(`[${this.logName}] Sending prompt (${content.length} chars): ${content.substring(0, 100)}${content.length > 100 ? '...' : ''}`);
     this._write(command);
-    logger.debug(`[PiBridge] Prompt written to stdin (${command.length} bytes)`);
+    logger.debug(`[${this.logName}] Prompt written to stdin (${command.length} bytes)`);
   }
 
   /**
@@ -190,7 +198,7 @@ class PiBridge extends EventEmitter {
   abort() {
     if (!this.isReady()) return;
     const command = JSON.stringify({ type: 'abort' });
-    logger.debug('[PiBridge] Sending abort');
+    logger.debug(`[${this.logName}] Sending abort`);
     this._write(command);
   }
 
@@ -222,7 +230,7 @@ class PiBridge extends EventEmitter {
       // Give the process a moment to exit gracefully, then force kill
       const killTimeout = setTimeout(() => {
         if (this._process) {
-          logger.warn('[PiBridge] Force killing process');
+          logger.warn(`[${this.logName}] Force killing process`);
           this._process.kill('SIGKILL');
         }
       }, 3000);
@@ -267,7 +275,7 @@ class PiBridge extends EventEmitter {
     const args = ['--mode', 'rpc', '--tools', this.tools];
 
     if (this.sessionPath) {
-      args.push('--session', this.sessionPath);
+      args.push(this.sessionFlag, this.sessionPath);
     }
 
     if (this.provider) {
@@ -326,9 +334,9 @@ class PiBridge extends EventEmitter {
         if (event.success && event.data && event.data.sessionFile) {
           this.sessionPath = event.data.sessionFile;
           this.emit('session', { sessionFile: event.data.sessionFile });
-          logger.info(`[PiBridge] Discovered session file: ${event.data.sessionFile}`);
+          logger.info(`[${this.logName}] Discovered session file: ${event.data.sessionFile}`);
         } else {
-          logger.debug('[PiBridge] get_state did not return a sessionFile');
+          logger.debug(`[${this.logName}] get_state did not return a sessionFile`);
         }
         resolve();
       });
@@ -337,7 +345,7 @@ class PiBridge extends EventEmitter {
       timeout = setTimeout(() => {
         if (this._pendingCallbacks.has('get_state')) {
           this._pendingCallbacks.delete('get_state');
-          logger.debug('[PiBridge] get_state timed out');
+          logger.debug(`[${this.logName}] get_state timed out`);
           resolve();
         }
       }, 5000);
@@ -348,7 +356,7 @@ class PiBridge extends EventEmitter {
         this._write(JSON.stringify({ type: 'get_state' }));
       } catch (err) {
         this._pendingCallbacks.delete('get_state');
-        logger.debug(`[PiBridge] Failed to send get_state: ${err.message}`);
+        logger.debug(`[${this.logName}] Failed to send get_state: ${err.message}`);
         resolve();
       }
     });
@@ -360,7 +368,7 @@ class PiBridge extends EventEmitter {
    */
   _write(jsonLine) {
     if (!this._process || !this._process.stdin.writable) {
-      throw new Error('Pi RPC process stdin is not writable');
+      throw new Error(`${this.cliName} RPC process stdin is not writable`);
     }
     this._process.stdin.write(jsonLine + '\n');
   }
@@ -376,7 +384,7 @@ class PiBridge extends EventEmitter {
     try {
       event = JSON.parse(line);
     } catch {
-      logger.debug(`[PiBridge] Ignoring unparseable line: ${line.substring(0, 100)}`);
+      logger.debug(`[${this.logName}] Ignoring unparseable line: ${line.substring(0, 100)}`);
       return;
     }
 
@@ -438,24 +446,24 @@ class PiBridge extends EventEmitter {
           this._pendingCallbacks.delete(event.command);
           callback(event);
         } else if (!event.success) {
-          logger.error(`[PiBridge] Command failed: ${event.error}`);
+          logger.error(`[${this.logName}] Command failed: ${event.error}`);
           this.emit('error', { error: new Error(event.error || 'Unknown command error') });
         } else {
-          logger.debug(`[PiBridge] Command acknowledged: ${JSON.stringify(event).substring(0, 200)}`);
+          logger.debug(`[${this.logName}] Command acknowledged: ${JSON.stringify(event).substring(0, 200)}`);
         }
         break;
 
       case 'agent_start':
       case 'turn_start':
-        logger.debug(`[PiBridge] ${type}`);
+        logger.debug(`[${this.logName}] ${type}`);
         this.emit('status', { status: 'working' });
         break;
       case 'turn_end':
-        logger.debug(`[PiBridge] ${type}`);
+        logger.debug(`[${this.logName}] ${type}`);
         this.emit('status', { status: 'turn_complete' });
         break;
       case 'session':
-        logger.debug(`[PiBridge] ${type}: ${JSON.stringify(event).substring(0, 200)}`);
+        logger.debug(`[${this.logName}] ${type}: ${JSON.stringify(event).substring(0, 200)}`);
         if (event.sessionFile) {
           this.sessionPath = event.sessionFile;
         }
@@ -463,7 +471,7 @@ class PiBridge extends EventEmitter {
         break;
 
       default:
-        logger.debug(`[PiBridge] Unhandled event type: ${type}`);
+        logger.debug(`[${this.logName}] Unhandled event type: ${type}`);
     }
   }
 
@@ -512,12 +520,12 @@ class PiBridge extends EventEmitter {
         break;
       case 'error': {
         const errorMsg = assistantEvent.error || assistantEvent.delta || 'Unknown streaming error';
-        logger.error(`[PiBridge] Streaming error: ${errorMsg}`);
+        logger.error(`[${this.logName}] Streaming error: ${errorMsg}`);
         this.emit('error', { error: new Error(errorMsg) });
         break;
       }
       default:
-        logger.debug(`[PiBridge] Unhandled assistantMessageEvent type: ${assistantEvent.type}`);
+        logger.debug(`[${this.logName}] Unhandled assistantMessageEvent type: ${assistantEvent.type}`);
     }
   }
 
@@ -531,7 +539,7 @@ class PiBridge extends EventEmitter {
     this._accumulatedText = '';
     this._inMessage = false;
 
-    logger.debug(`[PiBridge] Agent ended, accumulated ${fullText.length} chars`);
+    logger.debug(`[${this.logName}] Agent ended, accumulated ${fullText.length} chars`);
     this.emit('complete', { fullText });
   }
 
@@ -546,7 +554,7 @@ class PiBridge extends EventEmitter {
     const id = event.id;
 
     if (DIALOG_METHODS.has(method) && id) {
-      logger.debug(`[PiBridge] Auto-cancelling dialog: ${method} (${id})`);
+      logger.debug(`[${this.logName}] Auto-cancelling dialog: ${method} (${id})`);
       // Respond with cancellation
       const response = JSON.stringify({
         type: 'extension_ui_response',
@@ -559,7 +567,7 @@ class PiBridge extends EventEmitter {
         // Process may be dead
       }
     } else {
-      logger.debug(`[PiBridge] Ignoring extension_ui_request: ${method}`);
+      logger.debug(`[${this.logName}] Ignoring extension_ui_request: ${method}`);
     }
   }
 }

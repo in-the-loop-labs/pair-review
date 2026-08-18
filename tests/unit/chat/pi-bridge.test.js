@@ -66,12 +66,23 @@ function createFakeProcess({ autoRespondGetState = true } = {}) {
 describe('PiBridge', () => {
   let fakeProc;
 
+  // The bridge reads PAIR_REVIEW_PI_CMD at construction; clear it so a shell
+  // that exports it (the documented wrapper mechanism) can't flip the default
+  // command assertions below.
+  const origPiCmd = process.env.PAIR_REVIEW_PI_CMD;
+
   afterAll(() => {
     childProcess.spawn = realSpawn;
+    if (origPiCmd === undefined) {
+      delete process.env.PAIR_REVIEW_PI_CMD;
+    } else {
+      process.env.PAIR_REVIEW_PI_CMD = origPiCmd;
+    }
   });
 
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.PAIR_REVIEW_PI_CMD;
     fakeProc = createFakeProcess();
     mockSpawn.mockReturnValue(fakeProc);
   });

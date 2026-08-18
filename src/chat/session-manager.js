@@ -10,15 +10,20 @@
 const fs = require('fs');
 const path = require('path');
 const PiBridge = require('./pi-bridge');
+const OmpBridge = require('./omp-bridge');
 const AcpBridge = require('./acp-bridge');
 const ClaudeCodeBridge = require('./claude-code-bridge');
 const CodexBridge = require('./codex-bridge');
-const { getChatProvider, isAcpProvider, isClaudeCodeProvider, isCodexProvider, applyConfigOverrides: applyChatConfigOverrides } = require('./chat-providers');
+const { getChatProvider, isAcpProvider, isOmpProvider, isClaudeCodeProvider, isCodexProvider, applyConfigOverrides: applyChatConfigOverrides } = require('./chat-providers');
 const logger = require('../utils/logger');
 
 const taskExtensionDir = path.resolve(__dirname, '../../.pi/extensions/task');
 
 const CHAT_TOOLS = 'read,bash,grep,find,ls';
+
+// OMP's tool names differ from Pi's: file listing is `glob` (no find/ls), and
+// OMP errors on unknown tool names in --tools, so the Pi list cannot be reused.
+const OMP_CHAT_TOOLS = 'read,bash,grep,glob';
 
 class ChatSessionManager {
   /**
@@ -435,7 +440,7 @@ class ChatSessionManager {
     const usesOpaqueSessionId = isAcp || isClaudeCode;
 
     if (!usesOpaqueSessionId && !isCodex) {
-      // Pi sessions require a session file on disk
+      // Pi/OMP sessions require a session file on disk
       if (!row.agent_session_id) {
         throw new Error(`Session ${sessionId} has no session file — cannot resume`);
       }
@@ -536,11 +541,13 @@ class ChatSessionManager {
 
   /**
    * Create the appropriate bridge instance for a provider.
-   * ACP providers get an AcpBridge; everything else gets a PiBridge with tools/skills.
+   * ACP providers get an AcpBridge, Claude gets a ClaudeCodeBridge, Codex gets
+   * a CodexBridge, OMP gets an OmpBridge; everything else gets a PiBridge with
+   * tools/skills.
    * @param {string} provider
    * @param {Object} options - Bridge constructor options
    * @param {Object} [providerDef] - Pre-resolved provider definition (avoids redundant getChatProvider calls)
-   * @returns {PiBridge|AcpBridge}
+   * @returns {PiBridge|OmpBridge|AcpBridge|ClaudeCodeBridge|CodexBridge}
    */
   _createBridge(provider, options, providerDef) {
     const def = providerDef || getChatProvider(provider);
@@ -572,6 +579,25 @@ class ChatSessionManager {
         env: def?.env,
         useShell: def?.useShell,
         sandbox: def?.sandbox,
+      });
+    }
+    if (isOmpProvider(provider)) {
+      // OMP — same RPC protocol as Pi, so the option mapping below mirrors the
+      // Pi branch (see its comments), with two OMP-specific differences:
+      // - Tools: OMP_CHAT_TOOLS (OMP rejects Pi's find/ls tool names).
+      // - No task extension: pair-review's bundled extension is Pi-specific
+      //   (it spawns `pi` subagents via PI_CMD), matching the AI provider,
+      //   which also omits it for OMP.
+      return new OmpBridge({
+        ...options,
+        provider: def?.provider || null,
+        model: options.model || def?.model,
+        piCommand: def?.command,
+        extraArgs: def?.args,
+        env: def?.env,
+        useShell: def?.useShell,
+        tools: OMP_CHAT_TOOLS,
+        loadSkills: options.loadSkills ?? def?.load_skills,
       });
     }
     // Pi provider — resolve config overrides (command, model, env) from provider def.

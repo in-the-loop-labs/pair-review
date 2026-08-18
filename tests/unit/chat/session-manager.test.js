@@ -17,11 +17,13 @@ vi.mock('../../../src/utils/logger', () => ({
 // session-manager.js does: const PiBridge = require('./pi-bridge')
 // We replace the cached module export before session-manager is loaded.
 const piBridgePath = require.resolve('../../../src/chat/pi-bridge');
+const ompBridgePath = require.resolve('../../../src/chat/omp-bridge');
 const acpBridgePath = require.resolve('../../../src/chat/acp-bridge');
 const claudeCodeBridgePath = require.resolve('../../../src/chat/claude-code-bridge');
 const codexBridgePath = require.resolve('../../../src/chat/codex-bridge');
 const chatProvidersPath = require.resolve('../../../src/chat/chat-providers');
 const originalPiBridgeExport = require(piBridgePath);
+const originalOmpBridgeExport = require(ompBridgePath);
 const originalAcpBridgeExport = require(acpBridgePath);
 const originalClaudeCodeBridgeExport = require(claudeCodeBridgePath);
 const originalCodexBridgeExport = require(codexBridgePath);
@@ -30,6 +32,7 @@ const originalChatProvidersExport = require(chatProvidersPath);
 // Shared state for controlling mock behavior per-test
 let _nextStartFail = false;
 const _createdBridges = [];
+const _createdOmpBridges = [];
 const _createdAcpBridges = [];
 const _createdClaudeCodeBridges = [];
 const _createdCodexBridges = [];
@@ -50,6 +53,27 @@ function MockPiBridge(options) {
   bridge.abort = vi.fn();
   bridge._bridgeType = 'pi';
   bridge._constructorOptions = options || {};
+  _createdBridges.push(bridge);
+  return bridge;
+}
+
+function MockOmpBridge(options) {
+  const bridge = new EventEmitter();
+  bridge.start = vi.fn().mockImplementation(() => {
+    if (_nextStartFail) {
+      _nextStartFail = false;
+      return Promise.reject(new Error('spawn failed'));
+    }
+    return Promise.resolve();
+  });
+  bridge.close = vi.fn().mockResolvedValue(undefined);
+  bridge.sendMessage = vi.fn().mockResolvedValue(undefined);
+  bridge.isReady = vi.fn().mockReturnValue(true);
+  bridge.isBusy = vi.fn().mockReturnValue(false);
+  bridge.abort = vi.fn();
+  bridge._bridgeType = 'omp';
+  bridge._constructorOptions = options || {};
+  _createdOmpBridges.push(bridge);
   _createdBridges.push(bridge);
   return bridge;
 }
@@ -122,6 +146,7 @@ const mockChatProviders = {
   getChatProvider: vi.fn((id) => {
     const providers = {
       pi: { id: 'pi', name: 'Pi (RPC)', type: 'pi' },
+      omp: { id: 'omp', name: 'OMP (RPC)', type: 'omp' },
       'copilot-acp': { id: 'copilot-acp', name: 'Copilot (ACP)', type: 'acp', command: 'copilot', args: ['--acp', '--stdio'], env: {} },
       'cursor-acp': { id: 'cursor-acp', name: 'Cursor (ACP)', type: 'acp', command: 'agent', args: ['acp'], env: {} },
       'opencode-acp': { id: 'opencode-acp', name: 'OpenCode (ACP)', type: 'acp', command: 'opencode', args: ['acp'], env: {} },
@@ -133,6 +158,7 @@ const mockChatProviders = {
   isAcpProvider: vi.fn((id) => {
     return ['copilot-acp', 'cursor-acp', 'opencode-acp'].includes(id);
   }),
+  isOmpProvider: vi.fn((id) => id === 'omp'),
   isClaudeCodeProvider: vi.fn((id) => id === 'claude'),
   isCodexProvider: vi.fn((id) => {
     return id === 'codex';
@@ -142,6 +168,7 @@ const mockChatProviders = {
 
 // Replace the cached exports
 require.cache[piBridgePath].exports = MockPiBridge;
+require.cache[ompBridgePath].exports = MockOmpBridge;
 require.cache[acpBridgePath].exports = MockAcpBridge;
 require.cache[claudeCodeBridgePath].exports = MockClaudeCodeBridge;
 require.cache[codexBridgePath].exports = MockCodexBridge;
@@ -157,6 +184,7 @@ describe('ChatSessionManager', () => {
   afterAll(() => {
     // Restore original modules
     require.cache[piBridgePath].exports = originalPiBridgeExport;
+    require.cache[ompBridgePath].exports = originalOmpBridgeExport;
     require.cache[acpBridgePath].exports = originalAcpBridgeExport;
     require.cache[claudeCodeBridgePath].exports = originalClaudeCodeBridgeExport;
     require.cache[codexBridgePath].exports = originalCodexBridgeExport;
@@ -166,6 +194,7 @@ describe('ChatSessionManager', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     _createdBridges.length = 0;
+    _createdOmpBridges.length = 0;
     _createdAcpBridges.length = 0;
     _createdClaudeCodeBridges.length = 0;
     _createdCodexBridges.length = 0;
@@ -728,6 +757,39 @@ describe('ChatSessionManager', () => {
       }
     });
 
+    it('should resume an omp session from its session file via OmpBridge', async () => {
+      const session = await manager.createSession({ provider: 'omp', reviewId: 1 });
+
+      const fs = require('fs');
+      const os = require('os');
+      const path = require('path');
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'omp-resume-'));
+      const sessionFilePath = path.join(tmpDir, 'session.jsonl');
+      fs.writeFileSync(sessionFilePath, '{}');
+
+      try {
+        db.prepare('UPDATE chat_sessions SET agent_session_id = ? WHERE id = ?')
+          .run(sessionFilePath, session.id);
+        await manager.closeSession(session.id);
+
+        const result = await manager.resumeSession(session.id, { systemPrompt: 'test', cwd: tmpDir });
+        expect(result).toEqual({ id: session.id, status: 'active' });
+
+        // Resume must create an OmpBridge (not a PiBridge) with sessionPath set
+        const resumedBridge = _createdOmpBridges[_createdOmpBridges.length - 1];
+        expect(resumedBridge._constructorOptions.sessionPath).toBe(sessionFilePath);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should require a session file on disk to resume an omp session', async () => {
+      const session = await manager.createSession({ provider: 'omp', reviewId: 1 });
+      await manager.closeSession(session.id);
+
+      await expect(manager.resumeSession(session.id)).rejects.toThrow('has no session file');
+    });
+
     it('should not set loadSkills when not provided on resume', async () => {
       const session = await manager.createSession({ provider: 'pi', reviewId: 1 });
       const sessionFilePath = '/tmp/test-resume-no-load-skills.json';
@@ -948,6 +1010,40 @@ describe('ChatSessionManager', () => {
       await manager.createSession({ provider: 'pi', reviewId: 1 });
       const bridge = _createdBridges[0];
       expect(bridge._bridgeType).toBe('pi');
+    });
+
+    it('should return OmpBridge for omp provider', async () => {
+      await manager.createSession({ provider: 'omp', reviewId: 1 });
+      const bridge = _createdOmpBridges[0];
+      expect(bridge).toBeDefined();
+      expect(bridge._bridgeType).toBe('omp');
+    });
+
+    it('should pass OMP tool set and no extensions to OmpBridge', async () => {
+      await manager.createSession({ provider: 'omp', reviewId: 1 });
+      const bridge = _createdOmpBridges[0];
+      // OMP rejects Pi's find/ls tool names; its file-listing tool is glob
+      expect(bridge._constructorOptions.tools).toBe('read,bash,grep,glob');
+      // The pair-review task extension is Pi-specific and must not be loaded
+      expect(bridge._constructorOptions.extensions).toBeUndefined();
+    });
+
+    it('should pass command, model, and load_skills from provider def to OmpBridge', async () => {
+      mockChatProviders.getChatProvider.mockImplementationOnce(
+        () => ({ id: 'omp', type: 'omp', command: 'devx omp', model: 'opus', useShell: true, load_skills: false })
+      );
+      await manager.createSession({ provider: 'omp', reviewId: 1 });
+      const bridge = _createdOmpBridges[0];
+      expect(bridge._constructorOptions.piCommand).toBe('devx omp');
+      expect(bridge._constructorOptions.model).toBe('opus');
+      expect(bridge._constructorOptions.useShell).toBe(true);
+      expect(bridge._constructorOptions.loadSkills).toBe(false);
+    });
+
+    it('should not pass chat provider ID as provider to OmpBridge', async () => {
+      await manager.createSession({ provider: 'omp', reviewId: 1 });
+      const bridge = _createdOmpBridges[0];
+      expect(bridge._constructorOptions.provider).toBeNull();
     });
 
     it('should pass copilot-acp command and args to AcpBridge', async () => {
