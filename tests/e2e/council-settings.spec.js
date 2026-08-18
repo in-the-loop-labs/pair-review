@@ -448,6 +448,11 @@ test.describe('Settings councils - create', () => {
 
     release();
     await expect(page.locator('#tab-panel-council #vc-council-selector')).toHaveValue(id);
+    // Still disabled once the mount lands — for the OTHER reason now: an Edit
+    // editor opens CLEAN, and the footer Save carries the dirty gate the tab's
+    // own Save button used to. An edit through a real control arms it.
+    await expect(saveBtn).toBeDisabled();
+    await page.locator('#tab-panel-council #vc-reviewer-list .voice-tier').first().selectOption('thorough');
     await expect(saveBtn).toBeEnabled();
     await page.unroute('**/api/councils');
 
@@ -488,8 +493,11 @@ test.describe('Settings councils - edit', () => {
     const selector = page.locator('#tab-panel-council #vc-council-selector');
     await expect(selector).toBeVisible();
     await expect(selector).toHaveValue(id);
-    // The footer Save is live once the mount resolved — that (not any button
-    // inside the panel) is what performs the in-place PUT.
+    // The footer Save — not any button inside the panel — is what performs the
+    // in-place PUT, and it carries the same dirty gate the panel's Save did: an
+    // untouched Edit editor cannot rewrite the stored config.
+    await expect(page.locator('.council-manager__save-btn')).toBeDisabled();
+    await page.locator('#tab-panel-council #vc-reviewer-list .voice-tier').first().selectOption('thorough');
     await expect(page.locator('.council-manager__save-btn')).toBeEnabled();
 
     expectNoPageProblems(problems);

@@ -128,6 +128,23 @@ describe('CouncilCard.render dispatch', () => {
     expect(container.innerHTML).toContain('&lt;img');
   });
 
+  it('escapes the level summary, which is built from raw config KEYS', () => {
+    // `validateCouncilFormat` requires at least one valid level key but never
+    // rejects extras, and file councils (`.council.json` in the repo under
+    // review) go through that same validator — so an arbitrary string can reach
+    // this template. Every other field in it is escaped; this one was not.
+    const container = mount();
+    new CouncilCard({ container, resolveModelDisplay }).render({
+      name: 'Hostile',
+      type: 'council',
+      config: { voices: [], levels: { '<img src=x onerror=alert(1)>': true } }
+    });
+    expect(container.querySelector('.council-card-summary img')).toBeNull();
+    expect(container.innerHTML).not.toContain('<img src=x');
+    expect(container.querySelector('.council-card-summary').textContent)
+      .toBe('Levels <img src=x onerror=alert(1)>');
+  });
+
   it('falls back to raw ids when no resolver is provided', () => {
     const container = mount();
     new CouncilCard({ container }).render({

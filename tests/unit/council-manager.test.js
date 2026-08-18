@@ -1276,8 +1276,12 @@ describe('CouncilManager editor mount sequence', () => {
       gate.resolve();
       await vi.waitFor(() => expect(manager._tab).toBeTruthy());
       expect(settled.done).toBe(true);
-      expect(host.querySelector('.council-manager__save-btn').disabled).toBe(false);
       expect(manager._tab.selectedCouncilId).toBe('db-1');
+      // Still disabled once the mount lands — but for the OTHER reason now: an
+      // Edit editor opens clean, and Save gates on dirt. An edit arms it.
+      expect(host.querySelector('.council-manager__save-btn').disabled).toBe(true);
+      manager._tab._markDirty();
+      expect(host.querySelector('.council-manager__save-btn').disabled).toBe(false);
     });
 
     it('tears the editor down when the tab reports a failed council load', async () => {
@@ -1441,7 +1445,7 @@ describe('CouncilManager editor footer', () => {
   // manager exited to the list with `mutated: true` and fired onChange, making
   // the host page refresh its Default-for-Analysis picker for a council that
   // does not exist. `_saveCouncil` now reports the outcome explicitly.
-  describe('a Save that writes nothing on a CLEAN editor', () => {
+  describe('a Save that writes nothing', () => {
     it('Add → Save → cancel the name prompt stays in the editor', async () => {
       window.textInputDialog.show = vi.fn().mockResolvedValue(null);
       const onChange = vi.fn();
@@ -1469,10 +1473,11 @@ describe('CouncilManager editor footer', () => {
       const onChange = vi.fn();
       const { host, manager } = await openEditor({ list: [dbCouncil()], nextId: 2 }, { onChange });
 
-      // Untouched editor (clean) + a PUT the server refuses. council-crud.js
-      // swallows the failure into an error toast, so nothing but the return
-      // value distinguishes it from a successful save.
+      // An edited editor + a PUT the server refuses. council-crud.js swallows
+      // the failure into an error toast, so nothing but the return value
+      // distinguishes it from a successful save.
       expect(manager._tab.isDirty).toBe(false);
+      manager._tab._markDirty();
       global.fetch = vi.fn(async (url, opts = {}) => {
         if (url === '/api/councils' && (opts.method || 'GET') === 'GET') {
           return makeResponse({ councils: [dbCouncil()] });
@@ -1501,12 +1506,12 @@ describe('CouncilManager editor footer', () => {
     });
 
     it('Edit → Save → PUT succeeds still exits and notifies', async () => {
-      // The other half of the contract: a clean editor whose PUT DOES land is
-      // still a real write, so it must exit exactly as before.
+      // The other half of the contract: a PUT that DOES land is a real write,
+      // so it must exit exactly as before.
       const onChange = vi.fn();
       const { host, manager, fetchMock } = await openEditor({ list: [dbCouncil()], nextId: 2 }, { onChange });
 
-      expect(manager._tab.isDirty).toBe(false);
+      manager._tab._markDirty();
       host.querySelector('.council-manager__save-btn').click();
 
       await vi.waitFor(() => expect(host.querySelector('.council-manager__list-wrap')).toBeTruthy());
@@ -1673,6 +1678,96 @@ describe('CouncilManager editor footer', () => {
     expect(onChange).not.toHaveBeenCalled();
     // The heuristic itself is gone, not merely unused.
     expect(manager._listSignature).toBeUndefined();
+  });
+
+  // REGRESSION (final phase-3 review): this footer REPLACED the tab's own write
+  // row, and dropped the gates that row carried
+  // (`!isDirty || !selectedCouncilId || isFile`). Ungated, an Edit → Save with
+  // zero edits rewrote the whole config from `_readConfigFromUI()` — a full
+  // round trip through the UI that no surface in the app could trigger before,
+  // and one that silently drops any reviewer whose stored model does not
+  // re-select (see the alias regression in config-tab-model-aliases.test.js).
+  describe('the footer Save gate', () => {
+    it('stays disabled on an untouched Edit editor and arms on a real edit', async () => {
+      const { host, manager } = await openEditor({ list: [dbCouncil()], nextId: 2 });
+
+      expect(manager._tab.isDirty).toBe(false);
+      expect(host.querySelector('.council-manager__save-btn').disabled).toBe(true);
+
+      // Driven through the DOM rather than `_markDirty()`: this asserts the
+      // manager is SUBSCRIBED to the tab's state, not merely able to sync it.
+      const tier = host.querySelector('#tab-panel-council .voice-tier');
+      tier.value = 'thorough';
+      tier.dispatchEvent(new Event('change', { bubbles: true }));
+
+      expect(manager._tab.isDirty).toBe(true);
+      expect(host.querySelector('.council-manager__save-btn').disabled).toBe(false);
+    });
+
+    it('is live on a clean brand-new editor, because that Save IS the create', async () => {
+      // `reset()` leaves the editor clean, so a bare `!isDirty` gate would make
+      // creating a council impossible.
+      const { host, manager } = await mountManager({ list: [], nextId: 1 });
+
+      host.querySelector('.council-manager__add-btn').click();
+      host.querySelectorAll('.council-manager__chooser-option')[0].click();
+      await vi.waitFor(() => expect(manager._tab && manager._tab._injected).toBe(true));
+
+      expect(manager._tab.isDirty).toBe(false);
+      expect(manager._tab.selectedCouncilId).toBeNull();
+      expect(host.querySelector('.council-manager__save-btn').disabled).toBe(false);
+    });
+
+    it('refuses an in-place save onto a file council picked in the selector', async () => {
+      const fileVoice = fileCouncil({ id: 'file:voice', name: 'From Disk', type: 'council', config: VOICE_CONFIG });
+      const { host, manager } = await openEditor({ list: [dbCouncil(), fileVoice], nextId: 2 });
+
+      const selector = host.querySelector('#vc-council-selector');
+      selector.value = 'file:voice';
+      selector.dispatchEvent(new Event('change', { bubbles: true }));
+      expect(manager._tab.selectedCouncilId).toBe('file:voice');
+
+      // Dirty, so only the file rule can be keeping Save down. The API 400s PUT
+      // on a `file:` id; Duplicate in the list is the editable-copy path.
+      manager._tab._markDirty();
+      expect(manager._tab.isDirty).toBe(true);
+      expect(host.querySelector('.council-manager__save-btn').disabled).toBe(true);
+    });
+  });
+
+  // REGRESSION (final phase-3 review): the header was set ONCE at `_openEditor`.
+  // The tabs drop their write row when hosted but keep their council `<select>`,
+  // and `CouncilCrud.saveCouncil` branches purely on `selectedCouncilId` — so
+  // the label and the write target could disagree.
+  describe('the editor header', () => {
+    it('follows the council the selector switches to', async () => {
+      const { host, manager } = await mountManager({ list: [dbCouncil()], nextId: 2 });
+
+      host.querySelector('.council-manager__add-btn').click();
+      host.querySelectorAll('.council-manager__chooser-option')[0].click();
+      await vi.waitFor(() => expect(manager._tab && manager._tab._injected).toBe(true));
+      expect(host.querySelector('.council-manager__editor-header').textContent).toBe('New council');
+
+      const selector = host.querySelector('#vc-council-selector');
+      selector.value = 'db-1';
+      selector.dispatchEvent(new Event('change', { bubbles: true }));
+
+      // Save would now UPDATE db-1, so the label has to say so.
+      expect(manager._tab.selectedCouncilId).toBe('db-1');
+      expect(host.querySelector('.council-manager__editor-header').textContent).toBe('Edit council');
+    });
+
+    it('goes back to "New council" when the selector returns to + New Council', async () => {
+      const { host, manager } = await openEditor({ list: [dbCouncil()], nextId: 2 });
+      expect(host.querySelector('.council-manager__editor-header').textContent).toBe('Edit council');
+
+      const selector = host.querySelector('#vc-council-selector');
+      selector.value = '';
+      selector.dispatchEvent(new Event('change', { bubbles: true }));
+
+      expect(manager._tab.selectedCouncilId).toBeNull();
+      expect(host.querySelector('.council-manager__editor-header').textContent).toBe('New council');
+    });
   });
 });
 

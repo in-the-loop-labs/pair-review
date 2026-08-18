@@ -78,6 +78,10 @@ class VoiceCentricConfigTab {
     // Dirty state tracking
     this._isDirty = false;
 
+    // Host subscription: fired whenever the state that gates saving moves.
+    // Set by CouncilManager when it hosts this tab; null everywhere else.
+    this.onStateChange = null;
+
     // Character limit constants for custom instructions
     this.CHAR_LIMIT = 5000;
     this.CHAR_WARNING_THRESHOLD = 4500;
@@ -984,6 +988,42 @@ class VoiceCentricConfigTab {
   }
 
   /**
+   * Assign a STORED model id onto a `<select>` whose options carry canonical
+   * ids only, resolving legacy aliases on the way in.
+   *
+   * A bare `modelSelect.value = voice.model` selects NOTHING when the stored id
+   * is an alias — `opus`, `fable`, `opus-4.5`, `gpt-5.4`, `gemini-3.5-flash`,
+   * `muse-spark` are all real, and aliases exist precisely so old councils keep
+   * resolving. Worse, it runs AFTER `_updateModelDropdown` has already picked a
+   * valid default, so the alias overwrites a good value with `""` — and
+   * `_readConfigFromUI` keeps a reviewer only `if (provider && model)`, so the
+   * row is silently DROPPED from the config the next Save writes.
+   *
+   * Two rules, in order: resolve the alias through the shared, alias-aware
+   * `ProviderMap.findModelWithAliases`, and refuse to assign anything the
+   * dropdown does not actually offer — leaving `_updateModelDropdown`'s valid
+   * default in place is strictly better than blanking the field.
+   *
+   * `window.ProviderMap` is resolved at CALL time (this codebase's rule), and
+   * its absence degrades to the raw id rather than throwing.
+   *
+   * @param {HTMLSelectElement|null} modelSelect - The model dropdown to set
+   * @param {string} providerId - Provider the stored model belongs to
+   * @param {string} modelId - Stored model id (may be an alias)
+   */
+  _applyModelSelection(modelSelect, providerId, modelId) {
+    if (!modelSelect || !modelId) return;
+    const providerMap = typeof window !== 'undefined' ? window.ProviderMap : null;
+    const canonical = providerMap?.findModelWithAliases
+      ? providerMap.findModelWithAliases(this.providers[providerId], modelId)
+      : null;
+    const resolved = canonical ? canonical.id : modelId;
+    if (Array.from(modelSelect.options).some(opt => opt.value === resolved)) {
+      modelSelect.value = resolved;
+    }
+  }
+
+  /**
    * Sync the tier dropdown to the selected model's recommended tier.
    * Called when the user manually changes the model dropdown.
    * @param {HTMLSelectElement} modelSelect - The model dropdown that changed
@@ -1263,7 +1303,7 @@ class VoiceCentricConfigTab {
           this._updateModelDropdown(providerSelect);
           this._updateExecutableState(providerSelect);
           const modelSelect = row.querySelector('.voice-model');
-          if (modelSelect) modelSelect.value = voice.model;
+          this._applyModelSelection(modelSelect, voice.provider, voice.model);
           const tierSelect = row.querySelector('.voice-tier');
           if (tierSelect) tierSelect.value = voice.tier || 'balanced';
           // Mount the TimeoutSelect from its placeholder
@@ -1317,7 +1357,7 @@ class VoiceCentricConfigTab {
           providerSelect.dataset.previousProvider = vcConfig.orchestration.provider;
           this._updateModelDropdown(providerSelect);
           const modelSelect = orchRow.querySelector('.voice-model');
-          if (modelSelect) modelSelect.value = vcConfig.orchestration.model;
+          this._applyModelSelection(modelSelect, vcConfig.orchestration.provider, vcConfig.orchestration.model);
           const tierSelect = orchRow.querySelector('.voice-tier');
           if (tierSelect) tierSelect.value = vcConfig.orchestration.tier || 'balanced';
         }
@@ -1444,6 +1484,14 @@ class VoiceCentricConfigTab {
   }
 
   _updateSaveButtonStates() {
+    // The hosted editor (CouncilManager) renders the footer that replaces this
+    // tab's own write row, and its Save has to follow the same state this
+    // method gates on — dirty, and which council is selected. Every transition
+    // funnels through here (_markDirty, _markClean, the selector's change
+    // handler), so this is the one place a host can subscribe to and see all of
+    // them. No-op when nothing subscribed.
+    if (typeof this.onStateChange === 'function') this.onStateChange();
+
     const panel = this.modal.querySelector('#tab-panel-council');
     if (!panel) return;
 

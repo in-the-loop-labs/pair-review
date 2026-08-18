@@ -668,7 +668,12 @@ class CouncilManager {
       // that view owns the container now; this tab is garbage.
       if (this._editorEpoch !== epoch) return;
       this._tab = tab;
-      this._syncFooterButtons();
+      // Dirty state and the selected council both move under the tab's own
+      // hand; the footer Save and the header both gate on them. The tab fires
+      // this on every such transition. The identity check drops callbacks from
+      // a tab this manager has already dropped (`_exitEditor` nulls `_tab`).
+      tab.onStateChange = () => { if (this._tab === tab) this._syncEditorState(); };
+      this._syncEditorState();
     } catch (error) {
       // A half-mounted tab is worse than none: drop it and go back to the list
       // rather than leave a dead editor (and an unhandled rejection) behind.
@@ -744,17 +749,69 @@ class CouncilManager {
   }
 
   /**
-   * Footer button states. Save is live only when a fully-mounted tab is
-   * published AND no mutation is in flight; Back only when nothing is in flight.
-   * Queried rather than cached: in list mode there is no footer and both lookups
-   * are a harmless null.
+   * Footer button states. Save is live only when no mutation is in flight and
+   * the published tab holds a writable change (see `_canSave`); Back only when
+   * nothing is in flight. Queried rather than cached: in list mode there is no
+   * footer and both lookups are a harmless null.
    */
   _syncFooterButtons() {
     if (!this.container) return;
     const saveBtn = this.container.querySelector('.council-manager__save-btn');
-    if (saveBtn) saveBtn.disabled = this._busy || !this._tab;
+    if (saveBtn) saveBtn.disabled = this._busy || !this._canSave();
     const backBtn = this.container.querySelector('.council-manager__back-btn');
     if (backBtn) backBtn.disabled = this._busy;
+  }
+
+  /**
+   * Is there something Save can legitimately write?
+   *
+   * This footer REPLACES the tab's own write row, so it has to carry the gates
+   * that row carried: `!isDirty || !selectedCouncilId || isFile`. Without them
+   * an Edit → Save with zero edits rewrites the whole config from
+   * `_readConfigFromUI()` — something no surface in the app could do before —
+   * and every stored value that does not round-trip is lost on the way.
+   *
+   * The `selectedCouncilId` half is INVERTED here, deliberately. In the tab, no
+   * selection meant "nothing to update, use Save As". Here there is no Save As:
+   * this button IS the create path, and `reset()` leaves a brand-new editor
+   * CLEAN — so gating on dirty alone would make creating a council impossible.
+   * Hence: no selection => always live; a selection => only when dirty.
+   *
+   * File councils are refused outright. The API 400s PUT and DELETE on `file:`
+   * ids, so an in-place save there cannot succeed; the list's Duplicate button
+   * is the path that turns one into an editable copy.
+   *
+   * @returns {boolean}
+   */
+  _canSave() {
+    const tab = this._tab;
+    if (!tab) return false;
+    const selectedId = tab.selectedCouncilId;
+    if (!selectedId) return true;
+    if (this._isReadOnly(this._councils.find(c => c.id === selectedId))) return false;
+    return Boolean(tab.isDirty);
+  }
+
+  /**
+   * Keep the editor header on the council Save actually writes to.
+   *
+   * The header is set once at `_openEditor`, but the tab's council `<select>`
+   * survives in hosted mode (only the write row is dropped) and its change
+   * handler reassigns `selectedCouncilId` — which is the only thing
+   * `CouncilCrud.saveCouncil` branches on. So Add → pick "Dream Team" → Save
+   * updates Dream Team under a header still reading "New council". The write is
+   * what the selector implies; the stale label is the defect.
+   */
+  _syncEditorHeader() {
+    if (!this.container || !this._tab) return;
+    const header = this.container.querySelector('.council-manager__editor-header');
+    if (header) header.textContent = this._tab.selectedCouncilId ? 'Edit council' : 'New council';
+  }
+
+  /** Both halves of the editor chrome, for the tab's state subscription. */
+  _syncEditorState() {
+    this._syncEditorHeader();
+    this._syncFooterButtons();
   }
 
   /**

@@ -147,7 +147,7 @@ class CouncilCard {
     this.container.innerHTML = `
       <div class="council-card">
         <div class="council-card-name">${this.escapeHtml(council.name)}</div>
-        <div class="council-card-summary">${summaryText}</div>
+        <div class="council-card-summary">${this.escapeHtml(summaryText)}</div>
         <div class="council-card-reviewers">
           ${reviewerLines}
         </div>
