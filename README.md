@@ -720,7 +720,7 @@ You can override provider settings and define custom models in your config file.
 | `env` | Environment variables to set when running the CLI |
 | `installInstructions` | Custom installation instructions shown in UI |
 | `availability_timeout_seconds` | Seconds to allow for the startup availability probe before the provider is reported unavailable (default `10`). Raise it for providers whose check runs a slow build/compile step. Also supported per chat provider under `chat_providers.<id>`. |
-| `availability_command` | Command run to decide availability. Executable providers default to always-available when omitted; chat providers fall back to `<command> --version` (or, for the built-in Pi, the cached AI-provider status). Pair with `availability_timeout_seconds` when the probe runs a slow build. |
+| `availability_command` | Command run to decide availability. Executable providers default to always-available when omitted; chat providers fall back to `<command> --version` (or, for the built-in Pi and OMP, the cached AI-provider status). Pair with `availability_timeout_seconds` when the probe runs a slow build. |
 | `advisor` | OMP only. Set to `true` to enable OMP's advisor runtime during analysis (`--advisor`). Defaults to `false`: pair-review disables the advisor via a bundled config overlay, even when it is enabled in your global OMP configuration. |
 | `models` | Array of model definitions (see below) |
 | `default_model` | Model `id` to use as the provider's default (in the picker and when no model is specified). Preferred over the per-model `default: true` flag. If it names an unknown or disabled model, the provider falls back to automatic selection. |
@@ -834,6 +834,8 @@ npm install -g @mariozechner/pi-coding-agent
 
 Configure your preferred models in `providers.pi.models` — see [AI Provider Configuration](#ai-provider-configuration) for details. Everything else in pair-review works without Pi installed.
 
+[OMP (Oh My Pi)](https://github.com/can1357/oh-my-pi), a fork of Pi, is also available as a chat provider (`omp`) — it speaks the same RPC protocol through the `omp` CLI (`npm install -g @oh-my-pi/pi-coding-agent`) and uses whatever model your OMP configuration selects (set a chat model via `chat_providers.omp.model`; values are passed to `omp --model`, which fuzzy-matches). Unlike Pi chat, OMP chat does not load pair-review's task extension for subagent delegation.
+
 **Chat provider command overrides:** To customize CLI commands for chat providers (e.g., to use a wrapper script), use the `chat_providers` config key:
 
 ```json
@@ -846,7 +848,7 @@ Configure your preferred models in `providers.pi.models` — see [AI Provider Co
 }
 ```
 
-Available chat provider IDs: `pi`, `claude`, `codex`, `copilot-acp`, `opencode-acp`, `cursor-acp`. Each supports `command`, `args` (replaces defaults), `extra_args` (appends), and `env` overrides. Codex chat also supports `sandbox`: use `workspace-write` by default, or `read-only` for discussion-only sessions. (Antigravity and Muse are analysis-only providers — neither CLI has an ACP mode, so there are no Antigravity or Muse chat providers.)
+Available chat provider IDs: `pi`, `omp`, `claude`, `codex`, `copilot-acp`, `opencode-acp`, `cursor-acp`. Each supports `command`, `args` (replaces defaults; for `pi` and `omp` there are no default args — supplied args are appended after the generated RPC flags, so use a multi-word `command` like `"devx omp"` for wrappers rather than `args`), `extra_args` (appends), and `env` overrides. Codex chat also supports `sandbox`: use `workspace-write` by default, or `read-only` for discussion-only sessions. (Antigravity and Muse are analysis-only providers — neither CLI has an ACP mode, so there are no Antigravity or Muse chat providers.)
 
 **Keyboard shortcut:** Press `p` then `c` to toggle the chat panel.
 

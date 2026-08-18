@@ -25,6 +25,7 @@ const {
   getChatProvider,
   getAllChatProviders,
   isAcpProvider,
+  isOmpProvider,
   isClaudeCodeProvider,
   isCodexProvider,
   checkChatProviderAvailability,
@@ -51,6 +52,15 @@ describe('chat-providers', () => {
     it('should return pi provider', () => {
       const pi = getChatProvider('pi');
       expect(pi).toEqual({ id: 'pi', name: 'Pi (RPC)', type: 'pi' });
+    });
+
+    it('should return omp provider with no default command', () => {
+      const provider = getChatProvider('omp');
+      expect(provider).toEqual({
+        id: 'omp',
+        name: 'OMP (RPC)',
+        type: 'omp',
+      });
     });
 
     it('should return copilot-acp provider with correct defaults', () => {
@@ -291,11 +301,12 @@ describe('chat-providers', () => {
   });
 
   describe('getAllChatProviders', () => {
-    it('should return all six providers', () => {
+    it('should return all seven providers', () => {
       const providers = getAllChatProviders();
-      expect(providers).toHaveLength(6);
+      expect(providers).toHaveLength(7);
       const ids = providers.map(p => p.id);
       expect(ids).toContain('pi');
+      expect(ids).toContain('omp');
       expect(ids).toContain('copilot-acp');
       expect(ids).toContain('opencode-acp');
       expect(ids).toContain('cursor-acp');
@@ -340,6 +351,29 @@ describe('chat-providers', () => {
 
     it('should return false for codex', () => {
       expect(isAcpProvider('codex')).toBe(false);
+    });
+  });
+
+  describe('isOmpProvider', () => {
+    it('should return true for omp', () => {
+      expect(isOmpProvider('omp')).toBe(true);
+    });
+
+    it('should return false for pi', () => {
+      expect(isOmpProvider('pi')).toBe(false);
+    });
+
+    it('should return false for ACP providers', () => {
+      expect(isOmpProvider('copilot-acp')).toBe(false);
+    });
+
+    it('should return false for unknown provider', () => {
+      expect(isOmpProvider('unknown')).toBe(false);
+    });
+
+    it('should return true for a custom type:omp provider from config', () => {
+      applyConfigOverrides({ 'my-omp': { type: 'omp', command: '/opt/omp' } });
+      expect(isOmpProvider('my-omp')).toBe(true);
     });
   });
 
@@ -392,6 +426,36 @@ describe('chat-providers', () => {
       mockGetCachedAvailability.mockReturnValue(null);
       const result = await checkChatProviderAvailability('pi');
       expect(result).toEqual({ available: false, error: undefined });
+    });
+
+    it('should delegate to getCachedAvailability for omp', async () => {
+      mockGetCachedAvailability.mockReturnValue({ available: true });
+      const result = await checkChatProviderAvailability('omp');
+      expect(result).toEqual({ available: true, error: undefined });
+      expect(mockGetCachedAvailability).toHaveBeenCalledWith('omp');
+    });
+
+    it('should return unavailable for omp when getCachedAvailability returns null', async () => {
+      mockGetCachedAvailability.mockReturnValue(null);
+      const result = await checkChatProviderAvailability('omp');
+      expect(result).toEqual({ available: false, error: undefined });
+    });
+
+    it('does not consult the omp cache when built-in omp is overridden with a command', async () => {
+      applyConfigOverrides({ 'omp': { command: '/opt/omp' } });
+      mockGetCachedAvailability.mockReturnValue({ available: true });
+
+      const { EventEmitter } = require('events');
+      const fakeProc = new EventEmitter();
+      const mockSpawn = vi.fn().mockReturnValue(fakeProc);
+
+      const promise = checkChatProviderAvailability('omp', { spawn: mockSpawn });
+      fakeProc.emit('close', 0);
+
+      const result = await promise;
+      expect(result).toEqual({ available: true });
+      expect(mockGetCachedAvailability).not.toHaveBeenCalled();
+      expect(mockSpawn).toHaveBeenCalledWith('/opt/omp', ['--version'], expect.any(Object));
     });
 
     it('does not consult the pi cache for a custom type:pi provider with its own command', async () => {
@@ -766,6 +830,7 @@ describe('chat-providers', () => {
 
       const cache = getAllCachedChatAvailability();
       expect(cache.pi).toEqual({ available: true, error: undefined });
+      expect(cache.omp).toEqual({ available: true, error: undefined });
       expect(cache['copilot-acp']).toEqual({ available: true });
       expect(cache['opencode-acp']).toEqual({ available: true });
       expect(cache['cursor-acp']).toEqual({ available: true });

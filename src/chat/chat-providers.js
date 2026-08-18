@@ -2,8 +2,8 @@
 /**
  * Chat Provider Registry
  *
- * Defines named chat providers (Pi, Copilot, OpenCode, Claude, Codex, Cursor) with their
- * default commands/args, config overrides, and availability checks.
+ * Defines named chat providers (Pi, OMP, Copilot, OpenCode, Claude, Codex, Cursor) with
+ * their default commands/args, config overrides, and availability checks.
  */
 
 const { spawn } = require('child_process');
@@ -23,6 +23,17 @@ const CHAT_PROVIDERS = {
     id: 'pi',
     name: 'Pi (RPC)',
     type: 'pi',
+  },
+  // OMP (Oh My Pi) is a Pi fork that speaks the same RPC protocol with a
+  // slightly different CLI surface (see OmpBridge). Like the built-in Pi
+  // definition, `command` is intentionally omitted: OmpBridge resolves its own
+  // default at runtime, and the availability check delegates to the AI
+  // provider's cached probe (which honors PAIR_REVIEW_OMP_CMD and
+  // providers.omp.command).
+  omp: {
+    id: 'omp',
+    name: 'OMP (RPC)',
+    type: 'omp',
   },
   'copilot-acp': {
     id: 'copilot-acp',
@@ -206,6 +217,16 @@ function isAcpProvider(id) {
 }
 
 /**
+ * Check if a provider ID corresponds to an OMP (Oh My Pi) provider.
+ * @param {string} id
+ * @returns {boolean}
+ */
+function isOmpProvider(id) {
+  const provider = getChatProvider(id);
+  return provider?.type === 'omp';
+}
+
+/**
  * Check if a provider ID corresponds to a Claude Code provider.
  * @param {string} id
  * @returns {boolean}
@@ -262,15 +283,16 @@ async function checkChatProviderAvailability(id, _deps) {
     });
   }
 
-  // Delegate to the AI provider's cached availability only for the built-in Pi
-  // chat provider with no command override — i.e. the same binary the AI
-  // provider already probed. The built-in `pi` definition intentionally omits
-  // `command` (PiBridge resolves its own default at runtime), so `!provider.command`
-  // cleanly distinguishes it. Custom `type: 'pi'` providers and built-in Pi
-  // overridden with a different `command` point at a different binary, so they
-  // fall through to the `<command> --version` probe below (which honors `timeout`).
-  if (provider.type === 'pi' && !provider.command) {
-    const cached = getCachedAvailability('pi');
+  // Delegate to the AI provider's cached availability only for the built-in
+  // Pi/OMP chat providers with no command override — i.e. the same binary the
+  // AI provider already probed. The built-in `pi`/`omp` definitions
+  // intentionally omit `command` (PiBridge/OmpBridge resolve their own default
+  // at runtime), so `!provider.command` cleanly distinguishes them. Custom
+  // `type: 'pi'`/`type: 'omp'` providers and built-ins overridden with a
+  // different `command` point at a different binary, so they fall through to
+  // the `<command> --version` probe below (which honors `timeout`).
+  if ((provider.type === 'pi' || provider.type === 'omp') && !provider.command) {
+    const cached = getCachedAvailability(provider.type);
     return { available: cached?.available || false, error: cached?.error };
   }
 
@@ -402,6 +424,7 @@ module.exports = {
   getChatProvider,
   getAllChatProviders,
   isAcpProvider,
+  isOmpProvider,
   isClaudeCodeProvider,
   isCodexProvider,
   checkChatProviderAvailability,
