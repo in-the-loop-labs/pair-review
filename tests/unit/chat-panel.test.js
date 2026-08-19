@@ -94,6 +94,7 @@ function createMockElement(tag = 'div', overrides = {}) {
       if (selector === '.chat-panel__action-btn--dismiss-suggestion') return elementRegistry['chat-dismiss-suggestion-btn'] || null;
       if (selector === '.chat-panel__action-btn--dismiss-comment') return elementRegistry['chat-dismiss-comment-btn'] || null;
       if (selector === '.chat-panel__action-btn--create-comment') return elementRegistry['chat-create-comment-btn'] || null;
+      if (selector === '.chat-panel__action-btn--use-summary') return elementRegistry['chat-use-summary-btn'] || null;
       if (selector === '.chat-panel__action-bar-dismiss') return elementRegistry['chat-action-bar-dismiss'] || null;
       if (selector === '.chat-panel__resize-handle') return elementRegistry['chat-resize-handle'] || null;
       if (selector === '.chat-panel__empty') return elementRegistry['chat-empty'] || null;
@@ -161,6 +162,7 @@ function buildElementRegistry() {
     'chat-dismiss-suggestion-btn': createMockElement('button'),
     'chat-dismiss-comment-btn': createMockElement('button'),
     'chat-create-comment-btn': createMockElement('button'),
+    'chat-use-summary-btn': createMockElement('button'),
     'chat-action-bar-dismiss': createMockElement('button'),
     'chat-resize-handle': createMockElement('div'),
     'chat-empty': createMockElement('div'),
@@ -193,6 +195,7 @@ function buildElementRegistry() {
   elementRegistry['chat-dismiss-suggestion-btn'].style = { display: 'none' };
   elementRegistry['chat-dismiss-comment-btn'].style = { display: 'none' };
   elementRegistry['chat-create-comment-btn'].style = { display: 'none' };
+  elementRegistry['chat-use-summary-btn'].style = { display: 'none' };
   elementRegistry['chat-provider-dropdown'].style = { display: 'none' };
   elementRegistry['chat-session-dropdown'].style = { display: 'none' };
   elementRegistry['chat-new-content-pill'].style = { display: 'none' };
@@ -359,6 +362,7 @@ function createChatPanel() {
       '.chat-panel__action-btn--dismiss-suggestion': reg['chat-dismiss-suggestion-btn'],
       '.chat-panel__action-btn--dismiss-comment': reg['chat-dismiss-comment-btn'],
       '.chat-panel__action-btn--create-comment': reg['chat-create-comment-btn'],
+      '.chat-panel__action-btn--use-summary': reg['chat-use-summary-btn'],
       '.chat-panel__action-bar-dismiss': reg['chat-action-bar-dismiss'],
       '.chat-panel__resize-handle': reg['chat-resize-handle'],
       '.chat-panel__provider-picker': reg['chat-provider-picker'],
@@ -776,6 +780,220 @@ describe('ChatPanel', () => {
       expect(chatPanel._contextItemId).toBeNull();
       expect(chatPanel._contextLineMeta).toBeNull();
       expect(chatPanel.actionBar.style.display).toBe('none');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Review summary drafting (Draft with AI)
+  // -----------------------------------------------------------------------
+  describe('getLastAssistantMessage', () => {
+    it('returns the most recent assistant message content', () => {
+      const tab = attachActiveTab(chatPanel);
+      tab.messages.push(
+        { role: 'user', content: 'draft a summary' },
+        { role: 'assistant', content: 'first draft' },
+        { role: 'user', content: 'make it shorter' },
+        { role: 'assistant', content: 'shorter draft' },
+      );
+
+      expect(chatPanel.getLastAssistantMessage()).toBe('shorter draft');
+    });
+
+    it('returns null when there is no assistant message', () => {
+      const tab = attachActiveTab(chatPanel);
+      tab.messages.push({ role: 'user', content: 'hello' });
+
+      expect(chatPanel.getLastAssistantMessage()).toBeNull();
+    });
+
+    it('returns null when there is no active tab', () => {
+      clearActiveTab(chatPanel);
+      expect(chatPanel.getLastAssistantMessage()).toBeNull();
+    });
+  });
+
+  describe('startSummaryDraft', () => {
+    it('opens a fresh tab, sets review-summary context, shows the button, and sends the prompt', async () => {
+      const openSpy = vi.spyOn(chatPanel, 'open').mockResolvedValue(undefined);
+      const newTabSpy = vi.spyOn(chatPanel, '_openNewTab').mockResolvedValue(undefined);
+      const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
+      chatPanel.isStreaming = false;
+
+      await chatPanel.startSummaryDraft({ currentSummary: 'keep this bit' });
+
+      expect(openSpy).toHaveBeenCalled();
+      // Draft goes into a dedicated fresh tab, not the currently active one.
+      expect(newTabSpy).toHaveBeenCalled();
+      expect(chatPanel._contextSource).toBe('review-summary');
+      expect(chatPanel.actionBar.style.display).toBe('');
+      expect(chatPanel.useSummaryBtn.style.display).toBe('');
+      expect(chatPanel.inputEl.value).toBe(ChatPanel.buildSummaryDraftPrompt('keep this bit'));
+      expect(chatPanel.inputEl.value).toContain('keep this bit');
+      expect(sendSpy).toHaveBeenCalled();
+    });
+
+    it('works with no current summary', async () => {
+      vi.spyOn(chatPanel, 'open').mockResolvedValue(undefined);
+      vi.spyOn(chatPanel, '_openNewTab').mockResolvedValue(undefined);
+      const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
+
+      await chatPanel.startSummaryDraft();
+
+      expect(chatPanel.inputEl.value).toBe(ChatPanel.buildSummaryDraftPrompt(''));
+      expect(sendSpy).toHaveBeenCalled();
+    });
+  });
+
+  describe('_updateActionButtons (review-summary context)', () => {
+    it('shows only the Use as review summary button, enabled once a reply exists', () => {
+      chatPanel._getActiveTab().messages.push({ role: 'assistant', content: 'the draft' });
+      chatPanel._contextSource = 'review-summary';
+      chatPanel._contextItemId = null;
+      chatPanel.isStreaming = false;
+
+      chatPanel._updateActionButtons();
+
+      expect(chatPanel.actionBar.style.display).toBe('');
+      expect(chatPanel.useSummaryBtn.style.display).toBe('');
+      expect(chatPanel.useSummaryBtn.disabled).toBe(false);
+      expect(chatPanel.adoptBtn.style.display).toBe('none');
+      expect(chatPanel.createCommentBtn.style.display).toBe('none');
+    });
+
+    it('stays shown but disabled until the first reply arrives', () => {
+      // review-summary context, not streaming, but no assistant reply yet.
+      chatPanel._contextSource = 'review-summary';
+      chatPanel.isStreaming = false;
+
+      chatPanel._updateActionButtons();
+
+      expect(chatPanel.useSummaryBtn.style.display).toBe('');
+      expect(chatPanel.useSummaryBtn.disabled).toBe(true);
+    });
+
+    it('disables the button while streaming (draft not complete)', () => {
+      chatPanel._getActiveTab().messages.push({ role: 'assistant', content: 'partial' });
+      chatPanel._contextSource = 'review-summary';
+      chatPanel.isStreaming = true;
+
+      chatPanel._updateActionButtons();
+
+      expect(chatPanel.useSummaryBtn.disabled).toBe(true);
+    });
+  });
+
+  describe('_handleUseSummaryClick', () => {
+    it('sends the latest assistant message to the review modal and clears context', () => {
+      const tab = attachActiveTab(chatPanel);
+      tab.messages.push({ role: 'assistant', content: 'the drafted summary' });
+      chatPanel._contextSource = 'review-summary';
+      chatPanel.isStreaming = false;
+      global.window.reviewModal = { applyDraftedSummary: vi.fn() };
+
+      chatPanel._handleUseSummaryClick();
+
+      expect(global.window.reviewModal.applyDraftedSummary).toHaveBeenCalledWith('the drafted summary');
+      expect(chatPanel._contextSource).toBeNull();
+      expect(chatPanel.useSummaryBtn.style.display).toBe('none');
+    });
+
+    it('does nothing while streaming', () => {
+      const tab = attachActiveTab(chatPanel);
+      tab.messages.push({ role: 'assistant', content: 'partial' });
+      chatPanel.isStreaming = true;
+      global.window.reviewModal = { applyDraftedSummary: vi.fn() };
+
+      chatPanel._handleUseSummaryClick();
+
+      expect(global.window.reviewModal.applyDraftedSummary).not.toHaveBeenCalled();
+    });
+
+    it('warns when there is no assistant reply yet', () => {
+      const tab = attachActiveTab(chatPanel);
+      tab.messages.push({ role: 'user', content: 'draft it' });
+      chatPanel.isStreaming = false;
+      global.window.reviewModal = { applyDraftedSummary: vi.fn() };
+      global.window.toast = { showWarning: vi.fn() };
+
+      chatPanel._handleUseSummaryClick();
+
+      expect(global.window.reviewModal.applyDraftedSummary).not.toHaveBeenCalled();
+      expect(global.window.toast.showWarning).toHaveBeenCalled();
+    });
+
+    it('extracts only the fenced markdown block from a narrated reply', () => {
+      const tab = attachActiveTab(chatPanel);
+      tab.messages.push({
+        role: 'assistant',
+        content: "I'll review the diff.\nNow let me check the lifecycle.\n\n```markdown\nApprove — one nit: guard the null path.\n```",
+      });
+      chatPanel._contextSource = 'review-summary';
+      chatPanel.isStreaming = false;
+      global.window.reviewModal = { applyDraftedSummary: vi.fn() };
+
+      chatPanel._handleUseSummaryClick();
+
+      // Only the block contents reach the modal — not the surrounding narration.
+      expect(global.window.reviewModal.applyDraftedSummary)
+        .toHaveBeenCalledWith('Approve — one nit: guard the null path.');
+    });
+  });
+
+  describe('buildSummaryDraftPrompt', () => {
+    it('asks for the summary inside a fenced markdown block and omits the refine section when no draft is given', () => {
+      const prompt = ChatPanel.buildSummaryDraftPrompt('');
+      expect(prompt).toContain('review summary');
+      expect(prompt).toContain('```markdown');
+      expect(prompt.toLowerCase()).toContain('narration');
+      expect(prompt).not.toContain('current draft');
+    });
+
+    it('frames it as a review, not a PR description, and pushes for brevity', () => {
+      const prompt = ChatPanel.buildSummaryDraftPrompt('');
+      // Must steer away from PR-description / diff-restatement output.
+      expect(prompt).toContain('not a PR description');
+      expect(prompt).toMatch(/do not.*(describe what the pr does|summarize the diff)/i);
+      // Must avoid duplicating line-level comments.
+      expect(prompt).toContain('line-level comments');
+      // Must push for terseness.
+      expect(prompt.toLowerCase()).toMatch(/terse|short|few sentences/);
+    });
+
+    it('embeds the current draft when provided', () => {
+      const prompt = ChatPanel.buildSummaryDraftPrompt('  my existing text  ');
+      expect(prompt).toContain('current draft to refine');
+      expect(prompt).toContain('my existing text');
+      // Whitespace is trimmed before embedding.
+      expect(prompt).not.toContain('  my existing text  ');
+    });
+  });
+
+  describe('extractDraftedSummary', () => {
+    it('returns only the fenced markdown block, dropping process narration around it', () => {
+      const raw = [
+        "I'll review the PR changes and existing comments to synthesize a summary.",
+        'Now let me check the lifecycle concerns.',
+        '',
+        '```markdown',
+        'Clean, well-scoped change. One nit: guard the null path.',
+        '```',
+      ].join('\n');
+
+      expect(ChatPanel.extractDraftedSummary(raw))
+        .toBe('Clean, well-scoped change. One nit: guard the null path.');
+    });
+
+    it('takes the last markdown block when several are present', () => {
+      const raw = '```markdown\nfirst\n```\nmore narration\n```markdown\nfinal summary\n```';
+      expect(ChatPanel.extractDraftedSummary(raw)).toBe('final summary');
+    });
+
+    it('falls back to the trimmed raw text when no fenced block is present', () => {
+      expect(ChatPanel.extractDraftedSummary('  just a plain reply  ')).toBe('just a plain reply');
+    });
+
+    it('passes through a null reply', () => {
+      expect(ChatPanel.extractDraftedSummary(null)).toBeNull();
     });
   });
 
