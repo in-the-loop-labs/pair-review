@@ -64,13 +64,16 @@ class CouncilCard {
    *
    * THE single place council `type` is turned into a layout. Only the literal
    * `'council'` gets the voice layout; everything else — `'advanced'`, an
-   * unrecognized value, and crucially a legacy row with NO `type` at all — gets
-   * the advanced one. Legacy untyped rows predate the `type` column and hold a
-   * level-keyed config that only the advanced layout can read; the voice layout
-   * would show zero reviewers under a bogus level summary. The rest of the app
-   * already reads them that way (`AdvancedConfigTab.loadCouncils` claims
-   * `!c.type || c.type === 'advanced'`, `VoiceCentricConfigTab.loadCouncils`
-   * takes only `c.type === 'council'`, and POST /api/councils stores
+   * unrecognized value, and crucially a row with NO `type` at all — gets
+   * the advanced one. An untyped row would hold a level-keyed config that only
+   * the advanced layout can read; the voice layout would show zero reviewers
+   * under a bogus level summary. (No current write path can produce one — every
+   * writer defaults the column to 'advanced' — so this is defensive tolerance,
+   * not a legacy-row rule.) The rest of the app already reads them that way
+   * (`AdvancedConfigTab.COUNCIL_CRUD_SPEC.councilFilter` claims
+   * `!c.type || c.type === 'advanced'`,
+   * `VoiceCentricConfigTab.COUNCIL_CRUD_SPEC.councilFilter` takes only
+   * `c.type === 'council'`, and POST /api/councils stores
    * `type || 'advanced'`), and `CouncilDropdown.typeBadge` now badges them
    * "Advanced" — so this matches the badge that sits above the card.
    *

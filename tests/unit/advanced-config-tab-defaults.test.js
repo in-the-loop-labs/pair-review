@@ -13,8 +13,10 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 
-const { AdvancedConfigTab } = require('../../public/js/components/AdvancedConfigTab.js');
-const { VoiceCentricConfigTab } = require('../../public/js/components/VoiceCentricConfigTab.js');
+// Loads both tabs with `window.CouncilCrud` — a hard dependency of their shared
+// methods, resolved at call time — already installed, and creates the `window`
+// this node-env file otherwise lacks. See the helper's header for why.
+const { AdvancedConfigTab, VoiceCentricConfigTab } = require('../utils/config-tab-modules.js');
 
 describe('AdvancedConfigTab._defaultConfig', () => {
   function makeCtx(overrides = {}) {

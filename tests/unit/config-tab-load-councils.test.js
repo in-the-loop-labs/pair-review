@@ -3,14 +3,16 @@
 /**
  * Unit tests for `loadCouncils()` on both council config tabs.
  *
- * Two things are pinned here, and neither had a single assertion before:
+ * Three things are pinned here, and none had a single assertion before:
  *
  *   1. THE TYPE FILTER ASYMMETRY. Voice takes `c.type === 'council'`; Advanced
- *      takes `!c.type || c.type === 'advanced'`, i.e. it also claims LEGACY
- *      untyped rows, which predate the `type` column and are level-centric.
- *      That rule is quoted as load-bearing in CouncilCard.js, CouncilDropdown.js,
+ *      takes `!c.type || c.type === 'advanced'`, i.e. it also claims UNTYPED
+ *      rows. That extra clause is defensive tolerance for a shape no write path
+ *      currently produces, and Advanced is its home because level-keyed config
+ *      is what such a row would hold (see the module header in council-crud.js).
+ *      The rule is quoted as load-bearing in CouncilCard.js, CouncilDropdown.js,
  *      CouncilManager.js and three test files — and was asserted in none of
- *      them. Tighten Advanced's filter to `c.type === 'advanced'` and legacy
+ *      them. Tighten Advanced's filter to `c.type === 'advanced'` and untyped
  *      councils vanish from BOTH selectors while every badge/card test still
  *      passes. The expected ids live on the TABS entries below, beside the type
  *      literals they belong to.
@@ -22,12 +24,20 @@
  *      It also stashes the UNFILTERED list as `_allCouncils`, which is what the
  *      duplicate-name scan in Save As reads: a name collision across types
  *      breaks `--council <name>` for both councils (see council-crud.js).
+ *
+ *   3. RETENTION ON FAILURE. A load that does not complete — the request failed,
+ *      or the repaint threw — leaves BOTH lists exactly as they were. Nothing
+ *      repaints the `<select>` on those paths, so emptying the model would leave
+ *      real `<option>` nodes offering councils no JS believes in; the two
+ *      sibling loaders (`SettingsPage.loadCouncils`,
+ *      `CouncilManager._loadCouncils`) make the same call.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { VoiceCentricConfigTab } = require('../../public/js/components/VoiceCentricConfigTab.js');
-const { AdvancedConfigTab } = require('../../public/js/components/AdvancedConfigTab.js');
+// Loads both tabs with `window.CouncilCrud` — which their shared methods resolve
+// at call time — already installed. See the helper's header for why.
+const { VoiceCentricConfigTab, AdvancedConfigTab } = require('../utils/config-tab-modules.js');
 
 /** One council of each shape the API can return. */
 const COUNCILS = [
@@ -113,10 +123,13 @@ for (const spec of TABS) {
       expect(window.toast.showError).not.toHaveBeenCalled();
     });
 
-    it('resolves false and clears BOTH lists when the request fails', async () => {
+    it('resolves false and KEEPS both lists when the request fails', async () => {
       const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
       vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 500 })));
-      const ctx = makeCtx({ councils: COUNCILS, _allCouncils: COUNCILS });
+      // Two distinct arrays, so a swap between them is caught as well as a wipe.
+      const previousFiltered = COUNCILS.filter(c => expectedCouncilIds.includes(c.id));
+      const previousAll = COUNCILS.slice();
+      const ctx = makeCtx({ councils: previousFiltered, _allCouncils: previousAll });
 
       try {
         await expect(TabClass.prototype.loadCouncils.call(ctx)).resolves.toBe(false);
@@ -124,9 +137,18 @@ for (const spec of TABS) {
         consoleSpy.mockRestore();
       }
 
-      // A stale name scan is no more trustworthy than a stale selector.
-      expect(ctx.councils).toEqual([]);
-      expect(ctx._allCouncils).toEqual([]);
+      // Nothing repaints the `<select>` on this path, so the last known-good
+      // lists are the only ones that still agree with the `<option>` nodes on
+      // screen. Emptying them left the duplicate-name scan blind (Save As then
+      // creates a second council under an existing name, breaking
+      // `--council <name>` for both) and the selector's change handler pointing
+      // `selectedCouncilId` at a row the editor is not showing — reachable
+      // because `putCouncil`/`postCouncil` both reload AFTER a successful write.
+      // `toBe` catches the wipe, `toEqual` catches an in-place mutation.
+      expect(ctx.councils).toBe(previousFiltered);
+      expect(ctx.councils.map(c => c.id)).toEqual(expectedCouncilIds);
+      expect(ctx._allCouncils).toBe(previousAll);
+      expect(ctx._allCouncils).toEqual(COUNCILS);
       expect(ctx._councilsLoaded).toBe(false);
       expect(ctx._renderCouncilSelector).not.toHaveBeenCalled();
       expect(window.toast.showError).toHaveBeenCalledWith('Failed to load saved councils');
@@ -145,7 +167,7 @@ for (const spec of TABS) {
       }
     });
 
-    it('resolves false rather than rejecting when the selector render throws', async () => {
+    it('resolves false rather than rejecting when the selector render throws, and keeps the list it fetched', async () => {
       const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
       vi.stubGlobal('fetch', vi.fn(async () => okResponse({ councils: COUNCILS })));
       const ctx = makeCtx({
@@ -157,6 +179,17 @@ for (const spec of TABS) {
       } finally {
         consoleSpy.mockRestore();
       }
+
+      // The other way into the catch, and the one that is purely a PAINTING
+      // failure: the fetch succeeded, both lists were assigned, and only the
+      // repaint threw. A list that loaded perfectly well is not discarded
+      // because drawing it failed.
+      expect(ctx._allCouncils).toEqual(COUNCILS);
+      expect(ctx.councils.map(c => c.id)).toEqual(expectedCouncilIds);
+      // Set before the repaint ran, so the data IS loaded — it is the view that
+      // is behind. `setDefaultCouncilId` reads this to decide whether a pending
+      // default can be applied immediately.
+      expect(ctx._councilsLoaded).toBe(true);
     });
 
     it('tolerates a payload with no councils array', async () => {

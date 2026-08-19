@@ -36,8 +36,9 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 require('../../public/js/components/TimeoutSelect.js');
 global.TimeoutSelect = window.TimeoutSelect;
 
-const { VoiceCentricConfigTab } = require('../../public/js/components/VoiceCentricConfigTab.js');
-const { AdvancedConfigTab } = require('../../public/js/components/AdvancedConfigTab.js');
+// Loads both tabs with `window.CouncilCrud` — which their shared methods resolve
+// at call time — already installed. See the helper's header for why.
+const { VoiceCentricConfigTab, AdvancedConfigTab } = require('../utils/config-tab-modules.js');
 
 const PROVIDERS = {
   claude: {

@@ -90,11 +90,13 @@ class CouncilDropdown {
    * consumer (e.g. a card preview, CouncilManager's list rows) label types
    * identically.
    *
-   * ONLY `'council'` is Standard. Everything else — including a legacy row with
-   * no `type` at all, which predates the column — is Advanced: such a row holds
-   * a level-keyed config, `AdvancedConfigTab.loadCouncils` claims it
+   * ONLY `'council'` is Standard. Everything else — including a row with no
+   * `type` at all — is Advanced: such a row holds a level-keyed config,
+   * `AdvancedConfigTab.COUNCIL_CRUD_SPEC.councilFilter` claims it
    * (`!c.type || c.type === 'advanced'`), and POST /api/councils stores
-   * `type || 'advanced'`. Normalizing HERE rather than at each call site is what
+   * `type || 'advanced'`. (Nothing writes an untyped row today — every writer
+   * defaults the column — so tolerating one is defensive, not legacy support.)
+   * Normalizing HERE rather than at each call site is what
    * stops the two renderers on /settings (CouncilManager's list row and the
    * "Default for Analysis" picker directly above it) from badging the same
    * council "Advanced" and "Standard" ~30px apart.

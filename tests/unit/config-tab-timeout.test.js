@@ -171,11 +171,11 @@ global.window.TimeoutSelect = {
   ],
 };
 
-// Load browser components
-require('../../public/js/components/AdvancedConfigTab.js');
-require('../../public/js/components/VoiceCentricConfigTab.js');
-
-const { AdvancedConfigTab, VoiceCentricConfigTab } = global.window;
+// Load browser components, with `window.CouncilCrud` installed for the tabs'
+// shared methods — see the helper's header. It only ADDS to the `global.window`
+// established above, so the TimeoutSelect stub survives, and it is required
+// (not imported) so it cannot hoist above that stub.
+const { AdvancedConfigTab, VoiceCentricConfigTab } = require('../utils/config-tab-modules.js');
 
 // ---------------------------------------------------------------------------
 // Shared test provider definitions

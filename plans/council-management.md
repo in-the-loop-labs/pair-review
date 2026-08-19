@@ -649,10 +649,145 @@ carries:
 2. **Then the extraction, as its own commit, before Phase 4 begins.** This is
    the precedent the branch already set with `99c76287 refactor: prep config
    tabs and CSS for settings-page hosting` — a prep refactor landed ahead of
-   the feature, not folded into it. **This step is the remaining work; step 1
-   no longer blocks it.**
+   the feature, not folded into it.
    Grow `COUNCIL_CRUD_SPEC` to carry: panel id, char-count id, timeout
    constant, auto-save prefix, and the filter predicate.
+
+   **DONE** (2026-08-18, uncommitted at time of writing). Three follow-ups
+   were deliberately left out of it — see
+   **Decision B step 2 — deferred follow-ups** immediately below the Decision B
+   hazards. All 13 methods now
+   live once in `public/js/utils/council-crud.js`; each tab keeps its own
+   prototype method delegating at CALL time
+   (`window.CouncilCrud.markDirty(this)`), exactly as 3a-pre established.
+   VoiceCentricConfigTab 1641→1524, AdvancedConfigTab 1592→1446,
+   council-crud.js 359→761. Where the implementation made a choice this spec
+   left open:
+
+   - **Home is `council-crud.js`, not a new module.** It is already
+     script-tagged on all four pages that load the tabs (pr/local/index/
+     settings). A new module means four new tags, and one missed page is a
+     runtime `TypeError` on a page nobody tested. Its file-top doc was widened
+     from "the five CRUD flows" to the full shared-behaviour remit.
+   - **Spec ids are explicit literals, not a derived prefix.** The two tabs
+     would in fact reduce to two prefixes (`vc-council`/`council` for the
+     action row, `vc`/`council` for the char-count block), but tab element ids
+     are page-global and a derived id is ungreppable. Every id is written out.
+   - **`defaultTimeout: TabClass.DEFAULT_TIMEOUT`**, not a second literal
+     `600000`. Static fields initialize in source order, so this required
+     moving the `COUNCIL_CRUD_SPEC` declaration BELOW `static DEFAULT_TIMEOUT`
+     in both classes. A forward reference evaluates to `undefined` silently.
+   - **The char-count method names stay asymmetric** — `_updateCharCount` on
+     the voice tab, `_updateCouncilCharCount` on the advanced one. Both
+     delegate to one `updateCharCount(tab, spec, count)`. Renaming is not part
+     of this refactor.
+   - **Tests now need `window.CouncilCrud` installed.** Seven test files
+     called these methods off the prototype without it. jsdom files get
+     `require('.../council-crud.js')`; the three node-env files
+     (`advanced-config-tab-defaults`, `config-tab-timeout`,
+     `config-tab-validation`) need
+     `global.window = global.window || {}; global.window.CouncilCrud = require(...)`
+     because the module cannot self-install with no `window` at require time.
+     `config-tab-export.test.js` REPLACES `global.window` wholesale and had to
+     carry `CouncilCrud` into the replacement object.
+   - **New: `tests/unit/config-tab-shared-spec.test.js`** — pins spec key
+     completeness, that every id resolves against a really-mounted non-hosted
+     tab, that a hosted tab drops exactly the action row + char-count block,
+     that all 13 stay own-prototype functions, and that the bodies read the
+     spec LEXICALLY (a `this.constructor.COUNCIL_CRUD_SPEC` read would break
+     the large amount of existing `TabClass.prototype.m.call(plainCtx)`
+     coverage).
+   - **`CouncilManager` keeps its own hardcoded panel-id literal.** Reading
+     `TabClass.COUNCIL_CRUD_SPEC.panelId` was tried and reverted: everything
+     before `_openEditor`'s try/catch runs unguarded, so reaching into a
+     static there turns a broken tab class into an unhandled throw instead of
+     the "Failed to open the council editor" recovery (two existing tests stub
+     a bare `class { inject() { throw } }` precisely to model that). The copy
+     is instead pinned to the spec by two assertions in
+     `council-manager.test.js`, mutation-verified.
+   - **`AnalysisConfigModal` keeps its EIGHT panel-id literals too**, for the
+     same reason and asked again in the 2026-08-19 round. It constructs its
+     tabs guarded (`typeof VoiceCentricConfigTab !== 'undefined'`,
+     `AnalysisConfigModal.js:59`), so it explicitly tolerates the tab classes
+     being absent; a bare `VoiceCentricConfigTab.COUNCIL_CRUD_SPEC.panelId`
+     read at `:1028` would throw in exactly the case the modal is written to
+     survive. The eight sites are four pairs — create (`:1028`, `:1034`), look
+     up to `inject()` (`:925`, `:937`), toggle in `_switchTab` (`:1100`,
+     `:1101`), reset in `hide()` (`:1333`, `:1334`) — and all four pairs are
+     now pinned to the spec by
+     `tests/unit/analysis-config-modal-tab-panels.test.js`, mutation-verified
+     per pair.
+
+   Verification, after the 2026-08-19 review round below: **10311
+   unit/integration tests green (304 files)**; E2E `council-settings` +
+   `council-save-button` + `ai-analysis` + `global-settings` 61 passed.
+   Mutation-verified that the two deliberate asymmetries are still pinned —
+   flipping the advanced `councilFilter` to `c => c.type === 'advanced'`
+   reddens 2 tests in `config-tab-load-councils.test.js`, and flipping
+   `autoSaveNamePrefix` to `'Council'` reddens 4 across
+   `config-tab-new-council-defaults.test.js` and
+   `config-tab-shared-spec.test.js`.
+
+   **Review round, 2026-08-19 — four latent bugs the extraction exposed.**
+   None was a regression; each was a faithful copy of pre-existing tab code
+   that only became decidable once the two copies were one. All four are fixed
+   and mutation-verified:
+   1. `loadCouncils` emptied `councils`/`_allCouncils` on a failed refresh
+      without repainting the `<select>`, so real `<option>` nodes kept offering
+      councils no JS believed in. Reachable without a reload —
+      `putCouncil`/`postCouncil` both re-fetch AFTER a successful write. Worst
+      consequence: the selector's `change` handler assigns `selectedCouncilId`
+      BEFORE its `if (council)` guard, so picking X from the stale dropdown
+      repointed the id at X while the editor showed Y, and the next Save PUT
+      Y's config over X. Now keeps the last-good lists, matching
+      `SettingsPage.loadCouncils` and `CouncilManager._loadCouncils`.
+   2. `renderCouncilSelector` never reconciled `tab.selectedCouncilId` when its
+      council vanished from the repainted list — `select.value = <missing id>`
+      falls back to "+ New Council" without touching the model, so the screen
+      said create while every write path said update. Rewritten to compute one
+      `target`; the early `return` is gone and `syncSelectorToSelection`'s
+      duplicate two steps now share `applySelectorValue`. **Two deviations from
+      the review's literal suggestion, both deliberate**: the model gets `null`
+      (not `''`) because the constructor, `reset()` and both `change` handlers
+      all normalise with `|| null`; and the fallback order is pending →
+      `tab.selectedCouncilId` → `currentValue` → `''`, because `postCouncil`
+      assigns the new id and only THEN reloads, so the DOM's value is still the
+      council the user saved FROM.
+   3. `CouncilManager._canSave` proved "file council" from a list lookup —
+      `find()` returns `undefined` on a miss and `_isReadOnly(undefined)` is
+      falsy, so a miss read as *writable* and Save lit up on a `file:` council
+      the API refuses with 403. Now asks the id, like every other gate.
+   4. `updateCharCount` disables the modal's shared Analyze button from a panel
+      that may be hidden, and nothing recomputed on tab switch — so over-limit
+      text in one council tab left Analyze stuck disabled with a tooltip about
+      a limit nothing on screen exceeded. `_switchTab` now recounts for the
+      revealed tab. Button OWNERSHIP deliberately unchanged; see the deferred
+      follow-ups.
+
+   Also in this round: `_exportCouncil` reads `spec.type` instead of a second
+   copy of the literal; both tabs gained a `_panel()` accessor replacing 13
+   open-coded `querySelector(panelId)` sites; the module header now names its
+   three off-remit helpers (`syncTierToModel`, `getProviderDefaultTimeout`,
+   `formatTimestamp`) and admits `syncTierToModel` is spec-free by design; and
+   the `councilFilter` justification was corrected — it claimed untyped rows
+   "predate the `type` column", but **no current write path can produce one**
+   (`src/database.js:227` table default, migration 18's constant ADD COLUMN
+   default which SQLite applies to pre-existing rows, `CouncilRepository.create`
+   default, `routes/councils.js` POST default, and `parseCouncilDocument`
+   throwing on any other type). The asymmetry stays; only the false premise
+   went, in five places, with three stale `loadCouncils` pointers repointed at
+   `COUNCIL_CRUD_SPEC.councilFilter`.
+
+   Test work in the round: three behavioural suites for contracts that moved
+   with NO coverage anywhere (`_syncTierToModel`, the char-count near-limit
+   tier — a branch never once executed in this repo — and `onStateChange`
+   including that it fires BEFORE the `!panel` guard, which is the hosted
+   case); five restatement blocks deleted from `config-tab-shared-spec.test.js`
+   (a test comparing the spec to a literal typed beside it cannot detect a
+   mistake); `tests/unit/analysis-config-modal-tab-panels.test.js` pinning all
+   four pairs of the modal's panel-id literals; and the `window.CouncilCrud`
+   bootstrap consolidated from three hand-copied variants across 14 files into
+   `tests/utils/config-tab-modules.js`.
 3. CSS extraction is **deferred** — see below. Do not fold it into step 2.
 
 **Hazards (Decision B)**
@@ -678,6 +813,120 @@ carries:
 > body depends on `_councilsLoaded` / `_injected`. Extracting it moves a method
 > that two hosts call at different points in their mount sequence.
 
+### Decision B step 2 — deferred follow-ups (recorded 2026-08-19)
+
+Three items the reviewer took OUT of the step-2 extraction. All measured
+against the tree as of 2026-08-19 (line numbers drift; the names do not).
+
+#### (a) The remaining tab duplication — deferred on purpose
+
+Still copied verbatim (or near enough) in both tabs after step 2:
+
+| What | Where | How different |
+| --- | --- | --- |
+| `_updateModelDropdown` | `VoiceCentricConfigTab.js:966`, `AdvancedConfigTab.js:908` | Identical apart from three comment lines |
+| `_populateProviderDropdown` | `VoiceCentricConfigTab.js:938`, `AdvancedConfigTab.js:880` | Identical apart from the `DUPLICATED in …` comment; 26 lines of body |
+| `_updateAllVoiceDropdowns` | `VoiceCentricConfigTab.js:928`, `AdvancedConfigTab.js:870` | Identical; its own comment says it stays until `_populateProviderDropdown` moves |
+| `setProviders` | `VoiceCentricConfigTab.js:167`, `AdvancedConfigTab.js:175` | Byte-identical |
+| `getSelectedCouncilId` | `VoiceCentricConfigTab.js:204`, `AdvancedConfigTab.js:213` | Byte-identical |
+| `validate` | `VoiceCentricConfigTab.js:213`, `AdvancedConfigTab.js:368` | Byte-identical |
+| `setDefaultOrchestration` | `VoiceCentricConfigTab.js:329`, `AdvancedConfigTab.js:280` | Byte-identical |
+| the council-selector `change` handler | `VoiceCentricConfigTab.js:582` (`_setupListeners`), `AdvancedConfigTab.js:655` (`_setupCouncilListeners`) | Differs only by the `<select>` id — which `spec.selectorId` already carries — and two comments |
+
+**Why deferred.** These pull DOM the shared module does not currently own, so
+they grow the review surface without closing a known bug. The two that DID land
+in this round earned it: `_applyModelSelection` closed a path that had actually
+drifted — the alias fix was written twice, once per tab, in `883e32e2`. Nothing
+in the list above has a matching incident.
+
+**Where it should go — decide before starting; the two candidates disagree.**
+The reviewer's suggestion was `public/js/utils/provider-map.js` on the grounds
+that it already owns the four model/orchestration resolvers (`buildProviderMap`,
+`findModelWithAliases`, `resolveModelDisplay`, `resolveDefaultOrchestration`)
+and that none of this is CRUD. Two facts cut the other way, and whoever picks
+this up should weigh them rather than re-derive them:
+
+- `provider-map.js`'s file-top doc ends "Pure logic — no DOM access at load
+  time", and all four exports take/return plain provider maps.
+  `_populateProviderDropdown` and `_updateModelDropdown` are `innerHTML`,
+  `createElement` and `<select>.value` from top to bottom.
+- `syncTierToModel` already lives in `council-crud.js` and is the TAIL of
+  `_updateModelDropdown` — the two do the same tier sync, one off the option's
+  `data-tier`, the other off the model list. The extraction boundary therefore
+  cuts through the middle of one flow today, and `council-crud.js`'s own header
+  already records "Pulling `_updateModelDropdown` across is tracked as a
+  follow-up". Moving it there reunites them and lets `syncTierToModel` become a
+  normal `(tab, spec)` participant instead of the calling-convention exception
+  that same header has to call out.
+
+A defensible split is possible (pure model-list resolution to `provider-map`,
+the DOM painting to `council-crud`) but it is a third option, not the default.
+
+**For the selector handler specifically.** A `bindCouncilSelector(tab, spec,
+panel)` would serve all three call sites: `_setupListeners`,
+`_setupCouncilListeners`, AND the pending-default branch at the end of
+`renderCouncilSelector` (`council-crud.js:754`), which is a near-copy of the
+handler's found-a-council branch (`_applyConfigToUI(council.config)` +
+`_markClean()`). While doing it, note that `markClean`/`markDirty`
+(`council-crud.js:764`, `:773`) already call `tab._updateSaveButtonStates()`
+unconditionally, so the handler's trailing `_updateSaveButtonStates()` is a
+second full pass on two of its three branches (selected-and-found, and
+no-selection; only selected-but-NOT-found needs it). That is not free: the pass
+re-runs `_readConfigFromUI()` + `_validateConfig()` and fires `onStateChange`,
+so on the settings page every selector change syncs the host footer twice.
+
+#### (b) The modal should own its own submit button
+
+Delete the `if (submitBtn)` block at the end of `CouncilCrud.updateCharCount`
+(`council-crud.js:888`) so the shared helper only touches nodes inside its own
+panel, and have `AnalysisConfigModal` gate `[data-action="submit"]` from
+whichever tab is active. That block is the ONLY reason the helper reaches for
+`tab.modal` instead of `panel`, and its `if` guard exists purely because the
+settings-page host has no submit button at all.
+
+Related, and part of the same change:
+
+- `AnalysisConfigModal.updateCharacterCount` (`AnalysisConfigModal.js:701`) is a
+  THIRD implementation of what `CouncilCrud.updateCharCount` now holds for both
+  tabs — same `char-count-warning` / `char-count-error` / `textarea-warning` /
+  `textarea-error` classes, same near-limit ladder, same tooltip strings. Once
+  button ownership moves, the panel-scoped remainder is one helper taking
+  `(container, textarea, countEl, limit, threshold)`.
+- The limit is declared THREE times — `AnalysisConfigModal.js:22`,
+  `VoiceCentricConfigTab.js:123`, `AdvancedConfigTab.js:133`, all `5000` /
+  `4500` — and the modal's tooltip still hardcodes the string `'5,000'`
+  (`AnalysisConfigModal.js:739`) rather than deriving it, so the number the user
+  is told can drift from the number enforced. The council-crud copy was already
+  fixed to derive it (`${tab.CHAR_LIMIT.toLocaleString()}`).
+
+Worth its own change with its own tests: it touches the Single-tab submit path
+that step 2 otherwise leaves alone. The recount added to `_switchTab` in this
+round is pinned by `tests/unit/analysis-config-modal-tab-panels.test.js`, which
+asserts on the shared button — that suite is the regression net this change has
+to keep green while moving who writes it.
+
+#### (c) Source the id table in `config-tab-hosted.test.js` from the spec
+
+`tests/unit/config-tab-hosted.test.js:57` spells nine ids as literals per tab —
+`panelId`, `selectorId`, `instructionsId`, `charCountId`,
+`charCountContainerId`, three `writeControlIds`, `exportId` — every one of which
+`COUNCIL_CRUD_SPEC` already carries. That suite already mounts both tabs hosted
+and non-hosted and queries exactly those ids, so reading them off the spec turns
+its existing assertions into a spec-to-DOM binding at no cost, and stops the
+table quietly asserting about ids that no longer exist after a rename.
+
+Two wrinkles for whoever does it: the suite stores BARE ids (`vc-char-count`)
+and builds `#${id}` selectors, while the spec stores full selectors
+(`#vc-char-count`) — so the conversion is one `.slice(1)`, not a swap. And
+`repoBannerId` has no spec counterpart; it stays a literal.
+
+Once it lands, the equivalent id-resolution block in
+`tests/unit/config-tab-shared-spec.test.js` becomes redundant and can go,
+leaving that file as the small structural suite it wants to be.
+
+Deferred because it edits a suite this round already touched, for a payoff that
+is protection against a future rename rather than a present defect.
+
 ### Deferral — CSS extraction waits for a third settings-page manager
 
 `public/css/council-manager.css` (261 lines) and
@@ -701,6 +950,9 @@ JS and the E2E selectors (`.council-manager__save-btn` is asserted in
 ### Follow-ups (explicitly NOT in this round)
 
 Listed worst-first. The head of this list is a real bug, not a tidy-up.
+The three follow-ups the Decision B step 2 extraction itself left behind are
+recorded separately, with their measurements, under
+**Decision B step 2 — deferred follow-ups** above.
 
 - **BUG, prioritise — "Add council" can silently overwrite a DIFFERENT
   council.** Pre-existing; found by integration review and traced by the
@@ -782,7 +1034,9 @@ Listed worst-first. The head of this list is a real bug, not a tidy-up.
 
 **Prerequisite from the Phase 3 review round** (above): Decision B step 2 — the
 tab-duplication extraction, as its own commit — lands before Phase 4 work
-starts. The `council-manager.css` / `snippet-manager.css` extraction is
+starts. **Both steps of Decision B are now done** (step 1 in the 2026-08-17
+review round, step 2 on 2026-08-18); Phase 4 is unblocked. The
+`council-manager.css` / `snippet-manager.css` extraction is
 deferred separately and is *not* a Phase 4 prerequisite (its trigger is a third
 settings-page manager, which the CLI does not add). Neither touches the CLI
 surface below; Phase 4's own spec is unaffected.
@@ -1015,7 +1269,9 @@ with the verb table.
   match its "Standard" badge (Decision A, 2026-08-17).
 - The remaining ~346 lines of tab duplication get extracted as its own commit
   before Phase 4, after the `loadCouncils` filter tests pin the asymmetry
-  (Decision B, 2026-08-17).
+  (Decision B, 2026-08-17). **Both steps done; the shared bodies live in
+  `council-crud.js` and the per-tab values in a grown `COUNCIL_CRUD_SPEC`
+  (2026-08-18).**
 - `council-manager.css` / `snippet-manager.css` extraction deferred until a
   third settings-page manager exists — design the base against three cases,
   not two (2026-08-17).

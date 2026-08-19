@@ -228,9 +228,13 @@ class CouncilManager {
   }
 
   /**
-   * The type literal to send to the API / the document builder. Legacy rows
-   * predate the `type` column and are level-centric, matching
-   * `AdvancedConfigTab.loadCouncils`' `!c.type || c.type === 'advanced'` filter.
+   * The type literal to send to the API / the document builder. Anything that
+   * is not exactly `'council'` — including an untyped row — is level-centric
+   * here, matching `AdvancedConfigTab.COUNCIL_CRUD_SPEC.councilFilter`'s
+   * `!c.type || c.type === 'advanced'`. Untyped rows do not come from any
+   * current write path (every one of them defaults the column to 'advanced');
+   * tolerating them is defensive, and Advanced is where they belong because
+   * level-keyed config is the shape they would hold.
    */
   _effectiveType(council) {
     return council?.type === 'council' ? 'council' : 'advanced';
@@ -361,7 +365,7 @@ class CouncilManager {
       // (the dropdown only returns { label, cssClass }) so the untrusted parts
       // of the row stay textContent-only.
       //
-      // The badge is fed the EFFECTIVE type, so a legacy untyped row badges as
+      // The badge is fed the EFFECTIVE type, so an untyped row badges as
       // "Advanced" — which is what it is, and what this row's Edit button opens.
       // `typeBadge` normalizes untyped rows the same way, so this is belt and
       // braces; it stays explicit because `_effectiveType` is also what the
@@ -600,9 +604,15 @@ class CouncilManager {
     wrapper.className = 'council-manager__tab-host';
 
     const panel = document.createElement('div');
-    // Hardcoded inside the tabs (VoiceCentricConfigTab._updateSaveButtonStates
-    // queries '#tab-panel-council'; AdvancedConfigTab queries
-    // '#tab-panel-advanced'). They are not configurable.
+    // The tab looks its own panel up by id, so this node has to be named
+    // exactly what the tab will query for. The canonical id lives on the tab's
+    // `COUNCIL_CRUD_SPEC.panelId`; it is repeated rather than read from there
+    // deliberately, because everything up to the try/catch below runs
+    // unguarded and `TabClass` is whatever was on `window` — reaching into a
+    // static here turns a broken tab class into an unhandled throw instead of
+    // the "Failed to open the council editor" recovery. The two copies are
+    // pinned together by council-manager.test.js, and divergence is silent
+    // (the tab finds no panel; every button-state refresh no-ops).
     panel.id = type === 'council' ? 'tab-panel-council' : 'tab-panel-advanced';
     wrapper.appendChild(panel);
     root.appendChild(wrapper);
@@ -777,9 +787,22 @@ class CouncilManager {
    * CLEAN — so gating on dirty alone would make creating a council impossible.
    * Hence: no selection => always live; a selection => only when dirty.
    *
-   * File councils are refused outright. The API 400s PUT and DELETE on `file:`
-   * ids, so an in-place save there cannot succeed; the list's Duplicate button
-   * is the path that turns one into an editable copy.
+   * File councils are refused outright, and the proof is the ID, not a row from
+   * `this._councils`. `tab._isFileCouncil` -> `CouncilCrud.isFileCouncilId` is
+   * the same helper the tab's own Save row gates on, so the two gates cannot
+   * disagree, and it still holds when the list is empty or stale — which it can
+   * be: `_loadCouncils` deliberately keeps the previous array on a failed
+   * refresh, and it is a different array from `tab.councils`, fetched at a
+   * different moment. A list lookup would answer a MISS as `undefined`, and
+   * `_isReadOnly(undefined)` is falsy — so "not in my list" would silently read
+   * as "writable". The hosted tab keeps its council `<select>`, so the user can
+   * point the editor at a council this list does not contain; Save would light
+   * up on a `file:` id the API then 403s. `_isReadOnly` stays where the fetched
+   * `source`/`readOnly` fields are authoritative: rendering the list rows.
+   *
+   * The API 400s PUT and DELETE on `file:` ids, so an in-place save there cannot
+   * succeed; the list's Duplicate button is the path that turns one into an
+   * editable copy.
    *
    * @returns {boolean}
    */
@@ -788,7 +811,7 @@ class CouncilManager {
     if (!tab) return false;
     const selectedId = tab.selectedCouncilId;
     if (!selectedId) return true;
-    if (this._isReadOnly(this._councils.find(c => c.id === selectedId))) return false;
+    if (tab._isFileCouncil(selectedId)) return false;
     return Boolean(tab.isDirty);
   }
 
@@ -920,8 +943,8 @@ class CouncilManager {
    * case-insensitive name collision so a rejected name is re-offered rather than
    * lost, and POST the ORIGINAL stored config (not a re-read of any UI).
    *
-   * File councils are duplicated with their own type — and a legacy row with no
-   * type is 'advanced', matching what POST /api/councils defaults to.
+   * File councils are duplicated with their own type — and a row with no type
+   * is 'advanced', matching what POST /api/councils defaults to.
    *
    * NOTE: a file council's `description` is DROPPED by the copy. The `councils`
    * table has no description column (src/database.js), so there is nowhere to
@@ -992,7 +1015,7 @@ class CouncilManager {
   /**
    * Export a council as a versioned council document (download + best-effort
    * clipboard copy), straight from the row data — no UI round-trip, so what is
-   * exported is exactly what is stored. Legacy untyped rows export as
+   * exported is exactly what is stored. An untyped row exports as
    * 'advanced'; the document format requires a type.
    */
   async _export(council) {

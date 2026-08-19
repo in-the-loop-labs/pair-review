@@ -14,6 +14,10 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
+// Deliberately NOT tests/utils/config-tab-modules.js: the helper ASSIGNS
+// `window.CouncilCrud` itself, which would make the registration assertion below
+// compare an object to itself. This file has to observe the module's own
+// self-install, so it loads it directly.
 const CouncilCrudModule = require('../../public/js/utils/council-crud.js');
 const { VoiceCentricConfigTab } = require('../../public/js/components/VoiceCentricConfigTab.js');
 const { AdvancedConfigTab } = require('../../public/js/components/AdvancedConfigTab.js');
@@ -60,9 +64,16 @@ function makeCtx(overrides = {}) {
   return {
     modal: mountBothSelectors(),
     councils: [{ id: 'c1', name: 'Db Council' }],
+    // The unfiltered list the real tabs keep alongside `councils` — same row
+    // plus one this tab filters out, so pruning that touches only the right
+    // entries is observable.
+    _allCouncils: [{ id: 'c1', name: 'Db Council' }, { id: 'c2', name: 'Other Council' }],
     selectedCouncilId: 'c1',
     _markClean: vi.fn(),
-    loadCouncils: vi.fn(async () => {}),
+    // `true` is the real contract: the fetch succeeded AND the selector was
+    // re-rendered. Callers branch on it.
+    loadCouncils: vi.fn(async () => true),
+    _renderCouncilSelector: vi.fn(),
     _applyConfigToUI: vi.fn(),
     _defaultConfig: vi.fn(() => CONFIG),
     _updateSaveButtonStates: vi.fn(),
@@ -166,7 +177,16 @@ for (const spec of TABS) {
       const fetchSpy = vi.fn(async () => okResponse());
       vi.stubGlobal('fetch', fetchSpy);
       window.confirmDialog = { show: vi.fn(async () => 'confirm') };
-      const ctx = makeCtx();
+      // The real `loadCouncils` contract, faked: on success it repaints the
+      // selector through the module's own renderer and resolves true. That
+      // repaint — over the pruned list — is what takes the deleted `<option>`
+      // off screen, so stubbing it out would pin nothing here.
+      const ctx = makeCtx({
+        _renderCouncilSelector: vi.fn(function () {
+          CouncilCrudModule.renderCouncilSelector(this, TabClass.COUNCIL_CRUD_SPEC);
+        })
+      });
+      ctx.loadCouncils = vi.fn(async () => { ctx._renderCouncilSelector(); return true; });
       select(ctx, selectorId).value = 'c1';
       select(ctx, selectorId).classList.remove('new-council-selected');
 
@@ -180,7 +200,48 @@ for (const spec of TABS) {
       expect(ctx._updateSaveButtonStates).toHaveBeenCalledTimes(1);
       expect(select(ctx, selectorId).value).toBe('');
       expect(select(ctx, selectorId).classList.contains('new-council-selected')).toBe(true);
+      // The successful reload already repainted; no second repaint on top of it.
+      expect(ctx._renderCouncilSelector).toHaveBeenCalledTimes(1);
+      expect(select(ctx, selectorId).querySelector('option[value="c1"]')).toBe(null);
       expect(window.toast.showSuccess).toHaveBeenCalledWith('Council deleted');
+    });
+
+    it('drops the deleted row locally when the follow-up reload fails', async () => {
+      // The DELETE returned ok, so the row is gone server-side — but
+      // `loadCouncils` deliberately KEEPS the previous lists when its GET
+      // fails. Without a local prune the deleted council stays in both lists:
+      // still selectable, and its name still reserved in `saveCouncilAs`'s
+      // duplicate scan.
+      vi.stubGlobal('fetch', vi.fn(async () => okResponse()));
+      window.confirmDialog = { show: vi.fn(async () => 'confirm') };
+      const ctx = makeCtx({ loadCouncils: vi.fn(async () => false) });
+
+      await expect(TabClass.prototype._deleteCouncil.call(ctx)).resolves.toBe(true);
+
+      expect(ctx.councils).toEqual([]);
+      expect(ctx._allCouncils).toEqual([{ id: 'c2', name: 'Other Council' }]);
+      // The load-bearing half: pruning the arrays alone leaves the real
+      // `<option>` nodes up, because NOTHING repaints the `<select>` on the
+      // failed-reload path.
+      expect(ctx._renderCouncilSelector).toHaveBeenCalledTimes(1);
+      expect(ctx.selectedCouncilId).toBe(null);
+      expect(window.toast.showSuccess).toHaveBeenCalledWith('Council deleted');
+    });
+
+    it('prunes without _allCouncils, which a tab may not have yet', async () => {
+      // `saveCouncilAs` documents the absent case (a stubbed context, or a tab
+      // whose first `loadCouncils` has not resolved) and falls back to
+      // `tab.councils` — which the prune covers. Reaching for `.filter` on it
+      // regardless would throw INSIDE the try, turning a successful delete into
+      // "Failed to delete council".
+      vi.stubGlobal('fetch', vi.fn(async () => okResponse()));
+      window.confirmDialog = { show: vi.fn(async () => 'confirm') };
+      const ctx = makeCtx({ _allCouncils: undefined, loadCouncils: vi.fn(async () => false) });
+
+      await expect(TabClass.prototype._deleteCouncil.call(ctx)).resolves.toBe(true);
+
+      expect(ctx.councils).toEqual([]);
+      expect(window.toast.showError).not.toHaveBeenCalled();
     });
 
     it('does not delete when the confirmation is dismissed', async () => {

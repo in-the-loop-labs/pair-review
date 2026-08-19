@@ -10,14 +10,6 @@
  * voice-centric tab is now the default "Council" tab.
  */
 class AdvancedConfigTab {
-  /**
-   * What the shared council CRUD (public/js/utils/council-crud.js) needs to
-   * speak for THIS tab: the API type literal and this tab's own council
-   * `<select>`. Read off the class (not `this`) so the delegations work on any
-   * tab-like context.
-   */
-  static COUNCIL_CRUD_SPEC = { type: 'advanced', selectorId: '#council-selector' };
-
   /** Info circle SVG icon for section tooltips */
   static INFO_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8Zm8-6.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM6.5 7.75A.75.75 0 0 1 7.25 7h1a.75.75 0 0 1 .75.75v2.75h.25a.75.75 0 0 1 0 1.5h-2a.75.75 0 0 1 0-1.5h.25v-2h-.25a.75.75 0 0 1-.75-.75ZM8 6a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z"/></svg>`;
 
@@ -51,6 +43,52 @@ class AdvancedConfigTab {
 
   /** Default timeout in milliseconds (10 minutes) */
   static DEFAULT_TIMEOUT = 600000;
+
+  /**
+   * Everything the shared council-tab behaviour
+   * (public/js/utils/council-crud.js) needs to speak for THIS tab: the API type
+   * literal, this tab's own element ids, its default timeout, the prefix for an
+   * auto-saved council's generated name, and which councils its selector shows.
+   * Read off the class (not `this`) so the delegations work on any tab-like
+   * context.
+   *
+   * Ids are spelled out literally rather than derived from a prefix — tab
+   * element ids are page-global, so every one of them has to stay greppable.
+   *
+   * `councilFilter` and `autoSaveNamePrefix` are the two values that carry
+   * BEHAVIOUR, and they differ from VoiceCentricConfigTab's on purpose. The
+   * prefixes are the persisted `type` column literals. The filters are
+   * asymmetric because the two tabs render two DIFFERENT config shapes, so a
+   * council has to land in the tab that can read it: VoiceCentricConfigTab
+   * claims `type === 'council'` exactly, and this one additionally accepts
+   * `!c.type`. That extra clause is defensive tolerance, NOT a legacy-row
+   * rule — no current write path can produce an untyped row (the column
+   * defaults to 'advanced' in the schema and in migration 18's ADD COLUMN, so
+   * even pre-migration rows read back 'advanced'; `CouncilRepository.create`
+   * and `POST /api/councils` both default it; and file councils come from
+   * `parseCouncilDocument`, which throws on any type but the two literals).
+   * It lives HERE because level-keyed config is the shape such a row would
+   * hold, and this tab is the only one that can render it. See the module
+   * header in council-crud.js.
+   *
+   * Declared after DEFAULT_TIMEOUT because static fields initialize in source
+   * order — moving it above would make `defaultTimeout` undefined.
+   */
+  static COUNCIL_CRUD_SPEC = {
+    type: 'advanced',
+    selectorId: '#council-selector',
+    panelId: '#tab-panel-advanced',
+    saveBtnId: '#council-save-btn',
+    saveAsBtnId: '#council-save-as-btn',
+    exportBtnId: '#council-export-btn',
+    deleteBtnId: '#council-delete-btn',
+    charCountId: '#council-char-count',
+    charCountContainerId: '#council-char-count-container',
+    instructionsId: '#council-custom-instructions',
+    defaultTimeout: AdvancedConfigTab.DEFAULT_TIMEOUT,
+    autoSaveNamePrefix: 'Advanced',
+    councilFilter: c => !c.type || c.type === 'advanced'
+  };
 
 
   /**
@@ -97,6 +135,21 @@ class AdvancedConfigTab {
   }
 
   /**
+   * This tab's panel inside whatever host it was mounted in, or null.
+   *
+   * The id lives in `COUNCIL_CRUD_SPEC.panelId` and is read from there rather
+   * than spelled out per call site. `querySelector` returns null on a miss
+   * instead of throwing, and every caller guards with `if (!panel) return;` —
+   * so an inline lookup left behind by a rename becomes a silent no-op, and at
+   * `_readConfigFromUI` the next Save writes a config built from nothing.
+   *
+   * @returns {HTMLElement|null}
+   */
+  _panel() {
+    return this.modal.querySelector(AdvancedConfigTab.COUNCIL_CRUD_SPEC.panelId);
+  }
+
+  /**
    * Inject the advanced council panel into the modal.
    * Called by AnalysisConfigModal after the tab panels are created.
    * @param {HTMLElement} panel - The #tab-panel-advanced element
@@ -116,6 +169,7 @@ class AdvancedConfigTab {
 
   /**
    * Load providers data (reuses the modal's loaded providers)
+   * DUPLICATED in VoiceCentricConfigTab — known and tracked (plans/council-management.md); dedup deferred.
    * @param {Object} providers - Provider definitions from AnalysisConfigModal
    */
   setProviders(providers) {
@@ -127,45 +181,20 @@ class AdvancedConfigTab {
 
   /**
    * Load saved councils from the API, filtering the SELECTOR to advanced and
-   * legacy-untyped rows.
+   * legacy-untyped rows via `COUNCIL_CRUD_SPEC.councilFilter`.
    *
-   * That filter is asymmetric with `VoiceCentricConfigTab.loadCouncils`, which
-   * takes `c.type === 'council'` only, and the asymmetry is load-bearing:
-   * untyped rows predate the `type` column and are level-centric, so THIS tab
-   * is the only one that can render them. Tighten this to
-   * `c.type === 'advanced'` and every legacy council disappears from both
-   * selectors. `CouncilCard`, `CouncilDropdown` and `CouncilManager` all cite
-   * this rule. Do not "unify" it.
-   *
-   * The unfiltered response is kept as `_allCouncils` for the duplicate-name
-   * scan, which must see every name regardless of type.
+   * That filter is asymmetric with `VoiceCentricConfigTab`'s, which takes
+   * `c.type === 'council'` only. The asymmetry is load-bearing: an untyped row
+   * would hold level-centric config, so THIS tab is the only one that can
+   * render it — see `COUNCIL_CRUD_SPEC` above for why `!c.type` is defensive
+   * tolerance rather than a legacy-row rule. The body is shared; see
+   * `loadCouncils` in public/js/utils/council-crud.js.
    *
    * @returns {Promise<boolean>} true iff the fetch succeeded and the selector
    *   was re-rendered. NEVER rejects — several callers fire and forget.
    */
   async loadCouncils() {
-    try {
-      const response = await fetch('/api/councils');
-      if (!response.ok) throw new Error('Failed to fetch councils');
-      const data = await response.json();
-      const all = Array.isArray(data.councils) ? data.councils : [];
-      this._allCouncils = all;
-      // Only show advanced (level-centric) councils, or councils with no type (legacy)
-      this.councils = all.filter(c => !c.type || c.type === 'advanced');
-      this._councilsLoaded = true;
-      this._renderCouncilSelector();
-      return true;
-    } catch (error) {
-      console.error('Error loading councils:', error);
-      // Both lists are cleared together: a stale name scan is no more trustworthy
-      // than a stale selector.
-      this.councils = [];
-      this._allCouncils = [];
-      if (window.toast) {
-        window.toast.showError('Failed to load saved councils');
-      }
-      return false;
-    }
+    return window.CouncilCrud.loadCouncils(this, AdvancedConfigTab.COUNCIL_CRUD_SPEC);
   }
 
   /**
@@ -178,6 +207,7 @@ class AdvancedConfigTab {
 
   /**
    * Get selected council ID (if using a saved council)
+   * DUPLICATED in VoiceCentricConfigTab — known and tracked (plans/council-management.md); dedup deferred.
    * @returns {string|null}
    */
   getSelectedCouncilId() {
@@ -189,7 +219,7 @@ class AdvancedConfigTab {
    * @param {string} text - Repository instructions text
    */
   setRepoInstructions(text) {
-    const panel = this.modal.querySelector('#tab-panel-advanced');
+    const panel = this._panel();
     if (!panel) return;
 
     const banner = panel.querySelector('#council-repo-instructions-banner');
@@ -208,7 +238,7 @@ class AdvancedConfigTab {
    * @param {string} text - Last used custom instructions
    */
   setLastInstructions(text) {
-    const panel = this.modal.querySelector('#tab-panel-advanced');
+    const panel = this._panel();
     if (!panel) return;
 
     const textarea = panel.querySelector('#council-custom-instructions');
@@ -242,6 +272,8 @@ class AdvancedConfigTab {
    * (this codebase's rule — see public/js/utils/council-export.js), and its
    * absence degrades to the previous behavior instead of throwing.
    *
+   * DUPLICATED in VoiceCentricConfigTab — known and tracked (plans/council-management.md); dedup deferred.
+   *
    * @param {string|null} provider - Desired provider ID (may be unavailable)
    * @param {string|null} model - Desired model ID (may be an alias, e.g. 'opus')
    */
@@ -257,19 +289,11 @@ class AdvancedConfigTab {
   /**
    * Set the default council ID to pre-select when councils load.
    * Stores the ID as pending; it will be applied in _renderCouncilSelector().
+   * Shared body; see `setDefaultCouncilId` in public/js/utils/council-crud.js.
    * @param {string} councilId - Council ID to pre-select
    */
   setDefaultCouncilId(councilId) {
-    this._pendingDefaultCouncilId = councilId;
-    // On a cached reopen the councils are already loaded, so loadCouncils() —
-    // and the _renderCouncilSelector() call that applies the pending default —
-    // will not run again (the modal instance is reused; see AnalysisConfigModal
-    // caching on window.analysisConfigModal). Apply it now so the saved/default
-    // council is restored instead of being silently dropped onto a blank
-    // "+ New Council" selection.
-    if (this._councilsLoaded && this._injected) {
-      this._renderCouncilSelector();
-    }
+    return window.CouncilCrud.setDefaultCouncilId(this, councilId);
   }
 
   /**
@@ -338,6 +362,7 @@ class AdvancedConfigTab {
   /**
    * Validate the current council configuration.
    * Shows a warning toast if invalid.
+   * DUPLICATED in VoiceCentricConfigTab — known and tracked (plans/council-management.md); dedup deferred.
    * @returns {boolean} true if valid
    */
   validate() {
@@ -351,62 +376,31 @@ class AdvancedConfigTab {
 
   /**
    * Auto-save council if there are unsaved changes.
-   * Called before analysis starts. Errors are caught and logged, never block analysis.
-   * Always saves unsaved councils so the config is persisted for history/reuse.
+   * Called before analysis starts. Errors are caught and logged, never block
+   * analysis. Always saves unsaved councils so the config is persisted for
+   * history/reuse.
    *
-   * Editing a file council and then hitting Analyze deliberately forks a
-   * timestamped DB copy here rather than writing back: file councils are
-   * read-only, and the config that actually ran has to be persisted. The fork
-   * is lazy — a clean file council returns early on the guard below and keeps
-   * its `file:` attribution, so tweaks that are abandoned without analyzing
-   * leave no junk rows behind.
+   * The generated name uses `COUNCIL_CRUD_SPEC.autoSaveNamePrefix` ('Advanced'
+   * for this tab) — the persisted `type` column literal, not the badge text.
+   * The body is shared; see `autoSaveIfDirty` in
+   * public/js/utils/council-crud.js.
+   *
    * @returns {Promise<void>}
    */
   async autoSaveIfDirty() {
-    // Skip saving when the council is clean AND already persisted (has an ID).
-    // Unsaved councils (no selectedCouncilId) always proceed so the config is persisted.
-    if (!this._isDirty && this.selectedCouncilId) return;
-
-    const config = this._readConfigFromUI();
-    const { valid } = this._validateConfig(config);
-    if (!valid) return; // Don't auto-save invalid configs
-
-    try {
-      const timestamp = this._formatTimestamp(new Date());
-
-      let name;
-      if (this.selectedCouncilId) {
-        // Fork: create new council based on existing, don't mutate the original
-        const existing = this.councils.find(c => c.id === this.selectedCouncilId);
-        const baseName = (existing?.name || 'Advanced').replace(/\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}$/, '').trim();
-        name = `${baseName} ${timestamp}`;
-      } else {
-        // 'Advanced' is the persisted `type` column literal for this tab, so the
-        // name stays meaningful if the badge wording ever changes. Only reachable
-        // with NO council selected; otherwise the branch above takes
-        // `existing.name` (and only falls back here when the selected id is
-        // missing from `this.councils`, i.e. after a failed loadCouncils).
-        name = `Advanced ${timestamp}`;
-      }
-      await this._postCouncil(name, config);
-    } catch (error) {
-      console.error('Auto-save council failed (non-blocking):', error);
-      if (window.toast) {
-        window.toast.showWarning('Council auto-save failed');
-      }
-    }
+    return window.CouncilCrud.autoSaveIfDirty(this, AdvancedConfigTab.COUNCIL_CRUD_SPEC);
   }
 
   // --- Private methods ---
 
   /**
    * Format a Date as "YYYY-MM-DD HH:MM" for council naming.
+   * Shared body; see `formatTimestamp` in public/js/utils/council-crud.js.
    * @param {Date} date
    * @returns {string}
    */
   _formatTimestamp(date) {
-    const pad = n => String(n).padStart(2, '0');
-    return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    return window.CouncilCrud.formatTimestamp(date);
   }
 
   /**
@@ -656,7 +650,8 @@ class AdvancedConfigTab {
   }
 
   _setupCouncilListeners(panel) {
-    // Council selector
+    // Council selector.
+    // DUPLICATED in VoiceCentricConfigTab — known and tracked (plans/council-management.md); dedup deferred.
     panel.querySelector('#council-selector')?.addEventListener('change', (e) => {
       this.selectedCouncilId = e.target.value || null;
       e.target.classList.toggle('new-council-selected', !this.selectedCouncilId);
@@ -852,55 +847,28 @@ class AdvancedConfigTab {
   /**
    * Whether a council id belongs to the read-only file overlay
    * (`~/.pair-review/councils/`).
-   *
-   * Mirrors isFileCouncilId() in src/councils/council-store.js, which is what
-   * the API gates PUT/DELETE on. Testing the id (not a joined `source` field)
-   * means the check still holds when the council list is empty or stale
-   * (loadCouncils() swallows fetch failures by setting this.councils = []).
-   *
+   * Shared body; see `isFileCouncilId` in public/js/utils/council-crud.js.
    * @param {string|null|undefined} councilId
    * @returns {boolean}
    */
   _isFileCouncil(councilId) {
-    return typeof councilId === 'string' && councilId.startsWith('file:');
+    return window.CouncilCrud.isFileCouncilId(councilId);
   }
 
+  /**
+   * Repaint the council `<select>` and apply any pending default council.
+   * Shared body; see `renderCouncilSelector` in
+   * public/js/utils/council-crud.js.
+   */
   _renderCouncilSelector() {
-    const selector = this.modal.querySelector('#council-selector');
-    if (!selector) return;
-
-    const currentValue = selector.value;
-    selector.innerHTML = '<option value="" class="council-option-new">+ New Council</option>';
-    for (const council of this.councils) {
-      const opt = document.createElement('option');
-      opt.value = council.id;
-      opt.textContent = this._isFileCouncil(council.id) ? `${council.name} (file)` : council.name;
-      selector.appendChild(opt);
-    }
-
-    // Apply pending default council ID if set (from last-used or repo default)
-    if (this._pendingDefaultCouncilId) {
-      const pendingId = this._pendingDefaultCouncilId;
-      this._pendingDefaultCouncilId = null;
-
-      // Only apply if the council exists in the loaded list (handles deleted councils gracefully)
-      const council = this.councils.find(c => c.id === pendingId);
-      if (council) {
-        selector.value = pendingId;
-        this.selectedCouncilId = pendingId;
-        selector.classList.remove('new-council-selected');
-        this._applyConfigToUI(council.config);
-        this._markClean();
-        return;
-      }
-    }
-
-    if (currentValue) selector.value = currentValue;
-    selector.classList.toggle('new-council-selected', !selector.value);
+    return window.CouncilCrud.renderCouncilSelector(this, AdvancedConfigTab.COUNCIL_CRUD_SPEC);
   }
 
+  // Byte-identical to VoiceCentricConfigTab's since `_panel()` supplied the
+  // panel id. Left in place until `_populateProviderDropdown` moves — known
+  // and tracked (plans/council-management.md).
   _updateAllVoiceDropdowns() {
-    const panel = this.modal.querySelector('#tab-panel-advanced');
+    const panel = this._panel();
     if (!panel) return;
 
     panel.querySelectorAll('.voice-provider').forEach(select => {
@@ -908,6 +876,7 @@ class AdvancedConfigTab {
     });
   }
 
+  // DUPLICATED in VoiceCentricConfigTab — known and tracked (plans/council-management.md); dedup deferred.
   _populateProviderDropdown(select) {
     const currentValue = select.value;
     const isConsolidation = select.dataset.target === 'orchestration';
@@ -935,6 +904,7 @@ class AdvancedConfigTab {
     this._updateModelDropdown(select);
   }
 
+  // DUPLICATED in VoiceCentricConfigTab — known and tracked (plans/council-management.md); dedup deferred.
   _updateModelDropdown(providerSelect) {
     const providerId = providerSelect.value;
     const provider = this.providers[providerId];
@@ -973,56 +943,25 @@ class AdvancedConfigTab {
   }
 
   /**
-   * Assign a STORED model id onto a `<select>` whose options carry canonical
-   * ids only, resolving legacy aliases on the way in.
-   *
-   * A bare `modelSelect.value = voice.model` selects NOTHING when the stored id
-   * is an alias — `opus`, `fable`, `opus-4.5`, `gpt-5.4`, `gemini-3.5-flash`,
-   * `muse-spark` are all real, and aliases exist precisely so old councils keep
-   * resolving. Worse, it runs AFTER `_updateModelDropdown` has already picked a
-   * valid default, so the alias overwrites a good value with `""` — and
-   * `_readConfigFromUI` keeps a reviewer only `if (provider && model)`, so the
-   * row is silently DROPPED from the config the next Save writes.
-   *
-   * Two rules, in order: resolve the alias through the shared, alias-aware
-   * `ProviderMap.findModelWithAliases`, and refuse to assign anything the
-   * dropdown does not actually offer — leaving `_updateModelDropdown`'s valid
-   * default in place is strictly better than blanking the field.
-   *
-   * `window.ProviderMap` is resolved at CALL time (this codebase's rule), and
-   * its absence degrades to the raw id rather than throwing.
-   *
+   * Assign a STORED model id onto a `<select>`, resolving legacy aliases first.
+   * Shared body; see `applyModelSelection` in public/js/utils/council-crud.js
+   * for why an unresolved alias silently DROPS a reviewer from the next Save.
    * @param {HTMLSelectElement|null} modelSelect - The model dropdown to set
    * @param {string} providerId - Provider the stored model belongs to
    * @param {string} modelId - Stored model id (may be an alias)
    */
   _applyModelSelection(modelSelect, providerId, modelId) {
-    if (!modelSelect || !modelId) return;
-    const providerMap = typeof window !== 'undefined' ? window.ProviderMap : null;
-    const canonical = providerMap?.findModelWithAliases
-      ? providerMap.findModelWithAliases(this.providers[providerId], modelId)
-      : null;
-    const resolved = canonical ? canonical.id : modelId;
-    if (Array.from(modelSelect.options).some(opt => opt.value === resolved)) {
-      modelSelect.value = resolved;
-    }
+    return window.CouncilCrud.applyModelSelection(this, modelSelect, providerId, modelId);
   }
 
   /**
    * Sync the tier dropdown to the selected model's recommended tier.
    * Called when the user manually changes the model dropdown.
+   * Shared body; see `syncTierToModel` in public/js/utils/council-crud.js.
    * @param {HTMLSelectElement} modelSelect - The model dropdown that changed
    */
   _syncTierToModel(modelSelect) {
-    const container = modelSelect.closest('.voice-row');
-    const tierSelect = container?.querySelector('.voice-tier');
-    if (!tierSelect) return;
-
-    const selectedOption = modelSelect.options[modelSelect.selectedIndex];
-    const tier = selectedOption?.dataset?.tier;
-    if (tier) {
-      tierSelect.value = tier;
-    }
+    return window.CouncilCrud.syncTierToModel(modelSelect);
   }
 
   _addVoice(level) {
@@ -1141,13 +1080,15 @@ class AdvancedConfigTab {
   }
 
   /**
-   * Get the default timeout for a provider, falling back to the static DEFAULT_TIMEOUT.
+   * Get the default timeout for a provider, falling back to the static
+   * DEFAULT_TIMEOUT (carried on the spec).
+   * Shared body; see `getProviderDefaultTimeout` in
+   * public/js/utils/council-crud.js.
    * @param {string} providerId - Provider ID (e.g., 'pi', 'claude')
    * @returns {number} Default timeout in ms
    */
   _getProviderDefaultTimeout(providerId) {
-    const provider = this.providers[providerId];
-    return provider?.defaultTimeout ?? AdvancedConfigTab.DEFAULT_TIMEOUT;
+    return window.CouncilCrud.getProviderDefaultTimeout(this, AdvancedConfigTab.COUNCIL_CRUD_SPEC, providerId);
   }
 
   /**
@@ -1196,7 +1137,7 @@ class AdvancedConfigTab {
    * @param {HTMLSelectElement} providerSelect - The provider dropdown that changed
    */
   _applyProviderDefaultTimeout(providerSelect) {
-    const panel = this.modal.querySelector('#tab-panel-advanced');
+    const panel = this._panel();
     if (!panel) return;
 
     const providerId = providerSelect.value;
@@ -1235,117 +1176,43 @@ class AdvancedConfigTab {
   // --- Dirty state tracking ---
 
   _markDirty() {
-    this._isDirty = true;
-    this._updateSaveButtonStates();
+    return window.CouncilCrud.markDirty(this);
   }
 
   _markClean() {
-    this._isDirty = false;
-    this._updateSaveButtonStates();
-  }
-
-  _updateSaveButtonStates() {
-    // The hosted editor (CouncilManager) renders the footer that replaces this
-    // tab's own write row, and its Save has to follow the same state this
-    // method gates on — dirty, and which council is selected. Every transition
-    // funnels through here (_markDirty, _markClean, the selector's change
-    // handler), so this is the one place a host can subscribe to and see all of
-    // them. No-op when nothing subscribed.
-    if (typeof this.onStateChange === 'function') this.onStateChange();
-
-    const panel = this.modal.querySelector('#tab-panel-advanced');
-    if (!panel) return;
-
-    const saveBtn = panel.querySelector('#council-save-btn');
-    const saveAsBtn = panel.querySelector('#council-save-as-btn');
-    const exportBtn = panel.querySelector('#council-export-btn');
-    const deleteBtn = panel.querySelector('#council-delete-btn');
-
-    // File councils are read-only: no in-place save, no delete. Save As stays
-    // enabled — it POSTs a copy, which is the duplicate-to-my-councils flow.
-    const isFile = this._isFileCouncil(this.selectedCouncilId);
-
-    if (saveBtn) {
-      saveBtn.disabled = !this._isDirty || !this.selectedCouncilId || isFile;
-    }
-    // Reuse _validateConfig to keep enablement in sync with actual save
-    // validation. Export shares the check: an invalid config can be neither
-    // saved nor exported (the exported document would not read back).
-    if (saveAsBtn || exportBtn) {
-      const config = this._readConfigFromUI();
-      const { valid } = this._validateConfig(config);
-      if (saveAsBtn) saveAsBtn.disabled = !valid;
-      if (exportBtn) exportBtn.disabled = !valid;
-    }
-    if (deleteBtn) {
-      // Delete is only available when viewing a saved, non-file council
-      deleteBtn.disabled = !this.selectedCouncilId || isFile;
-    }
-
-    // Toggle the "unsaved changes" hint in the modal footer
-    this._updateDirtyHint();
+    return window.CouncilCrud.markClean(this);
   }
 
   /**
-   * Toggle the "unsaved changes" hint + save button container in the modal footer.
-   * Visible only when council tab is active AND config is dirty.
+   * Refresh this tab's Save / Save As / Export / Delete enablement, notify a
+   * subscribed host via `onStateChange`, and toggle the modal's dirty hint.
+   * Shared body; see `updateSaveButtonStates` in
+   * public/js/utils/council-crud.js.
+   */
+  _updateSaveButtonStates() {
+    return window.CouncilCrud.updateSaveButtonStates(this, AdvancedConfigTab.COUNCIL_CRUD_SPEC);
+  }
+
+  /**
+   * Toggle the "unsaved changes" hint + save button container in the modal
+   * footer. Visible only when council tab is active AND config is dirty.
+   * Shared body; see `updateDirtyHint` in public/js/utils/council-crud.js.
    */
   _updateDirtyHint() {
-    const container = this.modal.querySelector('#council-footer-left');
-    if (!container) return;
-    container.style.display = this._isDirty ? '' : 'none';
+    return window.CouncilCrud.updateDirtyHint(this);
   }
 
   /**
-   * Update council custom instructions character count
+   * Update council custom instructions character count.
+   * Shared body; see `updateCharCount` in public/js/utils/council-crud.js.
    * @param {number} count - Current character count
    */
   _updateCouncilCharCount(count) {
-    const panel = this.modal.querySelector('#tab-panel-advanced');
-    if (!panel) return;
-
-    const charCountEl = panel.querySelector('#council-char-count');
-    const charCountContainer = panel.querySelector('#council-char-count-container');
-    const textarea = panel.querySelector('#council-custom-instructions');
-    const submitBtn = this.modal.querySelector('[data-action="submit"]');
-
-    if (charCountEl) {
-      charCountEl.textContent = count.toLocaleString();
-    }
-
-    const isOverLimit = count > this.CHAR_LIMIT;
-    const isNearLimit = count > this.CHAR_WARNING_THRESHOLD && count <= this.CHAR_LIMIT;
-
-    if (charCountContainer) {
-      charCountContainer.classList.remove('char-count-warning', 'char-count-error');
-      if (isOverLimit) {
-        charCountContainer.classList.add('char-count-error');
-      } else if (isNearLimit) {
-        charCountContainer.classList.add('char-count-warning');
-      }
-    }
-
-    if (textarea) {
-      textarea.classList.remove('textarea-warning', 'textarea-error');
-      if (isOverLimit) {
-        textarea.classList.add('textarea-error');
-      } else if (isNearLimit) {
-        textarea.classList.add('textarea-warning');
-      }
-    }
-
-    if (submitBtn) {
-      submitBtn.disabled = isOverLimit;
-      if (isOverLimit) {
-        submitBtn.title = 'Custom instructions exceed 5,000 character limit';
-      } else {
-        submitBtn.title = 'Start Analysis (Cmd/Ctrl+Enter)';
-      }
-    }
+    return window.CouncilCrud.updateCharCount(this, AdvancedConfigTab.COUNCIL_CRUD_SPEC, count);
   }
 
   _readConfigFromUI() {
-    const panel = this.modal.querySelector('#tab-panel-advanced');
+    const panel = this._panel();
     if (!panel) return this._defaultConfig();
 
     const config = { levels: {}, consolidation: {} };
@@ -1399,7 +1266,7 @@ class AdvancedConfigTab {
   }
 
   _applyConfigToUI(config) {
-    const panel = this.modal.querySelector('#tab-panel-advanced');
+    const panel = this._panel();
     if (!panel) return;
 
     for (const level of [1, 2, 3]) {
@@ -1567,12 +1434,17 @@ class AdvancedConfigTab {
    * `<slug>.council.json` and, best-effort, copies the same JSON to the
    * clipboard.
    *
-   * The whole body is shared with VoiceCentricConfigTab — only the type literal
-   * differs. See `exportCouncilFromTab` in public/js/utils/council-export.js for
+   * The whole body is shared with VoiceCentricConfigTab — only the type
+   * differs, and it comes from `COUNCIL_CRUD_SPEC.type` — the one place this
+   * tab states its persisted type literal. That argument is load-bearing:
+   * `exportCouncilFromTab` stamps it into the document's `type` field, and
+   * `parseCouncilDocument` refuses anything that is not exactly `'council'` or
+   * `'advanced'`, so it decides which editor a re-imported council opens in.
+   * See `exportCouncilFromTab` in public/js/utils/council-export.js for
    * the validity gate and the deliberate live-config / selected-name identity.
    */
   async _exportCouncil() {
-    return window.CouncilExport.exportCouncilFromTab(this, 'advanced');
+    return window.CouncilExport.exportCouncilFromTab(this, AdvancedConfigTab.COUNCIL_CRUD_SPEC.type);
   }
 
   /** Confirm and DELETE the selected council, then reset to "+ New Council". */

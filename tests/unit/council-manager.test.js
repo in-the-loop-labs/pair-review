@@ -30,9 +30,9 @@ require('../../public/js/components/CouncilDropdown.js');
 require('../../public/js/components/CouncilCard.js');
 require('../../public/js/utils/provider-map.js');
 require('../../public/js/utils/provider-model.js');
-require('../../public/js/utils/council-crud.js');
-const { VoiceCentricConfigTab } = require('../../public/js/components/VoiceCentricConfigTab.js');
-const { AdvancedConfigTab } = require('../../public/js/components/AdvancedConfigTab.js');
+// The tabs come from the helper, which installs `window.CouncilCrud` for them
+// first — see its header.
+const { VoiceCentricConfigTab, AdvancedConfigTab } = require('../utils/config-tab-modules.js');
 const { CouncilManager } = require('../../public/js/components/CouncilManager.js');
 
 const PROVIDERS = [
@@ -1022,6 +1022,12 @@ describe('CouncilManager editor mount sequence', () => {
     // The WRAPPER is the tab's query root — it plays the modal's role.
     expect(manager._tab.modal).toBe(host.querySelector('.council-manager__tab-host'));
     expect(manager._tab.modal.querySelector('#tab-panel-council')).toBeTruthy();
+    // CouncilManager names the panel with its own literal while the tab looks
+    // it up through COUNCIL_CRUD_SPEC.panelId (see the comment at that
+    // assignment for why the copy is deliberate). Divergence is silent — the
+    // tab finds no panel and every button-state refresh no-ops — so pin them.
+    expect(`#${host.querySelector('.council-manager__tab-host > div').id}`)
+      .toBe(VoiceCentricConfigTab.COUNCIL_CRUD_SPEC.panelId);
   });
 
   it('Add → Advanced mounts the advanced tab and its panel id', async () => {
@@ -1035,6 +1041,9 @@ describe('CouncilManager editor mount sequence', () => {
     expect(order).toEqual(['inject', 'setProviders', 'setDefaultOrchestration', 'reset', 'loadCouncils']);
     expect(host.querySelector('#tab-panel-advanced')).toBeTruthy();
     expect(manager._tab).toBeInstanceOf(AdvancedConfigTab);
+    // Same pin as the voice case above: host literal vs spec lookup.
+    expect(`#${host.querySelector('.council-manager__tab-host > div').id}`)
+      .toBe(AdvancedConfigTab.COUNCIL_CRUD_SPEC.panelId);
   });
 
   it('Edit applies setDefaultCouncilId before loadCouncils', async () => {
@@ -1727,11 +1736,80 @@ describe('CouncilManager editor footer', () => {
       selector.dispatchEvent(new Event('change', { bubbles: true }));
       expect(manager._tab.selectedCouncilId).toBe('file:voice');
 
+      // Both lists hold the row here — the paired case below is the one where
+      // only the tab's does. Stated so the pair reads as a pair.
+      expect(manager._councils.some(c => c.id === 'file:voice')).toBe(true);
+
       // Dirty, so only the file rule can be keeping Save down. The API 400s PUT
       // on a `file:` id; Duplicate in the list is the editable-copy path.
       manager._tab._markDirty();
       expect(manager._tab.isDirty).toBe(true);
       expect(host.querySelector('.council-manager__save-btn').disabled).toBe(true);
+    });
+
+    // REGRESSION (final phase-3 review, round two): the file rule used to look
+    // the selected id up in `this._councils` and read `readOnly`/`source` off
+    // the row. `Array.prototype.find` answers a MISS with `undefined`, and
+    // `_isReadOnly(undefined)` is falsy — so "not in my list" silently read as
+    // "writable".
+    //
+    // That list is not the tab's. `_openEditor` does not refetch, so the tab's
+    // own `loadCouncils()` GET happens later and can see councils this list
+    // never did; `_loadCouncils` also keeps the previous array on a FAILED
+    // refresh, so it can be arbitrarily stale. The hosted tab keeps its council
+    // `<select>`, so the user can point the editor at exactly such a council —
+    // and the two gates then disagreed: the footer Save lit up while the tab's
+    // own id-based gate stayed correctly down. Asking `tab._isFileCouncil`
+    // (-> `CouncilCrud.isFileCouncilId`) is asking the same helper the tab
+    // asks, and it holds whatever the list contains.
+    it('refuses a file council the manager\'s own list has never seen', async () => {
+      const fileVoice = fileCouncil({ id: 'file:voice', name: 'From Disk', type: 'council', config: VOICE_CONFIG });
+      const store = { list: [dbCouncil()], nextId: 2 };
+      const { host, manager } = await mountManager(store);
+
+      // The file overlay lands AFTER the manager painted its list. Only the
+      // tab's own load — inside `_openEditor`, which does not refetch ours —
+      // sees it.
+      store.list = [dbCouncil(), fileVoice];
+      rowFor(host, 'db-1').querySelector('.council-manager__edit-btn').click();
+      await vi.waitFor(() => expect(manager._tab && manager._tab.selectedCouncilId).toBe('db-1'));
+
+      const selector = host.querySelector('#vc-council-selector');
+      selector.value = 'file:voice';
+      selector.dispatchEvent(new Event('change', { bubbles: true }));
+      manager._tab._markDirty();
+
+      // The premise: the tab can select it, the manager's list cannot find it.
+      expect(manager._tab.councils.some(c => c.id === 'file:voice')).toBe(true);
+      expect(manager._councils.some(c => c.id === 'file:voice')).toBe(false);
+      expect(manager._tab.selectedCouncilId).toBe('file:voice');
+      expect(manager._tab.isDirty).toBe(true);
+
+      // Save here would PUT /api/councils/file:voice, which the API refuses.
+      expect(host.querySelector('.council-manager__save-btn').disabled).toBe(true);
+    });
+
+    it('still arms Save on a DB council the manager\'s own list has never seen', async () => {
+      // The other half of the fix: a list MISS must not become a blanket
+      // refusal either. A council created in another window is writable, and
+      // this list being behind is not the user's problem.
+      const store = { list: [dbCouncil()], nextId: 3 };
+      const { host, manager } = await mountManager(store);
+
+      store.list = [dbCouncil(), dbCouncil({ id: 'db-2', name: 'Second Team' })];
+      rowFor(host, 'db-1').querySelector('.council-manager__edit-btn').click();
+      await vi.waitFor(() => expect(manager._tab && manager._tab.selectedCouncilId).toBe('db-1'));
+
+      const selector = host.querySelector('#vc-council-selector');
+      selector.value = 'db-2';
+      selector.dispatchEvent(new Event('change', { bubbles: true }));
+      // Selecting a council marks the editor CLEAN, so this is the only thing
+      // Save can be waiting on.
+      manager._tab._markDirty();
+
+      expect(manager._councils.some(c => c.id === 'db-2')).toBe(false);
+      expect(manager._tab.selectedCouncilId).toBe('db-2');
+      expect(host.querySelector('.council-manager__save-btn').disabled).toBe(false);
     });
   });
 

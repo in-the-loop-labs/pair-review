@@ -21,15 +21,22 @@
  * field, so it survives an empty or stale `this.councils` — several cases below
  * pin exactly that.
  *
+ * The `_renderCouncilSelector` block also carries this file's SELECTION
+ * RECONCILIATION cases. They live here because this is the only suite that
+ * mounts a real `<select>` and drives the real method over a real council list,
+ * which is what those cases need: the repaint is where a selection whose
+ * council has vanished gets cleared, and `select.value = <missing id>` neither
+ * throws nor sticks, so nothing but a real `<option>` set can tell the two
+ * outcomes apart.
+ *
  * Both tabs implement this independently, so every case runs against both.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// Installs `window.CouncilCrud`, which the tabs' CRUD methods delegate to.
-require('../../public/js/utils/council-crud.js');
-const { VoiceCentricConfigTab } = require('../../public/js/components/VoiceCentricConfigTab.js');
-const { AdvancedConfigTab } = require('../../public/js/components/AdvancedConfigTab.js');
+// Loads both tabs with `window.CouncilCrud` — which their shared methods resolve
+// at call time — already installed. See the helper's header for why.
+const { VoiceCentricConfigTab, AdvancedConfigTab } = require('../utils/config-tab-modules.js');
 
 const DB_COUNCIL = { id: 'c1', name: 'Db Council', type: 'council', source: 'db', config: {} };
 const FILE_COUNCIL = {
@@ -184,7 +191,24 @@ for (const spec of TABS) {
     });
   });
 
-  describe(`${label}._renderCouncilSelector (file suffix)`, () => {
+  describe(`${label}._renderCouncilSelector`, () => {
+    /** The tab's council `<select>`, re-queried so the assertions see the DOM. */
+    const selectorEl = (ctx) => ctx.modal.querySelector(`#${selectorId}`);
+
+    /**
+     * A context for the reconciliation cases, with the two side effects that
+     * belong to the PENDING branch alone spied so they can be asserted absent
+     * everywhere else.
+     */
+    function makeRenderCtx(overrides = {}) {
+      return makeCtx(spec, {
+        _pendingDefaultCouncilId: null,
+        _applyConfigToUI: vi.fn(),
+        _markClean: vi.fn(),
+        ...overrides
+      });
+    }
+
     it('suffixes only the file council option with " (file)"', () => {
       const ctx = makeCtx(spec);
 
@@ -199,6 +223,126 @@ for (const spec of TABS) {
       ]);
       // The value stays the raw id — only the label is decorated.
       expect(options[2].value).toBe(FILE_COUNCIL.id);
+    });
+
+    it('clears a selection whose council is gone from the repainted list', () => {
+      // `select.value = <missing id>` neither throws nor sticks: the browser
+      // deselects and falls back to the first option. Leaving
+      // `selectedCouncilId` on the vanished id then puts the model and the view
+      // in open disagreement — `_saveCouncil` takes the PUT branch against an id
+      // the server no longer has, `_updateSaveButtonStates` keeps Delete
+      // enabled, and CouncilManager's header keeps reading "Edit council".
+      const ctx = makeRenderCtx({
+        councils: [DB_COUNCIL],
+        selectedCouncilId: FILE_COUNCIL.id
+      });
+
+      TabClass.prototype._renderCouncilSelector.call(ctx);
+
+      expect(selectorEl(ctx).value).toBe('');
+      expect(selectorEl(ctx).classList.contains('new-council-selected')).toBe(true);
+      // `null`, not '': '' is the `<option>` value the view falls back to, while
+      // `null` is what the constructor, `reset()` and both tabs' selector
+      // `change` handler (`e.target.value || null`) mean by "no council".
+      expect(ctx.selectedCouncilId).toBeNull();
+      expect(ctx._applyConfigToUI).not.toHaveBeenCalled();
+      expect(ctx._markClean).not.toHaveBeenCalled();
+    });
+
+    it('leaves a selection alone when its council is still in the list', () => {
+      // The case the clearing must not regress into: a live selection survives
+      // every repaint, class and all.
+      const ctx = makeRenderCtx({ selectedCouncilId: DB_COUNCIL.id });
+      selectorEl(ctx).classList.add('new-council-selected');
+
+      TabClass.prototype._renderCouncilSelector.call(ctx);
+
+      expect(ctx.selectedCouncilId).toBe(DB_COUNCIL.id);
+      expect(selectorEl(ctx).value).toBe(DB_COUNCIL.id);
+      expect(selectorEl(ctx).classList.contains('new-council-selected')).toBe(false);
+      expect(ctx._applyConfigToUI).not.toHaveBeenCalled();
+      expect(ctx._markClean).not.toHaveBeenCalled();
+    });
+
+    it('applies a pending default over the previous selection', () => {
+      const ctx = makeRenderCtx({ selectedCouncilId: DB_COUNCIL.id });
+      // Paint once so the `<select>` is really sitting on the db council.
+      TabClass.prototype._renderCouncilSelector.call(ctx);
+      expect(selectorEl(ctx).value).toBe(DB_COUNCIL.id);
+
+      ctx._pendingDefaultCouncilId = FILE_COUNCIL.id;
+      TabClass.prototype._renderCouncilSelector.call(ctx);
+
+      expect(ctx.selectedCouncilId).toBe(FILE_COUNCIL.id);
+      expect(selectorEl(ctx).value).toBe(FILE_COUNCIL.id);
+      // Consumed, so a later repaint cannot re-apply it over the user's edits.
+      expect(ctx._pendingDefaultCouncilId).toBeNull();
+      // ONLY this branch loads the council into the form and marks it clean.
+      expect(ctx._applyConfigToUI).toHaveBeenCalledWith(FILE_COUNCIL.config);
+      expect(ctx._markClean).toHaveBeenCalledTimes(1);
+    });
+
+    it('falls back to the current selection when the pending default is gone', () => {
+      const ctx = makeRenderCtx({
+        selectedCouncilId: DB_COUNCIL.id,
+        _pendingDefaultCouncilId: 'deleted-elsewhere'
+      });
+
+      TabClass.prototype._renderCouncilSelector.call(ctx);
+
+      expect(ctx.selectedCouncilId).toBe(DB_COUNCIL.id);
+      expect(selectorEl(ctx).value).toBe(DB_COUNCIL.id);
+      expect(ctx._pendingDefaultCouncilId).toBeNull();
+      // The restore path repaints a selector whose config is already sitting in
+      // the form, so re-applying it would be pointless and `_markClean()` would
+      // silently discard the user's unsaved edits.
+      expect(ctx._applyConfigToUI).not.toHaveBeenCalled();
+      expect(ctx._markClean).not.toHaveBeenCalled();
+    });
+
+    it('falls back to "+ New Council" when neither the pending default nor the selection exists', () => {
+      const ctx = makeRenderCtx({
+        councils: [DB_COUNCIL],
+        selectedCouncilId: 'also-gone',
+        _pendingDefaultCouncilId: 'deleted-elsewhere'
+      });
+
+      TabClass.prototype._renderCouncilSelector.call(ctx);
+
+      expect(selectorEl(ctx).value).toBe('');
+      expect(selectorEl(ctx).classList.contains('new-council-selected')).toBe(true);
+      expect(ctx.selectedCouncilId).toBeNull();
+      expect(ctx._applyConfigToUI).not.toHaveBeenCalled();
+      expect(ctx._markClean).not.toHaveBeenCalled();
+    });
+
+    it('prefers the model over the <select> when the two disagree', () => {
+      // The `_postCouncil` sequence: it assigns the new id and only THEN reloads
+      // the list, so at repaint time the `<select>` is still showing the council
+      // the user saved FROM. Restoring the DOM value would hand the freshly
+      // created council straight back to its source.
+      const ctx = makeRenderCtx({ selectedCouncilId: DB_COUNCIL.id });
+      TabClass.prototype._renderCouncilSelector.call(ctx);
+      expect(selectorEl(ctx).value).toBe(DB_COUNCIL.id);
+
+      ctx.selectedCouncilId = FILE_COUNCIL.id;
+      TabClass.prototype._renderCouncilSelector.call(ctx);
+
+      expect(selectorEl(ctx).value).toBe(FILE_COUNCIL.id);
+      expect(ctx.selectedCouncilId).toBe(FILE_COUNCIL.id);
+    });
+
+    it("restores the <select>'s own value when the model carries none", () => {
+      // Bottom rung of the ladder: the repaint wipes every option, so a context
+      // with no selection of its own has to put back what was on screen.
+      const ctx = makeRenderCtx({ selectedCouncilId: DB_COUNCIL.id });
+      TabClass.prototype._renderCouncilSelector.call(ctx);
+
+      ctx.selectedCouncilId = null;
+      TabClass.prototype._renderCouncilSelector.call(ctx);
+
+      expect(selectorEl(ctx).value).toBe(DB_COUNCIL.id);
+      expect(ctx.selectedCouncilId).toBe(DB_COUNCIL.id);
     });
   });
 

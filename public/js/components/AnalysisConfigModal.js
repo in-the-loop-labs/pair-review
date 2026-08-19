@@ -1116,6 +1116,11 @@ class AnalysisConfigModal {
         singleTextarea.value = source;
         singleTextarea.dispatchEvent(new Event('input', { bubbles: true }));
       }
+      // Recount for the panel we just revealed (see the note below the chain).
+      // OUTSIDE the `source` guard on purpose: the stale-disabled case is
+      // exactly the one where `source` is empty, so nothing was copied and
+      // nothing dispatched `input`.
+      this.updateCharacterCount(singleTextarea?.value.length ?? 0);
     } else if (tabId === 'council') {
       if (councilPanel) councilPanel.style.display = '';
       // Sync instructions to council tab
@@ -1130,6 +1135,9 @@ class AnalysisConfigModal {
       }
       if (this.councilTab) {
         this.councilTab._updateAllVoiceDropdowns();
+        // Recount for the panel we just revealed — after the copy above, so it
+        // counts the text this panel ends up holding.
+        this.councilTab._updateCharCount(vcTextarea?.value.length ?? 0);
       }
     } else if (tabId === 'advanced') {
       if (advancedPanel) advancedPanel.style.display = '';
@@ -1145,8 +1153,34 @@ class AnalysisConfigModal {
       }
       if (this.advancedTab) {
         this.advancedTab._updateAllVoiceDropdowns();
+        // Recount for the panel we just revealed — after the copy above, so it
+        // counts the text this panel ends up holding.
+        this.advancedTab._updateCouncilCharCount(advTextarea?.value.length ?? 0);
       }
     }
+
+    // WHY the three recounts above:
+    //
+    // All three character-count routines share ONE button — the modal's
+    // `[data-action="submit"]` — and each disables it when ITS OWN textarea is
+    // over the 5,000-char limit. `CouncilCrud.updateCharCount` looks the button
+    // up on `tab.modal`, not on the panel, for exactly that reason.
+    //
+    // Switching panels therefore changes which textarea the button's state is
+    // supposed to reflect, and nothing else recomputes it: this method copies
+    // instruction text BETWEEN textareas by plain assignment, which fires no
+    // `input` event. Paste 6,000 characters into the Council tab and switch to
+    // Advanced and, without these calls, the user faces a short, valid textarea
+    // and a disabled Analyze button whose tooltip cites a limit nothing on
+    // screen exceeds — recoverable only by going back and editing the hidden
+    // textarea.
+    //
+    // Deliberately NOT done by dispatching a synthetic `input` event. That would
+    // work (those handlers only recount and do not mark the editor dirty), but
+    // faking a user action to drive internal state hides the real trigger.
+    //
+    // Button ownership is unchanged here: each tab still disables the shared
+    // button. Moving ownership to the modal is a separate, recorded follow-up.
 
     // Update submit button text
     const submitBtnSpan = this.modal.querySelector('[data-action="submit"] span');

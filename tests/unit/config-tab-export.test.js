@@ -7,8 +7,10 @@
  * in council-export.test.js). What is pinned here is what remains tab-specific:
  *
  *   1. `_exportCouncil` delegates to the shared helper with the tab's OWN type
- *      literal ('council' vs 'advanced') and resolves the collaborator at call
- *      time, and
+ *      ('council' vs 'advanced') — read off `COUNCIL_CRUD_SPEC.type`, and
+ *      asserted BOTH against that spec and against the literal, so neither the
+ *      method and the spec nor the two tabs can drift — and resolves the
+ *      collaborator at call time, and
  *   2. `_updateSaveButtonStates` disables the Export button for exactly the
  *      configs the click-time gate would refuse — the state is visible before
  *      the click, not only after it.
@@ -16,8 +18,15 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { VoiceCentricConfigTab } = require('../../public/js/components/VoiceCentricConfigTab.js');
-const { AdvancedConfigTab } = require('../../public/js/components/AdvancedConfigTab.js');
+// Loads both tabs with `window.CouncilCrud` installed, and creates the `window`
+// this node-env file otherwise lacks — see the helper's header. `CouncilCrud`
+// itself is pulled out because the delegation suite below REPLACES
+// `global.window`, so this reference is carried into the replacement object too.
+const {
+  CouncilCrud,
+  VoiceCentricConfigTab,
+  AdvancedConfigTab
+} = require('../utils/config-tab-modules.js');
 
 const TABS = [
   {
@@ -78,7 +87,7 @@ function describeDelegation({ label, TabClass, expectedType }) {
     beforeEach(() => {
       originalWindow = global.window;
       exportCouncilFromTab = vi.fn(async () => ({ pair_review_council: 1 }));
-      global.window = { CouncilExport: { exportCouncilFromTab } };
+      global.window = { CouncilCrud, CouncilExport: { exportCouncilFromTab } };
     });
 
     afterEach(() => {
@@ -95,7 +104,22 @@ function describeDelegation({ label, TabClass, expectedType }) {
       await TabClass.prototype._exportCouncil.call(tab);
 
       expect(exportCouncilFromTab).toHaveBeenCalledTimes(1);
+      // Both assertions, deliberately. The literal alone let the two copies of
+      // the type drift apart (the method used to spell it out, and the CRUD
+      // spec held its own); the spec alone would let the PAIR drift to the same
+      // wrong value, since `expectedType` is what says which tab this is.
       expect(exportCouncilFromTab).toHaveBeenCalledWith(tab, expectedType);
+      expect(exportCouncilFromTab).toHaveBeenCalledWith(tab, TabClass.COUNCIL_CRUD_SPEC.type);
+    });
+
+    // The argument is not decoration: `council-export.js` stamps it into the
+    // exported document's `type`, and `council-document.js` refuses to parse a
+    // council whose type is neither 'council' nor 'advanced' — so this literal
+    // decides which editor a re-imported council opens in, and a wrong one makes
+    // the file unimportable.
+    it('sends a type the council-document format accepts', () => {
+      expect(['council', 'advanced']).toContain(TabClass.COUNCIL_CRUD_SPEC.type);
+      expect(TabClass.COUNCIL_CRUD_SPEC.type).toBe(expectedType);
     });
 
     it('returns whatever the shared helper resolves to', async () => {

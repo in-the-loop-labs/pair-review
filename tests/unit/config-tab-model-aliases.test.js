@@ -27,8 +27,9 @@ require('../../public/js/utils/provider-map.js');
 require('../../public/js/components/TimeoutSelect.js');
 global.TimeoutSelect = window.TimeoutSelect;
 
-const { VoiceCentricConfigTab } = require('../../public/js/components/VoiceCentricConfigTab.js');
-const { AdvancedConfigTab } = require('../../public/js/components/AdvancedConfigTab.js');
+// Loads both tabs with `window.CouncilCrud` — which their shared methods resolve
+// at call time — already installed. See the helper's header for why.
+const { VoiceCentricConfigTab, AdvancedConfigTab } = require('../utils/config-tab-modules.js');
 
 // `gpt-5.4` is an alias of a canonical id, exactly as codex-provider.js ships
 // it; `sonnet-4.6` is the option the dropdown would default to on its own.
