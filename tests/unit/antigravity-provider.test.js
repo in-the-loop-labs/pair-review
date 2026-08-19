@@ -41,6 +41,7 @@ const mockSpawn = vi.spyOn(require('child_process'), 'spawn');
 
 // Import after mocks are set up
 const AntigravityProvider = require('../../src/ai/antigravity-provider');
+const { LLM_EXTRACTION_TIMEOUT_MS } = require('../../src/ai/provider');
 // Real cancellation primitives: the provider captured these at require time, so
 // driving the actual activeAnalyses map (as shared.test.js does) exercises the
 // same code path rather than a mock. CancellationError identity must match too.
@@ -688,6 +689,19 @@ describe('AntigravityProvider', () => {
       // Fast-tier model resolves to its cliName.
       const modelIdx = config.args.indexOf('--model');
       expect(config.args[modelIdx + 1]).toBe('Gemini 3.5 Flash (Low)');
+    });
+
+    it('budgets --print-timeout just under the base-class extraction cap', () => {
+      const provider = new AntigravityProvider('gemini-3.1-pro-low');
+      const config = provider.getExtractionConfig('gemini-3.5-flash-low');
+
+      const timeoutIdx = config.args.indexOf('--print-timeout');
+      expect(timeoutIdx).toBeGreaterThanOrEqual(0);
+      // agy must self-terminate (with its own error output) before the base
+      // class LLM_EXTRACTION_TIMEOUT_MS (300s) kills it from outside.
+      expect(config.args[timeoutIdx + 1]).toBe('295s');
+      const capSecs = LLM_EXTRACTION_TIMEOUT_MS / 1000;
+      expect(parseInt(config.args[timeoutIdx + 1], 10)).toBeLessThan(capSecs);
     });
 
     it('should NOT enable tools for extraction (no --dangerously-skip-permissions)', () => {

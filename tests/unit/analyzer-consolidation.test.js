@@ -415,12 +415,25 @@ describe('Consolidation prompt templates (direct tests)', () => {
     // Refutation by code evidence beats source consensus (shared blind spots)
     expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('code evidence outranks consensus');
     // Repo access must stay READ-ONLY — this wording is a real mitigation
-    // under harnesses whose shell tool is not mechanically sandboxed
+    // under harnesses whose shell tool is not mechanically sandboxed.
+    // "Modify files / write commands" alone proved too narrow: opus-5 talked
+    // itself into building a scratch dir and executing project jars to
+    // reproduce a crash (keycloak#37429, eval 2026-08-18). The prohibition
+    // must name execution and scratch space explicitly.
     expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('READ-ONLY');
     expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('Do NOT modify files');
+    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('execute any code');
+    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('scratch and temp space included');
+    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('Verify by reading code, not by running it');
     // Source-neutral wording: the same text serves cross-voice consolidation
     // (reviewers) and cross-level orchestration (levels)
     expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('one reviewer or one level');
+    // The verification imperative invites narration ("I'll verify...") ahead
+    // of the JSON, which breaks extraction (opus-5, eval 2026-08-18) — the
+    // section must restate JSON-only output itself, with a concrete negative
+    // example of the observed preamble
+    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('no preamble');
+    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('nothing before the opening `{`');
   });
 
   it('thorough consolidation should carry adversarial verification as a flow-conditional placeholder', () => {

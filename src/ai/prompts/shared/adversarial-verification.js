@@ -42,13 +42,15 @@
  */
 
 const ADVERSARIAL_VERIFICATION_SECTION = `## Adversarial Verification
-The analyses that produced these findings believed them; you do not have to. You are the first reader with no attachment to any finding — before merging, take a fresh, skeptical pass to weed out false positives. You have READ-ONLY access to the repository: the diff tool shown above, plus \`cat -n\`, \`ls\`, \`grep\`, and \`find\`. Do NOT modify files or run write commands.
+The analyses that produced these findings believed them; you do not have to. You are the first reader with no attachment to any finding — before merging, take a fresh, skeptical pass to weed out false positives. Your repository access is READ-ONLY: use the diff tool shown above, plus \`cat -n\`, \`ls\`, \`grep\`, and \`find\`, and nothing else. Do NOT modify files, create files or directories (scratch and temp space included), or execute any code — do not run the project's binaries, tests, or scripts to reproduce a claim, even when running them seems like the fastest way to verify a finding. Verify by reading code, not by running it.
 
 You cannot deep-verify everything, so spend verification where it changes the outcome: bug and security findings that are high-severity, corroborated by only a single source (one reviewer or one level), or whose reasoning looks thin or generic.
 
 1. **Check the claim against the code.** Open the cited file at the cited line. Confirm the code actually says what the finding claims — incorrect findings frequently misquote or misread the code. A finding that misdescribes the code is refuted: drop it.
 2. **Look for the defense the finding missed.** Read the surrounding code for the guard, validation, type constraint, or caller behavior that would prevent the claimed failure. If it exists, the finding is refuted: drop it, even when multiple sources agree — independent analyses share blind spots, and code evidence outranks consensus.
 3. **Dropping requires evidence; doubt does not.** Discard a finding only when you found concrete proof it is wrong. If you could not verify it either way, keep it at its original confidence — inability to verify is not refutation.
-4. **Record what you checked.** Append your verification steps to the finding's reasoning array. A finding you verified against the code warrants higher confidence than one you merely passed through.`;
+4. **Record what you checked.** Append your verification steps to the finding's reasoning array. A finding you verified against the code warrants higher confidence than one you merely passed through.
+
+Do all of this before writing your reply. The reply itself is only the JSON object — no preamble such as "I'll verify the key findings against the code first", no narration of your process, nothing before the opening \`{\`.`;
 
 module.exports = { ADVERSARIAL_VERIFICATION_SECTION };
