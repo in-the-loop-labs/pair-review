@@ -28,7 +28,7 @@ const ClaudeProvider = require('../../src/ai/claude-provider.js');
 const AntigravityProvider = require('../../src/ai/antigravity-provider.js');
 const CodexProvider = require('../../src/ai/codex-provider.js');
 const CopilotProvider = require('../../src/ai/copilot-provider.js');
-const { AIProvider } = require('../../src/ai/provider.js');
+const { AIProvider, LLM_EXTRACTION_TIMEOUT_MS } = require('../../src/ai/provider.js');
 const logger = require('../../src/utils/logger');
 
 afterAll(() => {
@@ -634,6 +634,13 @@ describe('extractJSONWithLLM spawn lifecycle', () => {
       expect(child.kill).not.toHaveBeenCalled();
     });
 
+    it('gives extraction five minutes — losing results costs more than waiting', () => {
+      // 60s timed out on a 110KB thorough-tier consolidation (eval 2026-08-18).
+      // Extraction is the last line of defense before a completed analysis is
+      // discarded; keep the cap generous.
+      expect(LLM_EXTRACTION_TIMEOUT_MS).toBe(300000);
+    });
+
     it('reports a timeout (not a cancel) when no signal fired', async () => {
       vi.useFakeTimers();
       const child = makeFakeChild();
@@ -642,7 +649,10 @@ describe('extractJSONWithLLM spawn lifecycle', () => {
       const provider = new TestExtractionProvider(ARGV_CONFIG);
       const promise = provider.extractJSONWithLLM('raw');
 
-      await vi.advanceTimersByTimeAsync(60000);
+      // One tick short of the cap: still pending, not timed out.
+      await vi.advanceTimersByTimeAsync(LLM_EXTRACTION_TIMEOUT_MS - 1);
+      expect(child.kill).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
 
       await expect(promise).resolves.toEqual({
         success: false,
@@ -667,7 +677,7 @@ describe('extractJSONWithLLM spawn lifecycle', () => {
 
       controller.abort();
       // Child never emits close; the extraction timeout is the only way out.
-      await vi.advanceTimersByTimeAsync(60000);
+      await vi.advanceTimersByTimeAsync(LLM_EXTRACTION_TIMEOUT_MS);
 
       const { error } = await settled;
       expect(error).toMatchObject({ name: 'AbortError', isCancellation: true });

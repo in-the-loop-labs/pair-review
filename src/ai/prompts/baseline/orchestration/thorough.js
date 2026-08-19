@@ -325,6 +325,9 @@ Some input suggestions are marked as [FILE-LEVEL]. These are observations about 
 - Identify unique insights from each level that add value
 - Discard redundant or weakly-evidenced suggestions
 - Ensure the final set tells a coherent story about the PR's quality
+
+### Reply Shape
+- Your reply is the JSON object alone — no preamble such as "I'll verify the key findings against the code first", no narration of your process, nothing before the opening \`{\`
 </section>`;
 
 /**

@@ -259,6 +259,9 @@ Preserve the old_or_new value from input suggestions when merging.
 - The human reviewer has context you don't have
 - Focus on the code, not the reviewers
 - When uncertain, prefer quality over quantity
+
+### Reply Shape
+- Your reply is the JSON object alone — no preamble such as "I'll verify the key findings against the code first", no narration of your process, nothing before the opening \`{\`
 </section>`;
 
 /**

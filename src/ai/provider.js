@@ -19,6 +19,14 @@ const { TIERS, TIER_ALIASES } = require('./prompts/config');
 // Directory containing bin scripts (git-diff-lines, etc.)
 const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
 
+// Timeout for the LLM JSON-extraction fallback. Generous on purpose: this
+// fallback is the last line of defense before a completed analysis is thrown
+// away, and thorough-tier responses can exceed 100KB — a slow reformat beats
+// losing the results (eval 2026-08-18: a 60s cap timed out on a 110KB
+// consolidation). Providers whose extraction CLI self-terminates (agy
+// --print-timeout) budget just under this value so their own error wins.
+const LLM_EXTRACTION_TIMEOUT_MS = 300000;
+
 /**
  * Quote shell-sensitive arguments for safe shell execution.
  * Any arg containing characters that could be interpreted by the shell
@@ -299,7 +307,7 @@ ${rawResponse}
       let stdout = '';
       let stderr = '';
       let settled = false;
-      const timeout = 60000; // 60 second timeout for extraction
+      const timeout = LLM_EXTRACTION_TIMEOUT_MS;
 
       // Detaching is centralized here so it ALWAYS runs when this call returns,
       // including via the timeout path that settles before the child exits.
@@ -1114,6 +1122,7 @@ function getTierForModel(providerId, modelId) {
 
 module.exports = {
   AIProvider,
+  LLM_EXTRACTION_TIMEOUT_MS,
   MODEL_TIERS,
   quoteShellArgs,
   registerProvider,

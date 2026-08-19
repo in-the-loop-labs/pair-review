@@ -73,9 +73,10 @@ const EXTRACTION_DIRECTIVE =
   'Read the input provided on standard input and return ONLY the raw JSON object it describes — ' +
   'no explanation, no markdown, no code fences. Do not use any tools.';
 
-// agy self-terminates print mode at --print-timeout; extraction has a 60s cap
-// in the base class, so ask agy to give up just before that.
-const EXTRACTION_PRINT_TIMEOUT_SECS = 55;
+// agy self-terminates print mode at --print-timeout; extraction is capped at
+// LLM_EXTRACTION_TIMEOUT_MS (300s) in the base class, so ask agy to give up
+// just before that.
+const EXTRACTION_PRINT_TIMEOUT_SECS = 295;
 
 // The JS-side execute() timeout is a backstop: it fires this many ms AFTER agy's
 // own --print-timeout budget, so agy self-terminates first (with its own error

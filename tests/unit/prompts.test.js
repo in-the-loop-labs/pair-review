@@ -2390,3 +2390,28 @@ describe('Baseline Orchestration Thorough', () => {
     expect(baseline.taggedPrompt).toContain('synthesizing insights');
   });
 });
+
+describe('Thorough tier reply-shape guard', () => {
+  // opus-5 narrates its agentic process ahead of the JSON ("I'll start by
+  // examining the diff...", multi-step in longer runs), which breaks
+  // extraction (eval 2026-08-18: every extraction failure in both arms was
+  // opus-5, at level analyses and at the merge stages). Every thorough
+  // template must close with a plain reply-shape guard carrying a concrete
+  // example of the observed preamble.
+  const THOROUGH_TEMPLATES = [
+    'baseline/level1/thorough.js',
+    'baseline/level2/thorough.js',
+    'baseline/level3/thorough.js',
+    'baseline/orchestration/thorough.js',
+    'baseline/consolidation/thorough.js'
+  ];
+
+  for (const rel of THOROUGH_TEMPLATES) {
+    it(`${rel} closes with the JSON-only, no-preamble guard`, async () => {
+      const template = await import(`../../src/ai/prompts/${rel}`);
+
+      expect(template.taggedPrompt).toContain('no preamble such as');
+      expect(template.taggedPrompt).toContain('nothing before the opening `{`');
+    });
+  }
+});
