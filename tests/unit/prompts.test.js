@@ -1664,7 +1664,12 @@ describe('Baseline Level 3 Thorough', () => {
     expect(baseline.taggedPrompt).toContain('find . -name');
     expect(baseline.taggedPrompt).toContain('grep -r');
     expect(baseline.taggedPrompt).toContain('ls, tree commands');
-    expect(baseline.taggedPrompt).toContain('READ-ONLY');
+    // Execution is permitted for empirical verification (eval 2026-08-19:
+    // the blanket execution ban cost confirmed defects), but must leave no
+    // trace and have no effects beyond the machine
+    expect(baseline.taggedPrompt).toContain('empirical check');
+    expect(baseline.taggedPrompt).toContain('exactly as you found it');
+    expect(baseline.taggedPrompt).toContain('temp directory outside the repository');
     // Thorough should mention delegation harness-neutrally — never a
     // harness-specific tool name like Claude's "Tasks"
     expect(baseline.taggedPrompt).toContain('subagent or task-delegation tool');
