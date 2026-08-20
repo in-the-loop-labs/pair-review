@@ -414,17 +414,18 @@ describe('Consolidation prompt templates (direct tests)', () => {
     expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('keep it at its original confidence');
     // Refutation by code evidence beats source consensus (shared blind spots)
     expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('code evidence outranks consensus');
-    // Repo access must stay READ-ONLY — this wording is a real mitigation
-    // under harnesses whose shell tool is not mechanically sandboxed.
-    // "Modify files / write commands" alone proved too narrow: opus-5 talked
-    // itself into building a scratch dir and executing project jars to
-    // reproduce a crash (keycloak#37429, eval 2026-08-18). The prohibition
-    // must name execution and scratch space explicitly.
-    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('READ-ONLY');
-    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('Do NOT modify files');
-    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('execute any code');
-    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('scratch and temp space included');
-    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('Verify by reading code, not by running it');
+    // Execution policy is deliberately PERMISSIVE (user decision 2026-08-19,
+    // reversing a short-lived blanket ban): the tool reviews user- or
+    // team-authored code, and eval showed the ban cost confirmed defects —
+    // empirical runs are the strongest refutation evidence. The binding
+    // constraints are leave-no-trace (repo files and git state unchanged,
+    // scratch in temp space outside the repo) and no effects beyond the
+    // machine. This wording is a real mitigation under harnesses whose
+    // shell tool is not mechanically sandboxed (Pi) — keep all three rules.
+    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('run code');
+    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('temp directory outside the repository');
+    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('files and git state — exactly as you found it');
+    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('publishes, deploys, sends, or writes to anything beyond this machine');
     // Source-neutral wording: the same text serves cross-voice consolidation
     // (reviewers) and cross-level orchestration (levels)
     expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('one reviewer or one level');
