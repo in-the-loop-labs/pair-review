@@ -39,6 +39,7 @@
 
 import { test, expect } from './fixtures.js';
 import { waitForDiffToRender } from './helpers.js';
+import { LOCAL_PR_REVIEW } from './test-server.js';
 
 // ---------------------------------------------------------------------
 // Fixture data
@@ -798,15 +799,19 @@ test.describe('External comments: file-level rendering', () => {
 });
 
 // ---------------------------------------------------------------------
-// 8. Local-mode: External segment button is hidden
+// 8. Local-mode WITHOUT an associated PR: External segment button is hidden
 //
-// Local reviews never have an external source — the button should be
-// absent from the visible UI. Asserted at the visibility layer (not just
-// the `[hidden]` attribute) so the assertion stays accurate if a future
-// rule swaps the gate to display:none.
+// A local review with no associated PR has no external source, so the
+// button should be absent from the visible UI. Asserted at the visibility
+// layer (not just the `[hidden]` attribute) so the assertion stays accurate
+// if a future rule swaps the gate to display:none.
+//
+// This targets the un-associated local review (id 2). The associated one
+// (LOCAL_PR_REVIEW) is covered in section 10 — the gate is the
+// `canViewPRComments` capability, NOT the mode.
 // ---------------------------------------------------------------------
 
-test.describe('Local mode: External segment hidden', () => {
+test.describe('Local mode without an associated PR: External segment hidden', () => {
   test('External segment button is not visible on /local pages', async ({ page }) => {
     await page.goto('/local/2');
     await waitForDiffToRender(page);
@@ -815,6 +820,14 @@ test.describe('Local mode: External segment hidden', () => {
     const externalBtn = page.locator('.segment-btn[data-segment="external"]');
     // Either absent from the DOM or hidden via [hidden]/display:none.
     await expect(externalBtn).toBeHidden();
+
+    // The panel refresh button is gated by the SAME capability and by the
+    // same `hidden` attribute, but it carries `.findings-nav-btn`, whose
+    // author-origin `display: flex` used to beat the UA `[hidden]` rule and
+    // leave the button visible and inert. Assert visibility, not the
+    // attribute — a unit test on `hasAttribute('hidden')` cannot see a
+    // cascade, which is exactly how that bug survived.
+    await expect(page.locator('#refresh-external-comments-btn-panel')).toBeHidden();
 
     // The other three segments must still be visible — no collateral
     // damage from the gating logic.
@@ -914,5 +927,333 @@ test.describe('Review panel segment overflow scroll', () => {
 
     await expect(page.locator('#segment-scroll-left')).toBeHidden();
     await expect(page.locator('#segment-scroll-right')).toBeHidden();
+  });
+});
+
+// ---------------------------------------------------------------------
+// 10. Local mode WITH an associated PR (bridge Phase 2)
+//
+// A local review whose branch has an associated GitHub PR shows that PR's
+// inline review comments in the diff, read-only, alongside local drafts.
+//
+// FIXTURE: `LOCAL_PR_REVIEW` (tests/e2e/test-server.js) is a local review
+// carrying migration 56's `associated_pr_*` columns. Its `local_head_sha`
+// deliberately EQUALS the seeded PR's `head_sha`, so the default state is
+// the anchor-trusted one and only the drift tests need to patch a response.
+//
+// The backend here is REAL: `GET /api/local/:id` computes
+// `capabilities.canViewPRComments` from the association plus the resolved
+// credential. Only the two external-comment endpoints are mocked (same
+// reason as the rest of this spec — see MOCKING STRATEGY at the top).
+// ---------------------------------------------------------------------
+
+const LOCAL_PR_PAGE = `/local/${LOCAL_PR_REVIEW.id}`;
+const LOCAL_PR_REVIEW_API = `/api/local/${LOCAL_PR_REVIEW.id}`;
+
+/**
+ * Rewrite the associated PR's `head_sha` in the local-review metadata
+ * response, leaving every other field the real backend produced intact.
+ *
+ * This is the single knob for anchor trust: `PRManager._externalAnchorContext`
+ * compares the local review's HEAD against this value. Matching it to
+ * `LOCAL_PR_REVIEW.headSha` means "trust precise anchors"; anything else means
+ * the working tree has moved and every line thread must degrade to file level.
+ *
+ * The matcher pins the EXACT pathname so sibling routes (`/pr-metadata`,
+ * `/check-stale`) are left alone.
+ *
+ * @param {import('@playwright/test').Page} page
+ * @param {string} headSha
+ */
+async function mockAssociatedPRHeadSha(page, headSha) {
+  await page.route(
+    (url) => new URL(url).pathname === LOCAL_PR_REVIEW_API,
+    async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      await route.fulfill({
+        response,
+        json: {
+          ...body,
+          associatedPR: { ...(body.associatedPR || {}), head_sha: headSha },
+        },
+      });
+    }
+  );
+}
+
+/** A SHA that is not the local review's HEAD — the drifted-working-tree case. */
+const DRIFTED_PR_HEAD_SHA = 'f00dfacepushedlater';
+
+/**
+ * Where an external-comment row physically landed. `slotted` proves the card
+ * is attached to a rendered diff LINE (the @pierre/diffs annotation slot),
+ * which is exactly what anchor degradation must give up.
+ *
+ * @param {import('@playwright/test').Locator} row
+ */
+function describeRowPlacement(row) {
+  return row.evaluate((el) => ({
+    inFileZone: Boolean(el.closest('.file-comments-zone')),
+    slotted: Boolean(el.closest('[data-annotation-slot]')?.assignedSlot),
+    file: el.closest('[data-file-name]')?.dataset.fileName || null,
+  }));
+}
+
+test.describe('Local mode with an associated PR: external comments', () => {
+  test('reveals the External segment and the panel refresh button', async ({ page }) => {
+    await installExternalCommentMocks(page, { threads: [HAPPY_THREAD] });
+
+    await page.goto(LOCAL_PR_PAGE);
+    await waitForDiffToRender(page);
+    await page.evaluate(() => window.aiPanel?.expand());
+
+    // The capability really came from the backend, not from a test stub.
+    const capabilities = await page.evaluate(() => window.prManager?.capabilities);
+    expect(capabilities.hasAssociatedPR).toBe(true);
+    expect(capabilities.canViewPRComments).toBe(true);
+
+    await expect(page.locator('.segment-btn[data-segment="external"]')).toBeVisible();
+
+    // The refresh button ships `hidden` in local.html; the affordance update
+    // is what removes it. Assert both the attribute and the rendered state —
+    // the pill's first shipped bug was a `hidden` with no visual effect.
+    const refreshBtn = page.locator('#refresh-external-comments-btn-panel');
+    await expect(refreshBtn).toBeVisible();
+    expect(await refreshBtn.evaluate((el) => el.hasAttribute('hidden'))).toBe(false);
+
+    // No collateral damage to the other segments.
+    await expect(page.locator('.segment-btn[data-segment="ai"]')).toBeVisible();
+    await expect(page.locator('.segment-btn[data-segment="comments"]')).toBeVisible();
+    await expect(page.locator('.segment-btn[data-segment="all"]')).toBeVisible();
+  });
+
+  test('renders the associated PR thread inline in the local diff', async ({ page }) => {
+    await installExternalCommentMocks(page, { threads: [HAPPY_THREAD] });
+
+    // Record the fetch URLs rather than reading resource timings — the
+    // performance buffer is capped and would make this assertion flaky.
+    const listUrls = [];
+    page.on('request', (req) => {
+      if (/\/external-comments\?/.test(req.url()) && req.method() === 'GET') {
+        listUrls.push(req.url());
+      }
+    });
+
+    await page.goto(LOCAL_PR_PAGE);
+    await waitForDiffToRender(page);
+    await waitForExternalRowsRendered(page);
+
+    const rows = page.locator('.external-comment-row');
+    await expect(rows).toHaveCount(1);
+
+    const row = rows.first();
+    const comments = row.locator('.external-comment');
+    await expect(comments).toHaveCount(2);
+    await expect(comments.nth(0)).toHaveClass(/source-github/);
+    await expect(comments.nth(0)).not.toHaveClass(/is-reply/);
+    await expect(comments.nth(1)).toHaveClass(/is-reply/);
+
+    // Bodies are actually rendered and on screen, not merely in the DOM.
+    const bodies = row.locator('.external-comment-body');
+    await expect(bodies.nth(0)).toBeVisible();
+    await expect(bodies.nth(1)).toBeVisible();
+    await expect(row).toContainText('Should this be a');
+    await expect(row).toContainText('Good catch');
+
+    // Every GET was addressed to THIS local review id — local rows live in
+    // the same `reviews` table, so no PR-shaped id translation happens.
+    expect(listUrls.length).toBeGreaterThan(0);
+    for (const url of listUrls) {
+      expect(url).toContain(`/api/reviews/${LOCAL_PR_REVIEW.id}/external-comments`);
+    }
+  });
+
+  test('anchors precisely when local HEAD matches the PR head_sha', async ({ page }) => {
+    await installExternalCommentMocks(page, { threads: [HAPPY_THREAD] });
+
+    await page.goto(LOCAL_PR_PAGE);
+    await waitForDiffToRender(page);
+    await waitForExternalRowsRendered(page);
+
+    // Precondition, asserted rather than assumed: the fixture's two SHAs
+    // agree, which is the ONLY thing that licenses precise line anchoring.
+    const shas = await page.evaluate(() => ({
+      local: window.prManager?.currentPR?.head_sha,
+      pr: window.prManager?.currentPR?.associatedPR?.head_sha,
+    }));
+    expect(shas.local).toBe(LOCAL_PR_REVIEW.headSha);
+    expect(shas.pr).toBe(shas.local);
+
+    const row = page.locator('.external-comment-row').first();
+    await expect(row).not.toHaveClass(/external-comment-row--anchor-degraded/);
+    await expect(row).not.toHaveClass(/external-comment-row--file-level/);
+
+    // Trusted anchors carry no "why isn't this on its line" note.
+    await expect(page.locator('.external-comment-provenance')).toHaveCount(0);
+
+    // ...and the card really is slotted against a diff line in the file it
+    // was written on, not parked in that file's comments zone.
+    expect(await describeRowPlacement(row)).toEqual({
+      inFileZone: false,
+      slotted: true,
+      file: 'src/utils.js',
+    });
+  });
+
+  test('degrades a line thread to the file zone when local HEAD has drifted', async ({ page }) => {
+    await mockAssociatedPRHeadSha(page, DRIFTED_PR_HEAD_SHA);
+    await installExternalCommentMocks(page, { threads: [HAPPY_THREAD] });
+
+    await page.goto(LOCAL_PR_PAGE);
+    await waitForDiffToRender(page);
+    await waitForExternalRowsRendered(page);
+
+    const shas = await page.evaluate(() => ({
+      local: window.prManager?.currentPR?.head_sha,
+      pr: window.prManager?.currentPR?.associatedPR?.head_sha,
+    }));
+    expect(shas.pr).toBe(DRIFTED_PR_HEAD_SHA);
+    expect(shas.local).not.toBe(shas.pr);
+
+    const row = page.locator('.external-comment-row').first();
+    await expect(row).toHaveClass(/external-comment-row--anchor-degraded/);
+    // It is NOT a genuine file-level comment — that class means something else.
+    await expect(row).not.toHaveClass(/external-comment-row--file-level/);
+
+    // The line anchor is given up entirely: zone card, no annotation slot.
+    expect(await describeRowPlacement(row)).toEqual({
+      inFileZone: true,
+      slotted: false,
+      file: 'src/utils.js',
+    });
+
+    // And the user is told why. The contract is the provenance — it names the
+    // PR the comments came from and says the thread is shown at file level.
+    // The surrounding wording is prose and deliberately not pinned here.
+    const note = page.locator('.external-comment-provenance');
+    await expect(note).toHaveCount(1);
+    await expect(note).toBeVisible();
+    await expect(note).toContainText(`PR #${LOCAL_PR_REVIEW.prNumber}`);
+    await expect(note).toContainText(/file level/i);
+
+    // Degrading must not cost content — the discussion is still readable.
+    await expect(row).toContainText('Should this be a');
+    await expect(row).toContainText('Good catch');
+  });
+
+  test('leaves a genuine file-level thread unannotated even while anchors are degraded', async ({ page }) => {
+    // A file-level GitHub comment never had a line anchor, so nothing about
+    // it is approximate — it must keep --file-level and get no note.
+    await mockAssociatedPRHeadSha(page, DRIFTED_PR_HEAD_SHA);
+    await installExternalCommentMocks(page, { threads: [FILE_LEVEL_THREAD] });
+
+    await page.goto(LOCAL_PR_PAGE);
+    await waitForDiffToRender(page);
+    await waitForExternalRowsRendered(page);
+
+    const row = page.locator('.external-comment-row').first();
+    await expect(row).toHaveClass(/external-comment-row--file-level/);
+    await expect(row).not.toHaveClass(/external-comment-row--anchor-degraded/);
+    await expect(page.locator('.external-comment-provenance')).toHaveCount(0);
+    await expect(row).toContainText('This whole file could use a header docstring');
+  });
+
+  test('renders the thread read-only: no reply / resolve / edit / submit controls', async ({ page }) => {
+    // Phase 5 is what adds a write path back to GitHub. Until then the only
+    // interactive affordances are chat, the author link, and the permalink.
+    // This test is the guard — it must be updated deliberately, not silently.
+    await installExternalCommentMocks(page, { threads: [HAPPY_THREAD] });
+
+    await page.goto(LOCAL_PR_PAGE);
+    await waitForDiffToRender(page);
+    await waitForExternalRowsRendered(page);
+
+    const row = page.locator('.external-comment-row').first();
+    const affordances = await row.evaluate((el) => ({
+      buttons: [...el.querySelectorAll('button')].map((b) => b.className),
+      links: [...el.querySelectorAll('a')].map((a) => a.className),
+      editableCount: el.querySelectorAll(
+        'input, textarea, select, form, [contenteditable="true"], [contenteditable=""]'
+      ).length,
+    }));
+
+    // Nothing to type into and nothing to submit.
+    expect(affordances.editableCount).toBe(0);
+
+    // Every button is the chat affordance (one per comment: root + reply).
+    expect(affordances.buttons.length).toBe(2);
+    for (const cls of affordances.buttons) {
+      expect(cls).toContain('external-comment-chat-btn');
+    }
+
+    // Every link is the author or the permalink — both outbound, both read-only.
+    expect(affordances.links.length).toBeGreaterThan(0);
+    for (const cls of affordances.links) {
+      expect(cls).toMatch(/external-comment-(author|permalink)/);
+    }
+
+    // Belt and braces: no write-shaped control by label, anywhere in the card.
+    await expect(row.locator(
+      'button:has-text("Reply"), button:has-text("Resolve"), button:has-text("Unresolve"), '
+      + 'button:has-text("Edit"), button:has-text("Delete"), button:has-text("Submit"), '
+      + '[data-action="reply"], [data-action="resolve"], [data-action="edit"], [data-action="delete"]'
+    )).toHaveCount(0);
+  });
+
+  test('refresh button fires a sync round-trip against the local review id', async ({ page }) => {
+    let syncCallCount = 0;
+    const syncUrls = [];
+    await installExternalCommentMocks(page, {
+      threads: [HAPPY_THREAD],
+      onSync: (request) => { syncCallCount++; syncUrls.push(request.url()); },
+    });
+
+    await page.goto(LOCAL_PR_PAGE);
+    await waitForDiffToRender(page);
+    await waitForExternalRowsRendered(page);
+
+    await page.evaluate(() => window.aiPanel?.expand());
+
+    // Wait for the page-load sync to settle before clicking (pr.js clears
+    // is-refreshing in a finally block).
+    await page.waitForFunction(() => {
+      const btn = document.getElementById('refresh-external-comments-btn-panel');
+      return btn && !btn.hasAttribute('hidden')
+        && !btn.classList.contains('is-refreshing') && !btn.disabled;
+    }, { timeout: 10000 });
+
+    const initialSyncCount = syncCallCount;
+    expect(initialSyncCount).toBeGreaterThanOrEqual(1);
+    expect(await page.locator('.external-comment-row').count()).toBe(1);
+
+    await page.locator('#refresh-external-comments-btn-panel').click();
+
+    // Poll the counter rather than awaiting `page.waitForRequest`. Playwright
+    // delivers the `request` event and dispatches the `route` handler as two
+    // separate messages, so `waitForRequest` resolves BEFORE `onSync` has run
+    // and incremented this counter — reading it right after would race.
+    //
+    // The PR-mode twin above happens to survive that race only because its
+    // sync POST is fully routed before `click()` resolves. Local mode awaits
+    // `_onBeforeExternalCommentsRefresh` (a forced PR-metadata re-read) ahead
+    // of the POST, which pushes it past `click()` and into the race window.
+    // Poll on the thing actually being asserted so neither mode depends on
+    // that incidental ordering.
+    await expect.poll(() => syncCallCount, { timeout: 5000 })
+      .toBeGreaterThan(initialSyncCount);
+    // Every sync targeted this local review — the association is resolved
+    // server-side, so the URL stays review-scoped.
+    for (const url of syncUrls) {
+      expect(url).toContain(`/api/reviews/${LOCAL_PR_REVIEW.id}/external-comments/sync`);
+    }
+
+    await page.waitForFunction(() => {
+      const btn = document.getElementById('refresh-external-comments-btn-panel');
+      return btn && !btn.classList.contains('is-refreshing') && !btn.disabled;
+    }, { timeout: 10000 });
+
+    // Same dataset returned — re-render replaces, never duplicates.
+    await expect(page.locator('.external-comment-row')).toHaveCount(1);
   });
 });

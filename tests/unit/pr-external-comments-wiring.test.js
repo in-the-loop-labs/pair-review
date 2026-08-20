@@ -8,7 +8,15 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
  *   - _syncExternalComments: POSTs the sync endpoint and parses the response.
  *   - _loadExternalComments: sets reviewId on the singleton, syncs, and
  *     calls loadAndRender regardless of sync success.
- *   - Local-mode short-circuit: no sync, no loadAndRender.
+ *   - Capability short-circuit: `canViewPRComments: false` means no sync and
+ *     no loadAndRender — and, crucially, `window.PAIR_REVIEW_LOCAL_MODE` no
+ *     longer decides anything (the mode-sniff was replaced by the capability
+ *     in Phase 2 of plans/bridge-local-and-pr-modes.md).
+ *   - _externalAnchorContext / _prepareExternalCommentManager: how much the
+ *     rendered diff can be trusted to match the commit the comments were
+ *     anchored against, and how that reaches ExternalCommentManager.
+ *   - _updateExternalCommentsAffordances: refresh button + AI-panel External
+ *     segment visibility derived from capability × feature toggle.
  *   - Refresh button: clicking #refresh-external-comments-btn-panel invokes
  *     _loadExternalComments and toggles disabled state.
  */
@@ -35,6 +43,9 @@ beforeEach(() => {
     reviewId: undefined,
     sources: ['github'],
     loadAndRender: vi.fn().mockResolvedValue({ errors: [] }),
+    // Real manager surface since Phase 2 — every render entry point pushes
+    // the anchor-trust context through here before rendering.
+    setAnchorContext: vi.fn(),
     syncAndRender: vi.fn(async ({ syncFn } = {}) => {
       let syncResult = null;
       let syncError = null;
@@ -92,9 +103,39 @@ afterEach(() => {
   delete global.fetch;
 });
 
-function createTestPRManager() {
+/**
+ * The capability surface a real PR-mode `PRManager` advertises — see the
+ * `this.capabilities = {...}` block in the constructor (public/js/pr.js).
+ * PR mode hard-codes every action flag true because those endpoints already
+ * ship there; local mode receives them from GET /api/local/:reviewId.
+ *
+ * These tests build managers with `Object.create(PRManager.prototype)`, which
+ * skips the constructor entirely, so the fixture has to seed this itself.
+ * Without it `hasCapability('canViewPRComments')` reads `undefined` and every
+ * capability-gated path short-circuits — the tests would then pass by
+ * asserting on a manager that can do nothing.
+ */
+const PR_MODE_CAPABILITIES = Object.freeze({
+  hasAssociatedPR: true,
+  hasGitHubToken: true,
+  canShowPRMetadata: true,
+  canViewPRComments: true,
+  canCheckStaleVsPR: true,
+  canSyncDrafts: true,
+  canSubmitToGitHub: true,
+});
+
+/**
+ * @param {Object} [options]
+ * @param {Object} [options.capabilities] - Per-test overrides merged over the
+ *   PR-mode defaults (e.g. `{ canViewPRComments: false }` to model a local
+ *   review with no associated PR).
+ * @param {Object|null} [options.currentPR] - Override the loaded PR.
+ */
+function createTestPRManager({ capabilities, currentPR } = {}) {
   const prManager = Object.create(PRManager.prototype);
-  prManager.currentPR = {
+  prManager.capabilities = { ...PR_MODE_CAPABILITIES, ...capabilities };
+  prManager.currentPR = currentPR !== undefined ? currentPR : {
     owner: 'octo',
     repo: 'pair-review',
     number: 42,
@@ -184,9 +225,11 @@ describe('PRManager._loadExternalComments', () => {
     expect(console.warn).toHaveBeenCalled();
   });
 
-  it('local mode short-circuits: no fetch, no syncAndRender, no reviewId mutation', async () => {
-    window.PAIR_REVIEW_LOCAL_MODE = true;
-    const prManager = createTestPRManager();
+  it('canViewPRComments=false short-circuits: no fetch, no syncAndRender, no reviewId mutation', async () => {
+    // The gate is the capability, not the mode. A local review with no
+    // associated PR (or no usable credential) reports this false and the
+    // whole subsystem must stay inert.
+    const prManager = createTestPRManager({ capabilities: { canViewPRComments: false } });
 
     await prManager._loadExternalComments();
 
@@ -194,6 +237,25 @@ describe('PRManager._loadExternalComments', () => {
     expect(externalCommentManagerStub.syncAndRender).not.toHaveBeenCalled();
     expect(externalCommentManagerStub.loadAndRender).not.toHaveBeenCalled();
     expect(externalCommentManagerStub.reviewId).toBeUndefined();
+  });
+
+  it('local mode with canViewPRComments=true PROCEEDS — the mode-sniff is gone', async () => {
+    // Counterpart to the test above, and the actual proof of Phase 2: this
+    // method used to open with `if (window.PAIR_REVIEW_LOCAL_MODE) return;`.
+    // A local review whose branch has an associated PR now syncs and renders
+    // exactly like PR mode.
+    window.PAIR_REVIEW_LOCAL_MODE = true;
+    const prManager = createTestPRManager({ capabilities: { canViewPRComments: true } });
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ count: 2, lostAnchors: 0, syncedAt: 'now' }),
+    });
+
+    await prManager._loadExternalComments();
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(externalCommentManagerStub.syncAndRender).toHaveBeenCalledTimes(1);
+    expect(externalCommentManagerStub.reviewId).toBe(7);
   });
 
   it('external_comments feature toggle off: no fetch, no syncAndRender, no reviewId mutation', async () => {
@@ -400,6 +462,111 @@ describe('Refresh external-comments button wiring', () => {
     expect(refreshButton.disabled).toBe(false);
     expect(refreshButton.classList.contains('is-refreshing')).toBe(false);
   });
+
+  it('does nothing when canViewPRComments is false', async () => {
+    // The handler must agree with the affordance policy in
+    // _updateExternalCommentsAffordances (capability AND feature toggle).
+    // It previously guarded on the toggle alone, so a button that escaped
+    // its `hidden` attribute could drive the subsystem for a review with no
+    // PR target.
+    const prManager = createTestPRManager({ capabilities: { canViewPRComments: false } });
+    prManager._loadExternalComments = vi.fn().mockResolvedValue(undefined);
+
+    await prManager._handleExternalCommentsRefreshClick({ button: refreshButton });
+
+    expect(prManager._loadExternalComments).not.toHaveBeenCalled();
+    expect(refreshButton.disabled).toBe(false);
+    expect(refreshButton.classList.contains('is-refreshing')).toBe(false);
+  });
+
+});
+
+describe('Refresh button pre-refresh hook (_onBeforeExternalCommentsRefresh)', () => {
+  // The seam for the stale-PR-head fix. `trustPreciseAnchors` compares local
+  // HEAD against a PR head from the TTL-less pr_metadata cache, so after a
+  // push every thread renders degraded until something forces a re-read.
+  // Local mode installs a forced PR-metadata refresh here; PR mode leaves
+  // the hook null (no mode-sniffing — injection only).
+
+  function makePRManager() {
+    const prManager = createTestPRManager();
+    prManager._loadExternalComments = vi.fn().mockResolvedValue(undefined);
+    refreshButton._attrs = {};
+    refreshButton.setAttribute = vi.fn(function (k, v) { this._attrs[k] = String(v); });
+    refreshButton.removeAttribute = vi.fn(function (k) { delete this._attrs[k]; });
+    refreshButton.getAttribute = vi.fn(function (k) { return this._attrs[k] || null; });
+    return prManager;
+  }
+
+  it('awaits an installed hook BEFORE _loadExternalComments', async () => {
+    const order = [];
+    const prManager = makePRManager();
+    let releaseHook;
+    prManager._onBeforeExternalCommentsRefresh = vi.fn(() => new Promise((resolve) => {
+      order.push('hook:start');
+      releaseHook = () => { order.push('hook:end'); resolve(); };
+    }));
+    prManager._loadExternalComments = vi.fn(async () => { order.push('load'); });
+
+    const inflight = prManager._handleExternalCommentsRefreshClick({ button: refreshButton });
+    // The hook is genuinely awaited: the sync has not started yet.
+    expect(order).toEqual(['hook:start']);
+    expect(prManager._loadExternalComments).not.toHaveBeenCalled();
+
+    releaseHook();
+    await inflight;
+
+    expect(order).toEqual(['hook:start', 'hook:end', 'load']);
+    expect(prManager._onBeforeExternalCommentsRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('a rejecting hook does NOT prevent the refresh', async () => {
+    // A stale head only degrades placement; skipping the sync would lose
+    // the new comments entirely. Failing open is the right trade.
+    const prManager = makePRManager();
+    prManager._onBeforeExternalCommentsRefresh = vi.fn().mockRejectedValue(new Error('metadata refresh boom'));
+
+    await prManager._handleExternalCommentsRefreshClick({ button: refreshButton });
+
+    expect(prManager._loadExternalComments).toHaveBeenCalledTimes(1);
+    expect(console.warn).toHaveBeenCalled();
+    // Button state is still restored.
+    expect(refreshButton.disabled).toBe(false);
+    expect(refreshButton.getAttribute('aria-busy')).toBeNull();
+  });
+
+  it('an explicitly null hook (constructor default) is a no-op', async () => {
+    const prManager = makePRManager();
+    prManager._onBeforeExternalCommentsRefresh = null;
+
+    await prManager._handleExternalCommentsRefreshClick({ button: refreshButton });
+
+    expect(prManager._loadExternalComments).toHaveBeenCalledTimes(1);
+  });
+
+  it('with NO hook installed the sync starts on the same tick as before', async () => {
+    // PR-mode parity guard. `await undefined` costs a microtask, so an
+    // unconditional `await hook?.()` would push _loadExternalComments one
+    // tick later than every pre-hook release. The production guard is
+    // `typeof === 'function'` for exactly this reason; this test fails if
+    // someone "simplifies" it back to an unconditional await.
+    const prManager = makePRManager();
+
+    prManager._handleExternalCommentsRefreshClick({ button: refreshButton });
+
+    expect(prManager._loadExternalComments).toHaveBeenCalledTimes(1);
+  });
+
+  it('is not run when the capability gate rejects the click', async () => {
+    const prManager = createTestPRManager({ capabilities: { canViewPRComments: false } });
+    prManager._loadExternalComments = vi.fn().mockResolvedValue(undefined);
+    prManager._onBeforeExternalCommentsRefresh = vi.fn().mockResolvedValue(undefined);
+
+    await prManager._handleExternalCommentsRefreshClick({ button: refreshButton });
+
+    expect(prManager._onBeforeExternalCommentsRefresh).not.toHaveBeenCalled();
+    expect(prManager._loadExternalComments).not.toHaveBeenCalled();
+  });
 });
 
 describe('PRManager._externalCommentsEnabled', () => {
@@ -420,6 +587,274 @@ describe('PRManager._externalCommentsEnabled', () => {
     const prManager = createTestPRManager();
     expect(prManager._externalCommentsEnabled()).toBe(false);
   });
+});
+
+describe('PRManager._externalAnchorContext', () => {
+  // Anchor trust (plans/bridge-local-and-pr-modes.md decision 8): a comment's
+  // (file, line, side) was resolved against the PR head commit. Trust those
+  // numbers only when the diff on screen IS that commit.
+
+  it('pure PR mode (no association): trusts precise anchors, names the PR, disarms gate 2', () => {
+    const prManager = createTestPRManager();
+
+    // `commitSha: null` is load-bearing: it disarms the manager's SECOND,
+    // per-comment gate, so PR-mode rendering is byte-for-byte unchanged.
+    // `trustLeftAnchors: true` is the parity half of the same promise: in PR
+    // mode the left column IS the PR base, so LEFT threads keep placing
+    // precisely exactly as they always have.
+    expect(prManager._externalAnchorContext()).toEqual({
+      trustPreciseAnchors: true,
+      trustLeftAnchors: true,
+      prNumber: 42,
+      commitSha: null,
+    });
+  });
+
+  it('no PR loaded at all: still trusted, with a null PR number', () => {
+    const prManager = createTestPRManager({ currentPR: null });
+
+    expect(prManager._externalAnchorContext()).toEqual({
+      trustPreciseAnchors: true,
+      trustLeftAnchors: true,
+      prNumber: null,
+      commitSha: null,
+    });
+  });
+
+  it('association with matching head_sha: trusted, PR number from the association', () => {
+    // Local HEAD == PR head means the rendered diff and the comment anchors
+    // describe the same commit, so line numbers agree by construction.
+    const prManager = createTestPRManager({
+      currentPR: {
+        id: 7,
+        number: null,
+        head_sha: 'abc123',
+        associatedPR: { prNumber: 99, repository: 'owner/repo', head_sha: 'abc123' },
+      },
+    });
+
+    // Gate 2 is armed with the commit this diff IS, so a comment written
+    // against a commit the PR has since moved to is still caught per-thread.
+    // Heads agreeing says nothing about the BASE, so LEFT stays untrusted.
+    expect(prManager._externalAnchorContext()).toEqual({
+      trustPreciseAnchors: true,
+      trustLeftAnchors: false,
+      prNumber: 99,
+      commitSha: 'abc123',
+    });
+  });
+
+  it('association with a different head_sha: NOT trusted', () => {
+    const prManager = createTestPRManager({
+      currentPR: {
+        id: 7,
+        head_sha: 'local-sha',
+        associatedPR: { prNumber: 99, head_sha: 'pr-sha' },
+      },
+    });
+
+    expect(prManager._externalAnchorContext()).toEqual({
+      trustPreciseAnchors: false,
+      trustLeftAnchors: false,
+      prNumber: 99,
+      commitSha: 'local-sha',
+    });
+  });
+
+  // The `localHead && prHead &&` guards, not the `===`. With only ONE sha
+  // missing the comparison is already false, so those guards are only load
+  // bearing when BOTH are absent — `null === null` would otherwise report a
+  // match and trust line numbers resolved against a commit we never saw.
+  // Degrading is the honest answer; guessing they line up is the failure mode
+  // this exists to stop.
+  it('NEITHER head sha known (cold metadata cache, no local HEAD): NOT trusted', () => {
+    const prManager = createTestPRManager({
+      currentPR: { id: 7, head_sha: null, associatedPR: { prNumber: 99 } },
+    });
+
+    expect(prManager._externalAnchorContext()).toEqual({
+      trustPreciseAnchors: false,
+      trustLeftAnchors: false,
+      prNumber: 99,
+      commitSha: null,
+    });
+  });
+
+  it('association without a PR number yields prNumber null (generic provenance wording)', () => {
+    const prManager = createTestPRManager({
+      currentPR: { id: 7, head_sha: 'abc', associatedPR: { head_sha: 'abc' } },
+    });
+
+    expect(prManager._externalAnchorContext()).toEqual({
+      trustPreciseAnchors: true,
+      trustLeftAnchors: false,
+      prNumber: null,
+      commitSha: 'abc',
+    });
+  });
+});
+
+describe('PRManager._externalAnchorContext LEFT-side (base) trust', () => {
+  // A diff has TWO coordinate systems. `trustPreciseAnchors` compares heads,
+  // which vouches only for RIGHT-side line numbers. LEFT-side comments (on
+  // lines the PR removed) are numbered against the PR's BASE commit, while
+  // the rendered left column is the local merge-base / --base override /
+  // whatever the selected scope produces. `trustLeftAnchors` is the separate,
+  // strictly narrower flag ExternalCommentManager reads for those threads.
+
+  /**
+   * @param {Object} [over] - Fields to override on the base fixture, which
+   *   is the fully-trusted case: heads match, scope includes the branch, and
+   *   both base shas agree.
+   */
+  function contextFor(over = {}) {
+    const prManager = createTestPRManager({
+      currentPR: {
+        id: 7,
+        head_sha: 'head-1',
+        localBaseSha: 'base-1',
+        scopeIncludesBranch: true,
+        associatedPR: { prNumber: 99, head_sha: 'head-1', base_sha: 'base-1' },
+        ...over,
+      },
+    });
+    return prManager._externalAnchorContext();
+  }
+
+  it('scope includes branch AND bases match: LEFT anchors trusted', () => {
+    const ctx = contextFor();
+    expect(ctx.trustLeftAnchors).toBe(true);
+    expect(ctx.trustPreciseAnchors).toBe(true);
+  });
+
+  it('scope does NOT include the branch: NOT trusted even though the bases match', () => {
+    // The default local scope (unstaged..untracked) renders HEAD/index on
+    // the left, which is not the merge-base at all — so a coincidental sha
+    // match must not buy LEFT trust. This is the case the scope check exists
+    // for; without it every default local session mis-anchors LEFT threads.
+    const ctx = contextFor({ scopeIncludesBranch: false });
+    expect(ctx.trustLeftAnchors).toBe(false);
+    // Head trust is unaffected by the scope of the left side.
+    expect(ctx.trustPreciseAnchors).toBe(true);
+  });
+
+  it('scopeIncludesBranch must be strictly true, not merely truthy', () => {
+    const ctx = contextFor({ scopeIncludesBranch: 'yes' });
+    expect(ctx.trustLeftAnchors).toBe(false);
+    expect(ctx.trustPreciseAnchors).toBe(true);
+  });
+
+  it('bases differ: NOT trusted', () => {
+    const ctx = contextFor({ localBaseSha: 'base-local' });
+    expect(ctx.trustLeftAnchors).toBe(false);
+    expect(ctx.trustPreciseAnchors).toBe(true);
+  });
+
+  // As with the head shas, one missing base already fails the `===`. The
+  // `localBaseSha && prBaseSha &&` guards only earn their keep when NEITHER
+  // is known — `null === null` would otherwise vouch for a left column
+  // computed in a coordinate system we cannot see.
+  it('NEITHER base sha known (no local merge-base, older association payload): NOT trusted', () => {
+    const ctx = contextFor({
+      localBaseSha: null,
+      associatedPR: { prNumber: 99, head_sha: 'head-1' },
+    });
+    expect(ctx.trustLeftAnchors).toBe(false);
+    expect(ctx.trustPreciseAnchors).toBe(true);
+  });
+
+  it('heads differ: LEFT trust cannot exceed head trust', () => {
+    // trustLeftAnchors is strictly narrower — it is gated on
+    // trustPreciseAnchors, so a moved local HEAD degrades both sides.
+    const ctx = contextFor({ head_sha: 'head-moved' });
+    expect(ctx.trustPreciseAnchors).toBe(false);
+    expect(ctx.trustLeftAnchors).toBe(false);
+  });
+
+});
+
+describe('PRManager._prepareExternalCommentManager', () => {
+  it('pins the reviewId and forwards the anchor context', () => {
+    const prManager = createTestPRManager();
+
+    const manager = prManager._prepareExternalCommentManager();
+
+    expect(manager).toBe(externalCommentManagerStub);
+    expect(externalCommentManagerStub.reviewId).toBe(7);
+    expect(externalCommentManagerStub.setAnchorContext).toHaveBeenCalledTimes(1);
+    expect(externalCommentManagerStub.setAnchorContext).toHaveBeenCalledWith({
+      trustPreciseAnchors: true,
+      trustLeftAnchors: true,
+      prNumber: 42,
+      commitSha: null,
+    });
+  });
+
+  it('leaves reviewId untouched when no PR is loaded', () => {
+    const prManager = createTestPRManager({ currentPR: null });
+
+    prManager._prepareExternalCommentManager();
+
+    expect(externalCommentManagerStub.reviewId).toBeUndefined();
+  });
+});
+
+describe('PRManager._updateExternalCommentsAffordances', () => {
+  /** Attribute-tracking stand-in for #refresh-external-comments-btn-panel. */
+  function makeToggleButton({ hidden = true } = {}) {
+    const attrs = new Set(hidden ? ['hidden'] : []);
+    return {
+      setAttribute: vi.fn((name) => attrs.add(name)),
+      removeAttribute: vi.fn((name) => attrs.delete(name)),
+      hasAttribute: (name) => attrs.has(name),
+    };
+  }
+
+  function installButton(btn) {
+    global.document.getElementById = vi.fn((id) =>
+      (id === 'refresh-external-comments-btn-panel' ? btn : null));
+  }
+
+  it('capability true: reveals the refresh button and the External segment', () => {
+    const btn = makeToggleButton({ hidden: true });
+    installButton(btn);
+    const setExternalSegmentVisible = vi.fn();
+    window.aiPanel = { setExternalSegmentVisible };
+    const prManager = createTestPRManager();
+
+    prManager._updateExternalCommentsAffordances();
+
+    expect(btn.hasAttribute('hidden')).toBe(false);
+    expect(setExternalSegmentVisible).toHaveBeenCalledWith(true);
+  });
+
+  it('capability false: hides both affordances', () => {
+    const btn = makeToggleButton({ hidden: false });
+    installButton(btn);
+    const setExternalSegmentVisible = vi.fn();
+    window.aiPanel = { setExternalSegmentVisible };
+    const prManager = createTestPRManager({ capabilities: { canViewPRComments: false } });
+
+    prManager._updateExternalCommentsAffordances();
+
+    expect(btn.hasAttribute('hidden')).toBe(true);
+    expect(setExternalSegmentVisible).toHaveBeenCalledWith(false);
+  });
+
+  it('feature toggle off beats a true capability (global kill switch)', () => {
+    window.PAIR_REVIEW_RUNTIME_CONFIG = { external_comments_enabled: false };
+    const btn = makeToggleButton({ hidden: false });
+    installButton(btn);
+    const setExternalSegmentVisible = vi.fn();
+    window.aiPanel = { setExternalSegmentVisible };
+    const prManager = createTestPRManager();
+
+    prManager._updateExternalCommentsAffordances();
+
+    expect(btn.hasAttribute('hidden')).toBe(true);
+    expect(setExternalSegmentVisible).toHaveBeenCalledWith(false);
+  });
+
 });
 
 describe('PRManager.handleWhitespaceToggle re-renders external comments', () => {
