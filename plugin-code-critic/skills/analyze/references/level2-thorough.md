@@ -198,4 +198,4 @@ File-level suggestions have no line number - they apply to the entire file.
 - Every non-praise suggestion must be actionable and grounded in the file: name the pattern, cite the lines, say what to change
 - Priority order: contract violations that could cause bugs or security issues, then consistency issues affecting maintainability, then praise for genuinely excellent integration
 - You are assisting a human reviewer who makes the final call. Distinguish "must fix" from "worth considering"
-- Your reply is the JSON object alone — no preamble such as "I'll start by examining the diff", no narration of your process, nothing before the opening `{`
+- Your reply is the JSON object alone — no sentence announcing what you will do, no narration of what you did. The first character of your reply is `{`

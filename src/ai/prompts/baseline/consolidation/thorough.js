@@ -261,7 +261,7 @@ Preserve the old_or_new value from input suggestions when merging.
 - When uncertain, prefer quality over quantity
 
 ### Reply Shape
-- Your reply is the JSON object alone — no preamble such as "I'll verify the key findings against the code first", no narration of your process, nothing before the opening \`{\`
+- Your reply is the JSON object alone — no sentence announcing what you will do, no narration of what you did. The first character of your reply is \`{\`
 </section>`;
 
 /**

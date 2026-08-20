@@ -2392,12 +2392,14 @@ describe('Baseline Orchestration Thorough', () => {
 });
 
 describe('Thorough tier reply-shape guard', () => {
-  // opus-5 narrates its agentic process ahead of the JSON ("I'll start by
-  // examining the diff...", multi-step in longer runs), which breaks
-  // extraction (eval 2026-08-18: every extraction failure in both arms was
-  // opus-5, at level analyses and at the merge stages). Every thorough
-  // template must close with a plain reply-shape guard carrying a concrete
-  // example of the observed preamble.
+  // opus-5 narrates its agentic process ahead of the JSON (multi-step in
+  // longer runs), which breaks extraction (eval 2026-08-18: every extraction
+  // failure in both arms was opus-5, at level analyses and at the merge
+  // stages). Every thorough template must close with a plain reply-shape
+  // guard. The guard must NOT quote an example of the forbidden preamble:
+  // an earlier version did, and the next eval's one consolidation failure
+  // emitted the quoted sentence near-verbatim (priming) — describe the ban,
+  // never demonstrate it.
   const THOROUGH_TEMPLATES = [
     'baseline/level1/thorough.js',
     'baseline/level2/thorough.js',
@@ -2410,8 +2412,11 @@ describe('Thorough tier reply-shape guard', () => {
     it(`${rel} closes with the JSON-only, no-preamble guard`, async () => {
       const template = await import(`../../src/ai/prompts/${rel}`);
 
-      expect(template.taggedPrompt).toContain('no preamble such as');
-      expect(template.taggedPrompt).toContain('nothing before the opening `{`');
+      expect(template.taggedPrompt).toContain('no sentence announcing what you will do');
+      expect(template.taggedPrompt).toContain('The first character of your reply is `{`');
+      // Priming guard: no quoted narration examples anywhere in the template
+      expect(template.taggedPrompt).not.toContain("I'll start by examining");
+      expect(template.taggedPrompt).not.toContain("I'll verify the key findings");
     });
   }
 });

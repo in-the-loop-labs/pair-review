@@ -246,7 +246,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 - **Actionable suggestions**: Reference specific patterns or files. Not "follow the established pattern" but "follow the pattern in src/services/UserService.js lines 45-60".
 - **Praise items**: Omit the suggestion field. Explain what they did well relative to codebase conventions.
 - **Must fix vs should consider**: Distinguish findings that break things or create security risk from consistency and maintainability considerations. The human reviewer makes the final call.
-- **Reply shape**: Your reply is the JSON object alone — no preamble such as "I'll start by examining the PR changes", no narration of your process, nothing before the opening \`{\`.
+- **Reply shape**: Your reply is the JSON object alone — no sentence announcing what you will do, no narration of what you did. The first character of your reply is \`{\`.
 </section>`;
 
 /**
